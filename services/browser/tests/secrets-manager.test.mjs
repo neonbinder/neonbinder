@@ -669,9 +669,26 @@ describe("SecretsManagerService.updateCredentials — concurrent create (NEO-294
       !allOutput.includes(CREDS.password) && !allOutput.includes(CREDS.token),
       "credential material must never reach the log",
     );
+    // NEO-294: the half this test's NAME always claimed and never checked.
+    // The fully-qualified name is `projects/<project>/secrets/<key>` — it
+    // carries the GCP project identifier, which is the thing that escaped
+    // onto a response body and started this ticket. The log line keeps the
+    // bare secret id, so triage loses nothing.
+    assert.ok(
+      !allOutput.includes(SECRET),
+      "no fully-qualified secret resource name in any log line",
+    );
+    assert.ok(
+      !allOutput.includes("projects/neonbinder-test"),
+      "no GCP project identifier in any log line",
+    );
     assert.ok(
       capturedLogs.some((line) => line.includes("created concurrently")),
       "the lost race should still be observable server-side",
+    );
+    assert.ok(
+      capturedLogs.some((line) => line.includes(KEY)),
+      "…but the bare secret id IS logged, so the race stays triageable",
     );
   });
 
@@ -1042,8 +1059,86 @@ describe("SecretsManagerService.getCredentials — NEO-141 payload shape", () =>
 
     await assert.rejects(
       () => new SecretsManagerService().getCredentials(KEY),
-      /No active version found for key/,
+      (err) => {
+        // The routes match on this substring (routes/credentials.ts,
+        // routes/easypost.ts) — not on the key, which NEO-294 removed.
+        assert.match(err.message, /No active version/);
+        assert.ok(
+          !err.message.includes(KEY) && !err.message.includes("user_abc"),
+          "the per-user key must not ride out on the thrown message",
+        );
+        return true;
+      },
     );
+  });
+
+  it("never puts the credential key in any message it throws (NEO-294)", async () => {
+    // `key` is `<site>-credentials-<clerkUserId>`, so it is a per-user
+    // identifier. Two of these three branches used to interpolate it, and the
+    // SportLots adapter's catch put the result straight into an HTTP response
+    // body that Convex forwards to PostHog. Every branch must be a fixed
+    // string; the key stays in the structured console.error, server-side.
+    //
+    // This is the assertion a future refactor would trip: re-adding
+    // `: ${key}` "for triage" is exactly how the leak got there the first
+    // time.
+    const cases = [
+      {
+        name: "gRPC NOT_FOUND",
+        client: {
+          async listSecretVersions() {
+            const err = new Error("5 NOT_FOUND: Secret [" + SECRET + "] not found.");
+            err.code = 5;
+            throw err;
+          },
+        },
+      },
+      {
+        name: "no ENABLED version",
+        client: {
+          async listSecretVersions() {
+            return [[{ name: V(1), state: "DESTROYED" }]];
+          },
+        },
+      },
+      {
+        name: "unparseable payload",
+        client: {
+          async listSecretVersions() {
+            return [[{ name: V(1), state: "ENABLED" }]];
+          },
+          async accessSecretVersion() {
+            return [{ payload: { data: Buffer.from("{not-json", "utf8") } }];
+          },
+        },
+      },
+    ];
+
+    for (const { name, client } of cases) {
+      activeClient = client;
+      await assert.rejects(
+        () => new SecretsManagerService().getCredentials(KEY),
+        (err) => {
+          assert.ok(!err.message.includes(KEY), `${name}: the key must not be in the message`);
+          assert.ok(
+            !err.message.includes("user_abc"),
+            `${name}: the clerk user id must not be in the message`,
+          );
+          assert.ok(
+            !err.message.includes("projects/"),
+            `${name}: no resource name (and so no project id) in the message`,
+          );
+          return true;
+        },
+        name,
+      );
+      // The key IS still available to triage, in the structured log line.
+      assert.ok(
+        capturedErrors.some((line) => line.includes(KEY)),
+        `${name}: the key must still reach the server-side log`,
+      );
+      capturedErrors = [];
+    }
   });
 
   it("never leaks payload text through a JSON parse error", async () => {

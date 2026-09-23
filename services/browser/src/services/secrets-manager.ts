@@ -215,7 +215,7 @@ export class SecretsManagerService {
 
       const activeVersion = versions.find(v => v.state === 'ENABLED');
       if (!activeVersion?.name) {
-        throw new Error(`No active version found for secret: ${key}`);
+        throw new Error(`No active version found for secret`);
       }
 
       const [version] = await this.client.accessSecretVersion({
@@ -223,7 +223,7 @@ export class SecretsManagerService {
       });
 
       if (!version.payload?.data) {
-        throw new Error(`No data found in secret: ${key}`);
+        throw new Error(`No data found in secret`);
       }
 
       const secretData = version.payload.data.toString();
@@ -234,7 +234,7 @@ export class SecretsManagerService {
       try {
         credentials = JSON.parse(secretData) as Record<string, unknown>;
       } catch {
-        throw new Error(`Invalid credentials format in secret: ${key}`);
+        throw new Error(`Invalid credentials format in secret`);
       }
 
       // NEO-141: `username` is the ONLY required field. Requiring `password`
@@ -242,7 +242,7 @@ export class SecretsManagerService {
       // steady state for every user — unreadable, surfacing as a 500 out of
       // GET /credentials/:key/token.
       if (typeof credentials.username !== "string" || credentials.username.length === 0) {
-        throw new Error(`Invalid credentials format in secret: ${key}`);
+        throw new Error(`Invalid credentials format in secret`);
       }
 
       // Deliberately field-by-field rather than a spread: the stored JSON is
@@ -278,33 +278,21 @@ export class SecretsManagerService {
         key,
         error instanceof Error ? error.message : String(error),
       );
+      // NEO-294: these two used to interpolate `key` — i.e. the per-user
+      // clerk id — into a message that the SportLots adapter's catch then
+      // put in an HTTP response body and Convex forwarded to PostHog. Every
+      // other throw in this file is a fixed string; these are now too. The
+      // routes match on substrings ("not found" / "No active version"), not
+      // on the key, so the 404 mapping in routes/credentials.ts and
+      // routes/easypost.ts is unaffected. The key is still in the structured
+      // console.error above, which is where triage should read it.
       if (isNotFoundError(error)) {
-        throw new Error(`Credentials not found for key: ${key}`);
+        throw new Error(`Credentials not found`);
       }
       if (error.message && error.message.includes('No active version')) {
-        throw new Error(`No active version found for key: ${key}`);
+        throw new Error(`No active version found`);
       }
       throw new Error(`Failed to retrieve credentials`);
-    }
-  }
-
-  async listSecrets(): Promise<string[]> {
-    try {
-      const [secrets] = await this.client.listSecrets({
-        parent: `projects/${this.projectId}`,
-      });
-
-      return secrets.map(secret => {
-        const name = secret.name || '';
-        return name.split('/').pop() || '';
-      });
-    } catch (error) {
-      // Message only — same rule as getCredentials' catch below.
-      console.error(
-        'Failed to list secrets: %s',
-        error instanceof Error ? error.message : String(error),
-      );
-      return [];
     }
   }
 
@@ -482,11 +470,17 @@ export class SecretsManagerService {
       });
     } catch (err: any) {
       if (!isAlreadyExistsError(err)) throw err;
-      // Resource names and counts only — never the payload, and never the raw
-      // error object (which can carry the request that failed).
+      // NEO-294: the BARE secret id, never the fully-qualified resource name.
+      // `secretName` is `projects/<project>/secrets/<id>`, so logging it would
+      // write the GCP project identifier into Cloud Logging on every create
+      // race — the exact identifier this ticket exists to keep out of the
+      // error path. The id alone is enough to find the secret, and the project
+      // is a property of the deployment the log line already came from.
+      // Counts and ids only — never the payload, and never the raw error
+      // object (which can carry the request that failed).
       console.log(
         "Secret '%s' was created concurrently; adding a version to the existing secret",
-        secretName,
+        secretId,
       );
     }
 

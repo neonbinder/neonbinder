@@ -487,12 +487,20 @@ describe("loginFailureOutcome — unmoved by the NEO-294 idempotence fix", () =>
   });
 
   it("a genuine secret-store fault is still 502 / other, never 422", () => {
-    // The sanitised message updateCredentials throws on a real write failure,
-    // as the SportLots adapter interpolates it into its caller-facing error.
-    const raw = "Failed to login to SportLots: Error: Failed to update credentials";
+    // NEO-294: the adapter's catch no longer interpolates the caught error at
+    // all — the caller-facing string is this fixed one, whatever failed. The
+    // property being pinned is unchanged: a write fault we could not attribute
+    // to the seller must default to 502 and page.
+    const raw = "Failed to login to Sportlots";
     const out = loginFailureOutcome({}, raw);
     assert.deepEqual(out, { status: 502, errorClass: "other" });
     assert.notEqual(out.status, 422, "our fault must never be filed as the seller's");
+    // The pre-NEO-294 shape, kept so this still covers the interpolated form
+    // if anything ever reintroduces one.
+    assert.deepEqual(
+      loginFailureOutcome({}, "Failed to login to SportLots: Error: Failed to update credentials"),
+      { status: 502, errorClass: "other" },
+    );
   });
 
   it("the write-path string does not trip the invalid_credentials rule", () => {

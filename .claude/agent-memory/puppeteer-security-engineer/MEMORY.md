@@ -12,3 +12,4 @@
 - [undici socket reuse and close](reference_undici_socket_reuse_and_close.md) — global fetch does not keep back-to-back requests on one socket (pool race, use withSingleConnection); an unconsumed body >16 KiB hangs Client.close()
 - [Which paths exercise a cold BSC password login](reference_which_paths_exercise_a_cold_bsc_password_login.md) — transient creds + the canary are the ONLY callers of the B2C password exchange; a sub-second BSC login is cache/refresh, never proof sign-in works
 - [Secret Manager has no upsert](reference_secret_manager_has_no_upsert.md) — every credential write is a check-then-create race; ALREADY_EXISTS and NOT_FOUND are both fall-throughs, never a lock or a retry
+- [Adapter error string is body and classifier](reference_adapter_error_string_is_body_and_classifier.md) — sanitising an adapter's `error` also changes `error_class`; status code is flag-driven and safe

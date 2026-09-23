@@ -1027,10 +1027,19 @@ export class SportlotsAdapter extends BaseAdapter {
         automatedAccess: true,
       };
     } catch (error) {
+      // NEO-294: the caller-facing string is FIXED. It used to interpolate the
+      // caught error, and that made this the one place in services/browser
+      // where a raw error object reached an HTTP response body: index.ts puts
+      // `result.error` verbatim in the login 502, apps/web/convex/credentials.ts
+      // reads it as `detail`, and recordCredentialTest forwards `detail` to
+      // PostHog unsanitised. Anything a throw in here carries — a Secret
+      // Manager resource name, a per-user key, a fetch error's URL — left the
+      // process that way. The detail stays in the log line above, which is
+      // server-side and already name/message only.
       log(`login threw: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`);
       return {
         success: false,
-        error: `Failed to login to ${this.siteName}: ${error}`,
+        error: `Failed to login to ${this.siteName}`,
         retryable: true,
         automatedAccess,
       };

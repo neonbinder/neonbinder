@@ -2732,3 +2732,82 @@ describe("SportlotsAdapter — NEO-281 stored-cookie validation verdicts", () =>
     assert.doesNotMatch(joined, /sl_session=stored/, "the cookie value must never reach the log");
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-294 — the login catch is the one path that put a raw error in a body
+// ---------------------------------------------------------------------------
+//
+// attemptLogin's catch returns `error`, index.ts puts that string verbatim in
+// the /login/sportlots failure body, apps/web/convex/credentials.ts reads it as
+// `detail`, and recordCredentialTest forwards `detail` to PostHog unsanitised.
+// So whatever a throw in attemptLogin carries — a Secret Manager resource name,
+// the per-user credential key, a fetch error's URL — used to leave the process.
+// The string is fixed now; the detail lives only in the adapter's own log line.
+describe("SportlotsAdapter.login — the catch never echoes the error it caught", () => {
+  // A deliberately hostile throw: it names a GCP project and the per-user
+  // secret, exactly like the raw gRPC message that started this ticket.
+  const HOSTILE =
+    "9 FAILED_PRECONDITION: Secret [projects/999999999999/secrets/" +
+    "sportlots-credentials-user_leakcanary] is in a bad state";
+
+  function hostileAdapter() {
+    return loadSportlotsAdapter({
+      credentials: () => {
+        const err = new Error(HOSTILE);
+        err.code = 9;
+        throw err;
+      },
+    });
+  }
+
+  it("returns a fixed string, with no key, no user id and no interpolated error", async () => {
+    const SportlotsAdapter = hostileAdapter();
+    // canary:true only to bound the retry budget to CANARY_MAX_ATTEMPTS — the
+    // leak path is identical on the user path, which just retries five times.
+    const result = await new SportlotsAdapter(null).login(
+      "sportlots-credentials-user_leakcanary",
+      { canary: true },
+    );
+
+    assert.equal(result.success, false);
+    assert.equal(
+      result.error,
+      "Failed to login to Sportlots",
+      "the caller-facing string must be fixed, not interpolated",
+    );
+    for (const fragment of [
+      "FAILED_PRECONDITION",
+      "projects/",
+      "999999999999",
+      "user_leakcanary",
+      "sportlots-credentials-",
+      "Error:",
+    ]) {
+      assert.ok(
+        !result.error.includes(fragment),
+        `the response body must not carry "${fragment}"`,
+      );
+    }
+  });
+
+  it("keeps the detail server-side, where triage can still reach it", async () => {
+    const SportlotsAdapter = hostileAdapter();
+    const logged = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = (...a) => logged.push(a.map(String).join(" "));
+    console.error = (...a) => logged.push(a.map(String).join(" "));
+    try {
+      await new SportlotsAdapter(null).login("sportlots-credentials-user_leakcanary", {
+        canary: true,
+      });
+    } finally {
+      console.log = origLog;
+      console.error = origErr;
+    }
+    assert.ok(
+      logged.some((line) => line.includes("login threw") && line.includes("FAILED_PRECONDITION")),
+      "the cause must still be logged — sanitising the body must not blind triage",
+    );
+  });
+});
