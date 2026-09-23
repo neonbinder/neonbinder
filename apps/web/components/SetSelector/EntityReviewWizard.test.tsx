@@ -4416,18 +4416,33 @@ describe("EntityReviewWizard — footer layout", () => {
   it("dims the bulk create rather than unmounting it while the auto-add is armed", async () => {
     // Unmounting it would move everything to its right. `aria-disabled`, not
     // `disabled`, so a keyboard operator who tabbed here is not ejected.
+    //
+    // The call is held open on purpose. The default mock resolves on its own
+    // microtask, and `bulkPending` reverts to null the instant it does — a
+    // `waitFor` poll only needs the call to have HAPPENED, not to still be
+    // running, so it can observe either side of that revert depending on
+    // exactly how many microtask hops the two races take. That is the CI
+    // failure verbatim: a synchronous re-lookup by this button's un-armed,
+    // counted name landed on the turn where the label had already flipped to
+    // "Adding players…" and come up empty. Holding the promise open removes
+    // the race instead of trying to win it.
+    let releaseCreate: (v: unknown) => void = () => {};
+    mockRecordAllRemainingAsCreate.mockImplementationOnce(
+      () => new Promise((res) => (releaseCreate = res)),
+    );
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
     fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
-    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
-    const bulk = screen.getByRole("button", {
-      name: "Add remaining players as new (2)",
-    }) as HTMLButtonElement;
+    const bulk = await screen.findByRole("button", { name: "Adding players…" });
     expect(bulk.getAttribute("aria-disabled")).toBe("true");
     expect(bulk.className).toContain("aria-disabled:opacity-50");
     expect(footerStatusText()).toContain("Adding 2 more as their lookups finish…");
+
+    await act(async () => {
+      releaseCreate(LAST_PAGE);
+    });
   });
 
   it("keeps Skip remaining names live while armed — row 2 offers it by name", async () => {
@@ -4474,18 +4489,31 @@ describe("EntityReviewWizard — footer layout", () => {
 
 describe("EntityReviewWizard — armed bulk create is inert", () => {
   it("a second click on the dimmed create link issues nothing", async () => {
+    // Held open for the same reason as the footer-layout test's armed-label
+    // check above: the default mock resolves on its own microtask and
+    // `bulkPending` reverts the instant it does, so a lookup by the un-armed,
+    // counted name after a `waitFor` races that revert instead of reliably
+    // catching the dimmed control. Holding the call open removes the race.
+    let releaseCreate: (v: unknown) => void = () => {};
+    mockRecordAllRemainingAsCreate.mockImplementationOnce(
+      () => new Promise((res) => (releaseCreate = res)),
+    );
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
     const bulk = screen.getByRole("button", { name: "Add remaining players as new (2)" });
     fireEvent.click(bulk);
-    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
+
+    const dimmed = await screen.findByRole("button", { name: "Adding players…" });
 
     // Armed and aria-disabled, so the click is a no-op — the button says so and
     // behaves that way, rather than quietly issuing a duplicate.
-    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
-    await new Promise((r) => setTimeout(r, 0));
+    fireEvent.click(dimmed);
     expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      releaseCreate(LAST_PAGE);
+    });
   });
 });
 
