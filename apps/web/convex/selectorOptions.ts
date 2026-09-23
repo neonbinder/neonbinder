@@ -7069,7 +7069,30 @@ export const applyParallelGroupings = mutation({
     const now = Date.now();
 
     // ---- Validate everything first ----
-    const promotionTargets: Array<{
+    /*
+     * ── NEO-296: collected PER ROW MOVED, not per argument entry ────────────
+     *
+     * Each of the three lists below is keyed by the row it moves, so a plan
+     * that names the same row twice produces ONE target rather than two.
+     *
+     * The applied end state is unchanged. Each apply pass is a `db.patch` on
+     * the moved row, so two entries for one row always meant "the last one
+     * wins" — and a Map keyed by that row, written with `.set()`, keeps
+     * exactly that value while collapsing the redundant work.
+     *
+     * What changes is the two things that were wrong. The operator-facing
+     * counts (`promoted` / `demoted` / `reparented`) were `length` on the
+     * argument-shaped list, so a plan naming one row 400 times reported
+     * "demoted: 400" for a single re-parented row — a number shown to a person
+     * that was simply false. And the redundant patches were charged against
+     * `MAX_PARALLEL_GROUPING_ENTRIES`' budget for work that changed nothing.
+     *
+     * Duplicates are COLLAPSED rather than refused: this is an idempotent set
+     * operation on a drag-and-drop plan, and a refusal would be a new way for
+     * a legitimate screen to fail. It is the count that had to start telling
+     * the truth, not the caller that had to start being perfect.
+     */
+    const promotionTargets = new Map<Id<"selectorOptions">, {
       sourceId: Id<"selectorOptions">;
       targetId: Id<"selectorOptions">;
       metadata: Doc<"selectorOptions">["metadata"];
@@ -7080,7 +7103,7 @@ export const applyParallelGroupings = mutation({
        * fact being recorded belongs to the insert-level row — see below.
        */
       platformFacets: Doc<"selectorOptions">["platformFacets"] | undefined;
-    }> = [];
+    }>();
     for (const p of args.promotions) {
       const source = await ctx.db.get(p.insertId);
       if (!source) throw new Error(`Source insert ${p.insertId} not found`);
@@ -7142,7 +7165,7 @@ export const applyParallelGroupings = mutation({
       // this after the fact: a parallel of the BASE set sits on a different
       // `variant` axis and its untagged slots must stay inert.
       const untagged = untaggedBscSlots(source);
-      promotionTargets.push({
+      promotionTargets.set(p.insertId, {
         sourceId: p.insertId,
         targetId: p.targetInsertId,
         metadata: source.metadata,
@@ -7157,11 +7180,12 @@ export const applyParallelGroupings = mutation({
       });
     }
 
-    const demotionTargets: Array<{
+    // NEO-296 — keyed by the row moved; see the note on `promotionTargets`.
+    const demotionTargets = new Map<Id<"selectorOptions">, {
       parallelId: Id<"selectorOptions">;
       oldParentId: Id<"selectorOptions">;
       metadata: Doc<"selectorOptions">["metadata"];
-    }> = [];
+    }>();
     for (const d of args.demotions) {
       const row = await ctx.db.get(d.parallelId);
       if (!row) throw new Error(`Parallel ${d.parallelId} not found`);
@@ -7173,18 +7197,19 @@ export const applyParallelGroupings = mutation({
       if (!row.parentId) {
         throw new Error(`Parallel ${d.parallelId} has no parent`);
       }
-      demotionTargets.push({
+      demotionTargets.set(d.parallelId, {
         parallelId: d.parallelId,
         oldParentId: row.parentId,
         metadata: row.metadata,
       });
     }
 
-    const reparentingTargets: Array<{
+    // NEO-296 — keyed by the row moved; see the note on `promotionTargets`.
+    const reparentingTargets = new Map<Id<"selectorOptions">, {
       parallelId: Id<"selectorOptions">;
       oldParentId: Id<"selectorOptions">;
       newParentId: Id<"selectorOptions">;
-    }> = [];
+    }>();
     for (const r of args.reparentings ?? []) {
       const row = await ctx.db.get(r.parallelId);
       if (!row) throw new Error(`Parallel ${r.parallelId} not found`);
@@ -7212,7 +7237,7 @@ export const applyParallelGroupings = mutation({
           `Reparent target ${r.newInsertId} is not under variantType ${args.variantTypeId}`,
         );
       }
-      reparentingTargets.push({
+      reparentingTargets.set(r.parallelId, {
         parallelId: r.parallelId,
         oldParentId: row.parentId,
         newParentId: r.newInsertId,
@@ -7236,7 +7261,12 @@ export const applyParallelGroupings = mutation({
     // leaves tags alone — `variantName` is what the level rule answers at
     // `insert` anyway, so the tagged and untagged row resolve identically.
     const variantTypeChildren = await getChildren(args.variantTypeId);
-    for (const { sourceId, targetId, metadata, platformFacets } of promotionTargets) {
+    for (const {
+      sourceId,
+      targetId,
+      metadata,
+      platformFacets,
+    } of promotionTargets.values()) {
       await ctx.db.patch(sourceId, {
         level: "parallel",
         parentId: targetId,
@@ -7251,7 +7281,11 @@ export const applyParallelGroupings = mutation({
 
     // ---- Apply demotions ----
     const demotedFlags = derivedVariantFlags("insert", variantType);
-    for (const { parallelId, oldParentId, metadata } of demotionTargets) {
+    for (const {
+      parallelId,
+      oldParentId,
+      metadata,
+    } of demotionTargets.values()) {
       await ctx.db.patch(parallelId, {
         level: "insert",
         parentId: args.variantTypeId,
@@ -7264,7 +7298,11 @@ export const applyParallelGroupings = mutation({
     }
 
     // ---- Apply reparentings ----
-    for (const { parallelId, oldParentId, newParentId } of reparentingTargets) {
+    for (const {
+      parallelId,
+      oldParentId,
+      newParentId,
+    } of reparentingTargets.values()) {
       await ctx.db.patch(parallelId, {
         parentId: newParentId,
         lastUpdated: now,
@@ -7282,9 +7320,11 @@ export const applyParallelGroupings = mutation({
 
     return {
       success: true,
-      promoted: promotionTargets.length,
-      demoted: demotionTargets.length,
-      reparented: reparentingTargets.length,
+      // NEO-296 — DISTINCT rows moved, which is what these words mean to the
+      // operator reading them. See the note on `promotionTargets`.
+      promoted: promotionTargets.size,
+      demoted: demotionTargets.size,
+      reparented: reparentingTargets.size,
     };
   },
 });
@@ -13145,6 +13185,54 @@ function boundedAliasInput(raw: ReadonlyArray<string>): string[] {
     .slice(0, MAX_TEAM_ALIASES);
 }
 
+/**
+ * NEO-296 — how many checklist NAMES one prelude page walks.
+ *
+ * ## The arithmetic
+ *
+ * Convex counts one system operation per CALL, so what matters is the per-name
+ * loop, not the size of anything read. Once the creates have run, a name costs:
+ *
+ *   players — 1 `sameNamePlayers` (two indexed reads: the `players` name index
+ *             and the `playerAliases` one, plus one `db.get` per alias holder,
+ *             capped at `PLAYER_AMBIGUITY_SCAN_LIMIT`), so **2 on the ordinary
+ *             path**; an ambiguous name adds the card-year tie-break, itself
+ *             capped at `CARD_YEAR_TEAM_READS_PER_NAME` (8)
+ *   teams   — 1 `resolveTeamForSetYear` → `findTeamsByFullName`, **1–2 on the
+ *             ordinary path**, up to 18 when one alias key is held by many
+ *             rows (the preloaded college programs: "Miami", "Wisconsin")
+ *   either  — 1 extra `db.get` for a `link` decision, once per linked row
+ *
+ * So ~2 per name typical, and the tail is bounded rather than open. 300 names
+ * is ~600 operations, inside the ~900 this codebase treats as comfortable
+ * (~1,800 strains, ~4,000 fails — `CARDS_PER_COMMIT_CHUNK`), leaving room for
+ * the prelude's fixed preamble and ancestry tail on every page.
+ *
+ * ## Why the prelude needed this at all
+ *
+ * It walked EVERY distinct player and team name on the checklist in one
+ * transaction. A 754-card set yields ~750 player names and ~35 team names, so
+ * ~1,635 operations with nothing going wrong — already straining — and one
+ * `create` decision on a player with a long career list, or one team name on a
+ * crowded alias key, took it over.
+ *
+ * The same budget bounds the creates phase, which over-charges it: most names
+ * carry no create decision and that phase spends nothing on them. Over-charging
+ * buys a shorter page; under-charging buys a failed transaction.
+ */
+export const PRELUDE_NAMES_PER_PAGE = 300;
+
+/**
+ * NEO-296 — how many prelude pages one commit may walk before giving up.
+ *
+ * A runaway guard, not a budget. `MAX_DISTINCT_NAMES` is the validated
+ * ceiling on each name list, but a real checklist is `MAX_CARDS_PER_COMMIT`
+ * (5,000) cards worth of names — at most a few dozen pages per phase. 200 is
+ * an order of magnitude past that, so tripping it means a phase is not
+ * advancing, which must not be reported to the operator as a finished commit.
+ */
+export const PRELUDE_MAX_PAGES = 200;
+
 export const commitCardChecklistPrelude = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -13175,8 +13263,76 @@ export const commitCardChecklistPrelude = internalMutation({
       ),
     ),
     batchId: v.optional(v.string()),
+    /**
+     * NEO-296 — which half of the prelude this call runs. Absent runs BOTH,
+     * which is what every caller did before the split and what the direct
+     * callers in the test suite still do.
+     *
+     *   "creates" — the writes: durable skips, staged leagues, aliases, staged
+     *               career teams, and the rows a `create` decision asks for.
+     *               Bounded by the DECISIONS in the review batch.
+     *   "resolve" — pure reads: every checklist name mapped to the id it
+     *               resolves to. Bounded by the NAMES on the checklist.
+     *
+     * The order is not optional. Resolution must run after the creates,
+     * because a name a `create` decision covers only resolves once its row
+     * exists — that is the whole reason the split is this way round and not
+     * "resolve everything, then write".
+     */
+    phase: v.optional(v.union(v.literal("creates"), v.literal("resolve"))),
+    /**
+     * NEO-296 — what the "creates" phase minted, handed to "resolve".
+     *
+     * A PLAYER row is stored under the folded checklist name, so resolution
+     * finds it again through `sameNamePlayers` without being told. A TEAM row
+     * is stored under the operator's Location + Name (NEO-236), which need not
+     * resemble the checklist string at all — so the mapping from raw name to
+     * new row has to travel. Players ride along too for the one case where the
+     * lookup cannot settle it: a name that ALREADY matched two or more rows
+     * before this commit added a third.
+     */
+    priorCreates: v.optional(
+      v.object({
+        players: v.array(
+          v.object({
+            name: v.string(),
+            id: v.id("players"),
+            storedName: v.string(),
+          }),
+        ),
+        teams: v.array(
+          v.object({
+            name: v.string(),
+            id: v.id("teams"),
+            storedName: v.string(),
+          }),
+        ),
+      }),
+    ),
+    /** NEO-296 — how many names of this phase's walk are already done. */
+    resume: v.optional(v.object({ offset: v.number() })),
+    /**
+     * NEO-296 — narrow this call's page, for a test that needs the boundary in
+     * a particular place.
+     *
+     * It can only make the page SMALLER, exactly as `brandRehome`'s
+     * `clampPage` can: `PRELUDE_NAMES_PER_PAGE` is the transaction's ceiling
+     * and nothing, test or caller, gets to raise it. The case it exists for is
+     * the one that matters most here — two spellings of one name with the page
+     * boundary BETWEEN them — and building that with 300 real names would make
+     * a test slow enough that nobody keeps it.
+     */
+    namesPerPage: v.optional(v.number()),
   },
   returns: v.object({
+    /**
+     * NEO-296 — this phase's walk stopped on its bound. Call again with
+     * `resume`. Always false when `phase` is absent, because that runs the
+     * whole prelude in one transaction exactly as it always did.
+     */
+    hasMore: v.boolean(),
+    /** Where the next call resumes; null when there is nothing behind it. */
+    resume: v.union(v.object({ offset: v.number() }), v.null()),
     userId: v.string(),
     sportSkuCode: v.optional(v.string()),
     sportValue: v.string(),
@@ -13418,6 +13574,52 @@ export const commitCardChecklistPrelude = internalMutation({
           )
           .collect()
       : [];
+    /**
+     * NEO-296 — the `create` arm of a review decision, named once.
+     *
+     * The two create closures below are reached only for this arm, and saying
+     * so in their signatures is what lets them keep the bodies they were lifted
+     * from verbatim, narrowing and all.
+     */
+    type CreateDecision = Extract<
+      NonNullable<(typeof reviewRows)[number]["decision"]>,
+      { action: "create" }
+    >;
+    /*
+     * ── NEO-296: which half of the prelude this call is ─────────────────────
+     *
+     * Absent runs both, in order, exactly as one transaction always did — and
+     * that is still what the direct callers in the test suite get. The action
+     * splits them so neither half can outgrow a transaction: the writes are
+     * bounded by the review batch's DECISIONS, resolution by the checklist's
+     * NAMES.
+     */
+    const runCreates = args.phase === undefined || args.phase === "creates";
+    const runResolve = args.phase === undefined || args.phase === "resolve";
+    /**
+     * NEO-296 — rows the CREATES phase already minted, by the raw checklist
+     * name that asked for them.
+     *
+     * Empty for a whole-prelude call, which is what keeps that path byte-for-
+     * byte what it was. For a split run it is what stops the resolve phase
+     * writing anything: a name whose `create` decision has already been
+     * honoured is mapped from here instead of being created a second time.
+     *
+     * It matters most for PLAYERS. A team create adopts an existing row of the
+     * same composed name (`createTeamFromOperatorInput`), so a second attempt
+     * would link rather than duplicate; a player create is a bare `insert`, so
+     * a name that matched two or more rows BEFORE this commit — the one case
+     * where the resolve phase's exactly-one fast path cannot fire — would mint
+     * a second row for the same person. That is the duplicate this whole
+     * restructure exists not to create.
+     */
+    const priorPlayerByName = new Map(
+      (args.priorCreates?.players ?? []).map((e) => [e.name, e] as const),
+    );
+    const priorTeamByName = new Map(
+      (args.priorCreates?.teams ?? []).map((e) => [e.name, e] as const),
+    );
+
     const reviewByKey = new Map<string, (typeof reviewRows)[number]>();
     for (const row of reviewRows) {
       reviewByKey.set(`${row.kind}:${norm(row.name)}`, row);
@@ -13450,6 +13652,8 @@ export const commitCardChecklistPrelude = internalMutation({
     const skippedPlayerNames: string[] = [];
     const skippedTeamNames: string[] = [];
     for (const row of reviewRows) {
+      // NEO-296 — a WRITE pass; the resolve phase does not run it.
+      if (!runCreates) break;
       if (row.decision?.action !== "skip") continue;
       /*
        * NEO-254 — a skipped LEAGUE is not a suppressed name.
@@ -14052,6 +14256,8 @@ export const commitCardChecklistPrelude = internalMutation({
     const teamsWithSkippedLeague = new Set<string>();
 
     for (const row of reviewRows) {
+      // NEO-296 — a WRITE pass; the resolve phase does not run it.
+      if (!runCreates) break;
       if (row.kind !== "league") continue;
       const leagueKey = normalizeLeagueName(row.name);
       if (!leagueKey) continue;
@@ -14159,6 +14365,8 @@ export const commitCardChecklistPrelude = internalMutation({
       aliasNamesByTeamId.set(row.decision.linkedTeamId, names);
     }
     for (const [teamId, names] of aliasNamesByTeamId) {
+      // NEO-296 — a WRITE pass; the resolve phase does not run it.
+      if (!runCreates) break;
       const linked = await ctx.db.get(teamId);
       if (!linked || linked.sportId !== args.sportId) continue;
       const held = linked.aliases ?? [];
@@ -14223,6 +14431,8 @@ export const commitCardChecklistPrelude = internalMutation({
     const stagedTeamIdByLabel = new Map<string, Id<"teams">>();
 
     for (const row of reviewRows) {
+      // NEO-296 — a WRITE pass; the resolve phase does not run it.
+      if (!runCreates) break;
       if (row.kind !== "team") continue;
       if (row.source?.kind !== "careerTeamOf") continue;
       // A step answered by pointing at a team we already hold. Nothing to
@@ -14284,7 +14494,149 @@ export const commitCardChecklistPrelude = internalMutation({
      */
     const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
 
-    for (const name of allTeamNames) {
+    /*
+     * ── NEO-296: ONE bounded walk over both name sets ───────────────────────
+     *
+     * Teams first, then players, addressed by a single offset into the
+     * concatenation of the two — so a page boundary can fall anywhere,
+     * including in the middle of the teams, and the next call resumes exactly
+     * where this one stopped. Two separate cursors would have needed two
+     * resume fields and a rule about which one is live.
+     *
+     * A whole-prelude call (`phase` absent) starts at 0 with an unlimited
+     * budget, which is the loop both of these were before the split.
+     *
+     * The budget is a NAME COUNT rather than an operation count because, once
+     * the creates have run, every name costs the same one or two indexed reads
+     * — see `PRELUDE_NAMES_PER_PAGE`. The creates phase is charged against the
+     * same budget, which over-charges it (most names carry no create decision
+     * and cost nothing at all) and is the right way round: over-charging buys
+     * a shorter page, under-charging buys a failed transaction.
+     */
+    const teamNameList = Array.from(allTeamNames);
+    const playerNameList = Array.from(allPlayerNames);
+    const walkOffset = args.phase === undefined ? 0 : (args.resume?.offset ?? 0);
+    let walkBudget =
+      args.phase === undefined
+        ? Number.POSITIVE_INFINITY
+        : Math.min(
+            PRELUDE_NAMES_PER_PAGE,
+            Math.max(1, Math.floor(args.namesPerPage ?? PRELUDE_NAMES_PER_PAGE)),
+          );
+    /** Names this call got through, across both sets. */
+    let walked = 0;
+
+    /**
+     * NEO-296 — mint the team a checklist name's `create` decision asked for.
+     *
+     * The team counterpart of `createPlayerFromDecision`, lifted verbatim out
+     * of the name loop below for the same reason, and with the same division
+     * of labour: the caller has already established that the name does not
+     * resolve to exactly one existing row, so this only has to honour the
+     * decision.
+     *
+     * ## Unlike the player case, the raw name does NOT find this row again
+     *
+     * A player is stored under the folded form of the checklist string, so a
+     * later lookup for either spelling finds it. A team is stored under the
+     * operator's Location + Name (NEO-236) — "SD Padres" on the checklist
+     * becomes "San Diego Padres" on the row — so the raw string need not
+     * match anything. That is why this records `teamIdByName` under the RAW
+     * name here and why a resolve pass that runs later has to be handed that
+     * mapping rather than re-deriving it from the table.
+     */
+    const createTeamFromChecklistDecision = async (
+      name: string,
+      normalized: string,
+      // Only ever reached for a CREATE decision — the loop's `skip`/`link`
+      // branches return before this, and the create phase selects on it. Typed
+      // rather than re-narrowed, so a caller that got it wrong fails here.
+      decision: CreateDecision,
+    ): Promise<void> => {
+      // ── NEO-236: created ONLY from the operator's Location + Name ─────────
+      //
+      // `name` here is the raw checklist string, and it is deliberately NOT
+      // what gets stored. Jason, 2026-09-05: "We simply shouldn't allow for
+      // full string creation. Location & Team Name should be the input." The
+      // wizard pre-fills both halves and the operator confirms them; a create
+      // decision that carries neither cannot have come from that form, so
+      // nothing is inserted and the name is reported as unresolved for the
+      // attention walker's missing-team lane — the same place an unreviewed
+      // name lands.
+      const create = decision.create;
+      if (!create) {
+        unresolvedTeamNames.add(name);
+        return;
+      }
+      const teamReviewRow = reviewByKey.get(`team:${normalized}`);
+      const enrichment = teamReviewRow?.enrichment;
+      // NEO-284: `create.aliases` rides along on the whole decision object and
+      // is written on the insert branch only — see `createTeamFromOperatorInput`.
+      const made = await createTeamFromOperatorInput(create, {
+        // The row the operator reviewed arrives complete — the wizard's own
+        // Wikidata/ESPN lookup already ran, and since NEO-254 that lookup is
+        // the only enrichment a team gets that no operator asked for.
+        // NEO-236: league, era, colours and ids in one place, shared with the
+        // staged-career-team pass above. The operator's League choice wins over
+        // the enrichment's suggestion — see `reviewedTeamFields`.
+        extra: await reviewedTeamFields(
+          create,
+          enrichment,
+          teamReviewRow?._id as string | undefined,
+        ),
+        leagueChosen: await leagueAnswered(
+          create,
+          enrichment?.league,
+          teamReviewRow?._id as string | undefined,
+        ),
+      });
+      // NEO-254: null means the name resolves to two or more OVERLAPPING rows.
+      // Nothing was written, and the name is reported unresolved exactly as an
+      // unreviewed one is — Team Management is where a duplicate pair is sorted
+      // out, and a commit must not pick a side.
+      if (!made) {
+        unresolvedTeamNames.add(name);
+        return;
+      }
+      teamIdByName.set(name, made.id);
+      teamNameById.set(made.id, teamFullName(create));
+      // `createTeamFromOperatorInput` LINKS instead of inserting when the
+      // composed name already exists — the operator answered "SD Padres" with
+      // the San Diego Padres row we already have. A row this commit did not
+      // insert is not one it created, and `createdTeamIds` drives the finalize
+      // phase's creation-only work, so the flag is what decides.
+      if (made.created) createdTeamIds.push(made.id);
+    };
+
+    for (
+      let ti = Math.min(walkOffset, teamNameList.length);
+      ti < teamNameList.length;
+      ti++
+    ) {
+      if (walkBudget <= 0) break;
+      walkBudget--;
+      walked++;
+      const name = teamNameList[ti];
+      // NEO-296 — the CREATES phase does the create and nothing else. The
+      // decision lookup is in memory and free, so a name with no create
+      // decision costs this phase nothing at all; only the guard read below
+      // is charged, and only for the names that might actually mint a row.
+      if (!runResolve) {
+        const createDecision = reviewByKey.get(`team:${norm(name)}`)?.decision;
+        if (createDecision?.action !== "create") continue;
+        const { teamId: alreadyThere } = await resolveTeamForSetYear(
+          ctx,
+          args.sportId,
+          name,
+          setYear,
+        );
+        // Already resolves on its own — the resolve phase will link it, and
+        // minting a rival row is exactly what the guard in the combined loop
+        // below prevented.
+        if (alreadyThere) continue;
+        await createTeamFromChecklistDecision(name, norm(name), createDecision);
+        continue;
+      }
       // The review-row key, NOT a team-identity lookup: `reviewByKey` is built
       // with the same `norm` over the queue rows' own names, so the two sides
       // of that map have to agree with each other rather than with `teams`.
@@ -14352,59 +14704,21 @@ export const commitCardChecklistPrelude = internalMutation({
         }
         continue;
       }
-      // ── NEO-236: created ONLY from the operator's Location + Name ─────────
+      // NEO-296 — the CREATE half of this loop, lifted out whole; see
+      // `createTeamFromChecklistDecision`. Nothing about it changed.
       //
-      // `name` here is the raw checklist string, and it is deliberately NOT
-      // what gets stored. Jason, 2026-09-05: "We simply shouldn't allow for
-      // full string creation. Location & Team Name should be the input." The
-      // wizard pre-fills both halves and the operator confirms them; a create
-      // decision that carries neither cannot have come from that form, so
-      // nothing is inserted and the name is reported as unresolved for the
-      // attention walker's missing-team lane — the same place an unreviewed
-      // name lands.
-      const create = decision.create;
-      if (!create) {
-        unresolvedTeamNames.add(name);
+      // Unless the creates phase already minted it, in which case this is the
+      // resolve phase and it only has to record what that phase made. See
+      // `priorTeamByName` — a team's stored name is the operator's Location +
+      // Name and need not match the checklist string, so the lookup above
+      // cannot be relied on to find it.
+      const priorTeam = priorTeamByName.get(name);
+      if (priorTeam) {
+        teamIdByName.set(name, priorTeam.id);
+        teamNameById.set(priorTeam.id, priorTeam.storedName);
         continue;
       }
-      const teamReviewRow = reviewByKey.get(`team:${normalized}`);
-      const enrichment = teamReviewRow?.enrichment;
-      // NEO-284: `create.aliases` rides along on the whole decision object and
-      // is written on the insert branch only — see `createTeamFromOperatorInput`.
-      const made = await createTeamFromOperatorInput(create, {
-        // The row the operator reviewed arrives complete — the wizard's own
-        // Wikidata/ESPN lookup already ran, and since NEO-254 that lookup is
-        // the only enrichment a team gets that no operator asked for.
-        // NEO-236: league, era, colours and ids in one place, shared with the
-        // staged-career-team pass above. The operator's League choice wins over
-        // the enrichment's suggestion — see `reviewedTeamFields`.
-        extra: await reviewedTeamFields(
-          create,
-          enrichment,
-          teamReviewRow?._id as string | undefined,
-        ),
-        leagueChosen: await leagueAnswered(
-          create,
-          enrichment?.league,
-          teamReviewRow?._id as string | undefined,
-        ),
-      });
-      // NEO-254: null means the name resolves to two or more OVERLAPPING rows.
-      // Nothing was written, and the name is reported unresolved exactly as an
-      // unreviewed one is — Team Management is where a duplicate pair is sorted
-      // out, and a commit must not pick a side.
-      if (!made) {
-        unresolvedTeamNames.add(name);
-        continue;
-      }
-      teamIdByName.set(name, made.id);
-      teamNameById.set(made.id, teamFullName(create));
-      // `createTeamFromOperatorInput` LINKS instead of inserting when the
-      // composed name already exists — the operator answered "SD Padres" with
-      // the San Diego Padres row we already have. A row this commit did not
-      // insert is not one it created, and `createdTeamIds` drives the finalize
-      // phase's creation-only work, so the flag is what decides.
-      if (made.created) createdTeamIds.push(made.id);
+      await createTeamFromChecklistDecision(name, normalized, decision);
     }
 
     const playerIdByName = new Map<string, Id<"players">>();
@@ -14430,151 +14744,38 @@ export const commitCardChecklistPrelude = internalMutation({
      * a commit's reads.
      */
     const cardYearTeamCache = createCardYearTeamCache();
-    for (const name of allPlayerNames) {
-      const normalized = norm(name);
-      /**
-       * NEO-254 — the compound index returns as many rows as share this key,
-       * and that number is the decision.
-       *
-       * This was `.first()`, whose comment claimed the index "returns 0 or 1
-       * row per lookup". It returns 0 or 1 per (name, SPORT) pair — which is
-       * not the same as 0 or 1 full stop, because nothing makes that pair
-       * unique. Two people named Bob Allen played in the majors; the bulk
-       * preload (plan decision 3) puts both on file, and `.first()` then
-       * silently attached every "Bob Allen" card in the set to one of them.
-       *
-       * Bounded rather than collected: the branch only needs "none / one /
-       * more than one", and a name that normalizes to something a thousand
-       * rows share must not turn a per-name lookup inside a commit into an
-       * unbounded read.
-       *
-       *   exactly 1 → adopt it, exactly as before;
-       *   0 or >1   → fall through to the operator's decision below. For 0
-       *               that is the behaviour this loop always had. For >1 it
-       *               is the fix: a `link` decision names WHICH row (the
-       *               wizard listed them), a `create` decision means the
-       *               operator looked at those rows and said this is somebody
-       *               else, and NO decision leaves the card unlinked and the
-       *               name reported as unreviewed — never bound by a guess.
-       */
-      // NEO-254 — the shared derivation, not a fourth copy of the index read.
-      // It is what carries the ALIAS leg: a 2010 "Ron Artest" card and a 2011
-      // "Metta World Peace" card have to land on one row, and a hand-rolled
-      // read here would have found only the primary name.
-      const existingMatches = await sameNamePlayers(ctx, normalized, args.sportId);
-      if (existingMatches.length === 1) {
-        const existing = existingMatches[0];
-        playerIdByName.set(name, existing._id);
-        playerNameById.set(existing._id, existing.name);
-        continue;
-      }
-      const decision = reviewByKey.get(`player:${normalized}`)?.decision;
-      /**
-       * NEO-254 — the card's own year narrows "more than one" back to one.
-       *
-       * The guard above is correct and, on its own, expensive: a 1990 set with
-       * eight hundred commons would hand the operator a decision for every
-       * name two people have ever shared, almost all of which have exactly one
-       * plausible answer because the other man retired in 1937.
-       *
-       * The card is evidence about which one it is, and this uses it — the
-       * year first, then the team printed on the card when two contemporaries
-       * share a name. `narrowSameNamePlayersByCardYear` returns a row only when
-       * exactly one survives; every other outcome falls through to the
-       * operator's decision below, exactly as before. With no set year it
-       * narrows nothing at all: the rule is never to guess, only to rule out.
-       *
-       * ## Only when there is NO decision, and that ordering is load-bearing
-       *
-       * A review session is human-paced and a commit happens at the end of it.
-       * Between the operator ruling on this name and pressing Confirm, a
-       * colleague's commit or a bulk load can add a stint that makes the year
-       * evidence point somewhere — including somewhere ELSE. Narrowing first
-       * would let that late data silently overrule a person who had already
-       * looked at these very rows and said which one it was, or said "this is
-       * somebody new", or said "not a person at all". Inference never
-       * overrules an answer; it only fills a silence.
-       *
-       * `!decision` and not `decision?.action !== "link"`: a skip is an answer
-       * too, and a `create` means the operator saw the candidates and rejected
-       * all of them.
-       *
-       * Placed AFTER the exactly-one fast path so the ordinary name pays
-       * nothing for it.
-       */
-      if (!decision && existingMatches.length > 1) {
-        const narrowed = await narrowSameNamePlayersByCardYear(
-          ctx,
-          existingMatches,
-          {
-            ...(setYear !== undefined ? { cardYear: setYear } : {}),
-            cardTeamNames: cardTeamNamesByPlayer.get(normalized) ?? [],
-            teamCache: cardYearTeamCache,
-          },
-        );
-        if (narrowed.playerId) {
-          const picked = existingMatches.find((p) => p._id === narrowed.playerId)!;
-          playerIdByName.set(name, picked._id);
-          playerNameById.set(picked._id, picked.name);
-          continue;
-        }
-      }
-      // Not reviewed (shouldn't happen), or reviewed as "not a person"
-      // (NEO-212). Both leave the name out of `playerIdByName`, so the card
-      // keeps it as raw text and links to nothing — a skip is deliberately
-      // indistinguishable, at the card, from a name that was never resolved.
-      // The skip's durability comes from `entityReviewSkips` above, not from
-      // anything written here.
-      if (!decision || decision.action === "skip") {
-        // NEO-221: no decision at all is an unanswered question — the wizard
-        // never ruled on this name, so the card will link to nothing and no
-        // later pass will fix it. A skip is an ANSWER and is excluded.
-        if (!decision) unreviewedPlayerNames.push(name);
-        continue;
-      }
-      if (decision.action === "link") {
-        if (decision.linkedPlayerId) {
-          /**
-           * NEO-254 — the linked row is RE-VALIDATED, not trusted.
-           *
-           * A decision is recorded when the operator makes it and consumed
-           * when they hit Confirm, and a review session is a human-paced thing
-           * that can span a long while. Between the two, the row they picked
-           * can be deleted or merged away by another operator or by an admin
-           * tool — and this branch used to write the id into `playerIdByName`
-           * on the strength of the decision alone. The card then carried a
-           * `playerIds` entry pointing at nothing: invisible to every query
-           * that joins through it, unfixable by any later pass, and with
-           * nothing anywhere saying it had happened.
-           *
-           * The `db.get` was ALREADY here — it read the linked row's canonical
-           * spelling — and its result was simply discarded when the row was
-           * gone. Reading it once and acting on the answer costs nothing extra.
-           *
-           * The sport is checked too, for the reason `savePlayerFields` checks
-           * it on a stint: a cross-sport player is unreachable by every query
-           * that matters (all of them key on the sport row id), so linking to
-           * one is the same dangling reference wearing a valid id.
-           *
-           * Treated as UNREVIEWED rather than failed: the operator's answer
-           * has become unanswerable, which is exactly the state
-           * `unreviewedPlayerNames` reports and stamps on the card. The commit
-           * still lands — refusing it would cost them the whole sync over one
-           * name — and they are told which name to look at again.
-           */
-          const linked = await ctx.db.get(decision.linkedPlayerId);
-          if (!linked || linked.sportId !== args.sportId) {
-            unreviewedPlayerNames.push(name);
-            continue;
-          }
-          playerIdByName.set(name, decision.linkedPlayerId);
-          // The LINKED row's own spelling is what the old write loop's
-          // `db.get(...).name` produced, so use it here rather than assuming
-          // the reviewed name matches it.
-          playerNameById.set(decision.linkedPlayerId, linked.name);
-        }
-        continue;
-      }
+    /**
+     * NEO-296 — mint the player a `create` decision asked for, and record it
+     * in this commit's maps.
+     *
+     * Lifted verbatim out of the name loop below so that the prelude's two
+     * halves can be driven separately: the CREATES are bounded by the review
+     * batch's decisions, while RESOLUTION is bounded by the checklist's
+     * names and, once the creates have run, reads only.
+     *
+     * The caller owns the guard. This does not ask whether the name already
+     * resolves — the loop below checks `existingMatches.length === 1` and
+     * links instead of reaching here, and the create phase re-asks the same
+     * question before calling. Putting the guard inside would hide it from
+     * both.
+     *
+     * ## Why the two-spellings fold survives being moved
+     *
+     * The row is inserted with `nameNormalized: normalized`, the FOLDED key.
+     * So a later lookup for either raw spelling — "José Ramírez" or "Jose
+     * Ramirez" — finds this one row through `sameNamePlayers`, which keys on
+     * that same fold. The dedup therefore stops depending on one loop's
+     * iteration order and becomes a property of the key itself, which is the
+     * single most important thing this restructure must not lose.
+     * `convex/commitCardChecklist.entityReview.test.ts` pins it both ways
+     * round.
+     */
+    const createPlayerFromDecision = async (
+      name: string,
+      normalized: string,
+      // See `createTeamFromChecklistDecision` — same contract.
+      decision: CreateDecision,
+    ): Promise<void> => {
       // decision.action === "create" — seed directly from the wizard's own
       // Wikidata preview lookup (already fetched during review); no more
       // post-commit processEnrichmentQueue scheduling needed for this row.
@@ -14745,6 +14946,188 @@ export const commitCardChecklistPrelude = internalMutation({
       playerIdByName.set(name, id);
       playerNameById.set(id, name.trim());
       createdPlayerIds.push(id);
+    };
+
+    for (
+      let pi = Math.max(0, walkOffset - teamNameList.length);
+      pi < playerNameList.length;
+      pi++
+    ) {
+      if (walkBudget <= 0) break;
+      walkBudget--;
+      walked++;
+      const name = playerNameList[pi];
+      // NEO-296 — see the team loop above; same division, same guard.
+      if (!runResolve) {
+        const createDecision = reviewByKey.get(`player:${norm(name)}`)?.decision;
+        if (createDecision?.action !== "create") continue;
+        const already = await sameNamePlayers(ctx, norm(name), args.sportId);
+        if (already.length === 1) continue;
+        await createPlayerFromDecision(name, norm(name), createDecision);
+        continue;
+      }
+      const normalized = norm(name);
+      /**
+       * NEO-254 — the compound index returns as many rows as share this key,
+       * and that number is the decision.
+       *
+       * This was `.first()`, whose comment claimed the index "returns 0 or 1
+       * row per lookup". It returns 0 or 1 per (name, SPORT) pair — which is
+       * not the same as 0 or 1 full stop, because nothing makes that pair
+       * unique. Two people named Bob Allen played in the majors; the bulk
+       * preload (plan decision 3) puts both on file, and `.first()` then
+       * silently attached every "Bob Allen" card in the set to one of them.
+       *
+       * Bounded rather than collected: the branch only needs "none / one /
+       * more than one", and a name that normalizes to something a thousand
+       * rows share must not turn a per-name lookup inside a commit into an
+       * unbounded read.
+       *
+       *   exactly 1 → adopt it, exactly as before;
+       *   0 or >1   → fall through to the operator's decision below. For 0
+       *               that is the behaviour this loop always had. For >1 it
+       *               is the fix: a `link` decision names WHICH row (the
+       *               wizard listed them), a `create` decision means the
+       *               operator looked at those rows and said this is somebody
+       *               else, and NO decision leaves the card unlinked and the
+       *               name reported as unreviewed — never bound by a guess.
+       */
+      // NEO-254 — the shared derivation, not a fourth copy of the index read.
+      // It is what carries the ALIAS leg: a 2010 "Ron Artest" card and a 2011
+      // "Metta World Peace" card have to land on one row, and a hand-rolled
+      // read here would have found only the primary name.
+      const existingMatches = await sameNamePlayers(ctx, normalized, args.sportId);
+      if (existingMatches.length === 1) {
+        const existing = existingMatches[0];
+        playerIdByName.set(name, existing._id);
+        playerNameById.set(existing._id, existing.name);
+        continue;
+      }
+      const decision = reviewByKey.get(`player:${normalized}`)?.decision;
+      /**
+       * NEO-254 — the card's own year narrows "more than one" back to one.
+       *
+       * The guard above is correct and, on its own, expensive: a 1990 set with
+       * eight hundred commons would hand the operator a decision for every
+       * name two people have ever shared, almost all of which have exactly one
+       * plausible answer because the other man retired in 1937.
+       *
+       * The card is evidence about which one it is, and this uses it — the
+       * year first, then the team printed on the card when two contemporaries
+       * share a name. `narrowSameNamePlayersByCardYear` returns a row only when
+       * exactly one survives; every other outcome falls through to the
+       * operator's decision below, exactly as before. With no set year it
+       * narrows nothing at all: the rule is never to guess, only to rule out.
+       *
+       * ## Only when there is NO decision, and that ordering is load-bearing
+       *
+       * A review session is human-paced and a commit happens at the end of it.
+       * Between the operator ruling on this name and pressing Confirm, a
+       * colleague's commit or a bulk load can add a stint that makes the year
+       * evidence point somewhere — including somewhere ELSE. Narrowing first
+       * would let that late data silently overrule a person who had already
+       * looked at these very rows and said which one it was, or said "this is
+       * somebody new", or said "not a person at all". Inference never
+       * overrules an answer; it only fills a silence.
+       *
+       * `!decision` and not `decision?.action !== "link"`: a skip is an answer
+       * too, and a `create` means the operator saw the candidates and rejected
+       * all of them.
+       *
+       * Placed AFTER the exactly-one fast path so the ordinary name pays
+       * nothing for it.
+       */
+      if (!decision && existingMatches.length > 1) {
+        const narrowed = await narrowSameNamePlayersByCardYear(
+          ctx,
+          existingMatches,
+          {
+            ...(setYear !== undefined ? { cardYear: setYear } : {}),
+            cardTeamNames: cardTeamNamesByPlayer.get(normalized) ?? [],
+            teamCache: cardYearTeamCache,
+          },
+        );
+        if (narrowed.playerId) {
+          const picked = existingMatches.find((p) => p._id === narrowed.playerId)!;
+          playerIdByName.set(name, picked._id);
+          playerNameById.set(picked._id, picked.name);
+          continue;
+        }
+      }
+      // Not reviewed (shouldn't happen), or reviewed as "not a person"
+      // (NEO-212). Both leave the name out of `playerIdByName`, so the card
+      // keeps it as raw text and links to nothing — a skip is deliberately
+      // indistinguishable, at the card, from a name that was never resolved.
+      // The skip's durability comes from `entityReviewSkips` above, not from
+      // anything written here.
+      if (!decision || decision.action === "skip") {
+        // NEO-221: no decision at all is an unanswered question — the wizard
+        // never ruled on this name, so the card will link to nothing and no
+        // later pass will fix it. A skip is an ANSWER and is excluded.
+        if (!decision) unreviewedPlayerNames.push(name);
+        continue;
+      }
+      if (decision.action === "link") {
+        if (decision.linkedPlayerId) {
+          /**
+           * NEO-254 — the linked row is RE-VALIDATED, not trusted.
+           *
+           * A decision is recorded when the operator makes it and consumed
+           * when they hit Confirm, and a review session is a human-paced thing
+           * that can span a long while. Between the two, the row they picked
+           * can be deleted or merged away by another operator or by an admin
+           * tool — and this branch used to write the id into `playerIdByName`
+           * on the strength of the decision alone. The card then carried a
+           * `playerIds` entry pointing at nothing: invisible to every query
+           * that joins through it, unfixable by any later pass, and with
+           * nothing anywhere saying it had happened.
+           *
+           * The `db.get` was ALREADY here — it read the linked row's canonical
+           * spelling — and its result was simply discarded when the row was
+           * gone. Reading it once and acting on the answer costs nothing extra.
+           *
+           * The sport is checked too, for the reason `savePlayerFields` checks
+           * it on a stint: a cross-sport player is unreachable by every query
+           * that matters (all of them key on the sport row id), so linking to
+           * one is the same dangling reference wearing a valid id.
+           *
+           * Treated as UNREVIEWED rather than failed: the operator's answer
+           * has become unanswerable, which is exactly the state
+           * `unreviewedPlayerNames` reports and stamps on the card. The commit
+           * still lands — refusing it would cost them the whole sync over one
+           * name — and they are told which name to look at again.
+           */
+          const linked = await ctx.db.get(decision.linkedPlayerId);
+          if (!linked || linked.sportId !== args.sportId) {
+            unreviewedPlayerNames.push(name);
+            continue;
+          }
+          playerIdByName.set(name, decision.linkedPlayerId);
+          // The LINKED row's own spelling is what the old write loop's
+          // `db.get(...).name` produced, so use it here rather than assuming
+          // the reviewed name matches it.
+          playerNameById.set(decision.linkedPlayerId, linked.name);
+        }
+        continue;
+      }
+      // NEO-296 — the CREATE half of this loop, lifted out whole.
+      //
+      // Nothing about it changed; it moved so that the inversion can call
+      // it from a phase that walks review DECISIONS (~300) instead of this
+      // loop's names (~750), leaving what remains here a pure read. See
+      // `createPlayerFromDecision`.
+      //
+      // The resolve phase reaches this line only for a name that matched two
+      // or more rows before the commit, because one match takes the fast path
+      // above. Minting a second row for it is precisely the duplicate the
+      // restructure must not produce, so the creates phase's answer wins.
+      const priorPlayer = priorPlayerByName.get(name);
+      if (priorPlayer) {
+        playerIdByName.set(name, priorPlayer.id);
+        playerNameById.set(priorPlayer.id, priorPlayer.storedName);
+        continue;
+      }
+      await createPlayerFromDecision(name, normalized, decision);
     }
 
 
@@ -14814,6 +15197,13 @@ export const commitCardChecklistPrelude = internalMutation({
     const { maps: matchMaps } = buildMatchMaps(existingCards, leafNode);
 
     return {
+      // NEO-296 — a whole-prelude call walks both name sets with no budget, so
+      // `walked` always reaches the end and these are false/null for it.
+      hasMore: walkOffset + walked < teamNameList.length + playerNameList.length,
+      resume:
+        walkOffset + walked < teamNameList.length + playerNameList.length
+          ? { offset: walkOffset + walked }
+          : null,
       userId,
       sportSkuCode: commitSportRow.sportConfig?.skuCode,
       sportValue: commitSportRow.value ?? "",
@@ -14850,6 +15240,9 @@ export const commitCardChecklistPrelude = internalMutation({
 });
 
 type CommitPrelude = {
+  /** NEO-296 — see the mutation's `returns`. */
+  hasMore: boolean;
+  resume: { offset: number } | null;
   userId: string;
   sportSkuCode?: string;
   sportValue: string;
@@ -17830,19 +18223,151 @@ export const commitCardChecklist = action({
       for (const t of teamsOnCard) teamNames.push(t);
     }
 
-    const prelude: CommitPrelude = await phase("prelude", () =>
-      ctx.runMutation(internal.selectorOptions.commitCardChecklistPrelude, {
-        selectorOptionId: args.selectorOptionId,
-        sportId: args.sportId,
-        playerNames: Array.from(new Set(playerNames)),
-        teamNames: Array.from(new Set(teamNames)),
-        playerTeamNames: Array.from(
-          playerTeamNamesByPlayer,
-          ([playerNameNormalized, teams]) => ({ playerNameNormalized, teams }),
-        ),
-        batchId: args.batchId,
-      }),
-    );
+    /*
+     * ── NEO-296: the prelude is TWO bounded walks, and this drives them ──────
+     *
+     * It used to be one transaction over every distinct name on the checklist:
+     * ~1,635 Convex system operations on a 754-card set with nothing going
+     * wrong, and over the line the moment one `create` decision carried a long
+     * career list. See `PRELUDE_NAMES_PER_PAGE`.
+     *
+     * The split is CREATES first, then RESOLVE, and the order is the whole
+     * design rather than a convenience:
+     *
+     *  - The creates phase writes: the durable skips, the staged leagues and
+     *    aliases and career teams, and the rows a `create` decision asks for.
+     *    It is bounded by the review batch's decisions.
+     *  - The resolve phase then maps every checklist name to the id it
+     *    resolves to, reading only — because by then every row this commit
+     *    will create already exists.
+     *
+     * Resolving first and writing afterwards is the one arrangement that
+     * CANNOT work, and it is the obvious one: two spellings of a name fold to
+     * one key, so "José Ramírez" and "Jose Ramirez" are two entries in the
+     * name list and one player. A resolve-then-create pass sees no match for
+     * either and mints two rows — one man's inventory split down the middle,
+     * with no error anywhere. The fold is pinned in
+     * `convex/commitCardChecklist.entityReview.test.ts`, both ways round.
+     *
+     * What makes it safe the other way round: each page COMMITS before the
+     * next one reads, so a row the creates phase minted is visible to every
+     * later page, and a player row is stored under the FOLDED name — so the
+     * resolve phase finds it for either spelling without being told. Teams are
+     * stored under the operator's Location + Name, which need not resemble the
+     * checklist string, so those are handed forward explicitly in
+     * `priorCreates`.
+     *
+     * Every page is its own transaction. An interrupted run leaves the rows it
+     * created — which a re-run adopts rather than duplicates — and no card is
+     * written until the chunk phase, which has not started yet.
+     */
+    const preludeArgs = {
+      selectorOptionId: args.selectorOptionId,
+      sportId: args.sportId,
+      playerNames: Array.from(new Set(playerNames)),
+      teamNames: Array.from(new Set(teamNames)),
+      playerTeamNames: Array.from(
+        playerTeamNamesByPlayer,
+        ([playerNameNormalized, teams]) => ({ playerNameNormalized, teams }),
+      ),
+      batchId: args.batchId,
+    };
+    /** Walk one phase to the end, returning every page it produced. */
+    const walkPrelude = async (
+      which: "creates" | "resolve",
+      priorCreates?: {
+        players: Array<{ name: string; id: Id<"players">; storedName: string }>;
+        teams: Array<{ name: string; id: Id<"teams">; storedName: string }>;
+      },
+    ): Promise<CommitPrelude[]> => {
+      const pages: CommitPrelude[] = [];
+      let resume: { offset: number } | null = null;
+      for (let page = 1; ; page++) {
+        if (page > PRELUDE_MAX_PAGES) {
+          // Thrown, never returned: a prelude that stopped short of its own
+          // name list would hand the chunk phase a half-resolved commit, and
+          // that must not be reported to the operator as a success.
+          throw new Error(
+            `commitCardChecklist: prelude ${which} did not converge within ` +
+              `${PRELUDE_MAX_PAGES} pages`,
+          );
+        }
+        const result: CommitPrelude = await phase(
+          `prelude ${which} page ${page}`,
+          () =>
+            ctx.runMutation(internal.selectorOptions.commitCardChecklistPrelude, {
+              ...preludeArgs,
+              phase: which,
+              ...(priorCreates ? { priorCreates } : {}),
+              ...(resume ? { resume } : {}),
+            }),
+        );
+        pages.push(result);
+        if (!result.hasMore || result.resume === null) return pages;
+        resume = result.resume;
+      }
+    };
+
+    const createPages = await walkPrelude("creates");
+    /*
+     * What the creates phase minted, by the checklist name that asked for it.
+     * Drawn from that phase's own `*IdByName` maps, which contain exactly the
+     * rows it wrote — a create is the only thing it records.
+     */
+    const priorCreates = {
+      players: createPages.flatMap((pg) =>
+        pg.playerIdByName.map(({ name, id }) => ({
+          name,
+          id,
+          storedName:
+            pg.playerNameById.find((e) => e.id === id)?.name ?? name.trim(),
+        })),
+      ),
+      teams: createPages.flatMap((pg) =>
+        pg.teamIdByName.map(({ name, id }) => ({
+          name,
+          id,
+          storedName: pg.teamNameById.find((e) => e.id === id)?.name ?? name.trim(),
+        })),
+      ),
+    };
+    const resolvePages = await walkPrelude("resolve", priorCreates);
+
+    /*
+     * One prelude out of the pages.
+     *
+     * The scalars (the sport row's values, the ancestry, the match maps) are
+     * recomputed identically by every page — the preamble and the tail are
+     * cheap and run on all of them — so the last page is as good as any and is
+     * used whole. The COLLECTIONS are what differ, and each belongs to exactly
+     * one phase: the creates phase owns what was written, the resolve phase
+     * owns what every name resolved to. Concatenating them in that order is
+     * what reassembles the object the rest of this action already expects.
+     */
+    const lastPage = resolvePages[resolvePages.length - 1];
+    const allPages = [...createPages, ...resolvePages];
+    const concat = <T>(pick: (pg: CommitPrelude) => readonly T[]): T[] =>
+      allPages.flatMap((pg) => [...pick(pg)]);
+    const prelude: CommitPrelude = {
+      ...lastPage,
+      playerIdByName: concat((pg) => pg.playerIdByName),
+      teamIdByName: concat((pg) => pg.teamIdByName),
+      playerNameById: concat((pg) => pg.playerNameById),
+      teamNameById: concat((pg) => pg.teamNameById),
+      createdPlayerIds: concat((pg) => pg.createdPlayerIds),
+      createdTeamIds: concat((pg) => pg.createdTeamIds),
+      skippedPlayerNames: concat((pg) => pg.skippedPlayerNames),
+      skippedTeamNames: concat((pg) => pg.skippedTeamNames),
+      unreviewedPlayerNames: concat((pg) => pg.unreviewedPlayerNames),
+      unreviewedTeamNames: concat((pg) => pg.unreviewedTeamNames),
+      // Deduped: a team name the creates phase could not resolve is reported by
+      // that phase AND by the resolve phase, and the count is shown to an
+      // operator.
+      unresolvedTeamNames: Array.from(
+        new Set(concat((pg) => pg.unresolvedTeamNames)),
+      ),
+      unresolvedTeamCount: new Set(concat((pg) => pg.unresolvedTeamNames)).size,
+    };
 
     const playerIdByName = new Map(
       prelude.playerIdByName.map(({ name, id }) => [name, id] as const),

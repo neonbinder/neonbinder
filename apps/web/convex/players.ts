@@ -871,45 +871,79 @@ export const findOrCreate = mutation({
 });
 
 /**
- * NEO-254 — how many DISTINCT team documents the team-on-card tie-break may
- * read, across everything sharing one cache.
+ * NEO-254 / NEO-296 — how many DISTINCT teams the team-on-card tie-break may
+ * consult **for ONE NAME**.
  *
- * Distinct, because a cache hit costs nothing: the commit prelude passes one
- * cache through every ambiguous name in the batch, and a set's whole team
- * vocabulary is a couple of dozen rows that repeat on hundreds of cards. So
- * the budget bounds the extra reads a COMMIT can spend, which is the number
- * that matters inside a mutation, rather than re-arming per name — which was
- * no bound on a commit at all.
+ * ## What the number buys
  *
- * 64 is far beyond any real set: the tie-break only resolves stints that COVER
- * the card's year, so it sees roughly one team per candidate per year. It
- * exists for the row that is not real — a corrupt or hand-edited `teamYears`
- * with dozens of overlapping open stints.
+ * The tie-break only ever looks at stints that COVER the card's year
+ * (`stintCoversYear`, below), never at the whole career. So the cost is not
+ * driven by career length at all: a player with thirty years on file and a
+ * player with one both consult the teams they were on in that single year.
+ * That is one team in the ordinary case, two for a mid-season trade, three for
+ * a year with a trade and a loan. 8 is roughly three times the realistic
+ * worst, and it exists for the row that is not real — a corrupt or hand-edited
+ * `teamYears` with a dozen overlapping open stints.
+ *
+ * Worst case per name is therefore 8 `db.get`s, and a name is charged for a
+ * team it consults whether or not the read is served from `keysById` (see
+ * below). To move this number, count the teams one player can legitimately be
+ * on in one year and multiply by the margin you want.
+ *
+ * ## NEO-296 — this was a COMMIT-WIDE budget of 64, and changing it CHANGED
+ * BEHAVIOUR. That was deliberate.
+ *
+ * It used to count documents read across one whole commit, through the shared
+ * cache's `spent`. Two consequences, and the second is why it could not
+ * survive paging: a long checklist spent the budget partway through, so **the
+ * same ambiguous name resolved differently at position 700 than at position
+ * 5** — the tie-break simply stopped firing once the commit had used its 64 —
+ * and once the prelude's resolution walk is split across transactions, where
+ * the budget resets becomes a function of the page size.
+ *
+ * Jason, 2026-09-22, chose the per-name bound with the trade stated: it links
+ * MORE names automatically than the commit-wide budget did, because names that
+ * used to fall past a spent budget now get their tie-break. He took it on the
+ * merits — the same name resolves the same way wherever it sits in the
+ * checklist, so the position-dependence is removed rather than relocated to
+ * wherever the page boundary lands.
+ *
+ * That means this is a deliberate widening of `narrowedByCardYear`, which is
+ * the one link an operator never sees. Its log line (`resolveNameForReview`'s
+ * caller) is what answers "which cards did this happen to" on the day it goes
+ * wrong, and it fires for every name that takes the tie-break under this
+ * budget exactly as it did under the old one — more often now, which is the
+ * point of keeping it.
  *
  * Blowing it ABANDONS the tie-break rather than the whole narrowing, and never
  * picks a winner from a partial read: the year filter still applies, and if
  * that leaves more than one the name goes to a human. A budget that decided on
  * half the evidence would be worse than no budget at all.
  */
-const CARD_YEAR_TEAM_READ_BUDGET = 64;
+const CARD_YEAR_TEAM_READS_PER_NAME = 8;
 
 /**
  * NEO-254 — team lookups shared across one commit's worth of narrowing.
  *
  * `keysById` maps a team id to the normalized name keys a card might name it
- * by (the composed full name and the bare nickname). `spent` counts the
- * documents actually read, against `CARD_YEAR_TEAM_READ_BUDGET`.
+ * by (the composed full name and the bare nickname).
  *
  * Deliberately mutable and passed by reference: the point is that the second
- * "Bob Allen" in a set pays nothing for a team the first one already resolved.
+ * "Bob Allen" in a set pays no READ for a team the first one already resolved.
+ *
+ * NEO-296 — it is a memo and NOTHING ELSE now. The `spent` counter that used
+ * to live here was the commit-wide budget, and it is gone: a shared counter is
+ * exactly what made one name's answer depend on how many names came before it.
+ * A memo cannot do that, because a hit returns the same keys the read would
+ * have — it changes what the lookup COSTS, never what it CONCLUDES. That
+ * separation is what makes the budget above safe to share a cache with.
  */
 export type CardYearTeamCache = {
   keysById: Map<string, string[]>;
-  spent: number;
 };
 
 export function createCardYearTeamCache(): CardYearTeamCache {
-  return { keysById: new Map(), spent: 0 };
+  return { keysById: new Map() };
 }
 
 /** What the card-year narrowing concluded about a set of same-name rows. */
@@ -1011,17 +1045,33 @@ export async function narrowSameNamePlayersByCardYear(
     const cache = opts.teamCache ?? createCardYearTeamCache();
     let budgetBlown = false;
     const onThatTeam: Array<Doc<"players">> = [];
+    /**
+     * NEO-296 — distinct teams THIS CALL has consulted, against
+     * `CARD_YEAR_TEAM_READS_PER_NAME`.
+     *
+     * Charged on CONSULTATION, not on the read, and that distinction is the
+     * whole point: a team already in `keysById` still costs this name a unit.
+     * Otherwise the budget would be spent at different rates depending on what
+     * earlier names happened to warm, and one name's answer would again depend
+     * on its position — the exact property this replaced a commit-wide counter
+     * to remove. The memo now saves OPERATIONS without touching the ANSWER.
+     *
+     * Local to the call, so a caller that shares a cache shares no budget.
+     */
+    const consulted = new Set<string>();
     for (const player of survivors) {
       let hit = false;
       for (const stint of player.teamYears ?? []) {
         if (!stintCoversYear(stint, cardYear, currentYear)) continue;
         const key = stint.teamId as string;
-        if (!cache.keysById.has(key)) {
-          if (cache.spent >= CARD_YEAR_TEAM_READ_BUDGET) {
+        if (!consulted.has(key)) {
+          if (consulted.size >= CARD_YEAR_TEAM_READS_PER_NAME) {
             budgetBlown = true;
             break;
           }
-          cache.spent += 1;
+          consulted.add(key);
+        }
+        if (!cache.keysById.has(key)) {
           const team = await ctx.db.get(stint.teamId);
           cache.keysById.set(
             key,
@@ -1041,7 +1091,8 @@ export async function narrowSameNamePlayersByCardYear(
       if (budgetBlown) break;
       if (hit) onThatTeam.push(player);
     }
-    // A partial read must not pick a winner — see CARD_YEAR_TEAM_READ_BUDGET.
+    // A partial read must not pick a winner — see
+    // `CARD_YEAR_TEAM_READS_PER_NAME`.
     if (!budgetBlown && onThatTeam.length === 1) {
       return { playerId: onThatTeam[0]._id, activePlayerIds };
     }

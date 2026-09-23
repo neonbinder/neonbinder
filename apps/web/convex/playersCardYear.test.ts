@@ -891,3 +891,177 @@ describe("NEO-254: a prospect card printed before the debut", () => {
     expect(withRival.playerId).toBe(second);
   });
 });
+
+// ===========================================================================
+// NEO-296 — the team tie-break's budget is PER NAME, and the answer no longer
+// depends on where the name sits
+//
+// It used to be a commit-wide budget of 64 documents, held in the shared
+// cache's `spent`. Two things followed, and the second is what forced the
+// change: the same ambiguous name resolved differently at position 700 than at
+// position 5 (the budget was simply gone by then), and once the prelude's
+// resolution walk is split across transactions, "where the budget resets"
+// becomes a function of the page size — so paging would have moved an ANSWER,
+// not just a cost.
+//
+// Jason, 2026-09-22, chose the per-name bound knowing it links MORE names
+// automatically than the commit-wide one did: names that used to fall past a
+// spent budget now get their tie-break. The property bought is the one these
+// tests pin — the same name resolves the same way wherever it sits.
+//
+// The budget is charged on CONSULTATION, not on the read, so a team another
+// name already warmed in the shared memo still costs this name a unit. That is
+// what keeps the memo a pure cost saving with no say in the answer.
+// ===========================================================================
+
+describe("NEO-296: the card-team tie-break is bounded per NAME", () => {
+  /**
+   * `count` distinct teams, all named on the card, all covering 1994 — so the
+   * tie-break must consult every one of them before it can conclude anything.
+   */
+  async function seedManyTeamStints(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    count: number,
+  ) {
+    const teamIds: Id<"teams">[] = [];
+    for (let i = 0; i < count; i++) {
+      teamIds.push(
+        await insertTeam(t, sportId, `City${i}`, `Club${i}`, `city${i} club${i}`),
+      );
+    }
+    return teamIds;
+  }
+
+  test("a name consulting more teams than the budget allows falls to a human, never to a guess", async () => {
+    // The guard the budget exists for: a corrupt or hand-edited `teamYears`
+    // with more overlapping open stints than any real player has. A partial
+    // read must not pick a winner, so the tie-break is abandoned and the year
+    // filter's answer stands — which here is "two survivors, ask someone".
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1994");
+    const teamIds = await seedManyTeamStints(t, sportId, 12);
+    const other = await insertTeam(t, sportId, "Elsewhere", "Nine", "elsewhere nine");
+    /*
+     * The fixture is built so the tie-break WOULD succeed if the budget
+     * allowed it, which is the only way this test can tell a real bound from a
+     * fixture that was never going to resolve anyway.
+     *
+     * This Bob Allen holds twelve concurrent stints and the card names his
+     * TWELFTH team, so the answer is only reachable past the eighth
+     * consultation. The other Bob Allen is on a team the card does not name,
+     * and is active in 1994 — so the year filter leaves two survivors and the
+     * teams are the only thing that could separate them.
+     */
+    await insertBobAllen(
+      t,
+      sportId,
+      teamIds.map((teamId) => ({ teamId, fromYear: 1990, toYear: 1999 })),
+    );
+    await insertBobAllen(t, sportId, [
+      { teamId: other, fromYear: 1993, toYear: 1995 },
+    ]);
+
+    const resolved = await resolve(t, {
+      sportId,
+      cardYear: 1994,
+      cardTeamNames: ["City11 Club11"],
+    });
+
+    // Abandoned, not guessed: no winner, and specifically not the first row
+    // the index happened to return.
+    expect(resolved.playerId).toBeUndefined();
+    expect(resolved.matchCount).toBe(2);
+  });
+
+  test("a name inside the budget takes the tie-break and REPORTS that it did", async () => {
+    // `narrowedByCardYear` is the marker on the one link an operator never
+    // sees. The budget change makes this fire more often, not less, so the
+    // reporting matters more than it did — it is what answers "which cards did
+    // this happen to" on the day the inference is wrong.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1994");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const onPadres = await insertBobAllen(t, sportId, [
+      { teamId: padres, fromYear: 1990, toYear: 1999 },
+    ]);
+    await insertBobAllen(t, sportId, [
+      { teamId: cubs, fromYear: 1990, toYear: 1999 },
+    ]);
+
+    const resolved = await resolve(t, {
+      sportId,
+      cardYear: 1994,
+      cardTeamNames: ["San Diego Padres"],
+    });
+
+    expect(resolved.playerId).toBe(onPadres);
+    expect(resolved.narrowedByCardYear).toBe(true);
+    // Two rows really did answer to the name — this was a tie-break, not a
+    // lookup that happened to find one row.
+    expect(resolved.matchCount).toBe(2);
+  });
+
+  test("the SAME name resolves the same way however many names were narrowed before it", async () => {
+    /*
+     * THE PROPERTY JASON BOUGHT. Under the old commit-wide budget this is
+     * exactly what broke: enough earlier narrowing spent the 64, and this
+     * name — unchanged, on an unchanged card — stopped getting its tie-break
+     * and went to the operator instead.
+     *
+     * Driven through `resolveNameForReview`, which builds a fresh cache per
+     * call, and then through a long run of OTHER ambiguous names in one
+     * process, so any shared counter would have been drained by the time the
+     * subject is asked again.
+     */
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1994");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const onPadres = await insertBobAllen(t, sportId, [
+      { teamId: padres, fromYear: 1990, toYear: 1999 },
+    ]);
+    await insertBobAllen(t, sportId, [
+      { teamId: cubs, fromYear: 1990, toYear: 1999 },
+    ]);
+
+    const first = await resolve(t, {
+      sportId,
+      cardYear: 1994,
+      cardTeamNames: ["San Diego Padres"],
+    });
+
+    // Plenty of other ambiguous names, each consulting teams of its own.
+    const noise = await seedManyTeamStints(t, sportId, 40);
+    for (let i = 0; i < 40; i++) {
+      await t.run(async (ctx) => {
+        for (const suffix of ["a", "b"]) {
+          await ctx.db.insert("players", {
+            name: `Noise${i}${suffix}`,
+            nameNormalized: `noise${i}`,
+            sportId,
+            teamYears: [{ teamId: noise[i], fromYear: 1990, toYear: 1999 }],
+            lastUpdated: Date.now(),
+          });
+        }
+      });
+      await resolve(t, {
+        sportId,
+        name: `Noise${i}a`,
+        cardYear: 1994,
+        cardTeamNames: [`City${i} Club${i}`],
+      });
+    }
+
+    const later = await resolve(t, {
+      sportId,
+      cardYear: 1994,
+      cardTeamNames: ["San Diego Padres"],
+    });
+
+    expect(later.playerId).toBe(onPadres);
+    expect(later.playerId).toBe(first.playerId);
+    expect(later.narrowedByCardYear).toBe(first.narrowedByCardYear);
+  });
+});

@@ -694,37 +694,78 @@ describe("addCrossListingsByCardNumbers per-call cap (NEO-296)", () => {
 // 5 — applyParallelGroupings: refused, and ATOMIC — nothing written
 // ===========================================================================
 
+/** variantType → insert → parallel, the smallest tree a grouping plan moves. */
+async function seedGroupingTree(t: T) {
+  return t.run(async (ctx) => {
+    const variantTypeId = await ctx.db.insert("selectorOptions", {
+      level: "variantType",
+      value: "Base",
+      platformData: {},
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+    const insertId = await ctx.db.insert("selectorOptions", {
+      level: "insert",
+      value: "Stars",
+      platformData: {},
+      parentId: variantTypeId,
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+    const parallelId = await ctx.db.insert("selectorOptions", {
+      level: "parallel",
+      value: "Gold",
+      platformData: {},
+      parentId: insertId,
+      children: [],
+      lastUpdated: SENTINEL,
+    });
+    await ctx.db.patch(insertId, { children: [parallelId] });
+    await ctx.db.patch(variantTypeId, { children: [insertId] });
+    return { variantTypeId, insertId, parallelId };
+  });
+}
+
 describe("applyParallelGroupings entry cap (NEO-296)", () => {
+  test("a plan naming one row repeatedly counts it ONCE", async () => {
+    /*
+     * NEO-296 — the counts are what the operator is shown, so they have to
+     * mean rows and not argument entries. A plan naming the same `parallelId`
+     * three times used to report `demoted: 3` for a single re-parented row:
+     * three patches to one document, two of which changed nothing, and a
+     * number in front of a person that was simply false.
+     *
+     * Collapsed rather than refused — this is an idempotent set operation on a
+     * drag-and-drop plan — so the assertion is that the END STATE is the same
+     * one entry would produce AND that the count agrees with it.
+     */
+    const t = convexTest(schema, modules);
+    const { variantTypeId, parallelId, insertId } = await seedGroupingTree(t);
+
+    const res = await admin(t).mutation(
+      api.selectorOptions.applyParallelGroupings,
+      {
+        variantTypeId,
+        promotions: [],
+        demotions: [{ parallelId }, { parallelId }, { parallelId }],
+      },
+    );
+
+    expect(res.demoted).toBe(1);
+    const [row, oldParent] = await t.run(async (ctx) => [
+      await ctx.db.get(parallelId),
+      await ctx.db.get(insertId),
+    ]);
+    // One row, actually moved, exactly once.
+    expect(row!.level).toBe("insert");
+    expect(row!.parentId).toBe(variantTypeId);
+    // And the old parent's `children` cache lost it once, not three times over.
+    expect(oldParent!.children ?? []).not.toContain(parallelId);
+  });
+
   test("refuses an over-cap plan before reading or writing anything", async () => {
     const t = convexTest(schema, modules);
-    const { variantTypeId, parallelId, insertId } = await t.run(async (ctx) => {
-      const variantTypeId = await ctx.db.insert("selectorOptions", {
-        level: "variantType",
-        value: "Base",
-        platformData: {},
-        children: [],
-        lastUpdated: SENTINEL,
-      });
-      const insertId = await ctx.db.insert("selectorOptions", {
-        level: "insert",
-        value: "Stars",
-        platformData: {},
-        parentId: variantTypeId,
-        children: [],
-        lastUpdated: SENTINEL,
-      });
-      const parallelId = await ctx.db.insert("selectorOptions", {
-        level: "parallel",
-        value: "Gold",
-        platformData: {},
-        parentId: insertId,
-        children: [],
-        lastUpdated: SENTINEL,
-      });
-      await ctx.db.patch(insertId, { children: [parallelId] });
-      await ctx.db.patch(variantTypeId, { children: [insertId] });
-      return { variantTypeId, insertId, parallelId };
-    });
+    const { variantTypeId, parallelId, insertId } = await seedGroupingTree(t);
 
     // The cap is on promotions + demotions + reparentings together. 400
     // demotions is past it whatever the (module-private) number is, and is

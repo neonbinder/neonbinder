@@ -29,13 +29,17 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
-import { SKIPPED_NAME_LOOKUP_PAGE } from "./selectorOptions";
+import {
+  PRELUDE_NAMES_PER_PAGE,
+  SKIPPED_NAME_LOOKUP_PAGE,
+} from "./selectorOptions";
 import { normalizePlayerName } from "./players";
+import { cancelScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -3344,4 +3348,512 @@ describe("findSkippedEntityNames is bounded, and its caller slices (NEO-294)", (
 
     expect(resolved.unknownPlayers).toEqual(["Mike Trout"]);
   });
+});
+
+// ===========================================================================
+// NEO-296 — TWO SPELLINGS, ONE PLAYER ROW
+//
+// This is the defect that must never ship, written down before the prelude is
+// restructured so that it is pinned against the CURRENT code and cannot be
+// written to whatever the new code happens to do.
+//
+// `allPlayerNames` is a Set of trimmed RAW names (selectorOptions.ts) while
+// `sameNamePlayers` keys on `normalizePlayerName`. So "José Ramírez" and "Jose
+// Ramirez" are TWO iterations of the prelude's name loop that fold to ONE key,
+// and the only thing stopping the second from inserting a duplicate is
+// read-your-writes INSIDE the transaction: iteration N-1 inserts the row and
+// iteration N's lookup finds it and takes the link path.
+//
+// That makes the loop its own dedup mechanism, which is invisible until you
+// try to split reading from writing. Any restructure that resolves every name
+// before creating any row sees zero matches for BOTH spellings and mints two
+// players — and the symptom is not an error, it is one man's inventory quietly
+// split down the middle, discovered months later.
+//
+// The fold is asserted BOTH WAYS ROUND, because the surviving row's stored
+// `name` is whichever spelling was written first, and an ordering change is
+// exactly what a restructure introduces.
+//
+// Sibling coverage: `convex/entityNames.diacritics.test.ts` pins the KEY
+// agreeing across accents at each lookup. This pins what the COMMIT does with
+// two spellings in one payload, which is a different question.
+// ===========================================================================
+
+describe("two spellings of one name commit to ONE player row (NEO-296)", () => {
+  const ACCENTED = "José Ramírez";
+  const PLAIN = "Jose Ramirez";
+
+  /** Every `players` row in the fixture, so a duplicate cannot hide. */
+  async function allPlayers(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => ctx.db.query("players").collect());
+  }
+
+  /**
+   * Commit two cards whose player names differ only by accent, with ONE review
+   * row — which is what the wizard really produces, because `startBatch` keys
+   * the batch by the folded name too.
+   */
+  async function commitBothSpellings(
+    t: ReturnType<typeof convexTest>,
+    order: [string, string],
+  ) {
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "fold-batch",
+      kind: "player",
+      // The row carries ONE of the spellings; `reviewByKey` is built with the
+      // folded key, so it answers for both.
+      name: order[0],
+      decision: { action: "create" },
+    });
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        makeCard({ cardNumber: "1", cardName: "Card One", players: [order[0]] }),
+        makeCard({ cardNumber: "2", cardName: "Card Two", players: [order[1]] }),
+      ],
+      batchId: "fold-batch",
+    });
+    return { asAdmin, variantTypeId, sportId, result };
+  }
+
+  test("accented first, then plain — one row, and both cards point at it", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId, result } = await commitBothSpellings(t, [
+      ACCENTED,
+      PLAIN,
+    ]);
+
+    const players = await allPlayers(t);
+    expect(players).toHaveLength(1);
+    // The commit reports ONE creation, not two — the count the operator is
+    // shown has to agree with the rows on disk.
+    expect(result.createdPlayerIds).toHaveLength(1);
+    expect(result.createdPlayerIds[0]).toBe(players[0]._id);
+
+    // And BOTH cards resolve to that single row. A duplicate would show up
+    // here as two different ids rather than as a missing link, which is why
+    // this is asserted on the cards and not only on the table.
+    const cards = await t.run(async (ctx) =>
+      (await ctx.db.query("cardChecklist").collect()).filter(
+        (c) => c.selectorOptionId === variantTypeId,
+      ),
+    );
+    expect(cards).toHaveLength(2);
+    for (const card of cards) {
+      expect(card.playerIds).toEqual([players[0]._id]);
+    }
+    // Nothing was left pending: the name was settled, so neither card carries
+    // it as unreviewed free text.
+    for (const card of cards) {
+      expect(card.pendingPlayerNames ?? []).toEqual([]);
+    }
+  });
+
+  test("plain first, then accented — still one row", async () => {
+    // The mirror image. The stored spelling differs (it is whichever was
+    // written first) and that is fine; the ROW COUNT is the invariant.
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await commitBothSpellings(t, [PLAIN, ACCENTED]);
+
+    const players = await allPlayers(t);
+    expect(players).toHaveLength(1);
+    const cards = await t.run(async (ctx) =>
+      (await ctx.db.query("cardChecklist").collect()).filter(
+        (c) => c.selectorOptionId === variantTypeId,
+      ),
+    );
+    for (const card of cards) {
+      expect(card.playerIds).toEqual([players[0]._id]);
+    }
+  });
+
+  test("the two spellings share one normalized key — the premise of the fold", async () => {
+    // Stated as its own case so a change to `normalizePlayerName` that broke
+    // the premise would fail HERE, naming the cause, rather than showing up as
+    // a mysterious duplicate row in the two tests above.
+    expect(normalizePlayerName(ACCENTED)).toBe(normalizePlayerName(PLAIN));
+    expect(ACCENTED).not.toBe(PLAIN);
+  });
+
+  test("a SECOND commit of the other spelling still links rather than creating", async () => {
+    // The same fold across two separate transactions, which is the case the
+    // restructure cannot break by reordering — it is what proves the invariant
+    // is "one row per folded name" and not merely "one row per loop".
+    const t = convexTest(schema, modules);
+    const { asAdmin, variantTypeId, sportId } = await commitBothSpellings(t, [
+      ACCENTED,
+      ACCENTED,
+    ]);
+    expect(await allPlayers(t)).toHaveLength(1);
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [
+        makeCard({ cardNumber: "3", cardName: "Card Three", players: [PLAIN] }),
+      ],
+    });
+
+    expect(await allPlayers(t)).toHaveLength(1);
+  });
+});
+
+// ===========================================================================
+// NEO-296 — WHO retires a settled pending name, and on WHICH rows
+//
+// Written to answer one question before the prelude is restructured: can the
+// CHUNK's `mergePendingNames` stop subtracting the commit's settled names and
+// let the finalize phase's retirement pass do all of it?
+//
+// It cannot, and these two cases are why. The two passes cover DISJOINT
+// populations and do DIFFERENT work:
+//
+//   chunk    — rows this commit MATCHED, which is where marketplace refs live.
+//              Unions the card's unreviewed names onto the row AND subtracts
+//              everything the commit settled, then bounds the result.
+//   finalize — `if (hasMarketplaceRef(row)) continue`. Ref-less rows only,
+//              subtract only, no union.
+//
+// So finalize skips precisely the rows the chunk handles. The first test below
+// is the NEO-253 accent case on a MARKETPLACE row and fails the moment the
+// chunk stops subtracting; the second is the same case on a CUSTOM row, which
+// finalize does own, and passes either way. Together they say exactly where
+// the boundary is rather than leaving it to be inferred from a green suite.
+// ===========================================================================
+
+describe("settled pending names retire on marketplace rows too (NEO-296)", () => {
+  const ACCENTED = "José Ramírez";
+  const PLAIN = "Jose Ramirez";
+
+  /*
+   * These are the only cards in this file carrying a BSC ref, and a BSC card
+   * committed without a team schedules `processBscTeamEnrichmentQueue`
+   * (NEO-90). A THROWING stub rather than a canned 200, per
+   * `commitCardChecklist.chunking.test.ts`: the adapter already treats a
+   * request failure as a state it handles, and it cannot write anything
+   * derived from a payload this file invented. `cancelScheduled` then discards
+   * the chain, which is honest here — this describe is about pending NAMES,
+   * not about team enrichment.
+   */
+  beforeEach(() => {
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        throw new Error(
+          `NEO-296: this describe must not reach the network: ${String(url)}`,
+        );
+      }) as unknown as typeof fetch,
+    );
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  /** A card carrying a BSC ref, so a re-commit MATCHES the stored row. */
+  function refCard(cardNumber: string, players: string[]) {
+    return {
+      ...makeCard({ cardNumber, cardName: `Card ${cardNumber}`, players }),
+      platformData: { bsc: { ref: `bsc-${cardNumber}` } },
+    };
+  }
+
+  test("a MARKETPLACE row's differently-spelled pending name retires when the commit settles it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    // A first sync puts the row on disk with a marketplace ref.
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [refCard("1", [])],
+    });
+    const rowId = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("cardChecklist").collect();
+      const row = rows.find((r) => r.selectorOptionId === variantTypeId)!;
+      // It carries an unreviewed name in the PLAIN spelling — stamped by an
+      // earlier sync, or typed by an operator. This is the state NEO-253 is
+      // about: the backlog and the incoming payload disagree by an accent.
+      await ctx.db.patch(row._id, { pendingPlayerNames: [PLAIN] });
+      return row._id;
+    });
+
+    // Now a sync that SETTLES the name, in the accented spelling.
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "retire-batch",
+      kind: "player",
+      name: ACCENTED,
+      decision: { action: "create" },
+    });
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [refCard("1", [ACCENTED])],
+      batchId: "retire-batch",
+    });
+
+    const after = await t.run(async (ctx) => ctx.db.get(rowId));
+    // Settled means settled: the name is no longer waiting on anybody, so it
+    // must not still be on the row asking. Left pending it is re-offered on
+    // every later fetch — the loop NEO-212 exists to break, half-working.
+    expect(after!.pendingPlayerNames ?? []).toEqual([]);
+    // And it really did match the same row rather than inserting a second one.
+    const rows = await t.run(async (ctx) =>
+      (await ctx.db.query("cardChecklist").collect()).filter(
+        (c) => c.selectorOptionId === variantTypeId,
+      ),
+    );
+    expect(rows).toHaveLength(1);
+    await cancelScheduled(t);
+  });
+
+  test("a CUSTOM row's differently-spelled pending name retires as well — finalize owns that half", async () => {
+    // The same assertion one population over, so a change that moves work
+    // between the two passes cannot quietly drop one of them: this case is
+    // finalize's today and must stay covered whoever ends up doing it.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const customId = await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: variantTypeId,
+        cardNumber: "C1",
+        cardName: "Hand added",
+        // No ref on either side — NB's own card (NEO-239's `hasMarketplaceRef`).
+        platformData: {},
+        pendingPlayerNames: [PLAIN],
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "retire-custom",
+      kind: "player",
+      name: ACCENTED,
+      decision: { action: "create" },
+    });
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [refCard("2", [ACCENTED])],
+      batchId: "retire-custom",
+    });
+
+    const after = await t.run(async (ctx) => ctx.db.get(customId));
+    expect(after!.pendingPlayerNames ?? []).toEqual([]);
+    await cancelScheduled(t);
+  });
+});
+
+// ===========================================================================
+// NEO-296 — the prelude is TWO BOUNDED WALKS, and the fold survives the split
+//
+// The prelude used to resolve every distinct name on the checklist in one
+// transaction: ~1,635 Convex system operations on a 754-card set with nothing
+// going wrong. It is now a CREATES phase (bounded by the review batch's
+// decisions) followed by a RESOLVE phase (bounded by the checklist's names,
+// and reading only, because by then every row the commit will create exists).
+//
+// The order is the design. Resolving first and writing afterwards is the one
+// arrangement that cannot work, and these tests are what say so: two spellings
+// of a name fold to one key, so a resolve-then-create pass finds no match for
+// either and mints two players.
+//
+// The cases below put the PAGE BOUNDARY between the two spellings — the
+// arrangement the split introduces and the single-transaction version could
+// not produce — driving the phases by hand so the boundary lands exactly
+// where it is wanted rather than wherever 300 names happen to fall.
+// ===========================================================================
+
+describe("the prelude's phases keep the fold across a page boundary (NEO-296)", () => {
+  const ACCENTED = "José Ramírez";
+  const PLAIN = "Jose Ramirez";
+
+  async function seedBatch(t: ReturnType<typeof convexTest>) {
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "phased",
+      kind: "player",
+      name: ACCENTED,
+      decision: { action: "create" },
+    });
+    return { variantTypeId, sportId };
+  }
+
+  /** One prelude page, driven directly so the boundary is ours to place. */
+  function preludePage(
+    t: ReturnType<typeof convexTest>,
+    variantTypeId: Id<"selectorOptions">,
+    sportId: Id<"selectorOptions">,
+    playerNames: string[],
+    extra: Record<string, unknown>,
+  ) {
+    // The prelude is admin-gated like every phase of the commit.
+    return t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(internal.selectorOptions.commitCardChecklistPrelude, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        playerNames,
+        teamNames: [],
+        batchId: "phased",
+        ...extra,
+      });
+  }
+
+  test("the two spellings land in DIFFERENT resolve pages and still share one row", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId, sportId } = await seedBatch(t);
+    const names = [ACCENTED, PLAIN];
+
+    // 1. Creates. One row, for the one folded key the batch decided on.
+    const created = await preludePage(t, variantTypeId, sportId, names, {
+      phase: "creates",
+    });
+    expect(created.createdPlayerIds).toHaveLength(1);
+    const priorCreates = {
+      players: created.playerIdByName.map(({ name, id }) => ({
+        name,
+        id,
+        storedName:
+          created.playerNameById.find((e) => e.id === id)?.name ?? name,
+      })),
+      teams: [],
+    };
+
+    // 2. Resolve, ONE NAME AT A TIME — the boundary falls between the two
+    //    spellings, which is the arrangement the single transaction could not
+    //    produce and the one a restructure gets wrong.
+    const first = await preludePage(t, variantTypeId, sportId, names, {
+      phase: "resolve",
+      priorCreates,
+      resume: { offset: 0 },
+      namesPerPage: 1,
+    });
+    expect(first.hasMore).toBe(true);
+    expect(first.resume).toEqual({ offset: 1 });
+    const second = await preludePage(t, variantTypeId, sportId, names, {
+      phase: "resolve",
+      priorCreates,
+      resume: first.resume!,
+      namesPerPage: 1,
+    });
+    expect(second.hasMore).toBe(false);
+
+    const players = await t.run(async (ctx) => ctx.db.query("players").collect());
+    expect(players).toHaveLength(1);
+    // Both pages resolved their own spelling, and to the SAME row.
+    const mapped = [...first.playerIdByName, ...second.playerIdByName];
+    expect(mapped.map((e) => e.name).sort()).toEqual([ACCENTED, PLAIN].sort());
+    expect(new Set(mapped.map((e) => e.id)).size).toBe(1);
+    expect(mapped[0].id).toBe(players[0]._id);
+  });
+
+  test("the RESOLVE phase writes nothing — it is the property the order buys", async () => {
+    // If resolution can still create, the split has not actually moved the
+    // writes and an interrupted resolve page would leave rows behind. Asserted
+    // by running resolve over a name whose `create` decision the creates phase
+    // has already honoured, and checking the table does not grow.
+    const t = convexTest(schema, modules);
+    const { variantTypeId, sportId } = await seedBatch(t);
+    const names = [ACCENTED, PLAIN];
+
+    const created = await preludePage(t, variantTypeId, sportId, names, {
+      phase: "creates",
+    });
+    const before = await t.run(async (ctx) =>
+      (await ctx.db.query("players").collect()).length,
+    );
+    const priorCreates = {
+      players: created.playerIdByName.map(({ name, id }) => ({
+        name,
+        id,
+        storedName:
+          created.playerNameById.find((e) => e.id === id)?.name ?? name,
+      })),
+      teams: [],
+    };
+
+    await preludePage(t, variantTypeId, sportId, names, {
+      phase: "resolve",
+      priorCreates,
+    });
+
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("players").collect()).length,
+      ),
+    ).toBe(before);
+  });
+
+  test("a checklist wider than one page commits, and still folds, through the ACTION", async () => {
+    /*
+     * The phases driven by hand above prove the boundary case; this proves the
+     * action really walks them, at a size that forces more than one page of
+     * each. `PRELUDE_NAMES_PER_PAGE` is imported rather than assumed, so
+     * raising it cannot quietly turn this into a single-page test.
+     */
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const filler = Array.from(
+      { length: PRELUDE_NAMES_PER_PAGE + 25 },
+      (_, i) => `Filler${i}`,
+    );
+    // Every filler name is genuinely new, and so is the folded pair.
+    for (const name of [...filler, ACCENTED]) {
+      await insertReviewRow(t, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        batchId: "wide",
+        kind: "player",
+        name,
+        decision: { action: "create" },
+      });
+    }
+
+    const cards = [
+      ...filler.map((name, i) =>
+        makeCard({ cardNumber: String(i + 1), cardName: name, players: [name] }),
+      ),
+      makeCard({ cardNumber: "A", cardName: "Accented", players: [ACCENTED] }),
+      makeCard({ cardNumber: "B", cardName: "Plain", players: [PLAIN] }),
+    ];
+    const result = await asAdmin.action(
+      api.selectorOptions.commitCardChecklist,
+      { selectorOptionId: variantTypeId, sportId, cards, batchId: "wide" },
+    );
+
+    // One row per filler, and ONE for the folded pair — not two.
+    expect(result.createdPlayerIds).toHaveLength(filler.length + 1);
+    const players = await t.run(async (ctx) => ctx.db.query("players").collect());
+    expect(players).toHaveLength(filler.length + 1);
+
+    const accentedRow = players.find(
+      (p) => p.nameNormalized === normalizePlayerName(ACCENTED),
+    )!;
+    const stored = await t.run(async (ctx) =>
+      (await ctx.db.query("cardChecklist").collect()).filter(
+        (c) => c.selectorOptionId === variantTypeId,
+      ),
+    );
+    for (const cardNumber of ["A", "B"]) {
+      const card = stored.find((c) => c.cardNumber === cardNumber)!;
+      expect(card.playerIds).toEqual([accentedRow._id]);
+    }
+  }, 30_000);
 });
