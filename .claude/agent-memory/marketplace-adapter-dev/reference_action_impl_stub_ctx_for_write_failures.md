@@ -1,6 +1,6 @@
 ---
 name: action-impl-stub-ctx-for-write-failures
-description: Test a Convex action's WRITE-failure branches by extracting a plain *Impl(ctx, args) and passing a Pick<ActionCtx,"runQuery"|"runMutation"> stub that dispatches on getFunctionName — convex-test cannot produce an OCC conflict
+description: Testing a Convex action's error and write-failure branches — extract a plain *Impl(ctx, args) and script a Pick<ActionCtx,"runQuery"|"runMutation"> stub (convex-test cannot produce an OCC conflict), and never inject the failure at fetch: adapters here are no-throw, so a throwing fetch stub reaches no catch
 metadata:
   type: reference
 ---
@@ -18,15 +18,24 @@ Running off the end of the script should throw: an extra write is usually the
 bug being pinned. Such a test needs no convex-test, so it can live beside the
 adapter under `convex/adapters/`.
 
-Two things that cost time here:
+**"I stubbed `fetch` to throw" is not "the code under test saw a throw."**
+This generalises well past one file and invalidates a whole category of
+error-path tests here. Every adapter in `convex/adapters/` is **no-throw by
+convention**: `runSparql` absorbs a transport failure and answers `null` (its
+NEO-288 one-retry contract), and `adapters/espn.ts` states the rule outright
+("No-throw, like every adapter here"). So a throwing `fetch` stub never
+reaches a caller's `catch` — it arrives as a lookup that ran and answered
+nothing, and a test named for the catch passes identically with the catch
+deleted. Before trusting any error-path test, ask which layer actually
+propagates, and inject the failure THERE: for an action, that is the ctx
+(`runQuery`/`runMutation`), not the network. Then make the test prove which
+path it took — assert the marker the no-match branch logs and the absence of
+the one the catch logs — or the name drifts back into fiction. `convex/
+wikidataEntityReviewQueue.test.ts` carried exactly this fiction from NEO-99
+until NEO-294 renamed it.
 
-- **A dead `fetch` does not reach a wikidata lookup's catch.** `runSparql`
-  absorbs transport failures and answers `null` (its NEO-288 one-retry
-  contract), so a "network down" stub produces a NO-MATCH, not a throw. A test
-  that means to exercise the catch must throw from something else in the try —
-  the `getSportEnrichmentContext` query is the cheap one.
-- **`runWithOccRetry` (`lib/errors/occ-retry`) takes an injectable `sleep`**,
-  so pass `{ sleep: async () => {} }` instead of fake timers.
+Also: **`runWithOccRetry` (`lib/errors/occ-retry`) takes an injectable
+`sleep`**, so pass `{ sleep: async () => {} }` instead of fake timers.
 
 Mutation-test the result: move the write back inside the lookup's `try` and
 confirm the red lands on the *payload* assertion, not on a stub running out of
