@@ -48,6 +48,7 @@ vi.mock("convex/react", () => ({
 }));
 
 import ParallelForm from "./ParallelForm";
+import { RECONCILED_STORE_MAX_PAGES } from "./store-reconciled-until-done";
 
 const CHAIN = [
   { _id: "sport1", level: "sport", value: "Hockey" },
@@ -350,5 +351,147 @@ describe("ParallelForm — nothing on either side, nothing failed (NEO-216)", ()
     expect(mockStore).not.toHaveBeenCalled();
     // NEO-211 F3: the adapter's own text never reaches the DOM.
     expect(screen.queryByText(/api\.bsc/)).toBeNull();
+  });
+});
+
+// ===========================================================================
+// NEO-296 (audit condition 1) — an over-budget store must finish, and must
+// never report a count it did not write
+//
+// NEO-296 gave `storeReconciledOptions` a write budget: past it the mutation
+// stops, stores nothing further, and reports `hasMore` plus an honest
+// `message`. This form read none of the three — it took `unlinked`, closed
+// up, and printed `Stored ${items.length} parallels`, a count of rows SENT.
+// So an over-budget confirm dropped the tail and said everything was stored.
+//
+// The fix is the loop (`storeReconciledUntilDone`), not a better sentence:
+// the store is additive and id-keyed, so re-sending the identical list costs
+// nothing for the prefix and walks on into the tail.
+// ===========================================================================
+
+describe("ParallelForm — the store is replayed until it is finished (NEO-296)", () => {
+  /** Two BSC parallels and no SportLots: the single-platform store path. */
+  const twoBscOnly = {
+    ...bscOnly(),
+    bscOptions: [
+      { value: "Gold", platformValue: "bsc-gold" },
+      { value: "Silver", platformValue: "bsc-silver" },
+    ],
+    message: "BSC: 2, SL: 0",
+  };
+
+  it("calls the store again with the SAME list and reports the server's final count", async () => {
+    mockFetchRawOptions.mockResolvedValue(twoBscOnly);
+    mockStore
+      .mockResolvedValueOnce({
+        success: true,
+        // The server's own words for a truncated store. They must not be what
+        // the operator ends up reading, because the loop finishes the job.
+        message:
+          "Stored 1 reconciled parallel options — 1 of 2 not reached this " +
+          "time. Run the sync again to store the rest.",
+        optionsCount: 1,
+        itemsProcessed: 1,
+        hasMore: true,
+        unlinked: [],
+        unlinkedTotal: 0,
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        message: "Successfully stored 2 reconciled parallel options",
+        optionsCount: 2,
+        itemsProcessed: 2,
+        hasMore: false,
+        unlinked: [],
+        unlinkedTotal: 0,
+      });
+
+    const { onDone } = await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(2));
+    // Byte-identical payloads: that is what makes the prefix free and the
+    // second call reach the tail.
+    expect(mockStore.mock.calls[1][0]).toEqual(mockStore.mock.calls[0][0]);
+    const status = await screen.findByRole("status");
+    // The SERVER's count of rows now linked, not the 2 items we sent — those
+    // happen to agree here, and the next test is the one where they do not.
+    expect(status.textContent).toBe("Stored 2 parallels (single platform)");
+    // Finished, so the column returns to idle exactly as before.
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+  });
+
+  it("never claims a count the store did not write when the walk cannot finish", async () => {
+    // The runaway case: every page still asks for more. The panel must carry
+    // the server's own account of what was NOT reached, must not print the
+    // "Stored 2 parallels" success sentence, and must not close — closing is
+    // what turned this into a silent write loss in the first place.
+    mockStore.mockResolvedValue({
+      success: true,
+      message:
+        "Stored 1 reconciled parallel options — 1 of 2 not reached this " +
+        "time. Run the sync again to store the rest.",
+      optionsCount: 1,
+      itemsProcessed: 1,
+      hasMore: true,
+      unlinked: [],
+      unlinkedTotal: 0,
+    });
+    mockFetchRawOptions.mockResolvedValue(twoBscOnly);
+
+    const { onDone } = await renderForm();
+
+    await waitFor(() =>
+      expect(mockStore).toHaveBeenCalledTimes(RECONCILED_STORE_MAX_PAGES),
+    );
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("1 of 2 not reached this time");
+    expect(status.textContent).not.toContain("Stored 2 parallels");
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("keeps the dialog open on an unfinished save from the reconciliation modal", async () => {
+    // The modal path's version of the same rule. Save re-sends the identical
+    // list, so the dialog is exactly where the operator can finish the job —
+    // closing it would report a reconciliation that did not fully happen.
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [{ value: "Gold", platformValue: "bsc-gold" }],
+      slOptions: [{ value: "Gold", platformValue: "sl-gold" }],
+      autoMatched: [
+        {
+          displayName: "Gold",
+          bsc: { value: "Gold", platformValue: "bsc-gold" },
+          sl: { value: "Gold", platformValue: "sl-gold" },
+          confidence: 0.9,
+        },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+      message: "BSC: 1, SL: 1",
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      message:
+        "Stored 0 reconciled parallel options — 1 of 1 not reached this " +
+        "time. Run the sync again to store the rest.",
+      optionsCount: 0,
+      itemsProcessed: 0,
+      hasMore: true,
+      unlinked: [],
+      unlinkedTotal: 0,
+    });
+    const { onDone } = await renderForm();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByText(/Save 1 sets/));
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("1 of 1 not reached this time");
+    // Still in the dialog, with Save ready to continue the walk.
+    expect(screen.getByText(/Save 1 sets/)).toBeTruthy();
+    expect(onDone).not.toHaveBeenCalled();
   });
 });

@@ -14,6 +14,8 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import {
+  TEAM_NAME_LOOKUP_MAX_OPS,
+  TEAM_NAME_LOOKUP_READ_BUDGET,
   normalizeTeamAliasList,
   syncTeamAliases,
   normalizeTeamName,
@@ -358,6 +360,47 @@ describe("NEO-284: aliasesInUse is admin-gated and advisory", () => {
         selfId: padres,
       }),
     ).toEqual([]);
+  });
+
+  test("bounds the FAN-OUT as well as the alias count (NEO-296)", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    // The preloaded-college shape: ONE alias key that a whole window of teams
+    // answers to. Each lookup is then 2 index reads + one `db.get` per holder
+    // — 18 system ops — so the 64-alias cap alone allowed ~1,152 of them in a
+    // query that re-runs as the operator types.
+    for (let i = 0; i < 16; i += 1) {
+      await asAdmin.mutation(api.teams.findOrCreate, {
+        name: `Hurricanes ${i}`,
+        location: "Miami",
+        sportId,
+        aliases: ["Shared College Name"],
+      });
+    }
+
+    const asked = Array.from({ length: 64 }, () => "Shared College Name");
+    const notes = await asAdmin.query(api.teams.aliasesInUse, {
+      sportId,
+      aliases: asked,
+    });
+
+    // It STOPS rather than throwing: this is a note beside a text box, and a
+    // form that blanks because an advisory read got expensive is the worse
+    // answer. Derived from the constants, so a change to either re-derives
+    // here instead of going stale.
+    const affordable = Math.ceil(
+      TEAM_NAME_LOOKUP_READ_BUDGET / TEAM_NAME_LOOKUP_MAX_OPS,
+    );
+    expect(notes).toHaveLength(affordable);
+    expect(notes.length).toBeLessThan(asked.length);
+    // Every note it did answer is a real holder — a partial scan never
+    // invents one, and never reports an alias it did not read.
+    expect(new Set(notes.map((n) => n.alias))).toEqual(
+      new Set(["Shared College Name"]),
+    );
+    expect(notes.every((n) => n.name.startsWith("Miami Hurricanes"))).toBe(true);
   });
 
   test("bounded to 64 aliases even when more are passed", async () => {

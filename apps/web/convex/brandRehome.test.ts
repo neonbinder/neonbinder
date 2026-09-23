@@ -9,11 +9,13 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import {
+  REHOME_MAX_PAGES,
   findBrandUnknownRow,
   rehomedNotice,
   rehomeSetRowsToBrand,
@@ -142,7 +144,7 @@ describe("rehomeSetRowsToBrand", () => {
       }),
     );
 
-    expect(result).toEqual({ rehomed: 1, clashes: 0 });
+    expect(result).toEqual({ rehomed: 1, clashes: 0, operatorPlaced: 0 });
     const [row, oldParent, newParent] = await t.run(async (ctx) => [
       await ctx.db.get(setId),
       await ctx.db.get(unknown),
@@ -173,7 +175,7 @@ describe("rehomeSetRowsToBrand", () => {
       }),
     );
 
-    expect(result).toEqual({ rehomed: 0, clashes: 1 });
+    expect(result).toEqual({ rehomed: 0, clashes: 1, operatorPlaced: 0 });
     const row = await t.run((ctx) => ctx.db.get(doomed));
     expect(row?.parentId).toBe(unknown);
   });
@@ -190,7 +192,7 @@ describe("rehomeSetRowsToBrand", () => {
         brandId: topps,
       }),
     );
-    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+    expect(result).toEqual({ rehomed: 0, clashes: 0, operatorPlaced: 0 });
   });
 
   test("refuses when the target is not a manufacturer row", async () => {
@@ -238,7 +240,7 @@ describe("rehomeSetRowsToBrand", () => {
         brandId: topps,
       }),
     );
-    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+    expect(result).toEqual({ rehomed: 0, clashes: 0, operatorPlaced: 0 });
   });
 });
 
@@ -261,7 +263,7 @@ describe("rehomeSetsFromBrandUnknown", () => {
       prefix: "Topps",
     }));
 
-    expect(result).toEqual({ rehomed: 1, clashes: 0 });
+    expect(result).toEqual({ rehomed: 1, clashes: 0, operatorPlaced: 0, draining: false });
     const [movedRow, staleRow] = await t.run(async (ctx) => [
       await ctx.db.get(matching),
       await ctx.db.get(nonMatching),
@@ -284,7 +286,7 @@ describe("rehomeSetsFromBrandUnknown", () => {
       brandId: topps,
       prefix: "   ",
     }));
-    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+    expect(result).toEqual({ rehomed: 0, clashes: 0, operatorPlaced: 0, draining: false });
   });
 
   test("a year with no Unknown row yet returns zeros rather than throwing", async () => {
@@ -297,7 +299,7 @@ describe("rehomeSetsFromBrandUnknown", () => {
       brandId: topps,
       prefix: "Topps",
     }));
-    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+    expect(result).toEqual({ rehomed: 0, clashes: 0, operatorPlaced: 0, draining: false });
   });
 
   test("when the brand IS the Unknown row itself, nothing moves", async () => {
@@ -313,7 +315,218 @@ describe("rehomeSetsFromBrandUnknown", () => {
       brandId: unknown,
       prefix: "Topps",
     }));
-    expect(result).toEqual({ rehomed: 0, clashes: 0 });
+    expect(result).toEqual({ rehomed: 0, clashes: 0, operatorPlaced: 0, draining: false });
+  });
+});
+
+// ===========================================================================
+// NEO-296 — the bounded, resumable walk behind the two doors
+// ===========================================================================
+
+describe("rehomeSetsFromBrandUnknown pages (NEO-296)", () => {
+  /** A year with an Unknown row, a Topps brand, and `count` matching sets under Unknown. */
+  async function seedMatches(t: ReturnType<typeof convexTest>, count: number) {
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", { isBrandUnknown: true });
+    const topps = await seedManufacturer(t, year, "Topps");
+    await t.run(async (ctx) =>
+      ctx.db.patch(topps, { metadata: { setNamePrefix: "Topps" } }),
+    );
+    const sets: Id<"selectorOptions">[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const id = await seedSet(t, unknown, `Topps Set ${i}`);
+      await linkChild(t, unknown, id);
+      sets.push(id);
+    }
+    return { year, unknown, topps, sets };
+  }
+
+  async function parentsOf(
+    t: ReturnType<typeof convexTest>,
+    ids: Id<"selectorOptions">[],
+  ) {
+    return t.run(async (ctx) => {
+      const out: Array<Id<"selectorOptions"> | undefined> = [];
+      for (const id of ids) out.push((await ctx.db.get(id))?.parentId);
+      return out;
+    });
+  }
+
+  test("a small move is one call and schedules nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { year, topps, sets } = await seedMatches(t, 3);
+
+    const result = await t.run((ctx) =>
+      rehomeSetsFromBrandUnknown(ctx, { yearId: year, brandId: topps, prefix: "Topps" }),
+    );
+    expect(result).toEqual({ rehomed: 3, clashes: 0, operatorPlaced: 0, draining: false });
+    expect(await parentsOf(t, sets)).toEqual([topps, topps, topps]);
+    const scheduled = await t.run(async (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(0);
+  });
+
+  test("more matches than one page: the chain finishes every one, exactly once", async () => {
+    const t = convexTest(schema, modules);
+    const { year, unknown, topps, sets } = await seedMatches(t, 7);
+
+    const first = await t.run((ctx) =>
+      rehomeSetsFromBrandUnknown(ctx, {
+        yearId: year,
+        brandId: topps,
+        prefix: "Topps",
+        page: { scan: 2, move: 2 },
+      }),
+    );
+    // The operator's own transaction moved its page and said there is more.
+    expect(first.rehomed).toBe(2);
+    expect(first.draining).toBe(true);
+
+    await drainScheduled(t);
+
+    expect(await parentsOf(t, sets)).toEqual(sets.map(() => topps));
+    const [brandRow, unknownRow] = await t.run(async (ctx) => [
+      await ctx.db.get(topps),
+      await ctx.db.get(unknown),
+    ]);
+    // Moved once each: no duplicate in the target cache, none left in the source.
+    expect(brandRow?.children).toHaveLength(sets.length);
+    expect(new Set(brandRow?.children ?? []).size).toBe(sets.length);
+    expect(unknownRow?.children).toEqual([]);
+  });
+
+  test("an interrupted chain is finished by calling the door again, moving nothing twice", async () => {
+    const t = convexTest(schema, modules);
+    const { year, topps, sets } = await seedMatches(t, 6);
+
+    const first = await t.run((ctx) =>
+      rehomeSetsFromBrandUnknown(ctx, {
+        yearId: year,
+        brandId: topps,
+        prefix: "Topps",
+        page: { scan: 2, move: 2 },
+      }),
+    );
+    expect(first.rehomed).toBe(2);
+    // The continuation never runs — a deploy, a failed page, a lost schedule.
+    await t.run(async (ctx) => {
+      for (const job of await ctx.db.system.query("_scheduled_functions").collect()) {
+        await ctx.scheduler.cancel(job._id);
+      }
+    });
+    const afterInterrupt = await parentsOf(t, sets);
+    expect(afterInterrupt.filter((parent) => parent === topps)).toHaveLength(2);
+
+    // The door again, from the start: the moved rows are no longer under
+    // Unknown, so the walk simply does not see them.
+    await t.run((ctx) =>
+      rehomeSetsFromBrandUnknown(ctx, { yearId: year, brandId: topps, prefix: "Topps" }),
+    );
+    expect(await parentsOf(t, sets)).toEqual(sets.map(() => topps));
+    const brandRow = await t.run(async (ctx) => ctx.db.get(topps));
+    expect(brandRow?.children).toHaveLength(sets.length);
+    expect(new Set(brandRow?.children ?? []).size).toBe(sets.length);
+  });
+
+  test("a chain that runs out of pages reports what it left rather than dropping it", async () => {
+    const t = convexTest(schema, modules);
+    // One move per page, so the chain spends its whole page budget and still
+    // has matches under Unknown when it stops.
+    const total = REHOME_MAX_PAGES + 4;
+    const { year, topps, sets } = await seedMatches(t, total);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await t.run((ctx) =>
+      rehomeSetsFromBrandUnknown(ctx, {
+        yearId: year,
+        brandId: topps,
+        prefix: "Topps",
+        page: { scan: 1, move: 1 },
+      }),
+    );
+    await drainScheduled(t);
+
+    const parents = await parentsOf(t, sets);
+    // The first page plus REHOME_MAX_PAGES continuations.
+    expect(parents.filter((parent) => parent === topps)).toHaveLength(REHOME_MAX_PAGES + 1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("still under Unknown"));
+    warn.mockRestore();
+
+    // And the door again finishes the remainder — nothing is stranded.
+    await t.run((ctx) =>
+      rehomeSetsFromBrandUnknown(ctx, { yearId: year, brandId: topps, prefix: "Topps" }),
+    );
+    expect(await parentsOf(t, sets)).toEqual(sets.map(() => topps));
+  });
+
+  test("the cursor moves past a clash, so a page of them does not walk forever", async () => {
+    const t = convexTest(schema, modules);
+    const { year, unknown, topps } = await seedMatches(t, 0);
+    // The name is already taken under the brand: the row stays under Unknown,
+    // counted as a clash — and the walk must still advance past it.
+    const taken = await seedSet(t, topps, "Topps Chrome");
+    await linkChild(t, topps, taken);
+    const clashing = await seedSet(t, unknown, "Topps Chrome");
+    await linkChild(t, unknown, clashing);
+    const movable = await seedSet(t, unknown, "Topps Finest");
+    await linkChild(t, unknown, movable);
+
+    await t.run((ctx) =>
+      rehomeSetsFromBrandUnknown(ctx, {
+        yearId: year,
+        brandId: topps,
+        prefix: "Topps",
+        page: { scan: 1, move: 1 },
+      }),
+    );
+    await drainScheduled(t);
+
+    expect(await parentsOf(t, [clashing, movable])).toEqual([unknown, topps]);
+  });
+
+  test("a continuation whose prefix is no longer the brand's stops", async () => {
+    const t = convexTest(schema, modules);
+    const { year, unknown, topps, sets } = await seedMatches(t, 4);
+
+    const first = await t.run((ctx) =>
+      rehomeSetsFromBrandUnknown(ctx, {
+        yearId: year,
+        brandId: topps,
+        prefix: "Topps",
+        page: { scan: 1, move: 1 },
+      }),
+    );
+    expect(first.draining).toBe(true);
+    // The operator corrects the prefix a moment later. The chain in flight
+    // belongs to the prefix it was started for, and that is no longer the
+    // brand's rule.
+    await t.run(async (ctx) =>
+      ctx.db.patch(topps, { metadata: { setNamePrefix: "Topps Chrome" } }),
+    );
+    await drainScheduled(t);
+
+    const parents = await parentsOf(t, sets);
+    expect(parents.filter((parent) => parent === topps)).toHaveLength(1);
+    expect(parents.filter((parent) => parent === unknown)).toHaveLength(3);
+  });
+
+  test("the single-row move still writes one patch and schedules nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { unknown, topps } = await seedMatches(t, 0);
+    const row = await seedSet(t, unknown, "Topps Chrome");
+    await linkChild(t, unknown, row);
+
+    const result = await t.run(async (ctx) => {
+      const doc = (await ctx.db.get(row))!;
+      return rehomeSetRowsToBrand(ctx, { rows: [doc], brandId: topps });
+    });
+    expect(result).toEqual({ rehomed: 1, clashes: 0, operatorPlaced: 0 });
+    const scheduled = await t.run(async (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(0);
+    expect(await parentsOf(t, [row])).toEqual([topps]);
   });
 });
 

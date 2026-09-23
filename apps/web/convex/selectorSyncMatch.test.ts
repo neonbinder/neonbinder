@@ -10,9 +10,11 @@
 
 import { describe, expect, test } from "vitest";
 import {
+  BRAND_UNKNOWN_RENAME_REFUSAL,
   checkSelectorValue,
   clearDeclinedIfLabelChanged,
   effectiveCoveredSides,
+  isBrandUnknownRow,
   planSelectorSync,
   planValueRename,
   resolveReturnedIds,
@@ -644,7 +646,7 @@ describe("planValueRename", () => {
     // Renaming a variantType was the one thing an operator could not do to
     // their own taxonomy, and the reason was always an adapter's shortcut.
     const plan = planValueRename({
-      row: { _id: "a", level: "variantType", value: "Base" },
+      row: { _id: "a", level: "variantType", value: "Base", metadata: undefined },
       nextValue: "Base Set",
       siblings: [],
     });
@@ -656,7 +658,7 @@ describe("planValueRename", () => {
     // rows under one parent must not share a display value, or the drill utils
     // and pickers cannot tell them apart.
     const plan = planValueRename({
-      row: { _id: "a", level: "variantType", value: "Base" },
+      row: { _id: "a", level: "variantType", value: "Base", metadata: undefined },
       nextValue: "insert",
       siblings: [
         { _id: "a", value: "Base" },
@@ -668,7 +670,7 @@ describe("planValueRename", () => {
 
   test("refuses a sibling clash on the folded name", () => {
     const plan = planValueRename({
-      row: { _id: "a", level: "setName", value: "Topps" },
+      row: { _id: "a", level: "setName", value: "Topps", metadata: undefined },
       nextValue: "bowman",
       siblings: [
         { _id: "a", value: "Topps" },
@@ -680,7 +682,7 @@ describe("planValueRename", () => {
 
   test("reports an identical name as unchanged rather than a write", () => {
     const plan = planValueRename({
-      row: { _id: "a", level: "setName", value: "Topps" },
+      row: { _id: "a", level: "setName", value: "Topps", metadata: undefined },
       nextValue: "  Topps  ",
       siblings: [{ _id: "a", value: "Topps" }],
     });
@@ -690,18 +692,156 @@ describe("planValueRename", () => {
   test("rejects an over-long or control-character label without throwing", () => {
     expect(
       planValueRename({
-        row: { _id: "a", level: "setName", value: "Topps" },
+        row: { _id: "a", level: "setName", value: "Topps", metadata: undefined },
         nextValue: "x".repeat(300),
         siblings: [],
       }),
     ).toMatchObject({ ok: false, reason: "invalid" });
     expect(
       planValueRename({
-        row: { _id: "a", level: "setName", value: "Topps" },
+        row: { _id: "a", level: "setName", value: "Topps", metadata: undefined },
         nextValue: "Top\nps",
         siblings: [],
       }),
     ).toMatchObject({ ok: false, reason: "invalid" });
+  });
+
+  // ── NEO-294: the year's Unknown row does not rename ──────────────────────
+
+  test("refuses a rename of the year's brand-unknown row", () => {
+    // Jason, 2026-09-22: "Unknown should not be renamable." Every other
+    // brand-unknown consumer finds the row by its NB ROLE, so the refusal
+    // reads the flag too — never the name.
+    const plan = planValueRename({
+      row: {
+        _id: "u",
+        level: "manufacturer",
+        value: "Unknown",
+        metadata: { isBrandUnknown: true },
+      },
+      nextValue: "Choice",
+      siblings: [{ _id: "u", value: "Unknown" }],
+    });
+    expect(plan).toEqual({
+      ok: false,
+      reason: "invalid",
+      message: BRAND_UNKNOWN_RENAME_REFUSAL,
+    });
+  });
+
+  test("refuses a flagged row still wearing the legacy 'All Brands' name", () => {
+    // The row NB has not renamed yet is the same row. A refusal keyed on the
+    // name "Unknown" would let this one through — which is exactly the state
+    // `ensureBrandRowForName` has to report as `id: null`.
+    const plan = planValueRename({
+      row: {
+        _id: "u",
+        level: "manufacturer",
+        value: "All Brands",
+        metadata: { isBrandUnknown: true },
+      },
+      nextValue: "Star",
+      siblings: [],
+    });
+    expect(plan).toMatchObject({
+      ok: false,
+      message: BRAND_UNKNOWN_RENAME_REFUSAL,
+    });
+  });
+
+  test("refuses even a no-op rename of the flagged row", () => {
+    // "Can I rename this row" must not depend on what was typed: a no-op that
+    // answers `unchanged: true` tells a caller the door is open.
+    const plan = planValueRename({
+      row: {
+        _id: "u",
+        level: "manufacturer",
+        value: "Unknown",
+        metadata: { isBrandUnknown: true },
+      },
+      nextValue: "Unknown",
+      siblings: [{ _id: "u", value: "Unknown" }],
+    });
+    expect(plan).toMatchObject({ ok: false, reason: "invalid" });
+  });
+
+  test("an explicit isBrandUnknown: false is a real brand and renames", () => {
+    // NEO-237's `markBrandUnknownRole` treats `false` as an operator saying
+    // "this IS a brand" and never overrules it. The rename door agrees.
+    const plan = planValueRename({
+      row: {
+        _id: "m",
+        level: "manufacturer",
+        value: "Choice",
+        metadata: { isBrandUnknown: false },
+      },
+      nextValue: "Choice Marketing",
+      siblings: [],
+    });
+    expect(plan).toMatchObject({ ok: true, unchanged: false, value: "Choice Marketing" });
+  });
+
+  test("an ordinary brand row with no metadata renames as before", () => {
+    const plan = planValueRename({
+      row: {
+        _id: "m",
+        level: "manufacturer",
+        value: "Topps",
+        metadata: undefined,
+      },
+      nextValue: "Topps Company",
+      siblings: [],
+    });
+    expect(plan).toMatchObject({ ok: true, unchanged: false, value: "Topps Company" });
+  });
+
+  test("the internal escape hatch lets the backfill rename the flagged row", () => {
+    // `backfillBrandPrefixAndUnknownName` renames the legacy "All Brands"
+    // bucket to "Unknown". NB retiring its own word on its own row is the
+    // opposite of the case the refusal exists to stop, so it opts out — and
+    // nothing an operator or a marketplace label can reach sets this.
+    const plan = planValueRename({
+      row: {
+        _id: "u",
+        level: "manufacturer",
+        value: "All Brands",
+        metadata: { isBrandUnknown: true },
+      },
+      nextValue: "Unknown",
+      siblings: [{ _id: "u", value: "All Brands" }],
+      allowBrandUnknownRename: true,
+    });
+    expect(plan).toMatchObject({ ok: true, unchanged: false, value: "Unknown" });
+  });
+
+  test("the escape hatch does not also lift the sibling-clash rule", () => {
+    // It opens ONE door. A year that somehow holds both a flagged row and a
+    // row already called "Unknown" must still not end up with two.
+    const plan = planValueRename({
+      row: {
+        _id: "u",
+        level: "manufacturer",
+        value: "All Brands",
+        metadata: { isBrandUnknown: true },
+      },
+      nextValue: "Unknown",
+      siblings: [
+        { _id: "u", value: "All Brands" },
+        { _id: "x", value: "unknown" },
+      ],
+      allowBrandUnknownRename: true,
+    });
+    expect(plan).toMatchObject({ ok: false, reason: "clash" });
+  });
+});
+
+describe("isBrandUnknownRow", () => {
+  test("reads the flag, and only `true` counts", () => {
+    expect(isBrandUnknownRow({ isBrandUnknown: true })).toBe(true);
+    expect(isBrandUnknownRow({ isBrandUnknown: false })).toBe(false);
+    expect(isBrandUnknownRow({})).toBe(false);
+    expect(isBrandUnknownRow(undefined)).toBe(false);
+    expect(isBrandUnknownRow(null)).toBe(false);
   });
 });
 

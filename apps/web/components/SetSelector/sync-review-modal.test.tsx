@@ -205,7 +205,12 @@ describe("needsSyncReview", () => {
 // The dialog
 // ---------------------------------------------------------------------------
 
-function renderModal(d: SyncDiff) {
+function renderModal(
+  d: SyncDiff,
+  // NEO-294 — only the delete-cap cases pass anything here; everything else
+  // renders the component exactly as `CardChecklist` does.
+  extra: { maxDeleteSelection?: number } = {},
+) {
   const onSkip = vi.fn();
   const onConfirm = vi.fn();
   render(
@@ -215,6 +220,7 @@ function renderModal(d: SyncDiff) {
       setLabel="Test Set"
       onSkip={onSkip}
       onConfirm={onConfirm}
+      {...extra}
     />,
   );
   return { onSkip, onConfirm };
@@ -414,6 +420,203 @@ describe("SyncReviewModal — removed upstream", () => {
       screen.getByText(/3 further row/).textContent,
     ).toMatch(/still live on at least one marketplace/);
   });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-294 — the delete list has a ceiling, and this screen honours it
+//
+// `commitCardChecklistFinalize` refuses a list longer than
+// `MAX_OPERATOR_DELETE_IDS`, and it refuses it in the FINALIZE phase — after
+// every card chunk has already written. "Select all" used to seed the whole
+// orphan array, so a large re-sync bought the operator a failed commit on top
+// of a half-finished one. The cap belongs here, where the operator can see
+// what it leaves behind, rather than as a server error they cannot act on.
+// ---------------------------------------------------------------------------
+
+describe("SyncReviewModal — the delete list is capped (NEO-294)", () => {
+  /**
+   * The cap is injected at 3 rather than built at its real size.
+   *
+   * `MAX_OPERATOR_DELETE_IDS` is 1,000, and proving the ceiling by rendering
+   * 1,001 checkbox rows costs seconds per interaction in happy-dom — a test
+   * slow enough that it times out under the suite's own parallelism, which is
+   * a test nobody gets to keep. The behaviour under test is the arithmetic and
+   * the copy, neither of which cares what the number is; that the DEFAULT is
+   * the same constant the server throws on is a type-level fact, not a
+   * runtime one (both sides import `lib/cards/commit-limits.ts`).
+   */
+  const CAP = 3;
+  const overCapDiff = diff({
+    removedUpstream: {
+      fullyOrphaned: Array.from({ length: CAP + 2 }, (_, i) => ({
+        id: rowId(i + 1),
+        cardNumber: String(i + 1),
+        cardName: `Delisted ${i + 1}`,
+        sides: ["bsc"] as Array<"bsc" | "sportlots">,
+      })),
+      partialOrphanCount: 0,
+    },
+  });
+
+  /** The bulk-select control, as it reads once the list is over the cap. */
+  const CAPPED_SELECT = `Select first ${CAP} of ${CAP + 2} cards for deletion`;
+
+  it("Select all stops at the cap and hands back exactly that many ids, from the top of the list", () => {
+    const { onConfirm } = renderModal(overCapDiff, { maxDeleteSelection: CAP });
+    fireEvent.click(screen.getByLabelText(CAPPED_SELECT));
+    fireEvent.click(screen.getByLabelText("Apply selected changes"));
+    fireEvent.click(screen.getByLabelText(`Confirm deleting ${CAP} cards`));
+
+    // The FIRST of the list the operator is looking at, so "run it again for
+    // the rest" names rows they can find.
+    expect(onConfirm.mock.calls[0][0].operatorDeleteIds).toEqual([
+      rowId(1),
+      rowId(2),
+      rowId(3),
+    ]);
+  });
+
+  it("says the limit exists and what it leaves behind, rather than truncating in silence", () => {
+    renderModal(overCapDiff, { maxDeleteSelection: CAP });
+    const notice = screen.getByText(
+      new RegExp(`One pass can delete up to ${CAP} cards`),
+    );
+    // The notice is the accessible description of the per-row checkboxes too
+    // (aria-describedby), so it has to explain the REFUSAL as well as the
+    // bulk button — a screen-reader user who focuses a dimmed row after the
+    // cap bites hears this and nothing else.
+    expect(notice.textContent).toMatch(
+      new RegExp(`Once ${CAP} are ticked, another tick is refused`),
+    );
+    // It names the real controls: the bulk button as it currently reads, and
+    // Sync Sets — never "commit", which is the server's word for it.
+    expect(notice.textContent).toContain(`Select first ${CAP}`);
+    expect(notice.textContent).toContain("run Sync Sets again");
+    expect(notice.textContent).not.toMatch(/commit/i);
+
+    fireEvent.click(screen.getByLabelText(CAPPED_SELECT));
+    fireEvent.click(screen.getByLabelText("Apply selected changes"));
+    expect(screen.getByRole("alertdialog").textContent).toMatch(
+      new RegExp(
+        `2 of the ${CAP + 2} cards in this list are staying — one pass can only take ${CAP}`,
+      ),
+    );
+  });
+
+  /**
+   * THE BLOCKER (NEO-294 audit). The leftover sentence was gated on
+   * `orphansOverCap` — a fact about the LIST — rather than on the cap
+   * actually biting. A dealer scanning 1,247 delisted rows who deliberately
+   * ticks three of them (the normal case: you read a removed-upstream list
+   * and pull the handful you want gone) was told "1,244 of the 1,247 … stay
+   * for now — run the sync again to clear them": an instruction to delete
+   * 1,244 cards he had just chosen to keep.
+   */
+  it("does NOT claim the cap left rows behind when the operator chose a small selection", () => {
+    renderModal(overCapDiff, { maxDeleteSelection: CAP });
+    // One tick out of a long list — well under the cap, so nothing is held
+    // back by anything except the operator's own judgement.
+    fireEvent.click(screen.getByLabelText("Delete #1 Delisted 1"));
+    fireEvent.click(screen.getByLabelText("Apply selected changes"));
+
+    const confirm = screen.getByRole("alertdialog");
+    // The confirm still says what deleting means; it must not also tell him
+    // to come back and clear the rows he kept.
+    expect(confirm.textContent).toMatch(/This cannot be undone/);
+    expect(confirm.textContent).not.toMatch(/are staying/);
+    expect(confirm.textContent).not.toMatch(/Run Sync Sets again/);
+    expect(confirm.textContent).toMatch(/Delete 1 card\?/);
+  });
+
+  it("the footer counter says why ticking stopped, at the moment it stops", () => {
+    renderModal(overCapDiff, { maxDeleteSelection: CAP });
+    const counter = () =>
+      screen
+        .getAllByRole("status")
+        .find((n) => /will be applied/.test(n.textContent ?? "")) as HTMLElement;
+
+    fireEvent.click(screen.getByLabelText("Delete #1 Delisted 1"));
+    expect(counter().textContent).toContain("1 card will be deleted");
+    expect(counter().textContent).not.toContain("the most one pass can take");
+
+    fireEvent.click(screen.getByLabelText(CAPPED_SELECT));
+    expect(counter().textContent).toContain(
+      `${CAP} cards will be deleted — the most one pass can take.`,
+    );
+  });
+
+  it("refuses a tick past the cap, with aria-disabled rather than a native disable", () => {
+    renderModal(overCapDiff, { maxDeleteSelection: CAP });
+    fireEvent.click(screen.getByLabelText(CAPPED_SELECT));
+
+    const overflow = screen.getByLabelText(
+      `Delete #${CAP + 1} Delisted ${CAP + 1}`,
+    ) as HTMLInputElement;
+    // Native `disabled` would drop the row out of the tab order and take the
+    // reason for the refusal with it.
+    expect(overflow.getAttribute("aria-disabled")).toBe("true");
+    expect(overflow.disabled).toBe(false);
+    fireEvent.click(overflow);
+    expect(overflow.checked).toBe(false);
+
+    // Un-ticking is always allowed, cap or no cap — the way back out of a full
+    // list must never be the thing that is blocked — and with room again the
+    // overflow row goes in.
+    const inside = screen.getByLabelText("Delete #1 Delisted 1") as HTMLInputElement;
+    expect(inside.checked).toBe(true);
+    fireEvent.click(inside);
+    expect(inside.checked).toBe(false);
+    fireEvent.click(overflow);
+    expect(overflow.checked).toBe(true);
+  });
+
+  it("an orphan list inside the cap is unchanged: no notice, no capped label, no refusal", () => {
+    renderModal(
+      diff({
+        removedUpstream: {
+          fullyOrphaned: [
+            { id: rowId(7), cardNumber: "7", cardName: "Delisted", sides: ["bsc"] },
+          ],
+          partialOrphanCount: 0,
+        },
+      }),
+    );
+    // No `maxDeleteSelection` passed: this is the real ceiling, and one orphan
+    // is nowhere near it.
+    const bulk = screen.getByLabelText("Select all 1 cards for deletion");
+    expect(bulk).toBeTruthy();
+    // Under the cap the visible word is still "Select all", unchanged.
+    expect(bulk.textContent).toBe("Select all");
+    expect(screen.queryByText(/One pass can delete up to/)).toBeNull();
+    const box = screen.getByLabelText("Delete #7 Delisted") as HTMLInputElement;
+    expect(box.getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("the bulk button's visible words stay true, and its accessible name contains them (WCAG 2.5.3)", () => {
+    // The visible label used to stay "Select all" while the accessible name
+    // became "Select the first 3 of 5 cards for deletion": the visible word
+    // was false, and voice control ("click Select all") could no longer
+    // reach a control whose accessible name did not contain its own label.
+    renderModal(overCapDiff, { maxDeleteSelection: CAP });
+    const bulk = screen.getByLabelText(CAPPED_SELECT);
+    const visible = `Select first ${CAP}`;
+    expect(bulk.textContent).toBe(visible);
+    expect(bulk.getAttribute("aria-label")?.startsWith(visible)).toBe(true);
+  });
+
+  /*
+   * NOT COVERED HERE, DELIBERATELY: the thousands separators.
+   *
+   * Every count in this dialog now runs through `toLocaleString`, so a capped
+   * 1,247-orphan list reads "Delete 1,000 cards?" over "1,247" rather than
+   * mixing "1000" and "1,247" in one dialog. Proving it needs a fixture of
+   * 1,001+ rows, because the smallest number that HAS a separator is 1,000 —
+   * and a four-figure happy-dom fixture in this file passes on its own and
+   * times out under the suite's parallelism, which is the same reason `CAP`
+   * is injected at 3 rather than built at its real size. A test nobody gets
+   * to keep is worse than none; the formatting is uniform by construction
+   * (one call per rendered count) rather than by assertion.
+   */
 });
 
 describe("SyncReviewModal — cross-side conflicts", () => {

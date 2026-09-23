@@ -28,6 +28,7 @@ import schema from "./schema";
 import {
   ENTITY_REVIEW_ABANDONED_MS,
   ENTITY_REVIEW_ABANDONED_SCAN,
+  ENTITY_REVIEW_DELETE_PAGE,
 } from "./entityReviewQueue";
 import { Id } from "./_generated/dataModel";
 
@@ -386,3 +387,113 @@ async function scheduledSweeps(
       .map((r) => r.args[0]);
   });
 }
+
+// ===========================================================================
+// NEO-294 — the sweep's DELETES are bounded, not just its scan
+//
+// The page bounded how many table rows one invocation examined; nothing
+// bounded the deletes behind the nominations it produced. A cron that finds
+// ten abandoned 754-row reviews on one page deletes ~7,500 rows in one
+// transaction, which is past the ~4,000 that fails outright — and a sweep that
+// throws leaves the litter it exists to clear exactly where it was, every hour,
+// forever.
+// ===========================================================================
+
+describe("sweepAbandonedBatches bounds its deletes (NEO-294)", () => {
+  /** `count` abandoned rows of one batch, in ONE transaction. */
+  async function seedAbandoned(
+    t: ReturnType<typeof convexTest>,
+    selectorOptionId: Id<"selectorOptions">,
+    batchId: string,
+    count: number,
+  ): Promise<void> {
+    await t.run(async (ctx) => {
+      for (let i = 0; i < count; i++) {
+        await ctx.db.insert("entityReviewQueue", {
+          selectorOptionId,
+          batchId,
+          createdByUserId: "user_review_001",
+          kind: "player" as const,
+          name: `${batchId} ${i}`,
+          sportId: selectorOptionId,
+          status: "ready" as const,
+        });
+      }
+    });
+  }
+
+  test("a batch bigger than one delete page is reaped by the scheduled tail, not in one transaction", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const total = ENTITY_REVIEW_DELETE_PAGE + 25;
+    await seedAbandoned(t, selectorOptionId, "huge", total);
+
+    vi.setSystemTime(BASE + ENTITY_REVIEW_ABANDONED_MS + HOUR);
+    const first = await t.mutation(
+      internal.entityReviewQueue.sweepAbandonedBatches,
+      {},
+    );
+
+    // At most one page, and the rest handed to `cleanupBatch`. One operation
+    // short of the page, because the invocation's budget also pays for the
+    // re-read that judged the batch abandoned in the first place.
+    expect(first.rows).toBe(ENTITY_REVIEW_DELETE_PAGE - 1);
+    expect(await allRows(t)).toHaveLength(total - first.rows);
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await allRows(t)).toHaveLength(0);
+  });
+
+  test("several abandoned batches past the budget are all reaped once the chain drains", async () => {
+    // The loop around `deleteBatchRows` is what was unbounded. Three abandoned
+    // reviews on one page cost more than a single transaction may spend, so
+    // the sweep stops, hands what it started to `cleanupBatch`, and re-runs on
+    // the SAME cursor — because advancing past a page it had not finished
+    // judging would leave those batches for a table wrap-around that never
+    // comes.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const per = Math.ceil((ENTITY_REVIEW_DELETE_PAGE * 2) / 3);
+    for (const batchId of ["one", "two", "three"]) {
+      await seedAbandoned(t, selectorOptionId, batchId, per);
+    }
+
+    vi.setSystemTime(BASE + ENTITY_REVIEW_ABANDONED_MS + HOUR);
+    const first = await t.mutation(
+      internal.entityReviewQueue.sweepAbandonedBatches,
+      {},
+    );
+
+    // Bounded: one transaction did not delete all three batches.
+    expect(first.rows).toBeLessThanOrEqual(ENTITY_REVIEW_DELETE_PAGE);
+    expect(first.rows).toBeGreaterThan(0);
+    expect((await allRows(t)).length).toBeGreaterThan(0);
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await allRows(t)).toHaveLength(0);
+  });
+
+  test("a live batch still spares itself when the sweep is spending its budget elsewhere", async () => {
+    // The bound must not become a way to delete a session the operator is
+    // still in. The abandonment test runs over the batch's own rows before a
+    // single delete, whatever else the invocation has spent.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const now = BASE + ENTITY_REVIEW_ABANDONED_MS + HOUR;
+    await seedAbandoned(t, selectorOptionId, "dead", ENTITY_REVIEW_DELETE_PAGE);
+    await insertRow(t, {
+      selectorOptionId,
+      batchId: "alive",
+      name: "Still working",
+      lastTouchedAt: now - 60_000,
+    });
+
+    vi.setSystemTime(now);
+    await t.mutation(internal.entityReviewQueue.sweepAbandonedBatches, {});
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const rows = await allRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].batchId).toBe("alive");
+  });
+});

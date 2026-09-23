@@ -43,6 +43,13 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
+// NEO-294 — the bulk paths' page sizes, so a multi-page batch can be built
+// from the real numbers rather than a hard-coded guess.
+import {
+  ENTITY_REVIEW_BULK_PAGE,
+  ENTITY_REVIEW_DELETE_PAGE,
+  ENTITY_REVIEW_START_OPS,
+} from "./entityReviewQueue";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -138,6 +145,16 @@ async function scheduledEnqueueArgs(
     return rows.filter((r) => r.name === ENQUEUE_FN).map((r) => r.args[0]);
   });
 }
+
+/**
+ * NEO-294 — the continuation `startBatch` schedules for itself when one
+ * transaction's write budget runs out. Named here so the tests that drive the
+ * chain by hand and the tests that assert a SHORT batch schedules nothing are
+ * talking about the same thing.
+ */
+const START_BATCH_FN = "entityReviewQueue:startBatch";
+/** NEO-294 — the tail `cancelBatch` / the sweep hand an oversized delete to. */
+const CLEANUP_FN = "entityReviewQueue:cleanupBatch";
 
 async function scheduledNames(
   t: ReturnType<typeof convexTest>,
@@ -427,10 +444,17 @@ describe("startBatch", () => {
     });
   });
 
-  test("resume stamps lastTouchedAt on every surviving row — re-entering a batch is proof of life", async () => {
+  test("resume stamps a surviving row's lastTouchedAt — re-entering a batch is proof of life", async () => {
     // What keeps the abandoned-batch sweep off a session an operator has just
     // come back to. Without it, a batch created 25 hours ago and resumed a
     // second ago would still read as abandoned.
+    //
+    // NEO-294 narrowed this from every surviving row to ONE of them — the
+    // sweep spares a batch when ANY row is live, so the rest were writes that
+    // proved nothing. The "exactly one" half of that contract is pinned in
+    // "startBatch is bounded and resumable (NEO-294)" below; this test is
+    // about the property that has always mattered, on a single-row batch where
+    // the two statements coincide.
     const t = convexTest(schema, modules);
     const selectorOptionId = await seedSelectorOption(t);
 
@@ -1613,7 +1637,7 @@ describe("recordAllRemainingAsCreate", () => {
       { selectorOptionId, batchId: "bulk" },
     );
 
-    expect(count).toBe(3);
+    expect(count.decided).toBe(3);
     const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
       selectorOptionId,
       batchId: "bulk",
@@ -1649,7 +1673,7 @@ describe("recordAllRemainingAsCreate", () => {
       { selectorOptionId, batchId: "bulk" },
     );
 
-    expect(count).toBe(1);
+    expect(count.decided).toBe(1);
     const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
       selectorOptionId,
       batchId: "bulk",
@@ -1674,10 +1698,12 @@ describe("recordAllRemainingAsCreate", () => {
     });
 
     expect(
-      await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
-        selectorOptionId,
-        batchId: "bulk",
-      }),
+      (
+        await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+          selectorOptionId,
+          batchId: "bulk",
+        })
+      ).decided,
     ).toBe(0);
 
     await t.mutation(internal.entityReviewQueue.applyLookupResult, {
@@ -1687,10 +1713,12 @@ describe("recordAllRemainingAsCreate", () => {
     });
 
     expect(
-      await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
-        selectorOptionId,
-        batchId: "bulk",
-      }),
+      (
+        await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+          selectorOptionId,
+          batchId: "bulk",
+        })
+      ).decided,
     ).toBe(1);
     // The enrichment the wait was for is on the row commit will read.
     const row = await t.run(async (ctx) => ctx.db.get(lateId));
@@ -1712,10 +1740,12 @@ describe("recordAllRemainingAsCreate", () => {
     });
 
     expect(
-      await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
-        selectorOptionId,
-        batchId: "bulk",
-      }),
+      (
+        await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+          selectorOptionId,
+          batchId: "bulk",
+        })
+      ).decided,
     ).toBe(1);
   });
 
@@ -1741,7 +1771,7 @@ describe("recordAllRemainingAsCreate", () => {
       { selectorOptionId, batchId: "bulk" },
     );
 
-    expect(count).toBe(1);
+    expect(count.decided).toBe(1);
   });
 
   test("a later enrichment write does NOT clear the decisions it set", async () => {
@@ -1807,7 +1837,7 @@ describe("recordAllRemainingAsCreate", () => {
       { selectorOptionId, batchId: "mine" },
     );
 
-    expect(count).toBe(1);
+    expect(count.decided).toBe(1);
     const theirs = await asAdmin.query(api.entityReviewQueue.getBatch, {
       selectorOptionId,
       batchId: "theirs",
@@ -1863,7 +1893,7 @@ describe("recordAllRemainingAsSkip", () => {
       { selectorOptionId, batchId: "bulk" },
     );
 
-    expect(count).toBe(3);
+    expect(count.decided).toBe(3);
     const rows = await asAdmin.query(api.entityReviewQueue.getBatch, {
       selectorOptionId,
       batchId: "bulk",
@@ -1890,7 +1920,7 @@ describe("recordAllRemainingAsSkip", () => {
       { selectorOptionId, batchId: "bulk" },
     );
 
-    expect(count).toBe(2);
+    expect(count.decided).toBe(2);
   });
 
   test("leaves an already-decided row alone and does not count it", async () => {
@@ -1915,7 +1945,7 @@ describe("recordAllRemainingAsSkip", () => {
       { selectorOptionId, batchId: "bulk" },
     );
 
-    expect(count).toBe(1);
+    expect(count.decided).toBe(1);
     // The operator's own "create" call survives the bulk skip — the fast path
     // fills in the REMAINDER, it does not overrule decisions already made.
     expect(
@@ -1945,7 +1975,7 @@ describe("recordAllRemainingAsSkip", () => {
       { selectorOptionId, batchId: "mine" },
     );
 
-    expect(count).toBe(1);
+    expect(count.decided).toBe(1);
     const theirs = await asAdmin.query(api.entityReviewQueue.getBatch, {
       selectorOptionId,
       batchId: "theirs",
@@ -1966,10 +1996,12 @@ describe("recordAllRemainingAsSkip", () => {
     );
 
     expect(
-      await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
-        selectorOptionId,
-        batchId: "bulk",
-      }),
+      (
+        await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+          selectorOptionId,
+          batchId: "bulk",
+        })
+      ).decided,
     ).toBe(0);
   });
 
@@ -3020,7 +3052,7 @@ describe("recordAllRemainingAsCreate — NEO-236: players only", () => {
     );
 
     // The count is a count of PLAYERS — it is what the button's label shows.
-    expect(decided).toBe(1);
+    expect(decided.decided).toBe(1);
     expect(
       await t.run(async (ctx) => (await ctx.db.get(teamRowId))!.decision === undefined),
     ).toBe(true);
@@ -3048,7 +3080,7 @@ describe("recordAllRemainingAsCreate — NEO-236: players only", () => {
       { selectorOptionId, batchId: "b1" },
     );
 
-    expect(decided).toBe(1);
+    expect(decided.decided).toBe(1);
     // Staging still runs — it is what puts the step in the batch to be
     // answered — but the step itself is left for a human.
     const staged = await t.run(async (ctx) => {
@@ -3087,16 +3119,20 @@ describe("recordAllRemainingAsCreate — NEO-236: players only", () => {
     });
 
     expect(
-      await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
-        selectorOptionId,
-        batchId: "b1",
-      }),
+      (
+        await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+          selectorOptionId,
+          batchId: "b1",
+        })
+      ).decided,
     ).toBe(1);
     expect(
-      await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
-        selectorOptionId,
-        batchId: "b1",
-      }),
+      (
+        await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+          selectorOptionId,
+          batchId: "b1",
+        })
+      ).decided,
     ).toBe(0);
   });
 
@@ -3129,7 +3165,7 @@ describe("recordAllRemainingAsCreate — NEO-236: players only", () => {
       { selectorOptionId, batchId: "b1" },
     );
 
-    expect(decided).toBe(2);
+    expect(decided.decided).toBe(2);
     expect(await t.run(async (ctx) => (await ctx.db.get(teamRowId))!.decision)).toEqual({
       action: "skip",
     });
@@ -3193,7 +3229,7 @@ describe("NEO-236 — an unusable name never aborts the whole action", () => {
     // No throw, and the player is decided. The team keeps its own step, where
     // the operator is told the name is too long (`requireTeamCreate` throws a
     // ConvexError the wizard renders) rather than being silently truncated.
-    expect(decided).toBe(1);
+    expect(decided.decided).toBe(1);
     expect(
       await t.run(async (ctx) => (await ctx.db.get(longRowId))!.decision === undefined),
     ).toBe(true);
@@ -3228,12 +3264,743 @@ describe("NEO-236 — an unusable name never aborts the whole action", () => {
       { selectorOptionId, batchId: "b1" },
     );
 
-    expect(decided).toBe(1);
+    expect(decided.decided).toBe(1);
     expect(
       await t.run(async (ctx) => (await ctx.db.get(blankRowId))!.decision === undefined),
     ).toBe(true);
     expect(await t.run(async (ctx) => (await ctx.db.get(playerRowId))!.decision)).toEqual({
       action: "create",
     });
+  });
+});
+
+// ===========================================================================
+// NEO-294 — the bulk fast paths are BOUNDED, resumable walks
+//
+// The whole-batch version died on CI run 35760682857's seed job: a real 2024
+// Topps Chrome sync, 754 rows in the batch, 300 new players, and
+// `recordAllRemainingAsCreate` hit Convex's per-transaction system-operation
+// ceiling at "119 of 419 reviewed". The operator equivalent is worse than a
+// red seed — a full afternoon of review that cannot be committed.
+//
+// So a call decides at most one page and says whether more remain. What these
+// pin is everything that has to stay true once it does: the walk finishes,
+// `hasMore` is honest, an interrupted run neither loses a decision nor records
+// one twice, a small review is still one round trip, and nothing here disturbs
+// the row a human decided one at a time.
+// ===========================================================================
+
+describe("bulk decide is bounded and resumable (NEO-294)", () => {
+  /** Insert `count` settled player rows in ONE transaction. */
+  async function seedRows(
+    t: ReturnType<typeof convexTest>,
+    selectorOptionId: Id<"selectorOptions">,
+    batchId: string,
+    count: number,
+    kind: "player" | "team" = "player",
+  ): Promise<Array<Id<"entityReviewQueue">>> {
+    return t.run(async (ctx) => {
+      const ids: Array<Id<"entityReviewQueue">> = [];
+      for (let i = 0; i < count; i++) {
+        ids.push(
+          await ctx.db.insert("entityReviewQueue", {
+            selectorOptionId,
+            batchId,
+            createdByUserId: "user_review_001",
+            kind,
+            name: `Rookie${i}`,
+            sportId: selectorOptionId,
+            status: "ready",
+          }),
+        );
+      }
+      return ids;
+    });
+  }
+
+  /** One call of whichever path, with the optional cursor omitted when absent. */
+  async function callBulk(
+    t: ReturnType<typeof convexTest>,
+    which: "create" | "skip",
+    args: {
+      selectorOptionId: Id<"selectorOptions">;
+      batchId: string;
+      cursor?: number;
+    },
+  ) {
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    return which === "create"
+      ? await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, args)
+      : await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, args);
+  }
+
+  /**
+   * The client's walk, as `EntityReviewWizard.drainRemaining` performs it:
+   * keep calling with the cursor the server returned until it says stop.
+   */
+  async function drainBulk(
+    t: ReturnType<typeof convexTest>,
+    which: "create" | "skip",
+    selectorOptionId: Id<"selectorOptions">,
+    batchId: string,
+  ): Promise<{ calls: number; decided: number }> {
+    let cursor: number | null = null;
+    let calls = 0;
+    let decided = 0;
+    for (;;) {
+      const result = await callBulk(t, which, {
+        selectorOptionId,
+        batchId,
+        ...(cursor !== null ? { cursor } : {}),
+      });
+      calls += 1;
+      decided += result.decided;
+      if (!result.hasMore || result.cursor === null) return { calls, decided };
+      cursor = result.cursor;
+      // A walk that cannot terminate is the failure mode a cursor introduces;
+      // fail loudly rather than hanging the suite.
+      if (calls > 100) throw new Error("bulk walk did not terminate");
+    }
+  }
+
+  async function decisionCount(
+    t: ReturnType<typeof convexTest>,
+    batchId: string,
+  ): Promise<number> {
+    return t.run(async (ctx) => {
+      const rows = await ctx.db.query("entityReviewQueue").collect();
+      return rows.filter((r) => r.batchId === batchId && r.decision).length;
+    });
+  }
+
+  test("a review larger than one page completes across successive calls", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const total = ENTITY_REVIEW_BULK_PAGE.create.decide * 2 + 7;
+    await seedRows(t, selectorOptionId, "big", total);
+
+    const { calls, decided } = await drainBulk(t, "create", selectorOptionId, "big");
+
+    expect(decided).toBe(total);
+    // Three pages of work; the short last page is what ends the walk.
+    expect(calls).toBe(3);
+    expect(await decisionCount(t, "big")).toBe(total);
+  });
+
+  test("one call decides ONE page and no more", async () => {
+    // The property the seed job needed: whatever the batch's size, a single
+    // transaction's work is capped.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    await seedRows(t, selectorOptionId, "big", ENTITY_REVIEW_BULK_PAGE.create.decide * 3);
+
+    const first = await callBulk(t, "create", {
+      selectorOptionId,
+      batchId: "big",
+    });
+
+    expect(first.decided).toBe(ENTITY_REVIEW_BULK_PAGE.create.decide);
+    expect(first.hasMore).toBe(true);
+    expect(first.cursor).not.toBeNull();
+    expect(await decisionCount(t, "big")).toBe(ENTITY_REVIEW_BULK_PAGE.create.decide);
+  });
+
+  test("hasMore is true while work remains and false once the walk is past the end", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    // One row past the decision budget: the budget runs out mid-page, which is
+    // exactly the case the cursor has to carry — the unread rows behind it are
+    // the next call's first.
+    await seedRows(
+      t,
+      selectorOptionId,
+      "exact",
+      ENTITY_REVIEW_BULK_PAGE.create.decide + 1,
+    );
+
+    const first = await callBulk(t, "create", { selectorOptionId, batchId: "exact" });
+    expect(first.hasMore).toBe(true);
+
+    const second = await callBulk(t, "create", {
+      selectorOptionId,
+      batchId: "exact",
+      cursor: first.cursor!,
+    });
+    expect(second.decided).toBe(1);
+    // A short page ends the walk. The cursor still names the row it examined —
+    // only a page that read NOTHING has nothing to point at.
+    expect(second.hasMore).toBe(false);
+    expect(second.cursor).not.toBeNull();
+
+    const past = await callBulk(t, "create", {
+      selectorOptionId,
+      batchId: "exact",
+      cursor: second.cursor!,
+    });
+    expect(past).toEqual({ decided: 0, hasMore: false, cursor: null });
+  });
+
+  test("a review smaller than a page is still one call", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    await seedRows(t, selectorOptionId, "small", 3);
+
+    const { calls, decided } = await drainBulk(t, "create", selectorOptionId, "small");
+
+    expect(calls).toBe(1);
+    expect(decided).toBe(3);
+  });
+
+  test("an interrupted walk keeps its decisions and a re-run finishes the job", async () => {
+    // The operator closes the tab after the first page. Nothing is rolled
+    // back, nothing is half-written, and pressing the button again starts a
+    // fresh pass from the head of the batch.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const total = ENTITY_REVIEW_BULK_PAGE.create.decide * 2 + 4;
+    const ids = await seedRows(t, selectorOptionId, "resume", total);
+
+    const first = await callBulk(t, "create", { selectorOptionId, batchId: "resume" });
+    expect(first.decided).toBe(ENTITY_REVIEW_BULK_PAGE.create.decide);
+    const afterInterruption = await t.run(async (ctx) =>
+      Promise.all(
+        ids.map(async (id) => (await ctx.db.get(id))!.decision !== undefined),
+      ),
+    );
+    const decidedFirstPass = afterInterruption.filter(Boolean).length;
+    expect(decidedFirstPass).toBe(ENTITY_REVIEW_BULK_PAGE.create.decide);
+
+    // …and the cursor is GONE with the tab, so the re-run starts over.
+    const rerun = await drainBulk(t, "create", selectorOptionId, "resume");
+
+    // Every row decided exactly once: the re-run's first page re-read the rows
+    // the interrupted run had already answered and wrote nothing to them, so
+    // the totals add up rather than double-counting.
+    expect(rerun.decided).toBe(total - decidedFirstPass);
+    expect(await decisionCount(t, "resume")).toBe(total);
+  });
+
+  test("a replayed page never records a decision twice", async () => {
+    // Same call, same cursor, twice — a retry after a dropped response. The
+    // already-decided rule is what makes that a no-op.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const ids = await seedRows(t, selectorOptionId, "replay", 5);
+
+    const first = await callBulk(t, "create", { selectorOptionId, batchId: "replay" });
+    expect(first.decided).toBe(5);
+    const stamps = await t.run(async (ctx) =>
+      Promise.all(
+        ids.map(async (id) => (await ctx.db.get(id))!.lastTouchedAt ?? null),
+      ),
+    );
+
+    const replay = await callBulk(t, "create", { selectorOptionId, batchId: "replay" });
+
+    expect(replay.decided).toBe(0);
+    expect(
+      await t.run(async (ctx) =>
+        Promise.all(
+          ids.map(async (id) => (await ctx.db.get(id))!.lastTouchedAt ?? null),
+        ),
+      ),
+    ).toEqual(stamps);
+  });
+
+  test("the walk leaves a row the operator decided one at a time exactly as it found it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const ids = await seedRows(
+      t,
+      selectorOptionId,
+      "mixed",
+      ENTITY_REVIEW_BULK_PAGE.create.decide + 3,
+    );
+    // One row answered through the single-decision path, mid-batch.
+    const handDecided = ids[2];
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: handDecided,
+      action: "skip",
+    });
+
+    const { decided } = await drainBulk(t, "create", selectorOptionId, "mixed");
+
+    expect(decided).toBe(ids.length - 1);
+    expect(await t.run(async (ctx) => (await ctx.db.get(handDecided))!.decision)).toEqual({
+      action: "skip",
+    });
+  });
+
+  test("skip walks its own, larger page", async () => {
+    // A skip costs a read and a patch, so its page is sized for that and not
+    // for the create path's staging work. Pinned because the two numbers are
+    // the whole reason the record is keyed by action.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const total = ENTITY_REVIEW_BULK_PAGE.skip.decide + 6;
+    await seedRows(t, selectorOptionId, "skips", total, "team");
+
+    const { calls, decided } = await drainBulk(t, "skip", selectorOptionId, "skips");
+
+    expect(decided).toBe(total);
+    expect(calls).toBe(2);
+    expect(ENTITY_REVIEW_BULK_PAGE.skip.decide).toBeGreaterThan(
+      ENTITY_REVIEW_BULK_PAGE.create.decide,
+    );
+  });
+
+  test("rows the walk STAGES mid-run are scanned, and the walk still ends", async () => {
+    // Staging a player's career teams inserts rows into the batch being
+    // walked, with a `_creationTime` of now — so they land behind the cursor
+    // and later pages read them. They are team rows, so create skips each for
+    // the price of one read, and they stage nothing themselves. The property
+    // that matters is that the walk converges rather than chasing its own tail.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const players = ENTITY_REVIEW_BULK_PAGE.create.decide + 5;
+    await t.run(async (ctx) => {
+      for (let i = 0; i < players; i++) {
+        await ctx.db.insert("entityReviewQueue", {
+          selectorOptionId,
+          batchId: "staging",
+          createdByUserId: "user_review_001",
+          kind: "player",
+          name: `Rookie${i}`,
+          sportId: selectorOptionId,
+          status: "ready",
+          enrichment: { careerTeams: [{ name: `Club ${i}`, fromYear: 2019 }] },
+        });
+      }
+    });
+
+    const { decided } = await drainBulk(t, "create", selectorOptionId, "staging");
+
+    // Every PLAYER decided; every staged team row left for its own New Team
+    // step, which is NEO-236's rule and is not relaxed by the paging.
+    expect(decided).toBe(players);
+    const rows = await t.run(async (ctx) =>
+      (await ctx.db.query("entityReviewQueue").collect()).filter(
+        (r) => r.batchId === "staging",
+      ),
+    );
+    expect(rows.filter((r) => r.kind === "team").length).toBe(players);
+    expect(rows.filter((r) => r.kind === "team" && r.decision).length).toBe(0);
+  });
+
+  test("a cursor cannot reach another operator's batch", async () => {
+    // The ownership check runs over the page before the first patch, so a
+    // resumed call is gated exactly as the first one is.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    await seedRows(t, selectorOptionId, "theirs", 4);
+    await t.run(async (ctx) => {
+      for (const row of await ctx.db.query("entityReviewQueue").collect()) {
+        await ctx.db.patch(row._id, { createdByUserId: "user_someone_else" });
+      }
+    });
+
+    await expect(
+      callBulk(t, "create", { selectorOptionId, batchId: "theirs", cursor: 0 }),
+    ).rejects.toThrow();
+    expect(await decisionCount(t, "theirs")).toBe(0);
+  });
+});
+
+// ===========================================================================
+// NEO-294 — startBatch is bounded, and the bound costs nothing
+//
+// `startBatch` is the mutation the operator's Confirm blocks on. On the seed
+// job's 2024 Topps Chrome sync it was handed 300 new player names and 30 team
+// names, and Convex counts one system operation per CALL — so the fresh path
+// spent ~930 before a single ambiguous name, and the RESUME path spent one
+// WRITE PER EXISTING ROW (~755 on that batch) stamping `lastTouchedAt` before
+// it considered a single new one.
+//
+// What these pin is the contract that replaced it: one transaction writes at
+// most ENTITY_REVIEW_START_OPS operations' worth, the rest arrives on a
+// continuation scheduled with identical arguments, and running that
+// continuation converges — no name gets two rows, no decision is lost, and a
+// short batch is still exactly one call that schedules nothing.
+// ===========================================================================
+
+describe("startBatch is bounded and resumable (NEO-294)", () => {
+  /**
+   * Operations one unambiguous player name costs: the two index reads
+   * `sameNamePlayers` performs (`players` by name, `playerAliases` by alias)
+   * plus the insert. Stated here rather than imported because the point of the
+   * test is to build a batch that PROVABLY exceeds one page, and a helper that
+   * derived the same number from the same source could agree with a bug.
+   */
+  const OPS_PER_NEW_PLAYER = 3;
+
+  /** Enough distinct names that one transaction cannot afford them all. */
+  function overflowingPlayerNames(): string[] {
+    const count =
+      Math.floor(ENTITY_REVIEW_START_OPS / OPS_PER_NEW_PLAYER) + 25;
+    return Array.from({ length: count }, (_, i) => `Rookie Number${i}`);
+  }
+
+  async function rowsOf(
+    t: ReturnType<typeof convexTest>,
+    batchId: string,
+  ): Promise<Array<{ name: string; kind: string; decision?: unknown }>> {
+    return t.run(async (ctx) => {
+      const rows = await ctx.db.query("entityReviewQueue").collect();
+      return rows
+        .filter((r) => r.batchId === batchId)
+        .map((r) => ({ name: r.name, kind: r.kind, decision: r.decision }));
+    });
+  }
+
+  /**
+   * The continuation, run by hand.
+   *
+   * `startBatch` schedules ITSELF with identical arguments, so re-invoking it
+   * with the same arguments IS the continuation — which is the whole reason it
+   * needs no cursor. Driving it this way rather than draining the scheduler
+   * keeps the Wikidata pool enqueue unrun; that one reaches the workpool
+   * component, which convex-test cannot mount (see this file's header).
+   */
+  async function runStartBatch(
+    t: ReturnType<typeof convexTest>,
+    selectorOptionId: Id<"selectorOptions">,
+    playerNames: string[],
+    teamNames: string[] = [],
+  ): Promise<string> {
+    return t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames,
+      teamNames,
+    });
+  }
+
+  test("a name list larger than one page writes a page, schedules itself, and converges", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const names = overflowingPlayerNames();
+
+    const batchId = await runStartBatch(t, selectorOptionId, names);
+
+    const afterFirst = await rowsOf(t, batchId);
+    // The point: NOT all of them, in one transaction.
+    expect(afterFirst.length).toBeGreaterThan(0);
+    expect(afterFirst.length).toBeLessThan(names.length);
+    expect(await scheduledNames(t)).toContain(START_BATCH_FN);
+
+    // The continuation, and however many more it needs.
+    let guard = 0;
+    while ((await rowsOf(t, batchId)).length < names.length) {
+      const resumed = await runStartBatch(t, selectorOptionId, names);
+      // Same batch throughout — the client is already holding this id.
+      expect(resumed).toBe(batchId);
+      if (++guard > 20) throw new Error("startBatch chain did not converge");
+    }
+
+    const all = await rowsOf(t, batchId);
+    expect(all).toHaveLength(names.length);
+    // Exactly one row per name: the continuation re-runs the SAME reconciliation
+    // and `existingKeys` suppresses everything the earlier page already wrote.
+    expect(new Set(all.map((r) => r.name)).size).toBe(names.length);
+  });
+
+  test("the continuation it schedules is tagged with the batch it belongs to", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const names = overflowingPlayerNames();
+
+    const batchId = await runStartBatch(t, selectorOptionId, names);
+
+    const armed = await t.run(async (ctx) => {
+      const rows = await (
+        ctx as unknown as {
+          db: {
+            system: {
+              query: (n: string) => {
+                collect: () => Promise<
+                  Array<{
+                    name: string;
+                    args: Array<{ continueBatchId?: string }>;
+                  }>
+                >;
+              };
+            };
+          };
+        }
+      ).db.system.query("_scheduled_functions").collect();
+      return rows
+        .filter((r) => r.name === START_BATCH_FN)
+        .map((r) => r.args[0].continueBatchId);
+    });
+    expect(armed).toEqual([batchId]);
+  });
+
+  test("a continuation whose batch was cancelled writes nothing, and does not mint a new one", async () => {
+    // The window paging opened: the operator cancels between two links of the
+    // chain. Without the guard the next link finds no open batch, takes the
+    // FRESH path, and re-asks every name the operator has just dealt with — a
+    // wizard that reopens itself.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const names = overflowingPlayerNames();
+
+    const batchId = await runStartBatch(t, selectorOptionId, names);
+    await asAdmin.mutation(api.entityReviewQueue.cancelBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("entityReviewQueue").collect()).length,
+      ),
+    ).toBe(0);
+
+    // The armed continuation lands a moment later.
+    await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId,
+      createdByUserId: "user_review_001",
+      sportId: selectorOptionId,
+      playerNames: names,
+      teamNames: [],
+      continueBatchId: batchId,
+    });
+
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("entityReviewQueue").collect()).length,
+      ),
+    ).toBe(0);
+  });
+
+  test("a batch that fits in one page is one call and schedules no continuation", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+
+    const batchId = await runStartBatch(
+      t,
+      selectorOptionId,
+      ["Mike Trout", "Aaron Judge"],
+      ["Los Angeles Angels"],
+    );
+
+    expect(await rowsOf(t, batchId)).toHaveLength(3);
+    // The Wikidata enqueue is scheduled; a continuation of this mutation is not.
+    expect(await scheduledNames(t)).toContain(ENQUEUE_FN);
+    expect(await scheduledNames(t)).not.toContain(START_BATCH_FN);
+  });
+
+  test("a truncated first page keeps every row it wrote — the chain is additive, never rolled back", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const names = overflowingPlayerNames();
+
+    const batchId = await runStartBatch(t, selectorOptionId, names);
+    const written = (await rowsOf(t, batchId)).map((r) => r.name).sort();
+    expect(written.length).toBeGreaterThan(0);
+
+    // The tab closes; the continuation never runs. Nothing is lost, and the
+    // next Confirm (the same call, the same arguments) picks up where it
+    // stopped rather than starting over.
+    await runStartBatch(t, selectorOptionId, names);
+    const after = (await rowsOf(t, batchId)).map((r) => r.name);
+    for (const name of written) expect(after).toContain(name);
+    expect(new Set(after).size).toBe(after.length);
+  });
+
+  test("a resume stamps ONE row, not one per row in the batch", async () => {
+    // The write that used to dominate the resume path: 754 patches proving
+    // something the sweep only needs one row to know. See the sweep's own test
+    // file for the rule this relies on — ANY live row spares the batch.
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const names = ["Mike Trout", "Aaron Judge", "Shohei Ohtani"];
+
+    const batchId = await runStartBatch(t, selectorOptionId, names);
+    expect(
+      await t.run(async (ctx) =>
+        (await ctx.db.query("entityReviewQueue").collect()).filter(
+          (r) => r.lastTouchedAt !== undefined,
+        ).length,
+      ),
+    ).toBe(0);
+
+    await runStartBatch(t, selectorOptionId, names);
+
+    const stamped = await t.run(async (ctx) =>
+      (await ctx.db.query("entityReviewQueue").collect()).filter(
+        (r) => r.batchId === batchId && r.lastTouchedAt !== undefined,
+      ),
+    );
+    expect(stamped).toHaveLength(1);
+    expect(stamped[0].lastTouchedAt).toBeGreaterThan(0);
+  });
+
+  test("a resume that drops more rows than one page can delete converges without losing a decision", async () => {
+    // "Back to matching", re-pair everything, Confirm again: the incoming set
+    // is now empty and every undecided row is a question about nothing. The
+    // deletes are bounded, the continuation finishes them, and the row the
+    // operator ruled on is still there at the end.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const names = overflowingPlayerNames();
+
+    // Build the batch first, through the same paged path.
+    let batchId = await runStartBatch(t, selectorOptionId, names);
+    let guard = 0;
+    while ((await rowsOf(t, batchId)).length < names.length) {
+      batchId = await runStartBatch(t, selectorOptionId, names);
+      if (++guard > 20) throw new Error("startBatch chain did not converge");
+    }
+
+    // One row answered by hand. A decided row is never dropped, whatever the
+    // incoming set says.
+    const [first] = await asAdmin.query(api.entityReviewQueue.getBatch, {
+      selectorOptionId,
+      batchId,
+    });
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: first._id,
+      action: "skip",
+    });
+
+    guard = 0;
+    for (;;) {
+      await runStartBatch(t, selectorOptionId, [], []);
+      const left = await rowsOf(t, batchId);
+      if (left.length <= 1) break;
+      if (++guard > 20) throw new Error("resume drop did not converge");
+    }
+
+    const left = await rowsOf(t, batchId);
+    expect(left).toHaveLength(1);
+    expect(left[0].decision).toEqual({ action: "skip" });
+  });
+});
+
+// ===========================================================================
+// NEO-294 — deleting a batch is bounded too
+//
+// Cancel read the whole batch, checked ownership over it, re-read it and then
+// deleted it row by row: ~2,300 system operations on the seed job's 754-row
+// review, behind a button. The read is now a page, the rows it read are handed
+// straight to the delete rather than fetched twice, and anything behind the
+// page is a scheduled `cleanupBatch` that chains until the batch is gone.
+// ===========================================================================
+
+describe("batch deletion is bounded and chains (NEO-294)", () => {
+  /** Insert `count` rows of one batch in ONE transaction. */
+  async function seedBatch(
+    t: ReturnType<typeof convexTest>,
+    selectorOptionId: Id<"selectorOptions">,
+    batchId: string,
+    count: number,
+    createdByUserId = "user_review_001",
+  ): Promise<void> {
+    await t.run(async (ctx) => {
+      for (let i = 0; i < count; i++) {
+        await ctx.db.insert("entityReviewQueue", {
+          selectorOptionId,
+          batchId,
+          createdByUserId,
+          kind: "player",
+          name: `Rookie${i}`,
+          sportId: selectorOptionId,
+          status: "ready",
+        });
+      }
+    });
+  }
+
+  async function remaining(
+    t: ReturnType<typeof convexTest>,
+    batchId: string,
+  ): Promise<number> {
+    return t.run(async (ctx) =>
+      (await ctx.db.query("entityReviewQueue").collect()).filter(
+        (r) => r.batchId === batchId,
+      ).length,
+    );
+  }
+
+  test("a review that fits in one page is cancelled in one transaction, with no tail scheduled", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    await seedBatch(t, selectorOptionId, "small", 5);
+
+    await asAdmin.mutation(api.entityReviewQueue.cancelBatch, {
+      selectorOptionId,
+      batchId: "small",
+    });
+
+    expect(await remaining(t, "small")).toBe(0);
+    expect(await scheduledNames(t)).not.toContain(CLEANUP_FN);
+  });
+
+  test("a review larger than one page deletes a page, schedules the tail, and the chain empties it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    const total = ENTITY_REVIEW_DELETE_PAGE + 40;
+    await seedBatch(t, selectorOptionId, "big", total);
+
+    await asAdmin.mutation(api.entityReviewQueue.cancelBatch, {
+      selectorOptionId,
+      batchId: "big",
+    });
+
+    // One page gone, the rest still there — and a tail armed for it.
+    expect(await remaining(t, "big")).toBe(total - ENTITY_REVIEW_DELETE_PAGE);
+    expect(await scheduledNames(t)).toContain(CLEANUP_FN);
+
+    // The tail, run by hand: it re-reads from the head, so a replay finds
+    // fewer rows rather than deleting anything twice.
+    await t.mutation(internal.entityReviewQueue.cleanupBatch, {
+      selectorOptionId,
+      batchId: "big",
+    });
+    expect(await remaining(t, "big")).toBe(0);
+
+    // Replayed once more: nothing to delete, nothing to schedule, no throw.
+    await t.mutation(internal.entityReviewQueue.cleanupBatch, {
+      selectorOptionId,
+      batchId: "big",
+    });
+    expect(await remaining(t, "big")).toBe(0);
+  });
+
+  test("cleanupBatch chains itself while rows remain", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    await seedBatch(t, selectorOptionId, "chain", ENTITY_REVIEW_DELETE_PAGE + 1);
+
+    await t.mutation(internal.entityReviewQueue.cleanupBatch, {
+      selectorOptionId,
+      batchId: "chain",
+    });
+
+    expect(await remaining(t, "chain")).toBe(1);
+    expect(await scheduledNames(t)).toContain(CLEANUP_FN);
+  });
+
+  test("a cancel is still refused over a batch the caller does not own, and deletes nothing", async () => {
+    // The ownership check runs over the PAGE before the first delete, so
+    // paging did not weaken it: a refused cancel still writes nothing at all.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const selectorOptionId = await seedSelectorOption(t);
+    await seedBatch(t, selectorOptionId, "theirs", 4, "user_someone_else");
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.cancelBatch, {
+        selectorOptionId,
+        batchId: "theirs",
+      }),
+    ).rejects.toThrow();
+    expect(await remaining(t, "theirs")).toBe(4);
   });
 });

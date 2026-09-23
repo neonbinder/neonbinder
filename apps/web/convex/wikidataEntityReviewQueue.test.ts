@@ -1409,10 +1409,33 @@ describe("runEntityReviewLookup", () => {
     expect(fetchCalled).toBe(false);
   });
 
-  test("a lookup that throws is caught — the row is marked 'error'", async () => {
+  /**
+   * NEO-294 — RENAMED from "a lookup that throws is caught". It never tested
+   * that.
+   *
+   * Every adapter in convex/adapters/ is no-throw by convention: `runSparql`
+   * absorbs a transport failure and answers `null` (its NEO-288 one-retry
+   * contract), and adapters/espn.ts says the same in as many words ("No-throw,
+   * like every adapter here"). So a `fetch` stubbed to throw does NOT reach
+   * `runEntityReviewLookup`'s catch — it arrives as a lookup that ran and
+   * answered nothing, and this test passed identically with the catch removed.
+   * A test name that is a guarantee the body does not check is worse than no
+   * test, because it stops the next reader looking.
+   *
+   * What DOES reach that catch is a failure in the `try` that is not a fetch —
+   * the `getSportEnrichmentContext` query, say. That is covered against a REAL
+   * throw in convex/adapters/wikidata.entityReviewWrite.test.ts ("a lookup
+   * that threw"), which scripts the ctx directly; this harness runs the real
+   * queries and cannot make one fail. Not duplicated here.
+   *
+   * Kept for what it genuinely pins, which is worth pinning: from the row's
+   * side, a dead network is the SAME end state as a name Wikidata has never
+   * heard of — "error", no enrichment, and above all never left "pending".
+   */
+  test("a transport failure is absorbed as a no-match — 'error', no enrichment, never 'pending'", async () => {
     const t = convexTest(schema, modules);
     const selectorOptionId = await seedSelectorOption(t);
-    const row = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Throws During Lookup" });
+    const row = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Network Down During Lookup" });
 
     vi.stubGlobal(
       "fetch",
@@ -1420,11 +1443,37 @@ describe("runEntityReviewLookup", () => {
         throw new Error("network down");
       }) as unknown as typeof fetch,
     );
+    // The claim in the name, made checkable: these two spies are what say the
+    // request died on the NO-MATCH path rather than in the catch. Without
+    // them the assertions below cannot tell the two apart — which is exactly
+    // how the old name survived.
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
     await t.action(internal.adapters.wikidata.runEntityReviewLookup, { rowId: row });
 
+    const markers = logSpy.mock.calls
+      .map((call) => call[0])
+      .filter((first): first is string => typeof first === "string" && first.startsWith("{"))
+      .map((first) => (JSON.parse(first) as { msg?: string }).msg);
+    // Absorbed: the lookup RAN and answered nothing.
+    expect(markers).toContain("entity_review_lookup_no_match");
+    // ...and did not land in the catch, which logs this prefix instead.
+    expect(
+      errorSpy.mock.calls.filter(
+        (call) => typeof call[0] === "string" && call[0].startsWith("[entity-review-lookup]"),
+      ),
+    ).toHaveLength(0);
+    logSpy.mockRestore();
+    errorSpy.mockRestore();
+
     const r = await getRow(t, row);
     expect(r!.status).toBe("error");
+    // The no-match shape, in full: a transport failure must not leave a
+    // half-written enrichment behind, and must not strand the row on
+    // "pending" — the hang this action's fetch timeout exists to stop.
+    expect(r!.enrichment).toBeUndefined();
+    expect(r!.status).not.toBe("pending");
   });
 
   // ── NEO-99 fetch timeout ────────────────────────────────────────────────

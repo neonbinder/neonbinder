@@ -1726,7 +1726,16 @@ export default function PlayerManagement() {
           onChange={(e) => setFilter(e.target.value)}
           className="w-64"
         />
-        <div>
+        {/* Fixed width, not content width — the same defect fixed at the same
+            spot in LeagueManagement.tsx; read the long note there. Short
+            version: this row sits at its wrap boundary, `sportList` is a live
+            global query, and a content-sized select plus an auto-width counter
+            make the row's width follow the data, so the Add player button
+            moves under the operator's cursor. Measured on the leagues screen
+            in CI run 35731602457 — tapped at (75,387), at [675,327] 1.2s later
+            — and the five flows on this screen carry per-flow workarounds for
+            the same shape. */}
+        <div className="w-44">
           <label
             htmlFor="sport-filter"
             className="block text-sm font-medium mb-1 text-slate-300"
@@ -1753,10 +1762,13 @@ export default function PlayerManagement() {
             "0 matches". */}
         {/* NEO-235: centred against the field boxes rather than nudged up with
             a `pb-2`, so it stays put when the row wraps. */}
+        {/* `min-w-[13rem]`: this node is empty until the counts resolve, and an
+            auto-width node growing from 0 to ~200px is what tips the row over
+            its wrap boundary. See the note on the sport wrapper above. */}
         <p
           role="status"
           aria-live="polite"
-          className={`flex items-center text-xs text-slate-400 ${FIELD_BOX_HEIGHT}`}
+          className={`flex items-center text-xs text-slate-400 min-w-[13rem] ${FIELD_BOX_HEIGHT}`}
         >
           {counter}
         </p>

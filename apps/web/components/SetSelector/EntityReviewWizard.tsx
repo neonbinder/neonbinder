@@ -238,6 +238,24 @@ const AUTO_ADD_BATCH_THRESHOLD = 5;
 const AUTO_ADD_MAX_CALLS = 400;
 
 /**
+ * NEO-294 — how many bounded pages one bulk run may walk before it stops.
+ *
+ * `recordAllRemainingAs*` decides ONE PAGE per call now (deciding a 419-entity
+ * review in a single mutation is what blew Convex's system-operation budget on
+ * the seed job) and hands back `{ hasMore, cursor }`. `drainRemaining` walks
+ * that cursor until the server says there is nothing behind it; this bounds the
+ * walk in case `hasMore` somehow never goes false, which is the only way a
+ * client loop over a server's own continuation token can spin.
+ *
+ * 500 pages is 12,500 create decisions, or 100,000 rows read — one to two
+ * orders of magnitude past the largest review anyone has seen (754 rows, a
+ * first-time 2024 Topps Chrome sync). It is a runaway guard, not a budget: a
+ * run that trips it says so and leaves every decision it already wrote in
+ * place.
+ */
+export const BULK_MAX_PAGES = 500;
+
+/**
  * A Convex rejection's message, or a written-for-the-operator fallback.
  *
  * NEO-236: `data` is read FIRST, and structurally rather than with
@@ -277,6 +295,21 @@ const CONFIRM_SAVE_LABEL = "Confirm & Save (Enter) — commit this review";
 /** The same button once `saving` flips: its words change, so its name must too. */
 const CONFIRM_SAVING_LABEL = "Saving... — committing this review";
 const CANCEL_REVIEW_LABEL = "Cancel (Esc) — leave without committing";
+
+/**
+ * NEO-294 — the two bulk links' VISIBLE words, named once.
+ *
+ * "Press the button again to pick up where it left off" sat under two buttons,
+ * and the sentences that did try to name one said "Add All Remaining as New" —
+ * a label this footer has not rendered for some time. A message that names a
+ * control it does not share a constant with drifts silently, which is exactly
+ * what happened. Both the buttons and every sentence that names them now read
+ * from here. The visible text is the accessible name for both (no aria-label),
+ * and a Maestro flow matches `.*Add remaining players as new.*`, so these
+ * strings are E2E surface: change them and change the flow.
+ */
+const BULK_CREATE_LABEL = "Add remaining players as new";
+const BULK_SKIP_LABEL = "Skip remaining names";
 
 /** What the final step is about to write, as counted by the PARENT. */
 export type EntityReviewSummary = {
@@ -516,6 +549,20 @@ export default function EntityReviewWizard({
    */
   const [bulkPending, setBulkPending] = useState<null | "create" | "skip">(null);
   const bulkRef = useRef(false);
+  /**
+   * NEO-294 — "stop after the page you are on".
+   *
+   * A bulk run is no longer one mutation: it is a walk over the batch, several
+   * calls long, and it can still be in flight when the session ends under it.
+   * Read between pages, so a run that is no longer wanted stops at the next
+   * boundary instead of writing decisions into a batch the operator has
+   * discarded — or racing the commit's read of the same rows, which is the
+   * NEO-189 contention this file spends so much of its comment budget on.
+   *
+   * A ref, not state: the walk reads it between awaits, where a render value
+   * is whatever it was when the run started.
+   */
+  const bulkAbortRef = useRef(false);
   // NEO-110: a rejected bulk decide used to be swallowed entirely, so a failed
   // bulk looked identical to a partial one — the button simply re-enabled and
   // the counter didn't move. Surface it instead.
@@ -665,22 +712,32 @@ export default function EntityReviewWizard({
 
   /** Rows already decided "link" — their TARGET's canonical name is what the
    *  batch will actually use, so both the staging list and the decided list
-   *  need it, not the raw checklist string on the review row. */
+   *  need it, not the raw checklist string on the review row.
+   *
+   *  NEO-296: DISTINCT ids, sorted. One entry per decided row was one
+   *  `db.get` per decided row inside a live subscription — a 754-row batch
+   *  where the operator links them all asked for 754 reads on every re-run,
+   *  and a batch of that size links the same handful of teams over and over.
+   *  Sorted for the same reason `PlayerManagement` sorts its row-team ids:
+   *  Convex keys a subscription on the SERIALIZED args, so a stable order
+   *  stops a reorder that changes nothing from re-subscribing. The server
+   *  dedups and bounds this too (`convex/lib/batchIdReads.ts`); it is not
+   *  relying on this, and this is not relying on it. */
   const linkedTeamIds = useMemo(() => {
-    const ids: Id<"teams">[] = [];
+    const ids = new Set<Id<"teams">>();
     for (const row of rows ?? []) {
       if (row.decision?.action !== "link") continue;
-      if (row.decision.linkedTeamId) ids.push(row.decision.linkedTeamId);
+      if (row.decision.linkedTeamId) ids.add(row.decision.linkedTeamId);
     }
-    return ids;
+    return [...ids].sort();
   }, [rows]);
   const linkedPlayerIds = useMemo(() => {
-    const ids: Id<"players">[] = [];
+    const ids = new Set<Id<"players">>();
     for (const row of rows ?? []) {
       if (row.decision?.action !== "link") continue;
-      if (row.decision.linkedPlayerId) ids.push(row.decision.linkedPlayerId);
+      if (row.decision.linkedPlayerId) ids.add(row.decision.linkedPlayerId);
     }
-    return ids;
+    return [...ids].sort();
   }, [rows]);
   const linkedTeams = useQuery(
     api.teams.getManyByIds,
@@ -1209,6 +1266,70 @@ export default function EntityReviewWizard({
   }, [cancelling, confirming, saving]);
 
   /**
+   * NEO-294 — a commit starting, or the dialog closing, ends any bulk walk.
+   *
+   * Both are moments where continuing to write decisions is at best pointless
+   * (the batch is about to be read and deleted) and at worst the NEO-189
+   * read-set collision that turned a seed job red. The walk itself checks this
+   * between pages; this is only what raises it.
+   */
+  useEffect(() => {
+    if (saving || closing) bulkAbortRef.current = true;
+  }, [saving, closing]);
+
+  /**
+   * NEO-294 — walk one bulk decision across the batch, a bounded page at a time.
+   *
+   * `recordAllRemainingAs*` decides at most one page per call and returns
+   * `{ decided, hasMore, cursor }`; this is the client half of that contract —
+   * the same shape the reset batches are driven with, and the reason the
+   * mutation can no longer exceed Convex's per-transaction budget however many
+   * names a set surfaces.
+   *
+   * Three properties the callers depend on:
+   *
+   *  - **Every page is durable on its own.** A page that lands is committed.
+   *    If the operator closes the tab, discards the review or the connection
+   *    drops mid-walk, the decisions already written stay written and the walk
+   *    simply stops; pressing the button again resumes from the head of the
+   *    batch and re-decides nothing, because a row that carries a decision is
+   *    never touched twice. There is no half-written decision to clean up.
+   *  - **It stops when the session does** (`bulkAbortRef`), at a page boundary.
+   *  - **It throws on the runaway cap**, so the caller's existing `catch`
+   *    surfaces it in `bulkError` exactly as a refusal from the server.
+   *
+   * Returns nothing: the counts the wizard shows come from the reactive
+   * `getBatch` query, which updates as each page commits — that is what keeps
+   * "119 of 419 reviewed" moving through a long run rather than sitting still
+   * until the end.
+   */
+  const drainRemaining = async (kind: "create" | "skip"): Promise<void> => {
+    const call =
+      kind === "create" ? recordAllRemainingAsCreate : recordAllRemainingAsSkip;
+    let cursor: number | null = null;
+    for (let page = 0; page < BULK_MAX_PAGES; page++) {
+      const result = await call({
+        selectorOptionId,
+        batchId,
+        // Omitted on the first call rather than sent as null: absent is what
+        // the validator means by "start at the head of the batch".
+        ...(cursor !== null ? { cursor } : {}),
+      });
+      if (!result.hasMore || result.cursor === null) return;
+      if (bulkAbortRef.current) return;
+      cursor = result.cursor;
+    }
+    // NEO-294 — names the button, because "the button" sat under TWO of them.
+    // An operator who had just pressed Skip remaining names was told to press
+    // "the button" beside a live Add remaining players as new.
+    throw new Error(
+      `Stopped partway through — the names decided so far are saved. Press "${
+        kind === "create" ? BULK_CREATE_LABEL : BULK_SKIP_LABEL
+      }" again to pick up where it left off.`,
+    );
+  };
+
+  /**
    * NEO-221 — keep issuing the bulk create as lookups settle, while armed.
    *
    * ## Why this is throttled rather than reactive
@@ -1276,7 +1397,9 @@ export default function EntityReviewWizard({
       autoAddRef.current = false;
       setAutoAddPending(false);
       setBulkError(
-        `Stopped adding automatically after ${AUTO_ADD_MAX_CALLS} rounds. ${undecided.length} names are still waiting — use "Add All Remaining as New" again.`,
+        // NEO-294 — was `"Add All Remaining as New"`, a label this footer
+        // stopped rendering. Read from the constant the button renders.
+        `Stopped adding automatically after ${AUTO_ADD_MAX_CALLS} rounds. ${undecided.length} names are still waiting — use "${BULK_CREATE_LABEL}" again.`,
       );
       return;
     }
@@ -1319,10 +1442,15 @@ export default function EntityReviewWizard({
       }
       autoAddCallsRef.current += 1;
       bulkRef.current = true;
+      bulkAbortRef.current = false;
       setBulkPending("create");
       void (async () => {
         try {
-          await recordAllRemainingAsCreate({ selectorOptionId, batchId });
+          // NEO-294: one ROUND of the armed loop is a full walk of the batch,
+          // not one mutation. The cap above still counts rounds — what it
+          // bounds is how many times the wizard re-asks as lookups land, and
+          // that is unchanged.
+          await drainRemaining("create");
         } catch (e) {
           // One refusal means every retry refuses too.
           autoAddRef.current = false;
@@ -1616,6 +1744,10 @@ export default function EntityReviewWizard({
    */
   const runCancel = async () => {
     if (cancelling) return;
+    // NEO-294 — a bulk walk in flight must not keep deciding rows into a batch
+    // that is being thrown away. It stops at its next page boundary; anything
+    // it already wrote is deleted with the rest of the batch.
+    bulkAbortRef.current = true;
     setCancelling(true);
     setCancelError(null);
     try {
@@ -1657,14 +1789,12 @@ export default function EntityReviewWizard({
   const runBulk = async (kind: "create" | "skip") => {
     if (bulkRef.current || saving) return;
     bulkRef.current = true;
+    // NEO-294 — a fresh run is wanted, whatever ended the last one.
+    bulkAbortRef.current = false;
     setBulkPending(kind);
     setBulkError(null);
     try {
-      if (kind === "create") {
-        await recordAllRemainingAsCreate({ selectorOptionId, batchId });
-      } else {
-        await recordAllRemainingAsSkip({ selectorOptionId, batchId });
-      }
+      await drainRemaining(kind);
     } catch (e) {
       autoAddRef.current = false;
       setAutoAddPending(false);
@@ -1687,6 +1817,11 @@ export default function EntityReviewWizard({
     // button renders: it is already doing exactly this, and a click between
     // rounds would just issue a duplicate.
     if (autoAddPending) return;
+    // NEO-294 — and inert while a walk is in flight, for the same reason.
+    // `aria-disabled` replaced the native `disabled` here (a walk is seconds
+    // long now, and a disabled control ejects a keyboard operator from the
+    // footer mid-run), so the handler is what actually refuses the click.
+    if (bulkRef.current || saving) return;
     // Rows still being looked up are excluded server-side, so arm the follow-up
     // rather than leaving the operator to click again for each straggler. The
     // cap counts per arming, so re-clicking after it trips is a fresh budget —
@@ -1700,6 +1835,11 @@ export default function EntityReviewWizard({
   };
 
   const handleBulkSkip = () => {
+    // NEO-294 — refused BEFORE the disarm below, not after. With `aria-disabled`
+    // in place of the native `disabled`, a click during a walk reaches this
+    // handler; disarming the auto-add and then dropping out of `runBulk` would
+    // stop the run the operator can see without starting the one they asked for.
+    if (bulkRef.current || saving) return;
     // "Skip Remaining" is the explicit-exclusion branch: it means every name
     // left, lookups included, so it also cancels any armed auto-add.
     autoAddRef.current = false;
@@ -3365,11 +3505,58 @@ export default function EntityReviewWizard({
                     className="rounded-md border border-[#FF2EB3]/40 bg-[#FF2EB3]/10 p-3 space-y-2"
                   >
                     <p className="text-sm text-[#FF2EB3]">{commitError}</p>
+                    {/*
+                      NEO-294 — this line used to read "Nothing was saved.
+                      Every decision you made is still here." and the first
+                      half of it was FALSE. A commit has not been one
+                      transaction since NEO-189: the chunk phase writes cards
+                      before the finalize phase runs, so a finalize failure —
+                      the one this ticket exists for — leaves every card on
+                      disk and only the bookkeeping undone. Telling the
+                      operator nothing was saved invites them to go looking
+                      for work that is already there, or to undo it.
+
+                      What IS true is the thing that makes the error
+                      recoverable, and it is worth more than the false
+                      reassurance was: the commit is idempotent end to end.
+                      Cards re-match on their marketplace refs rather than
+                      their numbers (NEO-203), and every finalize page
+                      converges — so pressing the button again finishes the
+                      job instead of doubling it.
+                    */}
+                    {/*
+                      NEO-294 — Jason signed this off verbatim; the plain
+                      register is deliberate. This is the screen where being
+                      cute costs money, so it says what happened, what the
+                      button does, and how the operator knows it worked —
+                      nothing else. Do not brand-voice it.
+                    */}
                     <p className="text-xs text-gray-400">
-                      Nothing was saved. Every decision you made is still here.
+                      Part of this commit already saved. Retry commit picks up
+                      where it stopped — cards re-match what&apos;s already
+                      there instead of doubling, and your decisions are all
+                      still here. The set&apos;s card count will tell you when
+                      it&apos;s done.
                     </p>
                     <div className="flex items-center gap-3">
-                      <NeonButton onClick={onConfirm} disabled={saving}>
+                      {/*
+                        NEO-294 — `aria-disabled`, never native `disabled`, for
+                        the reason the decision controls have used it since
+                        NEO-221 and more so here: a paged finalize means a
+                        commit is in flight for SECONDS, and a native
+                        `disabled` drops the button out of the tab order for
+                        all of it, throwing a keyboard operator out of the
+                        alert they are reading. NeonButton already paints
+                        aria-disabled the same way, and the handler refuses
+                        rather than relying on the attribute.
+                      */}
+                      <NeonButton
+                        aria-disabled={saving || undefined}
+                        onClick={() => {
+                          if (saving) return;
+                          onConfirm();
+                        }}
+                      >
                         {saving ? "Saving..." : "Retry commit"}
                       </NeonButton>
                       {onDismissCommitError && (
@@ -3579,8 +3766,29 @@ export default function EntityReviewWizard({
                        */
                       className={footerFieldClass("btn-confirm-save")}
                       aria-label={saving ? CONFIRM_SAVING_LABEL : CONFIRM_SAVE_LABEL}
-                      onClick={onConfirm}
-                      disabled={saving}
+                      /*
+                       * NEO-294 — `aria-disabled`, not native `disabled`.
+                       *
+                       * A commit runs a bounded, resumable finalize walk now
+                       * (`commitCardChecklistFinalize`), so `saving` is true
+                       * for seconds on a real set rather than for one round
+                       * trip. Native `disabled` removes the button from the
+                       * tab order for that whole time and focus falls to
+                       * <body>, which is the same WCAG 2.4.3 problem the
+                       * decision controls above solved with aria-disabled.
+                       * The button is autofocused when this step opens, so it
+                       * is precisely the control a keyboard operator is
+                       * standing on when they press it.
+                       *
+                       * The refusal lives in the handlers, not in the
+                       * attribute: `onClick` returns early while saving, and
+                       * `onKeyDown` already did.
+                       */
+                      aria-disabled={saving || undefined}
+                      onClick={() => {
+                        if (saving) return;
+                        onConfirm();
+                      }}
                       /*
                        * THE BUTTON HANDLES ITS OWN ENTER, and this is not
                        * belt-and-braces around native activation — it is the
@@ -3723,10 +3931,12 @@ export default function EntityReviewWizard({
                 per-row decision controls: a keyboard operator who has tabbed
                 here must not be ejected from the footer.
 
-                Only the CREATE link goes inert. "Skip remaining names" stays
-                live on purpose — the status beside it says "wait or skip", and
-                taking the skip away while it says so would be advertising an
-                exit and locking it.
+                While the auto-add is ARMED only the create link goes inert.
+                "Skip remaining names" stays live on purpose — the status beside
+                it says "wait or skip", and taking the skip away while it says
+                so would be advertising an exit and locking it. (Both go inert
+                while a walk is actually in flight; that is a different
+                condition, and it is what stops two runs overlapping.)
 
                 No aria-label on either: the visible text IS the accessible
                 name, and Maestro matches `.*Add remaining players as new.*`.
@@ -3754,30 +3964,47 @@ export default function EntityReviewWizard({
                     createBlocked ? "min-w-0 overflow-hidden" : "shrink-0"
                   }`}
                 >
+                  {/*
+                    NEO-294 — `aria-disabled` on BOTH, and no native `disabled`
+                    on either.
+                    A bulk run is a walk over the batch now, several seconds and
+                    several mutations long, so "in flight" is a state a keyboard
+                    operator can genuinely be standing in. A native `disabled`
+                    blurs the focused control to <body> — outside the still-open
+                    modal — which is precisely the reason the per-row decision
+                    controls have used `aria-disabled` since NEO-221. The
+                    handlers refuse the click (`bulkRef`, the synchronous twin of
+                    `bulkPending`), so the control is inert without going away.
+                  */}
                   <button
                     type="button"
                     onClick={handleBulkCreate}
-                    disabled={bulkPending !== null || saving}
-                    aria-disabled={autoAddPending}
+                    aria-disabled={
+                      bulkPending !== null || saving || autoAddPending
+                        ? true
+                        : undefined
+                    }
                     // a11y (SC 2.5.8): `py-2 -my-2`, the same convention as
                     // `Stop` beside them — a 32px hit area out of a 16px
                     // `text-xs` line, given back to the layout so row 2's
                     // height is the same whether these are mounted or not.
-                    className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted disabled:opacity-50 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+                    className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                   >
                     {bulkPending === "create"
                       ? "Adding players…"
-                      : `Add remaining players as new (${remainingPlayers})`}
+                      : `${BULK_CREATE_LABEL} (${remainingPlayers})`}
                   </button>
                   <button
                     type="button"
                     onClick={handleBulkSkip}
-                    disabled={bulkPending !== null || saving}
-                    className="py-2 -my-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted disabled:opacity-50"
+                    aria-disabled={
+                      bulkPending !== null || saving ? true : undefined
+                    }
+                    className="py-2 -my-2 text-xs text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
                   >
                     {bulkPending === "skip"
                       ? "Skipping names…"
-                      : `Skip remaining names (${remainingNames})`}
+                      : `${BULK_SKIP_LABEL} (${remainingNames})`}
                   </button>
                 </div>
               )}

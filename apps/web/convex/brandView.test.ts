@@ -10,6 +10,8 @@ import { ConvexError } from "convex/values";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { setMoveTargetTooLargeRefusal } from "./brandView";
+import { MAX_YEAR_SET_ROWS } from "./setFromMarketplace";
 
 const modules = (
   import.meta as unknown as {
@@ -577,5 +579,340 @@ describe("setManufacturerSlViaAllBrands", () => {
           enabled: true,
         }),
     ).rejects.toThrow(/Admin access required/);
+  });
+});
+
+/**
+ * NEO-294 — the operator's "move this set to another brand".
+ *
+ * The undo for every automatic placement (the prefix re-home, the
+ * known-brands list, the sync's own bucketing), so what these pin is that the
+ * move is a PURE NB RE-PARENT — same `_id`, same subtree, same marketplace
+ * slots — that it refuses rather than merges when the target already has a
+ * set of that name, and that it stamps the row so no later sync moves it back.
+ */
+describe("getBrandsForYearOfSet", () => {
+  test("every brand in the set's year, Unknown first then by name, current flagged", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const topps = await seedManufacturer(t, year, "Topps");
+    const bowman = await seedManufacturer(t, year, "Bowman");
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    // A brand under a DIFFERENT year, which must never be offered.
+    const otherYear = await seedYear(t);
+    await seedManufacturer(t, otherYear, "Fleer");
+    const set = await seedSet(t, unknown, "Choice Biloxi Shuckers");
+
+    const rows = await admin(t).query(api.brandView.getBrandsForYearOfSet, {
+      setId: set,
+    });
+
+    expect(rows).toEqual([
+      { _id: unknown, value: "Unknown", isCurrent: true },
+      { _id: bowman, value: "Bowman", isCurrent: false },
+      { _id: topps, value: "Topps", isCurrent: false },
+    ]);
+  });
+
+  test("returns [] for an id that is not a set", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const topps = await seedManufacturer(t, year, "Topps");
+
+    expect(
+      await admin(t).query(api.brandView.getBrandsForYearOfSet, {
+        setId: topps,
+      }),
+    ).toEqual([]);
+  });
+
+  test("rejects a non-admin caller", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const set = await seedSet(t, unknown, "Choice Biloxi Shuckers");
+
+    await expect(
+      t
+        .withIdentity(NON_ADMIN_IDENTITY)
+        .query(api.brandView.getBrandsForYearOfSet, { setId: set }),
+    ).rejects.toThrow(/Admin access required/);
+  });
+});
+
+describe("moveSetToBrand", () => {
+  test("re-parents the set, keeps its subtree and slots, and stamps the operator flag", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const choice = await seedManufacturer(t, year, "Choice", {
+      setNamePrefix: "Choice",
+    });
+    const set = await seedSet(t, unknown, "Choice Biloxi Shuckers");
+    // A marketplace slot on the set and a variant type under it: the two
+    // things the operator is really asking about before they press the button.
+    const variantType = await t.run(async (ctx) => {
+      await ctx.db.patch(set, {
+        platformData: { bsc: { b0: "bsc-set-1" } },
+        metadata: { cardNumberPrefix: "DK-" },
+      });
+      return ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        platformData: {},
+        parentId: set,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+    });
+
+    const result = await admin(t).mutation(api.brandView.moveSetToBrand, {
+      setId: set,
+      brandId: choice,
+    });
+
+    expect(result).toEqual({ movedTo: "Choice" });
+    const [moved, oldParent, newParent, child] = await t.run(async (ctx) => [
+      await ctx.db.get(set),
+      await ctx.db.get(unknown),
+      await ctx.db.get(choice),
+      await ctx.db.get(variantType),
+    ]);
+    expect(moved!.parentId).toBe(choice);
+    // Same row, same links, same cards below it.
+    expect(moved!.value).toBe("Choice Biloxi Shuckers");
+    expect(moved!.platformData).toEqual({ bsc: { b0: "bsc-set-1" } });
+    expect(child!.parentId).toBe(set);
+    // The stamp lands beside the metadata that was already there.
+    expect(moved!.metadata).toEqual({
+      cardNumberPrefix: "DK-",
+      brandSetByOperator: true,
+    });
+    // Both children caches follow the row.
+    expect(oldParent!.children ?? []).not.toContain(set);
+    expect(newParent!.children ?? []).toContain(set);
+  });
+
+  test("moves a set back to the year's Unknown row — the one caller allowed to", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const choice = await seedManufacturer(t, year, "Choice", {
+      setNamePrefix: "Choice",
+    });
+    const set = await seedSet(t, choice, "Choice Biloxi Shuckers");
+
+    const result = await admin(t).mutation(api.brandView.moveSetToBrand, {
+      setId: set,
+      brandId: unknown,
+    });
+
+    expect(result).toEqual({ movedTo: "Unknown" });
+    const moved = await t.run(async (ctx) => ctx.db.get(set));
+    expect(moved!.parentId).toBe(unknown);
+    // Without the stamp the next sync would file it straight back under
+    // Choice by prefix, and the operator's decision would not survive.
+    expect(moved!.metadata?.brandSetByOperator).toBe(true);
+  });
+
+  test("an already-stamped set moves again — the stamp binds the sync, not the operator", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const choice = await seedManufacturer(t, year, "Choice");
+    const star = await seedManufacturer(t, year, "Star");
+    const set = await seedSet(t, unknown, "Choice Biloxi Shuckers");
+
+    await admin(t).mutation(api.brandView.moveSetToBrand, {
+      setId: set,
+      brandId: choice,
+    });
+    // Second thoughts, same hand: every AUTOMATIC re-home skips a stamped row,
+    // and this door is the one that does not.
+    const result = await admin(t).mutation(api.brandView.moveSetToBrand, {
+      setId: set,
+      brandId: star,
+    });
+
+    expect(result).toEqual({ movedTo: "Star" });
+    const moved = await t.run(async (ctx) => ctx.db.get(set));
+    expect(moved!.parentId).toBe(star);
+    expect(moved!.metadata?.brandSetByOperator).toBe(true);
+  });
+
+  test("refuses a fold-equal sibling name at the target; nothing moves, nothing merges", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const choice = await seedManufacturer(t, year, "Choice");
+    const set = await seedSet(t, unknown, "Choice Biloxi Shuckers");
+    const sitting = await seedSet(t, choice, "  choice biloxi shuckers ");
+
+    await expect(
+      admin(t).mutation(api.brandView.moveSetToBrand, {
+        setId: set,
+        brandId: choice,
+      }),
+    ).rejects.toThrow(ConvexError);
+
+    const [stillUnknown, stillThere] = await t.run(async (ctx) => [
+      await ctx.db.get(set),
+      await ctx.db.get(sitting),
+    ]);
+    expect(stillUnknown!.parentId).toBe(unknown);
+    expect(stillUnknown!.metadata?.brandSetByOperator).toBeUndefined();
+    expect(stillThere).not.toBeNull();
+  });
+
+  test("the clash refusal names the set already sitting there", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const choice = await seedManufacturer(t, year, "Choice");
+    const set = await seedSet(t, unknown, "Choice Biloxi Shuckers");
+    const sitting = await seedSet(t, choice, "choice biloxi shuckers");
+
+    const error = await admin(t)
+      .mutation(api.brandView.moveSetToBrand, { setId: set, brandId: choice })
+      .catch((e: unknown) => e);
+    expect((error as ConvexError<{ code: string }>).data).toEqual({
+      code: "SET_NAME_CLASH_AT_TARGET",
+      existingId: sitting,
+      value: "choice biloxi shuckers",
+    });
+  });
+
+  /**
+   * NEO-294 audit, condition 2. Unknown is a legal destination here and is
+   * the biggest bucket in every year, so the sibling read is bounded. Past
+   * the bound the clash check cannot be made, and a move made anyway would
+   * create the duplicate that check exists to prevent — so it FAILS CLOSED.
+   */
+  test("refuses when the target holds more sets than the clash check may read, and moves nothing", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const choice = await seedManufacturer(t, year, "Choice");
+    const set = await seedSet(t, unknown, "Choice Biloxi Shuckers");
+    // One past the bound. Inserted directly: the `children` cache plays no
+    // part in the read this test is about.
+    await t.run(async (ctx) => {
+      for (let i = 0; i <= MAX_YEAR_SET_ROWS; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "setName",
+          value: `Filler ${i}`,
+          platformData: {},
+          parentId: choice,
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+    });
+
+    const error = await admin(t)
+      .mutation(api.brandView.moveSetToBrand, { setId: set, brandId: choice })
+      .catch((e: unknown) => e);
+    expect((error as ConvexError<string>).data).toBe(
+      setMoveTargetTooLargeRefusal("Choice"),
+    );
+
+    const after = await t.run((ctx) => ctx.db.get(set));
+    expect(after!.parentId).toBe(unknown);
+    expect(after!.metadata?.brandSetByOperator).toBeUndefined();
+  });
+
+  test("refuses a brand under a different year", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const otherYear = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const elsewhere = await seedManufacturer(t, otherYear, "Choice");
+    const set = await seedSet(t, unknown, "Choice Biloxi Shuckers");
+
+    await expect(
+      admin(t).mutation(api.brandView.moveSetToBrand, {
+        setId: set,
+        brandId: elsewhere,
+      }),
+    ).rejects.toThrow(/different year/);
+    const stayed = await t.run(async (ctx) => ctx.db.get(set));
+    expect(stayed!.parentId).toBe(unknown);
+  });
+
+  test("refuses the brand the set is already under", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const choice = await seedManufacturer(t, year, "Choice");
+    const set = await seedSet(t, choice, "Choice Biloxi Shuckers");
+
+    await expect(
+      admin(t).mutation(api.brandView.moveSetToBrand, {
+        setId: set,
+        brandId: choice,
+      }),
+    ).rejects.toThrow(/already under Choice/);
+    // A refused no-op never stamps the row either.
+    const stayed = await t.run(async (ctx) => ctx.db.get(set));
+    expect(stayed!.metadata?.brandSetByOperator).toBeUndefined();
+  });
+
+  test("refuses a source that is not a set, and a target that is not a brand", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const choice = await seedManufacturer(t, year, "Choice");
+    const set = await seedSet(t, unknown, "Choice Biloxi Shuckers");
+
+    await expect(
+      admin(t).mutation(api.brandView.moveSetToBrand, {
+        setId: unknown,
+        brandId: choice,
+      }),
+    ).rejects.toThrow(/Only a set moves/);
+    await expect(
+      admin(t).mutation(api.brandView.moveSetToBrand, {
+        setId: set,
+        brandId: year,
+      }),
+    ).rejects.toThrow(/not one/);
+  });
+
+  test("rejects a non-admin caller and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const year = await seedYear(t);
+    const unknown = await seedManufacturer(t, year, "Unknown", {
+      isBrandUnknown: true,
+    });
+    const choice = await seedManufacturer(t, year, "Choice");
+    const set = await seedSet(t, unknown, "Choice Biloxi Shuckers");
+
+    await expect(
+      t.withIdentity(NON_ADMIN_IDENTITY).mutation(api.brandView.moveSetToBrand, {
+        setId: set,
+        brandId: choice,
+      }),
+    ).rejects.toThrow(/Admin access required/);
+    const stayed = await t.run(async (ctx) => ctx.db.get(set));
+    expect(stayed!.parentId).toBe(unknown);
   });
 });

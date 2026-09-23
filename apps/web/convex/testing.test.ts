@@ -680,6 +680,92 @@ describe("seedMyTestCredentials", () => {
       password: BSC_PASSWORD,
     });
   });
+
+  // NEO-294 — a failed store now says WHY. Every assertion above pins the exact
+  // array on a PASSING path and none of them gained a `reason` key, which is the
+  // other half of this contract: the field appears only on a failure, so the
+  // "callers assert the exact array" rule the EasyPost comment relies on still
+  // holds.
+  test("NEO-294 — a failed store carries saveCredentials' own reason, verbatim", async () => {
+    const t = convexTest(schema, modules);
+    stubFetch((async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      // No secret yet, so the seed goes on to the real store.
+      if (u.includes("/metadata")) return jsonResponse({ error: "Credentials not found" }, 404);
+      if (method === "POST" && u.includes("/login/bsc")) {
+        // NEO-288's shape: the marketplace answered by turning US away. This is
+        // the case the CI screenshot most needed to name — it looks identical to
+        // a bad password from the outside and is not one.
+        return jsonResponse({ error: "Authentication failed", error_class: "challenge" }, 403);
+      }
+      throw new Error(`unexpected fetch: ${method} ${u}`);
+    }) as FetchStub);
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["buysportscards"] });
+
+    expect(result.seeded).toEqual([
+      {
+        site: "buysportscards",
+        stored: false,
+        reason:
+          "BSC wouldn't let us in the door — that's on them, not your password. Nothing changed on your end. Give it another go in a bit.",
+      },
+    ]);
+    // The reason is the per-site copy, not an echo of the request: no username,
+    // password or session token may reach it (it lands in a public CI artifact).
+    const reason = result.seeded[0].reason ?? "";
+    expect(reason).not.toContain(BSC_USERNAME);
+    expect(reason).not.toContain(BSC_PASSWORD);
+  });
+
+  test("NEO-294 — a refused credential reports the credentials wording, not the site-side one", async () => {
+    const t = convexTest(schema, modules);
+    stubFetch((async (url, init) => {
+      const u = String(url);
+      const method = init?.method ?? "GET";
+      if (u.includes("/metadata")) return jsonResponse({ error: "Credentials not found" }, 404);
+      if (method === "POST" && u.includes("/login/sportlots")) {
+        // `invalid_credentials` is the one class that IS about the password:
+        // neither transient nor site-side, so saveCredentials rewrites the copy.
+        return jsonResponse(
+          { error: "Invalid credentials", error_class: "invalid_credentials" },
+          401,
+        );
+      }
+      throw new Error(`unexpected fetch: ${method} ${u}`);
+    }) as FetchStub);
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
+
+    expect(result.seeded).toEqual([
+      {
+        site: "sportlots",
+        stored: false,
+        reason:
+          "Could not sign in to SportLots. Nothing was saved — check your username and password and try again.",
+      },
+    ]);
+  });
+
+  test("NEO-294 — a SKIPPED site carries no reason (it is not a failure)", async () => {
+    process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
+    const t = convexTest(schema, modules);
+    stubFetch((async (url, init) => {
+      throw new Error(`unexpected fetch: ${init?.method ?? "GET"} ${String(url)}`);
+    }) as FetchStub);
+
+    const result = await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["sportlots"] });
+
+    expect(result.seeded).toEqual([{ site: "sportlots", stored: false, skipped: true }]);
+    delete process.env.NEONBINDER_PAUSED_PLATFORMS;
+  });
 });
 
 // NEO-121 — the scan-visibility fixture. It exists so an E2E flow can look at a

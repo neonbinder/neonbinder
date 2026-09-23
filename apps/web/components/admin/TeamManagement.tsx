@@ -7,6 +7,7 @@ import { Input, Textarea } from "@/components/primitives";
 import NeonButton from "@/components/modules/NeonButton";
 import { parseAliases } from "@/components/SetSelector/NewLeagueForm";
 import { AddLeagueDialog } from "./AddLeagueDialog";
+import { FIELD_BOX_HEIGHT } from "./AddLeagueForm";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { teamFullName, teamShortName } from "@/lib/teams/team-name";
@@ -1604,7 +1605,20 @@ export default function TeamManagement() {
           onChange={(e) => setFilter(e.target.value)}
           className="w-64"
         />
-        <div>
+        {/* Fixed width, not content width. `leagues` is its own query and
+            resolves independently of `management`, so a content-sized select
+            jumps from the width of "All leagues" to the width of the longest
+            league label the moment it lands — flipping this row across its
+            wrap boundary and shifting the entire master list under the
+            operator's cursor. Long note at the same spot in
+            LeagueManagement.tsx.
+
+            `w-72` rather than the `w-44` its siblings use because these
+            options are league LABELS (`abbreviation ?? name`), and a row
+            `findOrCreateLeague` wrote mid-import carries no abbreviation — so
+            the width to hold is "Major League Baseball" or "American Athletic
+            Conference", not "Basketball". */}
+        <div className="w-72">
           <label
             htmlFor="league-filter"
             className="block text-sm font-medium mb-1 text-slate-300"
@@ -1637,7 +1651,14 @@ export default function TeamManagement() {
             ))}
           </select>
         </div>
-        <p className="text-xs text-slate-400 pb-2">
+        {/* Floored and matched to the field-box height like its siblings
+            (LeagueManagement.tsx, PlayerManagement.tsx, FranchiseManagement.tsx)
+            rather than nudged up with a `pb-2`: centred against the field boxes
+            it stays put when the row wraps, and the `min-w` floor keeps a
+            resolving count from widening the row under the cursor. */}
+        <p
+          className={`flex items-center text-xs text-slate-400 min-w-[13rem] ${FIELD_BOX_HEIGHT}`}
+        >
           {visible.length} of {teams.length} teams
           {needingAttention > 0 && ` · ${needingAttention} need attention`}
           {management.truncated && " · list truncated"}

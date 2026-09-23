@@ -10,3 +10,6 @@
 - [Staging tables scope per operator](staging-tables-scope-per-operator.md) — Per-selectorOption staging tables must be scoped by operator (createdByUserId), because multiple admins sync the same shared set concurrently
 - [Strict returns drift is invisible to typecheck](strict-returns-drift-is-invisible-to-typecheck.md) — whole-doc `returns` copies (teams.ts, entityReviewQueue.ts) refuse at runtime, not compile; grep `_id: v.id("<table>")` before handing back
 - [Transient side-table checklist](transient-side-table-checklist.md) — a table keyed on a selectorOptions id must join the reset steps (4 toEqual blocks), the deleteSelectorOption sweep, the holdings note and the ops doc
+- [Convex has two transaction budgets](convex-two-transaction-limits.md) — a .collect() is 1 system op, not N; get this right before sizing any chunk or page
+- [Per-row cost hides in entity helpers](convex-per-row-cost-hides-in-entity-helpers.md) — findTeamsByFullName is 2-18 ops, so one player create is ~28; the call site lies
+- [OCC read set is the third budget](convex-occ-read-set-is-the-third-budget.md) — a .collect() also costs its read set; paging cuts the pager's risk and multiplies invalidations for concurrent wide readers

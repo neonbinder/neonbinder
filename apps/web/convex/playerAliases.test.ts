@@ -23,6 +23,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
+import { PLAYER_AMBIGUITY_SCAN_LIMIT } from "../lib/players/name-limits";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -415,6 +416,59 @@ describe("NEO-254: savePlayerFields writes aliases and keeps the index in step",
         selfId: father,
       }),
     ).toEqual([]);
+  });
+
+  test("the shared-alias read is a bounded WINDOW, not a collect (NEO-296)", async () => {
+    /*
+     * The alias leg used to `.collect()`. One op, yes — but one `db.get`
+     * behind every row it returned, so a key a thousand rows shared was a
+     * thousand system ops from a single alias, inside a query the alias box
+     * re-runs as the operator types. It now reads
+     * `PLAYER_AMBIGUITY_SCAN_LIMIT` rows like every other `playerAliases` read
+     * in the module, which puts `aliasesInUse` at 32 x 10 = 320 ops at worst.
+     *
+     * The window is only observable through what falls outside it, and the
+     * cheapest thing to put there is index residue — an alias row whose player
+     * is gone, which costs its `db.get` and yields no holder. A window full of
+     * residue reports nothing, exactly as a key nobody holds reports nothing:
+     * this note names ONE other holder and was never a census.
+     */
+    const shared = "Ken Griffey";
+
+    /** Residue rows first, then the one real holder behind them. */
+    const holderBehind = async (residue: number) => {
+      const t = convexTest(schema, modules);
+      const sportId = await seedSport(t);
+      await t.run(async (ctx) => {
+        for (let i = 0; i < residue; i += 1) {
+          const ghost = await ctx.db.insert("players", {
+            name: `Ghost ${i}`,
+            nameNormalized: normalizePlayerName(`Ghost ${i}`),
+            sportId,
+            lastUpdated: Date.now(),
+          });
+          await ctx.db.insert("playerAliases", {
+            playerId: ghost,
+            sportId,
+            aliasNormalized: normalizePlayerName(shared),
+          });
+          await ctx.db.delete(ghost);
+        }
+      });
+      await insertPlayerWithAliases(t, sportId, "Griffey Sr", [shared]);
+      return t
+        .withIdentity(ADMIN_IDENTITY)
+        .query(api.players.aliasesInUse, { sportId, aliases: [shared] });
+    };
+
+    // One row short of the window: the real holder is still inside it.
+    expect(await holderBehind(PLAYER_AMBIGUITY_SCAN_LIMIT - 1)).toEqual([
+      { alias: shared, name: "Griffey Sr" },
+    ]);
+
+    // One more row of residue pushes the holder past the window, and the note
+    // goes quiet rather than the read going unbounded.
+    expect(await holderBehind(PLAYER_AMBIGUITY_SCAN_LIMIT)).toEqual([]);
   });
 
   test("re-saving a row's own aliases is not a collision with itself", async () => {

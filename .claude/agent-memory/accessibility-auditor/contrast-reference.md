@@ -229,3 +229,10 @@ renders. No further investigation needed; this is settled.
 (`PAUSE_NOTICE_COPY.pane(...)`, amber-300 on the dialog's `bg-gray-900` shell).
 Confirms the in-code comment claiming this clears 1.4.3; no need to
 re-derive it again for this exact pairing.
+
+## `#FFB020` (custom amber) on `bg-gray-900` (#101828) — measured (NEO-294)
+
+~9.7:1 — comfortable pass. Used for `SyncReviewModal`'s standing delete-cap
+notice (`text-[#FFB020]` on the review panel's `bg-gray-900` shell). Not a
+Tailwind token (close to but not `amber-400` #ffb900); computed directly
+since it wasn't in this table yet.

@@ -759,7 +759,7 @@ describe("NEO-254: 'Add All Remaining as New' will not answer a choice for you",
       { selectorOptionId, batchId: "batch-1" },
     );
 
-    expect(decided).toBe(1);
+    expect(decided.decided).toBe(1);
     expect((await t.run(async (ctx) => ctx.db.get(plain)))!.decision).toEqual({
       action: "create",
     });
@@ -787,7 +787,7 @@ describe("NEO-254: 'Add All Remaining as New' will not answer a choice for you",
       { selectorOptionId, batchId: "batch-1" },
     );
 
-    expect(decided).toBe(1);
+    expect(decided.decided).toBe(1);
     expect((await t.run(async (ctx) => ctx.db.get(ambiguous)))!.decision).toEqual({
       action: "skip",
     });
@@ -840,7 +840,7 @@ describe("NEO-254: bulk create re-reads ambiguity rather than trusting the row",
       { selectorOptionId, batchId: "batch-1" },
     );
 
-    expect(decided).toBe(0);
+    expect(decided.decided).toBe(0);
     expect((await t.run(async (ctx) => ctx.db.get(stranded)))!.decision).toBeUndefined();
   });
 
@@ -898,7 +898,7 @@ describe("NEO-254: bulk create re-reads ambiguity rather than trusting the row",
     // question gets answered — and that, not the NEO-254 ambiguity guard, is
     // what held it back. The guard reads `players` by normalized name, so a
     // team row carrying a name two PLAYERS share must never trip it.
-    expect(decided).toBe(1);
+    expect(decided.decided).toBe(1);
     expect((await t.run(async (ctx) => ctx.db.get(playerRow)))!.decision).toEqual({
       action: "create",
     });

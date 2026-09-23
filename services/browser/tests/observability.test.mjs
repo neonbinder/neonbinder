@@ -455,3 +455,59 @@ describe("loginFailureOutcome — a detected challenge page forces error_class c
     assert.deepEqual(loginFailureOutcome({ credentialRejected: true }, "x"), { status: 422, errorClass: "invalid_credentials" });
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-294: making the secret write idempotent must not move any classification
+// ---------------------------------------------------------------------------
+
+/**
+ * The NEO-294 fix removes one FALSE 502 — a successful marketplace login that
+ * lost a Secret Manager create race and was reported as an integration fault.
+ * It must remove exactly that and nothing else. These pin the two edges the
+ * fix sits between, so a future attempt to "also stop 502-ing on write
+ * failures" cannot quietly start filing real faults as caller errors, or real
+ * rejections as outages.
+ */
+describe("loginFailureOutcome — unmoved by the NEO-294 idempotence fix", () => {
+  it("a genuine credential rejection is still 422 / invalid_credentials", () => {
+    // BSC's caller-facing string after a B2C password refusal.
+    assert.deepEqual(
+      loginFailureOutcome({ credentialRejected: true }, "Authentication failed"),
+      { status: 422, errorClass: "invalid_credentials" },
+    );
+    // SportLots' shape, where the rejection is decided by the adapter flag
+    // rather than the text.
+    assert.deepEqual(
+      loginFailureOutcome(
+        { credentialRejected: true, diagnostic: { challengeDetected: false } },
+        "SportLots login validation failed. Cookies did not authenticate.",
+      ),
+      { status: 422, errorClass: "invalid_credentials" },
+    );
+  });
+
+  it("a genuine secret-store fault is still 502 / other, never 422", () => {
+    // NEO-294: the adapter's catch no longer interpolates the caught error at
+    // all — the caller-facing string is this fixed one, whatever failed. The
+    // property being pinned is unchanged: a write fault we could not attribute
+    // to the seller must default to 502 and page.
+    const raw = "Failed to login to Sportlots";
+    const out = loginFailureOutcome({}, raw);
+    assert.deepEqual(out, { status: 502, errorClass: "other" });
+    assert.notEqual(out.status, 422, "our fault must never be filed as the seller's");
+    // The pre-NEO-294 shape, kept so this still covers the interpolated form
+    // if anything ever reintroduces one.
+    assert.deepEqual(
+      loginFailureOutcome({}, "Failed to login to SportLots: Error: Failed to update credentials"),
+      { status: 502, errorClass: "other" },
+    );
+  });
+
+  it("the write-path string does not trip the invalid_credentials rule", () => {
+    // "Failed to update credentials" contains "credential"; the rule also
+    // requires "invalid", and this asserts that pairing stays intact — a
+    // looser rule would exclude a real outage from paging.
+    assert.equal(classifyBrowserError("Failed to update credentials"), "other");
+    assert.equal(classifyBrowserError("Failed to retrieve credentials"), "other");
+  });
+});

@@ -277,6 +277,50 @@ export function isAllBrandsViewName(value: string): boolean {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
+// NEO-294 — the year's Unknown row does not rename
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Jason, 2026-09-22: "Unknown should not be renamable."
+ *
+ * Beside the All Brands refusal above because it is the same KIND of rule —
+ * NB reserving a word in NB's own column — but the two are reserved from
+ * opposite directions, and the difference is worth stating:
+ *
+ *   • "All Brands" is refused as a NAME, whatever row is asking for it, which
+ *     is why it lives in `checkCustomSelectorValue` (the create door) as well
+ *     as in `planValueRename` (every rename door).
+ *   • "Unknown" is refused as a ROW: the name is deliberately NOT reserved
+ *     (typing it in the custom-entry form selects the existing row through
+ *     the per-parent duplicate return), and what may not change is the value
+ *     of the row carrying `metadata.isBrandUnknown`. So the guard reads the
+ *     row's NB ROLE FLAG, never its name — the same rule every other
+ *     brand-unknown consumer follows (`brandView`, `brandRehome`,
+ *     `findAncestorLabels`), and the reason a legacy row still named
+ *     "All Brands" is caught by it too.
+ *
+ * WHY the row is frozen: every year's bucket is found by the flag and shown
+ * under one word, so a year whose bucket says "Unknown" and a year whose
+ * bucket says something an operator typed are the same bucket wearing two
+ * names — and NEO-294's `ensureBrandRowForName` has to refuse a year whose
+ * flagged row wears a known brand's name, which is a state only a rename
+ * could produce.
+ *
+ * The ONE exception is `backfillBrandPrefixAndUnknownName`, which renames the
+ * legacy "All Brands"-named flagged rows to "Unknown". That is NB tidying its
+ * own word, not an operator door, so it passes `allowBrandUnknownRename`.
+ */
+export const BRAND_UNKNOWN_RENAME_REFUSAL =
+  "Unknown is where sets with no known brand wait — it can't be renamed.";
+
+/** True for the row that holds a year's sets whose brand NB has not identified. */
+export function isBrandUnknownRow(
+  metadata: { isBrandUnknown?: boolean } | null | undefined,
+): boolean {
+  return metadata?.isBrandUnknown === true;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // NEO-237 — the ONE brand-prefix matcher
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -894,9 +938,24 @@ export function planValueRename(args: {
     value: string;
     features?: Record<string, string>;
     sportConfig?: unknown;
+    /**
+     * NEO-294 — REQUIRED, and required on purpose. The brand-unknown refusal
+     * below can only fire if the caller hands over the row's NB role flags,
+     * and an optional field is how a fourth call site would come to bypass a
+     * guard that three of them honour. `undefined` is a legitimate answer for
+     * a row that carries no metadata; forgetting to ask is not.
+     */
+    metadata: { isBrandUnknown?: boolean } | null | undefined;
   };
   nextValue: string;
   siblings: ReadonlyArray<{ _id: string; value: string }>;
+  /**
+   * NEO-294 — the internal escape hatch for the ONE rename that must still
+   * land on a flagged row: `backfillBrandPrefixAndUnknownName` renaming the
+   * legacy "All Brands"-named bucket to "Unknown". Never set from a path an
+   * operator or a marketplace label can reach.
+   */
+  allowBrandUnknownRename?: boolean;
 }): RenamePlan {
   const { row, siblings } = args;
 
@@ -911,6 +970,18 @@ export function planValueRename(args: {
   // accepted through `applySelectorSyncSuggestions` is a rename too.
   if (row.level === "manufacturer" && isAllBrandsViewName(trimmed)) {
     return { ok: false, reason: "invalid", message: ALL_BRANDS_VIEW_REFUSAL };
+  }
+
+  // NEO-294 — the year's Unknown row is frozen, whatever it is being renamed
+  // TO. Checked before the no-op branch below so "rename Unknown to Unknown"
+  // is refused rather than quietly reported as unchanged: the answer to
+  // "can I rename this row" must not depend on what was typed.
+  if (isBrandUnknownRow(row.metadata) && args.allowBrandUnknownRename !== true) {
+    return {
+      ok: false,
+      reason: "invalid",
+      message: BRAND_UNKNOWN_RENAME_REFUSAL,
+    };
   }
 
   const key = selectorValueKey(trimmed);
@@ -985,6 +1056,34 @@ export type BrandRouteManufacturer<TId extends string = string> = {
 export type BscSetHolder<TId extends string = string> = {
   rowId: TId;
   parentId: TId;
+  /**
+   * The row's OWN NB display value — the only name allowed to decide where
+   * this row goes (product invariants 3 and 4). Required, not optional: a
+   * holder without it would silently fall back to the marketplace's name,
+   * which is the bug this field exists to close. See `routeBscSets`.
+   */
+  value: string;
+  /**
+   * NEO-294 — `metadata.brandSetByOperator`: an operator put this row where
+   * it is. Read only to REFUSE a move; nothing else about the row changes.
+   */
+  setByOperator?: boolean;
+};
+
+/**
+ * NEO-294 — a brand from the known list that this year does not have yet,
+ * and the sets that asked for it.
+ *
+ * DATA, not an action: `routeBscSets` is pure and cannot create a row, so it
+ * reports the brand NAME it wants and the caller mints it (`ensureBrandRow`)
+ * before routing runs again with that row in hand. The name is an NB
+ * constant from `knownBrands.ts`, never a marketplace value.
+ */
+export type KnownBrandRequest = {
+  /** The entry from `KNOWN_BRANDS`, exactly as spelled there. */
+  brand: string;
+  /** The BSC sets that matched it — reported so the caller can say how many. */
+  sets: MarketplaceSetEntry[];
 };
 
 export type BscSetRoutePlan<TId extends string = string> = {
@@ -998,6 +1097,14 @@ export type BscSetRoutePlan<TId extends string = string> = {
    * than inserting a second copy. Only ever Unknown → brand.
    */
   moves: Array<{ rowId: TId; fromId: TId; toId: TId }>;
+  /**
+   * NEO-294 — the known brands this year would need for the sets that
+   * otherwise land in Unknown, deduped and in first-seen order. Empty unless
+   * a `matchKnownBrand` was passed in. The sets counted here are ALSO in
+   * `unknown`: until the brand row exists there is nowhere else to put them,
+   * and the caller re-routes once it does.
+   */
+  knownBrandRequests: KnownBrandRequest[];
 };
 
 /**
@@ -1013,9 +1120,10 @@ export type BscSetRoutePlan<TId extends string = string> = {
  *          operator's placement, or a prior sync's, is the linkage; the name
  *          is not consulted. Several holders under brands (NEO-137 M:1) →
  *          the first brand holder's bucket, and nothing moves.
- *        • under Unknown, and the label prefix-matches a brand → that row is
- *          re-homed to the brand (`moves`) and the set goes in the brand's
- *          bucket. Under Unknown with no matching brand → Unknown, in place.
+ *        • under Unknown, and THE ROW'S OWN NB NAME prefix-matches a brand →
+ *          that row is re-homed to the brand (`moves`) and the set goes in
+ *          the brand's bucket. Under Unknown with no matching brand →
+ *          Unknown, in place.
  *   2. no holder → the LONGEST matching prefix wins ("Upper Deck" before
  *      "Upper"), else Unknown.
  *
@@ -1023,12 +1131,72 @@ export type BscSetRoutePlan<TId extends string = string> = {
  * had filed under a brand — or that a brand's creation had re-homed — was
  * re-inserted under whichever bucket the prefix chose. This is the fix.
  *
+ * WHOSE NAME DECIDES — the rule that keeps rung 1 legal (NEO-294 audit,
+ * condition 1). `set.value` is the MARKETPLACE's name for the set;
+ * `holder.value` is the NB row's own. They are used for two different jobs
+ * and must never be swapped:
+ *
+ *   • A SET NB ALREADY HAS A ROW FOR (rung 1) is routed by the HOLDER's
+ *     value — every `brandByPrefix` and `matchKnownBrand` on that rung reads
+ *     `holder.value`. NB owns the row; a marketplace value may not move it
+ *     after creation (product invariants 3 and 4). The door this closes:
+ *     an operator renames a set under Unknown from "Choice Biloxi Shuckers"
+ *     to "Biloxi Shuckers Team Set" (ordinary set rows are renameable —
+ *     NEO-211), the marketplace keeps returning its old name, and routing on
+ *     `set.value` would mint "Choice" and re-parent the operator's row on
+ *     the strength of a name NB no longer uses. Upstream renames are
+ *     operator-reviewed suggestions, never silent writes.
+ *   • A SET NB HAS NO ROW FOR (rung 2) is routed by `set.value`, because
+ *     there is no NB name yet: this is creation-time derivation from
+ *     marketplace data, which invariant 2(a) allows and which is the whole
+ *     point of the known-brands list.
+ *
+ *   Each Unknown holder is judged on ITS OWN name, so a second row holding
+ *   the same BSC id is never moved on a sibling's name either. Do NOT
+ *   "simplify" rung 1 back to `set.value` — it type-checks, the tests that
+ *   name a renamed row are the only thing that catches it, and the failure
+ *   is silent data movement.
+ *
+ *   KNOWN, AND DELIBERATE: with SEVERAL Unknown holders of one BSC id whose
+ *   names match DIFFERENT brands, each holder is re-homed to the brand its
+ *   own name matched, but the SET is bucketed under `target` — the FIRST
+ *   holder's brand. So the set is stored beside one of them while a sibling
+ *   row has moved to another brand. The alternative is worse: one BSC set
+ *   list entry is one set, and bucketing it under several brands would store
+ *   a copy of it under each. Every row keeps its id, its cards and its
+ *   linkage either way; what is arbitrary is only which brand's bucket the
+ *   incoming id/label lands in. Do not "fix" this by changing behaviour
+ *   without asking — an M:1 fan-out across brands is a data shape an
+ *   operator has to see, not one a router should quietly pick a winner for.
+ *
+ * NEO-294 adds two more rules AROUND that ladder, both on the Unknown rung:
+ *
+ *   • AN OPERATOR'S PLACEMENT IS FINAL. A holder carrying `setByOperator`
+ *     never moves and its set is bucketed where the row already is — under
+ *     Unknown, in place. It is checked BEFORE the prefix, so the operator
+ *     outranks a brand's prefix and the known list alike. Bucketing it
+ *     anywhere else would insert a second copy beside the row it named.
+ *   • THE KNOWN LIST IS THE LAST WORD BEFORE UNKNOWN. A set no NB brand
+ *     claims is offered to `matchKnownBrand` — by the holder's name on rung
+ *     1 and by the marketplace's on rung 2, per "whose name decides" above.
+ *     A hit is reported in `knownBrandRequests` and the set ALSO stays in
+ *     `unknown` for this pass, because the brand row does not exist yet.
+ *     The caller mints the requested brands and calls this function again
+ *     with them in `manufacturers`, where rung 2 files the sets and the
+ *     Unknown holders become ordinary prefix moves. One function decides
+ *     placement, once.
+ *
  * Pure: it reads rows and returns a plan; the action re-homes and stores.
+ * `matchKnownBrand` is injected rather than imported so this module stays
+ * free of `knownBrands.ts` (which imports the matcher from here) and so a
+ * test can route against a list of its own.
  */
 export function routeBscSets<TId extends string>(args: {
   sets: readonly MarketplaceSetEntry[];
   manufacturers: readonly BrandRouteManufacturer<TId>[];
   holdersByBscId: ReadonlyMap<string, readonly BscSetHolder<TId>[]>;
+  /** NEO-294 — `knownBrands.matchKnownBrand`; absent means "no known list". */
+  matchKnownBrand?: (setName: string) => string | undefined;
 }): BscSetRoutePlan<TId> {
   const unknownIds = new Set<TId>();
   // Prefix candidates, longest folded prefix first, so the first match is the
@@ -1058,6 +1226,16 @@ export function routeBscSets<TId extends string>(args: {
     else buckets.set(id, [set]);
   };
 
+  // NEO-294 — requested known brands, deduped on the folded name so two
+  // spellings of one entry could never ask for two rows. First-seen order.
+  const requests = new Map<string, KnownBrandRequest>();
+  const requestKnownBrand = (brand: string, set: MarketplaceSetEntry) => {
+    const key = selectorValueKey(brand);
+    const existing = requests.get(key);
+    if (existing) existing.sets.push(set);
+    else requests.set(key, { brand, sets: [set] });
+  };
+
   for (const set of args.sets) {
     const holders = args.holdersByBscId.get(set.platformValue) ?? [];
     const brandHolder = holders.find((h) => !unknownIds.has(h.parentId));
@@ -1065,26 +1243,53 @@ export function routeBscSets<TId extends string>(args: {
       bucket(brandHolder.parentId, set);
       continue;
     }
-    const target = brandByPrefix(set.value);
     if (holders.length > 0) {
       // Every holder sits under Unknown.
-      if (target === undefined) {
+      //
+      // NEO-294 — unless an operator put one of them there, in which case
+      // this set is theirs and neither the prefix nor the known list gets a
+      // vote. The row stays; the set is bucketed nowhere but Unknown.
+      if (holders.some((h) => h.setByOperator === true)) {
         unknown.push(set);
         continue;
       }
+      // NEO-294 condition 1 — NB already has a row for this set, so the name
+      // that decides where the row goes is the ROW'S, not the marketplace's
+      // (see "whose name decides" above). Each holder is judged on its own
+      // value; the set is bucketed under the first brand any of them names.
+      let target: TId | undefined;
       for (const h of holders) {
+        const to = brandByPrefix(h.value);
+        if (to === undefined) continue;
+        if (target === undefined) target = to;
         if (moved.has(h.rowId)) continue;
         moved.add(h.rowId);
-        moves.push({ rowId: h.rowId, fromId: h.parentId, toId: target });
+        moves.push({ rowId: h.rowId, fromId: h.parentId, toId: to });
+      }
+      if (target === undefined) {
+        // No holder's own name matches an existing brand; the known list is
+        // asked the same question with the same NB names.
+        for (const h of holders) {
+          const known = args.matchKnownBrand?.(h.value);
+          if (known !== undefined) requestKnownBrand(known, set);
+        }
+        unknown.push(set);
+        continue;
       }
       bucket(target, set);
       continue;
     }
-    if (target === undefined) unknown.push(set);
-    else bucket(target, set);
+    const target = brandByPrefix(set.value);
+    if (target !== undefined) {
+      bucket(target, set);
+      continue;
+    }
+    const known = args.matchKnownBrand?.(set.value);
+    if (known !== undefined) requestKnownBrand(known, set);
+    unknown.push(set);
   }
 
-  return { buckets, unknown, moves };
+  return { buckets, unknown, moves, knownBrandRequests: [...requests.values()] };
 }
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -6,6 +6,7 @@ import {
   internalMutation,
   internalQuery,
   ActionCtx,
+  MutationCtx,
   QueryCtx,
 } from "./_generated/server";
 import type { FunctionReference } from "convex/server";
@@ -60,6 +61,10 @@ import { safeMarketplaceText } from "../lib/marketplace/safe-text";
 // each entry point rather than trusted from the adapter. (`MAX_CARD_PLAYERS` /
 // `MAX_CARD_TEAMS` are already imported below.)
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
+import {
+  CROSS_LISTING_LINKS_PER_CALL,
+  MAX_OPERATOR_DELETE_IDS,
+} from "../lib/cards/commit-limits";
 // NEO-199: the SAME comparison CardPairingModal uses on a hand-linked pair.
 // An auto-matched disagreement and a manual one have to be the same thing —
 // see the note in lib/cards/card-name.ts.
@@ -99,6 +104,9 @@ import {
   type IncomingItem,
   // NEO-237 — the reserved view name, refused at the sync insert door too.
   isAllBrandsViewName,
+  // NEO-294 — the year's Unknown row does not rename, at any door.
+  isBrandUnknownRow,
+  BRAND_UNKNOWN_RENAME_REFUSAL,
   // NEO-237 — the one brand-prefix matcher and the two pure routers behind
   // Sync Sets. The BSC phase files by id first and prefix second; the
   // SportLots phase classifies a brand's list as covered / variant / new.
@@ -115,9 +123,11 @@ import {
 // inside this boundary and nowhere user-facing (see the module header).
 import { SL_ALL_BRANDS_BRAND_ID, isSlAllBrandsBrandId } from "./slBrandAxis";
 // NEO-237 — the pure NB re-home, Unknown → brand, shared by the three doors.
+import { matchKnownBrand } from "./knownBrands";
 import {
   countNoun,
   rehomedNotice,
+  ensureBrandRowForName,
   rehomeSetRowsToBrand,
   rehomeSetsFromBrandUnknown,
 } from "./brandRehome";
@@ -267,6 +277,7 @@ import {
   slotForId,
   slotIds,
   slotLabel,
+  type PlatformSide,
 } from "./platformSlots";
 
 // The wire still speaks marketplace IDs — clients know nothing about slots.
@@ -1062,16 +1073,61 @@ function hasMarketplaceRef(card: {
 }
 
 /**
+ * NEO-294 — how many candidate names one `findSkippedEntityNames` call may be
+ * handed.
+ *
+ * ## The arithmetic
+ *
+ * The budget counts one operation per CALL, not per row — a `.collect()` of a
+ * thousand rows is one operation. What costs here is that the handler's body is
+ * a call PER CANDIDATE: one `withIndex(...).first()` against
+ * `entityReviewSkips.by_selector_option_and_kind_and_name` for each name. So
+ * **~1 system operation per name**, and that is the whole of the query's work.
+ *
+ * Sized against the house calibration in `CARDS_PER_COMMIT_CHUNK` below
+ * (NEO-189: ~900 operations comfortable, ~1,800 straining, ~4,000 failing):
+ * 300 names is ~300 operations, a third of the comfortable figure. The
+ * headroom is deliberate — this query is one of several a single
+ * `resolveChecklistEntities` run makes, and the list it walks grows with the
+ * checklist rather than with the review.
+ *
+ * ## Why it is a REFUSAL and not a silent truncation
+ *
+ * The old comment here claimed "batches are at most a few hundred names,
+ * comfortably inside a query's read budget". It was wrong twice over. The
+ * candidate list is not the *unknown* names, it is EVERY distinct player and
+ * team name the fetch observed — a first-time 2024 Topps Chrome sync hands it
+ * ~750 — and a few hundred was not comfortable: CI run 35771938308's seed job
+ * died here with `Your request timed out performing too many system
+ * operations.`, and the operator's version of that is a bare `Server Error` at
+ * the Confirm New Players step with the wizard never opening at all.
+ *
+ * Its one caller now walks the list in slices of this size and merges the
+ * results (`resolveUnknownsAndStartBatch`), which an ACTION can do because it
+ * is not a transaction: each slice is its own query, and the union of every
+ * slice is exactly what one unbounded call used to return. So nothing is
+ * truncated and nothing is approximated — the bound is on the transaction, not
+ * on the answer. A caller that ignores the slicing is refused rather than
+ * quietly served a short answer, the same way `createSetsFromSlRoots` refuses
+ * an over-long root list: a missing skip is invisible, and would put a name the
+ * operator has already settled back in front of them on every future fetch.
+ */
+export const SKIPPED_NAME_LOOKUP_PAGE = 300;
+
+/**
  * NEO-212 — which of these candidate names has an operator already ruled "not
  * a person / not a team" for this set?
  *
  * Lives here rather than in entityReviewQueue.ts because its only caller is
  * `resolveUnknownsAndStartBatch` below, and it is shaped for that caller: one
- * round trip carrying every candidate, rather than the N `ctx.runQuery` hops
- * an action would otherwise pay to ask the same question name by name. Inside,
- * it is still one indexed point lookup per candidate against
- * `by_selector_option_and_kind_and_name` — batches are at most a few hundred
- * names, comfortably inside a query's read budget.
+ * round trip carrying a BOUNDED SLICE of the candidates, rather than the N
+ * `ctx.runQuery` hops an action would otherwise pay to ask the same question
+ * name by name. Inside, it is one indexed point lookup per candidate against
+ * `by_selector_option_and_kind_and_name`.
+ *
+ * NEO-294 — at most `SKIPPED_NAME_LOOKUP_PAGE` candidates per call, refused
+ * above that; see the arithmetic on the constant and the slicing loop in
+ * `resolveUnknownsAndStartBatch`.
  *
  * Takes NORMALIZED names, because that is what the index stores and what the
  * caller has already computed to dedupe its own candidates. Returns the subset
@@ -1090,6 +1146,12 @@ export const findSkippedEntityNames = internalQuery({
   },
   returns: v.array(v.string()),
   handler: async (ctx, args): Promise<string[]> => {
+    if (args.candidates.length > SKIPPED_NAME_LOOKUP_PAGE) {
+      throw new Error(
+        `findSkippedEntityNames: ${args.candidates.length} candidates exceeds the ` +
+          `${SKIPPED_NAME_LOOKUP_PAGE} per call — slice them`,
+      );
+    }
     const skipped: string[] = [];
     for (const candidate of args.candidates) {
       const row = await ctx.db
@@ -1232,6 +1294,17 @@ async function resolveUnknownsAndStartBatch(
 }> {
   const unknownPlayers: string[] = [];
   const unknownTeams: string[] = [];
+  /**
+   * NEO-296 — the unknown player names this gate proved match NOTHING.
+   *
+   * `resolveNameForReview` below already reads the two indexes
+   * `entityReviewQueue.startBatch` would read again per name, and hands back
+   * `matchCount`. Zero means there is no existing row for the wizard to offer,
+   * so passing the fact along saves that mutation 2 operations per name —
+   * ~600 on a 300-player Confirm, against its 800-operation budget. See
+   * `startBatch`'s `playersWithNoExistingMatch` for what a stale entry costs.
+   */
+  const playersWithNoExistingMatch: string[] = [];
   let batchId: string | undefined;
 
   const playerByNorm = new Map<string, string>();
@@ -1282,21 +1355,52 @@ async function resolveUnknownsAndStartBatch(
   //
   // Scoped to THIS selectorOption, matching the table's per-set key: a name
   // that is noise on one checklist is very often a real player on the next.
-  const skippedKeys = new Set(
-    await ctx.runQuery(internal.selectorOptions.findSkippedEntityNames, {
-      selectorOptionId: args.selectorOptionId,
-      candidates: [
-        ...Array.from(playerByNorm.keys(), (nameNormalized) => ({
-          kind: "player" as const,
-          nameNormalized,
-        })),
-        ...Array.from(teamByNorm.keys(), (nameNormalized) => ({
-          kind: "team" as const,
-          nameNormalized,
-        })),
-      ],
-    }),
-  );
+  //
+  // ── NEO-294: asked in BOUNDED SLICES, because one query is one transaction ─
+  //
+  // This list is every distinct player and team name the fetch observed, not
+  // just the unknown ones, so a real first-time sync hands it ~750 (2024 Topps
+  // Chrome). The budget counts one operation per CALL, and that query makes a
+  // call PER NAME, so ~750 names is ~750 operations in one transaction — past
+  // what is comfortable. CI run 35771938308's seed job died here — the
+  // operator's version being a bare `Server Error` at Confirm New Players,
+  // before the wizard opens, with no way forward at all.
+  //
+  // This is the EASY instance of NEO-296's shape and the reason is worth
+  // stating: `resolveUnknownsAndStartBatch` runs inside an ACTION
+  // (`resolveChecklistEntities` / `fetchCardChecklist`), and an action is not
+  // a transaction. Each `ctx.runQuery` below is its own transaction with its
+  // own budget, so slicing the list costs a few extra round trips and buys a
+  // complete answer — no cursor, no resumption, nothing partial to report.
+  // The union of every slice IS what one unbounded call used to return, so
+  // NOTHING is truncated here; the loop runs to the end of the list or throws.
+  //
+  // (The two HARD instances — a mutation that must page and resume — are
+  // `entityReviewQueue.decideAllRemaining` and `commitCardChecklistFinalize`.)
+  const skipCandidates = [
+    ...Array.from(playerByNorm.keys(), (nameNormalized) => ({
+      kind: "player" as const,
+      nameNormalized,
+    })),
+    ...Array.from(teamByNorm.keys(), (nameNormalized) => ({
+      kind: "team" as const,
+      nameNormalized,
+    })),
+  ];
+  const skippedKeys = new Set<string>();
+  for (
+    let start = 0;
+    start < skipCandidates.length;
+    start += SKIPPED_NAME_LOOKUP_PAGE
+  ) {
+    const slice = skipCandidates.slice(start, start + SKIPPED_NAME_LOOKUP_PAGE);
+    for (const key of await ctx.runQuery(
+      internal.selectorOptions.findSkippedEntityNames,
+      { selectorOptionId: args.selectorOptionId, candidates: slice },
+    )) {
+      skippedKeys.add(key);
+    }
+  }
 
   /**
    * NEO-254 — the year of the set these names were read off, resolved ONCE.
@@ -1359,6 +1463,11 @@ async function resolveUnknownsAndStartBatch(
     // person once the year is taken into account.
     if (!resolved.playerId) {
       unknownPlayers.push(name);
+      // NEO-296 — and whether it matched nothing at all, which is the common
+      // case on a first sync and is what lets `startBatch` skip its own
+      // lookup. `matchCount` is the count BEFORE any year narrowing, so zero
+      // here means zero rows of that name exist, full stop.
+      if (resolved.matchCount === 0) playersWithNoExistingMatch.push(name);
     } else if (resolved.narrowedByCardYear) {
       /*
        * NEO-254 — an auto-link the OPERATOR never saw.
@@ -1446,6 +1555,11 @@ async function resolveUnknownsAndStartBatch(
       sportId: args.sportId,
       playerNames: unknownPlayers,
       teamNames: unknownTeams,
+      // NEO-296 — omitted when empty so the wire shape is unchanged for a
+      // batch where every unknown name has a same-name row already.
+      ...(playersWithNoExistingMatch.length > 0
+        ? { playersWithNoExistingMatch }
+        : {}),
     });
   }
 
@@ -1649,6 +1763,190 @@ export const getCardChecklist = query({
  * fetch did not return the id. Every removal is reported back so an admin sees
  * it instead of discovering it later.
  */
+/**
+ * NEO-296 — how many WRITES one `storeSelectorOptions` transaction may make.
+ *
+ * ## The failure this exists to stop
+ *
+ * Convex counts one system operation per CALL — a `db.get`, an indexed read
+ * (`.first()` / `.unique()` / `.collect()` / `.take()`), an `insert`, a
+ * `patch`. A `.collect()` returning 2,000 rows is ONE of those. So what kills
+ * this transaction is never the sibling snapshot; it is the per-item loop.
+ *
+ * `MAX_SYNC_ITEMS` (2,000, `selectorSyncStore.ts`) was sized as "generous
+ * headroom" for the MATCHER'S CPU, with no reference to what an item costs in
+ * operations. Counted, one call spends:
+ *
+ *   1   — the parent `db.get` for the features / teamIds copy-down
+ *   1   — the sibling `.collect()` (one op, whatever it returns)
+ *   ≤7  — `loadResolvabilityChain`, one `db.get` per ancestor level
+ *   1   — per item that lands as a fresh INSERT
+ *   1   — per row the write pass patches, however many passes touched it
+ *   2   — the parent `db.get` + `patch` for the `children` union
+ *   ≤50 — `annotateHasCards`, one indexed read per unlink notice
+ *
+ * At the 2,000-item cap that is 2,000 inserts plus up to 2,000 patches plus
+ * ~60 fixed — past the ~4,000 that fails outright (house calibration on
+ * `CARDS_PER_COMMIT_CHUNK`: ~900 comfortable, ~1,800 straining, ~4,000
+ * failing). The cap sat beyond the failing line, and the year-level set sync
+ * is exactly the caller that reaches it: SportLots listed 2,563 sets for one
+ * year.
+ *
+ * ## Why a WRITE budget rather than a smaller item cap
+ *
+ * Identical to `RECONCILE_STORE_WRITE_BUDGET`, and deliberately the same
+ * number so the two stores cannot drift: an item that matches a row and
+ * changes nothing costs ZERO operations (NEO-85's write-if-changed guard), and
+ * on a re-run every item the previous call stored is exactly that. Counting
+ * WRITES is what makes the truncation **resumable by replay** — the caller
+ * re-sends the identical list, the stored prefix re-matches by id for free,
+ * and the call walks on into the tail. An item cap would make the second call
+ * re-spend its whole budget on the prefix and never advance. Nothing is
+ * applied twice either way: the store is additive and id-keyed, and each page
+ * commits as its own transaction.
+ *
+ * 800 writes plus the ~60 fixed operations lands just under the ~900 line.
+ *
+ * The UNLINK pass runs AFTER the item loop, so its patches land in the
+ * reported `writeOps` but are not part of the budget CHECK — it is never
+ * truncated, for the reason its sibling gives: it is evidence-driven (a
+ * covered side, plus a primary id the fetch did not return), its evidence is
+ * the WHOLE payload rather than the items this call reached, and dropping a
+ * detachment silently is the one thing invariant 5 forbids. It is also small
+ * by construction — a detachment per row upstream stopped listing — which is
+ * what makes leaving it outside the check safe rather than merely convenient.
+ *
+ * Exported so a test can build a deliberately multi-page batch without
+ * hard-coding the number.
+ */
+export const SELECTOR_STORE_WRITE_BUDGET = 800;
+
+/**
+ * NEO-296 — how many times a caller replays the same store payload before it
+ * gives up and says so.
+ *
+ * A runaway guard, not a budget. `MAX_SYNC_ITEMS` (2,000) items is at most
+ * three budget-full pages, and a page that writes nothing ends the walk, so a
+ * real sync finishes in one or two. Reaching 8 means a page is not advancing —
+ * a bug, and one that must not be reported to the operator as a finished sync.
+ */
+export const SELECTOR_STORE_MAX_PAGES = 8;
+
+/** What one `storeSelectorOptions` call reports; see its `returns` validator. */
+type StoreSelectorOptionsResult = {
+  success: boolean;
+  message: string;
+  optionsCount: number;
+  unlinked: UnlinkedEntry[];
+  unlinkedTotal: number;
+  relinked: UnlinkedEntry[];
+  relinkedTotal: number;
+  linkedFromPlaceholder: number;
+  returnedIdsTruncatedSides: PlatformSide[];
+  reservedNamesSkipped: number;
+  itemsProcessed: number;
+  hasMore: number | boolean;
+  writeOps: number;
+};
+
+/**
+ * NEO-296 — call `storeSelectorOptions` until it has stored the whole list.
+ *
+ * The store stops on a WRITE budget, not an item count, so a caller cannot
+ * pre-slice its way to a full store: how many items fit depends on how many of
+ * them turn out to be changes. What it CAN do is replay. Re-sending the
+ * identical payload is free for the prefix already stored — those items match
+ * by id and change nothing, so they spend no budget — and the call walks on
+ * into the tail. See `SELECTOR_STORE_WRITE_BUDGET`.
+ *
+ * Both callers are ACTIONS, which is why this is a loop and not an operator
+ * notice: an action can simply finish the job, and a truncation the operator
+ * has to act on is worse than one nobody ever sees. The reconciler's store has
+ * the same budget and CLIENT callers, and they loop too — see
+ * `components/SetSelector/store-reconciled-until-done.ts`, which mirrors this
+ * function including its merge rule.
+ *
+ * ## Merging, which is not "add everything up"
+ *
+ * Each page recomputes some numbers over every item it reached and reports
+ * others as events that happened in that transaction:
+ *
+ *  - `optionsCount`, `reservedNamesSkipped`, `returnedIdsTruncatedSides` are
+ *    recomputed over items `0..itemsProcessed`, and the LAST page reached the
+ *    furthest — so the last page's value is the whole answer, and summing
+ *    would count the prefix once per page.
+ *  - `unlinked`, `relinked`, `linkedFromPlaceholder` and `writeOps` are events
+ *    that happen once. A later page re-reads a row the earlier page already
+ *    detached or re-linked and finds nothing to do, so these SUM.
+ *
+ * Getting that backwards would put a wrong number in front of an operator,
+ * which is the whole reason it is written down here.
+ */
+async function storeSelectorOptionsUntilDone(
+  ctx: ActionCtx,
+  args: {
+    level: (typeof levelValidator)["type"];
+    options: Array<{
+      value: string;
+      platformData: {
+        bsc?: string | string[];
+        sportlots?: string | string[];
+        sportlotsDisplay?: string;
+      };
+    }>;
+    parentId?: Id<"selectorOptions">;
+    coveredSides?: PlatformSide[];
+    returnedIds?: { bsc?: string[]; sportlots?: string[] };
+  },
+): Promise<StoreSelectorOptionsResult> {
+  let last: StoreSelectorOptionsResult | undefined;
+  const unlinked: UnlinkedEntry[] = [];
+  const relinked: UnlinkedEntry[] = [];
+  let unlinkedTotal = 0;
+  let relinkedTotal = 0;
+  let linkedFromPlaceholder = 0;
+  let writeOps = 0;
+  for (let page = 1; ; page++) {
+    const result: StoreSelectorOptionsResult = await ctx.runMutation(
+      api.selectorOptions.storeSelectorOptions,
+      args,
+    );
+    last = result;
+    unlinked.push(...result.unlinked);
+    relinked.push(...result.relinked);
+    unlinkedTotal += result.unlinkedTotal;
+    relinkedTotal += result.relinkedTotal;
+    linkedFromPlaceholder += result.linkedFromPlaceholder;
+    writeOps += result.writeOps;
+    if (!result.hasMore) break;
+    if (page >= SELECTOR_STORE_MAX_PAGES) {
+      // Loud and structured, and the result still says `hasMore` — a caller
+      // that reads this as a finished sync would be reporting a store that
+      // silently did less. Counts only.
+      console.warn(
+        JSON.stringify({
+          msg: "selector_sync_store_did_not_converge",
+          level: args.level,
+          parentId: args.parentId ?? null,
+          itemsSent: args.options.length,
+          itemsProcessed: result.itemsProcessed,
+          pages: page,
+        }),
+      );
+      break;
+    }
+  }
+  return {
+    ...last!,
+    unlinked: unlinked.slice(0, UNLINK_NOTICE_LIMIT),
+    unlinkedTotal,
+    relinked: relinked.slice(0, UNLINK_NOTICE_LIMIT),
+    relinkedTotal,
+    linkedFromPlaceholder,
+    writeOps,
+  };
+}
+
 export const storeSelectorOptions = mutation({
   args: {
     level: levelValidator,
@@ -1722,6 +2020,23 @@ export const storeSelectorOptions = mutation({
      * linked). Reported, never renamed. Zero on every normal sync.
      */
     reservedNamesSkipped: v.number(),
+    /**
+     * NEO-296 — how many of `options` this call actually reached. Less than
+     * `options.length` exactly when the write budget ran out.
+     */
+    itemsProcessed: v.number(),
+    /**
+     * NEO-296 — this call stopped on `SELECTOR_STORE_WRITE_BUDGET` rather than
+     * on the end of the list. Re-send the IDENTICAL list to continue: the
+     * stored prefix re-matches for free and the call walks into the tail.
+     */
+    hasMore: v.boolean(),
+    /**
+     * NEO-296 — inserts plus patches this transaction made, for the log and
+     * for a caller that wants to size its own batches. See
+     * `SELECTOR_STORE_WRITE_BUDGET` for what one operation is.
+     */
+    writeOps: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -1921,6 +2236,69 @@ export const storeSelectorOptions = mutation({
       return w;
     };
 
+    /**
+     * NEO-296 — the patch this working row WOULD get, or `{}` for none.
+     *
+     * Extracted from the write pass so the budget counts exactly what the
+     * write pass writes. Two copies of this comparison would be a budget that
+     * drifts from the thing it bounds, and the drift would be silent: a store
+     * that reports `writeOps: 800` while spending 1,200.
+     *
+     * NEO-85's write-if-changed guard lives here. A matched row that differs
+     * in nothing costs no operation and no budget, which is what makes a
+     * replayed payload walk forward instead of re-spending its budget on the
+     * prefix it already stored.
+     */
+    const pendingPatchFor = (w: Working): Record<string, unknown> => {
+      const mergedPlatformData = pruneEmptySides({ ...w.platformData });
+      const mergedLabels = pruneEmptySides({ ...(w.platformLabels ?? {}) });
+      const mergedFacets = pruneEmptySides({ ...(w.platformFacets ?? {}) });
+      const nextLabels =
+        Object.keys(mergedLabels).length > 0 ? mergedLabels : undefined;
+      const nextFacets =
+        Object.keys(mergedFacets).length > 0 ? mergedFacets : undefined;
+
+      const patch: Record<string, unknown> = {};
+      if (!valuesDeepEqual(mergedPlatformData, w.row.platformData)) {
+        patch.platformData = mergedPlatformData;
+      }
+      if (!valuesDeepEqual(nextLabels ?? null, w.row.platformLabels ?? null)) {
+        patch.platformLabels = nextLabels;
+      }
+      if (!valuesDeepEqual(nextFacets ?? null, w.row.platformFacets ?? null)) {
+        patch.platformFacets = nextFacets;
+      }
+      if (
+        !valuesDeepEqual(
+          w.platformSlotSeq ?? {},
+          w.row.platformSlotSeq ?? {},
+        )
+      ) {
+        patch.platformSlotSeq = w.platformSlotSeq;
+      }
+      if (
+        !valuesDeepEqual(
+          w.primaryPlatformId ?? null,
+          w.row.primaryPlatformId ?? null,
+        )
+      ) {
+        patch.primaryPlatformId = w.primaryPlatformId;
+      }
+      if (
+        !valuesDeepEqual(
+          w.declinedUpstreamLabels ?? null,
+          w.row.declinedUpstreamLabels ?? null,
+        )
+      ) {
+        patch.declinedUpstreamLabels = w.declinedUpstreamLabels;
+      }
+      if (w.sportConfig) patch.sportConfig = w.sportConfig;
+      if (!valuesDeepEqual(w.metadata ?? null, w.row.metadata ?? null)) {
+        patch.metadata = w.metadata;
+      }
+      return patch;
+    };
+
     // NEO-239 — WHICH incoming id is the base variant, decided ONCE for the
     // whole batch.
     //
@@ -1967,8 +2345,27 @@ export const storeSelectorOptions = mutation({
       side: "bsc" | "sportlots";
     }> = [];
     let reservedNamesSkipped = 0;
+    /**
+     * NEO-296 — the two halves of the write budget.
+     *
+     * `inserts` are spent the moment they happen; `willPatch` holds the rows
+     * the write pass will touch, deduped, because a row is patched ONCE in
+     * that pass however many items or passes touched it. Their sum is what the
+     * budget bounds. A matched item that changes nothing adds to neither,
+     * which is exactly why re-sending the same list finishes the job.
+     */
+    let inserts = 0;
+    const willPatch = new Set<string>();
+    /** Items this call reached. The rest are the caller's next call. */
+    let itemsProcessed = 0;
 
     for (let i = 0; i < options.length; i++) {
+      // The bound is checked BEFORE the item, so the last item admitted is the
+      // one that spent the budget rather than the one after it. Everything
+      // already decided is written by the passes below and commits with this
+      // transaction; the tail is untouched, never half-applied.
+      if (inserts + willPatch.size >= SELECTOR_STORE_WRITE_BUDGET) break;
+      itemsProcessed = i + 1;
       const option = options[i];
       const item = items[i];
       const outcome = plan.outcomes[i];
@@ -2068,6 +2465,12 @@ export const storeSelectorOptions = mutation({
           const backfill = sportConfigDefaultsFor(option.value);
           if (backfill) w.sportConfig = backfill;
         }
+
+        // NEO-296 — charge the budget only if this row will ACTUALLY be
+        // patched. Asked through the same helper the write pass writes
+        // through, and deduped by row id, so the number the budget counts is
+        // the number of `db.patch` calls that follow.
+        if (Object.keys(pendingPatchFor(w)).length > 0) willPatch.add(row._id);
 
         linkedIds.push(row._id);
         continue;
@@ -2183,6 +2586,7 @@ export const storeSelectorOptions = mutation({
         ...(sportConfig ? { sportConfig } : {}),
         lastUpdated: Date.now(),
       });
+      inserts++;
       linkedIds.push(id);
     }
 
@@ -2197,6 +2601,14 @@ export const storeSelectorOptions = mutation({
     //
     // Inside the `options.length > 0` guard the delete pass used to carry: an
     // empty sync is not evidence of anything.
+    //
+    // NEO-296 — this pass is counted in `writeOps` but is NEVER truncated,
+    // and it does not need to be: its evidence is the WHOLE payload, not the
+    // items the budget let this call reach. `plan.returnedIds` is derived from
+    // every incoming item (or from the fetch's own `returnedIds`), so a row
+    // whose id is in the tail this call did not process is still seen as
+    // returned and is not unlinked. Truncating the detachments instead would
+    // break invariant 5 — a link that should have gone, silently kept.
     const unlinkedAll: UnlinkedEntry[] = [];
     if (options.length > 0) {
       for (const side of plan.coveredSides) {
@@ -2228,56 +2640,12 @@ export const storeSelectorOptions = mutation({
     // unchanged sync is correct. The unlink pass writes through the same
     // guard, so re-running an identical sync reports nothing and patches
     // nothing.
+    let patches = 0;
     for (const w of working.values()) {
-      const mergedPlatformData = pruneEmptySides({ ...w.platformData });
-      const mergedLabels = pruneEmptySides({ ...(w.platformLabels ?? {}) });
-      const mergedFacets = pruneEmptySides({ ...(w.platformFacets ?? {}) });
-      const nextLabels =
-        Object.keys(mergedLabels).length > 0 ? mergedLabels : undefined;
-      const nextFacets =
-        Object.keys(mergedFacets).length > 0 ? mergedFacets : undefined;
-
-      const patch: Record<string, unknown> = {};
-      if (!valuesDeepEqual(mergedPlatformData, w.row.platformData)) {
-        patch.platformData = mergedPlatformData;
-      }
-      if (!valuesDeepEqual(nextLabels ?? null, w.row.platformLabels ?? null)) {
-        patch.platformLabels = nextLabels;
-      }
-      if (!valuesDeepEqual(nextFacets ?? null, w.row.platformFacets ?? null)) {
-        patch.platformFacets = nextFacets;
-      }
-      if (
-        !valuesDeepEqual(
-          w.platformSlotSeq ?? {},
-          w.row.platformSlotSeq ?? {},
-        )
-      ) {
-        patch.platformSlotSeq = w.platformSlotSeq;
-      }
-      if (
-        !valuesDeepEqual(
-          w.primaryPlatformId ?? null,
-          w.row.primaryPlatformId ?? null,
-        )
-      ) {
-        patch.primaryPlatformId = w.primaryPlatformId;
-      }
-      if (
-        !valuesDeepEqual(
-          w.declinedUpstreamLabels ?? null,
-          w.row.declinedUpstreamLabels ?? null,
-        )
-      ) {
-        patch.declinedUpstreamLabels = w.declinedUpstreamLabels;
-      }
-      if (w.sportConfig) patch.sportConfig = w.sportConfig;
-      if (!valuesDeepEqual(w.metadata ?? null, w.row.metadata ?? null)) {
-        patch.metadata = w.metadata;
-      }
-
+      const patch = pendingPatchFor(w);
       if (Object.keys(patch).length > 0) {
         await ctx.db.patch(w.row._id, { ...patch, lastUpdated: Date.now() });
+        patches++;
       }
     }
 
@@ -2326,9 +2694,38 @@ export const storeSelectorOptions = mutation({
       );
     }
 
+    // NEO-296 — every WRITE this transaction made: the fresh inserts and the
+    // row patches. The reads (the parent get, the sibling collect, the
+    // ancestor walk, `annotateHasCards`) are the ~60 fixed operations the
+    // budget already sets aside for and are not counted here. The `children`
+    // union's patch is one more and is inside that fixed allowance.
+    const writeOps = inserts + patches;
+    const hasMore = itemsProcessed < options.length;
+    if (hasMore) {
+      // Structured, and loud: a truncated store is the one result a caller
+      // must not read as "done". Ids and counts only — a row `value` is
+      // operator content and an incoming one is a marketplace string.
+      console.warn(
+        JSON.stringify({
+          msg: "selector_sync_store_truncated",
+          fn: "storeSelectorOptions",
+          level,
+          parentId: parentId ?? null,
+          itemsSent: options.length,
+          itemsProcessed,
+          writeOps,
+          budget: SELECTOR_STORE_WRITE_BUDGET,
+        }),
+      );
+    }
+
     return {
       success: true,
-      message: `Successfully stored ${linkedIds.length} ${level} options`,
+      message: hasMore
+        ? `Stored ${linkedIds.length} ${level} options — ` +
+          `${options.length - itemsProcessed} of ${options.length} not reached ` +
+          `this time. Run the sync again to store the rest.`
+        : `Successfully stored ${linkedIds.length} ${level} options`,
       optionsCount: linkedIds.length,
       unlinked,
       unlinkedTotal: unlinkedAll.length,
@@ -2337,6 +2734,9 @@ export const storeSelectorOptions = mutation({
       linkedFromPlaceholder: linkedFromPlaceholderAll.length,
       returnedIdsTruncatedSides: truncatedSides,
       reservedNamesSkipped,
+      itemsProcessed,
+      hasMore,
+      writeOps,
     };
   },
 });
@@ -3855,6 +4255,21 @@ export const renameSelectorOption = mutation({
     // "base"); both now read the row's `variant`-tagged slot and
     // `metadata.isBase`, so a variantType renames like any other level.
 
+    // NEO-294 — Jason, 2026-09-22: "Unknown should not be renamable." The
+    // year's brand-unknown row is found by its NB ROLE everywhere else in the
+    // codebase, so it is frozen by that role here too, never by its name.
+    // `planValueRename` below refuses it as well; this door throws a
+    // ConvexError so the operator reads the sentence rather than the "Server
+    // Error" production redacts a plain `Error` to. The attributes panel does
+    // not offer the pencil on this row at all, so reaching this is a stale
+    // client or a direct call — both of which get told why.
+    if (isBrandUnknownRow(row.metadata)) {
+      throw new ConvexError({
+        code: "BRAND_UNKNOWN_RENAME_REFUSED",
+        message: BRAND_UNKNOWN_RENAME_REFUSAL,
+      });
+    }
+
     // Same normalized-compare rule addCustomSelectorOption uses, scoped to
     // siblings. Read even for a no-op so the one shared rename path always
     // sees the same inputs whichever caller reached it.
@@ -3865,7 +4280,15 @@ export const renameSelectorOption = mutation({
       )
       .collect();
 
-    const plan = planValueRename({ row, nextValue: args.value, siblings });
+    // `metadata` is spelled out because `planValueRename` requires it: a
+    // `Doc` whose `metadata` is optional does not satisfy a field the planner
+    // insists on being handed, which is exactly the compile error a future
+    // fifth call site should get rather than a silently skipped guard.
+    const plan = planValueRename({
+      row: { ...row, metadata: row.metadata },
+      nextValue: args.value,
+      siblings,
+    });
     if (!plan.ok) throw new Error(plan.message);
     if (plan.unchanged) return { success: true, message: "Unchanged" };
 
@@ -3979,23 +4402,222 @@ async function findAncestorLabels(
  * these into the same transaction, so query subscribers see exactly one
  * invalidation regardless of how many rows changed.
  */
-async function restampCardChecklistSortOrders(
+/**
+ * NEO-296 — how many `sortOrder` patches one restamp transaction makes.
+ *
+ * ## The arithmetic, and why the common case is untouched
+ *
+ * The read is ONE operation however many cards it returns (`.collect()`), so
+ * the cost is the patch loop, and the loop only patches a row whose
+ * `sortOrder` actually differs. A custom card added at the END of a checklist
+ * — the ordinary case, a new number past the set — shifts nothing and patches
+ * NOTHING. A card inserted at the FRONT of a 754-card set shifts every row
+ * behind it: 754 patches in `addCustomCard`'s own transaction, and a 5,000-card
+ * checklist (`MAX_CARDS_PER_COMMIT`) is 5,000 — past the ~4,000 that fails
+ * outright (house calibration on `CARDS_PER_COMMIT_CHUNK`: ~900 comfortable,
+ * ~1,800 straining).
+ *
+ * That is the shape of the bug: adding ONE card to a big set could fail, and
+ * fail after the card row was already inserted.
+ *
+ * 800 patches plus `addCustomCard`'s own fixed cost (the insert, the SKU
+ * patch, the sport walk) lands under ~900, so every checklist whose shift is
+ * under 800 rows — which is every real one — still completes in the operator's
+ * own transaction exactly as before. Only a bigger shift continues in the
+ * background.
+ */
+export const RESTAMP_SORT_ORDER_PAGE = 800;
+
+/**
+ * NEO-296 — how many restamp pages one chain walks before it stops and says so.
+ *
+ * A runaway stop, not a budget: `MAX_CARDS_PER_COMMIT` (5,000) cards is at
+ * most seven pages. Reaching 12 means the chain is not advancing, and a chain
+ * that will not stop is worse than one that logs what it left — the next
+ * `addCustomCard` on this set restamps from the start anyway.
+ */
+export const RESTAMP_MAX_PAGES = 12;
+
+/**
+ * Re-number a checklist's `sortOrder` to match card-number order, ONE PAGE.
+ *
+ * Returns where the next page resumes, or `null` when the pass is complete.
+ * `from` is an index into the sorted list rather than a `_creationTime`
+ * cursor, because the order being written is a property of the whole list:
+ * position `i` is only knowable once every card has been sorted, and the sort
+ * is recomputed each page off a single `.collect()`. A card added or removed
+ * between pages simply changes what the next page computes, and the pass
+ * converges on the current contents rather than on a snapshot.
+ *
+ * Every page commits on its own. An interrupted chain leaves the checklist
+ * PARTLY re-numbered — some rows on the new order, some on the old — which is
+ * a display-order wobble and nothing more: no card is lost, no number changes,
+ * and the next restamp of this set (or a re-run of the chain) finishes it.
+ * That is strictly better than what it replaces, which was the whole
+ * `addCustomCard` transaction failing on a big set.
+ */
+async function restampCardChecklistSortOrdersPage(
   ctx: { db: { query: any; patch: any } },
   selectorOptionId: Id<"selectorOptions">,
-): Promise<void> {
+  from: number,
+): Promise<{ patched: number; nextFrom: number | null }> {
   const all = await ctx.db
     .query("cardChecklist")
     .withIndex("by_selector_option", (q: any) =>
       q.eq("selectorOptionId", selectorOptionId),
     )
     .collect();
-  const sorted = [...all].sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber));
-  for (let i = 0; i < sorted.length; i++) {
+  const sorted = [...all].sort((a: Doc<"cardChecklist">, b: Doc<"cardChecklist">) =>
+    compareCardNumbers(a.cardNumber, b.cardNumber),
+  );
+  let patched = 0;
+  for (let i = from; i < sorted.length; i++) {
+    // Checked BEFORE the patch, so the last row written is the one that spent
+    // the budget rather than the one after it, and `i` is where to resume.
+    if (patched >= RESTAMP_SORT_ORDER_PAGE) {
+      return { patched, nextFrom: i };
+    }
     if (sorted[i].sortOrder !== i) {
       await ctx.db.patch(sorted[i]._id, { sortOrder: i });
+      patched++;
     }
   }
+  return { patched, nextFrom: null };
 }
+
+/**
+ * Re-number a checklist's `sortOrder`, continuing in the background if one
+ * transaction cannot finish it.
+ *
+ * The caller (`addCustomCard`) is a MUTATION, so it cannot loop the way an
+ * action can; the house shape for a mutation with unbounded follow-up work is
+ * a self-scheduling chain (`brandRehome.rehomeFromBrandUnknownBatch`), and
+ * this is that. On every real checklist the first page finishes the job and
+ * nothing is ever scheduled.
+ */
+async function restampCardChecklistSortOrders(
+  ctx: MutationCtx,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<void> {
+  const page = await restampCardChecklistSortOrdersPage(ctx, selectorOptionId, 0);
+  if (page.nextFrom === null) return;
+  await ctx.scheduler.runAfter(
+    0,
+    internal.selectorOptions.restampCardChecklistSortOrdersBatch,
+    {
+      selectorOptionId,
+      from: page.nextFrom,
+      pagesLeft: RESTAMP_MAX_PAGES - 1,
+    },
+  );
+}
+
+/**
+ * The continuation behind `restampCardChecklistSortOrders` — one page, then
+ * itself again while there is more.
+ *
+ * The WRITES are idempotent: each page re-reads the checklist, re-sorts it and
+ * writes only the rows that differ, so a page replayed against an unchanged
+ * checklist writes nothing.
+ *
+ * The CURSOR is not, and the distinction matters to anyone reading `from` as a
+ * promise. `from` is a POSITION in a freshly re-sorted array, not a key. A card
+ * inserted or deleted between two pages shifts every position behind it, so the
+ * next page can resume past a row it never stamped, or restamp one it already
+ * did. Nothing is lost by that — the only field written is `sortOrder`, so the
+ * worst case is display-order wobble, and because every page re-derives the
+ * order from the current contents the chain still converges on replay (and the
+ * next `addCustomCard` on this set restamps from the start anyway). Left as it
+ * is deliberately: a key-based cursor would buy nothing that matters here.
+ *
+ * Nothing on this path can lose a card or change a card number.
+ */
+export const restampCardChecklistSortOrdersBatch = internalMutation({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    from: v.number(),
+    pagesLeft: v.number(),
+  },
+  returns: v.object({
+    patched: v.number(),
+    /**
+     * This CHAIN is over — nothing further is scheduled.
+     *
+     * NEO-296: `done` is NOT "the checklist is in card-number order". A chain
+     * that spends `RESTAMP_MAX_PAGES` also stops, and also reports `done`,
+     * with the pass unfinished. The two are told apart by `converged`, and
+     * they are separate fields rather than one because they answer different
+     * questions: the scheduler wants to know whether to expect another call,
+     * and a caller or a test wants to know whether the order is right.
+     */
+    done: v.boolean(),
+    /**
+     * The pass reached the end of the checklist: every row's `sortOrder` now
+     * matches its card-number position.
+     *
+     * False with `done: true` is the runaway stop, and the one case where this
+     * mutation leaves a checklist partly re-numbered. That is a display-order
+     * wobble, not data loss — see the note on `RESTAMP_MAX_PAGES` — and the
+     * next `addCustomCard` on this set restamps from the start. It is surfaced
+     * rather than inferred so nobody has to read `done` as a convergence
+     * claim it was never making.
+     */
+    converged: v.boolean(),
+    /**
+     * Where the next page resumes, absent on the last one. Returned as well as
+     * scheduled because convex-test does not auto-run scheduled functions, so
+     * a test driving the chain by hand needs the index the page computed.
+     *
+     * Present on a runaway stop too: it is where a future run would have to
+     * pick up, which is exactly what makes that stop diagnosable.
+     */
+    nextFrom: v.optional(v.number()),
+  }),
+  handler: async (ctx, args) => {
+    const page = await restampCardChecklistSortOrdersPage(
+      ctx,
+      args.selectorOptionId,
+      args.from,
+    );
+    if (page.nextFrom === null) {
+      return { patched: page.patched, done: true, converged: true };
+    }
+    if (args.pagesLeft <= 1) {
+      // Counts and one id only. Stopping is the safe end of the trade: every
+      // page so far is committed, the checklist is intact, and the next card
+      // added to this set restamps from the start.
+      console.warn(
+        JSON.stringify({
+          msg: "restamp_sort_orders_stopped",
+          selectorOptionId: args.selectorOptionId,
+          pages: RESTAMP_MAX_PAGES,
+          from: page.nextFrom,
+        }),
+      );
+      return {
+        patched: page.patched,
+        done: true,
+        converged: false,
+        nextFrom: page.nextFrom,
+      };
+    }
+    await ctx.scheduler.runAfter(
+      0,
+      internal.selectorOptions.restampCardChecklistSortOrdersBatch,
+      {
+        selectorOptionId: args.selectorOptionId,
+        from: page.nextFrom,
+        pagesLeft: args.pagesLeft - 1,
+      },
+    );
+    return {
+      patched: page.patched,
+      done: false,
+      converged: false,
+      nextFrom: page.nextFrom,
+    };
+  },
+});
 
 // NEO-203: `storeCardChecklist` lived here — a public mutation with zero
 // callers that upserted a checklist keyed on cardNumber alone, deleted every
@@ -5313,7 +5935,55 @@ export const deleteCard = mutation({
 // MAX_EXPANDED_NUMBERS in CrossListingImportModal.tsx) — mirrored server-side
 // so a direct API call can't hand this mutation an unbounded batch just
 // because the client-side cap is only advisory.
+//
+// NEO-296 — this is the cap on what ONE OPERATOR IMPORT may name, and it is
+// deliberately NOT the transaction bound. That is
+// `CROSS_LISTING_LINKS_PER_CALL` below; see its arithmetic.
 const MAX_CROSS_LISTING_CARD_NUMBERS = 1000;
+
+/**
+ * NEO-296 — how many card numbers one `addCrossListingsByCardNumbers`
+ * transaction resolves and links.
+ *
+ * ## The arithmetic
+ *
+ * Convex counts one system operation per CALL. The existing-links `.collect()`
+ * is one, whatever it returns; the cost is the per-number loop:
+ *
+ *   1 — the `by_selector_option_and_number` `.first()` on the SOURCE set
+ *   1 — the `cardCrossListings` insert, for a number that resolves and is not
+ *       already linked
+ *
+ * So **2 operations per number** on the path that does the work, plus ~4
+ * fixed (the two node reads and the links collect). At the
+ * `MAX_CROSS_LISTING_CARD_NUMBERS` cap of 1,000 that is ~2,000 — into the band
+ * the house calibration calls straining, and an import is exactly the thing an
+ * operator does at full size: 2021 Score #301-320 is the worked example in the
+ * comment above, but "paste the whole checklist" is one keystroke away.
+ *
+ * 400 numbers is ~800 operations, under the ~900 comfortable line
+ * (`CARDS_PER_COMMIT_CHUNK`: ~900 comfortable, ~1,800 straining, ~4,000
+ * failing).
+ *
+ * ## Refused, not truncated — and the client slices
+ *
+ * A silently short import is the worst outcome here: the operator is told
+ * which numbers linked, which were already linked and which were not found,
+ * and a fourth silent category ("not attempted") would be indistinguishable
+ * from `notFound` on the screen that reports it. So the mutation refuses an
+ * over-long list and `CrossListingImportModal` sends it in slices, merging the
+ * three result lists — the operator still sees one answer for the whole paste.
+ *
+ * Each slice commits on its own and a link is idempotent: the existing-links
+ * read is per call, and a number already linked by an earlier slice comes back
+ * as `alreadyLinked` rather than being inserted twice. An interrupted import
+ * keeps every slice that landed and re-running it finishes the rest.
+ *
+ * The number itself lives in `lib/cards/commit-limits.ts` so the modal slices
+ * against the same value this mutation refuses above, and is re-exported here
+ * because that is where every server caller reads it from.
+ */
+export { CROSS_LISTING_LINKS_PER_CALL };
 
 export const addCrossListingsByCardNumbers = mutation({
   args: {
@@ -5334,10 +6004,13 @@ export const addCrossListingsByCardNumbers = mutation({
     if (args.sourceSelectorOptionId === args.targetSelectorOptionId) {
       throw new Error("Cannot cross-list a set into itself");
     }
-    if (args.cardNumbers.length > MAX_CROSS_LISTING_CARD_NUMBERS) {
+    if (args.cardNumbers.length > CROSS_LISTING_LINKS_PER_CALL) {
+      // NEO-296 — the TRANSACTION bound. `MAX_CROSS_LISTING_CARD_NUMBERS`
+      // still caps what one operator import may name; this caps what one
+      // transaction may do about it, and the modal slices between the two.
       throw new Error(
         `Too many card numbers in one request (${args.cardNumbers.length}); ` +
-          `max ${MAX_CROSS_LISTING_CARD_NUMBERS}.`,
+          `max ${CROSS_LISTING_LINKS_PER_CALL} per call — slice them.`,
       );
     }
 
@@ -5751,11 +6424,35 @@ const TEAM_EDITABLE_LEVELS: ReadonlySet<Level> = new Set<Level>([
 ]);
 
 /**
- * Cards examined per cascade invocation. Each is one read and at most one
- * patch, so 200 keeps an invocation an order of magnitude inside the mutation
- * read budget even after the first invocation's descendant walk.
+ * Cards examined per cascade invocation.
+ *
+ * Each is one read and at most one patch. The reads arrive in one `.take()`
+ * per node — one operation whatever it returns — so a page costs ~200 patches
+ * at worst, well inside the ~900 the house treats as comfortable
+ * (`CARDS_PER_COMMIT_CHUNK`).
+ *
+ * NEO-296 — the clause this comment used to end with, "even after the first
+ * invocation's descendant walk", is gone because that walk is no longer in the
+ * same transaction. It was the unbounded half: the card pass was paged from
+ * the day it was written, while the node pass ran over the WHOLE subtree
+ * first. See `TEAM_CASCADE_NODE_PAGE`.
  */
 const TEAM_CASCADE_CARD_PAGE = 200;
+
+/**
+ * Subtree NODES whose `teamIds` one cascade invocation settles.
+ *
+ * One `db.get` plus at most one `db.patch` each — **2 operations per node** —
+ * so 300 is ~600, inside the same ~900 line, and it is a page of its own
+ * rather than a share of the card budget so that neither number has to be read
+ * as "it depends what else ran".
+ *
+ * The node pass runs to completion before the first card is visited, which is
+ * the order `teamFollowVerdict` assumes: it asks whether a node still follows
+ * the root, and a half-settled subtree would answer that differently depending
+ * on where the previous page stopped.
+ */
+const TEAM_CASCADE_NODE_PAGE = 300;
 
 /**
  * Cards the preview examines before it gives up counting. A confirm dialog
@@ -6028,6 +6725,16 @@ export const cascadeSelectorOptionTeams = internalMutation({
     // Walk state, absent on the first invocation.
     nodeIds: v.optional(v.array(v.id("selectorOptions"))),
     nodeIndex: v.optional(v.number()),
+    /**
+     * NEO-296 — how far the NODE pass has got, as an index into `nodeIds`.
+     *
+     * `nodeIds[0]` is the root, which the caller has already written, so the
+     * pass starts at 1. Absent on the first invocation, and `nodeIds.length`
+     * once the pass is complete — which is the condition the card pass waits
+     * on. Separate from `nodeIndex` because the two passes walk the same list
+     * for different reasons and must not share a position.
+     */
+    nodeTeamsIndex: v.optional(v.number()),
     // The `_creationTime` of the last card examined under `nodeIds[nodeIndex]`.
     // A hand-rolled cursor rather than `.paginate()`, because Convex allows ONE
     // paginated query per function execution and an invocation walks several
@@ -6043,15 +6750,69 @@ export const cascadeSelectorOptionTeams = internalMutation({
 
     let nodeIds = args.nodeIds;
     if (!nodeIds) {
-      const descendantIds = await collectDescendantIds(ctx, args.rootId);
-      for (const id of descendantIds) {
-        const node = await ctx.db.get(id);
+      // The subtree is read ONCE, on the first invocation, and carried along
+      // the chain from here.
+      nodeIds = [args.rootId, ...(await collectDescendantIds(ctx, args.rootId))];
+    }
+
+    /*
+     * ── NEO-296: the NODE pass is a bounded page too ────────────────────────
+     *
+     * It used to run over the WHOLE subtree in the first transaction — one
+     * `db.get` and up to one `db.patch` per descendant — and then start the
+     * card pass in that same transaction. The card half has been bounded since
+     * it was written (`TEAM_CASCADE_CARD_PAGE`); this half was not, so a set
+     * with several hundred inserts and parallels spent ~2 operations per node
+     * before the card budget even began. At ~500 nodes that is ~1,000 on top
+     * of the card page's 200, into the band the house calls straining (~900
+     * comfortable, ~1,800 straining, ~4,000 failing —
+     * `CARDS_PER_COMMIT_CHUNK`).
+     *
+     * Now it takes `TEAM_CASCADE_NODE_PAGE` nodes per transaction and
+     * reschedules, exactly as the card pass does, and the card pass does not
+     * start until it is finished. Splitting them rather than sharing one
+     * budget keeps each page's cost flat and obvious: a node costs ~2
+     * operations, a card costs 1, and mixing them made neither number true.
+     *
+     * The order matters and is preserved: every node's `teamIds` is settled
+     * before any card is visited, which is what `teamFollowVerdict` assumes
+     * when it decides whether a node still follows the root.
+     *
+     * Every page commits on its own. An interrupted chain leaves the nodes it
+     * already wrote carrying the new teams and the rest carrying the old — the
+     * same partial state the card pass has always been able to leave, and the
+     * same remedy: the root keeps its `teamCascadeStartedAt` stamp, so the
+     * next edit's cascade re-walks from the top.
+     */
+    let nodeTeamsIndex = args.nodeTeamsIndex ?? 1;
+    if (nodeTeamsIndex < nodeIds.length) {
+      const end = Math.min(nodeTeamsIndex + TEAM_CASCADE_NODE_PAGE, nodeIds.length);
+      for (; nodeTeamsIndex < end; nodeTeamsIndex++) {
+        const node = await ctx.db.get(nodeIds[nodeTeamsIndex]);
         if (!node) continue;
         if (teamFollowVerdict(node.teamIds, previous, next) === "follow") {
-          await ctx.db.patch(id, { teamIds: [...next], lastUpdated: Date.now() });
+          await ctx.db.patch(node._id, {
+            teamIds: [...next],
+            lastUpdated: Date.now(),
+          });
         }
       }
-      nodeIds = [args.rootId, ...descendantIds];
+      if (nodeTeamsIndex < nodeIds.length) {
+        // More nodes to settle; the card pass waits for them.
+        await ctx.scheduler.runAfter(
+          0,
+          internal.selectorOptions.cascadeSelectorOptionTeams,
+          {
+            rootId: args.rootId,
+            previousTeamIds: previous,
+            teamIds: next,
+            ...(args.startedAt !== undefined ? { startedAt: args.startedAt } : {}),
+            nodeIds,
+            nodeTeamsIndex,
+          },
+        );
+        return null;
+      }
     }
 
     let nodeIndex = args.nodeIndex ?? 0;
@@ -6096,6 +6857,10 @@ export const cascadeSelectorOptionTeams = internalMutation({
           teamIds: next,
           ...(args.startedAt !== undefined ? { startedAt: args.startedAt } : {}),
           nodeIds,
+          // NEO-296 — the node pass is finished by the time the card pass
+          // reschedules; carrying its index says so, or a resumed chain would
+          // walk every node's `teamIds` again on each card page.
+          nodeTeamsIndex,
           nodeIndex,
           ...(cursor !== undefined ? { cursor } : {}),
         },
@@ -6212,6 +6977,35 @@ export const getInsertTreeByVariantType = query({
 //
 // All assertions run before any patches so a partial failure rejects cleanly.
 // Children arrays on parents are kept consistent.
+//
+// ── NEO-296: a CAP, deliberately, and not a page ───────────────────────────
+//
+// Every other unbounded operation in this file was given a bounded, resumable
+// walk. This one is not, because "all assertions run before any patches" is
+// the guarantee the function exists to provide: a grouping plan is one
+// operator decision about how a variantType's inserts and parallels relate,
+// and half of it applied is a tree in a shape nobody asked for. Paging it
+// would trade a failure the operator can retry for a partial re-parenting they
+// would have to diagnose.
+//
+// So the bound is on the ARGUMENT instead, and it is a refusal. Counted, one
+// entry costs:
+//
+//   promotion    — 2 `db.get` (source, target) + 1 `.collect()` (the source's
+//                  parallels) + 1 `patch` in the apply pass          = 4
+//   demotion     — 1 `db.get` + 1 `patch`                            = 2
+//   reparenting  — 2 `db.get` (row, new target) + 1 `patch`          = 3
+//
+// plus one `db.get` for the variantType and one `patch` per parent whose
+// `children` array changes. At 4 operations for the dearest kind, 200 entries
+// is ~800 — inside the ~900 the house treats as comfortable
+// (`CARDS_PER_COMMIT_CHUNK`: ~1,800 strains, ~4,000 fails).
+//
+// 200 is far above any real plan: this is a drag-and-drop over the inserts and
+// parallels of ONE variantType, all of them on screen at once. A caller that
+// somehow needs more is asking for a different feature, not a bigger
+// transaction.
+const MAX_PARALLEL_GROUPING_ENTRIES = 200;
 export const applyParallelGroupings = mutation({
   args: {
     variantTypeId: v.id("selectorOptions"),
@@ -6246,6 +7040,20 @@ export const applyParallelGroupings = mutation({
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
 
+    // NEO-296 — the transaction bound, checked before anything is read. See
+    // `MAX_PARALLEL_GROUPING_ENTRIES` for the arithmetic and for why this is a
+    // refusal rather than a page.
+    const groupingEntries =
+      args.promotions.length +
+      args.demotions.length +
+      (args.reparentings?.length ?? 0);
+    if (groupingEntries > MAX_PARALLEL_GROUPING_ENTRIES) {
+      throw new Error(
+        `applyParallelGroupings: ${groupingEntries} entries exceeds the ` +
+          `${MAX_PARALLEL_GROUPING_ENTRIES}-per-call limit`,
+      );
+    }
+
     const variantType = await ctx.db.get(args.variantTypeId);
     if (!variantType) {
       throw new Error("Variant type not found");
@@ -6274,7 +7082,30 @@ export const applyParallelGroupings = mutation({
     const now = Date.now();
 
     // ---- Validate everything first ----
-    const promotionTargets: Array<{
+    /*
+     * ── NEO-296: collected PER ROW MOVED, not per argument entry ────────────
+     *
+     * Each of the three lists below is keyed by the row it moves, so a plan
+     * that names the same row twice produces ONE target rather than two.
+     *
+     * The applied end state is unchanged. Each apply pass is a `db.patch` on
+     * the moved row, so two entries for one row always meant "the last one
+     * wins" — and a Map keyed by that row, written with `.set()`, keeps
+     * exactly that value while collapsing the redundant work.
+     *
+     * What changes is the two things that were wrong. The operator-facing
+     * counts (`promoted` / `demoted` / `reparented`) were `length` on the
+     * argument-shaped list, so a plan naming one row 400 times reported
+     * "demoted: 400" for a single re-parented row — a number shown to a person
+     * that was simply false. And the redundant patches were charged against
+     * `MAX_PARALLEL_GROUPING_ENTRIES`' budget for work that changed nothing.
+     *
+     * Duplicates are COLLAPSED rather than refused: this is an idempotent set
+     * operation on a drag-and-drop plan, and a refusal would be a new way for
+     * a legitimate screen to fail. It is the count that had to start telling
+     * the truth, not the caller that had to start being perfect.
+     */
+    const promotionTargets = new Map<Id<"selectorOptions">, {
       sourceId: Id<"selectorOptions">;
       targetId: Id<"selectorOptions">;
       metadata: Doc<"selectorOptions">["metadata"];
@@ -6285,7 +7116,7 @@ export const applyParallelGroupings = mutation({
        * fact being recorded belongs to the insert-level row — see below.
        */
       platformFacets: Doc<"selectorOptions">["platformFacets"] | undefined;
-    }> = [];
+    }>();
     for (const p of args.promotions) {
       const source = await ctx.db.get(p.insertId);
       if (!source) throw new Error(`Source insert ${p.insertId} not found`);
@@ -6347,7 +7178,7 @@ export const applyParallelGroupings = mutation({
       // this after the fact: a parallel of the BASE set sits on a different
       // `variant` axis and its untagged slots must stay inert.
       const untagged = untaggedBscSlots(source);
-      promotionTargets.push({
+      promotionTargets.set(p.insertId, {
         sourceId: p.insertId,
         targetId: p.targetInsertId,
         metadata: source.metadata,
@@ -6362,11 +7193,12 @@ export const applyParallelGroupings = mutation({
       });
     }
 
-    const demotionTargets: Array<{
+    // NEO-296 — keyed by the row moved; see the note on `promotionTargets`.
+    const demotionTargets = new Map<Id<"selectorOptions">, {
       parallelId: Id<"selectorOptions">;
       oldParentId: Id<"selectorOptions">;
       metadata: Doc<"selectorOptions">["metadata"];
-    }> = [];
+    }>();
     for (const d of args.demotions) {
       const row = await ctx.db.get(d.parallelId);
       if (!row) throw new Error(`Parallel ${d.parallelId} not found`);
@@ -6378,18 +7210,19 @@ export const applyParallelGroupings = mutation({
       if (!row.parentId) {
         throw new Error(`Parallel ${d.parallelId} has no parent`);
       }
-      demotionTargets.push({
+      demotionTargets.set(d.parallelId, {
         parallelId: d.parallelId,
         oldParentId: row.parentId,
         metadata: row.metadata,
       });
     }
 
-    const reparentingTargets: Array<{
+    // NEO-296 — keyed by the row moved; see the note on `promotionTargets`.
+    const reparentingTargets = new Map<Id<"selectorOptions">, {
       parallelId: Id<"selectorOptions">;
       oldParentId: Id<"selectorOptions">;
       newParentId: Id<"selectorOptions">;
-    }> = [];
+    }>();
     for (const r of args.reparentings ?? []) {
       const row = await ctx.db.get(r.parallelId);
       if (!row) throw new Error(`Parallel ${r.parallelId} not found`);
@@ -6417,7 +7250,7 @@ export const applyParallelGroupings = mutation({
           `Reparent target ${r.newInsertId} is not under variantType ${args.variantTypeId}`,
         );
       }
-      reparentingTargets.push({
+      reparentingTargets.set(r.parallelId, {
         parallelId: r.parallelId,
         oldParentId: row.parentId,
         newParentId: r.newInsertId,
@@ -6441,7 +7274,12 @@ export const applyParallelGroupings = mutation({
     // leaves tags alone — `variantName` is what the level rule answers at
     // `insert` anyway, so the tagged and untagged row resolve identically.
     const variantTypeChildren = await getChildren(args.variantTypeId);
-    for (const { sourceId, targetId, metadata, platformFacets } of promotionTargets) {
+    for (const {
+      sourceId,
+      targetId,
+      metadata,
+      platformFacets,
+    } of promotionTargets.values()) {
       await ctx.db.patch(sourceId, {
         level: "parallel",
         parentId: targetId,
@@ -6456,7 +7294,11 @@ export const applyParallelGroupings = mutation({
 
     // ---- Apply demotions ----
     const demotedFlags = derivedVariantFlags("insert", variantType);
-    for (const { parallelId, oldParentId, metadata } of demotionTargets) {
+    for (const {
+      parallelId,
+      oldParentId,
+      metadata,
+    } of demotionTargets.values()) {
       await ctx.db.patch(parallelId, {
         level: "insert",
         parentId: args.variantTypeId,
@@ -6469,7 +7311,11 @@ export const applyParallelGroupings = mutation({
     }
 
     // ---- Apply reparentings ----
-    for (const { parallelId, oldParentId, newParentId } of reparentingTargets) {
+    for (const {
+      parallelId,
+      oldParentId,
+      newParentId,
+    } of reparentingTargets.values()) {
       await ctx.db.patch(parallelId, {
         parentId: newParentId,
         lastUpdated: now,
@@ -6487,9 +7333,11 @@ export const applyParallelGroupings = mutation({
 
     return {
       success: true,
-      promoted: promotionTargets.length,
-      demoted: demotionTargets.length,
-      reparented: reparentingTargets.length,
+      // NEO-296 — DISTINCT rows moved, which is what these words mean to the
+      // operator reading them. See the note on `promotionTargets`.
+      promoted: promotionTargets.size,
+      demoted: demotionTargets.size,
+      reparented: reparentingTargets.size,
     };
   },
 });
@@ -6745,6 +7593,10 @@ type SetBuilderResetResult = {
   selectorOptionsDeleted: number;
   cardChecklistDeleted: number;
   crossListingsDeleted: number;
+  /** NEO-294 — staged review rows, the residue that made CI's reset quadratic. */
+  entityReviewQueueDeleted: number;
+  /** NEO-294 — staged candidate cards, the other half of an abandoned review. */
+  checklistCandidatesDeleted: number;
   playersDeleted: number;
   playerAliasesDeleted: number;
   teamsDeleted: number;
@@ -6796,6 +7648,8 @@ async function runSetBuilderReset(
     selectorOptionsDeleted: 0,
     cardChecklistDeleted: 0,
     crossListingsDeleted: 0,
+    entityReviewQueueDeleted: 0,
+    checklistCandidatesDeleted: 0,
     playersDeleted: 0,
     playerAliasesDeleted: 0,
     teamsDeleted: 0,
@@ -6822,6 +7676,45 @@ async function runSetBuilderReset(
     [
       "crossListingsDeleted",
       internal.selectorOptions.resetCardCrossListingsBatch,
+    ],
+    // ── NEO-294: the entity-review tables, drained BEFORE players/teams/
+    // leagues ──────────────────────────────────────────────────────────────
+    //
+    // The two staging tables a checklist fetch fills and a commit or a cancel
+    // empties. The RESET never claimed either, so the only thing that removed
+    // them was a cron — and for `entityReviewQueue` that cron waits
+    // ENTITY_REVIEW_ABANDONED_MS (24 h), which is the right threshold for a
+    // real operator's session (deleting a batch throws away their decisions)
+    // and unreachable in CI, where six runs land in fourteen hours and every
+    // one of them leaves its reviews behind. `checklistCandidates` is swept an
+    // hour after `lastUpdated`, so it does not stack across a day the way the
+    // queue does — but it is very much live during a run and between two runs
+    // close together, at ~900 rows per fetched set.
+    //
+    // Measured on PR #273: reset 15 s → 69 s → 246 s across successive runs on
+    // one preview, the seed job 15m00s → 20m39s before a flow ran, and a
+    // failure dump reading "1485 checklist reviews are in progress here".
+    // That message is `collectSelectorOptionHoldings` counting exactly these
+    // two tables together — residue from earlier runs refusing a delete the
+    // current run needs.
+    //
+    // BEFORE players/teams/leagues, for the reason the leagues comment below
+    // gives: a queue row's decision carries `linkedPlayerId` / `linkedTeamId`
+    // / `linkedLeagueId`, so draining those tables first would leave review
+    // rows pointing at deleted entities for the rest of the reset — and a
+    // reset interrupted at the budget would leave them that way until the next
+    // pass.
+    //
+    // Queue before candidates: a `careerTeamOf` / `leagueOf` row points at the
+    // queue row that needed it, so the queue is drained as one table rather
+    // than half-drained around a table that references nothing.
+    [
+      "entityReviewQueueDeleted",
+      internal.selectorOptions.resetEntityReviewQueueBatch,
+    ],
+    [
+      "checklistCandidatesDeleted",
+      internal.selectorOptions.resetChecklistCandidatesBatch,
     ],
     // Players + teams are populated alongside cardChecklist by the
     // commitCardChecklist flow. Wipe them too so subsequent dev/test
@@ -6880,6 +7773,25 @@ async function runSetBuilderReset(
  * and on deployments where `selectorOptions` has accumulated many thousands of
  * rows from prior test runs a single-pass `.collect()` threw "Too many reads in
  * a single function execution".
+ *
+ * ## NEO-294 — the system-operation arithmetic
+ *
+ * Every batch below has the same shape and therefore the same cost: one range
+ * read that produces the page (a `.take()` is ONE operation however many rows
+ * it returns) plus one delete per row, and nothing else per row — no `get`,
+ * no patch, no scheduled continuation. So a batch is `1 + 500 = ~501`
+ * operations against the ~900 that `CARDS_PER_COMMIT_CHUNK` measured as
+ * comfortable (~1,800 strains, ~4,000 fails). That is ~44% headroom, which is
+ * the margin this size buys over `ENTITY_REVIEW_DELETE_PAGE`'s 800 — that
+ * constant is sized to keep a cancel all-or-nothing, and a reset has no such
+ * requirement: it is already a resumable loop, so a smaller page just means
+ * more passes.
+ *
+ * The NEO-294 tables added to the loop cost the same one delete each. A
+ * "batch" of entity review is not a row of its own anywhere — it is the
+ * `(selectorOptionId, batchId)` grouping WITHIN `entityReviewQueue` — so
+ * draining the table drains every batch in it, at one operation per row and
+ * no per-batch surcharge.
  */
 const RESET_BATCH_SIZE = 500;
 
@@ -6913,8 +7825,9 @@ function assertResetArmed(): void {
 
 /**
  * The ONLY entry point to the Set Builder reset (NEO-214). Wipes
- * `selectorOptions`, `cardChecklist`, `cardCrossListings`, `players`, `teams`
- * and `leagues`.
+ * `selectorOptions`, `cardChecklist`, `cardCrossListings`,
+ * `entityReviewQueue`, `checklistCandidates`, `players`, `playerAliases`,
+ * `teams`, `teamAliases`, `franchises` and `leagues`.
  *
  * Runbook: `docs/operations/neo214-set-builder-admin-scripts.md`. Take a
  * **Backup Now** first (NEO-190 §3) and run it with the app CLOSED — resetting
@@ -6972,6 +7885,12 @@ export const resetSetBuilderDataFromCli = internalAction({
     selectorOptionsDeleted: v.number(),
     cardChecklistDeleted: v.number(),
     crossListingsDeleted: v.number(),
+    // NEO-294 — the staging tables. Reported so the CI seed log carries the
+    // residue count: a run that clears thousands here is a run that inherited
+    // a previous run's abandoned reviews, which is the diagnostic that would
+    // have caught the 15 s → 246 s drift a week earlier.
+    entityReviewQueueDeleted: v.number(),
+    checklistCandidatesDeleted: v.number(),
     playersDeleted: v.number(),
     // NEO-254 — reported alongside the players, so a run that drained one and
     // not the other is visible in the operator's own output.
@@ -7060,6 +7979,92 @@ export const resetCardCrossListingsBatch = internalMutation({
     // point — see assertResetArmed.
     assertResetArmed();
     const rows = await ctx.db.query("cardCrossListings").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `entityReviewQueue`, looped by `runSetBuilderReset`.
+ *
+ * NEO-294. The wizard's staging table, and the one that actually accumulates:
+ * a first-time sync of a real set surfaces hundreds of unknown
+ * player/team/league names, and nothing in CI ever removed them.
+ * `commitCardChecklist` and `cancelBatch` clean up after themselves, and the
+ * hourly `reap abandoned entity-review batches` cron clears what they missed —
+ * but only past ENTITY_REVIEW_ABANDONED_MS (24 h), which is deliberately long
+ * because deleting a batch throws away real operator work. Six CI runs in
+ * fourteen hours all land inside that window, so each one inherits every
+ * review the ones before it left staged.
+ *
+ * The 24-hour threshold is CORRECT and is not what this changes. What was
+ * wrong is that CI's own reset never claimed the table.
+ *
+ * The cost is not cosmetic. `collectSelectorOptionHoldings` counts these rows
+ * as in-flight review work and REFUSES a row delete while any exist, which is
+ * the `"1485 checklist reviews are in progress here"` failure; and
+ * `startBatch` resumes a batch it finds for the same (selectorOptionId, user),
+ * so stale rows are also a wrong starting point for the next fetch.
+ *
+ * There is no separate "batches" table — a batch is the
+ * `(selectorOptionId, batchId)` grouping inside THIS table — so draining the
+ * table drains the batches, and a row costs exactly one delete. Deliberately a
+ * flat `.take()` rather than the indexed, per-batch `deleteBatchRows` the
+ * product path uses: the reset wants the whole table gone, so grouping by
+ * batch would only add a read per group to arrive at the same set of deletes.
+ */
+export const resetEntityReviewQueueBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    // The arming flag, not an identity, is what lives next to the delete, so a
+    // future internal caller cannot drain this table by bypassing the entry
+    // point — see assertResetArmed.
+    assertResetArmed();
+    const rows = await ctx.db.query("entityReviewQueue").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `checklistCandidates`, looped by `runSetBuilderReset`.
+ *
+ * NEO-294, the twin of `resetEntityReviewQueueBatch` above and the bigger of
+ * the two by row count: one staged candidate per card, so ~900 rows for a
+ * single real set against a few hundred review rows.
+ *
+ * Its cron is NOT the queue's. `sweepStaleCandidates` deletes a row an hour
+ * after its `lastUpdated` (CANDIDATE_STALE_MS), so this table does not stack
+ * across a working day the way the queue does. It is drained here anyway, and
+ * with the queue, because the reset's job is a clean slate NOW rather than
+ * within the hour: `collectSelectorOptionHoldings` adds both tables into the
+ * single "reviews in progress" count that REFUSES a row delete, and a run
+ * starting less than an hour after the last one inherits ~900 live rows per
+ * set the previous run fetched. A reset that emptied the queue and left these
+ * would still hand the seed a deployment that refuses its deletes.
+ */
+export const resetChecklistCandidatesBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    // The arming flag, not an identity, is what lives next to the delete, so a
+    // future internal caller cannot drain this table by bypassing the entry
+    // point — see assertResetArmed.
+    assertResetArmed();
+    const rows = await ctx.db
+      .query("checklistCandidates")
+      .take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
@@ -7849,6 +8854,10 @@ export const applySelectorSyncSuggestions = mutation({
           value: workingValue.get(row._id) ?? row.value,
           features: workingFeatures.get(row._id),
           sportConfig: row.sportConfig,
+          // NEO-294 — the row's NB role flags, so an accepted marketplace
+          // label cannot rename the year's Unknown row either. A suggestion
+          // naming it is counted as skipped, like any other refused plan.
+          metadata: row.metadata,
         },
         nextValue: label,
         siblings: siblings.map((r) => ({
@@ -8109,8 +9118,6 @@ export const ensureSelectorOptions = action({
         failedPlatforms: string[];
         skippedSides: Array<"bsc" | "sportlots">;
         pausedSides: Array<"bsc" | "sportlots">;
-        /** NEO-237 (D13) — the set sync only: sets minted from SportLots. */
-        slCreated?: number;
       };
       if (level === "setName") {
         if (!yearId) {
@@ -8211,22 +9218,21 @@ export const ensureSelectorOptions = action({
         res.failedPlatforms.length > 0
           ? partialSyncMessage(res.failedPlatforms)
           : undefined;
-      // NEO-237 (D13) — sets the SportLots phase MINTED are news the operator
-      // otherwise never sees: the action's own `message` is logged, not
-      // shown, and a clean sync clears the status row. So a non-zero count
-      // is its own sentence in the done row, and only then — zero adds
-      // nothing, so every other sentence stays byte-identical to before.
-      const createdNotice =
-        res.slCreated !== undefined && res.slCreated > 0
-          ? `${countNoun(res.slCreated, "set")} added from SportLots.`
-          : undefined;
+      // NEO-237 (D13) added a third sentence here — "<N> sets added from
+      // SportLots." — whenever the set sync's SportLots phase minted rows.
+      // Jason, 2026-09-22: "We don't do it for other marketplaces we
+      // shouldn't do it here." A clean sync that happened to mint SportLots
+      // sets now reads exactly like a clean BSC-only one: nothing. The
+      // count itself survives as telemetry in `syncSetsAcrossManufacturers`'
+      // return and in its log-only `message` summary — it is simply never
+      // composed into the operator-visible done row.
+      //
       // A side cannot be both skipped and failed (a skipped side is never
       // called), so at most one of these is set. Failure wins if that ever
       // stops being true: it is the one that warrants a Retry. The paused
       // sentence is independent of both — it describes the OTHER side — and
-      // leads, so the operator reads the operator's own decision first; what
-      // was added comes next, before what could not be asked.
-      const message = [pausedNotice, createdNotice, failedNotice ?? skippedNotice]
+      // leads, so the operator reads the operator's own decision first.
+      const message = [pausedNotice, failedNotice ?? skippedNotice]
         .filter((part): part is string => part !== undefined)
         .join(" ") || undefined;
       const hasNotice = res.unlinkedTotal > 0 || message !== undefined;
@@ -8905,8 +9911,11 @@ export const fetchAggregatedOptions = action({
       // so its id is part of the unlink universe (see D6 above).
       if (slAllBrandsOption) fetchedIds.sportlots.push(slAllBrandsOption.id);
 
-      const result = await ctx.runMutation(
-        api.selectorOptions.storeSelectorOptions,
+      // NEO-296 — replayed until the store has the whole list; see
+      // `storeSelectorOptionsUntilDone`. A year-level SportLots list runs to
+      // thousands of sets, which is past what one transaction may write.
+      const result = await storeSelectorOptionsUntilDone(
+        ctx,
         {
           level,
           options: deduped,
@@ -9182,6 +10191,50 @@ export const ensureBrandUnknownRow = internalMutation({
 });
 
 /**
+ * NEO-294 — find or mint the year's brand row for a name from the KNOWN
+ * BRANDS list, so a set that matches one is filed under that brand instead
+ * of Unknown.
+ *
+ * INTERNAL, like `ensureBrandUnknownRow` beside it and for the same reason:
+ * the row is born with a `metadata.setNamePrefix` and a SportLots sentinel,
+ * and `addCustomSelectorOption` — the public creation path — takes no
+ * `metadata` argument and must not gain one. The mint itself is the shared
+ * helper in brandRehome.ts, so the backfill (a mutation, which cannot call
+ * this one) creates byte-identical rows.
+ *
+ * `name` is an NB constant (`KNOWN_BRANDS`), never a marketplace value: the
+ * caller matched a set's NB display name against the list and is asking for
+ * the row that list names. Idempotent by folded name — a second sync over
+ * the same year finds the row and writes nothing.
+ */
+export const ensureBrandRow = internalMutation({
+  args: {
+    yearId: v.id("selectorOptions"),
+    /** An entry from `KNOWN_BRANDS`, exactly as spelled there. */
+    name: v.string(),
+  },
+  returns: v.object({
+    /** `null` when the year's flagged Unknown row wears this name. */
+    id: v.union(v.id("selectorOptions"), v.null()),
+    created: v.boolean(),
+    /** The row's actual prefix — an adopted pre-NEO-237 row may have none. */
+    setNamePrefix: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const checked = checkCustomSelectorValue("manufacturer", args.name);
+    if (!checked.ok) {
+      // A constant in this repo's own source cannot fail the check; if it
+      // ever does, that is a bug in the list, not an operator's input.
+      throw new Error(`ensureBrandRow: ${checked.reason}`);
+    }
+    return await ensureBrandRowForName(ctx, {
+      yearId: args.yearId,
+      name: checked.value,
+    });
+  },
+});
+
+/**
  * NEO-237 — does ANY manufacturer under the year hold a set? The "already
  * populated" test for a Sets column opened from the All Brands view, where
  * the column's parent is the year and no setName row is ever parented by one.
@@ -9241,6 +10294,8 @@ export const listYearSetRows = internalQuery({
         parentId: v.id("selectorOptions"),
         value: v.string(),
         bscIds: v.array(v.string()),
+        /** NEO-294 — `metadata.brandSetByOperator`: this row does not move. */
+        setByOperator: v.optional(v.boolean()),
       }),
     ),
     truncated: v.boolean(),
@@ -9257,6 +10312,7 @@ export const listYearSetRows = internalQuery({
       parentId: Id<"selectorOptions">;
       value: string;
       bscIds: string[];
+      setByOperator?: boolean;
     }> = [];
     let truncated = false;
     for (const mfr of manufacturers) {
@@ -9278,6 +10334,9 @@ export const listYearSetRows = internalQuery({
           parentId: mfr._id,
           value: row.value,
           bscIds: slotIds(row, "bsc"),
+          ...(row.metadata?.brandSetByOperator !== undefined
+            ? { setByOperator: row.metadata.brandSetByOperator }
+            : {}),
         });
       }
     }
@@ -9333,10 +10392,55 @@ export const listBrandSubtreeSlIds = internalQuery({
 });
 
 /**
+ * NEO-296 — how many re-homes one `rehomeSetRowsForSync` transaction performs.
+ *
+ * ## The arithmetic
+ *
+ * Convex counts one system operation per CALL, so the cost is the per-move
+ * loop, not the size of anything read. Per move this mutation spends:
+ *
+ *   1   — the row `db.get`
+ *   0–1 — the parent `db.get`, MEMOISED below: every row in a year shares one
+ *         brand-unknown parent, so this is ~one per year, not one per move
+ *   ~1.8 — inside `rehomeSetRowsToBrand`: the row's own `patch`, plus its
+ *         share of the `children` patches (one per source parent, one for the
+ *         target brand) — the figure that function's own
+ *         `REHOME_ROWS_PER_TRANSACTION` (500) is sized against
+ *
+ * plus a fixed 2 per target brand (the brand `db.get` and the sibling
+ * `.take()`). So ~2.8 per move, and 250 moves is ~700 — inside the ~900 the
+ * house treats as comfortable (~1,800 strains, ~4,000 fails;
+ * `CARDS_PER_COMMIT_CHUNK`).
+ *
+ * Before this, the only bound was `MAX_SYNC_ITEMS` (2,000), which is an
+ * ARGUMENT cap and was never a transaction cap: 2,000 moves is ~5,600–9,600
+ * operations, and the un-memoised parent read made it worse. A year with a
+ * big Unknown row and a newly-prefixed brand reaches it — which is the whole
+ * scenario D9 exists for.
+ *
+ * Smaller than `REHOME_PAGE.move` (500) on purpose: that page is spent inside
+ * `rehomeSetRowsToBrand` alone, where the caller has already read the rows.
+ * This one pays a `db.get` per move first, so the same ~900 buys fewer moves.
+ */
+export const REHOME_MOVES_PER_CALL = 250;
+
+/**
  * NEO-237 (D8/D9) — the set sync's re-homes, by row id, grouped per target
  * brand. The rows are the ones `routeBscSets` found under Unknown holding a
  * BSC id whose upstream name now matches a brand's prefix; the move itself is
  * the shared pure NB op in brandRehome.ts.
+ *
+ * NEO-296 — at most `REHOME_MOVES_PER_CALL` moves per call, refused above
+ * that; the action slices (`rehomeSetRowsForSyncInSlices`). A refusal rather
+ * than a silent truncation, the same rule `createSetsFromSlRoots` follows: a
+ * move that did not happen leaves a set under Unknown where the operator was
+ * told it had been filed, and nothing later goes looking for it.
+ *
+ * Each slice commits on its own, and a move is idempotent — a row already
+ * under the brand is a no-op inside `rehomeSetRowsToBrand`, and a row whose
+ * parent is no longer the flagged Unknown row is skipped by the guard below.
+ * So an interrupted run leaves the moves it made, loses nothing, and
+ * re-running the sync finishes the rest.
  */
 export const rehomeSetRowsForSync = internalMutation({
   args: {
@@ -9349,10 +10453,10 @@ export const rehomeSetRowsForSync = internalMutation({
   },
   returns: v.object({ rehomed: v.number(), clashes: v.number() }),
   handler: async (ctx, args) => {
-    if (args.moves.length > MAX_SYNC_ITEMS) {
+    if (args.moves.length > REHOME_MOVES_PER_CALL) {
       throw new Error(
         `rehomeSetRowsForSync: ${args.moves.length} moves exceeds the ` +
-          `${MAX_SYNC_ITEMS}-per-call limit`,
+          `${REHOME_MOVES_PER_CALL}-per-call limit — slice them`,
       );
     }
     const byTarget = new Map<Id<"selectorOptions">, Id<"selectorOptions">[]>();
@@ -9361,6 +10465,28 @@ export const rehomeSetRowsForSync = internalMutation({
       if (list) list.push(move.rowId);
       else byTarget.set(move.toId, [move.rowId]);
     }
+    /**
+     * NEO-296 — the parent read, once per PARENT rather than once per move.
+     *
+     * Every row in this plan came out of the same year's brand-unknown row, so
+     * the un-memoised version spent one `db.get` per move re-reading one
+     * document. Halving the per-move cost is most of what makes a 250-move
+     * page fit. `null` is cached too: a parent that is gone stays gone for the
+     * rest of the transaction.
+     */
+    const parentCache = new Map<
+      Id<"selectorOptions">,
+      Doc<"selectorOptions"> | null
+    >();
+    const parentOf = async (
+      parentId: Id<"selectorOptions">,
+    ): Promise<Doc<"selectorOptions"> | null> => {
+      const hit = parentCache.get(parentId);
+      if (hit !== undefined) return hit;
+      const parent = await ctx.db.get(parentId);
+      parentCache.set(parentId, parent);
+      return parent;
+    };
     let rehomed = 0;
     let clashes = 0;
     for (const [brandId, rowIds] of byTarget) {
@@ -9371,7 +10497,7 @@ export const rehomeSetRowsForSync = internalMutation({
         // plan was computed a moment ago, and a row an operator moved in
         // between is theirs.
         if (!row || row.level !== "setName" || !row.parentId) continue;
-        const parent = await ctx.db.get(row.parentId);
+        const parent = await parentOf(row.parentId);
         if (parent?.metadata?.isBrandUnknown !== true) continue;
         rows.push(row);
       }
@@ -9383,6 +10509,47 @@ export const rehomeSetRowsForSync = internalMutation({
     return { rehomed, clashes };
   },
 });
+
+/**
+ * NEO-296 — every re-home the sync planned, in transaction-sized slices.
+ *
+ * The action is not a transaction, so this is the same shape the skip-name
+ * lookup uses: slice, call, sum. No cursor and nothing partial to report —
+ * the loop runs to the end of the plan or throws, and each slice commits on
+ * its own so an interruption keeps the moves it made.
+ *
+ * Sliced by TARGET-BRAND GROUPING order rather than by the raw plan order, so
+ * a slice boundary does not split one brand across two transactions more often
+ * than it has to: each group pays a fixed brand `db.get` + sibling `.take()`,
+ * and splitting a group pays it twice.
+ */
+async function rehomeSetRowsForSyncInSlices(
+  ctx: ActionCtx,
+  moves: Array<{ rowId: Id<"selectorOptions">; toId: Id<"selectorOptions"> }>,
+): Promise<{ rehomed: number; clashes: number }> {
+  const byTarget = new Map<
+    Id<"selectorOptions">,
+    Array<{ rowId: Id<"selectorOptions">; toId: Id<"selectorOptions"> }>
+  >();
+  for (const move of moves) {
+    const list = byTarget.get(move.toId);
+    if (list) list.push(move);
+    else byTarget.set(move.toId, [move]);
+  }
+  const ordered = [...byTarget.values()].flat();
+  let rehomed = 0;
+  let clashes = 0;
+  for (let start = 0; start < ordered.length; start += REHOME_MOVES_PER_CALL) {
+    const slice = ordered.slice(start, start + REHOME_MOVES_PER_CALL);
+    const result: { rehomed: number; clashes: number } = await ctx.runMutation(
+      internal.selectorOptions.rehomeSetRowsForSync,
+      { moves: slice },
+    );
+    rehomed += result.rehomed;
+    clashes += result.clashes;
+  }
+  return { rehomed, clashes };
+}
 
 /**
  * NEO-237 (D13) — the sets one brand scope gains from SportLots in one Sync
@@ -9641,9 +10808,14 @@ export const syncSetsAcrossManufacturers = action({
     pausedSides: v.array(platformSideValidator),
     /**
      * NEO-237 (D13) — sets the SportLots phase MINTED this run, summed across
-     * every brand scope it wrote. `ensureSelectorOptions` turns a non-zero
-     * count into the column's done-row sentence; the BSC phase's stores are
-     * in `totalSets` with these, not here.
+     * every brand scope it wrote. The BSC phase's stores are in `totalSets`
+     * with these, not here.
+     *
+     * Telemetry only. It used to become a done-row sentence in
+     * `ensureSelectorOptions`; that notice was removed (Jason, 2026-09-22 —
+     * no other marketplace announces what it added, so neither does this
+     * one). The count still rides the log-only `message` summary below, and
+     * nothing user-facing reads it.
      */
     slCreated: v.number(),
   }),
@@ -9681,6 +10853,11 @@ export const syncSetsAcrossManufacturers = action({
       let totalStored = 0;
       // Sets the SportLots phase minted (D13), reported to the column.
       let slCreatedTotal = 0;
+      // NEO-294 — brands minted from the KNOWN BRANDS list this run, and the
+      // sets filed under them. Both phases add to these and the summary says
+      // them once, so the operator reads one number per fact.
+      let knownBrandsAdded = 0;
+      let knownBrandSetsFiled = 0;
 
       // ── BSC phase ─────────────────────────────────────────────────────
       //
@@ -9740,38 +10917,141 @@ export const syncSetsAcrossManufacturers = action({
             internal.selectorOptions.listYearSetRows,
             { yearId: args.yearId },
           );
-          const holdersByBscId = new Map<
-            string,
-            Array<BscSetHolder<Id<"selectorOptions">>>
-          >();
-          for (const row of index.sets) {
-            for (const bscId of row.bscIds) {
-              const list = holdersByBscId.get(bscId);
-              const holder = { rowId: row._id, parentId: row.parentId };
-              if (list) list.push(holder);
-              else holdersByBscId.set(bscId, [holder]);
+          // NEO-296 (audit condition 3) — A TRUNCATED INDEX SKIPS THE WHOLE
+          // BSC BUCKETING PHASE, not just the moves.
+          //
+          // The index is what says "NB already has a row for this BSC set"
+          // (rung 1 of `routeBscSets`), and rung 1 is what keeps this legal:
+          // a set NB owns a row for is routed by THAT ROW'S OWN NB NAME.
+          // Past `MAX_YEAR_SET_ROWS` the holder map is missing rows, so a set
+          // whose NB row the read never reached looks like a set NB has no
+          // row for — and falls to rung 2, which routes by the MARKETPLACE's
+          // name for it. That is the forward dependency the product invariant
+          // forbids (CLAUDE.md, rule 4: NB behaviour is never keyed on a
+          // marketplace value), and it would re-home or re-file an operator's
+          // row on the strength of a name NB does not use.
+          //
+          // Suppressing only the `moves` — which is all this did — left the
+          // BUCKETING running on the same partial map, so the misrouting
+          // still happened, one store call later.
+          //
+          // Skipping the phase costs this run's BSC sets; they are stored by
+          // the next sync, or by a sync of the brand whose column asked. A
+          // phase that did not run is recoverable and visible. A set filed
+          // under a brand a marketplace name chose is neither.
+          if (index.truncated) {
+            console.warn(
+              JSON.stringify({
+                msg: "bsc_phase_skipped_truncated_index",
+                yearId: args.yearId,
+                cap: MAX_YEAR_SET_ROWS,
+                indexedSets: index.sets.length,
+                bscSets: bscResult.options.length,
+              }),
+            );
+            summary.push(
+              "too many sets this year to file BSC's list — none were filed",
+            );
+          } else {
+            const holdersByBscId = new Map<
+              string,
+              Array<BscSetHolder<Id<"selectorOptions">>>
+            >();
+            for (const row of index.sets) {
+              for (const bscId of row.bscIds) {
+                const list = holdersByBscId.get(bscId);
+                const holder = {
+                  rowId: row._id,
+                  parentId: row.parentId,
+                  // NEO-294 — the NB row's OWN name, which is the only one
+                  // allowed to re-home it; BSC's name for the same set routes
+                  // only sets NB has no row for. See `routeBscSets`.
+                  value: row.value,
+                  // NEO-294 — an operator's placement; this row never moves.
+                  ...(row.setByOperator !== undefined
+                    ? { setByOperator: row.setByOperator }
+                    : {}),
+                };
+                if (list) list.push(holder);
+                else holdersByBscId.set(bscId, [holder]);
+              }
             }
-          }
-          const plan = routeBscSets<Id<"selectorOptions">>({
-            sets: bscResult.options,
-            manufacturers: index.manufacturers,
-            holdersByBscId,
-          });
+            // The routing input, which the known-brand pre-pass may GROW.
+            let routeManufacturers: Array<{
+              _id: Id<"selectorOptions">;
+              value: string;
+              setNamePrefix?: string;
+              isBrandUnknown?: boolean;
+            }> = index.manufacturers;
+            const route = () =>
+              routeBscSets<Id<"selectorOptions">>({
+                sets: bscResult.options,
+                manufacturers: routeManufacturers,
+                holdersByBscId,
+                // NEO-294 — consulted ONLY for a set that would land in
+                // Unknown; an NB brand, by id or by prefix, always wins first.
+                matchKnownBrand,
+              });
+            let plan = route();
 
-          // 3. Re-home Unknown → brand BEFORE storing, so the brand's bucket
-          // matches the moved row by id (D9). Not on a truncated index: a
-          // holder the read did not reach is a placement this run cannot see.
-          if (plan.moves.length > 0) {
-            if (index.truncated) {
-              console.warn(
-                `[syncSetsAcrossManufacturers] year set index truncated at ` +
-                  `${MAX_YEAR_SET_ROWS} rows — ${plan.moves.length} re-home(s) skipped`,
+            // 2b. NEO-294 — the known-brand pre-pass. `routeBscSets` is pure
+            // and cannot create a row, so it named the brands this year would
+            // need; mint them here (idempotent, one row per year per brand)
+            // and route again with them in hand. The second pass is what
+            // FILES the sets — one function decides placement, once — and it
+            // turns the Unknown holders of those sets into ordinary prefix
+            // moves, which step 3 applies.
+            if (plan.knownBrandRequests.length > 0) {
+              const minted: typeof routeManufacturers = [];
+              let brandsAdded = 0;
+              for (const request of plan.knownBrandRequests) {
+                const ensured = await ctx.runMutation(
+                  internal.selectorOptions.ensureBrandRow,
+                  { yearId: args.yearId, name: request.brand },
+                );
+                // `null` = the year's flagged Unknown row already wears this
+                // name (an operator's rename). Nothing was created and these
+                // sets stay where they are.
+                if (ensured.id === null) continue;
+                if (ensured.created) brandsAdded++;
+                minted.push({
+                  _id: ensured.id,
+                  value: request.brand,
+                  ...(ensured.setNamePrefix !== undefined
+                    ? { setNamePrefix: ensured.setNamePrefix }
+                    : {}),
+                });
+              }
+              if (minted.length > 0) {
+                routeManufacturers = [...routeManufacturers, ...minted];
+                plan = route();
+              }
+              // Counted from the FINAL plan, so the number is what was filed
+              // rather than what was hoped for: a brand row adopted from
+              // before NEO-237 may carry no prefix and claim nothing.
+              const filed = minted.reduce(
+                (n, m) => n + (plan.buckets.get(m._id)?.length ?? 0),
+                0,
               );
-              summary.push("too many sets this year to move any out of Unknown");
-            } else {
-              const moved = await ctx.runMutation(
-                internal.selectorOptions.rehomeSetRowsForSync,
-                { moves: plan.moves.map((m) => ({ rowId: m.rowId, toId: m.toId })) },
+              knownBrandsAdded += brandsAdded;
+              knownBrandSetsFiled += filed;
+            }
+
+            // 3. Re-home Unknown → brand BEFORE storing, so the brand's bucket
+            // matches the moved row by id (D9).
+            //
+            // The truncated-index guard that used to sit HERE has moved up to
+            // the index read: a holder the read did not reach is a placement
+            // this run cannot see, and that is true of the bucketing as much
+            // as of the moves. Suppressing only the moves left the same
+            // partial map deciding where each set was FILED.
+            if (plan.moves.length > 0) {
+              // NEO-296 — sliced to transaction size; see
+              // `REHOME_MOVES_PER_CALL`. A whole year's worth of moves in one
+              // transaction was ~5,600+ operations.
+              const moved = await rehomeSetRowsForSyncInSlices(
+                ctx,
+                plan.moves.map((m) => ({ rowId: m.rowId, toId: m.toId })),
               );
               if (moved.rehomed > 0) summary.push(rehomedNotice(moved.rehomed));
               if (moved.clashes > 0) {
@@ -9781,59 +11061,59 @@ export const syncSetsAcrossManufacturers = action({
                 );
               }
             }
-          }
 
-          // 4. The brand-unknown bucket — minted only when something needs it.
-          const buckets = new Map<Id<"selectorOptions">, MarketplaceSetEntry[]>(
-            plan.buckets,
-          );
-          if (plan.unknown.length > 0) {
-            let unknownId = index.manufacturers.find(
-              (m) => m.isBrandUnknown === true,
-            )?._id;
-            if (!unknownId) {
-              const ensured = await ctx.runMutation(
-                internal.selectorOptions.ensureBrandUnknownRow,
-                { yearId: args.yearId },
-              );
-              unknownId = ensured.id;
+            // 4. The brand-unknown bucket — minted only when something needs it.
+            const buckets = new Map<Id<"selectorOptions">, MarketplaceSetEntry[]>(
+              plan.buckets,
+            );
+            if (plan.unknown.length > 0) {
+              let unknownId = routeManufacturers.find(
+                (m) => m.isBrandUnknown === true,
+              )?._id;
+              if (!unknownId) {
+                const ensured = await ctx.runMutation(
+                  internal.selectorOptions.ensureBrandUnknownRow,
+                  { yearId: args.yearId },
+                );
+                unknownId = ensured.id;
+              }
+              buckets.set(unknownId, [
+                ...(buckets.get(unknownId) ?? []),
+                ...plan.unknown,
+              ]);
             }
-            buckets.set(unknownId, [
-              ...(buckets.get(unknownId) ?? []),
-              ...plan.unknown,
-            ]);
-          }
 
-          // 5. Store sets under each manufacturer.
-          //
-          // NEO-211 condition 6: NO `coveredSides` here, deliberately. BSC
-          // returns one flat set list which this action then BUCKETS by
-          // manufacturer, so each per-bucket store call sees only a slice of
-          // what the fetch returned. Declaring BSC covered on a slice would
-          // make every set filed under a different manufacturer look delisted
-          // and strip its slug. The whole-year unlink belongs to a store call
-          // that sees the whole year, which this is not.
-          for (const [parentId, sets] of buckets) {
-            for (let i = 0; i < sets.length; i += MAX_SYNC_ITEMS) {
-              const result = await ctx.runMutation(
-                api.selectorOptions.storeSelectorOptions,
-                {
+            // 5. Store sets under each manufacturer.
+            //
+            // NEO-211 condition 6: NO `coveredSides` here, deliberately. BSC
+            // returns one flat set list which this action then BUCKETS by
+            // manufacturer, so each per-bucket store call sees only a slice of
+            // what the fetch returned. Declaring BSC covered on a slice would
+            // make every set filed under a different manufacturer look delisted
+            // and strip its slug. The whole-year unlink belongs to a store call
+            // that sees the whole year, which this is not.
+            for (const [parentId, sets] of buckets) {
+              for (let i = 0; i < sets.length; i += MAX_SYNC_ITEMS) {
+                // NEO-296 — the `MAX_SYNC_ITEMS` slice is the ARGUMENT cap; the
+                // store's own write budget is what bounds the transaction, and
+                // this replays each slice until it is fully stored.
+                const result = await storeSelectorOptionsUntilDone(ctx, {
                   level: "setName",
                   parentId,
                   options: sets.slice(i, i + MAX_SYNC_ITEMS).map((s) => ({
                     value: s.value,
                     platformData: { bsc: s.platformValue },
                   })),
-                },
-              );
-              totalStored += result.optionsCount;
-              unlinkedAll.push(...result.unlinked);
+                });
+                totalStored += result.optionsCount;
+                unlinkedAll.push(...result.unlinked);
+              }
+              // An internal LOG string, not a card title. Counts per bucket.
+              const name =
+                routeManufacturers.find((m) => m._id === parentId)?.value ??
+                BRAND_UNKNOWN_VALUE;
+              summary.push(`${name}: ${sets.length}`);
             }
-            // An internal LOG string, not a card title. Counts per bucket.
-            const name =
-              index.manufacturers.find((m) => m._id === parentId)?.value ??
-              BRAND_UNKNOWN_VALUE;
-            summary.push(`${name}: ${sets.length}`);
           }
         }
       }
@@ -10010,14 +11290,78 @@ export const syncSetsAcrossManufacturers = action({
         // Roots not filed because the year's set index is over
         // `MAX_YEAR_SET_ROWS` (`createSetsFromSlRoots` writes nothing then).
         let slIndexTruncated = 0;
+        /**
+         * NEO-294 (audit condition 3) — the year's set index came back
+         * truncated, so NOTHING more will be filed this sync.
+         *
+         * Sticky and hoisted out of `writeRoots` deliberately. That index is
+         * YEAR-wide and rebuilt inside every `createSetsFromSlRoots` call
+         * (≤ `MAX_YEAR_SET_ROWS` reads); sets are only ever added, so once it
+         * overflows every later call would rebuild it, write nothing and
+         * report the same truncation. Before NEO-294 that cost one wasted
+         * rebuild per scope; the known-brand split turns ≤5 chunked calls
+         * into up to ~40 group calls, so the same paper cut became ~40 full
+         * year scans to write nothing. With the flag the first truncated
+         * response stops the scope — and every scope after it — and the
+         * roots that never got their chance are COUNTED into
+         * `slIndexTruncated` exactly as they were before, so the operator's
+         * summary is unchanged.
+         */
+        let slIndexOverBudget = false;
         // Entries hidden as a variant of a set NB already has. Not written
         // as sets, but not invisible either: the operator reaches them from
         // that set's Base picker / attach pane, and the summary says how
         // many there are.
         let slVariantsOfKnown = 0;
+        /**
+         * Write one brand's new roots: at most `MAX_SL_SETS_PER_MUTATION`
+         * per transaction, counts summed. Returns how many sets were
+         * created, so the known-brand split can report its own number.
+         */
+        const writeRoots = async (
+          manufacturerId: Id<"selectorOptions">,
+          rootArgs: Array<{ id: string; label: string }>,
+        ): Promise<number> => {
+          if (slIndexOverBudget) {
+            // The index already overflowed: these roots would be refused by
+            // a rebuild that costs a full year scan. Count them, read nothing.
+            slIndexTruncated += rootArgs.length;
+            return 0;
+          }
+          let createdHere = 0;
+          const chunks = chunkSlRoots(rootArgs, MAX_SL_SETS_PER_MUTATION);
+          for (let c = 0; c < chunks.length; c++) {
+            const written = await ctx.runMutation(
+              internal.selectorOptions.createSetsFromSlRoots,
+              {
+                manufacturerId,
+                roots: chunks[c],
+                createdByUserId: adminUserId,
+              },
+            );
+            createdHere += written.created;
+            slCreated += written.created;
+            slCreatedTotal += written.created;
+            slClashedAtTarget += written.clashedAtTarget;
+            slExistsElsewhere += written.existsElsewhere;
+            totalStored += written.created;
+            if (written.indexTruncated) {
+              // Nothing of this chunk was filed and the later chunks would
+              // fare the same: count them all and stop for this scope — and,
+              // since the index is year-wide, for every scope after it.
+              slIndexOverBudget = true;
+              slIndexTruncated += chunks
+                .slice(c)
+                .reduce((n, chunk) => n + chunk.length, 0);
+              break;
+            }
+          }
+          return createdHere;
+        };
         const classify = async (
           scope: (typeof scopes)[number],
           entries: Array<{ id: string; label: string }>,
+          opts: { knownBrandSplit?: boolean } = {},
         ) => {
           const covered = await ctx.runQuery(
             internal.selectorOptions.listBrandSubtreeSlIds,
@@ -10051,31 +11395,59 @@ export const syncSetsAcrossManufacturers = action({
           // SportLots id, in transactions of at most MAX_SL_SETS_PER_MUTATION
           // roots per brand scope, in the classifier's order. Members are not
           // written; the next sync files them as the new set's variants.
-          const rootArgs = routed.roots.map((r) => ({ id: r.id, label: r.label }));
-          const chunks = chunkSlRoots(rootArgs, MAX_SL_SETS_PER_MUTATION);
-          for (let c = 0; c < chunks.length; c++) {
-            const written = await ctx.runMutation(
-              internal.selectorOptions.createSetsFromSlRoots,
-              {
-                manufacturerId: scope._id,
-                roots: chunks[c],
-                createdByUserId: adminUserId,
-              },
-            );
-            slCreated += written.created;
-            slCreatedTotal += written.created;
-            slClashedAtTarget += written.clashedAtTarget;
-            slExistsElsewhere += written.existsElsewhere;
-            totalStored += written.created;
-            if (written.indexTruncated) {
-              // Nothing of this chunk was filed and the later chunks would
-              // fare the same: count them all and stop for this scope.
-              slIndexTruncated += chunks
-                .slice(c)
-                .reduce((n, chunk) => n + chunk.length, 0);
-              break;
+          let rootArgs = routed.roots.map((r) => ({ id: r.id, label: r.label }));
+
+          // NEO-294 — a root ABOUT TO BE CREATED UNDER UNKNOWN whose label
+          // matches a known brand is created under that brand instead. Only
+          // the Unknown scope splits: every other scope is a brand already,
+          // and taking a set off the brand SportLots listed it under would be
+          // the sync second-guessing a placement. The brand is minted exactly
+          // as the BSC phase mints it, and `createSetsFromSlRoots` names the
+          // set from that brand's prefix, so "Choice Biloxi Shuckers" keeps
+          // its name rather than gaining a second "Choice".
+          if (opts.knownBrandSplit) {
+            const groups = new Map<
+              string,
+              { brand: string; roots: typeof rootArgs }
+            >();
+            const rest: typeof rootArgs = [];
+            for (const root of rootArgs) {
+              const brand = matchKnownBrand(root.label);
+              if (brand === undefined) {
+                rest.push(root);
+                continue;
+              }
+              const key = selectorValueKey(brand);
+              const group = groups.get(key);
+              if (group) group.roots.push(root);
+              else groups.set(key, { brand, roots: [root] });
             }
+            for (const group of groups.values()) {
+              if (slIndexOverBudget) {
+                // NEO-294 (audit condition 3) — nothing can be filed this
+                // sync, so no brand row is minted for sets that cannot land
+                // under it. The roots fall through to `rest`, where
+                // `writeRoots` counts them into `slIndexTruncated`.
+                rest.push(...group.roots);
+                continue;
+              }
+              const ensured = await ctx.runMutation(
+                internal.selectorOptions.ensureBrandRow,
+                { yearId: args.yearId, name: group.brand },
+              );
+              if (ensured.id === null) {
+                // The flagged row wears this name; these sets stay put.
+                rest.push(...group.roots);
+                continue;
+              }
+              if (ensured.created) knownBrandsAdded++;
+              knownBrandSetsFiled += await writeRoots(ensured.id, group.roots);
+            }
+            rootArgs = rest;
           }
+
+          if (rootArgs.length === 0) return;
+          await writeRoots(scope._id, rootArgs);
         };
 
         // Every brand's prefix, for the Unknown scope: Unknown holds what
@@ -10108,7 +11480,9 @@ export const syncSetsAcrossManufacturers = action({
               .filter((e) => matchesBrandPrefix(e.label, prefix))
               .map((e) => ({ id: e.id, label: stripMatchedBrandPrefix(e.label, prefix) }));
           }
-          await classify(scope, entries);
+          // NEO-294 — only the Unknown scope offers its roots to the known
+          // list; see `classify`.
+          await classify(scope, entries, { knownBrandSplit: isUnknown });
         }
         for (let i = 0; i < realToFetch.length; i++) {
           const list = realLists[i];
@@ -10165,6 +11539,18 @@ export const syncSetsAcrossManufacturers = action({
               `sets you already have`,
           );
         }
+      }
+
+      // NEO-294 — said once for both phases.
+      if (knownBrandsAdded > 0) {
+        summary.push(
+          `${countNoun(knownBrandsAdded, "brand")} added from the known list`,
+        );
+      }
+      if (knownBrandSetsFiled > 0) {
+        summary.push(
+          `${countNoun(knownBrandSetsFiled, "set")} filed under a known brand`,
+        );
       }
 
       // Success means "something was asked and answered": the same rule
@@ -11753,12 +13139,15 @@ export const CARDS_PER_COMMIT_CHUNK = 150;
  *
  * Mirrors `MAX_CROSS_LISTING_CARD_NUMBERS` above and exists for the same
  * reason: a client-side cap is advisory, and a direct API call must not be
- * able to hand a single transaction an unbounded delete list. Deletion is now
- * an explicit operator decision (see `commitCardChecklistFinalize`), and an
- * operator confirming a thousand deletions in one pass is already far beyond
- * anything the review UI produces.
+ * able to hand a single transaction an unbounded delete list.
+ *
+ * NEO-294 moved the number itself to `lib/cards/commit-limits.ts` so
+ * `SyncReviewModal` can cap its own "Select all" against the SAME value rather
+ * than a hand-copied one; re-exported here because that is where every server
+ * caller already reads it from. The per-transaction bound is separate and
+ * lives on `FINALIZE_DELETES_PER_PAGE`: this caps the LIST, that caps the PAGE.
  */
-export const MAX_OPERATOR_DELETE_IDS = 1000;
+export { MAX_OPERATOR_DELETE_IDS };
 
 /**
  * The stored-row shape `buildMatchMaps` needs. Deliberately narrower than
@@ -12000,6 +13389,62 @@ function boundedAliasInput(raw: ReadonlyArray<string>): string[] {
     .slice(0, MAX_TEAM_ALIASES);
 }
 
+/**
+ * NEO-296 — how many checklist NAMES one prelude page walks.
+ *
+ * ## The arithmetic
+ *
+ * Convex counts one system operation per CALL, so what matters is the per-name
+ * loop, not the size of anything read. Once the creates have run, a name costs:
+ *
+ *   players — 1 `sameNamePlayers` (two indexed reads: the `players` name index
+ *             and the `playerAliases` one, plus one `db.get` per alias holder,
+ *             capped at `PLAYER_AMBIGUITY_SCAN_LIMIT`), so **2 on the ordinary
+ *             path**; an ambiguous name adds the card-year tie-break, itself
+ *             capped at `CARD_YEAR_TEAM_READS_PER_NAME` (8)
+ *   teams   — 1 `resolveTeamForSetYear` → `findTeamsByFullName`, **1–2 on the
+ *             ordinary path**, up to 18 when one alias key is held by many
+ *             rows (the preloaded college programs: "Miami", "Wisconsin")
+ *   either  — 1 extra `db.get` for a `link` decision, once per linked row
+ *
+ * So ~2 per name typical, and the tail is bounded rather than open. 300 names
+ * is ~600 operations, inside the ~900 this codebase treats as comfortable
+ * (~1,800 strains, ~4,000 fails — `CARDS_PER_COMMIT_CHUNK`), leaving room for
+ * the prelude's fixed preamble and ancestry tail on every page.
+ *
+ * The tie-break's 8 is PER NAME, so on its own it would put the worst case at
+ * 8 × 300 = 2,400 reads — past the straining line. It is joined by a
+ * transaction total, `CARD_YEAR_TEAM_READS_PER_TRANSACTION`, which the walk
+ * below treats as a reason to END THE PAGE rather than to answer the
+ * remaining names on a spent budget. So this page size is the ceiling on
+ * names and that one is the ceiling on reads; whichever is reached first
+ * stops the page, and `hasMore` carries the rest.
+ *
+ * ## Why the prelude needed this at all
+ *
+ * It walked EVERY distinct player and team name on the checklist in one
+ * transaction. A 754-card set yields ~750 player names and ~35 team names, so
+ * ~1,635 operations with nothing going wrong — already straining — and one
+ * `create` decision on a player with a long career list, or one team name on a
+ * crowded alias key, took it over.
+ *
+ * The same budget bounds the creates phase, which over-charges it: most names
+ * carry no create decision and that phase spends nothing on them. Over-charging
+ * buys a shorter page; under-charging buys a failed transaction.
+ */
+export const PRELUDE_NAMES_PER_PAGE = 300;
+
+/**
+ * NEO-296 — how many prelude pages one commit may walk before giving up.
+ *
+ * A runaway guard, not a budget. `MAX_DISTINCT_NAMES` is the validated
+ * ceiling on each name list, but a real checklist is `MAX_CARDS_PER_COMMIT`
+ * (5,000) cards worth of names — at most a few dozen pages per phase. 200 is
+ * an order of magnitude past that, so tripping it means a phase is not
+ * advancing, which must not be reported to the operator as a finished commit.
+ */
+export const PRELUDE_MAX_PAGES = 200;
+
 export const commitCardChecklistPrelude = internalMutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -12030,8 +13475,87 @@ export const commitCardChecklistPrelude = internalMutation({
       ),
     ),
     batchId: v.optional(v.string()),
+    /**
+     * NEO-296 — which half of the prelude this call runs. Absent runs BOTH,
+     * which is what every caller did before the split and what the direct
+     * callers in the test suite still do.
+     *
+     *   "creates" — the writes: durable skips, staged leagues, aliases, staged
+     *               career teams, and the rows a `create` decision asks for.
+     *               Bounded by the DECISIONS in the review batch.
+     *   "resolve" — pure reads: every checklist name mapped to the id it
+     *               resolves to. Bounded by the NAMES on the checklist.
+     *
+     * The order is not optional. Resolution must run after the creates,
+     * because a name a `create` decision covers only resolves once its row
+     * exists — that is the whole reason the split is this way round and not
+     * "resolve everything, then write".
+     */
+    phase: v.optional(v.union(v.literal("creates"), v.literal("resolve"))),
+    /**
+     * NEO-296 — what the "creates" phase minted, handed to "resolve".
+     *
+     * A PLAYER row is stored under the folded checklist name, so resolution
+     * finds it again through `sameNamePlayers` without being told. A TEAM row
+     * is stored under the operator's Location + Name (NEO-236), which need not
+     * resemble the checklist string at all — so the mapping from raw name to
+     * new row has to travel. Players ride along too for the one case where the
+     * lookup cannot settle it: a name that ALREADY matched two or more rows
+     * before this commit added a third.
+     */
+    priorCreates: v.optional(
+      v.object({
+        players: v.array(
+          v.object({
+            name: v.string(),
+            id: v.id("players"),
+            storedName: v.string(),
+          }),
+        ),
+        teams: v.array(
+          v.object({
+            name: v.string(),
+            id: v.id("teams"),
+            storedName: v.string(),
+          }),
+        ),
+      }),
+    ),
+    /** NEO-296 — how many names of this phase's walk are already done. */
+    resume: v.optional(v.object({ offset: v.number() })),
+    /**
+     * NEO-296 — narrow this call's page, for a test that needs the boundary in
+     * a particular place.
+     *
+     * It can only make the page SMALLER, exactly as `brandRehome`'s
+     * `clampPage` can: `PRELUDE_NAMES_PER_PAGE` is the transaction's ceiling
+     * and nothing, test or caller, gets to raise it. The case it exists for is
+     * the one that matters most here — two spellings of one name with the page
+     * boundary BETWEEN them — and building that with 300 real names would make
+     * a test slow enough that nobody keeps it.
+     */
+    namesPerPage: v.optional(v.number()),
+    /**
+     * NEO-296 — narrow this call's TEAM READ ceiling, for a test that needs
+     * the page to end on it without seeding a few hundred teams.
+     *
+     * Same contract as `namesPerPage` directly above: it can only make the
+     * ceiling SMALLER (`createCardYearTeamCache` clamps it), because
+     * `CARD_YEAR_TEAM_READS_PER_TRANSACTION` is the transaction's bound and
+     * nothing gets to raise it. Ignored on a whole-prelude call, which is
+     * unpaged and so has no ceiling to lower.
+     */
+    cardYearTeamReads: v.optional(v.number()),
   },
   returns: v.object({
+    /**
+     * NEO-296 — this phase's walk stopped on its bound. Call again with
+     * `resume`. Always false when `phase` is absent, because that runs the
+     * whole prelude in one transaction exactly as it always did.
+     */
+    hasMore: v.boolean(),
+    /** Where the next call resumes; null when there is nothing behind it. */
+    resume: v.union(v.object({ offset: v.number() }), v.null()),
     userId: v.string(),
     sportSkuCode: v.optional(v.string()),
     sportValue: v.string(),
@@ -12273,6 +13797,52 @@ export const commitCardChecklistPrelude = internalMutation({
           )
           .collect()
       : [];
+    /**
+     * NEO-296 — the `create` arm of a review decision, named once.
+     *
+     * The two create closures below are reached only for this arm, and saying
+     * so in their signatures is what lets them keep the bodies they were lifted
+     * from verbatim, narrowing and all.
+     */
+    type CreateDecision = Extract<
+      NonNullable<(typeof reviewRows)[number]["decision"]>,
+      { action: "create" }
+    >;
+    /*
+     * ── NEO-296: which half of the prelude this call is ─────────────────────
+     *
+     * Absent runs both, in order, exactly as one transaction always did — and
+     * that is still what the direct callers in the test suite get. The action
+     * splits them so neither half can outgrow a transaction: the writes are
+     * bounded by the review batch's DECISIONS, resolution by the checklist's
+     * NAMES.
+     */
+    const runCreates = args.phase === undefined || args.phase === "creates";
+    const runResolve = args.phase === undefined || args.phase === "resolve";
+    /**
+     * NEO-296 — rows the CREATES phase already minted, by the raw checklist
+     * name that asked for them.
+     *
+     * Empty for a whole-prelude call, which is what keeps that path byte-for-
+     * byte what it was. For a split run it is what stops the resolve phase
+     * writing anything: a name whose `create` decision has already been
+     * honoured is mapped from here instead of being created a second time.
+     *
+     * It matters most for PLAYERS. A team create adopts an existing row of the
+     * same composed name (`createTeamFromOperatorInput`), so a second attempt
+     * would link rather than duplicate; a player create is a bare `insert`, so
+     * a name that matched two or more rows BEFORE this commit — the one case
+     * where the resolve phase's exactly-one fast path cannot fire — would mint
+     * a second row for the same person. That is the duplicate this whole
+     * restructure exists not to create.
+     */
+    const priorPlayerByName = new Map(
+      (args.priorCreates?.players ?? []).map((e) => [e.name, e] as const),
+    );
+    const priorTeamByName = new Map(
+      (args.priorCreates?.teams ?? []).map((e) => [e.name, e] as const),
+    );
+
     const reviewByKey = new Map<string, (typeof reviewRows)[number]>();
     for (const row of reviewRows) {
       reviewByKey.set(`${row.kind}:${norm(row.name)}`, row);
@@ -12305,6 +13875,8 @@ export const commitCardChecklistPrelude = internalMutation({
     const skippedPlayerNames: string[] = [];
     const skippedTeamNames: string[] = [];
     for (const row of reviewRows) {
+      // NEO-296 — a WRITE pass; the resolve phase does not run it.
+      if (!runCreates) break;
       if (row.decision?.action !== "skip") continue;
       /*
        * NEO-254 — a skipped LEAGUE is not a suppressed name.
@@ -12907,6 +14479,8 @@ export const commitCardChecklistPrelude = internalMutation({
     const teamsWithSkippedLeague = new Set<string>();
 
     for (const row of reviewRows) {
+      // NEO-296 — a WRITE pass; the resolve phase does not run it.
+      if (!runCreates) break;
       if (row.kind !== "league") continue;
       const leagueKey = normalizeLeagueName(row.name);
       if (!leagueKey) continue;
@@ -13014,6 +14588,8 @@ export const commitCardChecklistPrelude = internalMutation({
       aliasNamesByTeamId.set(row.decision.linkedTeamId, names);
     }
     for (const [teamId, names] of aliasNamesByTeamId) {
+      // NEO-296 — a WRITE pass; the resolve phase does not run it.
+      if (!runCreates) break;
       const linked = await ctx.db.get(teamId);
       if (!linked || linked.sportId !== args.sportId) continue;
       const held = linked.aliases ?? [];
@@ -13078,6 +14654,8 @@ export const commitCardChecklistPrelude = internalMutation({
     const stagedTeamIdByLabel = new Map<string, Id<"teams">>();
 
     for (const row of reviewRows) {
+      // NEO-296 — a WRITE pass; the resolve phase does not run it.
+      if (!runCreates) break;
       if (row.kind !== "team") continue;
       if (row.source?.kind !== "careerTeamOf") continue;
       // A step answered by pointing at a team we already hold. Nothing to
@@ -13139,7 +14717,157 @@ export const commitCardChecklistPrelude = internalMutation({
      */
     const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
 
-    for (const name of allTeamNames) {
+    /*
+     * ── NEO-296: ONE bounded walk over both name sets ───────────────────────
+     *
+     * Teams first, then players, addressed by a single offset into the
+     * concatenation of the two — so a page boundary can fall anywhere,
+     * including in the middle of the teams, and the next call resumes exactly
+     * where this one stopped. Two separate cursors would have needed two
+     * resume fields and a rule about which one is live.
+     *
+     * A whole-prelude call (`phase` absent) starts at 0 with an unlimited
+     * budget, which is the loop both of these were before the split.
+     *
+     * The budget is a NAME COUNT rather than an operation count because, once
+     * the creates have run, every name costs the same one or two indexed reads
+     * — see `PRELUDE_NAMES_PER_PAGE`. The creates phase is charged against the
+     * same budget, which over-charges it (most names carry no create decision
+     * and cost nothing at all) and is the right way round: over-charging buys
+     * a shorter page, under-charging buys a failed transaction.
+     */
+    const teamNameList = Array.from(allTeamNames);
+    const playerNameList = Array.from(allPlayerNames);
+    const walkOffset = args.phase === undefined ? 0 : (args.resume?.offset ?? 0);
+    let walkBudget =
+      args.phase === undefined
+        ? Number.POSITIVE_INFINITY
+        : Math.min(
+            PRELUDE_NAMES_PER_PAGE,
+            Math.max(1, Math.floor(args.namesPerPage ?? PRELUDE_NAMES_PER_PAGE)),
+          );
+    /** Names this call got through, across both sets. */
+    let walked = 0;
+    /**
+     * NEO-296 — this page ended on the TEAM READ ceiling rather than on the
+     * name budget. Logged rather than returned: the caller's resume loop is
+     * driven by `hasMore`, which is already true, and the operator has nothing
+     * to do about it — every name still gets its own answer, one transaction
+     * later. It is here so the day a page starts ending on it is visible.
+     */
+    let deferredOnTeamReads = false;
+
+    /**
+     * NEO-296 — mint the team a checklist name's `create` decision asked for.
+     *
+     * The team counterpart of `createPlayerFromDecision`, lifted verbatim out
+     * of the name loop below for the same reason, and with the same division
+     * of labour: the caller has already established that the name does not
+     * resolve to exactly one existing row, so this only has to honour the
+     * decision.
+     *
+     * ## Unlike the player case, the raw name does NOT find this row again
+     *
+     * A player is stored under the folded form of the checklist string, so a
+     * later lookup for either spelling finds it. A team is stored under the
+     * operator's Location + Name (NEO-236) — "SD Padres" on the checklist
+     * becomes "San Diego Padres" on the row — so the raw string need not
+     * match anything. That is why this records `teamIdByName` under the RAW
+     * name here and why a resolve pass that runs later has to be handed that
+     * mapping rather than re-deriving it from the table.
+     */
+    const createTeamFromChecklistDecision = async (
+      name: string,
+      normalized: string,
+      // Only ever reached for a CREATE decision — the loop's `skip`/`link`
+      // branches return before this, and the create phase selects on it. Typed
+      // rather than re-narrowed, so a caller that got it wrong fails here.
+      decision: CreateDecision,
+    ): Promise<void> => {
+      // ── NEO-236: created ONLY from the operator's Location + Name ─────────
+      //
+      // `name` here is the raw checklist string, and it is deliberately NOT
+      // what gets stored. Jason, 2026-09-05: "We simply shouldn't allow for
+      // full string creation. Location & Team Name should be the input." The
+      // wizard pre-fills both halves and the operator confirms them; a create
+      // decision that carries neither cannot have come from that form, so
+      // nothing is inserted and the name is reported as unresolved for the
+      // attention walker's missing-team lane — the same place an unreviewed
+      // name lands.
+      const create = decision.create;
+      if (!create) {
+        unresolvedTeamNames.add(name);
+        return;
+      }
+      const teamReviewRow = reviewByKey.get(`team:${normalized}`);
+      const enrichment = teamReviewRow?.enrichment;
+      // NEO-284: `create.aliases` rides along on the whole decision object and
+      // is written on the insert branch only — see `createTeamFromOperatorInput`.
+      const made = await createTeamFromOperatorInput(create, {
+        // The row the operator reviewed arrives complete — the wizard's own
+        // Wikidata/ESPN lookup already ran, and since NEO-254 that lookup is
+        // the only enrichment a team gets that no operator asked for.
+        // NEO-236: league, era, colours and ids in one place, shared with the
+        // staged-career-team pass above. The operator's League choice wins over
+        // the enrichment's suggestion — see `reviewedTeamFields`.
+        extra: await reviewedTeamFields(
+          create,
+          enrichment,
+          teamReviewRow?._id as string | undefined,
+        ),
+        leagueChosen: await leagueAnswered(
+          create,
+          enrichment?.league,
+          teamReviewRow?._id as string | undefined,
+        ),
+      });
+      // NEO-254: null means the name resolves to two or more OVERLAPPING rows.
+      // Nothing was written, and the name is reported unresolved exactly as an
+      // unreviewed one is — Team Management is where a duplicate pair is sorted
+      // out, and a commit must not pick a side.
+      if (!made) {
+        unresolvedTeamNames.add(name);
+        return;
+      }
+      teamIdByName.set(name, made.id);
+      teamNameById.set(made.id, teamFullName(create));
+      // `createTeamFromOperatorInput` LINKS instead of inserting when the
+      // composed name already exists — the operator answered "SD Padres" with
+      // the San Diego Padres row we already have. A row this commit did not
+      // insert is not one it created, and `createdTeamIds` drives the finalize
+      // phase's creation-only work, so the flag is what decides.
+      if (made.created) createdTeamIds.push(made.id);
+    };
+
+    for (
+      let ti = Math.min(walkOffset, teamNameList.length);
+      ti < teamNameList.length;
+      ti++
+    ) {
+      if (walkBudget <= 0) break;
+      walkBudget--;
+      walked++;
+      const name = teamNameList[ti];
+      // NEO-296 — the CREATES phase does the create and nothing else. The
+      // decision lookup is in memory and free, so a name with no create
+      // decision costs this phase nothing at all; only the guard read below
+      // is charged, and only for the names that might actually mint a row.
+      if (!runResolve) {
+        const createDecision = reviewByKey.get(`team:${norm(name)}`)?.decision;
+        if (createDecision?.action !== "create") continue;
+        const { teamId: alreadyThere } = await resolveTeamForSetYear(
+          ctx,
+          args.sportId,
+          name,
+          setYear,
+        );
+        // Already resolves on its own — the resolve phase will link it, and
+        // minting a rival row is exactly what the guard in the combined loop
+        // below prevented.
+        if (alreadyThere) continue;
+        await createTeamFromChecklistDecision(name, norm(name), createDecision);
+        continue;
+      }
       // The review-row key, NOT a team-identity lookup: `reviewByKey` is built
       // with the same `norm` over the queue rows' own names, so the two sides
       // of that map have to agree with each other rather than with `teams`.
@@ -13207,59 +14935,21 @@ export const commitCardChecklistPrelude = internalMutation({
         }
         continue;
       }
-      // ── NEO-236: created ONLY from the operator's Location + Name ─────────
+      // NEO-296 — the CREATE half of this loop, lifted out whole; see
+      // `createTeamFromChecklistDecision`. Nothing about it changed.
       //
-      // `name` here is the raw checklist string, and it is deliberately NOT
-      // what gets stored. Jason, 2026-09-05: "We simply shouldn't allow for
-      // full string creation. Location & Team Name should be the input." The
-      // wizard pre-fills both halves and the operator confirms them; a create
-      // decision that carries neither cannot have come from that form, so
-      // nothing is inserted and the name is reported as unresolved for the
-      // attention walker's missing-team lane — the same place an unreviewed
-      // name lands.
-      const create = decision.create;
-      if (!create) {
-        unresolvedTeamNames.add(name);
+      // Unless the creates phase already minted it, in which case this is the
+      // resolve phase and it only has to record what that phase made. See
+      // `priorTeamByName` — a team's stored name is the operator's Location +
+      // Name and need not match the checklist string, so the lookup above
+      // cannot be relied on to find it.
+      const priorTeam = priorTeamByName.get(name);
+      if (priorTeam) {
+        teamIdByName.set(name, priorTeam.id);
+        teamNameById.set(priorTeam.id, priorTeam.storedName);
         continue;
       }
-      const teamReviewRow = reviewByKey.get(`team:${normalized}`);
-      const enrichment = teamReviewRow?.enrichment;
-      // NEO-284: `create.aliases` rides along on the whole decision object and
-      // is written on the insert branch only — see `createTeamFromOperatorInput`.
-      const made = await createTeamFromOperatorInput(create, {
-        // The row the operator reviewed arrives complete — the wizard's own
-        // Wikidata/ESPN lookup already ran, and since NEO-254 that lookup is
-        // the only enrichment a team gets that no operator asked for.
-        // NEO-236: league, era, colours and ids in one place, shared with the
-        // staged-career-team pass above. The operator's League choice wins over
-        // the enrichment's suggestion — see `reviewedTeamFields`.
-        extra: await reviewedTeamFields(
-          create,
-          enrichment,
-          teamReviewRow?._id as string | undefined,
-        ),
-        leagueChosen: await leagueAnswered(
-          create,
-          enrichment?.league,
-          teamReviewRow?._id as string | undefined,
-        ),
-      });
-      // NEO-254: null means the name resolves to two or more OVERLAPPING rows.
-      // Nothing was written, and the name is reported unresolved exactly as an
-      // unreviewed one is — Team Management is where a duplicate pair is sorted
-      // out, and a commit must not pick a side.
-      if (!made) {
-        unresolvedTeamNames.add(name);
-        continue;
-      }
-      teamIdByName.set(name, made.id);
-      teamNameById.set(made.id, teamFullName(create));
-      // `createTeamFromOperatorInput` LINKS instead of inserting when the
-      // composed name already exists — the operator answered "SD Padres" with
-      // the San Diego Padres row we already have. A row this commit did not
-      // insert is not one it created, and `createdTeamIds` drives the finalize
-      // phase's creation-only work, so the flag is what decides.
-      if (made.created) createdTeamIds.push(made.id);
+      await createTeamFromChecklistDecision(name, normalized, decision);
     }
 
     const playerIdByName = new Map<string, Id<"players">>();
@@ -13275,161 +14965,62 @@ export const commitCardChecklistPrelude = internalMutation({
       ]),
     );
     /**
-     * NEO-254 — team lookups and the tie-break read budget, shared across every
-     * ambiguous name in this commit.
+     * NEO-254 / NEO-296 — team lookups shared across every ambiguous name in
+     * this call, and the READ ceiling for this transaction.
      *
      * A set's whole team vocabulary is a couple of dozen rows repeating over
      * hundreds of cards, so after the first few names the tie-break reads
-     * nothing at all. Per-name caches would have re-read the same teams for
-     * every collision AND re-armed the budget each time, which is no bound on
-     * a commit's reads.
+     * nothing at all; per-name caches would re-read the same teams for every
+     * collision.
+     *
+     * The ceiling it carries is a transaction bound and nothing else — how
+     * much EVIDENCE one name gets is `CARD_YEAR_TEAM_READS_PER_NAME`, which
+     * is per name and unshared, so an answer never depends on what came
+     * before it. Reaching the ceiling ends this PAGE (see the player loop
+     * below); the names behind it are walked by the next transaction from a
+     * fresh cache and answer identically. An unpaged whole-prelude call has
+     * nowhere to resume to, so it keeps the unbounded walk it always had —
+     * the same reason its `walkBudget` is `Infinity`.
      */
-    const cardYearTeamCache = createCardYearTeamCache();
-    for (const name of allPlayerNames) {
-      const normalized = norm(name);
-      /**
-       * NEO-254 — the compound index returns as many rows as share this key,
-       * and that number is the decision.
-       *
-       * This was `.first()`, whose comment claimed the index "returns 0 or 1
-       * row per lookup". It returns 0 or 1 per (name, SPORT) pair — which is
-       * not the same as 0 or 1 full stop, because nothing makes that pair
-       * unique. Two people named Bob Allen played in the majors; the bulk
-       * preload (plan decision 3) puts both on file, and `.first()` then
-       * silently attached every "Bob Allen" card in the set to one of them.
-       *
-       * Bounded rather than collected: the branch only needs "none / one /
-       * more than one", and a name that normalizes to something a thousand
-       * rows share must not turn a per-name lookup inside a commit into an
-       * unbounded read.
-       *
-       *   exactly 1 → adopt it, exactly as before;
-       *   0 or >1   → fall through to the operator's decision below. For 0
-       *               that is the behaviour this loop always had. For >1 it
-       *               is the fix: a `link` decision names WHICH row (the
-       *               wizard listed them), a `create` decision means the
-       *               operator looked at those rows and said this is somebody
-       *               else, and NO decision leaves the card unlinked and the
-       *               name reported as unreviewed — never bound by a guess.
-       */
-      // NEO-254 — the shared derivation, not a fourth copy of the index read.
-      // It is what carries the ALIAS leg: a 2010 "Ron Artest" card and a 2011
-      // "Metta World Peace" card have to land on one row, and a hand-rolled
-      // read here would have found only the primary name.
-      const existingMatches = await sameNamePlayers(ctx, normalized, args.sportId);
-      if (existingMatches.length === 1) {
-        const existing = existingMatches[0];
-        playerIdByName.set(name, existing._id);
-        playerNameById.set(existing._id, existing.name);
-        continue;
-      }
-      const decision = reviewByKey.get(`player:${normalized}`)?.decision;
-      /**
-       * NEO-254 — the card's own year narrows "more than one" back to one.
-       *
-       * The guard above is correct and, on its own, expensive: a 1990 set with
-       * eight hundred commons would hand the operator a decision for every
-       * name two people have ever shared, almost all of which have exactly one
-       * plausible answer because the other man retired in 1937.
-       *
-       * The card is evidence about which one it is, and this uses it — the
-       * year first, then the team printed on the card when two contemporaries
-       * share a name. `narrowSameNamePlayersByCardYear` returns a row only when
-       * exactly one survives; every other outcome falls through to the
-       * operator's decision below, exactly as before. With no set year it
-       * narrows nothing at all: the rule is never to guess, only to rule out.
-       *
-       * ## Only when there is NO decision, and that ordering is load-bearing
-       *
-       * A review session is human-paced and a commit happens at the end of it.
-       * Between the operator ruling on this name and pressing Confirm, a
-       * colleague's commit or a bulk load can add a stint that makes the year
-       * evidence point somewhere — including somewhere ELSE. Narrowing first
-       * would let that late data silently overrule a person who had already
-       * looked at these very rows and said which one it was, or said "this is
-       * somebody new", or said "not a person at all". Inference never
-       * overrules an answer; it only fills a silence.
-       *
-       * `!decision` and not `decision?.action !== "link"`: a skip is an answer
-       * too, and a `create` means the operator saw the candidates and rejected
-       * all of them.
-       *
-       * Placed AFTER the exactly-one fast path so the ordinary name pays
-       * nothing for it.
-       */
-      if (!decision && existingMatches.length > 1) {
-        const narrowed = await narrowSameNamePlayersByCardYear(
-          ctx,
-          existingMatches,
-          {
-            ...(setYear !== undefined ? { cardYear: setYear } : {}),
-            cardTeamNames: cardTeamNamesByPlayer.get(normalized) ?? [],
-            teamCache: cardYearTeamCache,
-          },
-        );
-        if (narrowed.playerId) {
-          const picked = existingMatches.find((p) => p._id === narrowed.playerId)!;
-          playerIdByName.set(name, picked._id);
-          playerNameById.set(picked._id, picked.name);
-          continue;
-        }
-      }
-      // Not reviewed (shouldn't happen), or reviewed as "not a person"
-      // (NEO-212). Both leave the name out of `playerIdByName`, so the card
-      // keeps it as raw text and links to nothing — a skip is deliberately
-      // indistinguishable, at the card, from a name that was never resolved.
-      // The skip's durability comes from `entityReviewSkips` above, not from
-      // anything written here.
-      if (!decision || decision.action === "skip") {
-        // NEO-221: no decision at all is an unanswered question — the wizard
-        // never ruled on this name, so the card will link to nothing and no
-        // later pass will fix it. A skip is an ANSWER and is excluded.
-        if (!decision) unreviewedPlayerNames.push(name);
-        continue;
-      }
-      if (decision.action === "link") {
-        if (decision.linkedPlayerId) {
-          /**
-           * NEO-254 — the linked row is RE-VALIDATED, not trusted.
-           *
-           * A decision is recorded when the operator makes it and consumed
-           * when they hit Confirm, and a review session is a human-paced thing
-           * that can span a long while. Between the two, the row they picked
-           * can be deleted or merged away by another operator or by an admin
-           * tool — and this branch used to write the id into `playerIdByName`
-           * on the strength of the decision alone. The card then carried a
-           * `playerIds` entry pointing at nothing: invisible to every query
-           * that joins through it, unfixable by any later pass, and with
-           * nothing anywhere saying it had happened.
-           *
-           * The `db.get` was ALREADY here — it read the linked row's canonical
-           * spelling — and its result was simply discarded when the row was
-           * gone. Reading it once and acting on the answer costs nothing extra.
-           *
-           * The sport is checked too, for the reason `savePlayerFields` checks
-           * it on a stint: a cross-sport player is unreachable by every query
-           * that matters (all of them key on the sport row id), so linking to
-           * one is the same dangling reference wearing a valid id.
-           *
-           * Treated as UNREVIEWED rather than failed: the operator's answer
-           * has become unanswerable, which is exactly the state
-           * `unreviewedPlayerNames` reports and stamps on the card. The commit
-           * still lands — refusing it would cost them the whole sync over one
-           * name — and they are told which name to look at again.
-           */
-          const linked = await ctx.db.get(decision.linkedPlayerId);
-          if (!linked || linked.sportId !== args.sportId) {
-            unreviewedPlayerNames.push(name);
-            continue;
-          }
-          playerIdByName.set(name, decision.linkedPlayerId);
-          // The LINKED row's own spelling is what the old write loop's
-          // `db.get(...).name` produced, so use it here rather than assuming
-          // the reviewed name matches it.
-          playerNameById.set(decision.linkedPlayerId, linked.name);
-        }
-        continue;
-      }
+    const cardYearTeamCache = createCardYearTeamCache(
+      args.phase === undefined
+        ? { budget: Number.POSITIVE_INFINITY }
+        : (args.cardYearTeamReads !== undefined
+            ? { budget: args.cardYearTeamReads }
+            : {}),
+    );
+    /**
+     * NEO-296 — mint the player a `create` decision asked for, and record it
+     * in this commit's maps.
+     *
+     * Lifted verbatim out of the name loop below so that the prelude's two
+     * halves can be driven separately: the CREATES are bounded by the review
+     * batch's decisions, while RESOLUTION is bounded by the checklist's
+     * names and, once the creates have run, reads only.
+     *
+     * The caller owns the guard. This does not ask whether the name already
+     * resolves — the loop below checks `existingMatches.length === 1` and
+     * links instead of reaching here, and the create phase re-asks the same
+     * question before calling. Putting the guard inside would hide it from
+     * both.
+     *
+     * ## Why the two-spellings fold survives being moved
+     *
+     * The row is inserted with `nameNormalized: normalized`, the FOLDED key.
+     * So a later lookup for either raw spelling — "José Ramírez" or "Jose
+     * Ramirez" — finds this one row through `sameNamePlayers`, which keys on
+     * that same fold. The dedup therefore stops depending on one loop's
+     * iteration order and becomes a property of the key itself, which is the
+     * single most important thing this restructure must not lose.
+     * `convex/commitCardChecklist.entityReview.test.ts` pins it both ways
+     * round.
+     */
+    const createPlayerFromDecision = async (
+      name: string,
+      normalized: string,
+      // See `createTeamFromChecklistDecision` — same contract.
+      decision: CreateDecision,
+    ): Promise<void> => {
       // decision.action === "create" — seed directly from the wizard's own
       // Wikidata preview lookup (already fetched during review); no more
       // post-commit processEnrichmentQueue scheduling needed for this row.
@@ -13600,6 +15191,226 @@ export const commitCardChecklistPrelude = internalMutation({
       playerIdByName.set(name, id);
       playerNameById.set(id, name.trim());
       createdPlayerIds.push(id);
+    };
+
+    for (
+      let pi = Math.max(0, walkOffset - teamNameList.length);
+      pi < playerNameList.length;
+      pi++
+    ) {
+      if (walkBudget <= 0) break;
+      walkBudget--;
+      walked++;
+      const name = playerNameList[pi];
+      // NEO-296 — see the team loop above; same division, same guard.
+      if (!runResolve) {
+        const createDecision = reviewByKey.get(`player:${norm(name)}`)?.decision;
+        if (createDecision?.action !== "create") continue;
+        const already = await sameNamePlayers(ctx, norm(name), args.sportId);
+        if (already.length === 1) continue;
+        await createPlayerFromDecision(name, norm(name), createDecision);
+        continue;
+      }
+      const normalized = norm(name);
+      /**
+       * NEO-254 — the compound index returns as many rows as share this key,
+       * and that number is the decision.
+       *
+       * This was `.first()`, whose comment claimed the index "returns 0 or 1
+       * row per lookup". It returns 0 or 1 per (name, SPORT) pair — which is
+       * not the same as 0 or 1 full stop, because nothing makes that pair
+       * unique. Two people named Bob Allen played in the majors; the bulk
+       * preload (plan decision 3) puts both on file, and `.first()` then
+       * silently attached every "Bob Allen" card in the set to one of them.
+       *
+       * Bounded rather than collected: the branch only needs "none / one /
+       * more than one", and a name that normalizes to something a thousand
+       * rows share must not turn a per-name lookup inside a commit into an
+       * unbounded read.
+       *
+       *   exactly 1 → adopt it, exactly as before;
+       *   0 or >1   → fall through to the operator's decision below. For 0
+       *               that is the behaviour this loop always had. For >1 it
+       *               is the fix: a `link` decision names WHICH row (the
+       *               wizard listed them), a `create` decision means the
+       *               operator looked at those rows and said this is somebody
+       *               else, and NO decision leaves the card unlinked and the
+       *               name reported as unreviewed — never bound by a guess.
+       */
+      // NEO-254 — the shared derivation, not a fourth copy of the index read.
+      // It is what carries the ALIAS leg: a 2010 "Ron Artest" card and a 2011
+      // "Metta World Peace" card have to land on one row, and a hand-rolled
+      // read here would have found only the primary name.
+      const existingMatches = await sameNamePlayers(ctx, normalized, args.sportId);
+      if (existingMatches.length === 1) {
+        const existing = existingMatches[0];
+        playerIdByName.set(name, existing._id);
+        playerNameById.set(existing._id, existing.name);
+        continue;
+      }
+      const decision = reviewByKey.get(`player:${normalized}`)?.decision;
+      /**
+       * NEO-254 — the card's own year narrows "more than one" back to one.
+       *
+       * The guard above is correct and, on its own, expensive: a 1990 set with
+       * eight hundred commons would hand the operator a decision for every
+       * name two people have ever shared, almost all of which have exactly one
+       * plausible answer because the other man retired in 1937.
+       *
+       * The card is evidence about which one it is, and this uses it — the
+       * year first, then the team printed on the card when two contemporaries
+       * share a name. `narrowSameNamePlayersByCardYear` returns a row only when
+       * exactly one survives; every other outcome falls through to the
+       * operator's decision below, exactly as before. With no set year it
+       * narrows nothing at all: the rule is never to guess, only to rule out.
+       *
+       * ## Only when there is NO decision, and that ordering is load-bearing
+       *
+       * A review session is human-paced and a commit happens at the end of it.
+       * Between the operator ruling on this name and pressing Confirm, a
+       * colleague's commit or a bulk load can add a stint that makes the year
+       * evidence point somewhere — including somewhere ELSE. Narrowing first
+       * would let that late data silently overrule a person who had already
+       * looked at these very rows and said which one it was, or said "this is
+       * somebody new", or said "not a person at all". Inference never
+       * overrules an answer; it only fills a silence.
+       *
+       * `!decision` and not `decision?.action !== "link"`: a skip is an answer
+       * too, and a `create` means the operator saw the candidates and rejected
+       * all of them.
+       *
+       * Placed AFTER the exactly-one fast path so the ordinary name pays
+       * nothing for it.
+       */
+      if (!decision && existingMatches.length > 1) {
+        const narrowed = await narrowSameNamePlayersByCardYear(
+          ctx,
+          existingMatches,
+          {
+            ...(setYear !== undefined ? { cardYear: setYear } : {}),
+            cardTeamNames: cardTeamNamesByPlayer.get(normalized) ?? [],
+            teamCache: cardYearTeamCache,
+          },
+        );
+        /*
+         * NEO-296 (audit condition 2) — THE TRANSACTION'S TEAM READS ARE
+         * SPENT. End the page; do not answer this name.
+         *
+         * The alternative — take `narrowed` as the answer and walk on — is
+         * how position-dependence walks straight back in: this name would
+         * resolve near the top of a page and go to review near the bottom of
+         * one, and the boundary would move with the page size. Ending the
+         * page instead means every name that WAS reached was evaluated on its
+         * full per-name allowance, and this one is re-walked by the next
+         * transaction from a fresh cache, where it answers exactly as it
+         * would have at position 0.
+         *
+         * `walked` is rolled back because it was charged at the top of this
+         * iteration: the resume offset has to point AT this name, not past
+         * it. Nothing has been written for it yet — the exactly-one fast path
+         * and the decision branches all return before here — so the next
+         * call starts it clean.
+         *
+         * LIVELOCK GUARD, the `entityReviewQueue.sweepAbandonedBatches`
+         * `rows > 0` equivalent: a page that ends having walked NOTHING would
+         * reschedule itself forever on the same offset. Two things stop it,
+         * and the first alone is sufficient — a fresh cache starts at zero
+         * reads with a budget of at least one, so the first name of any page
+         * always gets its allowance. `walked > 1` is the structural backstop
+         * in case that ever stops being true; when it holds, this name's
+         * partial answer is simply used, which is a worse answer but never a
+         * stalled commit.
+         */
+        if (
+          narrowed.transactionBudgetExhausted &&
+          args.phase !== undefined &&
+          walked > 1
+        ) {
+          walked--;
+          deferredOnTeamReads = true;
+          break;
+        }
+        if (narrowed.playerId) {
+          const picked = existingMatches.find((p) => p._id === narrowed.playerId)!;
+          playerIdByName.set(name, picked._id);
+          playerNameById.set(picked._id, picked.name);
+          continue;
+        }
+      }
+      // Not reviewed (shouldn't happen), or reviewed as "not a person"
+      // (NEO-212). Both leave the name out of `playerIdByName`, so the card
+      // keeps it as raw text and links to nothing — a skip is deliberately
+      // indistinguishable, at the card, from a name that was never resolved.
+      // The skip's durability comes from `entityReviewSkips` above, not from
+      // anything written here.
+      if (!decision || decision.action === "skip") {
+        // NEO-221: no decision at all is an unanswered question — the wizard
+        // never ruled on this name, so the card will link to nothing and no
+        // later pass will fix it. A skip is an ANSWER and is excluded.
+        if (!decision) unreviewedPlayerNames.push(name);
+        continue;
+      }
+      if (decision.action === "link") {
+        if (decision.linkedPlayerId) {
+          /**
+           * NEO-254 — the linked row is RE-VALIDATED, not trusted.
+           *
+           * A decision is recorded when the operator makes it and consumed
+           * when they hit Confirm, and a review session is a human-paced thing
+           * that can span a long while. Between the two, the row they picked
+           * can be deleted or merged away by another operator or by an admin
+           * tool — and this branch used to write the id into `playerIdByName`
+           * on the strength of the decision alone. The card then carried a
+           * `playerIds` entry pointing at nothing: invisible to every query
+           * that joins through it, unfixable by any later pass, and with
+           * nothing anywhere saying it had happened.
+           *
+           * The `db.get` was ALREADY here — it read the linked row's canonical
+           * spelling — and its result was simply discarded when the row was
+           * gone. Reading it once and acting on the answer costs nothing extra.
+           *
+           * The sport is checked too, for the reason `savePlayerFields` checks
+           * it on a stint: a cross-sport player is unreachable by every query
+           * that matters (all of them key on the sport row id), so linking to
+           * one is the same dangling reference wearing a valid id.
+           *
+           * Treated as UNREVIEWED rather than failed: the operator's answer
+           * has become unanswerable, which is exactly the state
+           * `unreviewedPlayerNames` reports and stamps on the card. The commit
+           * still lands — refusing it would cost them the whole sync over one
+           * name — and they are told which name to look at again.
+           */
+          const linked = await ctx.db.get(decision.linkedPlayerId);
+          if (!linked || linked.sportId !== args.sportId) {
+            unreviewedPlayerNames.push(name);
+            continue;
+          }
+          playerIdByName.set(name, decision.linkedPlayerId);
+          // The LINKED row's own spelling is what the old write loop's
+          // `db.get(...).name` produced, so use it here rather than assuming
+          // the reviewed name matches it.
+          playerNameById.set(decision.linkedPlayerId, linked.name);
+        }
+        continue;
+      }
+      // NEO-296 — the CREATE half of this loop, lifted out whole.
+      //
+      // Nothing about it changed; it moved so that the inversion can call
+      // it from a phase that walks review DECISIONS (~300) instead of this
+      // loop's names (~750), leaving what remains here a pure read. See
+      // `createPlayerFromDecision`.
+      //
+      // The resolve phase reaches this line only for a name that matched two
+      // or more rows before the commit, because one match takes the fast path
+      // above. Minting a second row for it is precisely the duplicate the
+      // restructure must not produce, so the creates phase's answer wins.
+      const priorPlayer = priorPlayerByName.get(name);
+      if (priorPlayer) {
+        playerIdByName.set(name, priorPlayer.id);
+        playerNameById.set(priorPlayer.id, priorPlayer.storedName);
+        continue;
+      }
+      await createPlayerFromDecision(name, normalized, decision);
     }
 
 
@@ -13668,7 +15479,28 @@ export const commitCardChecklistPrelude = internalMutation({
     // its log line; the review query, which computes in one process, keeps it.
     const { maps: matchMaps } = buildMatchMaps(existingCards, leafNode);
 
+    if (deferredOnTeamReads) {
+      // Counts and ids only — a checklist name is marketplace text.
+      console.warn(
+        JSON.stringify({
+          msg: "prelude_page_ended_on_team_reads",
+          selectorOptionId: args.selectorOptionId,
+          offset: walkOffset,
+          walked,
+          teamReads: cardYearTeamCache.reads,
+          budget: cardYearTeamCache.budget,
+        }),
+      );
+    }
+
     return {
+      // NEO-296 — a whole-prelude call walks both name sets with no budget, so
+      // `walked` always reaches the end and these are false/null for it.
+      hasMore: walkOffset + walked < teamNameList.length + playerNameList.length,
+      resume:
+        walkOffset + walked < teamNameList.length + playerNameList.length
+          ? { offset: walkOffset + walked }
+          : null,
       userId,
       sportSkuCode: commitSportRow.sportConfig?.skuCode,
       sportValue: commitSportRow.value ?? "",
@@ -13705,6 +15537,9 @@ export const commitCardChecklistPrelude = internalMutation({
 });
 
 type CommitPrelude = {
+  /** NEO-296 — see the mutation's `returns`. */
+  hasMore: boolean;
+  resume: { offset: number } | null;
   userId: string;
   sportSkuCode?: string;
   sportValue: string;
@@ -14441,6 +16276,104 @@ export const commitCardChecklistChunk = internalMutation({
     };
   },
 });
+/**
+ * NEO-294 — how many OPERATOR-NAMED DELETES one finalize page performs.
+ *
+ * ## The arithmetic, and the thing that is easy to get wrong
+ *
+ * Convex's budget counts one operation per CALL, not per document: a
+ * `.collect()` returning 754 rows is ONE operation. So the expensive shape is
+ * never "reads a lot", it is "a call per row" — which is exactly what this
+ * loop is.
+ *
+ * Per id: one `db.get`; then for one that survives the guards, one `by_card`
+ * collect plus one delete PER cross-listing, one `by_variation_parent` collect
+ * plus one patch PER variation child, and the row's own delete. A card with
+ * neither costs 4 (get + two collects + delete); a typical one 4–6; a heavily
+ * cross-listed one more. At 100 ids that is 400–800 operations, inside the
+ * ~900 `CARDS_PER_COMMIT_CHUNK` is calibrated against (NEO-189: ~900
+ * comfortable, ~1,800 straining, ~4,000 failing).
+ *
+ * This is the bound that was missing. `MAX_OPERATOR_DELETE_IDS` caps the LIST
+ * at 1,000, which at 4–6 operations each is 4,000–6,000 in one transaction —
+ * past the failure line, with no page to stop at. `SyncReviewModal`'s
+ * "Select all" could hand over exactly that.
+ */
+export const FINALIZE_DELETES_PER_PAGE = 100;
+
+/**
+ * NEO-294 — how many CHECKLIST ROWS one finalize page walks.
+ *
+ * The page's `.take()` is ONE operation however many rows it returns (see the
+ * note above), so the cost here is the WRITES: at most one variation patch, at
+ * most one preserved-custom `sortOrder` patch and at most one `pending*` patch
+ * per row. The first only ever applies to a committed row and the other two
+ * only to a ref-less one, so ~2 per row in the worst realistic case and 3 as
+ * an absolute ceiling — 1 + 600 operations at 200 rows, and far less on a
+ * commit that changes little.
+ *
+ * Sized at 200 rather than higher because the ceiling is what has to fit: a
+ * re-sync that re-sorts every preserved custom card and clears a pending name
+ * off each of them is a real commit, not a contrived one.
+ */
+export const FINALIZE_ROWS_PER_PAGE = 200;
+
+/**
+ * NEO-294 — how many consumed `entityReviewQueue` rows one finalize page
+ * deletes.
+ *
+ * Per id: one `db.get` (so a replayed page is a no-op rather than a throw on a
+ * row that is already gone) and one delete — 2 operations, nothing else. At
+ * 300 ids that is 600. The 1996 Score commit that failed on PR #272 carried
+ * 433 review rows against 220 cards, which is the ratio worth sizing for: at
+ * 2 operations each those 433 rows were ~866 on their own, and the card passes
+ * in the same transaction put it over.
+ */
+export const FINALIZE_REVIEW_ROWS_PER_PAGE = 300;
+
+/**
+ * NEO-294 — how many finalize pages one commit may walk before it gives up.
+ *
+ * A runaway guard, not a budget, and the same role `BULK_MAX_PAGES` plays for
+ * the review wizard's walk. The real ceiling is arithmetic: at most
+ * `MAX_CARDS_PER_COMMIT` (5,000) rows is 25 row pages, `MAX_OPERATOR_DELETE_IDS`
+ * (1,000) is 10 delete pages, and a review batch large enough to need more than
+ * a handful of review pages does not exist — well under 100 all told. 500 is an
+ * order of magnitude past that, so tripping it means a phase is not advancing,
+ * which is a bug and must not be reported to the operator as a successful
+ * commit.
+ */
+export const FINALIZE_MAX_PAGES = 500;
+
+/**
+ * NEO-294 — where a paged finalize resumes.
+ *
+ * Three phases run in order and each is bounded on its own, because they cost
+ * three different things (see the three constants above). `offset` counts how
+ * far into the CURRENT phase's id list this walk has got; `rowCursor` is the
+ * `_creationTime` of the last checklist row the `rows` phase examined.
+ */
+export type FinalizeResume = {
+  phase: "deletes" | "rows" | "review";
+  offset: number;
+  rowCursor: number | null;
+};
+
+/** What one bounded finalize page did, and where the next one resumes. */
+export type FinalizePageResult = {
+  /** Variation children linked BY THIS PAGE. */
+  variationsLinked: number;
+  /** Operator-named rows deleted BY THIS PAGE. */
+  operatorDeleted: number;
+  /** Operator-named rows this page examined and refused. */
+  deleteSkipped: number;
+  /** Rows THIS PAGE found that no incoming card matched. */
+  unmatchedExistingIds: Array<Id<"cardChecklist">>;
+  /** More phases or more pages remain; call again with `resume`. */
+  hasMore: boolean;
+  /** Null exactly when `hasMore` is false. */
+  resume: FinalizeResume | null;
+};
 
 /**
  * NEO-189 — the once-per-commit tail of `commitCardChecklist`, run after every
@@ -14456,9 +16389,93 @@ export const commitCardChecklistChunk = internalMutation({
  *  - review-row cleanup, the enrichment schedules, and the setName ancestor's
  *    totalCardCount.
  *
- * Reads the checklist ONCE and works from that map. The old single mutation did
- * a `db.get` per stored id here — twice — which was a large share of the
- * per-commit system-operation budget it eventually blew.
+ * ## NEO-294 — it is a BOUNDED PAGE now, and the action walks it
+ *
+ * The chunk phase has been bounded since NEO-189; this one was not, and it ran
+ * over every row of the checklist plus every row of the review batch in ONE
+ * transaction. PR #272's 1996 Score commit — 220 cards, 433 review rows —
+ * died on `Your request timed out performing too many system operations.`
+ * after every chunk had already written, which is the worst possible place to
+ * fail: the cards are in, none of the bookkeeping is, and the operator is told
+ * the commit failed.
+ *
+ * So a call now does ONE page of ONE phase and returns `{ hasMore, resume }`;
+ * `commitCardChecklist` loops on that, exactly as `EntityReviewWizard`
+ * loops on `recordAllRemainingAs*`'s `{ hasMore, cursor }`
+ * (`entityReviewQueue.decideAllRemaining` is the worked example). The three
+ * phases run in order and are bounded separately because they cost three
+ * different things:
+ *
+ *   deletes → `FINALIZE_DELETES_PER_PAGE` of `operatorDeleteIds`, ~5-8 ops each
+ *   rows    → `FINALIZE_ROWS_PER_PAGE` checklist rows,             ~3-4 ops each
+ *   review  → `FINALIZE_REVIEW_ROWS_PER_PAGE` of `reviewRowIds`,   ~2 ops each
+ *
+ * Deletes run FIRST so the row walk never sees a row it is about to destroy —
+ * which is what retires the old `deletedRowIds` guard on the sortOrder and
+ * `pending*` passes, since a deleted row simply is not in any later page.
+ *
+ * The row walk resumes with `gt("_creationTime", rowCursor)` on
+ * `by_selector_option`, the same hand-rolled cursor `cascadeSelectorOptionTeams`
+ * and `decideAllRemaining` use: `_creationTime` is the implicit last column of
+ * every index and is unique within a table, so "strictly after it" is an exact
+ * resume point, and deleting rows inside the page cannot disturb it because the
+ * cursor is a VALUE, not a pointer.
+ *
+ * It no longer reads the checklist into one map. The old single transaction did
+ * that to avoid a `db.get` per stored id — which was right when the whole
+ * checklist had to be in view at once, and is exactly what cannot fit now. Each
+ * pass below was rewritten to be driven BY the page rather than to look rows up
+ * in a snapshot: `variationLinks`, `variationClearIds` and `customSortOrders`
+ * become Maps/Sets keyed off the args, and the page's rows are matched against
+ * them. That is O(args) CPU per page and zero extra database operations.
+ *
+ * ## ATOMICITY — what this phase guaranteed, and what it guarantees now
+ *
+ * The action has not been atomic since NEO-189 (see the note on
+ * `commitCardChecklist`); finalize itself WAS, and one comment in this file
+ * leaned on it by name: "Deletion stays in this phase, and not in a chunk,
+ * because finalize is a single transaction, so a partial delete is not a
+ * reachable state." That is no longer true and is not being left implied.
+ *
+ * What is LOST: whole-list atomicity. An interrupted walk can leave some of
+ * `operatorDeleteIds` deleted and the rest not, some variation links written
+ * and the rest not, and some of the batch's review rows gone.
+ *
+ * What is KEPT, and what the rest of the system actually depends on:
+ *
+ *  - **Per-row atomicity of a delete.** A card's cross-listings, its children's
+ *    re-parenting and the row itself are all in ONE page's transaction, and a
+ *    given row belongs to exactly one page. So the invariant that matters —
+ *    never a cross-listing pointing at a card that is gone, never a variation
+ *    parented to a row that no longer exists — holds at every point in the
+ *    walk. A partial delete is a SHORTER delete list, never a torn row.
+ *  - **Idempotence.** Every write here is a converging one: a delete of a row
+ *    that is already gone is refused and counted (`db.get` returns null), a
+ *    variation patch writes the same pointer, the sortOrder and `pending*`
+ *    passes patch only when the value differs, and a review-row delete checks
+ *    existence first. Re-invoking the commit re-sends the same lists and
+ *    finishes the job; nothing is applied twice and nothing is lost.
+ *  - **The tail runs exactly once, at the end.** The BSC team-enrichment
+ *    schedule and the setName ancestor's `totalCardCount` are on the final page
+ *    only, so an interrupted walk schedules nothing — the same thing a failed
+ *    atomic finalize did.
+ *
+ * The one downstream claim worth naming: the inline review-row delete exists to
+ * close a race where a re-fetch landing between the commit returning and a
+ * SCHEDULED cleanup would find every row decided and wrongly resume the dead
+ * batch (`startBatch`). Paging does not reopen it. A walk that completes still
+ * ends with every row of the batch deleted before the commit returns, and a
+ * walk that does not complete throws — leaving a SUBSET of the batch's decided
+ * rows behind, which is strictly less resumable-dead-batch than the whole batch
+ * an all-or-nothing finalize left behind when it failed. Either way the re-run
+ * converges: the names those rows carry are now real `players`/`teams` rows or
+ * `entityReviewSkips` entries, so the re-fetch's gate no longer calls them
+ * unknown, and the prelude's own re-read of the batch hands the remaining rows
+ * back here to be deleted.
+ *
+ * Nothing here truncates. Every phase walks its whole list; the action loops
+ * until `hasMore` is false and throws if it cannot get there
+ * (`FINALIZE_MAX_PAGES`), rather than returning a commit that quietly did less.
  */
 export const commitCardChecklistFinalize = internalMutation({
   args: {
@@ -14480,9 +16497,13 @@ export const commitCardChecklistFinalize = internalMutation({
     // tomorrow and every NB set must stand untouched.
     //
     // So the sweep now REPORTS (`unmatchedExistingIds`) and deletes only what
-    // an operator explicitly named. Deletion stays in this phase, and not in a
-    // chunk, for the reason the atomicity note on the action gives: finalize
-    // is a single transaction, so a partial delete is not a reachable state.
+    // an operator explicitly named.
+    //
+    // NEO-294: it no longer stays in this phase because the phase is one
+    // transaction — it is not, any more. It stays because a delete is a
+    // whole-commit decision that a chunk cannot make, and because each
+    // individual delete is still atomic in its own page. See the atomicity
+    // note above.
     operatorDeleteIds: v.array(v.id("cardChecklist")),
     variationLinks: v.array(
       v.object({
@@ -14506,247 +16527,367 @@ export const commitCardChecklistFinalize = internalMutation({
     bscTeamEnrichmentIds: v.array(v.id("cardChecklist")),
     setNameAncestorId: v.optional(v.id("selectorOptions")),
     cardCount: v.number(),
+    // NEO-294 — absent starts the walk at the head of the first phase;
+    // otherwise the `resume` the previous page returned.
+    resume: v.optional(
+      v.object({
+        phase: v.union(
+          v.literal("deletes"),
+          v.literal("rows"),
+          v.literal("review"),
+        ),
+        offset: v.number(),
+        rowCursor: v.union(v.number(), v.null()),
+      }),
+    ),
   },
   returns: v.object({
+    // NEO-294 — all four are THIS PAGE's contribution; the action sums them.
     variationsLinked: v.number(),
-    // How many of `operatorDeleteIds` were actually deleted. The rest were
-    // refused by one of the guards below and are counted separately.
     operatorDeleted: v.number(),
     deleteSkipped: v.number(),
-    // Non-custom rows in this checklist that no incoming card matched — the
-    // ones that vanished upstream. Reported, never acted on.
     unmatchedExistingIds: v.array(v.id("cardChecklist")),
+    hasMore: v.boolean(),
+    resume: v.union(
+      v.object({
+        phase: v.union(
+          v.literal("deletes"),
+          v.literal("rows"),
+          v.literal("review"),
+        ),
+        offset: v.number(),
+        rowCursor: v.union(v.number(), v.null()),
+      }),
+      v.null(),
+    ),
   }),
-  handler: async (
-    ctx,
-    args,
-  ): Promise<{
-    variationsLinked: number;
-    operatorDeleted: number;
-    deleteSkipped: number;
-    unmatchedExistingIds: Array<Id<"cardChecklist">>;
-  }> => {
-    const rows = await ctx.db
-      .query("cardChecklist")
-      .withIndex("by_selector_option", (q) =>
-        q.eq("selectorOptionId", args.selectorOptionId),
-      )
-      .collect();
-    const rowsById = new Map<string, Doc<"cardChecklist">>();
-    for (const row of rows) rowsById.set(row._id, row);
-
-    // ── NEO-189: link each variation to the card it varies ──────────────────
-    //
-    // The pairs were resolved by the action, which is the only place that can
-    // see both a child in chunk 3 and its parent in chunk 1. The grouping rule
-    // itself lives in lib/cards/variations.ts and is deliberately not "a
-    // suffixed number belongs to the bare one" — 2021 Topps has no card #1 at
-    // all, only 1a/1b/1c, and SportLots gives every variation of #13 the number
-    // 13. What holds is: group by card-number stem, and the single row in the
-    // group that is NOT a variation is the parent.
-    //
-    // NEO-189: a hand-set parent is the operator's answer and outranks the
-    // derivation, exactly as a confirmed card pairing does (NEO-137). Without
-    // the `variationParentManual` check the pass below would re-derive the link
-    // from the stem and clear anything it did not derive, so a correction would
-    // survive only until the next fetch.
-    let variationsLinked = 0;
-    for (const { childId, parentId } of args.variationLinks) {
-      const child = rowsById.get(childId);
-      if (!child || child.variationParentManual) continue;
-      await ctx.db.patch(childId, {
-        variationOfCardId: parentId,
-        lastUpdated: Date.now(),
-      });
-      variationsLinked++;
-    }
-    // A row that USED to be a variation and no longer is must lose its pointer,
-    // or a re-sync after an upstream correction leaves it parented to the wrong
-    // card forever.
-    for (const id of args.variationClearIds) {
-      const row = rowsById.get(id);
-      if (!row || row.variationParentManual) continue;
-      if (row.variationOfCardId) {
-        await ctx.db.patch(id, {
-          variationOfCardId: undefined,
-          lastUpdated: Date.now(),
-        });
-      }
-    }
-
-    const committedIds = new Set<string>(args.committedIds);
-    const committedNumbers = new Set(args.committedNumbers);
-
-    // ── NEO-203: explicit deletes, then the report ──────────────────────────
-    //
-    // Five guards, in order, and every refusal is counted rather than thrown:
-    // a bad id in this list must not lose the operator the rest of a commit
-    // that has already written every chunk.
+  handler: async (ctx, args): Promise<FinalizePageResult> => {
+    // Checked on every page rather than only the first: an internal mutation
+    // must not depend on its caller having done it, and the list arrives whole
+    // on each call.
     if (args.operatorDeleteIds.length > MAX_OPERATOR_DELETE_IDS) {
       throw new Error(
         `commitCardChecklistFinalize: ${args.operatorDeleteIds.length} operatorDeleteIds exceeds the ${MAX_OPERATOR_DELETE_IDS} limit for a single commit`,
       );
     }
-    const requestedDeletes = new Set<string>(args.operatorDeleteIds);
-    const deletedIds: Array<Id<"cardChecklist">> = [];
+
+    // The common commit names no deletions at all, so the first page starts at
+    // the ROW walk rather than spending a round trip on an empty delete list.
+    // Everything after that is phase order; only the entry point is skipped.
+    const resume: FinalizeResume = args.resume ?? {
+      phase: args.operatorDeleteIds.length > 0 ? "deletes" : "rows",
+      offset: 0,
+      rowCursor: null,
+    };
+    const committedIds = new Set<string>(args.committedIds);
+    const committedNumbers = new Set(args.committedNumbers);
+    // Deduped, because `operatorDeleted + deleteSkipped` has always been a
+    // count of DISTINCT requested ids and the walk must not examine one twice.
+    const requestedDeletes = Array.from(new Set<string>(args.operatorDeleteIds));
+    const requestedDeleteSet = new Set<string>(requestedDeletes);
+
+    let variationsLinked = 0;
+    let operatorDeleted = 0;
     let deleteSkipped = 0;
-    for (const id of requestedDeletes) {
-      // 1. It must be a row of THIS checklist. `rowsById` is the
-      //    `by_selector_option` snapshot, so an id belonging to another set —
-      //    or one already gone — simply is not here. Skipped, never deleted,
-      //    never thrown.
-      const row = rowsById.get(id);
-      if (!row) {
-        deleteSkipped++;
-        continue;
-      }
-      // 2. NEO-239 — the "refuse to delete a custom card" guard that used to
-      //    sit here is GONE (decision 3). An operator who selected a row and
-      //    pressed delete meant it, and `deleteCard` never had this guard, so
-      //    the same card was deletable one screen over. The trust boundary is
-      //    the two checks around it: the row must belong to THIS checklist
-      //    (`rowsById`, the by_selector_option snapshot) and must not have come
-      //    back in this same commit.
-      // 3. The row came back in THIS sync. Whatever the operator decided when
-      //    they were shown the previous state, upstream still lists this card,
-      //    so deleting it now would discard a row the same commit just wrote.
-      if (committedIds.has(row._id) || committedNumbers.has(row.cardNumber)) {
-        deleteSkipped++;
-        continue;
-      }
-      // NEO-21: drop this card's cross-listing rows before the card itself.
-      await deleteCardCrossListingsFor(ctx, row._id);
-      // NEO-189: and re-parent anything that varies it. The old inference
-      // sweep deleted rows without this, which left variations pointing at a
-      // row that no longer existed — `deleteCard` has always done both.
-      await orphanVariationsOf(ctx, row._id);
-      await ctx.db.delete(row._id);
-      deletedIds.push(row._id);
-    }
-
-    // What upstream no longer lists. NOT deleted — surfaced, so the operator
-    // can decide, which is what `operatorDeleteIds` above carries back on a
-    // later commit.
+    const deletedIds: Array<Id<"cardChecklist">> = [];
     const unmatchedExistingIds: Array<Id<"cardChecklist">> = [];
-    for (const existing of rows) {
-      // A row no marketplace ever claimed has no upstream that could have
-      // stopped listing it, so its absence from this fetch proves nothing.
-      if (!hasMarketplaceRef(existing)) continue;
-      if (committedIds.has(existing._id)) continue;
-      if (requestedDeletes.has(existing._id)) continue;
-      unmatchedExistingIds.push(existing._id);
-    }
 
-    // One audit line per commit that touched deletions. Ids and counts only.
-    if (args.operatorDeleteIds.length > 0) {
-      console.log(
-        JSON.stringify({
-          msg: "commit_card_operator_deletes",
-          selectorOptionId: args.selectorOptionId,
-          userId: await getCurrentUserId(ctx),
-          requested: args.operatorDeleteIds.length,
-          deleted: deletedIds.length,
-          skipped: deleteSkipped,
-          deletedIds,
-        }),
+    // ── PHASE 1 (NEO-203): explicit deletes ─────────────────────────────────
+    //
+    // Driven by `operatorDeleteIds` rather than by a walk of the checklist, so
+    // every requested id is examined exactly once across the whole run and the
+    // refusal count stays exact. Five guards, in order, and every refusal is
+    // counted rather than thrown: a bad id in this list must not lose the
+    // operator the rest of a commit that has already written every chunk.
+    if (resume.phase === "deletes") {
+      const slice = requestedDeletes.slice(
+        resume.offset,
+        resume.offset + FINALIZE_DELETES_PER_PAGE,
       );
-    }
-
-    // Patch preserved custom cards whose sortOrder shifted because of the
-    // marketplace upsert. The targets were computed by the action across the
-    // whole commit; no reads here beyond the single collect above.
-    const customSortOrder = new Map<string, number>();
-    for (const { cardNumber, sortOrder } of args.customSortOrders) {
-      customSortOrder.set(cardNumber, sortOrder);
-    }
-    // NEO-239 — `rows` is the PRE-DELETE snapshot, and the delete pass above
-    // can now reach a ref-less row (the `isCustom` refusal that used to make
-    // that impossible is gone, decision 3). Patching one here would throw
-    // "Patch on non-existent document" and fail the whole finalize.
-    const deletedRowIds = new Set<string>(deletedIds);
-    for (const existing of rows) {
-      if (deletedRowIds.has(existing._id)) continue;
-      if (hasMarketplaceRef(existing)) continue;
-      if (committedNumbers.has(existing.cardNumber)) continue; // not preserved; replaced
-      const target = customSortOrder.get(existing.cardNumber);
-      if (target !== undefined && existing.sortOrder !== target) {
-        await ctx.db.patch(existing._id, { sortOrder: target });
+      for (const id of slice) {
+        // 1. It must exist, and it must be a row of THIS checklist. An id
+        //    belonging to another set — or one already gone, including one an
+        //    earlier page of this same walk deleted — is skipped, never
+        //    deleted, never thrown. (Before NEO-294 this was a lookup in the
+        //    whole-checklist snapshot; a `db.get` plus the parent check is the
+        //    same question asked one row at a time.)
+        const row = await ctx.db.get(id as Id<"cardChecklist">);
+        if (!row || row.selectorOptionId !== args.selectorOptionId) {
+          deleteSkipped++;
+          continue;
+        }
+        // 2. NEO-239 — the "refuse to delete a custom card" guard that used to
+        //    sit here is GONE (decision 3). An operator who selected a row and
+        //    pressed delete meant it, and `deleteCard` never had this guard, so
+        //    the same card was deletable one screen over. The trust boundary is
+        //    the two checks around it: the row must belong to THIS checklist
+        //    and must not have come back in this same commit.
+        // 3. The row came back in THIS sync. Whatever the operator decided when
+        //    they were shown the previous state, upstream still lists this card,
+        //    so deleting it now would discard a row the same commit just wrote.
+        if (committedIds.has(row._id) || committedNumbers.has(row.cardNumber)) {
+          deleteSkipped++;
+          continue;
+        }
+        // NEO-21: drop this card's cross-listing rows before the card itself.
+        await deleteCardCrossListingsFor(ctx, row._id);
+        // NEO-189: and re-parent anything that varies it. The old inference
+        // sweep deleted rows without this, which left variations pointing at a
+        // row that no longer existed — `deleteCard` has always done both.
+        //
+        // NEO-294: these two plus the delete are the reason a page is the unit
+        // of atomicity that matters. All three run in this transaction, so a
+        // row is never half-deleted however the walk is interrupted.
+        await orphanVariationsOf(ctx, row._id);
+        await ctx.db.delete(row._id);
+        deletedIds.push(row._id);
+        operatorDeleted++;
       }
+      const offset = resume.offset + slice.length;
+      const done = offset >= requestedDeletes.length;
+      // One audit line per PAGE that touched deletions. Ids and counts only.
+      if (slice.length > 0 && (deletedIds.length > 0 || deleteSkipped > 0)) {
+        console.log(
+          JSON.stringify({
+            msg: "commit_card_operator_deletes",
+            selectorOptionId: args.selectorOptionId,
+            userId: await getCurrentUserId(ctx),
+            requested: requestedDeletes.length,
+            examined: slice.length,
+            deleted: deletedIds.length,
+            skipped: deleteSkipped,
+            deletedIds,
+          }),
+        );
+      }
+      return {
+        variationsLinked,
+        operatorDeleted,
+        deleteSkipped,
+        unmatchedExistingIds,
+        hasMore: true,
+        resume: done
+          ? { phase: "rows", offset: 0, rowCursor: null }
+          : { phase: "deletes", offset, rowCursor: null },
+      };
     }
 
-    // Clear pendingPlayerNames / pendingTeamNames entries on custom cards
-    // for names that are now resolved (either pre-existing in players/teams
-    // or just created via the confirmed-new lists). Without this, every
-    // subsequent fetchCardChecklist would keep re-prompting for the same
-    // custom-card player names because they'd stay in pending* forever.
-    //
-    // NEO-212: a SKIPPED name is cleared by the same pass, on the same
-    // reasoning taken one step further. "Pending" means "waiting to become a
-    // players/teams row"; the operator has just ruled that this name never
-    // will be one, so it is not waiting for anything — it is settled, and the
-    // card keeps it as the free text it always was. Left pending it would be
-    // re-offered on every later fetch, which is exactly the loop
-    // `entityReviewSkips` exists to break, and the skip would only half-work:
-    // suppressed for marketplace names, still nagging for custom-card ones.
-    //
-    // NEO-253: folded keys on both sides. A custom card's pending name is
-    // hand-typed and the settled name came off a marketplace roster, so the two
-    // spellings routinely differ by an accent — and after the fold those are
-    // one name everywhere else in the commit. Compared literally, the sweep
-    // would leave the other spelling pending forever.
-    const resolvedPlayerNames = new Set([
-      ...args.resolvedPlayerNames,
-      ...args.skippedPlayerNames,
-    ].map(normalizeEntityName));
-    const resolvedTeamNames = new Set([
-      ...args.resolvedTeamNames,
-      ...args.skippedTeamNames,
-    ].map(normalizeEntityName));
-    for (const existing of rows) {
-      if (deletedRowIds.has(existing._id)) continue; // see the note above
-      if (hasMarketplaceRef(existing)) continue;
-      const patch: {
-        pendingPlayerNames?: string[];
-        pendingTeamNames?: string[];
-      } = {};
-      if (existing.pendingPlayerNames && existing.pendingPlayerNames.length > 0) {
-        const stillPending = existing.pendingPlayerNames.filter(
-          (n) => !resolvedPlayerNames.has(normalizeEntityName(n)),
-        );
-        if (stillPending.length !== existing.pendingPlayerNames.length) {
-          patch.pendingPlayerNames =
-            stillPending.length > 0 ? stillPending : undefined;
+    // ── PHASE 2: one page of the checklist ──────────────────────────────────
+    if (resume.phase === "rows") {
+      const after = resume.rowCursor;
+      const rows = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) =>
+          after === null
+            ? q.eq("selectorOptionId", args.selectorOptionId)
+            : q
+                .eq("selectorOptionId", args.selectorOptionId)
+                .gt("_creationTime", after),
+        )
+        .take(FINALIZE_ROWS_PER_PAGE);
+
+      // ── NEO-189: link each variation to the card it varies ────────────────
+      //
+      // The pairs were resolved by the action, which is the only place that can
+      // see both a child in chunk 3 and its parent in chunk 1. The grouping rule
+      // itself lives in lib/cards/variations.ts and is deliberately not "a
+      // suffixed number belongs to the bare one" — 2021 Topps has no card #1 at
+      // all, only 1a/1b/1c, and SportLots gives every variation of #13 the number
+      // 13. What holds is: group by card-number stem, and the single row in the
+      // group that is NOT a variation is the parent.
+      //
+      // NEO-189: a hand-set parent is the operator's answer and outranks the
+      // derivation, exactly as a confirmed card pairing does (NEO-137). Without
+      // the `variationParentManual` check the pass below would re-derive the link
+      // from the stem and clear anything it did not derive, so a correction would
+      // survive only until the next fetch.
+      //
+      // NEO-294: driven by the PAGE and not by the arg list, so a link whose
+      // child lands on a later page is applied on that page instead of being
+      // silently dropped as "not in the snapshot". Building the two lookups
+      // costs CPU proportional to the args and no database operations.
+      const parentByChild = new Map<string, Id<"cardChecklist">>();
+      for (const { childId, parentId } of args.variationLinks) {
+        parentByChild.set(childId, parentId);
+      }
+      const clearIds = new Set<string>(args.variationClearIds);
+      const customSortOrder = new Map<string, number>();
+      for (const { cardNumber, sortOrder } of args.customSortOrders) {
+        customSortOrder.set(cardNumber, sortOrder);
+      }
+      // NEO-253: folded keys on both sides. A custom card's pending name is
+      // hand-typed and the settled name came off a marketplace roster, so the two
+      // spellings routinely differ by an accent — and after the fold those are
+      // one name everywhere else in the commit. Compared literally, the sweep
+      // would leave the other spelling pending forever.
+      const resolvedPlayerNames = new Set(
+        [...args.resolvedPlayerNames, ...args.skippedPlayerNames].map(
+          normalizeEntityName,
+        ),
+      );
+      const resolvedTeamNames = new Set(
+        [...args.resolvedTeamNames, ...args.skippedTeamNames].map(
+          normalizeEntityName,
+        ),
+      );
+
+      for (const row of rows) {
+        const parentId = parentByChild.get(row._id);
+        if (parentId && !row.variationParentManual) {
+          await ctx.db.patch(row._id, {
+            variationOfCardId: parentId,
+            lastUpdated: Date.now(),
+          });
+          variationsLinked++;
+        } else if (
+          // A row that USED to be a variation and no longer is must lose its
+          // pointer, or a re-sync after an upstream correction leaves it
+          // parented to the wrong card forever.
+          !parentId &&
+          clearIds.has(row._id) &&
+          !row.variationParentManual &&
+          row.variationOfCardId
+        ) {
+          await ctx.db.patch(row._id, {
+            variationOfCardId: undefined,
+            lastUpdated: Date.now(),
+          });
+        }
+
+        // What upstream no longer lists. NOT deleted — surfaced, so the operator
+        // can decide, which is what `operatorDeleteIds` carries back on a later
+        // commit.
+        //
+        // A row no marketplace ever claimed has no upstream that could have
+        // stopped listing it, so its absence from this fetch proves nothing.
+        if (
+          hasMarketplaceRef(row) &&
+          !committedIds.has(row._id) &&
+          !requestedDeleteSet.has(row._id)
+        ) {
+          unmatchedExistingIds.push(row._id);
+        }
+
+        // The two custom-card passes below. Phase 1 has already run to
+        // completion, so a row an operator deleted is simply not here — which
+        // is what retires the old pre-delete-snapshot guard.
+        if (hasMarketplaceRef(row)) continue;
+
+        // Patch preserved custom cards whose sortOrder shifted because of the
+        // marketplace upsert. The targets were computed by the action across the
+        // whole commit.
+        if (!committedNumbers.has(row.cardNumber)) {
+          // not preserved; replaced
+          const target = customSortOrder.get(row.cardNumber);
+          if (target !== undefined && row.sortOrder !== target) {
+            await ctx.db.patch(row._id, { sortOrder: target });
+          }
+        }
+
+        // Clear pendingPlayerNames / pendingTeamNames entries on custom cards
+        // for names that are now resolved (either pre-existing in players/teams
+        // or just created via the confirmed-new lists). Without this, every
+        // subsequent fetchCardChecklist would keep re-prompting for the same
+        // custom-card player names because they'd stay in pending* forever.
+        //
+        // NEO-212: a SKIPPED name is cleared by the same pass, on the same
+        // reasoning taken one step further. "Pending" means "waiting to become a
+        // players/teams row"; the operator has just ruled that this name never
+        // will be one, so it is not waiting for anything — it is settled, and the
+        // card keeps it as the free text it always was. Left pending it would be
+        // re-offered on every later fetch, which is exactly the loop
+        // `entityReviewSkips` exists to break, and the skip would only half-work:
+        // suppressed for marketplace names, still nagging for custom-card ones.
+        const patch: {
+          pendingPlayerNames?: string[];
+          pendingTeamNames?: string[];
+        } = {};
+        if (row.pendingPlayerNames && row.pendingPlayerNames.length > 0) {
+          const stillPending = row.pendingPlayerNames.filter(
+            (n) => !resolvedPlayerNames.has(normalizeEntityName(n)),
+          );
+          if (stillPending.length !== row.pendingPlayerNames.length) {
+            patch.pendingPlayerNames =
+              stillPending.length > 0 ? stillPending : undefined;
+          }
+        }
+        if (row.pendingTeamNames && row.pendingTeamNames.length > 0) {
+          const stillPending = row.pendingTeamNames.filter(
+            (n) => !resolvedTeamNames.has(normalizeEntityName(n)),
+          );
+          if (stillPending.length !== row.pendingTeamNames.length) {
+            patch.pendingTeamNames =
+              stillPending.length > 0 ? stillPending : undefined;
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await ctx.db.patch(row._id, patch);
         }
       }
-      if (existing.pendingTeamNames && existing.pendingTeamNames.length > 0) {
-        const stillPending = existing.pendingTeamNames.filter(
-          (n) => !resolvedTeamNames.has(normalizeEntityName(n)),
-        );
-        if (stillPending.length !== existing.pendingTeamNames.length) {
-          patch.pendingTeamNames =
-            stillPending.length > 0 ? stillPending : undefined;
-        }
+
+      // A short page is the end of the walk. The cursor is the last row this
+      // page examined; a page that read nothing keeps the one it was handed, so
+      // a re-call can only ever re-read, never rewind.
+      const rowsDone = rows.length < FINALIZE_ROWS_PER_PAGE;
+      const rowCursor =
+        rows.length > 0 ? rows[rows.length - 1]._creationTime : after;
+      if (!rowsDone) {
+        return {
+          variationsLinked,
+          operatorDeleted,
+          deleteSkipped,
+          unmatchedExistingIds,
+          hasMore: true,
+          resume: { phase: "rows", offset: 0, rowCursor },
+        };
       }
-      if (Object.keys(patch).length > 0) {
-        await ctx.db.patch(existing._id, patch);
-      }
+      return {
+        variationsLinked,
+        operatorDeleted,
+        deleteSkipped,
+        unmatchedExistingIds,
+        hasMore: true,
+        resume: { phase: "review", offset: 0, rowCursor: null },
+      };
     }
 
-    // NEO-92: no post-commit Wikidata scheduling needed anymore — every
+    // ── PHASE 3 (NEO-92): the batch's consumed review rows ──────────────────
+    //
+    // Delete this batch's now-consumed entityReviewQueue rows here, in the walk
+    // that finishes the commit. Deliberately NOT scheduled async (the original
+    // design): a scheduled cleanup left a real race — a re-fetch of the same
+    // selectorOptionId landing in the gap between this returning and the
+    // scheduled delete actually running would find every row already decided and
+    // wrongly resume the dead batch (`startBatch`). Deleting inline closes that
+    // window: by the time the commit returns, the batch's rows are gone. NEO-294
+    // does not reopen it — see the atomicity note above.
+    //
+    // NEO-92: no post-commit Wikidata scheduling is needed anymore — every
     // created player/team was already enriched during the review wizard
-    // (reviewByKey's `enrichment`, seeded in the prelude). Delete this batch's
-    // now-consumed entityReviewQueue rows here, in the same transaction that
-    // finishes the commit — the ids were read in the prelude to resolve
-    // decisions, so this adds writes only, no extra reads. Deliberately NOT
-    // scheduled async (the original design): a scheduled cleanup left a real
-    // race — a re-fetch of the same selectorOptionId landing in the gap
-    // between this returning and the scheduled delete actually running would
-    // find every row already decided and wrongly resume the dead batch
-    // (startBatch) instead of starting fresh. Deleting inline closes that
-    // window: by the time the commit returns, the batch's rows are gone.
-    for (const id of args.reviewRowIds) {
-      await ctx.db.delete(id);
+    // (reviewByKey's `enrichment`, seeded in the prelude).
+    const reviewSlice = args.reviewRowIds.slice(
+      resume.offset,
+      resume.offset + FINALIZE_REVIEW_ROWS_PER_PAGE,
+    );
+    for (const id of reviewSlice) {
+      // NEO-294 — existence-checked, so a replayed page is a no-op instead of
+      // "Delete on non-existent document" failing a commit that is otherwise
+      // complete.
+      if (await ctx.db.get(id)) await ctx.db.delete(id);
     }
+    const reviewOffset = resume.offset + reviewSlice.length;
+    if (reviewOffset < args.reviewRowIds.length) {
+      return {
+        variationsLinked,
+        operatorDeleted,
+        deleteSkipped,
+        unmatchedExistingIds,
+        hasMore: true,
+        resume: { phase: "review", offset: reviewOffset, rowCursor: null },
+      };
+    }
+
+    // ── THE TAIL: fixed cost, once, on the last page ────────────────────────
 
     /*
      * ── NEO-254: this commit enqueues NO team enrichment, deliberately ──────
@@ -14776,6 +16917,9 @@ export const commitCardChecklistFinalize = internalMutation({
     // Cards whose team wasn't already recoverable from the bulk `players`
     // string (parsePlayersField's TC/parenthetical handling) get resolved
     // one at a time via BSC's per-card detail endpoint in the background.
+    //
+    // NEO-294: on the LAST page only, so an interrupted walk schedules
+    // nothing — the same thing a failed all-or-nothing finalize did.
     if (args.bscTeamEnrichmentIds.length > 0) {
       await ctx.scheduler.runAfter(
         0,
@@ -14809,9 +16953,11 @@ export const commitCardChecklistFinalize = internalMutation({
 
     return {
       variationsLinked,
-      operatorDeleted: deletedIds.length,
+      operatorDeleted,
       deleteSkipped,
       unmatchedExistingIds,
+      hasMore: false,
+      resume: null,
     };
   },
 });
@@ -16374,19 +18520,151 @@ export const commitCardChecklist = action({
       for (const t of teamsOnCard) teamNames.push(t);
     }
 
-    const prelude: CommitPrelude = await phase("prelude", () =>
-      ctx.runMutation(internal.selectorOptions.commitCardChecklistPrelude, {
-        selectorOptionId: args.selectorOptionId,
-        sportId: args.sportId,
-        playerNames: Array.from(new Set(playerNames)),
-        teamNames: Array.from(new Set(teamNames)),
-        playerTeamNames: Array.from(
-          playerTeamNamesByPlayer,
-          ([playerNameNormalized, teams]) => ({ playerNameNormalized, teams }),
-        ),
-        batchId: args.batchId,
-      }),
-    );
+    /*
+     * ── NEO-296: the prelude is TWO bounded walks, and this drives them ──────
+     *
+     * It used to be one transaction over every distinct name on the checklist:
+     * ~1,635 Convex system operations on a 754-card set with nothing going
+     * wrong, and over the line the moment one `create` decision carried a long
+     * career list. See `PRELUDE_NAMES_PER_PAGE`.
+     *
+     * The split is CREATES first, then RESOLVE, and the order is the whole
+     * design rather than a convenience:
+     *
+     *  - The creates phase writes: the durable skips, the staged leagues and
+     *    aliases and career teams, and the rows a `create` decision asks for.
+     *    It is bounded by the review batch's decisions.
+     *  - The resolve phase then maps every checklist name to the id it
+     *    resolves to, reading only — because by then every row this commit
+     *    will create already exists.
+     *
+     * Resolving first and writing afterwards is the one arrangement that
+     * CANNOT work, and it is the obvious one: two spellings of a name fold to
+     * one key, so "José Ramírez" and "Jose Ramirez" are two entries in the
+     * name list and one player. A resolve-then-create pass sees no match for
+     * either and mints two rows — one man's inventory split down the middle,
+     * with no error anywhere. The fold is pinned in
+     * `convex/commitCardChecklist.entityReview.test.ts`, both ways round.
+     *
+     * What makes it safe the other way round: each page COMMITS before the
+     * next one reads, so a row the creates phase minted is visible to every
+     * later page, and a player row is stored under the FOLDED name — so the
+     * resolve phase finds it for either spelling without being told. Teams are
+     * stored under the operator's Location + Name, which need not resemble the
+     * checklist string, so those are handed forward explicitly in
+     * `priorCreates`.
+     *
+     * Every page is its own transaction. An interrupted run leaves the rows it
+     * created — which a re-run adopts rather than duplicates — and no card is
+     * written until the chunk phase, which has not started yet.
+     */
+    const preludeArgs = {
+      selectorOptionId: args.selectorOptionId,
+      sportId: args.sportId,
+      playerNames: Array.from(new Set(playerNames)),
+      teamNames: Array.from(new Set(teamNames)),
+      playerTeamNames: Array.from(
+        playerTeamNamesByPlayer,
+        ([playerNameNormalized, teams]) => ({ playerNameNormalized, teams }),
+      ),
+      batchId: args.batchId,
+    };
+    /** Walk one phase to the end, returning every page it produced. */
+    const walkPrelude = async (
+      which: "creates" | "resolve",
+      priorCreates?: {
+        players: Array<{ name: string; id: Id<"players">; storedName: string }>;
+        teams: Array<{ name: string; id: Id<"teams">; storedName: string }>;
+      },
+    ): Promise<CommitPrelude[]> => {
+      const pages: CommitPrelude[] = [];
+      let resume: { offset: number } | null = null;
+      for (let page = 1; ; page++) {
+        if (page > PRELUDE_MAX_PAGES) {
+          // Thrown, never returned: a prelude that stopped short of its own
+          // name list would hand the chunk phase a half-resolved commit, and
+          // that must not be reported to the operator as a success.
+          throw new Error(
+            `commitCardChecklist: prelude ${which} did not converge within ` +
+              `${PRELUDE_MAX_PAGES} pages`,
+          );
+        }
+        const result: CommitPrelude = await phase(
+          `prelude ${which} page ${page}`,
+          () =>
+            ctx.runMutation(internal.selectorOptions.commitCardChecklistPrelude, {
+              ...preludeArgs,
+              phase: which,
+              ...(priorCreates ? { priorCreates } : {}),
+              ...(resume ? { resume } : {}),
+            }),
+        );
+        pages.push(result);
+        if (!result.hasMore || result.resume === null) return pages;
+        resume = result.resume;
+      }
+    };
+
+    const createPages = await walkPrelude("creates");
+    /*
+     * What the creates phase minted, by the checklist name that asked for it.
+     * Drawn from that phase's own `*IdByName` maps, which contain exactly the
+     * rows it wrote — a create is the only thing it records.
+     */
+    const priorCreates = {
+      players: createPages.flatMap((pg) =>
+        pg.playerIdByName.map(({ name, id }) => ({
+          name,
+          id,
+          storedName:
+            pg.playerNameById.find((e) => e.id === id)?.name ?? name.trim(),
+        })),
+      ),
+      teams: createPages.flatMap((pg) =>
+        pg.teamIdByName.map(({ name, id }) => ({
+          name,
+          id,
+          storedName: pg.teamNameById.find((e) => e.id === id)?.name ?? name.trim(),
+        })),
+      ),
+    };
+    const resolvePages = await walkPrelude("resolve", priorCreates);
+
+    /*
+     * One prelude out of the pages.
+     *
+     * The scalars (the sport row's values, the ancestry, the match maps) are
+     * recomputed identically by every page — the preamble and the tail are
+     * cheap and run on all of them — so the last page is as good as any and is
+     * used whole. The COLLECTIONS are what differ, and each belongs to exactly
+     * one phase: the creates phase owns what was written, the resolve phase
+     * owns what every name resolved to. Concatenating them in that order is
+     * what reassembles the object the rest of this action already expects.
+     */
+    const lastPage = resolvePages[resolvePages.length - 1];
+    const allPages = [...createPages, ...resolvePages];
+    const concat = <T>(pick: (pg: CommitPrelude) => readonly T[]): T[] =>
+      allPages.flatMap((pg) => [...pick(pg)]);
+    const prelude: CommitPrelude = {
+      ...lastPage,
+      playerIdByName: concat((pg) => pg.playerIdByName),
+      teamIdByName: concat((pg) => pg.teamIdByName),
+      playerNameById: concat((pg) => pg.playerNameById),
+      teamNameById: concat((pg) => pg.teamNameById),
+      createdPlayerIds: concat((pg) => pg.createdPlayerIds),
+      createdTeamIds: concat((pg) => pg.createdTeamIds),
+      skippedPlayerNames: concat((pg) => pg.skippedPlayerNames),
+      skippedTeamNames: concat((pg) => pg.skippedTeamNames),
+      unreviewedPlayerNames: concat((pg) => pg.unreviewedPlayerNames),
+      unreviewedTeamNames: concat((pg) => pg.unreviewedTeamNames),
+      // Deduped: a team name the creates phase could not resolve is reported by
+      // that phase AND by the resolve phase, and the count is shown to an
+      // operator.
+      unresolvedTeamNames: Array.from(
+        new Set(concat((pg) => pg.unresolvedTeamNames)),
+      ),
+      unresolvedTeamCount: new Set(concat((pg) => pg.unresolvedTeamNames)).size,
+    };
 
     const playerIdByName = new Map(
       prelude.playerIdByName.map(({ name, id }) => [name, id] as const),
@@ -16716,30 +18994,68 @@ export const commitCardChecklist = action({
     const committedIds = storedIdByIndex.filter(
       (id): id is Id<"cardChecklist"> => id !== undefined,
     );
-    const { variationsLinked, operatorDeleted, unmatchedExistingIds } = await phase(
-      "finalize",
-      () =>
-      ctx.runMutation(internal.selectorOptions.commitCardChecklistFinalize, {
-        selectorOptionId: args.selectorOptionId,
-        committedIds,
-        committedNumbers: Array.from(incomingNumbers),
-        operatorDeleteIds,
-        variationLinks: links,
-        variationClearIds,
-        customSortOrders: preservedCustomNumbers.map((cardNumber) => ({
-          cardNumber,
-          sortOrder: targetSortOrder.get(cardNumber) ?? 0,
-        })),
-        resolvedPlayerNames: Array.from(playerIdByName.keys()),
-        resolvedTeamNames: Array.from(teamIdByName.keys()),
-        skippedPlayerNames: prelude.skippedPlayerNames,
-        skippedTeamNames: prelude.skippedTeamNames,
-        reviewRowIds: args.batchId ? prelude.reviewRowIds : [],
-        bscTeamEnrichmentIds,
-        setNameAncestorId: prelude.setNameAncestorId,
-        cardCount: args.cards.length,
-      }),
-    );
+    /*
+     * ── NEO-294: finalize is a WALK now, and the action drives it ───────────
+     *
+     * `commitCardChecklistFinalize` does one bounded page of one phase per
+     * call and hands back `{ hasMore, resume }`; this is the caller half of
+     * that contract, the same shape `EntityReviewWizard.drainRemaining` uses
+     * on `recordAllRemainingAs*`. Every page commits on its own, so an
+     * interrupted walk keeps what it wrote and a re-run of the commit
+     * converges rather than double-applying — the full argument, including
+     * what atomicity this phase still guarantees, is on the mutation.
+     *
+     * The counts are SUMMED across pages because each page reports only its
+     * own contribution.
+     */
+    let variationsLinked = 0;
+    let operatorDeleted = 0;
+    const unmatchedExistingIds: Array<Id<"cardChecklist">> = [];
+    const finalizeArgs = {
+      selectorOptionId: args.selectorOptionId,
+      committedIds,
+      committedNumbers: Array.from(incomingNumbers),
+      operatorDeleteIds,
+      variationLinks: links,
+      variationClearIds,
+      customSortOrders: preservedCustomNumbers.map((cardNumber) => ({
+        cardNumber,
+        sortOrder: targetSortOrder.get(cardNumber) ?? 0,
+      })),
+      resolvedPlayerNames: Array.from(playerIdByName.keys()),
+      resolvedTeamNames: Array.from(teamIdByName.keys()),
+      skippedPlayerNames: prelude.skippedPlayerNames,
+      skippedTeamNames: prelude.skippedTeamNames,
+      reviewRowIds: args.batchId ? prelude.reviewRowIds : [],
+      bscTeamEnrichmentIds,
+      setNameAncestorId: prelude.setNameAncestorId,
+      cardCount: args.cards.length,
+    };
+    let resume: FinalizeResume | null = null;
+    let finalizePage = 0;
+    for (;;) {
+      finalizePage += 1;
+      if (finalizePage > FINALIZE_MAX_PAGES) {
+        // A runaway guard, not a budget. Thrown rather than returned: a commit
+        // that stopped short of its own bookkeeping must not report success.
+        throw new Error(
+          `commitCardChecklist: finalize did not converge within ${FINALIZE_MAX_PAGES} pages`,
+        );
+      }
+      const page: FinalizePageResult = await phase(
+        `finalize page ${finalizePage}${resume ? ` (${resume.phase})` : ""}`,
+        () =>
+          ctx.runMutation(internal.selectorOptions.commitCardChecklistFinalize, {
+            ...finalizeArgs,
+            ...(resume ? { resume } : {}),
+          }),
+      );
+      variationsLinked += page.variationsLinked;
+      operatorDeleted += page.operatorDeleted;
+      unmatchedExistingIds.push(...page.unmatchedExistingIds);
+      if (!page.hasMore || page.resume === null) break;
+      resume = page.resume;
+    }
 
     if (variationsLinked > 0 || variationLinks.unresolvedStems.length > 0) {
       console.log(

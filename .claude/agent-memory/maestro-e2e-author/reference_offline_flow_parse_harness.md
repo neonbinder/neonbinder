@@ -7,6 +7,13 @@ metadata:
 
 # Offline flow parsing — the check `MAESTRO_PLAN_ONLY` does NOT do
 
+> **RUN THIS BEFORE EVERY HAND-BACK THAT TOUCHES A FLOW.** All 122 flows in
+> ~2s, no Chrome, no Convex, no run lock, no CI minute. It is strictly better
+> than finding a YAML error 20 minutes into a CI run — and a parse error in
+> `setup.yaml` takes the whole gate down, so the suite reports nothing at all.
+> Proposed to the coordinator 2026-09-23 as a documented pre-push gate in the
+> Maestro README; until that lands, it is this note.
+
 `MAESTRO_PLAN_ONLY=1 ./run-e2e-smoke.sh <selector>` only resolves the SELECTOR.
 It never opens the flow bodies, so an invented property sails through it and
 dies in CI instead. `maestro.orchestra.yaml.YamlCommandReader.readCommands(Path)`

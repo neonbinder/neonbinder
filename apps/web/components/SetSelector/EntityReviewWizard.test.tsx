@@ -217,7 +217,7 @@ vi.mock("./EntityLinkSearch", () => ({
 // Component under test — imported after mocks
 // ---------------------------------------------------------------------------
 
-import EntityReviewWizard from "./EntityReviewWizard";
+import EntityReviewWizard, { BULK_MAX_PAGES } from "./EntityReviewWizard";
 
 // ---------------------------------------------------------------------------
 // Fixtures / helpers
@@ -272,6 +272,20 @@ type Row = {
       }
     | { action: "skip" };
 };
+
+/**
+ * NEO-294 — what `recordAllRemainingAs*` returns for the last page of a walk:
+ * it decided some rows and there is nothing behind them.
+ *
+ * `decided` is deliberately not asserted anywhere; the wizard's counts come
+ * from the reactive `getBatch`, and the only field that steers it is `hasMore`.
+ */
+const LAST_PAGE = { decided: 0, hasMore: false, cursor: null };
+
+/** A page with more behind it, resuming at `cursor`. */
+function morePages(cursor: number, decided = 25) {
+  return { decided, hasMore: true, cursor };
+}
 
 let nextRowId = 0;
 function makeRow(overrides: Partial<Row> = {}): Row {
@@ -423,8 +437,11 @@ beforeEach(() => {
   mockRecordDecision.mockResolvedValue(null);
   mockClearDecision.mockResolvedValue(null);
   mockCancelBatch.mockResolvedValue(null);
-  mockRecordAllRemainingAsCreate.mockResolvedValue(0);
-  mockRecordAllRemainingAsSkip.mockResolvedValue(0);
+  // NEO-294 — the bulk paths decide ONE BOUNDED PAGE per call and report
+  // whether more remain. The default is "that was the whole batch", so a test
+  // that does not care about paging still sees exactly one call.
+  mockRecordAllRemainingAsCreate.mockResolvedValue(LAST_PAGE);
+  mockRecordAllRemainingAsSkip.mockResolvedValue(LAST_PAGE);
   mockStageCareerTeamRows.mockResolvedValue(0);
   mockClearCareerTeamStint.mockResolvedValue(null);
   currentRows = [];
@@ -833,13 +850,27 @@ describe("EntityReviewWizard — final confirm step", () => {
     expect(onConfirm).toHaveBeenCalledTimes(1);
   });
 
-  it("disables Confirm & Save and shows 'Saving...' while saving is true", () => {
+  it("marks Confirm & Save aria-disabled and shows 'Saving...' while saving is true", () => {
+    // NEO-294 — `aria-disabled`, not native `disabled`: a paged finalize walk
+    // keeps `saving` true for seconds, and a native disable would drop the
+    // autofocused button out of the tab order for all of it. The refusal is in
+    // the handler, which is what the next test pins.
     currentRows = [makeRow({ decision: { action: "create" } })];
     renderWizard({ saving: true });
 
     const button = screen.getByRole("button", { name: /Saving/ });
     expect(button).toBeTruthy();
-    expect((button as HTMLButtonElement).disabled).toBe(true);
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("Confirm & Save refuses a second click while a commit is in flight", () => {
+    currentRows = [makeRow({ decision: { action: "create" } })];
+    const { onConfirm } = renderWizard({ saving: true });
+
+    fireEvent.click(screen.getByRole("button", { name: /Saving/ }));
+
+    expect(onConfirm).not.toHaveBeenCalled();
   });
 });
 
@@ -1343,7 +1374,197 @@ describe("EntityReviewWizard — bulk 'Add remaining players as new'", () => {
     fireEvent.click(bulk);
 
     await screen.findByRole("alert");
+    // NEO-294 — the control no longer carries a native `disabled` at all, so
+    // "usable again" is the absence of `aria-disabled`.
     expect(bulk.disabled).toBe(false);
+    expect(bulk.getAttribute("aria-disabled")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-294 — a bulk run is a WALK over the batch, not one mutation
+//
+// `recordAllRemainingAs*` decides one bounded page per call now (a 419-entity
+// review in a single transaction is what blew Convex's system-operation budget
+// on the seed job) and returns `{ decided, hasMore, cursor }`. The wizard is
+// what walks that cursor, so these pin the client half of the contract: it
+// keeps asking until the server says stop, it passes the cursor it was handed,
+// the counter keeps moving while it runs, and a second run cannot start on top
+// of the first.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — bulk walks the batch a page at a time", () => {
+  /** A promise this test resolves by hand, to hold a page open. */
+  function deferred<T>() {
+    let resolve: (v: T) => void = () => {};
+    const promise = new Promise<T>((res) => (resolve = res));
+    return { promise, resolve };
+  }
+
+  it("keeps calling with the server's cursor until hasMore is false", async () => {
+    currentRows = [makeRow({ status: "ready", name: "A" }), makeRow({ status: "ready", name: "B" })];
+    mockRecordAllRemainingAsCreate
+      .mockResolvedValueOnce(morePages(4242))
+      .mockResolvedValueOnce({ decided: 5, hasMore: false, cursor: 9999 });
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add remaining players as new (2)" }),
+    );
+
+    await waitFor(() =>
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2),
+    );
+    // The first call starts at the head of the batch — no `cursor` key at all,
+    // which is what the validator's `v.optional` means by "from the start".
+    expect(mockRecordAllRemainingAsCreate).toHaveBeenNthCalledWith(1, {
+      selectorOptionId: "selopt-1",
+      batchId: "batch-1",
+    });
+    // The second resumes exactly where the server said, and nowhere else.
+    expect(mockRecordAllRemainingAsCreate).toHaveBeenNthCalledWith(2, {
+      selectorOptionId: "selopt-1",
+      batchId: "batch-1",
+      cursor: 4242,
+    });
+  });
+
+  it("stops after one call when the first page was the whole batch", async () => {
+    currentRows = [makeRow({ status: "ready" })];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add remaining players as new (1)" }),
+    );
+
+    await waitFor(() =>
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1),
+    );
+    // A review smaller than one page is one round trip, exactly as before.
+    await act(async () => {});
+    expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("skip walks its pages too", async () => {
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
+    mockRecordAllRemainingAsSkip
+      .mockResolvedValueOnce(morePages(77))
+      .mockResolvedValueOnce(LAST_PAGE);
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Skip remaining names (2)" }),
+    );
+
+    await waitFor(() => expect(mockRecordAllRemainingAsSkip).toHaveBeenCalledTimes(2));
+    expect(mockRecordAllRemainingAsSkip).toHaveBeenNthCalledWith(2, {
+      selectorOptionId: "selopt-1",
+      batchId: "batch-1",
+      cursor: 77,
+    });
+  });
+
+  it("the progress counter advances BETWEEN pages, not only at the end", async () => {
+    // The whole point of committing each page: an operator watching a 419-name
+    // review has to see it move. Each page commits on the server, `getBatch` is
+    // reactive, so the header is already counting — this pins that the walk
+    // does not block the render in between.
+    const secondPage = deferred<unknown>();
+    mockRecordAllRemainingAsCreate
+      .mockResolvedValueOnce(morePages(10))
+      .mockImplementationOnce(() => secondPage.promise);
+
+    currentRows = [
+      makeRow({ _id: "row-a" as unknown as Id<"entityReviewQueue">, status: "ready", name: "A" }),
+      makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
+    ];
+    const { rerender } = renderWizard();
+    expect(screen.getByText("0 of 2 reviewed")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add remaining players as new (2)" }),
+    );
+    await waitFor(() =>
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2),
+    );
+
+    // The first page has committed and the reactive batch has caught up, while
+    // the second page is still in flight.
+    currentRows = [
+      makeRow({
+        _id: "row-a" as unknown as Id<"entityReviewQueue">,
+        status: "ready",
+        name: "A",
+        decision: { action: "create" },
+      }),
+      makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
+    ];
+    rerenderWizard(rerender);
+    expect(screen.getByText("1 of 2 reviewed")).toBeTruthy();
+
+    await act(async () => {
+      secondPage.resolve(LAST_PAGE);
+    });
+  });
+
+  it("refuses a second run while one is walking, with aria-disabled and not native disabled", async () => {
+    // A walk is seconds long, so "in flight" is a state a keyboard operator can
+    // stand in. A native `disabled` would blur them to <body>, outside the
+    // still-open modal — the same reason the per-row controls use aria-disabled.
+    const firstPage = deferred<unknown>();
+    mockRecordAllRemainingAsCreate.mockImplementationOnce(() => firstPage.promise);
+
+    currentRows = [makeRow({ status: "ready" }), makeRow({ status: "ready" })];
+    renderWizard();
+
+    const bulk = screen.getByRole("button", {
+      name: "Add remaining players as new (2)",
+    }) as HTMLButtonElement;
+    const skip = screen.getByRole("button", {
+      name: "Skip remaining names (2)",
+    }) as HTMLButtonElement;
+    bulk.focus();
+    fireEvent.click(bulk);
+
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Adding players…" })).toBeTruthy(),
+    );
+    const adding = screen.getByRole("button", { name: "Adding players…" });
+    expect(adding.getAttribute("aria-disabled")).toBe("true");
+    expect((adding as HTMLButtonElement).disabled).toBe(false);
+    // Focus is still inside the dialog, on the control that was pressed.
+    expect(document.activeElement).toBe(adding);
+    // Its twin is inert too — the two decide the same rows.
+    expect(skip.getAttribute("aria-disabled")).toBe("true");
+
+    // Neither a second click on the running control nor one on its twin starts
+    // anything: the handlers refuse, which is what `aria-disabled` promises.
+    fireEvent.click(adding);
+    fireEvent.click(skip);
+    expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+    expect(mockRecordAllRemainingAsSkip).not.toHaveBeenCalled();
+
+    await act(async () => {
+      firstPage.resolve(LAST_PAGE);
+    });
+  });
+
+  it("gives up after BULK_MAX_PAGES and says the decisions so far are saved", async () => {
+    // A server that never says "no more" is the only way a cursor walk spins.
+    // The cap is a runaway guard: it stops, it explains, and it does not claim
+    // the work was lost.
+    mockRecordAllRemainingAsCreate.mockResolvedValue(morePages(1));
+    currentRows = [makeRow({ status: "ready" })];
+    renderWizard();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add remaining players as new (1)" }),
+    );
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Stopped partway through");
+    expect(alert.textContent).toContain("saved");
+    expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(BULK_MAX_PAGES);
   });
 });
 
@@ -1426,7 +1647,7 @@ describe("EntityReviewWizard — armed bulk add", () => {
     vi.useFakeTimers();
     try {
       mockRecordAllRemainingAsCreate
-        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(LAST_PAGE)
         .mockRejectedValueOnce(new Error("not an admin"));
 
       currentRows = [
@@ -3648,7 +3869,16 @@ describe("EntityReviewWizard — commit failure", () => {
 
     const alert = screen.getByRole("alert");
     expect(alert.textContent).toContain("Commit failed: conflicting card numbers");
-    expect(alert.textContent).toContain("Every decision you made is still here.");
+    // NEO-294 — the old line claimed "Nothing was saved", which stopped being
+    // true when NEO-189 split the commit into chunks that write before
+    // finalize runs. What the copy promises now is the property the code
+    // actually has: re-running converges.
+    // Jason's own words, signed off verbatim — the plain register is the
+    // point, so this asserts the sentence rather than a paraphrase of it.
+    expect(alert.textContent).toContain(
+      "Part of this commit already saved. Retry commit picks up where it stopped — cards re-match what's already there instead of doubling, and your decisions are all still here. The set's card count will tell you when it's done.",
+    );
+    expect(alert.textContent).not.toContain("Nothing was saved");
 
     // One control per action: the footer's Confirm & Save stands down while the
     // inline Retry is up, so the operator is not choosing between two buttons
@@ -3971,7 +4201,7 @@ describe("EntityReviewWizard — armed bulk add does not stall", () => {
       ];
       rerender(wizardEl());
 
-      releaseFirst(1);
+      releaseFirst(LAST_PAGE);
       await act(async () => {});
 
       act(() => {
@@ -4186,18 +4416,33 @@ describe("EntityReviewWizard — footer layout", () => {
   it("dims the bulk create rather than unmounting it while the auto-add is armed", async () => {
     // Unmounting it would move everything to its right. `aria-disabled`, not
     // `disabled`, so a keyboard operator who tabbed here is not ejected.
+    //
+    // The call is held open on purpose. The default mock resolves on its own
+    // microtask, and `bulkPending` reverts to null the instant it does — a
+    // `waitFor` poll only needs the call to have HAPPENED, not to still be
+    // running, so it can observe either side of that revert depending on
+    // exactly how many microtask hops the two races take. That is the CI
+    // failure verbatim: a synchronous re-lookup by this button's un-armed,
+    // counted name landed on the turn where the label had already flipped to
+    // "Adding players…" and come up empty. Holding the promise open removes
+    // the race instead of trying to win it.
+    let releaseCreate: (v: unknown) => void = () => {};
+    mockRecordAllRemainingAsCreate.mockImplementationOnce(
+      () => new Promise((res) => (releaseCreate = res)),
+    );
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
     fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
-    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
-    const bulk = screen.getByRole("button", {
-      name: "Add remaining players as new (2)",
-    }) as HTMLButtonElement;
+    const bulk = await screen.findByRole("button", { name: "Adding players…" });
     expect(bulk.getAttribute("aria-disabled")).toBe("true");
     expect(bulk.className).toContain("aria-disabled:opacity-50");
     expect(footerStatusText()).toContain("Adding 2 more as their lookups finish…");
+
+    await act(async () => {
+      releaseCreate(LAST_PAGE);
+    });
   });
 
   it("keeps Skip remaining names live while armed — row 2 offers it by name", async () => {
@@ -4244,18 +4489,31 @@ describe("EntityReviewWizard — footer layout", () => {
 
 describe("EntityReviewWizard — armed bulk create is inert", () => {
   it("a second click on the dimmed create link issues nothing", async () => {
+    // Held open for the same reason as the footer-layout test's armed-label
+    // check above: the default mock resolves on its own microtask and
+    // `bulkPending` reverts the instant it does, so a lookup by the un-armed,
+    // counted name after a `waitFor` races that revert instead of reliably
+    // catching the dimmed control. Holding the call open removes the race.
+    let releaseCreate: (v: unknown) => void = () => {};
+    mockRecordAllRemainingAsCreate.mockImplementationOnce(
+      () => new Promise((res) => (releaseCreate = res)),
+    );
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
     const bulk = screen.getByRole("button", { name: "Add remaining players as new (2)" });
     fireEvent.click(bulk);
-    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
+
+    const dimmed = await screen.findByRole("button", { name: "Adding players…" });
 
     // Armed and aria-disabled, so the click is a no-op — the button says so and
     // behaves that way, rather than quietly issuing a duplicate.
-    fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
-    await new Promise((r) => setTimeout(r, 0));
+    fireEvent.click(dimmed);
     expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      releaseCreate(LAST_PAGE);
+    });
   });
 });
 
@@ -6564,5 +6822,104 @@ describe("EntityReviewWizard — a career team with several eras", () => {
     expect(screen.queryByText("Winnipeg Jets · which era?")).toBeNull();
     expect(screen.queryByText("needs a team decision")).toBeNull();
     expect(screen.getByText("Winnipeg Jets (1972–1980)")).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-296 — the two `getManyByIds` subscriptions ask for DISTINCT ids, in a
+// STABLE order
+//
+// One entry per decided row was one `db.get` per decided row inside a live
+// subscription: a 754-row batch where the operator links them all asked for
+// 754 reads on every re-run, and a batch that size links the same handful of
+// teams over and over. The server dedups and bounds these too
+// (`convex/lib/batchIdReads.ts`), which is exactly why the client half needs
+// its own case — a regression here answers identically and is invisible from
+// the server.
+//
+// The ordering half is not cosmetic: Convex keys a live subscription on the
+// SERIALIZED args, so a list that reorders without changing membership tears
+// the subscription down and sets it up again on every batch update. Same
+// reasoning as `PlayerManagement.tsx`'s row-team ids.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — linked-entity lookups are deduped and stably ordered", () => {
+  /** The args of the LAST call to `ref`, or undefined if it never ran. */
+  function lastArgs(ref: string): unknown {
+    const calls = queryCalls.filter((c) => c.ref === ref);
+    return calls.length > 0 ? calls[calls.length - 1].args : undefined;
+  }
+
+  it("passes each distinct linked id exactly once, however many rows name it", () => {
+    // Nine link decisions across two entities: the shape a real batch takes
+    // when a set's checklist repeats the same club and the same player.
+    currentRows = [
+      ...Array.from({ length: 5 }, () =>
+        makeRow({
+          kind: "team",
+          decision: { action: "link", linkedTeamId: "team_padres" },
+        }),
+      ),
+      makeRow({
+        kind: "team",
+        decision: { action: "link", linkedTeamId: "team_angels" },
+      }),
+      ...Array.from({ length: 3 }, () =>
+        makeRow({
+          kind: "player",
+          decision: { action: "link", linkedPlayerId: "player_trout" },
+        }),
+      ),
+    ];
+    renderWizard();
+
+    expect(lastArgs("teams.getManyByIds")).toEqual({
+      ids: ["team_angels", "team_padres"],
+    });
+    expect(lastArgs("players.getManyByIds")).toEqual({
+      ids: ["player_trout"],
+    });
+  });
+
+  it("keeps the args byte-identical when the batch changes but the decision set does not", () => {
+    // The reactive `getBatch` re-emits on every decision anywhere in the
+    // review, and a row arriving in a different position must not re-key these
+    // two subscriptions. Built in the OPPOSITE id order on the second render,
+    // which is the failure a plain `[...ids]` with no sort would produce.
+    const first = makeRow({
+      kind: "team",
+      decision: { action: "link", linkedTeamId: "team_padres" },
+    });
+    const second = makeRow({
+      kind: "team",
+      decision: { action: "link", linkedTeamId: "team_angels" },
+    });
+    currentRows = [first, second];
+    const { rerender } = renderWizard();
+    const before = lastArgs("teams.getManyByIds");
+
+    // Same two links, reordered, plus an undecided row that carries none.
+    currentRows = [second, makeRow({ kind: "player", status: "ready" }), first];
+    rerenderWizard(rerender);
+    const after = lastArgs("teams.getManyByIds");
+
+    expect(before).toEqual({ ids: ["team_angels", "team_padres"] });
+    // `toEqual` is the assertion that matters — Convex serializes the args, so
+    // equal-by-value is equal-by-subscription-key. A reordered list would fail
+    // it while still resolving the same two names on screen.
+    expect(after).toEqual(before);
+  });
+
+  it("asks for nothing at all when no row was answered by linking", () => {
+    // `"skip"` rather than an empty id list: an empty `ids` array is still a
+    // live subscription and still a round trip.
+    currentRows = [
+      makeRow({ kind: "team", decision: { action: "create" } }),
+      makeRow({ kind: "player", status: "ready" }),
+    ];
+    renderWizard();
+
+    expect(lastArgs("teams.getManyByIds")).toBe("skip");
+    expect(lastArgs("players.getManyByIds")).toBe("skip");
   });
 });

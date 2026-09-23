@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "A brand SportLots has no entry for links through All Brands by set-name prefix — the year-wide sync saves SportLots' own sets, the brand's sets re-home from Unknown, and its SportLots list narrows to the prefix"
+name: "A brand SportLots has no entry for links through All Brands by set-name prefix — the year-wide sync asks SportLots for every brand of the year, the brand's sets re-home from Unknown, and its SportLots list narrows to the prefix"
 tags:
   - set-selector
 ---
@@ -13,12 +13,19 @@ tags:
 #   1. Sync Sets from the All Brands view files BSC's year list under the
 #      brands by prefix and the remainder under the year's `Unknown` row, then
 #      asks SportLots per brand (STEP 1);
-#   2. every set SportLots lists that NB has no row for is SAVED by that same
-#      sync — an NB set named `<brand prefix> <label>` (the label as-is under
-#      Unknown) with a Base carrying the SportLots id, no review in between
-#      (Jason, 2026-09-21: "if a set exists in a marketplace it should be
-#      saved whether it is in SL or BSC or both") — and the Sets column's
-#      done notice says how many: "N sets added from SportLots" (STEP 2);
+#   2. that same sync ASKS SportLots for the year, per brand — and every set
+#      SportLots lists that NB has no row for is saved by it, as an NB set
+#      named `<brand prefix> <label>` (the label as-is under Unknown) with a
+#      Base carrying the SportLots id, no review in between (Jason,
+#      2026-09-21: "if a set exists in a marketplace it should be saved
+#      whether it is in SL or BSC or both"). What STEP 2 proves of that is
+#      that the phase RAN: the column's done state carries no "SportLots
+#      skipped" notice, the one thing the sync still says about the
+#      SportLots side. The SAVE ITSELF HAS NO ON-SCREEN SURFACE since
+#      2026-09-22 (Jason: "We don't do it for other marketplaces we
+#      shouldn't do it here" — the count sentence is gone), and nothing on
+#      this screen tells an SL-minted set from a BSC-filed one. STEP 2 says
+#      what would;
 #   3. the New Manufacturer confirm says that Unknown's matching sets will
 #      move (STEP 3) — and asks NOTHING about SportLots: creating a brand
 #      under a year that carries SportLots ids links it through All Brands
@@ -65,18 +72,21 @@ tags:
 #         PREFIXES, and (a)'s BSC set `SPx` prefixes all of them.
 #     (c) the year-wide sync classified 74 SportLots roots as new on the
 #         first run (measured through the review modal that stood here
-#         before the 2026-09-21 auto-save; the first was under Donruss,
-#         "Between the Pipes /3500"). Those roots are what STEP 2's notice
-#         now counts — year-wide in the view, never dependent on the SPx
-#         prefix. The count itself is the marketplace's business and is not
-#         asserted; only that it is not zero.
+#         before the 2026-09-21 auto-save). It still saves them — year-wide
+#         in the view, never dependent on the SPx prefix — but since
+#         2026-09-22 it says nothing about them and no surface names one, so
+#         NO STEP ASSERTS THE SAVE. 74 is recorded as what this year
+#         answered, not as anything a step reads; the marketplace labels
+#         behind it are not written down anywhere in this flow.
 #   If a replacement is ever needed, it must satisfy (a) and (b) again —
 #   the registry lists the alternatives considered. Re-measure and record.
 #   That measurement predates the 2026-09-21 preview-pass changes (the
 #   confirm's opt-in control removed, STEP 5's SportLots-cell reads added,
-#   `Unknown` pinned second in the Manufacturers column, and the review
-#   modal replaced by the auto-save STEP 2 now reads); those steps were
-#   parsed offline only and are measured by the next CI run of this flow.
+#   `Unknown` pinned second in the Manufacturers column, the review modal
+#   replaced by the auto-save) and the 2026-09-22 removal of the done-row
+#   count, after which STEP 2 reads only that the SportLots phase ran; those
+#   steps were parsed offline only and are measured by the next CI run of
+#   this flow.
 #
 # ── WHY A REAL YEAR, AND WHY THIS FLOW IS A SOLE WRITER (R7a) ───────────────
 #   Every claim above is about what a marketplace ANSWERS: which sets BSC
@@ -103,7 +113,8 @@ tags:
 #   switches": below the root the pause reads as a BSC-only tree), so every
 #   SportLots-shaped claim above has a paused counterpart asserted by name:
 #   the view's Sets column ends with "SportLots skipped: no SportLots ids on
-#   this path." and counts nothing added; the create links the brand to nothing, so the
+#   this path." — the sentence a live runner asserts is ABSENT, which is the
+#   whole of STEP 2's pair; the create links the brand to nothing, so the
 #   picker's pane reads "SportLots returned no base set for <set>" and the
 #   attributes panel's SportLots cell says why it cannot be pressed ("This
 #   year has no SportLots link to go through"). The confirm step itself is
@@ -120,11 +131,12 @@ tags:
 #   and the base picker's own fetch. Each is commented where it appears.
 #
 # ── HANDLES (accessible names and visible text; never a DOM id) ─────────────
-#   Sets column `N sets added from SportLots` (SyncDoneNotice, the year-wide
-#               sync's done notice in the view; the count is server-written
-#               from the rows the sync inserted), `N sets moved out of
-#               Unknown` (the brand's own column, STEP 5), `SportLots
-#               skipped: no SportLots ids on this path.`
+#   Sets column `SportLots skipped: no SportLots ids on this path.`
+#               (SyncDoneNotice in the view — present under the pause,
+#               absent live: STEP 2 asserts both), `N sets moved out of
+#               Unknown` (the brand's own column, STEP 5). There is NO
+#               notice for what SportLots added; do not re-add one to a
+#               flow (2026-09-22).
 #   confirm     `Create manufacturer '<name>' under Hockey › 1997?`, the line
 #               `Sets in Unknown whose names start with '<name>' move here.`,
 #               `Create manufacturer` — and nothing about SportLots (the
@@ -198,45 +210,60 @@ tags:
     file: ../util/util-paused-platforms.yaml
 
 # ============================================================
-# STEP 2 — THE YEAR-WIDE SYNC SAVED SPORTLOTS' OWN SETS, AND SAYS HOW MANY
+# STEP 2 — THE YEAR-WIDE SYNC ASKED SPORTLOTS FOR THIS YEAR'S SETS
 #
-# There is no review surface any more (Jason, 2026-09-21: "why do we have a
-# dialog? If a set exists in a marketplace it should be saved"): the sync's
-# SportLots phase writes every new root as a set with a Base carrying the
-# SportLots id (`insertSetWithBaseFromSl`), and the Sets column's done
-# notice — the `SyncDoneNotice` above the idle `Sync Sets` button, one
-# server-composed sentence rendered verbatim — carries the count: "N sets
-# added from SportLots". That notice is the claim: the count is written from
-# the rows the mutation inserted, so a sync that saved nothing cannot show
-# it and a build that stopped saving reads no notice at all (R2). Its value
-# is the marketplace's business, not this flow's (fixture note (c) in the
-# header): only "not zero" is asserted.
+# There is no review surface (Jason, 2026-09-21: "why do we have a dialog? If
+# a set exists in a marketplace it should be saved") and, since 2026-09-22, no
+# done-row count either (Jason: "We don't do it for other marketplaces we
+# shouldn't do it here"). The SportLots phase writes every new root as a set
+# with a Base carrying the SportLots id (`insertSetWithBaseFromSl`) and says
+# nothing about having done so: `ensureSelectorOptions` composes the column's
+# notice from `pausedSides`, `failedPlatforms`, notifiable `skippedSides` and
+# `unlinkedTotal` only, and a clean sync DELETES its status row.
 #
-# What is NOT asserted, and why: a saved set's row in the view. A set row is
-# not a terminal row, so `EntitySelector` renders no SL pill on it (the id
-# lives on its Base), and its name is SportLots' label behind a brand prefix
-# — nothing on this screen names one, so nothing here can pick one without
-# guessing a marketplace label. The link on the Base is proved on THIS
-# year's own terms in STEP 4 instead (the picker pane), and the Base-carries-
-# the-id shape is unit-tested at the helper.
+# ── WHAT THIS STEP PROVES ──────────────────────────────────────────
+# That the phase RAN. `syncSetsAcrossManufacturers` pushes "sportlots" into
+# `skippedSides` only when NOT ONE brand of the year passed the per-brand
+# ATTACH gate (sport + year + the brand's own SportLots id) — all or nothing,
+# one branch — so `SportLots skipped: no SportLots ids on this path.` is on
+# the column exactly when SportLots was never asked. Live it is absent: the
+# Manufacturers column's rows come from SportLots' own brand list, so they
+# carry its ids. Under the pause the tree below the root carries no SportLots
+# ids at all (README → "Operator switches"), every brand fails the gate, and
+# the sentence is there by name. That is the R2 pair for this step.
+#
+# ── WHAT IT CANNOT PROVE, AND WHY THAT IS A PRODUCT GAP ──────────────────
+# That a set was SAVED. Nothing on this screen separates a set the SportLots
+# phase minted from one BSC filed: a set row is not terminal, so
+# `EntitySelector` renders no SL pill on it (the id sits on its Base, and the
+# Base's pill is only reachable after the set is picked by NAME), and a minted
+# row's name is a SportLots label behind a brand prefix — no surface here
+# names one and no flow may guess one (invariant 4). On THIS fixture the
+# minted sets are also none of `SPx`'s: `routeSlSets` hides every SportLots
+# entry a set NB already has equals or word-boundary-prefixes, and BSC's set
+# named exactly `SPx` covers them all, so the flow's own brand cannot supply a
+# reachable example either. SET-REGISTRY.md → "Hockey → 1997" records the gap
+# and the affordance that would close it (a set row that carries its
+# marketplace coverage, plus a way to reach such a row that does not need its
+# name). Until one exists: the SportLots side of this year is proved by the
+# LINK — STEP 4's narrowed picker pane, which cannot render without the year's
+# ids and a live answer — and the minted row's shape is unit-tested at
+# `insertSetWithBaseFromSl`. Do not put the count sentence back to close it.
 # ============================================================
 
 - runFlow:
     when:
       true: "${output.SL_PAUSED}"
     commands:
-      # PAUSED: nothing was asked of SportLots, so nothing was saved from it —
-      # and the column says why, in the one-sided-skip notice the year-wide
-      # sync leaves when no brand carries the ids to scope SportLots. The
-      # notice sits below the column's list, DOWN from where the drill left
-      # the page. The negative is paired with that positive on the same
-      # surface (R2).
+      # PAUSED: nothing was asked of SportLots — below the root the pause
+      # reads as a BSC-only tree, so no brand carries the ids to scope
+      # SportLots and the year-wide sync leaves the one-sided-skip notice.
+      # It sits below the column's list, DOWN from where the drill left the
+      # page. The positive this step's live negative pairs with (R2).
       - scrollUntilVisible:
           element:
             text: "SportLots skipped: no SportLots ids on this path."
           timeout: 7000
-      - assertNotVisible:
-          text: ".*added from SportLots.*"
 
 - runFlow:
     when:
@@ -272,22 +299,22 @@ tags:
           element:
             text: "Sync Sets"
           timeout: 150000
-      # THE NOTICE. `EntityColumn` renders the done notice in the same slot
-      # as the idle action row and from the same status row the sync's final
-      # mutation wrote — `status: "done"` with the message, in the render
-      # that mounted the button — so nothing here races: the sentence is on
-      # screen the moment the button is, directly ABOVE it in DOM order
-      # (`SyncDoneNotice`, then `idleButtons`). UP from where the `Sync Sets`
-      # scroll left the page, uncentred: no tap follows, the scroll is the
-      # assertion (R6). Full-match regex on the notice's own <p>; the leading
-      # digit is forced non-zero so "0 sets added" — a SportLots phase that
-      # ran and saved nothing — fails here by name rather than passing on
-      # the shape of the sentence.
-      - scrollUntilVisible:
-          element:
-            text: ".*[1-9][0-9]* sets? added from SportLots.*"
-          direction: UP
-          timeout: 7000
+      # SPORTLOTS WAS ASKED. The skip sentence and the idle button share one
+      # slot and one `getSelectorSyncStatus` render — `EntityColumn` puts
+      # `SyncDoneNotice` directly ABOVE `idleButtons` — so if the sync had
+      # skipped SportLots the sentence would be on screen at this instant,
+      # not one round-trip later. The negative is not the vacuous kind the
+      # README warns about (an off-screen element reads as absent): the DOWN
+      # scroll above stops the moment the button is FULLY visible, which
+      # leaves it near the bottom edge with the whole slot above it inside
+      # the viewport, and the button itself is the positive it is paired
+      # with. (Order matters for exactly that reason: `setup.yaml` runs the
+      # same live-absent/paused-present idiom on the paused sentence and had
+      # to scroll to the notice first — at y≈620 it was UNDER the 625px fold
+      # and a bare assert read it as absent, PR #265 run 1. Here the scroll
+      # to the button below it is what puts the slot on screen.) Full-match
+      # regex over the notice's own <p>.
+      - assertNotVisible: "SportLots skipped: no SportLots ids on this path."
 
 # ============================================================
 # STEP 3 — CREATE THE BRAND, LINKED THROUGH ALL BRANDS

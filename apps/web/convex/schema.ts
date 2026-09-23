@@ -172,6 +172,8 @@ export const selectorOptionLevelValidator = v.union(
  *                     then `setSelectorOptionSetNamePrefix` (operator-typed)
  *                     and the one-shot `backfillBrandPrefixAndUnknownName`;
  *                     never on a row carrying `isBrandUnknown`
+ *   brandSetByOperator  the attributes panel's move control
+ *                     (`brandView.moveSetToBrand`); never written by a sync
  */
 export const selectorOptionMetadataFields = {
   cardNumberPrefix: v.optional(v.string()),   // e.g. "DK-" for Diamond Kings
@@ -283,6 +285,34 @@ export const selectorOptionMetadataFields = {
    * hand (a year's manufacturers, an ancestor chain).
    */
   setNamePrefix: v.optional(v.string()),
+  /**
+   * NEO-294 — "an operator put this set under this brand by hand", as an NB
+   * ROLE on a `setName` row. Written by the attributes panel's move control
+   * (`brandView.moveSetToBrand`) and by nothing else; read by every
+   * AUTOMATIC re-home, where it means exactly one thing: LEAVE THIS ROW
+   * WHERE IT IS.
+   *
+   * Why it has to exist. A move to another brand already survives a sync on
+   * its own — the set sync routes id-first and never moves a row that sits
+   * under a brand. A move to UNKNOWN does not: the row's name still matches
+   * whatever prefix or known-brand entry sent it to that brand in the first
+   * place, so the next Sync Sets would quietly take it back and the
+   * operator's decision would last until the next run. This flag is the
+   * difference between "NB files what nobody has filed" and "NB overrules
+   * the operator", and only the first is allowed.
+   *
+   * The paths that honour it: `rehomeSetsFromBrandUnknown` (a new brand, or
+   * an edited prefix, claiming Unknown's sets), `routeBscSets` (the sync's
+   * Unknown → brand move, including the NEO-294 known-brand route), and
+   * `backfillKnownBrands`. The operator's own move passes
+   * `includeOperatorPlaced` and moves the row again, because a second
+   * decision is still theirs.
+   *
+   * Absent means "nobody has placed this row by hand", which is every row
+   * written before NEO-294. Never set by a sync, never cleared by one: only
+   * the operator writes it, and re-stamping on each move keeps it true.
+   */
+  brandSetByOperator: v.optional(v.boolean()),
 };
 
 export const selectorOptionFields = {

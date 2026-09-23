@@ -105,14 +105,31 @@
  *     historical names are two rows by the NEO-254 model, and the loader never
  *     adopts across a rename; the operator dates the eras afterwards.
  *
- * ## Chunking
+ * ## Chunking — TWO bounds, because a row is not a unit of cost
  *
  * Each mutation is one Convex transaction, so the caller loops in chunks of at
- * most 50 rows. The cap is ENFORCED here rather than documented, because a
- * script that quietly sends 500 fails halfway through with a limit error and
- * leaves the operator guessing which rows landed. A row costs one indexed read
- * per incoming alias (most of them empty) plus a `db.get` per hit; a chunk of
- * rows carrying the dataset's 64-alias maximum should be sent smaller.
+ * most 50 rows, and that cap is ENFORCED here rather than documented: a script
+ * that quietly sends 500 fails halfway through with a limit error and leaves
+ * the operator guessing which rows landed.
+ *
+ * NEO-296 — 50 ROWS was never the real bound. A row's cost is set by its
+ * ALIASES: one full identity lookup per incoming alias, and
+ * `MAX_TEAM_ALIASES` (teams.ts) admits 64. Fifty four-alias NCAA rows spend
+ * ~900 operations; fifty 64-alias rows spend ~9,900 and die. The header used to
+ * say "a chunk of rows carrying the dataset's 64-alias maximum should be sent
+ * smaller" — a request to a caller, enforced by nothing. So the second bound is
+ * `BULK_LOAD_TEAM_OP_BUDGET`, spent against what each row actually reads and
+ * writes; see its note for the arithmetic.
+ *
+ * A call that runs out of budget STOPS BETWEEN ROWS and says so:
+ * `hasMore: true`, `processed`, and `nextKey` — the key of the first row it did
+ * not reach. Everything before that is written and committed; nothing after it
+ * was read. **Resume from `nextKey`, never by re-sending the whole chunk**: an
+ * adopt converges on a replay, but `decision: { create: true }` deliberately
+ * does not (below), so a replayed prefix inserts a second row for every
+ * `create` answer in it. `results` carries one entry per row reached, keyed by
+ * the caller's own `key`, so a partial run is legible row by row rather than as
+ * a number.
  *
  * ## Nothing here schedules enrichment — including through its helpers
  *
@@ -187,13 +204,82 @@ import { isWikidataQid } from "../lib/players/wikidata-id";
 // ---------------------------------------------------------------------------
 
 /**
- * Rows per call. Sized so one mutation stays well inside Convex's read budget
- * with room for the lookups each row makes: a team costs one name read, one
- * indexed read per incoming alias, a `db.get` per hit, its league, and on
- * create one search-index read for `nearExisting`.
+ * Rows per call — the OUTER bound. It caps the argument size and nothing else;
+ * what actually bounds the transaction is `BULK_LOAD_TEAM_OP_BUDGET` below,
+ * because a row's cost is set by its ALIASES, not by its being a row.
  */
 const MAX_LEAGUES_PER_CALL = 50;
 const MAX_TEAMS_PER_CALL = 50;
+
+/**
+ * NEO-296 — the operations one `loadTeams` transaction may spend before it
+ * stops and hands the rest of the chunk back.
+ *
+ * ## What one operation is, and why rows were the wrong unit
+ *
+ * Convex counts one system operation per CALL — a `db.get`, an indexed or
+ * search read, an `insert`, a `patch`, a `scheduler.runAfter`. A `.collect()`
+ * returning 754 rows is ONE of them; the document count is a separate budget
+ * with a separate error. So the cost of this loader is the number of CALLS its
+ * per-row body makes, and that is driven by `row.aliases`, which nothing
+ * bounded: `MAX_TEAM_ALIASES` (teams.ts) admits 64 per row, and the module
+ * header's "a chunk of rows carrying the dataset's 64-alias maximum should be
+ * sent smaller" was a request to the caller that no code enforced.
+ *
+ * ## The arithmetic, per incoming team row
+ *
+ *   `findTeamsByFullName` PER INCOMING ALIAS — the ownership/identity lookup:
+ *     1 read  `findTeamsByExactName`, the primary-name index
+ *     1 read  `findTeamsByAlias`, the `teamAliases` index
+ *     1 `db.get` per alias row it returns, up to `TEAM_ERA_SCAN_LIMIT` (16)
+ *     → 2 operations for the ordinary miss, up to 18 for a contested string
+ *   1 read    the row's OWN name leg (`findTeamsByExactName`)
+ *   1–17      the row's own alias leg, when the name leg found nothing
+ *   ADOPT:    2–18 for the canonical-name re-read, 1 `patch`, and
+ *             `syncTeamAliases` = 1 `.collect()` + up to 64 deletes + up to 64
+ *             inserts
+ *   CREATE:   1 search read for `nearExisting`, 1 `insert`, and
+ *             `syncTeamAliases` = 1 `.collect()` + one insert per alias
+ *
+ * A 4-alias NCAA row on the create path is 4×2 + 1 + 1 + 1 + 1 + (1+4) ≈ 18
+ * operations — ×50 rows ≈ 900, which is the house-comfortable figure and the
+ * load this file was written against. A row carrying the dataset's 64-alias
+ * maximum is 64×2 + 4 + (1+64) + 1 + 1 ≈ 198 — **×50 ≈ 9,900, which fails
+ * outright**, and because a Convex transaction aborts whole, the operator
+ * learns only that the chunk died and not which rows landed.
+ *
+ * The calibration is `CARDS_PER_COMMIT_CHUNK`'s (selectorOptions.ts, sized off
+ * this same Convex error in NEO-189): ~900 comfortable, ~1,800 straining,
+ * ~4,000 failing. This aims at the same ~900.
+ *
+ * ## Counted, not estimated
+ *
+ * The budget is spent against what the row ACTUALLY read — every identity
+ * lookup reports `2 + rows.length`, every write reports what it wrote — rather
+ * than against a worst case computed from the alias count. A worst-case
+ * estimate would charge a clean 4-alias row 137 operations for the 16 `db.get`s
+ * it will never make and cut the chunk to six rows, which would slow the real
+ * preload by 8× to defend against a shape the dataset does not contain.
+ *
+ * The check runs BETWEEN rows, so one row may carry the call past the budget:
+ * the ceiling is `BULK_LOAD_TEAM_OP_BUDGET` + the worst single row, and the
+ * worst single row is a 64-alias row whose every alias is contested — 64×18 +
+ * 18 + 18 + 1 + 129 ≈ 1,318. So 900 + 1,318 ≈ 2,220 absolute worst case:
+ * inside the straining band, and less than a third of the ~9,900 this replaces.
+ * A single row is never refused for its own size; it is always attempted, so no
+ * row of a legitimate dataset becomes unloadable.
+ *
+ * Exported so a test can build a deliberately over-budget chunk without
+ * hard-coding the number.
+ */
+export const BULK_LOAD_TEAM_OP_BUDGET = 900;
+
+/**
+ * The fixed half of one `findTeamsByFullName`: the name index read plus the
+ * alias index read. The variable half is one `db.get` per alias row, which the
+ * returned list counts.
+ */
+const IDENTITY_LOOKUP_BASE_OPS = 2;
 
 /** Bounds on the strings this writes. Same values as their admin twins. */
 const MAX_NAME_LENGTH = 120;
@@ -367,15 +453,40 @@ const teamResultValidator = v.object({
 });
 
 const teamsResultValidator = v.object({
+  /**
+   * One entry per row this call REACHED, in the order they were sent. On a
+   * truncated call it is shorter than the chunk; correlate by `key` and the
+   * rows that did not land are the ones with no entry.
+   */
   results: v.array(teamResultValidator),
   /**
    * What every league name in the chunk resolved to. `null` means the write
    * run would create it — for "NCAA" that is the signal to add an alias to the
    * existing league row first rather than let the loader mint a second one.
+   *
+   * NEO-296: only the leagues the PROCESSED rows named. A truncated call says
+   * nothing about a league only its unreached tail mentions.
    */
   leagues: v.array(
     v.object({ name: v.string(), id: v.union(v.id("leagues"), v.null()) }),
   ),
+  /** NEO-296 — how many rows of the chunk this call reached. */
+  processed: v.number(),
+  /**
+   * NEO-296 — this call stopped on `BULK_LOAD_TEAM_OP_BUDGET`, not on the end
+   * of the chunk. Everything it wrote is committed; the rows from `nextKey`
+   * onwards were not read and not written.
+   */
+  hasMore: v.boolean(),
+  /**
+   * NEO-296 — the `key` of the first row NOT reached. **Resume from this key**,
+   * never by re-sending the whole chunk: an adopt converges on a replay but
+   * `decision: { create: true }` deliberately does not (see the header), so a
+   * replayed prefix would insert a second row for every `create` answer in it.
+   */
+  nextKey: v.union(v.string(), v.null()),
+  /** NEO-296 — operations this call actually spent. See the budget's note. */
+  opsSpent: v.number(),
 });
 
 // ---------------------------------------------------------------------------
@@ -703,6 +814,10 @@ type TeamResult = {
 type TeamsResult = {
   results: TeamResult[];
   leagues: { name: string; id: Id<"leagues"> | null }[];
+  processed: number;
+  hasMore: boolean;
+  nextKey: string | null;
+  opsSpent: number;
 };
 
 function candidateOf(team: Doc<"teams">): NonNullable<TeamResult["candidates"]>[number] {
@@ -730,8 +845,26 @@ async function loadTeams(
   write: boolean,
 ): Promise<TeamsResult> {
   assertChunkSize(args.teams.length, MAX_TEAMS_PER_CALL, "teams");
+  /**
+   * NEO-296 — operations this transaction has spent, counted at the call
+   * sites. See `BULK_LOAD_TEAM_OP_BUDGET` for the model and the arithmetic.
+   */
+  let ops = 0;
   const sportId = await requireSportId(ctx, args.sport);
+  ops += 1; // the `by_level` sport collect
   const mutationCtx = write ? (ctx as MutationCtx) : null;
+
+  /**
+   * The shared identity lookup, with its cost recorded. `2 + rows.length` is
+   * the name index read, the alias index read, and one `db.get` per alias row
+   * — `rows.length` counts the hits `findTeamsByAlias` resolved, which is what
+   * those gets were spent on.
+   */
+  const lookupByFullName = async (value: string): Promise<Doc<"teams">[]> => {
+    const rows = await findTeamsByFullName(ctx, sportId, value);
+    ops += IDENTITY_LOOKUP_BASE_OPS + rows.length;
+    return rows;
+  };
 
   const results: TeamResult[] = [];
 
@@ -751,6 +884,10 @@ async function loadTeams(
       ? `name:${normalizeLeagueName(leagueName)}`
       : DEFAULT_LEAGUE_CACHE_KEY;
     if (!leagueCache.has(cacheKey)) {
+      // A cache MISS is the only time this costs anything, and it happens once
+      // or twice per chunk. `findLeagueByName` is a name read plus the alias
+      // leg's `by_sport_id` collect; `findOrCreateLeague` adds its insert.
+      ops += 3;
       if (leagueName) {
         const name = boundedName(leagueName, "A league name", key);
         const id = mutationCtx
@@ -782,7 +919,22 @@ async function loadTeams(
     return leagueCache.get(cacheKey)?.id ?? undefined;
   };
 
-  for (const row of args.teams) {
+  /** NEO-296 — rows this call reached, and where the next one resumes. */
+  let processed = 0;
+  let nextKey: string | null = null;
+
+  for (let rowIndex = 0; rowIndex < args.teams.length; rowIndex++) {
+    // NEO-296 — checked BETWEEN rows, never inside one: a row is an atomic
+    // unit of this protocol (its match, its ownership check and its write are
+    // one decision) and half of one is not a state anything can resume from.
+    // The first row is always attempted, so no single row is unloadable for
+    // its own size.
+    if (rowIndex > 0 && ops >= BULK_LOAD_TEAM_OP_BUDGET) {
+      nextKey = boundedKey(args.teams[rowIndex].key);
+      break;
+    }
+    const row = args.teams[rowIndex];
+    processed = rowIndex + 1;
     const key = boundedKey(row.key);
     const name = boundedName(row.name, "A team name", key);
     const location = row.location?.trim().replace(/\s+/g, " ") || undefined;
@@ -813,7 +965,10 @@ async function loadTeams(
      */
     const holdersByAlias = new Map<string, Doc<"teams">[]>();
     for (const alias of aliases) {
-      holdersByAlias.set(alias, await findTeamsByFullName(ctx, sportId, alias));
+      // NEO-296 — THE loop the budget exists for: unbounded by rows, bounded
+      // only by `MAX_TEAM_ALIASES` (64), and each turn is a full identity
+      // lookup rather than a single read.
+      holdersByAlias.set(alias, await lookupByFullName(alias));
     }
     const ownersExcept = (self: Id<"teams"> | null): AliasOwner[] => {
       const owners: AliasOwner[] = [];
@@ -892,7 +1047,7 @@ async function loadTeams(
       const skipped = [...skippedIn];
       const canonicalIsNew = existing.nameNormalized !== fields.nameNormalized;
       if (canonicalIsNew) {
-        const owners = (await findTeamsByFullName(ctx, sportId, fullName)).filter(
+        const owners = (await lookupByFullName(fullName)).filter(
           (holder) => holder._id !== existing._id,
         );
         for (const holder of owners) {
@@ -928,7 +1083,20 @@ async function loadTeams(
       }
       const aliasesAdded = merged.length - existingAliases.length;
 
-      if (mutationCtx && Object.keys(patch).length > 0) {
+      // NEO-296 — the cost is charged in BOTH modes, off the same conditions,
+      // so the dry run truncates on exactly the row the write run would. The
+      // dry run's one job is to predict the write run; a budget it did not pay
+      // would have it report seven rows the write run then stops at five.
+      const wouldPatch = Object.keys(patch).length > 0;
+      if (wouldPatch) {
+        ops += 1;
+        // `syncTeamAliases` is one `.collect()` of the row's side rows, then a
+        // delete per entry it no longer wants and an insert per entry it does
+        // not yet hold. Charged at its ceiling — the union only grows, so the
+        // deletes are the stale-sport case and the inserts are the additions.
+        if (patch.aliases) ops += 1 + existingAliases.length + additions.length;
+      }
+      if (mutationCtx && wouldPatch) {
         await mutationCtx.db.patch(existing._id, { ...patch, lastUpdated: Date.now() });
         if (patch.aliases) {
           await syncTeamAliases(mutationCtx, {
@@ -979,6 +1147,7 @@ async function loadTeams(
             q.search("nameNormalized", term).eq("sportId", sportId),
           )
           .take(NEAR_EXISTING_SEARCH_CANDIDATES);
+        ops += 1;
         const named = hits.map((hit) => ({ hit, name: teamFullName(hit) }));
         for (const { index } of rankTeamCandidates(fullName, named).slice(
           0,
@@ -994,6 +1163,10 @@ async function loadTeams(
       }
 
       const leagueId = await resolveLeagueId(row.league, key);
+      // NEO-296 — charged in both modes; see the same note on `adopt`.
+      ops += 1;
+      // One `.collect()` (empty — the row is new) plus one insert per alias.
+      if (safeAliases.length > 0) ops += 1 + safeAliases.length;
       let id: Id<"teams"> | null = null;
       if (mutationCtx) {
         id = await mutationCtx.db.insert("teams", {
@@ -1041,6 +1214,7 @@ async function loadTeams(
      */
     if (row.decision && "adopt" in row.decision) {
       const chosen = await ctx.db.get(row.decision.adopt);
+      ops += 1;
       if (!chosen || chosen.sportId !== sportId) {
         throw new ConvexError(
           `The team chosen for "${key}" is not a team in this sport.`,
@@ -1070,6 +1244,7 @@ async function loadTeams(
     // ---- 2. by name --------------------------------------------------------
 
     const byName = await findTeamsByExactName(ctx, sportId, fullName);
+    ops += 1;
     const nameMatch = eraMatch(byName, row.yearsActive);
     if (nameMatch.kind === "several") {
       results.push(ambiguous({ candidates: nameMatch.teams.map(candidateOf) }));
@@ -1094,7 +1269,10 @@ async function loadTeams(
         union.push(team);
       };
       // (i) rows whose ALIAS is the incoming full name — OUR primary name.
-      for (const team of await findTeamsByAlias(ctx, sportId, fullName)) {
+      const byAlias = await findTeamsByAlias(ctx, sportId, fullName);
+      // One `teamAliases` index read plus one `db.get` per row it resolved.
+      ops += 1 + byAlias.length;
+      for (const team of byAlias) {
         add(team, fullName, true);
       }
       // (ii) rows whose PRIMARY name is one of our aliases, and (iii) rows
@@ -1152,7 +1330,31 @@ async function loadTeams(
     results.push(await create([]));
   }
 
-  return { results, leagues: [...leagueCache.values()] };
+  const hasMore = processed < args.teams.length;
+  if (hasMore) {
+    // Structured and loud. A truncated chunk that a script read as "done"
+    // would silently drop rows, which is the one outcome this whole protocol
+    // is built to avoid. Keys and counts only — a team name is operator data.
+    console.warn(
+      JSON.stringify({
+        msg: "bulk_load_teams_truncated",
+        fn: write ? "upsertTeams" : "previewTeams",
+        rowsSent: args.teams.length,
+        processed,
+        opsSpent: ops,
+        budget: BULK_LOAD_TEAM_OP_BUDGET,
+      }),
+    );
+  }
+
+  return {
+    results,
+    leagues: [...leagueCache.values()],
+    processed,
+    hasMore,
+    nextKey,
+    opsSpent: ops,
+  };
 }
 
 /**
@@ -1180,6 +1382,24 @@ export const upsertTeams = internalMutation({
  * prod itself is dry-run before the flag is set. Same handler as
  * `upsertTeams` minus the writes; the confirm literal is kept so a script
  * cannot call the wrong one by accident.
+ *
+ * ## NEO-296 — the arming asymmetry is deliberate and stays
+ *
+ * This query carries `loadTeams`' full READ cost while needing only the
+ * `confirm` literal, with no `ALLOW_BULK_LOAD` flag. That asymmetry is the
+ * point of the function: arming is what guards WRITES, and the whole reason
+ * the dry run is a query is to be runnable on a deployment nobody has armed
+ * yet — which is every deployment, at the moment an operator most wants to
+ * know what the load would do. Requiring the flag here would mean arming prod
+ * in order to rehearse against it, i.e. arming it before the rehearsal that
+ * decides whether to arm it.
+ *
+ * What it is NOT is an unbounded door: `internalQuery` is unreachable from any
+ * client, so the only callers are a deploy-key `npx convex run` and other
+ * server code, and since NEO-296 the read cost is bounded by
+ * `BULK_LOAD_TEAM_OP_BUDGET` exactly as the mutation's is — they share one
+ * handler, so they cannot drift. The budget, not the flag, is what makes this
+ * safe to point at anything.
  */
 export const previewTeams = internalQuery({
   args: {

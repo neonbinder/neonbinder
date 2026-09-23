@@ -250,6 +250,14 @@ export const seedMyTestCredentials = action({
         site: v.string(),
         stored: v.boolean(),
         skipped: v.optional(v.boolean()),
+        // NEO-294: why a store failed, in the user-facing words
+        // `saveCredentials` already chose (paused / site-side refusal /
+        // no answer / refused credentials / lock contention). Present ONLY on
+        // a failure, so the "callers assert the exact array" contract above
+        // still holds for every passing path. /testing/seed-credentials
+        // prints it, which puts the CLASS of failure on the CI screenshot
+        // instead of a bare `=fail`.
+        reason: v.optional(v.string()),
       }),
     ),
   }),
@@ -276,6 +284,7 @@ export const seedMyTestCredentials = action({
       site: string;
       stored: boolean;
       skipped?: boolean;
+      reason?: string;
     }> = [];
 
     if (wantsScanFixture) {
@@ -407,7 +416,17 @@ export const seedMyTestCredentials = action({
         password,
       });
 
-      seeded.push({ site, stored: storeResult.success });
+      // NEO-294: carry `saveCredentials`' own message through on a failure.
+      // It is already product copy shown to real users (a fixed per-site
+      // string — no username, password or token is interpolated into it), and
+      // it is the only place that knows WHICH class of failure this was. On
+      // success nothing is added, so the result shape is byte-identical to
+      // before on every green path.
+      seeded.push({
+        site,
+        stored: storeResult.success,
+        ...(storeResult.success ? {} : { reason: storeResult.message }),
+      });
     }
 
     // NEO-120 — EasyPost postage key.

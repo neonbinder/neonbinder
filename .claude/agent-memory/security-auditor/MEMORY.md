@@ -50,3 +50,4 @@
 - [Patterns neo291 metadata doors](patterns_neo291_metadata_doors.md) — "no mutation takes this object any more" is a grep target (shared validator arg uses); two doors on one field need one normalizer; new public fn without a registry entry is a finding
 - [Patterns neo293 facet remap](patterns_neo293_facet_remap.md) — bscSourceView partition is the re-tag guard for the Attach dialog; allocateSlots refreshes facets on existing slots; armed backfills never validate their scope arg
 - [Patterns neo237 all brands view](patterns_neo237_all_brands_view.md) — reserved name has a 4th door (store insert); candidate `side` must key the Create slot; sibling prefix fold-collision unchecked at the edit door; pin audit-field omission in the guards test
+- [Patterns neo296 transaction bounds](patterns_neo296_transaction_bounds.md) — bounding a transaction: client callers that ignore hasMore, per-item budgets that re-arm, continuation scope re-checks, cursor advance

@@ -288,6 +288,86 @@ describe("teams.resolveNames", () => {
     ).rejects.toThrow(/max 64/);
   });
 
+  test("a contested 64-name list resolves without refusing or abandoning (NEO-296)", async () => {
+    /*
+     * The 64-name cap bounded the number of LOOKUPS and not what one costs:
+     * each `findTeamsByFullName` was up to 18 system ops, so one player's
+     * career teams could fan out to ~1,152 in a query that re-runs as the
+     * operator moves through the wizard.
+     *
+     * The fixture is the shape that made it real — a window of teams that ALL
+     * answer to every name asked about, which is what the preloaded college
+     * rows look like. The fix is not a budget: this query only ever branches on
+     * none / one / several, so it reads a two-row window and pays at most 4 ops
+     * a name. What it concludes is unchanged, which is what these assertions
+     * are for.
+     */
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    const asAdmin = t.withIdentity(ADMIN);
+    const aliases = Array.from({ length: 64 }, (_, i) => `Shared Name ${i}`);
+
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 16; i += 1) {
+        const teamId = await ctx.db.insert("teams", {
+          name: `Program ${i}`,
+          nameNormalized: normalizeTeamName(`Program ${i}`),
+          sportId: baseball,
+          aliases,
+          lastUpdated: 1_700_000_000_000,
+        });
+        for (const alias of aliases) {
+          await ctx.db.insert("teamAliases", {
+            teamId,
+            sportId: baseball,
+            aliasNormalized: normalizeTeamName(alias),
+          });
+        }
+      }
+    });
+
+    // The whole list is answered — no refusal, and no entry left unread.
+    const answered = await asAdmin.query(api.teams.resolveNames, {
+      names: aliases,
+      sportId: baseball,
+    });
+    expect(answered).toHaveLength(aliases.length);
+    expect(answered.map((row) => row.name)).toEqual(aliases);
+    // Sixteen holders still reads as "a human decides", never as one of them.
+    expect(answered.every((row) => row.ambiguous === true)).toBe(true);
+    expect(answered.every((row) => row.existingTeamId === undefined)).toBe(true);
+  });
+
+  test("the narrowed window does not change the one-row or no-row answers (NEO-296)", async () => {
+    // The window is two because two settles "several". One row must still come
+    // back AS the row, and a row reachable only by its alias must still count.
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    const asAdmin = t.withIdentity(ADMIN);
+
+    const padres = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Padres",
+      location: "San Diego",
+      sportId: baseball,
+      aliases: ["Friars"],
+    });
+
+    expect(
+      await asAdmin.query(api.teams.resolveNames, {
+        names: ["San Diego Padres", "Friars", "Nobody At All"],
+        sportId: baseball,
+      }),
+    ).toEqual([
+      {
+        name: "San Diego Padres",
+        existingTeamId: padres,
+        existingName: "San Diego Padres",
+      },
+      { name: "Friars", existingTeamId: padres, existingName: "San Diego Padres" },
+      { name: "Nobody At All" },
+    ]);
+  });
+
   test("is admin-gated", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t, "Baseball", "BB");

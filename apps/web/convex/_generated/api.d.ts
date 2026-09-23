@@ -30,6 +30,7 @@ import type * as auth from "../auth.js";
 import type * as backfillBrandPrefixAndUnknownName from "../backfillBrandPrefixAndUnknownName.js";
 import type * as backfillBrandUnknownRole from "../backfillBrandUnknownRole.js";
 import type * as backfillCardFeatures from "../backfillCardFeatures.js";
+import type * as backfillKnownBrands from "../backfillKnownBrands.js";
 import type * as backfillPromotedParallelFacet from "../backfillPromotedParallelFacet.js";
 import type * as backfillVariantFacetAndBaseRole from "../backfillVariantFacetAndBaseRole.js";
 import type * as brandRehome from "../brandRehome.js";
@@ -53,6 +54,7 @@ import type * as features_generateListing from "../features/generateListing.js";
 import type * as features_listingLimits from "../features/listingLimits.js";
 import type * as franchises from "../franchises.js";
 import type * as http from "../http.js";
+import type * as knownBrands from "../knownBrands.js";
 import type * as leagues from "../leagues.js";
 import type * as lib_cloudRunAuth from "../lib/cloudRunAuth.js";
 import type * as lib_easypostWebhookSignature from "../lib/easypostWebhookSignature.js";
@@ -92,6 +94,7 @@ import type * as repairSportHallOfFameQids from "../repairSportHallOfFameQids.js
 import type * as selectorOptions from "../selectorOptions.js";
 import type * as selectorSyncMatch from "../selectorSyncMatch.js";
 import type * as selectorSyncStore from "../selectorSyncStore.js";
+import type * as setFromMarketplace from "../setFromMarketplace.js";
 import type * as setReconciliation from "../setReconciliation.js";
 import type * as shipmentTracking from "../shipmentTracking.js";
 import type * as shipping from "../shipping.js";
@@ -136,6 +139,7 @@ declare const fullApi: ApiFromModules<{
   backfillBrandPrefixAndUnknownName: typeof backfillBrandPrefixAndUnknownName;
   backfillBrandUnknownRole: typeof backfillBrandUnknownRole;
   backfillCardFeatures: typeof backfillCardFeatures;
+  backfillKnownBrands: typeof backfillKnownBrands;
   backfillPromotedParallelFacet: typeof backfillPromotedParallelFacet;
   backfillVariantFacetAndBaseRole: typeof backfillVariantFacetAndBaseRole;
   brandRehome: typeof brandRehome;
@@ -159,6 +163,7 @@ declare const fullApi: ApiFromModules<{
   "features/listingLimits": typeof features_listingLimits;
   franchises: typeof franchises;
   http: typeof http;
+  knownBrands: typeof knownBrands;
   leagues: typeof leagues;
   "lib/cloudRunAuth": typeof lib_cloudRunAuth;
   "lib/easypostWebhookSignature": typeof lib_easypostWebhookSignature;
@@ -198,6 +203,7 @@ declare const fullApi: ApiFromModules<{
   selectorOptions: typeof selectorOptions;
   selectorSyncMatch: typeof selectorSyncMatch;
   selectorSyncStore: typeof selectorSyncStore;
+  setFromMarketplace: typeof setFromMarketplace;
   setReconciliation: typeof setReconciliation;
   shipmentTracking: typeof shipmentTracking;
   shipping: typeof shipping;

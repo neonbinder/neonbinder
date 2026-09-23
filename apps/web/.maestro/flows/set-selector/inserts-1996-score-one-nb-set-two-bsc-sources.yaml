@@ -650,6 +650,22 @@ tags:
             # The pinned CLI matches an `id:` as a FULL match, so the anchors are a
             # no-op there — they are belt-and-braces against the looser reading the
             # README's pressKey section used to claim.
+            # `optional: true` — the guard above and this tap are two
+            # hierarchy reads ~0.3s apart, and under a saturated deployment
+            # the wizard settles the row inside that gap; a non-optional tap
+            # then burns `lookupTimeoutMs` (17000) and fails the flow. The
+            # button vanishing between the two reads means the row was
+            # ANSWERED, which is this loop finishing, not a failure.
+            #
+            # ADJUDICATOR: `.*Confirm & Save.*`, the wait immediately below.
+            # It is hard, and the product makes it load-bearing —
+            # `components/SetSelector/EntityReviewWizard.tsx` renders that
+            # button ONLY when `allDecided` (`total > 0 && decided === total`),
+            # so a row this loop failed to answer leaves `decided < total`,
+            # the button never appears, and the wait fails by name. R2 holds.
+            #
+            # Full mechanism written once at the corresponding step of
+            # `util-wizard-walk-to-player-row.yaml` (R3 — not duplicated).
             - runFlow:
                 when:
                   visible:
@@ -657,6 +673,7 @@ tags:
                 commands:
                   - tapOn:
                       id: "^Add as New (Team|League)$"
+                      optional: true
       # NEO-221 — the bulk add now decides only rows whose Wikidata lookup has
       # SETTLED, staying armed for the rest, so this wait is gated on that live
       # external round-trip rather than on one mutation. Raised for that reason;

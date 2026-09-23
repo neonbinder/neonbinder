@@ -183,8 +183,16 @@ function planBackfill(rows: readonly Doc<"selectorOptions">[]): PlannedRow[] {
             value: row.value,
             features: row.features,
             sportConfig: row.sportConfig,
+            metadata: row.metadata,
           },
           nextValue: BRAND_UNKNOWN_VALUE,
+          // NEO-294 — Jason froze the flagged row's name against every
+          // OPERATOR door ("Unknown should not be renamable"), and this is
+          // the one rename that must still land: NB retiring its own legacy
+          // word on its own row. An internal backfill, armed and one-shot,
+          // renaming "All Brands" to "Unknown" — the opposite of the case
+          // the refusal exists to stop.
+          allowBrandUnknownRename: true,
           siblings: working,
         });
         if (!plan.ok) {

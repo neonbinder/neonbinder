@@ -115,11 +115,15 @@ export const TEAM_ERA_SCAN_LIMIT = 16;
  * name or on an alias and so reads the two legs separately. Every OTHER caller
  * wants the union below — a lookup that sees only the name leg silently
  * re-parks every alias the operator has already taught the row.
+ *
+ * NEO-296: `limit` narrows the window; see `findTeamsByFullName`. One indexed
+ * read either way — this leg is 1 system op whatever it returns.
  */
 export async function findTeamsByExactName(
   ctx: QueryCtx | MutationCtx,
   sportId: Id<"selectorOptions">,
   fullName: string,
+  limit: number = TEAM_ERA_SCAN_LIMIT,
 ): Promise<Doc<"teams">[]> {
   const nameNormalized = normalizeEntityName(fullName);
   if (nameNormalized.length === 0) return [];
@@ -128,7 +132,7 @@ export async function findTeamsByExactName(
     .withIndex("by_name_normalized_and_sport_id", (q) =>
       q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
     )
-    .take(TEAM_ERA_SCAN_LIMIT);
+    .take(Math.min(limit, TEAM_ERA_SCAN_LIMIT));
 }
 
 /**
@@ -143,11 +147,16 @@ export async function findTeamsByExactName(
  *
  * Capped at `TEAM_ERA_SCAN_LIMIT` like the name leg, and for the same reason:
  * every consumer branches on none / one / several.
+ *
+ * NEO-296: this is the leg with the fan-out. The indexed read is one system op
+ * whatever it returns; the `db.get` per holder is the cost, so `limit` bounds
+ * the GETS. See `findTeamsByFullName` for when a caller narrows it.
  */
 export async function findTeamsByAlias(
   ctx: QueryCtx | MutationCtx,
   sportId: Id<"selectorOptions">,
   fullName: string,
+  limit: number = TEAM_ERA_SCAN_LIMIT,
 ): Promise<Doc<"teams">[]> {
   const aliasNormalized = normalizeEntityName(fullName);
   if (aliasNormalized.length === 0) return [];
@@ -160,6 +169,11 @@ export async function findTeamsByAlias(
   const out: Doc<"teams">[] = [];
   const seen = new Set<string>();
   for (const row of aliasRows) {
+    // NEO-296: `limit` bounds the `db.get`s, which is where this leg's cost
+    // is — the indexed read above is ONE system op whatever it returns. The
+    // dedup below happens BEFORE the get, so a duplicate side row can never
+    // consume part of the budget and hide a second holder behind itself.
+    if (out.length >= limit) break;
     // Two side rows for one team under one key cannot be written by
     // `syncTeamAliases`, but a reader that trusted that would double-count a
     // legacy row, and double-counting is exactly what turns "one" into "ask".
@@ -189,20 +203,42 @@ export async function findTeamsByAlias(
  * it, and an alias that quietly won would skip the exactly-one guard that
  * keeps a shared string from binding a card to the wrong row. See the module
  * header. Never inserts.
+ *
+ * ── NEO-296: `limit`, for a caller that only needs to COUNT to two ──────────
+ *
+ * Convex charges one system op per call, so one of these lookups is 1 op for
+ * the name leg, 1 for the alias leg, and one `db.get` per holder the alias leg
+ * resolves — up to 18 with the default window. A caller that loops this over a
+ * list pays that per entry, which is how `teams.resolveNames` reached ~1,152
+ * ops for one player's career teams.
+ *
+ * A consumer that only branches on none / one / several does not need 16
+ * candidates to reach its answer; it needs two. `limit` is that window, and at
+ * 2 the lookup is at most 4 ops with no change to what any such consumer
+ * concludes — "several" is settled by the second row, exactly as
+ * `TEAM_ERA_SCAN_LIMIT`'s own note says.
+ *
+ * It is NOT for a caller that shows the candidates: a review panel listing
+ * eras, `resolveTeamForSetYear`, `nearMatches` and the loaders all take the
+ * default and must keep taking it. Narrowing the window there would shrink the
+ * list an operator is choosing from. The default is unchanged, so every
+ * existing caller reads exactly what it read before.
  */
 export async function findTeamsByFullName(
   ctx: QueryCtx | MutationCtx,
   sportId: Id<"selectorOptions">,
   fullName: string,
+  limit: number = TEAM_ERA_SCAN_LIMIT,
 ): Promise<Doc<"teams">[]> {
-  const byName = await findTeamsByExactName(ctx, sportId, fullName);
-  if (byName.length >= TEAM_ERA_SCAN_LIMIT) return byName;
-  const byAlias = await findTeamsByAlias(ctx, sportId, fullName);
+  const window = Math.min(limit, TEAM_ERA_SCAN_LIMIT);
+  const byName = await findTeamsByExactName(ctx, sportId, fullName, window);
+  if (byName.length >= window) return byName;
+  const byAlias = await findTeamsByAlias(ctx, sportId, fullName, window);
   if (byAlias.length === 0) return byName;
   const seen = new Set<string>(byName.map((row) => row._id));
   const merged = [...byName];
   for (const row of byAlias) {
-    if (merged.length >= TEAM_ERA_SCAN_LIMIT) break;
+    if (merged.length >= window) break;
     if (seen.has(row._id)) continue;
     seen.add(row._id);
     merged.push(row);

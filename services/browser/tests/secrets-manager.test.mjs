@@ -69,6 +69,13 @@ const { SecretsManagerService } = require("../dist/services/secrets-manager");
 const KEY = "buysportscards-credentials-user_abc";
 const SECRET = `projects/neonbinder-test/secrets/${KEY}`;
 const V = (n) => `${SECRET}/versions/${n}`;
+/**
+ * NEO-294: the log-safe form of a version name — the BARE secret id plus the
+ * ordinal, never `projects/<project>/...`. The prune log lines emit THIS, and
+ * the assertions below pin that in both directions: the short form present,
+ * the fully-qualified form absent.
+ */
+const SHORT_V = (n) => `${KEY}/versions/${n}`;
 
 const CREDS = {
   username: "seller@example.com",
@@ -82,7 +89,10 @@ const CREDS = {
  *
  * @param opts.createdVersion  name addSecretVersion reports back (null to omit)
  * @param opts.versions        what listSecretVersions returns
- * @param opts.addBehavior     "ok" | "notFound" (first add 404s, then succeeds) | "boom"
+ * @param opts.addBehavior     "ok" | "notFound" (first add 404s, then succeeds)
+ *                             | "alwaysNotFound" (every add 404s) | "boom"
+ * @param opts.createBehavior  "ok" | "alreadyExists" (NEO-294: another writer
+ *                             created the secret first) | "boom"
  * @param opts.destroyBehavior optional (name) => void; throw to simulate failure
  * @param opts.listThrows      when true, listSecretVersions rejects
  */
@@ -90,6 +100,7 @@ function makeClient({
   createdVersion = V(8),
   versions = [],
   addBehavior = "ok",
+  createBehavior = "ok",
   destroyBehavior = null,
   listThrows = false,
 } = {}) {
@@ -112,8 +123,13 @@ function makeClient({
         err.code = 7;
         throw err;
       }
-      if (addBehavior === "notFound" && addCount === 1) {
-        const err = new Error("Secret not found");
+      if (
+        addBehavior === "alwaysNotFound" ||
+        (addBehavior === "notFound" && addCount === 1)
+      ) {
+        // Shaped like the real client's: it names the secret resource, which
+        // is exactly the detail that must never reach a caller or a log line.
+        const err = new Error(`5 NOT_FOUND: Secret [${SECRET}] not found.`);
         err.code = 5;
         throw err;
       }
@@ -121,6 +137,18 @@ function makeClient({
     },
     async createSecret(req) {
       calls.create.push(req);
+      if (createBehavior === "alreadyExists") {
+        // Verbatim shape of the error that turned a SUCCESSFUL marketplace
+        // login into a 502 (NEO-294).
+        const err = new Error(`6 ALREADY_EXISTS: Secret [${SECRET}] already exists.`);
+        err.code = 6;
+        throw err;
+      }
+      if (createBehavior === "boom") {
+        const err = new Error("PERMISSION_DENIED: no secretmanager.secrets.create");
+        err.code = 7;
+        throw err;
+      }
       return [{ name: SECRET }];
     },
     async listSecretVersions(req) {
@@ -509,8 +537,14 @@ describe("SecretsManagerService.updateCredentials — prune is bounded and concu
       "the failing version must not prevent its siblings from being attempted",
     );
     assert.ok(
-      capturedErrors.some((line) => line.includes(V(19))),
+      capturedErrors.some((line) => line.includes(SHORT_V(19))),
       "the rejected version should be named in the log so it can be chased",
+    );
+    // NEO-294: named by the log-SAFE form. The ordinal is what makes the line
+    // chaseable and is deliberately kept; the project identifier is not.
+    assert.ok(
+      !capturedErrors.some((line) => line.includes(V(19))),
+      "…but never by its fully-qualified resource name",
     );
     assert.equal(
       capturedErrors.filter((line) => line.includes("Failed to destroy")).length,
@@ -550,6 +584,184 @@ describe("SecretsManagerService.updateCredentials — create-then-add path", () 
 });
 
 // ---------------------------------------------------------------------------
+// NEO-294: the check-then-create race is idempotent, in BOTH orderings
+// ---------------------------------------------------------------------------
+
+/**
+ * Secret Manager has no create-if-absent, so writing a key that may not exist
+ * is unavoidably `addSecretVersion` → NOT_FOUND → `createSecret`, and the gap
+ * between those two calls is a race. Both orderings are reachable in
+ * production and both must converge on "a new version exists on this secret":
+ *
+ *   - we lose the create  ⇒ ALREADY_EXISTS is success-and-continue
+ *   - we lose nothing     ⇒ NOT_FOUND on add creates, then adds
+ *
+ * What made this worth a suite of its own: the loser of the create race had
+ * ALREADY performed a real, successful marketplace sign-in. Throwing there
+ * reported a working login as a 502 (and on SportLots burned the adapter's
+ * entire 5-attempt retry budget, because every attempt re-ran the same losing
+ * race). Idempotence is the fix — NOT a retry or a sleep, and NOT a lock: the
+ * two writers can be two Cloud Run instances or two Convex deployments sharing
+ * one GCP project, which no in-process lock can see.
+ */
+describe("SecretsManagerService.updateCredentials — concurrent create (NEO-294)", () => {
+  it("falls through to add-version when createSecret says ALREADY_EXISTS", async () => {
+    activeClient = makeClient({
+      addBehavior: "notFound", // first add 404s: the secret is absent when we look
+      createBehavior: "alreadyExists", // …but another writer creates it before we do
+      createdVersion: V(3),
+      versions: [
+        { name: V(3), state: "ENABLED" },
+        { name: V(2), state: "ENABLED" },
+      ],
+    });
+
+    // The assertion that matters most: this RESOLVES. A throw here is what the
+    // adapter turns into "login failed" for a login that actually succeeded.
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    assert.equal(activeClient.calls.create.length, 1, "should have attempted the create");
+    // The create is addressed by (project parent, bare secret id) while the
+    // adds are addressed by the full secret resource name. All four arguments
+    // are strings, so nothing but an assertion catches a swapped pair.
+    assert.equal(activeClient.calls.create[0].parent, "projects/neonbinder-test");
+    assert.equal(activeClient.calls.create[0].secretId, KEY);
+    assert.equal(
+      activeClient.calls.add.length,
+      2,
+      "should add the version to the secret the other writer created",
+    );
+    assert.deepEqual(
+      activeClient.calls.add[1].parent,
+      SECRET,
+      "the second add targets the existing secret",
+    );
+    assert.deepEqual(
+      destroyed(activeClient),
+      [V(2)],
+      "prune still runs, still excluding the version this call wrote",
+    );
+  });
+
+  it("stores the credential payload even when it loses the create race", async () => {
+    // Losing the race must not cost the write. Round-trip the payload back out
+    // so this cannot pass on a call that was merely made but stored nothing.
+    activeClient = makeClient({
+      addBehavior: "notFound",
+      createBehavior: "alreadyExists",
+      createdVersion: V(1),
+      versions: [{ name: V(1), state: "ENABLED" }],
+    });
+
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    const written = JSON.parse(activeClient.calls.add[1].payload.data.toString("utf8"));
+    assert.deepEqual(written, CREDS, "the losing writer's payload is still what landed");
+  });
+
+  it("never leaks the raw GCP error — no secret resource name in any log line", async () => {
+    // The raw message is `6 ALREADY_EXISTS: Secret [projects/<p>/secrets/<id>]
+    // already exists.` — it names the project and the per-user key. Before this
+    // fix it escaped the sanitiser entirely (the create ran INSIDE the catch
+    // that does the sanitising) and reached the login response body.
+    activeClient = makeClient({
+      addBehavior: "notFound",
+      createBehavior: "alreadyExists",
+      createdVersion: V(1),
+      versions: [{ name: V(1), state: "ENABLED" }],
+    });
+
+    await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+    const allOutput = [...capturedErrors, ...capturedLogs].join("\n");
+    assert.ok(
+      !allOutput.includes("ALREADY_EXISTS"),
+      "the raw gRPC status must not be logged",
+    );
+    assert.ok(
+      !allOutput.includes(CREDS.password) && !allOutput.includes(CREDS.token),
+      "credential material must never reach the log",
+    );
+    // NEO-294: the half this test's NAME always claimed and never checked.
+    // The fully-qualified name is `projects/<project>/secrets/<key>` — it
+    // carries the GCP project identifier, which is the thing that escaped
+    // onto a response body and started this ticket. The log line keeps the
+    // bare secret id, so triage loses nothing.
+    assert.ok(
+      !allOutput.includes(SECRET),
+      "no fully-qualified secret resource name in any log line",
+    );
+    assert.ok(
+      !allOutput.includes("projects/neonbinder-test"),
+      "no GCP project identifier in any log line",
+    );
+    assert.ok(
+      capturedLogs.some((line) => line.includes("created concurrently")),
+      "the lost race should still be observable server-side",
+    );
+    assert.ok(
+      capturedLogs.some((line) => line.includes(KEY)),
+      "…but the bare secret id IS logged, so the race stays triageable",
+    );
+  });
+
+  it("is a fall-through, not a retry: a concurrent DELETE fails, and does not loop", async () => {
+    // The one interleaving that must NOT converge: the secret is gone again
+    // after our create, because an operator cleared this credential. Recreating
+    // it would resurrect a credential the user just asked us to destroy — so
+    // this propagates, sanitised, and the call count proves there is no loop.
+    activeClient = makeClient({
+      addBehavior: "alwaysNotFound",
+      createBehavior: "ok",
+    });
+
+    await assert.rejects(
+      () => new SecretsManagerService().updateCredentials(KEY, CREDS),
+      (err) => {
+        assert.equal(
+          err.message,
+          "Failed to update credentials",
+          "the caller-facing message stays generic",
+        );
+        return true;
+      },
+    );
+
+    assert.equal(activeClient.calls.create.length, 1, "creates at most once");
+    assert.equal(activeClient.calls.add.length, 2, "adds at most twice — no ping-pong");
+    assert.deepEqual(destroyed(activeClient), [], "a failed write must not prune");
+  });
+
+  it("sanitises a GENUINE create failure instead of propagating it raw", async () => {
+    // PERMISSION_DENIED on createSecret is a real integration fault, not a
+    // race. It must still reach the caller as the fixed generic string — this
+    // is the path that previously bypassed the sanitiser altogether.
+    activeClient = makeClient({ addBehavior: "notFound", createBehavior: "boom" });
+
+    await assert.rejects(
+      () => new SecretsManagerService().updateCredentials(KEY, CREDS),
+      (err) => {
+        assert.equal(err.message, "Failed to update credentials");
+        assert.ok(
+          !err.message.includes("PERMISSION_DENIED") && !err.message.includes(SECRET),
+          "no raw status and no resource name in the thrown error",
+        );
+        return true;
+      },
+    );
+
+    assert.ok(
+      capturedErrors.some((line) => line.includes("Failed to update credentials for key")),
+      "the real cause is logged server-side",
+    );
+    assert.ok(
+      !capturedErrors.join("\n").includes(CREDS.password),
+      "…but never with the payload that failed to write",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Best-effort: prune failures never reach the caller
 // ---------------------------------------------------------------------------
 
@@ -575,8 +787,12 @@ describe("SecretsManagerService.updateCredentials — prune is best-effort", () 
       "one failing version must not abort the sweep",
     );
     assert.ok(
-      capturedErrors.some((line) => line.includes(V(4))),
-      "the failure should be logged server-side",
+      capturedErrors.some((line) => line.includes(SHORT_V(4))),
+      "the failure should be logged server-side, by its log-safe version name",
+    );
+    assert.ok(
+      !capturedErrors.some((line) => line.includes(V(4))),
+      "and never by the fully-qualified name, which carries the GCP project",
     );
   });
 
@@ -860,8 +1076,86 @@ describe("SecretsManagerService.getCredentials — NEO-141 payload shape", () =>
 
     await assert.rejects(
       () => new SecretsManagerService().getCredentials(KEY),
-      /No active version found for key/,
+      (err) => {
+        // The routes match on this substring (routes/credentials.ts,
+        // routes/easypost.ts) — not on the key, which NEO-294 removed.
+        assert.match(err.message, /No active version/);
+        assert.ok(
+          !err.message.includes(KEY) && !err.message.includes("user_abc"),
+          "the per-user key must not ride out on the thrown message",
+        );
+        return true;
+      },
     );
+  });
+
+  it("never puts the credential key in any message it throws (NEO-294)", async () => {
+    // `key` is `<site>-credentials-<clerkUserId>`, so it is a per-user
+    // identifier. Two of these three branches used to interpolate it, and the
+    // SportLots adapter's catch put the result straight into an HTTP response
+    // body that Convex forwards to PostHog. Every branch must be a fixed
+    // string; the key stays in the structured console.error, server-side.
+    //
+    // This is the assertion a future refactor would trip: re-adding
+    // `: ${key}` "for triage" is exactly how the leak got there the first
+    // time.
+    const cases = [
+      {
+        name: "gRPC NOT_FOUND",
+        client: {
+          async listSecretVersions() {
+            const err = new Error("5 NOT_FOUND: Secret [" + SECRET + "] not found.");
+            err.code = 5;
+            throw err;
+          },
+        },
+      },
+      {
+        name: "no ENABLED version",
+        client: {
+          async listSecretVersions() {
+            return [[{ name: V(1), state: "DESTROYED" }]];
+          },
+        },
+      },
+      {
+        name: "unparseable payload",
+        client: {
+          async listSecretVersions() {
+            return [[{ name: V(1), state: "ENABLED" }]];
+          },
+          async accessSecretVersion() {
+            return [{ payload: { data: Buffer.from("{not-json", "utf8") } }];
+          },
+        },
+      },
+    ];
+
+    for (const { name, client } of cases) {
+      activeClient = client;
+      await assert.rejects(
+        () => new SecretsManagerService().getCredentials(KEY),
+        (err) => {
+          assert.ok(!err.message.includes(KEY), `${name}: the key must not be in the message`);
+          assert.ok(
+            !err.message.includes("user_abc"),
+            `${name}: the clerk user id must not be in the message`,
+          );
+          assert.ok(
+            !err.message.includes("projects/"),
+            `${name}: no resource name (and so no project id) in the message`,
+          );
+          return true;
+        },
+        name,
+      );
+      // The key IS still available to triage, in the structured log line.
+      assert.ok(
+        capturedErrors.some((line) => line.includes(KEY)),
+        `${name}: the key must still reach the server-side log`,
+      );
+      capturedErrors = [];
+    }
   });
 
   it("never leaks payload text through a JSON parse error", async () => {
@@ -916,6 +1210,85 @@ describe("SecretsManagerService.updateCredentials — prune logging discipline",
     for (const secret of [CREDS.username, CREDS.password, CREDS.token]) {
       assert.ok(!joined.includes(secret), `log must not contain ${secret === CREDS.password ? "the password" : secret}`);
     }
-    assert.ok(joined.includes(V(2)), "version resource names ARE safe to log and are useful");
+    // NEO-294 REVERSES the position this line used to pin. It previously read
+    // "version resource names ARE safe to log and are useful" — half right.
+    // The useful half is the ORDINAL, which tells one version from another and
+    // is what makes a prune failure chaseable. The rest of the resource name
+    // is `projects/<project>/secrets/<per-user-id>`, i.e. the GCP project
+    // identifier, which is the thing this ticket exists to keep out of the
+    // error path. So: keep the ordinal, drop the project.
+    assert.ok(
+      joined.includes(SHORT_V(2)),
+      "the version must still be identifiable — the ordinal is the useful part",
+    );
+    assert.ok(
+      !joined.includes(SECRET),
+      "but never the fully-qualified resource name",
+    );
+    assert.ok(
+      !joined.includes("projects/"),
+      "and never the GCP project identifier, on any prune failure path",
+    );
+  });
+
+  it("no prune path logs a fully-qualified resource name (NEO-294)", async () => {
+    // The inverted position, pinned across EVERY prune log line at once rather
+    // than one test per branch — a new prune log that reaches for `secretName`
+    // fails here even if it invents its own message.
+    const cases = [
+      {
+        name: "created version name unavailable",
+        client: () => makeClient({ createdVersion: null, versions: [{ name: V(1), state: "ENABLED" }] }),
+      },
+      {
+        name: "created version name has no parseable ordinal",
+        client: () => makeClient({ createdVersion: SECRET, versions: [{ name: V(1), state: "ENABLED" }] }),
+      },
+      {
+        name: "listSecretVersions fails",
+        client: () => makeClient({ createdVersion: V(2), listThrows: true }),
+      },
+      {
+        name: "destroy fails",
+        client: () =>
+          makeClient({
+            createdVersion: V(3),
+            versions: [
+              { name: V(3), state: "ENABLED" },
+              { name: V(2), state: "ENABLED" },
+            ],
+            destroyBehavior: () => {
+              throw new Error("PERMISSION_DENIED: no destroy permission");
+            },
+          }),
+      },
+      {
+        name: "per-write cap reached",
+        client: () => makeClient({ createdVersion: V(999), versions: backlog(V(999), 50) }),
+      },
+    ];
+
+    for (const { name, client } of cases) {
+      capturedErrors = [];
+      capturedLogs = [];
+      activeClient = client();
+
+      await new SecretsManagerService().updateCredentials(KEY, CREDS);
+
+      const joined = [...capturedErrors, ...capturedLogs].join("\n");
+      assert.ok(joined.length > 0, `${name}: sanity — this path does log`);
+      assert.ok(
+        !joined.includes("projects/"),
+        `${name}: no GCP project identifier may reach the log`,
+      );
+      assert.ok(
+        !joined.includes(SECRET),
+        `${name}: no fully-qualified secret resource name may reach the log`,
+      );
+      assert.ok(
+        joined.includes(KEY),
+        `${name}: …but the bare secret id must still be there, or the line is unchaseable`,
+      );
+    }
   });
 });

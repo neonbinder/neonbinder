@@ -1264,6 +1264,75 @@ function wireToIds(v: string | string[] | undefined): string[] {
 }
 
 /**
+ * NEO-296 — how many WRITES one `storeReconciledOptions` transaction may make
+ * before it stops storing items and reports the rest back to its caller.
+ *
+ * ## The failure this exists to stop
+ *
+ * Convex counts one system operation per CALL — a `db.get`, an indexed read
+ * (`.first()` / `.unique()` / `.collect()` / `.take()`), an `insert`, a
+ * `patch`, a `scheduler.runAfter`. A `.collect()` that returns 754 rows is ONE
+ * of those; the document count belongs to a separate budget with its own
+ * error. So what kills a transaction here is never the size of the sibling
+ * snapshot — it is the loop.
+ *
+ * `MAX_SYNC_ITEMS` (2,000, `selectorSyncStore.ts`) was sized as "generous
+ * headroom" for the matcher's CPU cost, with no reference to what an item
+ * costs in operations. Counted, one call spends:
+ *
+ *   1   — the parent `db.get` for the features / teamIds copy-down
+ *   1   — the sibling `.collect()` (one op, whatever it returns)
+ *   ≤7  — `loadResolvabilityChain`, one `db.get` per ancestor level
+ *   1   — per item that lands as a fresh INSERT
+ *   1   — per item that lands on an existing row AND changes it (one `patch`
+ *         in the write pass, however many passes touched that row)
+ *   1   — per sibling the UNLINK pass detaches a stale primary id from
+ *   2   — the parent `db.get` + `patch` for the `children` union
+ *   ≤50 — `annotateHasCards`, one indexed read per unlink notice
+ *         (`UNLINK_NOTICE_LIMIT`)
+ *
+ * At the 2,000-item cap over a 1,000-row sibling list that is 2,000 inserts +
+ * up to 1,000 patches + ~60 fixed ≈ 3,050 operations; 2,000 fresh items over
+ * 2,000 stale siblings reaches ~4,060. The house calibration — see
+ * `CARDS_PER_COMMIT_CHUNK` in selectorOptions.ts, sized off this same Convex
+ * error in NEO-189 — is **~900 comfortable, ~1,800 straining, ~4,000 failing
+ * outright**. The cap sat past the failing line.
+ *
+ * Latent rather than live today: the callers are `VariantForm` and
+ * `ParallelForm` at ~100–200 rows, which spend 300–600. But it is exactly the
+ * shape this function's own `checkReturnedIds` note records — SportLots listed
+ * 2,563 sets for one year, the form passed them all, and "Save 76 sets" never
+ * completed — so it is bounded now rather than the next time a big year
+ * arrives.
+ *
+ * ## Why a WRITE budget rather than a smaller item cap
+ *
+ * An item that matches a row and changes nothing costs ZERO operations
+ * (NEO-85's write-if-changed guard), and on a re-run every item the previous
+ * call stored is exactly that. Counting WRITES rather than items is therefore
+ * what makes the truncation **resumable by replay**: the caller re-sends the
+ * identical list, the stored prefix re-matches by id for free, and the call
+ * walks on into the tail. An item cap would have made the second call re-spend
+ * its whole budget on the prefix and never advance. Nothing is applied twice
+ * either way — the store is additive and id-keyed, and each page commits as its
+ * own transaction.
+ *
+ * 800 writes plus the ~60 fixed operations above lands just under the ~900
+ * comfortable line.
+ *
+ * The UNLINK pass is counted in the same budget but is never truncated. It is
+ * evidence-driven (a covered side, plus a primary id the fetch did not return),
+ * it is the pass the whole `returnedIds` machinery exists to keep small, and
+ * dropping a detachment silently is the one thing invariant 5 forbids. Its cost
+ * lands in the returned `writeOps`, so a run that does go past the budget says
+ * so in its own result rather than only in a Convex error.
+ *
+ * Exported so a test can build a deliberately multi-page batch without
+ * hard-coding the number.
+ */
+export const RECONCILE_STORE_WRITE_BUDGET = 800;
+
+/**
  * NEO-211 — additive, id-keyed store for the reconciled levels.
  *
  * Same rewrite as `storeSelectorOptions`, plus the two things only the
@@ -1341,6 +1410,35 @@ export const storeReconciledOptions = mutation({
      * nothing was unlinked on them. Empty on every normal sync.
      */
     returnedIdsTruncatedSides: v.array(platformSideValidator),
+    /**
+     * NEO-296 — items this call actually reached, in the order they were sent.
+     * Less than `reconciledItems.length` means the write budget stopped the
+     * loop; the rows behind it were neither stored nor unlinked, and nothing
+     * about them was decided.
+     */
+    itemsProcessed: v.number(),
+    /**
+     * NEO-296 — this call stopped on `RECONCILE_STORE_WRITE_BUDGET` rather
+     * than on the end of the list. Call again with the SAME list: the prefix
+     * this call stored re-matches by id, costs no write, and the walk
+     * continues into the tail. Never true on a batch that fits, which is every
+     * batch the forms send today.
+     *
+     * A CALLER MUST READ THIS. Both clients do it through
+     * `components/SetSelector/store-reconciled-until-done.ts`, which replays
+     * until it is false and reports the server's own `message` if a bound
+     * stops the walk. Ignoring it — which is what `VariantForm` and
+     * `ParallelForm` did when the budget landed — drops every row past the
+     * budget and closes the panel on a success the operator can act on but
+     * that did not happen.
+     */
+    hasMore: v.boolean(),
+    /**
+     * NEO-296 — inserts plus patches this transaction made, for the log and
+     * for a caller that wants to size its own batches. See
+     * `RECONCILE_STORE_WRITE_BUDGET` for what one operation is.
+     */
+    writeOps: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -1501,6 +1599,72 @@ export const storeReconciledOptions = mutation({
         value: working.get(r._id)?.value ?? r.value,
       }));
 
+    /**
+     * The patch a working row would receive, or `{}` for a row nothing
+     * changed on — NEO-85's write-if-changed guard, lifted out of the write
+     * pass below.
+     *
+     * Pure: it reads and writes no database. NEO-296 needs the answer TWICE —
+     * once in the item loop, to charge the write budget only for items that
+     * actually cost an operation (a matched item that changes nothing is free,
+     * and that is what makes a truncated call resumable by replay), and once in
+     * the write pass that performs it. Two copies of these eight comparisons
+     * would be two chances for the budget to charge for a write that never
+     * happens, or to let one through uncounted.
+     */
+    const pendingPatchFor = (w: Working): Record<string, unknown> => {
+      const prunedData = pruneEmptySides({ ...w.platformData });
+      const prunedLabels = pruneEmptySides({ ...(w.platformLabels ?? {}) });
+      const prunedFacets = pruneEmptySides({ ...(w.platformFacets ?? {}) });
+      const nextLabels =
+        Object.keys(prunedLabels).length > 0 ? prunedLabels : undefined;
+      const nextFacets =
+        Object.keys(prunedFacets).length > 0 ? prunedFacets : undefined;
+      const nextSlotSeq =
+        w.platformSlotSeq && Object.keys(w.platformSlotSeq).length > 0
+          ? w.platformSlotSeq
+          : undefined;
+
+      const patch: Record<string, unknown> = {};
+      if (w.value !== w.row.value) {
+        patch.value = w.value;
+        if (w.features) patch.features = w.features;
+        if (w.sportConfig) patch.sportConfig = w.sportConfig;
+      }
+      if (!valuesDeepEqual(prunedData, w.row.platformData)) {
+        patch.platformData = prunedData;
+      }
+      if (!valuesDeepEqual(nextLabels ?? null, w.row.platformLabels ?? null)) {
+        patch.platformLabels = nextLabels;
+      }
+      if (!valuesDeepEqual(nextFacets ?? null, w.row.platformFacets ?? null)) {
+        patch.platformFacets = nextFacets;
+      }
+      if (!valuesDeepEqual(nextSlotSeq ?? null, w.row.platformSlotSeq ?? null)) {
+        patch.platformSlotSeq = nextSlotSeq;
+      }
+      if (
+        !valuesDeepEqual(
+          w.primaryPlatformId ?? null,
+          w.row.primaryPlatformId ?? null,
+        )
+      ) {
+        patch.primaryPlatformId = w.primaryPlatformId;
+      }
+      if (
+        !valuesDeepEqual(
+          w.declinedUpstreamLabels ?? null,
+          w.row.declinedUpstreamLabels ?? null,
+        )
+      ) {
+        patch.declinedUpstreamLabels = w.declinedUpstreamLabels;
+      }
+      if (!valuesDeepEqual(w.metadata ?? null, w.row.metadata ?? null)) {
+        patch.metadata = w.metadata;
+      }
+      return patch;
+    };
+
     // NEO-239 — the base ROLE, decided once for the whole batch. Same rule as
     // `storeSelectorOptions`: exactly one incoming BSC id may name the base
     // variant, and a set whose base an operator has already chosen is left
@@ -1526,7 +1690,27 @@ export const storeReconciledOptions = mutation({
     const linkedIds: Id<"selectorOptions">[] = [];
     const relinkedAll: UnlinkedEntry[] = [];
 
+    /**
+     * NEO-296 — the write budget, counted rather than estimated.
+     *
+     * `inserts` are spent the moment they happen; `willPatch` holds the rows
+     * the loop has made dirty, each of which costs exactly one `patch` in the
+     * write pass no matter how many items or passes touched it. Their sum is
+     * what the budget bounds. A matched item that changes nothing adds to
+     * neither, which is why re-sending the same list finishes the job.
+     */
+    let inserts = 0;
+    const willPatch = new Set<string>();
+    /** Items this call reached. The rest are the caller's next call. */
+    let itemsProcessed = 0;
+
     for (let i = 0; i < reconciledItems.length; i++) {
+      // The bound is checked BEFORE the item, so the last item admitted is the
+      // one that spent the budget rather than the one after it. Everything
+      // already decided is written by the passes below and commits with this
+      // transaction; the tail is untouched, not half-applied.
+      if (inserts + willPatch.size >= RECONCILE_STORE_WRITE_BUDGET) break;
+      itemsProcessed = i + 1;
       const item = reconciledItems[i];
       const parsed = items[i];
       const outcome = plan.outcomes[i];
@@ -1551,6 +1735,12 @@ export const storeReconciledOptions = mutation({
               value: w.value,
               features: w.features,
               sportConfig: row.sportConfig,
+              // NEO-294 — this modal runs at every level, manufacturer
+              // included, so a tier-0 title edit is a fourth door onto the
+              // year's Unknown row. Hand over the role flags and the shared
+              // planner refuses it here too; the `!renamePlan.ok` branch
+              // below already logs and keeps the linkage.
+              metadata: row.metadata,
             },
             nextValue: item.value,
             siblings: workingSiblings(),
@@ -1669,6 +1859,11 @@ export const storeReconciledOptions = mutation({
           w.metadata = { ...(w.metadata ?? {}), ...variantFlags };
         }
 
+        // NEO-296 — charge the budget only if this item actually dirtied the
+        // row. A re-send of an already-stored list lands here and adds
+        // nothing, so the next call's budget is free to reach the tail.
+        if (Object.keys(pendingPatchFor(w)).length > 0) willPatch.add(row._id);
+
         linkedIds.push(row._id);
         continue;
       }
@@ -1776,6 +1971,7 @@ export const storeReconciledOptions = mutation({
         ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
         lastUpdated: Date.now(),
       });
+      inserts++;
       linkedIds.push(id);
     }
 
@@ -1812,59 +2008,12 @@ export const storeReconciledOptions = mutation({
     // invalidating every query watching it — re-rendering and reflowing the
     // SetSelector columns under Maestro's coordinate taps on a sync that
     // changed nothing.
+    let patches = 0;
     for (const w of working.values()) {
-      const prunedData = pruneEmptySides({ ...w.platformData });
-      const prunedLabels = pruneEmptySides({ ...(w.platformLabels ?? {}) });
-      const prunedFacets = pruneEmptySides({ ...(w.platformFacets ?? {}) });
-      const nextLabels =
-        Object.keys(prunedLabels).length > 0 ? prunedLabels : undefined;
-      const nextFacets =
-        Object.keys(prunedFacets).length > 0 ? prunedFacets : undefined;
-      const nextSlotSeq =
-        w.platformSlotSeq && Object.keys(w.platformSlotSeq).length > 0
-          ? w.platformSlotSeq
-          : undefined;
-
-      const patch: Record<string, unknown> = {};
-      if (w.value !== w.row.value) {
-        patch.value = w.value;
-        if (w.features) patch.features = w.features;
-        if (w.sportConfig) patch.sportConfig = w.sportConfig;
-      }
-      if (!valuesDeepEqual(prunedData, w.row.platformData)) {
-        patch.platformData = prunedData;
-      }
-      if (!valuesDeepEqual(nextLabels ?? null, w.row.platformLabels ?? null)) {
-        patch.platformLabels = nextLabels;
-      }
-      if (!valuesDeepEqual(nextFacets ?? null, w.row.platformFacets ?? null)) {
-        patch.platformFacets = nextFacets;
-      }
-      if (!valuesDeepEqual(nextSlotSeq ?? null, w.row.platformSlotSeq ?? null)) {
-        patch.platformSlotSeq = nextSlotSeq;
-      }
-      if (
-        !valuesDeepEqual(
-          w.primaryPlatformId ?? null,
-          w.row.primaryPlatformId ?? null,
-        )
-      ) {
-        patch.primaryPlatformId = w.primaryPlatformId;
-      }
-      if (
-        !valuesDeepEqual(
-          w.declinedUpstreamLabels ?? null,
-          w.row.declinedUpstreamLabels ?? null,
-        )
-      ) {
-        patch.declinedUpstreamLabels = w.declinedUpstreamLabels;
-      }
-      if (!valuesDeepEqual(w.metadata ?? null, w.row.metadata ?? null)) {
-        patch.metadata = w.metadata;
-      }
-
+      const patch = pendingPatchFor(w);
       if (Object.keys(patch).length > 0) {
         await ctx.db.patch(w.row._id, { ...patch, lastUpdated: Date.now() });
+        patches++;
       }
     }
 
@@ -1879,6 +2028,7 @@ export const storeReconciledOptions = mutation({
         ]);
         if (!valuesDeepEqual(parent.children ?? [], next)) {
           await ctx.db.patch(parentId, { children: next });
+          patches++;
         }
       }
     }
@@ -1901,15 +2051,46 @@ export const storeReconciledOptions = mutation({
       );
     }
 
+    // NEO-296 — every WRITE this transaction made: the fresh inserts, the row
+    // patches, and the parent's `children` union. The reads (the sibling
+    // collect, the ancestor walk, `annotateHasCards`) are the ~60 fixed
+    // operations the budget already sets aside for and are not counted here.
+    const writeOps = inserts + patches;
+    const hasMore = itemsProcessed < reconciledItems.length;
+    if (hasMore) {
+      // Structured, and loud: a truncated store is the one result a caller
+      // must not read as "done". Ids and counts only — a row `value` is
+      // operator content and an incoming one is a marketplace string.
+      console.warn(
+        JSON.stringify({
+          msg: "selector_sync_store_truncated",
+          fn: "storeReconciledOptions",
+          level,
+          parentId: parentId ?? null,
+          itemsSent: reconciledItems.length,
+          itemsProcessed,
+          writeOps,
+          budget: RECONCILE_STORE_WRITE_BUDGET,
+        }),
+      );
+    }
+
     return {
       success: true,
-      message: `Successfully stored ${linkedIds.length} reconciled ${level} options`,
+      message: hasMore
+        ? `Stored ${linkedIds.length} reconciled ${level} options — ` +
+          `${reconciledItems.length - itemsProcessed} of ${reconciledItems.length} ` +
+          `not reached this time. Run the sync again to store the rest.`
+        : `Successfully stored ${linkedIds.length} reconciled ${level} options`,
       optionsCount: linkedIds.length,
       unlinked,
       unlinkedTotal: unlinkedAll.length,
       relinked: relinkedAll.slice(0, UNLINK_NOTICE_LIMIT),
       relinkedTotal: relinkedAll.length,
       returnedIdsTruncatedSides: truncatedSides,
+      itemsProcessed,
+      hasMore,
+      writeOps,
     };
   },
 });

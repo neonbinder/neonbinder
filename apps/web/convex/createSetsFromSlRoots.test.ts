@@ -472,14 +472,26 @@ const numberedRoots = (n: number, from = 0) =>
   }));
 
 /**
+ * The action's hoisted `slIndexOverBudget` (NEO-294 audit, condition 3): one
+ * sync's memory that the year's set index has already overflowed. Shared
+ * across `createChunked` calls exactly as the action shares it across the
+ * known-brand split's groups and across its scopes.
+ */
+type ScopeBudget = { overBudget: boolean };
+
+/**
  * What the action does above the mutation: the classifier's roots in slices
  * of `MAX_SL_SETS_PER_MUTATION`, one call each, counts summed, stopping at a
- * truncated index. Mirrors `classify` in `syncSetsAcrossManufacturers`.
+ * truncated index — and, once truncated, not calling again at all, because
+ * the index is YEAR-wide and each call rebuilds it (≤ `MAX_YEAR_SET_ROWS`
+ * reads) only to report the same truncation. Mirrors `writeRoots` /
+ * `classify` in `syncSetsAcrossManufacturers`.
  */
 async function createChunked(
   t: T,
   manufacturerId: Id<"selectorOptions">,
   roots: Array<{ id: string; label: string }>,
+  budget: ScopeBudget = { overBudget: false },
 ) {
   const totals = {
     created: 0,
@@ -489,6 +501,10 @@ async function createChunked(
     calls: 0,
     notFiled: 0,
   };
+  if (budget.overBudget) {
+    totals.notFiled += roots.length;
+    return totals;
+  }
   const chunks = chunkSlRoots(roots, MAX_SL_SETS_PER_MUTATION);
   for (let c = 0; c < chunks.length; c++) {
     const written = await create(t, manufacturerId, chunks[c]);
@@ -498,6 +514,7 @@ async function createChunked(
     totals.existsElsewhere += written.existsElsewhere;
     totals.invalid += written.invalid;
     if (written.indexTruncated) {
+      budget.overBudget = true;
       totals.notFiled += chunks.slice(c).reduce((n, ch) => n + ch.length, 0);
       break;
     }
@@ -733,6 +750,40 @@ describe("createSetsFromSlRoots — the read budget", () => {
     expect(totals.calls).toBe(1);
     expect(totals.created).toBe(0);
     expect(totals.notFiled).toBe(95);
+    expect(await rowCount(t)).toBe(before);
+  });
+
+  /**
+   * NEO-294 audit, condition 3. The known-brand split turns one call per
+   * scope into one per matched brand — up to ~40 in a year. Each would
+   * rebuild the whole year index to write nothing, so the first truncated
+   * answer stops the rest: no further call, and the roots still counted.
+   */
+  test("after a truncated index the NEXT group is not asked at all, and its roots are still counted", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId } = await seedYear(t);
+    await seedBusyYear(t, yearId, 1, MAX_YEAR_SET_ROWS + 1);
+    const topps = await insertManufacturer(t, yearId, "Topps", {
+      slId: "1",
+      prefix: "Topps",
+    });
+    const choice = await insertManufacturer(t, yearId, "Choice", {
+      slId: "2",
+      prefix: "Choice",
+    });
+    const before = await rowCount(t);
+    const budget: ScopeBudget = { overBudget: false };
+
+    const first = await createChunked(t, topps, numberedRoots(95), budget);
+    expect(first.calls).toBe(1);
+    expect(first.notFiled).toBe(95);
+    expect(budget.overBudget).toBe(true);
+
+    // The second group's mutation is never run: no year rebuild, no write.
+    const second = await createChunked(t, choice, numberedRoots(40), budget);
+    expect(second.calls).toBe(0);
+    expect(second.created).toBe(0);
+    expect(second.notFiled).toBe(40);
     expect(await rowCount(t)).toBe(before);
   });
 });

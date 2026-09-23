@@ -770,9 +770,13 @@ export default function CardChecklist({
    * The auto-keep path commits cards the operator never sees, so it may only
    * commit a COMPLETE batch: `candidateCount` is the action's own count of
    * what it wrote, and the subscription has to agree with it before a single
-   * card is promoted. `startCandidateBatch` clears and rewrites in ONE
-   * transaction, so the subscription never shows a half-written batch — the
-   * only thing being waited on is the round trip.
+   * card is promoted. Since NEO-296 `startCandidateBatch` clears and rewrites
+   * in bounded PAGES, chained through the scheduler, so the subscription can
+   * legitimately show a half-written batch for a moment. That is exactly what
+   * this wait is for and no change was needed here: the loop polls until
+   * `live.total === expectedCount` inside a 30s budget, so a chained write
+   * only makes it wait a few more milliseconds. What it must never do is
+   * treat a short count as final.
    *
    * The batch id must MOVE. Without that check a previous run's abandoned rows
    * — same set, same operator, coincidentally the same count — would satisfy

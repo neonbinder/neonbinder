@@ -57,7 +57,6 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import {
-  collectDescendantIds,
   findSetYearForSelectorOption,
   parseYear,
 } from "./lib/selectorAncestry";
@@ -89,6 +88,38 @@ export const TEAM_FILL_CARD_PAGE = 1000;
 
 /** `readTeamFillPlayers` / `readTeamFillTeams` refuse more than this per call. */
 export const TEAM_FILL_ID_CHUNK = 500;
+
+/**
+ * NEO-296 — nodes `readTeamFillNodes` reads per call, and the width of one
+ * step of the subtree walk.
+ *
+ * ONE `ctx.db.get` per node now (see `listTeamFillSubtree`), so
+ *
+ *     400 nodes x 1  +  ~2 fixed  =  ~402 operations
+ *
+ * against the ~900 this codebase treats as comfortable — ~1,800 strains,
+ * ~4,000 fails (`CARDS_PER_COMMIT_CHUNK` in selectorOptions.ts). The old
+ * one-shot read cost TWO gets per node with no bound at all, so a set with
+ * ~300 parallel rows spent ~600 operations in a single query on BOTH the
+ * preview and the apply. Half the cost and a bound, for one extra round trip
+ * per 400 nodes — and an ordinary set is tens of nodes, which is still one
+ * call.
+ */
+export const TEAM_FILL_NODE_CHUNK = 400;
+
+/**
+ * The most nodes a fill will walk before refusing. Ten times the biggest real
+ * subtree (a set with a parallel per team per variant is low hundreds), so
+ * reaching it means a `children` graph that is not a set's — and a plan built
+ * from half of one would promise the operator a count the apply cannot
+ * deliver. Refuse, having written nothing.
+ */
+export const TEAM_FILL_MAX_SUBTREE_NODES = 4000;
+
+/** The refusal above, as the operator reads it. */
+export const TEAM_FILL_SUBTREE_TOO_LARGE =
+  `This set has more than ${TEAM_FILL_MAX_SUBTREE_NODES} rows beneath it — ` +
+  `too many to fill teams across in one go.`;
 
 /** How many cards one `applyTeamFillChunk` writes: one read + one patch each. */
 export const TEAM_FILL_APPLY_CHUNK = 100;
@@ -144,9 +175,13 @@ type SubtreeNode = {
   isBase: boolean;
 };
 
-type SubtreeResult = {
-  /** The `setName` root first, then every descendant. */
-  nodes: Array<SubtreeNode>;
+/** A node plus the pointer the walk follows out of it. */
+type SubtreeNodeWithChildren = SubtreeNode & {
+  childIds: Array<Id<"selectorOptions">>;
+};
+
+type SubtreeRoot = {
+  root: SubtreeNodeWithChildren;
   setYear: number | null;
   sportId: Id<"selectorOptions"> | null;
 };
@@ -169,12 +204,21 @@ type PlayerRow = {
 };
 type TeamRow = { _id: Id<"teams">; name: string; sportId: Id<"selectorOptions"> };
 
+const subtreeNodeValidator = v.object({
+  _id: v.id("selectorOptions"),
+  level: selectorOptionLevelValidator,
+  parentId: v.union(v.id("selectorOptions"), v.null()),
+  isBase: v.boolean(),
+  /** The walk's next step — `children`, the same pointer graph every subtree writer follows. */
+  childIds: v.array(v.id("selectorOptions")),
+});
+
 /**
- * The set's subtree: the `setName` row and everything beneath it — each node
- * with the three facts the tiers read (its level and parent, so a parallel
- * knows which node it copies; its `isBase` role, so the base checklist is
- * found by flag and never by name) — plus the two set-level facts the rules
- * compare against.
+ * The HEAD of the subtree walk: the `setName` row itself — with the three
+ * facts the tiers read (its level and parent, so a parallel knows which node
+ * it copies; its `isBase` role, so the base checklist is found by flag and
+ * never by name) — plus the two set-level facts the rules compare against and
+ * the children the walk continues into.
  *
  * Refuses any other level. A variantType or parallel row is a slice of a set,
  * and tier 3's evidence is "the base card of THIS SET" — asked from a
@@ -182,56 +226,83 @@ type TeamRow = { _id: Id<"teams">; name: string; sportId: Id<"selectorOptions"> 
  * carrying the answer. Asked from above the set (a year, a brand) it would
  * treat one set's teams as evidence for another's, which they are not.
  *
- * Each descendant is read twice — once by the shared walk, once here for its
- * fields. The walk is deliberately the one every subtree writer imports
- * (`collectDescendantIds`), so the planner sees exactly the rows the NEO-277
- * cascade would touch; a set's nodes number in the tens, so the second read
- * is cheap and keeps that guarantee.
+ * ## NEO-296 — one read per node, and a bound
+ *
+ * This used to call `collectDescendantIds` and then `ctx.db.get` every id it
+ * returned: TWO operations per node, in one unbounded query, on BOTH the
+ * preview and the apply. The shared walk reads each row already and keeps
+ * only its `children`, so the second read was re-reading a row this query had
+ * just had in its hands.
+ *
+ * So the walk moved up into the action, where it can be paged: this query
+ * returns the root and its children, `readTeamFillNodes` reads the next
+ * `TEAM_FILL_NODE_CHUNK` ids and returns THEIR children, and
+ * `computeTeamFillPlan` repeats until the frontier is empty. It is the same
+ * pointer-graph walk `collectDescendantIds` does — `children`, breadth first,
+ * each id visited once — so the planner still sees exactly the rows the
+ * NEO-277 cascade would touch; the cycle guard that walk keeps in `seen` is
+ * the action's `queued` set, for the same reason. It cannot simply CALL that
+ * walk because a one-shot helper has no resume point, which is the whole
+ * thing being fixed. If `collectDescendantIds` ever changes what a subtree
+ * is, this has to change with it.
  */
 export const listTeamFillSubtree = internalQuery({
   args: { selectorOptionId: v.id("selectorOptions") },
   returns: v.object({
-    nodes: v.array(
-      v.object({
-        _id: v.id("selectorOptions"),
-        level: selectorOptionLevelValidator,
-        parentId: v.union(v.id("selectorOptions"), v.null()),
-        isBase: v.boolean(),
-      }),
-    ),
+    root: subtreeNodeValidator,
     setYear: v.union(v.number(), v.null()),
     sportId: v.union(v.id("selectorOptions"), v.null()),
   }),
-  handler: async (ctx, args): Promise<SubtreeResult> => {
+  handler: async (ctx, args): Promise<SubtreeRoot> => {
     const root = await ctx.db.get(args.selectorOptionId);
     if (!root) throw new ConvexError("That set no longer exists.");
     if (root.level !== "setName") {
       throw new ConvexError("Fill teams from the set row, not a variant or parallel.");
     }
-    const descendantIds = await collectDescendantIds(ctx, root._id);
-    const nodes: Array<SubtreeNode> = [projectNode(root)];
-    for (const id of descendantIds) {
-      const row = await ctx.db.get(id);
-      // A child pointer whose row is gone mid-walk: nothing to read cards
-      // from, so nothing to plan for.
-      if (row) nodes.push(projectNode(row));
-    }
     const setYear = await findSetYearForSelectorOption(ctx, root._id);
     const sportId = await findSportForSelectorOption(ctx, root._id);
     return {
-      nodes,
+      root: projectNode(root),
       setYear: setYear ?? null,
       sportId: sportId ?? null,
     };
   },
 });
 
-function projectNode(row: Doc<"selectorOptions">): SubtreeNode {
+/**
+ * One step of the subtree walk: up to `TEAM_FILL_NODE_CHUNK` node ids in, the
+ * same projection out, plus each one's children for the next step.
+ *
+ * Refuses an oversized list rather than truncating it, the way
+ * `readTeamFillPlayers` and `readTeamFillTeams` do — a short answer here would
+ * silently drop whole branches of the set and the operator would be shown a
+ * count for a subtree that is not theirs. A dangling id is omitted: a child
+ * pointer whose row is gone has no cards to read and nothing to plan for,
+ * which is exactly what the old one-shot walk did with it.
+ */
+export const readTeamFillNodes = internalQuery({
+  args: { nodeIds: v.array(v.id("selectorOptions")) },
+  returns: v.array(subtreeNodeValidator),
+  handler: async (ctx, args): Promise<Array<SubtreeNodeWithChildren>> => {
+    if (args.nodeIds.length > TEAM_FILL_NODE_CHUNK) {
+      throw new Error(`Read subtree nodes in chunks of ${TEAM_FILL_NODE_CHUNK} or fewer.`);
+    }
+    const out: Array<SubtreeNodeWithChildren> = [];
+    for (const id of args.nodeIds) {
+      const row = await ctx.db.get(id);
+      if (row) out.push(projectNode(row));
+    }
+    return out;
+  },
+});
+
+function projectNode(row: Doc<"selectorOptions">): SubtreeNodeWithChildren {
   return {
     _id: row._id,
     level: row.level,
     parentId: row.parentId ?? null,
     isBase: row.metadata?.isBase === true,
+    childIds: row.children ?? [],
   };
 }
 
@@ -436,13 +507,49 @@ async function computeTeamFillPlan(
   // Every `runQuery` result below is annotated: an action calling functions
   // from its own module is the one place TypeScript can chase the module's
   // type back into itself, and the annotation is what breaks that cycle.
-  const subtree: SubtreeResult = await ctx.runQuery(internal.teamFill.listTeamFillSubtree, {
+  const subtree: SubtreeRoot = await ctx.runQuery(internal.teamFill.listTeamFillSubtree, {
     selectorOptionId,
   });
 
-  const nodeIds = subtree.nodes.map((node) => node._id);
+  // The subtree walk, paged (NEO-296). The frontier and its dedupe live HERE
+  // rather than in the query, so each query call is a plain bounded id read —
+  // the `readTeamFillPlayers` shape — and no walk state has to survive a round
+  // trip. `queued` is `collectDescendantIds`' `seen` set: a node enters the
+  // frontier once, so a `children` cycle or a row listed by two parents costs
+  // one read, not a loop.
+  const nodes: Array<SubtreeNode> = [];
+  const queued = new Set<string>([subtree.root._id]);
+  let frontier: Array<Id<"selectorOptions">> = [];
+  const visit = (node: SubtreeNodeWithChildren) => {
+    nodes.push({
+      _id: node._id,
+      level: node.level,
+      parentId: node.parentId,
+      isBase: node.isBase,
+    });
+    for (const childId of node.childIds) {
+      if (queued.has(childId)) continue;
+      queued.add(childId);
+      frontier.push(childId);
+    }
+  };
+  visit(subtree.root);
+  while (frontier.length > 0) {
+    if (queued.size > TEAM_FILL_MAX_SUBTREE_NODES) {
+      throw new ConvexError(TEAM_FILL_SUBTREE_TOO_LARGE);
+    }
+    const step = frontier.slice(0, TEAM_FILL_NODE_CHUNK);
+    frontier = frontier.slice(TEAM_FILL_NODE_CHUNK);
+    const rows: Array<SubtreeNodeWithChildren> = await ctx.runQuery(
+      internal.teamFill.readTeamFillNodes,
+      { nodeIds: step },
+    );
+    for (const row of rows) visit(row);
+  }
+
+  const nodeIds = nodes.map((node) => node._id);
   const nodesById = new Map<string, TeamFillNode>();
-  for (const node of subtree.nodes) {
+  for (const node of nodes) {
     nodesById.set(node._id, {
       level: node.level,
       ...(node.parentId !== null ? { parentId: node.parentId } : {}),
@@ -453,7 +560,7 @@ async function computeTeamFillPlan(
   // that has not been told which is its base, and tier 3 is skipped rather
   // than guessed. More than one is a data fault, and guessing between them
   // would be a fill from the wrong checklist — skipped the same way.
-  const baseNodes = subtree.nodes.filter((node) => node.level === "variantType" && node.isBase);
+  const baseNodes = nodes.filter((node) => node.level === "variantType" && node.isBase);
   const baseNodeId = baseNodes.length === 1 ? baseNodes[0]._id : null;
 
   const cards: Array<TeamFillCard> = [];
