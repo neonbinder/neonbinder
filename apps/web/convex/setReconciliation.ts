@@ -1423,6 +1423,14 @@ export const storeReconciledOptions = mutation({
      * this call stored re-matches by id, costs no write, and the walk
      * continues into the tail. Never true on a batch that fits, which is every
      * batch the forms send today.
+     *
+     * A CALLER MUST READ THIS. Both clients do it through
+     * `components/SetSelector/store-reconciled-until-done.ts`, which replays
+     * until it is false and reports the server's own `message` if a bound
+     * stops the walk. Ignoring it — which is what `VariantForm` and
+     * `ParallelForm` did when the budget landed — drops every row past the
+     * budget and closes the panel on a success the operator can act on but
+     * that did not happen.
      */
     hasMore: v.boolean(),
     /**

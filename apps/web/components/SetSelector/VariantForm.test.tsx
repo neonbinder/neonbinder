@@ -60,6 +60,7 @@ vi.mock("convex/react", () => ({
 }));
 
 import VariantForm from "./VariantForm";
+import { RECONCILED_STORE_MAX_PAGES } from "./store-reconciled-until-done";
 
 const CHAIN = [
   { _id: "sport1", level: "sport", value: "Hockey" },
@@ -509,5 +510,85 @@ describe("VariantForm — unlink notice (NEO-211 plan D)", () => {
     expect(notice.textContent).toContain(
       "Team Canada (has cards — listing on BSC will fail until re-linked)",
     );
+  });
+});
+
+// ===========================================================================
+// NEO-296 (audit condition 1) — an over-budget store must finish, and must
+// never report a count it did not write
+//
+// See `ParallelForm.test.tsx`'s copy for the full account. The two forms carry
+// separate copies of this branch, so the guarantee is pinned separately in
+// each: a fix applied to one and not the other is exactly the divergence that
+// ships.
+// ===========================================================================
+
+describe("VariantForm — the store is replayed until it is finished (NEO-296)", () => {
+  /** Two BSC variants and no SportLots: the single-platform store path. */
+  const twoBscOnly = {
+    ...bscOnly(),
+    bscOptions: [
+      { value: "Team Canada", platformValue: "team-canada" },
+      { value: "Team USSR", platformValue: "team-ussr" },
+    ],
+    message: "BSC: 2, SL: 0",
+  };
+
+  it("calls the store again with the SAME list and reports the server's final count", async () => {
+    mockFetchRawOptions.mockResolvedValue(twoBscOnly);
+    mockStore
+      .mockResolvedValueOnce({
+        success: true,
+        message:
+          "Stored 1 reconciled insert options — 1 of 2 not reached this " +
+          "time. Run the sync again to store the rest.",
+        optionsCount: 1,
+        itemsProcessed: 1,
+        hasMore: true,
+        unlinked: [],
+        unlinkedTotal: 0,
+      })
+      .mockResolvedValueOnce({
+        success: true,
+        message: "Successfully stored 2 reconciled insert options",
+        optionsCount: 2,
+        itemsProcessed: 2,
+        hasMore: false,
+        unlinked: [],
+        unlinkedTotal: 0,
+      });
+
+    const { onDone } = await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(2));
+    expect(mockStore.mock.calls[1][0]).toEqual(mockStore.mock.calls[0][0]);
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toBe("Stored 2 variants (single platform)");
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+  });
+
+  it("never claims a count the store did not write when the walk cannot finish", async () => {
+    mockStore.mockResolvedValue({
+      success: true,
+      message:
+        "Stored 1 reconciled insert options — 1 of 2 not reached this " +
+        "time. Run the sync again to store the rest.",
+      optionsCount: 1,
+      itemsProcessed: 1,
+      hasMore: true,
+      unlinked: [],
+      unlinkedTotal: 0,
+    });
+    mockFetchRawOptions.mockResolvedValue(twoBscOnly);
+
+    const { onDone } = await renderForm();
+
+    await waitFor(() =>
+      expect(mockStore).toHaveBeenCalledTimes(RECONCILED_STORE_MAX_PAGES),
+    );
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("1 of 2 not reached this time");
+    expect(status.textContent).not.toContain("Stored 2 variants");
+    expect(onDone).not.toHaveBeenCalled();
   });
 });

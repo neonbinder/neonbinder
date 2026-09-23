@@ -74,3 +74,19 @@ path already polls `getReadyCandidates` until `total` matches the action's own
 count, so it tolerates a chained write — but a sibling mutation that patches
 rows by id (`resolveCandidateTeams`) had to gain ONE delayed retry, because a
 row it cannot find is silently skipped.
+
+**A PER-ITEM budget is not a transaction bound; compose the two by ENDING THE
+PAGE.** A budget charged per name/row/item (8 team reads per name) is often
+chosen on purpose — it keeps an item's ANSWER independent of its position, which
+a shared counter cannot do. But per-item × page-size can blow past the ~1800
+band, so a transaction total has to join it. What the total does when it is
+reached is the whole design: do NOT let the remaining items fall back to a
+degraded answer, because that is exactly the position-dependence the per-item
+budget removed, and the boundary then moves with the page size. Instead stop the
+walk, roll the loop counter back so the resume cursor points AT the undecided
+item, and let `hasMore` carry it. Every item reached was evaluated whole; every
+item deferred is re-evaluated from a fresh cache in the next transaction and
+answers identically. Livelock guard (the `sweepAbandonedBatches` `rows > 0`
+equivalent): the first item of a page must always get its full allowance — a
+fresh per-transaction counter at zero with a floor of 1 gives that structurally
+— so a page can never end where it started.

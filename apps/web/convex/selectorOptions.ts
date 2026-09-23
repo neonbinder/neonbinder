@@ -1861,8 +1861,10 @@ type StoreSelectorOptionsResult = {
  *
  * Both callers are ACTIONS, which is why this is a loop and not an operator
  * notice: an action can simply finish the job, and a truncation the operator
- * has to act on is worse than one nobody ever sees. (The reconciler's store
- * has the same budget and a CLIENT caller, so it reports instead.)
+ * has to act on is worse than one nobody ever sees. The reconciler's store has
+ * the same budget and CLIENT callers, and they loop too — see
+ * `components/SetSelector/store-reconciled-until-done.ts`, which mirrors this
+ * function including its merge rule.
  *
  * ## Merging, which is not "add everything up"
  *
@@ -4514,10 +4516,21 @@ async function restampCardChecklistSortOrders(
  * The continuation behind `restampCardChecklistSortOrders` — one page, then
  * itself again while there is more.
  *
- * Idempotent by construction: each page re-reads the checklist, re-sorts it
- * and writes only the rows that differ, so a page replayed after a retry
- * writes nothing. Nothing here can lose a card or change a card number; the
- * only field it touches is the display order.
+ * The WRITES are idempotent: each page re-reads the checklist, re-sorts it and
+ * writes only the rows that differ, so a page replayed against an unchanged
+ * checklist writes nothing.
+ *
+ * The CURSOR is not, and the distinction matters to anyone reading `from` as a
+ * promise. `from` is a POSITION in a freshly re-sorted array, not a key. A card
+ * inserted or deleted between two pages shifts every position behind it, so the
+ * next page can resume past a row it never stamped, or restamp one it already
+ * did. Nothing is lost by that — the only field written is `sortOrder`, so the
+ * worst case is display-order wobble, and because every page re-derives the
+ * order from the current contents the chain still converges on replay (and the
+ * next `addCustomCard` on this set restamps from the start anyway). Left as it
+ * is deliberately: a key-based cursor would buy nothing that matters here.
+ *
+ * Nothing on this path can lose a card or change a card number.
  */
 export const restampCardChecklistSortOrdersBatch = internalMutation({
   args: {
@@ -10747,101 +10760,135 @@ export const syncSetsAcrossManufacturers = action({
             internal.selectorOptions.listYearSetRows,
             { yearId: args.yearId },
           );
-          const holdersByBscId = new Map<
-            string,
-            Array<BscSetHolder<Id<"selectorOptions">>>
-          >();
-          for (const row of index.sets) {
-            for (const bscId of row.bscIds) {
-              const list = holdersByBscId.get(bscId);
-              const holder = {
-                rowId: row._id,
-                parentId: row.parentId,
-                // NEO-294 — the NB row's OWN name, which is the only one
-                // allowed to re-home it; BSC's name for the same set routes
-                // only sets NB has no row for. See `routeBscSets`.
-                value: row.value,
-                // NEO-294 — an operator's placement; this row never moves.
-                ...(row.setByOperator !== undefined
-                  ? { setByOperator: row.setByOperator }
-                  : {}),
-              };
-              if (list) list.push(holder);
-              else holdersByBscId.set(bscId, [holder]);
-            }
-          }
-          // The routing input, which the known-brand pre-pass may GROW.
-          let routeManufacturers: Array<{
-            _id: Id<"selectorOptions">;
-            value: string;
-            setNamePrefix?: string;
-            isBrandUnknown?: boolean;
-          }> = index.manufacturers;
-          const route = () =>
-            routeBscSets<Id<"selectorOptions">>({
-              sets: bscResult.options,
-              manufacturers: routeManufacturers,
-              holdersByBscId,
-              // NEO-294 — consulted ONLY for a set that would land in
-              // Unknown; an NB brand, by id or by prefix, always wins first.
-              matchKnownBrand,
-            });
-          let plan = route();
-
-          // 2b. NEO-294 — the known-brand pre-pass. `routeBscSets` is pure
-          // and cannot create a row, so it named the brands this year would
-          // need; mint them here (idempotent, one row per year per brand)
-          // and route again with them in hand. The second pass is what
-          // FILES the sets — one function decides placement, once — and it
-          // turns the Unknown holders of those sets into ordinary prefix
-          // moves, which step 3 applies.
-          if (plan.knownBrandRequests.length > 0) {
-            const minted: typeof routeManufacturers = [];
-            let brandsAdded = 0;
-            for (const request of plan.knownBrandRequests) {
-              const ensured = await ctx.runMutation(
-                internal.selectorOptions.ensureBrandRow,
-                { yearId: args.yearId, name: request.brand },
-              );
-              // `null` = the year's flagged Unknown row already wears this
-              // name (an operator's rename). Nothing was created and these
-              // sets stay where they are.
-              if (ensured.id === null) continue;
-              if (ensured.created) brandsAdded++;
-              minted.push({
-                _id: ensured.id,
-                value: request.brand,
-                ...(ensured.setNamePrefix !== undefined
-                  ? { setNamePrefix: ensured.setNamePrefix }
-                  : {}),
-              });
-            }
-            if (minted.length > 0) {
-              routeManufacturers = [...routeManufacturers, ...minted];
-              plan = route();
-            }
-            // Counted from the FINAL plan, so the number is what was filed
-            // rather than what was hoped for: a brand row adopted from
-            // before NEO-237 may carry no prefix and claim nothing.
-            const filed = minted.reduce(
-              (n, m) => n + (plan.buckets.get(m._id)?.length ?? 0),
-              0,
+          // NEO-296 (audit condition 3) — A TRUNCATED INDEX SKIPS THE WHOLE
+          // BSC BUCKETING PHASE, not just the moves.
+          //
+          // The index is what says "NB already has a row for this BSC set"
+          // (rung 1 of `routeBscSets`), and rung 1 is what keeps this legal:
+          // a set NB owns a row for is routed by THAT ROW'S OWN NB NAME.
+          // Past `MAX_YEAR_SET_ROWS` the holder map is missing rows, so a set
+          // whose NB row the read never reached looks like a set NB has no
+          // row for — and falls to rung 2, which routes by the MARKETPLACE's
+          // name for it. That is the forward dependency the product invariant
+          // forbids (CLAUDE.md, rule 4: NB behaviour is never keyed on a
+          // marketplace value), and it would re-home or re-file an operator's
+          // row on the strength of a name NB does not use.
+          //
+          // Suppressing only the `moves` — which is all this did — left the
+          // BUCKETING running on the same partial map, so the misrouting
+          // still happened, one store call later.
+          //
+          // Skipping the phase costs this run's BSC sets; they are stored by
+          // the next sync, or by a sync of the brand whose column asked. A
+          // phase that did not run is recoverable and visible. A set filed
+          // under a brand a marketplace name chose is neither.
+          if (index.truncated) {
+            console.warn(
+              JSON.stringify({
+                msg: "bsc_phase_skipped_truncated_index",
+                yearId: args.yearId,
+                cap: MAX_YEAR_SET_ROWS,
+                indexedSets: index.sets.length,
+                bscSets: bscResult.options.length,
+              }),
             );
-            knownBrandsAdded += brandsAdded;
-            knownBrandSetsFiled += filed;
-          }
+            summary.push(
+              "too many sets this year to file BSC's list — none were filed",
+            );
+          } else {
+            const holdersByBscId = new Map<
+              string,
+              Array<BscSetHolder<Id<"selectorOptions">>>
+            >();
+            for (const row of index.sets) {
+              for (const bscId of row.bscIds) {
+                const list = holdersByBscId.get(bscId);
+                const holder = {
+                  rowId: row._id,
+                  parentId: row.parentId,
+                  // NEO-294 — the NB row's OWN name, which is the only one
+                  // allowed to re-home it; BSC's name for the same set routes
+                  // only sets NB has no row for. See `routeBscSets`.
+                  value: row.value,
+                  // NEO-294 — an operator's placement; this row never moves.
+                  ...(row.setByOperator !== undefined
+                    ? { setByOperator: row.setByOperator }
+                    : {}),
+                };
+                if (list) list.push(holder);
+                else holdersByBscId.set(bscId, [holder]);
+              }
+            }
+            // The routing input, which the known-brand pre-pass may GROW.
+            let routeManufacturers: Array<{
+              _id: Id<"selectorOptions">;
+              value: string;
+              setNamePrefix?: string;
+              isBrandUnknown?: boolean;
+            }> = index.manufacturers;
+            const route = () =>
+              routeBscSets<Id<"selectorOptions">>({
+                sets: bscResult.options,
+                manufacturers: routeManufacturers,
+                holdersByBscId,
+                // NEO-294 — consulted ONLY for a set that would land in
+                // Unknown; an NB brand, by id or by prefix, always wins first.
+                matchKnownBrand,
+              });
+            let plan = route();
 
-          // 3. Re-home Unknown → brand BEFORE storing, so the brand's bucket
-          // matches the moved row by id (D9). Not on a truncated index: a
-          // holder the read did not reach is a placement this run cannot see.
-          if (plan.moves.length > 0) {
-            if (index.truncated) {
-              console.warn(
-                `[syncSetsAcrossManufacturers] year set index truncated at ` +
-                  `${MAX_YEAR_SET_ROWS} rows — ${plan.moves.length} re-home(s) skipped`,
+            // 2b. NEO-294 — the known-brand pre-pass. `routeBscSets` is pure
+            // and cannot create a row, so it named the brands this year would
+            // need; mint them here (idempotent, one row per year per brand)
+            // and route again with them in hand. The second pass is what
+            // FILES the sets — one function decides placement, once — and it
+            // turns the Unknown holders of those sets into ordinary prefix
+            // moves, which step 3 applies.
+            if (plan.knownBrandRequests.length > 0) {
+              const minted: typeof routeManufacturers = [];
+              let brandsAdded = 0;
+              for (const request of plan.knownBrandRequests) {
+                const ensured = await ctx.runMutation(
+                  internal.selectorOptions.ensureBrandRow,
+                  { yearId: args.yearId, name: request.brand },
+                );
+                // `null` = the year's flagged Unknown row already wears this
+                // name (an operator's rename). Nothing was created and these
+                // sets stay where they are.
+                if (ensured.id === null) continue;
+                if (ensured.created) brandsAdded++;
+                minted.push({
+                  _id: ensured.id,
+                  value: request.brand,
+                  ...(ensured.setNamePrefix !== undefined
+                    ? { setNamePrefix: ensured.setNamePrefix }
+                    : {}),
+                });
+              }
+              if (minted.length > 0) {
+                routeManufacturers = [...routeManufacturers, ...minted];
+                plan = route();
+              }
+              // Counted from the FINAL plan, so the number is what was filed
+              // rather than what was hoped for: a brand row adopted from
+              // before NEO-237 may carry no prefix and claim nothing.
+              const filed = minted.reduce(
+                (n, m) => n + (plan.buckets.get(m._id)?.length ?? 0),
+                0,
               );
-              summary.push("too many sets this year to move any out of Unknown");
-            } else {
+              knownBrandsAdded += brandsAdded;
+              knownBrandSetsFiled += filed;
+            }
+
+            // 3. Re-home Unknown → brand BEFORE storing, so the brand's bucket
+            // matches the moved row by id (D9).
+            //
+            // The truncated-index guard that used to sit HERE has moved up to
+            // the index read: a holder the read did not reach is a placement
+            // this run cannot see, and that is true of the bucketing as much
+            // as of the moves. Suppressing only the moves left the same
+            // partial map deciding where each set was FILED.
+            if (plan.moves.length > 0) {
               // NEO-296 — sliced to transaction size; see
               // `REHOME_MOVES_PER_CALL`. A whole year's worth of moves in one
               // transaction was ~5,600+ operations.
@@ -10857,59 +10904,59 @@ export const syncSetsAcrossManufacturers = action({
                 );
               }
             }
-          }
 
-          // 4. The brand-unknown bucket — minted only when something needs it.
-          const buckets = new Map<Id<"selectorOptions">, MarketplaceSetEntry[]>(
-            plan.buckets,
-          );
-          if (plan.unknown.length > 0) {
-            let unknownId = routeManufacturers.find(
-              (m) => m.isBrandUnknown === true,
-            )?._id;
-            if (!unknownId) {
-              const ensured = await ctx.runMutation(
-                internal.selectorOptions.ensureBrandUnknownRow,
-                { yearId: args.yearId },
-              );
-              unknownId = ensured.id;
+            // 4. The brand-unknown bucket — minted only when something needs it.
+            const buckets = new Map<Id<"selectorOptions">, MarketplaceSetEntry[]>(
+              plan.buckets,
+            );
+            if (plan.unknown.length > 0) {
+              let unknownId = routeManufacturers.find(
+                (m) => m.isBrandUnknown === true,
+              )?._id;
+              if (!unknownId) {
+                const ensured = await ctx.runMutation(
+                  internal.selectorOptions.ensureBrandUnknownRow,
+                  { yearId: args.yearId },
+                );
+                unknownId = ensured.id;
+              }
+              buckets.set(unknownId, [
+                ...(buckets.get(unknownId) ?? []),
+                ...plan.unknown,
+              ]);
             }
-            buckets.set(unknownId, [
-              ...(buckets.get(unknownId) ?? []),
-              ...plan.unknown,
-            ]);
-          }
 
-          // 5. Store sets under each manufacturer.
-          //
-          // NEO-211 condition 6: NO `coveredSides` here, deliberately. BSC
-          // returns one flat set list which this action then BUCKETS by
-          // manufacturer, so each per-bucket store call sees only a slice of
-          // what the fetch returned. Declaring BSC covered on a slice would
-          // make every set filed under a different manufacturer look delisted
-          // and strip its slug. The whole-year unlink belongs to a store call
-          // that sees the whole year, which this is not.
-          for (const [parentId, sets] of buckets) {
-            for (let i = 0; i < sets.length; i += MAX_SYNC_ITEMS) {
-              // NEO-296 — the `MAX_SYNC_ITEMS` slice is the ARGUMENT cap; the
-              // store's own write budget is what bounds the transaction, and
-              // this replays each slice until it is fully stored.
-              const result = await storeSelectorOptionsUntilDone(ctx, {
-                level: "setName",
-                parentId,
-                options: sets.slice(i, i + MAX_SYNC_ITEMS).map((s) => ({
-                  value: s.value,
-                  platformData: { bsc: s.platformValue },
-                })),
-              });
-              totalStored += result.optionsCount;
-              unlinkedAll.push(...result.unlinked);
+            // 5. Store sets under each manufacturer.
+            //
+            // NEO-211 condition 6: NO `coveredSides` here, deliberately. BSC
+            // returns one flat set list which this action then BUCKETS by
+            // manufacturer, so each per-bucket store call sees only a slice of
+            // what the fetch returned. Declaring BSC covered on a slice would
+            // make every set filed under a different manufacturer look delisted
+            // and strip its slug. The whole-year unlink belongs to a store call
+            // that sees the whole year, which this is not.
+            for (const [parentId, sets] of buckets) {
+              for (let i = 0; i < sets.length; i += MAX_SYNC_ITEMS) {
+                // NEO-296 — the `MAX_SYNC_ITEMS` slice is the ARGUMENT cap; the
+                // store's own write budget is what bounds the transaction, and
+                // this replays each slice until it is fully stored.
+                const result = await storeSelectorOptionsUntilDone(ctx, {
+                  level: "setName",
+                  parentId,
+                  options: sets.slice(i, i + MAX_SYNC_ITEMS).map((s) => ({
+                    value: s.value,
+                    platformData: { bsc: s.platformValue },
+                  })),
+                });
+                totalStored += result.optionsCount;
+                unlinkedAll.push(...result.unlinked);
+              }
+              // An internal LOG string, not a card title. Counts per bucket.
+              const name =
+                routeManufacturers.find((m) => m._id === parentId)?.value ??
+                BRAND_UNKNOWN_VALUE;
+              summary.push(`${name}: ${sets.length}`);
             }
-            // An internal LOG string, not a card title. Counts per bucket.
-            const name =
-              routeManufacturers.find((m) => m._id === parentId)?.value ??
-              BRAND_UNKNOWN_VALUE;
-            summary.push(`${name}: ${sets.length}`);
           }
         }
       }
@@ -13208,6 +13255,14 @@ function boundedAliasInput(raw: ReadonlyArray<string>): string[] {
  * (~1,800 strains, ~4,000 fails — `CARDS_PER_COMMIT_CHUNK`), leaving room for
  * the prelude's fixed preamble and ancestry tail on every page.
  *
+ * The tie-break's 8 is PER NAME, so on its own it would put the worst case at
+ * 8 × 300 = 2,400 reads — past the straining line. It is joined by a
+ * transaction total, `CARD_YEAR_TEAM_READS_PER_TRANSACTION`, which the walk
+ * below treats as a reason to END THE PAGE rather than to answer the
+ * remaining names on a spent budget. So this page size is the ceiling on
+ * names and that one is the ceiling on reads; whichever is reached first
+ * stops the page, and `hasMore` carries the rest.
+ *
  * ## Why the prelude needed this at all
  *
  * It walked EVERY distinct player and team name on the checklist in one
@@ -13323,6 +13378,17 @@ export const commitCardChecklistPrelude = internalMutation({
      * a test slow enough that nobody keeps it.
      */
     namesPerPage: v.optional(v.number()),
+    /**
+     * NEO-296 — narrow this call's TEAM READ ceiling, for a test that needs
+     * the page to end on it without seeding a few hundred teams.
+     *
+     * Same contract as `namesPerPage` directly above: it can only make the
+     * ceiling SMALLER (`createCardYearTeamCache` clamps it), because
+     * `CARD_YEAR_TEAM_READS_PER_TRANSACTION` is the transaction's bound and
+     * nothing gets to raise it. Ignored on a whole-prelude call, which is
+     * unpaged and so has no ceiling to lower.
+     */
+    cardYearTeamReads: v.optional(v.number()),
   },
   returns: v.object({
     /**
@@ -14525,6 +14591,14 @@ export const commitCardChecklistPrelude = internalMutation({
           );
     /** Names this call got through, across both sets. */
     let walked = 0;
+    /**
+     * NEO-296 — this page ended on the TEAM READ ceiling rather than on the
+     * name budget. Logged rather than returned: the caller's resume loop is
+     * driven by `hasMore`, which is already true, and the operator has nothing
+     * to do about it — every name still gets its own answer, one transaction
+     * later. It is here so the day a page starts ending on it is visible.
+     */
+    let deferredOnTeamReads = false;
 
     /**
      * NEO-296 — mint the team a checklist name's `create` decision asked for.
@@ -14734,16 +14808,30 @@ export const commitCardChecklistPrelude = internalMutation({
       ]),
     );
     /**
-     * NEO-254 — team lookups and the tie-break read budget, shared across every
-     * ambiguous name in this commit.
+     * NEO-254 / NEO-296 — team lookups shared across every ambiguous name in
+     * this call, and the READ ceiling for this transaction.
      *
      * A set's whole team vocabulary is a couple of dozen rows repeating over
      * hundreds of cards, so after the first few names the tie-break reads
-     * nothing at all. Per-name caches would have re-read the same teams for
-     * every collision AND re-armed the budget each time, which is no bound on
-     * a commit's reads.
+     * nothing at all; per-name caches would re-read the same teams for every
+     * collision.
+     *
+     * The ceiling it carries is a transaction bound and nothing else — how
+     * much EVIDENCE one name gets is `CARD_YEAR_TEAM_READS_PER_NAME`, which
+     * is per name and unshared, so an answer never depends on what came
+     * before it. Reaching the ceiling ends this PAGE (see the player loop
+     * below); the names behind it are walked by the next transaction from a
+     * fresh cache and answer identically. An unpaged whole-prelude call has
+     * nowhere to resume to, so it keeps the unbounded walk it always had —
+     * the same reason its `walkBudget` is `Infinity`.
      */
-    const cardYearTeamCache = createCardYearTeamCache();
+    const cardYearTeamCache = createCardYearTeamCache(
+      args.phase === undefined
+        ? { budget: Number.POSITIVE_INFINITY }
+        : (args.cardYearTeamReads !== undefined
+            ? { budget: args.cardYearTeamReads }
+            : {}),
+    );
     /**
      * NEO-296 — mint the player a `create` decision asked for, and record it
      * in this commit's maps.
@@ -15047,6 +15135,44 @@ export const commitCardChecklistPrelude = internalMutation({
             teamCache: cardYearTeamCache,
           },
         );
+        /*
+         * NEO-296 (audit condition 2) — THE TRANSACTION'S TEAM READS ARE
+         * SPENT. End the page; do not answer this name.
+         *
+         * The alternative — take `narrowed` as the answer and walk on — is
+         * how position-dependence walks straight back in: this name would
+         * resolve near the top of a page and go to review near the bottom of
+         * one, and the boundary would move with the page size. Ending the
+         * page instead means every name that WAS reached was evaluated on its
+         * full per-name allowance, and this one is re-walked by the next
+         * transaction from a fresh cache, where it answers exactly as it
+         * would have at position 0.
+         *
+         * `walked` is rolled back because it was charged at the top of this
+         * iteration: the resume offset has to point AT this name, not past
+         * it. Nothing has been written for it yet — the exactly-one fast path
+         * and the decision branches all return before here — so the next
+         * call starts it clean.
+         *
+         * LIVELOCK GUARD, the `entityReviewQueue.sweepAbandonedBatches`
+         * `rows > 0` equivalent: a page that ends having walked NOTHING would
+         * reschedule itself forever on the same offset. Two things stop it,
+         * and the first alone is sufficient — a fresh cache starts at zero
+         * reads with a budget of at least one, so the first name of any page
+         * always gets its allowance. `walked > 1` is the structural backstop
+         * in case that ever stops being true; when it holds, this name's
+         * partial answer is simply used, which is a worse answer but never a
+         * stalled commit.
+         */
+        if (
+          narrowed.transactionBudgetExhausted &&
+          args.phase !== undefined &&
+          walked > 1
+        ) {
+          walked--;
+          deferredOnTeamReads = true;
+          break;
+        }
         if (narrowed.playerId) {
           const picked = existingMatches.find((p) => p._id === narrowed.playerId)!;
           playerIdByName.set(name, picked._id);
@@ -15195,6 +15321,20 @@ export const commitCardChecklistPrelude = internalMutation({
     // action. The commit path only needs the bounded `ambiguousMatchKeys` for
     // its log line; the review query, which computes in one process, keeps it.
     const { maps: matchMaps } = buildMatchMaps(existingCards, leafNode);
+
+    if (deferredOnTeamReads) {
+      // Counts and ids only — a checklist name is marketplace text.
+      console.warn(
+        JSON.stringify({
+          msg: "prelude_page_ended_on_team_reads",
+          selectorOptionId: args.selectorOptionId,
+          offset: walkOffset,
+          walked,
+          teamReads: cardYearTeamCache.reads,
+          budget: cardYearTeamCache.budget,
+        }),
+      );
+    }
 
     return {
       // NEO-296 — a whole-prelude call walks both name sets with no budget, so

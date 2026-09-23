@@ -17,6 +17,7 @@ import {
   planSinglePlatformStore,
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
+import { storeReconciledUntilDone } from "./store-reconciled-until-done";
 
 type RawOptionsResult = {
   success: boolean;
@@ -195,32 +196,53 @@ export default function ParallelForm({
           return;
         }
 
-        const stored = await storeReconciledOptions({
-          level: "parallel",
-          parentId: insertId,
-          reconciledItems: items,
-          // Every side that was REACHED — a skipped one is excluded, so the
-          // store never detaches on a marketplace nobody asked (NEO-239).
-          coveredSides: plan.coveredSides,
-          // The empty side arrives as [] — the statement that licenses
-          // unlinking its rows.
-          returnedIds: returnedIdsFromFetch(result),
-        });
-        const unlinkedRows: UnlinkedEntry[] = stored?.unlinked ?? [];
-        setUnlinkedTotal(stored?.unlinkedTotal);
+        // NEO-296 — REPLAYED until the store says it is finished. The store
+        // stops on a write budget and reports `hasMore`; a single call would
+        // drop every row past it and this panel would say otherwise. See
+        // `storeReconciledUntilDone`.
+        const { stored, converged } = await storeReconciledUntilDone(
+          storeReconciledOptions,
+          {
+            level: "parallel",
+            parentId: insertId,
+            reconciledItems: items,
+            // Every side that was REACHED — a skipped one is excluded, so the
+            // store never detaches on a marketplace nobody asked (NEO-239).
+            coveredSides: plan.coveredSides,
+            // The empty side arrives as [] — the statement that licenses
+            // unlinking its rows.
+            returnedIds: returnedIdsFromFetch(result),
+          },
+        );
+        const unlinkedRows: UnlinkedEntry[] = stored.unlinked ?? [];
+        setUnlinkedTotal(stored.unlinkedTotal);
 
         setUnlinked(unlinkedRows);
         setMessage(
-          // Our own sentence. `result.message` carries the same adapter-text
-          // warning suffix as the modal path above.
-          `Stored ${items.length} parallels (single platform)`,
+          // NEO-296 — the count is the SERVER'S (`optionsCount`: rows now
+          // linked), never `items.length`. The old sentence counted what was
+          // SENT, so a truncated store told the operator a number nothing had
+          // written. `items.length` survives only as a fallback for a result
+          // shape that predates the field.
+          //
+          // A store that did not converge gets the server's own sentence,
+          // which names how many rows it did not reach and what to do —
+          // composing our own here is how this went wrong the first time.
+          // `result.message` is never used: it carries the adapter-text
+          // warning suffix.
+          converged
+            ? `Stored ${stored.optionsCount ?? items.length} parallels (single platform)`
+            : (stored.message ??
+              "Some parallels were not stored. Run the sync again to store the rest."),
         );
-        // Hold the panel open while there is a detach to report.
+        // Hold the panel open while there is a detach to report, or while the
+        // store is unfinished — closing would take the only account of either
+        // with it.
         // NB: empty-empty-no-errors MUST land here and call onDone — it is the
         // normal path for a custom subtree (both adapters short-circuit), and
         // EntityColumn renders this form INSTEAD of the idle "+ Custom" button
         // while mode === "sync", so not returning to idle hides that button.
-        if (unlinkedRows.length === 0) onDone?.();
+        if (converged && unlinkedRows.length === 0) onDone?.();
       }
     } catch {
       // NEO-211 F3: the thrown text here is a Convex/adapter error that can
@@ -249,9 +271,10 @@ export default function ParallelForm({
       : undefined;
     // Clear any previous failure so a retry does not show a stale reason.
     setSaveError(null);
-    let stored;
+    let drained;
     try {
-      stored = await storeReconciledOptions({
+      // NEO-296 — replayed until the store is finished; see the doSync path.
+      drained = await storeReconciledUntilDone(storeReconciledOptions, {
         level: "parallel",
         parentId: insertId,
         reconciledItems: result.items.map((item) => ({
@@ -290,9 +313,22 @@ export default function ParallelForm({
       );
       return;
     }
+    const { stored, converged } = drained;
+    if (!converged) {
+      // NEO-296 — the store is still reporting more to do. The dialog STAYS
+      // OPEN, carrying the server's own account of what it did not reach:
+      // Save re-sends the identical list, which is exactly what continues the
+      // walk, and closing here would report a finished reconciliation that is
+      // not one.
+      setSaveError(
+        stored.message ??
+          "Some sets were not stored. Press Save to store the rest.",
+      );
+      return;
+    }
     setShowReconciliation(false);
-    const unlinkedRows = stored?.unlinked ?? [];
-    setUnlinkedTotal(stored?.unlinkedTotal);
+    const unlinkedRows = stored.unlinked ?? [];
+    setUnlinkedTotal(stored.unlinkedTotal);
     setUnlinked(unlinkedRows);
     if (unlinkedRows.length === 0) onDone?.();
   };

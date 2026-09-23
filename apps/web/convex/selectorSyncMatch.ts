@@ -1157,6 +1157,18 @@ export type BscSetRoutePlan<TId extends string = string> = {
  *   name a renamed row are the only thing that catches it, and the failure
  *   is silent data movement.
  *
+ *   KNOWN, AND DELIBERATE: with SEVERAL Unknown holders of one BSC id whose
+ *   names match DIFFERENT brands, each holder is re-homed to the brand its
+ *   own name matched, but the SET is bucketed under `target` — the FIRST
+ *   holder's brand. So the set is stored beside one of them while a sibling
+ *   row has moved to another brand. The alternative is worse: one BSC set
+ *   list entry is one set, and bucketing it under several brands would store
+ *   a copy of it under each. Every row keeps its id, its cards and its
+ *   linkage either way; what is arbitrary is only which brand's bucket the
+ *   incoming id/label lands in. Do not "fix" this by changing behaviour
+ *   without asking — an M:1 fan-out across brands is a data shape an
+ *   operator has to see, not one a router should quietly pick a winner for.
+ *
  * NEO-294 adds two more rules AROUND that ladder, both on the Unknown rung:
  *
  *   • AN OPERATOR'S PLACEMENT IS FINAL. A holder carrying `setByOperator`

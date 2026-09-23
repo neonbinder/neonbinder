@@ -923,6 +923,54 @@ export const findOrCreate = mutation({
 const CARD_YEAR_TEAM_READS_PER_NAME = 8;
 
 /**
+ * NEO-296 (audit condition 2) — how many team documents the tie-break may
+ * actually READ in ONE TRANSACTION, across every name it narrows.
+ *
+ * ## Why there are two numbers and not one
+ *
+ * `CARD_YEAR_TEAM_READS_PER_NAME` is what one name may CONSULT. It is what
+ * stops a decision being taken on a partial read, and — because it is charged
+ * per name and never shared — it is what makes an answer independent of where
+ * the name sits in the checklist. That decision stands.
+ *
+ * On its own it bounds nothing at the transaction, though: 8 per name times
+ * `PRELUDE_NAMES_PER_PAGE` (300) is 2,400 reads, past the ~1,800 the house
+ * calibration calls straining (`CARDS_PER_COMMIT_CHUNK`). The two compose —
+ * the per-name budget says what one name may consult, this one says what one
+ * TRANSACTION may spend reading.
+ *
+ * ## Reaching it ENDS THE PAGE. It never degrades an answer.
+ *
+ * This is the non-obvious part, and the reason it must not be "simplified"
+ * into letting the remaining names fall to review: a spent shared counter that
+ * changes ANSWERS is precisely the position-dependence the per-name budget was
+ * introduced to remove. A name that resolved at position 5 would stop
+ * resolving at position 280, and the boundary would move with the page size.
+ *
+ * So when the ceiling is reached the walk STOPS and reports `hasMore`. Every
+ * name the page did reach was fully evaluated; every name it did not is walked
+ * by the next transaction, from a fresh cache, and gets exactly the answer it
+ * would have got at position 0. The transaction stays bounded and the answers
+ * stay position-independent — which is only possible because the caller can
+ * resume.
+ *
+ * ## The number
+ *
+ * 240 reads, plus ~300 name lookups and the prelude's fixed preamble, lands
+ * near ~600 — inside the ~900 comfortable line with the ancestry tail to
+ * spare. It is also well past any real year's team vocabulary (a full MLB
+ * season is ~30 rows, a college football year a couple of hundred), and the
+ * memo means a team is read ONCE per transaction however many names name it.
+ * So a real commit never reaches this; what it bounds is the pathological
+ * page — hundreds of ambiguous names each consulting distinct teams.
+ *
+ * Counted on the READ, not on the consultation: it is a transaction cost
+ * bound, and a memo hit costs the transaction nothing. (The per-name budget is
+ * charged the other way round, on consultation, because it bounds EVIDENCE.)
+ */
+export const CARD_YEAR_TEAM_READS_PER_TRANSACTION = 240;
+
+/**
  * NEO-254 — team lookups shared across one commit's worth of narrowing.
  *
  * `keysById` maps a team id to the normalized name keys a card might name it
@@ -931,19 +979,51 @@ const CARD_YEAR_TEAM_READS_PER_NAME = 8;
  * Deliberately mutable and passed by reference: the point is that the second
  * "Bob Allen" in a set pays no READ for a team the first one already resolved.
  *
- * NEO-296 — it is a memo and NOTHING ELSE now. The `spent` counter that used
- * to live here was the commit-wide budget, and it is gone: a shared counter is
- * exactly what made one name's answer depend on how many names came before it.
- * A memo cannot do that, because a hit returns the same keys the read would
- * have — it changes what the lookup COSTS, never what it CONCLUDES. That
- * separation is what makes the budget above safe to share a cache with.
+ * NEO-296 — the `spent` counter that used to live here was a commit-wide
+ * budget on EVIDENCE, and it is gone: a shared counter that decides how much
+ * evidence a name gets is exactly what made one name's answer depend on how
+ * many names came before it. What the cache carries now is a memo plus a
+ * transaction READ COUNT, and neither can move an answer:
+ *
+ *  - `keysById` returns the same keys the read would have, so it changes what
+ *    a lookup COSTS, never what it CONCLUDES.
+ *  - `reads` is a cost meter. Reaching `budget` does not give the current name
+ *    a worse answer — it ends the PAGE, and the name is re-walked in the next
+ *    transaction. See `CARD_YEAR_TEAM_READS_PER_TRANSACTION`.
  */
 export type CardYearTeamCache = {
   keysById: Map<string, string[]>;
+  /** Team documents actually read through this cache in this transaction. */
+  reads: number;
+  /** The ceiling `reads` is measured against; see the constant. */
+  budget: number;
 };
 
-export function createCardYearTeamCache(): CardYearTeamCache {
-  return { keysById: new Map() };
+/**
+ * `budget` can only be made SMALLER than
+ * `CARD_YEAR_TEAM_READS_PER_TRANSACTION`, exactly as `commitCardChecklistPrelude`'s
+ * `namesPerPage` can only shrink a page: the ceiling is the transaction's and
+ * nothing, test or caller, gets to raise it. `Infinity` is the one exception
+ * and is deliberate — an UNPAGED caller (the whole-prelude call, and every
+ * one-shot caller that shares no cache) has nowhere to resume to, so giving it
+ * a ceiling could only degrade an answer. It keeps the unbounded walk it
+ * always had, and its `walkBudget` is `Infinity` for the same reason.
+ *
+ * Never below 1: a page whose first name cannot read a single team would make
+ * no progress, and a page that makes no progress is a livelock.
+ */
+export function createCardYearTeamCache(opts?: {
+  budget?: number;
+}): CardYearTeamCache {
+  const requested = opts?.budget ?? CARD_YEAR_TEAM_READS_PER_TRANSACTION;
+  return {
+    keysById: new Map(),
+    reads: 0,
+    budget:
+      requested === Number.POSITIVE_INFINITY
+        ? requested
+        : Math.max(1, Math.min(CARD_YEAR_TEAM_READS_PER_TRANSACTION, Math.floor(requested))),
+  };
 }
 
 /** What the card-year narrowing concluded about a set of same-name rows. */
@@ -961,6 +1041,21 @@ export type CardYearNarrowing = {
    * labels only what it can stand behind.
    */
   activePlayerIds: Array<Id<"players">>;
+  /**
+   * NEO-296 (audit condition 2) — the SHARED cache's transaction read ceiling
+   * was already spent when this name asked for the tie-break, so the tie-break
+   * did not run and this answer is NOT this name's final answer.
+   *
+   * A caller that shares a cache across names MUST treat this as "end the page
+   * and walk this name again in the next transaction", never as a result.
+   * Reading it as a result is the position-dependence
+   * `CARD_YEAR_TEAM_READS_PER_TRANSACTION` exists to prevent — the same name
+   * would resolve at the top of a page and go to review at the bottom of one.
+   *
+   * Absent for every one-shot caller: a fresh cache starts at zero reads with
+   * a budget of at least one, so the first name can never see it.
+   */
+  transactionBudgetExhausted?: boolean;
 };
 
 /**
@@ -1043,6 +1138,20 @@ export async function narrowSameNamePlayersByCardYear(
 
   if (teamKeys.size > 0 && survivors.length > 1) {
     const cache = opts.teamCache ?? createCardYearTeamCache();
+    // NEO-296 (audit condition 2) — checked BEFORE any of this name's
+    // consultations, so a name is either evaluated on its full allowance or
+    // deferred whole. Half a tie-break is the one thing that must not happen:
+    // it would answer this name worse than the identical name at the top of
+    // the page. `playerId` is left at the survivors' own answer so a caller
+    // that ignored the flag still fails safe (to review), but a caller sharing
+    // a cache is required to end its page instead — see the field's note.
+    if (cache.reads >= cache.budget) {
+      return {
+        playerId: null,
+        activePlayerIds,
+        transactionBudgetExhausted: true,
+      };
+    }
     let budgetBlown = false;
     const onThatTeam: Array<Doc<"players">> = [];
     /**
@@ -1072,6 +1181,12 @@ export async function narrowSameNamePlayersByCardYear(
           consulted.add(key);
         }
         if (!cache.keysById.has(key)) {
+          // The one place the transaction meter moves: an actual document
+          // read. A memo hit below costs the transaction nothing and so is
+          // charged nothing. The ceiling may be overshot by at most this
+          // name's remaining per-name allowance, which is what "a name is
+          // evaluated whole or deferred whole" costs.
+          cache.reads++;
           const team = await ctx.db.get(stint.teamId);
           cache.keysById.set(
             key,
