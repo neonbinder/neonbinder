@@ -1010,6 +1010,97 @@ describe("NEO-254: the batch dedupes a league by QID as well as by name", () => 
 });
 
 // ===========================================================================
+// The read set, not just the answer
+// ===========================================================================
+
+/*
+ * NEO-294 — the narrowing above it is behaviour-preserving BY DESIGN, so every
+ * assertion on the answer passes against the batch-wide `.collect()` it
+ * replaced. What has to be pinned is the READ RANGE: the thing optimistic
+ * concurrency charges for, and the thing that made `applyLookupResult` log four
+ * permanent write conflicts on PR #273's preview while the Wikidata pool ran it
+ * five-wide over a 754-row batch.
+ *
+ * `convexTest({ transactionLimits })` makes it observable. `documentsRead`
+ * counts every document a single function execution reads and throws Convex's
+ * own "Scanned too many documents" past the budget — so a read set is
+ * assertable even though convex-test does not simulate OCC itself.
+ *
+ * Measured on convex-test 0.0.55 against this exact fixture (200 filler rows in
+ * the batch), by running it once with each shape of the query:
+ *
+ *   indexed three-field prefix   passes at `documentsRead: 5`
+ *   `.collect()` of the batch    throws  at `documentsRead: 120`
+ *
+ * The cap below sits between those with a wide margin each way, so this fails
+ * loudly if the read is ever widened again and does not snap on an unrelated
+ * read added nearby.
+ */
+describe("NEO-294: the QID dedupe reads the batch's LEAGUE rows, not the batch", () => {
+  /** The 754-row seed job in miniature — none of them a league row. */
+  const FILLER_ROWS = 200;
+  const DOCUMENTS_READ_CAP = 60;
+
+  test("dedupes inside a read budget the batch-wide collect cannot meet", async () => {
+    const t = convexTest({
+      schema,
+      modules,
+      transactionLimits: { documentsRead: DOCUMENTS_READ_CAP },
+    });
+    const sportId = await seedSport(t);
+    const first = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Vancouver Canucks",
+    });
+    const second = await insertRow(t, {
+      sportId,
+      kind: "team",
+      name: "Calgary Flames",
+    });
+    for (let i = 0; i < FILLER_ROWS; i++) {
+      await insertRow(t, { sportId, kind: "player", name: `Filler Player ${i}` });
+    }
+
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: first,
+      status: "ready",
+      enrichment: { league: "NHL", leagueWikidataId: "Q1215892" },
+    });
+    /*
+     * This is the call under test. The second team proposes the SAME
+     * competition under a name that does not normalise to the first's, so the
+     * name index misses and the QID branch is the one that has to answer —
+     * which it must now do without pulling the other 200 rows in with it.
+     */
+    await t.mutation(internal.entityReviewQueue.applyLookupResult, {
+      id: second,
+      status: "ready",
+      enrichment: {
+        league: "National Hockey League",
+        leagueWikidataId: "Q1215892",
+      },
+    });
+
+    // Read back through the index the fix reads through: `leagueRows` collects
+    // the whole table and would spend the very budget this test exists to prove.
+    const staged = await t.run(async (ctx) =>
+      ctx.db
+        .query("entityReviewQueue")
+        .withIndex("by_batch_and_kind_and_name", (q) =>
+          q
+            .eq("selectorOptionId", sportId)
+            .eq("batchId", BATCH)
+            .eq("kind", "league"),
+        )
+        .collect(),
+    );
+    expect(staged).toHaveLength(1);
+    expect(staged[0].name).toBe("NHL");
+  });
+});
+
+// ===========================================================================
 // Resume reconciliation, and a league typed on a team step
 // ===========================================================================
 

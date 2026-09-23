@@ -1,7 +1,18 @@
 "use node";
 
 import { internalAction } from "../_generated/server";
+import type { ActionCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
+// NEO-294: the review row's resolution is WRITTEN through this. The write is
+// a separate failure mode from the lookup, and an optimistic-concurrency loss
+// on it must never be reported to the operator as "Wikidata found nothing" —
+// see `runEntityReviewLookupImpl` for the whole argument.
+import {
+  isOccConflict,
+  OCC_RETRY_ATTEMPTS,
+  runWithOccRetry,
+  type OccRetryOptions,
+} from "../../lib/errors/occ-retry";
 import { v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import { fetchEspnTeamInfo, fetchEspnTeamList } from "./espn";
@@ -1829,81 +1840,212 @@ function reviewEnrichmentFor(
  * Self-contained on purpose: the pool coordinates concurrency and the fetch
  * timeout bounds duration, so a single item completes fast (success, a
  * no-match "error", or a timed-out "error") and never blocks the lane. The row
- * is patched in BOTH the success and the caught-error branches here — the
- * pool's `onEntityReviewLookupComplete` is a further backstop for the residue
- * this cannot reach on its own (an UNCAUGHT throw, an action-level timeout, or
- * a pool cancellation), so a row can never be stranded on `pending`.
+ * is patched for BOTH a successful and a failed lookup here — the pool's
+ * `onEntityReviewLookupComplete` is a further backstop for the residue this
+ * cannot reach on its own (an UNCAUGHT throw, an action-level timeout, or a
+ * pool cancellation), so a row can never be stranded on `pending`.
  *
- * Deliberately does its own try/catch rather than letting the error propagate
- * to the pool: resolving the row here keeps every lookup outcome in one place
- * and lets the streaming counter advance immediately, instead of waiting for
- * the completion callback to fire.
+ * Deliberately catches the LOOKUP rather than letting it propagate to the
+ * pool: resolving the row here keeps every lookup outcome in one place and
+ * lets the streaming counter advance immediately, instead of waiting for the
+ * completion callback to fire. The WRITE is outside that catch — NEO-294, and
+ * the reason is on `runEntityReviewLookupImpl`.
  */
 export const runEntityReviewLookup = internalAction({
   args: {
     rowId: v.id("entityReviewQueue"),
   },
   returns: v.null(),
-  handler: async (ctx, args): Promise<null> => {
-    const row = await ctx.runQuery(internal.entityReviewQueue.getInternal, {
-      id: args.rowId,
-    });
-    // The row can legitimately be gone: a Cancel deletes the batch's rows while
-    // this item may still be draining. Nothing to resolve.
-    if (!row) return null;
-
-    try {
-      const sportCtx = await ctx.runQuery(
-        internal.selectorOptions.getSportEnrichmentContext,
-        { sportId: row.sportId },
-      );
-      const result = !sportCtx
-        ? null
-        : row.kind === "player"
-          ? await lookupPlayerEnrichment(row.name, sportCtx)
-          : row.kind === "league"
-            ? /*
-               * NEO-254 — a staged New League step, pre-filled.
-               *
-               * Without this the step arrived carrying a name and nothing
-               * else, which is the very shape the feature exists to stop an
-               * operator having to produce by hand. `source.wikidataId` is the
-               * league QID off the team's own P118 statement, so this reads
-               * the right record rather than searching for a label.
-               *
-               * `country` is DROPPED on the way out: `lookupLeagueEnrichment`
-               * returns it for context, `leagues` has no column for it, and
-               * the New League step does not render it. Spreading the whole
-               * result would put a field on the row that nothing can store —
-               * and `enrichmentValidator` would refuse it at runtime, which is
-               * the wizard failing to open.
-               */
-              await lookupLeagueEnrichment(
-                row.name,
-                sportCtx.wikidata?.sportQid,
-                row.source?.wikidataId,
-              )
-            : // NEO-236: a row staged off a player's career list carries the QID
-              // Wikidata attached to that P54 membership. Reading THAT record is
-              // not a search — it is the same club by construction, which is what
-              // gets "Sydney Blue Sox" its league instead of a null match from an
-              // EntitySearch that has no `wdt:P641` to filter on.
-              await lookupTeamEnrichment(row.name, sportCtx, row.source?.wikidataId);
-      await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
-        id: args.rowId,
-        status: result ? "ready" : "error",
-        enrichment: result ? reviewEnrichmentFor(row.kind, result) : undefined,
-      });
-    } catch (error) {
-      console.error(`[entity-review-lookup] lookup for ${args.rowId} failed:`, error);
-      await ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
-        id: args.rowId,
-        status: "error",
-      });
-    }
-    return null;
-  },
+  handler: async (ctx, args): Promise<null> => runEntityReviewLookupImpl(ctx, args),
 });
+
+/**
+ * NEO-294 — what the row will be resolved to, decided BEFORE anything is
+ * written.
+ *
+ * Mirrors `applyLookupResult`'s own args minus the id, so the two cannot drift
+ * apart silently: `status: "error"` with no `enrichment` is the genuine
+ * no-match, and it is the ONLY way that shape is produced.
+ */
+type EntityReviewLookupPayload = {
+  status: "ready" | "error";
+  enrichment?: ReturnType<typeof reviewEnrichmentFor>;
+};
+
+/**
+ * The slice of an action ctx this work item uses.
+ *
+ * Narrow rather than the whole `ActionCtx` so the unit tests can drive the
+ * impl with a two-method stub — the same reason `backstopEntityReviewRowImpl`
+ * is a plain function rather than a registered mutation: neither can be
+ * exercised through the workpool, which convex-test cannot mount.
+ */
+export type EntityReviewLookupCtx = Pick<ActionCtx, "runQuery" | "runMutation">;
+
+/**
+ * The body of `runEntityReviewLookup`, as a plain function so a test can hand
+ * it a ctx whose `runMutation` loses an optimistic-concurrency race.
+ *
+ * ## NEO-294 — why the write is not inside the lookup's catch
+ *
+ * It used to be. One `try` covered both the SPARQL lookup and the
+ * `applyLookupResult` that stores its answer, so a write that lost an OCC race
+ * (live logs: four times in a single seed run, permanently — the pool's
+ * lookups and `commitCardChecklist`'s batch read contend on these same rows)
+ * landed in the handler written for "Wikidata found nothing", which then wrote
+ * `status: "error"` with NO enrichment. A write failure was reported to the
+ * operator as a data absence:
+ *
+ *   - the wizard shows "No Wikidata match found" for a name Wikidata matched;
+ *   - a player's `careerTeams` never lands, so no career-team steps are
+ *     staged, and the belt-and-braces recovery pass reads `row.enrichment` —
+ *     which was never written — so it cannot recover them either;
+ *   - a team's `league` never lands, so no New League step and no ESPN
+ *     location pre-fill.
+ *
+ * Nothing in-session heals it; only a full re-sync of the set does.
+ *
+ * So the lookup decides a PAYLOAD and the catch covers only the lookup. The
+ * write then runs once, outside, with `runWithOccRetry` (NEO-189) — the
+ * mutation rolled back completely on a conflict, so re-running it starts from
+ * the state it started from the first time, which is exactly the failure that
+ * helper is safe for.
+ *
+ * ## What happens when the write fails anyway
+ *
+ * It THROWS, and the row is left `pending`. It is not rewritten as "error"
+ * here, because a write that never landed is not evidence about Wikidata and
+ * must not be turned into an answer about it. The pool's `onComplete`
+ * (`backstopEntityReviewRowImpl`) then ages the still-`pending` row to "error"
+ * off a SINGLE-document read set — it logs `entity_review_row_backstopped`
+ * with the work item's `resultKind`, and the failure is attributable in the
+ * pool's own telemetry rather than disguised as a lookup that found nothing.
+ * The operator ends up at the same wizard step either way; the difference is
+ * that this one leaves a trail. The pool does not retry (see wikidataPool.ts),
+ * so the throw costs no second SPARQL round trip.
+ *
+ * ## Telling the three outcomes apart in the logs
+ *
+ * Before this they were indistinguishable, which is why it went unnoticed for
+ * so long. Now: a genuine no-match logs `entity_review_lookup_no_match`, a
+ * lookup that threw logs the `[entity-review-lookup]` line it always has, and
+ * a write that could not be landed logs `entity_review_lookup_write_failed`.
+ * Ids, kinds and counts only — never the name on the row (observability.ts).
+ */
+export async function runEntityReviewLookupImpl(
+  ctx: EntityReviewLookupCtx,
+  args: { rowId: Id<"entityReviewQueue"> },
+  /**
+   * Test-only seam: lets a test inject a no-op `sleep` so the retry backoff
+   * costs no wall clock. Production passes nothing and gets occ-retry's own
+   * defaults, the same way `commitCardChecklist`'s phases do.
+   */
+  occRetry: OccRetryOptions = {},
+): Promise<null> {
+  const row = await ctx.runQuery(internal.entityReviewQueue.getInternal, {
+    id: args.rowId,
+  });
+  // The row can legitimately be gone: a Cancel deletes the batch's rows while
+  // this item may still be draining. Nothing to resolve.
+  if (!row) return null;
+
+  // Decided inside the try, WRITTEN outside it — see the docblock.
+  let payload: EntityReviewLookupPayload;
+  try {
+    const sportCtx = await ctx.runQuery(
+      internal.selectorOptions.getSportEnrichmentContext,
+      { sportId: row.sportId },
+    );
+    const result = !sportCtx
+      ? null
+      : row.kind === "player"
+        ? await lookupPlayerEnrichment(row.name, sportCtx)
+        : row.kind === "league"
+          ? /*
+             * NEO-254 — a staged New League step, pre-filled.
+             *
+             * Without this the step arrived carrying a name and nothing
+             * else, which is the very shape the feature exists to stop an
+             * operator having to produce by hand. `source.wikidataId` is the
+             * league QID off the team's own P118 statement, so this reads
+             * the right record rather than searching for a label.
+             *
+             * `country` is DROPPED on the way out: `lookupLeagueEnrichment`
+             * returns it for context, `leagues` has no column for it, and
+             * the New League step does not render it. Spreading the whole
+             * result would put a field on the row that nothing can store —
+             * and `enrichmentValidator` would refuse it at runtime, which is
+             * the wizard failing to open.
+             */
+            await lookupLeagueEnrichment(
+              row.name,
+              sportCtx.wikidata?.sportQid,
+              row.source?.wikidataId,
+            )
+          : // NEO-236: a row staged off a player's career list carries the QID
+            // Wikidata attached to that P54 membership. Reading THAT record is
+            // not a search — it is the same club by construction, which is what
+            // gets "Sydney Blue Sox" its league instead of a null match from an
+            // EntitySearch that has no `wdt:P641` to filter on.
+            await lookupTeamEnrichment(row.name, sportCtx, row.source?.wikidataId);
+    payload = result
+      ? { status: "ready", enrichment: reviewEnrichmentFor(row.kind, result) }
+      : { status: "error" };
+    if (!result) {
+      // The genuine no-match — and the ONLY place this file produces the
+      // `status: "error"` with no enrichment shape from a lookup that ran and
+      // answered. `sportContext: false` is the other way a row lands here: the
+      // sport carries no enrichment config, so no side was fetched at all.
+      console.log(
+        JSON.stringify({
+          msg: "entity_review_lookup_no_match",
+          rowId: args.rowId,
+          kind: row.kind,
+          sportContext: Boolean(sportCtx),
+        }),
+      );
+    }
+  } catch (error) {
+    // Unchanged (NEO-99): a lookup that THREW resolves the row to "error"
+    // exactly as one that found nothing does — from the operator's seat a
+    // question we could not ask and a question with no answer are the same
+    // end state. What is no longer inside this catch is the WRITE.
+    console.error(`[entity-review-lookup] lookup for ${args.rowId} failed:`, error);
+    payload = { status: "error" };
+  }
+
+  try {
+    await runWithOccRetry(
+      () =>
+        ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
+          id: args.rowId,
+          ...payload,
+        }),
+      occRetry,
+    );
+  } catch (error) {
+    // Ids, kinds and counts — never the row's name (observability.ts).
+    // `attempted` is what the lookup actually concluded, which is the point of
+    // the line: an "attempted": "ready" here is enrichment the operator did
+    // not get, on a row the backstop is about to age to "error" without it.
+    console.error(
+      JSON.stringify({
+        msg: "entity_review_lookup_write_failed",
+        rowId: args.rowId,
+        kind: row.kind,
+        attempted: payload.status,
+        occConflict: isOccConflict(error),
+        attempts: occRetry.attempts ?? OCC_RETRY_ATTEMPTS,
+      }),
+    );
+    // Rethrown deliberately (NEO-294): the row stays `pending`, the pool's
+    // onComplete backstop ages it to "error" off a single-document read set,
+    // and the failure is attributable rather than fabricated into an answer
+    // about Wikidata. Never a second `applyLookupResult` call from here.
+    throw error;
+  }
+  return null;
+}
 
 /**
  * NEO-240 — what a league lookup can answer.

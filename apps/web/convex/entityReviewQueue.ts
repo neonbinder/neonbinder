@@ -1620,23 +1620,52 @@ async function stageLeagueRowsImpl(
      * which is precisely the duplication this feature exists to prevent.
      *
      * The QID is the identity Wikidata itself asserts, so a match on EITHER
-     * key means the batch already holds this league. Read off the staged rows
-     * for this batch rather than through an index (there is none on
-     * `source.wikidataId`, and a batch's league rows are a handful).
+     * key means the batch already holds this league.
+     *
+     * ## NEO-294 — the range is the batch's LEAGUE rows, never the batch
+     *
+     * There is still no index on `source.wikidataId`, so the QID itself is
+     * matched in memory. What changed is the range feeding that match. This
+     * used to `.collect()` `by_selector_option_and_batch`, on the reasoning
+     * that "a batch's league rows are a handful" — true of the RESULT, false
+     * of the READ SET, and the read set is the only thing optimistic
+     * concurrency charges for. **A `.collect()` costs what it READS, not what
+     * it returns.** Every row in the batch (754 on the seed job) entered this
+     * transaction's read set, while `applyLookupResult` runs five-wide under
+     * the Wikidata pool with every sibling's `ctx.db.patch` landing inside
+     * that same range. They invalidated one another on the first attempt and
+     * again on every retry — four PERMANENT write conflicts on this mutation
+     * in PR #273's preview logs, with Convex's automatic retries exhausted.
+     *
+     * `by_batch_and_kind_and_name` is
+     * `[selectorOptionId, batchId, kind, nameNormalized]`, so stopping the
+     * equality chain after `kind` is a legal three-field prefix: the read set
+     * becomes this batch's league rows alone — a handful for real this time.
+     * `nameNormalized` is optional in the schema, and a prefix range spans
+     * every value of the trailing field including `undefined`, so a league row
+     * that carries no normalised name is still seen. `kind === "league"` is
+     * now guaranteed by the range and has left the predicate. Same answer,
+     * ~754 documents read down to ~5.
+     *
+     * Do not widen this back out to reach some other row of the batch: add the
+     * index, or read through one that already exists. The rule is written at
+     * the index in `schema.ts` — "a collect of the batch is the NEO-189
+     * optimistic-concurrency storm" — and this is the second time staging has
+     * broken it.
      */
     if (proposal.wikidataId) {
       const sameQid = (
         await ctx.db
           .query("entityReviewQueue")
-          .withIndex("by_selector_option_and_batch", (q) =>
+          .withIndex("by_batch_and_kind_and_name", (q) =>
             q
               .eq("selectorOptionId", teamRow.selectorOptionId)
-              .eq("batchId", teamRow.batchId),
+              .eq("batchId", teamRow.batchId)
+              .eq("kind", "league"),
           )
           .collect()
       ).some(
         (r) =>
-          r.kind === "league" &&
           r.source?.kind === "leagueOf" &&
           r.source.wikidataId === proposal.wikidataId,
       );

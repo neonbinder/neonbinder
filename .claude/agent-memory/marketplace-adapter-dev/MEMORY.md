@@ -13,3 +13,4 @@
 - [Sync action `message` is log-only](reference_sync_action_message_is_log_only.md) — legacy *Form components render it but `useEnsureSync` columns never mount them; the status row is the only surface
 - [Marketplace bucket words leak into set names](reference_marketplace_bucket_words_leak_into_set_names.md) — "Other ONIT Athlete …" is stored as the NB name; start-anchored matchers miss it; fix at the adapter boundary, never widen the matcher
 - [Convex op budget: count writes, not items](reference_convex_op_budget_count_writes_not_items.md) — count ops at the call sites; budgeting writes makes a truncated call finishable by replaying the same list; a shared dry run must pay the write cost
+- [Stub ctx for an action's write failures](reference_action_impl_stub_ctx_for_write_failures.md) — export a plain *Impl + Pick<ActionCtx> stub; convex-test can't make an OCC conflict; a dead fetch is a no-match, not a throw
