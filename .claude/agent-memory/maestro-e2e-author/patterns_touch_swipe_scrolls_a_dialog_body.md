@@ -46,4 +46,12 @@ hiding that.
 Worked examples: `parallel-grouping-reject-parallel.yaml` (pin to end, then
 ✕), `parallel-grouping-demoted-parallel-takes-parallels.yaml` (click-to-place
 instead of drag), `parallel-grouping-promoted-insert-fetches-from-bsc.yaml`
-(ReconciliationModal row button + Keep all).
+(ReconciliationModal row button + Keep all), `inserts-1996-score-one-nb-set-two-bsc-sources.yaml`
+(one UP swipe pins a short body to its end before tapping a Pending row's NAME).
+
+**Audit trigger:** any change that adds width to a dialog row (an inline button, a
+badge) can wrap its label to two lines and push the label's CENTRE past the body's
+bottom edge, so a flow that tapped it unswiped goes red with no flow change. The
+failure reads as `No visible element found` on the NEXT step (what the tap should
+have revealed); compare the tap's logged text bounds against the body's bottom in
+the failure hierarchy before anything else.
