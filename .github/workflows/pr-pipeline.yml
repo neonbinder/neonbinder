@@ -754,27 +754,154 @@ jobs:
 
           echo "✅ Wired — E2E will run against the PR's own preprocess preview(s)."
 
-      # NEO-299: the PR's Convex preview must throttle dispatch to the SAME
-      # ceiling the preview Cloud Run revisions above were just capped at
-      # (preprocess.yml's PREVIEW_HEAVY_MAX_INSTANCES /
-      # PREVIEW_FAST_MAX_INSTANCES), or Convex will happily fan out past what
-      # the tagged revisions can actually serve and reproduce the PR #275
-      # quota blowout even with the Cloud Run side fixed. Read from
-      # apps/web/convex/preprocessCapacity.json — the single source of truth
-      # also checked against terraform and these workflow literals by
-      # `capacity-parity` — rather than hardcoding the numbers a second time.
+  # NEO-299 follow-up: EVERY PR's Convex preview must throttle preprocess
+  # dispatch, not just PRs that touch services/preprocess. A web-only (or
+  # browser-only) PR's preview points at the SHARED dev preprocess services
+  # (dev caps: heavy 6, fast 3, from preprocessCapacity.json), but
+  # preprocessCapacity.ts's fallback — when the env var is unset — is the PROD
+  # value (heavy 12, fast 20, NEO-299). Left unset, such a PR would fan out at
+  # prod width against dev's services and 429 them, plus stampede a heavy
+  # warm-up burst (warmupPreprocess fans out to the FULL configured limit)
+  # into a service dev shares with every other PR.
+  #
+  # So this job runs for every PR (no `changes.outputs.preprocess` gate,
+  # unlike wire-preprocess-url above) and picks ONE of two rows from the same
+  # preprocessCapacity.json depending on which Cloud Run services this PR's
+  # Convex preview will actually call:
+  #   - preprocess changed  → `.heavy.preview` / `.fast.preview` (this PR has
+  #     its own pr-<N> preprocess preview, sized in preprocess.yml)
+  #   - preprocess unchanged → `.heavy.dev` / `.fast.dev` (this PR's preview
+  #     falls back to the shared dev services)
+  # wire-preprocess-url does NOT also set these — that would race two
+  # `convex env set` calls against the same variables. This job subsumes that
+  # part of wire-preprocess-url's job entirely.
+  #
+  # KNOWN GAP (raised to the coordinator, not fixable from this workflow
+  # alone): `apps/web/convex/preprocessCapacity.ts` reads
+  # HEAVY_PREPROCESS_MAX_PARALLELISM / PREPROCESS_MAX_PARALLELISM at MODULE
+  # SCOPE (`new Workpool(..., { maxParallelism: HEAVY_MAX_PARALLELISM })`,
+  # itself `resolveHeavyPreprocessMaxParallelism(process.env...)` evaluated
+  # once at import time). Per Convex's own docs (Environment Variables,
+  # https://docs.convex.dev/production/environment-variables): "the set of
+  # available functions is determined at deployment time and not reevaluated
+  # when variables change. This restriction also applies to cron definitions,
+  # which only reevaluate environment variables upon deployment." A
+  # `convex env set` run AFTER `web-preview` already pushed this preview's
+  # functions (which is always true here — this job `needs: web-preview`) does
+  # NOT retroactively change the already-baked-in `HEAVY_MAX_PARALLELISM`
+  # constant for THIS push; the deployment keeps running with whatever the env
+  # held (or its PROD fallback, if unset) at push time. It DOES take effect
+  # starting the deployment's NEXT push/redeploy, because Convex preview
+  # deployments persist their env vars and re-run module-scope code on every
+  # `npx convex deploy`, per docs.convex.dev/components/authoring
+  # ("Environment variables should be accessed inside function handlers rather
+  # than at the module scope, as module-scope code runs during deployment
+  # analysis"). So this job closes the race from a PR's SECOND push onward but
+  # not its first. The complete fix is a Convex *project* setting —
+  # `npx convex env default set HEAVY_PREPROCESS_MAX_PARALLELISM 3 --type
+  # preview` (and the fast equivalent) — documented at
+  # docs.convex.dev/production/environment-variables under "Project
+  # environment variable defaults": applied automatically at the moment a NEW
+  # preview deployment is created, before this job or wire-preprocess-url ever
+  # run. That is a one-time, project-wide Convex Dashboard/CLI action, not a
+  # per-PR CI step, so it is out of scope for a workflow edit — flagging it for
+  # the coordinator (or whoever holds the Convex project's deploy key) to set
+  # once. 3/3 is the safe uniform default: `fast.dev` and `fast.preview` are
+  # already both 3 (no conflict either way), and `heavy.preview` (3) is <=
+  # `heavy.dev` (6), so defaulting new previews to 3 is safe for both branches
+  # this job chooses between — merely conservative, not wrong, for the
+  # web-only/dev-fallback case until this job's own `env set` lands on the next
+  # push.
+  wire-preprocess-capacity:
+    name: Wire preprocess parallelism → PR Convex preview
+    needs: [changes, web-preview, wire-preprocess-url]
+    if: |
+      always()
+      && github.event_name == 'pull_request'
+      && needs.changes.result == 'success'
+      && needs.changes.outputs.deps_only != 'true'
+      && needs.web-preview.result == 'success'
+      && (needs.wire-preprocess-url.result == 'success' || needs.wire-preprocess-url.result == 'skipped')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PR: ${{ github.event.pull_request.number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/web/.nvmrc
+
+      # The PR's preview, handed over by `web-preview` (NEO-162). Same shape as
+      # wire-browser-url's equivalent step.
+      - name: Adopt the PR's Vercel preview URL
+        id: vercel
+        env:
+          URL: ${{ needs.web-preview.outputs.url }}
+        run: |
+          set -euo pipefail
+          if [ -z "${URL:-}" ]; then
+            echo "::error::web-preview produced no URL — cannot wire preprocess capacity."; exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      # Extract the Convex deployment NAME (slug) from the preview's
+      # x-convex-url meta. Exact copy of wire-browser-url's / wire-preprocess-
+      # url's equivalent step — this job cannot depend on either of theirs
+      # because wire-preprocess-url is SKIPPED on a web-only PR, which is
+      # exactly the case this job must still cover.
+      - name: Resolve Convex preview deployment name
+        id: convex
+        env:
+          PREVIEW_URL: ${{ steps.vercel.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            html=$(curl -sS -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" "$PREVIEW_URL/" || true)
+            cloud=$(printf '%s' "$html" | grep -oE 'name="x-convex-url" content="[^"]*"' | grep -oE 'https://[a-z0-9-]+\.convex\.cloud' | head -1 || true)
+            if [ -n "$cloud" ]; then
+              name="${cloud#https://}"; name="${name%.convex.cloud}"
+              echo "Convex deployment: $name"
+              echo "name=$name" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "attempt $attempt/60: preview not serving x-convex-url yet — retry in 5s"
+            sleep 5
+          done
+          echo "::error::Could not resolve Convex deployment name from preview index.html."; exit 1
+
+      # Choose the row: this PR's preview calls its OWN pr-<N> preprocess
+      # services iff services/preprocess changed (same condition
+      # wire-preprocess-url itself gates on); otherwise it falls back to the
+      # shared dev services.
       - name: Set preprocess parallelism env vars on the Convex preview
         working-directory: apps/web
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ steps.convex.outputs.name }}
+          PREPROCESS_CHANGED: ${{ needs.changes.outputs.preprocess }}
         run: |
           set -euo pipefail
-          HEAVY=$(jq -r '.heavy.preview' convex/preprocessCapacity.json)
-          FAST=$(jq -r '.fast.preview' convex/preprocessCapacity.json)
-          if [ -z "$HEAVY" ] || [ "$HEAVY" = "null" ] || [ -z "$FAST" ] || [ "$FAST" = "null" ]; then
-            echo "::error::could not read .heavy.preview / .fast.preview from convex/preprocessCapacity.json"; exit 1
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
+            exit 1
           fi
+
+          if [ "$PREPROCESS_CHANGED" = "true" ]; then
+            ROW="preview"
+          else
+            ROW="dev"
+          fi
+          HEAVY=$(jq -r ".heavy.${ROW}" convex/preprocessCapacity.json)
+          FAST=$(jq -r ".fast.${ROW}" convex/preprocessCapacity.json)
+          if [ -z "$HEAVY" ] || [ "$HEAVY" = "null" ] || [ -z "$FAST" ] || [ "$FAST" = "null" ]; then
+            echo "::error::could not read .heavy.${ROW} / .fast.${ROW} from convex/preprocessCapacity.json"; exit 1
+          fi
+          echo "This PR's Convex preview calls the '${ROW}' preprocess services — targeting heavy=$HEAVY fast=$FAST."
 
           npx --yes convex@1.39.1 env set HEAVY_PREPROCESS_MAX_PARALLELISM "$HEAVY" --deployment "$CONVEX_NAME"
           got_heavy=$(npx --yes convex@1.39.1 env get HEAVY_PREPROCESS_MAX_PARALLELISM --deployment "$CONVEX_NAME")
@@ -790,7 +917,7 @@ jobs:
             echo "::error::read-back mismatch: expected $FAST, got '$got_fast'"; exit 1
           fi
 
-          echo "✅ Preview Convex parallelism matches the preview Cloud Run caps ($HEAVY heavy / $FAST fast)."
+          echo "✅ Convex preview parallelism set to the '${ROW}' row ($HEAVY heavy / $FAST fast). NOTE: takes effect from this preview's NEXT redeploy onward — see this job's header comment for why the CURRENT push may still be running on preprocessCapacity.ts's fallback."
 
   # Invoke the (reusable) E2E suite. Runs AFTER wiring so the Convex preview is
   # already pointed at the PR's browser and preprocess previews (when those
@@ -810,7 +937,7 @@ jobs:
   # narrowed, BOTH must narrow together.
   e2e:
     name: E2E
-    needs: [changes, web-preview, wire-browser-url, wire-preprocess-url]
+    needs: [changes, web-preview, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity]
     if: |
       always()
       && needs.changes.result == 'success'
@@ -818,6 +945,7 @@ jobs:
       && needs.web-preview.result == 'success'
       && (needs.wire-browser-url.result == 'success' || needs.wire-browser-url.result == 'skipped')
       && (needs.wire-preprocess-url.result == 'success' || needs.wire-preprocess-url.result == 'skipped')
+      && (needs.wire-preprocess-capacity.result == 'success' || needs.wire-preprocess-capacity.result == 'skipped')
     uses: ./.github/workflows/e2e.yml
     with:
       preview_url: ${{ needs.web-preview.outputs.url }}
@@ -1187,7 +1315,7 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, e2e, repo-hygiene, capacity-parity]
+    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -1205,6 +1333,7 @@ jobs:
           R_CROP_MATRIX: ${{ needs.preprocess-crop-matrix.result }}
           R_WIRE: ${{ needs.wire-browser-url.result }}
           R_WIRE_PREPROCESS: ${{ needs.wire-preprocess-url.result }}
+          R_WIRE_CAPACITY: ${{ needs.wire-preprocess-capacity.result }}
           R_WEB_PREVIEW: ${{ needs.web-preview.result }}
           R_E2E: ${{ needs.e2e.result }}
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
@@ -1212,7 +1341,7 @@ jobs:
           R_CAPACITY_PARITY: ${{ needs.capacity-parity.result }}
         run: |
           set -euo pipefail
-          echo "hygiene=$R_HYGIENE capacity-parity=$R_CAPACITY_PARITY changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS e2e=$R_E2E deps_only=$R_DEPS_ONLY"
+          echo "hygiene=$R_HYGIENE capacity-parity=$R_CAPACITY_PARITY changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS wire-preprocess-capacity=$R_WIRE_CAPACITY e2e=$R_E2E deps_only=$R_DEPS_ONLY"
           fail=0
           # changes must SUCCEED (skipped => gate unreliable)
           [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
@@ -1235,7 +1364,7 @@ jobs:
           # (NEO-162): it is `skipped` exactly when deps_only skips E2E, and any
           # OTHER reason it fails to succeed already reds the gate through the
           # e2e rule above, since e2e `needs:` it.
-          for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-typecheck=$R_WEB_TYPECHECK" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "preprocess-crop-matrix=$R_CROP_MATRIX" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS"; do
+          for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-typecheck=$R_WEB_TYPECHECK" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "preprocess-crop-matrix=$R_CROP_MATRIX" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS" "wire-preprocess-capacity=$R_WIRE_CAPACITY"; do
             r="${kv#*=}"
             case "$r" in
               success|skipped) ;;
