@@ -57,3 +57,4 @@
 - [Vi mock a constant needs a getter](reference_vi_mock_a_constant_needs_a_getter.md) — lowering a MAX_* cap for a convex-test run: spread the original and expose it as a getter, or it freezes at import
 - [Entity review batch is a grouping not a table](reference_entity_review_batch_is_a_grouping_not_a_table.md) — no "batches" table; the queue's reaper waits 24h but the candidates' waits 1h, and one holdings number covers both
 - [Reset loop has a fifth consumer](reference_reset_loop_has_a_fifth_consumer.md) — publicFunctionAuth.test.ts pins each reset*Batch as internalMutation; the seeded toEqual block lives at two indent levels
+- [dnd-kit row control is a handle sibling](reference_dndkit_row_control_is_a_handle_sibling.md) — button in a draggable row: setNodeRef on row, activator+listeners on a handle div, button beside it

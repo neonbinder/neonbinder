@@ -250,3 +250,231 @@ describe("ParallelGroupingModal — a refused save", () => {
     expect(save.getAttribute("aria-disabled")).toBeNull();
   });
 });
+
+/**
+ * NEO-300 — the dialog never scrolls itself.
+ *
+ * An effect used to `scrollIntoView` the LAST ✕ in the list on open and on
+ * every placement change, so on a real variant type the dialog opened at the
+ * bottom and jumped back there on every drag, ✕ and "Accept all". happy-dom
+ * does no layout, so this pins the two things that can be observed: nothing
+ * calls `scrollIntoView`, and the body's `scrollTop` is where it was left.
+ */
+describe("ParallelGroupingModal — the body is never scrolled for the operator", () => {
+  /** Two groups, both with ✕ buttons, plus a suggestion — every trigger. */
+  function busyTree() {
+    return [
+      {
+        insert: { _id: "i1", value: "Chrome" },
+        parallels: [
+          { _id: "p1", value: "Chrome Gold" },
+          { _id: "p2", value: "Chrome Red" },
+        ],
+      },
+      {
+        insert: { _id: "i2", value: "Stars" },
+        parallels: [{ _id: "p3", value: "Stars Blue" }],
+      },
+      { insert: { _id: "i3", value: "Anime" }, parallels: [] },
+      // Prefix-matches "Anime": opens as a suggestion, so Accept all shows.
+      { insert: { _id: "i4", value: "Anime Kanji" }, parallels: [] },
+    ];
+  }
+
+  const body = () =>
+    document.querySelector("[data-grouping-body]") as HTMLElement;
+
+  /** Let any requestAnimationFrame callback an effect queued run. */
+  async function flushFrames() {
+    await act(async () => {
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    });
+  }
+
+  let scrollSpy: ReturnType<typeof vi.fn<(arg?: unknown) => void>>;
+  let restoreScroll: () => void;
+  beforeEach(() => {
+    tree = busyTree();
+    const proto = Element.prototype as unknown as {
+      scrollIntoView?: (arg?: unknown) => void;
+    };
+    const original = proto.scrollIntoView;
+    scrollSpy = vi.fn<(arg?: unknown) => void>();
+    proto.scrollIntoView = scrollSpy;
+    restoreScroll = () => {
+      proto.scrollIntoView = original;
+    };
+  });
+
+  test("opens scrolled to the top", async () => {
+    renderModal();
+    await flushFrames();
+    try {
+      expect(body().scrollTop).toBe(0);
+      expect(scrollSpy).not.toHaveBeenCalled();
+    } finally {
+      restoreScroll();
+    }
+  });
+
+  test("a ✕, an Accept all and a move leave the scroll position alone", async () => {
+    renderModal();
+    await flushFrames();
+    try {
+      // Where the operator had scrolled to.
+      body().scrollTop = 137;
+      expect(body().scrollTop).toBe(137);
+
+      fireEvent.click(screen.getByLabelText("Remove Chrome Red from parallels"));
+      await flushFrames();
+      expect(body().scrollTop).toBe(137);
+
+      fireEvent.click(screen.getByText(/Accept all suggestions/));
+      await flushFrames();
+      expect(body().scrollTop).toBe(137);
+
+      // Click-to-place (the keyboard path of a drag): Chrome Red under Stars.
+      fireEvent.click(screen.getByText("Chrome Red"));
+      fireEvent.click(screen.getByText('Parallels of "Stars"'));
+      await flushFrames();
+      expect(screen.getByText("Save 2 changes")).toBeTruthy();
+      expect(body().scrollTop).toBe(137);
+
+      expect(scrollSpy).not.toHaveBeenCalled();
+    } finally {
+      restoreScroll();
+    }
+  });
+});
+
+/**
+ * NEO-300 — a row the operator ✕'s out of a group can take parallels at once.
+ *
+ * Jason's case: "Bowman Sterling Autos" sat under "Bowman Sterling"; he ✕'d it
+ * and then needed to drag "Bowman Sterling Autographs Gold Refractors" under
+ * it. Only rows that were inserts at open used to get a "Parallels of …" box,
+ * so a demoted saved parallel had nowhere to receive anything.
+ *
+ * Moves are made with click-to-place, which dispatches the same PLACE a drop
+ * does; dnd-kit's pointer sensor needs real layout that happy-dom lacks.
+ */
+describe("ParallelGroupingModal — a demoted row is a drop target at once", () => {
+  const BS = "Bowman Sterling";
+  const AUTOS = "Bowman Sterling Autos";
+  const GOLD = "Bowman Sterling Autographs Gold Refractors";
+
+  const boxTitle = (name: string) => `Parallels of "${name}"`;
+  const zoneOf = (name: string) =>
+    screen.getByText(boxTitle(name)).parentElement!.parentElement as HTMLElement;
+
+  async function save() {
+    await act(async () => {
+      fireEvent.click(screen.getByText(/^Save \d+ changes?$/));
+    });
+    expect(mockApply).toHaveBeenCalledTimes(1);
+    return mockApply.mock.calls[0][0];
+  }
+
+  test("a SAVED parallel, once ✕'d, gets its own empty box and takes a row", async () => {
+    tree = [
+      {
+        insert: { _id: "bs", value: BS },
+        parallels: [{ _id: "autos", value: AUTOS }],
+      },
+      // An insert today; opens suggested under "Bowman Sterling".
+      { insert: { _id: "gold", value: GOLD }, parallels: [] },
+    ];
+    renderModal();
+    expect(screen.queryByText(boxTitle(AUTOS))).toBeNull();
+
+    fireEvent.click(screen.getByLabelText(`Remove ${AUTOS} from parallels`));
+
+    // Straight away, with no parallels in it yet.
+    const zone = zoneOf(AUTOS);
+    expect(within(zone).getByText("0 parallels")).toBeTruthy();
+
+    fireEvent.click(screen.getByText(GOLD));
+    fireEvent.click(screen.getByText(boxTitle(AUTOS)));
+    expect(within(zoneOf(AUTOS)).getByText(GOLD)).toBeTruthy();
+    expect(within(zoneOf(AUTOS)).getByText("1 parallel")).toBeTruthy();
+
+    // One Save carries both halves: the demotion AND the move under it.
+    // (The server must accept a target it is demoting in the same plan.)
+    expect(await save()).toEqual({
+      variantTypeId: VARIANT_TYPE_ID,
+      promotions: [{ insertId: "gold", targetInsertId: "autos" }],
+      demotions: [{ parallelId: "autos" }],
+      reparentings: [],
+    });
+  });
+
+  test("a saved parallel can be re-parented under a demoted one in the same save", async () => {
+    tree = [
+      {
+        insert: { _id: "bs", value: BS },
+        parallels: [
+          { _id: "autos", value: AUTOS },
+          { _id: "gold", value: GOLD },
+        ],
+      },
+    ];
+    renderModal();
+
+    fireEvent.click(screen.getByLabelText(`Remove ${AUTOS} from parallels`));
+    fireEvent.click(screen.getByText(GOLD));
+    fireEvent.click(screen.getByText(boxTitle(AUTOS)));
+
+    expect(await save()).toEqual({
+      variantTypeId: VARIANT_TYPE_ID,
+      promotions: [],
+      demotions: [{ parallelId: "autos" }],
+      reparentings: [{ parallelId: "gold", newInsertId: "autos" }],
+    });
+  });
+
+  test("an undone SUGGESTION takes a row too, with no demotion in the plan", async () => {
+    // All three are inserts; both longer names open suggested under the short.
+    tree = [
+      { insert: { _id: "bs", value: BS }, parallels: [] },
+      { insert: { _id: "autos", value: AUTOS }, parallels: [] },
+      { insert: { _id: "gold", value: GOLD }, parallels: [] },
+    ];
+    renderModal();
+
+    fireEvent.click(screen.getByLabelText(`Remove ${AUTOS} from parallels`));
+    expect(within(zoneOf(AUTOS)).getByText("0 parallels")).toBeTruthy();
+    fireEvent.click(screen.getByText(GOLD));
+    fireEvent.click(screen.getByText(boxTitle(AUTOS)));
+
+    expect(await save()).toEqual({
+      variantTypeId: VARIANT_TYPE_ID,
+      promotions: [{ insertId: "gold", targetInsertId: "autos" }],
+      demotions: [],
+      reparentings: [],
+    });
+  });
+
+  test("a row holding parallels cannot itself be moved under another (no chains)", () => {
+    tree = [
+      {
+        insert: { _id: "bs", value: BS },
+        parallels: [{ _id: "autos", value: AUTOS }],
+      },
+      { insert: { _id: "gold", value: GOLD }, parallels: [] },
+    ];
+    renderModal();
+    fireEvent.click(screen.getByLabelText(`Remove ${AUTOS} from parallels`));
+    fireEvent.click(screen.getByText(GOLD));
+    fireEvent.click(screen.getByText(boxTitle(AUTOS)));
+
+    // "Bowman Sterling Autos" now holds a parallel: its row cannot be picked
+    // up, so it cannot land under "Bowman Sterling" with Gold beneath it.
+    const autosRow = within(
+      screen.getByText("Top-level inserts").parentElement!.parentElement as HTMLElement,
+    )
+      .getByText(AUTOS)
+      .closest("button") as HTMLButtonElement;
+    expect(autosRow.disabled).toBe(true);
+  });
+});

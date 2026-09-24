@@ -97,6 +97,21 @@ function reducer(state: State, action: Action): State {
     case "RESET":
       return emptyState;
     case "PLACE": {
+      // NEO-300 — the tree stays one level deep here, not only on the server.
+      // Now that a demoted row gets a drop box, "✕ A, drag B under A, drag A
+      // under C" is three ordinary gestures, and it would put B under a
+      // parallel. The server's own guard reads the rows as they are BEFORE
+      // the plan, so it cannot see a chain built entirely inside one plan.
+      if (action.placement.kind === "child") {
+        const parentId = action.placement.parentId;
+        if (parentId === action.rowId) return state;
+        // The target must be a top-level row...
+        if (state.placement.get(parentId)?.kind !== "ungrouped") return state;
+        // ...and the moved row must not be holding parallels of its own.
+        for (const p of state.placement.values()) {
+          if (p.kind === "child" && p.parentId === action.rowId) return state;
+        }
+      }
       const next = new Map(state.placement);
       next.set(action.rowId, action.placement);
       const suggested = new Set(state.suggested);
@@ -423,34 +438,17 @@ export default function ParallelGroupingModal({
     }
   }, [isOpen, state.hasInitialized]);
 
-  // Scroll the body so the last parallel row (where the ✕ reject button lives)
-  // is fully inside the visible scroll viewport, not in the overflow region
-  // behind the footer. On a 1024×629 headless viewport the modal's body has
-  // ~50–80px of overflow with realistic content, and the ✕ button's natural
-  // y position falls under the footer's Save button — a CDP-driven tap at
-  // the ✕'s reported bounds-center would then hit Save instead. Scrolling
-  // the last reject row into view guarantees the ✕'s click target is the
-  // topmost element at that point, in any viewport size.
-  const bodyRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!isOpen || !state.hasInitialized) return;
-    // Wait one frame for the body to render its current row list before
-    // measuring offsets.
-    const id = window.requestAnimationFrame(() => {
-      const body = bodyRef.current;
-      if (!body) return;
-      const rejects = body.querySelectorAll<HTMLElement>(
-        'button[aria-label^="Remove "]',
-      );
-      if (rejects.length === 0) return;
-      rejects[rejects.length - 1].scrollIntoView({ block: "nearest" });
-    });
-    return () => window.cancelAnimationFrame(id);
-  }, [isOpen, state.hasInitialized, state.placement]);
+  // NEO-300 — the body is NEVER scrolled by this component. An effect here
+  // used to `scrollIntoView` the LAST ✕ in the list on open and on every
+  // placement change (it was added so a Maestro tap on a ✕ would not land on
+  // the footer). On a real variant type the last ✕ is at the bottom of a long
+  // list, so the dialog opened scrolled to the bottom and jumped there again
+  // on every drag, ✕ and "Accept all" — the operator lost their place on
+  // every move. A flow that needs a row inside the body's viewport scrolls
+  // the body itself. Pinned by ParallelGroupingModal.test.tsx.
 
-  // Top-level inserts: rows whose current placement is "ungrouped" AND original kind was insert.
-  // Demoted parallels show up here too (originalKind=parallel, currently ungrouped) — they'll
-  // become inserts on Confirm.
+  // Top-level rows: current placement "ungrouped". Demoted parallels show up
+  // here too (originalKind=parallel) — they become inserts on Save.
   const ungroupedRows = useMemo(() => {
     const out: RowInfo[] = [];
     for (const info of state.rows.values()) {
@@ -479,12 +477,25 @@ export default function ParallelGroupingModal({
     return map;
   }, [state]);
 
-  // The set of inserts that should render as parent cards: rows whose
-  // current placement is ungrouped AND originalKind was "insert" (not a
-  // demoted parallel waiting to become an insert on confirm).
-  const parentInserts = useMemo(
-    () => ungroupedRows.filter((r) => r.originalKind === "insert"),
-    [ungroupedRows],
+  /**
+   * NEO-300 — every top-level row gets a "Parallels of …" box, including a
+   * parallel demoted in this session.
+   *
+   * It used to be only rows that were inserts at open, so ✕-ing a saved
+   * parallel left it with nowhere to receive parallels until a Save and a
+   * re-open. The box list is not widened by this beyond what the operator
+   * does: every original top-level insert already had one, and the extra
+   * boxes are exactly the rows they demoted, one per ✕ or drag-out. Showing
+   * boxes only for rows with children would have been the only way to
+   * SHRINK the list, and it would take away the one way to start a group
+   * under an insert that has no parallels yet.
+   */
+  const parentRows = ungroupedRows;
+
+  /** Rows that currently have at least one row placed under them. */
+  const parentsWithChildren = useMemo(
+    () => new Set(childrenByParent.keys()),
+    [childrenByParent],
   );
 
   const sensors = useSensors(
@@ -734,7 +745,10 @@ export default function ParallelGroupingModal({
         </div>
 
         {/* Body */}
-        <div ref={bodyRef} className="flex-1 overflow-y-auto px-6 py-4">
+        <div
+          className="flex-1 overflow-y-auto px-6 py-4"
+          data-grouping-body
+        >
           {isLoading ? (
             <ModalSkeleton />
           ) : (
@@ -762,13 +776,16 @@ export default function ParallelGroupingModal({
                     const isFixedParent =
                       info.originalKind === "insert" &&
                       info.originalHadParallels;
+                    // NEO-300: a row holding parallels in this session is a
+                    // parent too, for as long as it holds them — see PLACE.
+                    const isParentNow = parentsWithChildren.has(info._id);
                     return (
                       <DraggableRow
                         key={info._id}
                         info={info}
                         isSuggested={state.suggested.has(info._id)}
                         isSelected={state.selectedRowId === info._id}
-                        isMovable={!isFixedParent}
+                        isMovable={!isFixedParent && !isParentNow}
                         onSelect={() => handleSelect(info._id)}
                       />
                     );
@@ -776,7 +793,7 @@ export default function ParallelGroupingModal({
                 </DropZone>
 
                 {/* Per-insert "Parallels of X" cards */}
-                {parentInserts.map((parent) => {
+                {parentRows.map((parent) => {
                   const children = childrenByParent.get(parent._id) ?? [];
                   const hasYellow = children.some((c) =>
                     state.suggested.has(c._id),

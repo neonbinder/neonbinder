@@ -118,6 +118,11 @@ type ReconciliationAction =
   // One item becomes a set on its own. Replaces "keep as platform-only":
   // a set with ids on one side only is ordinary, not special.
   | { type: "PROMOTE_SOLO"; side: Side; item: PlatformItem }
+  // NEO-300 — "Keep all": every item a column is SHOWING becomes its own set,
+  // in ONE action. A column can list 141 BSC sets; N PROMOTE_SOLOs would be N
+  // reducer passes each copying the Ready and Pending arrays (quadratic), and
+  // one action is also one undo-able step in the operator's head.
+  | { type: "PROMOTE_SOLO_MANY"; side: Side; items: PlatformItem[] }
   // An item joins an existing set. This is what makes 0-N per side reachable,
   // in both directions.
   | { type: "ATTACH"; key: string; side: Side; item: PlatformItem }
@@ -169,7 +174,8 @@ function withoutPending(
     : list;
 }
 
-function reconciliationReducer(
+/** Exported for its unit test; the component is the only production caller. */
+export function reconciliationReducer(
   state: ReconciliationState,
   action: ReconciliationAction,
 ): ReconciliationState {
@@ -216,6 +222,34 @@ function reconciliationReducer(
           action.side === "sl"
             ? withoutPending(state.pendingSl, action.item)
             : state.pendingSl,
+      };
+    }
+    case "PROMOTE_SOLO_MANY": {
+      // Exactly PROMOTE_SOLO applied to each item in order — same title, same
+      // one-sided mapping, keys drawn from the same never-rewound `seq` — but
+      // one pass. An item listed twice becomes one set, not two.
+      const seen = new Set<string>();
+      const items = action.items.filter((i) => {
+        if (seen.has(i.platformValue)) return false;
+        seen.add(i.platformValue);
+        return true;
+      });
+      if (items.length === 0) return state;
+      const created: ReadySet[] = items.map((item, n) => ({
+        key: `set-${state.seq + n}`,
+        title: item.value,
+        bsc: action.side === "bsc" ? [item] : [],
+        sl: action.side === "sl" ? [item] : [],
+        confidence: 0,
+      }));
+      const drop = (list: PlatformItem[]) =>
+        list.filter((i) => !seen.has(i.platformValue));
+      return {
+        ...state,
+        seq: state.seq + items.length,
+        ready: [...state.ready, ...created],
+        pendingBsc: action.side === "bsc" ? drop(state.pendingBsc) : state.pendingBsc,
+        pendingSl: action.side === "sl" ? drop(state.pendingSl) : state.pendingSl,
       };
     }
     case "ATTACH": {
@@ -397,13 +431,18 @@ function FilterInput({
   onChange,
   placeholder,
   ariaLabel,
+  inputRef: externalRef,
 }: {
   value: string;
   onChange: (next: string) => void;
   placeholder: string;
   ariaLabel: string;
+  /** NEO-300: lets the column's "Keep all" put focus back here once the list
+   *  it emptied (and the button with it) is gone. */
+  inputRef?: React.RefObject<HTMLInputElement | null>;
 }) {
-  const inputRef = React.useRef<HTMLInputElement | null>(null);
+  const ownRef = React.useRef<HTMLInputElement | null>(null);
+  const inputRef = externalRef ?? ownRef;
   // Unique per-instance class so Maestro inputText targets THIS filter rather
   // than the first filter input on screen (multiple FilterInputs share a
   // className; see useFieldTestClass).
@@ -454,15 +493,30 @@ function DraggableItem({
   platform,
   isSelected,
   onClick,
+  action,
 }: {
   id: string;
   value: string;
   platform: "bsc" | "sl";
   isSelected?: boolean;
   onClick?: () => void;
+  /**
+   * NEO-300 — a control that lives INSIDE the row, on its right edge (today:
+   * "Make its own set"). It is a SIBLING of the drag handle, never a child:
+   * dnd-kit gives the handle role="button", and a button nested in a button
+   * vanishes from the accessibility tree and would start a drag on press.
+   */
+  action?: React.ReactNode;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id });
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -476,33 +530,55 @@ function DraggableItem({
       ? "bg-blue-900/40 text-blue-300 border-blue-700"
       : "bg-purple-900/40 text-purple-300 border-purple-700";
 
+  // The row's whole box is the sortable node — so it is still the drop target
+  // a pairing drag lands on, button area included — while only the handle
+  // (badge + name) carries the drag listeners and the click-to-select.
   return (
     <div
       ref={setNodeRef}
       style={style}
-      {...attributes}
-      {...listeners}
-      onClick={onClick}
       className={`
-        px-3 py-2 rounded-lg border cursor-grab active:cursor-grabbing
-        text-sm font-medium transition-all select-none
+        group flex items-center rounded-lg border
+        text-sm font-medium transition-colors select-none
         ${isSelected
           ? "ring-2 ring-[#00B7FF] bg-[#00B7FF]/10 border-[#00B7FF]"
           : "bg-gray-800 border-gray-600 hover:border-gray-400"
         }
       `}
     >
-      <div className="flex items-start gap-2">
+      <div
+        ref={setActivatorNodeRef}
+        {...attributes}
+        {...listeners}
+        onClick={onClick}
+        className="flex-1 min-w-0 self-stretch flex items-start gap-2 px-3 py-2 rounded-lg cursor-grab active:cursor-grabbing focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#00B7FF]"
+      >
         <span
           className={`text-[10px] px-1.5 py-0.5 rounded border ${platformColor} shrink-0 mt-0.5`}
         >
           {platformLabel}
         </span>
-        <span className="text-gray-200 break-words">{value}</span>
+        <span className="text-gray-200 break-words min-w-0">{value}</span>
       </div>
+      {action && <div className="shrink-0 py-1.5 pr-1.5">{action}</div>}
     </div>
   );
 }
+
+/**
+ * NEO-300 — the per-row "Make its own set" button, and the column's
+ * "Keep all". Same shape, two weights: Keep all is the batch action, so it
+ * wears the Ready rail's green at rest; a row's button stays neutral until
+ * hovered or focused, so a column of 141 rows is not 141 green blobs. Green,
+ * either way, because pressing it sends the item up to Ready — whose rows
+ * carry that same green rail.
+ *
+ * `min-h-[28px]`: WCAG 2.5.8 wants 24px; 28 keeps the row a single line.
+ */
+const OWN_SET_BUTTON =
+  "inline-flex items-center min-h-[28px] px-2.5 rounded-md border text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF]";
+const OWN_SET_ROW_BUTTON = `${OWN_SET_BUTTON} border-gray-500 text-gray-300 hover:border-[#00D558] hover:text-[#00D558] hover:bg-[#00D558]/10 focus-visible:text-[#00D558]`;
+const KEEP_ALL_BUTTON = `${OWN_SET_BUTTON} border-[#00D558]/70 text-[#00D558] hover:bg-[#00D558]/10 hover:border-[#00D558] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent`;
 
 // ===== READY SET ROW =====
 
@@ -1086,13 +1162,38 @@ export default function ReconciliationModal({
     [selected, resolveItem],
   );
 
+  const bscFilterRef = useRef<HTMLInputElement | null>(null);
+  const slFilterRef = useRef<HTMLInputElement | null>(null);
+
+  /**
+   * NEO-300 — keep focus in the column after its row (or all its rows) leave.
+   *
+   * The pressed button unmounts with its row, which drops focus to <body> —
+   * a keyboard operator working down a column would be thrown out of it on
+   * every press. Next row's button (the one that slid into the pressed one's
+   * place), else the last one, else the column's filter.
+   */
+  const refocusColumn = useCallback((side: Side, index: number) => {
+    requestAnimationFrame(() => {
+      const buttons = dialogRef.current?.querySelectorAll<HTMLElement>(
+        `button[data-own-set="${side}"]`,
+      );
+      const next =
+        buttons && buttons.length > 0
+          ? buttons[Math.min(index, buttons.length - 1)]
+          : (side === "bsc" ? bscFilterRef : slFilterRef).current;
+      next?.focus();
+    });
+  }, []);
+
   const handlePromoteSolo = useCallback(
-    (side: Side, value: string) => {
+    (side: Side, value: string, index: number) => {
       const item = resolveItem(side, value);
       if (item) dispatch({ type: "PROMOTE_SOLO", side, item });
       setSelected(null);
+      refocusColumn(side, index);
     },
-    [resolveItem],
+    [resolveItem, refocusColumn],
   );
 
   const handleConfirm = useCallback(async () => {
@@ -1220,6 +1321,30 @@ export default function ReconciliationModal({
     const filtered = isBsc ? filteredPendingBsc : filteredPendingSl;
     const all = isBsc ? state.pendingBsc : state.pendingSl;
     const query = isBsc ? bscQuery : slQuery;
+    const sideName = isBsc ? "BSC" : "SportLots";
+    const narrowed = filtered.length !== all.length;
+    // NEO-300 — Keep all acts on exactly the rows that carry a "Make its own
+    // set" button: `filtered`, i.e. after the search box, the SportLots
+    // prefix filter ("Show all" off) and the other-level exclusion. The
+    // "already mapped" reveal is not included — those already back a set,
+    // and none of them offers "Make its own set" either.
+    //
+    // Labels: the visible words lead the accessible name (WCAG 2.5.3), and
+    // the two columns' names share no substring either way — Maestro's id
+    // matcher is a regex find (CardPairingModal's "Keep all BSC-only cards"
+    // must not match either of these, and does not).
+    const keepAllName = `Keep all ${filtered.length} listed ${sideName} ${
+      filtered.length === 1 ? "set" : "sets"
+    }, each as its own NeonBinder set`;
+    const keepAll = () => {
+      if (filtered.length === 0) return;
+      dispatch({ type: "PROMOTE_SOLO_MANY", side, items: filtered });
+      setSelected(null);
+      // The list this emptied took the focused button with it.
+      requestAnimationFrame(() =>
+        (isBsc ? bscFilterRef : slFilterRef).current?.focus(),
+      );
+    };
     // Already-mapped sets, revealed on request. Mapping never consumed them —
     // this toggle only keeps the default list to what still needs attention.
     const showMapped = isBsc ? showMappedBsc : showMappedSl;
@@ -1232,19 +1357,40 @@ export default function ReconciliationModal({
 
     return (
       <div>
-        <div
-          className={`text-xs font-medium uppercase tracking-wide mb-2 ${
-            isBsc ? "text-blue-400" : "text-purple-400"
-          }`}
-        >
-          {isBsc ? "BSC" : "SportLots"} ({filtered.length}
-          {filtered.length !== all.length ? ` of ${all.length}` : ""})
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div
+            className={`text-xs font-medium uppercase tracking-wide ${
+              isBsc ? "text-blue-400" : "text-purple-400"
+            }`}
+          >
+            {sideName} ({filtered.length}
+            {narrowed ? ` of ${all.length}` : ""})
+          </div>
+          <button
+            type="button"
+            onClick={keepAll}
+            disabled={filtered.length === 0}
+            aria-label={keepAllName}
+            title={
+              narrowed
+                ? `Make each of the ${filtered.length} listed ${sideName} sets its own NeonBinder set`
+                : `Make every pending ${sideName} set its own NeonBinder set`
+            }
+            className={KEEP_ALL_BUTTON}
+          >
+            {/* Filtered, the number says the button reaches only what is
+                listed — never the rows the search is hiding. */}
+            {narrowed && filtered.length > 0
+              ? `Keep all ${filtered.length}`
+              : "Keep all"}
+          </button>
         </div>
         <FilterInput
           value={isBsc ? bscFilter : slFilter}
           onChange={isBsc ? setBscFilter : setSlFilter}
           placeholder={isBsc ? "Filter BSC items..." : "Search SportLots items..."}
           ariaLabel={isBsc ? "Filter BSC items" : "Search SportLots items"}
+          inputRef={isBsc ? bscFilterRef : slFilterRef}
         />
         {isBsc ? (
           // Spacer keeps the two lists' tops aligned; only SL has a prefix
@@ -1279,26 +1425,30 @@ export default function ReconciliationModal({
           Show sets already mapped
         </label>
         <div className="space-y-1.5 min-h-[60px]">
-          {filtered.map((item) => (
-            <div key={`${side}-${item.value}`}>
-              <DraggableItem
-                id={`${side}-${item.value}`}
-                value={item.value}
-                platform={side}
-                isSelected={
-                  selected?.side === side && selected.value === item.value
-                }
-                onClick={() => handlePendingClick(side, item.value)}
-              />
-              <button
-                type="button"
-                onClick={() => handlePromoteSolo(side, item.value)}
-                className="mt-1 text-[11px] text-gray-400 hover:text-[#00B7FF] focus-visible:outline focus-visible:outline-1 focus-visible:outline-[#00B7FF] rounded px-1"
-                aria-label={`Make ${item.value} its own NeonBinder set`}
-              >
-                + Make its own set
-              </button>
-            </div>
+          {filtered.map((item, index) => (
+            <DraggableItem
+              key={`${side}-${item.value}`}
+              id={`${side}-${item.value}`}
+              value={item.value}
+              platform={side}
+              isSelected={
+                selected?.side === side && selected.value === item.value
+              }
+              onClick={() => handlePendingClick(side, item.value)}
+              action={
+                <button
+                  type="button"
+                  data-own-set={side}
+                  onClick={() => handlePromoteSolo(side, item.value, index)}
+                  className={OWN_SET_ROW_BUTTON}
+                  // Byte-stable: parallel-grouping-promoted-insert-fetches-
+                  // from-bsc.yaml taps this by id.
+                  aria-label={`Make ${item.value} its own NeonBinder set`}
+                >
+                  Make its own set
+                </button>
+              }
+            />
           ))}
           {mapped.map(({ item, usedBy }) => (
             <div key={`mapped-${side}-${item.value}`}>
