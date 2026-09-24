@@ -46,11 +46,95 @@
 
 import capacity from "./preprocessCapacity.json";
 
-/** The per-environment capacity table, exactly as committed. */
-export const PREPROCESS_CAPACITY: {
-  readonly heavy: { readonly prod: number; readonly dev: number; readonly preview: number };
-  readonly fast: { readonly prod: number; readonly dev: number; readonly preview: number };
-} = capacity;
+/** One pool's per-environment capacity. */
+export type PoolCapacity = {
+  readonly prod: number;
+  readonly dev: number;
+  readonly preview: number;
+};
+
+/** The whole table, as committed in preprocessCapacity.json. */
+export type CapacityTable = {
+  readonly heavy: PoolCapacity;
+  readonly fast: PoolCapacity;
+};
+
+/**
+ * Widest value we will accept from the environment or the committed JSON.
+ *
+ * Not a capacity opinion — a typo guard. Cloud Run could legitimately be
+ * configured past this, and if it ever is, this bound moves in the same change.
+ * What it catches is the shape of mistake that costs real money: a stray digit
+ * turning 20 into 200, pointing 200 concurrent dispatches at a service that can
+ * serve a handful, every surplus one burning a retry ladder.
+ */
+export const MAX_ACCEPTED_PARALLELISM = 50;
+
+const ENVIRONMENTS = ["prod", "dev", "preview"] as const;
+const POOLS = ["heavy", "fast"] as const;
+
+/**
+ * Check the committed capacity table and make it safe to run with.
+ *
+ * Every value must be an integer in [1, MAX_ACCEPTED_PARALLELISM] — the same
+ * bounds the env-var path enforces — and each pool must satisfy
+ * preview <= dev <= prod. A value outside the bounds is CLAMPED into them
+ * (a non-number becomes 1); an ordering violation is reported but left as
+ * written, because there is no correct value to substitute for it.
+ *
+ * Why clamp here when the env path falls back instead. The env path has a
+ * committed value to fall back TO; this table IS the committed value, so there
+ * is nothing behind it. Throwing at module load is not an option either: every
+ * Convex function that imports this module would fail to load, turning a typo
+ * in a capacity number into a full outage. So at runtime the table is clamped
+ * and a warning names every problem, and the unit tests
+ * (preprocessCapacity.test.ts) assert the committed table has NO problems,
+ * which is where a bad edit actually fails.
+ */
+export function validateCapacityTable(raw: CapacityTable): {
+  table: CapacityTable;
+  problems: string[];
+} {
+  const problems: string[] = [];
+  const clampOne = (pool: string, env: string, value: unknown): number => {
+    const n = typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : 1;
+    const clamped = Math.min(MAX_ACCEPTED_PARALLELISM, Math.max(1, n));
+    if (clamped !== value) {
+      problems.push(
+        `${pool}.${env}=${String(value)} is not an integer in 1-${MAX_ACCEPTED_PARALLELISM}; using ${clamped}`,
+      );
+    }
+    return clamped;
+  };
+  const clampPool = (pool: (typeof POOLS)[number]): PoolCapacity => {
+    const src = (raw as Partial<Record<string, Partial<PoolCapacity>>>)[pool] ?? {};
+    const [prod, dev, preview] = ENVIRONMENTS.map((env) => clampOne(pool, env, src[env]));
+    if (!(preview <= dev && dev <= prod)) {
+      problems.push(
+        `${pool} must satisfy preview <= dev <= prod; got preview=${preview} dev=${dev} prod=${prod}`,
+      );
+    }
+    return { prod, dev, preview };
+  };
+  return { table: { heavy: clampPool("heavy"), fast: clampPool("fast") }, problems };
+}
+
+const validated = validateCapacityTable(capacity);
+if (validated.problems.length > 0) {
+  console.warn(
+    JSON.stringify({
+      msg: "preprocess_capacity_json_invalid",
+      problems: validated.problems,
+    }),
+  );
+}
+
+/**
+ * The per-environment capacity table this deployment's code works from: the
+ * committed JSON, clamped into bounds if it ever has to be (see
+ * `validateCapacityTable`).
+ */
+export const PREPROCESS_CAPACITY: CapacityTable = validated.table;
 
 /**
  * What the FAST pool runs with when `PREPROCESS_MAX_PARALLELISM` is unset or
@@ -78,17 +162,6 @@ export const FAST_FALLBACK_MAX_PARALLELISM = PREPROCESS_CAPACITY.fast.prod;
  * different numbers, and a quiet fallback made one of them invisible.
  */
 export const HEAVY_FALLBACK_MAX_PARALLELISM = PREPROCESS_CAPACITY.heavy.prod;
-
-/**
- * Widest value we will accept from the environment.
- *
- * Not a capacity opinion — a typo guard. Cloud Run could legitimately be
- * configured past this, and if it ever is, this bound moves in the same change.
- * What it catches is the shape of mistake that costs real money: a stray digit
- * turning 20 into 200, pointing 200 concurrent dispatches at a service that can
- * serve a handful, every surplus one burning a retry ladder.
- */
-const MAX_ACCEPTED_PARALLELISM = 50;
 
 /**
  * Resolve the configured parallelism, or fall back.

@@ -33,6 +33,7 @@ import { ActionCtx } from "../_generated/server";
 import { NonRetryableError } from "@convex-dev/workpool";
 import { buildAuthHeaders } from "../lib/cloudRunAuth";
 import { preprocessAudienceFor } from "../preprocessAudience";
+import { WARMUP_HEAVY_FETCH_TIMEOUT_MS } from "../lib/preprocessWarmup";
 import {
   classifyAdapterError,
   newRequestId,
@@ -482,24 +483,9 @@ export async function callProcessEntryHeavy(
  */
 const WARMUP_FETCH_TIMEOUT_MS = 60_000;
 
-/**
- * How long a HEAVY warm-up call waits before giving up (NEO-299).
- *
- * Much longer than the fast budget, and it has to be, because heavy warm-ups
- * run THROUGH the heavy workpool: each one holds a pool slot for exactly as
- * long as this fetch is open. The heavy `/warmup` holds its instance for the
- * whole ~180-240s model load, and the service runs `container_concurrency = 1`.
- * If this fetch gave up at 60s, the pool would free the slot and dispatch the
- * next heavy request while the abandoned warm-up still occupied that instance
- * for another two or three minutes — the pool would believe it had a free
- * instance that Cloud Run did not have, and the request it sent would be shed
- * with a 429. The slot must stay held until the instance is actually free.
- *
- * 330s clears the slowest measured cold load (~240s) with margin, and stays
- * under the heavy Cloud Run service's request timeout, so it is Cloud Run that
- * ends a genuinely hung request, not an abort racing it.
- */
-const WARMUP_HEAVY_FETCH_TIMEOUT_MS = 330_000;
+// The HEAVY warm-up budget (330s) is WARMUP_HEAVY_FETCH_TIMEOUT_MS in
+// convex/lib/preprocessWarmup.ts, shared with the heavy pool's dedup window;
+// the reason it is so much longer than the fast budget is written there.
 
 /**
  * Best-effort warm-up of ONE preprocess instance — start it (and, on heavy,

@@ -29,7 +29,11 @@ import { components, internal } from "./_generated/api";
 import type { MutationCtx } from "./_generated/server";
 import { internalMutation } from "./_generated/server";
 import { HEAVY_MAX_PARALLELISM } from "./preprocessCapacity";
+import { HEAVY_WARMUP_WINDOW_MS } from "./lib/preprocessWarmup";
 import { findJob, recordImageOutcomeImpl } from "./placeholderPipeline";
+
+/** The fixed key of the heavy warm-up row in `preprocessWarmupState`. */
+export const HEAVY_WARMUP_STATE_KEY = "heavyWarmup";
 
 /**
  * The queue in front of the HEAVY preprocess Cloud Run service.
@@ -175,11 +179,19 @@ export const enqueueHeavyImage = internalMutation({
  * more heavy requests in flight than there are heavy instances, whichever kind
  * they are, so a warm-up can never be the reason an escalation gets a 429.
  *
- * Why the full width is cheap after the first call. `container_concurrency = 1`
- * means N concurrent warm-ups land on N distinct instances, which is what
- * brings a cold fleet up to its limit. Against a fleet that is already warm, a
- * `/warmup` answers at once, so a second caller's N warm-ups pass through the
- * pool in a few seconds and hold nothing.
+ * Why the full width. `container_concurrency = 1` means N concurrent warm-ups
+ * land on N distinct instances, which is what brings a cold fleet up to its
+ * limit.
+ *
+ * DEDUPED DEPLOYMENT-WIDE (security review, NEO-299). Only the first call in
+ * any HEAVY_WARMUP_WINDOW_MS (330s) window enqueues; later calls return
+ * `{enqueued: 0}` and log `preprocess_heavy_warmup_skipped`. This is the bound
+ * on what the public `warmPreprocess` action can put on the shared heavy pool:
+ * at most one fan-out of HEAVY_MAX_PARALLELISM items per window, however often
+ * and by however many users it is called. It keeps the design intent intact —
+ * the first navigation or script start warms the whole fleet, and a later call
+ * inside the window has nothing to add, because those instances are already
+ * warming or warm. The first-escalation warm-gate goes through the same guard.
  *
  * `retry: false` because a warm-up is best-effort and `callWarmupHeavy` never
  * throws anyway; a retry would only re-send a request whose one useful effect
@@ -192,6 +204,37 @@ export const enqueueHeavyWarmups = internalMutation({
   // Explicit return annotation: the handler references `internal`, whose type
   // includes this function, so leaving it inferred is a circular type.
   handler: async (ctx): Promise<{ enqueued: number }> => {
+    // The deployment-wide window (see the `preprocessWarmupState` table comment
+    // in schema.ts). Read and write of the one row happen in this transaction,
+    // so two concurrent callers cannot both pass it: OCC re-runs the loser,
+    // which then reads the winner's timestamp and skips.
+    const now = Date.now();
+    const state = await ctx.db
+      .query("preprocessWarmupState")
+      .withIndex("by_key", (q) => q.eq("key", HEAVY_WARMUP_STATE_KEY))
+      .unique();
+    if (state && now - state.heavyWarmEnqueuedAt < HEAVY_WARMUP_WINDOW_MS) {
+      console.log(
+        JSON.stringify({
+          msg: "preprocess_heavy_warmup_skipped",
+          reason: "window",
+          lastEnqueuedAt: state.heavyWarmEnqueuedAt,
+          windowMs: HEAVY_WARMUP_WINDOW_MS,
+        }),
+      );
+      return { enqueued: 0 };
+    }
+    if (state) {
+      await ctx.db.patch(state._id, { heavyWarmEnqueuedAt: now });
+    } else {
+      await ctx.db.insert("preprocessWarmupState", {
+        key: HEAVY_WARMUP_STATE_KEY,
+        heavyWarmEnqueuedAt: now,
+      });
+    }
+
+    // If the enqueue below throws, the whole mutation rolls back, including the
+    // timestamp above, so a failed fan-out never holds the window shut.
     const workIds: string[] = await heavyPreprocessPool.enqueueActionBatch(
       ctx,
       internal.placeholderBatch.warmHeavyWorker,

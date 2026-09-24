@@ -22,11 +22,14 @@
  */
 
 import { describe, expect, test, vi } from "vitest";
+import capacityJson from "./preprocessCapacity.json";
 import {
   FAST_FALLBACK_MAX_PARALLELISM,
   HEAVY_FALLBACK_MAX_PARALLELISM,
   HEAVY_MAX_PARALLELISM,
+  MAX_ACCEPTED_PARALLELISM,
   PREPROCESS_CAPACITY,
+  validateCapacityTable,
   PREPROCESS_MAX_PARALLELISM,
   resolveHeavyPreprocessMaxParallelism,
   resolvePreprocessMaxParallelism,
@@ -192,5 +195,100 @@ describe("the resolved deployment values", () => {
     expect(HEAVY_MAX_PARALLELISM).toBe(HEAVY_FALLBACK_MAX_PARALLELISM);
     expect(Number.isInteger(HEAVY_MAX_PARALLELISM)).toBe(true);
     expect(HEAVY_MAX_PARALLELISM).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The committed table itself (security review W1, NEO-299).
+//
+// preprocessCapacity.json is clamped and warned about at runtime rather than
+// thrown on, because a throw at module load would take down every function
+// that imports it. So THIS is where a bad edit to the JSON has to fail.
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-instance memory, in GiB, as sized in the terraform repo (NEO-299
+ * decision): heavy 16, fast 8. The browser service is not in the JSON; its
+ * counts and sizes here are the ones the NEO-299 capacity decision budgeted
+ * with, and must be updated by hand if the browser service is resized.
+ */
+const HEAVY_GIB = 16;
+const FAST_GIB = 8;
+const PROD_BROWSER_GIB = 20 * 2;
+const DEV_BROWSER_GIB = 20 * 4;
+const PREVIEW_BROWSER_GIB = 3 * 2;
+/** The default per-region Cloud Run memory quota, in both projects. */
+const REGION_MEMORY_QUOTA_GIB = 400;
+
+describe("preprocessCapacity.json", () => {
+  const ENVS = ["prod", "dev", "preview"] as const;
+  const POOLS = ["heavy", "fast"] as const;
+
+  test("validates with no problems, so the runtime uses it exactly as committed", () => {
+    const { table, problems } = validateCapacityTable(capacityJson);
+    expect(problems).toEqual([]);
+    expect(table).toEqual(capacityJson);
+    expect(PREPROCESS_CAPACITY).toEqual(capacityJson);
+  });
+
+  test.each(POOLS.flatMap((pool) => ENVS.map((env) => [pool, env] as const)))(
+    "%s.%s is an integer in the same bounds the env var must meet",
+    (pool, env) => {
+      const value = capacityJson[pool][env];
+      expect(Number.isInteger(value)).toBe(true);
+      expect(value).toBeGreaterThanOrEqual(1);
+      expect(value).toBeLessThanOrEqual(MAX_ACCEPTED_PARALLELISM);
+    },
+  );
+
+  test.each(POOLS)("%s is ordered preview <= dev <= prod", (pool) => {
+    const { prod, dev, preview } = capacityJson[pool];
+    expect(preview).toBeLessThanOrEqual(dev);
+    expect(dev).toBeLessThanOrEqual(prod);
+  });
+
+  test("prod fully warm fits the region's memory quota", () => {
+    const prodGib =
+      capacityJson.heavy.prod * HEAVY_GIB + capacityJson.fast.prod * FAST_GIB + PROD_BROWSER_GIB;
+    expect(prodGib).toBeLessThanOrEqual(REGION_MEMORY_QUOTA_GIB);
+  });
+
+  test("dev fully warm plus two PR previews fits the region's memory quota", () => {
+    // The reason dev's heavy value is lower than prod's: previews deploy into
+    // dev's project and share its quota.
+    const devGib =
+      capacityJson.heavy.dev * HEAVY_GIB + capacityJson.fast.dev * FAST_GIB + DEV_BROWSER_GIB;
+    const previewGib =
+      capacityJson.heavy.preview * HEAVY_GIB +
+      capacityJson.fast.preview * FAST_GIB +
+      PREVIEW_BROWSER_GIB;
+    expect(devGib + 2 * previewGib).toBeLessThanOrEqual(REGION_MEMORY_QUOTA_GIB);
+  });
+});
+
+describe("validateCapacityTable", () => {
+  test("clamps out-of-bounds values and names each one", () => {
+    const { table, problems } = validateCapacityTable({
+      heavy: { prod: 999, dev: 0, preview: 2.5 },
+      fast: { prod: 20, dev: 3, preview: Number.NaN },
+    });
+    expect(table).toEqual({
+      heavy: { prod: MAX_ACCEPTED_PARALLELISM, dev: 1, preview: 2 },
+      fast: { prod: 20, dev: 3, preview: 1 },
+    });
+    expect(problems).toHaveLength(5);
+    expect(problems.join("\n")).toMatch(/heavy\.prod=999/);
+    expect(problems.join("\n")).toMatch(/fast\.preview=NaN/);
+  });
+
+  test("reports an ordering violation without rewriting it", () => {
+    const { table, problems } = validateCapacityTable({
+      heavy: { prod: 6, dev: 12, preview: 3 },
+      fast: { prod: 20, dev: 3, preview: 3 },
+    });
+    expect(table.heavy).toEqual({ prod: 6, dev: 12, preview: 3 });
+    expect(problems).toEqual([
+      "heavy must satisfy preview <= dev <= prod; got preview=3 dev=12 prod=6",
+    ]);
   });
 });

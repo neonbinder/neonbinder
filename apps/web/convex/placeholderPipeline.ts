@@ -421,14 +421,18 @@ export async function findJob(
  * business spending our Cloud Run capacity), and `warmupPreprocess` itself
  * swallows every warm-up failure.
  *
- * No dedup. The fan-out warms the fast service directly and the heavy service
- * through the heavy workpool, to each service's instance limit (NEO-299). Heavy
- * warm-ups share the pool's slots with escalations, so however many callers
- * fire this in the same minute, the heavy requests in flight never exceed the
- * heavy instance count — extra callers queue behind the first, and against a
- * fleet that is already warm each of their warm-ups answers at once and frees
- * its slot. The on-start warm-ups stay as a backstop for clients that never
- * call this (a raw API consumer, an older CLI).
+ * The fan-out warms the fast service directly and the heavy service through
+ * the heavy workpool, to each service's instance limit (NEO-299). Heavy
+ * warm-ups share the pool's slots with escalations, so the heavy requests in
+ * flight never exceed the heavy instance count. And because this is callable
+ * by any signed-in user as often as they like, the heavy fan-out is DEDUPED
+ * deployment-wide: `enqueueHeavyWarmups` enqueues at most one round per
+ * HEAVY_WARMUP_WINDOW_MS (330s) and skips the rest, so a caller looping this
+ * cannot grow the shared queue in front of other users' escalations. The fast
+ * warm-ups are not deduped — they are direct fetches that hold no pool slot,
+ * and each returns within the fast budget. The on-start warm-ups stay as a
+ * backstop for clients that never call this (a raw API consumer, an older
+ * CLI).
  *
  * `requireUserId` (any signed-in user), NOT `requireAdmin`: warming is a benign
  * self-serve nicety, and gating it behind admin would defeat the point.

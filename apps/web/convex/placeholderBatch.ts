@@ -281,8 +281,9 @@ export const warmHeavyWorker = internalAction({
  * Put the heavy warm-up fan-out on the heavy pool, swallowing any failure.
  *
  * Both warm-up actions below call this. It returns how many warm-ups were
- * enqueued (HEAVY_MAX_PARALLELISM, or 0 if the enqueue failed) for their log
- * line. A warm-up must never be able to fail a start or a batch, so an enqueue
+ * enqueued for their log line: HEAVY_MAX_PARALLELISM, or 0 when another fan-out
+ * already ran inside the deployment-wide window (`enqueueHeavyWarmups` logs
+ * `preprocess_heavy_warmup_skipped`) or the enqueue failed. A warm-up must never be able to fail a start or a batch, so an enqueue
  * failure is logged and reported as 0 rather than thrown.
  */
 async function enqueueHeavyWarmupsSafely(ctx: ActionCtx): Promise<number> {
@@ -325,8 +326,9 @@ async function enqueueHeavyWarmupsSafely(ctx: ActionCtx): Promise<number> {
  * pool is what makes warming to the limit safe: warm-ups and escalations draw
  * from the same `maxParallelism` slots, so together they never ask for more
  * heavy instances than exist, and a warm-up can never be what sheds an
- * escalation with a 429. On an already-warm fleet each warm-up answers at once
- * and frees its slot within seconds.
+ * escalation with a 429. At most one heavy fan-out is enqueued per 330s window
+ * deployment-wide (`enqueueHeavyWarmups`), so repeated starts and page mounts
+ * cannot pile rounds of warm-ups in front of real escalations.
  *
  * This does NOT suppress the cold-start notice: `heavyWarmStartedAt` is still
  * set on the first escalation (placeholderPipeline.ts), so a batch that
@@ -368,6 +370,9 @@ export const warmupPreprocess = internalAction({
  * `warmPreprocess`. Because the warm-ups share the pool with the escalations,
  * they cannot stampede past the heavy instance ceiling: the pool admits at most
  * `maxParallelism` heavy requests of either kind, and the rest wait their turn.
+ * It passes through the same deployment-wide window as `warmupPreprocess`, so
+ * when a start or a page mount already warmed the fleet inside the window, it
+ * enqueues nothing.
  * The fast path is never gated on this — fast cards stream in regardless.
  *
  * The heavy enqueue is caught, so this action cannot fail.

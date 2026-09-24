@@ -35,10 +35,11 @@ const warmPreprocessRef = makeFunctionReference<
  * Contract:
  *   - **At most once per mount.** A ref latch survives StrictMode's
  *     mount→unmount→mount, so the double-invoke does not double-fire. A stray
- *     extra call is harmless server-side (heavy warm-ups share the heavy pool's
- *     slots, so it only queues another round behind the first) — but this must
- *     never LOOP, which is why the effect has an empty dependency list
- *     and the unstable `useAction` identity is deliberately not a dependency.
+ *     extra call is harmless server-side (the heavy fan-out is deduped
+ *     deployment-wide, so a second call inside the window enqueues nothing) —
+ *     but this must never LOOP, which is why the effect has an empty
+ *     dependency list and the unstable `useAction` identity is deliberately
+ *     not a dependency.
  *   - **Best-effort.** A warm-up that fails, times out, or hits a deployment
  *     that has not shipped `warmPreprocess` yet is swallowed. It can never block
  *     or fault the page; the real images that follow warm the model regardless.

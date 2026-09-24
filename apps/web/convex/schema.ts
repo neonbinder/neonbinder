@@ -2598,11 +2598,11 @@ export default defineSchema({
     // escalates an image, alongside scheduling the heavy warm-up fan-out (which
     // enqueues one warm-up per heavy instance on the heavy workpool, NEO-299).
     // Its ONLY job is to make that fan-out fire exactly once per batch — every
-    // later escalation reads it set and skips it (the warm-ups share the heavy
-    // pool's slots with the escalations, so a repeat could not overshoot the
-    // instance limit, but it would put another round of warm-ups in the queue
-    // ahead of later escalations for nothing). Absent means this batch has never
-    // needed the heavy service. Reset with the other counters on restart.
+    // later escalation reads it set and skips it. (The fan-out is also deduped
+    // deployment-wide — see `preprocessWarmupState` — so even the first
+    // escalation's round is skipped when another batch or a page mount warmed
+    // the fleet inside the window.) Absent means this batch has never needed the
+    // heavy service. Reset with the other counters on restart.
     heavyWarmStartedAt: v.optional(v.number()),
   })
     .index("by_job", ["jobId"])
@@ -2780,4 +2780,27 @@ export default defineSchema({
     // (jobId, frontIndex, backIndex); everything else on it is revisable until
     // the job reaches a terminal status.
   }).index("by_job", ["jobId"]),
+
+  // Deployment-wide preprocess warm-up state (NEO-299). One row per fixed
+  // `key`; today the only key is "heavyWarmup", read and written solely by
+  // `enqueueHeavyWarmups` (convex/placeholderHeavyPool.ts).
+  //
+  // Why it exists: every heavy warm-up fan-out puts HEAVY_MAX_PARALLELISM items
+  // on the SHARED heavy workpool, ahead of every user's escalations, and the
+  // public `warmPreprocess` action can be called by any signed-in user as often
+  // as they like. Without a deployment-wide window a caller looping it would
+  // grow that queue without bound, and queued escalations do not heartbeat, so
+  // the wedged-batch watchdog would eventually fail other users' batches. The
+  // row records when the last fan-out was enqueued; a fan-out inside
+  // HEAVY_WARMUP_WINDOW_MS of it is skipped. Reading and patching the one row
+  // in the same mutation makes the window race-free under Convex's OCC.
+  //
+  // Its own table rather than a field on an existing one: no existing table is
+  // deployment-wide state (every other table is per user, per job or per
+  // taxonomy row), and bolting a singleton onto one would put a row with a
+  // different shape and meaning among its real rows. Holds no user data.
+  preprocessWarmupState: defineTable({
+    key: v.string(),
+    heavyWarmEnqueuedAt: v.number(),
+  }).index("by_key", ["key"]),
 });
