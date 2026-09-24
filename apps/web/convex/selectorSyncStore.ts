@@ -13,8 +13,8 @@
 
 import { v } from "convex/values";
 import type { QueryCtx } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
-import type { PlatformSide } from "./platformSlots";
+import type { Doc, Id } from "./_generated/dataModel";
+import { MAX_SLOT_LABEL_LENGTH, type PlatformSide } from "./platformSlots";
 
 /**
  * Hard ceiling on the ARGUMENT a single sync batch may carry.
@@ -341,4 +341,279 @@ export function unionChildren(
     out.push(id);
   }
   return out;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-300 — rows elsewhere in the same variant type's subtree
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * One row the store left alone because it already lives elsewhere in the
+ * variant type's subtree (see `heldElsewhere` in `planSelectorSync`).
+ *
+ * `value` and `parentValue` are NB's own names — the row's and the row it sits
+ * under now — never the marketplace's label for the incoming item: the notice
+ * reads "Refractor is already under Chrome", about NB's tree.
+ */
+export const heldElsewhereEntryValidator = v.object({
+  id: v.id("selectorOptions"),
+  value: v.string(),
+  level: v.union(v.literal("insert"), v.literal("parallel")),
+  parentId: v.id("selectorOptions"),
+  parentValue: v.string(),
+});
+
+export type HeldElsewhereEntry = {
+  id: Id<"selectorOptions">;
+  value: string;
+  level: "insert" | "parallel";
+  parentId: Id<"selectorOptions">;
+  parentValue: string;
+};
+
+/**
+ * NEO-300 — an item the store WITHHELD because of what it found elsewhere in
+ * the variant type's subtree, reported to the operator rather than only
+ * logged (security audit, NEO-300). Nothing was written for it.
+ *
+ *   reason "heldByMany"   — the item's marketplace ids are held by more than
+ *                           one row elsewhere in the subtree; the store will
+ *                           not pick one.
+ *   reason "idsDisagree"  — the modal said the item IS a row elsewhere in the
+ *                           subtree (`existingId`), but that row does not hold
+ *                           the id the item carries.
+ *
+ * `label` is the item's own `value` as the caller sent it (the line the
+ * operator saw in the modal), trimmed to the selector value limit; `holders`
+ * are the NB rows it points at, named by NB values only.
+ */
+export const withheldElsewhereEntryValidator = v.object({
+  label: v.string(),
+  reason: v.union(v.literal("heldByMany"), v.literal("idsDisagree")),
+  holders: v.array(heldElsewhereEntryValidator),
+});
+
+export type WithheldElsewhereEntry = {
+  label: string;
+  reason: "heldByMany" | "idsDisagree";
+  holders: HeldElsewhereEntry[];
+};
+
+/** At most this many holders are named per withheld entry. */
+export const WITHHELD_HOLDERS_LIMIT = 10;
+
+/**
+ * NEO-300 — the most inserts one variant type may carry for the subtree walk
+ * to run. The walk is one indexed read per insert, and the stores charge those
+ * reads against their 800-write budgets capped at half, so 400 keeps a sync's
+ * whole transaction inside the ~900 operations the house treats as
+ * comfortable. A variant type past it is not a real set (a set's inserts run
+ * to dozens, low hundreds at the extreme).
+ */
+export const MAX_SUBTREE_WALK_INSERTS = 400;
+
+/**
+ * NEO-300 — the most DOCUMENTS the walk may read (the inserts plus every
+ * parallel it collects). Operations and documents are separate Convex budgets:
+ * a `.collect()` of 900 parallels is one operation but 900 documents. Counted
+ * as the walk goes — the cheapest honest measure, since a document's byte size
+ * is not observable without serialising it — and stopped at 4,000, a small
+ * fraction of the per-transaction document-read limit. At the ~1 KB a
+ * selectorOptions row weighs that is a few MB, well inside the data-read limit
+ * too, leaving the rest of the transaction (the sibling collect, the ancestor
+ * walk, the writes) its headroom. 4,000 is ten parallels under each of 400
+ * inserts; a real variant type is a small fraction of that.
+ */
+export const MAX_SUBTREE_WALK_DOCUMENTS = 4000;
+
+export type VariantTypeSubtreeElsewhere = {
+  /** Subtree rows that are not siblings of this sync. Empty when skipped. */
+  rows: Doc<"selectorOptions">[];
+  /** Every row the walk read, by id — to name a held row's parent. */
+  parentsById: Map<string, Doc<"selectorOptions">>;
+  /**
+   * `db.get` + index reads this walk made, for the caller's op budget. Spent
+   * even when the walk is then skipped, so it is charged either way.
+   */
+  reads: number;
+  /**
+   * The walk was needed but a bound (`MAX_SUBTREE_WALK_INSERTS` or
+   * `MAX_SUBTREE_WALK_DOCUMENTS`) stopped it. All-or-nothing: a partial
+   * subtree would make "held elsewhere" depend on which inserts happened to
+   * be read first, so a skipped walk contributes NO rows and the store falls
+   * back to the sibling-only rule. The store reports it
+   * (`subtreeWalkSkipped`), because under that rule a grouped row can be
+   * re-created.
+   */
+  skipped: boolean;
+};
+
+/**
+ * NEO-300 — every row in the sync's variant-type subtree that is NOT one of
+ * its siblings, or `null` when the sync is not inside such a subtree.
+ *
+ * A grouping (`applyParallelGroupings`) moves an insert down to be a parallel
+ * of another insert, or a parallel up to be an insert, keeping its `_id`, its
+ * slots and its cards. Both stores used to see only same-(level, parent)
+ * siblings, so the next Sync Inserts no longer found the promoted row, matched
+ * nothing, and re-created it at its old level. The subtree is what the match
+ * has to see instead.
+ *
+ * ## The rule — "elsewhere" is where a grouping could have moved the row
+ *
+ *   level=insert,   parent = a variantType → siblings are the inserts;
+ *                   elsewhere = every insert's parallels.
+ *   level=parallel, parent = an insert P   → siblings are P's parallels;
+ *                   elsewhere = every OTHER insert under the variant type,
+ *                   and every other insert's parallels.
+ *
+ * **The parent insert P is NOT elsewhere.** A grouping never turns a row into
+ * its own parent: a parallel demoted out of P becomes one of P's SIBLING
+ * inserts (covered), and a parallel reparented away sits under another insert
+ * (covered). P itself holding an id a parallel item carries is not a grouped
+ * row — it is the marketplace saying a sub-variant is the insert's own set —
+ * and today's rule for that stands; the grouping guard is where two
+ * indistinguishable rows are refused.
+ *
+ * Any other level/parent → `null`, today's sibling-only rule.
+ *
+ * Reads, by index only: one `by_level_and_parent` per insert for its parallels
+ * (P's own at `parallel` excluded — those are the siblings), plus at
+ * `parallel` one for the inserts and one `db.get` for the variant type (to
+ * name a demoted row's parent). They are returned as `reads` so the store
+ * charges them against its write budget; see the two call sites. Bounded by
+ * `MAX_SUBTREE_WALK_INSERTS` and `MAX_SUBTREE_WALK_DOCUMENTS`.
+ */
+export async function loadVariantTypeSubtreeElsewhere(
+  ctx: QueryCtx,
+  args: {
+    level: string;
+    parent: Doc<"selectorOptions"> | null;
+    siblings: readonly Doc<"selectorOptions">[];
+  },
+): Promise<VariantTypeSubtreeElsewhere | null> {
+  const { level, parent, siblings } = args;
+  if (!parent) return null;
+
+  let inserts: Doc<"selectorOptions">[];
+  let reads = 0;
+  let documents = 0;
+  const parentsById = new Map<string, Doc<"selectorOptions">>();
+  const rows: Doc<"selectorOptions">[] = [];
+
+  if (level === "insert" && parent.level === "variantType") {
+    inserts = [...siblings];
+    parentsById.set(parent._id, parent);
+  } else if (
+    level === "parallel" &&
+    parent.level === "insert" &&
+    parent.parentId !== undefined
+  ) {
+    const variantTypeId = parent.parentId;
+    const variantType = await ctx.db.get(variantTypeId);
+    reads++;
+    if (!variantType || variantType.level !== "variantType") return null;
+    parentsById.set(variantType._id, variantType);
+    inserts = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "insert").eq("parentId", variantTypeId),
+      )
+      .collect();
+    reads++;
+    documents += inserts.length;
+    // Every insert but the parent is elsewhere — see "The rule" above.
+    rows.push(...inserts.filter((insert) => insert._id !== parent._id));
+  } else {
+    return null;
+  }
+
+  const skip = (bound: "inserts" | "documents"): VariantTypeSubtreeElsewhere => {
+    console.warn(
+      JSON.stringify({
+        msg: "selector_sync_subtree_walk_skipped",
+        level,
+        parentId: parent._id,
+        bound,
+        inserts: inserts.length,
+        documents,
+        limits: {
+          inserts: MAX_SUBTREE_WALK_INSERTS,
+          documents: MAX_SUBTREE_WALK_DOCUMENTS,
+        },
+        effect: "sibling-only matching; a grouped row may be re-created",
+      }),
+    );
+    return { rows: [], parentsById: new Map(), reads, skipped: true };
+  };
+
+  if (inserts.length > MAX_SUBTREE_WALK_INSERTS) return skip("inserts");
+
+  for (const insert of inserts) {
+    parentsById.set(insert._id, insert);
+    // At `parallel`, the parent's own parallels ARE the siblings.
+    if (insert._id === parent._id) continue;
+    const parallels = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "parallel").eq("parentId", insert._id),
+      )
+      .collect();
+    reads++;
+    documents += parallels.length;
+    if (documents > MAX_SUBTREE_WALK_DOCUMENTS) return skip("documents");
+    rows.push(...parallels);
+  }
+
+  const siblingIds = new Set<string>(siblings.map((s) => s._id));
+  return {
+    rows: rows.filter((row) => !siblingIds.has(row._id)),
+    parentsById,
+    reads,
+    skipped: false,
+  };
+}
+
+/**
+ * NEO-300 — the operator-facing entry for a subtree withhold. `label` is the
+ * caller's own item value, trimmed to the selector value limit (it is echoed
+ * back to the client that sent it, never stored); holders are named by NB
+ * values only and capped at `WITHHELD_HOLDERS_LIMIT`.
+ */
+export function withheldElsewhereEntry(
+  label: string,
+  elsewhere: { reason: "heldByMany" | "idsDisagree"; holderIds: readonly string[] },
+  rowsById: ReadonlyMap<string, Doc<"selectorOptions">>,
+  parentsById: ReadonlyMap<string, Doc<"selectorOptions">>,
+): WithheldElsewhereEntry {
+  const holders: HeldElsewhereEntry[] = [];
+  for (const id of elsewhere.holderIds) {
+    if (holders.length >= WITHHELD_HOLDERS_LIMIT) break;
+    const row = rowsById.get(id);
+    const entry = row ? heldElsewhereEntry(row, parentsById) : null;
+    if (entry) holders.push(entry);
+  }
+  return {
+    label: label.trim().slice(0, MAX_SLOT_LABEL_LENGTH),
+    reason: elsewhere.reason,
+    holders,
+  };
+}
+
+/** The notice entry for a held row, named by NB values only. */
+export function heldElsewhereEntry(
+  row: Doc<"selectorOptions">,
+  parentsById: ReadonlyMap<string, Doc<"selectorOptions">>,
+): HeldElsewhereEntry | null {
+  if (row.level !== "insert" && row.level !== "parallel") return null;
+  if (!row.parentId) return null;
+  const parent = parentsById.get(row.parentId);
+  if (!parent) return null;
+  return {
+    id: row._id,
+    value: row.value,
+    level: row.level,
+    parentId: row.parentId,
+    parentValue: parent.value,
+  };
 }

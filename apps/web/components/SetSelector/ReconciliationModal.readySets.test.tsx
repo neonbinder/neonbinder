@@ -20,11 +20,12 @@
  */
 
 import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import ReconciliationModal, {
   type PlatformItem,
 } from "./ReconciliationModal";
 import type { Id } from "../../convex/_generated/dataModel";
+import { keyboardDrag, stubLayout } from "../../lib/testing/keyboard-drag";
 
 const BSC_S1: PlatformItem = {
   value: "Dugout Collection Artist's Proofs Series 1",
@@ -170,7 +171,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
 
     // Series 2 becomes its own set...
     fireEvent.click(
-      screen.getByLabelText(`Make ${BSC_S2.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S2.value}`),
     );
 
     // ...and the SL set, already mapped by set #1, is revealed and mapped again.
@@ -212,7 +213,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     const { onConfirm } = renderModal(allPending());
 
     fireEvent.click(
-      screen.getByLabelText(`Make ${BSC_S2.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S2.value}`),
     );
     fireEvent.click(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
@@ -230,7 +231,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     });
 
     fireEvent.click(
-      screen.getByLabelText(`Make ${BSC_S1.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S1.value}`),
     );
     fireEvent.click(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
@@ -244,7 +245,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     renderModal(allPending());
 
     fireEvent.click(
-      screen.getByLabelText(`Make ${BSC_S1.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S1.value}`),
     );
     expect(screen.getByText(/Save 1 sets/)).toBeTruthy();
 
@@ -255,7 +256,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     // Save is disabled at zero sets, and the item is back in Pending.
     expect(screen.getByText(/Save 0 sets/)).toBeTruthy();
     expect(
-      screen.getByLabelText(`Make ${BSC_S1.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S1.value}`),
     ).toBeTruthy();
   });
 
@@ -344,10 +345,10 @@ describe("ReconciliationModal — restoring saved rows", () => {
     // Both halves are pending again — each offers its solo affordance, which
     // only renders for a Pending item.
     expect(
-      screen.getByLabelText(`Make ${BSC_S1.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S1.value}`),
     ).toBeTruthy();
     expect(
-      screen.getByLabelText(`Make ${SL_COMBINED.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${SL_COMBINED.value}`),
     ).toBeTruthy();
   });
 
@@ -360,7 +361,7 @@ describe("ReconciliationModal — restoring saved rows", () => {
     fireEvent.click(screen.getByText(BSC_S1.value));
     fireEvent.click(screen.getByText(SL_COMBINED.value));
     fireEvent.click(
-      screen.getByLabelText(`Make ${BSC_S2.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S2.value}`),
     );
     expect(screen.getByText(/Ready \(2\)/)).toBeTruthy();
 
@@ -477,5 +478,256 @@ describe("ReconciliationModal — carrying the NB row id (NEO-211)", () => {
     const items = await itemsFromConfirm(onConfirm);
     expect((items[0] as { existingId?: unknown }).existingId).toBeUndefined();
     expect(items[0].platformData.bsc).toEqual(["dcap-series-1"]);
+  });
+});
+
+/**
+ * NEO-300 — ids another NB row already holds (for Sync Inserts: the parallels
+ * Group Parallels moved under an insert). The auto-match seeding used to hand
+ * every one back as a fresh Ready set, which the save then stored as a
+ * duplicate top-level insert.
+ */
+describe("ReconciliationModal — sets held elsewhere (NEO-300)", () => {
+  const KANJI_BSC: PlatformItem = { value: "Anime Kanji", platformValue: "bsc-kanji" };
+  const KANJI_SL: PlatformItem = { value: "Anime Kanji", platformValue: "sl-kanji" };
+  const STARS_BSC: PlatformItem = { value: "Chrome Stars", platformValue: "bsc-stars" };
+  const STARS_SL: PlatformItem = { value: "Chrome Stars", platformValue: "sl-stars" };
+  const LOOSE_BSC: PlatformItem = { value: "Anime Gold", platformValue: "bsc-gold" };
+
+  const heldElsewhere = {
+    rows: [
+      {
+        key: "par-kanji",
+        name: "Anime Kanji",
+        parentName: "Anime",
+        bsc: ["bsc-kanji"],
+        sportlots: ["sl-kanji"],
+      },
+      {
+        key: "par-gold",
+        name: "Anime Gold",
+        parentName: "Anime",
+        bsc: ["bsc-gold"],
+        sportlots: [],
+      },
+    ],
+    summary: "2 already grouped as parallels. Leaving those be.",
+    toggleLabel: "Show grouped",
+  };
+
+  function renderHeld(initialData: InitialData) {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ReconciliationModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        level="insert"
+        initialData={initialData}
+        heldElsewhere={heldElsewhere}
+      />,
+    );
+    return { onConfirm };
+  }
+
+  test("a held pair is NOT seeded Ready, and a held loose item is NOT Pending", async () => {
+    const { onConfirm } = renderHeld({
+      autoMatched: [
+        { displayName: "Anime Kanji", bsc: KANJI_BSC, sl: KANJI_SL, confidence: 0.95 },
+        { displayName: "Chrome Stars", bsc: STARS_BSC, sl: STARS_SL, confidence: 0.95 },
+      ],
+      unmatchedBsc: [LOOSE_BSC],
+      unmatchedSl: [],
+      slCandidates: [],
+    });
+
+    // Header counts: one Ready, nothing Pending.
+    expect(screen.getByText("1 ready")).toBeTruthy();
+    expect(screen.getByText(/Pending \(0\)/)).toBeTruthy();
+    expect(screen.queryByText(LOOSE_BSC.value)).toBeNull();
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items.map((i) => i.value)).toEqual(["Chrome Stars"]);
+  });
+
+  test("the header says how many were left alone, and names them on request", () => {
+    renderHeld({
+      autoMatched: [
+        { displayName: "Anime Kanji", bsc: KANJI_BSC, sl: KANJI_SL, confidence: 0.95 },
+      ],
+      unmatchedBsc: [LOOSE_BSC],
+      unmatchedSl: [],
+      slCandidates: [],
+    });
+
+    expect(
+      screen.getByText("2 already grouped as parallels. Leaving those be."),
+    ).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: "Show grouped" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    // Our names only — the row and the insert it is grouped under.
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Anime Kanji→grouped under Anime",
+      "Anime Gold→grouped under Anime",
+    ]);
+  });
+
+  test("the unheld half of a half-held auto-match lands in Pending, not nowhere", () => {
+    // Gold is held on BSC only. Its SL partner belongs to nobody, so it is an
+    // ordinary unassigned set the operator may still want.
+    const GOLD_SL: PlatformItem = { value: "Anime Gold", platformValue: "sl-gold" };
+    renderHeld({
+      autoMatched: [
+        { displayName: "Anime Gold", bsc: LOOSE_BSC, sl: GOLD_SL, confidence: 0.9 },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+    });
+
+    expect(screen.getByText("0 ready, 1 pending")).toBeTruthy();
+    expect(screen.getByText(/SportLots \(1\)/)).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Make its own set: Anime Gold" }),
+    ).toBeTruthy();
+  });
+
+  test("a restored row keeps an id a parallel also holds — our own rows come first", async () => {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ReconciliationModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        level="insert"
+        initialData={{
+          autoMatched: [],
+          unmatchedBsc: [],
+          unmatchedSl: [],
+          slCandidates: [],
+        }}
+        heldElsewhere={heldElsewhere}
+        existingRows={[
+          { value: "Anime Gold Insert", platformData: { bsc: ["bsc-gold"] } },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items[0].platformData.bsc).toEqual(["bsc-gold"]);
+  });
+
+  test("a long list scrolls inside its own bounded region, not the header", () => {
+    // 2026 Bowman: 140+ grouped rows. The header does not scroll, so an
+    // unbounded list pushed the body and the Save footer out of the panel.
+    const rows = Array.from({ length: 140 }, (_, i) => ({
+      key: `par-${i}`,
+      name: `Parallel ${i}`,
+      parentName: "Chrome",
+      bsc: [`bsc-${i}`],
+      sportlots: [],
+    }));
+    render(
+      <ReconciliationModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={vi.fn()}
+        level="insert"
+        initialData={allPending()}
+        heldElsewhere={{
+          rows,
+          summary: "140 already grouped as parallels. Leaving those be.",
+          toggleLabel: "Show grouped",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show grouped" }));
+    const region = screen.getByRole("group", {
+      name: "140 already grouped as parallels. Leaving those be.",
+    });
+    // Bounded and scrollable, and reachable from the keyboard to scroll it.
+    expect(region.className).toContain("max-h-40");
+    expect(region.className).toContain("overflow-y-auto");
+    expect(region.getAttribute("tabindex")).toBe("0");
+    expect(within(region).getAllByRole("listitem")).toHaveLength(140);
+    // The toggle points at the region it opens (through a wrapper: the
+    // focusable region itself carries no DOM id, which would hide its name
+    // from maestro-web's resource-id — NEO-300).
+    const controls = screen
+      .getByRole("button", { name: "Show grouped" })
+      .getAttribute("aria-controls");
+    expect(document.getElementById(controls!)?.contains(region)).toBe(true);
+    expect(region.getAttribute("id")).toBeNull();
+    // Save is still in the footer, untouched by the list.
+    expect(screen.getByText(/Save 0 sets/)).toBeTruthy();
+  });
+
+  test("the toggle meets the 24px target size and keeps its text (WCAG 2.5.8)", () => {
+    renderHeld({ autoMatched: [], unmatchedBsc: [], unmatchedSl: [], slCandidates: [] });
+    const toggle = screen.getByRole("button", { name: "Show grouped" });
+    expect(toggle.textContent).toBe("Show grouped");
+    // happy-dom has no layout; the classes are the contract.
+    expect(toggle.className).toContain("min-h-6");
+    expect(toggle.className).toContain("inline-block");
+  });
+
+  test("no held rows, no line", () => {
+    render(
+      <ReconciliationModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={vi.fn()}
+        level="insert"
+        initialData={allPending()}
+        heldElsewhere={{ ...heldElsewhere, rows: [] }}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Show grouped" })).toBeNull();
+    expect(screen.queryByText(/already grouped/)).toBeNull();
+  });
+});
+
+/**
+ * NEO-300 — a KEYBOARD drag pairs two sets.
+ *
+ * A real one, through dnd-kit's KeyboardSensor and collision code, on stubbed
+ * rectangles (happy-dom lays nothing out): Space on Series 1's handle, ten
+ * ArrowRights (25px each) carry it across onto the SportLots set, Space
+ * drops. Collision detection used to be bare `pointerWithin`, which finds
+ * nothing without a pointer, so this drop landed nowhere and nothing paired.
+ */
+describe("ReconciliationModal — a keyboard drop lands", () => {
+  test("Space, arrows, Space pairs a BSC set with a SportLots set", async () => {
+    const { onConfirm } = renderModal(allPending());
+    // The handle carries the listeners; the row around it is the sortable
+    // node, which is what dnd-kit measures and what a drop lands on.
+    const handle = screen.getByText(BSC_S1.value).parentElement!;
+    const bscRow = handle.parentElement!;
+    const slRow = screen.getByText(SL_COMBINED.value).parentElement!
+      .parentElement!;
+    const restore = stubLayout(
+      new Map([
+        [bscRow, { top: 100, left: 0, width: 300, height: 36 }],
+        [slRow, { top: 100, left: 400, width: 300, height: 36 }],
+      ]),
+    );
+    try {
+      await keyboardDrag(handle, Array(10).fill("ArrowRight"));
+    } finally {
+      restore();
+    }
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items).toHaveLength(1);
+    expect(items[0].platformData.bsc).toEqual(["dcap-series-1"]);
+    expect(items[0].platformData.sportlots).toEqual(["884412"]);
   });
 });

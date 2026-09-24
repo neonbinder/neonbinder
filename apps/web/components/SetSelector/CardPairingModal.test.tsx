@@ -17,6 +17,7 @@ import {
   within,
 } from "@testing-library/react";
 import CardPairingModal, { type PairingCard } from "./CardPairingModal";
+import { keyboardDrag, stubLayout } from "../../lib/testing/keyboard-drag";
 
 const bscCard = (n: string, name: string): PairingCard => ({
   cardNumber: n,
@@ -2988,6 +2989,71 @@ describe("CardPairingModal — drag-and-drop linking (NEO-189 follow-up)", () =>
    * click. Without it the Maestro flow's `tapOn "Select BSC card …"` stops
    * working the moment the listeners go on.
    */
+  /**
+   * NEO-300 — the row is the drag's ACTIVATOR node. Without one, dnd-kit's
+   * KeyboardSensor took a Space or Enter bubbling up from any child as "lift
+   * this row" and preventDefault'ed it: Select, Link and Keep never fired from
+   * the keyboard, and a drag (a second copy of the label, in the overlay)
+   * started instead.
+   */
+  test("Enter and Space on a row's buttons press the button, not lift the row", () => {
+    renderModal({
+      unmatchedBsc: [bscCard("1", "Griffey")],
+      unmatchedSl: [slCard("A1", "Griffey")],
+    });
+    const buttons = [
+      screen.getByLabelText("Select BSC card #1 Griffey"),
+      screen.getByLabelText("Keep #1 Griffey as BSC-only"),
+      screen.getByLabelText("Link selected BSC card to #A1 Griffey"),
+    ];
+    for (const button of buttons) {
+      // `fireEvent` returns false when a handler called preventDefault.
+      expect(fireEvent.keyDown(button, { key: "Enter", code: "Enter" })).toBe(true);
+      expect(fireEvent.keyDown(button, { key: " ", code: "Space" })).toBe(true);
+    }
+    // No drag began: the overlay would render a second "#1 Griffey".
+    expect(screen.getAllByText("#1 Griffey")).toHaveLength(1);
+  });
+
+  /**
+   * NEO-300 — a keyboard drag lands on the other column's card.
+   *
+   * A real one, through dnd-kit's KeyboardSensor and collision code, on
+   * stubbed rectangles: Space on the BSC row, ten ArrowRights (25px each)
+   * onto the SportLots row, Space. The row itself is not a tab stop (see the
+   * focus-trap test above; keyboard users link with Select + Link), so this
+   * pins the collision the modal shares with the other set-builder dialogs:
+   * bare `pointerWithin` found nothing for a drag with no pointer.
+   */
+  test("a keyboard drop onto the other column links the two cards", async () => {
+    const { onConfirm } = renderModal({
+      unmatchedBsc: [bscCard("1", "Griffey")],
+      unmatchedSl: [slCard("A1", "Griffey")],
+    });
+    const bscRow = rowFor("Select BSC card #1 Griffey");
+    const slRow = rowFor("Link selected BSC card to #A1 Griffey");
+    const restore = stubLayout(
+      new Map([
+        [bscRow, { top: 100, left: 0, width: 300, height: 36 }],
+        [slRow, { top: 100, left: 400, width: 300, height: 36 }],
+      ]),
+    );
+    try {
+      await keyboardDrag(bscRow, Array(10).fill("ArrowRight"));
+    } finally {
+      restore();
+    }
+
+    // Linked: nothing is left to reconcile, and the pair is what saves.
+    expect(screen.queryByText(/Drag a card onto its match/)).toBeNull();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+    await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
+    const [card] = onConfirm.mock.calls[0][0].cards;
+    expect(onConfirm.mock.calls[0][0].cards).toHaveLength(1);
+    expect(card.platformData.bsc?.ref).toBe("bsc-1");
+    expect(card.platformData.sportlots?.ref).toBe("#A1 Griffey");
+  });
+
   test("click-to-select still works with drag listeners attached", () => {
     renderModal({
       unmatchedBsc: [bscCard("1", "Griffey")],

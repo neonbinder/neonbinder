@@ -194,6 +194,37 @@ tags:
             text: ".*BSC \\(1 of [0-9]+\\).*"
           timeout: 15000
 
+      # BRING THE PENDING ROW INSIDE THE DIALOG BODY BEFORE TAPPING IT (R8 case
+      # 2: the body is the only scroller in a `fixed inset-0` dialog, so no
+      # `scrollUntilVisible` can move it — see the README's "Asserting inside a
+      # dialog"). Maestro never sees the body's overflow clip, only the window,
+      # so a row cut off by the body's bottom edge still reads as visible and
+      # the tap lands on whatever is painted there instead.
+      #
+      # MEASURED, CI 36032395476 (the failure) against 36011624154 (green):
+      # with Ready filtered to one row and BSC to "Artist", the body spans
+      # y=117-528 and the footer starts at 528. NEO-300 put "Make its own set"
+      # on the row's right edge and "Keep all" in the column header, so the
+      # name wraps to two lines, [96,509][348,549] (it was one line at
+      # [96,497][383,517]). Its centre, y=529, is one pixel into the footer:
+      # the tap armed nothing and "Add … to …" never rendered.
+      #
+      # One touch swipe UP pins this short body to its end. The body scrolls
+      # 48px at most here (content ends at 560 + 16px padding against a 528
+      # bottom), well under the swipe's ~312px, so the end state is the same
+      # wherever the body started, and it puts the name at ~y=461-501, inside
+      # 117-528. The touch starts at x=3% (~31px), inside the body's own 24px
+      # padding (the columns begin at x=41), so it never starts on a pending
+      # item's dnd-kit handle, where a touch would begin a drag. The Ready row
+      # (y=219-304 unswiped) stays inside the body at ~171-256.
+      #
+      # This swipe cannot be gated: every check passes on a clipped row. The
+      # `scrollUntilVisible` for the Ready row's "Add … to …" button below is
+      # the hard assert that the tap armed the row (R2).
+      - swipe:
+          start: "3%, 75%"
+          end: "3%, 25%"
+
       # Selecting a Pending item arms it; every Ready set then offers to take
       # it. Tapping by aria-label composes BOTH names, so this can only hit the
       # intended set even with a dozen Ready rows on screen.
