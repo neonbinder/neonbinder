@@ -1,0 +1,244 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Group Parallels — two ticked rows move under one insert with a single press and a single Save (NEO-300)"
+tags:
+  - set-selector
+  - parallel-grouping
+---
+# R1 — ONE FEATURE (NEO-300): multi-select in Group Parallels. The operator
+# ticks two rows with their tick boxes, the footer counts them ("2 selected"),
+# one press on another row's "Parallels of …" box moves both rows under it,
+# and one Save writes both moves. The proof is in the columns after the Save:
+# both rows are listed as parallels of the target insert.
+#
+# WHY A SIBLING FLOW. parallel-grouping-demoted-parallel-takes-parallels.yaml
+# proves a different feature (a demoted parallel takes parallels in the same
+# save). Moving several rows at once is a feature of its own, so under R1 it
+# gets its own flow. The fixture shape differs too: that flow needs names
+# that prefix-match (Stars / Stars Gold / Stars Blue) so detection suggests
+# a grouping. This one needs names that do NOT, so the modal opens with
+# nothing pending and every count in the footer comes from the ticks
+# (parallelDetection.ts only suggests B under A when A's name, plus a space,
+# is a prefix of B's).
+#
+# FIXTURE (R7a, SET-REGISTRY.md → `pg-multi-`): E2E Test Sport <worker> →
+# 2026 → Topps → pg-multi-<worker>-<ATTEMPT_ID> › Insert, with no marketplace
+# ids. The drill util creates it through the UI. It is PER ATTEMPT because
+# the in-body geometry below holds only while the set has exactly these
+# three rows. The rows carry the ATTEMPT_ID prefix because EntityColumn's
+# create refuses a value that already exists under another set.
+#
+# TICKING, NOT CMD/SHIFT-CLICK. maestro-web cannot hold a modifier during a
+# tap, and the tick box is the visible way to pick several rows without a
+# modifier. Its only handle is the accessible name `Select <row>`: the box
+# holds an svg and no text.
+#
+# DRAGGING IS NOT HOW IT MOVES. maestro-web cannot drive dnd-kit's drag. A
+# press on a box dispatches the same MOVE a drop of a selected row does, with
+# the whole selection (ParallelGroupingModal.tsx: handleZoneClick /
+# handleDragEnd → rowsCarriedBy).
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+- runFlow:
+    file: util-drill-to-custom-set.yaml
+    env:
+      SET_NAME: "pg-multi-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      VARIANT_TYPE: "Insert"
+
+# ============================================================
+# STEP 1 — THREE INSERTS, NONE A PREFIX OF ANOTHER: <ID> Aces, <ID> Bolt,
+# <ID> Comet. The create steps have the same shape as
+# parallel-grouping-reject-parallel.yaml (the NEO-272 confirm handling is
+# explained there).
+# ============================================================
+
+# No settle wait first (R10). The util's return contract puts "Add custom
+# Inserts" in the viewport, and the centred scroll below polls for it anyway.
+
+# --- <ID> Aces ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Aces"
+- pressKey: Enter
+# CONDITIONAL because the confirm is one of two possible outcomes (a value
+# already in THIS column closes the form with no confirm). The hard gate is
+# that the form is gone either way (R2).
+# parallel-grouping-reject-parallel.yaml has the measurement: the confirm is
+# up in ~0.35s, so a `when:` that finds it costs nothing.
+- runFlow:
+    when:
+      visible:
+        id: "Create insert"
+    commands:
+      - tapOn:
+          id: "Create insert"
+- assertNotVisible: "Add Custom Entry"
+
+# --- <ID> Bolt ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Bolt"
+- pressKey: Enter
+- runFlow:
+    when:
+      visible:
+        id: "Create insert"
+    commands:
+      - tapOn:
+          id: "Create insert"
+- assertNotVisible: "Add Custom Entry"
+
+# --- <ID> Comet ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Comet"
+- pressKey: Enter
+- runFlow:
+    when:
+      visible:
+        id: "Create insert"
+    commands:
+      - tapOn:
+          id: "Create insert"
+- assertNotVisible: "Add Custom Entry"
+# All three rows exist before the modal opens (R2 precondition). A create
+# selects nothing, so the column is still the expanded list.
+- extendedWaitUntil:
+    visible:
+      text: "${ATTEMPT_ID} Comet"
+    timeout: 7000
+
+# ============================================================
+# STEP 2 — OPEN GROUP PARALLELS WITH NOTHING PENDING
+# The action row (Sync / + Custom / Group Parallels) sits below the list that
+# the last create just grew, and below the "+ Custom" button centred above.
+# So the scroll goes DOWN (R5 direction).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Group Parallels"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Group Parallels"
+- extendedWaitUntil:
+    visible: ".*Drag inserts under a parent.*"
+    timeout: 7000
+# PRECONDITION (R2): detection suggested nothing, so any move the footer
+# counts later is one the ticks made.
+- assertVisible: "No changes yet"
+
+# ============================================================
+# STEP 3 — TICK BOLT AND COMET
+#
+# IN-BODY GEOMETRY. The body holds the "Top-level inserts" zone (Aces, Bolt,
+# Comet, sorted by name) and then one empty box per row, in the same order.
+# Everything this step and STEP 4 touch is in the zone and in the FIRST box,
+# at the top of the body. The body opens at scrollTop 0, and NEO-300 removed
+# every programmatic scroll from this modal, so nothing moves it before these
+# taps. No swipe is needed. A swipe could not make this more certain: two
+# DOWN swipes would pin the body to the top it already sits at. The body is a
+# `fixed inset-0` portal's `overflow-y-auto` child. Maestro does not see its
+# clip (R8 case 2), which is why the geometry is stated here and not assumed.
+# The two box titles further down (Bolt's, Comet's) may be clipped, and
+# nothing here taps them.
+# ============================================================
+
+# The tick box is a <button role="checkbox"> whose accessible name is
+# `Select <row>`. `id:` is a FULL match, so the Bolt tick can match no other
+# row's tick. A tick adds a row to the selection without replacing it
+# (TOGGLE). Its click does not reach the box behind it (stopPropagation), so
+# a tick never places anything.
+- tapOn:
+    id: "Select ${ATTEMPT_ID} Bolt"
+- tapOn:
+    id: "Select ${ATTEMPT_ID} Comet"
+# THE NEW BEHAVIOUR, part 1: both ticks count. The footer's status pill is
+# pinned, so it reads the same wherever the body is scrolled. It is a reducer
+# update with no server call, so the 7000 bar applies.
+- extendedWaitUntil:
+    visible: "2 selected"
+    timeout: 7000
+# ... and the one box that will take them says it takes both. Aces' box is
+# the only box whose own row is not selected. Bolt's and Comet's boxes read
+# "This row is selected…" instead. This is also the R2 precondition for the
+# next tap: the box is now a click target.
+- assertVisible: "Click here to make the 2 selected rows parallels"
+
+# ============================================================
+# STEP 4 — ONE PRESS ON ACES' BOX MOVES BOTH
+# The press is on the box's title. The title is inside the box, and the
+# whole box is the click target while rows are selected. It is not Aces' own
+# row: pressing the row would select Aces instead.
+# ============================================================
+
+- tapOn:
+    text: 'Parallels of "${ATTEMPT_ID} Aces"'
+# THE NEW BEHAVIOUR, part 2: two promotions (Bolt and Comet were inserts and
+# are now parallels of Aces) from one press. The footer is pinned.
+- extendedWaitUntil:
+    visible: "2 promotions, 0 demotions"
+    timeout: 7000
+
+# SAVE. The Save button is in the footer, outside the body (R8 case 2), so no
+# scroll is needed. applyParallelGroupings is a Convex mutation and the modal
+# closes when it succeeds, so the 7000 bar applies. A refusal keeps the modal
+# open with the server's message in the footer, so this gate fails on it.
+- tapOn: "Save 2 changes"
+- extendedWaitUntil:
+    notVisible: ".*Drag inserts under a parent.*"
+    timeout: 7000
+
+# ============================================================
+# STEP 5 — ASSERT IT IN THE COLUMNS: BOTH ROWS ARE PARALLELS OF ACES
+# With nothing selected, the Inserts column lists only Aces now. The column
+# sits ABOVE the action row the modal was opened from, so the scroll goes UP
+# (R5 direction). It is centred because a tap follows (R8).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "${ATTEMPT_ID} Aces"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: "${ATTEMPT_ID} Aces"
+# The Parallels column mounts for the selected insert ("Parallels" as a whole
+# text is its title; the "Group Parallels" button does not match) and lists
+# both rows. This is a Convex read, so the 7000 bar applies. It shows the
+# persisted state: the rows were read back from the server after the modal
+# closed.
+- extendedWaitUntil:
+    visible: "Parallels"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "${ATTEMPT_ID} Bolt"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "${ATTEMPT_ID} Comet"
+    timeout: 7000

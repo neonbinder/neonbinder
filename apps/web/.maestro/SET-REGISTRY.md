@@ -1343,6 +1343,7 @@ would put the wrong question on screen.
 | `pg-cancel-` | `parallel-grouping-cancel-discards.yaml` (also `-${ATTEMPT_ID}`) |
 | `pg-demote-` | `parallel-grouping-demoted-parallel-takes-parallels.yaml` (also `-${ATTEMPT_ID}`) — three inserts `<ATTEMPT_ID> Stars` / `Stars Gold` / `Stars Blue`; Gold and Blue are saved as parallels of Stars, then Gold is demoted and Blue re-parented under it in one save (NEO-300). Per-attempt because the flow taps inside the Group Parallels body at positions that hold only for exactly these three rows. |
 | `pg-move-` | `move-parallels-of-inserts-custom.yaml` |
+| `pg-multi-` | `parallel-grouping-multi-select-moves-together.yaml` (also `-${ATTEMPT_ID}`) — three inserts `<ATTEMPT_ID> Aces` / `Bolt` / `Comet`, none a prefix of another so nothing is suggested; Bolt and Comet are ticked together and saved as parallels of Aces in one save (NEO-300). Per-attempt because the flow taps inside the Group Parallels body at positions that hold only for exactly these three rows. |
 | `pg-reject-` | `parallel-grouping-reject-parallel.yaml` (also `-${ATTEMPT_ID}`) |
 | `pp-` | `player-picker-create-custom-card.yaml` |
 | `rnm-` | `rename-selector-option.yaml` (also `-${ATTEMPT_ID}`; renamed in-flow to `rnmx-`) |
