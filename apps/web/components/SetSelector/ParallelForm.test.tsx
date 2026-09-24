@@ -621,4 +621,35 @@ describe("ParallelForm — sets held elsewhere in the variant type (NEO-300)", (
     ]);
     expect(onDone).not.toHaveBeenCalled();
   });
+
+  it("single platform: a withheld item and a skipped check both show, and the panel stays up", async () => {
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 0,
+      hasMore: false,
+      withheldElsewhere: [
+        {
+          label: "Gold",
+          reason: "idsDisagree",
+          holders: [
+            { id: "ins9", value: "Chrome Stars", level: "insert", parentId: "vt1", parentValue: "Insert" },
+          ],
+        },
+      ],
+      withheldElsewhereTotal: 1,
+      subtreeWalkSkipped: true,
+    });
+    const { onDone } = await renderForm();
+
+    expect(
+      await screen.findByText("Hold up: 1 not added. It clashes with rows already in Inserts."),
+    ).toBeTruthy();
+    expect(screen.getByText("Points at a row linked to a different set:")).toBeTruthy();
+    // An insert holder is named on its own.
+    expect(screen.getByText("Chrome Stars", { selector: "li" })).toBeTruthy();
+    expect(screen.getByText(/Inserts is too big to check for grouped parallels/)).toBeTruthy();
+    expect(onDone).not.toHaveBeenCalled();
+  });
 });

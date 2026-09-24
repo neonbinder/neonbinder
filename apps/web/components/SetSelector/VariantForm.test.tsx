@@ -19,7 +19,7 @@
  * function reference, so each query resolves independently.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
@@ -882,6 +882,140 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
       fireEvent.click(await screen.findByText(/Save 1 sets/));
     });
     await waitFor(() => expect(onDone).toHaveBeenCalled());
+  });
+
+  const HOLDER = (id: string, value: string, parentValue: string) => ({
+    id,
+    value,
+    level: "parallel",
+    parentId: `ins-${parentValue}`,
+    parentValue,
+  });
+
+  it("single platform: an item the store WITHHELD is named with its clashing rows, and the panel stays up", async () => {
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 0,
+      hasMore: false,
+      withheldElsewhere: [
+        {
+          label: "Refractor",
+          reason: "heldByMany",
+          holders: [HOLDER("p1", "Refractor", "Chrome"), HOLDER("p2", "Refractor", "Prizm")],
+        },
+        {
+          label: "Anime Kanji",
+          reason: "idsDisagree",
+          holders: [HOLDER("p3", "Anime Kanji", "Anime")],
+        },
+      ],
+      withheldElsewhereTotal: 2,
+      subtreeWalkSkipped: false,
+    });
+    const { onDone } = await renderForm();
+
+    const summary = await screen.findByText(
+      "Hold up: 2 not added. They clash with rows already in Inserts.",
+    );
+    const box = summary.closest('[role="status"]') as HTMLElement;
+    // Actionable: what to do about it, in the operator's words.
+    expect(box.textContent).toContain("Delete or ungroup the extra row, then sync again.");
+    expect(box.textContent).toContain("Already on more than one row:");
+    expect(box.textContent).toContain("Points at a row linked to a different set:");
+    // Scrollable list named by the summary; each holder by NB names.
+    const list = screen.getByRole("group", { name: summary.textContent! });
+    const holders = within(list)
+      .getAllByRole("listitem")
+      .map((li) => li.textContent);
+    expect(holders).toContain("Refractor→grouped under Chrome");
+    expect(holders).toContain("Refractor→grouped under Prizm");
+    expect(holders).toContain("Anime Kanji→grouped under Anime");
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("single platform: a skipped subtree check warns, and the panel stays up", async () => {
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+      withheldElsewhere: [],
+      withheldElsewhereTotal: 0,
+      subtreeWalkSkipped: true,
+    });
+    const { onDone } = await renderForm();
+
+    expect(
+      await screen.findByText(
+        "Heads up: Inserts is too big to check for grouped parallels, so this sync may have re-added some. Look for doubles.",
+      ),
+    ).toBeTruthy();
+    expect(onDone).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+  });
+
+  it("single platform: a clean store result with the new fields still closes", async () => {
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+      heldElsewhere: [],
+      heldElsewhereTotal: 0,
+      withheldElsewhere: [],
+      withheldElsewhereTotal: 0,
+      subtreeWalkSkipped: false,
+    });
+    const { onDone } = await renderForm();
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+    expect(screen.queryByText(/Hold up|Heads up/)).toBeNull();
+  });
+
+  it("modal: a withheld item keeps the panel up after Save", async () => {
+    const BSC = { value: "Refractor", platformValue: "bsc-r" };
+    const SL = { value: "Refractor", platformValue: "sl-r" };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [BSC],
+      slOptions: [SL],
+      autoMatched: [{ displayName: "Refractor", bsc: BSC, sl: SL, confidence: 0.9 }],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 0,
+      hasMore: false,
+      withheldElsewhere: [
+        {
+          label: "Refractor",
+          reason: "heldByMany",
+          holders: [HOLDER("p1", "Refractor", "Chrome"), HOLDER("p2", "Refractor", "Prizm")],
+        },
+      ],
+      withheldElsewhereTotal: 1,
+      subtreeWalkSkipped: false,
+    });
+    const { onDone } = await renderForm();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByText(/Save 1 sets/));
+    });
+
+    expect(
+      await screen.findByText(
+        "Hold up: 1 not added. It clashes with rows already in Inserts.",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("Saved 0 sets.")).toBeTruthy();
+    expect(onDone).not.toHaveBeenCalled();
   });
 
   it("does not sync until the insert tree has loaded", async () => {

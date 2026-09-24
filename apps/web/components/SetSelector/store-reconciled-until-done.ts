@@ -34,7 +34,9 @@
  * getting it backwards puts a wrong number in front of an operator:
  *
  *  - `optionsCount`, `itemsProcessed`, `message`, `returnedIdsTruncatedSides`
- *    and (NEO-300) `heldElsewhere` / `heldElsewhereTotal` are recomputed per
+ *    and (NEO-300) `heldElsewhere` / `heldElsewhereTotal`,
+ *    `withheldElsewhere` / `withheldElsewhereTotal` and `subtreeWalkSkipped`
+ *    are recomputed per
  *    page and the LAST page reached furthest, so the last page's value is the
  *    whole answer. Summing would count the prefix once per page — a row held
  *    elsewhere is re-found by every page that walks past it.
@@ -48,6 +50,7 @@
 import {
   UNLINK_NOTICE_LIMIT,
   type HeldElsewhereEntry,
+  type WithheldElsewhereEntry,
 } from "../../convex/selectorSyncStore";
 import type { SyncSide, UnlinkedEntry } from "./selector-sync-feedback";
 
@@ -97,6 +100,20 @@ export type ReconciledStoreResult = {
    */
   heldElsewhere?: HeldElsewhereEntry[];
   heldElsewhereTotal?: number;
+  /**
+   * NEO-300 — items the store did NOT add: their marketplace id is already on
+   * 2+ rows in the variant type (`heldByMany`), or the row they point at
+   * carries different ids (`idsDisagree`). ≤50 entries, ≤10 holders each;
+   * `withheldElsewhereTotal` is the real count. Last page wins.
+   */
+  withheldElsewhere?: WithheldElsewhereEntry[];
+  withheldElsewhereTotal?: number;
+  /**
+   * NEO-300 — the variant type was too big for the store to look for grouped
+   * rows, so it fell back to siblings only and may have re-added some. Last
+   * page wins.
+   */
+  subtreeWalkSkipped?: boolean;
 };
 
 export type ReconciledStoreDrain = {
@@ -152,7 +169,8 @@ export async function storeReconciledUntilDone<TArgs>(
   return {
     // `hasMore` is left exactly as the last page reported it, so a caller that
     // reads the merged result alone still sees an unfinished store.
-    // `heldElsewhere` / `heldElsewhereTotal` ride in on `...last` on purpose:
+    // The NEO-300 fields (`heldElsewhere*`, `withheldElsewhere*`,
+    // `subtreeWalkSkipped`) ride in on `...last` on purpose:
     // recomputed per page, never summed (see the header).
     stored: {
       ...last,

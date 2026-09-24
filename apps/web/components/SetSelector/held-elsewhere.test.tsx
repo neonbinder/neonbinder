@@ -6,7 +6,13 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { mergeServerHeld, type HeldRow } from "./held-elsewhere";
+import {
+  mergeServerHeld,
+  parallelsInTree,
+  rowsOutsideInsert,
+  storeHoldsOf,
+  type HeldRow,
+} from "./held-elsewhere";
 import { savedSetsMessage } from "./HeldElsewhereNote";
 
 const CLIENT: HeldRow[] = [
@@ -82,5 +88,92 @@ describe("savedSetsMessage", () => {
     expect(savedSetsMessage(1)).toBe("Saved 1 set.");
     expect(savedSetsMessage(0)).toBe("Saved 0 sets.");
     expect(savedSetsMessage(3)).toBe("Saved 3 sets.");
+  });
+});
+
+/**
+ * The client mirror of the store's "elsewhere" rule (convex/selectorSyncStore
+ * `variantTypeSubtreeElsewhere`):
+ *   insert sync   → every insert's parallels;
+ *   parallel sync under P → every OTHER insert and its parallels; P itself and
+ *   P's own parallels (the sync's siblings) are not elsewhere.
+ */
+describe("the elsewhere rule matches the store's", () => {
+  const TREE = [
+    {
+      insert: {
+        _id: "P",
+        value: "Anime",
+        platformData: { bsc: { b0: "bsc-p" } },
+      },
+      parallels: [
+        {
+          _id: "p1",
+          value: "Anime Gold",
+          platformData: { bsc: { b0: "bsc-p1" } },
+        },
+      ],
+    },
+    {
+      insert: {
+        _id: "Q",
+        value: "Chrome",
+        platformData: { bsc: { b0: "bsc-q" } },
+      },
+      parallels: [
+        {
+          _id: "q1",
+          value: "Chrome Kanji",
+          platformData: { bsc: { b0: "bsc-q1" } },
+        },
+      ],
+    },
+  ];
+
+  it("insert sync: every insert's parallels, and no insert", () => {
+    expect(parallelsInTree(TREE).map((r) => [r.key, r.parentName])).toEqual([
+      ["p1", "Anime"],
+      ["q1", "Chrome"],
+    ]);
+  });
+
+  it("parallel sync under P: the other inserts and their parallels; never P or P's own", () => {
+    const rows = rowsOutsideInsert(TREE, "P");
+    expect(rows.map((r) => r.key)).toEqual(["Q", "q1"]);
+    expect(rows.find((r) => r.key === "Q")?.parentName).toBeUndefined();
+    expect(rows.find((r) => r.key === "q1")?.parentName).toBe("Chrome");
+  });
+});
+
+describe("storeHoldsOf", () => {
+  it("is null when the store withheld nothing and walked the subtree", () => {
+    expect(storeHoldsOf({})).toBeNull();
+    expect(storeHoldsOf(undefined)).toBeNull();
+    expect(
+      storeHoldsOf({
+        withheldElsewhere: [],
+        withheldElsewhereTotal: 0,
+        subtreeWalkSkipped: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("carries a skipped walk on its own", () => {
+    expect(storeHoldsOf({ subtreeWalkSkipped: true })).toEqual({
+      withheld: [],
+      withheldTotal: 0,
+      subtreeWalkSkipped: true,
+    });
+  });
+
+  it("counts past the capped withheld list", () => {
+    const out = storeHoldsOf({
+      withheldElsewhere: [
+        { label: "Refractor", reason: "heldByMany", holders: [] },
+      ],
+      withheldElsewhereTotal: 70,
+    });
+    expect(out?.withheld).toHaveLength(1);
+    expect(out?.withheldTotal).toBe(70);
   });
 });

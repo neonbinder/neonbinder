@@ -1,5 +1,8 @@
 import { slotIds, type SlotBearingRow } from "../../convex/platformSlots";
-import type { HeldElsewhereEntry } from "../../convex/selectorSyncStore";
+import type {
+  HeldElsewhereEntry,
+  WithheldElsewhereEntry,
+} from "../../convex/selectorSyncStore";
 
 /**
  * NEO-300 — marketplace ids a sync must leave alone because another NB row in
@@ -180,4 +183,43 @@ export function mergeServerHeld(
   }
   const extra = serverTotal - overlap;
   return { rows, total: clientRows.length + extra, extra };
+}
+
+/**
+ * NEO-300 — what the store WITHHELD and whether it could check the subtree at
+ * all, read off a (drained, last-page) store result. `null` when there is
+ * nothing to tell the operator, so a caller can gate "keep the panel open" on
+ * it directly.
+ *
+ *  - `withheld`: items the store did not add because their marketplace id is
+ *    already on 2+ rows in the variant type, or because the row they point at
+ *    carries different ids. Nothing was written for them; the operator fixes
+ *    the duplicate holder and syncs again.
+ *  - `subtreeWalkSkipped`: the variant type was too big for the store to look
+ *    for grouped rows, so this sync may have re-added some.
+ */
+export type StoreHolds = {
+  withheld: WithheldElsewhereEntry[];
+  withheldTotal: number;
+  subtreeWalkSkipped: boolean;
+};
+
+export function storeHoldsOf(
+  stored:
+    | {
+        withheldElsewhere?: ReadonlyArray<WithheldElsewhereEntry>;
+        withheldElsewhereTotal?: number;
+        subtreeWalkSkipped?: boolean;
+      }
+    | null
+    | undefined,
+): StoreHolds | null {
+  const withheld = [...(stored?.withheldElsewhere ?? [])];
+  const withheldTotal = Math.max(
+    stored?.withheldElsewhereTotal ?? 0,
+    withheld.length,
+  );
+  const subtreeWalkSkipped = stored?.subtreeWalkSkipped === true;
+  if (withheldTotal === 0 && !subtreeWalkSkipped) return null;
+  return { withheld, withheldTotal, subtreeWalkSkipped };
 }

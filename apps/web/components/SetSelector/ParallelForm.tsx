@@ -18,6 +18,7 @@ import {
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { storeReconciledUntilDone } from "./store-reconciled-until-done";
+import StoreHoldNotices from "./StoreHoldNotices";
 import HeldElsewhereNote, {
   heldElsewhereSummary,
   savedSetsMessage,
@@ -26,6 +27,8 @@ import {
   heldIdSets,
   heldRowsReturnedBy,
   mergeServerHeld,
+  storeHoldsOf,
+  type StoreHolds,
   rowsOutsideInsert,
   type HeldRow,
 } from "./held-elsewhere";
@@ -84,6 +87,9 @@ export default function ParallelForm({
   const [heldSkipped, setHeldSkipped] = useState<HeldRow[]>([]);
   // The true count behind `heldSkipped`: the store's list is a capped sample.
   const [heldTotal, setHeldTotal] = useState(0);
+  // NEO-300: what the store itself withheld, or could not check. Holds the
+  // panel open — see StoreHoldNotices.
+  const [storeHolds, setStoreHolds] = useState<StoreHolds | null>(null);
   const triggered = useRef(false);
   // a11y: focus-park landing spot — see VariantForm.tsx's own copy of these
   // two effects for the full rationale (Retry-unmount and Dismiss-unmount).
@@ -150,6 +156,7 @@ export default function ParallelForm({
     setMessage(null);
     setHeldSkipped([]);
     setHeldTotal(0);
+    setStoreHolds(null);
     try {
       const result = await fetchRawOptions({
         level: "parallel",
@@ -288,6 +295,8 @@ export default function ParallelForm({
         const heldAll = mergeServerHeld(skipped, stored);
         setHeldSkipped(heldAll.rows);
         setHeldTotal(heldAll.total);
+        const holds = storeHoldsOf(stored);
+        setStoreHolds(holds);
         setMessage(
           // NEO-296 — the count is the SERVER'S (`optionsCount`: rows now
           // linked), never `items.length`. The old sentence counted what was
@@ -312,7 +321,12 @@ export default function ParallelForm({
         // normal path for a custom subtree (both adapters short-circuit), and
         // EntityColumn renders this form INSTEAD of the idle "+ Custom" button
         // while mode === "sync", so not returning to idle hides that button.
-        if (converged && unlinkedRows.length === 0 && heldAll.total === 0) {
+        if (
+          converged &&
+          unlinkedRows.length === 0 &&
+          heldAll.total === 0 &&
+          holds === null
+        ) {
           onDone?.();
         }
       }
@@ -405,10 +419,15 @@ export default function ParallelForm({
     // NEO-300: the modal's header already named what the client filter held
     // back. If the store left alone MORE than that — rows the loaded tree did
     // not show as held — the panel stays up to say so, with the whole list.
+    //
+    // Likewise anything the store WITHHELD or could not check (StoreHoldNotices):
+    // the operator has to act on it, so the panel stays up to carry it.
     const heldAll = mergeServerHeld(modalHeldRows, stored);
-    if (heldAll.extra > 0) {
-      setHeldSkipped(heldAll.rows);
-      setHeldTotal(heldAll.total);
+    const holds = storeHoldsOf(stored);
+    if (heldAll.extra > 0 || holds !== null) {
+      setHeldSkipped(heldAll.extra > 0 ? heldAll.rows : []);
+      setHeldTotal(heldAll.extra > 0 ? heldAll.total : 0);
+      setStoreHolds(holds);
       setMessage(savedSetsMessage(stored.optionsCount ?? result.items.length));
       return;
     }
@@ -517,6 +536,13 @@ export default function ParallelForm({
                     </div>
                   )}
                 </div>
+              )}
+
+              {storeHolds && !showReconciliation && !isError && (
+                <StoreHoldNotices
+                  holds={storeHolds}
+                  variantsLabel={variantsLabel}
+                />
               )}
 
               {!loading && !showReconciliation && (

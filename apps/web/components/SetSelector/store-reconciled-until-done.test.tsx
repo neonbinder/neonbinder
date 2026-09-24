@@ -169,4 +169,28 @@ describe("storeReconciledUntilDone", () => {
       "Anime Gold",
     ]);
   });
+
+  it("takes the LAST page's withheld list and skipped flag (NEO-300)", async () => {
+    const w = (label: string) => ({ label, reason: "heldByMany" as const, holders: [] });
+    const store = vi
+      .fn<(a: typeof ARGS) => Promise<ReconciledStoreResult>>()
+      .mockResolvedValueOnce({
+        hasMore: true,
+        withheldElsewhere: [w("Refractor")],
+        withheldElsewhereTotal: 1,
+        subtreeWalkSkipped: false,
+      })
+      .mockResolvedValueOnce({
+        hasMore: false,
+        withheldElsewhere: [w("Refractor"), w("Gold")],
+        withheldElsewhereTotal: 2,
+        subtreeWalkSkipped: true,
+      });
+
+    const { stored } = await storeReconciledUntilDone(store, ARGS);
+
+    expect(stored.withheldElsewhereTotal).toBe(2);
+    expect(stored.withheldElsewhere?.map((e) => e.label)).toEqual(["Refractor", "Gold"]);
+    expect(stored.subtreeWalkSkipped).toBe(true);
+  });
 });
