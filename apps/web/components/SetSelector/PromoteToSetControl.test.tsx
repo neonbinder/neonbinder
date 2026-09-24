@@ -181,9 +181,9 @@ describe("PromoteToSetControl — the dialog", () => {
     previews.s1 = preview({ setName: "Topps Pristine Refractor" });
     renderControl();
     fireEvent.click(screen.getByRole("button", { name: PROMOTE_LABEL }));
-    const first = screen.getByRole("button", { name: "Promote Pristine" });
+    const first = screen.getByRole("radio", { name: "Promote Pristine" });
     await waitFor(() => expect(document.activeElement).toBe(first));
-    fireEvent.click(screen.getByRole("button", { name: "Promote Pristine Refractor" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Promote Pristine Refractor" }));
     expect(screen.getByRole("dialog").textContent).toContain("Topps Pristine Refractor");
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: promoteCopy.confirmNew }));
@@ -218,5 +218,40 @@ describe("PromoteToSetControl — the dialog", () => {
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(screen.queryByRole("dialog")).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+});
+
+describe("PromoteToSetControl — audit fixes (NEO-305)", () => {
+  it("the reason the confirm is blocked is said on the confirm", () => {
+    previews.s0 = preview({
+      setName: "Topps Chrome",
+      clash: { setId: "set-chrome", value: "Topps Chrome", hasBase: false, holdsLink: false },
+    });
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: PROMOTE_LABEL }));
+    const confirm = screen.getByRole("button", { name: promoteCopy.confirmNew });
+    const ids = (confirm.getAttribute("aria-describedby") ?? "").split(" ").filter(Boolean);
+    expect(ids.map((id) => document.getElementById(id)?.textContent).join(" ")).toContain(
+      promoteCopy.clashNoBase("Topps", "Topps Chrome"),
+    );
+  });
+
+  it("the links are a radio group", () => {
+    eligibility = {
+      eligible: true,
+      links: [
+        { slot: "s0", label: "Pristine" },
+        { slot: "s1", label: "Pristine Refractor" },
+      ],
+    };
+    previews.s1 = preview({ setName: "Topps Pristine Refractor" });
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: PROMOTE_LABEL }));
+    const first = screen.getByRole("radio", { name: "Promote Pristine" });
+    expect(first.getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(first, { key: "ArrowRight" });
+    const second = screen.getByRole("radio", { name: "Promote Pristine Refractor" });
+    expect(second.getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(second);
   });
 });

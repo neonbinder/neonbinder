@@ -44,6 +44,7 @@ vi.mock("convex/react", () => ({
 import MakeParallelControl, { MAKE_PARALLEL_LABEL, makeParallelCopy } from "./MakeParallelControl";
 
 const SET_ID = "set-bowman-blue" as never;
+const NO_LOSS = { cardPrefix: false, featureKeys: [], team: false, dismissedNames: false };
 
 function bowmanDetail(overrides: Record<string, unknown> = {}) {
   return {
@@ -52,9 +53,10 @@ function bowmanDetail(overrides: Record<string, unknown> = {}) {
     parallelTypeId: "pt-bowman",
     parallelTypeValue: "Parallel",
     parallels: [
-      { _id: "p-blue", value: "Blue", holdsLink: false },
-      { _id: "p-gold", value: "Gold", holdsLink: false },
+      { _id: "p-blue", value: "Blue", holdsLink: false, loses: NO_LOSS },
+      { _id: "p-gold", value: "Gold", holdsLink: false, loses: NO_LOSS },
     ],
+    newLoses: NO_LOSS,
     newName: "Fuchsia",
     ...overrides,
   };
@@ -140,15 +142,15 @@ describe("MakeParallelControl — the dialog", () => {
 
     const dialog = screen.getByRole("dialog", { name: makeParallelCopy.title("Bowman Fuchsia") });
     expect(dialog.getAttribute("aria-modal")).toBe("true");
-    const bowman = screen.getByRole("button", { name: "Parallel of Bowman" });
-    expect(bowman.getAttribute("aria-pressed")).toBe("true");
+    const bowman = screen.getByRole("radio", { name: "Parallel of Bowman" });
+    expect(bowman.getAttribute("aria-checked")).toBe("true");
     await waitFor(() => expect(document.activeElement).toBe(bowman));
     // A set with no Parallel type yet is listed but cannot be picked.
     expect(
-      screen.getByRole("button", { name: "Parallel of Bowman Sapphire Edition" }).getAttribute("aria-disabled"),
+      screen.getByRole("radio", { name: "Parallel of Bowman Sapphire Edition" }).getAttribute("aria-disabled"),
     ).toBe("true");
     expect(
-      screen.getByRole("button", { name: makeParallelCopy.newChoice("Fuchsia") }).getAttribute("aria-pressed"),
+      screen.getByRole("radio", { name: makeParallelCopy.newChoice("Fuchsia") }).getAttribute("aria-checked"),
     ).toBe("true");
     expect(dialog.textContent).toContain("Bowman›, Parallel›, Fuchsianew");
   });
@@ -177,7 +179,7 @@ describe("MakeParallelControl — the dialog", () => {
   it("adds to an existing parallel when the operator picks one", async () => {
     renderControl();
     fireEvent.click(screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }));
-    fireEvent.click(screen.getByRole("button", { name: "Add to Gold" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Add to Gold" }));
     expect(screen.getByRole("dialog").textContent).toContain("Goldjoins");
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: makeParallelCopy.confirm }));
@@ -197,8 +199,8 @@ describe("MakeParallelControl — the dialog", () => {
     });
     renderControl();
     fireEvent.click(screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }));
-    expect(screen.getByRole("button", { name: "Add to Blue" }).getAttribute("aria-pressed")).toBe("true");
-    const unavailable = screen.getByRole("button", { name: makeParallelCopy.newChoiceUnavailable });
+    expect(screen.getByRole("radio", { name: "Add to Blue" }).getAttribute("aria-checked")).toBe("true");
+    const unavailable = screen.getByRole("radio", { name: makeParallelCopy.newChoiceUnavailable });
     expect(unavailable.getAttribute("aria-disabled")).toBe("true");
     expect(unavailable.getAttribute("title")).toContain("already has a “Blue” parallel");
   });
@@ -207,12 +209,12 @@ describe("MakeParallelControl — the dialog", () => {
     details["s-bowman"] = bowmanDetail({
       newName: undefined,
       newRefusal: "linked",
-      parallels: [{ _id: "p-blue", value: "Blue", holdsLink: true }],
+      parallels: [{ _id: "p-blue", value: "Blue", holdsLink: true, loses: NO_LOSS }],
       holdsLinkReason: "“Blue” under Bowman already has this SportLots link.",
     });
     renderControl();
     fireEvent.click(screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }));
-    fireEvent.click(screen.getByRole("button", { name: "Add to Blue" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Add to Blue" }));
     const confirm = screen.getByRole("button", { name: makeParallelCopy.confirm });
     expect(confirm.getAttribute("aria-disabled")).toBe("true");
     await act(async () => {
@@ -224,11 +226,11 @@ describe("MakeParallelControl — the dialog", () => {
   it("switching the target set re-reads its parallels and resets the choice", () => {
     renderControl();
     fireEvent.click(screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }));
-    fireEvent.click(screen.getByRole("button", { name: "Add to Gold" }));
-    fireEvent.click(screen.getByRole("button", { name: "Parallel of Bowman Chrome" }));
-    expect(screen.queryByRole("button", { name: "Add to Gold" })).toBeNull();
+    fireEvent.click(screen.getByRole("radio", { name: "Add to Gold" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Parallel of Bowman Chrome" }));
+    expect(screen.queryByRole("radio", { name: "Add to Gold" })).toBeNull();
     expect(
-      screen.getByRole("button", { name: makeParallelCopy.newChoice("Fuchsia") }).getAttribute("aria-pressed"),
+      screen.getByRole("radio", { name: makeParallelCopy.newChoice("Fuchsia") }).getAttribute("aria-checked"),
     ).toBe("true");
   });
 
@@ -280,7 +282,7 @@ describe("MakeParallelControl — the dialog", () => {
   it("no two buttons share a name while the dialog is up", () => {
     renderControl();
     fireEvent.click(screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }));
-    const names = screen.getAllByRole("button").map(
+    const names = [...screen.getAllByRole("button"), ...screen.getAllByRole("radio")].map(
       (b) => b.getAttribute("aria-label") ?? b.textContent,
     );
     expect(new Set(names).size).toBe(names.length);
@@ -290,7 +292,118 @@ describe("MakeParallelControl — the dialog", () => {
     renderControl();
     fireEvent.click(screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }));
     for (const name of ["Parallel of Bowman", "Add to Blue", makeParallelCopy.newChoice("Fuchsia")]) {
-      expect(screen.getByRole("button", { name }).getAttribute("id")).toBeNull();
+      expect(screen.getByRole("radio", { name }).getAttribute("id")).toBeNull();
     }
+  });
+});
+
+/** The confirm's `aria-describedby` ids, resolved to their text. */
+function describedText(el: HTMLElement): string {
+  return (el.getAttribute("aria-describedby") ?? "")
+    .split(" ")
+    .filter(Boolean)
+    .map((id) => document.getElementById(id)?.textContent ?? "")
+    .join(" | ");
+}
+
+describe("MakeParallelControl — audit fixes (NEO-305)", () => {
+  it("when ANY parallel of the type holds the link, every destination is blocked and the reason is said on the confirm and the list", () => {
+    const reason = "“Blue” under Bowman already has this SportLots link. Remove it from “Blue” first if “Bowman Fuchsia” is the one to keep.";
+    details["s-bowman"] = bowmanDetail({
+      newName: undefined,
+      newRefusal: reason,
+      parallels: [
+        { _id: "p-blue", value: "Blue", holdsLink: true, loses: NO_LOSS },
+        { _id: "p-gold", value: "Gold", holdsLink: false, loses: NO_LOSS },
+      ],
+      holdsLinkReason: reason,
+    });
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }));
+    for (const name of ["Add to Blue", "Add to Gold", makeParallelCopy.newChoiceUnavailable]) {
+      expect(screen.getByRole("radio", { name }).getAttribute("aria-disabled")).toBe("true");
+    }
+    fireEvent.click(screen.getByRole("radio", { name: "Add to Gold" }));
+    expect(screen.getByRole("radio", { name: "Add to Gold" }).getAttribute("aria-checked")).toBe("false");
+    const confirm = screen.getByRole("button", { name: makeParallelCopy.confirm });
+    expect(confirm.getAttribute("aria-disabled")).toBe("true");
+    expect(describedText(confirm)).toContain(reason);
+    const destinations = screen.getByRole("radiogroup", { name: makeParallelCopy.destinationLegend });
+    expect(describedText(destinations)).toContain(reason);
+  });
+
+  it("a target with no Parallel type says why on the confirm and on the set list", () => {
+    const reason = "Bowman has no Parallel type yet. Pick Bowman, run Sync Variant Types, then come back.";
+    details["s-bowman"] = { ok: false, reason };
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }));
+    expect(describedText(screen.getByRole("button", { name: makeParallelCopy.confirm }))).toContain(reason);
+    expect(
+      describedText(screen.getByRole("radiogroup", { name: makeParallelCopy.targetsLegend })),
+    ).toContain(reason);
+  });
+
+  it("names what an existing parallel will not keep, before confirm", () => {
+    details["s-bowman"] = bowmanDetail({
+      parallels: [
+        {
+          _id: "p-gold",
+          value: "Gold",
+          holdsLink: false,
+          loses: { cardPrefix: true, featureKeys: ["releaseDate"], team: true, dismissedNames: false },
+        },
+      ],
+    });
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }));
+    // A new parallel carries everything: nothing is said.
+    expect(screen.getByRole("dialog").textContent).not.toContain("Not coming along");
+    fireEvent.click(screen.getByRole("radio", { name: "Add to Gold" }));
+    const sentence = "Not coming along: its card prefix, Release Date and its team.";
+    expect(screen.getByRole("dialog").textContent).toContain(sentence);
+    expect(describedText(screen.getByRole("button", { name: makeParallelCopy.confirm }))).toContain(sentence);
+  });
+
+  it("is a radio group: one Tab stop, and the arrow keys move focus with the choice, skipping what can't be chosen", () => {
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }));
+    const group = screen.getByRole("radiogroup", { name: makeParallelCopy.targetsLegend });
+    const radios = () => Array.from(group.querySelectorAll<HTMLElement>('[role="radio"]'));
+    expect(radios().map((r) => r.tabIndex)).toEqual([0, -1, -1]);
+
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Parallel of Bowman" }), { key: "ArrowDown" });
+    const chrome = screen.getByRole("radio", { name: "Parallel of Bowman Chrome" });
+    expect(chrome.getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(chrome);
+    expect(radios().map((r) => r.tabIndex)).toEqual([-1, 0, -1]);
+
+    // Sapphire has no Parallel type: skipped, wrapping back to Bowman.
+    fireEvent.keyDown(chrome, { key: "ArrowDown" });
+    expect(screen.getByRole("radio", { name: "Parallel of Bowman" }).getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Parallel of Bowman" }), { key: "ArrowUp" });
+    expect(screen.getByRole("radio", { name: "Parallel of Bowman Chrome" }).getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("a long list gets a filter whose result count is said politely", () => {
+    targets = {
+      ...(targets as object),
+      targets: Array.from({ length: 14 }, (_, i) => ({
+        setId: `s-${i}`,
+        value: `Bowman Set ${String.fromCharCode(65 + i)}`,
+        parallelTypeId: `pt-${i}`,
+        parallelTypeValue: "Parallel",
+      })),
+      suggestedSetId: "s-0",
+    };
+    details["s-0"] = bowmanDetail();
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }));
+    const filter = screen.getByLabelText(makeParallelCopy.targetsFilter);
+    const live = filter.parentElement!.querySelector('[aria-live="polite"]')!;
+    expect(live.textContent).toBe("");
+    fireEvent.change(filter, { target: { value: "set c" } });
+    expect(live.textContent).toBe("1 match");
+    fireEvent.change(filter, { target: { value: "zzz" } });
+    expect(live.textContent).toBe("Nothing matches that.");
   });
 });

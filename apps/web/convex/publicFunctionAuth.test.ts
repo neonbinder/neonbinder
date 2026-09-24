@@ -1114,10 +1114,10 @@ describe("NEO-237/NEO-294: the All Brands view doors are admin-gated", () => {
 
 describe("NEO-305: the set ⇄ parallel doors are admin-gated", () => {
   /**
-   * Seven public functions on the set builder. Two WRITES — "Make parallel
+   * Eight public functions on the set builder. Two WRITES — "Make parallel
    * of…" re-parents a set's SportLots links and cards onto a parallel and
    * deletes the emptied set; "Promote to set" mints a set from a parallel's
-   * SportLots link and may delete the parallel — and five reads behind their
+   * SportLots link and may delete the parallel — and six reads behind their
    * dialogs and the Parallels sync's brand-wide hold, each of which enumerates
    * a brand's sets, parallels or SportLots links. Every one is `requireAdmin`
    * like every other set-builder door, and refuses before its first read.

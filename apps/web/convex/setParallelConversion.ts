@@ -69,6 +69,7 @@ import {
   detachSlot,
   idForSlot,
   initialSlots,
+  isSlotKeyForSide,
   primarySlot,
   slotEntries,
   slotForId,
@@ -603,6 +604,109 @@ function newParallelCheck(
   return { ok: true, name: checked.value };
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// Operator-typed data on the rows a convert deletes (security audit, NEO-305)
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Feature keys a variant type derives for ITSELF (`deriveOwnLevelFeatures`
+ * at variantType: "cardType", "parallelName"). On a Base they say "Base" —
+ * a fact about the Base, never about a parallel — so they are never carried.
+ */
+const BASE_OWN_FEATURE_KEYS = ["cardType", "parallelName"];
+
+/**
+ * What the operator may have typed onto the set or its Base, which the
+ * delete at the end of a convert would otherwise throw away. The Base's own
+ * value wins over the set's (it is the row the checklist hangs off).
+ */
+type SourceData = {
+  cardNumberPrefix?: string;
+  features: Record<string, string>;
+  teamIds?: Array<Id<"teams">>;
+  /** A "no" to an upstream rename suggestion is on one of the rows. */
+  declined: boolean;
+};
+
+function sourceDataOf(set: Row, base: Row): SourceData {
+  const features: Record<string, string> = {
+    ...(set.features ?? {}),
+    ...(base.features ?? {}),
+  };
+  for (const key of BASE_OWN_FEATURE_KEYS) delete features[key];
+  const cardNumberPrefix =
+    base.metadata?.cardNumberPrefix ?? set.metadata?.cardNumberPrefix;
+  const teamIds =
+    base.teamIds && base.teamIds.length > 0
+      ? base.teamIds
+      : set.teamIds && set.teamIds.length > 0
+        ? set.teamIds
+        : undefined;
+  const declined = [set, base].some(
+    (r) =>
+      r.declinedUpstreamLabels?.bsc !== undefined ||
+      r.declinedUpstreamLabels?.sportlots !== undefined,
+  );
+  return {
+    ...(cardNumberPrefix !== undefined ? { cardNumberPrefix } : {}),
+    features,
+    ...(teamIds ? { teamIds } : {}),
+    declined,
+  };
+}
+
+/** What a convert would leave behind, per field. */
+export type ConversionLoss = {
+  cardPrefix: boolean;
+  /** Feature keys whose value the destination would not keep. */
+  featureKeys: string[];
+  team: boolean;
+  /** Turned-down rename suggestions — never carried: they were about THOSE rows' names. */
+  dismissedNames: boolean;
+};
+
+const lossValidator = v.object({
+  cardPrefix: v.boolean(),
+  featureKeys: v.array(v.string()),
+  team: v.boolean(),
+  dismissedNames: v.boolean(),
+});
+
+/**
+ * Onto a NEW parallel everything but the turned-down names is carried
+ * (`dest` null). Onto an EXISTING parallel nothing is written over the
+ * operator's own data there, so whatever differs stays behind.
+ */
+function lossOnto(data: SourceData, dest: Row | null): ConversionLoss {
+  if (dest === null) {
+    return { cardPrefix: false, featureKeys: [], team: false, dismissedNames: data.declined };
+  }
+  const destTeams = new Set<string>(dest.teamIds ?? []);
+  return {
+    cardPrefix:
+      data.cardNumberPrefix !== undefined &&
+      data.cardNumberPrefix !== dest.metadata?.cardNumberPrefix,
+    featureKeys: Object.keys(data.features)
+      .filter((k) => dest.features?.[k] !== data.features[k])
+      .sort(),
+    team:
+      data.teamIds !== undefined &&
+      (data.teamIds.length !== destTeams.size ||
+        data.teamIds.some((id) => !destTeams.has(id))),
+    dismissedNames: data.declined,
+  };
+}
+
+/** The dropped fields, by schema name, for the audit log line. */
+function lossFieldNames(loss: ConversionLoss): string[] {
+  return [
+    ...(loss.cardPrefix ? ["metadata.cardNumberPrefix"] : []),
+    ...loss.featureKeys.map((k) => `features.${k}`),
+    ...(loss.team ? ["teamIds"] : []),
+    ...(loss.dismissedNames ? ["declinedUpstreamLabels"] : []),
+  ];
+}
+
 /** Does `row` already hold any SportLots id the convert would move? By id. */
 function holdsAnyLink(row: Row, source: { set: Row; base: Row }): boolean {
   const moving = new Set(linksToMove(source.set, source.base).map((l) => l.id));
@@ -730,8 +834,14 @@ type TargetDetail =
       targetSetValue: string;
       parallelTypeId: RowId;
       parallelTypeValue: string;
-      parallels: Array<{ _id: RowId; value: string; holdsLink: boolean }>;
+      parallels: Array<{
+        _id: RowId;
+        value: string;
+        holdsLink: boolean;
+        loses: ConversionLoss;
+      }>;
       holdsLinkReason?: string;
+      newLoses: ConversionLoss;
       newName?: string;
       newRefusal?: string;
       sameAsId?: RowId;
@@ -764,10 +874,18 @@ export const getSetToParallelTargetDetail = query({
            * destination in either mode; `holdsLinkReason` says why.
            */
           holdsLink: v.boolean(),
+          /** What adding to THIS parallel would leave behind. */
+          loses: lossValidator,
         }),
       ),
-      /** The sentence for a parallel that `holdsLink`. */
+      /**
+       * Some parallel here already holds one of the links. Then NO parallel
+       * here is a destination, new or existing (security audit, NEO-305):
+       * the link would end up on two rows of one Parallel type.
+       */
       holdsLinkReason: v.optional(v.string()),
+      /** What a NEW parallel would leave behind (it carries the rest). */
+      newLoses: lossValidator,
       /** The new parallel's name, when one can be made. */
       newName: v.optional(v.string()),
       /** Why a new parallel cannot be made, when it cannot. */
@@ -805,6 +923,7 @@ export const getSetToParallelTargetDetail = query({
     );
     const check = newParallelCheck(source, targetSet, parallels);
     const holder = parallels.find((p) => holdsAnyLink(p, source));
+    const data = sourceDataOf(source.set, source.base);
     return {
       ok: true as const,
       targetSetValue: targetSet.value,
@@ -814,7 +933,9 @@ export const getSetToParallelTargetDetail = query({
         _id: p._id,
         value: p.value,
         holdsLink: holdsAnyLink(p, source),
+        loses: lossOnto(data, p),
       })),
+      newLoses: lossOnto(data, null),
       ...(holder
         ? {
             holdsLinkReason: conversionRefusal.linkTaken(
@@ -903,6 +1024,8 @@ export const convertSetToParallel = mutation({
 
     const links = linksToMove(set, base);
     const now = Date.now();
+    const sourceData = sourceDataOf(set, base);
+    let loss: ConversionLoss;
 
     // ── the destination row and its slots ──────────────────────────────
     let dest: Row;
@@ -913,11 +1036,23 @@ export const convertSetToParallel = mutation({
       if (!attach || attach.level !== "insert" || attach.parentId !== targetType._id) {
         throw new ConvexError(conversionRefusal.attachGone());
       }
-      if (holdsAnyLink(attach, source)) {
+      // ANY parallel of the type holding a moving link refuses, not only the
+      // one picked (security audit, NEO-305): the same rule as new mode, or
+      // the link would land on a second row of one Parallel type.
+      const holder = (await parallelsUnder(ctx, targetType._id)).find((p) =>
+        holdsAnyLink(p, source),
+      );
+      if (holder) {
         throw new ConvexError(
-          conversionRefusal.linkTaken(targetSet.value, attach.value, set.value),
+          conversionRefusal.linkTaken(targetSet.value, holder.value, set.value),
         );
       }
+      // Cards landing on a row mid-review would land under a commit that
+      // does not know about them (security audit, NEO-305).
+      if (await hasOpenReview(ctx, attach._id)) {
+        throw new ConvexError(conversionRefusal.reviewOpen(attach.value));
+      }
+      loss = lossOnto(sourceData, attach);
       const alloc = allocateSlots(attach, {
         sportlots: links.map((l) => ({ id: l.id, label: l.label })),
       });
@@ -935,11 +1070,24 @@ export const convertSetToParallel = mutation({
       const check = newParallelCheck(source, targetSet, siblings);
       if (!check.ok) throw new ConvexError(check.reason);
       const flags = derivedVariantFlags("insert", targetType);
+      // The set's and Base's operator data comes WITH it onto the new row
+      // (security audit, NEO-305): copy-down from the Parallel type first,
+      // then what the operator had, then the row's own level derivation.
       const features = {
         ...(targetType.features ?? {}),
+        ...sourceData.features,
         ...deriveOwnLevelFeatures("insert", check.name, flags),
       };
-      const teamIds = inheritedTeamIds(targetType);
+      const teamIds = sourceData.teamIds
+        ? [...sourceData.teamIds]
+        : inheritedTeamIds(targetType);
+      const metadata = {
+        ...(flags ?? {}),
+        ...(sourceData.cardNumberPrefix !== undefined
+          ? { cardNumberPrefix: sourceData.cardNumberPrefix }
+          : {}),
+      };
+      loss = lossOnto(sourceData, null);
       const alloc = initialSlots({
         sportlots: links.map((l) => ({ id: l.id, label: l.label })),
       });
@@ -952,7 +1100,7 @@ export const convertSetToParallel = mutation({
         parentId: targetType._id,
         children: [],
         createdByUserId: adminUserId,
-        ...(flags ? { metadata: flags } : {}),
+        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
         ...(Object.keys(features).length > 0 ? { features } : {}),
         ...(teamIds ? { teamIds } : {}),
         lastUpdated: now,
@@ -1005,6 +1153,9 @@ export const convertSetToParallel = mutation({
         links: links.length,
         cards: baseCards.length + setCards.length,
         guests: guestLinks.length,
+        // Operator-typed fields the deleted rows carried that the destination
+        // does not keep — named to the operator in the dialog before confirm.
+        dropped: lossFieldNames(loss),
       }),
     );
 
@@ -1178,7 +1329,9 @@ export const getParallelPromotionPreview = query({
     const source = await readPromotionSource(ctx, args.parallelId);
     if (!source.ok) return { ok: false as const, reason: source.reason };
     const { row, brand } = source;
-    const id = idForSlot(row, "sportlots", args.slSlotKey);
+    const id = isSlotKeyForSide("sportlots", args.slSlotKey)
+      ? idForSlot(row, "sportlots", args.slSlotKey)
+      : undefined;
     if (id === undefined) {
       return { ok: false as const, reason: promotionRefusal.linkGone(row.value) };
     }
@@ -1267,6 +1420,11 @@ export const promoteParallelToSet = mutation({
     if (!source.ok) throw new ConvexError(source.reason);
     const { row, brand } = source;
 
+    // A SportLots slot key and nothing else (security audit, NEO-305): a
+    // client-sent string never reaches the slot maps unless it is one.
+    if (!isSlotKeyForSide("sportlots", args.slSlotKey)) {
+      throw new ConvexError(promotionRefusal.linkGone(row.value));
+    }
     const id = idForSlot(row, "sportlots", args.slSlotKey);
     if (id === undefined) {
       throw new ConvexError(promotionRefusal.linkGone(row.value));
@@ -1309,6 +1467,9 @@ export const promoteParallelToSet = mutation({
       if (!targetBase) throw new ConvexError(promotionRefusal.attachNoBase(target.value));
       if (slotIds(targetBase, "sportlots").includes(id)) {
         throw new ConvexError(promotionRefusal.linkTaken(target.value, row.value));
+      }
+      if (await hasOpenReview(ctx, targetBase._id)) {
+        throw new ConvexError(promotionRefusal.reviewOpen(target.value));
       }
       const alloc = allocateSlots(targetBase, { sportlots: [{ id, label }] });
       await ctx.db.patch(targetBase._id, {

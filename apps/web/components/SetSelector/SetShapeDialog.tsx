@@ -41,6 +41,7 @@ export function SetShapeDialog({
   busy,
   confirmDisabled,
   autofocusConfirm,
+  confirmDescribedBy,
   error,
   onConfirm,
   onCancel,
@@ -57,6 +58,11 @@ export function SetShapeDialog({
   confirmDisabled?: boolean;
   /** No choice to land on (a single option): open on the confirm instead. */
   autofocusConfirm?: boolean;
+  /**
+   * Ids of text saying why the confirm is unavailable (or what it will leave
+   * behind), so a screen reader hears the reason on the button itself.
+   */
+  confirmDescribedBy?: string;
   error?: string | null;
   onConfirm: () => void;
   onCancel: () => void;
@@ -187,6 +193,7 @@ export function SetShapeDialog({
             // busy contract, with the container holding focus).
             disabled={busy}
             aria-disabled={confirmDisabled && !busy ? true : undefined}
+            aria-describedby={confirmDescribedBy || undefined}
           >
             {busy ? busyLabel : confirmLabel}
           </NeonButton>
@@ -220,12 +227,28 @@ export type Choice = {
 /** Lists longer than this get a filter box. */
 export const CHOICE_FILTER_THRESHOLD = 12;
 
+/** "3 matches" — the filter's polite count. DRAFT copy (NEO-305). */
+export function filterCountText(n: number): string {
+  return n === 0 ? "Nothing matches that." : `${n} ${n === 1 ? "match" : "matches"}`;
+}
+
 /**
- * One choice among buttons (`aria-pressed`) — never a `<select>`: the Maestro
- * web driver reaches options only in the FIRST native select on a page, and
- * the attributes panel has selects of its own. Bounded and scrolled so a
- * brand of forty sets cannot push the confirm off the 1024×629 E2E viewport;
- * the buttons are the scroll's own keyboard handles.
+ * One choice among several, as the APG single-select RADIO GROUP
+ * (`role="radiogroup"` / `role="radio"` + `aria-checked`), the pattern
+ * `CardPairingModal`'s name-conflict pills follow: one Tab stop (roving
+ * `tabIndex` — the checked radio, else the first one that can be chosen),
+ * and the arrow keys move focus WITH the selection, wrapping at both ends and
+ * skipping choices that are unavailable. Enter and a click choose too.
+ *
+ * Never a `<select>`: the Maestro web driver reaches options only in the
+ * FIRST native select on a page, and the attributes panel has selects of its
+ * own. The radios are buttons carrying their `aria-label`, which is what the
+ * E2E flows target. Bounded and scrolled so a brand of forty sets cannot push
+ * the confirm off the 1024×629 E2E viewport.
+ *
+ * A list longer than `CHOICE_FILTER_THRESHOLD` gets a filter box, and the
+ * filter's result count is said politely (`aria-live`), "Nothing matches
+ * that." included.
  */
 export function ChoiceList({
   legend,
@@ -234,6 +257,7 @@ export function ChoiceList({
   onSelect,
   autofocusId,
   filterLabel,
+  describedBy,
 }: {
   legend: string;
   choices: Choice[];
@@ -243,48 +267,97 @@ export function ChoiceList({
   autofocusId?: string | null;
   /** The filter box's accessible name, when the list is long enough for one. */
   filterLabel: string;
+  /** Ids of text explaining why choices here are unavailable. */
+  describedBy?: string;
 }) {
   const legendId = useId();
+  const groupRef = useRef<HTMLDivElement | null>(null);
   const [filter, setFilter] = useState("");
   const q = filter.trim().toLowerCase();
   const shown = q
     ? choices.filter((c) => c.label.toLowerCase().includes(q))
     : choices;
+  const available = shown.filter((c) => c.unavailable === undefined);
+  // The one Tab stop: the checked radio when it is shown, else the first
+  // radio that can be chosen, else the first radio at all (so a list of
+  // nothing-but-unavailable is still reachable, with its reasons).
+  const tabStopId =
+    (selectedId !== null && shown.some((c) => c.id === selectedId)
+      ? selectedId
+      : undefined) ??
+    available[0]?.id ??
+    shown[0]?.id;
+
+  const focusChoice = (id: string) => {
+    const radios = groupRef.current?.querySelectorAll<HTMLElement>("[data-choice]");
+    Array.from(radios ?? [])
+      .find((el) => el.getAttribute("data-choice") === id)
+      ?.focus();
+  };
+
+  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight"].includes(event.key)) {
+      return;
+    }
+    event.preventDefault();
+    if (available.length === 0) return;
+    const step = event.key === "ArrowUp" || event.key === "ArrowLeft" ? -1 : 1;
+    const from = available.findIndex((c) => c.id === (selectedId ?? tabStopId));
+    const at = from === -1 ? (step === 1 ? -1 : 0) : from;
+    const next = available[(at + step + available.length) % available.length];
+    onSelect(next.id);
+    // The radio already exists (selection does not re-order the list), so
+    // focus can move with the selection in the same event.
+    focusChoice(next.id);
+  };
+
   return (
     <div>
       <p id={legendId} className="mb-1 text-xs text-slate-400">
         {legend}
       </p>
       {choices.length > CHOICE_FILTER_THRESHOLD && (
-        <Input
-          bare
-          type="search"
-          aria-label={filterLabel}
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-          className="mb-1 w-full rounded px-2 py-1 text-sm"
-        />
+        <>
+          <Input
+            bare
+            type="search"
+            aria-label={filterLabel}
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="mb-1 w-full rounded px-2 py-1 text-sm"
+          />
+          {/* Always rendered once there is a filter, so the region exists
+              before its text changes and the count is actually announced. */}
+          <p aria-live="polite" className="mb-1 text-xs text-slate-400">
+            {q ? filterCountText(shown.length) : ""}
+          </p>
+        </>
       )}
       <div
-        role="group"
+        ref={groupRef}
+        role="radiogroup"
         aria-labelledby={legendId}
+        aria-describedby={describedBy}
+        onKeyDown={onKeyDown}
         className="max-h-40 overflow-y-auto flex flex-col gap-0.5 rounded border border-slate-500 p-1"
       >
-        {shown.length === 0 && (
-          <p className="px-2 py-1.5 text-xs text-slate-400">Nothing matches that.</p>
+        {shown.length === 0 && choices.length <= CHOICE_FILTER_THRESHOLD && (
+          <p className="px-2 py-1.5 text-xs text-slate-400">{filterCountText(0)}</p>
         )}
         {shown.map((choice) => {
-          const pressed = choice.id === selectedId;
+          const checked = choice.id === selectedId;
           const unavailable = choice.unavailable !== undefined;
           return (
             <button
               key={choice.id}
               type="button"
+              role="radio"
               data-choice={choice.id}
               {...(autofocusId === choice.id ? { "data-autofocus": true } : {})}
               aria-label={choice.ariaLabel}
-              aria-pressed={pressed}
+              aria-checked={checked}
               aria-disabled={unavailable || undefined}
+              tabIndex={choice.id === tabStopId ? 0 : -1}
               title={choice.unavailable}
               onClick={() => {
                 if (!unavailable) onSelect(choice.id);
@@ -294,12 +367,18 @@ export function ChoiceList({
               }
               // py-1.5 keeps each row at WCAG 2.5.8's 24px minimum.
               className={`flex items-baseline justify-between gap-2 rounded border px-2 py-1.5 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] ${
-                pressed
+                checked
                   ? "border-[#00D558] text-[#00D558]"
                   : "border-transparent text-slate-200 hover:border-slate-500"
               } ${unavailable ? "cursor-not-allowed opacity-60" : ""}`}
             >
-              <span>{choice.label}</span>
+              <span className="flex items-baseline gap-1">
+                {/* 1.4.1 — the checked state is not colour alone. A sibling
+                    of the label, never inside it, so the label's own text
+                    (what a flow matches) is unchanged. */}
+                {checked && <span aria-hidden="true">✓</span>}
+                <span>{choice.label}</span>
+              </span>
               {(choice.tag || unavailable) && (
                 <span className="shrink-0 text-xs text-slate-400">
                   {unavailable ? "unavailable" : choice.tag}

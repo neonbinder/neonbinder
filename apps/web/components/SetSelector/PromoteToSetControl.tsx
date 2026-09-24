@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -143,6 +143,10 @@ function PromoteDialog({
     slot ? { parallelId, slSlotKey: slot } : "skip",
   );
   const ok = preview?.ok ? preview : null;
+  // The reason the confirm is blocked (or what it will do instead), said on
+  // the confirm itself (a11y audit, NEO-305).
+  const noteId = useId();
+  const reasonId = useId();
 
   // What pressing confirm would do, and whether it can.
   const clash = ok?.clash;
@@ -206,6 +210,12 @@ function PromoteDialog({
       busyLabel={promoteCopy.busy}
       busy={busy}
       confirmDisabled={blocked}
+      confirmDescribedBy={
+        [
+          ...(preview !== undefined && !preview.ok ? [reasonId] : []),
+          ...(note ? [noteId] : []),
+        ].join(" ") || undefined
+      }
       autofocusConfirm={links.length <= 1}
       error={error}
       onConfirm={() => void handleConfirm()}
@@ -224,13 +234,20 @@ function PromoteDialog({
           }}
           autofocusId={slot}
           filterLabel={promoteCopy.linksFilter}
+          describedBy={note ? noteId : undefined}
         />
       )}
       {preview === undefined && <p className="text-sm text-slate-400">{promoteCopy.loading}</p>}
       {preview !== undefined && !preview.ok && (
-        <p className="text-sm text-[#FF2EB3]">{preview.reason}</p>
+        <p id={reasonId} className="text-sm text-[#FF2EB3]">
+          {preview.reason}
+        </p>
       )}
-      {note && <p className="text-sm text-slate-300">{note}</p>}
+      {note && (
+        <p id={noteId} className="text-sm text-slate-300">
+          {note}
+        </p>
+      )}
     </SetShapeDialog>
   );
 }

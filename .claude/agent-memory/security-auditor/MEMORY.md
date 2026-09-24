@@ -53,3 +53,4 @@
 - [Patterns neo296 transaction bounds](patterns_neo296_transaction_bounds.md) — bounding a transaction: client callers that ignore hasMore, per-item budgets that re-arm, continuation scope re-checks, cursor advance
 - [Patterns neo299 shared pool warmups](patterns_neo299_shared_pool_warmups.md) — public trigger enqueuing onto a shared FIFO workpool = head-of-line DoS; tf service-level metadata block removes out-of-band keys; 404-tolerant parity is fail-open
 - [Patterns neo300 held elsewhere](patterns_neo300_held_elsewhere.md) — subtree walk charges ranges not bytes; 400 cap falls back silently; dup-parallel guard vs legal M:1; tier-0 existingId drops ids
+- [Patterns neo305 set parallel conversion](patterns_neo305_set_parallel_conversion.md) — two-mode destination guard drift (attach skipped sibling holder scan); slot-key string args; row-delete doors drop operator NB fields

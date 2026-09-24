@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -6,6 +6,7 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { ChoiceList, LandingPath, SetShapeDialog, type Choice } from "./SetShapeDialog";
 import type { SelectorLevel } from "./selector-sync-feedback";
+import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
 
 /**
  * NEO-305 Part B — "Make parallel of…" on a set row.
@@ -57,7 +58,40 @@ export const makeParallelCopy = {
       : `“${set}” joined ${target}’s “${parallel}” parallel.`,
   newTag: "new",
   joinsTag: "joins",
+  /**
+   * Security audit (NEO-305): what the operator typed onto the set or its
+   * Base that the destination will not keep, said BEFORE confirm.
+   */
+  leftBehind: (items: string[]) => `Not coming along: ${joinList(items)}.`,
+  cardPrefix: "its card prefix",
+  team: "its team",
+  dismissedNames: "names you turned down for it",
 };
+
+/** "a", "a and b", "a, b and c". */
+function joinList(items: string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+type Loss = {
+  cardPrefix: boolean;
+  featureKeys: string[];
+  team: boolean;
+  dismissedNames: boolean;
+};
+
+/** The operator's words for a loss: feature keys become their panel labels. */
+export function lossItems(loss: Loss): string[] {
+  const label = (key: string) =>
+    EXPECTED_FEATURES.find((f) => f.key === key)?.label ?? key;
+  return [
+    ...(loss.cardPrefix ? [makeParallelCopy.cardPrefix] : []),
+    ...loss.featureKeys.map(label),
+    ...(loss.team ? [makeParallelCopy.team] : []),
+    ...(loss.dismissedNames ? [makeParallelCopy.dismissedNames] : []),
+  ];
+}
 
 const NEW = "__new__";
 
@@ -160,14 +194,24 @@ function MakeParallelDialog({
     chosenTarget ? { setId, targetSetId: chosenTarget } : "skip",
   );
   const detailOk = detail?.ok ? detail : null;
+  // Some parallel of the type already holds the link: NO destination here is
+  // valid, new or existing (security audit, NEO-305 — the server refuses
+  // every one of them).
+  const blockedByLink = detailOk?.holdsLinkReason;
+
+  // Reasons said on the controls they explain (a11y audit, NEO-305).
+  const targetReasonId = useId();
+  const destinationReasonId = useId();
+  const leftBehindId = useId();
 
   // The default destination for a target: a new parallel when one can be
   // made, else the parallel the refusal points at. Recomputed per target.
-  const defaultDestination = detailOk
-    ? detailOk.newName !== undefined
-      ? NEW
-      : (detailOk.sameAsId ?? null)
-    : null;
+  const defaultDestination =
+    detailOk && !blockedByLink
+      ? detailOk.newName !== undefined
+        ? NEW
+        : (detailOk.sameAsId ?? null)
+      : null;
   const chosenDestination = destination ?? defaultDestination;
 
   const targetChoices: Choice[] = targets?.ok
@@ -181,7 +225,7 @@ function MakeParallelDialog({
 
   const destinationChoices: Choice[] = detailOk
     ? [
-        detailOk.newName !== undefined
+        detailOk.newName !== undefined && !blockedByLink
           ? {
               id: NEW,
               label: makeParallelCopy.newChoice(detailOk.newName),
@@ -192,13 +236,13 @@ function MakeParallelDialog({
               id: NEW,
               label: makeParallelCopy.newChoiceUnavailable,
               ariaLabel: makeParallelCopy.newChoiceUnavailable,
-              unavailable: detailOk.newRefusal,
+              unavailable: blockedByLink ?? detailOk.newRefusal,
             },
         ...detailOk.parallels.map((p) => ({
           id: p._id,
           label: p.value,
           ariaLabel: `Add to ${p.value}`,
-          ...(p.holdsLink ? { unavailable: detailOk.holdsLinkReason } : {}),
+          ...(blockedByLink ? { unavailable: blockedByLink } : {}),
         })),
       ]
     : [];
@@ -208,8 +252,24 @@ function MakeParallelDialog({
     chosenDestination === NEW ? detailOk?.newName : chosenParallel?.value;
   const destinationValid =
     detailOk !== null &&
+    !blockedByLink &&
     ((chosenDestination === NEW && detailOk.newName !== undefined) ||
       (chosenParallel !== undefined && !chosenParallel.holdsLink));
+
+  // Why a destination cannot be chosen, as visible text with an id: the
+  // radios' `title` alone is not read by every screen reader.
+  const destinationReason = detailOk
+    ? (blockedByLink ?? (detailOk.newName === undefined ? detailOk.newRefusal : undefined))
+    : undefined;
+  const targetReason =
+    chosenTarget && detail !== undefined && !detail.ok ? detail.reason : undefined;
+  const loss =
+    detailOk && destinationValid
+      ? chosenDestination === NEW
+        ? detailOk.newLoses
+        : chosenParallel?.loses
+      : undefined;
+  const leftBehind = loss ? lossItems(loss) : [];
 
   const pickTarget = (id: string) => {
     setError(null);
@@ -277,23 +337,37 @@ function MakeParallelDialog({
           onSelect={pickTarget}
           autofocusId={chosenTarget}
           filterLabel={makeParallelCopy.targetsFilter}
+          describedBy={targetReason ? targetReasonId : undefined}
         />
-        {chosenTarget && detail !== undefined && !detail.ok && (
+        {targetReason && (
           // The server's own sentence: most often "no Parallel type yet",
           // with the step that fixes it.
-          <p className="text-sm text-slate-300">{detail.reason}</p>
+          <p id={targetReasonId} className="text-sm text-slate-300">
+            {targetReason}
+          </p>
         )}
         {detailOk && (
           <ChoiceList
             legend={makeParallelCopy.destinationLegend}
             choices={destinationChoices}
-            selectedId={chosenDestination}
+            selectedId={blockedByLink ? null : chosenDestination}
             onSelect={(id) => {
               setError(null);
               setDestination(id);
             }}
             filterLabel={makeParallelCopy.destinationFilter}
+            describedBy={destinationReason ? destinationReasonId : undefined}
           />
+        )}
+        {destinationReason && (
+          <p id={destinationReasonId} className="text-sm text-slate-300">
+            {destinationReason}
+          </p>
+        )}
+        {leftBehind.length > 0 && (
+          <p id={leftBehindId} className="text-sm text-slate-300">
+            {makeParallelCopy.leftBehind(leftBehind)}
+          </p>
         )}
       </>
     );
@@ -316,6 +390,13 @@ function MakeParallelDialog({
       busyLabel={makeParallelCopy.busy}
       busy={busy}
       confirmDisabled={!destinationValid}
+      confirmDescribedBy={
+        [
+          ...(targetReason ? [targetReasonId] : []),
+          ...(!destinationValid && destinationReason ? [destinationReasonId] : []),
+          ...(leftBehind.length > 0 ? [leftBehindId] : []),
+        ].join(" ") || undefined
+      }
       error={error}
       onConfirm={() => void handleConfirm()}
       onCancel={() => {

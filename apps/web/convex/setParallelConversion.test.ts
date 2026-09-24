@@ -33,6 +33,7 @@ import {
   remapCardPlatformData,
 } from "./setParallelConversion";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { teamRowFields } from "./lib/teamRow";
 
 const modules = (
   import.meta as unknown as {
@@ -1371,5 +1372,192 @@ describe("the queries behind the dialogs", () => {
       { name: "Bowman Blue", sportlots: ["SL-BLUE"] },
       { name: "Bowman Chrome Refractor", sportlots: ["SL-CHROME-REF"] },
     ]);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Security-audit conditions (NEO-305)
+// ───────────────────────────────────────────────────────────────────────────
+
+/** A staged checklist review on `rowId` — another admin's work in flight. */
+async function stageReview(t: T, rowId: RowId) {
+  await t.run(async (ctx) => {
+    await ctx.db.insert("checklistCandidates", {
+      selectorOptionId: rowId,
+      batchId: "batch-audit",
+      createdByUserId: "another_admin",
+      cardNumber: "1",
+      cardName: "Card 1",
+      platformData: {},
+      bucket: "matched",
+      stem: "1",
+      status: "ready",
+      lastUpdated: SENTINEL,
+    });
+  });
+}
+
+describe("security audit — convertSetToParallel", () => {
+  test("attach refuses when ANY parallel of the type holds a moving link, not only the one picked", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const sl = await slSets(t, ids.brandId, [{ id: "SL-BLUE", label: "Bowman Blue" }]);
+    // Gold holds the link; the operator tries to add to Blue.
+    await t.run(async (ctx) => {
+      await ctx.db.patch(ids.goldId, {
+        platformData: { bsc: { b0: "gold" }, sportlots: { s0: "SL-BLUE" } },
+        platformSlotSeq: { bsc: 1, sportlots: 1 },
+      });
+    });
+    await expectRefusal(
+      t,
+      () =>
+        t.withIdentity(ADMIN).mutation(api.setParallelConversion.convertSetToParallel, {
+          setId: sl["Bowman Blue"].setId,
+          targetParallelTypeId: ids.parallelTypeId,
+          attachToId: ids.blueId,
+        }),
+      conversionRefusal.linkTaken("Bowman", "Gold", "Bowman Blue"),
+    );
+  });
+
+  test("attach refuses a destination with a checklist review open", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const sl = await slSets(t, ids.brandId, [{ id: "SL-BLUE", label: "Bowman Blue" }]);
+    await stageReview(t, ids.blueId);
+    await expectRefusal(
+      t,
+      () =>
+        t.withIdentity(ADMIN).mutation(api.setParallelConversion.convertSetToParallel, {
+          setId: sl["Bowman Blue"].setId,
+          targetParallelTypeId: ids.parallelTypeId,
+          attachToId: ids.blueId,
+        }),
+      conversionRefusal.reviewOpen("Blue"),
+    );
+  });
+
+  test("a NEW parallel carries the card prefix, the attributes and the team; the Base's own role keys stay behind", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const sl = await slSets(t, ids.brandId, [{ id: "SL-FUCHSIA", label: "Bowman Fuchsia" }]);
+    const { setId, baseId } = sl["Bowman Fuchsia"];
+    const teamId = await t.run(async (ctx) => {
+      const year = (await ctx.db.get(ids.yearId))!;
+      return ctx.db.insert("teams", {
+        ...teamRowFields({ name: "Bulls", location: "Durham" }),
+        sportId: year.parentId!,
+        lastUpdated: SENTINEL,
+      } as never);
+    });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(setId, {
+        features: { releaseDate: "2026-05-01" },
+        declinedUpstreamLabels: { sportlots: "bowman fuchsia refractor" },
+      });
+      await ctx.db.patch(baseId, {
+        metadata: { isBase: true, cardNumberPrefix: "BF-" },
+        features: { cardType: "Base", parallelName: "Base", isCaseHit: "true" },
+        teamIds: [teamId as Id<"teams">],
+      });
+    });
+
+    const detail = await t
+      .withIdentity(ADMIN)
+      .query(api.setParallelConversion.getSetToParallelTargetDetail, {
+        setId,
+        targetSetId: ids.bowmanId,
+      });
+    if (!detail.ok) throw new Error(detail.reason);
+    // Only the turned-down names stay behind a NEW parallel…
+    expect(detail.newLoses).toEqual({
+      cardPrefix: false,
+      featureKeys: [],
+      team: false,
+      dismissedNames: true,
+    });
+    // …while adding to BSC's Blue keeps Blue's own data and leaves these.
+    expect(detail.parallels.find((p) => p.value === "Blue")!.loses).toEqual({
+      cardPrefix: true,
+      featureKeys: ["isCaseHit", "releaseDate"],
+      team: true,
+      dismissedNames: true,
+    });
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .mutation(api.setParallelConversion.convertSetToParallel, {
+        setId,
+        targetParallelTypeId: ids.parallelTypeId,
+      });
+    const row = (await get(t, result.parallelId))!;
+    expect(row.metadata).toEqual({ isParallel: true, cardNumberPrefix: "BF-" });
+    expect(row.teamIds).toEqual([teamId]);
+    expect(row.features).toMatchObject({
+      season: "2026",
+      releaseDate: "2026-05-01",
+      isCaseHit: "true",
+    });
+    // The parallel's own role, not the Base's.
+    expect(row.features?.cardType).not.toBe("Base");
+    expect(row.features?.parallelName).toBeUndefined();
+  });
+});
+
+describe("security audit — promoteParallelToSet", () => {
+  test.each(["b0", "s", "S0", "s0x", "__proto__", ""])(
+    "a slot key that is not a SportLots slot (%j) is refused, and the preview says so",
+    async (slSlotKey) => {
+      const t = convexTest(schema, modules);
+      const ids = await seed(t);
+      await t.run(async (ctx) => {
+        await ctx.db.patch(ids.goldId, {
+          platformData: { bsc: { b0: "gold" }, sportlots: { s0: "SL-GOLD" } },
+          platformSlotSeq: { bsc: 1, sportlots: 1 },
+        });
+      });
+      await expectRefusal(
+        t,
+        () =>
+          t.withIdentity(ADMIN).mutation(api.setParallelConversion.promoteParallelToSet, {
+            parallelId: ids.goldId,
+            slSlotKey,
+          }),
+        promotionRefusal.linkGone("Gold"),
+      );
+      expect(
+        await t
+          .withIdentity(ADMIN)
+          .query(api.setParallelConversion.getParallelPromotionPreview, {
+            parallelId: ids.goldId,
+            slSlotKey,
+          }),
+      ).toEqual({ ok: false, reason: promotionRefusal.linkGone("Gold") });
+    },
+  );
+
+  test("attach refuses a destination Base with a checklist review open", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const sl = await slSets(t, ids.brandId, [{ id: "SL-SAPPHIRE", label: "Bowman Sapphire" }]);
+    const row = await insertRow(t, {
+      level: "insert",
+      value: "Sapphire",
+      parentId: ids.parallelTypeId,
+      platformData: { sportlots: { s0: "SL-SAPPHIRE-2" } },
+      platformSlotSeq: { sportlots: 1 },
+    });
+    await stageReview(t, sl["Bowman Sapphire"].baseId);
+    await expectRefusal(
+      t,
+      () =>
+        t.withIdentity(ADMIN).mutation(api.setParallelConversion.promoteParallelToSet, {
+          parallelId: row,
+          slSlotKey: "s0",
+          attachToSetId: sl["Bowman Sapphire"].setId,
+        }),
+      promotionRefusal.reviewOpen("Bowman Sapphire"),
+    );
   });
 });
