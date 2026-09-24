@@ -12,7 +12,8 @@
  */
 
 import { describe, expect, test, vi, beforeEach } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { ConvexError } from "convex/values";
 import type { Id } from "../../convex/_generated/dataModel";
 
 vi.mock("../../convex/_generated/api", () => ({
@@ -170,5 +171,46 @@ describe("ParallelGroupingModal — discard guard", () => {
 
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(mockApply).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * NEO-300 — `applyParallelGroupings` refuses a plan that would put a row
+ * somewhere it already is with a ConvexError carrying the operator's sentence.
+ * `.message` arrives wrapped in the Convex request prefix on prod, so the
+ * footer reads `data`.
+ */
+describe("ParallelGroupingModal — a refused save", () => {
+  async function saveOneMove() {
+    renderModal();
+    demoteTheParallel();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Save 1 change"));
+    });
+  }
+
+  test("shows the ConvexError's own sentence, not the wrapped message", async () => {
+    const err = new ConvexError('"Refractor" is already a parallel of "Chrome".');
+    err.message =
+      '[CONVEX M(selectorOptions:applyParallelGroupings)] [Request ID: abc] Server Error Uncaught ConvexError: "Refractor" is already a parallel of "Chrome".';
+    mockApply.mockRejectedValueOnce(err);
+    await saveOneMove();
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe('"Refractor" is already a parallel of "Chrome".');
+    expect(alert.textContent).not.toContain("CONVEX");
+  });
+
+  test("falls back to the message for any other error", async () => {
+    mockApply.mockRejectedValueOnce(new Error("Network went away"));
+    await saveOneMove();
+    expect(screen.getByRole("alert").textContent).toBe("Network went away");
+  });
+
+  test("a ConvexError with structured data falls back too", async () => {
+    mockApply.mockRejectedValueOnce(new ConvexError({ code: "X" }));
+    await saveOneMove();
+    // Not "[object Object]" — the message path, as before.
+    expect(screen.getByRole("alert").textContent).not.toContain("[object");
   });
 });

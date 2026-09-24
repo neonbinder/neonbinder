@@ -20,7 +20,7 @@
  */
 
 import { describe, expect, test, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import ReconciliationModal, {
   type PlatformItem,
 } from "./ReconciliationModal";
@@ -620,6 +620,48 @@ describe("ReconciliationModal — sets held elsewhere (NEO-300)", () => {
     fireEvent.click(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
     expect(items[0].platformData.bsc).toEqual(["bsc-gold"]);
+  });
+
+  test("a long list scrolls inside its own bounded region, not the header", () => {
+    // 2026 Bowman: 140+ grouped rows. The header does not scroll, so an
+    // unbounded list pushed the body and the Save footer out of the panel.
+    const rows = Array.from({ length: 140 }, (_, i) => ({
+      key: `par-${i}`,
+      name: `Parallel ${i}`,
+      parentName: "Chrome",
+      bsc: [`bsc-${i}`],
+      sportlots: [],
+    }));
+    render(
+      <ReconciliationModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={vi.fn()}
+        level="insert"
+        initialData={allPending()}
+        heldElsewhere={{
+          rows,
+          summary: "140 already grouped as parallels. Leaving those be.",
+          toggleLabel: "Show grouped",
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Show grouped" }));
+    const region = screen.getByRole("group", {
+      name: "140 already grouped as parallels. Leaving those be.",
+    });
+    // Bounded and scrollable, and reachable from the keyboard to scroll it.
+    expect(region.className).toContain("max-h-40");
+    expect(region.className).toContain("overflow-y-auto");
+    expect(region.getAttribute("tabindex")).toBe("0");
+    expect(within(region).getAllByRole("listitem")).toHaveLength(140);
+    // The toggle points at the region it opens.
+    expect(
+      screen.getByRole("button", { name: "Show grouped" }).getAttribute("aria-controls"),
+    ).toBe(region.id);
+    // Save is still in the footer, untouched by the list.
+    expect(screen.getByText(/Save 0 sets/)).toBeTruthy();
   });
 
   test("no held rows, no line", () => {

@@ -136,4 +136,37 @@ describe("storeReconciledUntilDone", () => {
     expect(pages).toBe(1);
     expect(converged).toBe(true);
   });
+
+  it("takes the LAST page's heldElsewhere pair — never a sum (NEO-300)", async () => {
+    // Each page walks the list from the start, so a row held elsewhere is
+    // re-found by every page that passes it. Summing would report it twice.
+    const held = {
+      id: "p1" as never,
+      value: "Anime Kanji",
+      level: "parallel" as const,
+      parentId: "i1" as never,
+      parentValue: "Anime",
+    };
+    const store = vi
+      .fn<(a: typeof ARGS) => Promise<ReconciledStoreResult>>()
+      .mockResolvedValueOnce({
+        hasMore: true,
+        heldElsewhere: [held],
+        heldElsewhereTotal: 1,
+      })
+      .mockResolvedValueOnce({
+        hasMore: false,
+        heldElsewhere: [held, { ...held, id: "p2" as never, value: "Anime Gold" }],
+        heldElsewhereTotal: 2,
+      });
+
+    const { stored, pages } = await storeReconciledUntilDone(store, ARGS);
+
+    expect(pages).toBe(2);
+    expect(stored.heldElsewhereTotal).toBe(2);
+    expect(stored.heldElsewhere?.map((e) => e.value)).toEqual([
+      "Anime Kanji",
+      "Anime Gold",
+    ]);
+  });
 });

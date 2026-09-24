@@ -22,6 +22,7 @@ import HeldElsewhereNote, { groupedAsParallelsSummary } from "./HeldElsewhereNot
 import {
   heldIdSets,
   heldRowsReturnedBy,
+  mergeServerHeld,
   parallelsInTree,
   type HeldRow,
 } from "./held-elsewhere";
@@ -78,6 +79,8 @@ export default function VariantForm({
   // NEO-300: fetched sets the single-platform store skipped because a parallel
   // under this variant type already holds them. Shown beside the result.
   const [heldSkipped, setHeldSkipped] = useState<HeldRow[]>([]);
+  // The true count behind `heldSkipped`: the store's list is a capped sample.
+  const [heldTotal, setHeldTotal] = useState(0);
   const triggered = useRef(false);
   // a11y: a11y-focus-park landing spot for the two moments below where the
   // control that had focus unmounts out from under it.
@@ -146,11 +149,18 @@ export default function VariantForm({
     ? parallelsInTree(insertTree)
     : [];
 
+  // The subset the open reconcile modal was told about, so its confirm can
+  // tell the store's extras from what the header already named.
+  const modalHeldRows: HeldRow[] = reconciliationData
+    ? heldRowsReturnedBy(groupedParallels, reconciliationData)
+    : [];
+
   const doSync = async () => {
     if (!sportValue || !yearValue) return;
     setLoading(true);
     setMessage(null);
     setHeldSkipped([]);
+    setHeldTotal(0);
     try {
       const result = await fetchRawOptions({
         level: "insert",
@@ -271,6 +281,7 @@ export default function VariantForm({
         // a sync that looked like it did nothing.
         if (items.length === 0 && skipped.length > 0) {
           setHeldSkipped(skipped);
+          setHeldTotal(skipped.length);
           setMessage(`No new ${variantsLabel.toLowerCase()} to add.`);
           return;
         }
@@ -322,7 +333,11 @@ export default function VariantForm({
         setUnlinkedTotal(stored.unlinkedTotal);
 
         setUnlinked(unlinkedRows);
-        setHeldSkipped(skipped);
+        // NEO-300: the store re-checks in its own transaction and may have
+        // left alone rows this filter missed — they join the same note.
+        const heldAll = mergeServerHeld(skipped, stored);
+        setHeldSkipped(heldAll.rows);
+        setHeldTotal(heldAll.total);
         setMessage(
           // NEO-296 — the count is the SERVER'S (`optionsCount`: rows now
           // linked), never `items.length`. The old sentence counted what was
@@ -349,7 +364,7 @@ export default function VariantForm({
         // while mode === "sync", so not returning to idle hides that button.
         // NEO-300: likewise a skip — closing would hide that the sync left
         // grouped parallels alone.
-        if (converged && unlinkedRows.length === 0 && skipped.length === 0) {
+        if (converged && unlinkedRows.length === 0 && heldAll.total === 0) {
           onDone?.();
         }
       }
@@ -440,6 +455,16 @@ export default function VariantForm({
     const unlinkedRows = stored.unlinked ?? [];
     setUnlinkedTotal(stored.unlinkedTotal);
     setUnlinked(unlinkedRows);
+    // NEO-300: the modal's header already named what the client filter held
+    // back. If the store left alone MORE than that — rows the loaded tree did
+    // not show as held — the panel stays up to say so, with the whole list.
+    const heldAll = mergeServerHeld(modalHeldRows, stored);
+    if (heldAll.extra > 0) {
+      setHeldSkipped(heldAll.rows);
+      setHeldTotal(heldAll.total);
+      setMessage(`Saved ${stored.optionsCount ?? result.items.length} sets.`);
+      return;
+    }
     // Same rule as the single-platform path: a silent detach is not acceptable,
     // so the panel stays up to carry the notice.
     if (unlinkedRows.length === 0) onDone?.();
@@ -551,12 +576,13 @@ export default function VariantForm({
                   }
                 >
                   {message}
-                  {!isError && heldSkipped.length > 0 && (
+                  {!isError && heldTotal > 0 && (
                     <div className="mt-1">
                       <HeldElsewhereNote
                         tone="panel"
                         rows={heldSkipped}
-                        summary={groupedAsParallelsSummary(heldSkipped.length)}
+                        total={heldTotal}
+                        summary={groupedAsParallelsSummary(heldTotal)}
                         toggleLabel={GROUPED_TOGGLE_LABEL}
                       />
                     </div>
@@ -623,17 +649,11 @@ export default function VariantForm({
           })()}
           usedSlPlatformValues={usedIdentifiers?.slPlatformValues}
           usedBscPlatformValues={usedIdentifiers?.bscPlatformValues}
-          heldElsewhere={(() => {
-            const rows = heldRowsReturnedBy(
-              groupedParallels,
-              reconciliationData,
-            );
-            return {
-              rows,
-              summary: groupedAsParallelsSummary(rows.length),
-              toggleLabel: GROUPED_TOGGLE_LABEL,
-            };
-          })()}
+          heldElsewhere={{
+            rows: modalHeldRows,
+            summary: groupedAsParallelsSummary(modalHeldRows.length),
+            toggleLabel: GROUPED_TOGGLE_LABEL,
+          }}
           existingRows={existingVariantRows?.map((r) => ({
             // NEO-211 (plan E): carried through the modal so a rename inside it
             // stays a rename of THIS row.

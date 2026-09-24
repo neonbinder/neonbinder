@@ -18,11 +18,17 @@ import type { HeldRow } from "./held-elsewhere";
  */
 export default function HeldElsewhereNote({
   rows,
+  total,
   summary,
   toggleLabel,
   tone = "modal",
 }: {
   rows: ReadonlyArray<HeldRow>;
+  /**
+   * The true count, when it can exceed `rows` (the store's list is a capped
+   * sample). The list then ends with how many it is not naming.
+   */
+  total?: number;
   /** The whole sentence, count included — composed by the caller. */
   summary: string;
   toggleLabel: string;
@@ -31,7 +37,8 @@ export default function HeldElsewhereNote({
 }) {
   const [open, setOpen] = useState(false);
   const listId = useId();
-  if (rows.length === 0) return null;
+  const summaryId = useId();
+  if (rows.length === 0 && !(total !== undefined && total > 0)) return null;
 
   const text = tone === "modal" ? "text-gray-400" : "";
   const name = tone === "modal" ? "text-gray-200" : "font-medium";
@@ -39,7 +46,7 @@ export default function HeldElsewhereNote({
 
   return (
     <div className={`text-sm ${text}`}>
-      <span>{summary}</span>{" "}
+      <span id={summaryId}>{summary}</span>{" "}
       <button
         type="button"
         aria-expanded={open}
@@ -50,22 +57,40 @@ export default function HeldElsewhereNote({
         {toggleLabel}
       </button>
       {open && (
-        <ul id={listId} className="mt-1 space-y-0.5 pl-3">
-          {rows.map((r) => (
-            <li key={r.key}>
-              <span className={name}>{r.name}</span>
-              {r.parentName !== undefined && (
-                <>
-                  <span aria-hidden="true" className={`mx-1.5 ${arrow}`}>
-                    →
-                  </span>
-                  <span className="sr-only">grouped under </span>
-                  <span>{r.parentName}</span>
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
+        // Bounded and scrolled: in ReconciliationModal this sits in the
+        // header, which does not scroll, and a big set (2026 Bowman) can hold
+        // 140+ grouped rows — unbounded, the list pushed the body and the Save
+        // footer out of the 90vh panel. A focusable region, named by the
+        // summary it expands, so the keyboard can scroll it too. `group`, not
+        // `region`: the house role for a focusable scroll container (the
+        // print preview's), and the one the lint rule allows a tabIndex on.
+        <div
+          id={listId}
+          role="group"
+          aria-labelledby={summaryId}
+          tabIndex={0}
+          className="mt-1 max-h-40 overflow-y-auto overscroll-contain rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00C2FF]"
+        >
+          <ul className="space-y-0.5 pl-3">
+            {rows.map((r) => (
+              <li key={r.key}>
+                <span className={name}>{r.name}</span>
+                {r.parentName !== undefined && (
+                  <>
+                    <span aria-hidden="true" className={`mx-1.5 ${arrow}`}>
+                      →
+                    </span>
+                    <span className="sr-only">grouped under </span>
+                    <span>{r.parentName}</span>
+                  </>
+                )}
+              </li>
+            ))}
+            {total !== undefined && total > rows.length && (
+              <li>+ {total - rows.length} more</li>
+            )}
+          </ul>
+        </div>
       )}
     </div>
   );

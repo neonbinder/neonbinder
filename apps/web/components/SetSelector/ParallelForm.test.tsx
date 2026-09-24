@@ -596,4 +596,29 @@ describe("ParallelForm — sets held elsewhere in the variant type (NEO-300)", (
     expect(screen.getByText(/Pending \(1\)/)).toBeTruthy();
     expect(screen.getByText(/SportLots \(0\s*of 1\)/)).toBeTruthy();
   });
+
+  it("single platform: an insert the STORE left alone joins the note, named on its own", async () => {
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+      heldElsewhere: [
+        { id: "ins9", value: "Chrome Stars", level: "insert", parentId: "vt1", parentValue: "Insert" },
+      ],
+      heldElsewhereTotal: 1,
+    });
+    const { onDone } = await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already lives elsewhere in Inserts. Leaving it be.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show where" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Chrome Stars",
+    ]);
+    expect(onDone).not.toHaveBeenCalled();
+  });
 });

@@ -29,6 +29,7 @@ import { detectGroupings } from "./parallelDetection";
 import NeonButton from "../modules/NeonButton";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
+import { userFacingMessage } from "../../lib/errors/user-facing-message";
 
 /** "1 pending move" / "2 pending moves". */
 function plural(n: number, noun: string): string {
@@ -556,7 +557,17 @@ export default function ParallelGroupingModal({
       dispatch({ type: "RESET" });
       onClose();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to apply changes");
+      // NEO-300: the mutation's refusals are ConvexErrors carrying a sentence
+      // written for the operator ("Refractor" is already a parallel of
+      // "Chrome".) — `data` crosses intact, while `.message` arrives with the
+      // "[CONVEX M(...)] [Request ID: …]" prefix on prod. Anything else keeps
+      // the old reading so no failure goes quiet.
+      setError(
+        userFacingMessage(
+          err,
+          err instanceof Error ? err.message : "Failed to apply changes",
+        ),
+      );
     } finally {
       setConfirming(false);
     }
@@ -798,7 +809,11 @@ export default function ParallelGroupingModal({
         <div className="px-6 py-4 border-t border-gray-700 flex items-center justify-between gap-3">
           <div className="text-xs text-gray-400">
             {error ? (
-              <span className="text-red-300">{error}</span>
+              // role="alert": the operator pressed Save and is watching the
+              // button, so a refusal has to be announced, not just painted.
+              <span role="alert" className="text-red-300">
+                {error}
+              </span>
             ) : totalChanges > 0 ? (
               <>
                 {diff.promotions.length} promotion

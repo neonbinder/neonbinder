@@ -1,4 +1,5 @@
 import { slotIds, type SlotBearingRow } from "../../convex/platformSlots";
+import type { HeldElsewhereEntry } from "../../convex/selectorSyncStore";
 
 /**
  * NEO-300 — marketplace ids a sync must leave alone because another NB row in
@@ -108,7 +109,8 @@ export function heldRowsReturnedBy(
     sl.add(m.sl.platformValue);
   }
   return rows.filter(
-    (r) => r.bsc.some((id) => bsc.has(id)) || r.sportlots.some((id) => sl.has(id)),
+    (r) =>
+      r.bsc.some((id) => bsc.has(id)) || r.sportlots.some((id) => sl.has(id)),
   );
 }
 
@@ -124,4 +126,58 @@ export function heldIdSets(rows: ReadonlyArray<HeldRow>): {
     for (const id of r.sportlots) sportlots.add(id);
   }
   return { bsc, sportlots };
+}
+
+/**
+ * NEO-300 — fold the STORE's own account of what it left alone into what the
+ * client already filtered.
+ *
+ * The client filter runs against the insert tree it has loaded; the store
+ * re-checks against the database in its own transaction, so it can catch a row
+ * the client missed (a grouping that landed after the tree loaded, say). Those
+ * extras must reach the operator through the same note — a skip the server
+ * made silently is still a silent skip.
+ *
+ * `total` is the true count: every client row, plus the server's total less
+ * the entries it listed that the client had already counted. The server's list
+ * is a capped sample, so `total` can exceed `rows.length`; the note says how
+ * many it is not naming. `extra` is how many the client did NOT know about —
+ * the caller holds its panel open on that, and only that.
+ */
+export function mergeServerHeld(
+  clientRows: ReadonlyArray<HeldRow>,
+  server:
+    | {
+        heldElsewhere?: ReadonlyArray<HeldElsewhereEntry>;
+        heldElsewhereTotal?: number;
+      }
+    | null
+    | undefined,
+): { rows: HeldRow[]; total: number; extra: number } {
+  const listed = server?.heldElsewhere ?? [];
+  const serverTotal = Math.max(server?.heldElsewhereTotal ?? 0, listed.length);
+  const known = new Set(clientRows.map((r) => r.key));
+  const rows: HeldRow[] = [...clientRows];
+  let overlap = 0;
+  for (const e of listed) {
+    const key = String(e.id);
+    if (known.has(key)) {
+      overlap++;
+      continue;
+    }
+    known.add(key);
+    rows.push({
+      key,
+      name: e.value,
+      // An insert is named on its own; its parent is the variant type, which
+      // is where the operator already is.
+      ...(e.level === "parallel" ? { parentName: e.parentValue } : {}),
+      // The store names rows, not the ids that matched; nothing downstream of
+      // the note needs them.
+      bsc: [],
+      sportlots: [],
+    });
+  }
+  const extra = serverTotal - overlap;
+  return { rows, total: clientRows.length + extra, extra };
 }

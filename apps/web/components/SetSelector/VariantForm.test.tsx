@@ -736,6 +736,153 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     expect(onDone).not.toHaveBeenCalled();
   });
 
+  it("single platform: a row the STORE left alone that the tree missed joins the note", async () => {
+    // The tree says nothing is grouped (a grouping landed after it loaded, or
+    // a holder outside what the client reads). The store re-checks in its own
+    // transaction and reports the row; it must not vanish silently.
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [
+        { value: "Refractor", platformValue: "bsc-refractor" },
+        { value: "Team Canada", platformValue: "team-canada" },
+      ],
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+      heldElsewhere: [
+        {
+          id: "par-refractor",
+          value: "Refractor",
+          level: "parallel",
+          parentId: "ins-chrome",
+          parentValue: "Chrome",
+        },
+      ],
+      heldElsewhereTotal: 1,
+    });
+    const { onDone } = await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already grouped as a parallel. Leaving it be.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show grouped" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Refractor→grouped under Chrome",
+    ]);
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("single platform: counts past the store's capped list", async () => {
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+      heldElsewhere: [
+        { id: "p1", value: "Gold", level: "parallel", parentId: "i1", parentValue: "Chrome" },
+      ],
+      heldElsewhereTotal: 60,
+    });
+    await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("60 already grouped as parallels.");
+    fireEvent.click(screen.getByRole("button", { name: "Show grouped" }));
+    expect(screen.getByText("+ 59 more")).toBeTruthy();
+  });
+
+  it("modal: the store's extras keep the panel up after Save; the header's own do not", async () => {
+    insertTree = groupedUnderAnime();
+    const KANJI_BSC = { value: "Anime Kanji", platformValue: "bsc-kanji" };
+    const KANJI_SL = { value: "Anime Kanji", platformValue: "sl-kanji" };
+    const NEW_BSC = { value: "Chrome Stars", platformValue: "bsc-stars" };
+    const NEW_SL = { value: "Chrome Stars", platformValue: "sl-stars" };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [KANJI_BSC, NEW_BSC],
+      slOptions: [KANJI_SL, NEW_SL],
+      autoMatched: [
+        { displayName: "Anime Kanji", bsc: KANJI_BSC, sl: KANJI_SL, confidence: 0.95 },
+        { displayName: "Chrome Stars", bsc: NEW_BSC, sl: NEW_SL, confidence: 0.95 },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+      // Kanji the client already held back, plus one it did not know about.
+      heldElsewhere: [
+        { id: "par-kanji", value: "Anime Kanji", level: "parallel", parentId: "ins-anime", parentValue: "Anime" },
+        { id: "par-x", value: "Chrome Stars", level: "parallel", parentId: "ins-y", parentValue: "Prizm" },
+      ],
+      heldElsewhereTotal: 2,
+    });
+    const { onDone } = await renderForm();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByText(/Save 1 sets/));
+    });
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("Saved 1 sets.");
+    expect(status.textContent).toContain(
+      "2 already grouped as parallels. Leaving those be.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show grouped" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Anime Kanji→grouped under Anime",
+      "Chrome Stars→grouped under Prizm",
+    ]);
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("modal: a store that only confirms the header's rows closes as before", async () => {
+    insertTree = groupedUnderAnime();
+    const KANJI_BSC = { value: "Anime Kanji", platformValue: "bsc-kanji" };
+    const KANJI_SL = { value: "Anime Kanji", platformValue: "sl-kanji" };
+    const NEW_BSC = { value: "Chrome Stars", platformValue: "bsc-stars" };
+    const NEW_SL = { value: "Chrome Stars", platformValue: "sl-stars" };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [KANJI_BSC, NEW_BSC],
+      slOptions: [KANJI_SL, NEW_SL],
+      autoMatched: [
+        { displayName: "Anime Kanji", bsc: KANJI_BSC, sl: KANJI_SL, confidence: 0.95 },
+        { displayName: "Chrome Stars", bsc: NEW_BSC, sl: NEW_SL, confidence: 0.95 },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+      heldElsewhere: [
+        { id: "par-kanji", value: "Anime Kanji", level: "parallel", parentId: "ins-anime", parentValue: "Anime" },
+      ],
+      heldElsewhereTotal: 1,
+    });
+    const { onDone } = await renderForm();
+
+    await act(async () => {
+      fireEvent.click(await screen.findByText(/Save 1 sets/));
+    });
+    await waitFor(() => expect(onDone).toHaveBeenCalled());
+  });
+
   it("does not sync until the insert tree has loaded", async () => {
     // A sync that ran before the tree arrived would have nothing to filter
     // against and re-create every grouped row — the bug itself.

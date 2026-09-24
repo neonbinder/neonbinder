@@ -34,9 +34,10 @@
  * getting it backwards puts a wrong number in front of an operator:
  *
  *  - `optionsCount`, `itemsProcessed`, `message`, `returnedIdsTruncatedSides`
- *    are recomputed per page and the LAST page reached furthest, so the last
- *    page's value is the whole answer. Summing would count the prefix once per
- *    page.
+ *    and (NEO-300) `heldElsewhere` / `heldElsewhereTotal` are recomputed per
+ *    page and the LAST page reached furthest, so the last page's value is the
+ *    whole answer. Summing would count the prefix once per page — a row held
+ *    elsewhere is re-found by every page that walks past it.
  *  - `unlinked`, `relinked` and `writeOps` are events. The unlink pass detaches
  *    a stale primary id the first time it sees one; a later page re-reads the
  *    same row, finds nothing to detach and reports none. So these SUM — and
@@ -44,7 +45,10 @@
  *    notices, which invariant 5 says the operator must be told about.
  */
 
-import { UNLINK_NOTICE_LIMIT } from "../../convex/selectorSyncStore";
+import {
+  UNLINK_NOTICE_LIMIT,
+  type HeldElsewhereEntry,
+} from "../../convex/selectorSyncStore";
 import type { SyncSide, UnlinkedEntry } from "./selector-sync-feedback";
 
 /**
@@ -85,6 +89,14 @@ export type ReconciledStoreResult = {
   itemsProcessed?: number;
   hasMore?: boolean;
   writeOps?: number;
+  /**
+   * NEO-300 — rows the store left alone because they already live elsewhere
+   * in the variant type (a parallel grouped under another insert, say). A
+   * sample capped at `UNLINK_NOTICE_LIMIT`; `heldElsewhereTotal` is the real
+   * count. Recomputed per page, so the LAST page's pair is the answer.
+   */
+  heldElsewhere?: HeldElsewhereEntry[];
+  heldElsewhereTotal?: number;
 };
 
 export type ReconciledStoreDrain = {
@@ -140,6 +152,8 @@ export async function storeReconciledUntilDone<TArgs>(
   return {
     // `hasMore` is left exactly as the last page reported it, so a caller that
     // reads the merged result alone still sees an unfinished store.
+    // `heldElsewhere` / `heldElsewhereTotal` ride in on `...last` on purpose:
+    // recomputed per page, never summed (see the header).
     stored: {
       ...last,
       unlinked: unlinked.slice(0, UNLINK_NOTICE_LIMIT),
