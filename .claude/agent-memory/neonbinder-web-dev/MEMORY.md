@@ -58,3 +58,4 @@
 - [Entity review batch is a grouping not a table](reference_entity_review_batch_is_a_grouping_not_a_table.md) — no "batches" table; the queue's reaper waits 24h but the candidates' waits 1h, and one holdings number covers both
 - [Reset loop has a fifth consumer](reference_reset_loop_has_a_fifth_consumer.md) — publicFunctionAuth.test.ts pins each reset*Batch as internalMutation; the seeded toEqual block lives at two indent levels
 - [dnd-kit row control is a handle sibling](reference_dndkit_row_control_is_a_handle_sibling.md) — button beside the handle, not inside; set an activator node or Enter on a child button starts a drag
+- [dnd-kit pointerWithin kills keyboard drops](reference_dndkit_pointerwithin_kills_keyboard_drops.md) — keyboard drag has null pointer coords → no drop target; fall back to rectIntersection; own role=status is ambiguous in tests

@@ -34,7 +34,44 @@ vi.mock("convex/react", () => ({
     ref === "getInsertTreeByVariantType" ? tree : undefined,
 }));
 
-import ParallelGroupingModal from "./ParallelGroupingModal";
+/**
+ * NEO-300 — the drop half of a drag, reached through the real handler.
+ *
+ * dnd-kit's pointer sensor needs layout happy-dom does not do, and a keyboard
+ * drag's drop target comes from rectangles that are all zero here. The
+ * context itself is the real one; this only keeps a hand on the props the
+ * modal gave it, so a test can call `onDragStart` / `onDragEnd` exactly as a
+ * finished drag would.
+ */
+type DndHandlers = {
+  onDragStart?: (e: { active: { id: string } }) => void;
+  onDragEnd?: (e: {
+    active: { id: string };
+    over: { id: string } | null;
+  }) => void;
+};
+const dnd: DndHandlers = {};
+vi.mock("@dnd-kit/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@dnd-kit/core")>();
+  const Real = actual.DndContext;
+  return {
+    ...actual,
+    DndContext: (props: React.ComponentProps<typeof Real>) => {
+      dnd.onDragStart = props.onDragStart as DndHandlers["onDragStart"];
+      dnd.onDragEnd = props.onDragEnd as DndHandlers["onDragEnd"];
+      return <Real {...props} />;
+    },
+  };
+});
+
+import ParallelGroupingModal, {
+  emptyGroupingState,
+  groupingCollision,
+  groupingReducer,
+  type GroupingState,
+  type Placement,
+  type RowInfo,
+} from "./ParallelGroupingModal";
 
 const VARIANT_TYPE_ID = "vt1" as Id<"selectorOptions">;
 
@@ -511,5 +548,529 @@ describe("ParallelGroupingModal — draggable rows", () => {
   test("Space on the row itself still picks it up (keyboard drag)", () => {
     renderModal();
     expect(fireEvent.keyDown(row("Gold"), { key: " ", code: "Space" })).toBe(false);
+  });
+});
+
+/**
+ * NEO-300 — moving many rows at once.
+ *
+ * Jason's case: six top-level "Chrome Autographs Mojo … Refractors" rows all
+ * belong under "Chrome Autographs Mojo Refractors", and none of them
+ * prefix-matches it, so no suggestion helps — it was six drags. A seventh
+ * row, "… Blue Wave", already holds a parallel, sits in the middle of the run
+ * (rows sort by name) and can never be picked.
+ */
+describe("ParallelGroupingModal — several rows at once", () => {
+  const P = "Chrome Autographs Mojo";
+  const MOJO = `${P} Refractors`;
+  const AQUA = `${P} Aqua Refractors`;
+  const BW = `${P} Black and White Refractors`;
+  const BLACK = `${P} Black Refractors`;
+  const BLUE = `${P} Blue Refractors`;
+  const WAVE = `${P} Blue Wave`;
+  const GOLD = `${P} Gold Refractors`;
+  const GREEN = `${P} Green Refractors`;
+  const SIX = [AQUA, BW, BLACK, BLUE, GOLD, GREEN];
+
+  function mojoTree() {
+    return [
+      { insert: { _id: "mojo", value: MOJO }, parallels: [] },
+      { insert: { _id: "aqua", value: AQUA }, parallels: [] },
+      { insert: { _id: "bw", value: BW }, parallels: [] },
+      { insert: { _id: "black", value: BLACK }, parallels: [] },
+      { insert: { _id: "blue", value: BLUE }, parallels: [] },
+      {
+        insert: { _id: "wave", value: WAVE },
+        parallels: [
+          { _id: "wave-red", value: "Wave Red" },
+          { _id: "wave-teal", value: "Wave Teal" },
+        ],
+      },
+      { insert: { _id: "gold", value: GOLD }, parallels: [] },
+      { insert: { _id: "green", value: GREEN }, parallels: [] },
+    ];
+  }
+
+  beforeEach(() => {
+    tree = mojoTree();
+  });
+
+  const tick = (name: string) =>
+    screen.getByRole("checkbox", { name: `Select ${name}` });
+  const nameButton = (name: string) =>
+    screen.getByText(name).closest("button") as HTMLButtonElement;
+  const isPicked = (name: string) =>
+    tick(name).getAttribute("aria-checked") === "true";
+  const picked = (names: string[]) => names.filter(isPicked);
+  const boxTitle = (name: string) => `Parallels of "${name}"`;
+  const zoneOf = (title: string) =>
+    screen.getByText(title).parentElement!.parentElement as HTMLElement;
+  // dnd-kit keeps a role="status" of its own; this is the footer's.
+  const count = () =>
+    document.querySelector('[role="status"][data-selection-count]')!
+      .textContent;
+
+  async function savedPlan() {
+    await act(async () => {
+      fireEvent.click(screen.getByText(/^Save \d+ changes?$/));
+    });
+    expect(mockApply).toHaveBeenCalledTimes(1);
+    return mockApply.mock.calls[0][0];
+  }
+
+  test("Cmd/Ctrl+click and the tick box toggle rows in and out", () => {
+    renderModal();
+    fireEvent.click(nameButton(AQUA), { metaKey: true });
+    fireEvent.click(nameButton(GOLD), { ctrlKey: true });
+    fireEvent.click(tick(GREEN));
+    expect(picked([...SIX, MOJO])).toEqual([AQUA, GOLD, GREEN]);
+    expect(count()).toBe("3 selected");
+    // Selected is not colour alone: the tick box says so, and so does the
+    // name button's pressed state.
+    expect(nameButton(GOLD).getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(nameButton(GOLD), { metaKey: true });
+    fireEvent.click(tick(GREEN));
+    expect(picked([...SIX, MOJO])).toEqual([AQUA]);
+    expect(count()).toBe("1 selected");
+  });
+
+  test("a picked row wears the selected style even while it is a suggestion", () => {
+    // "… Mojo Refractors Gold" prefix-matches the target, so it opens yellow.
+    tree = [
+      ...mojoTree(),
+      { insert: { _id: "sugg", value: `${MOJO} Gold` }, parallels: [] },
+    ];
+    renderModal();
+    const row = () => screen.getByRole("group", { name: `${MOJO} Gold` });
+    expect(row().className).toContain("border-yellow-700");
+    fireEvent.click(tick(`${MOJO} Gold`));
+    expect(row().className).toContain("border-neon-blue");
+    expect(row().className).not.toContain("border-yellow-700");
+    // The badge still says it was suggested.
+    expect(within(row()).getByText("Suggested")).toBeTruthy();
+  });
+
+  test("a plain click still selects that row alone", () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick(BW));
+    fireEvent.click(tick(BLACK));
+    expect(count()).toBe("3 selected");
+
+    fireEvent.click(screen.getByText(GOLD));
+    expect(picked([...SIX, MOJO])).toEqual([GOLD]);
+    // The single-row wording is the one a Maestro flow waits on.
+    expect(
+      screen.getAllByText("Click here to make the selected row a parallel")
+        .length,
+    ).toBeGreaterThan(0);
+
+    // ...and click-to-place moves only it.
+    fireEvent.click(screen.getByText(boxTitle(MOJO)));
+    expect(screen.getByText("1 promotion, 0 demotions")).toBeTruthy();
+    expect(within(zoneOf(boxTitle(MOJO))).getByText(GOLD)).toBeTruthy();
+  });
+
+  test("Shift+click takes the run from the anchor, skipping a row that holds parallels", () => {
+    renderModal();
+    fireEvent.click(screen.getByText(AQUA));
+    fireEvent.click(nameButton(GREEN), { shiftKey: true });
+    // The whole run, less "Blue Wave" (it holds parallels) and less the
+    // target, which sorts after Green.
+    expect(picked([...SIX, MOJO])).toEqual(SIX);
+    expect(tick(WAVE).hasAttribute("disabled")).toBe(true);
+    expect(tick(WAVE).getAttribute("aria-checked")).toBe("false");
+    expect(count()).toBe("6 selected");
+
+    // A second Shift+click from the same anchor replaces the run.
+    fireEvent.click(tick(BLACK), { shiftKey: true });
+    expect(picked([...SIX, MOJO])).toEqual([AQUA, BW, BLACK]);
+  });
+
+  test("a range never spans boxes: Shift+click in another list adds that row alone", () => {
+    renderModal();
+    fireEvent.click(screen.getByText(AQUA));
+    fireEvent.click(nameButton("Wave Teal"), { shiftKey: true });
+    // Aqua kept, Teal added — not every row between them.
+    expect(picked([...SIX, MOJO])).toEqual([AQUA]);
+    expect(isPicked("Wave Teal")).toBe(true);
+    expect(isPicked("Wave Red")).toBe(false);
+    // Teal is the new anchor: a Shift+click in its own box runs from it.
+    fireEvent.click(tick("Wave Red"), { shiftKey: true });
+    expect(isPicked("Wave Red")).toBe(true);
+    expect(count()).toBe("3 selected");
+  });
+
+  test("Esc clears the selection first, and the dialog on the next press", () => {
+    const { onClose } = renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick(GOLD));
+
+    fireEvent.keyDown(overlay(), { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+    expect(picked(SIX)).toEqual([]);
+    expect(count()).toBe("");
+
+    fireEvent.keyDown(overlay(), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test("Clear empties the selection and keeps focus in the dialog", () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
+    expect(picked(SIX)).toEqual([]);
+    expect(screen.queryByRole("button", { name: "Clear selection" })).toBeNull();
+    expect(document.activeElement).toBe(overlay());
+  });
+
+  test("keyboard: arrows walk the list, Shift+arrows extend, Space is the tick's own", () => {
+    renderModal();
+    tick(AQUA).focus();
+    // A plain arrow moves focus down the list without picking anything, and
+    // is not left to scroll the body.
+    expect(fireEvent.keyDown(tick(AQUA), { key: "ArrowDown" })).toBe(false);
+    expect(document.activeElement).toBe(tick(BW));
+    expect(picked(SIX)).toEqual([]);
+
+    fireEvent.keyDown(tick(BW), { key: "ArrowDown", shiftKey: true });
+    expect(document.activeElement).toBe(tick(BLACK));
+    expect(picked(SIX)).toEqual([BW, BLACK]);
+    fireEvent.keyDown(tick(BLACK), { key: "ArrowDown", shiftKey: true });
+    // "Blue Wave" can't be picked, so it is not a stop either.
+    fireEvent.keyDown(tick(BLUE), { key: "ArrowDown", shiftKey: true });
+    expect(document.activeElement).toBe(tick(GOLD));
+    expect(picked(SIX)).toEqual([BW, BLACK, BLUE, GOLD]);
+    // Back up: the run shrinks toward the anchor.
+    fireEvent.keyDown(tick(GOLD), { key: "ArrowUp", shiftKey: true });
+    expect(picked(SIX)).toEqual([BW, BLACK, BLUE]);
+
+    // The name buttons walk the same way.
+    nameButton(AQUA).focus();
+    fireEvent.keyDown(nameButton(AQUA), { key: "ArrowDown" });
+    expect(document.activeElement).toBe(nameButton(BW));
+
+    // Space on the tick is a button press, not dnd-kit's Space-to-lift.
+    expect(fireEvent.keyDown(tick(AQUA), { key: " ", code: "Space" })).toBe(true);
+    expect(tick(AQUA).tagName).toBe("BUTTON");
+  });
+
+  test("click-to-place moves every selected row, in one save", async () => {
+    renderModal();
+    fireEvent.click(screen.getByText(AQUA));
+    fireEvent.click(nameButton(GREEN), { shiftKey: true });
+    // Every box invites the drop — except those of the six themselves.
+    expect(
+      within(zoneOf(boxTitle(MOJO))).getByText(
+        "Click here to make the 6 selected rows parallels",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(zoneOf(boxTitle(BLUE))).getByText(
+        "This row is selected. Untick it to drop the other 5 here.",
+      ),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByText(boxTitle(MOJO)));
+
+    expect(screen.getByText("6 promotions, 0 demotions")).toBeTruthy();
+    const box = zoneOf(boxTitle(MOJO));
+    for (const name of SIX) expect(within(box).getByText(name)).toBeTruthy();
+    // The selection is spent.
+    expect(screen.queryByText(/selected$/)).toBeNull();
+
+    const plan = await savedPlan();
+    expect(plan.promotions).toHaveLength(6);
+    expect(
+      new Set(plan.promotions.map((p: { insertId: string }) => p.insertId)),
+    ).toEqual(new Set(["aqua", "bw", "black", "blue", "gold", "green"]));
+    for (const p of plan.promotions) expect(p.targetInsertId).toBe("mojo");
+    expect(plan.demotions).toEqual([]);
+  });
+
+  test("a drag of any selected row carries the whole selection", async () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick(BLUE));
+    fireEvent.click(tick(GREEN));
+
+    act(() => {
+      dnd.onDragStart!({ active: { id: "blue" } });
+    });
+    // The other two ride along, dimmed like the grabbed row.
+    const rowOf = (name: string) => screen.getByRole("group", { name });
+    expect(rowOf(AQUA).style.opacity).toBe("0.4");
+    expect(rowOf(GREEN).style.opacity).toBe("0.4");
+    expect(rowOf(GOLD).style.opacity).toBe("1");
+
+    act(() => {
+      dnd.onDragEnd!({
+        active: { id: "blue" },
+        over: { id: "drop-insert-mojo" },
+      });
+    });
+    expect(screen.getByText("3 promotions, 0 demotions")).toBeTruthy();
+    const plan = await savedPlan();
+    expect(
+      plan.promotions.map((p: { insertId: string }) => p.insertId).sort(),
+    ).toEqual(["aqua", "blue", "green"]);
+  });
+
+  test("the drag overlay stacks the rows and counts them", () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick(GOLD));
+    // A real keyboard lift: Space on the row's own drag handle.
+    act(() => {
+      fireEvent.keyDown(screen.getByRole("group", { name: GOLD }), {
+        key: " ",
+        code: "Space",
+      });
+    });
+    expect(screen.getByText("2 rows")).toBeTruthy();
+  });
+
+  test("a drag of an UNSELECTED row moves it alone and keeps the selection", () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick(GOLD));
+    act(() => {
+      dnd.onDragStart!({ active: { id: "green" } });
+      dnd.onDragEnd!({
+        active: { id: "green" },
+        over: { id: "drop-insert-mojo" },
+      });
+    });
+    expect(screen.getByText("1 promotion, 0 demotions")).toBeTruthy();
+    expect(picked(SIX)).toEqual([AQUA, GOLD]);
+  });
+
+  test("a picked row that is handed a parallel drops out of the selection", () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick(GOLD));
+    // Green (not picked) dropped under Aqua: Aqua now holds a parallel.
+    act(() => {
+      dnd.onDragEnd!({
+        active: { id: "green" },
+        over: { id: "drop-insert-aqua" },
+      });
+    });
+    expect(tick(AQUA).hasAttribute("disabled")).toBe(true);
+    expect(picked(SIX)).toEqual([GOLD]);
+    expect(count()).toBe("1 selected");
+  });
+
+  test("demote many: rows from two boxes to the top level at once", async () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick(BW));
+    fireEvent.click(screen.getByText(boxTitle(MOJO)));
+    // Now: Aqua and B&W under Mojo; Red and Teal under Blue Wave.
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick("Wave Red"));
+    fireEvent.click(tick("Wave Teal"));
+    expect(
+      screen.getByText("Click here to place the 3 selected rows at the top level"),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Top-level inserts"));
+
+    // Aqua's promotion is undone; Red and Teal are demoted.
+    expect(screen.getByText("1 promotion, 2 demotions")).toBeTruthy();
+    const plan = await savedPlan();
+    expect(plan.promotions).toEqual([{ insertId: "bw", targetInsertId: "mojo" }]);
+    expect(
+      plan.demotions.map((d: { parallelId: string }) => d.parallelId).sort(),
+    ).toEqual(["wave-red", "wave-teal"]);
+  });
+
+  test("a box whose own row is selected refuses the selection, and says why", () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick(BW));
+    fireEvent.click(tick(MOJO));
+
+    const box = zoneOf(boxTitle(MOJO));
+    expect(
+      within(box).getByText("This row is selected. Untick it to drop the other 2 here."),
+    ).toBeTruthy();
+    // It does not offer itself as a click target (the other boxes do)...
+    expect(box.className).not.toContain("cursor-pointer");
+    expect(zoneOf(boxTitle(GOLD)).className).toContain("cursor-pointer");
+    // ...a click on it does nothing...
+    fireEvent.click(screen.getByText(boxTitle(MOJO)));
+    // ...and neither does a drop (a drop lands nowhere, but even one that
+    // reached the handler is refused whole).
+    act(() => {
+      dnd.onDragEnd!({ active: { id: "aqua" }, over: { id: "drop-insert-mojo" } });
+    });
+    expect(screen.getByText("No changes yet")).toBeTruthy();
+    expect(picked([AQUA, BW, MOJO])).toEqual([AQUA, BW, MOJO]);
+
+    // Untick the target and the same click moves the other two.
+    fireEvent.click(tick(MOJO));
+    fireEvent.click(screen.getByText(boxTitle(MOJO)));
+    expect(screen.getByText("2 promotions, 0 demotions")).toBeTruthy();
+  });
+
+  test("clicking a row inside a box selects it; it does not drop the selection there", () => {
+    renderModal();
+    fireEvent.click(screen.getByText(AQUA));
+    // "Wave Red" sits inside Blue Wave's box, which is a click target now.
+    fireEvent.click(screen.getByText("Wave Red"));
+    expect(screen.getByText("No changes yet")).toBeTruthy();
+    expect(isPicked("Wave Red")).toBe(true);
+    expect(isPicked(AQUA)).toBe(false);
+    fireEvent.click(tick("Wave Teal"));
+    expect(screen.getByText("No changes yet")).toBeTruthy();
+    expect(count()).toBe("2 selected");
+  });
+
+  test("✕ on one row keeps the rest of the selection", () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick("Wave Red"));
+    fireEvent.click(screen.getByLabelText("Remove Wave Teal from parallels"));
+    expect(screen.getByText("0 promotions, 1 demotion")).toBeTruthy();
+    expect(isPicked(AQUA)).toBe(true);
+    expect(isPicked("Wave Red")).toBe(true);
+  });
+});
+
+/**
+ * NEO-300 — the reducer on its own: states the UI keeps out of reach, which
+ * is exactly why they need a backstop.
+ */
+describe("groupingReducer — a move of several rows is all or nothing", () => {
+  const id = (s: string) => s as Id<"selectorOptions">;
+  function state(): GroupingState {
+    const rows = new Map<Id<"selectorOptions">, RowInfo>();
+    const placement = new Map<Id<"selectorOptions">, Placement>();
+    const add = (
+      key: string,
+      kind: "insert" | "parallel",
+      parent: string | null,
+    ) => {
+      rows.set(id(key), {
+        _id: id(key),
+        value: key,
+        originalKind: kind,
+        originalParentId: parent ? id(parent) : null,
+        originalHadParallels: false,
+      });
+      placement.set(
+        id(key),
+        parent ? { kind: "child", parentId: id(parent) } : { kind: "ungrouped" },
+      );
+    };
+    add("target", "insert", null);
+    add("a", "insert", null);
+    add("holder", "insert", null);
+    add("b", "insert", null);
+    add("held", "parallel", "holder");
+    return groupingReducer(emptyGroupingState, {
+      type: "INIT",
+      rows,
+      placement,
+      suggested: new Set(),
+    });
+  }
+
+  test("a valid row and one holding parallels: nothing moves", () => {
+    const before = state();
+    const after = groupingReducer(before, {
+      type: "MOVE",
+      rowIds: [id("a"), id("holder")],
+      placement: { kind: "child", parentId: id("target") },
+      fromSelection: true,
+    });
+    expect(after).toBe(before);
+  });
+
+  test("the target inside the rows: nothing moves", () => {
+    const before = state();
+    const after = groupingReducer(before, {
+      type: "MOVE",
+      rowIds: [id("a"), id("b"), id("target")],
+      placement: { kind: "child", parentId: id("target") },
+      fromSelection: true,
+    });
+    expect(after).toBe(before);
+  });
+
+  test("all valid: one action moves them all and spends the selection", () => {
+    let s = state();
+    s = groupingReducer(s, { type: "TOGGLE", rowId: id("a") });
+    s = groupingReducer(s, { type: "TOGGLE", rowId: id("b") });
+    const after = groupingReducer(s, {
+      type: "MOVE",
+      rowIds: s.selected,
+      placement: { kind: "child", parentId: id("target") },
+      fromSelection: true,
+    });
+    expect(after.placement.get(id("a"))).toEqual({ kind: "child", parentId: "target" });
+    expect(after.placement.get(id("b"))).toEqual({ kind: "child", parentId: "target" });
+    expect(after.selected).toEqual([]);
+  });
+
+  test("a row holding parallels can't be picked by any path", () => {
+    const s = state();
+    for (const action of [
+      { type: "SELECT_ONLY" as const, rowId: id("holder") },
+      { type: "TOGGLE" as const, rowId: id("holder") },
+    ]) {
+      expect(groupingReducer(s, action).selected).toEqual([]);
+    }
+    const ranged = groupingReducer(s, {
+      type: "SELECT_RANGE",
+      rowId: id("b"),
+      list: [id("a"), id("holder"), id("b")],
+      from: id("a"),
+    });
+    expect(ranged.selected).toEqual(["a", "b"]);
+  });
+});
+
+/**
+ * NEO-300 — a KEYBOARD drag has no pointer, and `pointerWithin` answers
+ * "nothing" without one, so Space-arrows-Space never landed anywhere.
+ */
+describe("groupingCollision", () => {
+  const rect = (top: number, height: number) => ({
+    top,
+    left: 0,
+    width: 400,
+    height,
+    bottom: top + height,
+    right: 400,
+  });
+  function args(pointer: { x: number; y: number } | null) {
+    const droppableRects = new Map([
+      ["drop-ungrouped", rect(0, 100)],
+      ["drop-insert-x", rect(120, 100)],
+    ]);
+    return {
+      active: { id: "row" },
+      collisionRect: rect(150, 30),
+      droppableRects,
+      droppableContainers: [...droppableRects.keys()].map((key) => ({
+        id: key,
+      })),
+      pointerCoordinates: pointer,
+    } as unknown as Parameters<typeof groupingCollision>[0];
+  }
+
+  test("with no pointer, the box the dragged row overlaps wins", () => {
+    expect(groupingCollision(args(null)).map((c) => c.id)).toEqual([
+      "drop-insert-x",
+    ]);
+  });
+
+  test("with a pointer, the box under the pointer wins, as before", () => {
+    expect(groupingCollision(args({ x: 10, y: 50 })).map((c) => c.id)).toEqual([
+      "drop-ungrouped",
+    ]);
   });
 });
