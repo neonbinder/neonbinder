@@ -15,3 +15,4 @@
 - [Convex op budget: count writes, not items](reference_convex_op_budget_count_writes_not_items.md) — count ops at the call sites; budgeting writes makes a truncated call finishable by replaying the same list; a shared dry run must pay the write cost
 - [Store loops fall through to insert](reference_store_loops_fall_through_to_insert.md) — a new MatchOutcome kind becomes a NEW ROW in both stores until each gets an explicit branch
 - [Stub ctx for an action's write failures](reference_action_impl_stub_ctx_for_write_failures.md) — export a plain *Impl + Pick<ActionCtx> stub; convex-test can't make an OCC conflict; adapters are no-throw, so a throwing fetch stub never reaches a catch
+- [Convex test files are not typechecked](reference_convex_test_files_are_not_typechecked.md) — convex tsconfig excludes *.test.ts; grep root `tsc -p .` output for your test file

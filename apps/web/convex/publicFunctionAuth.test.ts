@@ -1099,3 +1099,172 @@ describe("NEO-237/NEO-294: the All Brands view doors are admin-gated", () => {
     expect(setsUnderBrand).toHaveLength(0);
   });
 });
+
+describe("NEO-305: the set ⇄ parallel doors are admin-gated", () => {
+  /**
+   * Seven public functions on the set builder. Two WRITES — "Make parallel
+   * of…" re-parents a set's SportLots links and cards onto a parallel and
+   * deletes the emptied set; "Promote to set" mints a set from a parallel's
+   * SportLots link and may delete the parallel — and five reads behind their
+   * dialogs and the Parallels sync's brand-wide hold, each of which enumerates
+   * a brand's sets, parallels or SportLots links. Every one is `requireAdmin`
+   * like every other set-builder door, and refuses before its first read.
+   *
+   * Called with arguments the writes would ACCEPT, so the assertions below
+   * (nothing moved, nothing deleted) are evidence the gate refused first.
+   */
+  async function seedConversion(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const insert = (doc: Record<string, unknown>) =>
+        ctx.db.insert("selectorOptions", {
+          platformData: {},
+          children: [],
+          lastUpdated: 1_700_000_000_000,
+          ...doc,
+        } as never);
+      const sportId = await insert({ level: "sport", value: "Baseball" });
+      const yearId = await insert({ level: "year", value: "2026", parentId: sportId });
+      const brandId = await insert({
+        level: "manufacturer",
+        value: "Bowman",
+        parentId: yearId,
+        metadata: { setNamePrefix: "Bowman" },
+      });
+      const flagshipId = await insert({
+        level: "setName",
+        value: "Bowman",
+        parentId: brandId,
+        platformData: { bsc: { b0: "bowman" } },
+      });
+      const parallelTypeId = await insert({
+        level: "variantType",
+        value: "Parallel",
+        parentId: flagshipId,
+        platformData: { bsc: { b0: "parallel" } },
+        platformFacets: { bsc: { b0: "variant" } },
+      });
+      const parallelId = await insert({
+        level: "insert",
+        value: "Gold",
+        parentId: parallelTypeId,
+        platformData: { sportlots: { s0: "SL-GOLD" } },
+        platformLabels: { sportlots: { s0: "Bowman Gold" } },
+        platformSlotSeq: { sportlots: 1 },
+        metadata: { isParallel: true },
+      });
+      await ctx.db.patch(parallelTypeId, { children: [parallelId] });
+      await ctx.db.patch(flagshipId, { children: [parallelTypeId] });
+      const setId = await insert({
+        level: "setName",
+        value: "Bowman Blue",
+        parentId: brandId,
+      });
+      const baseId = await insert({
+        level: "variantType",
+        value: "Base",
+        parentId: setId,
+        metadata: { isBase: true },
+        platformData: { sportlots: { s0: "SL-BLUE" } },
+        platformLabels: { sportlots: { s0: "Bowman Blue" } },
+        platformSlotSeq: { sportlots: 1 },
+      });
+      await ctx.db.patch(setId, { children: [baseId] });
+      await ctx.db.patch(brandId, { children: [flagshipId, setId] });
+      return { brandId, flagshipId, parallelTypeId, parallelId, setId, baseId };
+    });
+  }
+
+  type Ids = Awaited<ReturnType<typeof seedConversion>>;
+
+  test.each([
+    [
+      "setParallelConversion.convertSetToParallel",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.mutation(api.setParallelConversion.convertSetToParallel, {
+          setId: ids.setId,
+          targetParallelTypeId: ids.parallelTypeId,
+        }),
+    ],
+    [
+      "setParallelConversion.promoteParallelToSet",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.mutation(api.setParallelConversion.promoteParallelToSet, {
+          parallelId: ids.parallelId,
+          slSlotKey: "s0",
+        }),
+    ],
+    [
+      "setParallelConversion.getSetToParallelEligibility",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.setParallelConversion.getSetToParallelEligibility, { setId: ids.setId }),
+    ],
+    [
+      "setParallelConversion.getSetToParallelTargets",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.setParallelConversion.getSetToParallelTargets, { setId: ids.setId }),
+    ],
+    [
+      "setParallelConversion.getSetToParallelTargetDetail",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.setParallelConversion.getSetToParallelTargetDetail, {
+          setId: ids.setId,
+          targetSetId: ids.flagshipId,
+        }),
+    ],
+    [
+      "setParallelConversion.getParallelPromotionEligibility",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.setParallelConversion.getParallelPromotionEligibility, {
+          parallelId: ids.parallelId,
+        }),
+    ],
+    [
+      "setParallelConversion.getParallelPromotionPreview",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.setParallelConversion.getParallelPromotionPreview, {
+          parallelId: ids.parallelId,
+          slSlotKey: "s0",
+        }),
+    ],
+    [
+      "setParallelConversion.getBrandSlHolders",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.setParallelConversion.getBrandSlHolders, {
+          variantTypeId: ids.parallelTypeId,
+        }),
+    ],
+  ])("%s refuses a signed-in non-admin and a signed-out caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedConversion(t);
+    await expect(call(t.withIdentity(SIGNED_IN), ids)).rejects.toThrow();
+    await expect(call(t, ids)).rejects.toThrow();
+    // Refused before any write: both rows and both links are where seeded.
+    const after = await t.run(async (ctx) => ({
+      set: await ctx.db.get(ids.setId),
+      base: await ctx.db.get(ids.baseId),
+      parallel: await ctx.db.get(ids.parallelId),
+      sets: await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "setName").eq("parentId", ids.brandId),
+        )
+        .collect(),
+    }));
+    expect(after.set).not.toBeNull();
+    expect(after.base!.platformData).toEqual({ sportlots: { s0: "SL-BLUE" } });
+    expect(after.parallel!.platformData).toEqual({ sportlots: { s0: "SL-GOLD" } });
+    expect(after.sets).toHaveLength(2);
+  });
+
+  test("and an admin gets through (the gate is the refusal, not the arguments)", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedConversion(t);
+    const result = await t
+      .withIdentity(ADMIN)
+      .mutation(api.setParallelConversion.convertSetToParallel, {
+        setId: ids.setId,
+        targetParallelTypeId: ids.parallelTypeId,
+      });
+    expect(result.parallelValue).toBe("Blue");
+  });
+});

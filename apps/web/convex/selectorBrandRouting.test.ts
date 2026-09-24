@@ -27,8 +27,10 @@ import {
   matchesBrandPrefix,
   routeBscSets,
   routeSlSets,
+  slFlagshipAbsorbs,
   stripMatchedBrandPrefix,
   type BrandRouteManufacturer,
+  type BscSetPhaseOutcome,
   type BscSetHolder,
   type MarketplaceSetEntry,
 } from "./selectorSyncMatch";
@@ -586,6 +588,199 @@ describe("routeSlSets", () => {
     expect(plan.roots).toEqual([]);
     expect(plan.variants).toBe(0);
     expect(plan.covered).toBe(0);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-305 — the flagship absorbs its SportLots-only names when BSC answered
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * 2026 Bowman, as the sync sees it after BSC filed its three sets. The
+ * labels are what the adapter returns for a real brand: "Bowman " stripped
+ * case-sensitively, and the flagship kept whole ("never strips to nothing").
+ */
+const BOWMAN_2026_KNOWN = knownSetNameKeys([
+  { value: "Bowman", brandPrefix: "Bowman" },
+  { value: "Bowman Chrome", brandPrefix: "Bowman" },
+  { value: "Bowman Sapphire Edition", brandPrefix: "Bowman" },
+]);
+const BOWMAN_2026_SL = [
+  { id: "sl-bowman", label: "Bowman" },
+  { id: "sl-chrome", label: "Chrome" },
+  { id: "sl-chrome-refractor", label: "Chrome Refractor" },
+  { id: "sl-sapphire", label: "Sapphire Edition" },
+  { id: "sl-blue", label: "Blue" },
+  { id: "sl-gold", label: "Gold" },
+  { id: "sl-neon-green", label: "Neon Green" },
+];
+
+describe("routeSlSets — flagshipAbsorbs (NEO-305)", () => {
+  test("2026 Bowman: with the flag, the colours are the flagship's parallels, not sets", () => {
+    const plan = routeSlSets({
+      entries: BOWMAN_2026_SL,
+      coveredSlIds: new Set(),
+      knownSetNameKeys: BOWMAN_2026_KNOWN,
+      scopePrefix: "Bowman",
+      flagshipAbsorbs: true,
+    });
+    expect(plan.roots).toEqual([]);
+    expect(plan.flagshipParallels).toBe(3); // Blue, Gold, Neon Green
+    // The flagship itself, Chrome (+ its refractor) and Sapphire Edition are
+    // variants of sets BSC already filed — unchanged by the flag.
+    expect(plan.variants).toBe(4);
+    expect(plan.covered).toBe(0);
+  });
+
+  test("2026 Bowman: without the flag (absent), the colours become roots exactly as before", () => {
+    const plan = routeSlSets({
+      entries: BOWMAN_2026_SL,
+      coveredSlIds: new Set(),
+      knownSetNameKeys: BOWMAN_2026_KNOWN,
+      scopePrefix: "Bowman",
+    });
+    expect(plan.roots.map((r) => r.label)).toEqual(["Blue", "Gold", "Neon Green"]);
+    expect(plan.flagshipParallels).toBe(0);
+    expect(plan.variants).toBe(4);
+  });
+
+  test("flag false is byte-identical to the flag absent", () => {
+    const base = {
+      entries: BOWMAN_2026_SL,
+      coveredSlIds: new Set<string>(["sl-gold"]),
+      knownSetNameKeys: BOWMAN_2026_KNOWN,
+      scopePrefix: "Bowman",
+    };
+    expect(routeSlSets({ ...base, flagshipAbsorbs: false })).toEqual(routeSlSets(base));
+  });
+
+  test("NEO-237 Topps/Heritage still pins when the flag is unset or false", () => {
+    for (const flagshipAbsorbs of [undefined, false]) {
+      const plan = routeSlSets({
+        entries: [
+          { id: "sl-1", label: "Topps" },
+          { id: "sl-2", label: "Heritage" },
+        ],
+        coveredSlIds: new Set(),
+        knownSetNameKeys: new Set(["topps"]),
+        scopePrefix: "Topps",
+        ...(flagshipAbsorbs !== undefined ? { flagshipAbsorbs } : {}),
+      });
+      expect(plan.variants).toBe(1);
+      expect(plan.roots.map((r) => r.label)).toEqual(["Heritage"]);
+      expect(plan.flagshipParallels).toBe(0);
+    }
+  });
+
+  test("with the flag, a SportLots-only name under a bare Topps flagship is absorbed too (decision 1: BSC's list decides)", () => {
+    const plan = routeSlSets({
+      entries: [{ id: "sl-2", label: "Heritage" }],
+      coveredSlIds: new Set(),
+      knownSetNameKeys: new Set(["topps"]),
+      scopePrefix: "Topps",
+      flagshipAbsorbs: true,
+    });
+    expect(plan.roots).toEqual([]);
+    expect(plan.flagshipParallels).toBe(1);
+  });
+
+  test("with the flag but no flagship among the known names, nothing is absorbed", () => {
+    const plan = routeSlSets({
+      entries: [{ id: "sl-2", label: "Heritage" }],
+      coveredSlIds: new Set(),
+      knownSetNameKeys: new Set(["topps chrome"]),
+      scopePrefix: "Topps",
+      flagshipAbsorbs: true,
+    });
+    expect(plan.roots.map((r) => r.label)).toEqual(["Heritage"]);
+    expect(plan.flagshipParallels).toBe(0);
+  });
+
+  test("with no scope prefix (Unknown), the flag absorbs nothing — no key can be the flagship", () => {
+    const plan = routeSlSets({
+      entries: [{ id: "sl-1", label: "Bowman Blue" }],
+      coveredSlIds: new Set(),
+      knownSetNameKeys: new Set(["bowman"]),
+      flagshipAbsorbs: true,
+    });
+    // "bowman" prefix-hides "Bowman Blue" when there is no scope prefix to
+    // strip (the pre-NEO-305 rule), so it is a variant — never a parallel.
+    expect(plan.flagshipParallels).toBe(0);
+    expect(plan.variants).toBe(1);
+  });
+
+  test("covered, unnameable and variant still win over absorption, and each entry is counted once", () => {
+    const plan = routeSlSets({
+      entries: [
+        { id: "sl-blue", label: "Blue" }, // covered by id
+        { id: "sl-long", label: "X".repeat(500) }, // unnameable
+        { id: "sl-chrome", label: "Chrome" }, // variant of a known set
+        { id: "sl-gold", label: "Gold" }, // absorbed
+        { id: "sl-gold", label: "Gold" }, // duplicate id, ignored
+      ],
+      coveredSlIds: new Set(["sl-blue"]),
+      knownSetNameKeys: BOWMAN_2026_KNOWN,
+      scopePrefix: "Bowman",
+      flagshipAbsorbs: true,
+    });
+    expect(plan.covered).toBe(1);
+    expect(plan.unnameable).toBe(1);
+    expect(plan.variants).toBe(1);
+    expect(plan.flagshipParallels).toBe(1);
+    expect(plan.roots).toEqual([]);
+  });
+
+  test("a label the case-sensitive adapter strip missed is judged after the prefix and absorbed", () => {
+    const plan = routeSlSets({
+      entries: [{ id: "sl-1", label: "BOWMAN Blue" }],
+      coveredSlIds: new Set(),
+      knownSetNameKeys: BOWMAN_2026_KNOWN,
+      scopePrefix: "Bowman",
+      flagshipAbsorbs: true,
+    });
+    expect(plan.flagshipParallels).toBe(1);
+    expect(plan.roots).toEqual([]);
+  });
+});
+
+describe("slFlagshipAbsorbs (NEO-305)", () => {
+  test("true only when BSC filed, the scope holds a BSC set, and it is not Unknown", () => {
+    expect(
+      slFlagshipAbsorbs({
+        bscPhase: "filed",
+        scopeHasBscSet: true,
+        scopeIsBrandUnknown: false,
+      }),
+    ).toBe(true);
+  });
+
+  test.each<BscSetPhaseOutcome>(["skipped", "paused", "failed", "index_truncated"])(
+    "false when the BSC phase was %s",
+    (bscPhase) => {
+      expect(
+        slFlagshipAbsorbs({ bscPhase, scopeHasBscSet: true, scopeIsBrandUnknown: false }),
+      ).toBe(false);
+    },
+  );
+
+  test("false when the scope holds no set with a BSC id", () => {
+    expect(
+      slFlagshipAbsorbs({
+        bscPhase: "filed",
+        scopeHasBscSet: false,
+        scopeIsBrandUnknown: false,
+      }),
+    ).toBe(false);
+  });
+
+  test("false for the brand-unknown scope", () => {
+    expect(
+      slFlagshipAbsorbs({
+        bscPhase: "filed",
+        scopeHasBscSet: true,
+        scopeIsBrandUnknown: true,
+      }),
+    ).toBe(false);
   });
 });
 

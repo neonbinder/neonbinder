@@ -132,6 +132,17 @@ export function groupedAsParallelsSummary(n: number): string {
     : `${n} already grouped as parallels. Leaving those be.`;
 }
 
+/**
+ * NEO-305 — ids another SET in this brand already holds (a SportLots-derived
+ * "Bowman Blue" whose Base carries the id). "1 already linked to another set
+ * in this brand. Leaving it be." DRAFT copy, pending sign-off.
+ */
+export function linkedInBrandSummary(n: number): string {
+  return n === 1
+    ? "1 already linked to another set in this brand. Leaving it be."
+    : `${n} already linked to other sets in this brand. Leaving those be.`;
+}
+
 /** Sub-Variants: rows held by another insert, or by another insert's parallels. */
 export function heldElsewhereSummary(n: number, variantsLabel: string): string {
   return n === 1

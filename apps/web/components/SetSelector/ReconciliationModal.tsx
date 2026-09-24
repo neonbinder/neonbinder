@@ -390,6 +390,18 @@ type ReconciliationModalProps = {
     summary: string;
     toggleLabel: string;
   };
+  /**
+   * NEO-305 — the same hold, for ids another SET in the brand already holds
+   * (a SportLots-derived "Bowman Blue" whose Base carries the id Bowman's
+   * Parallels sync fetches again). Held exactly like `heldElsewhere` — not
+   * offered, not auto-matched — and named in a note of its own, so the
+   * grouped-parallels note keeps its wording and its count.
+   */
+  heldInBrand?: {
+    rows: HeldRow[];
+    summary: string;
+    toggleLabel: string;
+  };
   // Previously-saved insert rows for this variantType. Used to seed the
   // modal's matched / keptBsc / keptSl sections so re-running a sync
   // preserves prior reconciliation work instead of starting fresh.
@@ -799,6 +811,7 @@ export default function ReconciliationModal({
   existingRows = [],
   saveError = null,
   heldElsewhere,
+  heldInBrand,
 }: ReconciliationModalProps) {
   const usedSlSet = useMemo(
     () => new Set(usedSlPlatformValues),
@@ -864,7 +877,11 @@ export default function ReconciliationModal({
     // level's own rows coming back, and BEFORE the auto-matches so a grouped
     // set is not handed back as a fresh Ready set — which is exactly how a
     // Sync Inserts after Group Parallels re-created every grouped row.
-    const held = heldIdSets(heldElsewhere?.rows ?? []);
+    // NEO-305: ids another set in the brand holds are held the same way.
+    const held = heldIdSets([
+      ...(heldElsewhere?.rows ?? []),
+      ...(heldInBrand?.rows ?? []),
+    ]);
     for (const id of held.bsc) usedBsc.add(id);
     for (const id of held.sportlots) usedSl.add(id);
     // The unheld half of an auto-match whose other half is held: an ordinary
@@ -1565,6 +1582,15 @@ export default function ReconciliationModal({
                 rows={heldElsewhere.rows}
                 summary={heldElsewhere.summary}
                 toggleLabel={heldElsewhere.toggleLabel}
+              />
+            </div>
+          )}
+          {heldInBrand && heldInBrand.rows.length > 0 && (
+            <div className="mt-1">
+              <HeldElsewhereNote
+                rows={heldInBrand.rows}
+                summary={heldInBrand.summary}
+                toggleLabel={heldInBrand.toggleLabel}
               />
             </div>
           )}
