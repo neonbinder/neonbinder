@@ -47,6 +47,9 @@ So for a list that scrolls INSIDE the page:
 
 Do not try to scroll the inner list from a flow: maestro-web's only scroll
 primitive is `window.scroll` ([[maestro-web-driver-primitives]] §4).
+That is `scrollUntilVisible`'s primitive; a raw `swipe` is a TOUCH drag and
+does scroll the scroller under the finger — the dialog-body recipe is
+[[touch-swipe-scrolls-a-dialog-body]].
 
 Correction to [[entity-column-shapes-and-cold-sync]]: its closing line said a
 dump "lists only nodes that are not clipped by an inner overflow-y-auto

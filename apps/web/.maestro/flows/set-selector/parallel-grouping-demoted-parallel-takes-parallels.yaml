@@ -1,0 +1,314 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Group Parallels — a saved parallel sent back to the top level takes a parallel of its own in the same save (NEO-300)"
+tags:
+  - set-selector
+  - parallel-grouping
+---
+# R1 — ONE FEATURE (NEO-300): in Group Parallels, a SAVED parallel that the
+# operator ✕'s back to the top level immediately gets its own "Parallels of
+# <name>" box, another parallel can be moved into that box, and ONE Save
+# writes both moves — the demotion and the re-parenting under the row being
+# demoted. Before NEO-300 the box list was only rows that were inserts when
+# the modal opened, so a demoted parallel had nowhere to receive parallels
+# until a Save and a re-open; and the server read the tree as it was BEFORE
+# the plan, so it refused a re-parenting whose target was demoted in the
+# same save. The proof is the columns after the Save: the demoted row is an
+# insert and the moved parallel is listed under it.
+#
+# WHY NOT INSIDE parallel-grouping-promoted-insert-fetches-from-bsc.yaml
+# (2026 Bowman). That modal lists every top-level insert of a real variant
+# type — ~15 rows plus a box each after its Accept All — in a body that only
+# a fixed-length touch swipe can scroll (a `fixed inset-0` portal; R8 case
+# 2), while Maestro's hierarchy cannot see the body's clip (README →
+# "Asserting inside a dialog"). Reaching "Parallels of "Anime"" there would
+# mean swiping a distance that depends on how many inserts BSC lists that
+# week — geometry this flow could not state, so a tap could land on the
+# footer. This feature is marketplace-agnostic (grouping never reads a
+# marketplace id), so it is proven where the modal's content is exactly
+# known: a hand-made set with three rows, per attempt.
+#
+# FIXTURE (R7a, SET-REGISTRY.md → `pg-demote-`): E2E Test Sport <worker> →
+# 2026 → Topps → pg-demote-<worker>-<ATTEMPT_ID> › Insert, no marketplace
+# ids, created through the UI by the drill util. PER ATTEMPT because the
+# modal's geometry below depends on the set holding exactly these three
+# rows, and because the rows are prefixed with ATTEMPT_ID: EntityColumn's
+# create refuses a value that exists under another set ("exists elsewhere"),
+# which a bare "Stars" from an earlier attempt would trigger.
+#
+# DRAGGING IS NOT HOW IT MOVES. maestro-web cannot drive dnd-kit's drag, and
+# does not need to: the modal's own click-to-place path — press a row to
+# select it, then press the box — is the non-drag way an operator (and a
+# keyboard or switch user) moves a row, and it dispatches the same PLACE the
+# drop does (ParallelGroupingModal.tsx, handleZoneClick / handleDragEnd).
+#
+# SCROLL-POSITION CLAIM, NOT MADE HERE: that a ✕ no longer jumps the body to
+# the last ✕ is pinned by ParallelGroupingModal.test.tsx. Maestro cannot see
+# the body's scrollTop, and in a body this short the old jump would not have
+# moved anything, so an assert here would pass on a regressed build too.
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+- runFlow:
+    file: util-drill-to-custom-set.yaml
+    env:
+      SET_NAME: "pg-demote-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      VARIANT_TYPE: "Insert"
+
+# ============================================================
+# STEP 1 — THREE INSERTS: <ID> Stars, <ID> Stars Gold, <ID> Stars Blue
+# Gold and Blue word-prefix Stars, so Group Parallels suggests both under it.
+# The creation steps are parallel-grouping-reject-parallel.yaml's, verbatim
+# in shape (the NEO-272 confirm handling is explained there).
+# ============================================================
+
+# No settle wait first (R10): the util's return contract puts "Add custom
+# Inserts" in the viewport, and the centred scroll below polls for it anyway.
+
+# --- <ID> Stars ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Stars"
+- pressKey: Enter
+# CONDITIONAL because the confirm is one of two outcomes (a value already in
+# THIS column closes the form with no confirm); the hard gate is the form
+# being gone either way (R2). parallel-grouping-reject-parallel.yaml has the
+# measurement (the confirm is up in ~0.35s, so a found `when:` costs nothing).
+- runFlow:
+    when:
+      visible:
+        id: "Create insert"
+    commands:
+      - tapOn:
+          id: "Create insert"
+- assertNotVisible: "Add Custom Entry"
+
+# --- <ID> Stars Gold ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Stars Gold"
+- pressKey: Enter
+- runFlow:
+    when:
+      visible:
+        id: "Create insert"
+    commands:
+      - tapOn:
+          id: "Create insert"
+- assertNotVisible: "Add Custom Entry"
+
+# --- <ID> Stars Blue ---
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Inserts"
+- assertVisible: "Add Custom Entry"
+- inputText: "${ATTEMPT_ID} Stars Blue"
+- pressKey: Enter
+- runFlow:
+    when:
+      visible:
+        id: "Create insert"
+    commands:
+      - tapOn:
+          id: "Create insert"
+- assertNotVisible: "Add Custom Entry"
+# All three exist before anything is grouped (R2 precondition). A custom
+# create selects nothing, so the column is still the expanded list.
+- extendedWaitUntil:
+    visible:
+      text: "${ATTEMPT_ID} Stars Blue"
+    timeout: 7000
+
+# ============================================================
+# STEP 2 — MAKE GOLD AND BLUE SAVED PARALLELS OF STARS
+# The feature needs a parallel that was SAVED as one: only a row whose
+# original kind is "parallel" was left without a box before NEO-300. Accept
+# all suggestions + Save is the operator's route there. Both buttons live in
+# the modal's fixed header and footer, never in the body, so no in-body
+# scrolling is needed in this step.
+# ============================================================
+
+# The action row (Sync / + Custom / Group Parallels) sits under the list the
+# last create just grew, below the "+ Custom" button centred above — DOWN.
+- scrollUntilVisible:
+    element:
+      text: "Group Parallels"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Group Parallels"
+- extendedWaitUntil:
+    visible: ".*Drag inserts under a parent.*"
+    timeout: 7000
+# PRECONDITION (R2): detection suggested both. The button exists only while
+# suggestions are pending, and its count is theirs. `text:` is a regex, so
+# the count's parentheses are escaped.
+- tapOn: "Accept all suggestions \\(2\\)"
+- assertVisible: "2 promotions, 0 demotions"
+- tapOn: "Save 2 changes"
+# applyParallelGroupings is a Convex mutation and the modal closes on
+# success — the 7000 bar. Negative; STEP 3's positive gates follow.
+- extendedWaitUntil:
+    notVisible: ".*Drag inserts under a parent.*"
+    timeout: 7000
+
+# ============================================================
+# STEP 3 — RE-OPEN: GOLD IS A SAVED PARALLEL WITH NO BOX OF ITS OWN
+# The Save moved Gold and Blue out of the Inserts list, so the action row
+# rose above where it was centred for STEP 2 — UP (R5 direction).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Group Parallels"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn: "Group Parallels"
+- extendedWaitUntil:
+    visible: ".*Drag inserts under a parent.*"
+    timeout: 7000
+# The Save persisted: the re-opened modal has nothing pending (no suggestion
+# is re-made for rows already nested) ...
+- assertVisible: "No changes yet"
+# ... Gold carries a ✕, i.e. it sits inside "Parallels of <ID> Stars" as a
+# saved parallel ...
+- assertVisible:
+    id: "Remove ${ATTEMPT_ID} Stars Gold from parallels"
+# ... and has no box of its own yet, so the box STEP 4 asserts is one the ✕
+# created. After the positive asserts above, so a dead page cannot pass it.
+- assertNotVisible:
+    text: 'Parallels of "${ATTEMPT_ID} Stars Gold"'
+
+# ============================================================
+# STEP 4 — ✕ GOLD: IT GOES TO THE TOP LEVEL AND GETS ITS OWN BOX
+#
+# IN-BODY GEOMETRY. The body holds the "Top-level inserts" zone (one row,
+# <ID> Stars) and one box, "Parallels of "<ID> Stars"", with Blue then Gold
+# (rows are sorted by name). Gold's ✕ is therefore the LAST row of the LAST
+# box. The body is a `fixed inset-0` portal's `overflow-y-auto` child:
+# `scrollUntilVisible` swipes the WINDOW and cannot move it (R8 case 2 —
+# the footer Save held its bounds across every centring try in
+# move-parallels-of-inserts-custom.yaml), and Maestro does not see its clip,
+# so a clipped ✕ would be "visible" and the tap would land on the footer.
+# PIN THE BODY TO ITS END with one real touch swipe (maestro-web swipes with
+# a TOUCH pointer, so the scroller under the finger moves): the last row
+# then sits ~30px above the body's bottom (box p-3 + border + body pb-4),
+# fully inside it, however much or little the body overflows. At this point
+# it most likely does not overflow at all (the modal is shorter than its
+# 90vh cap), and the swipe changes nothing in the modal.
+#
+# The swipe starts at x=13% (~133px), inside the body's 24px left padding
+# (the max-w-3xl modal spans ~121-889 of the 1009px layout viewport; drop
+# zones start at ~146, rows at ~160), so the touch never begins on a row —
+# rows are dnd-kit draggables, a touch drag on one starts a DRAG — nor on
+# the backdrop, whose press asks to discard. y=75% (~469) is inside the
+# body (~117-529 at the modal's tallest). Full derivation, measured on the
+# same modal: parallel-grouping-reject-parallel.yaml.
+# ============================================================
+
+- swipe:
+    start: "13%, 75%"
+    end: "13%, 25%"
+- tapOn:
+    id: "Remove ${ATTEMPT_ID} Stars Gold from parallels"
+# THE NEW BEHAVIOUR: the demoted row has a box to receive parallels, in the
+# same session. A reducer update, no server — the 7000 bar.
+- extendedWaitUntil:
+    visible:
+      text: 'Parallels of "${ATTEMPT_ID} Stars Gold"'
+    timeout: 7000
+# The footer accounts for it as exactly one demotion (and proves the tap hit
+# the ✕, not the footer beneath it).
+- assertVisible: "0 promotions, 1 demotion"
+
+# ============================================================
+# STEP 5 — MOVE BLUE UNDER GOLD, WHICH IS BEING DEMOTED IN THIS SAME SAVE
+# Gold's new box is now the LAST thing in the body ("Stars" < "Stars Gold"),
+# and the body grew by one top-level row and one empty box while losing one
+# child row, so it may now overflow. Pin to the end again: Gold's box then
+# ends ~16px above the body's bottom, its title ~one box-height (~115px)
+# higher, and Blue's row in the "<ID> Stars" box above that — both well
+# inside the body. The body stays put between here and the taps: NEO-300
+# removed every programmatic scroll from this modal.
+# ============================================================
+
+- swipe:
+    start: "13%, 75%"
+    end: "13%, 25%"
+# SELECT BLUE. Its name is a text node inside the row's select button;
+# whole-text match, and the modal is the only place it is on screen (a
+# parallel is not in the Inserts column behind the overlay, and no insert is
+# selected, so no Parallels column is open).
+- tapOn:
+    text: "${ATTEMPT_ID} Stars Blue"
+# The selection landed: every box now invites the click (R2 precondition for
+# the next tap, which would otherwise do nothing).
+- extendedWaitUntil:
+    visible: "Click here to make the selected row a parallel"
+    timeout: 7000
+# PLACE IT: press Gold's box, by its title (the title is inside the box, and
+# the whole box is the click target while a row is selected). Not Gold's own
+# row — that would select Gold instead.
+- tapOn:
+    text: 'Parallels of "${ATTEMPT_ID} Stars Gold"'
+# One demotion (Gold) and one re-parenting (Blue, from Stars to Gold), in one
+# pending plan — the shape the server refused before NEO-300.
+- extendedWaitUntil:
+    visible: "0 promotions, 1 demotion, 1 re-parented"
+    timeout: 7000
+
+# SAVE. Footer button, outside the body (R8 case 2; no scroll needed). The
+# mutation validates against the post-plan tree and the modal closes on
+# success — the 7000 bar. A refusal keeps the modal open with the server's
+# sentence in the footer, so this gate fails on it.
+- tapOn: "Save 2 changes"
+- extendedWaitUntil:
+    notVisible: ".*Drag inserts under a parent.*"
+    timeout: 7000
+
+# ============================================================
+# STEP 6 — ASSERT IT IN THE COLUMNS: GOLD IS AN INSERT, BLUE IS ITS PARALLEL
+# The Inserts column (nothing selected, expanded) lists <ID> Stars and, now,
+# <ID> Stars Gold. It sits ABOVE the action row the modal was opened from,
+# and the pin swipes may have chained into a window scroll further down —
+# UP either way (R5 direction). Centred: a tap follows (R8).
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "${ATTEMPT_ID} Stars Gold"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: "${ATTEMPT_ID} Stars Gold"
+# The Parallels column mounts for the selected insert (whole-text "Parallels"
+# is its title; the "Group Parallels" button does not match) and lists Blue —
+# a Convex read, the 7000 bar. This is the persisted state: the rows were
+# re-read from the server after the modal closed.
+- extendedWaitUntil:
+    visible: "Parallels"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "${ATTEMPT_ID} Stars Blue"
+    timeout: 7000

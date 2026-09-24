@@ -290,9 +290,9 @@ and the harness must never dictate the data shape.
 | | |
 | -- | -- |
 | drills | Baseball → 2026 → Bowman → Bowman, all four levels COLD; under the pause the manufacturer row `Bowman` is hand-made by the drill (`CREATE_MANUFACTURER`), exactly as `Score` is for 1996 |
-| reconcile (live) | filters Ready and BSC to "Anime"; makes `Anime` / `Anime Kanji` their own NeonBinder set only when the auto-matcher left either Pending; **saves every Ready set** — the filter narrows the view, not the write, as on 1996 Score |
+| reconcile (live) | filters Ready and BSC to "Anime"; makes `Anime` its own NeonBinder set with its row's "Make its own set" when the auto-matcher left it Pending, then presses **"Keep all"** on the "Anime"-filtered BSC column (NEO-300), making every still-Pending Anime item (`Anime Black Refractors`, `Anime Red Refractors`, `Anime SuperFractors`, and `Anime Kanji` if unpaired) its own BSC-only set — the same rows the paused branch stores; **saves every Ready set** — the filter narrows the view, not the write, as on 1996 Score |
 | paused | no reconcile — the column fills straight from BSC |
-| grouping | Group Parallels → Accept all suggestions → Save; every prefix pair in the set nests, `Anime Kanji` (and under the pause the other three Anime parallels) under `Anime` |
+| grouping | Group Parallels → Accept all suggestions → Save; every prefix pair in the set nests, `Anime Kanji` and the other three Anime parallels (Keep all made them sets live; the paused sync stores them) under `Anime` |
 | re-sync (NEO-300) | "Sync Inserts" again after the grouping; live, the reconcile dialog re-opens and is **saved with no edits**, paused the single-platform store runs; both must say "N already grouped as parallels. Leaving those be." and must not re-create a grouped row as an insert |
 | fetch | on the promoted `Anime Kanji`: the pairing dialog when SportLots paired a set with it, the one-marketplace path otherwise; the review is drained with "Skip remaining names" (no players created) |
 | asserts | after the re-sync: the "already grouped" line, `Anime Kanji` absent from the "Anime"-filtered Inserts column and listed under `Anime` in Parallels; then `Remove Anime Kanji` chip + "attached as a BSC variant", no "Needs re-mapping"; `Saved N cards` with N ≥ 1; the chip's detach confirm reads a BSC per-slot count ≥ 1, then Cancel |
@@ -302,8 +302,8 @@ all at the head of every run):
 
 | | |
 | -- | -- |
-| insert rows | every set the reconcile's auto-match put in Ready (live) or every BSC insert (paused), each with the ids the sync gave it — nothing hand-made below the manufacturer |
-| nesting | every word-prefix pair among them nested by Accept All; `Anime Kanji` is a `parallel` under `Anime`, its BSC slot tagged `variantName` |
+| insert rows | every set the reconcile's auto-match put in Ready plus every "Anime" BSC item Keep all made its own set (live), or every BSC insert (paused), each with the ids the sync gave it — nothing hand-made below the manufacturer |
+| nesting | every word-prefix pair among them nested by Accept All; `Anime Kanji` (and, in both branches, the other three Anime parallels) is a `parallel` under `Anime`, its BSC slot tagged `variantName` |
 | `Anime Kanji` checklist | COMMITTED, every card from BSC (plus SportLots' when paired); its unknown names SKIPPED, so no players or teams are minted |
 | everything else | untouched — Base is never selected, no card is edited |
 
@@ -1341,6 +1341,7 @@ would put the wrong question on screen.
 | `msb-` | `move-set-to-another-brand.yaml` — its OWN sport `msb-sport-<worker>`, brand rows `Topps` / `Panini` under it in 2026 (hand-made, no ids), and ONE set `msb-a-<worker>` under `Topps`. The flow moves that set to `Panini` and back, so it ends where it started; `Panini` stays empty. Per-worker only (no count is asserted). **Never under `E2E Test Sport <worker>`** — it adds a brand row, see the fold note below. |
 | `parallel-feature-` | `cards-parallel-custom.yaml` |
 | `pg-cancel-` | `parallel-grouping-cancel-discards.yaml` (also `-${ATTEMPT_ID}`) |
+| `pg-demote-` | `parallel-grouping-demoted-parallel-takes-parallels.yaml` (also `-${ATTEMPT_ID}`) — three inserts `<ATTEMPT_ID> Stars` / `Stars Gold` / `Stars Blue`; Gold and Blue are saved as parallels of Stars, then Gold is demoted and Blue re-parented under it in one save (NEO-300). Per-attempt because the flow taps inside the Group Parallels body at positions that hold only for exactly these three rows. |
 | `pg-move-` | `move-parallels-of-inserts-custom.yaml` |
 | `pg-reject-` | `parallel-grouping-reject-parallel.yaml` (also `-${ATTEMPT_ID}`) |
 | `pp-` | `player-picker-create-custom-card.yaml` |

@@ -1331,8 +1331,8 @@ export default function ReconciliationModal({
     //
     // Labels: the accessible name BEGINS with the visible words (WCAG 2.5.3
     // label in name), then says what they reach. The two columns' names share
-    // no substring either way — Maestro's id matcher is a regex find — and
-    // neither matches CardPairingModal's "Keep all BSC-only cards".
+    // no substring either way, and neither matches CardPairingModal's
+    // "Keep all BSC-only cards".
     const keepAllName = `Keep all: ${filtered.length} ${sideName} ${
       filtered.length === 1 ? "set" : "sets"
     }`;
@@ -1443,9 +1443,8 @@ export default function ReconciliationModal({
                   className={OWN_SET_ROW_BUTTON}
                   // WCAG 2.5.3: the name begins with the visible text, then
                   // names the row. parallel-grouping-promoted-insert-fetches-
-                  // from-bsc.yaml taps this by id — Maestro's id match is a
-                  // regex FIND, so a flow must anchor it (`…: Anime$`) or it
-                  // also matches "…: Anime Kanji".
+                  // from-bsc.yaml taps this by id (Maestro id: is a full-string
+                  // regex match).
                   aria-label={`Make its own set: ${item.value}`}
                 >
                   Make its own set
