@@ -52,3 +52,4 @@
 - [Patterns neo237 all brands view](patterns_neo237_all_brands_view.md) — reserved name has a 4th door (store insert); candidate `side` must key the Create slot; sibling prefix fold-collision unchecked at the edit door; pin audit-field omission in the guards test
 - [Patterns neo296 transaction bounds](patterns_neo296_transaction_bounds.md) — bounding a transaction: client callers that ignore hasMore, per-item budgets that re-arm, continuation scope re-checks, cursor advance
 - [Patterns neo300 held elsewhere](patterns_neo300_held_elsewhere.md) — subtree walk charges ranges not bytes; 400 cap falls back silently; dup-parallel guard vs legal M:1; tier-0 existingId drops ids
+- [Patterns neo304 armed subtree wipe](patterns_neo304_armed_subtree_wipe.md) — name-only confirm phrase does not bind a target among duplicates; per-mutation re-arm + membership walk; schema graph pin

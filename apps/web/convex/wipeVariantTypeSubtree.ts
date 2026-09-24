@@ -18,12 +18,16 @@
  * the variant type row (a Base variant type carries its checklist there) are
  * not part of the subtree below it and are left alone; the dry run says so.
  *
- * Nothing outside the subtree is written, with two deliberate exceptions:
- * the variant type's `children` cache, and the `selectorSyncStatus` rows
- * keyed ON the variant type. Those describe its child columns, the rows
- * being wiped, so their notices would otherwise name rows that no longer
- * exist. Sibling variant types, the set and everything above it, players,
- * teams and leagues are never read for writing.
+ * No row outside the subtree is deleted or edited, with two deliberate
+ * exceptions: the variant type's `children` cache, and the
+ * `selectorSyncStatus` rows keyed ON the variant type. Those describe its
+ * child columns, the rows being wiped, so their notices would otherwise name
+ * rows that no longer exist. Cross-listing JUNCTIONS are deleted in both
+ * directions, including ones that point at a row or card outside the
+ * subtree: a subtree card's listing into another set goes with the card, and
+ * an outside card's listing into a subtree row goes with the row. The
+ * outside row or card itself is never touched. Sibling variant types, the
+ * set and everything above it, players, teams and leagues are never written.
  *
  * ## The reference graph (from convex/schema.ts)
  *
@@ -43,7 +47,7 @@
  *
  *   # 0. find the variant type id
  *   npx convex run --prod wipeVariantTypeSubtree:locate \
- *     '{"sport":"Baseball","year":"2026","brand":"Bowman","set":"Bowman"}'
+ *     '{"sport":"<sport>","year":"<year>","brand":"<brand>","set":"<set>"}'
  *
  *   # 1. dry run (the default): writes nothing, needs no arming
  *   npx convex run --prod wipeVariantTypeSubtree:run '{"variantTypeId":"<id>"}'
@@ -65,9 +69,12 @@
  * Two independent arms, the NEO-214 pair: the deployment flag
  * `ALLOW_WIPE_VARIANT_TYPE_SUBTREE` (`true` or `1`), its own name so a
  * deployment armed for another task is not armed for this one, and a typed
- * `confirm` that must equal `wipe <variant type name> under <set path>`
- * exactly. The phrase names the target, so a right command pointed at the
- * wrong id refuses. It is an argument, not a prompt, so a `!` run with no TTY
+ * `confirm` that must equal
+ * `wipe <variant type name> under <set path> (#<variant type id>)` exactly.
+ * The phrase names the target BY ID as well as by name: same-named twin
+ * variant types under one set (the duplicate damage this tool exists for)
+ * would otherwise share a phrase, and a phrase copied for one would arm the
+ * other. It is an argument, not a prompt, so a `!` run with no TTY
  * works. Both are re-asserted inside every mutation that deletes, so an
  * internal caller that skips `run` gets the same refusal, and every node id
  * a mutation is handed is re-checked to sit under the variant type.
@@ -260,8 +267,18 @@ const NOT_ARMED_MESSAGE =
   `${ENV_FLAG}=true on it (npx convex env set ${ENV_FLAG} true, with --prod ` +
   `for production), re-run, and remove it afterwards. Nothing was written.`;
 
-export function confirmPhraseFor(value: string, path: string[]): string {
-  return `wipe ${value} under ${path.join(" / ")}`;
+/**
+ * The full id, not a short suffix: it is unique by construction, where a
+ * tail of an id is only probably unique (and in convex-test every id of a
+ * table ends in the same characters). The operator copies it from the dry
+ * run, so its length costs nothing.
+ */
+export function confirmPhraseFor(
+  value: string,
+  path: string[],
+  id: string,
+): string {
+  return `wipe ${value} under ${path.join(" / ")} (#${id})`;
 }
 
 type DbReader = { get: QueryCtx["db"]["get"] };
@@ -298,7 +315,7 @@ async function loadTarget(
     path.unshift(parent.value);
     parentId = parent.parentId;
   }
-  return { row, path, confirmPhrase: confirmPhraseFor(row.value, path) };
+  return { row, path, confirmPhrase: confirmPhraseFor(row.value, path, row._id) };
 }
 
 /**
@@ -385,6 +402,19 @@ function clampPage(requested: number | undefined, fallback: number): number {
   return Math.max(1, Math.min(Math.floor(requested), fallback));
 }
 
+/**
+ * The per-call time budget: the caller may LOWER it, never raise or disable
+ * it. A non-finite value (NaN, Infinity) would make `Date.now() - start >=
+ * budget` false forever and switch the budget off, so it means the default.
+ */
+export function resolveTimeBudgetMs(requested: number | undefined): number {
+  const value =
+    requested !== undefined && Number.isFinite(requested)
+      ? requested
+      : TIME_BUDGET_MS;
+  return Math.max(0, Math.min(value, TIME_BUDGET_MS));
+}
+
 function sameIds(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((id, i) => id === b[i]);
 }
@@ -459,10 +489,21 @@ const lossValidator = v.object({
   holds: holdsValidator,
 });
 
+/**
+ * A variation the armed run will refuse on. `outsideVariantType`: the child
+ * lives on a row this wipe keeps, so deleting its parent would dangle it.
+ * `nestedVariation`: the child has variations of its own
+ * (`grandchildCardId`), which the one-level model forbids.
+ */
 const blockerValidator = v.object({
+  reason: v.union(
+    v.literal("outsideVariantType"),
+    v.literal("nestedVariation"),
+  ),
   cardId: v.id("cardChecklist"),
   childCardId: v.id("cardChecklist"),
   childSelectorOptionId: v.id("selectorOptions"),
+  grandchildCardId: v.optional(v.id("cardChecklist")),
 });
 
 const tableCountsValidator = v.object({
@@ -610,7 +651,7 @@ export const locate = internalQuery({
                 children: children.length,
                 bsc: vt.platformData.bsc ?? {},
                 sportlots: vt.platformData.sportlots ?? {},
-                confirmPhrase: confirmPhraseFor(vt.value, path),
+                confirmPhrase: confirmPhraseFor(vt.value, path, vt._id),
               });
             }
             out.push({
@@ -907,11 +948,7 @@ export const surveyCardsPage = internalQuery({
       id: Id<"cardCrossListings">;
       guestId: Id<"selectorOptions">;
     }> = [];
-    const childrenElsewhere: Array<{
-      cardId: Id<"cardChecklist">;
-      childCardId: Id<"cardChecklist">;
-      childSelectorOptionId: Id<"selectorOptions">;
-    }> = [];
+    const childrenElsewhere: Blocker[] = [];
     for (const card of page.page) {
       if (card.imageUrls?.front || card.imageUrls?.back) withImages += 1;
       const links = await ctx.db
@@ -930,9 +967,25 @@ export const surveyCardsPage = internalQuery({
       for (const child of children) {
         if (child.selectorOptionId !== args.nodeId) {
           childrenElsewhere.push({
+            reason: "outsideVariantType",
             cardId: card._id,
             childCardId: child._id,
             childSelectorOptionId: child.selectorOptionId,
+          });
+        }
+        const grandchild = await ctx.db
+          .query("cardChecklist")
+          .withIndex("by_variation_parent", (q) =>
+            q.eq("variationOfCardId", child._id),
+          )
+          .first();
+        if (grandchild) {
+          childrenElsewhere.push({
+            reason: "nestedVariation",
+            cardId: card._id,
+            childCardId: child._id,
+            childSelectorOptionId: child.selectorOptionId,
+            grandchildCardId: grandchild._id,
           });
         }
       }
@@ -1047,6 +1100,23 @@ export const wipeCardsPage = internalMutation({
               `Re-parent or clear that variation first. This page wrote nothing.`,
           );
         }
+        // Variations are one level deep (`setCardVariationParent` refuses
+        // nesting). A child carrying variations of its own breaks that, and
+        // deleting it here would leave its children pointing at nothing.
+        const grandchild = await ctx.db
+          .query("cardChecklist")
+          .withIndex("by_variation_parent", (q) =>
+            q.eq("variationOfCardId", child._id),
+          )
+          .first();
+        ops += 1;
+        if (grandchild && !deleted.has(grandchild._id)) {
+          throw new ConvexError(
+            `Refused: variation ${child._id} of card ${card._id} has ` +
+              `variations of its own (${grandchild._id}); variations are one ` +
+              `level deep. Clear that nesting first. This page wrote nothing.`,
+          );
+        }
         await dropCard(child);
       }
       await dropCard(card);
@@ -1129,7 +1199,14 @@ export const wipeNodeRefsPage = internalMutation({
               `wrote nothing.`,
           );
         }
-        if (depth < MAX_DEPTH) await dropQueueRow(dependent, depth + 1);
+        if (depth >= MAX_DEPTH) {
+          throw new ConvexError(
+            `Refused: staged review rows depending on ${row._id} nest deeper ` +
+              `than ${MAX_DEPTH}, which no review batch builds. This page ` +
+              `wrote nothing.`,
+          );
+        }
+        await dropQueueRow(dependent, depth + 1);
       }
       await ctx.db.delete(row._id);
       queueGone.add(row._id);
@@ -1397,6 +1474,21 @@ export const finalizeVariantType = internalMutation({
       args.variantTypeId,
       args.confirm,
     );
+    // Only once the subtree is empty. While a child row remains, the
+    // column's notices and the cache still describe something real, so this
+    // writes nothing and says how many are left.
+    const remaining = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_parent", (q) => q.eq("parentId", args.variantTypeId))
+      .take(MAX_SUBTREE_NODES);
+    if (remaining.length > 0) {
+      return {
+        selectorSyncStatus: 0,
+        childrenRemaining: remaining.length,
+        childrenCacheCleared: false,
+      };
+    }
+
     const statuses: Doc<"selectorSyncStatus">[] = [];
     for (const level of ALL_LEVELS) {
       statuses.push(
@@ -1415,21 +1507,16 @@ export const finalizeVariantType = internalMutation({
       statuses.map((row) => row._id),
     );
 
-    const remaining = await ctx.db
-      .query("selectorOptions")
-      .withIndex("by_parent", (q) => q.eq("parentId", args.variantTypeId))
-      .take(MAX_SUBTREE_NODES);
-    const remainingIds = new Set<string>(remaining.map((row) => row._id));
     const current = target.row.children ?? [];
-    const next = current.filter((id) => remainingIds.has(id));
+    const next: Id<"selectorOptions">[] = [];
     const changed = !sameIds(current, next);
     if (changed) {
       await ctx.db.patch(args.variantTypeId, { children: next });
     }
     return {
       selectorSyncStatus: statuses.length,
-      childrenRemaining: remaining.length,
-      childrenCacheCleared: changed && next.length === 0,
+      childrenRemaining: 0,
+      childrenCacheCleared: changed,
     };
   },
 });
@@ -1489,6 +1576,7 @@ type Holds = {
   skips: number;
   syncStatus: number;
   externalVariationChildren: number;
+  nestedVariations: number;
 };
 
 function emptyHolds(): Holds {
@@ -1504,6 +1592,7 @@ function emptyHolds(): Holds {
     skips: 0,
     syncStatus: 0,
     externalVariationChildren: 0,
+    nestedVariations: 0,
   };
 }
 
@@ -1523,14 +1612,17 @@ function isBeyondChecklist(holds: Holds): boolean {
     holds.reviewQueue > 0 ||
     holds.candidates > 0 ||
     holds.cardsWithImages > 0 ||
-    holds.externalVariationChildren > 0
+    holds.externalVariationChildren > 0 ||
+    holds.nestedVariations > 0
   );
 }
 
 type Blocker = {
+  reason: "outsideVariantType" | "nestedVariation";
   cardId: Id<"cardChecklist">;
   childCardId: Id<"cardChecklist">;
   childSelectorOptionId: Id<"selectorOptions">;
+  grandchildCardId?: Id<"cardChecklist">;
 };
 
 type DryRunResult = {
@@ -1614,9 +1706,12 @@ async function survey(
         if (nodeIds.has(link.guestId)) holds.crossListingsInternal += 1;
         else holds.crossListingsOut += 1;
       }
-      for (const child of page.childrenElsewhere) {
-        if (!nodeIds.has(child.childSelectorOptionId)) {
-          blockers.push(child);
+      for (const blocker of page.childrenElsewhere) {
+        if (blocker.reason === "nestedVariation") {
+          blockers.push(blocker);
+          holds.nestedVariations += 1;
+        } else if (!nodeIds.has(blocker.childSelectorOptionId)) {
+          blockers.push(blocker);
           holds.externalVariationChildren += 1;
         }
       }
@@ -1828,17 +1923,21 @@ async function applyWipe(
     }
   }
 
-  const finished: {
-    selectorSyncStatus: number;
-    childrenRemaining: number;
-    childrenCacheCleared: boolean;
-  } = await ctx.runMutation(
-    internal.wipeVariantTypeSubtree.finalizeVariantType,
-    armed,
-  );
-  deleted.selectorSyncStatus += finished.selectorSyncStatus;
-
-  const complete = finished.childrenRemaining === 0 && notEmpty.length === 0;
+  // The variant type's own tidy-up runs only once every node is gone: while
+  // rows remain, its child-column notices and cache still describe them.
+  let complete = false;
+  if (notEmpty.length === 0) {
+    const finished: {
+      selectorSyncStatus: number;
+      childrenRemaining: number;
+      childrenCacheCleared: boolean;
+    } = await ctx.runMutation(
+      internal.wipeVariantTypeSubtree.finalizeVariantType,
+      armed,
+    );
+    deleted.selectorSyncStatus += finished.selectorSyncStatus;
+    complete = finished.childrenRemaining === 0;
+  }
   return {
     mode: "applied",
     complete,
@@ -1857,7 +1956,7 @@ export const run = internalAction({
     variantTypeId: v.id("selectorOptions"),
     /** Default true. Only `false` writes, and only when armed and confirmed. */
     dryRun: v.optional(v.boolean()),
-    /** `wipe <variant type name> under <set path>`, as the dry run prints it. */
+    /** `wipe <name> under <set path> (#<id>)`, as the dry run prints it. */
     confirm: v.optional(v.string()),
     /** Dry run only: add one entry per row. */
     detail: v.optional(v.boolean()),
@@ -1915,10 +2014,7 @@ export const run = internalAction({
       );
     }
 
-    const budget = Math.max(
-      0,
-      Math.min(args.timeBudgetMs ?? TIME_BUDGET_MS, TIME_BUDGET_MS),
-    );
+    const budget = resolveTimeBudgetMs(args.timeBudgetMs);
     const result = await applyWipe(
       ctx,
       target,

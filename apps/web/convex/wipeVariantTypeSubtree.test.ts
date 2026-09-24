@@ -31,6 +31,7 @@ import {
   ENV_FLAG,
   SUBTREE_REFERENCE_GRAPH,
   WIPED_TABLES,
+  resolveTimeBudgetMs,
 } from "./wipeVariantTypeSubtree";
 
 const modules = (import.meta as unknown as {
@@ -38,7 +39,10 @@ const modules = (import.meta as unknown as {
 }).glob("./**/*.*s");
 
 const NOW = 1_700_000_000_000;
-const PHRASE = "wipe Insert under Baseball / 2026 / Bowman / Bowman";
+const PATH = "Hockey / 1999 / Acme / Acme Series";
+/** The confirm phrase for a variant type named `name` in the fixture's set. */
+const phraseFor = (id: string, name = "Insert") =>
+  `wipe ${name} under ${PATH} (#${id})`;
 
 type T = ReturnType<typeof convexTest>;
 type SO = Id<"selectorOptions">;
@@ -108,28 +112,28 @@ async function seed(t: T): Promise<Fixture> {
         ...extra,
       });
 
-    const sport = await row("sport", "Baseball");
-    const year = await row("year", "2026", sport);
-    const brand = await row("manufacturer", "Bowman", year);
-    const set = await row("setName", "Bowman", brand);
+    const sport = await row("sport", "Hockey");
+    const year = await row("year", "1999", sport);
+    const brand = await row("manufacturer", "Acme", year);
+    const set = await row("setName", "Acme Series", brand);
     const insertVt = await row("variantType", "Insert", set, {
-      platformData: { bsc: { b0: "bowman-inserts" }, sportlots: { s0: "901" } },
-      platformLabels: { bsc: { b0: "Inserts" }, sportlots: { s0: "Bowman Inserts" } },
+      platformData: { bsc: { b0: "acme-inserts" }, sportlots: { s0: "901" } },
+      platformLabels: { bsc: { b0: "Inserts" }, sportlots: { s0: "Acme Inserts" } },
       platformSlotSeq: { bsc: 1, sportlots: 1 },
       metadata: { isInsert: true },
     });
     const baseVt = await row("variantType", "Base", set, {
-      platformData: { bsc: { b0: "bowman-base" } },
+      platformData: { bsc: { b0: "acme-base" } },
       metadata: { isBase: true },
     });
 
     // ── the subtree ────────────────────────────────────────────────────────
-    const insA = await row("insert", "Chrome Prospects", insertVt, {
-      platformData: { bsc: { b0: "chrome-prospects" }, sportlots: { s0: "77" } },
+    const insA = await row("insert", "Star Rookies", insertVt, {
+      platformData: { bsc: { b0: "star-rookies" }, sportlots: { s0: "77" } },
     });
-    const insB = await row("insert", "Bowman Scouts", insertVt);
+    const insB = await row("insert", "Hot Prospects", insertVt);
     const parA1 = await row("parallel", "Refractor", insA, {
-      platformData: { bsc: { b0: "chrome-prospects-refractor" } },
+      platformData: { bsc: { b0: "star-rookies-refractor" } },
     });
     const parA2 = await row("parallel", "Gold", insA);
 
@@ -137,8 +141,8 @@ async function seed(t: T): Promise<Fixture> {
     const baseP = await row("parallel", "Base Refractor", baseVt);
 
     const player = await ctx.db.insert("players", {
-      name: "Jackson Holliday",
-      nameNormalized: "holliday jackson",
+      name: "Pat Example",
+      nameNormalized: "example pat",
       sportId: sport,
       lastUpdated: NOW,
     });
@@ -190,7 +194,7 @@ async function seed(t: T): Promise<Fixture> {
       batchId: "batch-a",
       createdByUserId: "admin",
       kind: "player",
-      name: "Jackson Holliday",
+      name: "Pat Example",
       sportId: sport,
       status: "ready",
     });
@@ -199,7 +203,7 @@ async function seed(t: T): Promise<Fixture> {
       batchId: "batch-a",
       createdByUserId: "admin",
       kind: "team",
-      name: "Norfolk Tides",
+      name: "Example Farm Club",
       sportId: sport,
       status: "pending",
       source: { kind: "careerTeamOf", playerRowId: qPlayer },
@@ -265,7 +269,7 @@ async function seed(t: T): Promise<Fixture> {
       level: "insert",
       parentId: insertVt,
       status: "done",
-      unlinked: [{ id: insB, value: "Bowman Scouts", side: "sportlots" }],
+      unlinked: [{ id: insB, value: "Hot Prospects", side: "sportlots" }],
       updatedAt: NOW,
     });
     await ctx.db.insert("selectorSyncStatus", {
@@ -456,10 +460,10 @@ describe("NEO-304: dry run", () => {
     expect(report.target).toEqual({
       id: f.insertVt,
       value: "Insert",
-      path: "Baseball / 2026 / Bowman / Bowman",
-      confirmPhrase: PHRASE,
+      path: PATH,
+      confirmPhrase: phraseFor(f.insertVt),
       isBase: false,
-      bsc: { b0: "bowman-inserts" },
+      bsc: { b0: "acme-inserts" },
       sportlots: { s0: "901" },
       hasOwnCards: true,
       statusRows: 1,
@@ -469,7 +473,7 @@ describe("NEO-304: dry run", () => {
       {
         id: f.insA,
         level: "insert",
-        value: "Chrome Prospects",
+        value: "Star Rookies",
         holds: {
           children: 2,
           cards: 3,
@@ -509,9 +513,9 @@ describe("NEO-304: dry run", () => {
       {
         id: f.insA,
         level: "insert",
-        value: "Chrome Prospects",
+        value: "Star Rookies",
         parentId: f.insertVt,
-        bsc: { b0: "chrome-prospects" },
+        bsc: { b0: "star-rookies" },
         sportlots: { s0: "77" },
         holds: {
           children: 2,
@@ -525,7 +529,7 @@ describe("NEO-304: dry run", () => {
       {
         id: f.insB,
         level: "insert",
-        value: "Bowman Scouts",
+        value: "Hot Prospects",
         parentId: f.insertVt,
         bsc: {},
         sportlots: {},
@@ -536,7 +540,7 @@ describe("NEO-304: dry run", () => {
         level: "parallel",
         value: "Refractor",
         parentId: f.insA,
-        bsc: { b0: "chrome-prospects-refractor" },
+        bsc: { b0: "star-rookies-refractor" },
         sportlots: {},
         holds: { cards: 2, crossListingsIn: 1, crossListingsInternal: 1 },
       },
@@ -593,33 +597,33 @@ describe("NEO-304: dry run", () => {
     const t = convexTest(schema, modules);
     const f = await seed(t);
     const found = await t.query(internal.wipeVariantTypeSubtree.locate, {
-      sport: "baseball",
-      year: "2026",
-      brand: "BOWMAN",
-      set: "Bowman ",
+      sport: "hockey",
+      year: "1999",
+      brand: "ACME",
+      set: "Acme Series ",
     });
     expect(found).toEqual([
       {
         setId: f.set,
-        path: "Baseball / 2026 / Bowman / Bowman",
+        path: PATH,
         variantTypes: [
           {
             id: f.insertVt,
             value: "Insert",
             isBase: false,
             children: 2,
-            bsc: { b0: "bowman-inserts" },
+            bsc: { b0: "acme-inserts" },
             sportlots: { s0: "901" },
-            confirmPhrase: PHRASE,
+            confirmPhrase: phraseFor(f.insertVt),
           },
           {
             id: f.baseVt,
             value: "Base",
             isBase: true,
             children: 1,
-            bsc: { b0: "bowman-base" },
+            bsc: { b0: "acme-base" },
             sportlots: {},
-            confirmPhrase: "wipe Base under Baseball / 2026 / Bowman / Bowman",
+            confirmPhrase: phraseFor(f.baseVt, "Base"),
           },
         ],
       },
@@ -637,7 +641,7 @@ describe("NEO-304: armed run", () => {
     const result = await run(t, {
       variantTypeId: f.insertVt,
       dryRun: false,
-      confirm: PHRASE,
+      confirm: phraseFor(f.insertVt),
     });
 
     expect(result).toEqual({
@@ -686,7 +690,7 @@ describe("NEO-304: armed run", () => {
     const again = await run(t, {
       variantTypeId: f.insertVt,
       dryRun: false,
-      confirm: PHRASE,
+      confirm: phraseFor(f.insertVt),
     });
     expect(again).toMatchObject({
       complete: true,
@@ -726,7 +730,7 @@ describe("NEO-304: armed run", () => {
     const result = await run(t, {
       variantTypeId: f.insertVt,
       dryRun: false,
-      confirm: PHRASE,
+      confirm: phraseFor(f.insertVt),
     });
     expect(result).toMatchObject({ complete: true });
     const vt = await t.run(async (ctx) => ctx.db.get(f.insertVt));
@@ -756,7 +760,7 @@ describe("NEO-304: armed run", () => {
       const result = await run(t, {
         variantTypeId: f.insertVt,
         dryRun: false,
-        confirm: PHRASE,
+        confirm: phraseFor(f.insertVt),
         batchSize: 1,
         timeBudgetMs: 0,
       });
@@ -808,6 +812,7 @@ describe("NEO-304: armed run", () => {
     if (report.mode !== "dryRun") throw new Error("unreachable");
     expect(report.blockers).toEqual([
       {
+        reason: "outsideVariantType",
         cardId: f.cards.a3,
         childCardId: stray,
         childSelectorOptionId: f.baseVt,
@@ -815,7 +820,11 @@ describe("NEO-304: armed run", () => {
     ]);
 
     await expect(
-      run(t, { variantTypeId: f.insertVt, dryRun: false, confirm: PHRASE }),
+      run(t, {
+        variantTypeId: f.insertVt,
+        dryRun: false,
+        confirm: phraseFor(f.insertVt),
+      }),
     ).rejects.toThrow(/outside this variant type/);
 
     // The stray and its parent are both still there, and what did land
@@ -828,22 +837,31 @@ describe("NEO-304: armed run", () => {
 });
 
 describe("NEO-304: refusals write nothing", () => {
-  test.each([
-    ["no arming flag", undefined, PHRASE, /not armed/],
-    ["a flag that is not true or 1", "yes", PHRASE, /not armed/],
-    ["a missing confirm", "true", undefined, /confirm does not match/],
+  type PhraseFor = (f: Fixture) => string | undefined;
+  const own: PhraseFor = (f) => phraseFor(f.insertVt);
+  test.each<[string, string | undefined, PhraseFor, RegExp]>([
+    ["no arming flag", undefined, own, /not armed/],
+    ["a flag that is not true or 1", "yes", own, /not armed/],
+    ["a missing confirm", "true", () => undefined, /confirm does not match/],
     [
       "the sibling's phrase",
       "true",
-      "wipe Base under Baseball / 2026 / Bowman / Bowman",
+      (f) => phraseFor(f.baseVt, "Base"),
       /confirm does not match/,
     ],
-    ["a near-miss phrase", "true", `${PHRASE} `, /confirm does not match/],
-  ])("%s", async (_label, flag, confirm, error) => {
+    ["a near-miss phrase", "true", (f) => `${own(f)} `, /confirm does not match/],
+    [
+      "the right name and path without the id",
+      "true",
+      () => `wipe Insert under ${PATH}`,
+      /confirm does not match/,
+    ],
+  ])("%s", async (_label, flag, phrase, error) => {
     if (flag !== undefined) vi.stubEnv(ENV_FLAG, flag);
     const t = convexTest(schema, modules);
     const f = await seed(t);
     const before = await snapshot(t);
+    const confirm = phrase(f);
 
     await expect(
       run(t, {
@@ -860,7 +878,7 @@ describe("NEO-304: refusals write nothing", () => {
     const t = convexTest(schema, modules);
     const f = await seed(t);
     const before = await snapshot(t);
-    const armed = { variantTypeId: f.insertVt, confirm: PHRASE };
+    const armed = { variantTypeId: f.insertVt, confirm: phraseFor(f.insertVt) };
 
     // Unarmed: straight to a batch, around the entry point.
     await expect(
@@ -970,5 +988,184 @@ describe("NEO-304: the surface and the graph are pinned", () => {
     expect([...referencing].sort()).toEqual(
       Object.keys(SUBTREE_REFERENCE_GRAPH).sort(),
     );
+  });
+});
+
+describe("NEO-304 security audit conditions", () => {
+  test("twin variant types with one name get different phrases, and neither arms the other", async () => {
+    // Condition 1. Same-named twins under one set are the duplicate damage
+    // this tool exists for; a phrase built from names alone would be shared.
+    vi.stubEnv(ENV_FLAG, "true");
+    const t = convexTest(schema, modules);
+    const f = await seed(t);
+    const { twin, twinInsert } = await t.run(async (ctx) => {
+      const twin = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Insert",
+        parentId: f.set,
+        platformData: {},
+        children: [],
+        lastUpdated: NOW,
+      });
+      const twinInsert = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Star Rookies",
+        parentId: twin,
+        platformData: {},
+        children: [],
+        lastUpdated: NOW,
+      });
+      await ctx.db.patch(twin, { children: [twinInsert] });
+      return { twin, twinInsert };
+    });
+
+    const found = await t.query(internal.wipeVariantTypeSubtree.locate, {
+      sport: "Hockey",
+      year: "1999",
+      brand: "Acme",
+      set: "Acme Series",
+    });
+    const phrases = found[0].variantTypes
+      .filter((vt) => vt.value === "Insert")
+      .map((vt) => [vt.id, vt.confirmPhrase]);
+    expect(phrases).toEqual([
+      [f.insertVt, phraseFor(f.insertVt)],
+      [twin, phraseFor(twin)],
+    ]);
+    expect(phraseFor(f.insertVt)).not.toEqual(phraseFor(twin));
+
+    const before = await snapshot(t);
+    await expect(
+      run(t, { variantTypeId: f.insertVt, dryRun: false, confirm: phraseFor(twin) }),
+    ).rejects.toThrow(/confirm does not match/);
+    await expect(
+      run(t, { variantTypeId: twin, dryRun: false, confirm: phraseFor(f.insertVt) }),
+    ).rejects.toThrow(/confirm does not match/);
+    expect(await snapshot(t)).toEqual(before);
+
+    // Its own phrase wipes the twin and leaves the original's subtree alone.
+    const result = await run(t, {
+      variantTypeId: twin,
+      dryRun: false,
+      confirm: phraseFor(twin),
+    });
+    expect(result).toMatchObject({ complete: true });
+    const after = await snapshot(t);
+    expect(after.has(twinInsert)).toBe(false);
+    for (const id of f.doomed.selectorOptions) expect(after.has(id)).toBe(true);
+  });
+
+  test("a non-finite time budget means the default, never no budget", () => {
+    // Condition 2. NaN makes `elapsed >= budget` false forever.
+    expect(resolveTimeBudgetMs(Number.NaN)).toBe(150_000);
+    expect(resolveTimeBudgetMs(Number.POSITIVE_INFINITY)).toBe(150_000);
+    expect(resolveTimeBudgetMs(undefined)).toBe(150_000);
+    expect(resolveTimeBudgetMs(1e12)).toBe(150_000);
+    expect(resolveTimeBudgetMs(-5)).toBe(0);
+    expect(resolveTimeBudgetMs(0)).toBe(0);
+    expect(resolveTimeBudgetMs(2_000)).toBe(2_000);
+  });
+
+  test("staged review rows nested past the depth cap refuse the page instead of dangling", async () => {
+    // Condition 3. No batch builds a chain this deep; if one exists, skipping
+    // its tail would delete a row the tail still points at.
+    vi.stubEnv(ENV_FLAG, "true");
+    const t = convexTest(schema, modules);
+    const f = await seed(t);
+    await t.run(async (ctx) => {
+      let previous = await ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: f.insB,
+        batchId: "deep",
+        createdByUserId: "admin",
+        kind: "player",
+        name: "Root",
+        sportId: f.sport,
+        status: "ready",
+      });
+      for (let i = 0; i < 10; i += 1) {
+        previous = await ctx.db.insert("entityReviewQueue", {
+          selectorOptionId: f.insB,
+          batchId: "deep",
+          createdByUserId: "admin",
+          kind: "team",
+          name: `Link ${i}`,
+          sportId: f.sport,
+          status: "ready",
+          source: { kind: "careerTeamOf", playerRowId: previous },
+        });
+      }
+    });
+    const before = await snapshot(t);
+
+    await expect(
+      t.mutation(internal.wipeVariantTypeSubtree.wipeNodeRefsPage, {
+        variantTypeId: f.insertVt,
+        confirm: phraseFor(f.insertVt),
+        nodeId: f.insB,
+      }),
+    ).rejects.toThrow(/nest deeper/);
+    expect(await snapshot(t)).toEqual(before);
+  });
+
+  test("a variation with variations of its own is a blocker: listed, then refused", async () => {
+    // Condition 4. Deleting the middle card would dangle the grandchild.
+    vi.stubEnv(ENV_FLAG, "true");
+    const t = convexTest(schema, modules);
+    const f = await seed(t);
+    const grandchild = await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: f.insA,
+        cardNumber: "CP-1c",
+        cardName: "Nested",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: NOW,
+        variationOfCardId: f.cards.a2,
+      }),
+    );
+
+    const report = await run(t, { variantTypeId: f.insertVt });
+    if (report.mode !== "dryRun") throw new Error("unreachable");
+    expect(report.blockers).toEqual([
+      {
+        reason: "nestedVariation",
+        cardId: f.cards.a1,
+        childCardId: f.cards.a2,
+        childSelectorOptionId: f.insA,
+        grandchildCardId: grandchild,
+      },
+    ]);
+
+    await expect(
+      run(t, {
+        variantTypeId: f.insertVt,
+        dryRun: false,
+        confirm: phraseFor(f.insertVt),
+      }),
+    ).rejects.toThrow(/variations of its own/);
+    const after = await snapshot(t);
+    expect(after.has(grandchild)).toBe(true);
+    expect(after.has(f.cards.a2)).toBe(true);
+    expect(after.has(f.cards.a1)).toBe(true);
+    expect(await danglingReferences(t)).toEqual([]);
+  });
+
+  test("finalizing while subtree rows remain writes nothing", async () => {
+    // Condition 5. The variant type's notices and cache still describe rows.
+    vi.stubEnv(ENV_FLAG, "true");
+    const t = convexTest(schema, modules);
+    const f = await seed(t);
+    const before = await snapshot(t);
+
+    const result = await t.mutation(
+      internal.wipeVariantTypeSubtree.finalizeVariantType,
+      { variantTypeId: f.insertVt, confirm: phraseFor(f.insertVt) },
+    );
+    expect(result).toEqual({
+      selectorSyncStatus: 0,
+      childrenRemaining: 2,
+      childrenCacheCleared: false,
+    });
+    expect(await snapshot(t)).toEqual(before);
   });
 });
