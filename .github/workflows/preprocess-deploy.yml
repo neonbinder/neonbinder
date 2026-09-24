@@ -47,11 +47,11 @@ env:
   PROD_IMAGE: gcr.io/neonbinder/neonbinder-preprocess
   # NEO-299: every gcloud run deploy of preprocess (heavy + fast, dev + prod,
   # no-traffic sha-tag deploys included) must pass its own explicit
-  # --max-instances. A manual `gcloud run deploy` on 2026-04-16 set
-  # --max-instances=5 on the live heavy service, and every deploy since —
-  # dev-promote/prod-promote included — silently carried that hand-set value
-  # forward because no deploy step here ever passed the flag. These literals
-  # are the dev/prod half of the single source of truth
+  # --max-instances. Without it, a `gcloud run deploy` leaves the service's
+  # existing max-instances untouched, so a value set once by hand — outside
+  # any of these workflows — silently carries forward through every
+  # subsequent deploy, dev-promote/prod-promote included, in no repo. These
+  # literals are the dev/prod half of the single source of truth
   # `apps/web/convex/preprocessCapacity.json`, kept in sync by
   # `capacity-parity` in pr-pipeline.yml. Update both together.
   DEV_HEAVY_MAX_INSTANCES: 6
@@ -242,8 +242,6 @@ jobs:
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           # NEO-299: explicit per-deploy cap — see the env block comment above.
-          # This is what replaces the hand-set --max-instances=5 that every
-          # deploy since 2026-04-16 silently carried forward.
           flags: "--max-instances=${{ env.DEV_HEAVY_MAX_INSTANCES }}"
 
       - id: capture-new

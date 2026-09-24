@@ -8,11 +8,10 @@
 #
 # WHY THIS EXISTS
 #
-# Before NEO-299 these could (and did) disagree silently: Terraform's
-# heavy_preprocess_max_instances defaulted to 20 and was never set in either
-# environment's tfvars, a hand-run `gcloud run deploy` on 2026-04-16 pinned the
-# LIVE service at 5 with that value in no repo, and Convex's
-# HEAVY_PREPROCESS_MAX_PARALLELISM read 3 in prod. Nothing compared them.
+# Before NEO-299 these three numbers could (and did) disagree silently:
+# nothing deployed the live Cloud Run service's --max-instances from a
+# tracked value, nothing compared Terraform's tfvars against Convex's
+# parallelism env vars, and nothing asserted a preview revision's cap at all.
 #
 # WHAT THIS CHECKS
 #
@@ -132,6 +131,85 @@ fail=0
 warn=0
 
 # ---------------------------------------------------------------------------
+# 0. Sanity checks on the JSON itself — the rest of this script only proves
+#    the numbers AGREE with each other; it says nothing about whether the
+#    agreed-upon number is itself sane. All three checks are strict (in-repo,
+#    no network, no reason ever to warn-and-continue).
+# ---------------------------------------------------------------------------
+
+# 0a. Typo guard: every value must be an integer in [1, 50]. Mirrors
+# preprocessCapacity.ts's own MAX_ACCEPTED_PARALLELISM bound, so a JSON value
+# outside it would already be silently rejected at runtime (falling back to
+# the prod default) — catch that here instead of discovering it as a
+# capacity mismatch in production.
+for pair in "heavy.prod=$json_heavy_prod" "heavy.dev=$json_heavy_dev" "heavy.preview=$json_heavy_preview" \
+            "fast.prod=$json_fast_prod" "fast.dev=$json_fast_dev" "fast.preview=$json_fast_preview"; do
+  label="${pair%%=*}"
+  val="${pair#*=}"
+  if [[ "$val" =~ ^[0-9]+$ ]] && [ "$val" -ge 1 ] && [ "$val" -le 50 ]; then
+    echo "ok    sanity: $label=$val is an integer in [1,50]"
+  else
+    echo "FAIL  sanity: $label=$val is not an integer in [1,50] (preprocessCapacity.ts accepts only this range; anything else falls back silently at runtime)"
+    fail=1
+  fi
+done
+
+# 0b. Ordering: preview <= dev <= prod, per pool. Preview and dev share Cloud
+# Run capacity with every other PR in flight at once (NEO-299's whole reason
+# for existing), so either one outrunning prod's width makes no sense — prod
+# is the only environment that owns its capacity outright.
+check_ordering() {
+  local pool="$1" preview="$2" dev="$3" prod="$4"
+  if [ "$preview" -le "$dev" ] && [ "$dev" -le "$prod" ]; then
+    echo "ok    sanity: $pool preview($preview) <= dev($dev) <= prod($prod)"
+  else
+    echo "FAIL  sanity: $pool ordering violated — expected preview <= dev <= prod, got preview=$preview dev=$dev prod=$prod"
+    fail=1
+  fi
+}
+check_ordering "heavy" "$json_heavy_preview" "$json_heavy_dev" "$json_heavy_prod"
+check_ordering "fast"  "$json_fast_preview"  "$json_fast_dev"  "$json_fast_prod"
+
+# 0c/0d. Cloud Run memory quota arithmetic — 400 GiB per region, per project
+# (prod and dev each have their own 400 GiB budget; this is NOT a shared pool
+# between them). container_concurrency=1 on both preprocess services (NEO-161)
+# means instance count IS concurrent request count, so "every instance fully
+# warm at once" is the real worst case, not a padded estimate.
+HEAVY_GIB=16
+FAST_GIB=8
+PROD_BROWSER_GIB_TOTAL=40   # prod browser: 20 instances x 2 GiB
+DEV_BROWSER_GIB_TOTAL=80    # dev browser: 20 instances x 4 GiB
+PREVIEW_BROWSER_GIB_TOTAL=6 # one PR's browser preview: 3 instances x 2 GiB (browser.yml)
+
+prod_heavy_gib=$(( json_heavy_prod * HEAVY_GIB ))
+prod_fast_gib=$(( json_fast_prod * FAST_GIB ))
+prod_sum=$(( prod_heavy_gib + prod_fast_gib + PROD_BROWSER_GIB_TOTAL ))
+if [ "$prod_sum" -le 400 ]; then
+  echo "ok    sanity: prod fully-warm memory ${prod_sum} GiB <= 400 GiB quota (heavy ${json_heavy_prod}x${HEAVY_GIB}=${prod_heavy_gib} + fast ${json_fast_prod}x${FAST_GIB}=${prod_fast_gib} + browser ${PROD_BROWSER_GIB_TOTAL})"
+else
+  echo "FAIL  sanity: prod fully-warm memory ${prod_sum} GiB EXCEEDS the 400 GiB/region Cloud Run quota — heavy ${json_heavy_prod}x${HEAVY_GIB}GiB=${prod_heavy_gib} + fast ${json_fast_prod}x${FAST_GIB}GiB=${prod_fast_gib} + browser ${PROD_BROWSER_GIB_TOTAL}GiB = ${prod_sum}GiB. Lower heavy.prod and/or fast.prod, or this WILL 429/OOM once every instance is warm simultaneously."
+  fail=1
+fi
+
+# One PR preview's addon is computed once and reused in the message below so
+# the arithmetic reads the same way it was derived (NEO-299's decision
+# comment: "one preview +N GiB").
+preview_heavy_gib=$(( json_heavy_preview * HEAVY_GIB ))
+preview_fast_gib=$(( json_fast_preview * FAST_GIB ))
+preview_addon=$(( preview_heavy_gib + preview_fast_gib + PREVIEW_BROWSER_GIB_TOTAL ))
+
+dev_heavy_gib=$(( json_heavy_dev * HEAVY_GIB ))
+dev_fast_gib=$(( json_fast_dev * FAST_GIB ))
+dev_sum=$(( dev_heavy_gib + dev_fast_gib + DEV_BROWSER_GIB_TOTAL + preview_addon ))
+if [ "$dev_sum" -le 400 ]; then
+  echo "ok    sanity: dev + one PR preview fully-warm memory ${dev_sum} GiB <= 400 GiB quota (dev: heavy ${json_heavy_dev}x${HEAVY_GIB}=${dev_heavy_gib} + fast ${json_fast_dev}x${FAST_GIB}=${dev_fast_gib} + browser ${DEV_BROWSER_GIB_TOTAL}; +one preview ${preview_addon} [heavy ${json_heavy_preview}x${HEAVY_GIB}=${preview_heavy_gib} + fast ${json_fast_preview}x${FAST_GIB}=${preview_fast_gib} + browser ${PREVIEW_BROWSER_GIB_TOTAL}])"
+else
+  echo "FAIL  sanity: dev + one PR preview fully-warm memory ${dev_sum} GiB EXCEEDS the 400 GiB/region Cloud Run quota — dev (heavy ${json_heavy_dev}x${HEAVY_GIB}GiB=${dev_heavy_gib} + fast ${json_fast_dev}x${FAST_GIB}GiB=${dev_fast_gib} + browser ${DEV_BROWSER_GIB_TOTAL}GiB) + one preview (heavy ${json_heavy_preview}x${HEAVY_GIB}GiB=${preview_heavy_gib} + fast ${json_fast_preview}x${FAST_GIB}GiB=${preview_fast_gib} + browser ${PREVIEW_BROWSER_GIB_TOTAL}GiB) = ${dev_sum}GiB. This is the exact quota-exhaustion shape a PR preview can trigger alongside the shared dev revision — lower heavy.dev/fast.dev and/or heavy.preview/fast.preview."
+  fail=1
+fi
+echo
+
+# ---------------------------------------------------------------------------
 # 1. Workflow env: literals vs JSON — strict, in-repo, no network.
 # ---------------------------------------------------------------------------
 
@@ -186,7 +264,7 @@ echo
 
 fetch_tfvars() {
   local url="$1"
-  curl -fsSL --max-time 15 "$url" 2>/dev/null
+  curl -fsSL --retry 3 --retry-all-errors --max-time 20 "$url" 2>/dev/null
 }
 
 # Reads `name = <number>` from tfvars content on stdin-like variable. Comments
