@@ -13,6 +13,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { groupingRefusal } from "./selectorOptions";
 
 const modules = (
   import.meta as unknown as {
@@ -415,5 +416,268 @@ describe("applyParallelGroupings — no row lands beside a parallel holding the 
       demotions: [{ parallelId: old }],
     });
     expect(result).toEqual({ success: true, promoted: 1, demoted: 1, reparented: 0 });
+  });
+});
+
+describe("applyParallelGroupings — a row ungrouped in this save can take parallels in the same save (NEO-300)", () => {
+  /** Chrome (insert) with Autos as its parallel; Gold as a separate insert. */
+  async function seed(t: ReturnType<typeof convexTest>) {
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome", undefined, { bsc: { b0: "chrome-v" } });
+    const autos = await insertParallel(t, chrome, "Autos", undefined, { bsc: { b0: "autos-v" } });
+    return { vt, chrome, autos };
+  }
+
+  test("✕ Autos (demote) + move Gold under Autos (promote), in one save", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { vt, chrome, autos } = await seed(t);
+    const gold = await insertInsert(t, vt, "Gold", undefined, { bsc: { b0: "gold-v" } });
+
+    const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: vt,
+      promotions: [{ insertId: gold, targetInsertId: autos }],
+      demotions: [{ parallelId: autos }],
+    });
+    expect(result).toEqual({ success: true, promoted: 1, demoted: 1, reparented: 0 });
+
+    const [autosRow, goldRow, chromeRow, vtRow] = await Promise.all([
+      getRow(t, autos),
+      getRow(t, gold),
+      getRow(t, chrome),
+      getRow(t, vt),
+    ]);
+    expect(autosRow?.level).toBe("insert");
+    expect(autosRow?.parentId).toBe(vt);
+    expect(goldRow?.level).toBe("parallel");
+    expect(goldRow?.parentId).toBe(autos);
+    expect(autosRow?.children).toEqual([gold]);
+    expect(chromeRow?.children).toEqual([]);
+    expect(new Set(vtRow?.children)).toEqual(new Set([chrome, autos]));
+  });
+
+  test("✕ Autos (demote) + move sibling parallel Gold under Autos (reparent), in one save", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { vt, chrome, autos } = await seed(t);
+    const gold = await insertParallel(t, chrome, "Gold", undefined, { bsc: { b0: "gold-v" } });
+
+    const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: vt,
+      promotions: [],
+      demotions: [{ parallelId: autos }],
+      reparentings: [{ parallelId: gold, newInsertId: autos }],
+    });
+    expect(result).toEqual({ success: true, promoted: 0, demoted: 1, reparented: 1 });
+
+    const [autosRow, goldRow, chromeRow] = await Promise.all([
+      getRow(t, autos),
+      getRow(t, gold),
+      getRow(t, chrome),
+    ]);
+    expect(autosRow?.level).toBe("insert");
+    expect(autosRow?.parentId).toBe(vt);
+    expect(goldRow?.level).toBe("parallel");
+    expect(goldRow?.parentId).toBe(autos);
+    expect(autosRow?.children).toEqual([gold]);
+    expect(chromeRow?.children).toEqual([]);
+  });
+
+  test("without the demotion, a parallel target is still refused — by name", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { vt, autos } = await seed(t);
+    const gold = await insertInsert(t, vt, "Gold");
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [{ insertId: gold, targetInsertId: autos }],
+        demotions: [],
+      }),
+    ).rejects.toThrow(groupingRefusal.notAnInsert("Autos"));
+    expect((await getRow(t, gold))?.level).toBe("insert");
+  });
+
+  test("the duplicate guard sees the demoted target's post-plan children: only what arrives", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { vt, chrome, autos } = await seed(t);
+    // A Gold twin already under Chrome does not count against Autos…
+    await insertParallel(t, chrome, "Gold", undefined, { bsc: { b0: "gold-v" } });
+    const gold = await insertInsert(t, vt, "Gold", undefined, { bsc: { b0: "gold-v" } });
+    const ok = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: vt,
+      promotions: [{ insertId: gold, targetInsertId: autos }],
+      demotions: [{ parallelId: autos }],
+    });
+    expect(ok.promoted).toBe(1);
+
+    // …but two indistinguishable rows arriving at a demoted target are refused.
+    const t2 = convexTest(schema, modules);
+    const asAdmin2 = t2.withIdentity(ADMIN_IDENTITY);
+    const s2 = await seed(t2);
+    const a = await insertInsert(t2, s2.vt, "Gold", undefined, { bsc: { b0: "gold-v" } });
+    const b = await insertInsert(t2, s2.vt, "Gold Copy", undefined, { bsc: { b0: "gold-v" } });
+    await expect(
+      asAdmin2.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: s2.vt,
+        promotions: [
+          { insertId: a, targetInsertId: s2.autos },
+          { insertId: b, targetInsertId: s2.autos },
+        ],
+        demotions: [{ parallelId: s2.autos }],
+      }),
+    ).rejects.toThrow('"Gold Copy" is already a parallel of "Autos" as "Gold".');
+    // All-or-nothing: the demotion did not land either.
+    expect((await getRow(t2, s2.autos))?.level).toBe("parallel");
+  });
+});
+
+describe("applyParallelGroupings — chains are refused, server-side (NEO-300)", () => {
+  test("a promotion target that is itself promoted in the same plan", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const autos = await insertInsert(t, vt, "Autos");
+    const gold = await insertInsert(t, vt, "Gold");
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [
+          { insertId: autos, targetInsertId: chrome },
+          { insertId: gold, targetInsertId: autos },
+        ],
+        demotions: [],
+      }),
+    ).rejects.toThrow(groupingRefusal.chain("Autos"));
+    expect((await getRow(t, autos))?.level).toBe("insert");
+    expect((await getRow(t, gold))?.level).toBe("insert");
+  });
+
+  test("a demoted target that is also reparented is two moves for one row", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const prizm = await insertInsert(t, vt, "Prizm");
+    const autos = await insertParallel(t, chrome, "Autos");
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [],
+        demotions: [{ parallelId: autos }],
+        reparentings: [{ parallelId: autos, newInsertId: prizm }],
+      }),
+    ).rejects.toThrow(groupingRefusal.twoMoves("Autos"));
+  });
+
+  test("a reparent target that is itself reparented in the same plan", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const prizm = await insertInsert(t, vt, "Prizm");
+    const autos = await insertParallel(t, chrome, "Autos");
+    const gold = await insertParallel(t, chrome, "Gold");
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [],
+        demotions: [],
+        reparentings: [
+          { parallelId: autos, newInsertId: prizm },
+          { parallelId: gold, newInsertId: autos },
+        ],
+      }),
+    ).rejects.toThrow(groupingRefusal.chain("Autos"));
+  });
+
+  test("a promoted row that would keep parallels is refused — by name", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const prizm = await insertInsert(t, vt, "Prizm");
+    await insertParallel(t, chrome, "Refractor");
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [{ insertId: chrome, targetInsertId: prizm }],
+        demotions: [],
+      }),
+    ).rejects.toThrow(groupingRefusal.hasParallels("Chrome"));
+  });
+
+  test("…but not when this same save moves its parallels out", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const prizm = await insertInsert(t, vt, "Prizm");
+    const refractor = await insertParallel(t, chrome, "Refractor");
+
+    const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: vt,
+      promotions: [{ insertId: chrome, targetInsertId: prizm }],
+      demotions: [{ parallelId: refractor }],
+    });
+    expect(result).toEqual({ success: true, promoted: 1, demoted: 1, reparented: 0 });
+    expect((await getRow(t, chrome))?.parentId).toBe(prizm);
+    expect((await getRow(t, refractor))?.parentId).toBe(vt);
+  });
+});
+
+describe("applyParallelGroupings — refusals are operator sentences, never ids (NEO-300)", () => {
+  test("a row from ANOTHER variant type cannot be demoted into this one", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const otherVt = await insertVariantType(t, "insert");
+    const otherInsert = await insertInsert(t, otherVt, "Elsewhere");
+    const stray = await insertParallel(t, otherInsert, "Stray");
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [],
+        demotions: [{ parallelId: stray }],
+      }),
+    ).rejects.toThrow(groupingRefusal.moved("Stray"));
+  });
+
+  test("a deleted row is the generic refresh sentence", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const gone = await insertInsert(t, vt, "Gone");
+    await t.run(async (ctx) => ctx.db.delete(gone));
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [{ insertId: gone, targetInsertId: chrome }],
+        demotions: [],
+      }),
+    ).rejects.toThrow(groupingRefusal.gone());
+  });
+
+  test("no refusal sentence carries a document id", () => {
+    const sentences = [
+      groupingRefusal.gone(),
+      groupingRefusal.moved("Autos"),
+      groupingRefusal.notAnInsert("Autos"),
+      groupingRefusal.chain("Autos"),
+      groupingRefusal.hasParallels("Autos"),
+      groupingRefusal.twoMoves("Autos"),
+      groupingRefusal.tooMany(200),
+    ];
+    for (const s of sentences) expect(s).not.toMatch(/[a-z0-9]{20,}/);
   });
 });

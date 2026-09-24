@@ -7109,7 +7109,9 @@ export const getInsertTreeByVariantType = query({
 //
 //   promotion    — 2 `db.get` (source, target) + 1 `.collect()` (the source's
 //                  parallels) + 1 `patch` in the apply pass          = 4
-//   demotion     — 1 `db.get` + 1 `patch`                            = 2
+//   demotion     — 2 `db.get` (row, its parent insert — NEO-300: the
+//                  row may be a target, so it must belong here) + 1 `patch`
+//                                                                    = 3
 //   reparenting  — 2 `db.get` (row, new target) + 1 `patch`          = 3
 //
 // plus one `db.get` for the variantType, one `patch` per parent whose
@@ -7125,6 +7127,38 @@ export const getInsertTreeByVariantType = query({
 // somehow needs more is asking for a different feature, not a bigger
 // transaction.
 const MAX_PARALLEL_GROUPING_ENTRIES = 200;
+
+/**
+ * NEO-300 — every refusal `applyParallelGroupings` can hand an operator, as
+ * `ConvexError` strings. NB names only, never an id: the person reading it
+ * dragged rows on a screen. DRAFT copy — pending a brand-voice pass and
+ * Jason's sign-off (NEO-245: no copywriter; every user-facing string gets one).
+ *
+ * Exported so the tests assert the exact sentence and the client can match a
+ * refusal it wants to treat specially without re-typing it.
+ */
+export const groupingRefusal = {
+  /** A row the plan names was deleted, or the variant type is not one. */
+  gone: () => "Something in this grouping was removed. Refresh and try again.",
+  /** A row is no longer where the screen showed it (another session moved it). */
+  moved: (value: string) =>
+    `"${value}" has moved since you opened this. Refresh and try again.`,
+  /** A target that is not (and will not be) an insert of this variant type. */
+  notAnInsert: (value: string) =>
+    `"${value}" isn't an insert here, so nothing can go under it. Refresh and try again.`,
+  /** A target this same plan promotes or reparents: a parallel of a parallel. */
+  chain: (value: string) =>
+    `"${value}" is being grouped under something too. Save that first, then group under it.`,
+  /** A promoted row that would keep parallels of its own. */
+  hasParallels: (value: string) =>
+    `"${value}" has parallels of its own. Move them out first.`,
+  /** One row both ungrouped and moved under another insert in one save. */
+  twoMoves: (value: string) =>
+    `"${value}" can't be ungrouped and moved in the same save. Pick one.`,
+  /** Past `MAX_PARALLEL_GROUPING_ENTRIES`. */
+  tooMany: (limit: number) =>
+    `That's more than ${limit} moves in one save. Save in smaller batches.`,
+};
 
 /**
  * NEO-300 — the refusal an operator reads when a grouping would put a row
@@ -7185,20 +7219,14 @@ export const applyParallelGroupings = mutation({
       args.demotions.length +
       (args.reparentings?.length ?? 0);
     if (groupingEntries > MAX_PARALLEL_GROUPING_ENTRIES) {
-      throw new Error(
-        `applyParallelGroupings: ${groupingEntries} entries exceeds the ` +
-          `${MAX_PARALLEL_GROUPING_ENTRIES}-per-call limit`,
+      throw new ConvexError(
+        groupingRefusal.tooMany(MAX_PARALLEL_GROUPING_ENTRIES),
       );
     }
 
     const variantType = await ctx.db.get(args.variantTypeId);
-    if (!variantType) {
-      throw new Error("Variant type not found");
-    }
-    if (variantType.level !== "variantType") {
-      throw new Error(
-        `applyParallelGroupings target must be a variantType row; got ${variantType.level}`,
-      );
+    if (!variantType || variantType.level !== "variantType") {
+      throw new ConvexError(groupingRefusal.gone());
     }
 
     // Track in-memory children sets keyed by row id so multiple promotions/
@@ -7264,43 +7292,130 @@ export const applyParallelGroupings = mutation({
        */
       platformFacets: Doc<"selectorOptions">["platformFacets"] | undefined;
     }>();
+    // NEO-300 — every refusal below is an operator's sentence, not a
+    // developer's: a plain `Error` message is hidden on prod, and an id means
+    // nothing to the person who dragged the rows. See `groupingRefusal`.
+    const rowCache = new Map<Id<"selectorOptions">, Doc<"selectorOptions"> | null>();
+    const readRow = async (id: Id<"selectorOptions">) => {
+      if (!rowCache.has(id)) rowCache.set(id, await ctx.db.get(id));
+      return rowCache.get(id) ?? null;
+    };
+
+    // ---- Demotions first: their rows may be TARGETS below ----
+    //
+    // NEO-300 — an operator can ✕ a parallel A (it becomes an insert) and, in
+    // the same save, move B under A. Validating targets against the rows as
+    // they are before any patch refused that, because A is still a parallel
+    // until the demotion applies. So the demotions are known before any target
+    // is checked, and a target this plan demotes counts as the insert it is
+    // about to be.
+    const demotionTargets = new Map<Id<"selectorOptions">, {
+      parallelId: Id<"selectorOptions">;
+      oldParentId: Id<"selectorOptions">;
+      metadata: Doc<"selectorOptions">["metadata"];
+    }>();
+    for (const d of args.demotions) {
+      const row = await readRow(d.parallelId);
+      if (!row) throw new ConvexError(groupingRefusal.gone());
+      if (row.level !== "parallel" || !row.parentId) {
+        throw new ConvexError(groupingRefusal.moved(row.value));
+      }
+      // The row must be a parallel of an insert IN THIS variant type: a
+      // demotion lands it under `variantTypeId`, and (NEO-300) it may now be a
+      // target, so a row from another variant type must not be pulled in.
+      const oldParent = await readRow(row.parentId);
+      if (
+        !oldParent ||
+        oldParent.level !== "insert" ||
+        oldParent.parentId !== args.variantTypeId
+      ) {
+        throw new ConvexError(groupingRefusal.moved(row.value));
+      }
+      demotionTargets.set(d.parallelId, {
+        parallelId: d.parallelId,
+        oldParentId: row.parentId,
+        metadata: row.metadata,
+      });
+    }
+
+    // ---- Promotion sources ----
+    const promotionRows = new Map<
+      Id<"selectorOptions">,
+      { source: Doc<"selectorOptions">; target: Doc<"selectorOptions"> }
+    >();
     for (const p of args.promotions) {
-      const source = await ctx.db.get(p.insertId);
-      if (!source) throw new Error(`Source insert ${p.insertId} not found`);
-      if (source.level !== "insert") {
-        throw new Error(
-          `Source ${p.insertId} is not an insert (level=${source.level})`,
-        );
+      const source = await readRow(p.insertId);
+      if (!source) throw new ConvexError(groupingRefusal.gone());
+      if (source.level !== "insert" || source.parentId !== args.variantTypeId) {
+        throw new ConvexError(groupingRefusal.moved(source.value));
       }
-      if (source.parentId !== args.variantTypeId) {
-        throw new Error(
-          `Source ${p.insertId} is not under variantType ${args.variantTypeId}`,
-        );
+      const target = await readRow(p.targetInsertId);
+      if (!target) throw new ConvexError(groupingRefusal.gone());
+      promotionRows.set(p.insertId, { source, target });
+    }
+
+    // ---- Reparenting sources ----
+    const reparentRows = new Map<
+      Id<"selectorOptions">,
+      { row: Doc<"selectorOptions">; target: Doc<"selectorOptions"> }
+    >();
+    for (const r of args.reparentings ?? []) {
+      const row = await readRow(r.parallelId);
+      if (!row) throw new ConvexError(groupingRefusal.gone());
+      if (row.level !== "parallel" || !row.parentId) {
+        throw new ConvexError(groupingRefusal.moved(row.value));
       }
-      const target = await ctx.db.get(p.targetInsertId);
-      if (!target) throw new Error(`Target insert ${p.targetInsertId} not found`);
-      if (target.level !== "insert") {
-        throw new Error(
-          `Target ${p.targetInsertId} is not an insert (level=${target.level})`,
-        );
+      if (row.parentId === r.newInsertId) {
+        // No-op: same parent. Skip silently.
+        continue;
       }
-      if (target.parentId !== args.variantTypeId) {
-        throw new Error(
-          `Target ${p.targetInsertId} is not under variantType ${args.variantTypeId}`,
-        );
+      // One row, two moves: ungrouped to an insert AND moved under another
+      // insert. The apply passes would leave it an insert with an insert for
+      // a parent. Refused rather than guessing which move was meant.
+      if (demotionTargets.has(r.parallelId)) {
+        throw new ConvexError(groupingRefusal.twoMoves(row.value));
       }
-      // Defensive: refuse to promote an insert that already has parallels
-      // beneath it (would create parallels-of-parallels).
-      const existingParallels = await ctx.db
+      const target = await readRow(r.newInsertId);
+      if (!target) throw new ConvexError(groupingRefusal.gone());
+      reparentRows.set(r.parallelId, { row, target });
+    }
+
+    // ---- Targets, against the tree as it will be after this plan ----
+    //
+    // A target is valid when it is an insert under this variant type now and
+    // stays one, or when this plan demotes it into one. A target that this
+    // plan itself PROMOTES or REPARENTS is a chain — a parallel of a
+    // parallel — and is refused, whatever order the passes apply in.
+    const checkTarget = (target: Doc<"selectorOptions">) => {
+      if (promotionRows.has(target._id) || reparentRows.has(target._id)) {
+        throw new ConvexError(groupingRefusal.chain(target.value));
+      }
+      if (demotionTargets.has(target._id)) return;
+      if (target.level !== "insert" || target.parentId !== args.variantTypeId) {
+        throw new ConvexError(groupingRefusal.notAnInsert(target.value));
+      }
+    };
+
+    /** Rows leaving their current parent in this plan. */
+    const leavingParent = new Set<Id<"selectorOptions">>([
+      ...demotionTargets.keys(),
+      ...reparentRows.keys(),
+    ]);
+
+    for (const [insertId, { source, target }] of promotionRows) {
+      checkTarget(target);
+      // A promoted row must not keep children: it would become a parallel
+      // with parallels beneath it. Judged AFTER the plan — a parallel of the
+      // source that this same plan demotes or reparents away does not count
+      // (arrivals under the source are already refused as a chain above).
+      const ownParallels = await ctx.db
         .query("selectorOptions")
         .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", "parallel").eq("parentId", p.insertId),
+          q.eq("level", "parallel").eq("parentId", insertId),
         )
-        .first();
-      if (existingParallels) {
-        throw new Error(
-          `Cannot promote insert "${source.value}" to parallel — it already has parallels beneath it.`,
-        );
+        .collect();
+      if (ownParallels.some((p) => !leavingParent.has(p._id))) {
+        throw new ConvexError(groupingRefusal.hasParallels(source.value));
       }
       // NEO-293 — tag the ids this move would otherwise strand.
       //
@@ -7325,10 +7440,10 @@ export const applyParallelGroupings = mutation({
       // this after the fact: a parallel of the BASE set sits on a different
       // `variant` axis and its untagged slots must stay inert.
       const untagged = untaggedBscSlots(source);
-      arrivals.set(p.insertId, { row: source, target });
-      promotionTargets.set(p.insertId, {
-        sourceId: p.insertId,
-        targetId: p.targetInsertId,
+      arrivals.set(insertId, { row: source, target });
+      promotionTargets.set(insertId, {
+        sourceId: insertId,
+        targetId: target._id,
         metadata: source.metadata,
         platformFacets:
           untagged.length > 0
@@ -7342,67 +7457,18 @@ export const applyParallelGroupings = mutation({
     }
 
     // NEO-296 — keyed by the row moved; see the note on `promotionTargets`.
-    const demotionTargets = new Map<Id<"selectorOptions">, {
-      parallelId: Id<"selectorOptions">;
-      oldParentId: Id<"selectorOptions">;
-      metadata: Doc<"selectorOptions">["metadata"];
-    }>();
-    for (const d of args.demotions) {
-      const row = await ctx.db.get(d.parallelId);
-      if (!row) throw new Error(`Parallel ${d.parallelId} not found`);
-      if (row.level !== "parallel") {
-        throw new Error(
-          `Source ${d.parallelId} is not a parallel (level=${row.level})`,
-        );
-      }
-      if (!row.parentId) {
-        throw new Error(`Parallel ${d.parallelId} has no parent`);
-      }
-      demotionTargets.set(d.parallelId, {
-        parallelId: d.parallelId,
-        oldParentId: row.parentId,
-        metadata: row.metadata,
-      });
-    }
-
-    // NEO-296 — keyed by the row moved; see the note on `promotionTargets`.
     const reparentingTargets = new Map<Id<"selectorOptions">, {
       parallelId: Id<"selectorOptions">;
       oldParentId: Id<"selectorOptions">;
       newParentId: Id<"selectorOptions">;
     }>();
-    for (const r of args.reparentings ?? []) {
-      const row = await ctx.db.get(r.parallelId);
-      if (!row) throw new Error(`Parallel ${r.parallelId} not found`);
-      if (row.level !== "parallel") {
-        throw new Error(
-          `Reparent source ${r.parallelId} is not a parallel (level=${row.level})`,
-        );
-      }
-      if (!row.parentId) {
-        throw new Error(`Parallel ${r.parallelId} has no parent`);
-      }
-      if (row.parentId === r.newInsertId) {
-        // No-op: same parent. Skip silently.
-        continue;
-      }
-      const target = await ctx.db.get(r.newInsertId);
-      if (!target) throw new Error(`New insert ${r.newInsertId} not found`);
-      if (target.level !== "insert") {
-        throw new Error(
-          `Reparent target ${r.newInsertId} is not an insert (level=${target.level})`,
-        );
-      }
-      if (target.parentId !== args.variantTypeId) {
-        throw new Error(
-          `Reparent target ${r.newInsertId} is not under variantType ${args.variantTypeId}`,
-        );
-      }
-      arrivals.set(r.parallelId, { row, target });
-      reparentingTargets.set(r.parallelId, {
-        parallelId: r.parallelId,
-        oldParentId: row.parentId,
-        newParentId: r.newInsertId,
+    for (const [parallelId, { row, target }] of reparentRows) {
+      checkTarget(target);
+      arrivals.set(parallelId, { row, target });
+      reparentingTargets.set(parallelId, {
+        parallelId,
+        oldParentId: row.parentId!,
+        newParentId: target._id,
       });
     }
 
@@ -7426,10 +7492,6 @@ export const applyParallelGroupings = mutation({
     // reparented elsewhere) does not block, and two rows ARRIVING at one
     // target in the same plan are compared with each other too. Checked
     // before any patch, like every other refusal here.
-    const leavingParent = new Set<Id<"selectorOptions">>([
-      ...demotionTargets.keys(),
-      ...reparentingTargets.keys(),
-    ]);
     const landedByTarget = new Map<
       Id<"selectorOptions">,
       Doc<"selectorOptions">[]
@@ -7437,12 +7499,16 @@ export const applyParallelGroupings = mutation({
     for (const { row, target } of arrivals.values()) {
       let landed = landedByTarget.get(target._id);
       if (!landed) {
-        const current = await ctx.db
-          .query("selectorOptions")
-          .withIndex("by_level_and_parent", (q) =>
-            q.eq("level", "parallel").eq("parentId", target._id),
-          )
-          .collect();
+        // A target this plan DEMOTES is a parallel today and has no parallels
+        // of its own: after the plan its children are exactly what arrives.
+        const current = demotionTargets.has(target._id)
+          ? []
+          : await ctx.db
+              .query("selectorOptions")
+              .withIndex("by_level_and_parent", (q) =>
+                q.eq("level", "parallel").eq("parentId", target._id),
+              )
+              .collect();
         landed = current.filter((p) => !leavingParent.has(p._id));
         landedByTarget.set(target._id, landed);
       }
