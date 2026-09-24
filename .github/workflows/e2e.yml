@@ -217,6 +217,38 @@ jobs:
           preview-url: ${{ needs.setup.outputs.url }}
           bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
 
+      # NEO-301: capture this PR preview's Convex logs for the seed job's own
+      # lifetime. Preview log HISTORY is only ~15 minutes, and every attempt to
+      # read it after a red run (PR #275, #277) was already gone — so capture
+      # while it's live instead of trying to read it back afterwards.
+      # `npx convex logs --jsonl` never exits on its own, so it's backgrounded
+      # with `nohup … &` (a background process survives past the step that
+      # started it, within the same job/VM — a standard GHA pattern) and
+      # stopped explicitly in "Stop Convex log capture (seed)" below, which is
+      # also where the filtering happens (see that step's comment for why the
+      # raw stream is filtered before upload).
+      #
+      # Best-effort only: never fails the job. A missing CONVEX_DEPLOY_KEY
+      # skips capture with a warning, not an error.
+      - name: Start Convex log capture (seed)
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for the seed job."
+            exit 0
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-seed.raw.jsonl"
+          rm -f "$RAW_LOG_FILE"
+          nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed.stderr.log" &
+          disown
+          echo "CONVEX_LOGS_SEED_PID=$!" >> "$GITHUB_ENV"
+          echo "Started Convex log capture for seed job (pid $!) -> $RAW_LOG_FILE"
+
       # NEO-287: mirror the `vars.NEONBINDER_PAUSED_PLATFORMS` repo variable onto
       # THIS PR's Convex preview before seeding, so the preview env and the
       # Maestro `-e PAUSED_PLATFORMS` variable agree by construction. Without
@@ -435,6 +467,60 @@ jobs:
           E2E_QUEUE_SECRET: ${{ secrets.E2E_QUEUE_SECRET }}
         run: ./run-e2e-queue.sh enqueue
 
+      # NEO-301: stop the background capture and filter before upload.
+      # Filtered, not raw: keep only ERROR/WARN log lines and our structured
+      # `{"msg": …}` JSON lines (the house convention — see
+      # convex/observability.ts and the adapters), dropping plain INFO/LOG
+      # chatter. That chatter can carry a Convex userId (an opaque internal
+      # id, e.g. the `player_created`/`team_created`/`marketplace_token_paused`
+      # lines) which has no diagnostic value for a red E2E flow and is
+      # unnecessary to keep in an artifact anyone logged into GitHub can
+      # download on this public repo. A grep of apps/web/convex found no raw
+      # emails, passwords, tokens or secrets ever reach console.* —
+      # credentials.ts and machineAuth.ts are deliberately written to log only
+      # status codes and public ids (see machineAuth.ts's own comment on this)
+      # — so the filter is belt-and-suspenders for the one thing that does
+      # appear (userId) and for anything a future console.log adds. `jq` is
+      # preinstalled on ubuntu-latest.
+      #
+      # Never fails the job: `|| true` throughout, `if: always()`.
+      - name: Stop Convex log capture (seed)
+        if: always()
+        working-directory: apps/web
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_LOGS_SEED_PID:-}" ]; then
+            kill "${CONVEX_LOGS_SEED_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_SEED_PID}" 2>/dev/null || true
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-seed.raw.jsonl"
+          OUT_FILE="convex-logs-seed.jsonl"
+          if [ -s "$RAW_LOG_FILE" ]; then
+            jq -c '
+                (.logLines // [])
+                | map(select(
+                    .level == "ERROR" or .level == "WARN"
+                    or ((.messages // []) | join(" ") | test("\"msg\""))
+                  ))
+                as $keep
+                | select((.error != null) or ($keep | length) > 0)
+                | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-jq.stderr.log" || true
+            gzip -f "$OUT_FILE" || true
+            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for the seed job."
+          else
+            echo "No Convex logs captured for the seed job (capture may have been skipped or produced nothing)."
+          fi
+
+      - name: Upload Convex log capture (seed)
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: convex-logs-seed
+          path: apps/web/convex-logs-seed.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Upload seed report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -482,6 +568,34 @@ jobs:
           preview-url: ${{ needs.setup.outputs.url }}
           bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
 
+      # NEO-301: the seed job ends before the runner matrix starts, so it can
+      # only cover its own window (captured above) — nothing spans the WHOLE
+      # E2E run. Runner 0 does: it drains the shared queue until empty, which
+      # by construction covers every flow any runner executes. So runner 0
+      # alone streams Convex logs for its full lifetime; runners 1-7 skip
+      # this (one stream is enough, and it would just be the same preview's
+      # logs duplicated 8x). See "Stop Convex log capture (runner 0)" below
+      # for the filtering rationale. Best-effort only: never fails the job.
+      - name: Start Convex log capture (runner 0)
+        if: matrix.runner == 0
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for runner 0."
+            exit 0
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-runner-0.raw.jsonl"
+          rm -f "$RAW_LOG_FILE"
+          nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-runner-0.stderr.log" &
+          disown
+          echo "CONVEX_LOGS_RUNNER0_PID=$!" >> "$GITHUB_ENV"
+          echo "Started Convex log capture for runner 0 (pid $!) -> $RAW_LOG_FILE"
+
       - name: Drain the work-queue (runner ${{ matrix.runner }})
         env:
           APP_URL: http://localhost:3000
@@ -498,6 +612,47 @@ jobs:
         # for the real verdict. A HARD error (bootstrap fail / crash) still fails
         # this job, which the gate also checks.
         run: ./run-e2e-queue.sh
+
+      # NEO-301: stop the background capture and filter before upload — same
+      # filter and same reasoning as "Stop Convex log capture (seed)" above
+      # (keep ERROR/WARN + our structured `{"msg": …}` lines, drop plain
+      # INFO/LOG chatter that can carry a Convex userId). Never fails the job.
+      - name: Stop Convex log capture (runner 0)
+        if: always() && matrix.runner == 0
+        working-directory: apps/web
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_LOGS_RUNNER0_PID:-}" ]; then
+            kill "${CONVEX_LOGS_RUNNER0_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_RUNNER0_PID}" 2>/dev/null || true
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-runner-0.raw.jsonl"
+          OUT_FILE="convex-logs-runner-0.jsonl"
+          if [ -s "$RAW_LOG_FILE" ]; then
+            jq -c '
+                (.logLines // [])
+                | map(select(
+                    .level == "ERROR" or .level == "WARN"
+                    or ((.messages // []) | join(" ") | test("\"msg\""))
+                  ))
+                as $keep
+                | select((.error != null) or ($keep | length) > 0)
+                | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-runner-0-jq.stderr.log" || true
+            gzip -f "$OUT_FILE" || true
+            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for runner 0."
+          else
+            echo "No Convex logs captured for runner 0 (capture may have been skipped or produced nothing)."
+          fi
+
+      - name: Upload Convex log capture (runner 0)
+        if: always() && matrix.runner == 0
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: convex-logs-runner-0
+          path: apps/web/convex-logs-runner-0.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload Maestro report — runner ${{ matrix.runner }}
         if: always()
