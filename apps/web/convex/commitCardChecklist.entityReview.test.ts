@@ -1884,7 +1884,7 @@ describe("commitCardChecklist: a team is created by its OWN step, not by the bul
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
     await seedTeamRow(t, variantTypeId, sportId);
 
-    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+    await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
       selectorOptionId: variantTypeId,
       batchId: "batch-1",
     });

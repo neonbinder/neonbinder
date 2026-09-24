@@ -34,6 +34,18 @@ the one the catch logs — or the name drifts back into fiction. `convex/
 wikidataEntityReviewQueue.test.ts` carried exactly this fiction from NEO-99
 until NEO-294 renamed it.
 
+**Wikidata's pool work items are the exception since NEO-301.** The adapter
+is still no-throw, but `runSparql` records the failure on a `LookupTrace`
+(`unavailable` for timeout/network/5xx/429), and `enrichPlayer` /
+`enrichTeam` / `enrichLeague` / `runEntityReviewLookupImpl` read it AFTER
+their catch and throw a retryable `WikidataUnavailableError`. So a stubbed
+dead `fetch` now DOES make those actions throw — through the trace, not
+through a catch. A stubbed failure that returns fast is retried in-call once
+after a real 1.5 s sleep; to simulate a realistic (slow) failure with no
+wall clock, `vi.useFakeTimers({ toFake: ["Date"] })` and have the fetch stub
+call `vi.setSystemTime(Date.now() + WIKIDATA_FETCH_TIMEOUT_MS)` before it
+throws — a slow failure is not retried in-call. See [[workpool-retry-semantics]].
+
 Also: **`runWithOccRetry` (`lib/errors/occ-retry`) takes an injectable
 `sleep`**, so pass `{ sleep: async () => {} }` instead of fake timers.
 

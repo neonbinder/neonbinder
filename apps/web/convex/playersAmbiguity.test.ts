@@ -754,7 +754,7 @@ describe("NEO-254: 'Add All Remaining as New' will not answer a choice for you",
       ],
     });
 
-    const decided = await asAdmin.mutation(
+    const decided = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsCreate,
       { selectorOptionId, batchId: "batch-1" },
     );
@@ -782,7 +782,7 @@ describe("NEO-254: 'Add All Remaining as New' will not answer a choice for you",
       ],
     });
 
-    const decided = await asAdmin.mutation(
+    const decided = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsSkip,
       { selectorOptionId, batchId: "batch-1" },
     );
@@ -835,7 +835,7 @@ describe("NEO-254: bulk create re-reads ambiguity rather than trusting the row",
       }),
     );
 
-    const decided = await asAdmin.mutation(
+    const decided = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsCreate,
       { selectorOptionId, batchId: "batch-1" },
     );
@@ -888,7 +888,7 @@ describe("NEO-254: bulk create re-reads ambiguity rather than trusting the row",
       }),
     );
 
-    const decided = await asAdmin.mutation(
+    const decided = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsCreate,
       { selectorOptionId, batchId: "batch-1" },
     );

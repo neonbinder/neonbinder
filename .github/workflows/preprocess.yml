@@ -81,6 +81,18 @@ env:
   # No new cleanup policy is needed: `delete-stale-pr-images` (tag prefix `pr-`,
   # 30d) and `delete-old-untagged` (14d) both apply to ALL packages.
   DEV_PREVIEW_IMAGE: gcr.io/neonbinder-dev/neonbinder-preprocess-preview
+  # NEO-299: every `gcloud run deploy` of preprocess must pass its own explicit
+  # --max-instances. A tagged no-traffic preview revision does NOT honour the
+  # service-level cap (NEO-114/NEO-175 shape), so a preview otherwise scales to
+  # whatever maxScale the last deploy of this service happened to carry —
+  # unbounded by anything this workflow controls, and able to exhaust dev's
+  # shared Cloud Run memory quota alongside the fast preview and the
+  # traffic-serving dev revision. These literals are the preview-side half of
+  # the single source of truth `apps/web/convex/preprocessCapacity.json`
+  # (`.preview` values) — kept in sync by `capacity-parity` in
+  # pr-pipeline.yml. Update both together.
+  PREVIEW_HEAVY_MAX_INSTANCES: 3
+  PREVIEW_FAST_MAX_INSTANCES: 3
 
 jobs:
   # Unit tests + lint. Mirrors pr-pipeline.yml's `preprocess-test` on purpose:
@@ -217,6 +229,11 @@ jobs:
             PREVIEW_SHA=${{ github.event.pull_request.head.sha }}
           no_traffic: true
           tag: pr-${{ github.event.pull_request.number }}
+          # NEO-299: explicit per-deploy cap — see the env block comment above.
+          # Without this, a tagged no-traffic revision inherits whatever
+          # --max-instances the PREVIOUS deploy of this service happened to
+          # set (or the terraform default), never this workflow's own value.
+          flags: "--max-instances=${{ env.PREVIEW_HEAVY_MAX_INSTANCES }}"
 
       - id: capture
         name: Capture preview URL
@@ -398,6 +415,8 @@ jobs:
           project_id: neonbinder-dev
           no_traffic: true
           tag: pr-${{ github.event.pull_request.number }}
+          # NEO-299: see deploy-preview's identical comment above.
+          flags: "--max-instances=${{ env.PREVIEW_FAST_MAX_INSTANCES }}"
 
       - id: capture
         name: Capture fast preview URL

@@ -249,10 +249,22 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // editors (`findOrCreate`, `saveTeamFields`) that write aliases in the
     // first place.
     ["teams.aliasesInUse", (t, sportId) => t.query(api.teams.aliasesInUse, { sportId, aliases: ["Friars"] })],
+    // NEO-301: both bulk fast paths are public ACTIONS now (a query picks the
+    // page, an internal mutation writes it), and the admin gate runs in the
+    // action before either half is reached. The create twin was never pinned
+    // here; it is now.
     [
       "entityReviewQueue.recordAllRemainingAsSkip",
       (t, sportId) =>
-        t.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+        t.action(api.entityReviewQueue.recordAllRemainingAsSkip, {
+          selectorOptionId: sportId,
+          batchId: "no-such-batch",
+        }),
+    ],
+    [
+      "entityReviewQueue.recordAllRemainingAsCreate",
+      (t, sportId) =>
+        t.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
           selectorOptionId: sportId,
           batchId: "no-such-batch",
         }),
@@ -1266,5 +1278,30 @@ describe("NEO-305: the set ⇄ parallel doors are admin-gated", () => {
         targetParallelTypeId: ids.parallelTypeId,
       });
     expect(result.parallelValue).toBe("Blue");
+  });
+});
+
+describe("NEO-301: the bulk review decide is a public action over two internal halves", () => {
+  /**
+   * `recordAllRemainingAsCreate` / `recordAllRemainingAsSkip` became actions so
+   * the page they walk is read in a query, outside any transaction's OCC read
+   * set. The two halves take a `callerId` ARGUMENT and trust it — correct for
+   * an internal function whose only caller is the admin-gated action, and a
+   * forged-identity write primitive if either were ever declared public. So
+   * the keyword is pinned, the same reading-the-source way as the NEO-154 and
+   * NEO-289 blocks (convex-test does not enforce the public/internal boundary).
+   */
+  test.each([
+    ["entityReviewQueue.ts", "recordAllRemainingAsCreate", "action"],
+    ["entityReviewQueue.ts", "recordAllRemainingAsSkip", "action"],
+    ["entityReviewQueue.ts", "listBulkCandidates", "internalQuery"],
+    ["entityReviewQueue.ts", "decideRowsByIds", "internalMutation"],
+  ])("%s :: %s is declared %s", (file, fn, keyword) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+    for (const other of ["query", "mutation", "action", "internalQuery", "internalMutation", "internalAction"]) {
+      if (other === keyword) continue;
+      expect(src).not.toContain(`export const ${fn} = ${other}(`);
+    }
   });
 });
