@@ -419,7 +419,7 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
 
     // The bulk decides the PLAYER and leaves the club's step alone — that step
     // asks which league, and this path can only guess.
-    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+    await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
       selectorOptionId: variantTypeId,
       batchId: BATCH,
     });

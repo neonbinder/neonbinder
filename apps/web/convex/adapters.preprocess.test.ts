@@ -593,3 +593,55 @@ describe("callWarmupFast / callWarmupHeavy — best-effort, never throw", () => 
     await expect(callWarmupFast(ctx)).resolves.toEqual({ warmed: true });
   });
 });
+
+describe("per-call fetch timeouts (NEO-299)", () => {
+  // Each call's abort budget is threaded straight into `AbortSignal.timeout`,
+  // which is what actually bounds the fetch. Spying on the static factory
+  // proves the number reaching the network is the one the comment claims —
+  // reading the request itself can't observe a signal's timeout value.
+  function spyOnAbortTimeout() {
+    return vi.spyOn(AbortSignal, "timeout");
+  }
+
+  test("callWarmupHeavy uses the 330s heavy warm-up budget, not the fast one", async () => {
+    const timeoutSpy = spyOnAbortTimeout();
+    stubFetch(async () => new Response("{}", { status: 200 }));
+
+    await callWarmupHeavy(stubCtx());
+
+    expect(timeoutSpy).toHaveBeenCalledWith(330_000);
+    timeoutSpy.mockRestore();
+  });
+
+  test("callWarmupFast uses the 60s fast warm-up budget", async () => {
+    const timeoutSpy = spyOnAbortTimeout();
+    stubFetch(async () => new Response("{}", { status: 200 }));
+
+    await callWarmupFast(stubCtx());
+
+    expect(timeoutSpy).toHaveBeenCalledWith(60_000);
+    expect(timeoutSpy).not.toHaveBeenCalledWith(330_000);
+    timeoutSpy.mockRestore();
+  });
+
+  test("callProcessEntryHeavy uses the 400s heavy process-entry budget", async () => {
+    const timeoutSpy = spyOnAbortTimeout();
+    stubFetch(async () => new Response(JSON.stringify(PROCESS_OK), { status: 200 }));
+
+    await callProcessEntryHeavy(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 });
+
+    expect(timeoutSpy).toHaveBeenCalledWith(400_000);
+    timeoutSpy.mockRestore();
+  });
+
+  test("callProcessEntryFast uses the 60s fast process-entry budget, not heavy's", async () => {
+    const timeoutSpy = spyOnAbortTimeout();
+    stubFetch(async () => new Response(JSON.stringify(PROCESS_OK), { status: 200 }));
+
+    await callProcessEntryFast(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 });
+
+    expect(timeoutSpy).toHaveBeenCalledWith(60_000);
+    expect(timeoutSpy).not.toHaveBeenCalledWith(400_000);
+    timeoutSpy.mockRestore();
+  });
+});

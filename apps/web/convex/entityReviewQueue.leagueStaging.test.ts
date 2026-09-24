@@ -36,6 +36,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizeLeagueName } from "./leagues";
+import { backstopEntityReviewRowImpl } from "./entityReviewQueue";
 import { normalizeTeamName } from "./teams";
 
 const modules = (import.meta as unknown as {
@@ -473,7 +474,7 @@ describe("NEO-254: the New League step's decisions", () => {
 
     const decided = await t
       .withIdentity(ADMIN_IDENTITY)
-      .mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      .action(api.entityReviewQueue.recordAllRemainingAsCreate, {
         selectorOptionId: sportId,
         batchId: BATCH,
       });
@@ -928,10 +929,15 @@ describe("NEO-254: a staged league step is looked up like any other row", () => 
     expect("country" in (row!.enrichment ?? {})).toBe(false);
   });
 
-  test("a failed lookup settles the row to error, never leaves it pending", async () => {
-    // NEO-99's invariant: a review row can never be stranded on `pending`. The
-    // step still opens — with the name only, and its details section open,
-    // which is the New League form's "there is work to do" state.
+  test("a lookup that cannot reach Wikidata waits for the pool's retry, and the final backstop settles it to error", async () => {
+    // NEO-99's invariant — a review row can never be STRANDED on `pending` —
+    // still holds, but NEO-301 moved where it is kept. An unreachable
+    // Wikidata is not an answer, so the work item writes nothing and throws a
+    // retryable error; the row stays `pending` while `wikidataPool` retries.
+    // Only the completion after the FINAL attempt (the backstop) settles it,
+    // and the step then opens as before — with the name only, and its details
+    // section open, which is the New League form's "there is work to do"
+    // state.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const league = await insertRow(t, {
@@ -941,9 +947,22 @@ describe("NEO-254: a staged league step is looked up like any other row", () => 
     });
 
     vi.stubGlobal("fetch", stubLeagueDetail({ throwOnFetch: true }));
-    await t.action(internal.adapters.wikidata.runEntityReviewLookup, {
-      rowId: league,
-    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await expect(
+      t.action(internal.adapters.wikidata.runEntityReviewLookup, {
+        rowId: league,
+      }),
+    ).rejects.toThrow(/wikidata_unavailable kind=league reason=network/);
+    expect((await t.run(async (ctx) => ctx.db.get(league)))!.status).toBe("pending");
+
+    // What the pool's onComplete receives once the ladder is spent.
+    await t.run(async (ctx) =>
+      backstopEntityReviewRowImpl(ctx, league, {
+        kind: "failed",
+        error: "Uncaught WikidataUnavailableError: wikidata_unavailable kind=league reason=network",
+      }),
+    );
+    warn.mockRestore();
 
     const row = await t.run(async (ctx) => ctx.db.get(league));
     expect(row!.status).toBe("error");
@@ -1335,7 +1354,7 @@ describe("NEO-254: 'Skip remaining names' and an already-decided team", () => {
 
     await t
       .withIdentity(ADMIN_IDENTITY)
-      .mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+      .action(api.entityReviewQueue.recordAllRemainingAsSkip, {
         selectorOptionId: sportId,
         batchId: BATCH,
       });

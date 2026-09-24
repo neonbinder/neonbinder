@@ -421,10 +421,18 @@ export async function findJob(
  * business spending our Cloud Run capacity), and `warmupPreprocess` itself
  * swallows every warm-up failure.
  *
- * No dedup and no cost concern when already warm: a warm instance answers
- * `/warmup` immediately, so N callers hitting it in the same minute is cheap and
- * harmless. The on-start warm-ups stay as a backstop for clients that never call
- * this (a raw API consumer, an older CLI).
+ * The fan-out warms the fast service directly and the heavy service through
+ * the heavy workpool, to each service's instance limit (NEO-299). Heavy
+ * warm-ups share the pool's slots with escalations, so the heavy requests in
+ * flight never exceed the heavy instance count. And because this is callable
+ * by any signed-in user as often as they like, the heavy fan-out is DEDUPED
+ * deployment-wide: `enqueueHeavyWarmups` enqueues at most one round per
+ * HEAVY_WARMUP_WINDOW_MS (330s) and skips the rest, so a caller looping this
+ * cannot grow the shared queue in front of other users' escalations. The fast
+ * warm-ups are not deduped — they are direct fetches that hold no pool slot,
+ * and each returns within the fast budget. The on-start warm-ups stay as a
+ * backstop for clients that never call this (a raw API consumer, an older
+ * CLI).
  *
  * `requireUserId` (any signed-in user), NOT `requireAdmin`: warming is a benign
  * self-serve nicety, and gating it behind admin would defeat the point.
@@ -1699,8 +1707,9 @@ async function settleImageOutcome(
       imageId: image._id,
     });
     if (firstEscalation) {
-      // The warm-gate: one heavy `/warmup`, fired once per batch, ahead of the
-      // heavy pool draining the escalations behind the warming instance.
+      // The warm-gate, fired once per batch: enqueue the heavy warm-up fan-out
+      // (to the heavy instance limit) on the same heavy pool as the
+      // escalations, so warm-ups and escalations share its slots.
       await ctx.scheduler.runAfter(0, internal.placeholderBatch.warmupHeavyPreprocess, {});
     }
     return null;
@@ -1834,6 +1843,39 @@ export const markJobFailed = internalMutation({
     const job = await findJob(ctx, args.jobId);
     if (!job) return null;
     await markJobFailedImpl(ctx, job, args.errorCode, args.errorDetail);
+    return null;
+  },
+});
+
+/**
+ * Refresh a job's `lastActivityAt` heartbeat without settling anything
+ * (NEO-299).
+ *
+ * Called by `processHeavyEntryWorker` (placeholderBatch.ts) each time a heavy
+ * escalation attempt fails RETRYABLY. The heavy retry ladder can outlast the
+ * wedged-batch watchdog's 30-minute PLACEHOLDER_WEDGE_STALE_MS in the worst
+ * case (see placeholderHeavyPool.ts for the arithmetic), and between attempts
+ * nothing else bumps the heartbeat — settle only bumps it when an image
+ * completes. Without this, a batch whose last outstanding image is working
+ * through its retries would be failed as wedged while the pool is still
+ * legitimately retrying it.
+ *
+ * Only while the job is still consuming work: "processing" (a zip or a closed
+ * stream draining) or "collecting" (an open stream, whose idle clock is the
+ * same field — a retrying escalation is the stream doing work, exactly as a
+ * completion is). Any other status means the batch is terminal, not started,
+ * or already pairing, and a late heartbeat from a retry that outlived it must
+ * not make a finished job look active. A missing job is a no-op for the same
+ * reason.
+ */
+export const touchJobActivity = internalMutation({
+  args: { jobId: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const job = await findJob(ctx, args.jobId);
+    if (!job) return null;
+    if (job.status !== "processing" && job.status !== "collecting") return null;
+    await ctx.db.patch(job._id, { lastActivityAt: Date.now() });
     return null;
   },
 });

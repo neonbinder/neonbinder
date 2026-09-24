@@ -29,33 +29,72 @@ import { components, internal } from "./_generated/api";
 import type { MutationCtx } from "./_generated/server";
 import { internalMutation } from "./_generated/server";
 import { HEAVY_MAX_PARALLELISM } from "./preprocessCapacity";
+import { HEAVY_WARMUP_WINDOW_MS } from "./lib/preprocessWarmup";
 import { findJob, recordImageOutcomeImpl } from "./placeholderPipeline";
+
+/** The fixed key of the heavy warm-up row in `preprocessWarmupState`. */
+export const HEAVY_WARMUP_STATE_KEY = "heavyWarmup";
 
 /**
  * The queue in front of the HEAVY preprocess Cloud Run service.
  *
  * `maxParallelism` is pinned to the HEAVY service's own instance ceiling — set
- * independently of the fast pool's, because the heavy service is the ~191s
- * BiRefNet cold-loader only escalations reach, so a deployment runs far fewer of
- * them than fast instances. Resolved from `HEAVY_PREPROCESS_MAX_PARALLELISM` at
- * module load; see convex/preprocessCapacity.ts.
+ * independently of the fast pool's, because the heavy service is the BiRefNet
+ * cold-loader (~180-240s model load, 16 GiB per instance) that only
+ * escalations and heavy warm-ups reach. Resolved from
+ * `HEAVY_PREPROCESS_MAX_PARALLELISM` at module load; the per-environment values
+ * live in convex/preprocessCapacity.json.
  *
- * Idempotent action (write-once GCS output, re-derived input), but FEWER
- * attempts than the fast pool (3, not 5) for two reasons unique to heavy. First,
- * a heavy attempt is expensive: its budget is PREPROCESS_HEAVY_TIMEOUT_MS (400s,
- * sized in adapters/preprocess.ts to CLEAR a ~315s cold start + inference), so a
- * cold call now succeeds on the FIRST attempt — retries are for genuine
- * transients (429/503/network), not for cold starts, and those don't need five
- * tries. Second, 5 × 400s + backoff is ~34 min, which would overrun the 30-min
- * watchdog (PLACEHOLDER_WEDGE_STALE_MS) and let it heal a batch mid-retry; 3 ×
- * 400s + ~15s backoff is ~20 min, comfortably inside it.
+ * TWO kinds of work share these slots (NEO-299): escalated images
+ * (`enqueueHeavyImage`) and heavy warm-ups (`enqueueHeavyWarmups`). The service
+ * runs `container_concurrency = 1`, so a warm-up holding an instance for its
+ * whole cold load is exactly as much capacity as an escalation holding it for
+ * inference. Routing both through one pool is what keeps the total in flight at
+ * or under the instance ceiling; firing warm-ups beside the pool, as the old
+ * single-warm-up design did, let warm-ups and escalations together overshoot it
+ * and the surplus came back as 429s.
+ *
+ * RETRY LADDER (verified against @convex-dev/workpool 0.4.12,
+ * src/component/loop.ts `rescheduleJob` and `withJitter`): after the k-th
+ * failed attempt the next start is delayed by
+ *
+ *     initialBackoffMs * base^(k-1) * jitter,   jitter uniform in [0.5, 1.5)
+ *
+ * so with 40s / base 2 the nominal backoffs between the five attempts are
+ * 40s, 80s, 160s, 320s (600s nominal in total). A retrying item goes back to the
+ * pool's pending queue for its backoff and does NOT hold a slot while it waits.
+ *
+ *  - Why the ladder is this long. The item that fails fast is a 429 / "no
+ *    available instance", which Cloud Run returns while instances are still
+ *    cold-loading the model (~180-240s). The old ladder (3 attempts, 5s then
+ *    10s) could spend every attempt inside one cold load and fail the photo.
+ *    With this ladder, even at the shortest
+ *    jitter the four backoffs sum to 0.5 * 600s = 300s, longer than a 240s cold
+ *    load, so an image cannot run out of attempts before the instances it was
+ *    shed by have finished loading.
+ *  - Why 5 attempts rather than more. A heavy attempt is expensive: its budget
+ *    is PREPROCESS_HEAVY_TIMEOUT_MS (400s, sized in adapters/preprocess.ts to
+ *    clear a cold start + inference), so a cold call succeeds on its FIRST
+ *    attempt. The retries are for transients (429/503/network), not cold starts.
+ *  - The watchdog. Worst case is five attempts that each run to the 400s
+ *    timeout plus the longest jitter on every backoff: 5 * 400s + 1.5 * 600s =
+ *    2900s, about 48 minutes, which is MORE than the 30-minute
+ *    PLACEHOLDER_WEDGE_STALE_MS. The ladder therefore does not fit inside the
+ *    watchdog on its own. What keeps a healthy retrying batch from being healed
+ *    as wedged is the heartbeat: `processHeavyEntryWorker` bumps the job's
+ *    `lastActivityAt` (placeholderPipeline.ts `touchJobActivity`) every time an
+ *    attempt fails retryably, so between bumps a retrying escalation spends at
+ *    most one backoff plus one attempt, 1.5 * 320s + 400s = 880s (under 15
+ *    minutes), plus any wait for a free slot after its backoff. That wait is
+ *    time the pool's other work is running, so it is short unless the heavy
+ *    pool is saturated for a long stretch.
  */
 export const heavyPreprocessPool = new Workpool(components.heavyPreprocessPool, {
   maxParallelism: HEAVY_MAX_PARALLELISM,
   retryActionsByDefault: true,
   defaultRetryBehavior: {
-    maxAttempts: 3,
-    initialBackoffMs: 5000,
+    maxAttempts: 5,
+    initialBackoffMs: 40_000,
     base: 2,
   },
 });
@@ -92,8 +131,9 @@ export const onHeavyImageComplete = heavyPreprocessPool.defineOnComplete({
  *    forced it terminal between the settle and here, so honour the cancel and do
  *    NOT create more paid heavy work behind its back.
  *
- * The warm-gate is NOT fired here — `settleImageOutcome` already fired the single
- * heavy `/warmup` on the first escalation of the batch, so this only places work.
+ * The warm-gate is NOT fired here — `settleImageOutcome` already scheduled the
+ * heavy warm-up fan-out on the first escalation of the batch, so this only
+ * places work.
  */
 export const enqueueHeavyImage = internalMutation({
   args: { imageId: v.id("placeholderImages") },
@@ -125,5 +165,82 @@ export const enqueueHeavyImage = internalMutation({
     );
     await ctx.db.patch(image._id, { workId });
     return { enqueued: true };
+  },
+});
+
+/**
+ * Enqueue HEAVY_MAX_PARALLELISM heavy warm-ups onto the heavy pool — one per
+ * heavy instance this environment runs (NEO-299: warm to the limit).
+ *
+ * Called by `warmupPreprocess` (batch start and warm-on-intent) and by
+ * `warmupHeavyPreprocess` (the warm-gate on a batch's first escalation), both in
+ * placeholderBatch.ts. Through the pool rather than fired directly, so warm-ups
+ * and escalations share the same `maxParallelism` slots: the pool never has
+ * more heavy requests in flight than there are heavy instances, whichever kind
+ * they are, so a warm-up can never be the reason an escalation gets a 429.
+ *
+ * Why the full width. `container_concurrency = 1` means N concurrent warm-ups
+ * land on N distinct instances, which is what brings a cold fleet up to its
+ * limit.
+ *
+ * DEDUPED DEPLOYMENT-WIDE (security review, NEO-299). Only the first call in
+ * any HEAVY_WARMUP_WINDOW_MS (330s) window enqueues; later calls return
+ * `{enqueued: 0}` and log `preprocess_heavy_warmup_skipped`. This is the bound
+ * on what the public `warmPreprocess` action can put on the shared heavy pool:
+ * at most one fan-out of HEAVY_MAX_PARALLELISM items per window, however often
+ * and by however many users it is called. It keeps the design intent intact —
+ * the first navigation or script start warms the whole fleet, and a later call
+ * inside the window has nothing to add, because those instances are already
+ * warming or warm. The first-escalation warm-gate goes through the same guard.
+ *
+ * `retry: false` because a warm-up is best-effort and `callWarmupHeavy` never
+ * throws anyway; a retry would only re-send a request whose one useful effect
+ * (starting the model load) has already happened. No `onComplete`: nothing
+ * reads a warm-up's result, and `warmHeavyWorker` logs it.
+ */
+export const enqueueHeavyWarmups = internalMutation({
+  args: {},
+  returns: v.object({ enqueued: v.number() }),
+  // Explicit return annotation: the handler references `internal`, whose type
+  // includes this function, so leaving it inferred is a circular type.
+  handler: async (ctx): Promise<{ enqueued: number }> => {
+    // The deployment-wide window (see the `preprocessWarmupState` table comment
+    // in schema.ts). Read and write of the one row happen in this transaction,
+    // so two concurrent callers cannot both pass it: OCC re-runs the loser,
+    // which then reads the winner's timestamp and skips.
+    const now = Date.now();
+    const state = await ctx.db
+      .query("preprocessWarmupState")
+      .withIndex("by_key", (q) => q.eq("key", HEAVY_WARMUP_STATE_KEY))
+      .unique();
+    if (state && now - state.heavyWarmEnqueuedAt < HEAVY_WARMUP_WINDOW_MS) {
+      console.log(
+        JSON.stringify({
+          msg: "preprocess_heavy_warmup_skipped",
+          reason: "window",
+          lastEnqueuedAt: state.heavyWarmEnqueuedAt,
+          windowMs: HEAVY_WARMUP_WINDOW_MS,
+        }),
+      );
+      return { enqueued: 0 };
+    }
+    if (state) {
+      await ctx.db.patch(state._id, { heavyWarmEnqueuedAt: now });
+    } else {
+      await ctx.db.insert("preprocessWarmupState", {
+        key: HEAVY_WARMUP_STATE_KEY,
+        heavyWarmEnqueuedAt: now,
+      });
+    }
+
+    // If the enqueue below throws, the whole mutation rolls back, including the
+    // timestamp above, so a failed fan-out never holds the window shut.
+    const workIds: string[] = await heavyPreprocessPool.enqueueActionBatch(
+      ctx,
+      internal.placeholderBatch.warmHeavyWorker,
+      Array.from({ length: HEAVY_MAX_PARALLELISM }, () => ({})),
+      { retry: false },
+    );
+    return { enqueued: workIds.length };
   },
 });
