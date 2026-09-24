@@ -754,6 +754,44 @@ jobs:
 
           echo "✅ Wired — E2E will run against the PR's own preprocess preview(s)."
 
+      # NEO-299: the PR's Convex preview must throttle dispatch to the SAME
+      # ceiling the preview Cloud Run revisions above were just capped at
+      # (preprocess.yml's PREVIEW_HEAVY_MAX_INSTANCES /
+      # PREVIEW_FAST_MAX_INSTANCES), or Convex will happily fan out past what
+      # the tagged revisions can actually serve and reproduce the PR #275
+      # quota blowout even with the Cloud Run side fixed. Read from
+      # apps/web/convex/preprocessCapacity.json — the single source of truth
+      # also checked against terraform and these workflow literals by
+      # `capacity-parity` — rather than hardcoding the numbers a second time.
+      - name: Set preprocess parallelism env vars on the Convex preview
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ steps.convex.outputs.name }}
+        run: |
+          set -euo pipefail
+          HEAVY=$(jq -r '.heavy.preview' convex/preprocessCapacity.json)
+          FAST=$(jq -r '.fast.preview' convex/preprocessCapacity.json)
+          if [ -z "$HEAVY" ] || [ "$HEAVY" = "null" ] || [ -z "$FAST" ] || [ "$FAST" = "null" ]; then
+            echo "::error::could not read .heavy.preview / .fast.preview from convex/preprocessCapacity.json"; exit 1
+          fi
+
+          npx --yes convex@1.39.1 env set HEAVY_PREPROCESS_MAX_PARALLELISM "$HEAVY" --deployment "$CONVEX_NAME"
+          got_heavy=$(npx --yes convex@1.39.1 env get HEAVY_PREPROCESS_MAX_PARALLELISM --deployment "$CONVEX_NAME")
+          echo "Convex preview HEAVY_PREPROCESS_MAX_PARALLELISM = $got_heavy"
+          if [ "$got_heavy" != "$HEAVY" ]; then
+            echo "::error::read-back mismatch: expected $HEAVY, got '$got_heavy'"; exit 1
+          fi
+
+          npx --yes convex@1.39.1 env set PREPROCESS_MAX_PARALLELISM "$FAST" --deployment "$CONVEX_NAME"
+          got_fast=$(npx --yes convex@1.39.1 env get PREPROCESS_MAX_PARALLELISM --deployment "$CONVEX_NAME")
+          echo "Convex preview PREPROCESS_MAX_PARALLELISM = $got_fast"
+          if [ "$got_fast" != "$FAST" ]; then
+            echo "::error::read-back mismatch: expected $FAST, got '$got_fast'"; exit 1
+          fi
+
+          echo "✅ Preview Convex parallelism matches the preview Cloud Run caps ($HEAVY heavy / $FAST fast)."
+
   # Invoke the (reusable) E2E suite. Runs AFTER wiring so the Convex preview is
   # already pointed at the PR's browser and preprocess previews (when those
   # areas changed). For PRs that touch neither, both wiring jobs are SKIPPED
@@ -1129,9 +1167,27 @@ jobs:
           fi
           echo "OK — the repo root .claude/ is the only one."
 
+  # NEO-299: cheap, always-runs, no path filter (like repo-hygiene above) —
+  # the three numbers that describe preprocess capacity
+  # (apps/web/convex/preprocessCapacity.json, the workflow env: literals that
+  # cap each `gcloud run deploy`, and the neonbinder_ioc tfvars) must agree
+  # regardless of which area a given PR touches, since any of the three repos
+  # can drift independently. See scripts/check-capacity-parity.sh's header for
+  # the full design, including why a tfvars mismatch on ioc `main` is reported
+  # but never fails this job (GitFlow promotion lag, not drift).
+  capacity-parity:
+    name: Preprocess capacity parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: ./scripts/check-capacity-parity.sh
+
   ci-gate:
     name: CI Gate
-    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, e2e, repo-hygiene]
+    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, e2e, repo-hygiene, capacity-parity]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -1153,14 +1209,17 @@ jobs:
           R_E2E: ${{ needs.e2e.result }}
           R_DEPS_ONLY: ${{ needs.changes.outputs.deps_only }}
           R_HYGIENE: ${{ needs.repo-hygiene.result }}
+          R_CAPACITY_PARITY: ${{ needs.capacity-parity.result }}
         run: |
           set -euo pipefail
-          echo "hygiene=$R_HYGIENE changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS e2e=$R_E2E deps_only=$R_DEPS_ONLY"
+          echo "hygiene=$R_HYGIENE capacity-parity=$R_CAPACITY_PARITY changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS e2e=$R_E2E deps_only=$R_DEPS_ONLY"
           fail=0
           # changes must SUCCEED (skipped => gate unreliable)
           [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
-          # repo-hygiene is ungated (it always runs), so `skipped` is a fault, not out-of-scope.
+          # repo-hygiene and capacity-parity are both ungated (always run, no
+          # path filter), so `skipped` is a fault, not out-of-scope, for either.
           [ "$R_HYGIENE" = "success" ] || { echo "::error::repo-hygiene=$R_HYGIENE (must succeed)"; fail=1; }
+          [ "$R_CAPACITY_PARITY" = "success" ] || { echo "::error::capacity-parity=$R_CAPACITY_PARITY (must succeed)"; fail=1; }
           # e2e must SUCCEED, except on a dependency-manifest-only PR where a
           # SKIP is the intended outcome (NEO-87). Note the deps_only check reads
           # the same job output that gated the skip, so the two can't disagree.
