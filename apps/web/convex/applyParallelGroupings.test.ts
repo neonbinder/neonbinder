@@ -331,6 +331,76 @@ describe("applyParallelGroupings — no row lands beside a parallel holding the 
     expect(result.promoted).toBe(1);
   });
 
+  test("NEO-137 M:1 is allowed: one SportLots set over two rows that BSC splits", async () => {
+    // Refractor and Gold Refractor share SportLots' one set but are two BSC
+    // variantNames. Grouping Gold beside Refractor is a real operator
+    // decision, not a duplicate (security audit, NEO-300).
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    await insertParallel(t, chrome, "Refractor", undefined, {
+      bsc: { b0: "refractor-v" },
+      sportlots: { s0: "sl-refractors" },
+    });
+    const gold = await insertInsert(t, vt, "Gold Refractor", undefined, {
+      bsc: { b0: "gold-refractor-v" },
+      sportlots: { s0: "sl-refractors" },
+    });
+
+    const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: vt,
+      promotions: [{ insertId: gold, targetInsertId: chrome }],
+      demotions: [],
+    });
+    expect(result.promoted).toBe(1);
+    const row = await getRow(t, gold);
+    expect(row?.level).toBe("parallel");
+    expect(row?.parentId).toBe(chrome);
+  });
+
+  test("a true duplicate on both sides is still refused", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const both = { bsc: { b0: "refractor-v" }, sportlots: { s0: "sl-refractors" } };
+    await insertParallel(t, chrome, "Refractor", undefined, both);
+    const copy = await insertInsert(t, vt, "Refractor", undefined, both);
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [{ insertId: copy, targetInsertId: chrome }],
+        demotions: [],
+      }),
+    ).rejects.toThrow('"Refractor" is already a parallel of "Chrome".');
+  });
+
+  test("a row linked only on the side it shares is indistinguishable there, and refused", async () => {
+    // The only side both rows are linked on carries the same id; the other
+    // row's extra BSC link says nothing about this one.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    await insertParallel(t, chrome, "Refractor", undefined, {
+      bsc: { b0: "refractor-v" },
+      sportlots: { s0: "sl-refractors" },
+    });
+    const slOnly = await insertInsert(t, vt, "Refractor", undefined, {
+      sportlots: { s0: "sl-refractors" },
+    });
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [{ insertId: slOnly, targetInsertId: chrome }],
+        demotions: [],
+      }),
+    ).rejects.toThrow('"Refractor" is already a parallel of "Chrome".');
+  });
+
   test("a twin LEAVING the target in the same plan does not block the swap", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);

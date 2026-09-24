@@ -20,7 +20,7 @@ import {
   planValueRename,
   resolveReturnedIds,
   selectorValueKey,
-  sharesMarketplaceId,
+  indistinguishableByMarketplaceIds,
   unlinkStalePrimary,
   type IncomingItem,
   type MatchableRow,
@@ -646,8 +646,61 @@ describe("planSelectorSync — a row held elsewhere in the variant type's subtre
       items: [item("Refractor", { bsc: "refractor-v" })],
       elsewhereInSubtree: [refractorParallel(), twin],
     });
-    expect(plan.outcomes[0].kind).toBe("withheld");
+    expect(plan.outcomes[0]).toEqual({
+      kind: "withheld",
+      reason: "marketplace ids are held by 2 rows elsewhere in this variant type",
+      // Named, so the store can tell the operator which rows (audit finding 6).
+      elsewhere: { reason: "heldByMany", holderIds: ["refractor", "twin"] },
+    });
     expect(plan.ambiguities).toHaveLength(1);
+  });
+
+  test("tier 0 needs the ids to agree: an existingId whose row lacks the item's id is WITHHELD and names the row", () => {
+    const plan = planSelectorSync({
+      existing: [chrome()],
+      // The modal says "this is Refractor", but carries a BSC id Refractor
+      // does not hold.
+      items: [item("Refractor", { bsc: "some-other-set" }, "refractor")],
+      elsewhereInSubtree: [refractorParallel()],
+    });
+    expect(plan.outcomes[0]).toEqual({
+      kind: "withheld",
+      reason:
+        "existingId names a row elsewhere in this variant type that does not hold the item's bsc id",
+      elsewhere: { reason: "idsDisagree", holderIds: ["refractor"] },
+    });
+  });
+
+  test("tier 0 with ids the row DOES hold is heldElsewhere", () => {
+    const plan = planSelectorSync({
+      existing: [chrome()],
+      items: [item("Refractor", { bsc: "refractor-v", sportlots: "sl-ref" }, "refractor")],
+      elsewhereInSubtree: [refractorParallel()],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "heldElsewhere", rowId: "refractor", tier: 0 });
+  });
+
+  test("tier 0: one agreeing side does not excuse a disagreeing one", () => {
+    const plan = planSelectorSync({
+      existing: [chrome()],
+      items: [item("Refractor", { bsc: "refractor-v", sportlots: "sl-other" }, "refractor")],
+      elsewhereInSubtree: [refractorParallel()],
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+  });
+
+  test("a sibling-level withhold carries no `elsewhere` — its shape is unchanged", () => {
+    const a = row("a", "Series 1", { platformData: { bsc: { b0: "x" } } });
+    const b = row("b", "Series 2", { platformData: { bsc: { b0: "x" } } });
+    const plan = planSelectorSync({
+      existing: [a, b],
+      items: [item("Anything", { bsc: "x" })],
+      elsewhereInSubtree: [refractorParallel()],
+    });
+    expect(plan.outcomes[0]).toEqual({
+      kind: "withheld",
+      reason: "bsc id is held by 2 sibling rows",
+    });
   });
 
   test("a subtree row that is also a sibling is treated as a sibling only", () => {
@@ -694,23 +747,62 @@ describe("itemsReachPastSiblings (NEO-300)", () => {
   });
 });
 
-describe("sharesMarketplaceId (NEO-300)", () => {
-  test("same side, same id in any slot", () => {
-    const a = row("a", "X", { platformData: { bsc: { b0: "p", b1: "q" } } });
-    const b = row("b", "Y", { platformData: { bsc: { b3: "q" } } });
-    expect(sharesMarketplaceId(a, b)).toBe(true);
+describe("indistinguishableByMarketplaceIds (NEO-300)", () => {
+  const r = (platformData: Row["platformData"], value = "X") =>
+    row(value, value, { platformData });
+
+  test("the same id on the one side both are linked on: indistinguishable", () => {
+    expect(
+      indistinguishableByMarketplaceIds(
+        r({ bsc: { b0: "p", b1: "q" } }),
+        r({ bsc: { b3: "q" } }),
+      ),
+    ).toBe(true);
   });
 
-  test("the same string on DIFFERENT sides is not a shared id", () => {
-    const a = row("a", "X", { platformData: { bsc: { b0: "q" } } });
-    const b = row("b", "X", { platformData: { sportlots: { s0: "q" } } });
-    expect(sharesMarketplaceId(a, b)).toBe(false);
+  test("the same ids on both sides: indistinguishable", () => {
+    expect(
+      indistinguishableByMarketplaceIds(
+        r({ bsc: { b0: "p" }, sportlots: { s0: "s1" } }),
+        r({ bsc: { b0: "p" }, sportlots: { s0: "s1" } }),
+      ),
+    ).toBe(true);
   });
 
-  test("a shared name with no shared id is not a match", () => {
-    const a = row("a", "Refractor", { platformData: { bsc: { b0: "p" } } });
-    const b = row("b", "Refractor", { platformData: {} });
-    expect(sharesMarketplaceId(a, b)).toBe(false);
+  test("NEO-137 M:1 — one SportLots set over two rows BSC splits: DISTINGUISHABLE", () => {
+    expect(
+      indistinguishableByMarketplaceIds(
+        r({ bsc: { b0: "refractor" }, sportlots: { s0: "sl-set" } }),
+        r({ bsc: { b0: "gold-refractor" }, sportlots: { s0: "sl-set" } }),
+      ),
+    ).toBe(false);
+  });
+
+  test("a side only one row is linked on says nothing: the common side decides", () => {
+    expect(
+      indistinguishableByMarketplaceIds(
+        r({ sportlots: { s0: "sl-set" } }),
+        r({ bsc: { b0: "p" }, sportlots: { s0: "sl-set" } }),
+      ),
+    ).toBe(true);
+  });
+
+  test("the same string on DIFFERENT sides: no common side, not indistinguishable", () => {
+    expect(
+      indistinguishableByMarketplaceIds(
+        r({ bsc: { b0: "q" } }),
+        r({ sportlots: { s0: "q" } }),
+      ),
+    ).toBe(false);
+  });
+
+  test("a row with no links is never indistinguishable, whatever its name", () => {
+    expect(
+      indistinguishableByMarketplaceIds(r({}, "Refractor"), r({}, "Refractor")),
+    ).toBe(false);
+    expect(
+      indistinguishableByMarketplaceIds(r({ bsc: { b0: "p" } }, "Refractor"), r({}, "Refractor")),
+    ).toBe(false);
   });
 });
 

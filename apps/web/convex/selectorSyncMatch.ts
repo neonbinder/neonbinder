@@ -453,7 +453,22 @@ export type MatchOutcome<TId extends string = string> =
       placeholderSides?: PlatformSide[];
     }
   | { kind: "insert" }
-  | { kind: "withheld"; reason: string }
+  | {
+      kind: "withheld";
+      reason: string;
+      /**
+       * NEO-300 — set only on a withhold decided against the variant type's
+       * subtree (two rows elsewhere hold the item's ids, or the modal's
+       * `existingId` names a subtree row that does not carry the item's ids).
+       * Which of the two it was, and the rows the item points at, so the
+       * store can tell the operator rather than only logging it. Absent on
+       * every sibling-level withhold, whose shape is unchanged.
+       */
+      elsewhere?: {
+        reason: "heldByMany" | "idsDisagree";
+        holderIds: TId[];
+      };
+    }
   /**
    * NEO-300 — the item names a row that already lives ELSEWHERE in this
    * variant type's subtree (an operator grouped it: an insert promoted to a
@@ -638,6 +653,11 @@ function indexBySideId<TId extends string>(
   return out;
 }
 
+/** Does `row` hold `id` in any slot on `side`? */
+function rowHoldsId(row: SlotBearingRow, side: PlatformSide, id: string): boolean {
+  return Object.values(row.platformData?.[side] ?? {}).includes(id);
+}
+
 /**
  * NEO-300 — does this item name a row that lives elsewhere in the variant
  * type's subtree? `undefined` = no, carry on to the name tier.
@@ -647,6 +667,13 @@ function indexBySideId<TId extends string>(
  * WITHHOLD, not an insert: the id is already in the subtree, so a new row
  * would be the duplicate this rule exists to stop, and picking one holder
  * would be a coin-flip about which grouping the operator meant.
+ *
+ * Tier 0 needs the ids to agree. The `existingId` is the CLIENT's claim; the
+ * row it names must hold every id the item carries (on each side it carries
+ * one). An item carrying an id the row does not hold is not "the same row,
+ * already grouped" — it is a modal line pointing at one set with another
+ * set's id — so it is withheld and reported, never quietly accepted. An item
+ * carrying no ids at all has nothing to contradict the claim.
  */
 function heldElsewhereOutcome<TId extends string>(
   item: IncomingItem,
@@ -655,7 +682,22 @@ function heldElsewhereOutcome<TId extends string>(
 ): MatchOutcome<TId> | undefined {
   if (item.existingId) {
     const row = byId.get(item.existingId);
-    if (row) return { kind: "heldElsewhere", rowId: row._id, tier: 0 };
+    if (row) {
+      const contradicted = PLATFORM_SIDES.filter((side) => {
+        const id = item.ids[side];
+        return id !== undefined && !rowHoldsId(row, side, id);
+      });
+      if (contradicted.length === 0) {
+        return { kind: "heldElsewhere", rowId: row._id, tier: 0 };
+      }
+      return {
+        kind: "withheld",
+        reason:
+          `existingId names a row elsewhere in this variant type that does ` +
+          `not hold the item's ${contradicted.join(" and ")} id`,
+        elsewhere: { reason: "idsDisagree", holderIds: [row._id] },
+      };
+    }
   }
   const holders = new Set<MatchableRow<TId>>();
   for (const side of PLATFORM_SIDES) {
@@ -668,6 +710,10 @@ function heldElsewhereOutcome<TId extends string>(
     return {
       kind: "withheld",
       reason: `marketplace ids are held by ${holders.size} rows elsewhere in this variant type`,
+      elsewhere: {
+        reason: "heldByMany",
+        holderIds: [...holders].map((row) => row._id),
+      },
     };
   }
   return { kind: "heldElsewhere", rowId: [...holders][0]._id, tier: 1 };
@@ -708,22 +754,33 @@ export function itemsReachPastSiblings(
 }
 
 /**
- * NEO-300 — do two rows hold the same marketplace id on the same side, in any
- * slot? The grouping guard's test for "this row is already a parallel of that
- * insert". Ids only: two rows with the same NAME under one insert are two NB
- * rows as far as this is concerned, and a card number is never consulted.
+ * NEO-300 — are two rows the SAME marketplace set as far as their links can
+ * tell? The grouping guard's test for "this row is already a parallel of that
+ * insert".
+ *
+ * True only when the rows are linked on at least one common side AND, on
+ * every side BOTH are linked on, they share an id (in any slot). One shared
+ * id is not enough: NEO-137 made M:1 legal — one SportLots set can cover two
+ * NB rows that BSC splits — so two rows holding the same SL id but different
+ * BSC ids are two sets, and grouping one beside the other is a real operator
+ * decision. A side only one row is linked on says nothing either way.
+ *
+ * Ids only: two rows with the same NAME under one insert are two NB rows as
+ * far as this is concerned, and a card number is never consulted.
  */
-export function sharesMarketplaceId(
+export function indistinguishableByMarketplaceIds(
   a: SlotBearingRow,
   b: SlotBearingRow,
 ): boolean {
-  return PLATFORM_SIDES.some((side) => {
+  let commonSides = 0;
+  for (const side of PLATFORM_SIDES) {
+    const ours = Object.values(a.platformData?.[side] ?? {});
     const theirs = new Set(Object.values(b.platformData?.[side] ?? {}));
-    if (theirs.size === 0) return false;
-    return Object.values(a.platformData?.[side] ?? {}).some((id) =>
-      theirs.has(id),
-    );
-  });
+    if (ours.length === 0 || theirs.size === 0) continue;
+    commonSides++;
+    if (!ours.some((id) => theirs.has(id))) return false;
+  }
+  return commonSides > 0;
 }
 
 export function planSelectorSync<TId extends string>(args: {

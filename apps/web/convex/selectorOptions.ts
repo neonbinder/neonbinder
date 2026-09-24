@@ -101,7 +101,7 @@ import {
   planValueRename,
   resolveReturnedIds,
   selectorValueKey,
-  sharesMarketplaceId,
+  indistinguishableByMarketplaceIds,
   unlinkStalePrimary,
   type IncomingItem,
   // NEO-237 — the reserved view name, refused at the sync insert door too.
@@ -151,6 +151,8 @@ import {
   heldElsewhereEntry,
   heldElsewhereEntryValidator,
   loadVariantTypeSubtreeElsewhere,
+  withheldElsewhereEntry,
+  withheldElsewhereEntryValidator,
   partialSyncMessage,
   pausedSyncMessage,
   platformNames,
@@ -162,6 +164,7 @@ import {
   unlinkedEntryValidator,
   type HeldElsewhereEntry,
   type UnlinkedEntry,
+  type WithheldElsewhereEntry,
 } from "./selectorSyncStore";
 import {
   platformServesLevel,
@@ -1855,6 +1858,9 @@ type StoreSelectorOptionsResult = {
   writeOps: number;
   heldElsewhere: HeldElsewhereEntry[];
   heldElsewhereTotal: number;
+  withheldElsewhere: WithheldElsewhereEntry[];
+  withheldElsewhereTotal: number;
+  subtreeWalkSkipped: boolean;
 };
 
 /**
@@ -1880,7 +1886,7 @@ type StoreSelectorOptionsResult = {
  * others as events that happened in that transaction:
  *
  *  - `optionsCount`, `reservedNamesSkipped`, `returnedIdsTruncatedSides` and
- *    (NEO-300) `heldElsewhere` / `heldElsewhereTotal` are
+ *    (NEO-300) `heldElsewhere*`, `withheldElsewhere*`, `subtreeWalkSkipped` are
  *    recomputed over items `0..itemsProcessed`, and the LAST page reached the
  *    furthest — so the last page's value is the whole answer, and summing
  *    would count the prefix once per page.
@@ -2057,6 +2063,23 @@ export const storeSelectorOptions = mutation({
      */
     heldElsewhere: v.array(heldElsewhereEntryValidator),
     heldElsewhereTotal: v.number(),
+    /**
+     * NEO-300 (security audit) — items WITHHELD because of what the subtree
+     * holds: their ids are on several rows elsewhere (`heldByMany`), or the
+     * modal's `existingId` names a subtree row that does not hold the item's
+     * id (`idsDisagree`). Nothing was written for them; the operator is told
+     * rather than only the log. Capped at `UNLINK_NOTICE_LIMIT`; the true
+     * count is `withheldElsewhereTotal`. Recomputed per page — last page wins.
+     */
+    withheldElsewhere: v.array(withheldElsewhereEntryValidator),
+    withheldElsewhereTotal: v.number(),
+    /**
+     * NEO-300 (security audit) — the subtree walk was needed but a bound
+     * (`MAX_SUBTREE_WALK_INSERTS` / `MAX_SUBTREE_WALK_DOCUMENTS`) stopped it,
+     * so this call matched against siblings only and a grouped row may have
+     * been re-created. False on every real set. Last page wins.
+     */
+    subtreeWalkSkipped: v.boolean(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -2400,6 +2423,7 @@ export const storeSelectorOptions = mutation({
       (subtree?.rows ?? []).map((row) => [row._id, row]),
     );
     const heldElsewhereById = new Map<string, HeldElsewhereEntry>();
+    const withheldElsewhereAll: WithheldElsewhereEntry[] = [];
 
     for (let i = 0; i < options.length; i++) {
       // The bound is checked BEFORE the item, so the last item admitted is the
@@ -2411,7 +2435,21 @@ export const storeSelectorOptions = mutation({
       const option = options[i];
       const item = items[i];
       const outcome = plan.outcomes[i];
-      if (outcome.kind === "withheld") continue;
+      if (outcome.kind === "withheld") {
+        // NEO-300 — a subtree withhold reaches the operator, not only the
+        // log. Sibling-level withholds are unchanged (log-only).
+        if (outcome.elsewhere) {
+          withheldElsewhereAll.push(
+            withheldElsewhereEntry(
+              option.value,
+              outcome.elsewhere,
+              subtreeRowsById,
+              subtree?.parentsById ?? new Map(),
+            ),
+          );
+        }
+        continue;
+      }
 
       // NEO-300 — already in this variant type's subtree, where the operator
       // put it. Nothing is written to it or for it (no insert, reparent,
@@ -2749,7 +2787,8 @@ export const storeSelectorOptions = mutation({
       );
     }
     const heldElsewhereAll = [...heldElsewhereById.values()];
-    if (heldElsewhereAll.length > 0 || subtree) {
+    const subtreeWalkSkipped = subtree?.skipped ?? false;
+    if (heldElsewhereAll.length > 0 || withheldElsewhereAll.length > 0 || subtree) {
       // Ids and counts only — a row `value` is operator content.
       console.log(
         JSON.stringify({
@@ -2758,7 +2797,9 @@ export const storeSelectorOptions = mutation({
           level,
           parentId: parentId ?? null,
           count: heldElsewhereAll.length,
+          withheld: withheldElsewhereAll.length,
           subtreeReads: subtree?.reads ?? 0,
+          subtreeWalkSkipped,
           rowIds: heldElsewhereAll.slice(0, 25).map((r) => r.id),
         }),
       );
@@ -2809,6 +2850,9 @@ export const storeSelectorOptions = mutation({
       writeOps,
       heldElsewhere: heldElsewhereAll.slice(0, UNLINK_NOTICE_LIMIT),
       heldElsewhereTotal: heldElsewhereAll.length,
+      withheldElsewhere: withheldElsewhereAll.slice(0, UNLINK_NOTICE_LIMIT),
+      withheldElsewhereTotal: withheldElsewhereAll.length,
+      subtreeWalkSkipped,
     };
   },
 });
@@ -7364,12 +7408,18 @@ export const applyParallelGroupings = mutation({
 
     // ---- NEO-300: no row lands beside a parallel it duplicates ----
     //
-    // A target insert must not end up with two parallels holding the same
-    // marketplace id (same side, same slot value). That state is what a sync
-    // could once manufacture — Sync Inserts re-created a promoted row, and a
-    // second grouping then put the copy beside the original — and nothing
-    // downstream can tell the two apart: both answer the checklist fetch for
-    // the same marketplace set. Refused here, by id, never by name.
+    // A target insert must not end up with two parallels its marketplace
+    // links cannot tell apart — linked on a common side, and sharing an id on
+    // EVERY side both are linked on (`indistinguishableByMarketplaceIds`).
+    // That state is what a sync could once manufacture — Sync Inserts
+    // re-created a promoted row, and a second grouping then put the copy
+    // beside the original — and nothing downstream can tell the two apart:
+    // both answer the checklist fetch for the same marketplace set. Refused
+    // here, by id, never by name.
+    //
+    // One shared id is NOT enough (security audit, NEO-300): NEO-137's legal
+    // M:1 — one SportLots set covering two NB rows that BSC splits — shares
+    // the SL id and differs on BSC, and grouping those is a real decision.
     //
     // Compared against the target's parallels as they will be AFTER this
     // plan: a parallel leaving the target in the same plan (demoted, or
@@ -7397,7 +7447,7 @@ export const applyParallelGroupings = mutation({
         landedByTarget.set(target._id, landed);
       }
       const twin = landed.find(
-        (p) => p._id !== row._id && sharesMarketplaceId(row, p),
+        (p) => p._id !== row._id && indistinguishableByMarketplaceIds(row, p),
       );
       if (twin) {
         throw new ConvexError(duplicateParallelRefusal(row, target, twin));

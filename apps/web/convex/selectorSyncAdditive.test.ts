@@ -25,6 +25,7 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { SL_ALL_BRANDS_BRAND_ID } from "./slBrandAxis";
 import {
+  MAX_SUBTREE_WALK_DOCUMENTS,
   MAX_SUBTREE_WALK_INSERTS,
   loadVariantTypeSubtreeElsewhere,
 } from "./selectorSyncStore";
@@ -1944,6 +1945,9 @@ describe("a row grouped between insert and parallel is not re-created by the nex
     );
     expect(res.heldElsewhere).toEqual([]);
     expect(res.heldElsewhereTotal).toBe(0);
+    expect(res.withheldElsewhere).toEqual([]);
+    expect(res.withheldElsewhereTotal).toBe(0);
+    expect(res.subtreeWalkSkipped).toBe(false);
     expect(res.writeOps).toBe(0);
     // The structured line is written only when the subtree was walked.
     expect(
@@ -1965,7 +1969,9 @@ describe("a row grouped between insert and parallel is not re-created by the nex
           )
           .collect();
         const r = await loadVariantTypeSubtreeElsewhere(ctx, { level, parent, siblings });
-        return r ? { reads: r.reads, values: r.rows.map((x) => x.value).sort() } : null;
+        return r
+          ? { reads: r.reads, skipped: r.skipped, values: r.rows.map((x) => x.value).sort() }
+          : null;
       });
     const a = await t.run(async (ctx) => {
       const mk = (value: string) =>
@@ -1993,12 +1999,22 @@ describe("a row grouped between insert and parallel is not re-created by the nex
     });
 
     // At `insert`: the siblings are A and B; elsewhere is every parallel.
-    expect(await walk("insert", vt)).toEqual({ reads: 2, values: ["A1", "A2", "B1"] });
+    expect(await walk("insert", vt)).toEqual({
+      reads: 2,
+      skipped: false,
+      values: ["A1", "A2", "B1"],
+    });
     // At `parallel` under A: the variant type get + the inserts read + B's
-    // parallels; A's own parallels are the siblings.
-    expect(await walk("parallel", a)).toEqual({ reads: 3, values: ["A", "B", "B1"] });
+    // parallels. A's own parallels are the siblings, and A itself is NOT
+    // elsewhere (the rule: elsewhere is where a grouping could have moved a
+    // row, and a grouping never turns a row into its own parent).
+    expect(await walk("parallel", a)).toEqual({
+      reads: 3,
+      skipped: false,
+      values: ["B", "B1"],
+    });
 
-    // Past the bound the walk does not run at all.
+    // Past the inserts bound the walk does not run at all, and says so.
     await t.run(async (ctx) => {
       for (let i = 0; i < MAX_SUBTREE_WALK_INSERTS; i++) {
         await ctx.db.insert("selectorOptions", {
@@ -2011,7 +2027,245 @@ describe("a row grouped between insert and parallel is not re-created by the nex
         });
       }
     });
-    expect(await walk("insert", vt)).toBeNull();
+    expect(await walk("insert", vt)).toEqual({ reads: 0, skipped: true, values: [] });
+  });
+
+  test("the walk stops past the documents bound — all or nothing, and the reads it spent are still reported", async () => {
+    const t = convexTest(schema, modules);
+    const vt = await insertVariantType(t);
+    await t.run(async (ctx) => {
+      const mk = (value: string) =>
+        ctx.db.insert("selectorOptions", {
+          level: "insert",
+          value,
+          platformData: {},
+          parentId: vt,
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      const a = await mk("A");
+      const b = await mk("B");
+      // A few under A, then more than the bound under B.
+      for (let i = 0; i < 3; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "parallel",
+          value: `A${i}`,
+          platformData: {},
+          parentId: a,
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+      for (let i = 0; i < MAX_SUBTREE_WALK_DOCUMENTS; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "parallel",
+          value: `B${i}`,
+          platformData: {},
+          parentId: b,
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+    });
+    const out = await t.run(async (ctx) => {
+      const parent = await ctx.db.get(vt);
+      const siblings = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "insert").eq("parentId", vt),
+        )
+        .collect();
+      const r = await loadVariantTypeSubtreeElsewhere(ctx, {
+        level: "insert",
+        parent,
+        siblings,
+      });
+      return r ? { reads: r.reads, skipped: r.skipped, rows: r.rows.length } : null;
+    });
+    // Both parallels reads were made before the bound tripped; no partial
+    // subtree is handed back.
+    expect(out).toEqual({ reads: 2, skipped: true, rows: 0 });
+  });
+
+  test("a store whose walk is skipped says so (subtreeWalkSkipped) and falls back to the sibling-only rule", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const vt = await insertVariantType(t);
+    await t.run(async (ctx) => {
+      const chrome = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Chrome",
+        platformData: { bsc: { b0: "chrome-v" } },
+        parentId: vt,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      await ctx.db.insert("selectorOptions", {
+        level: "parallel",
+        value: "Refractor",
+        platformData: { bsc: { b0: "refractor-v" } },
+        parentId: chrome,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      for (let i = 0; i < MAX_SUBTREE_WALK_INSERTS; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "insert",
+          value: `Bulk ${i}`,
+          platformData: {},
+          parentId: vt,
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+    });
+
+    const res = await asAdmin.mutation(
+      api.setReconciliation.storeReconciledOptions,
+      {
+        level: "insert",
+        parentId: vt,
+        reconciledItems: [
+          { value: "Refractor", platformData: { bsc: "refractor-v" }, metadata: undefined },
+        ],
+      },
+    );
+    expect(res.subtreeWalkSkipped).toBe(true);
+    expect(res.heldElsewhereTotal).toBe(0);
+    // The documented fallback: today's sibling-only rule, so the row IS
+    // re-created — which is exactly why the flag is surfaced.
+    const inserts = await rowsUnder(t, "insert", vt);
+    expect(inserts.filter((r) => r.value === "Refractor")).toHaveLength(1);
+
+    const res2 = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "insert",
+      parentId: vt,
+      options: [{ value: "Atomic", platformData: { bsc: "atomic-v" } }],
+    });
+    expect(res2.subtreeWalkSkipped).toBe(true);
+  });
+
+  test("an id held by two rows elsewhere is WITHHELD and reported to the operator, both stores", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const vt = await insertVariantType(t);
+    const { chrome, prizm } = await t.run(async (ctx) => {
+      const mk = (value: string, bsc: string) =>
+        ctx.db.insert("selectorOptions", {
+          level: "insert",
+          value,
+          platformData: { bsc: { b0: bsc } },
+          parentId: vt,
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      const chrome = await mk("Chrome", "chrome-v");
+      const prizm = await mk("Prizm", "prizm-v");
+      for (const [value, parentId] of [
+        ["Refractor", chrome],
+        ["Refractor", prizm],
+      ] as const) {
+        await ctx.db.insert("selectorOptions", {
+          level: "parallel",
+          value,
+          platformData: { bsc: { b0: "refractor-v" } },
+          parentId,
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+      return { chrome, prizm };
+    });
+
+    const res = await asAdmin.mutation(
+      api.setReconciliation.storeReconciledOptions,
+      {
+        level: "insert",
+        parentId: vt,
+        reconciledItems: [
+          { value: "Refractor", platformData: { bsc: "refractor-v" }, metadata: undefined },
+        ],
+      },
+    );
+    expect(res.withheldElsewhereTotal).toBe(1);
+    expect(res.withheldElsewhere).toHaveLength(1);
+    expect(res.withheldElsewhere[0].label).toBe("Refractor");
+    expect(res.withheldElsewhere[0].reason).toBe("heldByMany");
+    expect(
+      res.withheldElsewhere[0].holders
+        .map((h) => ({ value: h.value, level: h.level, parentId: String(h.parentId), parentValue: h.parentValue }))
+        .sort((x, y) => x.parentValue.localeCompare(y.parentValue)),
+    ).toEqual([
+      { value: "Refractor", level: "parallel", parentId: String(chrome), parentValue: "Chrome" },
+      { value: "Refractor", level: "parallel", parentId: String(prizm), parentValue: "Prizm" },
+    ]);
+    expect(res.heldElsewhereTotal).toBe(0);
+    // Nothing inserted.
+    expect((await rowsUnder(t, "insert", vt)).map((r) => r.value).sort()).toEqual([
+      "Chrome",
+      "Prizm",
+    ]);
+
+    const res2 = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "insert",
+      parentId: vt,
+      options: [{ value: "Refractor", platformData: { bsc: "refractor-v" } }],
+    });
+    expect(res2.withheldElsewhereTotal).toBe(1);
+    expect(res2.withheldElsewhere[0].reason).toBe("heldByMany");
+    expect(await rowsUnder(t, "insert", vt)).toHaveLength(2);
+  });
+
+  test("an existingId naming a subtree row that lacks the item's id is WITHHELD, reported, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const vt = await insertVariantType(t);
+    const { chrome, refractor } = await t.run(async (ctx) => {
+      const chrome = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Chrome",
+        platformData: { bsc: { b0: "chrome-v" } },
+        parentId: vt,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const refractor = await ctx.db.insert("selectorOptions", {
+        level: "parallel",
+        value: "Refractor",
+        platformData: { bsc: { b0: "refractor-v" } },
+        parentId: chrome,
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      return { chrome, refractor };
+    });
+
+    const res = await asAdmin.mutation(
+      api.setReconciliation.storeReconciledOptions,
+      {
+        level: "insert",
+        parentId: vt,
+        reconciledItems: [
+          {
+            value: "Refractor",
+            platformData: { bsc: "not-refractors-id" },
+            existingId: refractor,
+            metadata: undefined,
+          },
+        ],
+      },
+    );
+    expect(res.heldElsewhereTotal).toBe(0);
+    expect(res.withheldElsewhereTotal).toBe(1);
+    expect(res.withheldElsewhere[0]).toMatchObject({
+      label: "Refractor",
+      reason: "idsDisagree",
+    });
+    expect(res.withheldElsewhere[0].holders.map((h) => String(h.id))).toEqual([String(refractor)]);
+    expect((await rowsUnder(t, "insert", vt)).map((r) => r._id)).toEqual([chrome]);
+    const after = await t.run(async (ctx) => ctx.db.get(refractor));
+    expect(after?.platformData).toEqual({ bsc: { b0: "refractor-v" } });
+    expect(after?.lastUpdated).toBe(SENTINEL);
   });
 
   test("outside a variant type's subtree (a setName sync) nothing is held and nothing changes", async () => {
