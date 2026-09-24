@@ -10,7 +10,10 @@ import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RunResult } from "@convex-dev/workpool";
 // NEO-301: the backstop says whether a failed item gave up on Wikidata.
-import { isWikidataUnavailableResult } from "../lib/errors/wikidata-unavailable";
+import {
+  isWikidataUnavailableResult,
+  parseWikidataUnavailable,
+} from "../lib/errors/wikidata-unavailable";
 import { getCurrentUserId, requireAdmin } from "./auth";
 import {
   buildExistingPlayerCandidates,
@@ -3568,6 +3571,34 @@ export const getInternal = internalQuery({
  * see `backstopEntityReviewRowImpl`, which carries the same guard and the
  * argument for why.
  */
+/**
+ * NEO-301 — lay a team lookup's later result over the partial answer already
+ * on the row (see `applyLookupResult`). A field the new result leaves
+ * `undefined` keeps its stored value; `colors` is merged per swatch for the
+ * same reason. Everything the new result DOES carry wins, so a Wikidata answer
+ * adds `wikidataId`, `yearsActive` and `leagueWikidataId` and an ESPN answer
+ * refreshes its own fields with the same values.
+ */
+export function overlayTeamEnrichment(
+  prior: Doc<"entityReviewQueue">["enrichment"],
+  next: Doc<"entityReviewQueue">["enrichment"],
+): Doc<"entityReviewQueue">["enrichment"] {
+  if (!next) return prior;
+  if (!prior) return next;
+  const merged: Record<string, unknown> = { ...prior };
+  for (const [key, value] of Object.entries(next)) {
+    if (value !== undefined) merged[key] = value;
+  }
+  if (prior.colors || next.colors) {
+    const colors: Record<string, unknown> = { ...(prior.colors ?? {}) };
+    for (const [key, value] of Object.entries(next.colors ?? {})) {
+      if (value !== undefined) colors[key] = value;
+    }
+    merged.colors = colors;
+  }
+  return merged as Doc<"entityReviewQueue">["enrichment"];
+}
+
 export const applyLookupResult = internalMutation({
   args: {
     id: v.id("entityReviewQueue"),
@@ -3583,6 +3614,33 @@ export const applyLookupResult = internalMutation({
     // Decided: the operator has ruled and commit is imminent or done. Writing
     // here would only contend with the commit's read of this same row.
     if (row.decision) return null;
+
+    /*
+     * NEO-301 — a TEAM row can already be "ready" with a PARTIAL answer here.
+     *
+     * When a team's Wikidata lookup is unavailable but ESPN answered,
+     * `runEntityReviewLookupImpl` writes that ESPN half as "ready" (league,
+     * location, colours — the operator can act on it now, and for a team this
+     * lookup is the only automatic source of them, NEO-254) and then throws so
+     * `wikidataPool` retries the Wikidata half. Each later attempt lands here
+     * on a row that already holds an answer, and must ADD to it, never take
+     * from it:
+     *   - a result is overlaid field by field, keeping every field the new
+     *     one leaves undefined — a retry whose ESPN fetch failed (ESPN is
+     *     no-throw, so that reads as "no ESPN data") must not erase the
+     *     colours the first attempt found;
+     *   - an "error" (a retry whose lookup found nothing at all) does not
+     *     downgrade it — the ESPN answer it already holds is still true.
+     *
+     * Scoped to team rows that are already "ready" because that shape has
+     * exactly one producer: a team row is staged `pending` and its lookup is
+     * enqueued once (NEO-99's creation-only contract), so before NEO-301 no
+     * team row was ever written twice. League rows, which ARE staged "ready"
+     * before their first lookup, are deliberately not included.
+     */
+    const priorTeamAnswer =
+      row.kind === "team" && row.status === "ready" ? row.enrichment : undefined;
+    if (priorTeamAnswer && args.status === "error") return null;
 
     /**
      * NEO-254 — attach NB's OWN answer to the same question the lookup asked.
@@ -3624,7 +3682,9 @@ export const applyLookupResult = internalMutation({
     const enrichment =
       existingCandidates.length > 0
         ? { ...(args.enrichment ?? {}), existingCandidates }
-        : args.enrichment;
+        : priorTeamAnswer
+          ? overlayTeamEnrichment(priorTeamAnswer, args.enrichment)
+          : args.enrichment;
 
     await ctx.db.patch(args.id, {
       status: args.status,
@@ -3662,8 +3722,8 @@ export const applyLookupResult = internalMutation({
      * the career-team staging runs here: `nextUndecided` only ever presents a
      * settled row, and this mutation is what settles it.
      */
-    if (row.kind === "team" && args.enrichment?.league) {
-      await stageLeagueRowsImpl(ctx, { ...row, enrichment: args.enrichment });
+    if (row.kind === "team" && enrichment?.league) {
+      await stageLeagueRowsImpl(ctx, { ...row, enrichment });
     }
     return null;
   },
@@ -3716,6 +3776,26 @@ export async function backstopEntityReviewRowImpl(
   const row = await ctx.db.get(rowId);
   // Gone (a Cancel deleted the batch while this item drained) — nothing to age.
   if (!row) return null;
+  // NEO-301 — the retry ladder ran out without ever reaching Wikidata. Said
+  // for EVERY surviving row, before the guards below, because the row it
+  // matters most for is one they leave alone: a team row already "ready"
+  // with the ESPN half of its answer keeps it (it has data; flipping it to
+  // "error" would throw that away), and this line is then the only record
+  // that its Wikidata half never came. Ids, kinds and the transport reason
+  // only — never the name (observability.ts).
+  const unavailable =
+    result.kind === "failed" ? parseWikidataUnavailable(result.error) : null;
+  if (unavailable) {
+    console.warn(
+      JSON.stringify({
+        msg: "wikidata_review_unavailable",
+        rowId,
+        kind: row.kind,
+        reason: unavailable.reason,
+        rowStatus: row.status,
+      }),
+    );
+  }
   // Already resolved by the action itself — the common path. Leave it be.
   if (row.status !== "pending") return null;
   // NEO-189: decided by the operator — commit is imminent or done, and this

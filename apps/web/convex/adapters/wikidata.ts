@@ -1719,10 +1719,11 @@ export async function lookupTeamEnrichment(
  *
  * NEO-301: when a Wikidata call is unavailable this still returns whatever it
  * has (ESPN's answer, or a QID without its detail) — the adapter answers, the
- * trace records. The pool work items discard such a partial and retry the
- * whole lookup rather than writing half an answer: a written `wikidataId` or
- * `espnId` is an enrichment MARKER, and would make the retry skip the row as
- * already enriched.
+ * trace records. `enrichTeam` discards such a partial and retries the whole
+ * lookup: on a `teams` row a written `wikidataId` or `espnId` is an
+ * enrichment MARKER, and would make the retry skip the row as already
+ * enriched. A team REVIEW row is the opposite case — it writes the partial as
+ * "ready" and then retries (see `runEntityReviewLookupImpl`).
  */
 export async function lookupTeamEnrichmentLive(
   name: string,
@@ -1985,7 +1986,9 @@ function reviewEnrichmentFor(
  * 5xx, 429) is neither — it writes nothing, THROWS, and the pool retries it on
  * its ladder (convex/wikidataPool.ts). The row stays `pending` until an
  * attempt gets an answer, or until the final attempt fails and the backstop
- * ages it to "error".
+ * ages it to "error". The exception is a team row with a partial (ESPN)
+ * answer, which is written "ready" before the throw and kept "ready" after
+ * the ladder — see `runEntityReviewLookupImpl`.
  *
  * Deliberately catches the LOOKUP rather than letting it propagate to the
  * pool: resolving the row here keeps every lookup outcome in one place and
@@ -2169,10 +2172,24 @@ export async function runEntityReviewLookupImpl(
   // written: the row stays `pending` ("Looking up…", which is the truth) and
   // the throw hands it to `wikidataPool`'s retry ladder. Only after the
   // ladder's FINAL attempt does the pool's onComplete backstop
-  // (`backstopEntityReviewRowImpl`) age it to "error". A partial answer (a
-  // team ESPN knew, or a QID whose detail query failed) is discarded rather
-  // than shown: the retry fetches the whole thing.
-  if (trace.unavailable) {
+  // (`backstopEntityReviewRowImpl`) age it to "error".
+  //
+  // ONE exception (Jason, NEO-301): a TEAM row whose lookup still produced a
+  // partial answer — ESPN's league, location and colours, and a QID if the
+  // search got through before the detail query failed. That half is written
+  // as "ready" NOW, so the operator can act on it, and THEN the item throws
+  // for the retry that fetches the Wikidata half. `applyLookupResult` merges
+  // each later result over it and never downgrades it to "error", and the
+  // final backstop leaves a non-pending row alone, so after a spent ladder the
+  // row keeps its ESPN answer (the backstop still logs the unavailable line).
+  // Teams only: for a team this lookup is the only automatic source of these
+  // fields (NEO-254 — teams are never enriched at creation). A player or
+  // league partial is still discarded. Row ENRICHMENT (`enrichTeam`) never
+  // writes a partial: there `espnId` is a creation-only marker and would make
+  // the retry skip the row.
+  const writePartialThenRetry =
+    trace.unavailable && row.kind === "team" && payload.status === "ready";
+  if (trace.unavailable && !writePartialThenRetry) {
     throwIfUnavailable(row.kind, args.rowId, trace);
   }
 
@@ -2200,6 +2217,11 @@ export async function runEntityReviewLookupImpl(
         attempts: occRetry.attempts ?? OCC_RETRY_ATTEMPTS,
       }),
     );
+    // NEO-301: a partial whose write failed is still an unavailable lookup —
+    // the retry has to go back to Wikidata anyway, and it redoes this write
+    // with it — so the retryable signal wins over NEO-294's non-retryable
+    // rethrow below. The row stays `pending` in the meantime.
+    if (writePartialThenRetry) throwIfUnavailable(row.kind, args.rowId, trace);
     // Rethrown deliberately (NEO-294): the row stays `pending`, the pool's
     // onComplete backstop ages it to "error" off a single-document read set,
     // and the failure is attributable rather than fabricated into an answer
@@ -2216,6 +2238,8 @@ export async function runEntityReviewLookupImpl(
       { cause: error },
     );
   }
+  // The partial landed; now ask the pool for the Wikidata half.
+  if (writePartialThenRetry) throwIfUnavailable(row.kind, args.rowId, trace);
   return null;
 }
 
