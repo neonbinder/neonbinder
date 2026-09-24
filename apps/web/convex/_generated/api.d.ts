@@ -109,6 +109,7 @@ import type * as testing from "../testing.js";
 import type * as userProfile from "../userProfile.js";
 import type * as variantRole from "../variantRole.js";
 import type * as wikidataPool from "../wikidataPool.js";
+import type * as wipeVariantTypeSubtree from "../wipeVariantTypeSubtree.js";
 
 import type {
   ApiFromModules,
@@ -218,6 +219,7 @@ declare const fullApi: ApiFromModules<{
   userProfile: typeof userProfile;
   variantRole: typeof variantRole;
   wikidataPool: typeof wikidataPool;
+  wipeVariantTypeSubtree: typeof wipeVariantTypeSubtree;
 }>;
 
 /**
