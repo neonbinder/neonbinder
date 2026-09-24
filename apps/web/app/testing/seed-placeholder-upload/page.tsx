@@ -68,9 +68,8 @@ import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
 // directories may be selected — never an arbitrary caller-supplied path.
 const DEFAULT_FIXTURE_SET = "placeholder-fixtures";
 const ALLOWED_FIXTURE_SETS = new Set([
-  DEFAULT_FIXTURE_SET, // 3 inset pairs → escalate (heavy) — print-layout + full-batch flows
-  "placeholder-fixtures-fullbleed", // frame-filling cards → fast path (no escalation)
-  "placeholder-fixtures-escalation-pair", // ONE inset pair → escalate; keeps the all-heavy cold-start batch near the ~5-min bar (NEO-175)
+  DEFAULT_FIXTURE_SET, // 3 inset pairs → all 6 escalate (heavy) — the escalation cold-start flow (NEO-175, six images since NEO-299)
+  "placeholder-fixtures-fullbleed", // frame-filling cards → fast path (no escalation) — the fast-path and flip-edge flows
 ]);
 
 async function loadFixtureFiles(fixtureSet: string): Promise<File[]> {
