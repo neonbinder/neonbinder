@@ -834,7 +834,8 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     });
 
     const status = await screen.findByRole("status");
-    expect(status.textContent).toContain("Saved 1 sets.");
+    expect(status.textContent).toContain("Saved 1 set.");
+    expect(status.textContent).not.toContain("Saved 1 sets");
     expect(status.textContent).toContain(
       "2 already grouped as parallels. Leaving those be.",
     );

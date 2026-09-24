@@ -7,6 +7,7 @@
 
 import { describe, expect, it } from "vitest";
 import { mergeServerHeld, type HeldRow } from "./held-elsewhere";
+import { savedSetsMessage } from "./HeldElsewhereNote";
 
 const CLIENT: HeldRow[] = [
   {
@@ -73,5 +74,13 @@ describe("mergeServerHeld", () => {
       extra: 0,
     });
     expect(mergeServerHeld(CLIENT, undefined).extra).toBe(0);
+  });
+});
+
+describe("savedSetsMessage", () => {
+  it("pluralises", () => {
+    expect(savedSetsMessage(1)).toBe("Saved 1 set.");
+    expect(savedSetsMessage(0)).toBe("Saved 0 sets.");
+    expect(savedSetsMessage(3)).toBe("Saved 3 sets.");
   });
 });

@@ -18,7 +18,10 @@ import {
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { storeReconciledUntilDone } from "./store-reconciled-until-done";
-import HeldElsewhereNote, { groupedAsParallelsSummary } from "./HeldElsewhereNote";
+import HeldElsewhereNote, {
+  groupedAsParallelsSummary,
+  savedSetsMessage,
+} from "./HeldElsewhereNote";
 import {
   heldIdSets,
   heldRowsReturnedBy,
@@ -462,7 +465,7 @@ export default function VariantForm({
     if (heldAll.extra > 0) {
       setHeldSkipped(heldAll.rows);
       setHeldTotal(heldAll.total);
-      setMessage(`Saved ${stored.optionsCount ?? result.items.length} sets.`);
+      setMessage(savedSetsMessage(stored.optionsCount ?? result.items.length));
       return;
     }
     // Same rule as the single-platform path: a silent detach is not acceptable,

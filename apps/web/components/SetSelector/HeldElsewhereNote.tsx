@@ -109,3 +109,11 @@ export function heldElsewhereSummary(n: number, variantsLabel: string): string {
     ? `1 already lives elsewhere in ${variantsLabel}. Leaving it be.`
     : `${n} already live elsewhere in ${variantsLabel}. Leaving those be.`;
 }
+
+/**
+ * The status line after a reconcile Save the store partly declined. Same verb
+ * as the modal's "Save N sets" button. "Saved 1 set." / "Saved 3 sets."
+ */
+export function savedSetsMessage(n: number): string {
+  return n === 1 ? "Saved 1 set." : `Saved ${n} sets.`;
+}

@@ -18,7 +18,10 @@ import {
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { storeReconciledUntilDone } from "./store-reconciled-until-done";
-import HeldElsewhereNote, { heldElsewhereSummary } from "./HeldElsewhereNote";
+import HeldElsewhereNote, {
+  heldElsewhereSummary,
+  savedSetsMessage,
+} from "./HeldElsewhereNote";
 import {
   heldIdSets,
   heldRowsReturnedBy,
@@ -406,7 +409,7 @@ export default function ParallelForm({
     if (heldAll.extra > 0) {
       setHeldSkipped(heldAll.rows);
       setHeldTotal(heldAll.total);
-      setMessage(`Saved ${stored.optionsCount ?? result.items.length} sets.`);
+      setMessage(savedSetsMessage(stored.optionsCount ?? result.items.length));
       return;
     }
     if (unlinkedRows.length === 0) onDone?.();
