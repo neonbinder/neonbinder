@@ -719,6 +719,33 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
   });
 
+  it("the held-rows toggle and list sit OUTSIDE the status region (a11y)", async () => {
+    // Opened inside a live region, the list would be read aloud row by row.
+    // The summary stays in the region; the toggle and list follow it.
+    insertTree = groupedUnderAnime();
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [
+        { value: "Anime Gold", platformValue: "bsc-gold" },
+        { value: "Team Canada", platformValue: "team-canada" },
+      ],
+    });
+    mockStore.mockResolvedValue({ success: true, unlinked: [], optionsCount: 1, hasMore: false });
+    await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("1 already grouped as a parallel. Leaving it be.");
+    const toggle = screen.getByRole("button", { name: "Show grouped" });
+    expect(status.contains(toggle)).toBe(false);
+    fireEvent.click(toggle);
+    const list = screen.getByRole("group", {
+      name: "1 already grouped as a parallel. Leaving it be.",
+    });
+    expect(status.contains(list)).toBe(false);
+    expect(status.textContent).not.toContain("Anime");
+    expect(toggle.getAttribute("aria-controls")).toBe(list.id);
+  });
+
   it("single platform, everything already grouped: writes nothing and says why", async () => {
     insertTree = groupedUnderAnime();
     mockFetchRawOptions.mockResolvedValue({
@@ -919,13 +946,19 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     const summary = await screen.findByText(
       "Hold up: 2 not added. They clash with rows already in Inserts.",
     );
-    const box = summary.closest('[role="status"]') as HTMLElement;
-    // Actionable: what to do about it, in the operator's words.
-    expect(box.textContent).toContain("Delete or ungroup the extra row, then sync again.");
-    expect(box.textContent).toContain("Already on more than one row:");
-    expect(box.textContent).toContain("Points at a row linked to a different set:");
+    const live = summary.closest('[role="status"]') as HTMLElement;
+    // Actionable: what to do about it, in the operator's words — and that
+    // sentence is part of what gets announced.
+    expect(live.textContent).toContain("Delete or ungroup the extra row, then sync again.");
     // Scrollable list named by the summary; each holder by NB names.
     const list = screen.getByRole("group", { name: summary.textContent! });
+    expect(list.textContent).toContain("Already on more than one row:");
+    expect(list.textContent).toContain("Points at a row linked to a different set:");
+    // a11y audit: the list is NOT inside the live region (it would read every
+    // row aloud), and the live region carries only the sentences.
+    expect(list.closest('[role="status"]')).toBeNull();
+    expect(live.contains(list)).toBe(false);
+    expect(live.textContent).not.toContain("Refractor");
     const holders = within(list)
       .getAllByRole("listitem")
       .map((li) => li.textContent);

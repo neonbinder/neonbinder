@@ -16,7 +16,8 @@ import type { StoreHolds } from "./held-elsewhere";
  *    grouped parallels, so this sync may have re-added some.
  *
  * AMBER, like `SyncDoneNotice`: an unanswered question, nothing destroyed.
- * `role="status"` — announced when it appears, never interrupting.
+ * `role="status"` — announced when it appears, never interrupting — on the
+ * sentences only; the withheld list sits beside the live region, not in it.
  *
  * All copy here is DRAFT pending Jason's sign-off (NEO-300).
  */
@@ -36,11 +37,16 @@ export default function StoreHoldNotices({
   return (
     <>
       {withheldTotal > 0 && (
-        <div role="status" className={box}>
-          <p id={summaryId} className="font-medium">
-            {withheldSummary(withheldTotal, variantsLabel)}
-          </p>
-          <p>Delete or ungroup the extra row, then sync again.</p>
+        // a11y audit (NEO-300): only the summary and the fix are live. The
+        // list is a SIBLING of the status region, not inside it — a live
+        // region holding 50 items of up to 10 rows each would read them all.
+        <div className={box}>
+          <div role="status">
+            <p id={summaryId} className="font-medium">
+              {withheldSummary(withheldTotal, variantsLabel)}
+            </p>
+            <p>Delete or ungroup the extra row, then sync again.</p>
+          </div>
           {withheld.length > 0 && (
             // Bounded for the same reason as HeldElsewhereNote's list: up to
             // 50 items with up to 10 rows each. Focusable so the keyboard can

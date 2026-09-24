@@ -213,4 +213,40 @@ describe("ParallelGroupingModal — a refused save", () => {
     // Not "[object Object]" — the message path, as before.
     expect(screen.getByRole("alert").textContent).not.toContain("[object");
   });
+
+  test("Save stays focused through the save, so the refusal lands beside it (a11y)", async () => {
+    // Native `disabled` dropped focus to <body> the moment Save was pressed,
+    // and the role="alert" refusal then arrived with the keyboard user
+    // nowhere near it.
+    let reject!: (e: unknown) => void;
+    mockApply.mockImplementationOnce(
+      () => new Promise((_res, rej) => (reject = rej)),
+    );
+    renderModal();
+    demoteTheParallel();
+    const save = screen.getByText("Save 1 change").closest("button") as HTMLButtonElement;
+    save.focus();
+    await act(async () => {
+      fireEvent.click(save);
+    });
+
+    // In flight: aria-disabled, never native disabled, and still focused.
+    expect(save.hasAttribute("disabled")).toBe(false);
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    expect(document.activeElement).toBe(save);
+    // A second press while in flight does nothing.
+    await act(async () => {
+      fireEvent.click(save);
+    });
+    expect(mockApply).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      reject(new ConvexError('"Refractor" is already a parallel of "Chrome".'));
+    });
+    expect(screen.getByRole("alert").textContent).toBe(
+      '"Refractor" is already a parallel of "Chrome".',
+    );
+    expect(document.activeElement).toBe(save);
+    expect(save.getAttribute("aria-disabled")).toBeNull();
+  });
 });

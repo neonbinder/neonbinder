@@ -374,6 +374,19 @@ export default function ParallelGroupingModal({
   const [state, dispatch] = useReducer(reducer, emptyState);
   const [confirming, setConfirming] = useState(false);
   /**
+   * NEO-300 (a11y) — Save stays FOCUSABLE while the save is in flight.
+   *
+   * It used native `disabled`, which drops focus to <body> the moment it is
+   * pressed; a refusal ("Refractor" is already a parallel of "Chrome".) then
+   * arrived as a role="alert" with a keyboard user stranded nowhere near it.
+   * `aria-disabled` keeps focus on Save, and this ref is the double-press
+   * guard native `disabled` used to be (a state read in the click handler
+   * would be one render stale).
+   */
+  const confirmingRef = useRef(false);
+  const saveRef = useRef<HTMLButtonElement | null>(null);
+  const wasConfirmingRef = useRef(false);
+  /**
    * NEO-220 — is the "throw these moves away?" confirm on screen? Distinct
    * from `confirming` ("the save is in flight"), which is the opposite
    * question.
@@ -540,10 +553,12 @@ export default function ParallelGroupingModal({
     diff.promotions.length + diff.demotions.length + diff.reparentings.length;
 
   const handleConfirm = useCallback(async () => {
+    if (confirmingRef.current) return;
     if (totalChanges === 0) {
       onClose();
       return;
     }
+    confirmingRef.current = true;
     setConfirming(true);
     setError(null);
     try {
@@ -569,9 +584,23 @@ export default function ParallelGroupingModal({
         ),
       );
     } finally {
+      confirmingRef.current = false;
       setConfirming(false);
     }
   }, [apply, diff, onClose, totalChanges, variantTypeId]);
+
+  // a11y: the focus-park pattern from VariantForm/ParallelForm. Should focus
+  // still fall to <body> across the save (a re-render that remounts Save),
+  // put it back on Save — beside the footer where a refusal appears — rather
+  // than leave a keyboard user at the top of the page. Guarded on the actual
+  // blur so it never steals focus the operator moved themselves.
+  useEffect(() => {
+    const was = wasConfirmingRef.current;
+    wasConfirmingRef.current = confirming;
+    if (was && !confirming && document.activeElement === document.body) {
+      saveRef.current?.focus();
+    }
+  }, [confirming]);
 
   /**
    * NEO-220 — the single door out.
@@ -833,8 +862,13 @@ export default function ParallelGroupingModal({
               Cancel
             </NeonButton>
             <NeonButton
+              ref={saveRef}
               onClick={handleConfirm}
-              disabled={confirming || isLoading || totalChanges === 0}
+              // In flight: aria-disabled, not `disabled` — see confirmingRef.
+              // The not-actionable states (loading, nothing to save) keep
+              // native `disabled`; focus is never on Save when they begin.
+              aria-disabled={confirming || undefined}
+              disabled={isLoading || totalChanges === 0}
             >
               {confirming
                 ? "Saving..."

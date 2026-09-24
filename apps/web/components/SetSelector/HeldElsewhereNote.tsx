@@ -12,6 +12,16 @@ import type { HeldRow } from "./held-elsewhere";
  * Every name here is OURS — the holding row's NB name and its parent insert's
  * NB name — never the marketplace's label for the set.
  *
+ * ## Live regions (a11y audit, NEO-300)
+ *
+ * Inside a sync panel the summary is part of the result the panel ANNOUNCES,
+ * but the toggle and list must not be: a list opened inside a live region
+ * reads every row aloud. So a caller that owns a live region renders the
+ * summary itself, inside it, passes that element's id as `summaryId`, and
+ * renders this component AFTER the region — it then draws only the toggle and
+ * the list, labelled by that id. Without `summaryId` (the modal header, which
+ * is not live) it draws the summary too.
+ *
  * `toggleLabel` is per caller on purpose. Sync Inserts and Sync Sub-Variants
  * can each have a panel up at once, and two disclosures with one accessible
  * name are ambiguous both for a screen reader and for a Maestro text match.
@@ -21,6 +31,7 @@ export default function HeldElsewhereNote({
   total,
   summary,
   toggleLabel,
+  summaryId: externalSummaryId,
   tone = "modal",
 }: {
   rows: ReadonlyArray<HeldRow>;
@@ -32,12 +43,18 @@ export default function HeldElsewhereNote({
   /** The whole sentence, count included — composed by the caller. */
   summary: string;
   toggleLabel: string;
+  /**
+   * The id of a summary the CALLER rendered (inside its live region). When
+   * set, this component does not render `summary` and labels its list by it.
+   */
+  summaryId?: string;
   /** "modal" sits on the dark dialog panel; "panel" inside the sync form's status box. */
   tone?: "modal" | "panel";
 }) {
   const [open, setOpen] = useState(false);
   const listId = useId();
-  const summaryId = useId();
+  const ownSummaryId = useId();
+  const summaryId = externalSummaryId ?? ownSummaryId;
   if (rows.length === 0 && !(total !== undefined && total > 0)) return null;
 
   const text = tone === "modal" ? "text-gray-400" : "";
@@ -46,13 +63,19 @@ export default function HeldElsewhereNote({
 
   return (
     <div className={`text-sm ${text}`}>
-      <span id={summaryId}>{summary}</span>{" "}
+      {externalSummaryId === undefined && (
+        <>
+          <span id={summaryId}>{summary}</span>{" "}
+        </>
+      )}
       <button
         type="button"
         aria-expanded={open}
         aria-controls={listId}
         onClick={() => setOpen((o) => !o)}
-        className="underline underline-offset-2 hover:text-[#00C2FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00C2FF] rounded px-0.5"
+        // WCAG 2.5.8: padding grows the hit area to 24px+ tall; the negative
+        // vertical margin keeps the line from growing with it.
+        className="inline-block min-h-6 px-1 py-0.5 -my-0.5 underline underline-offset-2 hover:text-[#00C2FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00C2FF] rounded"
       >
         {toggleLabel}
       </button>

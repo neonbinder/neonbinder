@@ -664,6 +664,15 @@ describe("ReconciliationModal — sets held elsewhere (NEO-300)", () => {
     expect(screen.getByText(/Save 0 sets/)).toBeTruthy();
   });
 
+  test("the toggle meets the 24px target size and keeps its text (WCAG 2.5.8)", () => {
+    renderHeld({ autoMatched: [], unmatchedBsc: [], unmatchedSl: [], slCandidates: [] });
+    const toggle = screen.getByRole("button", { name: "Show grouped" });
+    expect(toggle.textContent).toBe("Show grouped");
+    // happy-dom has no layout; the classes are the contract.
+    expect(toggle.className).toContain("min-h-6");
+    expect(toggle.className).toContain("inline-block");
+  });
+
   test("no held rows, no line", () => {
     render(
       <ReconciliationModal

@@ -555,7 +555,11 @@ describe("ParallelForm — sets held elsewhere in the variant type (NEO-300)", (
     expect(status.textContent).toContain(
       "2 already live elsewhere in Inserts. Leaving those be.",
     );
-    fireEvent.click(screen.getByRole("button", { name: "Show where" }));
+    const toggle = screen.getByRole("button", { name: "Show where" });
+    // a11y: the toggle and the list it opens sit outside the live region.
+    expect(status.contains(toggle)).toBe(false);
+    fireEvent.click(toggle);
+    expect(status.contains(screen.getByRole("group"))).toBe(false);
     // An insert is named on its own; a parallel with the insert it sits under.
     expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
       "Chrome Stars",

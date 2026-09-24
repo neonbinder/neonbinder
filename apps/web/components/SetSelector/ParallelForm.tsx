@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useId, useRef, useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
@@ -90,6 +90,9 @@ export default function ParallelForm({
   // NEO-300: what the store itself withheld, or could not check. Holds the
   // panel open — see StoreHoldNotices.
   const [storeHolds, setStoreHolds] = useState<StoreHolds | null>(null);
+  // a11y: the held-rows summary lives INSIDE the status region; its toggle and
+  // list render after it, labelled by this id (see HeldElsewhereNote).
+  const heldSummaryId = useId();
   const triggered = useRef(false);
   // a11y: focus-park landing spot — see VariantForm.tsx's own copy of these
   // two effects for the full rationale (Retry-unmount and Dismiss-unmount).
@@ -522,19 +525,26 @@ export default function ParallelForm({
                 >
                   {message}
                   {!isError && heldTotal > 0 && (
-                    <div className="mt-1">
-                      <HeldElsewhereNote
-                        tone="panel"
-                        rows={heldSkipped}
-                        total={heldTotal}
-                        summary={heldElsewhereSummary(
-                          heldTotal,
-                          variantsLabel,
-                        )}
-                        toggleLabel={HELD_TOGGLE_LABEL}
-                      />
-                    </div>
+                    <p id={heldSummaryId} className="mt-1">
+                      {heldElsewhereSummary(heldTotal, variantsLabel)}
+                    </p>
                   )}
+                </div>
+              )}
+
+              {/* a11y audit (NEO-300): the toggle and list sit OUTSIDE the
+                  status region — opened inside it, every row would be read
+                  aloud. The summary above is what gets announced. */}
+              {message && !showReconciliation && !isError && heldTotal > 0 && (
+                <div className="-mt-2 mb-4 px-3">
+                  <HeldElsewhereNote
+                    tone="panel"
+                    rows={heldSkipped}
+                    total={heldTotal}
+                    summary={heldElsewhereSummary(heldTotal, variantsLabel)}
+                    summaryId={heldSummaryId}
+                    toggleLabel={HELD_TOGGLE_LABEL}
+                  />
                 </div>
               )}
 
