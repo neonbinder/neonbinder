@@ -52,6 +52,7 @@ const JOB_A = "job-aaaa-1111";
 type JobStatus =
   | "pending"
   | "uploaded"
+  | "collecting"
   | "extracting"
   | "processing"
   | "pairing"
@@ -1941,5 +1942,54 @@ describe("resolveMaxActiveJobsPerUser", () => {
       using: 2,
       accepted: "integer 1-10",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// touchJobActivity — the heartbeat a heavy retry uses to outlast the wedge
+// watchdog (NEO-299)
+// ---------------------------------------------------------------------------
+
+describe("touchJobActivity", () => {
+  test.each([["processing"], ["collecting"]] as const)(
+    "bumps lastActivityAt while the job is %s",
+    async (status) => {
+      const t = convexTest(schema, modules);
+      const { jobId } = await seedJob(t, { status });
+      const before = Date.now();
+
+      await t.mutation(internal.placeholderPipeline.touchJobActivity, { jobId });
+
+      const after = Date.now();
+      const job = await getJob(t, jobId);
+      expect(job?.lastActivityAt).toBeDefined();
+      expect(job!.lastActivityAt as number).toBeGreaterThanOrEqual(before);
+      expect(job!.lastActivityAt as number).toBeLessThanOrEqual(after);
+    },
+  );
+
+  test.each([
+    ["pending"],
+    ["uploaded"],
+    ["extracting"],
+    ["pairing"],
+    ["succeeded"],
+    ["failed"],
+  ] as const)("is a no-op for a terminal/pre-active status (%s)", async (status) => {
+    const t = convexTest(schema, modules);
+    const { jobId } = await seedJob(t, { status });
+
+    await t.mutation(internal.placeholderPipeline.touchJobActivity, { jobId });
+
+    const job = await getJob(t, jobId);
+    expect(job?.lastActivityAt).toBeUndefined();
+  });
+
+  test("is a no-op for a job that does not exist", async () => {
+    const t = convexTest(schema, modules);
+
+    await expect(
+      t.mutation(internal.placeholderPipeline.touchJobActivity, { jobId: "no-such-job" }),
+    ).resolves.toBeNull();
   });
 });
