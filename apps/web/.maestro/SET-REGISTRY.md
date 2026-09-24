@@ -293,8 +293,9 @@ and the harness must never dictate the data shape.
 | reconcile (live) | filters Ready and BSC to "Anime"; makes `Anime` / `Anime Kanji` their own NeonBinder set only when the auto-matcher left either Pending; **saves every Ready set** — the filter narrows the view, not the write, as on 1996 Score |
 | paused | no reconcile — the column fills straight from BSC |
 | grouping | Group Parallels → Accept all suggestions → Save; every prefix pair in the set nests, `Anime Kanji` (and under the pause the other three Anime parallels) under `Anime` |
+| re-sync (NEO-300) | "Sync Inserts" again after the grouping; live, the reconcile dialog re-opens and is **saved with no edits**, paused the single-platform store runs; both must say "N already grouped as parallels. Leaving those be." and must not re-create a grouped row as an insert |
 | fetch | on the promoted `Anime Kanji`: the pairing dialog when SportLots paired a set with it, the one-marketplace path otherwise; the review is drained with "Skip remaining names" (no players created) |
-| asserts | `Remove Anime Kanji` chip + "attached as a BSC variant", no "Needs re-mapping"; `Saved N cards` with N ≥ 1; the chip's detach confirm reads a BSC per-slot count ≥ 1, then Cancel |
+| asserts | after the re-sync: the "already grouped" line, `Anime Kanji` absent from the "Anime"-filtered Inserts column and listed under `Anime` in Parallels; then `Remove Anime Kanji` chip + "attached as a BSC variant", no "Needs re-mapping"; `Saved N cards` with N ≥ 1; the chip's detach confirm reads a BSC per-slot count ≥ 1, then Cancel |
 
 **What the flow leaves behind** (fresh-only; `setup.yaml`'s reset removes it
 all at the head of every run):

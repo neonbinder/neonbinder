@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Group Parallels — a BSC-synced insert promoted under the insert it parallels keeps its BSC source and fetches its cards from BSC (2026 Bowman Anime Kanji, NEO-293)"
+name: "Group Parallels — a BSC-synced insert promoted under the insert it parallels stays grouped through Sync Inserts, keeps its BSC source and fetches its cards from BSC (2026 Bowman Anime Kanji, NEO-293, NEO-300)"
 tags:
   - set-selector
   - parallel-grouping
@@ -16,6 +16,22 @@ tags:
 # promotion left the slot untagged: the panel filed it under "Needs
 # re-mapping", the fetch skipped BSC, and the Attach dialog would not offer
 # the id back.
+#
+# NEO-300 — THE SAME PROMOTION HAS TO SURVIVE THE NEXT "Sync Inserts". BSC
+# keeps listing "Anime Kanji" as an insert, and before NEO-300 the sync saw
+# nothing at insert level holding its id (it only looked at inserts), so it
+# re-created every grouped row as a top-level insert. Now the sync treats an
+# id held anywhere in the variant type's subtree as linked, leaves it alone
+# and says so ("N already grouped as parallels. Leaving those be."). STEP 4b
+# re-runs the sync after the grouping; STEP 4c asserts the row is still a
+# parallel and NOT back among the inserts. It rides on this flow rather than
+# a sibling because this flow is 2026 Bowman's sole writer and the only place
+# a real BSC insert is ever promoted (SET-REGISTRY.md, R7a) — a sibling would
+# need a second real set, which is owner approval. One feature (R1): a
+# promotion Group Parallels makes holds — through the next sync, and as a
+# working BSC source. STEPs 5-8 run AFTER the re-sync, so the BSC chip and
+# the BSC fetch they assert also prove the re-sync kept the grouped row's
+# link (CLAUDE.md invariant 5).
 #
 # WHY A NEW REAL SET (see .maestro/SET-REGISTRY.md → "2026 Bowman"). The bug
 # needs an insert row that CARRIES a BSC id and MAY be moved, whose BSC
@@ -370,8 +386,9 @@ tags:
     timeout: 7000
 
 # ============================================================
-# STEP 4 — OPEN THE PROMOTED ROW AS A PARALLEL
-# Re-drill first, for the same horizontal-offset reason as STEP 1's.
+# STEP 4 — THE GROUPING MOVED THE ROW OUT OF THE INSERTS
+# Re-drill first, for the same horizontal-offset reason as STEP 1's. The
+# promoted row is opened as a parallel in STEP 4c, after the re-sync.
 # ============================================================
 
 - runFlow:
@@ -404,6 +421,145 @@ tags:
 - inputText: "Anime"
 # "Anime" is the only insert left under that filter — "Anime Kanji" (and,
 # under the pause, the other three Anime parallels) are parallels now.
+# R2 PRECONDITION for STEP 4b: the grouping itself moved the row, so a row
+# that reappears in STEP 4c was put back by the sync, not left by the save.
+- extendedWaitUntil:
+    visible:
+      text: "^Anime$"
+      below:
+        id: "Search inserts"
+    timeout: 7000
+- assertNotVisible:
+    text: "^Anime Kanji$"
+    below:
+      id: "Search inserts"
+
+# ============================================================
+# STEP 4b — NEO-300: "Sync Inserts" AGAIN, AFTER THE GROUPING
+# The column is expanded (nothing selected), so its action row (Sync Inserts
+# / + Custom / Group Parallels) sits just under the one-row "Anime" list —
+# BELOW the search box that was just centred, hence DOWN (R5 direction). No
+# page-length travel: 7000, centred (R8), as STEP 3's scroll to the same row.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Sync Inserts"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Sync Inserts"
+
+# THE SYNC IS A LIVE MARKETPLACE ROUND-TRIP — fetchRawOptions asks BSC (and
+# SportLots, live) again whatever NB already holds. R5 marketplace exception:
+# 240000, the ceiling inserts-1996-score STEP 8b gives the same forced insert
+# re-sync and STEP 1 above gives this set's first one (measured at 5.8s in
+# green CI run 35948573036; the ceiling is for a cold marketplace, not for
+# NB). Each branch gates on the one thing its path renders when the fetch is
+# back; the hard assert below is common to both (R2).
+#
+# LIVE — both marketplaces answered, so the reconcile dialog re-opens with the
+# saved inserts restored as Ready. The grouped rows' ids are held: neither
+# seeded Ready from an auto-match nor offered in Pending.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible: "Reconcile Inserts"
+          timeout: 240000
+
+# PAUSED — BSC alone: the single-platform store, which skips the held ids and
+# reports in the column's own status box. "Sync failed…" is named in the gate
+# so a failed fetch fails here in seconds, on its own sentence, instead of
+# burning the ceiling; the hard assert below then fails it by name.
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: "Stored [0-9]+ variants \\(single platform\\)|Some variants were not stored.*|Sync failed: could not load variants.*"
+          timeout: 240000
+
+# ASSERTION (a), BOTH BRANCHES: the sync says it left the grouped rows alone.
+# Live it is in the dialog's pinned HEADER, under "N ready" (README →
+# "Asserting inside a dialog": header and footer only); paused it is in the
+# status box. Same sentence, same component (HeldElsewhereNote), rendered in
+# the same commit as the gate above — a Convex read already in hand, the 7000
+# bar. The count is matched by shape: Accept All nested 141 rows in green run
+# 35948573036, and how many of them BSC returns is the marketplace's business.
+# A build without NEO-300 renders no such line, and fails here by name.
+- extendedWaitUntil:
+    visible:
+      text: "[0-9]+ already grouped as (a parallel|parallels)\\. Leaving (it|those) be\\."
+    timeout: 7000
+# Its disclosure is offered beside it. NOT opened: it lists every grouped row
+# (141 here) inside the dialog's header, which is not the dialog's scroller —
+# "Anime Kanji" cannot be reached in it by any scroll a flow can perform.
+# What it would show is proven in columns, where a user sees it, by STEP 4c.
+- assertVisible:
+    text: "Show grouped"
+
+# LIVE — SAVE WITH NO EDITS, the operator's ordinary way out of a re-sync.
+# This is the write that re-created the grouped rows before NEO-300 (their
+# auto-matches arrived Ready and were stored as inserts), so it has to run for
+# STEP 4c to mean anything. R8 case 2, MEASURED on this footer by
+# inserts-1996-score (CI 34349299679 + 34361627641): bounds held at y=545
+# across `Scrolling try count: 0`..`5`, so uncentred. The close is a Convex
+# write of the restored Ready sets: MEASURED at 1.0s for 156 sets in green run
+# 35948573036 (STEP 1's save), so the 7000 bar, not STEP 1's inherited 60000.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: ".*Save [0-9]+ sets.*"
+          timeout: 7000
+      - tapOn:
+          text: ".*Save [0-9]+ sets.*"
+      - extendedWaitUntil:
+          notVisible: "Reconcile Inserts"
+          timeout: 7000
+
+# ============================================================
+# STEP 4c — ASSERTIONS (b) AND (c): STILL A PARALLEL, NOT AN INSERT AGAIN
+# Re-drill, for STEP 1's horizontal-offset reason, and so the column is a
+# fresh Convex read rather than the state the sync left on screen (paused:
+# its status box is still open). 7000 on the search box: the column is
+# populated, `ensureSelectorOptions` answers `already_populated`.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2026"
+      MANUFACTURER: "Bowman"
+      SET: "Bowman"
+      CREATE_MANUFACTURER: "1"
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Insert"
+- extendedWaitUntil:
+    visible: ".*Search inserts.*"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: ".*Search inserts.*"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Anime"
+# (b) The positive first, so the negative cannot pass on an empty or dead
+# column: "Anime" is listed, and "Anime Kanji" is not listed beside it — the
+# sync did not re-create it as a top-level insert. The search box's own
+# VALUE is "Anime" too, hence `below:` (README → getNodeText).
 - extendedWaitUntil:
     visible:
       text: "^Anime$"
@@ -419,7 +575,7 @@ tags:
     below:
       id: "Search inserts"
 
-# The Parallels column mounts for "Anime" (whole-text "Parallels" is the
+# (c) The Parallels column mounts for "Anime" (whole-text "Parallels" is the
 # column title; the "Group Parallels" button does not match it) and lists the
 # promoted row(s): a Convex read, the existing rows make the column's
 # ensure-sync a no-op.
