@@ -51,3 +51,4 @@
 - [Patterns neo293 facet remap](patterns_neo293_facet_remap.md) — bscSourceView partition is the re-tag guard for the Attach dialog; allocateSlots refreshes facets on existing slots; armed backfills never validate their scope arg
 - [Patterns neo237 all brands view](patterns_neo237_all_brands_view.md) — reserved name has a 4th door (store insert); candidate `side` must key the Create slot; sibling prefix fold-collision unchecked at the edit door; pin audit-field omission in the guards test
 - [Patterns neo296 transaction bounds](patterns_neo296_transaction_bounds.md) — bounding a transaction: client callers that ignore hasMore, per-item budgets that re-arm, continuation scope re-checks, cursor advance
+- [Patterns neo299 shared pool warmups](patterns_neo299_shared_pool_warmups.md) — public trigger enqueuing onto a shared FIFO workpool = head-of-line DoS; tf service-level metadata block removes out-of-band keys; 404-tolerant parity is fail-open
