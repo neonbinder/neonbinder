@@ -34,6 +34,10 @@ import type { MutationCtx } from "./_generated/server";
 import { internalMutation } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { backstopEntityReviewRowImpl } from "./entityReviewQueue";
+import {
+  enrichmentCompletionLogLine,
+  type WikidataLookupKind,
+} from "../lib/errors/wikidata-unavailable";
 
 /**
  * Wikidata's documented ceiling: 5 parallel queries per client IP. Unlike the
@@ -45,18 +49,101 @@ import { backstopEntityReviewRowImpl } from "./entityReviewQueue";
 export const WIKIDATA_MAX_PARALLELISM = 5;
 
 /**
- * The queue in front of query.wikidata.org.
+ * NEO-301 — the retry ladder for a work item that could not reach Wikidata.
  *
- * No retries (the default): a Wikidata miss, a 429, or a timed-out request all
- * mean the same thing to a review row — "no usable Wikidata data" — which the
- * row already represents as `status: "error"` ("No Wikidata match found" in the
- * wizard). Retrying would spend the 5-wide lane re-asking questions whose answer
- * is "not right now" and slow the whole batch, when a later re-sync is the
- * natural retry. This mirrors the old chained queue, which likewise never
- * retried a 429.
+ * ## What is retried, and what is not
+ *
+ * Only a THROW is retried, and the four work items throw a retryable error for
+ * one reason: the lookup was UNAVAILABLE — a SPARQL call's last attempt timed
+ * out, failed on the network, or got a 5xx or a 429 (`WikidataUnavailableError`,
+ * lib/errors/wikidata-unavailable.ts; `throwIfUnavailable` in
+ * adapters/wikidata.ts). A genuine no-match — a 200 with no binding — returns
+ * normally and is final, so a name Wikidata has never heard of costs one
+ * lookup, never five. The review lookup's NEO-294 write failure is thrown as a
+ * `NonRetryableError`, so it still settles at once. A thrown query or write
+ * inside `enrichPlayer` / `enrichTeam` is also retried; those are transient
+ * platform failures the same ladder is right for, and the marker guard makes
+ * a repeat harmless.
+ *
+ * Before this the pool had no retries, on the reasoning that a timeout and a
+ * miss "mean the same thing" and a re-sync is the natural retry. That was
+ * wrong for the rows that matter most: enrichment runs ONCE, at creation
+ * (NEO-203), so a player created during a bad minute on query.wikidata.org
+ * stayed bare for good — no QID, no career years, no Hall-of-Fame flag — and
+ * nothing re-sync does reaches it.
+ *
+ * ## The ladder (verified against @convex-dev/workpool 0.4.12,
+ * src/component/loop.ts `rescheduleJob` and `withJitter`)
+ *
+ * After the k-th failed attempt the next start is delayed by
+ *
+ *     initialBackoffMs * base^(k-1) * jitter,   jitter uniform in [0.5, 1.5)
+ *
+ * so with 30 s / base 2 and 5 attempts the four nominal backoffs are
+ * 30 s, 60 s, 120 s, 240 s = 450 s (7.5 min) in total; at the extremes of the
+ * jitter the sum is 225 s (3.75 min) to 675 s (11.25 min). A retrying item goes
+ * back to the pool's pending queue for its backoff and does NOT hold one of the
+ * five slots while it waits, so a degraded endpoint slows the lane only by the
+ * attempts themselves.
+ *
+ *  - Why this long. The measured failures (adapters/wikidata.ts,
+ *    `WIKIDATA_FETCH_TIMEOUT_MS`) come in runs: slow answers and 502s cluster
+ *    for minutes. Even at the shortest jitter the ladder spans 225 s of
+ *    waiting plus five attempts, so an item cannot run out of attempts inside
+ *    a degradation shorter than ~4 minutes, and nominally it keeps asking for
+ *    7.5 minutes.
+ *  - Why not longer. The review wizard shows a row as "Looking up…" for the
+ *    whole ladder, and the stale-row cron is measured from row creation
+ *    (below). Past ~10 minutes of continuous failure the endpoint is down, and
+ *    a bare row plus a `wikidata_*_unavailable` log line is the honest outcome.
+ *
+ * ## The worst case, against every clock that watches these items
+ *
+ * One attempt is bounded by the adapter (`WIKIDATA_FETCH_TIMEOUT_MS`):
+ * 73 s for a player or league (search + detail, 36.5 s each), 83 s for a team
+ * (ESPN's 10 s first). From an item's first start to its final failure:
+ *
+ *     team:   5 × 83 s + 1.5 × 450 s = 415 + 675 = 1090 s ≈ 18.2 min
+ *     player: 5 × 73 s + 1.5 × 450 s = 365 + 675 = 1040 s ≈ 17.3 min
+ *
+ * plus any wait for a free slot after each backoff.
+ *
+ *  - Convex's 10-minute action limit applies per ATTEMPT (each is its own
+ *    action run): 83 s.
+ *  - The workpool's own recovery scan only inspects runs older than 5 min;
+ *    no attempt gets near that.
+ *  - `ENTITY_REVIEW_STALE_MS` (entityReviewQueue.ts, 30 min, measured from the
+ *    row's `_creationTime`, swept every 15 min): an item that starts promptly
+ *    gives up by 18.2 min, leaving 11.8 min for queueing. A large batch
+ *    draining through a sustained outage CAN queue past that, and the sweep
+ *    then ages the row to "error" while a retry is still scheduled. That is
+ *    deliberately left alone rather than heartbeated: the early "error" is
+ *    self-correcting — a later attempt that gets an answer still writes
+ *    "ready" (`applyLookupResult` guards only DECIDED rows), and a later
+ *    final failure's backstop no-ops on a row that is no longer pending — and
+ *    after 30 minutes of Wikidata failing, "error" is the right thing to show.
+ *  - `ENTITY_REVIEW_ABANDONED_MS` (24 h) and the placeholder wedge watchdog
+ *    (a different pool) are not in reach.
+ *  - A retry after the row was deleted (batch committed or cancelled, player
+ *    merged away) reads `null` and returns; after an operator filled the row
+ *    in, the creation-only marker guard skips it. Nothing is written by an
+ *    unavailable attempt, so neither guard can be tripped by our own retry.
+ */
+export const WIKIDATA_POOL_RETRY = {
+  maxAttempts: 5,
+  initialBackoffMs: 30_000,
+  base: 2,
+} as const;
+
+/**
+ * The queue in front of query.wikidata.org. Retries per `WIKIDATA_POOL_RETRY`
+ * (NEO-301) — every item on this pool is a Wikidata lookup, so the ladder is
+ * the pool default rather than a per-enqueue option someone can forget.
  */
 export const wikidataPool = new Workpool(components.wikidataPool, {
   maxParallelism: WIKIDATA_MAX_PARALLELISM,
+  retryActionsByDefault: true,
+  defaultRetryBehavior: { ...WIKIDATA_POOL_RETRY },
 });
 
 /**
@@ -85,7 +172,49 @@ export const onEntityReviewLookupComplete = wikidataPool.defineOnComplete({
     ctx: MutationCtx,
     { context, result }: { context: { rowId: Id<"entityReviewQueue"> }; result: RunResult },
   ) => {
+    // NEO-301: the workpool calls this only once retries are exhausted (or
+    // the item succeeded, or was non-retryable/canceled) — never between
+    // attempts — so a row whose lookup was unavailable stays `pending` for
+    // the whole ladder and is aged to "error" here only after the last one.
     await backstopEntityReviewRowImpl(ctx, context.rowId, result);
+  },
+});
+
+/**
+ * NEO-301 — completion for a row-ENRICHMENT item (`enrichPlayer` /
+ * `enrichTeam` / `enrichLeague`), run once after its final attempt.
+ *
+ * It writes nothing: an un-enriched row is a valid end state, and there is no
+ * status to age. What it adds is the one signal that was missing — after the
+ * retry ladder is spent without ever reaching Wikidata, the row is bare and
+ * nobody knew. It now logs `wikidata_{player|team|league}_unavailable` with
+ * the row's id, the transport reason and the attempt count (never a name), and
+ * any other failure as `wikidata_enrichment_failed`. A success logs nothing.
+ *
+ * No shared document is read or written, so the batched-inline `onComplete`
+ * trap (NEO-170, see `onEntityReviewLookupComplete`) cannot bite.
+ */
+const enrichmentKindValidator = v.union(
+  v.literal("player"),
+  v.literal("team"),
+  v.literal("league"),
+);
+
+export const onEnrichmentLookupComplete = wikidataPool.defineOnComplete({
+  context: v.object({ kind: enrichmentKindValidator, id: v.string() }),
+  handler: async (
+    _ctx: MutationCtx,
+    {
+      context,
+      result,
+    }: { context: { kind: WikidataLookupKind; id: string }; result: RunResult },
+  ) => {
+    const line = enrichmentCompletionLogLine(
+      context,
+      result,
+      WIKIDATA_POOL_RETRY.maxAttempts,
+    );
+    if (line) console.warn(JSON.stringify(line));
   },
 });
 
@@ -193,11 +322,15 @@ export const enqueueEntityReviewLookups = internalMutation({
  * operator remedy for a wrong franchise or a bad match. No automatic path may
  * set it.
  *
- * No `onComplete`: unlike a review row, an un-enriched player or team is a
- * perfectly valid end state (the long-standing "a miss is fall-back, not
- * failure" convention in adapters/wikidata.ts) — there is nothing to age, so a
- * completion callback would only add cost. `enrichPlayer`/`enrichTeam` write
- * their own results and are safe to retry-never for the same reason the pool is.
+ * NEO-301 — retried, and completed with a LOG, not a write. An un-enriched
+ * row is still a valid end state (a genuine miss is final and never retried),
+ * but "Wikidata could not be asked" no longer ends there: the work item throws,
+ * the pool's ladder (`WIKIDATA_POOL_RETRY`) asks again, and
+ * `onEnrichmentLookupComplete` logs `wikidata_{kind}_unavailable` if the last
+ * attempt still could not. Before this there was no `onComplete` here and no
+ * retry, so a creation during a bad minute left the row bare with no trace.
+ * The retry never re-enqueues, so the creation-only contract above is
+ * untouched: it is the same work item, for the same just-created id.
  *
  * Players before teams so a card render gets HoF/career-team flags first, same
  * ordering intent the removed `processEnrichmentQueue` had.
@@ -223,6 +356,10 @@ export const enqueueEnrichment = internalMutation({
         ctx,
         internal.adapters.wikidata.enrichPlayer,
         { playerId, force: args.force },
+        {
+          onComplete: internal.wikidataPool.onEnrichmentLookupComplete,
+          context: { kind: "player", id: playerId },
+        },
       );
     }
     for (const teamId of args.teamIds ?? []) {
@@ -230,6 +367,10 @@ export const enqueueEnrichment = internalMutation({
         ctx,
         internal.adapters.wikidata.enrichTeam,
         { teamId, force: args.force },
+        {
+          onComplete: internal.wikidataPool.onEnrichmentLookupComplete,
+          context: { kind: "team", id: teamId },
+        },
       );
     }
     // Leagues last: a card render needs the player's HoF/career-team flags
@@ -241,6 +382,10 @@ export const enqueueEnrichment = internalMutation({
         ctx,
         internal.adapters.wikidata.enrichLeague,
         { leagueId, force: args.force },
+        {
+          onComplete: internal.wikidataPool.onEnrichmentLookupComplete,
+          context: { kind: "league", id: leagueId },
+        },
       );
     }
     return null;

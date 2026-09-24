@@ -9,6 +9,8 @@ import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RunResult } from "@convex-dev/workpool";
+// NEO-301: the backstop says whether a failed item gave up on Wikidata.
+import { isWikidataUnavailableResult } from "../lib/errors/wikidata-unavailable";
 import { getCurrentUserId, requireAdmin } from "./auth";
 import {
   buildExistingPlayerCandidates,
@@ -3724,11 +3726,17 @@ export async function backstopEntityReviewRowImpl(
   // observability.ts). `result.kind` tells triage HOW the work item ended
   // without the row having been resolved — the fingerprint of the residue this
   // backstop exists for.
+  //
+  // NEO-301: `wikidataUnavailable` says the item gave up because every attempt
+  // of the pool's retry ladder failed to reach Wikidata (the backstop only
+  // runs after the LAST attempt), as opposed to a thrown write or a
+  // cancellation — the one question triage asks of this line first.
   console.warn(
     JSON.stringify({
       msg: "entity_review_row_backstopped",
       rowId,
       resultKind: result.kind,
+      wikidataUnavailable: isWikidataUnavailableResult(result),
     }),
   );
   await ctx.db.patch(rowId, { status: "error" });
@@ -3749,6 +3757,16 @@ export async function backstopEntityReviewRowImpl(
  * half an hour, Wikidata is down and "error" is the correct outcome anyway.
  * Erring long mirrors the placeholder wedge watchdog's exact philosophy: a
  * safety net must never fire on healthy work.
+ *
+ * NEO-301: a lookup that cannot reach Wikidata is now RETRIED by the pool, and
+ * the row stays `pending` across the whole ladder — at worst 18.2 minutes from
+ * the item's first start to its final failure (the arithmetic is on
+ * `WIKIDATA_POOL_RETRY` in wikidataPool.ts), inside this 30-minute window for
+ * any row that starts promptly. A row queued behind a large batch during a
+ * sustained outage can outlast it and be aged here mid-ladder; that is
+ * self-correcting (a later successful attempt still writes "ready", and the
+ * final backstop no-ops on a non-pending row), so this stays a clock from
+ * creation rather than growing a heartbeat.
  */
 export const ENTITY_REVIEW_STALE_MS = 30 * 60 * 1000;
 

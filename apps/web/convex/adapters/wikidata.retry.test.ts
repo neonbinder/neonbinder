@@ -16,6 +16,17 @@
  *  - a 200 is never retried, including one whose body will not parse;
  *  - the retry log line is structured and carries a reason, never the query.
  *
+ * NEO-301 narrowed the in-call retry to FAST failures and added the second
+ * trace marker the pool work items read:
+ *  - a failure that took `WIKIDATA_FAST_FAILURE_MS` or longer — every real
+ *    timeout, and a slow 5xx — is NOT retried in-call; it is left to the
+ *    pool's retry ladder (convex/wikidataPool.ts);
+ *  - `trace.unavailable` trips only for the retryable set (timeout, network,
+ *    5xx, 429) on the last attempt; a 400, a 404 or an unreadable 200 trips
+ *    `transportFailed` (the capture must not record it) but NOT `unavailable`
+ *    (asking again later would get the same answer, so nothing retries it);
+ *  - the per-attempt timeout is pinned against the measured latency.
+ *
  * Pure function, no Convex runtime: a stubbed global `fetch` (this session's
  * `vi.stubGlobal("fetch", …)` convention, as in espn.test.ts beside it) and
  * fake timers so the backoff is asserted, not waited for. It lives in
@@ -30,6 +41,8 @@ import {
   lookupPlayerEnrichmentLive,
   newLookupTrace,
   runSparql,
+  WIKIDATA_FAST_FAILURE_MS,
+  WIKIDATA_FETCH_TIMEOUT_MS,
   type SportEnrichmentContext,
 } from "./wikidata";
 
@@ -45,18 +58,32 @@ const jsonResponse = (body: unknown, status = 200) =>
 const timeoutError = () => new DOMException("The operation was aborted due to timeout", "TimeoutError");
 
 /**
- * A `fetch` that answers from a script of outcomes, one per call, and counts.
- * An outcome is a `Response` to resolve with or an `Error` to reject with.
- * Running off the end of the script fails the test loudly: a third attempt
- * is exactly the bug the "never more than two" cases exist to catch.
+ * NEO-301 — an outcome that arrives only after `elapsedMs` of wall clock. The
+ * clock is MOVED (fake Date), not waited on: what the adapter reads is how
+ * long the attempt took, and a real timeout always takes the full
+ * `WIKIDATA_FETCH_TIMEOUT_MS`.
  */
-function scriptedFetch(script: Array<Response | Error>) {
+type Slow = { elapsedMs: number; outcome: Response | Error };
+const slow = (elapsedMs: number, outcome: Response | Error): Slow => ({ elapsedMs, outcome });
+
+/**
+ * A `fetch` that answers from a script of outcomes, one per call, and counts.
+ * An outcome is a `Response` to resolve with or an `Error` to reject with,
+ * optionally `slow(...)`. Running off the end of the script fails the test
+ * loudly: a third attempt is exactly the bug the "never more than two" cases
+ * exist to catch.
+ */
+function scriptedFetch(script: Array<Response | Error | Slow>) {
   let calls = 0;
   const urls: string[] = [];
   vi.stubGlobal("fetch", (async (input: unknown) => {
     urls.push(String(input));
-    const next = script[calls++];
+    let next = script[calls++];
     if (next === undefined) throw new Error(`fetch called ${calls} times; script has ${script.length}`);
+    if (!(next instanceof Response) && !(next instanceof Error)) {
+      vi.setSystemTime(Date.now() + next.elapsedMs);
+      next = next.outcome;
+    }
     if (next instanceof Error) throw next;
     return next;
   }) as unknown as typeof fetch);
@@ -125,16 +152,46 @@ describe("runSparql — one retry on a transport failure", () => {
     expect(retryLines(warn)).toEqual([{ msg: "wikidata_sparql_retry", reason: "http_503" }]);
   });
 
-  test("timeout then 200 → the result, retry reason 'timeout', trace NOT tripped", async () => {
-    const stub = scriptedFetch([timeoutError(), jsonResponse(HIT)]);
+  test("a REAL timeout (the full ceiling elapsed) is NOT retried in-call → null, unavailable, one fetch", async () => {
+    // NEO-301. The script's second entry is a success that must never be
+    // reached: an in-call retry of a 30 s timeout would hold a pool slot for
+    // another 30 s on a request the service already could not answer.
+    const stub = scriptedFetch([slow(WIKIDATA_FETCH_TIMEOUT_MS, timeoutError()), jsonResponse(HIT)]);
+    const trace = newLookupTrace();
+
+    const pending = runSparql(QUERY, trace);
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS * 3);
+    const result = await pending;
+
+    expect(result).toBeNull();
+    expect(stub.calls()).toBe(1);
+    expect(trace).toEqual({ transportFailed: true, unavailable: true, unavailableReason: "timeout" });
+    expect(retryLines(warn)).toEqual([]);
+  });
+
+  test("a SLOW 5xx (at the fast-failure line) is not retried in-call either", async () => {
+    const stub = scriptedFetch([slow(WIKIDATA_FAST_FAILURE_MS, jsonResponse({}, 502)), jsonResponse(HIT)]);
+    const trace = newLookupTrace();
+
+    const pending = runSparql(QUERY, trace);
+    await vi.advanceTimersByTimeAsync(BACKOFF_MS * 3);
+    const result = await pending;
+
+    expect(result).toBeNull();
+    expect(stub.calls()).toBe(1);
+    expect(trace).toEqual({ transportFailed: true, unavailable: true, unavailableReason: "http_502" });
+  });
+
+  test("a 5xx just under the fast-failure line IS retried in-call and recovers", async () => {
+    const stub = scriptedFetch([slow(WIKIDATA_FAST_FAILURE_MS - 1, jsonResponse({}, 502)), jsonResponse(HIT)]);
     const trace = newLookupTrace();
 
     const result = await runWithBackoff(QUERY, trace);
 
     expect(result).toEqual(HIT);
     expect(stub.calls()).toBe(2);
-    expect(trace.transportFailed).toBe(false);
-    expect(retryLines(warn)).toEqual([{ msg: "wikidata_sparql_retry", reason: "timeout" }]);
+    expect(trace).toEqual({ transportFailed: false, unavailable: false });
+    expect(retryLines(warn)).toEqual([{ msg: "wikidata_sparql_retry", reason: "http_502" }]);
   });
 
   test("a thrown fetch (network) then 200 → the result, retry reason 'network'", async () => {
@@ -177,6 +234,9 @@ describe("runSparql — one retry on a transport failure", () => {
     expect(result).toBeNull();
     expect(stub.calls()).toBe(2);
     expect(trace.transportFailed).toBe(true);
+    // NEO-301: the LAST attempt's reason is what the work item reports.
+    expect(trace.unavailable).toBe(true);
+    expect(trace.unavailableReason).toBe("timeout");
     expect(retryLines(warn)).toEqual([{ msg: "wikidata_sparql_retry", reason: "http_502" }]);
   });
 
@@ -204,17 +264,22 @@ describe("runSparql — one retry on a transport failure", () => {
     // Still a round trip that did not complete: a capture must not write it
     // down as a no-match.
     expect(trace.transportFailed).toBe(true);
+    // NEO-301: but not UNAVAILABLE — asking again later gets the same 404, so
+    // no work item retries it.
+    expect(trace.unavailable).toBe(false);
     expect(retryLines(warn)).toEqual([]);
   });
 
   test("400 (a bad query) → null with NO retry — asking again is the same bad query", async () => {
     const stub = scriptedFetch([jsonResponse({}, 400)]);
+    const trace = newLookupTrace();
 
-    const pending = runSparql(QUERY);
+    const pending = runSparql(QUERY, trace);
     await vi.advanceTimersByTimeAsync(BACKOFF_MS * 3);
 
     await expect(pending).resolves.toBeNull();
     expect(stub.calls()).toBe(1);
+    expect(trace.unavailable).toBe(false);
     expect(retryLines(warn)).toEqual([]);
   });
 
@@ -228,6 +293,7 @@ describe("runSparql — one retry on a transport failure", () => {
     await expect(pending).resolves.toBeNull();
     expect(stub.calls()).toBe(1);
     expect(trace.transportFailed).toBe(true);
+    expect(trace.unavailable).toBe(false);
     expect(retryLines(warn)).toEqual([]);
   });
 
@@ -311,5 +377,32 @@ describe("runSparql retry as seen by the lookup callers", () => {
     expect(result?.wikidataId).toBe("Q1585630");
     expect(stub.calls()).toBe(3);
     expect(trace.transportFailed).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-301 — the per-attempt ceiling, pinned against what was measured
+// ---------------------------------------------------------------------------
+
+describe("WIKIDATA_FETCH_TIMEOUT_MS", () => {
+  test("is 30 s: above every slow ANSWER measured, below WDQS's own 60 s query limit", () => {
+    expect(WIKIDATA_FETCH_TIMEOUT_MS).toBe(30_000);
+    // The slowest answers that did come back under load: 11.2, 14.3, 19.3 s.
+    // The old 10 s ceiling threw all three away as "no match".
+    expect(WIKIDATA_FETCH_TIMEOUT_MS).toBeGreaterThan(19_300);
+    // Past WDQS's server-side limit nothing useful can come back; waiting
+    // longer only holds one of the pool's five slots.
+    expect(WIKIDATA_FETCH_TIMEOUT_MS).toBeLessThan(60_000);
+  });
+
+  test("the fast-failure line sits well below the timeout, so no timeout is ever retried in-call", () => {
+    expect(WIKIDATA_FAST_FAILURE_MS).toBeLessThan(WIKIDATA_FETCH_TIMEOUT_MS);
+    // Worst case per `runSparql` call, the figure the pool's ladder and the
+    // stale-row cron are sized from (convex/wikidataPool.ts):
+    const worstPerCall = Math.max(
+      WIKIDATA_FETCH_TIMEOUT_MS,
+      WIKIDATA_FAST_FAILURE_MS + BACKOFF_MS + WIKIDATA_FETCH_TIMEOUT_MS,
+    );
+    expect(worstPerCall).toBe(36_500);
   });
 });

@@ -31,6 +31,7 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { normalizeLeagueName } from "./leagues";
+import { isNonRetryableError } from "@convex-dev/workpool";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -173,6 +174,7 @@ const getLeague = (t: ReturnType<typeof convexTest>, id: Id<"leagues">) =>
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 // ===========================================================================
@@ -385,7 +387,14 @@ describe("enrichLeague", () => {
     ).resolves.toBeNull();
   });
 
-  test("a SPARQL failure never escapes the action", async () => {
+  /**
+   * NEO-301 — this used to be "a SPARQL failure never escapes the action",
+   * and that was the bug: with no throw and no pool retry, a league created
+   * while query.wikidata.org was failing stayed bare for good. The one thing
+   * that escapes now is the RETRYABLE `WikidataUnavailableError`, and only
+   * with the row untouched, so the retry is not skipped as already enriched.
+   */
+  test("a SPARQL transport failure throws RETRYABLE, with the row untouched", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const leagueId = await insertLeague(t, sportId, { name: "Texas League" });
@@ -397,10 +406,59 @@ describe("enrichLeague", () => {
         throw new Error("network down");
       }) as unknown as typeof fetch,
     );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const thrown = await t
+      .action(internal.adapters.wikidata.enrichLeague, { leagueId })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(await getLeague(t, leagueId)).toEqual(before);
+    expect(String(thrown)).toMatch(/wikidata_unavailable kind=league reason=network/);
+    expect(isNonRetryableError(thrown)).toBe(false);
+  });
+
+  test("a search HIT whose detail query is unavailable writes NOTHING and throws — a lone wikidataId would make the retry skip", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const leagueId = await insertLeague(t, sportId, { name: "Major League Baseball" });
+    const before = await getLeague(t, leagueId);
+
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        const decoded = decodeURIComponent(String(url));
+        if (decoded.includes("P1813")) {
+          return new Response("upstream", { status: 503 });
+        }
+        return jsonResponse(makeSparqlSearchBody("Q1163715"));
+      }) as unknown as typeof fetch,
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      t.action(internal.adapters.wikidata.enrichLeague, { leagueId }),
+    ).rejects.toThrow(/wikidata_unavailable kind=league reason=http_503/);
+    // Not even the QID: `externalIds.wikidataId` is an enrichment marker.
+    expect(await getLeague(t, leagueId)).toEqual(before);
+  });
+
+  test("a genuine no-match (200, no binding) resolves and is final — no throw, no write", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const leagueId = await insertLeague(t, sportId, { name: "Texas League" });
+    const before = await getLeague(t, leagueId);
+
+    const stub = makeFetchStub({ qid: null });
+    vi.stubGlobal("fetch", stub.fetch);
 
     await expect(
       t.action(internal.adapters.wikidata.enrichLeague, { leagueId }),
     ).resolves.toBeNull();
+    expect(stub.searchCalls()).toBe(1);
+    expect(stub.detailCalls()).toBe(0);
     expect(await getLeague(t, leagueId)).toEqual(before);
   });
 
