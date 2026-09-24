@@ -25,6 +25,7 @@ import ReconciliationModal, {
   type PlatformItem,
 } from "./ReconciliationModal";
 import type { Id } from "../../convex/_generated/dataModel";
+import { keyboardDrag, stubLayout } from "../../lib/testing/keyboard-drag";
 
 const BSC_S1: PlatformItem = {
   value: "Dugout Collection Artist's Proofs Series 1",
@@ -656,10 +657,14 @@ describe("ReconciliationModal — sets held elsewhere (NEO-300)", () => {
     expect(region.className).toContain("overflow-y-auto");
     expect(region.getAttribute("tabindex")).toBe("0");
     expect(within(region).getAllByRole("listitem")).toHaveLength(140);
-    // The toggle points at the region it opens.
-    expect(
-      screen.getByRole("button", { name: "Show grouped" }).getAttribute("aria-controls"),
-    ).toBe(region.id);
+    // The toggle points at the region it opens (through a wrapper: the
+    // focusable region itself carries no DOM id, which would hide its name
+    // from maestro-web's resource-id — NEO-300).
+    const controls = screen
+      .getByRole("button", { name: "Show grouped" })
+      .getAttribute("aria-controls");
+    expect(document.getElementById(controls!)?.contains(region)).toBe(true);
+    expect(region.getAttribute("id")).toBeNull();
     // Save is still in the footer, untouched by the list.
     expect(screen.getByText(/Save 0 sets/)).toBeTruthy();
   });
@@ -686,5 +691,43 @@ describe("ReconciliationModal — sets held elsewhere (NEO-300)", () => {
     );
     expect(screen.queryByRole("button", { name: "Show grouped" })).toBeNull();
     expect(screen.queryByText(/already grouped/)).toBeNull();
+  });
+});
+
+/**
+ * NEO-300 — a KEYBOARD drag pairs two sets.
+ *
+ * A real one, through dnd-kit's KeyboardSensor and collision code, on stubbed
+ * rectangles (happy-dom lays nothing out): Space on Series 1's handle, ten
+ * ArrowRights (25px each) carry it across onto the SportLots set, Space
+ * drops. Collision detection used to be bare `pointerWithin`, which finds
+ * nothing without a pointer, so this drop landed nowhere and nothing paired.
+ */
+describe("ReconciliationModal — a keyboard drop lands", () => {
+  test("Space, arrows, Space pairs a BSC set with a SportLots set", async () => {
+    const { onConfirm } = renderModal(allPending());
+    // The handle carries the listeners; the row around it is the sortable
+    // node, which is what dnd-kit measures and what a drop lands on.
+    const handle = screen.getByText(BSC_S1.value).parentElement!;
+    const bscRow = handle.parentElement!;
+    const slRow = screen.getByText(SL_COMBINED.value).parentElement!
+      .parentElement!;
+    const restore = stubLayout(
+      new Map([
+        [bscRow, { top: 100, left: 0, width: 300, height: 36 }],
+        [slRow, { top: 100, left: 400, width: 300, height: 36 }],
+      ]),
+    );
+    try {
+      await keyboardDrag(handle, Array(10).fill("ArrowRight"));
+    } finally {
+      restore();
+    }
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items).toHaveLength(1);
+    expect(items[0].platformData.bsc).toEqual(["dcap-series-1"]);
+    expect(items[0].platformData.sportlots).toEqual(["884412"]);
   });
 });

@@ -280,6 +280,24 @@ describe("ReconciliationModal — names begin with the visible text", () => {
     expect(beginsWithVisible(keepAllBsc())).toBe(true);
   });
 
+  /**
+   * maestro-web reports resource-id as `id || aria-label`: a DOM id on
+   * either button would replace the name the flows tap it by
+   * ("Make its own set: Anime$", "Keep all: [1-9][0-9]* BSC sets?").
+   */
+  test("Keep all, Make its own set and the row handle carry no DOM id", () => {
+    renderModal(pending([S1, S2], [SL_AP]));
+    const controls = [
+      keepAllBsc(),
+      keepAllSl(),
+      screen.getByRole("button", { name: `Make its own set: ${S1.value}` }),
+      screen.getByRole("button", { name: `Make its own set: ${SL_AP.value}` }),
+      // The drag handle (role="button" from dnd-kit) around the row's name.
+      screen.getByText(S1.value).parentElement!,
+    ];
+    for (const el of controls) expect(el.getAttribute("id")).toBeNull();
+  });
+
   test("the two columns' names never contain one another (Maestro ids are a regex find)", () => {
     renderModal(pending([S1], [SL_AP]));
     const a = keepAllBsc().getAttribute("aria-label")!;

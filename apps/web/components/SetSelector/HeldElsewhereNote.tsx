@@ -79,6 +79,12 @@ export default function HeldElsewhereNote({
       >
         {toggleLabel}
       </button>
+      {/* NEO-300 — `aria-controls` points at this WRAPPER, not at the list:
+          the list is focusable, and maestro-web reports a control's
+          resource-id as `id || aria-label`, so an id on a focusable element
+          hides its name from every flow. Always rendered, so the reference
+          resolves whether the list is open or not. */}
+      <div id={listId}>
       {open && (
         // Bounded and scrolled: in ReconciliationModal this sits in the
         // header, which does not scroll, and a big set (2026 Bowman) can hold
@@ -88,7 +94,6 @@ export default function HeldElsewhereNote({
         // `region`: the house role for a focusable scroll container (the
         // print preview's), and the one the lint rule allows a tabIndex on.
         <div
-          id={listId}
           role="group"
           aria-labelledby={summaryId}
           tabIndex={0}
@@ -115,6 +120,7 @@ export default function HeldElsewhereNote({
           </ul>
         </div>
       )}
+      </div>
     </div>
   );
 }

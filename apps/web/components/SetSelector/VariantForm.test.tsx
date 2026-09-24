@@ -743,7 +743,15 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     });
     expect(status.contains(list)).toBe(false);
     expect(status.textContent).not.toContain("Anime");
-    expect(toggle.getAttribute("aria-controls")).toBe(list.id);
+    // aria-controls reaches the list through a wrapper; the focusable list
+    // and the toggle carry no DOM id (maestro-web: resource-id = id ||
+    // aria-label, so an id hides a control's name — NEO-300).
+    const controlled = document.getElementById(
+      toggle.getAttribute("aria-controls")!,
+    );
+    expect(controlled?.contains(list)).toBe(true);
+    expect(list.getAttribute("id")).toBeNull();
+    expect(toggle.getAttribute("id")).toBeNull();
   });
 
   it("single platform, everything already grouped: writes nothing and says why", async () => {

@@ -4,7 +4,6 @@ import { Theme } from "@radix-ui/themes";
 import {
   DndContext,
   DragOverlay,
-  pointerWithin,
   useSensor,
   useSensors,
   PointerSensor,
@@ -18,6 +17,7 @@ import { CSS } from "@dnd-kit/utilities";
 import NeonButton from "../modules/NeonButton";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import { keyboardAwareCollision } from "@/lib/dnd/keyboard-aware-collision";
 import { countReconciliationEdits } from "./reconciliation-edits";
 import { Input } from "../primitives/Input";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -1574,7 +1574,9 @@ export default function ReconciliationModal({
             Ready set, so they cannot be in separate contexts. */}
         <DndContext
           sensors={sensors}
-          collisionDetection={pointerWithin}
+          // NEO-300 — not bare `pointerWithin`: a keyboard drag has no
+          // pointer, and that dropped every keyboard drag on nothing.
+          collisionDetection={keyboardAwareCollision}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >

@@ -15,13 +15,10 @@ import {
   DragOverlay,
   KeyboardSensor,
   PointerSensor,
-  pointerWithin,
-  rectIntersection,
   useDraggable,
   useDroppable,
   useSensor,
   useSensors,
-  type CollisionDetection,
   type DragEndEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
@@ -32,6 +29,7 @@ import { detectGroupings } from "./parallelDetection";
 import NeonButton from "../modules/NeonButton";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
+import { keyboardAwareCollision } from "../../lib/dnd/keyboard-aware-collision";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
 
 /** "1 pending move" / "2 pending moves". */
@@ -272,17 +270,6 @@ export function groupingReducer(state: State, action: Action): State {
 }
 const reducer = groupingReducer;
 
-/**
- * NEO-300 — which box a drag is over.
- *
- * `pointerWithin` is the right answer for a mouse or finger: the box under
- * the pointer. But dnd-kit hands a KEYBOARD drag no pointer coordinates at
- * all, and `pointerWithin` answers "nothing" — so Space, arrows, Space
- * dropped every row back where it started. With no pointer, the box the
- * dragged row's rectangle overlaps most is the target.
- */
-export const groupingCollision: CollisionDetection = (args) =>
-  args.pointerCoordinates ? pointerWithin(args) : rectIntersection(args);
 
 type Tree = FunctionReturnType<
   typeof api.selectorOptions.getInsertTreeByVariantType
@@ -374,9 +361,14 @@ function computeDiff(state: State): {
 /** Which of a row's two selection controls a key or click came from. */
 type RowControl = "tick" | "name";
 
-/** The DOM id of a row's tick box or name button — arrow keys move focus by it. */
-function rowControlId(rowId: RowId, control: RowControl): string {
-  return `parallel-grouping-${control}-${rowId}`;
+/**
+ * How the arrow keys find a row's tick box or name button: a data attribute,
+ * NOT a DOM id. maestro-web reports an element's resource-id as
+ * `id || aria-label`, so an id on a control hides its accessible name from
+ * every flow ("Select <row>" could no longer be tapped by name).
+ */
+function rowControlKey(rowId: RowId, control: RowControl): string {
+  return `${control}-${rowId}`;
 }
 
 function DraggableRow({
@@ -460,7 +452,7 @@ function DraggableRow({
       <button
         type="button"
         role="checkbox"
-        id={rowControlId(info._id, "tick")}
+        data-grouping-control={rowControlKey(info._id, "tick")}
         aria-checked={isSelected}
         aria-label={`Select ${info.value}`}
         disabled={!isMovable}
@@ -495,7 +487,7 @@ function DraggableRow({
       </button>
       <button
         type="button"
-        id={rowControlId(info._id, "name")}
+        data-grouping-control={rowControlKey(info._id, "name")}
         onClick={onNameClick}
         onKeyDown={(e) => onNavKey(e, "name")}
         disabled={!isMovable}
@@ -883,7 +875,11 @@ export default function ParallelGroupingModal({
       if (e.shiftKey) {
         dispatch({ type: "SELECT_RANGE", rowId: next, list, from: rowId });
       }
-      document.getElementById(rowControlId(next, control))?.focus();
+      overlayRef.current
+        ?.querySelector<HTMLElement>(
+          `[data-grouping-control="${rowControlKey(next, control)}"]`,
+        )
+        ?.focus();
     },
     [listOfRow],
   );
@@ -1031,10 +1027,13 @@ export default function ParallelGroupingModal({
     selectedCount === 1
       ? "Click here to make the selected row a parallel"
       : `Click here to make the ${selectedCount} selected rows parallels`;
+  const othersSelected = selectedCount - 1;
   const ownBoxHint =
     selectedCount === 1
       ? "This row is selected"
-      : `This row is selected. Untick it to drop the other ${selectedCount - 1} here.`;
+      : othersSelected === 1
+        ? "This row is selected. Untick it to drop the other row here."
+        : `This row is selected. Untick it to drop the other ${othersSelected} rows here.`;
 
   const renderRow = (
     info: RowInfo,
@@ -1154,7 +1153,7 @@ export default function ParallelGroupingModal({
           ) : (
             <DndContext
               sensors={sensors}
-              collisionDetection={groupingCollision}
+              collisionDetection={keyboardAwareCollision}
               onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
             >
@@ -1310,7 +1309,6 @@ export default function ParallelGroupingModal({
             {selectedCount > 0 && (
               <button
                 type="button"
-                id="parallel-grouping-clear-selection"
                 aria-label="Clear selection"
                 onClick={() => {
                   dispatch({ type: "CLEAR_SELECTION" });

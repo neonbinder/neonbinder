@@ -51,6 +51,8 @@ type DndHandlers = {
   }) => void;
 };
 const dnd: DndHandlers = {};
+/** Every drop dnd-kit itself reported, for a real (keyboard) drag. */
+const dndEnds: Array<{ active: unknown; over: unknown }> = [];
 vi.mock("@dnd-kit/core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@dnd-kit/core")>();
   const Real = actual.DndContext;
@@ -59,14 +61,22 @@ vi.mock("@dnd-kit/core", async (importOriginal) => {
     DndContext: (props: React.ComponentProps<typeof Real>) => {
       dnd.onDragStart = props.onDragStart as DndHandlers["onDragStart"];
       dnd.onDragEnd = props.onDragEnd as DndHandlers["onDragEnd"];
-      return <Real {...props} />;
+      return (
+        <Real
+          {...props}
+          onDragEnd={(e) => {
+            dndEnds.push({ active: e.active.id, over: e.over?.id ?? null });
+            props.onDragEnd?.(e);
+          }}
+        />
+      );
     },
   };
 });
 
+import { keyboardDrag, stubLayout } from "../../lib/testing/keyboard-drag";
 import ParallelGroupingModal, {
   emptyGroupingState,
-  groupingCollision,
   groupingReducer,
   type GroupingState,
   type Placement,
@@ -768,7 +778,7 @@ describe("ParallelGroupingModal — several rows at once", () => {
     ).toBeTruthy();
     expect(
       within(zoneOf(boxTitle(BLUE))).getByText(
-        "This row is selected. Untick it to drop the other 5 here.",
+        "This row is selected. Untick it to drop the other 5 rows here.",
       ),
     ).toBeTruthy();
 
@@ -894,7 +904,7 @@ describe("ParallelGroupingModal — several rows at once", () => {
 
     const box = zoneOf(boxTitle(MOJO));
     expect(
-      within(box).getByText("This row is selected. Untick it to drop the other 2 here."),
+      within(box).getByText("This row is selected. Untick it to drop the other 2 rows here."),
     ).toBeTruthy();
     // It does not offer itself as a click target (the other boxes do)...
     expect(box.className).not.toContain("cursor-pointer");
@@ -915,6 +925,21 @@ describe("ParallelGroupingModal — several rows at once", () => {
     expect(screen.getByText("2 promotions, 0 demotions")).toBeTruthy();
   });
 
+  test("a selected row's own box counts the OTHER rows: none, one, or several", () => {
+    renderModal();
+    const hint = () =>
+      within(zoneOf(boxTitle(MOJO))).getByText(/^This row is selected/)
+        .textContent;
+    fireEvent.click(tick(MOJO));
+    expect(hint()).toBe("This row is selected");
+    fireEvent.click(tick(AQUA));
+    expect(hint()).toBe("This row is selected. Untick it to drop the other row here.");
+    fireEvent.click(tick(BW));
+    expect(hint()).toBe(
+      "This row is selected. Untick it to drop the other 2 rows here.",
+    );
+  });
+
   test("clicking a row inside a box selects it; it does not drop the selection there", () => {
     renderModal();
     fireEvent.click(screen.getByText(AQUA));
@@ -926,6 +951,59 @@ describe("ParallelGroupingModal — several rows at once", () => {
     fireEvent.click(tick("Wave Teal"));
     expect(screen.getByText("No changes yet")).toBeTruthy();
     expect(count()).toBe("2 selected");
+  });
+
+  /**
+   * A REAL keyboard drag, through dnd-kit's own KeyboardSensor and collision
+   * code, on stubbed rectangles: Space on Gold's handle, five ArrowDowns
+   * (25px each) carry it from the top-level box into Mojo's box below, Space
+   * drops. Before the keyboard-aware collision, `pointerWithin` found no
+   * target without a pointer and this drop landed nowhere.
+   */
+  test("a keyboard drop lands, and carries the selection", async () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    fireEvent.click(tick(GOLD));
+    const handle = screen.getByRole("group", { name: GOLD });
+    const restore = stubLayout(
+      new Map([
+        [zoneOf("Top-level inserts"), { top: 0, left: 0, width: 600, height: 400 }],
+        [handle, { top: 300, left: 20, width: 560, height: 36 }],
+        [zoneOf(boxTitle(MOJO)), { top: 420, left: 0, width: 600, height: 120 }],
+      ]),
+    );
+    try {
+      await keyboardDrag(handle, Array(5).fill("ArrowDown"));
+    } finally {
+      restore();
+    }
+    expect(dndEnds.at(-1)).toEqual({ active: "gold", over: "drop-insert-mojo" });
+    expect(screen.getByText("2 promotions, 0 demotions")).toBeTruthy();
+    const box = zoneOf(boxTitle(MOJO));
+    expect(within(box).getByText(AQUA)).toBeTruthy();
+    expect(within(box).getByText(GOLD)).toBeTruthy();
+  });
+
+  /**
+   * maestro-web reports resource-id as `id || aria-label`: a DOM id on a
+   * control hides its accessible name from every flow. The controls NEO-300
+   * added are reached by name ("Select <row>", "Clear selection"), so none
+   * of them may carry one. Arrow keys find rows by a data attribute instead
+   * (the keyboard test above still walks them).
+   */
+  test("no row control and no Clear button carries a DOM id", () => {
+    renderModal();
+    fireEvent.click(tick(AQUA));
+    const controls = [
+      ...screen.getAllByRole("checkbox"),
+      nameButton(AQUA),
+      nameButton("Wave Red"),
+      screen.getByLabelText("Remove Wave Red from parallels"),
+      screen.getByRole("button", { name: "Clear selection" }),
+    ];
+    for (const el of controls) expect(el.getAttribute("id")).toBeNull();
+    // Maestro reaches the tick by its name.
+    expect(tick(AQUA).getAttribute("aria-label")).toBe(`Select ${AQUA}`);
   });
 
   test("✕ on one row keeps the rest of the selection", () => {
@@ -1030,47 +1108,5 @@ describe("groupingReducer — a move of several rows is all or nothing", () => {
       from: id("a"),
     });
     expect(ranged.selected).toEqual(["a", "b"]);
-  });
-});
-
-/**
- * NEO-300 — a KEYBOARD drag has no pointer, and `pointerWithin` answers
- * "nothing" without one, so Space-arrows-Space never landed anywhere.
- */
-describe("groupingCollision", () => {
-  const rect = (top: number, height: number) => ({
-    top,
-    left: 0,
-    width: 400,
-    height,
-    bottom: top + height,
-    right: 400,
-  });
-  function args(pointer: { x: number; y: number } | null) {
-    const droppableRects = new Map([
-      ["drop-ungrouped", rect(0, 100)],
-      ["drop-insert-x", rect(120, 100)],
-    ]);
-    return {
-      active: { id: "row" },
-      collisionRect: rect(150, 30),
-      droppableRects,
-      droppableContainers: [...droppableRects.keys()].map((key) => ({
-        id: key,
-      })),
-      pointerCoordinates: pointer,
-    } as unknown as Parameters<typeof groupingCollision>[0];
-  }
-
-  test("with no pointer, the box the dragged row overlaps wins", () => {
-    expect(groupingCollision(args(null)).map((c) => c.id)).toEqual([
-      "drop-insert-x",
-    ]);
-  });
-
-  test("with a pointer, the box under the pointer wins, as before", () => {
-    expect(groupingCollision(args({ x: 10, y: 50 })).map((c) => c.id)).toEqual([
-      "drop-ungrouped",
-    ]);
   });
 });
