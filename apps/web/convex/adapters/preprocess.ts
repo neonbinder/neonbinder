@@ -12,13 +12,14 @@
  *   POST /extract        → unzip the upload, list the entries it accepted (FAST)
  *   POST /process-entry  → crop + orient + classify + hash ONE entry (FAST first,
  *                          HEAVY on escalation)
- *   POST /warmup         → force an instance resident (FAST on start, HEAVY on
- *                          the first escalation)
+ *   POST /warmup         → force an instance resident (FAST fired directly on
+ *                          start; HEAVY enqueued on the heavy pool, to the
+ *                          instance limit, on start and on the first escalation)
  *
  * FAST is the classical-only service every image hits first; it cold-starts in
  * seconds and returns `needs_escalation: true` (no crop) for a card its fast
- * path cannot settle. HEAVY runs the full BiRefNet cascade, cold-loads ~191s,
- * and is where those escalations go. `/extract` is a per-job unzip that needs no
+ * path cannot settle. HEAVY runs the full BiRefNet cascade, cold-loads the
+ * model in ~180-240s, and is where those escalations go. `/extract` is a per-job unzip that needs no
  * model, so it goes to FAST — routing it to HEAVY would cold-start the 191s
  * service just to unzip, on every batch, and defeat the whole split.
  *
@@ -148,9 +149,10 @@ const TERMINAL_STATUSES = new Set([400, 401, 403, 404, 413, 415, 422]);
  * Preprocess is neither. It is OUR service, so a 429 is our own capacity
  * telling us to wait rather than a stranger's quota; the requests are
  * idempotent (GCS writes are write-once, and re-processing an entry produces
- * the same output object); and the workpool caps in-flight work at
- * `PREPROCESS_MAX_PARALLELISM`, which equals the service's entire instance
- * ceiling. A retry therefore re-orders load in time but cannot amplify it —
+ * the same output object); and each workpool caps in-flight work at its own
+ * service's entire instance ceiling (`PREPROCESS_MAX_PARALLELISM` for fast,
+ * `HEAVY_MAX_PARALLELISM` for heavy, whose slots heavy warm-ups share since
+ * NEO-299). A retry therefore re-orders load in time but cannot amplify it —
  * the pool physically cannot have more than N requests outstanding no matter
  * how many are retrying. That is the property NEO-29's retry loop lacked.
  */
@@ -472,26 +474,41 @@ export async function callProcessEntryHeavy(
 }
 
 /**
- * How long a warm-up call waits before giving up.
+ * How long a FAST warm-up call waits before giving up.
  *
- * Shorter than the process-entry budgets and deliberately so: a
- * warm-up that has not returned in a minute has already done its ONE useful
- * thing — it landed on an instance and told Cloud Run to keep that instance
- * alive with the model loading — and waiting longer for the `{status:"warm"}`
- * body buys nothing, because the instance keeps warming after we hang up. The
- * real images that follow are what actually need the warm model, and they get
- * the full 4-minute budget.
+ * A fast instance has no model to load and cold-starts in seconds, so a fast
+ * warm-up that has not answered in a minute has already done its one useful
+ * thing (landed on an instance and started it) and waiting longer buys nothing.
  */
 const WARMUP_FETCH_TIMEOUT_MS = 60_000;
 
 /**
- * Best-effort warm-up of the preprocess service — force the BiRefNet model
- * resident on ONE instance so the first real `/process-entry` does not pay the
- * multi-minute cold start.
+ * How long a HEAVY warm-up call waits before giving up (NEO-299).
  *
- * **This function NEVER throws.** It is fired from a fire-and-forget scheduled
- * action at the very start of a batch, long before any image needs processing,
- * and nothing downstream depends on it succeeding: a warm-up that fails, times
+ * Much longer than the fast budget, and it has to be, because heavy warm-ups
+ * run THROUGH the heavy workpool: each one holds a pool slot for exactly as
+ * long as this fetch is open. The heavy `/warmup` holds its instance for the
+ * whole ~180-240s model load, and the service runs `container_concurrency = 1`.
+ * If this fetch gave up at 60s, the pool would free the slot and dispatch the
+ * next heavy request while the abandoned warm-up still occupied that instance
+ * for another two or three minutes — the pool would believe it had a free
+ * instance that Cloud Run did not have, and the request it sent would be shed
+ * with a 429. The slot must stay held until the instance is actually free.
+ *
+ * 330s clears the slowest measured cold load (~240s) with margin, and stays
+ * under the heavy Cloud Run service's request timeout, so it is Cloud Run that
+ * ends a genuinely hung request, not an abort racing it.
+ */
+const WARMUP_HEAVY_FETCH_TIMEOUT_MS = 330_000;
+
+/**
+ * Best-effort warm-up of ONE preprocess instance — start it (and, on heavy,
+ * load the BiRefNet model) so the first real `/process-entry` does not pay the
+ * cold start.
+ *
+ * **This function NEVER throws.** It runs as background work (a fire-and-forget
+ * scheduled action for fast, a heavy-pool worker for heavy), usually before any
+ * image needs processing, and nothing downstream depends on it succeeding: a warm-up that fails, times
  * out, or hits a service that has not deployed `/warmup` yet simply means the
  * cold start happens later, exactly as it does today. So every failure path
  * records telemetry, logs, and returns `{ warmed: false }` rather than
@@ -503,15 +520,17 @@ const WARMUP_FETCH_TIMEOUT_MS = 60_000;
  * x-internal-key / OIDC transition. `container_concurrency = 1` means one
  * warm-up warms exactly one instance.
  *
- * Takes the target service so the same swallow-everything body serves both the
- * FAST fan-out (`warmupPreprocess`, N-wide on start) and the HEAVY warm-gate
- * (`warmupHeavyPreprocess`, one on the first escalation). `operation` names
- * which, so the telemetry can tell a fast warm-up from a heavy one.
+ * Takes the target service and its fetch budget so the same swallow-everything
+ * body serves both the FAST fan-out (fired directly, N-wide) and each HEAVY
+ * warm-up (one per heavy-pool slot, see `warmHeavyWorker` in
+ * placeholderBatch.ts). `operation` names which, so the telemetry can tell a
+ * fast warm-up from a heavy one.
  */
 async function callWarmupFor(
   ctx: ActionCtx,
   service: PreprocessService,
   operation: string,
+  timeoutMs: number,
 ): Promise<{ warmed: boolean }> {
   const started = Date.now();
   const requestId = newRequestId();
@@ -537,7 +556,7 @@ async function callWarmupFor(
       method: "POST",
       headers: await preprocessHeaders(service),
       body: JSON.stringify({}),
-      signal: AbortSignal.timeout(WARMUP_FETCH_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
     statusCode = response.status;
     // Drain the body so the socket can be reused; its contents are ignored.
@@ -562,16 +581,21 @@ async function callWarmupFor(
 
 /** Warm one FAST instance. Fired PREPROCESS_MAX_PARALLELISM-wide on start. */
 export function callWarmupFast(ctx: ActionCtx): Promise<{ warmed: boolean }> {
-  return callWarmupFor(ctx, FAST_SERVICE(), "preprocessWarmupFast");
+  return callWarmupFor(ctx, FAST_SERVICE(), "preprocessWarmupFast", WARMUP_FETCH_TIMEOUT_MS);
 }
 
 /**
- * Warm one HEAVY instance. Fired exactly ONCE, on the first escalation of a
- * batch (the warm-gate) — deliberately not N-wide like the fast fan-out, because
- * heavy instances are the 191s cold-loaders and escalations are a minority of
- * images; the heavy pool queues the rest behind this one warming instance rather
- * than stampeding N cold heavy instances.
+ * Warm one HEAVY instance. Called only from `warmHeavyWorker`, which the heavy
+ * workpool runs HEAVY_MAX_PARALLELISM-wide on batch start, on warm-on-intent and
+ * on a batch's first escalation. Never fired beside the pool: a heavy warm-up
+ * occupies an instance for its whole cold load, so it has to hold a pool slot
+ * for that long or the pool over-dispatches (see WARMUP_HEAVY_FETCH_TIMEOUT_MS).
  */
 export function callWarmupHeavy(ctx: ActionCtx): Promise<{ warmed: boolean }> {
-  return callWarmupFor(ctx, HEAVY_SERVICE(), "preprocessWarmupHeavy");
+  return callWarmupFor(
+    ctx,
+    HEAVY_SERVICE(),
+    "preprocessWarmupHeavy",
+    WARMUP_HEAVY_FETCH_TIMEOUT_MS,
+  );
 }

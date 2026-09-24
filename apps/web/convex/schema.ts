@@ -2595,12 +2595,14 @@ export default defineSchema({
     pairingScheduled: v.optional(v.boolean()),
     // When the HEAVY preprocess service's warm-gate first fired for this batch
     // (NEO-175). Set by `settleImageOutcome` the first time a fast completion
-    // escalates an image, alongside scheduling a single heavy `/warmup`. Its ONLY
-    // job is to make that warm-up fire exactly once per batch — every later
-    // escalation reads it set and skips the warm-up (a warm instance answers
-    // immediately, so a stray extra would be harmless, but there is no reason to
-    // send one). Absent means this batch has never needed the heavy service.
-    // Reset with the other counters on restart.
+    // escalates an image, alongside scheduling the heavy warm-up fan-out (which
+    // enqueues one warm-up per heavy instance on the heavy workpool, NEO-299).
+    // Its ONLY job is to make that fan-out fire exactly once per batch — every
+    // later escalation reads it set and skips it (the warm-ups share the heavy
+    // pool's slots with the escalations, so a repeat could not overshoot the
+    // instance limit, but it would put another round of warm-ups in the queue
+    // ahead of later escalations for nothing). Absent means this batch has never
+    // needed the heavy service. Reset with the other counters on restart.
     heavyWarmStartedAt: v.optional(v.number()),
   })
     .index("by_job", ["jobId"])
