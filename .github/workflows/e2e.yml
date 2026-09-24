@@ -497,11 +497,11 @@ jobs:
           OUT_FILE="convex-logs-seed.jsonl"
           if [ -s "$RAW_LOG_FILE" ]; then
             jq -c '
-                (.logLines // [])
+                ((.logLines // [])
                 | map(select(
                     .level == "ERROR" or .level == "WARN"
                     or ((.messages // []) | join(" ") | test("\"msg\""))
-                  ))
+                  )))
                 as $keep
                 | select((.error != null) or ($keep | length) > 0)
                 | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
@@ -630,11 +630,11 @@ jobs:
           OUT_FILE="convex-logs-runner-0.jsonl"
           if [ -s "$RAW_LOG_FILE" ]; then
             jq -c '
-                (.logLines // [])
+                ((.logLines // [])
                 | map(select(
                     .level == "ERROR" or .level == "WARN"
                     or ((.messages // []) | join(" ") | test("\"msg\""))
-                  ))
+                  )))
                 as $keep
                 | select((.error != null) or ($keep | length) > 0)
                 | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
