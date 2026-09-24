@@ -16,3 +16,5 @@
 - [Stub ctx for an action's write failures](reference_action_impl_stub_ctx_for_write_failures.md) — export a plain *Impl + Pick<ActionCtx> stub; convex-test can't make an OCC conflict; adapters are no-throw, so a throwing fetch stub never reaches a catch (Wikidata pool items throw via LookupTrace since NEO-301)
 - [Workpool retry semantics](reference_workpool_retry_semantics.md) — every throw retries unless NonRetryableError; onComplete only after the final attempt; error arrives as a string
 - [Convex test files are not typechecked](reference_convex_test_files_are_not_typechecked.md) — convex tsconfig excludes *.test.ts and eslint skips .ts; typecheck new tests with a scratch tsconfig
+- [Store loops fall through to insert](reference_store_loops_fall_through_to_insert.md) — a new MatchOutcome kind becomes a NEW ROW in both stores until each gets an explicit branch
+- [Stub ctx for an action's write failures](reference_action_impl_stub_ctx_for_write_failures.md) — export a plain *Impl + Pick<ActionCtx> stub; convex-test can't make an OCC conflict; adapters are no-throw, so a throwing fetch stub never reaches a catch

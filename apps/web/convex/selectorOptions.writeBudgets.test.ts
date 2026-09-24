@@ -777,7 +777,9 @@ describe("applyParallelGroupings entry cap (NEO-296)", () => {
         demotions: Array.from({ length: 400 }, () => ({ parallelId })),
         reparentings: [],
       }),
-    ).rejects.toThrow(/exceeds/);
+      // NEO-300 — an operator's sentence now (`groupingRefusal.tooMany`), not
+      // the developer's "exceeds the N-per-call limit".
+    ).rejects.toThrow(/moves in one save/);
 
     // This one is deliberately atomic rather than paged, so the refusal has to
     // leave the subtree exactly as it was — no half-applied grouping.
