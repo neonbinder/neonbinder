@@ -52,13 +52,14 @@ async function insertInsert(
   variantTypeId: Id<"selectorOptions">,
   value: string,
   metadata?: Record<string, unknown>,
+  platformData: Record<string, Record<string, string>> = {},
 ): Promise<Id<"selectorOptions">> {
   return t.run(async (ctx) => {
     const id = await ctx.db.insert("selectorOptions", {
       level: "insert",
       value,
       parentId: variantTypeId,
-      platformData: {},
+      platformData,
       children: [],
       ...(metadata ? { metadata } : {}),
       lastUpdated: SENTINEL,
@@ -74,13 +75,14 @@ async function insertParallel(
   insertId: Id<"selectorOptions">,
   value: string,
   metadata?: Record<string, unknown>,
+  platformData: Record<string, Record<string, string>> = {},
 ): Promise<Id<"selectorOptions">> {
   return t.run(async (ctx) => {
     const id = await ctx.db.insert("selectorOptions", {
       level: "parallel",
       value,
       parentId: insertId,
-      platformData: {},
+      platformData,
       children: [],
       ...(metadata ? { metadata } : {}),
       lastUpdated: SENTINEL,
@@ -211,5 +213,137 @@ describe("applyParallelGroupings — demotion replaces the flags with the varian
 
     const row = await getRow(t, parallelRow);
     expect(row?.metadata).toEqual({ cardNumberPrefix: "GR-" });
+  });
+});
+
+describe("applyParallelGroupings — no row lands beside a parallel holding the same marketplace set (NEO-300)", () => {
+  test("promoting an insert whose BSC id a target parallel already holds is refused, and nothing moves", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome", undefined, { bsc: { b0: "chrome-v" } });
+    await insertParallel(t, chrome, "Refractor", undefined, { bsc: { b0: "refractor-v" } });
+    // The copy Sync Inserts used to re-create.
+    const copy = await insertInsert(t, vt, "Refractor", undefined, { bsc: { b0: "refractor-v" } });
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [{ insertId: copy, targetInsertId: chrome }],
+        demotions: [],
+      }),
+    ).rejects.toThrow('"Refractor" is already a parallel of "Chrome".');
+
+    const row = await getRow(t, copy);
+    expect(row?.level).toBe("insert");
+    expect(row?.parentId).toBe(vt);
+    expect(row?.lastUpdated).toBe(SENTINEL);
+  });
+
+  test("the twin's own name is given when it differs", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    await insertParallel(t, chrome, "Refractors", undefined, { sportlots: { s0: "sl-ref" } });
+    const copy = await insertInsert(t, vt, "Refractor", undefined, { sportlots: { s0: "sl-ref" } });
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [{ insertId: copy, targetInsertId: chrome }],
+        demotions: [],
+      }),
+    ).rejects.toThrow('"Refractor" is already a parallel of "Chrome" as "Refractors".');
+  });
+
+  test("reparenting a parallel next to its twin is refused the same way", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const prizm = await insertInsert(t, vt, "Prizm");
+    await insertParallel(t, chrome, "Refractor", undefined, { bsc: { b0: "refractor-v" } });
+    const other = await insertParallel(t, prizm, "Refractor", undefined, { bsc: { b0: "refractor-v" } });
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [],
+        demotions: [],
+        reparentings: [{ parallelId: other, newInsertId: chrome }],
+      }),
+    ).rejects.toThrow('"Refractor" is already a parallel of "Chrome".');
+    expect((await getRow(t, other))?.parentId).toBe(prizm);
+  });
+
+  test("two rows arriving at one target in the same plan are compared with each other", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const a = await insertInsert(t, vt, "Refractor", undefined, { bsc: { b0: "refractor-v" } });
+    const b = await insertInsert(t, vt, "Refractor B", undefined, { bsc: { b0: "refractor-v" } });
+
+    await expect(
+      asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId: vt,
+        promotions: [
+          { insertId: a, targetInsertId: chrome },
+          { insertId: b, targetInsertId: chrome },
+        ],
+        demotions: [],
+      }),
+    ).rejects.toThrow('"Refractor B" is already a parallel of "Chrome" as "Refractor".');
+    // All-or-nothing: the first promotion did not land either.
+    expect((await getRow(t, a))?.level).toBe("insert");
+  });
+
+  test("never by name: a same-named parallel with a different id does not block", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    await insertParallel(t, chrome, "Refractor", undefined, { bsc: { b0: "refractor-v" } });
+    const other = await insertInsert(t, vt, "Refractor", undefined, { bsc: { b0: "other-v" } });
+
+    const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: vt,
+      promotions: [{ insertId: other, targetInsertId: chrome }],
+      demotions: [],
+    });
+    expect(result.promoted).toBe(1);
+  });
+
+  test("the same id on DIFFERENT sides is not the same set", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    await insertParallel(t, chrome, "Refractor", undefined, { bsc: { b0: "x1" } });
+    const other = await insertInsert(t, vt, "Refractor SL", undefined, { sportlots: { s0: "x1" } });
+
+    const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: vt,
+      promotions: [{ insertId: other, targetInsertId: chrome }],
+      demotions: [],
+    });
+    expect(result.promoted).toBe(1);
+  });
+
+  test("a twin LEAVING the target in the same plan does not block the swap", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const vt = await insertVariantType(t, "insert");
+    const chrome = await insertInsert(t, vt, "Chrome");
+    const old = await insertParallel(t, chrome, "Refractor", undefined, { bsc: { b0: "refractor-v" } });
+    const copy = await insertInsert(t, vt, "Refractor", undefined, { bsc: { b0: "refractor-v" } });
+
+    const result = await asAdmin.mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId: vt,
+      promotions: [{ insertId: copy, targetInsertId: chrome }],
+      demotions: [{ parallelId: old }],
+    });
+    expect(result).toEqual({ success: true, promoted: 1, demoted: 1, reparented: 0 });
   });
 });

@@ -453,7 +453,19 @@ export type MatchOutcome<TId extends string = string> =
       placeholderSides?: PlatformSide[];
     }
   | { kind: "insert" }
-  | { kind: "withheld"; reason: string };
+  | { kind: "withheld"; reason: string }
+  /**
+   * NEO-300 — the item names a row that already lives ELSEWHERE in this
+   * variant type's subtree (an operator grouped it: an insert promoted to a
+   * parallel, or a parallel demoted to an insert). No sibling holds it, so
+   * without this the item landed as `insert` and re-created the row at its
+   * old level. The store writes NOTHING for it — no insert, no reparent, no
+   * level change, no rename, no platform refresh — and reports it.
+   *
+   * `tier` says what identified it: 0 = the modal's `existingId`, 1 = a
+   * marketplace id held in one of the row's slots. Never a name.
+   */
+  | { kind: "heldElsewhere"; rowId: TId; tier: 0 | 1 };
 
 /**
  * NEO-237 — "is this id on this side a placeholder link, not a live
@@ -604,6 +616,116 @@ function placeholderSidesFor(
   });
 }
 
+/** side → marketplace id → the rows holding it in ANY slot. */
+function indexBySideId<TId extends string>(
+  rows: readonly MatchableRow<TId>[],
+): Record<PlatformSide, Map<string, Array<MatchableRow<TId>>>> {
+  const out: Record<PlatformSide, Map<string, Array<MatchableRow<TId>>>> = {
+    bsc: new Map(),
+    sportlots: new Map(),
+  };
+  for (const row of rows) {
+    for (const side of PLATFORM_SIDES) {
+      const map = row.platformData?.[side];
+      if (!map) continue;
+      for (const id of Object.values(map)) {
+        const holders = out[side].get(id);
+        if (!holders) out[side].set(id, [row]);
+        else if (!holders.includes(row)) holders.push(row);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * NEO-300 — does this item name a row that lives elsewhere in the variant
+ * type's subtree? `undefined` = no, carry on to the name tier.
+ *
+ * Tier 0 first (the modal's own NB row id), then every marketplace id the
+ * item carries. One distinct holder is `heldElsewhere`. Several is a
+ * WITHHOLD, not an insert: the id is already in the subtree, so a new row
+ * would be the duplicate this rule exists to stop, and picking one holder
+ * would be a coin-flip about which grouping the operator meant.
+ */
+function heldElsewhereOutcome<TId extends string>(
+  item: IncomingItem,
+  byId: ReadonlyMap<string, MatchableRow<TId>>,
+  bySideId: Record<PlatformSide, Map<string, Array<MatchableRow<TId>>>>,
+): MatchOutcome<TId> | undefined {
+  if (item.existingId) {
+    const row = byId.get(item.existingId);
+    if (row) return { kind: "heldElsewhere", rowId: row._id, tier: 0 };
+  }
+  const holders = new Set<MatchableRow<TId>>();
+  for (const side of PLATFORM_SIDES) {
+    const id = item.ids[side];
+    if (!id) continue;
+    for (const row of bySideId[side].get(id) ?? []) holders.add(row);
+  }
+  if (holders.size === 0) return undefined;
+  if (holders.size > 1) {
+    return {
+      kind: "withheld",
+      reason: `marketplace ids are held by ${holders.size} rows elsewhere in this variant type`,
+    };
+  }
+  return { kind: "heldElsewhere", rowId: [...holders][0]._id, tier: 1 };
+}
+
+/**
+ * NEO-300 — does any item name something no sibling holds?
+ *
+ * The stores use it to skip the subtree read on the common path: a re-sync
+ * whose every id (and every `existingId`) is already on a sibling cannot
+ * produce a `heldElsewhere`, so the per-insert reads would buy nothing.
+ */
+export function itemsReachPastSiblings(
+  existing: readonly MatchableRow[],
+  items: readonly IncomingItem[],
+): boolean {
+  const ids = new Set<string>();
+  const held: Record<PlatformSide, Set<string>> = {
+    bsc: new Set(),
+    sportlots: new Set(),
+  };
+  for (const row of existing) {
+    ids.add(row._id);
+    for (const side of PLATFORM_SIDES) {
+      for (const id of Object.values(row.platformData?.[side] ?? {})) {
+        held[side].add(id);
+      }
+    }
+  }
+  return items.some(
+    (item) =>
+      (item.existingId !== undefined && !ids.has(item.existingId)) ||
+      PLATFORM_SIDES.some((side) => {
+        const id = item.ids[side];
+        return id !== undefined && !held[side].has(id);
+      }),
+  );
+}
+
+/**
+ * NEO-300 — do two rows hold the same marketplace id on the same side, in any
+ * slot? The grouping guard's test for "this row is already a parallel of that
+ * insert". Ids only: two rows with the same NAME under one insert are two NB
+ * rows as far as this is concerned, and a card number is never consulted.
+ */
+export function sharesMarketplaceId(
+  a: SlotBearingRow,
+  b: SlotBearingRow,
+): boolean {
+  return PLATFORM_SIDES.some((side) => {
+    const theirs = new Set(Object.values(b.platformData?.[side] ?? {}));
+    if (theirs.size === 0) return false;
+    return Object.values(a.platformData?.[side] ?? {}).some((id) =>
+      theirs.has(id),
+    );
+  });
+}
+
 export function planSelectorSync<TId extends string>(args: {
   existing: readonly MatchableRow<TId>[];
   items: readonly IncomingItem[];
@@ -617,6 +739,16 @@ export function planSelectorSync<TId extends string>(args: {
    * an old bundle ever sent it, the M:1 withhold is the right answer.
    */
   isPlaceholderId?: PlaceholderIdPredicate;
+  /**
+   * NEO-300 — rows in the same variant type's subtree that are NOT siblings
+   * of this sync (see `loadVariantTypeSubtreeElsewhere`). Consulted only
+   * AFTER the sibling tiers 0 and 1 miss outright, and only by NB row id
+   * (tier 0) or marketplace id held in a slot (tier 1) — never by name, and
+   * never by card number. A hit is `heldElsewhere`. Absent or empty → today's
+   * rule exactly. A row that is also in `existing` is ignored here: a sibling
+   * always wins.
+   */
+  elsewhereInSubtree?: readonly MatchableRow<TId>[];
 }): SelectorSyncPlan<TId> {
   const { existing, items, isPlaceholderId } = args;
 
@@ -650,6 +782,18 @@ export function planSelectorSync<TId extends string>(args: {
       }
     }
   }
+
+  // NEO-300 — the same two identity indexes over the rest of the variant
+  // type's subtree. No name index, deliberately: a same-named row under a
+  // different parent is a different set as far as NB knows.
+  const elsewhereById = new Map<string, MatchableRow<TId>>();
+  const elsewhereBySideId = indexBySideId(
+    (args.elsewhereInSubtree ?? []).filter((row) => {
+      if (byRowId.has(row._id) || elsewhereById.has(row._id)) return false;
+      elsewhereById.set(row._id, row);
+      return true;
+    }),
+  );
 
   /** A row already claimed by another item in this same batch. */
   const claimed = new Set<TId>();
@@ -733,6 +877,24 @@ export function planSelectorSync<TId extends string>(args: {
       const reason = "bsc and sportlots ids resolve to different rows";
       ambiguities.push({ item: item.value, reason });
       carriedReason[i] = reason;
+    }
+
+    // NEO-300 — no sibling holds anything this item names. Before it can
+    // become an insert, ask whether the row already lives elsewhere in the
+    // variant type's subtree. Only on a CLEAN sibling miss: a sibling-level
+    // ambiguity is already a withhold, and a sibling hit always wins.
+    if (tier1.size === 0 && carriedReason[i] === undefined) {
+      const elsewhere = heldElsewhereOutcome(
+        item,
+        elsewhereById,
+        elsewhereBySideId,
+      );
+      if (elsewhere) {
+        if (elsewhere.kind === "withheld") {
+          ambiguities.push({ item: item.value, reason: elsewhere.reason });
+        }
+        outcomes[i] = elsewhere;
+      }
     }
   }
 

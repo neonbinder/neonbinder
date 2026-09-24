@@ -34,6 +34,7 @@ vi.mock("../../convex/_generated/api", () => ({
       getAncestorChain: "getAncestorChain",
       getUsedInsertIdentifiersBySet: "getUsedInsertIdentifiersBySet",
       getSelectorOptions: "getSelectorOptions",
+      getInsertTreeByVariantType: "getInsertTreeByVariantType",
       getBaseVariantBySet: "getBaseVariantBySet",
     },
   },
@@ -41,6 +42,9 @@ vi.mock("../../convex/_generated/api", () => ({
 
 const mockFetchRawOptions = vi.fn();
 const mockStore = vi.fn();
+// NEO-300: what getInsertTreeByVariantType answers. Loaded-but-empty by
+// default — the auto-sync is gated on it, so `undefined` would never sync.
+let insertTree: unknown[] = [];
 
 vi.mock("convex/react", () => ({
   useAction: (ref: string) =>
@@ -53,6 +57,7 @@ vi.mock("convex/react", () => ({
     // `baseVariant !== undefined`, so undefined would never fire doSync.
     if (ref === "getBaseVariantBySet") return null;
     if (ref === "getSelectorOptions") return [];
+    if (ref === "getInsertTreeByVariantType") return insertTree;
     if (ref === "getUsedInsertIdentifiersBySet")
       return { slPlatformValues: [], bscPlatformValues: [] };
     return undefined;
@@ -105,6 +110,7 @@ async function renderForm(onDone = vi.fn()) {
 beforeEach(() => {
   vi.clearAllMocks();
   mockStore.mockResolvedValue({ success: true, unlinked: [] });
+  insertTree = [];
 });
 
 describe("VariantForm — single-platform store (NEO-211 plan B)", () => {
@@ -590,5 +596,152 @@ describe("VariantForm — the store is replayed until it is finished (NEO-296)",
     expect(status.textContent).toContain("1 of 2 not reached this time");
     expect(status.textContent).not.toContain("Stored 2 variants");
     expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * NEO-300 — Group Parallels moves insert rows under another insert as
+ * `level=parallel`, keeping their `_id` and their marketplace slots. The next
+ * Sync Inserts re-created every one of them as a top-level insert, because
+ * neither the modal's `existingRows` (inserts only) nor `usedIdentifiers`
+ * (other variant types only) could see a parallel.
+ */
+describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
+  /** "Anime" with two rows grouped under it, one per side. */
+  function groupedUnderAnime() {
+    return [
+      {
+        insert: {
+          _id: "ins-anime",
+          value: "Anime",
+          platformData: { bsc: { b0: "bsc-anime" }, sportlots: { s0: "sl-anime" } },
+        },
+        parallels: [
+          {
+            _id: "par-kanji",
+            value: "Anime Kanji",
+            platformData: { bsc: { b0: "bsc-kanji" }, sportlots: { s0: "sl-kanji" } },
+          },
+          {
+            _id: "par-gold",
+            value: "Anime Gold",
+            platformData: { bsc: { b0: "bsc-gold" } },
+          },
+        ],
+      },
+    ];
+  }
+
+  it("does NOT auto-seed a grouped pair as Ready, and says how many it left", async () => {
+    insertTree = groupedUnderAnime();
+    const KANJI_BSC = { value: "Anime Kanji", platformValue: "bsc-kanji" };
+    const KANJI_SL = { value: "Anime Kanji", platformValue: "sl-kanji" };
+    const NEW_BSC = { value: "Chrome Stars", platformValue: "bsc-stars" };
+    const NEW_SL = { value: "Chrome Stars", platformValue: "sl-stars" };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [KANJI_BSC, NEW_BSC],
+      slOptions: [KANJI_SL, NEW_SL],
+      autoMatched: [
+        { displayName: "Anime Kanji", bsc: KANJI_BSC, sl: KANJI_SL, confidence: 0.95 },
+        { displayName: "Chrome Stars", bsc: NEW_BSC, sl: NEW_SL, confidence: 0.95 },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+    });
+    await renderForm();
+
+    // Only the genuinely new set is Ready.
+    expect(await screen.findByText(/Save 1 sets/)).toBeTruthy();
+    // Only Kanji came back, so only Kanji is counted — Gold was not fetched.
+    expect(
+      screen.getByText("1 already grouped as a parallel. Leaving it be."),
+    ).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: "Show grouped" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const item = screen.getByText("Anime Kanji", { selector: "li > span" });
+    expect(item.parentElement?.textContent).toBe("Anime Kanji→grouped under Anime");
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Save 1 sets/));
+    });
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    expect(args.reconciledItems.map((i: { value: string }) => i.value)).toEqual([
+      "Chrome Stars",
+    ]);
+    // The grouped row is still LISTED: its ids stay in the fetch universe, so
+    // the store does not read them as delisted.
+    expect(args.returnedIds.bsc).toContain("bsc-kanji");
+    expect(args.returnedIds.sportlots).toContain("sl-kanji");
+  });
+
+  it("single platform: stores only what no grouped parallel holds, and keeps the panel up to say so", async () => {
+    insertTree = groupedUnderAnime();
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [
+        { value: "Anime Gold", platformValue: "bsc-gold" },
+        { value: "Anime Kanji", platformValue: "bsc-kanji" },
+        { value: "Team Canada", platformValue: "team-canada" },
+      ],
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+    });
+    const { onDone } = await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    expect(args.reconciledItems).toHaveLength(1);
+    expect(args.reconciledItems[0].platformData.bsc).toBe("team-canada");
+    // The whole fetch, grouped ids included — they are still listed.
+    expect([...args.returnedIds.bsc].sort()).toEqual([
+      "bsc-gold",
+      "bsc-kanji",
+      "team-canada",
+    ]);
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("Stored 1 variants (single platform)");
+    expect(status.textContent).toContain(
+      "2 already grouped as parallels. Leaving those be.",
+    );
+    // Held open so the skip is seen; the operator closes it.
+    expect(onDone).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
+  });
+
+  it("single platform, everything already grouped: writes nothing and says why", async () => {
+    insertTree = groupedUnderAnime();
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [{ value: "Anime Gold", platformValue: "bsc-gold" }],
+    });
+    const { onDone } = await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain("No new inserts to add.");
+    expect(status.textContent).toContain(
+      "1 already grouped as a parallel. Leaving it be.",
+    );
+    expect(mockStore).not.toHaveBeenCalled();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("does not sync until the insert tree has loaded", async () => {
+    // A sync that ran before the tree arrived would have nothing to filter
+    // against and re-create every grouped row — the bug itself.
+    insertTree = undefined as unknown as unknown[];
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    await renderForm();
+    expect(mockFetchRawOptions).not.toHaveBeenCalled();
   });
 });

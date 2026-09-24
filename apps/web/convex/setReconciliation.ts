@@ -19,6 +19,7 @@ import {
   PLATFORM_SIDES,
   checkSelectorValue,
   clearDeclinedIfLabelChanged,
+  itemsReachPastSiblings,
   planSelectorSync,
   planValueRename,
   resolveReturnedIds,
@@ -32,12 +33,16 @@ import {
   UNLINK_NOTICE_LIMIT,
   annotateHasCards,
   checkReturnedIds,
+  heldElsewhereEntry,
+  heldElsewhereEntryValidator,
+  loadVariantTypeSubtreeElsewhere,
   pausedSyncMessage,
   platformSideValidator,
   returnedIdsValidator,
   unionChildren,
   unaskedSidesNotice,
   unlinkedEntryValidator,
+  type HeldElsewhereEntry,
   type UnlinkedEntry,
 } from "./selectorSyncStore";
 import {
@@ -1439,6 +1444,18 @@ export const storeReconciledOptions = mutation({
      * `RECONCILE_STORE_WRITE_BUDGET` for what one operation is.
      */
     writeOps: v.number(),
+    /**
+     * NEO-300 — items that name a row already living ELSEWHERE in this
+     * variant type's subtree (an insert the operator grouped under another
+     * insert as a parallel, or a parallel they moved up to an insert). The
+     * store left each one exactly where the operator put it: no new row, no
+     * move, no rename, no platform write. One entry per held ROW, NB names
+     * only, capped at `UNLINK_NOTICE_LIMIT`; `heldElsewhereTotal` is the true
+     * count. Recomputed over the items this call reached, so a replay's LAST
+     * page carries the whole answer (like `optionsCount`).
+     */
+    heldElsewhere: v.array(heldElsewhereEntryValidator),
+    heldElsewhereTotal: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -1542,11 +1559,25 @@ export const storeReconciledOptions = mutation({
         return false;
       });
 
+    // NEO-300 — the rest of the variant type's subtree, so a row an operator
+    // grouped (insert ↔ parallel) is recognised by its ids instead of being
+    // re-created at its old level. Read only when some item names an id or
+    // an `existingId` no sibling holds; a re-sync that stays inside the
+    // siblings pays nothing. See `loadVariantTypeSubtreeElsewhere`.
+    const subtree = itemsReachPastSiblings(existingOptions, items)
+      ? await loadVariantTypeSubtreeElsewhere(ctx, {
+          level,
+          parent: parentRowForCopyDown,
+          siblings: existingOptions,
+        })
+      : null;
+
     const plan = planSelectorSync({
       existing: existingOptions,
       items,
       coveredSides: effectiveCovered,
       returnedIds: effectiveReturnedIds,
+      ...(subtree ? { elsewhereInSubtree: subtree.rows } : {}),
     });
     if (plan.ambiguities.length > 0) {
       console.warn(
@@ -1703,18 +1734,47 @@ export const storeReconciledOptions = mutation({
     const willPatch = new Set<string>();
     /** Items this call reached. The rest are the caller's next call. */
     let itemsProcessed = 0;
+    // NEO-300 — the subtree walk is one read per insert, counted at the call
+    // site, and charged against this call's budget so the transaction's total
+    // stays where `RECONCILE_STORE_WRITE_BUDGET` put it. Capped at half the
+    // budget so a call always has room to advance, which keeps the replay
+    // finishing (the walk costs the same on every page). Half is ~400 inserts
+    // under one variant type — past any real set.
+    const writeBudget =
+      RECONCILE_STORE_WRITE_BUDGET -
+      Math.min(subtree?.reads ?? 0, RECONCILE_STORE_WRITE_BUDGET / 2);
+    const subtreeRowsById = new Map<string, Doc<"selectorOptions">>(
+      (subtree?.rows ?? []).map((row) => [row._id, row]),
+    );
+    const heldElsewhereById = new Map<string, HeldElsewhereEntry>();
 
     for (let i = 0; i < reconciledItems.length; i++) {
       // The bound is checked BEFORE the item, so the last item admitted is the
       // one that spent the budget rather than the one after it. Everything
       // already decided is written by the passes below and commits with this
       // transaction; the tail is untouched, not half-applied.
-      if (inserts + willPatch.size >= RECONCILE_STORE_WRITE_BUDGET) break;
+      if (inserts + willPatch.size >= writeBudget) break;
       itemsProcessed = i + 1;
       const item = reconciledItems[i];
       const parsed = items[i];
       const outcome = plan.outcomes[i];
       if (outcome.kind === "withheld") continue;
+
+      // NEO-300 — the row is already in this variant type's subtree, where the
+      // operator put it. Nothing is written to it or for it: not an insert,
+      // not a reparent, not a level change, not a rename — and not the
+      // platform refresh a sibling match gets either. The id that identified
+      // it is already in its slot; the only things a refresh could change are
+      // a label or the OTHER side's id, and writing those from a fetch scoped
+      // to a different level onto a row this call does not own is a silent
+      // relink (invariants 3 and 5). Reported instead.
+      if (outcome.kind === "heldElsewhere") {
+        const row = subtreeRowsById.get(outcome.rowId);
+        const entry =
+          row && subtree ? heldElsewhereEntry(row, subtree.parentsById) : null;
+        if (entry) heldElsewhereById.set(entry.id, entry);
+        continue;
+      }
 
       if (outcome.kind === "matched") {
         const row = byRowId.get(outcome.existingId)!;
@@ -2050,6 +2110,21 @@ export const storeReconciledOptions = mutation({
         }),
       );
     }
+    const heldElsewhereAll = [...heldElsewhereById.values()];
+    if (heldElsewhereAll.length > 0 || subtree) {
+      // Ids and counts only — a row `value` is operator content.
+      console.log(
+        JSON.stringify({
+          msg: "selector_sync_held_elsewhere",
+          fn: "storeReconciledOptions",
+          level,
+          parentId: parentId ?? null,
+          count: heldElsewhereAll.length,
+          subtreeReads: subtree?.reads ?? 0,
+          rowIds: heldElsewhereAll.slice(0, 25).map((r) => r.id),
+        }),
+      );
+    }
 
     // NEO-296 — every WRITE this transaction made: the fresh inserts, the row
     // patches, and the parent's `children` union. The reads (the sibling
@@ -2070,7 +2145,7 @@ export const storeReconciledOptions = mutation({
           itemsSent: reconciledItems.length,
           itemsProcessed,
           writeOps,
-          budget: RECONCILE_STORE_WRITE_BUDGET,
+          budget: writeBudget,
         }),
       );
     }
@@ -2091,6 +2166,8 @@ export const storeReconciledOptions = mutation({
       itemsProcessed,
       hasMore,
       writeOps,
+      heldElsewhere: heldElsewhereAll.slice(0, UNLINK_NOTICE_LIMIT),
+      heldElsewhereTotal: heldElsewhereAll.length,
     };
   },
 });

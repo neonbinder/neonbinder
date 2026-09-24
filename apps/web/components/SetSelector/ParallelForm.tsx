@@ -18,6 +18,13 @@ import {
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { storeReconciledUntilDone } from "./store-reconciled-until-done";
+import HeldElsewhereNote, { heldElsewhereSummary } from "./HeldElsewhereNote";
+import {
+  heldIdSets,
+  heldRowsReturnedBy,
+  rowsOutsideInsert,
+  type HeldRow,
+} from "./held-elsewhere";
 
 type RawOptionsResult = {
   success: boolean;
@@ -37,6 +44,10 @@ type RawOptionsResult = {
 // column so Maestro can distinguish variant vs parallel failure surfacing
 // when it eventually asserts on this text.
 const SYNC_FAILED_PREFIX = "Sync failed: could not load parallels";
+
+// NEO-300: the disclosure's accessible name. Distinct from VariantForm's
+// ("Show grouped"), which can be on screen in the next column at the same time.
+const HELD_TOGGLE_LABEL = "Show where";
 
 export default function ParallelForm({
   insertId,
@@ -64,6 +75,9 @@ export default function ParallelForm({
   // NEO-211: a failed save from inside the reconciliation dialog. Shown IN the
   // dialog so the operator's reconciliation survives and Save can be retried.
   const [saveError, setSaveError] = useState<string | null>(null);
+  // NEO-300: fetched sets the single-platform store skipped because another
+  // row in this variant type already holds them. Shown beside the result.
+  const [heldSkipped, setHeldSkipped] = useState<HeldRow[]>([]);
   const triggered = useRef(false);
   // a11y: focus-park landing spot — see VariantForm.tsx's own copy of these
   // two effects for the full rationale (Retry-unmount and Dismiss-unmount).
@@ -77,9 +91,19 @@ export default function ParallelForm({
   const manufacturerValue = ancestorChain?.find(
     (a: { level: string }) => a.level === "manufacturer",
   )?.value;
-  const variantTypeValue = ancestorChain?.find(
+  const variantTypeAncestor = ancestorChain?.find(
     (a: { level: string }) => a.level === "variantType",
-  )?.value;
+  );
+  const variantTypeValue = variantTypeAncestor?.value;
+  const variantTypeId = variantTypeAncestor?._id as
+    | GenericId<"selectorOptions">
+    | undefined;
+  // Pluralised for the held-elsewhere sentence ("… elsewhere in Inserts").
+  const variantsLabel = variantTypeValue
+    ? variantTypeValue.endsWith("s")
+      ? variantTypeValue
+      : `${variantTypeValue}s`
+    : "this set";
   const setNameAncestor = ancestorChain?.find(
     (a: { level: string }) => a.level === "setName",
   );
@@ -95,11 +119,24 @@ export default function ParallelForm({
     api.selectorOptions.getUsedInsertIdentifiersBySet,
     setId ? { setId } : "skip",
   );
+  // NEO-300 — the symmetric half of the Sync Inserts fix. `usedIdentifiers`
+  // only trims the Pending lists, and only by INSERT ids: a set another
+  // insert's parallel already holds, or another insert holds, still arrived as
+  // a Ready auto-match and was stored as a second parallel here. Everything in
+  // this variant type outside this insert's own parallels counts as held.
+  const insertTree = useQuery(
+    api.selectorOptions.getInsertTreeByVariantType,
+    variantTypeId ? { variantTypeId } : "skip",
+  );
+  const heldOutside: HeldRow[] = insertTree
+    ? rowsOutsideInsert(insertTree, insertId)
+    : [];
 
   const doSync = async () => {
     if (!sportValue || !yearValue || !manufacturerValue || !variantTypeValue || !setNameValue) return;
     setLoading(true);
     setMessage(null);
+    setHeldSkipped([]);
     try {
       const result = await fetchRawOptions({
         level: "parallel",
@@ -165,16 +202,30 @@ export default function ParallelForm({
           return;
         }
 
+        // NEO-300: see VariantForm.doSync — filtered out of what is STORED
+        // only; `returnedIds` stays the whole fetch.
+        const skipped = heldRowsReturnedBy(heldOutside, result);
+        const held = heldIdSets(skipped);
         const items = [
-          ...result.bscOptions.map((o: PlatformItem) => ({
-            value: o.value,
-            platformData: { bsc: o.platformValue as string | undefined, sportlots: undefined },
-          })),
-          ...result.slOptions.map((o: PlatformItem) => ({
-            value: o.value,
-            platformData: { bsc: undefined, sportlots: o.platformValue as string | undefined },
-          })),
+          ...result.bscOptions
+            .filter((o: PlatformItem) => !held.bsc.has(o.platformValue))
+            .map((o: PlatformItem) => ({
+              value: o.value,
+              platformData: { bsc: o.platformValue as string | undefined, sportlots: undefined },
+            })),
+          ...result.slOptions
+            .filter((o: PlatformItem) => !held.sportlots.has(o.platformValue))
+            .map((o: PlatformItem) => ({
+              value: o.value,
+              platformData: { bsc: undefined, sportlots: o.platformValue as string | undefined },
+            })),
         ];
+
+        if (items.length === 0 && skipped.length > 0) {
+          setHeldSkipped(skipped);
+          setMessage("No new parallels to add.");
+          return;
+        }
 
         // NEO-239 — NOTHING CAME BACK, AND THAT IS NOT A FAILURE.
         //
@@ -218,6 +269,7 @@ export default function ParallelForm({
         setUnlinkedTotal(stored.unlinkedTotal);
 
         setUnlinked(unlinkedRows);
+        setHeldSkipped(skipped);
         setMessage(
           // NEO-296 — the count is the SERVER'S (`optionsCount`: rows now
           // linked), never `items.length`. The old sentence counted what was
@@ -242,7 +294,9 @@ export default function ParallelForm({
         // normal path for a custom subtree (both adapters short-circuit), and
         // EntityColumn renders this form INSTEAD of the idle "+ Custom" button
         // while mode === "sync", so not returning to idle hides that button.
-        if (converged && unlinkedRows.length === 0) onDone?.();
+        if (converged && unlinkedRows.length === 0 && skipped.length === 0) {
+          onDone?.();
+        }
       }
     } catch {
       // NEO-211 F3: the thrown text here is a Convex/adapter error that can
@@ -334,12 +388,21 @@ export default function ParallelForm({
   };
 
   useEffect(() => {
-    if (sportValue && yearValue && manufacturerValue && variantTypeValue && setNameValue && !triggered.current) {
+    // NEO-300: gated on the insert tree too — see VariantForm's matching gate.
+    if (
+      sportValue &&
+      yearValue &&
+      manufacturerValue &&
+      variantTypeValue &&
+      setNameValue &&
+      insertTree !== undefined &&
+      !triggered.current
+    ) {
       triggered.current = true;
       doSync();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- doSync deliberately omitted — same one-shot auto-sync latch as BaseMappingForm; including it would loop
-  }, [sportValue, yearValue, manufacturerValue, variantTypeValue, setNameValue]);
+  }, [sportValue, yearValue, manufacturerValue, variantTypeValue, setNameValue, insertTree]);
 
   useEffect(() => {
     const wasLoading = wasLoadingRef.current;
@@ -411,6 +474,19 @@ export default function ParallelForm({
                   }
                 >
                   {message}
+                  {!isError && heldSkipped.length > 0 && (
+                    <div className="mt-1">
+                      <HeldElsewhereNote
+                        tone="panel"
+                        rows={heldSkipped}
+                        summary={heldElsewhereSummary(
+                          heldSkipped.length,
+                          variantsLabel,
+                        )}
+                        toggleLabel={HELD_TOGGLE_LABEL}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -427,7 +503,10 @@ export default function ParallelForm({
         })()}
       </div>
 
-      {showReconciliation && reconciliationData && existingParallelRows !== undefined && (
+      {showReconciliation &&
+        reconciliationData &&
+        existingParallelRows !== undefined &&
+        insertTree !== undefined && (
         <ReconciliationModal
           isOpen={showReconciliation}
           onClose={() => {
@@ -451,6 +530,14 @@ export default function ParallelForm({
           manufacturer={manufacturerValue || ""}
           usedSlPlatformValues={usedIdentifiers?.slPlatformValues}
           usedBscPlatformValues={usedIdentifiers?.bscPlatformValues}
+          heldElsewhere={(() => {
+            const rows = heldRowsReturnedBy(heldOutside, reconciliationData);
+            return {
+              rows,
+              summary: heldElsewhereSummary(rows.length, variantsLabel),
+              toggleLabel: HELD_TOGGLE_LABEL,
+            };
+          })()}
           existingRows={existingParallelRows.map((r) => ({
             // NEO-211 (plan E): carried through so a rename in the modal stays
             // a rename of THIS row.

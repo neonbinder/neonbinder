@@ -13,7 +13,7 @@
 
 import { v } from "convex/values";
 import type { QueryCtx } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
 import type { PlatformSide } from "./platformSlots";
 
 /**
@@ -341,4 +341,177 @@ export function unionChildren(
     out.push(id);
   }
   return out;
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-300 — rows elsewhere in the same variant type's subtree
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * One row the store left alone because it already lives elsewhere in the
+ * variant type's subtree (see `heldElsewhere` in `planSelectorSync`).
+ *
+ * `value` and `parentValue` are NB's own names — the row's and the row it sits
+ * under now — never the marketplace's label for the incoming item: the notice
+ * reads "Refractor is already under Chrome", about NB's tree.
+ */
+export const heldElsewhereEntryValidator = v.object({
+  id: v.id("selectorOptions"),
+  value: v.string(),
+  level: v.union(v.literal("insert"), v.literal("parallel")),
+  parentId: v.id("selectorOptions"),
+  parentValue: v.string(),
+});
+
+export type HeldElsewhereEntry = {
+  id: Id<"selectorOptions">;
+  value: string;
+  level: "insert" | "parallel";
+  parentId: Id<"selectorOptions">;
+  parentValue: string;
+};
+
+/**
+ * NEO-300 — the most inserts one variant type may carry for the subtree walk
+ * to run. The walk is one indexed read per insert, and the stores charge those
+ * reads against their 800-write budgets capped at half, so 400 keeps a sync's
+ * whole transaction inside the ~900 operations the house treats as
+ * comfortable. A variant type past it is not a real set (a set's inserts run
+ * to dozens, low hundreds at the extreme); the walk is skipped with a
+ * structured warning and the store falls back to the sibling-only rule rather
+ * than risk the transaction.
+ */
+export const MAX_SUBTREE_WALK_INSERTS = 400;
+
+export type VariantTypeSubtreeElsewhere = {
+  /** Subtree rows that are not siblings of this sync. */
+  rows: Doc<"selectorOptions">[];
+  /** Every row the walk read, by id — to name a held row's parent. */
+  parentsById: Map<string, Doc<"selectorOptions">>;
+  /** `db.get` + index reads this walk made, for the caller's op budget. */
+  reads: number;
+};
+
+/**
+ * NEO-300 — every row in the sync's variant-type subtree that is NOT one of
+ * its siblings, or `null` when the sync is not inside such a subtree.
+ *
+ * A grouping (`applyParallelGroupings`) moves an insert down to be a parallel
+ * of another insert, or a parallel up to be an insert, keeping its `_id`, its
+ * slots and its cards. Both stores used to see only same-(level, parent)
+ * siblings, so the next Sync Inserts no longer found the promoted row, matched
+ * nothing, and re-created it at its old level. The subtree is what the match
+ * has to see instead:
+ *
+ *   level=insert,   parent = a variantType → siblings are the inserts;
+ *                   elsewhere = every insert's parallels.
+ *   level=parallel, parent = an insert     → siblings are that insert's
+ *                   parallels; elsewhere = every insert under the variant
+ *                   type (the parent included) + every OTHER insert's
+ *                   parallels.
+ *
+ * Any other level/parent → `null`, today's sibling-only rule.
+ *
+ * Reads, by index only: one `by_level_and_parent` per insert for its parallels
+ * (the parent's own at `parallel` excluded — those are the siblings), plus at
+ * `parallel` one for the inserts and one `db.get` for the variant type (to name
+ * a demoted row's parent). They are returned as `reads` so the store charges
+ * them against its write budget; see the two call sites. Bounded by
+ * `MAX_SUBTREE_WALK_INSERTS`.
+ */
+export async function loadVariantTypeSubtreeElsewhere(
+  ctx: QueryCtx,
+  args: {
+    level: string;
+    parent: Doc<"selectorOptions"> | null;
+    siblings: readonly Doc<"selectorOptions">[];
+  },
+): Promise<VariantTypeSubtreeElsewhere | null> {
+  const { level, parent, siblings } = args;
+  if (!parent) return null;
+
+  let inserts: Doc<"selectorOptions">[];
+  let reads = 0;
+  const parentsById = new Map<string, Doc<"selectorOptions">>();
+  const rows: Doc<"selectorOptions">[] = [];
+
+  if (level === "insert" && parent.level === "variantType") {
+    inserts = [...siblings];
+    parentsById.set(parent._id, parent);
+  } else if (
+    level === "parallel" &&
+    parent.level === "insert" &&
+    parent.parentId !== undefined
+  ) {
+    const variantTypeId = parent.parentId;
+    const variantType = await ctx.db.get(variantTypeId);
+    reads++;
+    if (!variantType || variantType.level !== "variantType") return null;
+    parentsById.set(variantType._id, variantType);
+    inserts = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "insert").eq("parentId", variantTypeId),
+      )
+      .collect();
+    reads++;
+    // Every insert is elsewhere at `parallel` — including the parent itself,
+    // and including a parallel an operator demoted to an insert.
+    rows.push(...inserts);
+  } else {
+    return null;
+  }
+
+  if (inserts.length > MAX_SUBTREE_WALK_INSERTS) {
+    console.warn(
+      JSON.stringify({
+        msg: "selector_sync_subtree_walk_skipped",
+        level,
+        parentId: parent._id,
+        inserts: inserts.length,
+        limit: MAX_SUBTREE_WALK_INSERTS,
+        effect: "sibling-only matching; a grouped row may be re-created",
+      }),
+    );
+    return null;
+  }
+
+  for (const insert of inserts) {
+    parentsById.set(insert._id, insert);
+    // At `parallel`, the parent's own parallels ARE the siblings.
+    if (insert._id === parent._id) continue;
+    const parallels = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "parallel").eq("parentId", insert._id),
+      )
+      .collect();
+    reads++;
+    rows.push(...parallels);
+  }
+
+  const siblingIds = new Set<string>(siblings.map((s) => s._id));
+  return {
+    rows: rows.filter((row) => !siblingIds.has(row._id)),
+    parentsById,
+    reads,
+  };
+}
+
+/** The notice entry for a held row, named by NB values only. */
+export function heldElsewhereEntry(
+  row: Doc<"selectorOptions">,
+  parentsById: ReadonlyMap<string, Doc<"selectorOptions">>,
+): HeldElsewhereEntry | null {
+  if (row.level !== "insert" && row.level !== "parallel") return null;
+  if (!row.parentId) return null;
+  const parent = parentsById.get(row.parentId);
+  if (!parent) return null;
+  return {
+    id: row._id,
+    value: row.value,
+    level: row.level,
+    parentId: row.parentId,
+    parentValue: parent.value,
+  };
 }

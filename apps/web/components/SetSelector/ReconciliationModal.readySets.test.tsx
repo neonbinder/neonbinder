@@ -479,3 +479,161 @@ describe("ReconciliationModal — carrying the NB row id (NEO-211)", () => {
     expect(items[0].platformData.bsc).toEqual(["dcap-series-1"]);
   });
 });
+
+/**
+ * NEO-300 — ids another NB row already holds (for Sync Inserts: the parallels
+ * Group Parallels moved under an insert). The auto-match seeding used to hand
+ * every one back as a fresh Ready set, which the save then stored as a
+ * duplicate top-level insert.
+ */
+describe("ReconciliationModal — sets held elsewhere (NEO-300)", () => {
+  const KANJI_BSC: PlatformItem = { value: "Anime Kanji", platformValue: "bsc-kanji" };
+  const KANJI_SL: PlatformItem = { value: "Anime Kanji", platformValue: "sl-kanji" };
+  const STARS_BSC: PlatformItem = { value: "Chrome Stars", platformValue: "bsc-stars" };
+  const STARS_SL: PlatformItem = { value: "Chrome Stars", platformValue: "sl-stars" };
+  const LOOSE_BSC: PlatformItem = { value: "Anime Gold", platformValue: "bsc-gold" };
+
+  const heldElsewhere = {
+    rows: [
+      {
+        key: "par-kanji",
+        name: "Anime Kanji",
+        parentName: "Anime",
+        bsc: ["bsc-kanji"],
+        sportlots: ["sl-kanji"],
+      },
+      {
+        key: "par-gold",
+        name: "Anime Gold",
+        parentName: "Anime",
+        bsc: ["bsc-gold"],
+        sportlots: [],
+      },
+    ],
+    summary: "2 already grouped as parallels. Leaving those be.",
+    toggleLabel: "Show grouped",
+  };
+
+  function renderHeld(initialData: InitialData) {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ReconciliationModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        level="insert"
+        initialData={initialData}
+        heldElsewhere={heldElsewhere}
+      />,
+    );
+    return { onConfirm };
+  }
+
+  test("a held pair is NOT seeded Ready, and a held loose item is NOT Pending", async () => {
+    const { onConfirm } = renderHeld({
+      autoMatched: [
+        { displayName: "Anime Kanji", bsc: KANJI_BSC, sl: KANJI_SL, confidence: 0.95 },
+        { displayName: "Chrome Stars", bsc: STARS_BSC, sl: STARS_SL, confidence: 0.95 },
+      ],
+      unmatchedBsc: [LOOSE_BSC],
+      unmatchedSl: [],
+      slCandidates: [],
+    });
+
+    // Header counts: one Ready, nothing Pending.
+    expect(screen.getByText("1 ready")).toBeTruthy();
+    expect(screen.getByText(/Pending \(0\)/)).toBeTruthy();
+    expect(screen.queryByText(LOOSE_BSC.value)).toBeNull();
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items.map((i) => i.value)).toEqual(["Chrome Stars"]);
+  });
+
+  test("the header says how many were left alone, and names them on request", () => {
+    renderHeld({
+      autoMatched: [
+        { displayName: "Anime Kanji", bsc: KANJI_BSC, sl: KANJI_SL, confidence: 0.95 },
+      ],
+      unmatchedBsc: [LOOSE_BSC],
+      unmatchedSl: [],
+      slCandidates: [],
+    });
+
+    expect(
+      screen.getByText("2 already grouped as parallels. Leaving those be."),
+    ).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: "Show grouped" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryAllByRole("listitem")).toHaveLength(0);
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    // Our names only — the row and the insert it is grouped under.
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Anime Kanji→grouped under Anime",
+      "Anime Gold→grouped under Anime",
+    ]);
+  });
+
+  test("the unheld half of a half-held auto-match lands in Pending, not nowhere", () => {
+    // Gold is held on BSC only. Its SL partner belongs to nobody, so it is an
+    // ordinary unassigned set the operator may still want.
+    const GOLD_SL: PlatformItem = { value: "Anime Gold", platformValue: "sl-gold" };
+    renderHeld({
+      autoMatched: [
+        { displayName: "Anime Gold", bsc: LOOSE_BSC, sl: GOLD_SL, confidence: 0.9 },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+    });
+
+    expect(screen.getByText("0 ready, 1 pending")).toBeTruthy();
+    expect(screen.getByText(/SportLots \(1\)/)).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Make Anime Gold its own NeonBinder set" }),
+    ).toBeTruthy();
+  });
+
+  test("a restored row keeps an id a parallel also holds — our own rows come first", async () => {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ReconciliationModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        level="insert"
+        initialData={{
+          autoMatched: [],
+          unmatchedBsc: [],
+          unmatchedSl: [],
+          slCandidates: [],
+        }}
+        heldElsewhere={heldElsewhere}
+        existingRows={[
+          { value: "Anime Gold Insert", platformData: { bsc: ["bsc-gold"] } },
+        ]}
+      />,
+    );
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items[0].platformData.bsc).toEqual(["bsc-gold"]);
+  });
+
+  test("no held rows, no line", () => {
+    render(
+      <ReconciliationModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={vi.fn()}
+        level="insert"
+        initialData={allPending()}
+        heldElsewhere={{ ...heldElsewhere, rows: [] }}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: "Show grouped" })).toBeNull();
+    expect(screen.queryByText(/already grouped/)).toBeNull();
+  });
+});

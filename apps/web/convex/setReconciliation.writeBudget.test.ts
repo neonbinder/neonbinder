@@ -234,3 +234,74 @@ describe("storeReconciledOptions is bounded by its writes (NEO-296)", () => {
     expect(new Set(rows.map((r) => r.value)).size).toBe(size);
   });
 });
+
+describe("NEO-300 — the variant-type subtree walk is paid for out of the same budget", () => {
+  async function variantTypeWithInserts(
+    t: ReturnType<typeof convexTest>,
+    existing: number,
+  ): Promise<Id<"selectorOptions">> {
+    return t.run(async (ctx) => {
+      const vt = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        platformData: { bsc: { b0: "insert" } },
+        platformFacets: { bsc: { b0: "variant" } },
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      for (let i = 0; i < existing; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "insert",
+          value: `Existing ${i}`,
+          platformData: { bsc: { b0: `existing-${i}` } },
+          parentId: vt,
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+      return vt;
+    });
+  }
+
+  function insertBatch(size: number) {
+    return Array.from({ length: size }, (_, i) => ({
+      value: `Insert ${i}`,
+      platformData: { bsc: `ins-${i}` },
+      metadata: undefined,
+    }));
+  }
+
+  test("one read per existing insert comes off the write budget, and a replay still finishes", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = admin(t);
+    const existing = 5;
+    const vt = await variantTypeWithInserts(t, existing);
+    const items = insertBatch(RECONCILE_STORE_WRITE_BUDGET);
+
+    const first = await asAdmin.mutation(
+      api.setReconciliation.storeReconciledOptions,
+      { level: "insert", parentId: vt, reconciledItems: items },
+    );
+    // New ids no sibling holds → the walk ran: one parallels read per insert.
+    expect(first.hasMore).toBe(true);
+    expect(first.itemsProcessed).toBe(RECONCILE_STORE_WRITE_BUDGET - existing);
+    // The admitted inserts, plus the parent `children` patch.
+    expect(first.writeOps).toBe(RECONCILE_STORE_WRITE_BUDGET - existing + 1);
+
+    const second = await asAdmin.mutation(
+      api.setReconciliation.storeReconciledOptions,
+      { level: "insert", parentId: vt, reconciledItems: items },
+    );
+    expect(second.hasMore).toBe(false);
+    expect(second.itemsProcessed).toBe(RECONCILE_STORE_WRITE_BUDGET);
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "insert").eq("parentId", vt),
+        )
+        .collect(),
+    );
+    expect(rows).toHaveLength(existing + RECONCILE_STORE_WRITE_BUDGET);
+  });
+});

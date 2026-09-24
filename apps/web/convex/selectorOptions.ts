@@ -96,10 +96,12 @@ import {
   MAX_SELECTOR_VALUE_LENGTH,
   valuesDeepEqual,
   clearDeclinedIfLabelChanged,
+  itemsReachPastSiblings,
   planSelectorSync,
   planValueRename,
   resolveReturnedIds,
   selectorValueKey,
+  sharesMarketplaceId,
   unlinkStalePrimary,
   type IncomingItem,
   // NEO-237 — the reserved view name, refused at the sync insert door too.
@@ -146,6 +148,9 @@ import {
   UNLINK_NOTICE_LIMIT,
   annotateHasCards,
   checkReturnedIds,
+  heldElsewhereEntry,
+  heldElsewhereEntryValidator,
+  loadVariantTypeSubtreeElsewhere,
   partialSyncMessage,
   pausedSyncMessage,
   platformNames,
@@ -155,6 +160,7 @@ import {
   unaskedSidesNotice,
   unionChildren,
   unlinkedEntryValidator,
+  type HeldElsewhereEntry,
   type UnlinkedEntry,
 } from "./selectorSyncStore";
 import {
@@ -1847,6 +1853,8 @@ type StoreSelectorOptionsResult = {
   itemsProcessed: number;
   hasMore: number | boolean;
   writeOps: number;
+  heldElsewhere: HeldElsewhereEntry[];
+  heldElsewhereTotal: number;
 };
 
 /**
@@ -1871,7 +1879,8 @@ type StoreSelectorOptionsResult = {
  * Each page recomputes some numbers over every item it reached and reports
  * others as events that happened in that transaction:
  *
- *  - `optionsCount`, `reservedNamesSkipped`, `returnedIdsTruncatedSides` are
+ *  - `optionsCount`, `reservedNamesSkipped`, `returnedIdsTruncatedSides` and
+ *    (NEO-300) `heldElsewhere` / `heldElsewhereTotal` are
  *    recomputed over items `0..itemsProcessed`, and the LAST page reached the
  *    furthest — so the last page's value is the whole answer, and summing
  *    would count the prefix once per page.
@@ -2037,6 +2046,17 @@ export const storeSelectorOptions = mutation({
      * `SELECTOR_STORE_WRITE_BUDGET` for what one operation is.
      */
     writeOps: v.number(),
+    /**
+     * NEO-300 — options that name a row already living ELSEWHERE in this
+     * variant type's subtree (an operator grouping moved it between insert
+     * and parallel). Left exactly where it is: no new row, no move, no
+     * rename, no platform write. One entry per held row, NB names only,
+     * capped at `UNLINK_NOTICE_LIMIT`; the total is `heldElsewhereTotal`.
+     * Recomputed per page over the items reached — the last page is the whole
+     * answer. Empty at every level above `insert`.
+     */
+    heldElsewhere: v.array(heldElsewhereEntryValidator),
+    heldElsewhereTotal: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -2170,11 +2190,23 @@ export const storeSelectorOptions = mutation({
         return false;
       });
 
+    // NEO-300 — the rest of the variant type's subtree, read only when some
+    // option names an id no sibling holds. Same rule and same reason as
+    // `storeReconciledOptions`; see `loadVariantTypeSubtreeElsewhere`.
+    const subtree = itemsReachPastSiblings(existingOptions, items)
+      ? await loadVariantTypeSubtreeElsewhere(ctx, {
+          level,
+          parent: parentRowForCopyDown,
+          siblings: existingOptions,
+        })
+      : null;
+
     const plan = planSelectorSync({
       existing: existingOptions,
       items,
       coveredSides: effectiveCovered,
       returnedIds: effectiveReturnedIds,
+      ...(subtree ? { elsewhereInSubtree: subtree.rows } : {}),
       // NEO-237 — at manufacturer level, SportLots' all-brands option id is a
       // PLACEHOLDER link, not a live brand id: `addCustomSelectorOption`
       // writes it on every hand-typed brand, and the fetch that finally lists
@@ -2358,18 +2390,41 @@ export const storeSelectorOptions = mutation({
     const willPatch = new Set<string>();
     /** Items this call reached. The rest are the caller's next call. */
     let itemsProcessed = 0;
+    // NEO-300 — the subtree walk's reads, counted at the call site and
+    // charged against this call's budget (capped at half, so every page
+    // still advances and the replay finishes). See `storeReconciledOptions`.
+    const writeBudget =
+      SELECTOR_STORE_WRITE_BUDGET -
+      Math.min(subtree?.reads ?? 0, SELECTOR_STORE_WRITE_BUDGET / 2);
+    const subtreeRowsById = new Map<string, Doc<"selectorOptions">>(
+      (subtree?.rows ?? []).map((row) => [row._id, row]),
+    );
+    const heldElsewhereById = new Map<string, HeldElsewhereEntry>();
 
     for (let i = 0; i < options.length; i++) {
       // The bound is checked BEFORE the item, so the last item admitted is the
       // one that spent the budget rather than the one after it. Everything
       // already decided is written by the passes below and commits with this
       // transaction; the tail is untouched, never half-applied.
-      if (inserts + willPatch.size >= SELECTOR_STORE_WRITE_BUDGET) break;
+      if (inserts + willPatch.size >= writeBudget) break;
       itemsProcessed = i + 1;
       const option = options[i];
       const item = items[i];
       const outcome = plan.outcomes[i];
       if (outcome.kind === "withheld") continue;
+
+      // NEO-300 — already in this variant type's subtree, where the operator
+      // put it. Nothing is written to it or for it (no insert, reparent,
+      // level change, rename, or platform refresh — a refresh from a fetch
+      // scoped to another level could only relink a row this call does not
+      // own). Reported instead.
+      if (outcome.kind === "heldElsewhere") {
+        const row = subtreeRowsById.get(outcome.rowId);
+        const entry =
+          row && subtree ? heldElsewhereEntry(row, subtree.parentsById) : null;
+        if (entry) heldElsewhereById.set(entry.id, entry);
+        continue;
+      }
 
       if (outcome.kind === "matched") {
         const row = byRowId.get(outcome.existingId)!;
@@ -2693,6 +2748,21 @@ export const storeSelectorOptions = mutation({
         }),
       );
     }
+    const heldElsewhereAll = [...heldElsewhereById.values()];
+    if (heldElsewhereAll.length > 0 || subtree) {
+      // Ids and counts only — a row `value` is operator content.
+      console.log(
+        JSON.stringify({
+          msg: "selector_sync_held_elsewhere",
+          fn: "storeSelectorOptions",
+          level,
+          parentId: parentId ?? null,
+          count: heldElsewhereAll.length,
+          subtreeReads: subtree?.reads ?? 0,
+          rowIds: heldElsewhereAll.slice(0, 25).map((r) => r.id),
+        }),
+      );
+    }
 
     // NEO-296 — every WRITE this transaction made: the fresh inserts and the
     // row patches. The reads (the parent get, the sibling collect, the
@@ -2714,7 +2784,7 @@ export const storeSelectorOptions = mutation({
           itemsSent: options.length,
           itemsProcessed,
           writeOps,
-          budget: SELECTOR_STORE_WRITE_BUDGET,
+          budget: writeBudget,
         }),
       );
     }
@@ -2737,6 +2807,8 @@ export const storeSelectorOptions = mutation({
       itemsProcessed,
       hasMore,
       writeOps,
+      heldElsewhere: heldElsewhereAll.slice(0, UNLINK_NOTICE_LIMIT),
+      heldElsewhereTotal: heldElsewhereAll.length,
     };
   },
 });
@@ -6996,16 +7068,37 @@ export const getInsertTreeByVariantType = query({
 //   demotion     — 1 `db.get` + 1 `patch`                            = 2
 //   reparenting  — 2 `db.get` (row, new target) + 1 `patch`          = 3
 //
-// plus one `db.get` for the variantType and one `patch` per parent whose
-// `children` array changes. At 4 operations for the dearest kind, 200 entries
-// is ~800 — inside the ~900 the house treats as comfortable
-// (`CARDS_PER_COMMIT_CHUNK`: ~1,800 strains, ~4,000 fails).
+// plus one `db.get` for the variantType, one `patch` per parent whose
+// `children` array changes, and (NEO-300) one `.collect()` per DISTINCT target
+// insert for the duplicate-parallel guard — at most one per promotion or
+// reparenting, so the dearest entry is 5. 200 entries is then ≤ ~1,000 at the
+// pathological one-target-per-entry shape and ~800 for any real plan (a drag
+// of many rows onto a few inserts) — at the ~900 the house treats as
+// comfortable (`CARDS_PER_COMMIT_CHUNK`: ~1,800 strains, ~4,000 fails).
 //
 // 200 is far above any real plan: this is a drag-and-drop over the inserts and
 // parallels of ONE variantType, all of them on screen at once. A caller that
 // somehow needs more is asking for a different feature, not a bigger
 // transaction.
 const MAX_PARALLEL_GROUPING_ENTRIES = 200;
+
+/**
+ * NEO-300 — the refusal an operator reads when a grouping would put a row
+ * beside a parallel holding the same marketplace set. NB names only; the
+ * twin's name is added when it differs, because "already a parallel" is then
+ * true of a row the operator knows by another name.
+ */
+export function duplicateParallelRefusal(
+  row: { value: string },
+  target: { value: string },
+  twin: { value: string },
+): string {
+  const base = `"${row.value}" is already a parallel of "${target.value}"`;
+  return selectorValueKey(twin.value) === selectorValueKey(row.value)
+    ? `${base}.`
+    : `${base} as "${twin.value}".`;
+}
+
 export const applyParallelGroupings = mutation({
   args: {
     variantTypeId: v.id("selectorOptions"),
@@ -7105,6 +7198,16 @@ export const applyParallelGroupings = mutation({
      * a legitimate screen to fail. It is the count that had to start telling
      * the truth, not the caller that had to start being perfect.
      */
+    /**
+     * NEO-300 — every row this plan lands under a target insert as a
+     * parallel (promotions and reparentings), keyed by the row moved so a
+     * duplicate entry keeps "last one wins" like the maps below. Read by the
+     * duplicate-parallel guard after validation.
+     */
+    const arrivals = new Map<
+      Id<"selectorOptions">,
+      { row: Doc<"selectorOptions">; target: Doc<"selectorOptions"> }
+    >();
     const promotionTargets = new Map<Id<"selectorOptions">, {
       sourceId: Id<"selectorOptions">;
       targetId: Id<"selectorOptions">;
@@ -7178,6 +7281,7 @@ export const applyParallelGroupings = mutation({
       // this after the fact: a parallel of the BASE set sits on a different
       // `variant` axis and its untagged slots must stay inert.
       const untagged = untaggedBscSlots(source);
+      arrivals.set(p.insertId, { row: source, target });
       promotionTargets.set(p.insertId, {
         sourceId: p.insertId,
         targetId: p.targetInsertId,
@@ -7250,11 +7354,55 @@ export const applyParallelGroupings = mutation({
           `Reparent target ${r.newInsertId} is not under variantType ${args.variantTypeId}`,
         );
       }
+      arrivals.set(r.parallelId, { row, target });
       reparentingTargets.set(r.parallelId, {
         parallelId: r.parallelId,
         oldParentId: row.parentId,
         newParentId: r.newInsertId,
       });
+    }
+
+    // ---- NEO-300: no row lands beside a parallel it duplicates ----
+    //
+    // A target insert must not end up with two parallels holding the same
+    // marketplace id (same side, same slot value). That state is what a sync
+    // could once manufacture — Sync Inserts re-created a promoted row, and a
+    // second grouping then put the copy beside the original — and nothing
+    // downstream can tell the two apart: both answer the checklist fetch for
+    // the same marketplace set. Refused here, by id, never by name.
+    //
+    // Compared against the target's parallels as they will be AFTER this
+    // plan: a parallel leaving the target in the same plan (demoted, or
+    // reparented elsewhere) does not block, and two rows ARRIVING at one
+    // target in the same plan are compared with each other too. Checked
+    // before any patch, like every other refusal here.
+    const leavingParent = new Set<Id<"selectorOptions">>([
+      ...demotionTargets.keys(),
+      ...reparentingTargets.keys(),
+    ]);
+    const landedByTarget = new Map<
+      Id<"selectorOptions">,
+      Doc<"selectorOptions">[]
+    >();
+    for (const { row, target } of arrivals.values()) {
+      let landed = landedByTarget.get(target._id);
+      if (!landed) {
+        const current = await ctx.db
+          .query("selectorOptions")
+          .withIndex("by_level_and_parent", (q) =>
+            q.eq("level", "parallel").eq("parentId", target._id),
+          )
+          .collect();
+        landed = current.filter((p) => !leavingParent.has(p._id));
+        landedByTarget.set(target._id, landed);
+      }
+      const twin = landed.find(
+        (p) => p._id !== row._id && sharesMarketplaceId(row, p),
+      );
+      if (twin) {
+        throw new ConvexError(duplicateParallelRefusal(row, target, twin));
+      }
+      landed.push(row);
     }
 
     // ---- Apply promotions ----

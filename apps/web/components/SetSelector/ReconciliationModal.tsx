@@ -22,6 +22,8 @@ import { countReconciliationEdits } from "./reconciliation-edits";
 import { Input } from "../primitives/Input";
 import type { Id } from "../../convex/_generated/dataModel";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
+import HeldElsewhereNote from "./HeldElsewhereNote";
+import { heldIdSets, type HeldRow } from "./held-elsewhere";
 
 // ===== TYPES =====
 
@@ -337,6 +339,23 @@ type ReconciliationModalProps = {
   extraSlPrefixes?: string[];
   usedSlPlatformValues?: string[];
   usedBscPlatformValues?: string[];
+  /**
+   * NEO-300 — NB rows OUTSIDE this sync's own level that already hold some of
+   * the fetched marketplace ids (for Sync Inserts: the parallels Group
+   * Parallels moved under an insert). Their ids are neither seeded Ready from
+   * an auto-match nor offered in Pending, and the header says how many were
+   * left alone, with a disclosure naming them. Only rows the fetch actually
+   * returned belong here — the caller filters with `heldRowsReturnedBy`.
+   *
+   * Unlike `used*PlatformValues`, which only trims the Pending lists, this
+   * also stops the auto-match seeding: that seeding is what re-created every
+   * grouped parallel as a top-level insert.
+   */
+  heldElsewhere?: {
+    rows: HeldRow[];
+    summary: string;
+    toggleLabel: string;
+  };
   // Previously-saved insert rows for this variantType. Used to seed the
   // modal's matched / keptBsc / keptSl sections so re-running a sync
   // preserves prior reconciliation work instead of starting fresh.
@@ -703,6 +722,7 @@ export default function ReconciliationModal({
   usedBscPlatformValues = [],
   existingRows = [],
   saveError = null,
+  heldElsewhere,
 }: ReconciliationModalProps) {
   const usedSlSet = useMemo(
     () => new Set(usedSlPlatformValues),
@@ -763,10 +783,29 @@ export default function ReconciliationModal({
       for (const id of slIds) usedSl.add(id);
     }
 
+    // NEO-300: ids another NB row already holds (a grouped parallel, for
+    // Sync Inserts). Seeded AFTER the restored rows so they never stop this
+    // level's own rows coming back, and BEFORE the auto-matches so a grouped
+    // set is not handed back as a fresh Ready set — which is exactly how a
+    // Sync Inserts after Group Parallels re-created every grouped row.
+    const held = heldIdSets(heldElsewhere?.rows ?? []);
+    for (const id of held.bsc) usedBsc.add(id);
+    for (const id of held.sportlots) usedSl.add(id);
+    // The unheld half of an auto-match whose other half is held: an ordinary
+    // unassigned marketplace set, so it goes to Pending rather than vanishing.
+    const releasedBsc: PlatformItem[] = [];
+    const releasedSl: PlatformItem[] = [];
+
     // Auto-matches that do not collide with anything already restored. These
     // are suggestions the reconciler made; they arrive as Ready because 95%+
     // of them are right, and a wrong one is one ✕ away from Pending.
     for (const m of initialData.autoMatched) {
+      const bscHeld = held.bsc.has(m.bsc.platformValue);
+      const slHeld = held.sportlots.has(m.sl.platformValue);
+      if (bscHeld !== slHeld) {
+        if (!bscHeld) releasedBsc.push(m.bsc);
+        if (!slHeld) releasedSl.push(m.sl);
+      }
       if (usedBsc.has(m.bsc.platformValue) || usedSl.has(m.sl.platformValue)) {
         continue;
       }
@@ -781,14 +820,20 @@ export default function ReconciliationModal({
       usedSl.add(m.sl.platformValue);
     }
 
+    const pendingOf = (items: PlatformItem[], used: Set<string>) => {
+      const seen = new Set<string>();
+      return items.filter((it) => {
+        if (used.has(it.platformValue) || seen.has(it.platformValue)) {
+          return false;
+        }
+        seen.add(it.platformValue);
+        return true;
+      });
+    };
     return {
       ready,
-      pendingBsc: initialData.unmatchedBsc.filter(
-        (it) => !usedBsc.has(it.platformValue),
-      ),
-      pendingSl: initialData.unmatchedSl.filter(
-        (it) => !usedSl.has(it.platformValue),
-      ),
+      pendingBsc: pendingOf([...initialData.unmatchedBsc, ...releasedBsc], usedBsc),
+      pendingSl: pendingOf([...initialData.unmatchedSl, ...releasedSl], usedSl),
       seq,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1362,6 +1407,15 @@ export default function ReconciliationModal({
             {saveCount} ready
             {pendingCount > 0 ? `, ${pendingCount} pending` : ""}
           </p>
+          {heldElsewhere && heldElsewhere.rows.length > 0 && (
+            <div className="mt-1">
+              <HeldElsewhereNote
+                rows={heldElsewhere.rows}
+                summary={heldElsewhere.summary}
+                toggleLabel={heldElsewhere.toggleLabel}
+              />
+            </div>
+          )}
         </div>
 
         {/* One DndContext over BOTH sections — a pending item is dragged onto a

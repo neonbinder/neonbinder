@@ -15,10 +15,12 @@ import {
   clearDeclinedIfLabelChanged,
   effectiveCoveredSides,
   isBrandUnknownRow,
+  itemsReachPastSiblings,
   planSelectorSync,
   planValueRename,
   resolveReturnedIds,
   selectorValueKey,
+  sharesMarketplaceId,
   unlinkStalePrimary,
   type IncomingItem,
   type MatchableRow,
@@ -549,6 +551,166 @@ describe("planSelectorSync — placeholder links (NEO-237)", () => {
       kind: "withheld",
       reason: "sportlots id is held by 2 sibling rows",
     });
+  });
+});
+
+describe("planSelectorSync — a row held elsewhere in the variant type's subtree (NEO-300)", () => {
+  // The shape the bug produced: Sync Inserts stored Chrome and Refractor as
+  // sibling inserts, the operator grouped Refractor under Chrome as a
+  // parallel, and the next Sync Inserts saw only Chrome among its siblings.
+  const chrome = () =>
+    row("chrome", "Chrome", { platformData: { bsc: { b0: "chrome-v" } } });
+  const refractorParallel = () =>
+    row("refractor", "Refractor", {
+      level: "parallel",
+      platformData: { bsc: { b0: "refractor-v" }, sportlots: { s0: "sl-ref" } },
+    });
+
+  test("an id no sibling holds but a subtree row does is heldElsewhere, not an insert", () => {
+    const plan = planSelectorSync({
+      existing: [chrome()],
+      items: [
+        item("Chrome", { bsc: "chrome-v" }),
+        item("Refractor", { bsc: "refractor-v" }),
+      ],
+      elsewhereInSubtree: [refractorParallel()],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "chrome", tier: 1 });
+    expect(plan.outcomes[1]).toEqual({ kind: "heldElsewhere", rowId: "refractor", tier: 1 });
+  });
+
+  test("today's rule without the subtree: the same item is an insert (the bug)", () => {
+    const plan = planSelectorSync({
+      existing: [chrome()],
+      items: [item("Refractor", { bsc: "refractor-v" })],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "insert" });
+  });
+
+  test("either side's id identifies the held row", () => {
+    const plan = planSelectorSync({
+      existing: [chrome()],
+      items: [item("Refractors (SL)", { sportlots: "sl-ref" })],
+      elsewhereInSubtree: [refractorParallel()],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "heldElsewhere", rowId: "refractor", tier: 1 });
+  });
+
+  test("a sibling holding the id still wins over a subtree row holding it too", () => {
+    const siblingCopy = row("sib", "Refractor", {
+      platformData: { bsc: { b0: "refractor-v" } },
+    });
+    const plan = planSelectorSync({
+      existing: [chrome(), siblingCopy],
+      items: [item("Refractor", { bsc: "refractor-v" })],
+      elsewhereInSubtree: [refractorParallel()],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "sib", tier: 1 });
+  });
+
+  test("a sibling holding ONE of the item's ids wins, even if the other is held elsewhere", () => {
+    const sib = row("sib", "Refractor", { platformData: { bsc: { b0: "refractor-v" } } });
+    const plan = planSelectorSync({
+      existing: [sib],
+      items: [item("Refractor", { bsc: "refractor-v", sportlots: "sl-ref" })],
+      elsewhereInSubtree: [refractorParallel()],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "sib", tier: 1 });
+  });
+
+  test("the modal's existingId naming a subtree row is heldElsewhere at tier 0", () => {
+    const plan = planSelectorSync({
+      existing: [chrome()],
+      items: [item("Refractor", {}, "refractor")],
+      elsewhereInSubtree: [refractorParallel()],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "heldElsewhere", rowId: "refractor", tier: 0 });
+  });
+
+  test("never by name: a same-named subtree row with no shared id does not hold the item", () => {
+    const plan = planSelectorSync({
+      existing: [chrome()],
+      items: [item("Refractor", { bsc: "a-different-set" })],
+      elsewhereInSubtree: [refractorParallel()],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "insert" });
+  });
+
+  test("an id held by two subtree rows is WITHHELD, not inserted and not guessed", () => {
+    const twin = row("twin", "Refractor B", {
+      level: "parallel",
+      platformData: { bsc: { b0: "refractor-v" } },
+    });
+    const plan = planSelectorSync({
+      existing: [chrome()],
+      items: [item("Refractor", { bsc: "refractor-v" })],
+      elsewhereInSubtree: [refractorParallel(), twin],
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+    expect(plan.ambiguities).toHaveLength(1);
+  });
+
+  test("a subtree row that is also a sibling is treated as a sibling only", () => {
+    const sib = row("sib", "Refractor", { platformData: { bsc: { b0: "refractor-v" } } });
+    const plan = planSelectorSync({
+      existing: [sib],
+      items: [item("Refractor", { bsc: "refractor-v" })],
+      elsewhereInSubtree: [sib],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "sib", tier: 1 });
+  });
+
+  test("a sibling-level ambiguity stays a withhold — the subtree cannot turn it into a hit", () => {
+    const a = row("a", "Series 1", { platformData: { bsc: { b0: "refractor-v" } } });
+    const b = row("b", "Series 2", { platformData: { bsc: { b0: "refractor-v" } } });
+    const plan = planSelectorSync({
+      existing: [a, b],
+      items: [item("Refractor", { bsc: "refractor-v" })],
+      elsewhereInSubtree: [refractorParallel()],
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+  });
+});
+
+describe("itemsReachPastSiblings (NEO-300)", () => {
+  const sib = row("sib", "Chrome", { platformData: { bsc: { b0: "chrome-v" } } });
+
+  test("false when every id and existingId is already on a sibling — the subtree read is skipped", () => {
+    expect(
+      itemsReachPastSiblings([sib], [item("Chrome", { bsc: "chrome-v" }, "sib")]),
+    ).toBe(false);
+  });
+
+  test("true for an id no sibling holds", () => {
+    expect(itemsReachPastSiblings([sib], [item("Refractor", { bsc: "refractor-v" })])).toBe(true);
+  });
+
+  test("true for an existingId that is not a sibling", () => {
+    expect(itemsReachPastSiblings([sib], [item("Refractor", {}, "elsewhere")])).toBe(true);
+  });
+
+  test("false for an item with no ids at all — nothing it could be held by", () => {
+    expect(itemsReachPastSiblings([sib], [item("Nameless")])).toBe(false);
+  });
+});
+
+describe("sharesMarketplaceId (NEO-300)", () => {
+  test("same side, same id in any slot", () => {
+    const a = row("a", "X", { platformData: { bsc: { b0: "p", b1: "q" } } });
+    const b = row("b", "Y", { platformData: { bsc: { b3: "q" } } });
+    expect(sharesMarketplaceId(a, b)).toBe(true);
+  });
+
+  test("the same string on DIFFERENT sides is not a shared id", () => {
+    const a = row("a", "X", { platformData: { bsc: { b0: "q" } } });
+    const b = row("b", "X", { platformData: { sportlots: { s0: "q" } } });
+    expect(sharesMarketplaceId(a, b)).toBe(false);
+  });
+
+  test("a shared name with no shared id is not a match", () => {
+    const a = row("a", "Refractor", { platformData: { bsc: { b0: "p" } } });
+    const b = row("b", "Refractor", { platformData: {} });
+    expect(sharesMarketplaceId(a, b)).toBe(false);
   });
 });
 

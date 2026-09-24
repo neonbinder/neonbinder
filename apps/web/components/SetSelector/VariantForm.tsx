@@ -18,6 +18,13 @@ import {
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { storeReconciledUntilDone } from "./store-reconciled-until-done";
+import HeldElsewhereNote, { groupedAsParallelsSummary } from "./HeldElsewhereNote";
+import {
+  heldIdSets,
+  heldRowsReturnedBy,
+  parallelsInTree,
+  type HeldRow,
+} from "./held-elsewhere";
 
 type RawOptionsResult = {
   success: boolean;
@@ -37,6 +44,10 @@ type RawOptionsResult = {
 // substring to verify the column surfaced (not silently swallowed) a
 // platform fetch failure.
 const SYNC_FAILED_PREFIX = "Sync failed: could not load variants";
+
+// NEO-300: the disclosure's accessible name. Distinct from ParallelForm's, which
+// can be on screen in the next column at the same time.
+const GROUPED_TOGGLE_LABEL = "Show grouped";
 
 export default function VariantForm({
   variantTypeId,
@@ -64,6 +75,9 @@ export default function VariantForm({
   // NEO-211: a failed save from inside the reconciliation dialog. Shown IN the
   // dialog so the operator's reconciliation survives and Save can be retried.
   const [saveError, setSaveError] = useState<string | null>(null);
+  // NEO-300: fetched sets the single-platform store skipped because a parallel
+  // under this variant type already holds them. Shown beside the result.
+  const [heldSkipped, setHeldSkipped] = useState<HeldRow[]>([]);
   const triggered = useRef(false);
   // a11y: a11y-focus-park landing spot for the two moments below where the
   // control that had focus unmounts out from under it.
@@ -120,10 +134,23 @@ export default function VariantForm({
     setId ? { setId } : "skip",
   );
 
+  // NEO-300: the parallels under this variant type's inserts. Group Parallels
+  // moves an insert row under another insert as `level=parallel`, keeping its
+  // marketplace ids — and neither `existingVariantRows` (inserts only) nor
+  // `usedIdentifiers` (other variant types only) sees it there. Without this,
+  // the next sync re-creates every grouped row as a top-level insert.
+  const insertTree = useQuery(api.selectorOptions.getInsertTreeByVariantType, {
+    variantTypeId,
+  });
+  const groupedParallels: HeldRow[] = insertTree
+    ? parallelsInTree(insertTree)
+    : [];
+
   const doSync = async () => {
     if (!sportValue || !yearValue) return;
     setLoading(true);
     setMessage(null);
+    setHeldSkipped([]);
     try {
       const result = await fetchRawOptions({
         level: "insert",
@@ -218,16 +245,35 @@ export default function VariantForm({
           return;
         }
 
+        // NEO-300: a set a grouped parallel already holds is not a new
+        // insert. Filtered out of what is STORED only — `returnedIds` below
+        // stays the whole fetch, because the grouped row's link is still
+        // listed and must not read as delisted.
+        const skipped = heldRowsReturnedBy(groupedParallels, result);
+        const held = heldIdSets(skipped);
         const items = [
-          ...result.bscOptions.map((o: PlatformItem) => ({
-            value: o.value,
-            platformData: { bsc: o.platformValue as string | undefined, sportlots: undefined },
-          })),
-          ...result.slOptions.map((o: PlatformItem) => ({
-            value: o.value,
-            platformData: { bsc: undefined, sportlots: o.platformValue as string | undefined },
-          })),
+          ...result.bscOptions
+            .filter((o: PlatformItem) => !held.bsc.has(o.platformValue))
+            .map((o: PlatformItem) => ({
+              value: o.value,
+              platformData: { bsc: o.platformValue as string | undefined, sportlots: undefined },
+            })),
+          ...result.slOptions
+            .filter((o: PlatformItem) => !held.sportlots.has(o.platformValue))
+            .map((o: PlatformItem) => ({
+              value: o.value,
+              platformData: { bsc: undefined, sportlots: o.platformValue as string | undefined },
+            })),
         ];
+
+        // NEO-300: everything that came back is already grouped. Nothing to
+        // store, but the operator is told why rather than the panel closing on
+        // a sync that looked like it did nothing.
+        if (items.length === 0 && skipped.length > 0) {
+          setHeldSkipped(skipped);
+          setMessage(`No new ${variantsLabel.toLowerCase()} to add.`);
+          return;
+        }
 
         // NEO-239 — NOTHING CAME BACK, AND THAT IS NOT A FAILURE.
         //
@@ -276,6 +322,7 @@ export default function VariantForm({
         setUnlinkedTotal(stored.unlinkedTotal);
 
         setUnlinked(unlinkedRows);
+        setHeldSkipped(skipped);
         setMessage(
           // NEO-296 — the count is the SERVER'S (`optionsCount`: rows now
           // linked), never `items.length`. The old sentence counted what was
@@ -300,7 +347,11 @@ export default function VariantForm({
         // normal path for a custom subtree (both adapters short-circuit), and
         // EntityColumn renders this form INSTEAD of the idle "+ Custom" button
         // while mode === "sync", so not returning to idle hides that button.
-        if (converged && unlinkedRows.length === 0) onDone?.();
+        // NEO-300: likewise a skip — closing would hide that the sync left
+        // grouped parallels alone.
+        if (converged && unlinkedRows.length === 0 && skipped.length === 0) {
+          onDone?.();
+        }
       }
     } catch {
       // NEO-211 F3: the thrown text here is a Convex/adapter error that can
@@ -399,17 +450,22 @@ export default function VariantForm({
     // prefix can flow into fetchRawOptions on the first call. Without
     // this, doSync fires before getBaseVariantBySet resolves and
     // baseSlPrefix arrives empty.
+    //
+    // NEO-300: gated on the insert tree too. The single-platform branch filters
+    // against it, and a sync that fired before it loaded would re-create every
+    // grouped parallel as an insert — the bug this gate exists to prevent.
     if (
       sportValue &&
       yearValue &&
       baseVariant !== undefined &&
+      insertTree !== undefined &&
       !triggered.current
     ) {
       triggered.current = true;
       doSync();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- doSync deliberately omitted — same one-shot auto-sync latch; including it would loop
-  }, [sportValue, yearValue, baseVariant]);
+  }, [sportValue, yearValue, baseVariant, insertTree]);
 
   // a11y: `loading` hides the ENTIRE button row below (Retry/Cancel), so a
   // click on Retry unmounts itself on the very next render — the browser
@@ -495,6 +551,16 @@ export default function VariantForm({
                   }
                 >
                   {message}
+                  {!isError && heldSkipped.length > 0 && (
+                    <div className="mt-1">
+                      <HeldElsewhereNote
+                        tone="panel"
+                        rows={heldSkipped}
+                        summary={groupedAsParallelsSummary(heldSkipped.length)}
+                        toggleLabel={GROUPED_TOGGLE_LABEL}
+                      />
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -511,7 +577,10 @@ export default function VariantForm({
         })()}
       </div>
 
-      {showReconciliation && reconciliationData && existingVariantRows !== undefined && (
+      {showReconciliation &&
+        reconciliationData &&
+        existingVariantRows !== undefined &&
+        insertTree !== undefined && (
         <ReconciliationModal
           isOpen={showReconciliation}
           onClose={() => {
@@ -554,6 +623,17 @@ export default function VariantForm({
           })()}
           usedSlPlatformValues={usedIdentifiers?.slPlatformValues}
           usedBscPlatformValues={usedIdentifiers?.bscPlatformValues}
+          heldElsewhere={(() => {
+            const rows = heldRowsReturnedBy(
+              groupedParallels,
+              reconciliationData,
+            );
+            return {
+              rows,
+              summary: groupedAsParallelsSummary(rows.length),
+              toggleLabel: GROUPED_TOGGLE_LABEL,
+            };
+          })()}
           existingRows={existingVariantRows?.map((r) => ({
             // NEO-211 (plan E): carried through the modal so a rename inside it
             // stays a rename of THIS row.
