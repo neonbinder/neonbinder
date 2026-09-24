@@ -1,6 +1,6 @@
 ---
 name: dndkit-row-control-is-a-handle-sibling
-description: To put a real button inside a dnd-kit draggable row, split the node — setNodeRef on the row box, setActivatorNodeRef + attributes + listeners on a handle div — and render the button as the handle's SIBLING, never its child
+description: A real button inside a dnd-kit draggable row goes beside the handle (setNodeRef on the row, activator+listeners on a handle), and every draggable needs an activator node, or Enter/Space on a child button starts a drag
 metadata:
   type: reference
 ---
@@ -23,8 +23,17 @@ A test can pin it without layout: `handle = getByText(name).closest(".cursor-gra
 then assert `handle.parentElement.contains(button)`, `!handle.contains(button)`
 and `handle.getAttribute("role") === "button"`.
 
-`ParallelGroupingModal`'s `DraggableRow` still spreads `attributes` on the outer
-div around its inner buttons. Its comment claims no role is set, but dnd-kit
-sets one. Fix it the same way when that file is next reshaped.
+**Always set an activator node.** Without `setActivatorNodeRef`, dnd-kit's
+KeyboardSensor accepts a Space or Enter keydown *bubbling up from any child*,
+calls `preventDefault` and starts a drag. The child button never fires. Before
+NEO-300, pressing Enter on the ✕ in `ParallelGroupingModal` picked up the row.
+With an activator set, a keydown whose target is anything else is ignored.
+
+If the drag container has to wrap buttons, as `ParallelGroupingModal`'s
+`DraggableRow` does, pass `useDraggable({ attributes: { role: "group" } })`
+and name it with `aria-labelledby` pointing at the row's text. Keyboard drag
+still works, because it runs on `tabIndex` and the `onKeyDown` listener, not
+on the role. Pin it in happy-dom with `fireEvent.keyDown(child, {code:"Enter"})`:
+it returns `false` when a handler called `preventDefault`.
 
 Related: [[maestro-web-text-is-direct-text-nodes-only]].

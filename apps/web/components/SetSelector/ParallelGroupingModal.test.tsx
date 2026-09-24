@@ -478,3 +478,38 @@ describe("ParallelGroupingModal — a demoted row is a drop target at once", () 
     expect(autosRow.disabled).toBe(true);
   });
 });
+
+/**
+ * NEO-300 — a draggable row is a named group, not a button around buttons.
+ *
+ * dnd-kit's default attributes made the row div role="button", which hides the
+ * select and ✕ buttons inside it from the accessibility tree. And with no
+ * activator node, a Space/Enter bubbling up from either inner button was taken
+ * as "pick this row up": preventDefault'ed, so the button never fired.
+ */
+describe("ParallelGroupingModal — draggable rows", () => {
+  const row = (name: string) => screen.getByRole("group", { name });
+  const reject = () => screen.getByLabelText("Remove Gold from parallels");
+
+  test("each row is a group named by its own text, holding its buttons", () => {
+    renderModal();
+    const gold = row("Gold");
+    expect(gold.getAttribute("aria-roledescription")).toBe("draggable");
+    expect(gold.contains(reject())).toBe(true);
+    expect(reject().closest('[role="button"]')).toBeNull();
+  });
+
+  test("Enter or Space on ✕ is left to the button, not taken as a drag", () => {
+    renderModal();
+    // `fireEvent` returns false when a handler called preventDefault.
+    expect(fireEvent.keyDown(reject(), { key: "Enter", code: "Enter" })).toBe(true);
+    expect(fireEvent.keyDown(reject(), { key: " ", code: "Space" })).toBe(true);
+    // No drag began: the overlay would render a second "Gold".
+    expect(screen.getAllByText("Gold")).toHaveLength(1);
+  });
+
+  test("Space on the row itself still picks it up (keyboard drag)", () => {
+    renderModal();
+    expect(fireEvent.keyDown(row("Gold"), { key: " ", code: "Space" })).toBe(false);
+  });
+});

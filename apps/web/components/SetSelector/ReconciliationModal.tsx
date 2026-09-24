@@ -1329,13 +1329,13 @@ export default function ReconciliationModal({
     // "already mapped" reveal is not included — those already back a set,
     // and none of them offers "Make its own set" either.
     //
-    // Labels: the visible words lead the accessible name (WCAG 2.5.3), and
-    // the two columns' names share no substring either way — Maestro's id
-    // matcher is a regex find (CardPairingModal's "Keep all BSC-only cards"
-    // must not match either of these, and does not).
-    const keepAllName = `Keep all ${filtered.length} listed ${sideName} ${
+    // Labels: the accessible name BEGINS with the visible words (WCAG 2.5.3
+    // label in name), then says what they reach. The two columns' names share
+    // no substring either way — Maestro's id matcher is a regex find — and
+    // neither matches CardPairingModal's "Keep all BSC-only cards".
+    const keepAllName = `Keep all: ${filtered.length} ${sideName} ${
       filtered.length === 1 ? "set" : "sets"
-    }, each as its own NeonBinder set`;
+    }`;
     const keepAll = () => {
       if (filtered.length === 0) return;
       dispatch({ type: "PROMOTE_SOLO_MANY", side, items: filtered });
@@ -1441,9 +1441,12 @@ export default function ReconciliationModal({
                   data-own-set={side}
                   onClick={() => handlePromoteSolo(side, item.value, index)}
                   className={OWN_SET_ROW_BUTTON}
-                  // Byte-stable: parallel-grouping-promoted-insert-fetches-
-                  // from-bsc.yaml taps this by id.
-                  aria-label={`Make ${item.value} its own NeonBinder set`}
+                  // WCAG 2.5.3: the name begins with the visible text, then
+                  // names the row. parallel-grouping-promoted-insert-fetches-
+                  // from-bsc.yaml taps this by id — Maestro's id match is a
+                  // regex FIND, so a flow must anchor it (`…: Anime$`) or it
+                  // also matches "…: Anime Kanji".
+                  aria-label={`Make its own set: ${item.value}`}
                 >
                   Make its own set
                 </button>

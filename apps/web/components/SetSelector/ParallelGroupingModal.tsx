@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useReducer,
   useRef,
@@ -234,9 +235,23 @@ function DraggableRow({
   onSelect: () => void;
   onReject?: () => void;
 }) {
-  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+  const nameId = useId();
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    isDragging,
+  } = useDraggable({
     id: info._id,
     disabled: !isMovable,
+    // NEO-300 — NOT dnd-kit's default role="button". This row WRAPS real
+    // buttons (select, ✕), and a button inside a button is hidden from the
+    // accessibility tree. "group" is a container role, so both stay exposed;
+    // `aria-roledescription="draggable"` and the keyboard instructions
+    // (aria-describedby) still come from dnd-kit, and the name is the row's
+    // own text via aria-labelledby.
+    attributes: { role: "group" },
   });
 
   const baseClass = isSuggested
@@ -245,19 +260,25 @@ function DraggableRow({
       ? "ring-2 ring-[#00B7FF] bg-[#00B7FF]/10 border-[#00B7FF]"
       : "bg-gray-800 border-gray-600 hover:border-gray-400";
 
-  // Outer div is the drag container only — no role="button" so the inner
-  // <button> children remain visible in the accessibility tree (ARIA hides
-  // nested widgets inside another widget). dnd-kit's listeners on the
-  // outer div catch pointer events; tap-to-click on the inner buttons is
-  // unaffected because PointerSensor's activationConstraint requires 5px
-  // of movement to activate drag.
+  // The outer div is the drag source and its own tab stop: Space/Enter on IT
+  // starts a keyboard drag (tabIndex and the onKeyDown listener, not the
+  // role, are what make that work). It is also the ACTIVATOR node — without
+  // that, dnd-kit accepts a Space/Enter bubbling up from any child, calls
+  // preventDefault and starts a drag, so pressing Enter on ✕ or on the
+  // select button picked the row up instead of pressing the button.
+  // Pointer taps on the inner buttons are unaffected: PointerSensor's
+  // activationConstraint needs 5px of movement before a drag starts.
   return (
     <div
-      ref={setNodeRef}
+      ref={(el) => {
+        setNodeRef(el);
+        setActivatorNodeRef(el);
+      }}
       {...listeners}
       {...attributes}
+      aria-labelledby={nameId}
       style={{ opacity: isDragging ? 0.4 : 1 }}
-      className={`rounded-lg border text-sm font-medium transition-all select-none flex items-stretch ${baseClass} ${
+      className={`rounded-lg border text-sm font-medium transition-all select-none flex items-stretch focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF] ${baseClass} ${
         isMovable ? "cursor-grab active:cursor-grabbing" : "cursor-default"
       }`}
     >
@@ -270,7 +291,9 @@ function DraggableRow({
           isMovable ? "cursor-pointer" : "cursor-default"
         } disabled:opacity-100`}
       >
-        <span className="text-gray-200 break-words flex-1">{info.value}</span>
+        <span id={nameId} className="text-gray-200 break-words flex-1">
+          {info.value}
+        </span>
         {isSuggested && (
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-yellow-900/40 text-yellow-300 border border-yellow-700">
             Suggested

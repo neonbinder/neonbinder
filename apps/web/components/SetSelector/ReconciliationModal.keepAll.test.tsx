@@ -49,9 +49,9 @@ function pending(bscItems: PlatformItem[], slItems: PlatformItem[] = []): Initia
 }
 
 const keepAllBsc = () =>
-  screen.getByRole("button", { name: /^Keep all \d+ listed BSC sets?, each as its own NeonBinder set$/ });
+  screen.getByRole("button", { name: /^Keep all: \d+ BSC sets?$/ });
 const keepAllSl = () =>
-  screen.getByRole("button", { name: /^Keep all \d+ listed SportLots sets?, each as its own NeonBinder set$/ });
+  screen.getByRole("button", { name: /^Keep all: \d+ SportLots sets?$/ });
 
 async function savedItems(onConfirm: ReturnType<typeof vi.fn>) {
   fireEvent.click(screen.getByText(/^Save \d+ sets$/));
@@ -78,7 +78,7 @@ describe("ReconciliationModal — Keep all", () => {
     expect(screen.getByText(/Ready \(3\)/)).toBeTruthy();
     expect(screen.getByText("Nothing pending on BSC")).toBeTruthy();
     // The other column is untouched.
-    expect(screen.getByLabelText(`Make ${SL_AP.value} its own NeonBinder set`)).toBeTruthy();
+    expect(screen.getByLabelText(`Make its own set: ${SL_AP.value}`)).toBeTruthy();
 
     const items = await savedItems(onConfirm);
     expect(items.map((i) => [i.value, i.platformData])).toEqual([
@@ -97,7 +97,7 @@ describe("ReconciliationModal — Keep all", () => {
     const button = keepAllBsc();
     expect(button.textContent).toBe("Keep all 2");
     expect(button.getAttribute("aria-label")).toBe(
-      "Keep all 2 listed BSC sets, each as its own NeonBinder set",
+      "Keep all: 2 BSC sets",
     );
     fireEvent.click(button);
 
@@ -105,10 +105,10 @@ describe("ReconciliationModal — Keep all", () => {
     fireEvent.change(screen.getByLabelText("Filter BSC items"), {
       target: { value: "" },
     });
-    expect(screen.getByLabelText(`Make ${DK.value} its own NeonBinder set`)).toBeTruthy();
-    expect(screen.queryByLabelText(`Make ${S1.value} its own NeonBinder set`)).toBeNull();
+    expect(screen.getByLabelText(`Make its own set: ${DK.value}`)).toBeTruthy();
+    expect(screen.queryByLabelText(`Make its own set: ${S1.value}`)).toBeNull();
     expect(keepAllBsc().getAttribute("aria-label")).toBe(
-      "Keep all 1 listed BSC set, each as its own NeonBinder set",
+      "Keep all: 1 BSC set",
     );
 
     const items = await savedItems(onConfirm);
@@ -124,7 +124,7 @@ describe("ReconciliationModal — Keep all", () => {
     // The out-of-prefix set was not listed, so it was not kept.
     fireEvent.click(screen.getByLabelText("Show all SportLots items"));
     expect(
-      screen.getByLabelText(`Make ${SL_OTHER.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${SL_OTHER.value}`),
     ).toBeTruthy();
     fireEvent.click(keepAllSl());
     expect(screen.getByText(/Ready \(3\)/)).toBeTruthy();
@@ -132,7 +132,7 @@ describe("ReconciliationModal — Keep all", () => {
 
   test("leaves the already-mapped reveal alone — those already back a set", () => {
     renderModal(pending([S1, S2]));
-    fireEvent.click(screen.getByLabelText(`Make ${S1.value} its own NeonBinder set`));
+    fireEvent.click(screen.getByLabelText(`Make its own set: ${S1.value}`));
     fireEvent.click(screen.getByLabelText("Show BSC sets already mapped"));
     // S1 is listed again (as mapped), S2 is pending.
     expect(screen.getByText(`mapped to ${S1.value}`)).toBeTruthy();
@@ -212,7 +212,7 @@ describe("ReconciliationModal — Make its own set is a button in the row", () =
   test("sits inside the item's row, beside (not inside) the drag handle", () => {
     renderModal(pending([S1, S2]));
     const button = screen.getByRole("button", {
-      name: `Make ${S1.value} its own NeonBinder set`,
+      name: `Make its own set: ${S1.value}`,
     });
     expect(button.textContent).toBe("Make its own set");
 
@@ -231,13 +231,13 @@ describe("ReconciliationModal — Make its own set is a button in the row", () =
 
   test("pressing it keeps the operator in the column: focus moves to the next row", async () => {
     renderModal(pending([S1, S2, DK]));
-    const first = screen.getByLabelText(`Make ${S1.value} its own NeonBinder set`);
+    const first = screen.getByLabelText(`Make its own set: ${S1.value}`);
     first.focus();
     fireEvent.click(first);
     await flushFrame();
 
     expect(document.activeElement).toBe(
-      screen.getByLabelText(`Make ${S2.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${S2.value}`),
     );
     expect(
       within(screen.getByText(/Ready \(1\)/).parentElement as HTMLElement).getByLabelText(
@@ -248,10 +248,46 @@ describe("ReconciliationModal — Make its own set is a button in the row", () =
 
   test("the last row hands focus back to the filter", async () => {
     renderModal(pending([S1]));
-    const only = screen.getByLabelText(`Make ${S1.value} its own NeonBinder set`);
+    const only = screen.getByLabelText(`Make its own set: ${S1.value}`);
     only.focus();
     fireEvent.click(only);
     await flushFrame();
     expect(document.activeElement).toBe(screen.getByLabelText("Filter BSC items"));
+  });
+});
+
+/**
+ * WCAG 2.5.3 label in name: a speech user says what they SEE, so each
+ * accessible name must begin with the visible words (punctuation aside).
+ */
+describe("ReconciliationModal — names begin with the visible text", () => {
+  const words = (s: string) => s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const beginsWithVisible = (el: HTMLElement) =>
+    words(el.getAttribute("aria-label") ?? "").startsWith(words(el.textContent ?? ""));
+
+  test("row button and Keep all, filtered or not", () => {
+    renderModal(pending([S1, S2, DK], [SL_AP]));
+    const rowButton = screen.getByRole("button", { name: `Make its own set: ${S1.value}` });
+    expect(beginsWithVisible(rowButton)).toBe(true);
+    expect(keepAllBsc().getAttribute("aria-label")).toBe("Keep all: 3 BSC sets");
+    expect(beginsWithVisible(keepAllBsc())).toBe(true);
+    expect(keepAllSl().getAttribute("aria-label")).toBe("Keep all: 1 SportLots set");
+
+    fireEvent.change(screen.getByLabelText("Filter BSC items"), {
+      target: { value: "series" },
+    });
+    expect(keepAllBsc().textContent).toBe("Keep all 2");
+    expect(beginsWithVisible(keepAllBsc())).toBe(true);
+  });
+
+  test("the two columns' names never contain one another (Maestro ids are a regex find)", () => {
+    renderModal(pending([S1], [SL_AP]));
+    const a = keepAllBsc().getAttribute("aria-label")!;
+    const b = keepAllSl().getAttribute("aria-label")!;
+    expect(a.includes(b) || b.includes(a)).toBe(false);
+    // CardPairingModal's ids, which setup.yaml taps.
+    for (const id of ["Keep all BSC-only cards", "Keep all SportLots-only cards"]) {
+      expect(new RegExp(id).test(a) || new RegExp(id).test(b)).toBe(false);
+    }
   });
 });

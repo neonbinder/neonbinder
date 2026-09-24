@@ -170,7 +170,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
 
     // Series 2 becomes its own set...
     fireEvent.click(
-      screen.getByLabelText(`Make ${BSC_S2.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S2.value}`),
     );
 
     // ...and the SL set, already mapped by set #1, is revealed and mapped again.
@@ -212,7 +212,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     const { onConfirm } = renderModal(allPending());
 
     fireEvent.click(
-      screen.getByLabelText(`Make ${BSC_S2.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S2.value}`),
     );
     fireEvent.click(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
@@ -230,7 +230,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     });
 
     fireEvent.click(
-      screen.getByLabelText(`Make ${BSC_S1.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S1.value}`),
     );
     fireEvent.click(screen.getByText(/Save 1 sets/));
     const items = await itemsFromConfirm(onConfirm);
@@ -244,7 +244,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     renderModal(allPending());
 
     fireEvent.click(
-      screen.getByLabelText(`Make ${BSC_S1.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S1.value}`),
     );
     expect(screen.getByText(/Save 1 sets/)).toBeTruthy();
 
@@ -255,7 +255,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
     // Save is disabled at zero sets, and the item is back in Pending.
     expect(screen.getByText(/Save 0 sets/)).toBeTruthy();
     expect(
-      screen.getByLabelText(`Make ${BSC_S1.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S1.value}`),
     ).toBeTruthy();
   });
 
@@ -344,10 +344,10 @@ describe("ReconciliationModal — restoring saved rows", () => {
     // Both halves are pending again — each offers its solo affordance, which
     // only renders for a Pending item.
     expect(
-      screen.getByLabelText(`Make ${BSC_S1.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S1.value}`),
     ).toBeTruthy();
     expect(
-      screen.getByLabelText(`Make ${SL_COMBINED.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${SL_COMBINED.value}`),
     ).toBeTruthy();
   });
 
@@ -360,7 +360,7 @@ describe("ReconciliationModal — restoring saved rows", () => {
     fireEvent.click(screen.getByText(BSC_S1.value));
     fireEvent.click(screen.getByText(SL_COMBINED.value));
     fireEvent.click(
-      screen.getByLabelText(`Make ${BSC_S2.value} its own NeonBinder set`),
+      screen.getByLabelText(`Make its own set: ${BSC_S2.value}`),
     );
     expect(screen.getByText(/Ready \(2\)/)).toBeTruthy();
 
@@ -592,7 +592,7 @@ describe("ReconciliationModal — sets held elsewhere (NEO-300)", () => {
     expect(screen.getByText("0 ready, 1 pending")).toBeTruthy();
     expect(screen.getByText(/SportLots \(1\)/)).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Make Anime Gold its own NeonBinder set" }),
+      screen.getByRole("button", { name: "Make its own set: Anime Gold" }),
     ).toBeTruthy();
   });
 
