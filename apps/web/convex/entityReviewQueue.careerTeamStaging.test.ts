@@ -928,7 +928,7 @@ describe("recordAllRemainingAsCreate: a typed stint is not lost to the bulk", ()
       ],
     });
 
-    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+    await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
       selectorOptionId: sportId,
       batchId: BATCH,
     });
@@ -956,7 +956,7 @@ describe("recordAllRemainingAsCreate: a typed stint is not lost to the bulk", ()
       enrichment: { careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }] },
     });
 
-    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+    await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
       selectorOptionId: sportId,
       batchId: BATCH,
     });
@@ -1204,7 +1204,7 @@ describe("recordAllRemainingAsCreate: the bulk never answers the League question
 
     await t
       .withIdentity(ADMIN_IDENTITY)
-      .mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      .action(api.entityReviewQueue.recordAllRemainingAsCreate, {
         selectorOptionId: sportId,
         batchId: BATCH,
       });
@@ -1237,7 +1237,7 @@ describe("recordAllRemainingAsCreate: the bulk never answers the League question
 
     await t
       .withIdentity(ADMIN_IDENTITY)
-      .mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      .action(api.entityReviewQueue.recordAllRemainingAsCreate, {
         selectorOptionId: sportId,
         batchId: BATCH,
       });

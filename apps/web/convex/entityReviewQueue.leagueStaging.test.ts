@@ -474,7 +474,7 @@ describe("NEO-254: the New League step's decisions", () => {
 
     const decided = await t
       .withIdentity(ADMIN_IDENTITY)
-      .mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      .action(api.entityReviewQueue.recordAllRemainingAsCreate, {
         selectorOptionId: sportId,
         batchId: BATCH,
       });
@@ -1354,7 +1354,7 @@ describe("NEO-254: 'Skip remaining names' and an already-decided team", () => {
 
     await t
       .withIdentity(ADMIN_IDENTITY)
-      .mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+      .action(api.entityReviewQueue.recordAllRemainingAsSkip, {
         selectorOptionId: sportId,
         batchId: BATCH,
       });

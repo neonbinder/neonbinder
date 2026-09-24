@@ -1,7 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
@@ -370,10 +370,14 @@ export default function EntityReviewWizard({
   const recordDecision = useMutation(api.entityReviewQueue.recordDecision);
   const clearDecision = useMutation(api.entityReviewQueue.clearDecision);
   const cancelBatch = useMutation(api.entityReviewQueue.cancelBatch);
-  const recordAllRemainingAsCreate = useMutation(
+  // NEO-301 — ACTIONS, not mutations: each call reads its page in a query and
+  // writes it in a mutation, so a lookup storm landing elsewhere in the batch
+  // no longer exhausts the write's OCC retries. Same arguments, same
+  // `{ decided, hasMore, cursor }` contract.
+  const recordAllRemainingAsCreate = useAction(
     api.entityReviewQueue.recordAllRemainingAsCreate,
   );
-  const recordAllRemainingAsSkip = useMutation(
+  const recordAllRemainingAsSkip = useAction(
     api.entityReviewQueue.recordAllRemainingAsSkip,
   );
   // NEO-236 — turn a player's career teams into their own New Team steps.
@@ -581,6 +585,18 @@ export default function EntityReviewWizard({
   const autoAddRef = useRef(false);
   /** Automatic re-calls issued since the last arming, against AUTO_ADD_MAX_CALLS. */
   const autoAddCallsRef = useRef(0);
+  /**
+   * NEO-301 — automatic rounds that have failed IN A ROW since the last one
+   * that succeeded (or the last arming).
+   *
+   * One failed round is retried; a second consecutive one disarms (Jason's
+   * call). A single failure is usually transient — a write that lost its OCC
+   * retries while the lookup pool was landing results on the same rows — and
+   * turning the auto-add off on it left the operator to notice the footer
+   * error and press the button again. Two in a row is a refusal, and a refusal
+   * is repeated by every further retry.
+   */
+  const autoAddFailuresRef = useRef(0);
   const autoAddTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   /** Overrides the >5 collapse of the decided list once the operator toggles it. */
@@ -1349,8 +1365,11 @@ export default function EntityReviewWizard({
    *    stalled.
    *  - **Cap.** `AUTO_ADD_MAX_CALLS` auto re-calls, then it disarms and says
    *    so. A bug that made the mutation a no-op would otherwise spin forever.
-   *  - **Disarm on rejection.** One refusal (not an admin, batch gone) means
-   *    every retry refuses too.
+   *  - **Disarm on a second rejection in a row.** One refusal (not an admin,
+   *    batch gone) means every retry refuses too — but a single failed round
+   *    is as often a transient write conflict with the lookup pool, so it is
+   *    retried ONCE, after the debounce rather than immediately (NEO-301).
+   *    Only a second consecutive failure disarms and says so.
    *
    * Re-entrancy is held off by `bulkRef` (synchronous) rather than
    * `bulkPending` (a render value), so a burst of row updates cannot fire two
@@ -1451,8 +1470,15 @@ export default function EntityReviewWizard({
           // bounds is how many times the wizard re-asks as lookups land, and
           // that is unchanged.
           await drainRemaining("create");
+          autoAddFailuresRef.current = 0;
         } catch (e) {
-          // One refusal means every retry refuses too.
+          // NEO-301 — the first failure in a row is retried: nothing is
+          // disarmed or shown, and the `bulkPending` change below re-enters
+          // the effect, which schedules the retry after the debounce. Every
+          // page that did land stays decided, so the retry only re-reads them.
+          autoAddFailuresRef.current += 1;
+          if (autoAddFailuresRef.current < 2) return;
+          // A second in a row is a refusal, and every retry refuses too.
           autoAddRef.current = false;
           setAutoAddPending(false);
           setBulkError(
@@ -1465,7 +1491,14 @@ export default function EntityReviewWizard({
       })();
     }
 
-    if (settled >= AUTO_ADD_BATCH_THRESHOLD && !bulkRef.current) {
+    // NEO-301 — the retry after a failed round waits out the debounce rather
+    // than firing on the threshold: re-issuing the instant a write lost its
+    // conflict retries would meet the same lookup burst it just lost to.
+    if (
+      settled >= AUTO_ADD_BATCH_THRESHOLD &&
+      !bulkRef.current &&
+      autoAddFailuresRef.current === 0
+    ) {
       if (autoAddTimerRef.current !== null) {
         clearTimeout(autoAddTimerRef.current);
         autoAddTimerRef.current = null;
@@ -1828,6 +1861,7 @@ export default function EntityReviewWizard({
     // which is the point: a deliberate click is not a runaway loop.
     if (pendingBulkCreatable > 0) {
       autoAddCallsRef.current = 0;
+      autoAddFailuresRef.current = 0;
       autoAddRef.current = true;
       setAutoAddPending(true);
     }
