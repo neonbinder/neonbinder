@@ -83,3 +83,13 @@ The status line "Started the X franchise. Save the team to put it on there."
 renders UNDER the Save row, so read it after centring Save. That line is the
 decisive check: a box read-back cannot tell a landed pick from a missed tap
 that left the typing in place. Worked example: `admin/admin-franchises-link-teams.yaml`.
+
+**Editing a WIZARD New Team field.** The wizard passes stable DOM ids
+(`entity-review-team-*`) to Location and Name, and a DOM id shadows the
+aria-label as resource-id. So `id: "New team name"` works in the DIALOG but
+never in the wizard. Tap the field by its value `below: {text: "Team name"}`
+(the caption; the nearest match is the input, not the "Shows as:" preview).
+The alias-clash sentence ("<holder> already answers to this name as an alias
+— remove it there …") is one text node, in both the body and the footer. Prove
+"Add as New Team" refused by the row still being presented after the restore
+typing. Worked example: the alias flow's R2(i).

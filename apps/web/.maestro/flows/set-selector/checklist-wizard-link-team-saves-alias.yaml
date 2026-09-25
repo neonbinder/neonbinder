@@ -39,6 +39,14 @@ tags:
 #     (g) SELF-CLEANING (R7): clearing the box and saving removes the alias,
 #         and a RELOAD shows the box empty (its placeholder is the text) with no
 #         "Current aliases" list — a negative paired with a positive.
+#     (i) NEO-307 — a New Team name that is another team's ALIAS is refused.
+#         Homestead Grays is created with the alias `Hga<token>`. On the
+#         first team step the Team name is edited to it, and the step then
+#         prints "Homestead Grays already answers to this name as an alias —
+#         remove it there before a team can take the name.", offers
+#         "Link to Homestead Grays · 1912–1950", and "Add as New Team" records
+#         nothing (the row is still presented after the name is restored).
+#         About 15s, on a step the flow already stands on.
 #     (h) NEO-307 — A CARD CAN SHOW A TEAM'S PAST. A club on this checklist,
 #         "Homestead Grays", is created through the UI first with the era
 #         1912–1950, which ended before this 2024 set. Because the sport holds
@@ -255,6 +263,13 @@ tags:
 - tapOn:
     id: "New team active to"
 - inputText: "1950"
+# R2(i) NEO-307: one alias on the retro club, `Hga<token>`, for the wizard's
+# alias-clash warning in PART 4. Typed here because the dialog already asks
+# for aliases, which costs one field instead of a Team Management detour. It
+# is inert: no checklist carries it, and the flow never searches for it.
+- tapOn:
+    id: "New team aliases \\(optional\\)"
+- inputText: "Hga${output.TOKEN}"
 # No Location and no League typed: the composed full name is exactly the
 # checklist's string, which is what the Create button's name asserts.
 - tapOn:
@@ -456,6 +471,62 @@ tags:
 # (curly quotes are the product's). Its checked state is proven by (d) below.
 - assertVisible:
     text: "Remember “${output.ROW_NAME}” as a name for this team"
+
+# ── R2(i) NEO-307: a New Team name that is another team's ALIAS is refused ──
+# Edit this step's Team name to `Hga<token>`, the alias PART 1 gave Homestead
+# Grays. The step must then say so in the product's one sentence (body and
+# footer carry the same text node), offer the holder's link, and refuse
+# "Add as New Team". Then the name is put back and the flow carries on
+# exactly as before.
+#
+# The field is found by its VALUE under its caption. In the wizard the input
+# carries a stable DOM id, which becomes its resource-id and shadows the
+# aria-label, and flows never target a DOM id. `below:` the "Team name"
+# caption picks the nearest match, which is the input and not the "Shows as:"
+# preview further down. The "Search all teams" box, which also holds the row's
+# name, sits above the form. A centre tap on a short value in the wide field
+# puts the caret past the end, so `eraseText` clears it.
+# MEASURE: (1) the prefill's Location is empty for these clubs (no ESPN
+#   location), so Team name holds the WHOLE row name and editing it alone
+#   makes the composed name `Hga<token>`. If a Location is pre-filled, clear
+#   it the same way first. (2) The Team name field is inside the body's
+#   visible slice on this step. (3) The caret lands at the end.
+- tapOn:
+    text: "${output.ROW_NAME}"
+    below:
+      text: "Team name"
+- eraseText: 60
+- inputText: "Hga${output.TOKEN}"
+# The holder's full name, then the sentence. Em dash matched with ".".
+- extendedWaitUntil:
+    visible: "Homestead Grays already answers to this name as an alias . remove it there before a team can take the name\\."
+    timeout: 7000
+# The fix offered in place: the holder's link, era included (middle dot and
+# en dash matched with "."). Asserted only. The flow's own link is to
+# Loc<token> Ali<token>, below.
+- assertVisible: "Link to Homestead Grays . 1912.1950"
+# The refused create. The button is aria-disabled, so the tap must record
+# nothing. The proof is two steps down: after the restore (several seconds of
+# typing), the row is STILL this one, and a recorded create would have moved
+# the walk on long before that.
+- tapOn:
+    id: "Add as New Team"
+
+# Put the name back. The prefill held the whole row name (see MEASURE above),
+# so retyping ROW_NAME restores the step exactly.
+- tapOn:
+    text: "Hga${output.TOKEN}"
+    below:
+      text: "Team name"
+- eraseText: 60
+- inputText: "${output.ROW_NAME}"
+- extendedWaitUntil:
+    visible: "New Team: ${output.ROW_NAME}"
+    timeout: 7000
+# Negative paired with the positive above: the clash cleared with the name.
+- extendedWaitUntil:
+    notVisible: ".*already answers to this name as an alias.*"
+    timeout: 7000
 
 # The field selects its pre-filled text on focus, so typing REPLACES the row's
 # name. That is read back before the option is looked for: if the typing had
