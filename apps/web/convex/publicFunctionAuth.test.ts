@@ -1154,6 +1154,7 @@ describe("NEO-305: the set ⇄ parallel doors are admin-gated", () => {
         parentId: flagshipId,
         platformData: { bsc: { b0: "parallel" } },
         platformFacets: { bsc: { b0: "variant" } },
+        metadata: { variantRole: "parallel" },
       });
       const parallelId = await insert({
         level: "insert",
@@ -1303,5 +1304,143 @@ describe("NEO-301: the bulk review decide is a public action over two internal h
       if (other === keyword) continue;
       expect(src).not.toContain(`export const ${fn} = ${other}(`);
     }
+  });
+});
+
+describe("NEO-306: the Make insert of… door is admin-gated", () => {
+  /**
+   * Five queries and one mutation. The mutation moves marketplace links and
+   * cards and deletes the emptied rows, so a refused call must write nothing:
+   * the source row keeps its link and the Insert type gains no row.
+   */
+  async function seedInsertDoor(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const insert = (fields: Record<string, unknown>) =>
+        ctx.db.insert("selectorOptions", {
+          platformData: {},
+          children: [],
+          lastUpdated: 1_700_000_000_000,
+          ...fields,
+        } as never);
+      const brandId = await insert({
+        level: "manufacturer",
+        value: "Bowman",
+        metadata: { setNamePrefix: "Bowman" },
+      });
+      const setId = await insert({
+        level: "setName",
+        value: "Bowman",
+        parentId: brandId,
+        platformData: { bsc: { b0: "bowman" } },
+      });
+      const parallelTypeId = await insert({
+        level: "variantType",
+        value: "Parallel",
+        parentId: setId,
+        metadata: { variantRole: "parallel" },
+      });
+      const insertTypeId = await insert({
+        level: "variantType",
+        value: "Insert",
+        parentId: setId,
+        metadata: { variantRole: "insert" },
+      });
+      const insertId = await insert({
+        level: "insert",
+        value: "Autos",
+        parentId: insertTypeId,
+      });
+      const rowId = await insert({
+        level: "insert",
+        value: "Autos Red Ink",
+        parentId: parallelTypeId,
+        platformData: { sportlots: { s0: "SL-RED-INK" } },
+        platformLabels: { sportlots: { s0: "Autos Red Ink" } },
+        platformSlotSeq: { sportlots: 1 },
+      });
+      await ctx.db.patch(parallelTypeId, { children: [rowId] });
+      await ctx.db.patch(insertTypeId, { children: [insertId] });
+      await ctx.db.patch(setId, { children: [parallelTypeId, insertTypeId] });
+      await ctx.db.patch(brandId, { children: [setId] });
+      return { brandId, setId, parallelTypeId, insertTypeId, insertId, rowId };
+    });
+  }
+
+  type Ids = Awaited<ReturnType<typeof seedInsertDoor>>;
+
+  test.each([
+    [
+      "setInsertConversion.convertToInsert",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.mutation(api.setInsertConversion.convertToInsert, {
+          rowId: ids.rowId,
+          targetInsertTypeId: ids.insertTypeId,
+          landing: { kind: "newInsert" },
+        }),
+    ],
+    [
+      "setInsertConversion.getMakeInsertEligibility",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.setInsertConversion.getMakeInsertEligibility, { rowId: ids.rowId }),
+    ],
+    [
+      "setInsertConversion.getMakeInsertTargets",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.setInsertConversion.getMakeInsertTargets, { rowId: ids.rowId }),
+    ],
+    [
+      "setInsertConversion.getMakeInsertTargetDetail",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.setInsertConversion.getMakeInsertTargetDetail, {
+          rowId: ids.rowId,
+          targetSetId: ids.setId,
+        }),
+    ],
+    [
+      "setInsertConversion.getMakeInsertInsertDetail",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.setInsertConversion.getMakeInsertInsertDetail, {
+          rowId: ids.rowId,
+          insertId: ids.insertId,
+        }),
+    ],
+    [
+      "setInsertConversion.getMakeInsertNamedPreview",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.setInsertConversion.getMakeInsertNamedPreview, {
+          rowId: ids.rowId,
+          targetSetId: ids.setId,
+          name: "Autos",
+        }),
+    ],
+  ])("%s refuses a signed-in non-admin and a signed-out caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedInsertDoor(t);
+    await expect(call(t.withIdentity(SIGNED_IN), ids)).rejects.toThrow();
+    await expect(call(t, ids)).rejects.toThrow();
+    const after = await t.run(async (ctx) => ({
+      row: await ctx.db.get(ids.rowId),
+      inserts: await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "insert").eq("parentId", ids.insertTypeId),
+        )
+        .collect(),
+    }));
+    expect(after.row!.platformData).toEqual({ sportlots: { s0: "SL-RED-INK" } });
+    expect(after.inserts.map((r) => r._id)).toEqual([ids.insertId]);
+  });
+
+  test("and an admin gets through (the gate is the refusal, not the arguments)", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedInsertDoor(t);
+    const result = await t
+      .withIdentity(ADMIN)
+      .mutation(api.setInsertConversion.convertToInsert, {
+        rowId: ids.rowId,
+        targetInsertTypeId: ids.insertTypeId,
+        landing: { kind: "newParallel", insertId: ids.insertId },
+      });
+    expect(result.landedValue).toBe("Red Ink");
   });
 });

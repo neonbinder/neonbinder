@@ -104,6 +104,7 @@ import {
   childrenOf,
   hasOpenReview,
   holdsAnyLink,
+  insertRowsUnder,
   linksOnRows,
   lossFieldNames,
   lossOnto,
@@ -178,12 +179,12 @@ export const conversionRefusal = {
 };
 
 export const promotionRefusal = {
-  rowGone: () => "That parallel is gone. Refresh and try again.",
-  notAParallel: (row: string) =>
-    `“${row}” isn't a parallel of a set, so it can't become one.`,
+  rowGone: () => "That row is gone. Refresh and try again.",
+  /** Kept under its NEO-305 key; NEO-306 promotes inserts and parallels of inserts too. */
+  notAParallel: (row: string) => `“${row}” isn't under a set, so it can't become one.`,
   linkGone: (row: string) =>
     `That SportLots link isn't on “${row}” any more. Refresh and try again.`,
-  noBrand: () => "This parallel has no brand above it. Refresh and try again.",
+  noBrand: () => "This row has no brand above it. Refresh and try again.",
   nameTaken: (brand: string, set: string) =>
     `${brand} already has a set called “${set}”. Add it to that set's Base instead.`,
   existsElsewhere: (set: string, otherBrand: string, brand: string) =>
@@ -363,18 +364,6 @@ function newParallelCheck(
     };
   }
   return { ok: true, name: checked.value };
-}
-
-async function parallelsUnder(
-  ctx: { db: QueryCtx["db"] },
-  typeId: RowId,
-): Promise<Row[]> {
-  return ctx.db
-    .query("selectorOptions")
-    .withIndex("by_level_and_parent", (q) =>
-      q.eq("level", "insert").eq("parentId", typeId),
-    )
-    .collect();
 }
 
 /**
@@ -570,7 +559,7 @@ export const getSetToParallelTargetDetail = query({
         reason: noParallelTypeYet(targetSet.value),
       };
     }
-    const parallels = (await parallelsUnder(ctx, type._id)).sort((a, b) =>
+    const parallels = (await insertRowsUnder(ctx, type._id)).sort((a, b) =>
       a.value.localeCompare(b.value),
     );
     const check = newParallelCheck(source, targetSet, parallels);
@@ -691,7 +680,7 @@ export const convertSetToParallel = mutation({
       // ANY parallel of the type holding a moving link refuses, not only the
       // one picked (security audit, NEO-305): the same rule as new mode, or
       // the link would land on a second row of one Parallel type.
-      const holder = (await parallelsUnder(ctx, targetType._id)).find((p) =>
+      const holder = (await insertRowsUnder(ctx, targetType._id)).find((p) =>
         holdsAnyLink(p, sourceRows(source)),
       );
       if (holder) {
@@ -718,7 +707,7 @@ export const convertSetToParallel = mutation({
       created = false;
       slotByIdOnDest = alloc.slotByIdBySide.sportlots;
     } else {
-      const siblings = await parallelsUnder(ctx, targetType._id);
+      const siblings = await insertRowsUnder(ctx, targetType._id);
       const check = newParallelCheck(source, targetSet, siblings);
       if (!check.ok) throw new ConvexError(check.reason);
       const flags = derivedVariantFlags("insert", targetType);
@@ -831,10 +820,17 @@ type PromotionSource =
   | { ok: true; row: Row; set: Row; brand: Row };
 
 /**
- * A parallel of a set: an `insert`-level row under a variant type whose NB
- * role is "parallel" — or, when that role cannot be read any more (the type
- * lost its tagged BSC slot), a row that was born flagged `isParallel`. Both
- * are NB facts about the row, never its name.
+ * A row under a set that "Promote to set" can split a SportLots link off
+ * (NEO-306 generalised it from NEO-305's parallels of a set):
+ *
+ *  - an `insert`-level row under any variant type but the Base — a parallel
+ *    of the base, an insert, or a row filed under a type with no NB role
+ *    (the SportLots-only review files there too, and invariant 6 says a row
+ *    without a role behaves like one with);
+ *  - a `parallel`-level row under such an insert (row → insert → type).
+ *
+ * Decided by level and the NB base flag, never by a name. The Base is
+ * refused because it is terminal: nothing NB mints sits under it.
  */
 async function readPromotionSource(
   ctx: { db: QueryCtx["db"] },
@@ -842,14 +838,17 @@ async function readPromotionSource(
 ): Promise<PromotionSource> {
   const row = await ctx.db.get(parallelId);
   if (!row) return { ok: false, reason: promotionRefusal.rowGone() };
-  const type = row.parentId ? await ctx.db.get(row.parentId) : null;
-  if (
-    row.level !== "insert" ||
-    !type ||
-    type.level !== "variantType" ||
-    (variantTypeRole(type) !== "parallel" && row.metadata?.isParallel !== true)
-  ) {
-    return { ok: false, reason: promotionRefusal.notAParallel(row.value) };
+  const notUnderASet = { ok: false as const, reason: promotionRefusal.notAParallel(row.value) };
+  let insertRow: Row | null = row;
+  if (row.level === "parallel") {
+    insertRow = row.parentId ? await ctx.db.get(row.parentId) : null;
+  } else if (row.level !== "insert") {
+    return notUnderASet;
+  }
+  if (!insertRow || insertRow.level !== "insert") return notUnderASet;
+  const type = insertRow.parentId ? await ctx.db.get(insertRow.parentId) : null;
+  if (!type || type.level !== "variantType" || variantTypeRole(type) === "base") {
+    return notUnderASet;
   }
   const set = type.parentId ? await ctx.db.get(type.parentId) : null;
   const brand = set?.parentId ? await ctx.db.get(set.parentId) : null;
@@ -981,7 +980,9 @@ export const getParallelPromotionPreview = query({
 });
 
 /**
- * NEO-305 Part C — "Promote to set", the way back from Part B.
+ * NEO-305 Part C — "Promote to set", the way back from Part B — and, since
+ * NEO-306, from "Make insert of…": `parallelId` is any row
+ * `readPromotionSource` accepts (an insert-level row, or a parallel of one).
  *
  * One SportLots link (`slSlotKey`) on a parallel row becomes a set under the
  * same brand: a set and Base minted by `insertSetWithBaseFromSl` — the exact

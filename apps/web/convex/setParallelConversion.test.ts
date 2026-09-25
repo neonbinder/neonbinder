@@ -74,13 +74,17 @@ async function insertRow(
   });
 }
 
-/** A variant type whose NB role is read off its `variant`-tagged BSC slot. */
+/**
+ * A variant type as a BSC variant-type sync writes it: the `variant`-tagged
+ * BSC slot, and the NB role conferred from it once (NEO-306: `isBase`, or
+ * `metadata.variantRole`, is what `variantTypeRole` reads).
+ */
 function roleType(role: "base" | "insert" | "parallel") {
   return {
     platformData: { bsc: { b0: role } },
     platformFacets: { bsc: { b0: "variant" as const } },
     platformSlotSeq: { bsc: 1 },
-    ...(role === "base" ? { metadata: { isBase: true } } : {}),
+    metadata: role === "base" ? { isBase: true } : { variantRole: role },
   };
 }
 
@@ -901,30 +905,24 @@ describe("promoteParallelToSet — guards", () => {
     ).rejects.toThrow();
   });
 
-  test("only a parallel of a set: not an insert, not a set", async () => {
+  test("only a row under a set's variant types: not a set, not a variant type, not under the Base", async () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t);
-    const star = await insertRow(t, {
+    // NEO-306: an insert under the Insert type IS promotable now; a row under
+    // the Base is not (the Base is terminal), nor is a set or a variant type.
+    const underBase = await insertRow(t, {
       level: "insert",
-      value: "Stars",
-      parentId: ids.insertTypeId,
-      platformData: { sportlots: { s0: "SL-STARS" } },
+      value: "Stray",
+      parentId: ids.bowmanBaseId,
+      platformData: { sportlots: { s0: "SL-STRAY" } },
     });
     const as = t.withIdentity(ADMIN);
-    await expectRefusal(
-      t,
-      () => as.mutation(api.setParallelConversion.promoteParallelToSet, { parallelId: star, slSlotKey: "s0" }),
-      promotionRefusal.notAParallel("Stars"),
-    );
-    await expectRefusal(
-      t,
-      () =>
-        as.mutation(api.setParallelConversion.promoteParallelToSet, {
-          parallelId: ids.bowmanId,
-          slSlotKey: "s0",
-        }),
-      promotionRefusal.notAParallel("Bowman"),
-    );
+    const promote = (parallelId: RowId) =>
+      as.mutation(api.setParallelConversion.promoteParallelToSet, { parallelId, slSlotKey: "s0" });
+    await expectRefusal(t, () => promote(underBase), promotionRefusal.notAParallel("Stray"));
+    await expectRefusal(t, () => promote(ids.bowmanId), promotionRefusal.notAParallel("Bowman"));
+    await expectRefusal(t, () => promote(ids.parallelTypeId), promotionRefusal.notAParallel("Parallel"));
+    expect(promotionRefusal.notAParallel("Stray")).toBe("“Stray” isn't under a set, so it can't become one.");
   });
 
   test("the row must carry that SportLots link", async () => {
@@ -1122,6 +1120,115 @@ describe("promoteParallelToSet — the move", () => {
     expect(result.parallelKept).toBe(true);
     expect((await cardsOn(t, row)).map((c) => c.cardNumber)).toEqual(["99"]);
     expect((await get(t, row))!.platformData).toEqual({});
+  });
+
+  test("NEO-306: an INSERT holding a SportLots link becomes a set, its cards following the link", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const stars = await insertRow(t, {
+      level: "insert",
+      value: "Stars",
+      parentId: ids.insertTypeId,
+      platformData: { sportlots: { s0: "SL-STARS" } },
+      platformLabels: { sportlots: { s0: "Stars" } },
+      platformSlotSeq: { sportlots: 1 },
+      metadata: { isInsert: true },
+    });
+    const [c1] = await addCards(t, stars, [{ n: "S-1", sl: { ref: "#S-1", src: "s0" } }]);
+    const eligibility = await t
+      .withIdentity(ADMIN)
+      .query(api.setParallelConversion.getParallelPromotionEligibility, { parallelId: stars });
+    expect(eligibility).toEqual({ eligible: true, links: [{ slot: "s0", label: "Stars" }] });
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .mutation(api.setParallelConversion.promoteParallelToSet, { parallelId: stars, slSlotKey: "s0" });
+    expect(result).toMatchObject({ setValue: "Bowman Stars", created: true, parallelKept: false });
+    const base = (await get(t, result.baseId))!;
+    expect(base.platformData).toEqual({ sportlots: { s0: "SL-STARS" } });
+    expect(base.platformLabels).toEqual({ sportlots: { s0: "Stars" } });
+    expect((await cardsOn(t, base._id)).map((c) => c._id)).toEqual([c1]);
+    expect(await get(t, stars)).toBeNull();
+    expect((await get(t, ids.insertTypeId))!.children).not.toContain(stars);
+    expect(await covered(t, ids.brandId)).toContain("SL-STARS");
+  });
+
+  test("NEO-306: a PARALLEL of an insert becomes a set; the insert keeps its BSC link and its other parallels", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const autos = await insertRow(t, {
+      level: "insert",
+      value: "Autos",
+      parentId: ids.insertTypeId,
+      platformData: { bsc: { b0: "autos" } },
+      platformSlotSeq: { bsc: 1 },
+      metadata: { isInsert: true },
+    });
+    const redInk = await insertRow(t, {
+      level: "parallel",
+      value: "Red Ink",
+      parentId: autos,
+      platformData: { sportlots: { s0: "SL-RED-INK" } },
+      platformLabels: { sportlots: { s0: "Autos Red Ink" } },
+      platformSlotSeq: { sportlots: 1 },
+      metadata: { isParallel: true },
+    });
+    const gold = await insertRow(t, {
+      level: "parallel",
+      value: "Gold",
+      parentId: autos,
+      platformData: { bsc: { b0: "autos-gold" } },
+      platformSlotSeq: { bsc: 1 },
+      metadata: { isParallel: true },
+    });
+    const [c1, c2] = await addCards(t, redInk, [
+      { n: "A-1", sl: { ref: "#A-1", src: "s0" } },
+      { n: "A-1", sl: { ref: "#A-1 var", src: "s0" } },
+    ]);
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .mutation(api.setParallelConversion.promoteParallelToSet, { parallelId: redInk, slSlotKey: "s0" });
+    expect(result).toMatchObject({ setValue: "Bowman Autos Red Ink", created: true, parallelKept: false });
+    const base = (await get(t, result.baseId))!;
+    expect(base.platformData).toEqual({ sportlots: { s0: "SL-RED-INK" } });
+    expect((await cardsOn(t, base._id)).map((c) => c._id).sort()).toEqual([c1, c2].sort());
+    expect(await get(t, redInk)).toBeNull();
+    const insert = (await get(t, autos))!;
+    expect(insert.children).toEqual([gold]);
+    expect(insert.platformData).toEqual({ bsc: { b0: "autos" } });
+    expect(await covered(t, ids.brandId)).toContain("SL-RED-INK");
+  });
+
+  test("NEO-306: a parallel of an insert still holding a BSC link stays, only its SportLots link leaves", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const autos = await insertRow(t, {
+      level: "insert",
+      value: "Autos",
+      parentId: ids.insertTypeId,
+      metadata: { isInsert: true },
+    });
+    const redInk = await insertRow(t, {
+      level: "parallel",
+      value: "Red Ink",
+      parentId: autos,
+      platformData: { bsc: { b0: "red-ink" }, sportlots: { s0: "SL-RED-INK" } },
+      platformLabels: { sportlots: { s0: "Autos Red Ink" } },
+      platformFacets: { bsc: { b0: "variantName" } },
+      platformSlotSeq: { bsc: 1, sportlots: 1 },
+      metadata: { isParallel: true },
+    });
+    await addCards(t, redInk, [{ n: "1", bsc: { ref: "b1", src: "b0" } }]);
+    const result = await t
+      .withIdentity(ADMIN)
+      .mutation(api.setParallelConversion.promoteParallelToSet, { parallelId: redInk, slSlotKey: "s0" });
+    expect(result.parallelKept).toBe(true);
+    const kept = (await get(t, redInk))!;
+    expect(kept.platformData).toEqual({ bsc: { b0: "red-ink" } });
+    // The BSC side is untouched, facet tag included.
+    expect(kept.platformFacets).toEqual({ bsc: { b0: "variantName" } });
+    expect(await cardsOn(t, redInk)).toHaveLength(1);
   });
 
   test("attach: the link and its cards join an existing set's Base", async () => {

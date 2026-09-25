@@ -227,11 +227,14 @@ export function splitCardsForSlot(
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Feature keys a variant type derives for ITSELF (`deriveOwnLevelFeatures`
- * at variantType: "cardType", "parallelName"). On a Base they say "Base" —
- * a fact about the Base, never about a parallel — so they are never carried.
+ * Feature keys a row derives for ITSELF from its level (`deriveOwnLevelFeatures`:
+ * "cardType" and "parallelName" at variantType, "cardType" at insert and
+ * parallel). On a Base they say "Base"; on an insert-level row they say what
+ * its OLD place made it ("Parallel" under a Parallel type). Facts about the
+ * source's position, never about the destination — which re-derives its own —
+ * so they are never carried.
  */
-const BASE_OWN_FEATURE_KEYS = ["cardType", "parallelName"];
+const OWN_LEVEL_FEATURE_KEYS = ["cardType", "parallelName"];
 
 /**
  * What the operator may have typed onto the set or its Base, which the
@@ -251,7 +254,7 @@ export function sourceDataOf(set: Row, base: Row): SourceData {
     ...(set.features ?? {}),
     ...(base.features ?? {}),
   };
-  for (const key of BASE_OWN_FEATURE_KEYS) delete features[key];
+  for (const key of OWN_LEVEL_FEATURE_KEYS) delete features[key];
   const cardNumberPrefix =
     base.metadata?.cardNumberPrefix ?? set.metadata?.cardNumberPrefix;
   const teamIds =
@@ -265,6 +268,27 @@ export function sourceDataOf(set: Row, base: Row): SourceData {
       r.declinedUpstreamLabels?.bsc !== undefined ||
       r.declinedUpstreamLabels?.sportlots !== undefined,
   );
+  return {
+    ...(cardNumberPrefix !== undefined ? { cardNumberPrefix } : {}),
+    features,
+    ...(teamIds ? { teamIds } : {}),
+    declined,
+  };
+}
+
+/**
+ * The same, for a source that is ONE row (NEO-306's S2: an insert-level row
+ * with nothing under it). Its own level-derived keys are stripped exactly as
+ * a Base's are.
+ */
+export function sourceDataOfRow(row: Row): SourceData {
+  const features: Record<string, string> = { ...(row.features ?? {}) };
+  for (const key of OWN_LEVEL_FEATURE_KEYS) delete features[key];
+  const cardNumberPrefix = row.metadata?.cardNumberPrefix;
+  const teamIds = row.teamIds && row.teamIds.length > 0 ? row.teamIds : undefined;
+  const declined =
+    row.declinedUpstreamLabels?.bsc !== undefined ||
+    row.declinedUpstreamLabels?.sportlots !== undefined;
   return {
     ...(cardNumberPrefix !== undefined ? { cardNumberPrefix } : {}),
     features,
@@ -372,6 +396,23 @@ export async function hasOpenReview(
     .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", rowId))
     .first();
   return queued !== null;
+}
+
+/**
+ * Every `insert`-level row directly under a variant type — its inserts, or
+ * its parallels of the base when the type is a Parallel type. Unbounded: a
+ * caller that must bound it reads with its own `.take()`.
+ */
+export async function insertRowsUnder(
+  ctx: { db: QueryCtx["db"] },
+  typeId: RowId,
+): Promise<Row[]> {
+  return ctx.db
+    .query("selectorOptions")
+    .withIndex("by_level_and_parent", (q) =>
+      q.eq("level", "insert").eq("parentId", typeId),
+    )
+    .collect();
 }
 
 /** The Base of a set: its variant type carrying the NB base role. */
