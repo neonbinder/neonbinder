@@ -1128,3 +1128,162 @@ describe("NEO-284 S1 at commit: the two commit-time alias writers drop another t
     expect(card!.teamOnCardIds).toEqual([auburn._id]);
   });
 });
+
+// ===========================================================================
+// NEO-307 — the alias rule is era-blind at commit too, in both orders
+// ===========================================================================
+
+describe("NEO-307: commit-time alias writers ignore eras when a string is another team's name", () => {
+  /** The Chrome fixture, re-dated. */
+  async function seedSetIn(t: ReturnType<typeof convexTest>, season: string) {
+    const seeded = await seedVariantTypeUnderChromeSet(t);
+    await t.run(async (ctx) => {
+      for (const id of [seeded.setNameId, seeded.variantTypeId]) {
+        await ctx.db.patch(id, { features: { manufacturer: "Donruss", season } });
+      }
+    });
+    return seeded;
+  }
+
+  test("remember-as-a-name drops Brooklyn Dodgers on LA (1958–) silently, and the 2026 retro card links Brooklyn", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedSetIn(t, "2026");
+    const brooklyn = await insertTeamWithAliases(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      yearsActive: { from: 1911, to: 1957 },
+    });
+    const la = await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      yearsActive: { from: 1958 },
+    });
+    // The franchise-lineage link an operator might make, box left on.
+    await t.run((ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: variantTypeId,
+        batchId: "batch-307-remember",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "team",
+        name: "Brooklyn Dodgers",
+        nameNormalized: normalizeTeamName("Brooklyn Dodgers"),
+        sportId,
+        status: "ready",
+        decision: { action: "link", linkedTeamId: la, saveAsAlias: true },
+      }),
+    );
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let result: { success: boolean };
+    try {
+      result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", teams: ["Brooklyn Dodgers"] })],
+        batchId: "batch-307-remember",
+      });
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(
+        lines.some(
+          (l) => l.includes("Brooklyn Dodgers's own name") && l.includes("Linked, not remembered"),
+        ),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+    // Silent to the commit: it lands.
+    expect(result.success).toBe(true);
+    expect((await t.run((ctx) => ctx.db.get(la)))!.aliases).toBeUndefined();
+    expect(await t.run((ctx) => ctx.db.query("teamAliases").collect())).toEqual([]);
+
+    const card = await t.run((ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .first(),
+    );
+    expect(card!.teamOnCardIds).toEqual([brooklyn]);
+    // …and it would again next time: nothing now answers to the name but Brooklyn.
+    expect(
+      (
+        await asAdmin.query(api.teams.findByNameAndSport, {
+          name: "Brooklyn Dodgers",
+          sportId,
+          setYear: 2026,
+        })
+      )?._id,
+    ).toBe(brooklyn);
+  });
+
+  test("the reverse order at commit: a New Team create onto another team's alias writes nothing and leaves the name unresolved", async () => {
+    // A pair from before the rule: LA (1958–) holds "Brooklyn Dodgers" as an
+    // alias and no Brooklyn row exists. On a 1955 set LA cannot answer (its era
+    // starts later), so the name reaches its create decision — which would
+    // leave two teams answering to one string.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedSetIn(t, "1955");
+    const la = await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+      yearsActive: { from: 1958 },
+    });
+    await t.run((ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: variantTypeId,
+        batchId: "batch-307-reverse",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "team",
+        name: "Brooklyn Dodgers",
+        nameNormalized: normalizeTeamName("Brooklyn Dodgers"),
+        sportId,
+        status: "ready",
+        decision: {
+          action: "create",
+          create: {
+            location: "Brooklyn",
+            name: "Dodgers",
+            yearsActive: { from: 1911, to: 1957 },
+          },
+        },
+      }),
+    );
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let result: { success: boolean };
+    try {
+      result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", teams: ["Brooklyn Dodgers"] })],
+        batchId: "batch-307-reverse",
+      });
+      const lines = warn.mock.calls.map((c) => String(c[0]));
+      expect(
+        lines.some(
+          (l) =>
+            l.includes("Los Angeles Dodgers already answers to a New Team's name as an alias") &&
+            l.includes("Not created"),
+        ),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+    expect(result.success).toBe(true);
+    const teams = await t.run((ctx) => ctx.db.query("teams").collect());
+    expect(teams.map((row) => row._id)).toEqual([la]);
+    const card = await t.run((ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+        .first(),
+    );
+    expect(card!.teamOnCardIds ?? []).toEqual([]);
+    // Nothing created, so nothing for finalize's creation-only work either.
+    // The name goes to the prelude's unresolved list, the same outcome the
+    // "two overlapping rows" refusal beside it has.
+    expect((result as { createdTeamIds?: unknown[] }).createdTeamIds).toEqual([]);
+  });
+});

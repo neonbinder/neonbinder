@@ -1,6 +1,6 @@
 ---
 name: team-resolver-serves-card-and-stint-years
-description: resolveTeamForSetYear answers for BOTH a card's set year and a career stint's start year — card-only era rules go behind the opt-in allowPastEra option (NEO-307); and a disjoint-era alias on a successor row steals retro cards
+description: resolveTeamForSetYear answers for BOTH a card's set year and a career stint's start year — card-only era rules go behind the opt-in allowPastEra option (NEO-307); aliases may never be another team's name in any era, because a disjoint-era alias steals retro cards
 metadata:
   type: reference
 ---
@@ -24,12 +24,15 @@ kind of year it holds. Before changing the rule, list the callers and which
 year each passes. The commit's create guard is not independently pinned: the
 create path's `findCollidingTeams` adopts an undated/overlapping answer anyway.
 
-**Alias hazard (verified with a probe, 2026-09-25):** the S1 alias guard only
-refuses another team's primary name when the eras OVERLAP. A dated successor
-(LA Dodgers 1958–) may carry "Brooklyn Dodgers" as an alias; then a 2026
-"Brooklyn Dodgers" card has two candidates, only LA's era covers 2026, and the
-several-candidate path silently links LA. An alias written on an UNDATED row
-before the other row exists skips S1 entirely and does the same.
+**Alias rule (NEO-307):** a team's alias may never equal another team's
+primary full name in the same sport, WHATEVER the eras. The old S1 guard only
+refused overlapping eras, which let a dated successor (LA Dodgers 1958–) carry
+"Brooklyn Dodgers" and silently win every 2026 retro card, because the era
+narrowing picks the one covering row. The reverse order (creating or renaming
+a team onto another team's alias) is `assertNameNotAnotherTeamsAlias` /
+`findAliasHoldersOfName`, gated on the key changing so a legacy pair cannot
+lock a team out of its own saves. The bulk loader's forward check was already
+era-blind; its reverse order still creates beside an alias holder.
 
 **How to apply:** when touching era narrowing or alias writers, test both the
 card and stint callers, and a successor row wearing its predecessor's name.

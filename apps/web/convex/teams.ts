@@ -25,6 +25,7 @@ import { normalizeEntityName } from "../lib/entities/normalize-name";
 import {
   TEAM_ERA_SCAN_LIMIT,
   findCollidingTeams,
+  findTeamsByAlias,
   findTeamsByExactName,
   findTeamsByFullName,
   resolveTeamForSetYear,
@@ -32,7 +33,7 @@ import {
 } from "./lib/teamRow";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
-import { eraLabel, erasOverlap, teamOptionLabel, type TeamEra } from "../lib/teams/team-era";
+import { eraLabel, teamOptionLabel } from "../lib/teams/team-era";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 
 /**
@@ -486,11 +487,22 @@ export async function findTeamAliasCollision(
  *
  * Plan decision 5, option (a): refuse it at the WRITERS. Alias-vs-alias stays
  * advisory (`aliasesInUse`) — two teams may share "Miami" and the era or the
- * operator decides — but a team's own name belongs to that team, in its era.
- * The era matters: "Winnipeg Jets" as an alias on the 2011- row does not lock
- * out the 1972-1996 row, because `findCollidingTeams` would not collide them
- * either. `erasOverlap` treats an undated side as overlapping, the safe
- * direction for a refusal.
+ * operator decides — but a team's own name belongs to that team.
+ *
+ * ── NEO-307: WHATEVER THE ERAS ──────────────────────────────────────────────
+ *
+ * This used to refuse only when the two eras overlapped, on the reasoning that
+ * a disjoint era could not be locked out (`findCollidingTeams` would not
+ * collide them). Lock-out was the wrong test. The alias also joins the
+ * resolver's candidate list, and there the era is what DECIDES: with
+ * "Brooklyn Dodgers" on the Los Angeles Dodgers (1958–), a 2026 retro card of
+ * the Brooklyn Dodgers (1911–1957) sees two candidates, only LA's era covers
+ * 2026, and the card links to LA with nothing anywhere saying so. So the rule
+ * is now absolute, approved by Jason for NEO-307: **a team's alias may never
+ * equal another team's primary full name in the same sport, whatever the
+ * eras.** Same sport only — an NFL team's name on a baseball team is not a
+ * candidate for any baseball card. The reverse order — naming a team what
+ * another team already holds as an alias — is `assertNameNotAnotherTeamsAlias`.
  *
  * Two flavours over one lookup. `assertAliasesNotPrimaryNames` throws for the
  * operator surfaces, naming the owning team's DISPLAY name (reference data
@@ -509,17 +521,13 @@ export async function findAliasPrimaryNameOwners(
     aliases: ReadonlyArray<string>;
     /** The row the aliases are for, which does not collide with itself. */
     selfId?: Id<"teams">;
-    /** The era the aliases will sit beside; undated overlaps everything. */
-    yearsActive?: TeamEra;
   },
 ): Promise<Array<{ alias: string; owner: Doc<"teams"> }>> {
   const out: Array<{ alias: string; owner: Doc<"teams"> }> = [];
   for (const alias of args.aliases) {
+    // Sport-scoped by the index; era-blind by design (NEO-307, above).
     const named = await findTeamsByExactName(ctx, args.sportId, alias);
-    const owner = named.find(
-      (row) =>
-        row._id !== args.selfId && erasOverlap(row.yearsActive, args.yearsActive),
-    );
+    const owner = named.find((row) => row._id !== args.selfId);
     if (owner) out.push({ alias, owner });
   }
   return out;
@@ -532,7 +540,6 @@ export async function assertAliasesNotPrimaryNames(
     sportId: Id<"selectorOptions">;
     aliases: ReadonlyArray<string>;
     selfId?: Id<"teams">;
-    yearsActive?: TeamEra;
   },
 ): Promise<void> {
   const [clash] = await findAliasPrimaryNameOwners(ctx, args);
@@ -556,7 +563,6 @@ export async function dropAliasesThatArePrimaryNames(
     sportId: Id<"selectorOptions">;
     aliases: ReadonlyArray<string>;
     selfId?: Id<"teams">;
-    yearsActive?: TeamEra;
   },
 ): Promise<{ aliases: string[]; dropped: Array<{ alias: string; teamName: string }> }> {
   const owners = await findAliasPrimaryNameOwners(ctx, args);
@@ -566,6 +572,52 @@ export async function dropAliasesThatArePrimaryNames(
     aliases: args.aliases.filter((alias) => !taken.has(alias)),
     dropped: owners.map((o) => ({ alias: o.alias, teamName: teamFullName(o.owner) })),
   };
+}
+
+/**
+ * NEO-307 — the REVERSE order of the rule above: the other teams in this sport
+ * that already hold `fullName` as an ALIAS.
+ *
+ * "Brooklyn Dodgers" saved as an alias on the Los Angeles Dodgers before any
+ * Brooklyn row existed passes the forward check (there was no primary name to
+ * clash with). Creating the Brooklyn Dodgers afterwards — or renaming a team
+ * to it — produces exactly the pair the forward check refuses. So a create or
+ * a rename asks this first.
+ *
+ * Alias leg only: a row holding the name as its OWN primary name is a same-name
+ * era, which `findCollidingTeams` and the era rules already govern. `selfId`
+ * is the row being renamed.
+ */
+export async function findAliasHoldersOfName(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    sportId: Id<"selectorOptions">;
+    fullName: string;
+    selfId?: Id<"teams">;
+  },
+): Promise<Doc<"teams">[]> {
+  const key = normalizeTeamName(args.fullName);
+  const holders = await findTeamsByAlias(ctx, args.sportId, args.fullName);
+  return holders.filter((row) => row._id !== args.selfId && row.nameNormalized !== key);
+}
+
+/** The refusing flavour of `findAliasHoldersOfName` — operator surfaces. */
+export async function assertNameNotAnotherTeamsAlias(
+  ctx: QueryCtx | MutationCtx,
+  args: {
+    sportId: Id<"selectorOptions">;
+    fullName: string;
+    selfId?: Id<"teams">;
+  },
+): Promise<void> {
+  const [holder] = await findAliasHoldersOfName(ctx, args);
+  if (holder) {
+    // The holding team's display name — reference data the operator can go
+    // and open — and not the name they typed, matching the forward message.
+    throw new ConvexError(
+      `${teamFullName(holder)} already answers to this name as an alias — remove it there before a team can take the name.`,
+    );
+  }
 }
 
 /**
@@ -794,6 +846,20 @@ export const findOrCreate = mutation({
           `Sort them out in Team Management first.`,
       );
     }
+    /*
+     * NEO-307 — the reverse order of S1. Nothing OVERLAPPING answers to this
+     * name (that row would have been returned above, which is how typing an
+     * alias finds its team), but a team in another era may still hold it as
+     * an alias. Creating a row under it would leave two teams answering to one
+     * string, and the resolver's era narrowing would then choose between them
+     * silently — the retro-card theft S1 refuses in the forward order.
+     * Refused before the new-era question, because confirming the era cannot
+     * make it right.
+     */
+    await assertNameNotAnotherTeamsAlias(ctx, {
+      sportId: args.sportId,
+      fullName,
+    });
     if (!args.newEra) {
       const sameName = await findTeamsByFullName(ctx, args.sportId, fullName);
       if (sameName.length > 0) {
@@ -845,13 +911,13 @@ export const findOrCreate = mutation({
     const aliases = args.aliases
       ? normalizeTeamAliasList(args.aliases, fullName)
       : [];
-    // S1: …but never another team's own name in an overlapping era — that
-    // would lock the other team out of editing itself. Refused, naming it.
+    // S1: …but never another team's own name, in any era (NEO-307) — it would
+    // lock that team out of editing itself, and steal its retro cards.
+    // Refused, naming it.
     if (aliases.length) {
       await assertAliasesNotPrimaryNames(ctx, {
         sportId: args.sportId,
         aliases,
-        yearsActive: args.yearsActive,
       });
     }
 
@@ -1483,6 +1549,18 @@ export const saveTeamFields = mutation({
       if (clash) {
         throw new ConvexError(`NAME_TAKEN:${clash._id}`);
       }
+      // NEO-307 — the reverse order of S1: renaming onto a name another team
+      // (in a disjoint era, or `clash` above would have caught it) holds as an
+      // alias. Only when the KEY changes: a re-save of a row's own name, or an
+      // accent-only fix, must not start refusing because of a pair written
+      // before this rule existed — that would be the lock-out S1 prevents.
+      if (fields.nameNormalized !== existing.nameNormalized) {
+        await assertNameNotAnotherTeamsAlias(ctx, {
+          sportId: existing.sportId,
+          fullName: teamFullName(fields),
+          selfId: args.id,
+        });
+      }
 
       patch.name = fields.name;
       patch.nameNormalized = fields.nameNormalized;
@@ -1566,14 +1644,13 @@ export const saveTeamFields = mutation({
         args.aliases,
         teamFullName({ name: nextName, location: nextLocation }),
       );
-      // S1: an alias that is another team's own name (overlapping era) would
-      // lock that team out of `saveTeamFields` for good. Refused, naming it.
-      // Against the era this save LEAVES on the row, like everything above.
+      // S1: an alias that is another team's own name, in ANY era (NEO-307),
+      // would lock that team out of `saveTeamFields` and let its retro cards
+      // resolve to this row. Refused, naming it.
       await assertAliasesNotPrimaryNames(ctx, {
         sportId: existing.sportId,
         aliases,
         selfId: args.id,
-        yearsActive: nextYears,
       });
       // Dropped entirely once empty, so a cleared row is indistinguishable
       // from one that never had an alias — the rule `externalIds` follows.

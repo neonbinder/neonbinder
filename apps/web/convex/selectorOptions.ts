@@ -203,6 +203,7 @@ import {
   // NEO-284 security audit: the warn-and-skip flavour of the primary-name
   // lock-out check, for the two commit-time alias writers below.
   dropAliasesThatArePrimaryNames,
+  findAliasHoldersOfName,
   normalizeTeamAliasList,
   normalizeTeamName,
   syncTeamAliases,
@@ -14457,6 +14458,26 @@ export const commitCardChecklistPrelude = internalMutation({
        * and it is the only screen that can.
        */
       if (colliding.length > 1) return null;
+      /*
+       * NEO-307 — the reverse order of S1, fail-soft. No overlapping row
+       * answers to this name, but a team in a disjoint era may hold it as an
+       * ALIAS ("Brooklyn Dodgers" on the 1958– Los Angeles Dodgers). Creating
+       * the row would leave two teams answering to one string, with the era
+       * narrowing choosing between them silently. Team Management refuses the
+       * same create; here nobody is standing at a form, so nothing is written
+       * and the name comes back unresolved, like the mess above. The warn
+       * names the HOLDING team, never the checklist string.
+       */
+      const aliasHolders = await findAliasHoldersOfName(ctx, {
+        sportId: args.sportId,
+        fullName: teamFullName(fields),
+      });
+      if (aliasHolders.length > 0) {
+        console.warn(
+          `commitCardChecklistPrelude: ${teamFullName(aliasHolders[0])} already answers to a New Team's name as an alias. Not created.`,
+        );
+        return null;
+      }
       // NEO-156: every team-creation path attaches a league. The caller
       // supplies one when the enrichment named it; otherwise the sport's
       // default.
@@ -14485,7 +14506,7 @@ export const commitCardChecklistPrelude = internalMutation({
       if (aliases.length) {
         /*
          * NEO-284 security audit — an alias that is another team's PRIMARY
-         * name in this sport (same era) is dropped, not written. Such an
+         * name in this sport (any era, since NEO-307) is dropped, not written. Such an
          * alias locks that team out of its own edits (`findCollidingTeams`
          * would hit it as NAME_TAKEN). The New Team step refuses it where the
          * operator can see; here there is nobody to tell, so the alias is
@@ -14495,7 +14516,6 @@ export const commitCardChecklistPrelude = internalMutation({
         const { aliases: safe, dropped } = await dropAliasesThatArePrimaryNames(ctx, {
           sportId: args.sportId,
           aliases,
-          yearsActive: extra.yearsActive,
         });
         for (const { teamName } of dropped) {
           // The owning team's display name only — never the alias string.
@@ -14977,15 +14997,16 @@ export const commitCardChecklistPrelude = internalMutation({
       }
       if (additions.length === 0) continue;
       // NEO-284 security audit — a string that is another team's PRIMARY name
-      // in this sport (overlapping era) is not remembered: stored as an alias
-      // it would lock that team out of its own edits (NAME_TAKEN on every
-      // save). Warn-and-skip, like the caps above; the link itself still
-      // lands. `selfId` so the linked team's own name is not a clash.
+      // in this sport is not remembered: stored as an alias it would lock that
+      // team out of its own edits (NAME_TAKEN on every save). NEO-307: in ANY
+      // era — a disjoint one cannot lock anyone out, but it steals the other
+      // team's retro cards (a 2026 "Brooklyn Dodgers" card resolving to LA).
+      // Warn-and-skip, like the caps above; the link itself still lands.
+      // `selfId` so the linked team's own name is not a clash.
       const { aliases: safeAdditions, dropped } = await dropAliasesThatArePrimaryNames(ctx, {
         sportId: args.sportId,
         aliases: additions,
         selfId: linked._id,
-        yearsActive: linked.yearsActive,
       });
       for (const { teamName } of dropped) {
         // The owning team's display name only — never the parked string.
