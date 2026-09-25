@@ -17,6 +17,7 @@ Invoke:
 
 from __future__ import annotations
 
+import base64
 import io
 import os
 
@@ -76,6 +77,29 @@ def client(target_url: str) -> httpx.Client:
 
 
 @pytest.fixture(scope="session")
+def synthetic_card_on_desk_image() -> tuple[bytes, tuple[int, int, int, int]]:
+    """An unmistakable card on a dark desk, plus the card's true (x, y, w, h).
+
+    For the haiku_bbox smoke: the card fills a well-defined minority of the
+    frame against a flat contrasting background so the model has one obvious
+    answer. Same bitmap-font, no-asset approach as `synthetic_card_image`.
+    """
+    frame_w, frame_h = 1200, 1200
+    card = (350, 250, 500, 700)
+    x, y, w, h = card
+    img = Image.new("RGB", (frame_w, frame_h), color=(62, 44, 30))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((x, y, x + w - 1, y + h - 1), fill="white", outline="black", width=14)
+    draw.rectangle((x + 40, y + 40, x + w - 41, y + 480), fill=(40, 90, 170))
+    draw.text((x + 50, y + 510), "SMOKE TEST CARD", fill="black")
+    draw.text((x + 50, y + 560), "PLAYER NAME", fill="black")
+    draw.text((x + 50, y + 610), "TEAM XYZ  #42", fill="black")
+    out = io.BytesIO()
+    img.save(out, format="JPEG", quality=90)
+    return out.getvalue(), card
+
+
+@pytest.fixture(scope="session")
 def synthetic_card_image() -> bytes:
     """Generate a small test image with detectable text.
 
@@ -127,6 +151,9 @@ class TestProcessAuth:
 
 
 class TestProcessHappyPath:
+    # Also the live proof that the Anthropic classify call works: every
+    # image-only /process path ends in classify_card, and any exception it
+    # raises (an SDK that rejects our kwargs included) is a 502, never a 200.
     def test_valid_request_returns_shape(
         self,
         client: httpx.Client,
@@ -156,6 +183,7 @@ class TestProcessHappyPath:
         }
         assert set(body.keys()) == expected_keys, f"unexpected keys {sorted(body.keys())}"
         assert body["side"] in {"front", "back"}, f"bad side {body['side']!r}"
+        assert isinstance(body["players"], list), f"bad players {body['players']!r}"
         assert body["rotation_degrees"] in {
             0,
             90,
@@ -179,3 +207,41 @@ class TestProcessHappyPath:
         }, f"unexpected cropped_source {body['cropped_source']!r}"
         if body["cropped_source"] == "precropped":
             assert body["cropped_image_b64"] is None
+
+
+class TestHaikuBboxCrop:
+    """Live proof that the haiku_bbox strategy's Anthropic call works.
+
+    Nothing else reaches it deterministically: the cascade only runs it after
+    tiered and sam fail, and haiku_bbox_crop turns ANY exception (an SDK that
+    rejects our kwargs included) into a None, which /crop reports as "ran
+    cleanly, no crop". So the assertion is that a crop actually came back.
+    """
+
+    def test_haiku_bbox_crops_an_obvious_card(
+        self,
+        client: httpx.Client,
+        internal_key: str,
+        auth_headers: dict[str, str],
+        synthetic_card_on_desk_image: tuple[bytes, tuple[int, int, int, int]],
+    ) -> None:
+        image_bytes, (_, _, card_w, card_h) = synthetic_card_on_desk_image
+        response = client.post(
+            "/crop",
+            headers={**auth_headers, "x-internal-key": internal_key},
+            files={"image": ("smoke-desk.jpg", image_bytes, "image/jpeg")},
+            data={"strategy": "haiku_bbox"},
+        )
+        assert response.status_code == 200, response.text
+        crops = response.json()["crops"]
+        assert [c["strategy"] for c in crops] == ["haiku_bbox"], crops
+        entry = crops[0]
+        assert entry["error"] is None, f"haiku_bbox raised {entry['error']}"
+        assert entry["image_b64"], "haiku_bbox returned no crop for an obvious card"
+
+        with Image.open(io.BytesIO(base64.b64decode(entry["image_b64"]))) as cropped:
+            out_w, out_h = cropped.size
+        # Loose bounds: this proves the call worked and Haiku found the card,
+        # not pixel accuracy. A crop of the whole frame would fail them.
+        assert 0.6 * card_w <= out_w <= 1.4 * card_w, (out_w, out_h)
+        assert 0.6 * card_h <= out_h <= 1.4 * card_h, (out_w, out_h)

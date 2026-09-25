@@ -3,10 +3,13 @@
 Anthropic SDK is mocked. Fixtures cover: happy path, markdown-wrapped JSON,
 malformed-JSON with retry success, malformed both attempts, empty response
 block, missing/unknown side value, and a non-existent image payload.
+`TestClassifyWireRequest` instead drives the REAL SDK client against an
+in-memory transport and asserts the JSON body it sends (see `_fake_anthropic`).
 """
 
 from __future__ import annotations
 
+import base64
 import io
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -16,6 +19,8 @@ from PIL import Image
 
 from app.classify import (
     ANTHROPIC_MAX_RAW_BYTES,
+    DEFAULT_MODEL,
+    MAX_TOKENS,
     PROMPT,
     RETRY_PROMPT_SUFFIX,
     ClassifyError,
@@ -24,6 +29,7 @@ from app.classify import (
     _strip_code_fences,
     classify_card,
 )
+from tests.unit._fake_anthropic import real_client
 
 
 def _png_bytes() -> bytes:
@@ -267,3 +273,67 @@ class TestClassifyCard:
 
         call = client.messages.create.call_args
         assert call.kwargs["model"] == "claude-test-model"
+
+    def test_passes_temperature_zero_via_extra_body(self):
+        # anthropic>=1.0 rejects `temperature=` as a direct kwarg; it rides in
+        # extra_body. A direct kwarg must not come back.
+        payload = '{"player":null,"team":null,"card_number":null,"side":"front"}'
+        client = _mock_client(_response_with_text(payload))
+
+        classify_card(_jpeg_bytes(), client=client)
+
+        call = client.messages.create.call_args
+        assert call.kwargs["extra_body"] == {"temperature": 0.0}
+        assert "temperature" not in call.kwargs
+
+
+class TestClassifyWireRequest:
+    """The real anthropic SDK builds the request; we assert what hits the wire."""
+
+    def test_request_body_sent_to_messages_endpoint(self):
+        good = '{"player":"Ken Griffey Jr.","team":"Mariners","card_number":"24","side":"front"}'
+        client, transport = real_client(good)
+        image = _jpeg_bytes()
+
+        result = classify_card(image, client=client)
+
+        assert result.player == "Ken Griffey Jr."
+        assert result.side == "front"
+        assert len(transport.requests) == 1
+        request = transport.requests[0]
+        assert request.method == "POST"
+        assert request.url.path == "/v1/messages"
+        assert transport.bodies[0] == {
+            "model": DEFAULT_MODEL,
+            "max_tokens": MAX_TOKENS,
+            "temperature": 0.0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": base64.b64encode(image).decode("ascii"),
+                            },
+                        },
+                        {"type": "text", "text": PROMPT},
+                    ],
+                }
+            ],
+        }
+
+    def test_retry_request_also_carries_temperature_zero(self):
+        good = '{"player":"Pujols","team":"Cardinals","card_number":"5","side":"front"}'
+        client, transport = real_client("not json", good)
+
+        result = classify_card(_jpeg_bytes(), client=client)
+
+        assert result.player == "Pujols"
+        assert len(transport.bodies) == 2
+        assert [body["temperature"] for body in transport.bodies] == [0.0, 0.0]
+        assert transport.bodies[1]["messages"][0]["content"][1]["text"] == (
+            PROMPT + RETRY_PROMPT_SUFFIX
+        )

@@ -2,11 +2,15 @@
 
 Anthropic SDK is mocked — no real Haiku calls. Covers parse helpers, the
 downscale-coord rescaling, the crop step, and the error paths that must
-return None rather than raise.
+return None rather than raise. `TestHaikuBboxWireRequest` drives the REAL SDK
+client against an in-memory transport and asserts the JSON body it sends: this
+module swallows every SDK exception into `None`, so a rejected kwarg would
+otherwise look like "Haiku found no card".
 """
 
 from __future__ import annotations
 
+import base64
 import io
 import json
 from types import SimpleNamespace
@@ -15,11 +19,15 @@ from unittest.mock import MagicMock
 from PIL import Image
 
 from app.cropper.haiku_bbox import (
+    DEFAULT_MODEL,
+    MAX_TOKENS,
+    PROMPT,
     _parse_bbox,
     _rescale_bbox,
     _strip_code_fences,
     haiku_bbox_crop,
 )
+from tests.unit._fake_anthropic import real_client
 
 
 def _response_with_text(text: str) -> SimpleNamespace:
@@ -182,10 +190,55 @@ class TestHaikuBboxCrop:
 
         call = client.messages.create.call_args
         assert call.kwargs["model"] == "claude-test-model"
-        assert call.kwargs["temperature"] == 0.0
+        # anthropic>=1.0 rejects `temperature=` as a direct kwarg; it rides in
+        # extra_body. A direct kwarg must not come back.
+        assert call.kwargs["extra_body"] == {"temperature": 0.0}
+        assert "temperature" not in call.kwargs
 
     def test_unreadable_image_returns_none(self):
         client = _mock_client(_response_with_text(json.dumps({"x": 0, "y": 0, "w": 10, "h": 10})))
         # _prepare_for_anthropic can handle garbage by returning it passthrough-ish,
         # but Image.open later will fail. haiku_bbox should catch that.
         assert haiku_bbox_crop(b"not an image at all", client=client) is None
+
+
+class TestHaikuBboxWireRequest:
+    """The real anthropic SDK builds the request; we assert what hits the wire."""
+
+    def test_request_body_sent_and_crop_returned(self):
+        image = _jpeg_bytes(size=(1200, 1600))
+        client, transport = real_client(json.dumps({"x": 100, "y": 200, "w": 800, "h": 1100}))
+
+        result = haiku_bbox_crop(image, client=client)
+
+        # A None here with no request recorded means the SDK refused our
+        # kwargs before sending (haiku_bbox_crop swallows the exception).
+        assert len(transport.requests) == 1
+        assert result is not None
+        with Image.open(io.BytesIO(result)) as out:
+            assert abs(out.size[0] - 800) <= 2
+            assert abs(out.size[1] - 1100) <= 2
+        request = transport.requests[0]
+        assert request.method == "POST"
+        assert request.url.path == "/v1/messages"
+        assert transport.bodies[0] == {
+            "model": DEFAULT_MODEL,
+            "max_tokens": MAX_TOKENS,
+            "temperature": 0.0,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "image/jpeg",
+                                "data": base64.b64encode(image).decode("ascii"),
+                            },
+                        },
+                        {"type": "text", "text": PROMPT},
+                    ],
+                }
+            ],
+        }
