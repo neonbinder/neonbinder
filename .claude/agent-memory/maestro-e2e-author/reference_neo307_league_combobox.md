@@ -105,3 +105,10 @@ typing. Worked example: the alias flow's R2(i).
   ~114px down, out of the visible slice.
 - Programmatic focus uses `focusWithoutOpening` (the list never opens on a
   focus return), and the list stays inside the dialog body.
+- A walk that must SEE every team step has to take league steps too. Since
+  NEO-307 a staged `New League:` step is presented while its lookup is
+  pending, so it can interleave with team steps. Drain with ONE guard,
+  `id: "Skip .*(not a team|has no league)"`. Per row, copy the heading
+  `"New (Team|League): .*"` and the skip control's text, and assert they
+  agree ("no league" ⇒ `New League:`). Worked example: the alias flow's
+  PART 5.

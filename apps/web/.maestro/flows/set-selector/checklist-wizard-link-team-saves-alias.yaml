@@ -246,8 +246,8 @@ tags:
 # ── R2(h) NEO-307: the retro club, with a CLOSED era, through the same picker
 # The trigger is `setPopoverOpen(true)`, never a toggle, so reopening is safe
 # whatever state the first create left the popover in.
-# MEASURE: "+ Add team" after the first chip — the career editor gained a
-#   stint row above it; confirm it is still on screen without a scroll.
+# MEASURED (green local run, 2026-09-25): after the first chip "+ Add team"
+# is at y=495-517, on screen with no scroll.
 - tapOn:
     id: "Add team"
 - tapOn:
@@ -262,8 +262,8 @@ tags:
 - assertVisible: "New team: Pittsburgh Crawfords"
 # The era, by the fields' explicit aria-labels (NewTeamForm; regex brackets
 # escaped). "to" stays disabled until a start year exists, so from first.
-# MEASURE: both era boxes are in the dialog body's visible slice at 1024x629
-#   (they sit directly under Location/Name, above Aliases and League).
+# MEASURED (same run): both era boxes at y=266-300, inside the dialog body's
+# visible slice.
 - tapOn:
     id: "New team active from \\(optional\\)"
 - inputText: "1926"
@@ -587,7 +587,7 @@ tags:
 # PART 5 — COMMIT (R2e), after reading every other team step (R2h)
 # ============================================================
 # R2(h) — the retro club is NOT raised. The wizard presents every settled
-# undecided TEAM row before any player row, one row at a time
+# undecided TEAM (and LEAGUE) row before any player row, one row at a time
 # (`entity-review-nav.ts`), and the batch settled in PART 3. So walking the
 # remaining team steps one by one, reading each heading and skipping it,
 # reads EVERY team step the batch raised; a player row coming up is the
@@ -596,12 +596,32 @@ tags:
 # skipped": its exactly-one fast path links a resolvable name BEFORE it reads
 # the decision (`commitCardChecklistPrelude`).
 #
-# Same loop shape as `util-wizard-walk-to-player-row.yaml`'s team drain (its
-# note has the `optional: true` mechanism; not duplicated, R3). The heading
-# is read with copyTextFrom and compared, not asserted absent: a negative on
-# a dead page passes, a copied heading cannot.
+# LEAGUE STEPS COME THROUGH THIS WALK TOO (CI run 36166081072, runner 7, step
+# 146). A staged career team (here "Homestead Grays", from Josh Gibson's
+# Wikidata stints) raises its own `New League:` step. Since NEO-307 a league
+# step is presented while its lookup is still pending, so it can come up at
+# any point in this walk, before, between or after team steps. A loop that
+# only knew "Skip … not a team" stalled on "New League: Negro league baseball"
+# and the player-row wait below failed. So the walk takes every team OR
+# league step, one presented row at a time, and reads each one before
+# skipping it. A skip creates nothing (R7).
+#
+# Per row, two readings that must agree:
+#   * the step's HEADING ("New Team: …" or "New League: …", the body's top
+#     line, a copied node, so it cannot pass on a dead page); and
+#   * the skip CONTROL's own text ("Skip — not a team" / "Skip — no league"),
+#     which says which kind of step the footer is acting on.
+# A league skip must sit under a `New League:` heading, and a team skip under
+# a `New Team:` heading that is not the retro club. So no team step, the retro
+# club's above all, can be skipped as if it were a league, and every team
+# heading the batch raised is read.
+#
+# ONE guard for both kinds, the same selector `util-wizard-walk-to-player-
+# row.yaml` drains with: a second `when:` that does not match costs ~6.6s per
+# pass (a non-matching `runFlow when` waits out its lookup). The `optional:
+# true` tap is that util's mechanism, noted there and not duplicated (R3).
 - repeat:
-    times: 10
+    times: 20
     while:
       notVisible:
         id: "Skip .* not a person"
@@ -609,13 +629,21 @@ tags:
       - runFlow:
           when:
             visible:
-              id: "Skip .* not a team"
+              id: "Skip .*(not a team|has no league)"
           commands:
             - copyTextFrom:
-                text: "New Team: .*"
-            - assertTrue: '${maestro.copiedText !== "New Team: Pittsburgh Crawfords"}'
+                text: "New (Team|League): .*"
+            - evalScript: '${output.STEP_HEADING = maestro.copiedText}'
+            - copyTextFrom:
+                id: "Skip .*(not a team|has no league)"
+            - evalScript: >-
+                ${output.STEP_OK = (maestro.copiedText.indexOf("no league") >= 0)
+                  ? output.STEP_HEADING.indexOf("New League: ") === 0
+                  : (output.STEP_HEADING.indexOf("New Team: ") === 0
+                     && output.STEP_HEADING !== "New Team: Pittsburgh Crawfords")}
+            - assertTrue: ${output.STEP_OK}
             - tapOn:
-                id: "Skip .* not a team"
+                id: "Skip .*(not a team|has no league)"
                 optional: true
 - extendedWaitUntil:
     visible:
@@ -642,12 +670,12 @@ tags:
 # resolved teams by full name (`CardChecklistItem`: `teamFullName` over
 # `teamOnCardIds`) and an unresolved one as "<name> (unconfirmed)", so the
 # negative lookahead is what makes this the link and not the raw string.
-# The club is on card RW-2 (Gibson's). MEASURED locally 2026-09-25: after the
-# commit the page leaves the four rows at the TOP of the viewport, with RW-2's
-# sub-line at y=2-18, under the sticky binder header (RW-1 is above y=0), so
-# the scroll goes UP. Centring from there is still unmeasured.
-# MEASURE: that this UP scroll centres inside 7000. The sub-line is one text
-#   node (`subParts.join`), which the regex assumes.
+# The club is on card RW-2 (Gibson's). The page position after the commit
+# varies: one local run left RW-2's sub-line at y=2-18 under the sticky
+# header (RW-1 above y=0), which is why the scroll goes UP. The green local
+# run (2026-09-25) found it at try 0 with the sub-line at y=510-526, fully
+# visible, and accepted it without a swipe. The sub-line is one text node
+# (`subParts.join`), which the regex assumes.
 - scrollUntilVisible:
     element:
       text: ".*Pittsburgh Crawfords(?! \\(unconfirmed\\)).*"
