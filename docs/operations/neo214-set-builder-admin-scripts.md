@@ -236,7 +236,7 @@ sure a reset is what you want.
 1. **Ask whether it is really a reset.** If one set is wrong, re-sync that set
    in the admin and edit inline — NEO-190 §2.1. A reset is for a corrupted or
    abandoned catalogue, not a bad row.
-2. **Backup Now.** Convex dashboard → deployment `first-starfish-800` →
+2. **Backup Now.** Convex dashboard → the prod deployment →
    Settings → Backups → **Backup Now**. NEO-190 §3: take a manual backup
    before any deliberate destructive operation. This is the only undo that
    exists.
