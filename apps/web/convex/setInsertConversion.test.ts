@@ -27,7 +27,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_CARDS_PER_MOVE, sourceDataOfRow } from "./setShapeMove";
-import { insertConversionRefusal } from "./setInsertConversion";
+import { MAX_INSERT_TREE_ROWS, insertConversionRefusal } from "./setInsertConversion";
 
 const modules = (
   import.meta as unknown as {
@@ -1132,6 +1132,59 @@ describe("convertToInsert — refusals", () => {
       () => convert(t, row, ids.insertTypeId, { kind: "newInsert" }),
       insertConversionRefusal.tooManyCards("Red Ink", MAX_CARDS_PER_MOVE),
     );
+  });
+
+  test("more than MAX_INSERT_TREE_ROWS rows under the target Insert type: the read is refused, not judged partially", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const row = await slRow(t, ids.parallelTypeId, "Red Ink", [RED_INK]);
+
+    // One row over the bound, inserted directly (bypassing the mutation) so
+    // the fixture cost is one bulk write rather than MAX_INSERT_TREE_ROWS+1
+    // convert() calls. Every filler row is childless and link-less: nothing
+    // about ITS shape matters, only that the read stops counting.
+    await t.run(async (ctx) => {
+      const fillerIds: RowId[] = [];
+      for (let i = 0; i < MAX_INSERT_TREE_ROWS + 1; i++) {
+        fillerIds.push(
+          await ctx.db.insert("selectorOptions", {
+            level: "insert",
+            value: `Filler ${i}`,
+            parentId: ids.insertTypeId,
+            platformData: {},
+            children: [],
+            lastUpdated: SENTINEL,
+          }),
+        );
+      }
+      const type = await ctx.db.get(ids.insertTypeId);
+      await ctx.db.patch(ids.insertTypeId, {
+        children: [...(type?.children ?? []), ...fillerIds],
+      });
+    });
+
+    // The dialog's own read says so and offers no landing under this set.
+    const detail = await t
+      .withIdentity(ADMIN)
+      .query(api.setInsertConversion.getMakeInsertTargetDetail, {
+        rowId: row,
+        targetSetId: ids.bowmanId,
+      });
+    expect(detail.ok).toBe(true);
+    if (detail.ok) {
+      expect(detail.truncated).toBe(true);
+      expect(detail.holdsLinkReason).toBe(insertConversionRefusal.tooManyRows("Bowman"));
+    }
+
+    // The mutation refuses the same way rather than risking a second SL id
+    // landing on a row the read never reached — fail closed, not partial.
+    const before = await t.run(async (ctx) => (await ctx.db.get(ids.insertTypeId))?.children?.length);
+    await expect(
+      convert(t, row, ids.insertTypeId, { kind: "newInsert" }),
+    ).rejects.toThrow(insertConversionRefusal.tooManyRows("Bowman"));
+    const after = await t.run(async (ctx) => (await ctx.db.get(ids.insertTypeId))?.children?.length);
+    expect(after).toBe(before);
+    expect(await get(t, row)).not.toBeNull();
   });
 });
 

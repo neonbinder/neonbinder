@@ -885,4 +885,75 @@ describe("applySlSetReview — a save resumed after a thrown chunk", () => {
     expect(new Set(typeRow!.children).size).toBe(45);
     expect(await reviews(t)).toEqual([]);
   });
+
+  test("a concurrent Sync Sets replaces the doc between chunks: no crash, no duplicate, the new entries stay pending", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const ids = await seedBowmanSets(t, bowmanId);
+    const entries = Array.from({ length: 45 }, (_, i) => ({
+      slId: `sl-${String(i).padStart(2, "0")}`,
+      label: `Colour ${String(i).padStart(2, "0")}`,
+    }));
+    await seedReviewDoc(t, yearId, bowmanId, entries);
+    const decisions = entries.map((e) => ({ slId: e.slId, variantTypeId: ids.parallelTypeId }));
+
+    const rowsUnderType = getFunctionName(internal.slSetReview.createSlRowsUnderVariantType);
+    let rowCalls = 0;
+    // A second Sync Sets lands its own classification of this same brand
+    // between the two write chunks — three of the still-pending entries
+    // (42–44) survive re-classification, the other two (40–41) do not, and
+    // two brand-new SportLots-only names (sl-98, sl-99) show up. Nothing
+    // about this save's OWN chunking should notice: the chunk it already
+    // queued (sl-00..sl-39) already committed and left the review; the
+    // in-flight chunk (sl-40..sl-44) re-reads the doc fresh, same as a
+    // "save again" would.
+    type Ctx = Parameters<typeof applySlSetReviewImpl>[0];
+    const raced: Ctx = {
+      runQuery: ((ref: FunctionReference<"query">, args: Record<string, unknown>) =>
+        t.query(ref, args)) as Ctx["runQuery"],
+      runMutation: (async (
+        ref: FunctionReference<"mutation">,
+        args: Record<string, unknown>,
+      ) => {
+        if (getFunctionName(ref) === rowsUnderType && ++rowCalls === 2) {
+          await t.mutation(internal.slSetReview.replaceScope, {
+            yearId,
+            manufacturerId: bowmanId,
+            entries: [
+              { slId: "sl-42", label: "Colour 42" },
+              { slId: "sl-43", label: "Colour 43" },
+              { slId: "sl-44", label: "Colour 44" },
+              { slId: "sl-98", label: "Colour 98" },
+              { slId: "sl-99", label: "Colour 99" },
+            ],
+            rootsTruncated: 0,
+          });
+        }
+        return t.mutation(ref, args);
+      }) as Ctx["runMutation"],
+    };
+
+    const result = await applySlSetReviewImpl(raced, ADMIN.subject, {
+      manufacturerId: bowmanId,
+      decisions,
+    });
+
+    // The chunk that raced the concurrent sync only had sl-40..sl-44 to
+    // offer; sl-40 and sl-41 were re-classified away and are counted, never
+    // written; sl-42..44 land normally.
+    expect(result.underType.parallel).toBe(43);
+    expect(result.skippedByReason.notInReview).toBe(2);
+    const rows = await childrenAt(t, ids.parallelTypeId, "insert");
+    expect(rows).toHaveLength(43);
+    expect(new Set(rows.map((r) => r.value)).size).toBe(43);
+    expect(rows.some((r) => r.value === "Colour 40")).toBe(false);
+    expect(rows.some((r) => r.value === "Colour 41")).toBe(false);
+    expect(rows.some((r) => r.value === "Colour 42")).toBe(true);
+
+    // The two brand-new names the concurrent sync classified are untouched
+    // by this save (they were never in ITS decisions) and stay pending.
+    const [remaining] = await reviews(t);
+    expect(remaining.entries.map((e) => e.slId).sort()).toEqual(["sl-98", "sl-99"]);
+    expect(result.remaining).toBe(2);
+  });
 });
