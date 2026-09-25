@@ -133,9 +133,6 @@ export default function MakeParallelControl({
   return (
     <>
       <button
-        // A stable id so a flow's `pressKey` can re-find this exact control;
-        // the visible text is its name, so the id hides nothing a flow reads.
-        id="make-parallel-of"
         ref={triggerRef}
         type="button"
         onClick={openDialog}

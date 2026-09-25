@@ -89,7 +89,6 @@ export default function PromoteToSetControl({
   return (
     <>
       <button
-        id="promote-to-set"
         ref={triggerRef}
         type="button"
         onClick={openDialog}
