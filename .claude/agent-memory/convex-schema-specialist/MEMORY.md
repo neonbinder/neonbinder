@@ -13,3 +13,5 @@
 - [Convex has two transaction budgets](convex-two-transaction-limits.md) — a .collect() is 1 system op, not N; get this right before sizing any chunk or page
 - [Per-row cost hides in entity helpers](convex-per-row-cost-hides-in-entity-helpers.md) — findTeamsByFullName is 2-18 ops, so one player create is ~28; the call site lies
 - [OCC read set is the third budget](convex-occ-read-set-is-the-third-budget.md) — collect/take cost their read set; a short take is an open interval; status-flips are phantoms; fix = query selects, mutation point-reads
+- [Sync Sets artefacts key per scope](sync-sets-artefacts-key-per-scope.md) — sync runs per manufacturer too; per-year array docs overflow 1 MiB; measure with getConvexSize
+- [Armed backfill models have no cursor](armed-backfill-models-have-no-cursor.md) — facet/brand-unknown backfills are one take(SCAN_LIMIT+1); 16 MiB read is the real bound; page + action loop
