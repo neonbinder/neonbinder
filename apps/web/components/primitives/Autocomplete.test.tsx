@@ -176,6 +176,30 @@ describe("Autocomplete — ARIA", () => {
     );
   });
 
+  it("never points aria-controls at a listbox that is not rendered", () => {
+    // An IDREF to a missing element is invalid; ARIA 1.2 lets a collapsed
+    // combobox omit it. So it comes and goes with the popup.
+    render(<Harness />);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(input().hasAttribute("aria-controls")).toBe(false);
+
+    openList();
+    const id = input().getAttribute("aria-controls");
+    expect(id).toBeTruthy();
+    expect(document.getElementById(id!)).toBe(screen.getByRole("listbox"));
+
+    fireEvent.keyDown(input(), { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(input().hasAttribute("aria-controls")).toBe(false);
+  });
+
+  it("drops aria-controls in the empty-query state a search caller starts in", () => {
+    render(<Harness initialQuery="" />);
+    openList();
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(input().hasAttribute("aria-controls")).toBe(false);
+  });
+
   it("points aria-activedescendant at the highlighted option", () => {
     render(<Harness />);
     openList();

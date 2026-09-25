@@ -965,6 +965,11 @@ export default function NewTeamForm({
           onKeyDown={(e) => {
             if (e.key === "Escape") {
               e.preventDefault();
+              // One level at a time: Escape here cancels THIS sub-form only.
+              // Without stopping it, NewTeamDialog's own Escape handler (on
+              // an ancestor) also ran and closed the whole dialog, throwing
+              // away the team the operator was in the middle of.
+              e.stopPropagation();
               closeNewLeague();
             }
           }}

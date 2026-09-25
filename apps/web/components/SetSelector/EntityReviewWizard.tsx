@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { inertBackground } from "../../lib/dom/inert-background";
 import { Theme } from "@radix-ui/themes";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
@@ -1883,6 +1884,48 @@ export default function EntityReviewWizard({
     setAutoAddPending(false);
     void runBulk("skip");
   };
+
+  /**
+   * NEO-307 (a11y audit) — the page behind the wizard goes `inert` while it is
+   * up.
+   *
+   * `aria-modal` plus the Tab behaviour kept keyboard focus in here, but the
+   * card checklist behind it stayed in the accessibility tree — reachable by
+   * a screen reader's browse cursor and by anything querying the whole tree,
+   * which is what let its per-row TeamPicker's New Team form (another
+   * combobox named "League") sit live beside this wizard's own. `inertBackground`
+   * stacks with `NewTeamDialog`'s identical hold, so a dialog opened over the
+   * wizard can close without releasing the page the wizard still holds.
+   *
+   * Inert blurs whatever held focus behind the wizard, so the opener is read
+   * first, focus is parked on the dialog root if nothing inside has claimed it,
+   * and on close focus goes back to the opener — after the release, because
+   * focusing a still-inert element is a no-op.
+   */
+  const wizardMounted = isOpen && rows !== undefined;
+  useEffect(() => {
+    if (!wizardMounted) return;
+    const root = dialogRootRef.current;
+    if (!root) return;
+    const opener = document.activeElement as HTMLElement | null;
+    const release = inertBackground(root);
+    if (!root.contains(document.activeElement)) root.focus();
+    return () => {
+      release();
+      const active = document.activeElement;
+      const focusLost =
+        !active || active === document.body || !active.isConnected || root.contains(active);
+      if (
+        focusLost &&
+        opener &&
+        opener !== document.body &&
+        opener.isConnected &&
+        !root.contains(opener)
+      ) {
+        opener.focus();
+      }
+    };
+  }, [wizardMounted]);
 
   if (!isOpen || rows === undefined) return null;
 

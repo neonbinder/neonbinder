@@ -870,3 +870,118 @@ describe("NewTeamDialog — a second era", () => {
     expect(alert.textContent).toBe("Could not create team.");
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-307 (a11y audit) — everything behind the dialog is inert while it is up
+//
+// Opened from a picker while the review wizard shows its own New Team step,
+// both forms carried a combobox named "League" and neither was hidden. The
+// name is an E2E contract and stays; the background goes `inert` instead.
+// happy-dom does not drop inert subtrees from role queries, so "reachable" is
+// asserted as "not inside an [inert] ancestor" — the attribute is the contract.
+// ---------------------------------------------------------------------------
+
+describe("NewTeamDialog — the background is inert while it is open", () => {
+  const live = (el: Element) => el.closest("[inert]") === null;
+
+  /** Stand-in for the wizard: another body-level portal holding its own
+   *  "League" combobox, as EntityReviewWizard's New Team step does. */
+  function mountWizardStandIn(): HTMLElement {
+    const portal = document.createElement("div");
+    portal.setAttribute("data-testid", "wizard-portal");
+    const league = document.createElement("input");
+    league.setAttribute("role", "combobox");
+    league.setAttribute("aria-label", "League");
+    portal.appendChild(league);
+    document.body.appendChild(portal);
+    return portal;
+  }
+
+  afterEach(() => {
+    document.querySelectorAll('[data-testid="wizard-portal"], [data-testid="someone-elses"]').forEach((n) => n.remove());
+  });
+
+  it("leaves exactly one live 'League' combobox — its own — over another portal's", () => {
+    const wizard = mountWizardStandIn();
+    const { container } = renderDialog();
+
+    const leagues = screen.getAllByRole("combobox", { name: "League" });
+    expect(leagues).toHaveLength(2);
+    const reachable = leagues.filter(live);
+    expect(reachable).toHaveLength(1);
+    expect(dialog().contains(reachable[0])).toBe(true);
+    // The wizard's portal and the page (the render container) are both held.
+    expect(wizard.hasAttribute("inert")).toBe(true);
+    expect(container.hasAttribute("inert")).toBe(true);
+    // The dialog itself never is.
+    expect(live(dialog())).toBe(true);
+  });
+
+  it("restores the background exactly on close", () => {
+    const wizard = mountWizardStandIn();
+    const { rerender, props, container } = renderDialog();
+    rerender(<Host open={false} {...props} />);
+
+    expect(wizard.hasAttribute("inert")).toBe(false);
+    expect(container.hasAttribute("inert")).toBe(false);
+    expect(screen.getAllByRole("combobox", { name: "League" }).filter(live)).toHaveLength(1);
+  });
+
+  it("never clears an inert or aria-hidden that someone else set", () => {
+    const theirs = document.createElement("div");
+    theirs.setAttribute("data-testid", "someone-elses");
+    theirs.setAttribute("inert", "");
+    theirs.setAttribute("aria-hidden", "true");
+    document.body.appendChild(theirs);
+
+    const { rerender, props } = renderDialog();
+    expect(theirs.hasAttribute("inert")).toBe(true);
+    rerender(<Host open={false} {...props} />);
+
+    expect(theirs.hasAttribute("inert")).toBe(true);
+    expect(theirs.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("still hands focus back to the opener on close — released before focusing", () => {
+    const props = { initialName: "Padres", onCreated: vi.fn(), onClose: vi.fn() };
+    const { rerender } = render(<Host open={false} {...props} />);
+    const opener = screen.getByRole("button", { name: "Opener" });
+    opener.focus();
+    rerender(<Host open {...props} />);
+    expect(opener.closest("[inert]")).not.toBeNull();
+
+    rerender(<Host open={false} {...props} />);
+    expect(opener.closest("[inert]")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 (a11y audit) — Escape in the inline league form is ONE level
+// ---------------------------------------------------------------------------
+
+describe("NewTeamDialog — Escape inside the inline New League form", () => {
+  it("cancels only the league form; the dialog and the team draft survive", async () => {
+    currentLeagues = [];
+    const { onClose } = renderDialog({ initialName: "Lincoln Stars" });
+    fireEvent.change(locationField(), { target: { value: "Lincoln" } });
+    fireEvent.change(nameField(), { target: { value: "Stars" } });
+
+    const league = screen.getByRole("combobox", { name: "League" });
+    fireEvent.focus(league);
+    fireEvent.change(league, { target: { value: "USHL" } });
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “USHL”" }));
+    const leagueName = screen.getByLabelText("New league name");
+
+    fireEvent.keyDown(leagueName, { key: "Escape" });
+
+    expect(screen.queryByLabelText("New league name")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(dialog()).toBeTruthy();
+    expect(locationField().value).toBe("Lincoln");
+    expect(nameField().value).toBe("Stars");
+    // And a second Escape, now outside the sub-form, is the dialog's again.
+    fireEvent.keyDown(nameField(), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});

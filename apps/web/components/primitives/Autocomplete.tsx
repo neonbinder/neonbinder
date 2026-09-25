@@ -238,7 +238,12 @@ export function Autocomplete<T>({
         // the accessibility tree. ARIA 1.2 defines it as popup visibility.
         aria-expanded={showPopup}
         aria-autocomplete="list"
-        aria-controls={listboxId}
+        // Only while the listbox is in the DOM. An IDREF to an element that
+        // does not exist is an invalid reference (ARIA 1.2 lets a collapsed
+        // combobox omit aria-controls), and some AT reads a dangling one as
+        // "controls nothing". Conditional rather than an always-rendered
+        // hidden <ul>, so the collapsed DOM stays exactly what flows see.
+        aria-controls={showPopup ? listboxId : undefined}
         aria-activedescendant={showPopup ? activeId : undefined}
         autoComplete="off"
         onChange={(e) => {

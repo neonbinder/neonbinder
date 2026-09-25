@@ -231,6 +231,9 @@ vi.mock("./EntityLinkSearch", () => ({
 // ---------------------------------------------------------------------------
 
 import EntityReviewWizard, { BULK_MAX_PAGES } from "./EntityReviewWizard";
+// NEO-307 (a11y audit) — rendered over the wizard to prove only one "League"
+// combobox is ever live. Not mocked: its hold on the background is the point.
+import NewTeamDialog from "./NewTeamDialog";
 
 // ---------------------------------------------------------------------------
 // Fixtures / helpers
@@ -7231,5 +7234,110 @@ describe("EntityReviewWizard — linked-entity lookups are deduped and stably or
 
     expect(lastArgs("teams.getManyByIds")).toBe("skip");
     expect(lastArgs("players.getManyByIds")).toBe("skip");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 (a11y audit) — the page behind the wizard is inert, and a New Team
+// dialog opened over the wizard leaves exactly one "League" combobox live
+//
+// CardChecklist renders the wizard AND per-row TeamPickers; a picker's
+// NewTeamDialog portals over the wizard while the wizard shows its own New
+// Team step, so two comboboxes named "League" (an E2E contract, kept) were in
+// the tree at once. happy-dom does not drop inert subtrees from role queries,
+// so "live" is asserted as "no [inert] ancestor" — the attribute is the
+// contract a browser acts on.
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — modal isolation", () => {
+  const live = (el: Element) => el.closest("[inert]") === null;
+  const wizardPortal = () => {
+    let el: Element | null = screen.getByRole("dialog", {
+      name: "Confirm New Players & Teams",
+    });
+    while (el && el.parentElement !== document.body) el = el.parentElement;
+    return el as HTMLElement;
+  };
+
+  it("makes the page behind it inert while open, and releases it on close", () => {
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    const { container, rerender } = renderWizard();
+    expect(container.hasAttribute("inert")).toBe(true);
+    expect(live(wizardPortal())).toBe(true);
+
+    rerender(
+      <EntityReviewWizard
+        isOpen={false}
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId="batch-1"
+        summary={SUMMARY}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(container.hasAttribute("inert")).toBe(false);
+  });
+
+  it("parks focus in the dialog on open and hands it back to the opener on close", () => {
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    const opener = document.createElement("button");
+    opener.textContent = "Review names";
+    document.body.appendChild(opener);
+    try {
+      opener.focus();
+      const { rerender } = renderWizard();
+      expect(wizardPortal().contains(document.activeElement)).toBe(true);
+      expect(opener.hasAttribute("inert")).toBe(true);
+
+      rerender(
+        <EntityReviewWizard
+          isOpen={false}
+          selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+          batchId="batch-1"
+          summary={SUMMARY}
+          onConfirm={vi.fn()}
+          onCancel={vi.fn()}
+        />,
+      );
+      expect(opener.hasAttribute("inert")).toBe(false);
+      expect(document.activeElement).toBe(opener);
+    } finally {
+      opener.remove();
+    }
+  });
+
+  it("leaves one live 'League' combobox with a New Team dialog over its New Team step, and restores it on close", () => {
+    currentRows = [makeRow({ kind: "team", name: "Padres", status: "ready" })];
+    const { container } = renderWizard();
+    // The wizard's own New Team step, live on its own.
+    expect(
+      screen.getAllByRole("combobox", { name: "League" }).filter(live),
+    ).toHaveLength(1);
+
+    // A picker's dialog, opened over it.
+    const overlay = render(
+      <NewTeamDialog
+        sportId={"selopt-sport-1" as unknown as Id<"selectorOptions">}
+        initialName="Savannah Bananas"
+        onCreated={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    const teamDialog = screen.getByRole("dialog", { name: /New team/i });
+    const all = screen.getAllByRole("combobox", { name: "League" });
+    expect(all).toHaveLength(2);
+    const reachable = all.filter(live);
+    expect(reachable).toHaveLength(1);
+    expect(teamDialog.contains(reachable[0])).toBe(true);
+    expect(wizardPortal().hasAttribute("inert")).toBe(true);
+    expect(container.hasAttribute("inert")).toBe(true);
+
+    overlay.unmount();
+    // The wizard is live again; the page behind it is still the wizard's.
+    expect(wizardPortal().hasAttribute("inert")).toBe(false);
+    expect(container.hasAttribute("inert")).toBe(true);
+    const back = screen.getAllByRole("combobox", { name: "League" });
+    expect(back).toHaveLength(1);
+    expect(live(back[0])).toBe(true);
   });
 });

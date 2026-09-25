@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { inertBackground } from "../../lib/dom/inert-background";
 import { Theme } from "@radix-ui/themes";
 import { useMutation } from "convex/react";
 import { ConvexError } from "convex/values";
@@ -143,13 +144,32 @@ export default function NewTeamDialog({
   const titleId = useId();
 
   useEffect(() => {
+    // Captured FIRST: making the background inert (below) blurs whatever held
+    // focus, and a trigger read after that would be `<body>`.
     triggerRef.current = document.activeElement as HTMLElement | null;
+    /*
+     * NEO-307 (a11y audit) — everything behind this dialog goes `inert` for as
+     * long as it is open: the page, and any other portal, the review wizard's
+     * included. Opened from a picker while the wizard is showing its own New
+     * Team step, both forms carried a combobox named "League" and neither was
+     * hidden, so two identical controls were live in the tree at once — a
+     * Tab trap stops keyboard focus crossing between them, not a screen
+     * reader's browse cursor or a selector. `inertBackground` stacks and
+     * restores exactly, so closing this never releases what the wizard (or
+     * anyone else) is still holding.
+     */
+    const releaseBackground = dialogRef.current
+      ? inertBackground(dialogRef.current)
+      : () => {};
     // Opens on the field the operator came to type in, not on Cancel: nothing
     // here is destructive, so the safe thing and the intended thing coincide.
     // Same departure from `ConfirmDialog`, and the same reasoning, as
     // `AddLeagueDialog`.
     nameInputRef.current?.focus();
     return () => {
+      // Released BEFORE focus goes back: focusing an element that is still
+      // inert is a no-op.
+      releaseBackground();
       const trigger = triggerRef.current;
       if (trigger?.isConnected) trigger.focus();
     };
