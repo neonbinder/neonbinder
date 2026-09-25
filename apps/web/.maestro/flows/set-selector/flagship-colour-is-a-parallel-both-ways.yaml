@@ -1686,9 +1686,16 @@ tags:
           visible: "“${output.SOURCE_ROW}” now lives at ${output.BRAND} › ${output.TYPE_INSERT} › ${output.INSERT_ROW} › ${output.NEW_PARALLEL}\\."
           timeout: 7000
       # The builder drills to the landed row (`onReshaped` with the server's
-      # path): the panel now describes the new parallel. Its heading sits two
-      # lines above the `Set actions` row the page is centred on and changes
-      # in place, so it is on screen without a scroll.
-      - extendedWaitUntil:
-          visible: ".*Attributes for ${output.NEW_PARALLEL}.*"
+      # path): the panel now describes the new parallel. The drill brings the
+      # cascade's columns into view, which puts the panel BELOW the fold (CI
+      # 36185224543, step 569: the columns read All-America Game Autos › Red
+      # Ink with the SportLots link attached, the panel off screen). So scroll
+      # to it the way every other drill in this flow does: DOWN, centred,
+      # NEO-260 spacer (R8 case 1).
+      - scrollUntilVisible:
+          element:
+            text: ".*Attributes for ${output.NEW_PARALLEL}.*"
+          centerElement: true
+          visibilityPercentage: 10
+          waitToSettleTimeoutMs: 1000
           timeout: 7000
