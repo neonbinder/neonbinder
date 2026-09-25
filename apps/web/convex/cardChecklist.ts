@@ -213,6 +213,8 @@ export const backfillTeamToOnCardIds = internalMutation({
         sportId,
         teamString,
         setYear,
+        // NEO-307: a SET year — a card can show a team's past.
+        { allowPastEra: true },
       );
 
       if (!resolvedTeamId) {
@@ -386,6 +388,8 @@ export const applyBscTeamResolution = internalMutation({
       sportId,
       teamName,
       await findSetYearForSelectorOption(ctx, row.selectorOptionId),
+      // NEO-307: a SET year — a card can show a team's past.
+      { allowPastEra: true },
     );
 
     if (!resolvedTeamId) {

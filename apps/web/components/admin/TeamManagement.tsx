@@ -93,9 +93,10 @@ const NO_FRANCHISE = "";
 /**
  * NEO-254 — how many franchise pills render before the filter box appears.
  *
- * The League group next door bounds itself with `max-h-40 overflow-y-auto` and
- * a "Change league" disclosure, which works because a sport holds tens of
- * leagues. Franchises are about to be different: the NEO-254 preload mints one
+ * The New Team form's League pills once bounded themselves with `max-h-40
+ * overflow-y-auto` and a "Show all leagues" disclosure — until bulk-loaded
+ * leagues made even that unusable and NEO-307 replaced them with a type-ahead.
+ * Franchises are about to be different: the NEO-254 preload mints one
  * per franchise thread across five sports, so a scroll box would become a
  * hundred-pill haystack with no way to aim at one. Past the cap the group grows
  * a filter instead, and says how many it is hiding.
@@ -117,10 +118,10 @@ const FRANCHISE_PILL_CAP = 24;
 const ALIAS_NOTE_ANNOUNCE_DEBOUNCE_MS = 400;
 
 /**
- * Pill styling, copied deliberately from `SetSelector/NewTeamForm.tsx` and kept
- * in step with it — the two are the same control answering two versions of the
- * same question, and an operator should not have to learn it twice. The
- * accessibility reasoning behind each line lives on the original:
+ * Pill styling, originally copied from the League pills in
+ * `SetSelector/NewTeamForm.tsx`. Those were retired in NEO-307 (League is a
+ * type-ahead there now), so this is the surviving copy and its accessibility
+ * reasoning lives here:
  *
  *  - `py-1` not `py-0.5`: a text-xs pill at py-0.5 is 22px and only clears
  *    SC 2.5.8's 24px floor by leaning on the spacing exception.
@@ -142,7 +143,8 @@ function franchisePillClass(picked: boolean): string {
     "disabled:opacity-50 disabled:cursor-not-allowed",
     picked
       ? // A SOLID fill with a black label, not the translucent tint
-        // `NewTeamForm`'s green pills use. Measured, not copied: this project's
+        // the retired `NewTeamForm` league pills used (and `Autocomplete`'s
+        // green highlight still uses). Measured, not copied: this project's
         // own note is that raising opacity on a SAME-HUE tint lowers contrast,
         // and `bg-neon-purple/20` over this panel's ground composites to
         // #29173b, on which #A44AFF text is 3.91:1 — under SC 1.4.3's 4.5:1
@@ -536,8 +538,9 @@ function TeamDetail({
 
   /**
    * The Franchise options IN RENDERED ORDER — one model the JSX, the roving
-   * tabindex and the arrow keys all read from. Same shape, and the same
-   * reasoning, as `NewTeamForm`'s league pills.
+   * tabindex and the arrow keys all read from — the APG radio-group pattern,
+   * the same shape `CardPairingModal`'s name-conflict group uses (and
+   * `NewTeamForm`'s league pills used, until NEO-307 made League a type-ahead).
    *
    * Every entry is a VALUE, and exactly one is checked at any moment, because
    * each `checked` is the same comparison against `franchiseId`. "Start a new
@@ -547,7 +550,8 @@ function TeamDetail({
    * checked radios, which is a single-selection contract broken for anyone
    * reading it through assistive tech (SC 4.1.2) and invisible to everyone
    * else. It is a disclosure button beside the group instead, the same shape
-   * `NewTeamForm` gives its "Change league" toggle.
+   * `NewTeamForm`'s League row gave its "Show all leagues" toggle before
+   * NEO-307.
    */
   const franchisePills: Array<{
     key: string;
@@ -1094,8 +1098,10 @@ function TeamDetail({
             silently mutates the earlier. This panel already had two selects
             above it (the screen's league filter and this panel's League), so
             the Franchise select was the third and could never be driven.
-            `SetSelector/NewTeamForm.tsx` hit the identical trap and documents
-            it; this is the same remedy, deliberately.
+            `SetSelector/NewTeamForm.tsx`'s League hit the identical trap and
+            took the same remedy; since NEO-307 it is a type-ahead whose `<li
+            role="option">` rows Maestro taps directly, which is the other way
+            out of the trap.
 
             The League select beside it has the same defect and is NOT converted
             here — it is pre-existing, it is not what this ticket changed, and

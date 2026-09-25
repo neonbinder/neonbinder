@@ -56,6 +56,64 @@ export interface AutocompleteProps<T> {
   disabled?: boolean;
   className?: string;
   inputClassName?: string;
+  /**
+   * NEO-307 — show the list on focus even with nothing typed.
+   *
+   * Off by default: a SEARCH over an unbounded table (players) has nothing to
+   * show until there is a query. On for a bounded PICKER (a sport's leagues),
+   * where the whole set is the useful first view and typing only narrows it.
+   */
+  openOnEmpty?: boolean;
+  /**
+   * NEO-307 — the item that is the field's current answer, by `getKey`.
+   *
+   * Opening the list puts the highlight on it rather than on row 0, so Enter
+   * on a freshly-focused field re-confirms what is already chosen instead of
+   * silently swapping it for whatever sorts first. It is also marked with a
+   * check, so the answer is findable in a long list.
+   */
+  selectedKey?: string;
+  /**
+   * NEO-307 — the list closed without a pick (blur, or Escape while open).
+   * A caller showing its current answer in the field uses this to put that
+   * answer's label back after the operator typed and walked away.
+   */
+  onDismiss?: () => void;
+  /**
+   * NEO-307 — select the field's text on focus, so typing REPLACES a label the
+   * field is displaying rather than appending to it.
+   */
+  selectOnFocus?: boolean;
+  /**
+   * Height cap for the list, as a whole Tailwind class. Replaced rather than
+   * appended: Tailwind resolves two `max-h-*` utilities by stylesheet order,
+   * not by the order they appear in the string.
+   */
+  listMaxHeightClassName?: string;
+  /**
+   * The input's padding and font size, as whole Tailwind classes. Replaced
+   * rather than appended to `inputClassName`, for the same stylesheet-order
+   * reason as `listMaxHeightClassName`: a caller dropping this into a form of
+   * compact `p-1.5 text-sm` fields cannot out-rank `px-3 py-2 text-base`.
+   */
+  inputGeometryClassName?: string;
+  /**
+   * NEO-307 — put `getDescription`'s text on its own line under the label
+   * instead of beside it. For rows whose second fact is what tells two of
+   * them apart (five "Dodgers": league and years), where a trailing inline
+   * note is the first thing a narrow list truncates or wraps mid-phrase. The
+   * label stays the option's only direct text node either way.
+   */
+  descriptionBelow?: boolean;
+  /**
+   * NEO-307 — keep the list shut while there is nothing in it and nothing on
+   * its way, instead of showing `emptyMessage`. For a field that opens
+   * pre-filled with a proposal rather than with a search: "No matches" under a
+   * query the operator never typed answers a question nobody asked. The caller
+   * turns it off once the operator types, so a real search that finds nothing
+   * still says so.
+   */
+  hideWhenEmpty?: boolean;
 }
 
 export function Autocomplete<T>({
@@ -73,10 +131,22 @@ export function Autocomplete<T>({
   disabled = false,
   className = "",
   inputClassName = "",
+  openOnEmpty = false,
+  selectedKey,
+  onDismiss,
+  selectOnFocus = false,
+  listMaxHeightClassName = "max-h-60",
+  inputGeometryClassName = "px-3 py-2 text-base",
+  descriptionBelow = false,
+  hideWhenEmpty = false,
 }: AutocompleteProps<T>) {
   const [open, setOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
+  /** Set by a focus, consumed by the mouseup that follows a click-to-focus —
+   *  see `selectOnFocus`. */
+  const justFocusedRef = useRef(false);
   const listboxId = useId();
 
   // The highlight indexes into `items`, so it has to reset when the results
@@ -115,13 +185,40 @@ export function Autocomplete<T>({
   const hasResults = items.length > 0;
   // The popup is also shown for the loading and empty states, so the user gets
   // "searching…" / "no matches" rather than a silently absent list.
-  const showPopup = open && query.trim().length > 0;
+  const showPopup =
+    open &&
+    (openOnEmpty || query.trim().length > 0) &&
+    !(hideWhenEmpty && !hasResults && !loading);
   const activeId = hasResults ? `${listboxId}-opt-${highlightIdx}` : undefined;
+
+  // Keep the highlighted row on screen as the arrows walk a list longer than
+  // its height cap. Without this the highlight scrolls out of the box and a
+  // sighted keyboard user is steering blind. `nearest` so a row already in
+  // view does not jump. Optional-called: happy-dom has no layout.
+  useEffect(() => {
+    if (!showPopup || !hasResults) return;
+    const option = listRef.current?.querySelector<HTMLElement>(
+      `[id="${listboxId}-opt-${highlightIdx}"]`,
+    );
+    option?.scrollIntoView?.({ block: "nearest" });
+  }, [showPopup, hasResults, highlightIdx, listboxId]);
 
   const select = (item: T) => {
     onSelect(item);
     setOpen(false);
   };
+
+  /** Close without a pick, and tell the caller. Idempotent for the caller: a
+   *  blur after a pick reports a dismissal of a list that was already shut. */
+  const dismiss = () => {
+    setOpen(false);
+    onDismiss?.();
+  };
+
+  const selectedIdx =
+    selectedKey === undefined
+      ? -1
+      : items.findIndex((item) => getKey(item) === selectedKey);
 
   return (
     <div ref={containerRef} className={`relative ${className}`}>
@@ -148,8 +245,33 @@ export function Autocomplete<T>({
           onQueryChange(e.target.value);
           setOpen(true);
         }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
+        onFocus={(e) => {
+          setOpen(true);
+          // Open on the current answer, not on row 0 — see `selectedKey`.
+          if (selectedIdx !== -1) setHighlightIdx(selectedIdx);
+          if (selectOnFocus) {
+            e.currentTarget.select();
+            justFocusedRef.current = true;
+          }
+        }}
+        // A click on a field that already has focus fires no focus event, so
+        // after a pick (the list closes, focus stays) clicking the field again
+        // would do nothing. Reopen on click too.
+        onClick={() => setOpen(true)}
+        onMouseUp={(e) => {
+          // A click-to-focus runs focus (which selects) and THEN mouseup, and
+          // the mouseup's default is to drop a caret where the pointer is —
+          // throwing the selection away. Cancel only that first mouseup, so a
+          // later click inside the text still places the caret normally.
+          if (justFocusedRef.current) {
+            justFocusedRef.current = false;
+            e.preventDefault();
+          }
+        }}
+        onBlur={() => {
+          justFocusedRef.current = false;
+          dismiss();
+        }}
         onKeyDown={(e) => {
           if (e.key === "ArrowDown") {
             e.preventDefault();
@@ -177,7 +299,7 @@ export function Autocomplete<T>({
             if (showPopup) {
               e.preventDefault();
               e.stopPropagation();
-              setOpen(false);
+              dismiss();
             }
           }
         }}
@@ -187,15 +309,16 @@ export function Autocomplete<T>({
         // non-bare Input would (`px-3 py-2 text-base`). Without it the
         // placeholder sits flush against the border and the field is shorter
         // than every select beside it.
-        className={`w-full px-3 py-2 text-base ${inputClassName}`}
+        className={`w-full ${inputGeometryClassName} ${inputClassName}`}
       />
 
       {showPopup && (
         <ul
+          ref={listRef}
           id={listboxId}
           role="listbox"
           aria-label={`${label} suggestions`}
-          className="absolute z-20 left-0 right-0 mt-1 max-h-60 overflow-y-auto rounded-md border border-gray-700 bg-gray-900 shadow-lg"
+          className={`absolute z-20 left-0 right-0 mt-1 ${listMaxHeightClassName} overflow-y-auto rounded-md border border-gray-700 bg-gray-900 shadow-lg`}
         >
           {!hasResults && (
             // role="option" + aria-disabled, NOT role="presentation": per the
@@ -221,6 +344,7 @@ export function Autocomplete<T>({
           )}
           {items.map((item, idx) => {
             const description = getDescription?.(item);
+            const isCurrent = idx === selectedIdx;
             return (
               <li
                 key={getKey(item)}
@@ -240,9 +364,33 @@ export function Autocomplete<T>({
                     : "text-gray-200 hover:bg-gray-800"
                 }`}
               >
+                {selectedKey !== undefined && (
+                  /* The current answer's mark. A fixed-width slot on EVERY
+                     row, so labels stay aligned whether or not they carry it.
+                     aria-hidden: the combobox's own value already announces
+                     the answer, and the glyph must not join the option's
+                     accessible name or its text (the label is the option's
+                     only direct text node, which is what a flow matches). */
+                  <span
+                    aria-hidden="true"
+                    className="mr-2 inline-block w-3 text-[#00D558]"
+                  >
+                    {isCurrent ? "✓" : ""}
+                  </span>
+                )}
                 {getLabel(item)}
                 {description && (
-                  <span className="ml-2 text-xs text-gray-400">{description}</span>
+                  <span
+                    // `pl-5` = the check slot's `w-3 mr-2`, so a line under
+                    // the label starts under the label and not under the mark.
+                    className={`${
+                      descriptionBelow
+                        ? `block mt-0.5 ${selectedKey !== undefined ? "pl-5" : ""}`
+                        : "ml-2"
+                    } text-xs text-gray-400`}
+                  >
+                    {description}
+                  </span>
                 )}
               </li>
             );

@@ -127,6 +127,14 @@ const nameField = () => screen.getByLabelText("New team name") as HTMLInputEleme
 const locationField = () =>
   screen.getByLabelText("New team location (optional)") as HTMLInputElement;
 const dialog = () => screen.getByRole("dialog");
+/** NEO-307 — League is a type-ahead: focus opens the list, a pick is a mouse
+ *  down on the option (the combobox selects before its own blur can close). */
+const leagueField = () =>
+  screen.getByRole("combobox", { name: "League" }) as HTMLInputElement;
+function pickLeague(label: string): void {
+  fireEvent.focus(leagueField());
+  fireEvent.mouseDown(screen.getByRole("option", { name: label }));
+}
 const scrim = () => dialog();
 
 beforeEach(() => {
@@ -186,13 +194,12 @@ describe("NewTeamDialog — what it shows", () => {
     expect(nameField().value).toBe("Los Angeles Angels");
   });
 
-  it("passes the league suggestion through to the pills", () => {
+  it("passes the league suggestion through to the League field", () => {
     currentLeagues = [];
     renderDialog({ leagueSuggestion: "Australian Baseball League" });
 
-    expect(
-      screen.getByRole("radio", { name: "Create Australian Baseball League" }),
-    ).toBeTruthy();
+    // The standing answer while nothing else is picked.
+    expect(leagueField().value).toBe("Create Australian Baseball League");
   });
 });
 
@@ -317,7 +324,7 @@ describe("NewTeamDialog — creating", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderDialog({ initialName: "Padres" });
 
-    fireEvent.click(screen.getByRole("radio", { name: "MLB" }));
+    pickLeague("MLB");
     fireEvent.click(screen.getByRole("button", { name: "Create team Padres" }));
 
     await waitFor(() => {
@@ -335,7 +342,7 @@ describe("NewTeamDialog — creating", () => {
     // the two would file every league-less team under the sport default.
     renderDialog({ initialName: "Orix Buffaloes" });
 
-    fireEvent.click(screen.getByRole("radio", { name: "No league" }));
+    pickLeague("No league");
     fireEvent.click(screen.getByRole("button", { name: "Create team Orix Buffaloes" }));
 
     await waitFor(() => {
@@ -366,9 +373,7 @@ describe("NewTeamDialog — creating", () => {
       leagueSuggestion: "Australian Baseball League",
     });
 
-    fireEvent.click(
-      screen.getByRole("radio", { name: "Create Australian Baseball League" }),
-    );
+    pickLeague("Create Australian Baseball League");
     fireEvent.click(screen.getByRole("button", { name: "Create team Sydney Blue Sox" }));
 
     await waitFor(() => {
@@ -384,10 +389,8 @@ describe("NewTeamDialog — creating", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderDialog({ initialName: "Padres", leagueSuggestion: "Nippon Professional Baseball" });
 
-    fireEvent.click(
-      screen.getByRole("radio", { name: "Create Nippon Professional Baseball" }),
-    );
-    fireEvent.click(screen.getByRole("radio", { name: "MLB" }));
+    pickLeague("Create Nippon Professional Baseball");
+    pickLeague("MLB");
     fireEvent.click(screen.getByRole("button", { name: "Create team Padres" }));
 
     await waitFor(() => expect(mockFindOrCreate).toHaveBeenCalledTimes(1));
@@ -658,15 +661,17 @@ describe("NewTeamDialog — focus", () => {
     expect(document.activeElement).toBe(button);
   });
 
-  it("does not count the untabbable League pills as Tab stops", () => {
-    // The pills are a roving-tabindex radiogroup: all but one carry
-    // `tabindex="-1"`, so counting them would make the trap wrap at the wrong
-    // element.
+  it("wraps at the true ends with the League combobox and its open list inside", () => {
+    // NEO-307: League is one combobox — one Tab stop — and its options are
+    // `<li role="option">` with no tabindex, so an open list adds no stops for
+    // the trap to miscount.
     currentLeagues = [
       { _id: lid("l1"), name: "MLB" },
       { _id: lid("l2"), name: "NPB" },
     ];
     renderDialog();
+    fireEvent.focus(leagueField());
+    expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
 
     const cancel = screen.getByRole("button", { name: "Cancel" });
     cancel.focus();
@@ -703,7 +708,7 @@ describe("NewTeamDialog — end to end", () => {
 
     fireEvent.change(nameField(), { target: { value: "Padres" } });
     fireEvent.change(locationField(), { target: { value: "San Diego" } });
-    fireEvent.click(screen.getByRole("radio", { name: "MLB" }));
+    pickLeague("MLB");
 
     await act(async () => {
       fireEvent.keyDown(nameField(), { key: "Enter" });

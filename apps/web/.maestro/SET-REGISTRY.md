@@ -1171,8 +1171,10 @@ One new real set, touched by exactly one flow,
 checklist. Rule 1 above applies: this is a proposal for the owner, not an
 approval. Measured live on PR #262's Convex preview on 2026-09-16.
 
-**What the flow proves** (NEO-284): a "Link to Existing…" decision on a TEAM
-row in the entity-review wizard keeps the checklist's raw spelling as an alias
+**What the flow proves** (NEO-284): a LINK decision on a TEAM row in the
+entity-review wizard (since NEO-307 taken from the step's one `Search all
+teams` combobox — teams have no "Link to Existing…" or near-match Link buttons
+any more; players and leagues keep theirs) keeps the checklist's raw spelling as an alias
 of the linked team, by default, and the alias is written at COMMIT — so it
 needs a real set whose wizard opens on a TEAM row, and it needs to commit.
 
@@ -1368,7 +1370,7 @@ would put the wrong question on screen.
 | `cpx-` | `set-attributes-card-prefix.yaml` — an Insert row `CPXROW` under it carries the Card prefix under test; the flow clears the prefix before it ends. |
 | `cvar-` | `variation-link-group-and-unlink.yaml` |
 | `fp-` | `features-propagation.yaml` |
-| `ftl-` | `set-fill-teams-from-teammate-card.yaml` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, the `stt-` shape for the same League-row reason. Per-attempt because the Fill teams confirm's title and toast are EXACT card counts. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows, its player `FTP<token>` and its team `FTT<token>` stand. The set is given NO set-level team (NEO-277 would copy it onto every card and leave nothing to fill). |
+| `ftl-` | `set-fill-teams-from-teammate-card.yaml` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, the `stt-` shape for the same League-combobox reason. Per-attempt because the Fill teams confirm's title and toast are EXACT card counts. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows, its player `FTP<token>` and its team `FTT<token>` stand. The set is given NO set-level team (NEO-277 would copy it onto every card and leave nothing to fill). |
 | `msb-` | `move-set-to-another-brand.yaml` — its OWN sport `msb-sport-<worker>`, brand rows `Topps` / `Panini` under it in 2026 (hand-made, no ids), and ONE set `msb-a-<worker>` under `Topps`. The flow moves that set to `Panini` and back, so it ends where it started; `Panini` stays empty. Per-worker only (no count is asserted). **Never under `E2E Test Sport <worker>`** — it adds a brand row, see the fold note below. |
 | `parallel-feature-` | `cards-parallel-custom.yaml` |
 | `pg-cancel-` | `parallel-grouping-cancel-discards.yaml` (also `-${ATTEMPT_ID}`) |
@@ -1378,7 +1380,7 @@ would put the wrong question on screen.
 | `pg-reject-` | `parallel-grouping-reject-parallel.yaml` (also `-${ATTEMPT_ID}`) |
 | `pp-` | `player-picker-create-custom-card.yaml` |
 | `rnm-` | `rename-selector-option.yaml` (also `-${ATTEMPT_ID}`; renamed in-flow to `rnmx-`) |
-| `stt-` | `set-team-carries-down-to-cards.yaml` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, NOT Baseball: the New Team dialog's League row lists every league the sport holds in a `max-h-40` inner scroller maestro-web cannot drive, and under the synthetic sport the only pill is `No league`. Per-attempt because the cascade confirm's body is an EXACT card count. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows and its three teams stand. |
+| `stt-` | `set-team-carries-down-to-cards.yaml` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, NOT Baseball: the New Team dialog's `League` combobox (NEO-307) then lists only leagues this worker minted, so its typed filters match exactly what the flow expects. It mints ONE league, `STL<token>L`, on STA's dialog and picks it back on STB's (see the minted-names table). Per-attempt because the cascade confirm's body is an EXACT card count. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows and its three teams stand. |
 | `tlf-` | `checklist-title-length-limits-and-fixer.yaml` (also `-${ATTEMPT_ID}`) |
 | `tp-` | `team-picker.yaml` |
 | `tpc-` | `team-picker-create-custom-card.yaml` |
@@ -1589,6 +1591,17 @@ pin the form, the staging order and the decision. What the three E2E flows owe
 it is only that they ANSWER it — which is the loop above, and which is enough,
 because a league step they cannot answer stops the batch dead and fails them.
 
+**NEO-307 — the one deterministic route in: a league the operator TYPES.**
+Everything above is about a step an ENRICHMENT raises. A step the operator
+raises by picking `Create “<typed>”` in a team step's `League` combobox has
+neither problem: a per-attempt name (`Lg<token>`) is missing from every sport
+by construction, and nothing earlier in the run can have created it.
+`checklist-wizard-career-team-entry.yaml` does exactly that on its minted
+`ProbeTeam<token>` step, answers the `New League: Lg<token>` step the walk
+presents, reads `Lg<token> (new)` back on the team, and discards the batch — so
+the step is asserted live without a new real set and without writing a
+`leagues` row.
+
 **Do not answer these with a seed.** `e2e-baseline.sh` says it outright —
 NEO-214 removed the seed-teams fixture — and the standing rule is that E2E
 fixtures come from the UI. Creating a real set's worth of teams through Team
@@ -1606,8 +1619,18 @@ Two consequences worth knowing before writing a picker step:
   `New team <typed>` — and taking it OPENS a portalled dialog. The dialog is
   headed `New team: <typed>` and asks the three questions a `teams` row needs:
   `New team location (optional)`, `New team name` (pre-filled with the typed
-  text) and a `New team league` radiogroup of pills (the sport's leagues, an
-  optional `Create <league>`, and `No league`), with a `Shows as:` preview. Its
+  text) and a `League` combobox (NEO-307: one input, accessible name exactly
+  `League`, over a listbox whose options read the sport's league names,
+  `<name> (new)` for a league the batch staged, `Create <name>` for an
+  enrichment suggestion NB lacks, `Create “<typed>”` ONLY when the typed text
+  matches nothing (no league name, alias or abbreviation, staged league or
+  suggestion contains it) — in the dialog it opens the league form
+  pre-filled, and `Add league` writes the row; in the wizard it stages a
+  `New League:` step — and `No league`, always, unfiltered), with a
+  `Shows as:` preview. Drive it as: tap
+  `id: "League"`, type a STRICT substring of the option, tap the option by its
+  exact text, then read the input back as `{id: "League", text: <label>}` —
+  never type the whole label, or the input's own text answers to the tap. Its
   Create button keeps the accessible name every flow already used —
   `Create team <composed full name>` — so the only change to an existing flow is
   the extra step that opens the dialog.
@@ -1660,6 +1683,8 @@ whole thing; never assume which letter the worker half starts with.
 | `MintedTeam` | `checklist-wizard-career-team-commits.yaml` | |
 | `TPT` | `team-picker.yaml` | |
 | `ProbeTeam` / `TempTeam` | `checklist-wizard-career-team-entry.yaml` | never persisted — the flow discards its batch |
+| `STL` | `set-selector/set-team-carries-down-to-cards.yaml` | a LEAGUE, not a team, named `STL<token>L`: created from STA's New Team dialog (`Create “STL<token>L”` → `Add league`) under `E2E Test Sport <w>`, then picked as an existing league on STB's by typing `<token>L`. The trailing `L` is load-bearing: the create option appears only when the typed text is a substring of NO league, the token's random tail varies in length, so a bare `STL<token>` can sit inside an older attempt's name — a letter after the digits makes it contained in none. No flow deletes it, so one row per attempt stands in that worker's sport; nothing else types into that sport's League combobox except `No lea` |
+| `Lg` | `checklist-wizard-career-team-entry.yaml` | a LEAGUE staged on ProbeTeam's wizard step and picked as `Lg<token> (new)` on TempTeam's — never persisted, the batch is discarded |
 
 ### ⚠️ A name typed into a team picker must be a SINGLE search token
 

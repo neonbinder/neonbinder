@@ -45,9 +45,9 @@ tags:
 #   (SET-REGISTRY.md, prefix `ftl-`). Per-attempt because the confirm's title
 #   and the toast are EXACT card counts, only knowable on a checklist this
 #   attempt created from empty (the stt-/cna- precedent). The synthetic sport
-#   rather than Baseball because the New Team dialog's League row lists every
-#   league the sport holds in a `max-h-40` inner scroller maestro-web cannot
-#   drive; under this sport the only pill is "No league", always in view. The
+#   rather than Baseball keeps the New Team dialog's League combobox (NEO-307)
+#   to leagues this worker minted, none of which the typed "No lea" filter
+#   below can match. The
 #   set gets NO set-level team (NEO-277): a set team is copied onto every card
 #   born beneath it, which would leave nothing for Fill teams to fill.
 #
@@ -268,12 +268,23 @@ tags:
 - assertVisible:
     id: "New team name"
     text: "FTT${output.ATTEMPT_TOKEN}"
-# Location by its explicit aria-label (regex brackets escaped). League: the
-# "No league" pill — under this sport it is the only league pill there is.
+# Location by its explicit aria-label (regex brackets escaped).
 - tapOn:
     id: "New team location \\(optional\\)"
 - inputText: "Loc${output.ATTEMPT_TOKEN}"
+# League (NEO-307): the combobox named "League", answered "No league" the
+# same way set-team-carries-down-to-cards.yaml answers its STC team — see the
+# note there for why "No lea" (a strict substring, so the input's own text
+# cannot answer to the tap) and why the read-back is decisive.
+- tapOn:
+    id: "League"
+- inputText: "No lea"
 - tapOn: "No league"
+- extendedWaitUntil:
+    visible:
+      id: "League"
+      text: "No league"
+    timeout: 7000
 # THE WRITE. The Create button's accessible name is the COMPOSED full name,
 # so targeting it is itself the assertion that Location + Name composed in
 # that order. Tapped by id, never a second Enter (Create/Cancel share a class

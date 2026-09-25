@@ -145,6 +145,9 @@ export const findByNameAndSport = query({
       args.sportId,
       args.name,
       args.setYear,
+      // NEO-307: `setYear` here is the SET's year (the review gate's), so a
+      // card may show a team's past. See `resolveTeamForSetYear` rule 1.
+      { allowPastEra: true },
     );
     return teamId ? await ctx.db.get(teamId) : null;
   },
@@ -1003,6 +1006,9 @@ export const findByFullNameInternal = internalQuery({
   },
   returns: v.union(v.id("teams"), v.null()),
   handler: async (ctx, args): Promise<Id<"teams"> | null> => {
+    // NEO-307: STRICT — no `allowPastEra`. The one caller is the Wikidata
+    // career-team resolver, and its year is a stint's start: nobody plays for
+    // a team after it folds, so a lone row outside its era stays unmatched.
     const { teamId } = await resolveTeamForSetYear(
       ctx,
       args.sportId,

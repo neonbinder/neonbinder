@@ -14339,6 +14339,9 @@ export const commitCardChecklistPrelude = internalMutation({
       rawName: string,
       forYear: number | undefined,
     ): Promise<Id<"teams"> | null> => {
+      // NEO-307: STRICT — no `allowPastEra`. The one caller is
+      // `resolveCareerTeamId`, whose year is a stint's start; a card's teams
+      // resolve in the team loop further down, which opts in.
       const { teamId } = await resolveTeamForSetYear(
         ctx,
         args.sportId,
@@ -15211,6 +15214,8 @@ export const commitCardChecklistPrelude = internalMutation({
           args.sportId,
           name,
           setYear,
+          // NEO-307: a SET year — must agree with the resolve phase below.
+          { allowPastEra: true },
         );
         // Already resolves on its own — the resolve phase will link it, and
         // minting a rival row is exactly what the guard in the combined loop
@@ -15247,6 +15252,8 @@ export const commitCardChecklistPrelude = internalMutation({
         args.sportId,
         name,
         setYear,
+        // NEO-307: a SET year — a card can show a team's past.
+        { allowPastEra: true },
       );
       if (existingTeamId) {
         const existing = (await ctx.db.get(existingTeamId))!;

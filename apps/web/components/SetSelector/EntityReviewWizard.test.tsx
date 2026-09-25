@@ -113,6 +113,9 @@ vi.mock("../../convex/_generated/api", () => ({
       stageCareerTeamRows: "entityReviewQueue.stageCareerTeamRows",
       // NEO-248: removing a chip clears the years off the step that holds them.
       clearCareerTeamStint: "entityReviewQueue.clearCareerTeamStint",
+      // NEO-254 / NEO-307: a league typed into the New Team step's League
+      // field is staged as a New League step of its own.
+      stageLeagueRows: "entityReviewQueue.stageLeagueRows",
     },
     players: {
       nearMatches: "players.nearMatches",
@@ -130,7 +133,7 @@ vi.mock("../../convex/_generated/api", () => ({
       getManyByIds: "teams.getManyByIds",
       resolveNames: "teams.resolveNames",
     },
-    // NEO-236: NewTeamForm's League pills read the sport's leagues.
+    // NEO-236: NewTeamForm's League field reads the sport's leagues.
     leagues: {
       list: "leagues.list",
     },
@@ -159,7 +162,10 @@ const mockRecordAllRemainingAsSkip = vi.fn();
 const mockStageCareerTeamRows = vi.fn(() => Promise.resolve(0));
 /** NEO-248 — the durable half of removing a hand-typed chip. */
 const mockClearCareerTeamStint = vi.fn(() => Promise.resolve(null));
-/** Rows served to leagues.list (the New Team step's League pills). */
+/** NEO-307 — what staging a typed league answers. Undefined by default (the
+ *  wizard's fire-and-forget staging ignores it). */
+const mockStageLeagueRows = vi.fn(() => Promise.resolve(undefined as unknown));
+/** Rows served to leagues.list (the New Team step's League field). */
 let currentLeagues: unknown;
 
 vi.mock("convex/react", () => ({
@@ -183,6 +189,7 @@ vi.mock("convex/react", () => ({
       return mockStageCareerTeamRows;
     if (ref === "entityReviewQueue.clearCareerTeamStint")
       return mockClearCareerTeamStint;
+    if (ref === "entityReviewQueue.stageLeagueRows") return mockStageLeagueRows;
     // Every other mutation still has to look like one: the component `await`s
     // what `useMutation` hands back.
     return vi.fn(() => Promise.resolve(undefined));
@@ -344,6 +351,18 @@ const teamLocationField = () =>
   screen.getByLabelText("New team location (optional)") as HTMLInputElement;
 const teamNameField = () =>
   screen.getByLabelText("New team name") as HTMLInputElement;
+/** NEO-307 — League is a type-ahead named "League": focus opens the list, and
+ *  a pick is a mouse down on the option. */
+const teamLeagueField = () =>
+  screen.getByRole("combobox", { name: "League" }) as HTMLInputElement;
+/** The League field's own list — scoped, because the team step can carry a
+ *  second combobox (the team-match search) whose options are not leagues. */
+const teamLeagueList = () =>
+  screen.getByRole("listbox", { name: "League suggestions" });
+function pickTeamLeague(label: string): void {
+  fireEvent.focus(teamLeagueField());
+  fireEvent.mouseDown(within(teamLeagueList()).getByRole("option", { name: label }));
+}
 
 /**
  * The composed-name preview, read as one string.
@@ -450,6 +469,7 @@ beforeEach(() => {
   mockRecordAllRemainingAsSkip.mockResolvedValue(LAST_PAGE);
   mockStageCareerTeamRows.mockResolvedValue(0);
   mockClearCareerTeamStint.mockResolvedValue(null);
+  mockStageLeagueRows.mockResolvedValue(undefined);
   currentRows = [];
   currentLeagues = [];
   currentNearMatches = [];
@@ -670,25 +690,13 @@ describe("EntityReviewWizard — decision actions", () => {
     });
   });
 
-  it("selecting a team from EntityLinkSearch calls recordDecision with linkedTeamId set (linkedPlayerId undefined)", async () => {
-    const row = makeRow({ kind: "team", status: "ready" });
-    currentRows = [row];
+  it("NEO-307: a TEAM row has no 'Link to Existing…' — its link control is the 'Search all teams' type-ahead", () => {
+    currentRows = [makeRow({ kind: "team", status: "ready" })];
     renderWizard();
 
-    fireEvent.click(screen.getByLabelText("Link to existing instead"));
-    fireEvent.click(screen.getByText("Stub link select"));
-
-    await waitFor(() => {
-      expect(mockRecordDecision).toHaveBeenCalledWith({
-        reviewRowId: row._id,
-        action: "link",
-        linkedPlayerId: undefined,
-        linkedTeamId: "linked-id-123",
-        // NEO-284 — the "remember this name" box is ticked by default on a
-        // team row, so a link carries it unless the operator unticks it.
-        saveAsAlias: true,
-      });
-    });
+    expect(screen.queryByLabelText("Link to existing instead")).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Search all teams" })).toBeTruthy();
+    // Linking from it is covered in EntityReviewWizard.teamMatchSearch.test.tsx.
   });
 });
 
@@ -2298,7 +2306,7 @@ describe("EntityReviewWizard — near matches", () => {
     });
   });
 
-  it("picking a panel row records a link decision", async () => {
+  it("picking a near match records a link decision", async () => {
     const row = makeRow({ kind: "team", name: "NY Yankees", status: "ready" });
     currentNearMatches = [
       { _id: "team_ny", name: "New York Yankees", confidence: "close" },
@@ -2306,7 +2314,10 @@ describe("EntityReviewWizard — near matches", () => {
     currentRows = [row];
     renderWizard();
 
-    fireEvent.click(screen.getByLabelText("Link to New York Yankees"));
+    // NEO-307 — on a team step the near matches are the "Search all teams"
+    // type-ahead's opening options, not a list of buttons.
+    fireEvent.focus(screen.getByRole("combobox", { name: "Search all teams" }));
+    fireEvent.mouseDown(screen.getByRole("option", { name: /^New York Yankees/ }));
 
     await waitFor(() => {
       expect(mockRecordDecision).toHaveBeenCalledWith({
@@ -2445,24 +2456,14 @@ describe("EntityReviewWizard — save-as-alias checkbox", () => {
   const collapsed = (box: HTMLElement) =>
     box.closest("[hidden]") !== null && box.tabIndex === -1;
 
-  it("is COLLAPSED (mounted, hidden, out of the tab order) when there is no Link control on screen at all", () => {
+  it("NEO-307: is SHOWN on a team step with no near matches — the 'Search all teams' type-ahead is its Link control", () => {
     currentNearMatches = [];
     currentRows = [makeRow({ kind: "team", name: "Brand New Squad", status: "ready" })];
     renderWizard();
 
     expect(screen.queryByText("Possible matches")).toBeNull();
+    expect(screen.getByRole("combobox", { name: "Search all teams" })).toBeTruthy();
     const box = screen.getByLabelText(rememberLabel("Brand New Squad"));
-    expect(collapsed(box)).toBe(true);
-  });
-
-  it("expands once the link search opens on a team row with no near matches", () => {
-    currentNearMatches = [];
-    currentRows = [makeRow({ kind: "team", name: "Brand New Squad", status: "ready" })];
-    renderWizard();
-
-    const box = screen.getByLabelText(rememberLabel("Brand New Squad"));
-    expect(collapsed(box)).toBe(true);
-    fireEvent.click(screen.getByLabelText("Link to existing instead"));
     expect(collapsed(box)).toBe(false);
     expect(box.closest("[hidden]")).toBeNull();
     expect(box.tabIndex).toBe(0);
@@ -2491,7 +2492,9 @@ describe("EntityReviewWizard — save-as-alias checkbox", () => {
     ];
     rerender(wizardEl());
 
-    expect(screen.getByLabelText("Link to LSU Fighting Tigers")).toBeTruthy();
+    // NEO-307 — the close match lands in the team type-ahead, whose panel
+    // heading appears with it.
+    expect(screen.getByText("Possible matches")).toBeTruthy();
     expect(screen.getByLabelText(rememberLabel("LSU"))).toBe(box);
     expect(document.activeElement).toBe(box);
   });
@@ -4727,7 +4730,7 @@ describe("EntityReviewWizard — the New Team step", () => {
 
     expect(screen.queryByLabelText("New team location (optional)")).toBeNull();
     expect(screen.queryByLabelText("New team name")).toBeNull();
-    expect(screen.queryByRole("radiogroup", { name: "New team league" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "League" })).toBeNull();
   });
 
   // -------------------------------------------------------------------------
@@ -4787,9 +4790,12 @@ describe("EntityReviewWizard — the New Team step", () => {
 
     expect(teamLocationField().id).toBe("entity-review-team-location");
     expect(teamNameField().id).toBe("entity-review-team-name");
+    // The League id sits on the field's wrapper, never on the combobox: an id
+    // there would replace "League" as the input's Maestro resource-id.
+    expect(teamLeagueField().id).toBe("");
     expect(
-      screen.getByRole("radiogroup", { name: "New team league" }).id,
-    ).toBe("entity-review-team-league");
+      document.getElementById("entity-review-team-league")?.contains(teamLeagueField()),
+    ).toBe(true);
   });
 
   it("sends the League the operator picked, and null verbatim for 'No league'", async () => {
@@ -4803,7 +4809,7 @@ describe("EntityReviewWizard — the New Team step", () => {
     ];
     renderWizard();
 
-    fireEvent.click(screen.getByRole("radio", { name: "No league" }));
+    pickTeamLeague("No league");
     fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
 
     await waitFor(() => {
@@ -4815,7 +4821,7 @@ describe("EntityReviewWizard — the New Team step", () => {
     });
   });
 
-  it("offers the enrichment's league as a pill, and sends it as a NAME when we hold no such row", async () => {
+  it("offers the enrichment's league as 'Create <name>', and sends it as a NAME when we hold no such row", async () => {
     const row = makeRow({
       kind: "team",
       name: "Sydney Blue Sox",
@@ -4826,9 +4832,7 @@ describe("EntityReviewWizard — the New Team step", () => {
     currentLeagues = [];
     renderWizard();
 
-    fireEvent.click(
-      screen.getByRole("radio", { name: "Create Australian Baseball League" }),
-    );
+    pickTeamLeague("Create Australian Baseball League");
     fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
 
     await waitFor(() => {
@@ -4837,6 +4841,137 @@ describe("EntityReviewWizard — the New Team step", () => {
           create: {
             name: "Sydney Blue Sox",
             leagueName: "Australian Baseball League",
+          },
+        }),
+      );
+    });
+  });
+
+  it("shows the enrichment's league as the standing answer before anything is picked", () => {
+    currentRows = [
+      makeRow({
+        kind: "team",
+        name: "Sydney Blue Sox",
+        status: "ready",
+        enrichment: { league: "Australian Baseball League" },
+      }),
+    ];
+    currentLeagues = [
+      { _id: "league-abl" as unknown as Id<"leagues">, name: "Australian Baseball League" },
+      { _id: "league-mlb" as unknown as Id<"leagues">, name: "MLB" },
+    ];
+    renderWizard();
+
+    expect(teamLeagueField().value).toBe("Australian Baseball League");
+    fireEvent.focus(teamLeagueField());
+    // Suggested first, then the rest, then No league.
+    expect(
+      within(teamLeagueList())
+        .getAllByRole("option")
+        .map((o) => o.textContent),
+    ).toEqual(["✓Australian Baseball League", "MLB", "No league"]);
+  });
+
+  it("finds a held league by its alias and sends it as leagueId", async () => {
+    const row = makeRow({ kind: "team", name: "Lincoln Stars", status: "ready" });
+    currentRows = [row];
+    currentLeagues = [
+      {
+        _id: "league-ushl" as unknown as Id<"leagues">,
+        name: "United States Hockey League",
+        aliases: ["USHL"],
+      },
+      { _id: "league-whl" as unknown as Id<"leagues">, name: "Western Hockey League" },
+    ];
+    renderWizard();
+
+    fireEvent.focus(teamLeagueField());
+    fireEvent.change(teamLeagueField(), { target: { value: "ushl" } });
+    fireEvent.mouseDown(
+      within(teamLeagueList()).getByRole("option", {
+        name: "United States Hockey League",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: {
+            name: "Lincoln Stars",
+            leagueId: "league-ushl",
+          },
+        }),
+      );
+    });
+  });
+
+  it("stages a typed league the sport does not hold, and sends the team's league as that NAME", async () => {
+    // Jason, preview 2026-09-07, on "New Team: Lincoln Stars" (USHL): no
+    // suggestion and no league in the sport. Typing it is now how it is said.
+    const row = makeRow({ kind: "team", name: "Lincoln Stars", status: "ready" });
+    currentRows = [row];
+    currentLeagues = [];
+    mockStageLeagueRows.mockResolvedValue({
+      outcome: "staged",
+      name: "United States Hockey League",
+    });
+    renderWizard();
+
+    fireEvent.focus(teamLeagueField());
+    fireEvent.change(teamLeagueField(), {
+      target: { value: "United States Hockey League" },
+    });
+    fireEvent.mouseDown(
+      within(teamLeagueList()).getByRole("option", {
+        name: "Create “United States Hockey League”",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(mockStageLeagueRows).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        leagueName: "United States Hockey League",
+      }),
+    );
+    await waitFor(() =>
+      expect(teamLeagueField().value).toBe("United States Hockey League (new)"),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: {
+            name: "Lincoln Stars",
+            leagueName: "United States Hockey League",
+          },
+        }),
+      );
+    });
+  });
+
+  it("offers a league an earlier step of this batch created, as '<name> (new)'", async () => {
+    const league = makeRow({
+      kind: "league",
+      name: "United States Hockey League",
+      status: "ready",
+      decision: { action: "create" },
+    });
+    const team = makeRow({ kind: "team", name: "Lincoln Stars", status: "ready" });
+    currentRows = [league, team];
+    currentLeagues = [];
+    renderWizard();
+
+    pickTeamLeague("United States Hockey League (new)");
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          create: {
+            name: "Lincoln Stars",
+            leagueName: "United States Hockey League",
           },
         }),
       );
@@ -4900,7 +5035,7 @@ describe("EntityReviewWizard — career-team chips report the staged answer", ()
     // And no team form of any shape on a player step — that is the New Team
     // step's job, and it is a different step.
     expect(screen.queryByLabelText("New team name")).toBeNull();
-    expect(screen.queryByRole("radiogroup", { name: "New team league" })).toBeNull();
+    expect(screen.queryByRole("combobox", { name: "League" })).toBeNull();
   });
 
   it("reads '→ {name}' for a career team we already hold", () => {
@@ -5895,10 +6030,14 @@ describe("EntityReviewWizard — the decision lives in the fixed footer", () => 
     }));
     renderWizard();
 
-    const group = screen.getByRole("radiogroup", { name: "New team league" });
-    expect(group.getAttribute("id")).toBe("entity-review-team-league");
-    expect(group.className).toContain("max-h-40");
-    expect(group.className).toContain("overflow-y-auto");
+    // NEO-307: the list floats over the step rather than growing it, and is
+    // capped and scrolls however many leagues the sport holds.
+    fireEvent.focus(teamLeagueField());
+    const list = teamLeagueList();
+    expect(list.className).toContain("absolute");
+    expect(list.className).toContain("max-h-40");
+    expect(list.className).toContain("overflow-y-auto");
+    expect(within(list).getAllByRole("option")).toHaveLength(21);
   });
 });
 
@@ -6833,6 +6972,85 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
     const scrollBox = document.querySelector(".overflow-y-auto");
     const primary = screen.getByRole("button", { name: "Add as New League" });
     expect(scrollBox!.contains(primary)).toBe(false);
+  });
+
+  function seedLookingUpLeague(status: "pending" | "ready") {
+    const team = makeRow({
+      _id: "row-team" as unknown as Id<"entityReviewQueue">,
+      kind: "team",
+      name: "Vancouver Canucks",
+      status: "ready",
+    });
+    const league = makeRow({
+      _id: "row-league" as unknown as Id<"entityReviewQueue">,
+      kind: "league",
+      name: "National Hockey League",
+      status,
+      source: { kind: "leagueOf", teamRowId: team._id as unknown as string },
+      // No `enrichment`: the league's own Wikidata lookup has not landed.
+    });
+    currentRows = [
+      league,
+      team,
+      makeRow({ kind: "player", name: "Guy Lafleur", status: "pending" }),
+      makeRow({ kind: "team", name: "Montreal Canadiens", status: "pending" }),
+    ];
+    currentNearMatches = [];
+    return league;
+  }
+
+  it("presents a league step whose lookup is still PENDING, says so, and lets it be added now", async () => {
+    // House rule: Wikidata is assistive, never waited on — and E2E must not
+    // wait on it either. The lookup only PREFILLS abbreviation, years and the
+    // QID, so the step is on screen before it answers (`isPresentable`).
+    const league = seedLookingUpLeague("pending");
+    renderWizard();
+
+    expect(
+      screen.getByRole("heading", { name: "New League: National Hockey League" }),
+    ).toBeTruthy();
+    // Honest about the lookup, and not a false "no match".
+    expect(
+      screen.getByText("Still looking up details. Add it now, or wait and they'll fill in."),
+    ).toBeTruthy();
+    expect(screen.queryByText("No Wikidata match found.")).toBeNull();
+    // The batch really is still looking things up — this league included…
+    expect(footerStatusText()).toBe("3 still looking up — wait or skip");
+    // …and the step does not care.
+    const primary = screen.getByRole("button", { name: "Add as New League" });
+    expect(primary.getAttribute("aria-disabled")).toBeNull();
+    expect((primary as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(primary);
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewRowId: league._id,
+          action: "create",
+          createLeague: { name: "National Hockey League" },
+        }),
+      );
+    });
+  });
+
+  it("lets a READY league with no prefill yet be added while other rows are still looking up", async () => {
+    // How staging inserts a league today: `ready` at once, lookup in flight.
+    const league = seedLookingUpLeague("ready");
+    renderWizard();
+
+    expect(footerStatusText()).toBe("2 still looking up — wait or skip");
+    const primary = screen.getByRole("button", { name: "Add as New League" });
+    expect(primary.getAttribute("aria-disabled")).toBeNull();
+    fireEvent.click(primary);
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewRowId: league._id,
+          action: "create",
+          createLeague: { name: "National Hockey League" },
+        }),
+      );
+    });
   });
 
   it("offers 'Skip — no league', not 'not a league'", () => {

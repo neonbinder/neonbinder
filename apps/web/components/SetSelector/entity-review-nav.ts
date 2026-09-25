@@ -108,7 +108,7 @@ export type NavRow = {
  * NEO-254 — is this TEAM row still waiting on a league the batch has to create?
  *
  * The league twin of `waitingOnStagedTeams`, and the same argument: a team step
- * whose league does not exist yet cannot be answered — its league pill row
+ * whose league does not exist yet cannot be answered — its League field
  * would offer `Create <name>`, which is the very thing the New League step
  * replaced. So the team waits for its own staged league, exactly as a player
  * waits for its staged teams.
@@ -131,6 +131,27 @@ export type NavRow = {
  * from `stagedLeagueIdByName` at commit. Blocking thirty steps on one answer
  * would stall the walk for no gain.
  */
+/**
+ * NEO-307 — can this row be put in front of the operator yet?
+ *
+ * For a player or a team, only once its lookup has settled: the whole step is
+ * built out of what the lookup found. For a LEAGUE, always. Everything a New
+ * League step asks is known when the row is staged (the name, and the checks
+ * that the sport and the batch do not already hold it); its Wikidata lookup
+ * only prefills abbreviation, years and the QID, and streams into the open
+ * form when it lands. Wikidata is assistive and is never waited on — so a
+ * still-pending league is presented, says it is still looking, and can be
+ * added straight away.
+ *
+ * `stageLeagueRowsImpl` already inserts league steps `ready` for the same
+ * reason; this is the client holding the same line for any league row that
+ * arrives pending, rather than trusting one insert site forever.
+ */
+export function isPresentable(row: NavRow): boolean {
+  if (row.decision) return false;
+  return row.status !== "pending" || row.kind === "league";
+}
+
 function waitingOnStagedLeagues(
   row: NavRow,
   rows: readonly NavRow[],
@@ -243,12 +264,14 @@ export function nextUndecided<T extends NavRow>(rows: readonly T[]): T | null {
    * ── NEO-254: and EVERY undecided league comes before ANY undecided team ──
    *
    * The same argument, one level up, and it is not optional here: a team step
-   * whose league does not exist yet cannot be answered — its league pill row
+   * whose league does not exist yet cannot be answered — its League field
    * would offer `Create <name>`, which is the very thing the New League step
    * replaced. Answering leagues first also makes the TEAMS easier, exactly as
    * answering teams first makes the players easier.
    */
-  const league = rows.find((r) => settled(r) && r.kind === "league");
+  // NEO-307: `isPresentable`, not `settled` — a league's lookup is a prefill,
+  // never a wait.
+  const league = rows.find((r) => r.kind === "league" && isPresentable(r));
   if (league) return league;
 
   /*
@@ -258,9 +281,9 @@ export function nextUndecided<T extends NavRow>(rows: readonly T[]): T | null {
    * its own staged league was presented anyway and `waitingOnStagedLeagues`
    * was dead code on the hot path. That is the defect NEO-236 hit with
    * players (a pin that never re-checked for newly staged blockers),
-   * reappearing one level up — and it is why the league pass above is not on
-   * its own sufficient: a league whose lookup has not landed is not `settled`,
-   * so it is stepped over, and its team must still wait for it.
+   * reappearing one level up. Since NEO-307 the league pass above presents a
+   * league whether or not its lookup has landed, so an undecided staged league
+   * is always reachable first; its team still waits for the ANSWER.
    */
   const team = rows.find(
     (r) => settled(r) && r.kind === "team" && !waitingOnStagedLeagues(r, rows),
@@ -295,9 +318,10 @@ function hasSettledUndecidedTeam(rows: readonly NavRow[]): boolean {
     (r) =>
       // NEO-254: a league counts too — it is the prerequisite of a team
       // exactly as a team is of a player, and both sort ahead of one.
+      // NEO-307: a league is answerable while its lookup is still out, so it
+      // counts whether or not that lookup has landed.
       (r.kind === "team" || r.kind === "league") &&
-      r.status !== "pending" &&
-      !r.decision,
+      isPresentable(r),
   );
 }
 

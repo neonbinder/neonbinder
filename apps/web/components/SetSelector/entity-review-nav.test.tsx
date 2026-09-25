@@ -25,6 +25,7 @@ import {
   countDecided,
   countPendingUndecided,
   describeDecision,
+  isPresentable,
   nextUndecided,
   resolveNav,
   summarizeDecisions,
@@ -925,8 +926,8 @@ describe("nextUndecided — the league tier", () => {
      * presented with an unanswered league would show `Create <league>` — the
      * very thing the New League step replaced.
      *
-     * The league here is still `pending`, so the league pass above steps over
-     * it; only the team's own blocker check keeps the walk honest.
+     * Since NEO-307 a pending league is presented rather than stepped over,
+     * so the walk goes to the LEAGUE — never to the team it blocks.
      */
     const team = { _id: "t1", status: "ready" as const, kind: "team" as const };
     const league = {
@@ -935,7 +936,7 @@ describe("nextUndecided — the league tier", () => {
       kind: "league" as const,
       source: { kind: "leagueOf" as const, teamRowId: "t1" },
     };
-    expect(nextUndecided([team, league])).toBeNull();
+    expect(nextUndecided([team, league])?._id).toBe("l1");
   });
 
   it("releases the team once its league is answered — including a skip", () => {
@@ -1005,5 +1006,97 @@ describe("nextUndecided — a team waits on the league DECISION, never the looku
       decision: { action: "create" as const },
     };
     expect(nextUndecided([team, league])?._id).toBe("t1");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 — a league step never waits on Wikidata
+//
+// House rule: Wikidata is assistive and never waited on, and E2E must not wait
+// on it either. A New League step's lookup only PREFILLS abbreviation, years
+// and the QID, so a league row is presented whether or not that lookup has
+// landed. Players and teams keep waiting: their whole step is built out of
+// what the lookup found.
+// ---------------------------------------------------------------------------
+
+describe("nextUndecided — a pending league is presented, not waited on", () => {
+  const pendingLeague = (id: string, teamRowId?: string) => ({
+    _id: id,
+    status: "pending" as const,
+    kind: "league" as const,
+    ...(teamRowId ? { source: { kind: "leagueOf" as const, teamRowId } } : {}),
+  });
+
+  it("presents a league whose lookup is still out", () => {
+    expect(nextUndecided([pendingLeague("l1")])?._id).toBe("l1");
+  });
+
+  it("presents it ahead of settled teams and players, as a settled league would be", () => {
+    const team = { _id: "t1", status: "ready" as const, kind: "team" as const };
+    const p = player("p1");
+    expect(nextUndecided([team, p, pendingLeague("l1")])?._id).toBe("l1");
+  });
+
+  it("presents it while every other row is still looking up too", () => {
+    expect(
+      nextUndecided([
+        player("p1", "pending"),
+        { _id: "t1", status: "pending" as const, kind: "team" as const },
+        pendingLeague("l1", "t1"),
+      ])?._id,
+    ).toBe("l1");
+  });
+
+  it("does not present a pending league the operator already answered", () => {
+    const answered = { ...pendingLeague("l1"), decision: { action: "create" as const } };
+    expect(nextUndecided([answered])).toBeNull();
+  });
+
+  it("leaves players and teams waiting on their own lookups, unchanged", () => {
+    expect(nextUndecided([player("p1", "pending")])).toBeNull();
+    expect(
+      nextUndecided([{ _id: "t1", status: "pending" as const, kind: "team" as const }]),
+    ).toBeNull();
+    // A row with no kind is the pre-NEO-236 shape — still waits.
+    expect(nextUndecided([row("r1", "pending")])).toBeNull();
+  });
+
+  it("isPresentable says the same, row by row", () => {
+    expect(isPresentable(pendingLeague("l1"))).toBe(true);
+    expect(isPresentable({ _id: "l2", status: "error", kind: "league" })).toBe(true);
+    expect(isPresentable(player("p1", "pending"))).toBe(false);
+    expect(isPresentable({ _id: "t1", status: "pending", kind: "team" })).toBe(false);
+    expect(isPresentable(player("p2"))).toBe(true);
+    expect(isPresentable(player("p3", "ready", { action: "skip" }))).toBe(false);
+  });
+
+  it("still counts a pending league as looking up, for the status line", () => {
+    // The operator does not have to wait for it, but it IS still looking up,
+    // and the footer says so honestly.
+    expect(countPendingUndecided([pendingLeague("l1")])).toBe(1);
+  });
+});
+
+describe("resolveNav — an implicitly pinned player yields to a pending league", () => {
+  it("moves off the player to the league step, lookup or not", () => {
+    // `hasSettledUndecidedTeam` counts leagues as the prerequisite tier; a
+    // pending league is answerable, so it counts too.
+    const rows: NavRow[] = [
+      player("p1"),
+      { _id: "l1", status: "pending", kind: "league" },
+    ];
+    expect(resolveNav(rows, { rowId: "p1", explicit: false })).toEqual({
+      rowId: "l1",
+      explicit: false,
+    });
+  });
+
+  it("but an explicit pin still wins", () => {
+    const rows: NavRow[] = [
+      player("p1"),
+      { _id: "l1", status: "pending", kind: "league" },
+    ];
+    const nav = { rowId: "p1", explicit: true };
+    expect(resolveNav(rows, nav)).toBe(nav);
   });
 });

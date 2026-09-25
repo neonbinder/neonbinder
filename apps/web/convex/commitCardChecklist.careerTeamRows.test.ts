@@ -1062,3 +1062,65 @@ describe("commit prelude: a stored league that stopped being usable is DROPPED, 
     expect(foreign!.sportId).toBe(otherSportId);
   });
 });
+
+// ===========================================================================
+// NEO-307 — the past-era allowance is for CARDS, never for a career stint
+// ===========================================================================
+
+describe("NEO-307: a commit never files a stint under a team that had folded", () => {
+  /*
+   * NEO-307 lets a card's team link a lone row whose era has ended — a 2026
+   * retro card of the 1911–1957 Brooklyn Dodgers. The commit's career-team
+   * resolver answers a different question: which club did the player play
+   * for, in the season the stint STARTED. Nobody plays for a team after it
+   * folds, so a 2015 "Winnipeg Jets" stint cannot mean the 1972–1996 row even
+   * when it is the only Jets we hold.
+   */
+  async function setUp(stintFrom: number) {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+    const originalJets = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        location: "Winnipeg",
+        name: "Jets",
+        nameNormalized: normalizeTeamName("Winnipeg Jets"),
+        sportId,
+        yearsActive: { from: 1972, to: 1996 },
+        lastUpdated: Date.now(),
+      }),
+    );
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "player",
+      name: "Blake Wheeler",
+      decision: { action: "create" },
+      enrichment: { careerTeams: [{ name: "Winnipeg Jets", fromYear: stintFrom }] },
+    });
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardName: "Blake Wheeler", players: ["Blake Wheeler"] })],
+      batchId: BATCH,
+    });
+    return { t, originalJets };
+  }
+
+  test("a 2015 stint with only the 1972–1996 Jets held links NOTHING", async () => {
+    const { t } = await setUp(2015);
+    const player = await playerNamed(t, "Blake Wheeler");
+    expect(player).not.toBeNull();
+    expect(player!.teamYears ?? []).toEqual([]);
+    await cancelScheduled(t);
+  });
+
+  test("…while a 1985 stint at the same row links it", async () => {
+    const { t, originalJets } = await setUp(1985);
+    const player = await playerNamed(t, "Blake Wheeler");
+    expect(
+      (player!.teamYears ?? []).map((ty: { teamId: Id<"teams"> }) => ty.teamId),
+    ).toEqual([originalJets]);
+    await cancelScheduled(t);
+  });
+});

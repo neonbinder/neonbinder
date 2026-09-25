@@ -1985,6 +1985,10 @@ async function stageCareerTeamRowsImpl(
     // a step so the operator picks the era. Without the year here, a 1979
     // Winnipeg Jets stint would be silently satisfied by the 2011 row simply
     // because it exists.
+    //
+    // NEO-307: STRICT — no `allowPastEra`. This is a stint's year, and nobody
+    // plays for a team after it folds: a 2015 stint with only the 1972-1996
+    // Jets held gets its step, so the 2011 era can be created.
     const { teamId: heldTeamId } = await resolveTeamForSetYear(
       ctx,
       playerRow.sportId,

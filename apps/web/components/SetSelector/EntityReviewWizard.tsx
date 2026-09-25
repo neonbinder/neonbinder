@@ -26,6 +26,7 @@ import { CopyButton } from "../primitives/CopyButton";
 // question it asks there ("is a duplicate possible at all?") is the one
 // `hasExact` was written for.
 import { NearMatchPanel, type NearMatch } from "../entities/NearMatchPanel";
+import { TeamMatchSearch } from "../entities/TeamMatchSearch";
 import { teamOptionLabel } from "../../lib/teams/team-era";
 import EntityLinkSearch from "./EntityLinkSearch";
 import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
@@ -166,7 +167,9 @@ const MAX_TEAM_FULL_NAME_LENGTH = 120;
  */
 const TEAM_LOCATION_FIELD_ID = "entity-review-team-location";
 const TEAM_NAME_FIELD_ID = "entity-review-team-name";
-/** NEO-236 — the League pill group on the New Team step, same reasoning. */
+/** NEO-236 — the League field on the New Team step, same reasoning. Lands on
+ *  the field's WRAPPER, never on the combobox input (NEO-307): an id there
+ *  would replace "League" as the input's Maestro resource-id. */
 const TEAM_LEAGUE_FIELD_ID = "entity-review-team-league";
 /**
  * NEO-284 — the "remember this name" checkbox on a team row. A stable id for
@@ -2190,6 +2193,23 @@ export default function EntityReviewWizard({
 
   const exactRows = (nearMatches ?? []).filter((m) => m.confidence === "exact");
   const exactMatch = exactRows[0] ?? null;
+  /**
+   * NEO-307 — the footer primary's words when it links to the lone exact
+   * match, era included for a team: "Link to Brooklyn Dodgers · 1911–1957".
+   *
+   * Jason, 2026-09-25: a name alone does not say WHICH Brooklyn Dodgers the
+   * one tap commits to, and team identity is (name, sport, era). Same helper
+   * as the panel rows and the pickers, so an open era reads "1958–present"
+   * and an undated row stays a bare `Link to {name}`. Players keep the bare
+   * name; their disambiguation is `SameNamePlayerPanel`'s job.
+   */
+  const exactMatchLinkLabel = exactMatch
+    ? `Link to ${
+        current?.kind === "team"
+          ? teamOptionLabel(exactMatch.name, exactMatch.yearsActive)
+          : exactMatch.name
+      }`
+    : "";
 
   /**
    * NEO-254 — the NB rows already filed under this exact name.
@@ -2316,8 +2336,12 @@ export default function EntityReviewWizard({
    * footer primary on a lone exact match, a near-match row in the panel, or
    * the open link search. Decides whether the "remember this name" checkbox
    * is SHOWN (never whether it is mounted — see the JSX).
+   *
+   * NEO-307 — always, on a team step: its "Search all teams" type-ahead is on
+   * every one of them, so the box is too. Intended (Jason, 2026-09-25).
    */
   const linkControlOnScreen =
+    current?.kind === "team" ||
     linkingOpen ||
     (showExactHierarchy && exactMatch !== null) ||
     (panelMatches?.length ?? 0) > 0;
@@ -2470,7 +2494,7 @@ export default function EntityReviewWizard({
           aria-describedby={createBlocked ? createBlockedId : undefined}
           aria-label={
             showExactHierarchy && exactMatch
-              ? `Link to ${exactMatch.name}`
+              ? exactMatchLinkLabel
               : `Add as New ${kindLabel(current.kind)}`
           }
           onClick={() => {
@@ -2489,7 +2513,7 @@ export default function EntityReviewWizard({
           }}
         >
           {showExactHierarchy && exactMatch
-            ? `Link to ${exactMatch.name}`
+            ? exactMatchLinkLabel
             : `Add as New ${kindLabel(current.kind)}`}
         </NeonButton>
 
@@ -2521,18 +2545,22 @@ export default function EntityReviewWizard({
           </button>
         )}
 
-        <button
-          type="button"
-          aria-disabled={busy}
-          onClick={() => {
-            if (busy) return;
-            setLinkingOpen(true);
-          }}
-          aria-label="Link to existing instead"
-          className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
-        >
-          Link to Existing…
-        </button>
+        {/* NEO-307 — players and leagues only. A team step's "Search all
+            teams" type-ahead, always in the body, is its link control. */}
+        {current.kind !== "team" && (
+          <button
+            type="button"
+            aria-disabled={busy}
+            onClick={() => {
+              if (busy) return;
+              setLinkingOpen(true);
+            }}
+            aria-label="Link to existing instead"
+            className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
+          >
+            Link to Existing…
+          </button>
+        )}
 
         {/*
           NEO-212: the third way out. "Checklist", "Team Card" and subset
@@ -2821,7 +2849,19 @@ export default function EntityReviewWizard({
                     )}
 
                   <div className="mt-2 text-sm text-gray-400 space-y-1">
-                    {current.status === "error" || !current.enrichment ? (
+                    {current.kind === "league" && current.status === "pending" ? (
+                      /* NEO-307 — a New League step is presented while its
+                         lookup is still out (`isPresentable` in
+                         entity-review-nav). Say so, and say it does not have
+                         to be waited for: Wikidata only prefills the details
+                         below, and it streams them into the form if it lands
+                         first. Not "No Wikidata match found." — that would be
+                         a claim about a lookup that has not answered. */
+                      <p role="status" className="italic">
+                        Still looking up details. Add it now, or wait and
+                        they&apos;ll fill in.
+                      </p>
+                    ) : current.status === "error" || !current.enrichment ? (
                       <p className="italic">No Wikidata match found.</p>
                     ) : current.kind === "player" ? (
                       <>
@@ -3143,6 +3183,12 @@ export default function EntityReviewWizard({
                       controls and not above a New Team form, where "this
                       team" would have meant the one being typed.
 
+                      NEO-307: every team step now carries a link control (the
+                      "Search all teams" type-ahead), so on a team step this
+                      is always shown — Jason's call, 2026-09-25. It sits
+                      directly above that type-ahead, which is what "this
+                      team" now refers to.
+
                       MOUNTED for every team row and collapsed with `hidden`,
                       never `&&`-gated: the conditions that show it are all
                       derived from the async `nearMatches` query, and the
@@ -3206,37 +3252,48 @@ export default function EntityReviewWizard({
                       </div>
                     )}
 
-                    {!linkingOpen && (
-                      <NearMatchPanel
-                        kind={current.kind}
-                        matches={panelMatches}
-                        /* NEO-254 — a team's era goes INTO its label.
-                           
-                           Team identity is now (name, sport, era), so this
-                           panel can be handed two rows both called "Winnipeg
-                           Jets". Without the era they render as two identical
-                           buttons with two identical accessible names, and the
-                           operator picks one at random — which is the defect
-                           the era exists to fix, moved from the server to the
-                           screen. Players get the same treatment through
-                           `SameNamePlayerPanel`; leagues have no such
-                           collision and keep the default. */
-                        {...(current.kind === "team"
-                          ? {
-                              pickLabel: (name: string, match: NearMatch) =>
-                                `Link to ${teamOptionLabel(name, match.yearsActive)}`,
-                            }
-                          : {})}
+                    {/*
+                      NEO-307 — a TEAM step's link control is one type-ahead,
+                      on every team step, where the Possible matches list used
+                      to be. Jason, 2026-09-25: the fixed list could not reach
+                      a team the ranking did not surface, and "Link to
+                      Existing…" (removed for teams) hid the whole step to
+                      offer a second search. It opens on the near matches —
+                      `panelMatches`, so the lone exact match stays the
+                      footer's primary and is not offered twice — and a pick
+                      goes down the SAME `handleLink` path, "Remember …"
+                      answer included. Keyed by row so each step opens on its
+                      own name.
+
+                      Players (and leagues) keep the panel and the link search.
+                    */}
+                    {current.kind === "team" ? (
+                      <TeamMatchSearch
+                        key={current._id}
+                        sportId={current.sportId}
+                        initialQuery={current.name}
+                        defaultMatches={panelMatches}
                         onPick={(id) => {
                           if (busy) return;
-                          void handleLink(
-                            current._id,
-                            current.kind,
-                            id as Id<"players"> | Id<"teams"> | Id<"leagues">,
-                            linkOptions,
-                          );
+                          void handleLink(current._id, "team", id, linkOptions);
                         }}
                       />
+                    ) : (
+                      !linkingOpen && (
+                        <NearMatchPanel
+                          kind={current.kind}
+                          matches={panelMatches}
+                          onPick={(id) => {
+                            if (busy) return;
+                            void handleLink(
+                              current._id,
+                              current.kind,
+                              id as Id<"players"> | Id<"teams"> | Id<"leagues">,
+                              linkOptions,
+                            );
+                          }}
+                        />
+                      )
                     )}
 
                     {linkingOpen ? (
@@ -3293,8 +3350,8 @@ export default function EntityReviewWizard({
                             stagedLeagueNames={stagedLeagueNames}
                             /* NEO-254 — a league the operator names here gets a
                                step of its own, walked next (leagues come before
-                               teams), and this team comes back with the pill
-                               reading "<name> (new)" and selected. */
+                               teams), and this team comes back with its
+                               League field reading "<name> (new)". */
                             onStageLeague={async (name) => {
                               const staged = await stageLeagueRows({
                                 reviewRowId: current._id,

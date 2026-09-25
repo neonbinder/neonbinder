@@ -29,6 +29,17 @@ tags:
 #         player row (its career-team form is gone). `recordDecision`
 #         re-validates the manual years server-side, so a payload it rejected
 #         would leave the wizard where it was rather than moving on.
+#     (f) NEO-307 — the New Team steps (d)'s hops walk through answer their
+#         League from the `League` combobox: on ProbeTeam's step a typed name
+#         matching nothing offers `Create “Lg<token>”`, picking it raises a
+#         `New League: Lg<token>` step the walk presents first, and after
+#         "Add as New League" the team's combobox reads `Lg<token> (new)`; on
+#         TempTeam's step that staged league is PICKED by typing a substring
+#         of it. These two minted, discarded team steps are the only
+#         deterministic, read-only New Team steps in the suite, which is why
+#         the wizard's league-create coverage rides here rather than in a new
+#         flow (R3) — the dialog's existing-league and "No league" picks live
+#         in set-team-carries-down-to-cards.yaml.
 #
 # ── WHAT THIS FLOW DELIBERATELY DOES NOT PROVE ──────────────────────────────
 #   The staged team is only WRITTEN at commit, where `resolveTeamIdByName`
@@ -45,7 +56,9 @@ tags:
 #   unknown never reaches the wizard again, so one commit per worker would
 #   quietly drain the fixture the other three flows depend on. CI cannot
 #   serialize a writer against the readers either (`run-e2e-queue.sh` filters
-#   only `util`/`wip`/`setup`).
+#   only `util`/`wip`/`setup`). The same holds for R2(f)'s league: "Add as
+#   New League" is a decision on the batch, and the discard takes the staged
+#   step with it, so no `leagues` row is ever written.
 #
 # ── WHY THE YEARS SURVIVE (71f23a4) ─────────────────────────────────────────
 #   "Add career team" stages a New Team step for the club and sends the walk to
@@ -228,9 +241,62 @@ tags:
 - extendedWaitUntil:
     visible: "New Team: ProbeTeam${output.ATTEMPT_TOKEN}"
     timeout: 7000
-# One tap accepts the pre-filled Location, Name and League. Safe to match by
-# text: the button only relabels itself to "Link to <name>" on an exact
-# hierarchy match, and this name is per-worker unique, so it can have none.
+
+# ── R2(f) NEO-307: a league CREATED from the League combobox raises its own step
+# The combobox's accessible name is exactly "League" (`id:`); focusing it opens
+# the list. `Lg<token>` is a league no sport holds and no batch has staged
+# (nothing in the suite persists an `Lg`-prefixed league, so no stored name,
+# alias or abbreviation can CONTAIN it), so typing it matches nothing and the
+# list offers `Create “Lg<token>”` — shown only when the typed text matches
+# nothing at all
+# (curly quotes matched with ".", the en-dash convention below). In the
+# wizard that option STAGES the league rather than writing it. The input's
+# own text is the bare typed name, which the full-match regex cannot confuse
+# with the option.
+- tapOn:
+    id: "League"
+- inputText: "Lg${output.ATTEMPT_TOKEN}"
+- tapOn: "Create .Lg${output.ATTEMPT_TOKEN}."
+
+# The pick stages a `New League: Lg<token>` step (`stageLeagueRows`) sourced
+# from THIS team, and this team now waits on it (`waitingOnStagedLeagues`), so
+# the walk leaves the team and — leagues before teams — presents the league.
+#
+# NO WAIT ON WIKIDATA (Jason, NEO-307). The staged row's own lookup is
+# assistive, never a gate: the step is presented and its primary action is
+# usable while that lookup is still running, so this is one in-app wait at
+# the R5 bar and an immediate tap. A red here is a product finding (the step
+# was held back for its lookup), never a reason to add the long gate back.
+#
+# This is the one deterministic New League step in the suite: SET-REGISTRY's
+# NEO-254 note explains why an ENRICHMENT-raised one cannot be, and a typed,
+# per-attempt name is exactly what removes both of its objections.
+- extendedWaitUntil:
+    visible: "New League: Lg${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+# By id, full-match: cannot reach the demoted "Add as New League anyway" link.
+- tapOn:
+    id: "Add as New League"
+
+# Back on the team, which the answered league no longer blocks. The combobox
+# now reads the STAGED option's label at rest, "Lg<token> (new)" — the typed
+# text was the bare name, so the "(new)" suffix can only come from the team's
+# recorded answer surviving the hop to the league step and back. Read on the
+# control itself: it was tapped in place above, so it is in the body's
+# visible slice (README "Asserting inside a dialog").
+- extendedWaitUntil:
+    visible: "New Team: ProbeTeam${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      id: "League"
+      text: "Lg${output.ATTEMPT_TOKEN} \\(new\\)"
+    timeout: 7000
+
+# One tap accepts the Location and Name as pre-filled and the league as
+# answered. Safe to match by text: the button only relabels itself to
+# "Link to <name>" on an exact hierarchy match, and this name is per-worker
+# unique, so it can have none.
 - tapOn: "Add as New Team"
 - extendedWaitUntil:
     visible:
@@ -277,6 +343,23 @@ tags:
     timeout: 180000
 - extendedWaitUntil:
     visible: "New Team: TempTeam${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+# R2(f) NEO-307, second half: a league staged on ONE team's step is offered to
+# every later team as "<name> (new)", not re-offered as a create (NEO-254).
+# The bare <token> is a strict substring of "Lg<token>", so the staged option
+# answers the filter (and, because something matches, no `Create “<token>”`
+# is offered); the tap is by the option's full text, so any other row that
+# happened to contain the token could not take it. The read-back is decisive
+# because the typed text carries neither "Lg" nor "(new)". No second league
+# step follows: the batch has already staged this name.
+- tapOn:
+    id: "League"
+- inputText: "${output.ATTEMPT_TOKEN}"
+- tapOn: "Lg${output.ATTEMPT_TOKEN} \\(new\\)"
+- extendedWaitUntil:
+    visible:
+      id: "League"
+      text: "Lg${output.ATTEMPT_TOKEN} \\(new\\)"
     timeout: 7000
 - tapOn: "Add as New Team"
 - extendedWaitUntil:

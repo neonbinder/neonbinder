@@ -4,11 +4,12 @@ name: "Entity review — linking a checklist TEAM to an existing team remembers 
 tags:
   - set-selector
 ---
-# R1 — ONE FEATURE (NEO-284): a "Link to Existing…" decision on a TEAM row
-# carries the row's raw marketplace string into the linked team's aliases,
-# and it does so by default. The wizard shows the operator a ticked
-# "Remember “<string>” as a name for this team" box the moment a link control
-# is on screen; the decision reads "· remembered as …"; the COMMIT writes the
+# R1 — ONE FEATURE (NEO-284): a LINK decision on a TEAM row carries the row's
+# raw marketplace string into the linked team's aliases, and it does so by
+# default. Since NEO-307 a team is linked from the step's one "Search all
+# teams" combobox (the near-match buttons and "Link to Existing…" are gone for
+# teams). The wizard shows the operator a ticked "Remember “<string>” as a
+# name for this team" box beside it; the decision reads "· remembered as …"; the COMMIT writes the
 # alias; and Team Management then lists it under "Current aliases", where the
 # operator can take it back out again.
 #
@@ -17,9 +18,10 @@ tags:
 #         editor proves `teams.findOrCreate` returned;
 #     (b) the wizard opens with nothing decided ("0 of N reviewed") and the row
 #         under test is a TEAM row: its skip control says "not a team";
-#     (c) the remember-box is on screen, quoting THIS row's raw name, as soon
-#         as the link search is open;
-#     (d) the search finds the fixture BY ITS NAME and taking it records a
+#     (c) the remember-box is on screen, quoting THIS row's raw name, beside
+#         the "Search all teams" combobox, which opens seeded with that name;
+#     (d) the combobox finds the fixture BY ITS NAME (typing replaces the
+#         seeded text) and picking it records a
 #         LINK WITH THE ALIAS — the read-back line is
 #         "Linked to <team> · remembered as “<row>”", a string `describeDecision`
 #         composes ONLY when `decision.saveAsAlias` is true on a team link.
@@ -362,36 +364,50 @@ tags:
 # ============================================================
 # PART 4 — LINK, WITH THE REMEMBER-BOX ON (R2c, R2d)
 # ============================================================
-# Retry the open, because the row can grow UNDER the tap: a near-match panel
-# arriving on its own query pushes "Link to Existing…" down between the bounds
-# read and the click (measured on Topps Brooklyn Collection; see
-# checklist-wizard-link-commits). The wait doubles as the R2 precondition —
-# this panel is labelled for TEAMS.
-- retry:
-    maxRetries: 2
-    commands:
-      - tapOn:
-          id: "Link to existing instead"
-          retryTapIfNoChange: true
-      - extendedWaitUntil:
-          visible:
-            id: "Search existing teams"
-          timeout: 7000
+# NEO-307 — a team step no longer has "Link to Existing…" or near-match Link
+# buttons. Every team step carries ONE combobox, "Search all teams", pre-filled
+# with the row's own name and opening on the near matches; a pick links through
+# the same `handleLink` path, "Remember …" answer included.
+#
+# R2 precondition: the combobox is on THIS team step. It sits in the step body
+# above the New Team form, inside the body's visible slice (README "Asserting
+# inside a dialog"); its value is the row's raw name, which is also the proof
+# that it was seeded from this row and not left over from another.
+- extendedWaitUntil:
+    visible:
+      id: "Search all teams"
+      text: "${output.ROW_NAME}"
+    timeout: 7000
 
-# R2(c) — the box is offered, quoting THIS row's raw name (curly quotes are
-# the product's). Its checked state is proven by (d) below, not here.
+# R2(c) — the box is offered beside the combobox, quoting THIS row's raw name
+# (curly quotes are the product's). Its checked state is proven by (d) below.
 - assertVisible:
     text: "Remember “${output.ROW_NAME}” as a name for this team"
 
+# The field selects its pre-filled text on focus, so typing REPLACES the row's
+# name. That is read back before the option is looked for: if the typing had
+# landed inside the pre-fill instead (a caret dropped mid-string), the search
+# would be for a string no team carries and the failure would read as "no such
+# team" rather than what it is. `Ali<token>` is a strict substring of the
+# option's "Loc<token> Ali<token>", so the input's own text cannot answer to
+# the tap.
 - tapOn:
-    id: "Search existing teams"
+    id: "Search all teams"
 - inputText: "Ali${output.TOKEN}"
 - extendedWaitUntil:
     visible:
-      id: "Link to Loc${output.TOKEN} Ali${output.TOKEN}"
+      id: "Search all teams"
+      text: "Ali${output.TOKEN}"
+    timeout: 7000
+# The option's only direct text node is the composed full name (its "League ·
+# years" line is a separate node; this fixture has neither, so there is none).
+# It comes back from `teams.search` after a 200ms debounce — in-app, 7000.
+- extendedWaitUntil:
+    visible:
+      text: "Loc${output.TOKEN} Ali${output.TOKEN}"
     timeout: 7000
 - tapOn:
-    id: "Link to Loc${output.TOKEN} Ali${output.TOKEN}"
+    text: "Loc${output.TOKEN} Ali${output.TOKEN}"
 # The decision landing is what moves the wizard OFF this row (an implicit row
 # advances the moment it is settled). Waiting for the heading to go is the
 # only honest "it landed" here — the counter already moved for the league skip
