@@ -1,15 +1,18 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Fill teams — a teamless card borrows the team its player carries on another card of the same set, after a preview the operator confirms (NEO-279)"
+name: "Fill teams — a teamless card borrows the team its player carries on another card of the same set, from the checklist's \"N cards need a team\" button, after a preview the operator confirms (NEO-279, NEO-306)"
 tags:
   - set-selector
 ---
-# R1 — SINGLE FEATURE (NEO-279): the Set attributes panel's header, at the SET
-# row, carries a "Fill teams" action. It previews what the set's own evidence
-# can fill, asks in a ConfirmDialog that counts the cards and lists who gets
-# which team, and on "Yes, fill" writes the team onto the cards that had none.
-# Rule A is the one exercised here: a teamless card whose player is teamed on
-# another card of the same set gets that team.
+# R1 — SINGLE FEATURE (NEO-279, moved by NEO-306): the card checklist's
+# header carries the amber "N cards need a team" button beside the attention
+# chip — N is THIS checklist's missing-team count, and the button is there
+# only while N > 0. It previews what the SET's own evidence can fill, asks in
+# a ConfirmDialog that counts the cards and lists who gets which team, and on
+# "Yes, fill" writes the team onto the cards that had none. Rule A is the one
+# exercised here: a teamless card whose player is teamed on another card of
+# the same set gets that team. (Before NEO-306 the action was "Fill teams" in
+# the Set attributes panel's header at the SET row; it left the panel.)
 #
 # R2 — HARD ASSERTIONS, no silent fall-through:
 #   - Step 2: card #781 is quick-added with a NEW player (FTP<token>) AND a
@@ -20,15 +23,17 @@ tags:
 #     must not offer to create a name that exists) and NO team. Its row carries
 #     the "needs attention: no team on this card yet" badge, which is the exact
 #     state Fill teams exists to clear.
-#   - Step 4: at the set row, "Fill teams" opens the confirm titled EXACTLY
-#     "Fill teams on 1 card?" with the body "1 from the same player's other
-#     cards here." and a ledger row naming the player, the team and the rule;
-#     "Yes, fill" lands the toast "Filled teams on 1 card". Every string is a
-#     full-match regex with its punctuation escaped, so a count that drifts
-#     fails here rather than reading "close enough".
-#   - Step 5: back on Base, card #782's drawer chips the borrowed team (the
-#     single-row proof — both rows now print the same sub-line), and its row
-#     badge is gone while the row is on screen.
+#   - Step 4: on the same checklist, the header button reads EXACTLY "1 card
+#     needs a team" (one of the two cards is teamless); it opens the confirm
+#     titled EXACTLY "Fill teams on 1 card?" with the body "1 from the same
+#     player's other cards here." and a ledger row naming the player, the
+#     team and the rule; "Yes, fill" lands "Filled teams on 1 card" in the
+#     checklist's own notice line, and the button is gone (N is 0). Every
+#     string is a full-match regex with its punctuation escaped, so a count
+#     that drifts fails here rather than reading "close enough".
+#   - Step 5: card #782's drawer chips the borrowed team (the single-row
+#     proof — both rows now print the same sub-line), and its row badge is
+#     gone while the row is on screen.
 #
 # R3 — DEDUP: checklist-attention-badge-and-filter.yaml owns the badge/chip
 #   mechanics and the quick-add TeamPicker; player-picker-create-custom-card
@@ -51,10 +56,11 @@ tags:
 #   set gets NO set-level team (NEO-277): a set team is copied onto every card
 #   born beneath it, which would leave nothing for Fill teams to fill.
 #
-# R9 — both Sport › Year › Manufacturer › Set drills (Step 1, and the Step 4
-#   return to the set) go through util-drill-to-custom.yaml; Step 2 creates
-#   the two rows BENEATH the selected set inline (the stt- STEP 3 / features-
-#   propagation STEP B shape and measurement). A hand-added variant type named
+# R9 — the one Sport › Year › Manufacturer › Set drill (Step 1) goes through
+#   util-drill-to-custom.yaml; Step 2 creates the two rows BENEATH the
+#   selected set inline (the stt- STEP 3 / features-propagation STEP B shape
+#   and measurement). Since NEO-306 the fill is reached from the checklist
+#   itself, so there is no second drill back to the set row. A hand-added variant type named
 #   "Base" is NOT terminal — the base is `metadata.isBase`, never the display
 #   value (NEO-239) — so the checklist needs the Insert › Base pair.
 #
@@ -421,68 +427,38 @@ tags:
     timeout: 7000
 
 # ============================================================
-# STEP 4 — FILL TEAMS FROM THE SET ROW: preview → confirm → toast.
+# STEP 4 — FILL FROM THE CHECKLIST HEADER: count → preview → confirm → notice.
 #
-# The control lives in the panel's header at the SET level only, reachable
-# while the panel is collapsed (SetAttributesPanel.tsx, FillTeamsControl.tsx).
-# The set has to be the deepest selection again, so: RE-DRILL, do not re-open
-# the column. The four-level util reloads /set-selector and re-selects the
-# four rows that already exist. Re-opening the mounted Sets column from its
-# collapsed "Sets: <name> — change" card is NOT reachable from here: choosing
-# the insert "Base" reveals a further column and EntityColumn.scrollColumnIntoView
-# scrolls the columns row horizontally, leaving the Sets card off the left of
-# the viewport, where maestro-web (viewport-pruned hierarchy, vertical-only
-# scroll) cannot see it — set-team-carries-down-to-cards.yaml STEP 5 has the
-# CI evidence (run 34796320801).
+# NEO-306 moved the control off the attributes panel and into THIS
+# checklist's header, directly beside the attention chip, as the amber
+# attention button (FillTeamsControl.tsx, CardChecklist.tsx). So the flow
+# stays where STEP 3 left it — on the Base checklist, centred on #782's row
+# — and needs no re-drill and no `Edit attributes`: the fill is still a
+# whole-SET operation (the checklist hands the control the set's id), it is
+# just asked from where the teamless cards are.
 # ============================================================
 
-- runFlow:
-    file: util-drill-to-custom.yaml
-    env:
-      SPORT: "E2E Test Sport ${WORKER_INDEX || 0}"
-      YEAR: "2026"
-      MANUFACTURER: "Topps"
-      SET_NAME: "ftl-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
-- assertVisible: "Variant Types"
-
-# The panel is the last thing on the page and sits BELOW the fold after the
-# re-drill (CI run 34926541719, runner 3, step 204: the hierarchy dump held the
-# six columns and no panel at all — maestro-web prunes by viewport, and a
-# wait does not scroll). Bring its header into view first, exactly as stt-'s
-# STEP 5 does, on the toggle the header always carries; the heading assertion
-# below then reads what is on screen.
+# THE COUNT. The trigger's visible TEXT is its accessible name
+# (`fillTeamsLabel`: "1 card needs a team" / "N cards need a team"; no
+# aria-label, so the name follows the state — "Checking…" while the preview
+# runs). N is this checklist's cards whose attention items include a missing
+# team: #781 is teamed, #782 is not, so EXACTLY one. Matched by `text:`,
+# never by the DOM id the component carries for the driver's pressKey
+# re-find (README: never target a DOM id). Full match, so the confirm's
+# title "Fill teams on 1 card?" cannot satisfy it.
+#
+# UP — the attention row is part of the checklist's header, ABOVE the card
+# list, and STEP 3 left the page centred on #782's row (R5: an anchor above
+# the page's position takes UP). Centred for the tap (R8); it sits a few
+# rows above the list's first card, so it centres in one swipe (7000).
 - scrollUntilVisible:
     element:
-      id: "Edit attributes"
-    centerElement: true
-    visibilityPercentage: 10
-    waitToSettleTimeoutMs: 1000
-    timeout: 7000
-
-# The panel is about the SET again — its heading names the level. Full match
-# on the collapsed bar's own text node.
-- extendedWaitUntil:
-    visible:
-      text: "Attributes for ftl-${WORKER_INDEX || 0}-${ATTEMPT_ID} \\(Set\\)"
-    timeout: 7000
-
-# "Fill teams" — the trigger's visible TEXT is its accessible name
-# (FILL_TEAMS_LABEL; the button carries no aria-label, so its text content
-# is the name and follows the state: "Checking…" while the preview runs). It
-# is matched by `text:`, never by the DOM id the component carries for the
-# driver's pressKey re-find (README: never target a DOM id). Full match, so
-# the confirm's own title "Fill teams on 1 card?" cannot satisfy it. It sits
-# in the panel header beside the title; the panel is the last thing on the
-# page and the NEO-260 208px spacer below it is what lets this centre in 1-2
-# swipes (R5 — 7000; R8 — centred; the same dependency stt-'s "Edit
-# attributes" scroll names).
-- scrollUntilVisible:
-    element:
-      text: "Fill teams"
+      text: "1 card needs a team"
+    direction: UP
     centerElement: true
     timeout: 7000
 - tapOn:
-    text: "Fill teams"
+    text: "1 card needs a team"
 
 # THE PREVIEW → THE CONFIRM. The trigger reads "Checking…" while the server
 # plans; when the plan fills anything, ConfirmDialog opens (`fixed inset-0
@@ -507,58 +483,48 @@ tags:
 # same Base row, so no borrowed-from node list is appended). Each span is its
 # own text node and each is full-matched; the middot is matched as `.` (the
 # same idiom checklist-attention-walker-missing-team.yaml uses for its status
-# line). No card row is mounted at the set level and the set has no team
-# chip, so the player and team strings can only be the ledger's.
+# line). The player and the team ALSO print on the checklist rows behind the
+# dialog, so these two are read inside the ledger's group, never page-wide.
 - assertVisible:
     id: "Who gets which team"
-- assertVisible: "FTP${output.ATTEMPT_TOKEN}"
-- assertVisible: "Loc${output.ATTEMPT_TOKEN} FTT${output.ATTEMPT_TOKEN}"
+- assertVisible:
+    text: "FTP${output.ATTEMPT_TOKEN}"
+    childOf:
+      id: "Who gets which team"
+- assertVisible:
+    text: "Loc${output.ATTEMPT_TOKEN} FTT${output.ATTEMPT_TOKEN}"
+    childOf:
+      id: "Who gets which team"
 - assertVisible: ". 1 card . same player in this set"
 
 # THE WRITE. "Yes, fill" is the confirm's own label (confirmLabel); the
 # sibling reads "Cancel" — distinct text, so no class-XPath ambiguity arises
 # from a tap by text. applyTeamFill recomputes the plan server-side and
-# re-checks each card at write time; the toast counts what landed.
+# re-checks each card at write time; the result lands in the CHECKLIST'S OWN
+# notice line (the in-flow `role="status"` banner every checklist result
+# reads in — "Saved N cards." and friends), not the panel's toast. The banner
+# renders ABOVE the attention row the page is centred on, so it is on screen
+# (Chrome's scroll anchoring keeps the row where it was and the banner takes
+# the space above it). One action: the 7000 bar.
 - tapOn: "Yes, fill"
 - extendedWaitUntil:
     visible:
       text: "Filled teams on 1 card"
     timeout: 7000
-# The dialog closed with the fill (a positive — the toast — stands before
-# this negative).
+# The dialog closed with the fill, and N is 0 now, so the button is gone
+# with it (FillTeamsControl renders nothing at N = 0 once its fill window
+# closes). Both negatives stand after the notice, the positive (R2).
 - assertNotVisible: "Fill teams on 1 card\\?"
+- assertNotVisible:
+    text: "[0-9]+ cards? needs? a team"
 
 # ============================================================
-# STEP 5 — BACK DOWN TO BASE: card #782 carries the borrowed team, its badge
-# and the attention chip are gone.
+# STEP 5 — card #782 carries the borrowed team, its badge is gone.
+#
+# Still on the same Base checklist. #782's row is BELOW the header the page
+# is centred on: DOWN (the default), centred.
 # ============================================================
 
-# The Variant Types column is ABOVE the panel we just acted from — UP
-# (stt- STEP 5 / features-propagation STEP D, same anchor, same direction).
-# "Insert" is the row in that column; nothing else on screen carries that
-# exact text.
-- scrollUntilVisible:
-    element:
-      text: "Insert"
-    direction: UP
-    centerElement: true
-    timeout: 7000
-- tapOn: "Insert"
-- extendedWaitUntil:
-    visible: "Inserts"
-    timeout: 7000
-- scrollUntilVisible:
-    element:
-      text: "Base"
-    centerElement: true
-    timeout: 7000
-- tapOn: "Base"
-- scrollUntilVisible:
-    element:
-      id: "Open add card form"
-    centerElement: true
-    visibilityPercentage: 50
-    timeout: 7000
 - scrollUntilVisible:
     element:
       id: "Edit card 782-${ATTEMPT_ID}(, .*)?"

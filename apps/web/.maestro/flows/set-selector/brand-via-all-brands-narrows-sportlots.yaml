@@ -13,19 +13,16 @@ tags:
 #   1. Sync Sets from the All Brands view files BSC's year list under the
 #      brands by prefix and the remainder under the year's `Unknown` row, then
 #      asks SportLots per brand (STEP 1);
-#   2. that same sync ASKS SportLots for the year, per brand — and every set
-#      SportLots lists that NB has no row for is saved by it, as an NB set
-#      named `<brand prefix> <label>` (the label as-is under Unknown) with a
-#      Base carrying the SportLots id, no review in between (Jason,
-#      2026-09-21: "if a set exists in a marketplace it should be saved
-#      whether it is in SL or BSC or both"). What STEP 2 proves of that is
-#      that the phase RAN: the column's done state carries no "SportLots
-#      skipped" notice, the one thing the sync still says about the
-#      SportLots side. The SAVE ITSELF HAS NO ON-SCREEN SURFACE since
-#      2026-09-22 (Jason: "We don't do it for other marketplaces we
-#      shouldn't do it here" — the count sentence is gone), and nothing on
-#      this screen tells an SL-minted set from a BSC-filed one. STEP 2 says
-#      what would;
+#   2. that same sync ASKS SportLots for the year, per brand. Since NEO-306
+#      it no longer writes what SportLots alone lists: every such name waits
+#      in that BRAND's review (the "N SportLots sets to sort" pill on a
+#      brand's own Sets column — never on this view, which spans every
+#      brand; `flagship-colour-is-a-parallel-both-ways` drives it). What
+#      STEP 2 proves is that the phase RAN: the column's done state carries
+#      no "SportLots skipped" notice, the one thing the sync says about the
+#      SportLots side here. Nothing this flow reads depends on a SportLots-
+#      only set existing — the view's `Search sets` precondition is BSC's
+#      list (the paused branch, BSC alone, meets it too);
 #   3. the New Manufacturer confirm says that Unknown's matching sets will
 #      move (STEP 3) — and asks NOTHING about SportLots: creating a brand
 #      under a year that carries SportLots ids links it through All Brands
@@ -65,17 +62,18 @@ tags:
 #         between 1 and 8 entries: STEP 4's pane rendered at least one
 #         `SportLots base candidate: …` and NO "Search SportLots sets..."
 #         box (BaseSetPicker renders the box above 8). Unchanged by the
-#         auto-save: the pane is the adapter's narrowed list, not the rows
-#         that exist (`BaseSetPicker` never drops an attached candidate),
-#         and STEP 1 saves none of these anyway — `routeSlSets` hides every
-#         SportLots entry that a set NB already has EQUALS or word-boundary-
-#         PREFIXES, and (a)'s BSC set `SPx` prefixes all of them.
+#         auto-save or by NEO-306's review: the pane is the adapter's
+#         narrowed list, not the rows that exist (`BaseSetPicker` never
+#         drops an attached candidate), and none of these ever reaches a
+#         review — `routeSlSets` hides every SportLots entry that a set NB
+#         already has EQUALS or word-boundary-PREFIXES, and (a)'s BSC set
+#         `SPx` prefixes all of them.
 #     (c) the year-wide sync classified 74 SportLots roots as new on the
 #         first run (measured through the review modal that stood here
-#         before the 2026-09-21 auto-save). It still saves them — year-wide
-#         in the view, never dependent on the SPx prefix — but since
-#         2026-09-22 it says nothing about them and no surface names one, so
-#         NO STEP ASSERTS THE SAVE. 74 is recorded as what this year
+#         before the 2026-09-21 auto-save). Since NEO-306 they are not
+#         saved by the sync at all: each waits in its brand's review, which
+#         this flow never opens (the view has no pill), so NO STEP ASSERTS
+#         THEM. 74 is recorded as what this year
 #         answered, not as anything a step reads; the marketplace labels
 #         behind it are not written down anywhere in this flow.
 #   If a replacement is ever needed, it must satisfy (a) and (b) again —
@@ -96,9 +94,9 @@ tags:
 #   set", and a brand created under it is linked to nothing. So the year is
 #   real, cold, and this flow WRITES to it: a manufacturer row (`SPx`, linked
 #   through All Brands by the create itself — the year carries SportLots
-#   ids), every set the year-wide sync saves from SportLots' lists (dozens;
-#   their names are SportLots' labels behind the brands' prefixes — never
-#   read, never guessed, never a literal here), and the re-homes. Nothing
+#   ids), the per-brand SportLots reviews the year-wide sync leaves behind
+#   (unsaved — NEO-306; their labels are never read, never guessed, never a
+#   literal here), and the re-homes. Nothing
 #   deletes, nothing renames. It is the ONLY flow on Hockey 1997.
 #
 #   ⚠️ FRESH-ONLY, like `checklist-one-marketplace-skips-match-dialog`: a
@@ -212,12 +210,11 @@ tags:
 # ============================================================
 # STEP 2 — THE YEAR-WIDE SYNC ASKED SPORTLOTS FOR THIS YEAR'S SETS
 #
-# There is no review surface (Jason, 2026-09-21: "why do we have a dialog? If
-# a set exists in a marketplace it should be saved") and, since 2026-09-22, no
-# done-row count either (Jason: "We don't do it for other marketplaces we
-# shouldn't do it here"). The SportLots phase writes every new root as a set
-# with a Base carrying the SportLots id (`insertSetWithBaseFromSl`) and says
-# nothing about having done so: `ensureSelectorOptions` composes the column's
+# What the SportLots phase does with what it finds is NOT this flow's claim.
+# Since NEO-306 it writes no SportLots-only set: each such name waits in its
+# brand's review (a per-brand document; the pill that opens it lives on a
+# brand's own Sets column, not on this year-wide view), and the phase says
+# nothing about it here — `ensureSelectorOptions` composes the column's
 # notice from `pausedSides`, `failedPlatforms`, notifiable `skippedSides` and
 # `unlinkedTotal` only, and a clean sync DELETES its status row.
 #
@@ -232,23 +229,15 @@ tags:
 # ids at all (README → "Operator switches"), every brand fails the gate, and
 # the sentence is there by name. That is the R2 pair for this step.
 #
-# ── WHAT IT CANNOT PROVE, AND WHY THAT IS A PRODUCT GAP ──────────────────
-# That a set was SAVED. Nothing on this screen separates a set the SportLots
-# phase minted from one BSC filed: a set row is not terminal, so
-# `EntitySelector` renders no SL pill on it (the id sits on its Base, and the
-# Base's pill is only reachable after the set is picked by NAME), and a minted
-# row's name is a SportLots label behind a brand prefix — no surface here
-# names one and no flow may guess one (invariant 4). On THIS fixture the
-# minted sets are also none of `SPx`'s: `routeSlSets` hides every SportLots
-# entry a set NB already has equals or word-boundary-prefixes, and BSC's set
-# named exactly `SPx` covers them all, so the flow's own brand cannot supply a
-# reachable example either. SET-REGISTRY.md → "Hockey → 1997" records the gap
-# and the affordance that would close it (a set row that carries its
-# marketplace coverage, plus a way to reach such a row that does not need its
-# name). Until one exists: the SportLots side of this year is proved by the
-# LINK — STEP 4's narrowed picker pane, which cannot render without the year's
-# ids and a live answer — and the minted row's shape is unit-tested at
-# `insertSetWithBaseFromSl`. Do not put the count sentence back to close it.
+# ── WHAT IT DOES NOT PROVE ────────────────────────────────────────────
+# What the phase classified. That belongs to the brand's review, which is
+# proved on 2026 Bowman (`flagship-colour-is-a-parallel-both-ways`, STEP 1);
+# on THIS fixture none of `SPx`'s SportLots entries would even reach one —
+# `routeSlSets` hides every SportLots entry a set NB already has equals or
+# word-boundary-prefixes, and BSC's set named exactly `SPx` covers them all.
+# The SportLots side of this year is proved here by the LINK — STEP 4's
+# narrowed picker pane, which cannot render without the year's ids and a live
+# answer.
 # ============================================================
 
 - runFlow:
