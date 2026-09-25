@@ -34,6 +34,7 @@ import BaseRoleControl from "./BaseRoleControl";
 import { isBaseRole } from "./baseRole";
 import MoveSetToBrandControl from "./MoveSetToBrandControl";
 import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
+import MakeInsertControl from "./MakeInsertControl";
 import PromoteToSetControl from "./PromoteToSetControl";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
 import {
@@ -644,11 +645,19 @@ export default function SetAttributesPanel({
               onReshaped={onReshaped}
             />
           )}
-          {/* NEO-306 SLOT — "Make insert of…" (MakeInsertControl) goes HERE,
-              after Make parallel of…, keyed `make-insert-${selectorOptionId}`.
-              It is offered on set rows AND on insert rows (the plan's S1 and
-              S2 sources), so it mounts on `setName || insert` and lets its
-              own eligibility query decide. Lands with its backend. */}
+          {/* NEO-306: "Make insert of…", after Make parallel of…. Offered on
+              set rows AND insert-level rows (a SportLots set, or a row the
+              Parallels reconcile filed, that is really an insert or a
+              parallel of one); its own eligibility query decides. */}
+          {(leafLevel === "setName" || leafLevel === "insert") && (
+            <MakeInsertControl
+              key={`make-insert-${selectorOptionId}`}
+              rowId={selectorOptionId}
+              rowValue={row.value}
+              showToast={showToast}
+              onReshaped={onReshaped}
+            />
+          )}
           {/* NEO-306: the way back from an insert OR a parallel row — a
               parallel of an insert can hold a SportLots link too. The level
               only says where it could apply; the control's eligibility

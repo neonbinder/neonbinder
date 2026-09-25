@@ -115,6 +115,15 @@ vi.mock("../../convex/_generated/api", () => ({
       getParallelPromotionPreview: "spc.getParallelPromotionPreview",
       promoteParallelToSet: "spc.promoteParallelToSet",
     },
+    // NEO-306 — "Make insert of…", asking the server at render.
+    setInsertConversion: {
+      getMakeInsertEligibility: "sic.getMakeInsertEligibility",
+      getMakeInsertTargets: "sic.getMakeInsertTargets",
+      getMakeInsertTargetDetail: "sic.getMakeInsertTargetDetail",
+      getMakeInsertInsertDetail: "sic.getMakeInsertInsertDetail",
+      getMakeInsertNamedPreview: "sic.getMakeInsertNamedPreview",
+      convertToInsert: "sic.convertToInsert",
+    },
   },
 }));
 
@@ -149,6 +158,8 @@ let currentTeamRows: unknown;
 let pickNext = "team-bulls";
 /** NEO-294: the year's brands the move control offers. */
 let currentYearBrands: unknown;
+/** NEO-306: `getMakeInsertEligibility` — "yes" unless a test says no. */
+let currentInsertEligibility: unknown = { eligible: true };
 /** NEO-306: `getParallelPromotionEligibility` — "yes" unless a test says no. */
 let currentPromotionEligibility: unknown = {
   eligible: true,
@@ -167,6 +178,7 @@ vi.mock("convex/react", () => ({
     if (query === "spc.getSetToParallelEligibility") return { eligible: true };
     if (query === "spc.getParallelPromotionEligibility")
       return currentPromotionEligibility;
+    if (query === "sic.getMakeInsertEligibility") return currentInsertEligibility;
     return undefined;
   },
   useMutation: (mutation: string) => {
@@ -2721,7 +2733,7 @@ describe("SetAttributesPanel — Fill teams is not a panel control any more (NEO
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     currentRow = makeRow({ level: "setName" });
     const { rerender } = renderPanel();
-    for (const name of ["Move to another brand", "Make parallel of…"]) {
+    for (const name of ["Move to another brand", "Make parallel of…", "Make insert of…"]) {
       expect(screen.getAllByRole("button", { name })).toHaveLength(1);
     }
 
@@ -2732,7 +2744,7 @@ describe("SetAttributesPanel — Fill teams is not a panel control any more (NEO
         defaultCollapsed={false}
       />,
     );
-    for (const name of ["Move to another brand", "Make parallel of…"]) {
+    for (const name of ["Move to another brand", "Make parallel of…", "Make insert of…"]) {
       expect(screen.getAllByRole("button", { name })).toHaveLength(1);
     }
     expect(
@@ -2775,19 +2787,20 @@ describe("SetAttributesPanel — the Set actions row (NEO-306)", () => {
       eligible: true,
       links: [{ slot: "s0", label: "Bowman Blue" }],
     };
+    currentInsertEligibility = { eligible: true };
   });
 
   function actionsGroup() {
     return screen.getByRole("group", { name: "Set actions" });
   }
 
-  it("on a set row: Move to another brand, then Make parallel of…, in that order, and nothing else", () => {
+  it("on a set row: Move to another brand, Make parallel of…, Make insert of…, in that order, and nothing else", () => {
     currentRow = makeRow({ level: "setName", value: "Bowman Blue" });
     renderPanel();
     const names = within(actionsGroup())
       .getAllByRole("button")
       .map((b) => b.textContent);
-    expect(names).toEqual(["Move to another brand", "Make parallel of…"]);
+    expect(names).toEqual(["Move to another brand", "Make parallel of…", "Make insert of…"]);
   });
 
   it("sits under the breadcrumb, and the title line keeps only the row's identity", () => {
@@ -2829,23 +2842,38 @@ describe("SetAttributesPanel — the Set actions row (NEO-306)", () => {
     }
   });
 
-  it.each(["insert", "parallel"])(
-    "on an eligible %s row: Promote to set",
-    (level) => {
-      currentRow = makeRow({ level, value: "Blue" });
-      renderPanel();
-      const names = within(actionsGroup())
-        .getAllByRole("button")
-        .map((b) => b.textContent);
-      expect(names).toEqual(["Promote to set"]);
-    },
-  );
+  it("on an eligible insert row: Make insert of…, then Promote to set", () => {
+    currentRow = makeRow({ level: "insert", value: "Blue" });
+    renderPanel();
+    const names = within(actionsGroup())
+      .getAllByRole("button")
+      .map((b) => b.textContent);
+    expect(names).toEqual(["Make insert of…", "Promote to set"]);
+  });
+
+  it("on an eligible parallel row: Promote to set only — a parallel is never a Make insert source", () => {
+    currentRow = makeRow({ level: "parallel", value: "Blue" });
+    renderPanel();
+    const names = within(actionsGroup())
+      .getAllByRole("button")
+      .map((b) => b.textContent);
+    expect(names).toEqual(["Promote to set"]);
+  });
+
+  it("Make insert of… follows the server: absent on a set row it does not apply to", () => {
+    currentInsertEligibility = { eligible: false };
+    currentRow = makeRow({ level: "setName", value: "Bowman Blue" });
+    renderPanel();
+    expect(screen.queryByRole("button", { name: "Make insert of…" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Make parallel of…" })).toBeTruthy();
+  });
 
   it("on an insert row the server says no to, the row is present but EMPTY, so `:empty` hides it", () => {
     // Each control renders nothing when it does not apply; with no whitespace
     // text nodes the group matches `:empty`, and `empty:hidden` takes it out
     // of the layout and the accessibility tree.
     currentPromotionEligibility = { eligible: false };
+    currentInsertEligibility = { eligible: false };
     currentRow = makeRow({ level: "insert", value: "Blue" });
     renderPanel();
     const group = screen.getByRole("group", { name: "Set actions", hidden: true });
@@ -3133,11 +3161,12 @@ describe("SetAttributesPanel — set ⇄ parallel row actions (NEO-305)", () => 
   );
 
   it.each(["sport", "year", "manufacturer", "variantType"])(
-    "offers neither at level %s",
+    "offers none of them at level %s",
     (level) => {
       currentRow = makeRow({ level, value: "Whatever" });
       renderPanel();
       expect(screen.queryByRole("button", { name: "Make parallel of…" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Make insert of…" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Promote to set" })).toBeNull();
     },
   );
