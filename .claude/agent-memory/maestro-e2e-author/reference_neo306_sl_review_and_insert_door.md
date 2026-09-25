@@ -33,19 +33,22 @@ in the body scroller):
 **A populated insert/parallel column never auto-reconciles.** `EntityColumn`'s
 legacy auto-sync fires only on an EMPTY column; once the review files rows
 under Bowman › Parallel/Insert, opening that type shows an idle list and the
-flow must tap `Sync <Type>s`. This is what makes two flows that both need a
-"first cold open" of the same variant type order-dependent.
+flow must tap `Sync <Type>s`. Two flows that both need a "first cold open"
+of the same variant type can never be ordered by the CI queue — the owner's
+fix (2026-09-25) was ONE ordered flow per real brand-year.
 
 Make insert of…: title/confirm follow the landing — `Make “X” an insert` /
 `Make “X” a parallel`; confirm `Make it an insert` / `Make it a parallel` /
 `Add it to <row>`; choices `Insert of <set>`, `Add to <insert>`, `New insert:
 <name>`, `New insert named…`, `New parallel: <name>`, `Add to <parallel>`;
 toast `“X” now lives at <set> › <type> › <insert>[ › <parallel>].` / `“X”
-joined …`. Choice lists are max-h-40 inner scrollers with a filter only above
-12 choices — pick targets that sort near the top.
+joined …`. Choice lists are max-h-40 inner scrollers with a filter (`Find a set` /
+`Find an insert` / `Find a parallel`) only above 12 choices — use it when
+it is there (`runFlow when: visible` on the filter resolves at once when
+present), then assert the radio.
 
 Fill teams: checklist header, amber, `1 card needs a team` / `N cards need a
 team`, only while N > 0; result in the checklist's own notice line.
 
-Worked example: `flagship-colour-is-a-parallel-both-ways.yaml`. Selector
+Worked example: `flagship-colour-is-a-parallel-both-ways.yaml` (all of 2026 Bowman, in order). Selector
 mechanics: [[childof-parent-is-first-match]].

@@ -45,7 +45,7 @@ hiding that.
 
 Worked examples: `parallel-grouping-reject-parallel.yaml` (pin to end, then
 ✕), `parallel-grouping-demoted-parallel-takes-parallels.yaml` (click-to-place
-instead of drag), `parallel-grouping-promoted-insert-fetches-from-bsc.yaml`
+instead of drag), `flagship-colour-is-a-parallel-both-ways.yaml` STEP 2 (merged from `parallel-grouping-promoted-insert-fetches-from-bsc`)
 (ReconciliationModal row button + Keep all), `inserts-1996-score-one-nb-set-two-bsc-sources.yaml`
 (one UP swipe pins a short body to its end before tapping a Pending row's NAME).
 
