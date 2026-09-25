@@ -888,10 +888,16 @@ export default function ReconciliationModal({
     // unassigned marketplace set, so it goes to Pending rather than vanishing.
     const releasedBsc: PlatformItem[] = [];
     const releasedSl: PlatformItem[] = [];
+    // Only the rows restored from `existingRows` take an attached half below;
+    // the auto-match sets pushed after them are the reconciler's guesses, not
+    // our data, and a second guess is not joined onto a first.
+    const restoredCount = ready.length;
 
-    // Auto-matches that do not collide with anything already restored. These
-    // are suggestions the reconciler made; they arrive as Ready because 95%+
-    // of them are right, and a wrong one is one ✕ away from Pending.
+    // Auto-matches. These are suggestions the reconciler made; a pair that
+    // collides with nothing arrives as a Ready set because 95%+ of them are
+    // right, and a wrong one is one ✕ away from Pending. A pair that collides
+    // on ONE half is not skipped whole: its other half is attached or released
+    // (NEO-306, below), because a skipped half is a link nobody can make.
     for (const m of initialData.autoMatched) {
       const bscHeld = held.bsc.has(m.bsc.platformValue);
       const slHeld = held.sportlots.has(m.sl.platformValue);
@@ -899,7 +905,51 @@ export default function ReconciliationModal({
         if (!bscHeld) releasedBsc.push(m.bsc);
         if (!slHeld) releasedSl.push(m.sl);
       }
-      if (usedBsc.has(m.bsc.platformValue) || usedSl.has(m.sl.platformValue)) {
+      // A held half is never attached anywhere, and its unheld partner was
+      // just released above: the NEO-300/305 path, untouched by NEO-306.
+      if (bscHeld || slHeld) continue;
+      const bscUsed = usedBsc.has(m.bsc.platformValue);
+      const slUsed = usedSl.has(m.sl.platformValue);
+      if (bscUsed && slUsed) continue;
+      if (bscUsed || slUsed) {
+        // Exactly one half is already mapped. NEO-306: the SportLots review
+        // files "Blue" as a parallel holding its SL id, and the next Sync
+        // Parallels auto-matches BSC "Blue" with that same SL id. Skipping
+        // the whole pair (the old behaviour) dropped BSC Blue on the floor:
+        // in neither Ready nor Pending, so it could never be linked.
+        //
+        // The free half joins the ONE restored row that carries the used
+        // half's id — matched by id, never by name — as an ordinary attached
+        // chip the operator can ✕ back to Pending. The free half is held or
+        // placed nowhere (`used*` holds every held and restored id and every
+        // id placed so far), so the attach duplicates nothing. It is also not
+        // attached when the caller says another level uses it
+        // (`used*PlatformValues`), because the modal would not offer it in
+        // Pending either. In every case with no single row to join — no
+        // restored row carries that id (an earlier auto-match placed it), two
+        // do (a shared marketplace id), or the caller's list names the free
+        // half — it goes to Pending, where it is handled like any loose item.
+        const side: Side = bscUsed ? "sl" : "bsc";
+        const usedPv = bscUsed ? m.bsc.platformValue : m.sl.platformValue;
+        const free = side === "bsc" ? m.bsc : m.sl;
+        const usedByCaller = (side === "bsc" ? usedBscSet : usedSlSet).has(
+          free.platformValue,
+        );
+        const owners: number[] = [];
+        for (let i = 0; i < restoredCount; i++) {
+          const mapped = bscUsed ? ready[i].bsc : ready[i].sl;
+          if (mapped.some((it) => it.platformValue === usedPv)) owners.push(i);
+        }
+        if (owners.length === 1 && !usedByCaller) {
+          const row = ready[owners[0]];
+          ready[owners[0]] =
+            side === "bsc"
+              ? { ...row, bsc: [...row.bsc, free] }
+              : { ...row, sl: [...row.sl, free] };
+          (side === "bsc" ? usedBsc : usedSl).add(free.platformValue);
+        } else {
+          (side === "bsc" ? releasedBsc : releasedSl).push(free);
+        }
         continue;
       }
       ready.push({
