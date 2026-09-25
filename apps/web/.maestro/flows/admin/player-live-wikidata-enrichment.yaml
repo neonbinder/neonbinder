@@ -111,14 +111,24 @@ tags:
 # NEO-260) and are not repeated here.
 #
 # ── EXPECTED RED DURING A GENUINE WIKIDATA OUTAGE ────────────────────────────
-# The adapter maps a timeout, a 429 and any non-OK response to `null`
-# ("a miss is fall-back, not failure") and the pool never retries, so ONE
-# 5xx on either of the two SPARQL calls leaves the row un-enriched and step
-# (d) reds after its full ceiling. That is by design: this flow's job is to
-# say so when the live lane is down. Re-run per README → "Re-running a red
-# E2E (NEO-187)"; a repeat with query.wikidata.org healthy is a product bug.
-# (The probe that picked this name saw one HTTP 502 from Wikidata on its
-# first attempt, 2026-09-20 — the outage class is real, not hypothetical.)
+# Since NEO-301 a transport failure (timeout, network error, 5xx, 429) is
+# "unavailable", not a miss: the attempt writes nothing and throws, and
+# `wikidataPool` retries the item on its backoff ladder (`WIKIDATA_POOL_RETRY`,
+# `convex/wikidataPool.ts`). A 200 with no binding is a real no-match and is
+# final. So one bad answer no longer costs the assertion — step (d)'s ceiling
+# (arithmetic at the site) outlasts the first THREE pool attempts, and a red
+# at (d) means query.wikidata.org stayed unavailable through all of them.
+# That is still this flow's job to report: the live lane was down.
+#
+# Confirm it from evidence before re-running. The run's `convex-logs-runner-0`
+# artifact streams the PR preview's Convex logs for the whole E2E run; an
+# unavailable attempt logs `wikidata_lookup_unavailable` (kind `player`, the
+# row id and the transport reason — never the name) each time it gives up.
+# The stream covers the whole preview, so a review-row lookup from another
+# runner logs the same line; either way, such lines inside this flow's window
+# are the outage, stated by the product. Then re-run per README → "Re-running a red E2E (NEO-187)". A red
+# with NO such lines, or a repeat with query.wikidata.org healthy, is a
+# product finding (lane starvation or a broken write), not a flake.
 
 - launchApp
 
@@ -233,38 +243,49 @@ tags:
 # fixture can answer it. Nothing the product could make faster is being
 # waited on — this is Wikidata's latency plus a shared queue in front of it.
 #
-# THE CEILING: 200000, from two measured numbers and nothing else —
-#   * the lookup itself is bounded server-side by `WIKIDATA_FETCH_TIMEOUT_MS`
-#     (`convex/adapters/wikidata.ts`, 10 000 ms per attempt) across two
-#     sequential SPARQL calls (the `EntitySearch` QID probe, then the detail
-#     query). Since NEO-288 each call gets ONE retry after a fixed 1.5 s
-#     backoff on a transport failure (5xx / 429 / timeout / thrown fetch), so
-#     the worst case per call is 10 + 1.5 + 10 = 21.5 s and per player
-#     2 × 21.5 = 43 s — reached only when all FOUR attempts hit the 10 s
-#     ceiling, i.e. an outage, not a blip. A single blip now costs one
-#     10 s timeout plus 1.5 s, where it used to cost the whole assertion.
-#     Career-team resolution after that is local Convex queries and the
-#     write is one mutation — not network;
-#   * lane contention: `enrichPlayer` is enqueued on the SAME 5-wide
-#     `wikidataPool` every runner's review-wizard drain uses, and the pool
-#     claims in enqueue order. The largest drain any concurrent runner can
-#     put ahead of this item is `inserts-1996-score-one-nb-set-two-bsc-sources`'s
+# THE CEILING: 600000 — approved by Jason 2026-09-24 (NEO-301), replacing
+# 200000. It is sized to cover the first THREE `wikidataPool` attempts and no
+# more, from these numbers and nothing else:
+#   * ONE attempt is bounded by the adapter (`convex/adapters/wikidata.ts`):
+#     two sequential SPARQL calls (the `EntitySearch` QID probe, then the
+#     detail query), each capped at `WIKIDATA_FETCH_TIMEOUT_MS` = 30 s. A
+#     FAST failure (< `WIKIDATA_FAST_FAILURE_MS`, 5 s) gets one in-call retry
+#     after 1.5 s, so a call is at most 5 + 1.5 + 30 = 36.5 s and an attempt
+#     at most 2 × 36.5 = 73 s. A slow failure (every timeout, any slow 5xx)
+#     ends the attempt instead and goes to the pool's ladder. Career-team
+#     resolution after a hit is local Convex queries and one mutation;
+#   * the ladder (`WIKIDATA_POOL_RETRY`, `convex/wikidataPool.ts`): 5
+#     attempts, 30 s initial backoff, base 2, jitter ×[0.5, 1.5) — so the
+#     worst-case backoff before attempt 2 is 45 s and before attempt 3 is
+#     90 s. A retrying item waits in the pending queue, not in a slot;
+#   * lane contention: `enrichPlayer` shares the 5-wide pool
+#     (`WIKIDATA_MAX_PARALLELISM`) with every runner's review-wizard drain,
+#     claimed in enqueue order. The largest drain a concurrent runner can put
+#     ahead of this item is `inserts-1996-score-one-nb-set-two-bsc-sources`'s
 #     ~200 uncovered 1996 names, which that flow budgets at 180 s ("~3s/item
-#     five-wide"); the seed's own drain is fixture-backed now and no longer
-#     competes. Sized at 20 + 180 = 200 s BEFORE the retry; the retry's
-#     43 s worst case would sum to 223 s, but that case is four consecutive
-#     10 s timeouts behind a fully contended lane — an outage this flow
-#     SHOULD report, so the ceiling is deliberately NOT raised for it.
-# It is under the 240 s the setup track uses (`setup.yaml`, the cold-sync
-# ceiling) — the previous largest wait in the suite — and it is a CANARY, not
-# a stopwatch: on an idle lane the id lands in seconds (scheduler hop + two
-# SPARQL calls + the subscription push). RE-MEASURE from the first green CI
-# runs and record the typical figure here; a run that needs the ceiling with
-# query.wikidata.org healthy is a product finding (lane starvation), not a
-# bigger number. What VOIDS this figure: a change to `WIKIDATA_FETCH_TIMEOUT_MS`,
-# to `WIKIDATA_RETRY_BACKOFF_MS` or `WIKIDATA_MAX_ATTEMPTS`, to
-# `WIKIDATA_MAX_PARALLELISM`, or a new flow that drains a bigger set through
-# the wizard.
+#     five-wide"); the seed's drain is fixture-backed and does not compete.
+#     Plus ~5 s of scheduler hop and subscription push: 185 s of overhead.
+# Worst-case jitter, from the tap to the id on screen:
+#     healthy, idle lane (typical)       ≈ 1–2 s
+#     success on the 1st attempt         ≤ 185 + 73                    = 258 s
+#     success on the 2nd attempt         ≈ 185 + (73 + 45 + 73)        = 376 s
+#     success on the 3rd attempt         ≈ 185 + (191 + 90 + 73)       = 539 s
+#     success on the 4th attempt         ≈ 185 + (354 + 180 + 73)      = 792 s
+# 600 s covers the third attempt with ~60 s to spare and deliberately NOT the
+# fourth: past three attempts Wikidata has been unavailable for most of ten
+# minutes, which is the outage this flow exists to report (see the header).
+# The full ladder (1040 s per player, on `WIKIDATA_POOL_RETRY`) is for the
+# product's rows, not for this assertion.
+# It ties the suite's largest wait and it is a CANARY, not a stopwatch: on an
+# idle lane with Wikidata healthy the id lands in seconds (scheduler hop + two
+# SPARQL calls + the subscription push). A green run that needed more than
+# the first attempt shows `wikidata_lookup_unavailable` lines in the
+# `convex-logs-runner-0` artifact; one that took minutes WITHOUT them is a
+# product finding (lane starvation), not a bigger number. What VOIDS this
+# figure: a change to `WIKIDATA_FETCH_TIMEOUT_MS`, `WIKIDATA_FAST_FAILURE_MS`,
+# `WIKIDATA_RETRY_BACKOFF_MS`, `WIKIDATA_MAX_ATTEMPTS`, `WIKIDATA_POOL_RETRY`
+# or `WIKIDATA_MAX_PARALLELISM`, or a new flow that drains a bigger set
+# through the wizard.
 #
 # The matcher is a FULL match of the link's own text (README → pressKey
 # section: `textMatches` is `Regex.matches`), so `Wikidata Q[0-9]+` is exactly
@@ -274,4 +295,4 @@ tags:
 # entity the search picks is the adapter's unit-test concern.
 - extendedWaitUntil:
     visible: "Wikidata Q[0-9]+"
-    timeout: 200000
+    timeout: 600000

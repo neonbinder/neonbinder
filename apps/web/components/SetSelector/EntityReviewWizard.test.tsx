@@ -179,10 +179,6 @@ vi.mock("convex/react", () => ({
     if (ref === "entityReviewQueue.recordDecision") return mockRecordDecision;
     if (ref === "entityReviewQueue.clearDecision") return mockClearDecision;
     if (ref === "entityReviewQueue.cancelBatch") return mockCancelBatch;
-    if (ref === "entityReviewQueue.recordAllRemainingAsCreate")
-      return mockRecordAllRemainingAsCreate;
-    if (ref === "entityReviewQueue.recordAllRemainingAsSkip")
-      return mockRecordAllRemainingAsSkip;
     if (ref === "entityReviewQueue.stageCareerTeamRows")
       return mockStageCareerTeamRows;
     if (ref === "entityReviewQueue.clearCareerTeamStint")
@@ -190,6 +186,16 @@ vi.mock("convex/react", () => ({
     // Every other mutation still has to look like one: the component `await`s
     // what `useMutation` hands back.
     return vi.fn(() => Promise.resolve(undefined));
+  },
+  // NEO-301 — the two bulk fast paths are ACTIONS now (a query reads the page,
+  // an internal mutation writes it), so the wizard reaches them through
+  // `useAction`. Anything else asked for here is a wiring mistake worth seeing.
+  useAction: (ref: string) => {
+    if (ref === "entityReviewQueue.recordAllRemainingAsCreate")
+      return mockRecordAllRemainingAsCreate;
+    if (ref === "entityReviewQueue.recordAllRemainingAsSkip")
+      return mockRecordAllRemainingAsSkip;
+    throw new Error(`unexpected useAction(${ref})`);
   },
 }));
 
@@ -1641,13 +1647,91 @@ describe("EntityReviewWizard — armed bulk add", () => {
     }
   });
 
-  it("disarms on a rejected follow-up and says it stopped", async () => {
-    // One refusal means every retry refuses too, so retrying on a timer would
-    // hammer the backend with a call that cannot succeed.
+  it("retries a failed follow-up ONCE, after the debounce, and carries on armed (NEO-301)", async () => {
+    // A single failed round is most often a write that lost its conflict
+    // retries to the lookup pool landing results on the same rows. Turning the
+    // auto-add off on it left the operator to notice and press again.
     vi.useFakeTimers();
     try {
       mockRecordAllRemainingAsCreate
         .mockResolvedValueOnce(LAST_PAGE)
+        .mockRejectedValueOnce(new Error("write conflict"))
+        .mockResolvedValue(LAST_PAGE);
+
+      currentRows = [
+        { ...settledA() },
+        makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "pending", name: "B" }),
+        makeRow({ _id: "row-c" as unknown as Id<"entityReviewQueue">, status: "pending", name: "C" }),
+      ];
+      const { rerender } = render(wizardEl());
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Add remaining players as new (3)" }),
+      );
+      await act(async () => {});
+
+      // B lands; the follow-up round fails.
+      currentRows = [
+        { ...settledA(), decision: { action: "create" } },
+        makeRow({ _id: "row-b" as unknown as Id<"entityReviewQueue">, status: "ready", name: "B" }),
+        makeRow({ _id: "row-c" as unknown as Id<"entityReviewQueue">, status: "pending", name: "C" }),
+      ];
+      rerender(wizardEl());
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+      await act(async () => {});
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2);
+
+      // Nothing said, nothing disarmed: still "adding as their lookups finish".
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByText(/as their lookups finish/)).toBeTruthy();
+
+      // The retry waits out the debounce rather than firing on the spot…
+      act(() => {
+        vi.advanceTimersByTime(1499);
+      });
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2);
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      await act(async () => {});
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(3);
+
+      // …and a later round after the successful retry still happens: the one
+      // failure did not use up the loop.
+      currentRows = [
+        { ...settledA(), decision: { action: "create" } },
+        makeRow({
+          _id: "row-b" as unknown as Id<"entityReviewQueue">,
+          status: "ready",
+          name: "B",
+          decision: { action: "create" },
+        }),
+        makeRow({ _id: "row-c" as unknown as Id<"entityReviewQueue">, status: "ready", name: "C" }),
+      ];
+      rerender(wizardEl());
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+      await act(async () => {});
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(4);
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(screen.getByText(/as their lookups finish/)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("disarms on a SECOND rejected follow-up in a row and says it stopped", async () => {
+    // One retry, then stop: a refusal (not an admin, batch gone) is repeated
+    // by every retry, so retrying on a timer would hammer the backend with a
+    // call that cannot succeed.
+    vi.useFakeTimers();
+    try {
+      mockRecordAllRemainingAsCreate
+        .mockResolvedValueOnce(LAST_PAGE)
+        .mockRejectedValueOnce(new Error("not an admin"))
         .mockRejectedValueOnce(new Error("not an admin"));
 
       currentRows = [
@@ -1670,9 +1754,17 @@ describe("EntityReviewWizard — armed bulk add", () => {
       act(() => {
         vi.advanceTimersByTime(1500);
       });
-      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2);
-
       await act(async () => {});
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2);
+      // The first failure is retried silently.
+      expect(screen.queryByRole("alert")).toBeNull();
+
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+      await act(async () => {});
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(3);
+
       const alert = screen.getByRole("alert");
       expect(alert.textContent).toContain("not an admin");
       expect(alert.textContent).toContain("Stopped adding automatically");
@@ -1683,7 +1775,7 @@ describe("EntityReviewWizard — armed bulk add", () => {
       act(() => {
         vi.advanceTimersByTime(10_000);
       });
-      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(2);
+      expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
     }

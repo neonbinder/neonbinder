@@ -6,3 +6,4 @@
 - [Neo102 reconcile no team](neo102_reconcile_no_team.md) — NEO-102 consult findings — repo facts on team field handling (schema, adapters, wizard) for the missing-team reconciliation feature
 - [Neo239 retire custom concept test](neo239_retire_custom_concept_test.md) — NEO-239 manual test pass findings (2026-09-04) — set-builder base-role UX, Multi-source panel gating, minor copy nits.
 - [TeamPicker is append-only; change = clear then pick](teampicker_is_append_only_change_is_clear_then_pick.md) — any feature keyed on the picker's previous value must survive remove-then-add (NEO-277 cascade)
+- [Known-brand curation tests](known-brand-curation-tests.md) — issuer? two-rows-one-issuer? did the line outlive its parent?; plus the "Other …"/"NBA …"/"Team Issue …" leading-qualifier artifacts

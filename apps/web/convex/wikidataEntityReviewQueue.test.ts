@@ -14,7 +14,9 @@
  *     that replaced the old chained `processEntityReviewQueue`. One call looks up
  *     one row and patches it "ready"/"error"; the pool (not this action) handles
  *     concurrency. Includes the NEO-99 fetch-timeout coverage: a stalled/aborted
- *     request must resolve the row to "error", never hang it on "pending".
+ *     request must END the action, never hang it. Since NEO-301 it ends by
+ *     throwing a retryable error with the row still "pending"; the row is
+ *     aged to "error" by the pool's backstop only after the final attempt.
  *
  * Lives at the convex/ ROOT (not co-located under convex/adapters/) for the
  * same reason as convex/wikidataEnrichTeam.test.ts / convex/bscTeamEnrichmentQueue.test.ts:
@@ -39,7 +41,9 @@ import {
   lookupPlayerEnrichment,
   lookupTeamEnrichment,
   membershipIsOutsidePlayerSport,
+  WIKIDATA_FETCH_TIMEOUT_MS,
 } from "./adapters/wikidata";
+import { isNonRetryableError } from "@convex-dev/workpool";
 // NEO-236: the ESPN team list is memoised per league path for the life of the
 // module, and the knownQid cases below stub a different body for "baseball/mlb".
 import { __resetEspnTeamListCache } from "./adapters/espn";
@@ -191,6 +195,9 @@ function makePlayerFetchStub(opts: {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  // NEO-301: the transport-failure tests spy on the console and fake Date.
+  vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 // ===========================================================================
@@ -1410,29 +1417,24 @@ describe("runEntityReviewLookup", () => {
   });
 
   /**
-   * NEO-294 — RENAMED from "a lookup that throws is caught". It never tested
-   * that.
+   * NEO-294 named this "a transport failure is absorbed as a no-match", and
+   * that WAS the contract: every adapter in convex/adapters/ is no-throw, so a
+   * dead `fetch` arrived as a lookup that ran and answered nothing, and the
+   * row went to "error" — "No Wikidata match found" for a name Wikidata knows.
    *
-   * Every adapter in convex/adapters/ is no-throw by convention: `runSparql`
-   * absorbs a transport failure and answers `null` (its NEO-288 one-retry
-   * contract), and adapters/espn.ts says the same in as many words ("No-throw,
-   * like every adapter here"). So a `fetch` stubbed to throw does NOT reach
-   * `runEntityReviewLookup`'s catch — it arrives as a lookup that ran and
-   * answered nothing, and this test passed identically with the catch removed.
-   * A test name that is a guarantee the body does not check is worse than no
-   * test, because it stops the next reader looking.
+   * NEO-301 reverses it on purpose. The adapter is STILL no-throw (it answers
+   * `null` and records the failure on a `LookupTrace`); it is the work item
+   * that now reads the trace and THROWS a retryable `WikidataUnavailableError`
+   * for `wikidataPool`'s retry ladder. So the row must be left exactly as it
+   * was — `pending`, no enrichment, no no-match line — and the throw must be
+   * the retryable kind. The row reaching "error" is the backstop's job, after
+   * the ladder's LAST attempt; that half is pinned in
+   * convex/wikidataPool.retry.test.ts.
    *
-   * What DOES reach that catch is a failure in the `try` that is not a fetch —
-   * the `getSportEnrichmentContext` query, say. That is covered against a REAL
-   * throw in convex/adapters/wikidata.entityReviewWrite.test.ts ("a lookup
-   * that threw"), which scripts the ctx directly; this harness runs the real
-   * queries and cannot make one fail. Not duplicated here.
-   *
-   * Kept for what it genuinely pins, which is worth pinning: from the row's
-   * side, a dead network is the SAME end state as a name Wikidata has never
-   * heard of — "error", no enrichment, and above all never left "pending".
+   * Asserted against the markers each path logs, so the test cannot pass by
+   * landing on the wrong branch (the trap NEO-294 documented here).
    */
-  test("a transport failure is absorbed as a no-match — 'error', no enrichment, never 'pending'", async () => {
+  test("a transport failure is NOT a no-match — the row stays 'pending' and the item throws retryable", async () => {
     const t = convexTest(schema, modules);
     const selectorOptionId = await seedSelectorOption(t);
     const row = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Network Down During Lookup" });
@@ -1443,37 +1445,68 @@ describe("runEntityReviewLookup", () => {
         throw new Error("network down");
       }) as unknown as typeof fetch,
     );
-    // The claim in the name, made checkable: these two spies are what say the
-    // request died on the NO-MATCH path rather than in the catch. Without
-    // them the assertions below cannot tell the two apart — which is exactly
-    // how the old name survived.
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.spyOn(console, "error").mockImplementation(() => {});
 
-    await t.action(internal.adapters.wikidata.runEntityReviewLookup, { rowId: row });
+    const thrown = await t
+      .action(internal.adapters.wikidata.runEntityReviewLookup, { rowId: row })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
 
-    const markers = logSpy.mock.calls
-      .map((call) => call[0])
-      .filter((first): first is string => typeof first === "string" && first.startsWith("{"))
-      .map((first) => (JSON.parse(first) as { msg?: string }).msg);
-    // Absorbed: the lookup RAN and answered nothing.
-    expect(markers).toContain("entity_review_lookup_no_match");
-    // ...and did not land in the catch, which logs this prefix instead.
-    expect(
-      errorSpy.mock.calls.filter(
-        (call) => typeof call[0] === "string" && call[0].startsWith("[entity-review-lookup]"),
-      ),
-    ).toHaveLength(0);
-    logSpy.mockRestore();
-    errorSpy.mockRestore();
+    // What got WRITTEN first: nothing. The row is untouched.
+    const r = await getRow(t, row);
+    expect(r!.status).toBe("pending");
+    expect(r!.enrichment).toBeUndefined();
+
+    // Then how it ended: a retryable unavailable throw, not a no-match.
+    expect(String(thrown)).toMatch(/wikidata_unavailable kind=player reason=network/);
+    expect(isNonRetryableError(thrown)).toBe(false);
+    const markers = (spy: { mock: { calls: unknown[][] } }): Array<Record<string, unknown>> =>
+      spy.mock.calls
+        .map((call) => call[0])
+        .filter((first): first is string => typeof first === "string" && first.startsWith("{"))
+        .map((first) => JSON.parse(first) as Record<string, unknown>);
+    expect(markers(logSpy).map((l) => l.msg)).not.toContain("entity_review_lookup_no_match");
+    const unavailable = markers(warnSpy).filter((l) => l.msg === "wikidata_lookup_unavailable");
+    expect(unavailable).toEqual([
+      { msg: "wikidata_lookup_unavailable", kind: "player", id: row, reason: "network" },
+    ]);
+    // Ids and kinds only — never the name on the row.
+    expect(JSON.stringify(unavailable)).not.toContain("Network Down During Lookup");
+  });
+
+  test("a 200 with no binding IS a no-match — 'error', no enrichment, and it does not throw", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedSelectorOption(t);
+    const row = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Nobody Wikidata Knows" });
+
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      (async () => {
+        calls += 1;
+        return jsonResponse(makePlayerSearchBody(null));
+      }) as unknown as typeof fetch,
+    );
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    await expect(
+      t.action(internal.adapters.wikidata.runEntityReviewLookup, { rowId: row }),
+    ).resolves.toBeNull();
 
     const r = await getRow(t, row);
     expect(r!.status).toBe("error");
-    // The no-match shape, in full: a transport failure must not leave a
-    // half-written enrichment behind, and must not strand the row on
-    // "pending" — the hang this action's fetch timeout exists to stop.
     expect(r!.enrichment).toBeUndefined();
-    expect(r!.status).not.toBe("pending");
+    // One search, no detail query, no in-call retry: an answer is final.
+    expect(calls).toBe(1);
+    const msgs = logSpy.mock.calls
+      .map((call) => call[0])
+      .filter((first): first is string => typeof first === "string" && first.startsWith("{"))
+      .map((first) => (JSON.parse(first) as { msg?: string }).msg);
+    expect(msgs).toContain("entity_review_lookup_no_match");
   });
 
   // ── NEO-99 fetch timeout ────────────────────────────────────────────────
@@ -1503,25 +1536,36 @@ describe("runEntityReviewLookup", () => {
     expect(sawSignal).toBe(true);
   });
 
-  test("an aborted/timed-out request resolves the row to 'error' rather than hanging it", async () => {
+  test("a timed-out request leaves the row 'pending' for the pool's retry — not hung, and not 'error'", async () => {
     const t = convexTest(schema, modules);
     const selectorOptionId = await seedSelectorOption(t);
     const row = await seedReviewRow(t, selectorOptionId, { kind: "player", name: "Times Out" });
 
-    // Simulate what AbortSignal.timeout does when it fires: fetch rejects with a
-    // TimeoutError. runSparql maps it to null exactly like any other failure.
+    // What AbortSignal.timeout does when it fires: fetch rejects with a
+    // TimeoutError after WIKIDATA_FETCH_TIMEOUT_MS. The clock is moved by that
+    // much so the adapter sees a SLOW failure, which it does not retry in-call.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    let calls = 0;
     vi.stubGlobal(
       "fetch",
       (async () => {
+        calls += 1;
+        vi.setSystemTime(Date.now() + WIKIDATA_FETCH_TIMEOUT_MS);
         throw new DOMException("The operation timed out.", "TimeoutError");
       }) as unknown as typeof fetch,
     );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    await t.action(internal.adapters.wikidata.runEntityReviewLookup, { rowId: row });
+    // The action ENDS (the NEO-99 hang is still impossible) — by throwing
+    // the retryable error, not by fabricating an answer.
+    await expect(
+      t.action(internal.adapters.wikidata.runEntityReviewLookup, { rowId: row }),
+    ).rejects.toThrow(/wikidata_unavailable kind=player reason=timeout/);
+    // A slow failure is handed to the pool's ladder, never retried in-call.
+    expect(calls).toBe(1);
 
     const r = await getRow(t, row);
-    // The bug was: this stayed "pending" forever. Now it resolves.
-    expect(r!.status).toBe("error");
+    expect(r!.status).toBe("pending");
   });
 });
 

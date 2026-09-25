@@ -1094,10 +1094,17 @@ What that changes for flows:
   recording and from every checklist the suite commits — and waits for the
   `Wikidata Q…` link in the detail header. It carries the suite's one
   in-flow R5 exception above 7 s, recorded at the site with its arithmetic,
-  and it is **expected to go red during a genuine Wikidata outage**: the
-  adapter never retries, so a single 5xx on either SPARQL call leaves the row
-  un-enriched. Re-run it per "Re-running a red E2E (NEO-187)"; a repeat with
-  `query.wikidata.org` healthy is a product finding.
+  and it is **expected to go red during a genuine Wikidata outage**. Since
+  NEO-301 a transport failure (timeout, network error, 5xx, 429) is
+  "unavailable", not a miss: the attempt writes nothing and `wikidataPool`
+  retries it on its backoff ladder (`WIKIDATA_POOL_RETRY`), while a real
+  no-match is final. The flow's ceiling outlasts the first three pool
+  attempts, so a red means Wikidata stayed unavailable through all of them.
+  Confirm that from the run's `convex-logs-runner-0` artifact, which streams
+  the preview's Convex logs for the whole run: each unavailable attempt logs
+  `wikidata_lookup_unavailable` (kind, row id and reason, never a name).
+  Then re-run per "Re-running a red E2E (NEO-187)". A red with no such lines,
+  or a repeat with `query.wikidata.org` healthy, is a product finding.
 - **Do not add the live-proof name to the recording.** The capture reads the
   deployment's `players` rows, so a capture taken after the suite has run
   would sweep it in; `convex/adapters/enrichmentFixtureFile.test.ts` refuses

@@ -11,9 +11,11 @@ import workpool from "@convex-dev/workpool/convex.config";
  *   - the FAST service runs the classical-only fast path — it never loads a
  *     model, cold-starts in seconds, and settles the identity-majority of cards.
  *     Every image is enqueued here FIRST (`fastPreprocessPool`).
- *   - the HEAVY service runs the full BiRefNet+SAM cascade, cold-loads ~191s,
- *     and is the one the fast service escalates to when the classical path
- *     cannot settle a card. Only escalations reach it (`heavyPreprocessPool`).
+ *   - the HEAVY service runs the full BiRefNet+SAM cascade, cold-loads the
+ *     model in ~180-240s, and is the one the fast service escalates to when the
+ *     classical path cannot settle a card. Only escalations and heavy warm-ups
+ *     reach it, both through `heavyPreprocessPool` so they share its slots
+ *     (NEO-299).
  *
  * Each service is deliberately stateless and capacity-bound: `container_
  * concurrency = 1` (a single full-BiRefNet inference transiently allocates

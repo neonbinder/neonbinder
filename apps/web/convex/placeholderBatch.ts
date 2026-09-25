@@ -11,6 +11,7 @@
  */
 
 import { internalAction } from "./_generated/server";
+import type { ActionCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { isNonRetryableError } from "@convex-dev/workpool";
@@ -22,7 +23,7 @@ import {
   callWarmupHeavy,
   parsePreprocessErrorCode,
 } from "./adapters/preprocess";
-import { PREPROCESS_MAX_PARALLELISM } from "./preprocessCapacity";
+import { HEAVY_MAX_PARALLELISM, PREPROCESS_MAX_PARALLELISM } from "./preprocessCapacity";
 
 /**
  * Extract is retried inline rather than through the workpool.
@@ -195,9 +196,27 @@ export const processEntryWorker = internalAction({
 /**
  * Process one ESCALATED image against the HEAVY service. Enqueued by the HEAVY
  * workpool (`enqueueHeavyImage` in placeholderHeavyPool.ts) after the fast path
- * declined the image. Same no-error-handling / no-state-writes contract as the
- * fast worker; its result always carries `needs_escalation: false`, and the
- * shared settle terminates the row on it.
+ * declined the image. Same no-state-on-success contract as the fast worker; its
+ * result always carries `needs_escalation: false`, and the shared settle
+ * terminates the row on it.
+ *
+ * ONE addition over the fast worker: a heartbeat on a RETRYABLE failure
+ * (NEO-299). The heavy retry ladder (placeholderHeavyPool.ts) can run to ~48
+ * minutes in the worst case, longer than the wedged-batch watchdog's 30-minute
+ * PLACEHOLDER_WEDGE_STALE_MS, and nothing else bumps the job's `lastActivityAt`
+ * while an escalation is between attempts. So a retryable throw first refreshes
+ * the heartbeat, then RETHROWS the original error unchanged — the pool must
+ * still see the failure, or it would read the attempt as a success and stop
+ * retrying.
+ *
+ * A `NonRetryableError` (400/404 from the adapter) is rethrown WITHOUT touching
+ * the job: the pool will not retry it, the completion hook settles the image as
+ * failed on the spot, and that settle is what bumps the heartbeat. Touching here
+ * too would only claim progress for work that has already ended.
+ *
+ * The heartbeat is best-effort. If the mutation itself fails, that failure is
+ * logged and swallowed so the original preprocess error is what the pool
+ * records and retries on.
  */
 export const processHeavyEntryWorker = internalAction({
   args: {
@@ -207,50 +226,125 @@ export const processHeavyEntryWorker = internalAction({
   },
   returns: v.any(),
   handler: async (ctx, args) => {
-    return callProcessEntryHeavy(ctx, {
-      jobId: args.jobId,
-      userId: args.userId,
-      entryIndex: args.entryIndex,
-    });
+    try {
+      return await callProcessEntryHeavy(ctx, {
+        jobId: args.jobId,
+        userId: args.userId,
+        entryIndex: args.entryIndex,
+      });
+    } catch (err) {
+      if (!isNonRetryableError(err)) {
+        try {
+          await ctx.runMutation(internal.placeholderPipeline.touchJobActivity, {
+            jobId: args.jobId,
+          });
+        } catch (touchErr) {
+          console.warn(
+            JSON.stringify({
+              msg: "preprocess_heavy_heartbeat_failed",
+              jobId: args.jobId,
+              entryIndex: args.entryIndex,
+              error: touchErr instanceof Error ? touchErr.message : String(touchErr),
+            }),
+          );
+        }
+      }
+      throw err;
+    }
   },
 });
 
 /**
- * Warm the FAST fan-out AND one HEAVY preprocess instance, in the background, at
- * the start of a batch.
+ * Warm ONE heavy instance. The function `enqueueHeavyWarmups`
+ * (placeholderHeavyPool.ts) enqueues HEAVY_MAX_PARALLELISM times onto the HEAVY
+ * pool, so each call occupies one pool slot for as long as its `/warmup` holds
+ * an instance — for a cold instance, the whole model load.
  *
- * Scheduled fire-and-forget from `startPlaceholderStream` and
- * `startPlaceholderBatch` (via `ctx.scheduler.runAfter(0, ...)`), so the start
- * mutation returns inside the 7-second UI budget and instances are up WHILE the
- * user uploads or scans. The fast service cold-starts in seconds, so its warm-up
- * is a smaller win, but it is free and keeps the first fast image off even that
- * short cold start.
+ * `callWarmupHeavy` never throws (its fetch budget is
+ * WARMUP_HEAVY_FETCH_TIMEOUT_MS, sized in adapters/preprocess.ts to outlast a
+ * cold load), so this action cannot fail and the pool's `retry: false` is never
+ * exercised.
+ */
+export const warmHeavyWorker = internalAction({
+  args: {},
+  returns: v.object({ warmed: v.boolean() }),
+  handler: async (ctx) => {
+    const result = await callWarmupHeavy(ctx);
+    console.log(
+      JSON.stringify({ msg: "preprocess_heavy_warmup", warmed: result.warmed }),
+    );
+    return { warmed: result.warmed };
+  },
+});
+
+/**
+ * Put the heavy warm-up fan-out on the heavy pool, swallowing any failure.
  *
- * Fires PREPROCESS_MAX_PARALLELISM fast warm-ups CONCURRENTLY to spread across
- * the fast instances Cloud Run will run, plus ONE heavy warm-up.
+ * Both warm-up actions below call this. It returns how many warm-ups were
+ * enqueued for their log line: HEAVY_MAX_PARALLELISM, or 0 when another fan-out
+ * already ran inside the deployment-wide window (`enqueueHeavyWarmups` logs
+ * `preprocess_heavy_warmup_skipped`) or the enqueue failed. A warm-up must never be able to fail a start or a batch, so an enqueue
+ * failure is logged and reported as 0 rather than thrown.
+ */
+async function enqueueHeavyWarmupsSafely(ctx: ActionCtx): Promise<number> {
+  try {
+    const { enqueued } = await ctx.runMutation(
+      internal.placeholderHeavyPool.enqueueHeavyWarmups,
+      {},
+    );
+    return enqueued;
+  } catch (err) {
+    console.warn(
+      JSON.stringify({
+        msg: "preprocess_heavy_warmup_enqueue_failed",
+        requested: HEAVY_MAX_PARALLELISM,
+        error: err instanceof Error ? err.message : String(err),
+      }),
+    );
+    return 0;
+  }
+}
+
+/**
+ * Warm the FAST fan-out AND the HEAVY fleet, in the background, at the start of
+ * a batch — and earlier still, on warm-on-intent (`warmPreprocess` in
+ * placeholderPipeline.ts, fired on upload-page mount and scanner start).
  *
- * Heavy IS warmed on start now (NEO-175 revision, at the user's request): its
- * ~191s cold load is the dominant latency an escalation pays, and starting it
- * here — rather than only when the first image escalates — overlaps that load
- * with the entire fast phase, so a mid-batch escalation waits far less (often
- * nothing) for the model. The cost is one heavy instance per batch that scales
- * back to zero on idle if nothing escalates. It does NOT suppress the cold-start
- * notice: `heavyWarmStartedAt` is still set on the first escalation
- * (placeholderPipeline.ts), so a batch that escalates before the load finishes
- * shows the notice exactly as before. The on-escalation warm-gate stays as a
- * cheap belt-and-suspenders fallback for the rare batch that skipped this.
+ * Scheduled fire-and-forget from `startPlaceholderStream`,
+ * `startPlaceholderBatch` and `warmPreprocess` (via
+ * `ctx.scheduler.runAfter(0, ...)`), so the caller returns inside the 7-second
+ * UI budget and instances come up WHILE the user uploads or scans.
  *
- * `callWarmupFast`/`callWarmupHeavy` never throw, so this action cannot fail;
- * `Promise.all` over non-throwing calls is safe.
+ * FAST: PREPROCESS_MAX_PARALLELISM warm-ups fired directly and CONCURRENTLY, one
+ * per fast instance Cloud Run will run. The fast service cold-starts in
+ * seconds, so this is a small win, but it is free.
+ *
+ * HEAVY: HEAVY_MAX_PARALLELISM warm-ups, enqueued on the HEAVY POOL rather than
+ * fired directly (NEO-299). Heavy's ~180-240s cold model load is the dominant
+ * latency an escalation pays, so the design is to warm the heavy fleet to its
+ * limit here and overlap the whole load with the fast phase. Going through the
+ * pool is what makes warming to the limit safe: warm-ups and escalations draw
+ * from the same `maxParallelism` slots, so together they never ask for more
+ * heavy instances than exist, and a warm-up can never be what sheds an
+ * escalation with a 429. At most one heavy fan-out is enqueued per 330s window
+ * deployment-wide (`enqueueHeavyWarmups`), so repeated starts and page mounts
+ * cannot pile rounds of warm-ups in front of real escalations.
+ *
+ * This does NOT suppress the cold-start notice: `heavyWarmStartedAt` is still
+ * set on the first escalation (placeholderPipeline.ts), so a batch that
+ * escalates before the load finishes shows the notice exactly as before.
+ *
+ * `callWarmupFast` never throws and the heavy enqueue is caught, so this action
+ * cannot fail.
  */
 export const warmupPreprocess = internalAction({
   args: {},
   returns: v.null(),
   handler: async (ctx) => {
     const requested = PREPROCESS_MAX_PARALLELISM;
-    const [fastResults, heavy] = await Promise.all([
+    const [fastResults, heavyRequested] = await Promise.all([
       Promise.all(Array.from({ length: requested }, () => callWarmupFast(ctx))),
-      callWarmupHeavy(ctx),
+      enqueueHeavyWarmupsSafely(ctx),
     ]);
     const warmed = fastResults.filter((r) => r.warmed).length;
     console.log(
@@ -258,7 +352,7 @@ export const warmupPreprocess = internalAction({
         msg: "preprocess_warmup",
         requested,
         warmed,
-        heavyWarmed: heavy.warmed,
+        heavyRequested,
       }),
     );
     return null;
@@ -266,29 +360,30 @@ export const warmupPreprocess = internalAction({
 });
 
 /**
- * The HEAVY warm-gate: warm ONE heavy instance, fired the first time a batch
- * escalates an image (scheduled fire-and-forget from `settleImageOutcome`).
+ * The HEAVY warm-gate, fired the first time a batch escalates an image
+ * (scheduled fire-and-forget from `settleImageOutcome`).
  *
- * A single warm-up, NOT the fast fan-out's N-wide burst, and that asymmetry is
- * the whole point (requirement #4): the heavy service cold-loads ~191s, and
- * escalations are a minority of images, so pre-warming all N heavy instances for
- * what may be one escalation would stampede N cold heavy instances. Warming one
- * and letting the heavy pool's `maxParallelism` queue the escalations behind
- * that warming instance is what keeps the heavy footprint proportional to the
- * escalation load. The fast path is never gated on this — fast cards stream in
- * regardless.
+ * Enqueues the same HEAVY_MAX_PARALLELISM warm-ups as `warmupPreprocess`, onto
+ * the same heavy pool (NEO-299; previously it fired a single direct warm-up).
+ * It is the backstop for a batch whose start-time warm-up has long since let
+ * the fleet scale back to zero, or whose client never called
+ * `warmPreprocess`. Because the warm-ups share the pool with the escalations,
+ * they cannot stampede past the heavy instance ceiling: the pool admits at most
+ * `maxParallelism` heavy requests of either kind, and the rest wait their turn.
+ * It passes through the same deployment-wide window as `warmupPreprocess`, so
+ * when a start or a page mount already warmed the fleet inside the window, it
+ * enqueues nothing.
+ * The fast path is never gated on this — fast cards stream in regardless.
  *
- * `callWarmupHeavy` never throws, so this action cannot fail. It runs entirely
- * in the background; the escalations it precedes get the pool's full 4-minute
- * per-request budget, which clears a heavy cold start.
+ * The heavy enqueue is caught, so this action cannot fail.
  */
 export const warmupHeavyPreprocess = internalAction({
   args: {},
   returns: v.null(),
   handler: async (ctx) => {
-    const result = await callWarmupHeavy(ctx);
+    const heavyRequested = await enqueueHeavyWarmupsSafely(ctx);
     console.log(
-      JSON.stringify({ msg: "preprocess_heavy_warmup", warmed: result.warmed }),
+      JSON.stringify({ msg: "preprocess_heavy_warmup_gate", heavyRequested }),
     );
     return null;
   },

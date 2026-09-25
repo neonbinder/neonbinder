@@ -376,7 +376,12 @@ describe("NEO-212 — a refused write to shared reference data persists nothing"
     expect(await t.run(async (ctx) => ctx.db.query("players").collect())).toEqual([]);
   });
 
-  test("entityReviewQueue.recordAllRemainingAsSkip refuses a non-admin without deciding a row", async () => {
+  test.each([
+    ["recordAllRemainingAsSkip", api.entityReviewQueue.recordAllRemainingAsSkip],
+    // NEO-301 — the create twin, pinned beside it now that both are actions
+    // whose write half takes the caller's id as an argument.
+    ["recordAllRemainingAsCreate", api.entityReviewQueue.recordAllRemainingAsCreate],
+  ] as const)("entityReviewQueue.%s refuses a non-admin without deciding a row", async (_name, fn) => {
     // The BULK one: a single call marks every undecided name in a batch as
     // "not an entity", and commit then makes each of those a durable per-set
     // suppression. Ungated, one call could retire an operator's whole review.
@@ -395,7 +400,7 @@ describe("NEO-212 — a refused write to shared reference data persists nothing"
     );
 
     await expect(
-      t.withIdentity(MEMBER).mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+      t.withIdentity(MEMBER).action(fn, {
         selectorOptionId,
         batchId: "batch-1",
       }),

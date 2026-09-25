@@ -162,9 +162,53 @@ tags:
     text: ".*Parallels of.*${ATTEMPT_ID} Stars.*"
 
 # ── TAP ✕ NEXT TO "<ID> Stars Gold" ────────────────────────────────────────
-# The product scrolls the last reject button into view on state change (bodyRef
-# scrollIntoView), so the ✕ for Stars Gold is within the modal body's visible
-# area. aria-label maps to resource-id (id: matcher).
+# NEO-300 REMOVED THE AUTO-SCROLL this step used to ride on. The modal used to
+# `scrollIntoView` the LAST ✕ on open and on every change; it now opens at
+# scrollTop 0 and never moves on its own (ParallelGroupingModal.test.tsx pins
+# that). So the flow has to put the ✕ inside the body's viewport itself.
+#
+# WHY IT IS CLIPPED AT scrollTop 0. The "Parallels of …" boxes are sorted by
+# name, so "<ID> Champions"' (empty) box comes FIRST and "<ID> Stars"' box —
+# holding Stars Gold, the only ✕ — is the LAST thing in the body. Green CI
+# runs 35948573036 and PR #277's show the modal at its max-h (Accept all at
+# y=48, footer Cancel at y=545) and the auto-scroll parking the ✕ at
+# [799,491][834,527] with its bottom on the body's bottom edge (~529): its
+# natural place is below that, UNDER THE FOOTER. Maestro does not see the
+# body's clip (README → "Asserting inside a dialog") and would tap the ✕'s
+# centre anyway — x≈816 in the footer band is the Save button (x≈757-864), which at that
+# moment reads "Save 1 change".
+#
+# `scrollUntilVisible` cannot help: its swipe moves the WINDOW and this is a
+# `fixed inset-0` portal (R8 case 2 — the modal's footer Save held its bounds
+# across every centring try, move-parallels-of-inserts-custom.yaml). The
+# body is scrolled with a real touch swipe instead (maestro-web swipes with a
+# TOUCH pointer, so the scroller under the finger moves), as
+# parallel-grouping-promoted-insert-fetches-from-bsc.yaml does inside
+# ReconciliationModal. PIN THE BODY TO ITS END: the ✕ is the last row of the
+# last box, so at maximum scroll it sits ~30px above the body's bottom (the
+# box's p-3 + border + the body's pb-4) — exactly where the old auto-scroll
+# parked it, and fully inside the viewport. One swipe is ~312px (75%→25% of
+# the 625px Maestro measures) and the body's overflow here is one DropZone at most (~80-130px:
+# modal max-h 566 against the content of 3 rows and 2 boxes), so a second
+# swipe is not needed; a swipe past the end is a no-op either way.
+#
+# THE START POINT: x=13% (~133px of the 1024 Maestro scales against) is
+# inside the body's own 24px left padding. The modal is max-w-3xl (768px)
+# centred in the 1009px layout viewport (1024 less the scrollbar; the same
+# runs put "Accept all" at x=658-864, i.e. the header's right padding ends at
+# 888), so the modal spans ~121-889, its body's left padding ~122-145, and
+# the drop zones begin at ~146 with rows inside them from ~160. The touch
+# never begins on a row (rows are dnd-kit draggables: a touch drag on one
+# would start a DRAG) and never on the backdrop left of ~121 (a backdrop
+# press asks to discard). y=75% (~469) is inside the body, whose band here
+# is ~117-529.
+# No settle needed after it: the tap re-reads the hierarchy.
+- swipe:
+    start: "13%, 75%"
+    end: "13%, 25%"
+# aria-label maps to resource-id (id: matcher). The hard asserts below ("No
+# changes yet", Gold back at top level) are what prove the tap landed on the
+# ✕ and not on the footer.
 - tapOn:
     id: "Remove ${ATTEMPT_ID} Stars Gold from parallels"
 

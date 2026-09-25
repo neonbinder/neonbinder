@@ -1,6 +1,6 @@
 ---
 name: flake-runtime-forensics
-description: How to get RUNTIME proof (not elimination) for an intermittent E2E flake — cross-client control from the same run's artifacts; which log sources are/aren't retrievable
+description: How to get RUNTIME proof (not elimination) for an intermittent E2E flake from a run's artifacts, and how to size a real fixture (list counts, step cost) from a GREEN run's maestro.log before asserting on it
 metadata:
   type: reference
 ---
@@ -44,3 +44,6 @@ error, never enough to see the screen.
 Also note the runner jobs all conclude `success` even when a flow fails: the
 queue records the failure and the separate `E2E / e2e` gate job is what reds.
 Do not read "runner (7): success" as "nothing failed on r7".
+
+## Size a real fixture from a GREEN run before writing an assert on it
+Green runs keep `debug/<flow>/maestro.log` too, and every `tapOn` logs the tapped node's FULL text (`Tapping on element: … text=Accept all suggestions (141)`), every centred scroll logs `Element bounds`, and command start/finish stamps give per-step cost. So before asserting on a list whose length is the marketplace's business, grep the last green run for the count: NEO-300 found 2026 Bowman nests 141 parallels, which ruled out asserting a row inside a disclosure that renders in a dialog's non-scrolling header — and the 156-set reconcile Save measured 1.0s, which justified 7000 instead of an inherited 60000 on the re-sync save.

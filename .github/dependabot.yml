@@ -12,6 +12,10 @@ updates:
       - "/apps/web/.github/actions/maestro-runner"
     schedule:
       interval: weekly
+    # 7-day cooldown: never propose a release younger than a week. Supply-chain
+    # compromises are usually caught and unpublished within days of release.
+    cooldown:
+      default-days: 7
     groups:
       github-actions:
         update-types: ["minor", "patch"]
@@ -21,6 +25,10 @@ updates:
     directory: "/apps/web"
     schedule:
       interval: weekly
+    # 7-day cooldown: never propose a release younger than a week. Supply-chain
+    # compromises are usually caught and unpublished within days of release.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     groups:
       web-minor-patch:
@@ -31,6 +39,10 @@ updates:
     directory: "/services/browser"
     schedule:
       interval: weekly
+    # 7-day cooldown: never propose a release younger than a week. Supply-chain
+    # compromises are usually caught and unpublished within days of release.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     groups:
       browser-minor-patch:
@@ -42,6 +54,10 @@ updates:
     directory: "/services/preprocess"
     schedule:
       interval: weekly
+    # 7-day cooldown: never propose a release younger than a week. Supply-chain
+    # compromises are usually caught and unpublished within days of release.
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
     groups:
       preprocess-minor-patch:

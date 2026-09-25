@@ -26,11 +26,14 @@ selected by `--full-bleed`:
 
   * DEFAULT (inset)  -> public/placeholder-fixtures/           -> every card
     ESCALATES. Drives placeholders/pipeline-escalation-cold-start.yaml, which
-    asserts the "Warming up the full card processor…" cold-start notice.
+    uploads all six (more escalations than a PR preview's heavy cap, NEO-299)
+    and asserts the "A few of these need a closer look…" cold-start notice,
+    "All 6 photos read." and "3 pairs ready to print.".
   * --full-bleed     -> public/placeholder-fixtures-fullbleed/ -> every card
-    STAYS on the fast path (no escalation). Drives the retargeted main flow
+    STAYS on the fast path (no escalation). Drives
     placeholders/pipeline-pairs-uploaded-scans.yaml, which asserts a tight
-    fast-path completion and the ABSENCE of the cold-start notice.
+    fast-path completion and the ABSENCE of the cold-start notice, and
+    placeholders/flip-edge-mirrors-the-backs.yaml.
 
 Both modes are VALIDATED against the real classical decision without a network:
 `app.cropper.tiered.fast_tiered_crop(bytes)` returns the input untouched for a
@@ -51,13 +54,14 @@ WHY BOTH SIDES PRINT THE SAME FULL PLAYER NAME  (the load-bearing constraint)
 --------------------------------------------------------------------------
 Pairing is IDENTITY-FIRST (`placeholderPairing.ts` calls `pairBatch` with
 `useAdjacency: false` — NEO-170's precedence rework). Every image goes through
-the identity pool, so the resolver runs once per done image (the flow asserts
-`resolver calls: 6` for the 6 scans), and a front pairs to a back ONLY when the
+the identity pool, so the resolver runs once per done image, and a front pairs
+to a back ONLY when the
 two share an extractable identity: `lib/pairing/pool.ts` scores a candidate on
 player name (`names.ts` — a surname-only fuzzy rung, "BUEHLER" front ↔ "Walker
 Buehler" back) or team, and a FRONT's card number is discarded, so it never
-contributes. A pool match renders "… · by image pool", which is what the flow's
-Step 5 asserts. Anything the pool cannot place drops to the guarded adjacency
+contributes. A pool match renders "… · by image pool" (which pairs landed by
+which mechanism is left to the pairing unit tests, not asserted by the flows).
+Anything the pool cannot place drops to the guarded adjacency
 fallback and renders "… · by scan order" — a regression signal on these clean,
 name-matching fixtures.
 
@@ -78,8 +82,8 @@ textCount<=2 / zero resolver calls" rule is gone: it existed only to feed an
 adjacency PRE-pass that no longer runs.
 
 Each BACK also prints a distinct card number (#17 / #42 / #83) large and
-high-contrast, so it OCRs reliably — those numbers are how Step 5 tells the
-three finished pairs apart.
+high-contrast, so it OCRs reliably and the three finished pairs can be told
+apart on screen.
 
 --------------------------------------------------------------------------
 WHY THE CARD IS INSET ON A NOISY BACKGROUND

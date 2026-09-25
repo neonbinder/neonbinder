@@ -23,18 +23,23 @@ const warmPreprocessRef = makeFunctionReference<
  * Warm the preprocess model the moment an upload page mounts, so it is loading
  * while the user is still choosing files rather than only from the first upload.
  *
- * Cold-start of the BiRefNet model is ~40s; firing the warm-up on mount hides
- * most of that behind the time it takes a person to pick a folder of scans. This
+ * A cold heavy instance takes ~180-240s to load the BiRefNet model; firing the
+ * warm-up on mount starts that load (on every heavy instance, through the heavy
+ * workpool — see `warmupPreprocess` in convex/placeholderBatch.ts) while a
+ * person is still picking a folder of scans, so escalated images meet a warm
+ * fleet instead of paying the load themselves. This
  * is complementary to — not a replacement for — the queued-state "Warming up the
  * card processor…" indicator: this makes the wait shorter, the indicator
  * explains it when it still happens.
  *
  * Contract:
  *   - **At most once per mount.** A ref latch survives StrictMode's
- *     mount→unmount→mount, so the double-invoke does not double-fire. The action
- *     is idempotent server-side, so a stray extra call is harmless anyway — but
- *     this must never LOOP, which is why the effect has an empty dependency list
- *     and the unstable `useAction` identity is deliberately not a dependency.
+ *     mount→unmount→mount, so the double-invoke does not double-fire. A stray
+ *     extra call is harmless server-side (the heavy fan-out is deduped
+ *     deployment-wide, so a second call inside the window enqueues nothing) —
+ *     but this must never LOOP, which is why the effect has an empty
+ *     dependency list and the unstable `useAction` identity is deliberately
+ *     not a dependency.
  *   - **Best-effort.** A warm-up that fails, times out, or hits a deployment
  *     that has not shipped `warmPreprocess` yet is swallowed. It can never block
  *     or fault the page; the real images that follow warm the model regardless.

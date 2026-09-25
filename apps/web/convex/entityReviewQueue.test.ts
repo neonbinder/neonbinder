@@ -1632,7 +1632,7 @@ describe("recordAllRemainingAsCreate", () => {
         status: "ready",
       });
 
-    const count = await asAdmin.mutation(
+    const count = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsCreate,
       { selectorOptionId, batchId: "bulk" },
     );
@@ -1668,7 +1668,7 @@ describe("recordAllRemainingAsCreate", () => {
       sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "CDPlayerB", status: "pending",
     });
 
-    const count = await asAdmin.mutation(
+    const count = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsCreate,
       { selectorOptionId, batchId: "bulk" },
     );
@@ -1699,7 +1699,7 @@ describe("recordAllRemainingAsCreate", () => {
 
     expect(
       (
-        await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+        await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
           selectorOptionId,
           batchId: "bulk",
         })
@@ -1714,7 +1714,7 @@ describe("recordAllRemainingAsCreate", () => {
 
     expect(
       (
-        await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+        await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
           selectorOptionId,
           batchId: "bulk",
         })
@@ -1741,7 +1741,7 @@ describe("recordAllRemainingAsCreate", () => {
 
     expect(
       (
-        await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+        await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
           selectorOptionId,
           batchId: "bulk",
         })
@@ -1766,7 +1766,7 @@ describe("recordAllRemainingAsCreate", () => {
       ctx.db.patch(decidedId, { decision: { action: "create" } }),
     );
 
-    const count = await asAdmin.mutation(
+    const count = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsCreate,
       { selectorOptionId, batchId: "bulk" },
     );
@@ -1800,7 +1800,7 @@ describe("recordAllRemainingAsCreate", () => {
         }),
       );
 
-    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+    await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsSkip, {
       selectorOptionId,
       batchId: "bulk",
     });
@@ -1832,7 +1832,7 @@ describe("recordAllRemainingAsCreate", () => {
       sportId: selectorOptionId, batchId: "theirs", kind: "player", name: "Theirs", status: "ready",
     });
 
-    const count = await asAdmin.mutation(
+    const count = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsCreate,
       { selectorOptionId, batchId: "mine" },
     );
@@ -1854,7 +1854,7 @@ describe("recordAllRemainingAsCreate", () => {
     });
 
     await expect(
-      t.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+      t.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
         selectorOptionId,
         batchId: "bulk",
       }),
@@ -1888,7 +1888,7 @@ describe("recordAllRemainingAsSkip", () => {
         status: "ready",
       });
 
-    const count = await asAdmin.mutation(
+    const count = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsSkip,
       { selectorOptionId, batchId: "bulk" },
     );
@@ -1915,7 +1915,7 @@ describe("recordAllRemainingAsSkip", () => {
       sportId: selectorOptionId, batchId: "bulk", kind: "player", name: "StillLookingUp", status: "pending",
     });
 
-    const count = await asAdmin.mutation(
+    const count = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsSkip,
       { selectorOptionId, batchId: "bulk" },
     );
@@ -1940,7 +1940,7 @@ describe("recordAllRemainingAsSkip", () => {
       ctx.db.patch(decidedId, { decision: { action: "create" } }),
     );
 
-    const count = await asAdmin.mutation(
+    const count = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsSkip,
       { selectorOptionId, batchId: "bulk" },
     );
@@ -1970,7 +1970,7 @@ describe("recordAllRemainingAsSkip", () => {
       sportId: selectorOptionId, batchId: "theirs", kind: "player", name: "Theirs", status: "ready",
     });
 
-    const count = await asAdmin.mutation(
+    const count = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsSkip,
       { selectorOptionId, batchId: "mine" },
     );
@@ -1997,7 +1997,7 @@ describe("recordAllRemainingAsSkip", () => {
 
     expect(
       (
-        await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+        await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsSkip, {
           selectorOptionId,
           batchId: "bulk",
         })
@@ -2014,7 +2014,7 @@ describe("recordAllRemainingAsSkip", () => {
     });
 
     await expect(
-      t.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+      t.action(api.entityReviewQueue.recordAllRemainingAsSkip, {
         selectorOptionId,
         batchId: "bulk",
       }),
@@ -2356,7 +2356,7 @@ describe("clearDecision", () => {
     });
     // Only the bulk SKIP path can decide a pending row since NEO-221, which is
     // exactly how this state is reached in the wild.
-    await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, {
+    await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsSkip, {
       selectorOptionId,
       batchId: "b",
     });
@@ -2539,7 +2539,7 @@ describe("ownership scoping", () => {
         });
 
       await expect(
-        t.withIdentity(OTHER_ADMIN).mutation(fn, {
+        t.withIdentity(OTHER_ADMIN).action(fn, {
           selectorOptionId,
           batchId: "b",
         }),
@@ -2609,7 +2609,7 @@ describe("bulk fast paths: includePending is not a client argument", () => {
     });
 
     await expect(
-      asAdmin.mutation(fn, {
+      asAdmin.action(fn, {
         selectorOptionId,
         batchId: "bulk",
         includePending: true,
@@ -3046,7 +3046,7 @@ describe("recordAllRemainingAsCreate — NEO-236: players only", () => {
       status: "ready",
     });
 
-    const decided = await asAdmin.mutation(
+    const decided = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsCreate,
       { selectorOptionId, batchId: "b1" },
     );
@@ -3075,7 +3075,7 @@ describe("recordAllRemainingAsCreate — NEO-236: players only", () => {
       enrichment: { careerTeams: [{ name: "Sydney Blue Sox", fromYear: 2019 }] },
     });
 
-    const decided = await asAdmin.mutation(
+    const decided = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsCreate,
       { selectorOptionId, batchId: "b1" },
     );
@@ -3120,7 +3120,7 @@ describe("recordAllRemainingAsCreate — NEO-236: players only", () => {
 
     expect(
       (
-        await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+        await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
           selectorOptionId,
           batchId: "b1",
         })
@@ -3128,7 +3128,7 @@ describe("recordAllRemainingAsCreate — NEO-236: players only", () => {
     ).toBe(1);
     expect(
       (
-        await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, {
+        await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsCreate, {
           selectorOptionId,
           batchId: "b1",
         })
@@ -3160,7 +3160,7 @@ describe("recordAllRemainingAsCreate — NEO-236: players only", () => {
       status: "pending",
     });
 
-    const decided = await asAdmin.mutation(
+    const decided = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsSkip,
       { selectorOptionId, batchId: "b1" },
     );
@@ -3221,7 +3221,7 @@ describe("NEO-236 — an unusable name never aborts the whole action", () => {
       status: "ready",
     });
 
-    const decided = await asAdmin.mutation(
+    const decided = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsCreate,
       { selectorOptionId, batchId: "b1" },
     );
@@ -3259,7 +3259,7 @@ describe("NEO-236 — an unusable name never aborts the whole action", () => {
       status: "ready",
     });
 
-    const decided = await asAdmin.mutation(
+    const decided = await asAdmin.action(
       api.entityReviewQueue.recordAllRemainingAsCreate,
       { selectorOptionId, batchId: "b1" },
     );
@@ -3330,8 +3330,8 @@ describe("bulk decide is bounded and resumable (NEO-294)", () => {
   ) {
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     return which === "create"
-      ? await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsCreate, args)
-      : await asAdmin.mutation(api.entityReviewQueue.recordAllRemainingAsSkip, args);
+      ? await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsCreate, args)
+      : await asAdmin.action(api.entityReviewQueue.recordAllRemainingAsSkip, args);
   }
 
   /**

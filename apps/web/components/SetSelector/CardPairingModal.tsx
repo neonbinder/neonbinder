@@ -14,7 +14,6 @@ import {
   DragOverlay,
   KeyboardSensor,
   PointerSensor,
-  pointerWithin,
   useDraggable,
   useDroppable,
   useSensor,
@@ -28,6 +27,7 @@ import { Input } from "../primitives/Input";
 import { countPairingEdits } from "./pairing-session-edits";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { compareCardNumbers } from "@/lib/cards/card-number";
+import { keyboardAwareCollision } from "@/lib/dnd/keyboard-aware-collision";
 // NEO-199: the wrong-player check is SHARED with the server. `fetchCardChecklist`
 // runs this exact function over an auto-matched pair before it discards the
 // losing name, so an auto-matched disagreement and a hand-linked one are
@@ -567,6 +567,15 @@ function plural(n: number, noun: string): string {
  * Plain clicks on the inner buttons still work because the PointerSensor's
  * 5px activation constraint means a drag never starts from a stationary press
  * (same reasoning as ParallelGroupingModal).
+ *
+ * NEO-300 — the <li> is also the drag's ACTIVATOR node. Without one, dnd-kit's
+ * KeyboardSensor takes a Space or Enter bubbling up from ANY child as "lift
+ * this row": it preventDefaults the key, so the Select / Link / Keep button
+ * never fires, and a drag starts instead. That broke the keyboard path this
+ * row's comment above calls the accessible one. With the <li> as the
+ * activator, only a key pressed on the <li> itself lifts it — and the <li>
+ * is deliberately not focusable, so keyboard users link by Select + Link,
+ * exactly as before.
  */
 function PairableRow({
   side,
@@ -578,14 +587,20 @@ function PairableRow({
   children: React.ReactNode;
 }) {
   const id = dragId(side, cardKey);
-  const { listeners, setNodeRef: setDragRef, isDragging } = useDraggable({ id });
+  const {
+    listeners,
+    setNodeRef: setDragRef,
+    setActivatorNodeRef,
+    isDragging,
+  } = useDraggable({ id });
   const { setNodeRef: setDropRef, isOver, active } = useDroppable({ id });
   const setRef = useCallback(
     (node: HTMLLIElement | null) => {
       setDragRef(node);
       setDropRef(node);
+      setActivatorNodeRef(node);
     },
-    [setDragRef, setDropRef],
+    [setDragRef, setDropRef, setActivatorNodeRef],
   );
   // Highlight only for a drop that would actually DO something. A row is its
   // own droppable, and same-column drops are no-ops, so an unconditional
@@ -2951,7 +2966,10 @@ export default function CardPairingModal({
             {!nothingToReconcile && (
             <DndContext
               sensors={sensors}
-              collisionDetection={pointerWithin}
+              // NEO-300 — not bare `pointerWithin`, which finds nothing for a
+              // drag with no pointer; shared with the set builder's other
+              // drag-and-drop dialogs.
+              collisionDetection={keyboardAwareCollision}
               onDragStart={handleDragStart}
               onDragEnd={handleDragEnd}
               onDragCancel={handleDragCancel}

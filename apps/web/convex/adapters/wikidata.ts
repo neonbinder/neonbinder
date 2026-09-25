@@ -15,6 +15,13 @@ import {
 } from "../../lib/errors/occ-retry";
 import { v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
+// NEO-301: a lookup that could not reach Wikidata is retried by the pool
+// rather than recorded as "no match"; a write failure is not.
+import { NonRetryableError } from "@convex-dev/workpool";
+import {
+  WikidataUnavailableError,
+  type WikidataLookupKind,
+} from "../../lib/errors/wikidata-unavailable";
 import { fetchEspnTeamInfo, fetchEspnTeamList } from "./espn";
 // NEO-212: the SINGLE career-timeline ordering, shared with
 // commitCardChecklistPrelude in convex/selectorOptions.ts. Both paths write
@@ -71,69 +78,95 @@ import {
  * Failure mode: if a player has no Wikidata entry (rare for major-league
  * pros, common for minor leaguers / prospects on rookie cards), we leave
  * the row unenriched. The UI must always treat these fields as optional.
+ *
+ * NEO-301: "no entry" and "could not ask" are different outcomes. A lookup
+ * whose SPARQL call timed out, failed on the network, or got a 5xx / 429 is
+ * UNAVAILABLE, not a miss: the pool work items throw for `wikidataPool`'s
+ * retry ladder instead of recording it (see `LookupTrace`).
  */
 
 const SPARQL_ENDPOINT = "https://query.wikidata.org/sparql";
 const USER_AGENT = "NeonBinder/1.0 (https://neonbinder.io; jburich@neonbinder.io)";
 
 /**
- * Hard ceiling on a single SPARQL round trip (NEO-99).
+ * Hard ceiling on a single SPARQL round trip (NEO-99, resized NEO-301).
  *
  * `runSparql` had no timeout at all, which is the second half of the
  * "Looking up…" hang: when Wikidata throttled our IP a request could stall
  * indefinitely, and because the `await` never returned, the row was never
  * patched out of `pending` — the pool's `onComplete` and the stale-row cron
  * are backstops, but the primary fix is to never stall in the first place.
- * `AbortSignal.timeout` makes a throttled/slow call reject fast; `runSparql`
- * already maps any rejection to `null`, so the caller resolves the row to
- * "error" (shown as "No Wikidata match found") within seconds instead of hanging.
+ * `AbortSignal.timeout` guarantees the call ends.
  *
- * 10s is comfortably above a healthy query — a single direct SPARQL call
- * returns in ~0.4s — while short enough that a genuinely stuck request gives
- * up long before a user would. Each lookup makes at most two of these
- * sequentially (search + detail); with the one retry below, the worst case
- * per `runSparql` call is 10 s + 1.5 s + 10 s = 21.5 s, and per entity
- * 2 × 21.5 = 43 s. See `WIKIDATA_RETRY_BACKOFF_MS` for the budget check.
+ * ## Why 30 s (NEO-301)
+ *
+ * Measured against query.wikidata.org with this adapter's exact query shape
+ * (an `EntitySearch` mwapi call plus the P31/P641 filters), uncached:
+ *   - DNS + connect + TLS: ~0.1 s every time, so the latency is server-side;
+ *   - time to first byte: 0.3 s at best, then 11.2 s, 14.3 s, 19.3 s, 57.6 s,
+ *     one request that hung past 40 s, and HTTP 502s that arrived after
+ *     ~36 s;
+ *   - 6 of 18 queries exceeded the old 10 s ceiling or failed outright;
+ *   - controls on the same host: a trivial SPARQL query 0.16 s, the same names
+ *     through `wbsearchentities` 0.26–0.49 s — so it is the query service
+ *     under load, not the network and not throttling (no 429s were seen).
+ *
+ * 10 s cut off answers that were on their way (11–19 s). 30 s keeps every one
+ * of those and still ends well inside WDQS's own 60 s server-side query limit,
+ * past which nothing useful can come back anyway. What 30 s does NOT catch
+ * (the 40 s+ hangs, the 57.6 s answer, the slow 502s) is exactly what the
+ * pool's retry ladder is for: a failed attempt is now "unavailable", not "no
+ * match", and `wikidataPool` asks again later (see `LookupTrace.unavailable`
+ * and the ladder in convex/wikidataPool.ts).
+ *
+ * Per-attempt budget, which the pool's ladder and every watchdog are checked
+ * against (convex/wikidataPool.ts `WIKIDATA_POOL_RETRY`):
+ *   per `runSparql` call, worst case:  max(30 s, 5 s + 1.5 s + 30 s) = 36.5 s
+ *   per lookup (search + detail):      2 × 36.5 s                     = 73 s
+ * A team lookup also makes one ESPN request first (`ESPN_FETCH_TIMEOUT_MS`,
+ * 10 s, adapters/espn.ts, no retry), so a team attempt is ≤ 83 s. Convex
+ * actions time out at 10 min; one attempt is nowhere near.
  */
-const WIKIDATA_FETCH_TIMEOUT_MS = 10_000;
+export const WIKIDATA_FETCH_TIMEOUT_MS = 30_000;
 
 /**
- * NEO-288 — ONE retry (two attempts total) on a TRANSPORT failure, with a
- * fixed pause between them.
+ * NEO-288 — ONE in-call retry on a FAST transport failure, with a fixed pause.
  *
- * Why: query.wikidata.org flaps. On 2026-09-20 the same trivial query
- * answered in 0.15 s, then 12–30 s, then 0.15 s again, for hours. With a
- * single attempt, one 5xx / 429 / timed-out probe turned a real player into
- * "No Wikidata match found" — a permanent, operator-visible answer to a
- * transient question — and the live-proof E2E flow
- * (`.maestro/flows/admin/player-live-wikidata-enrichment.yaml`) went red on
- * one blip. A second attempt after a short pause is enough to ride out the
- * blip without turning the lane into a retry storm.
+ * Why it exists: query.wikidata.org flaps, and a one-off 5xx / 429 / reset that
+ * comes back in a fraction of a second is usually gone 1.5 s later. Retrying it
+ * inside the same call keeps the common blip invisible, where the pool's ladder
+ * (NEO-301) would make the row wait tens of seconds for its next attempt.
  *
- * What retries: a status ≥ 500, a 429, a timeout abort, or a thrown fetch
- * (DNS, reset, TLS). What does NOT: any other 4xx — a 400 is a bad query and
- * asking it again is the same bad query — and a 200, ever, even one whose
- * body fails to parse.
+ * What retries in-call: a status ≥ 500, a 429 or a thrown fetch (DNS, reset,
+ * TLS) that ended within `WIKIDATA_FAST_FAILURE_MS`. What does NOT: any other
+ * 4xx — a 400 is a bad query and asking it again is the same bad query — a
+ * 200, ever, even one whose body fails to parse, and (NEO-301) any failure
+ * that took longer than `WIKIDATA_FAST_FAILURE_MS`, which includes every
+ * timeout.
  *
- * Budget arithmetic, checked against every caller (2026-09-20):
- *   per `runSparql` call, worst case: 10 s + 1.5 s + 10 s = 21.5 s
- *   per entity (search + detail):     2 × 21.5 s          = 43 s
- *   - `wikidataPool` (convex/wikidataPool.ts): the retry runs INSIDE the
- *     same pooled slot — it is the same call — so parallelism stays ≤ 5 and
- *     the pool's own no-retry policy is untouched (it never re-enqueues).
- *   - the wizard's per-row wait: rows stream in one-by-one on the reactive
- *     `getBatch`; `setup.yaml` gates the SAVE (120 s, fixture-backed now)
- *     and the stale-row cron ages a pending row only after
- *     `ENTITY_REVIEW_STALE_MS` (30 min) — 43 s is inside both.
- *   - the live-proof flow's 200 s ceiling was sized as 20 s (lookup) + 180 s
- *     (lane contention); the lookup term is now 43 s, so the sum is 223 s.
- *     The flow's own comment records that; its timeout is a canary, not a
- *     stopwatch, and stays at 200 s until CI measures otherwise.
- *   - Convex actions time out at 10 min; 43 s per entity is nowhere near.
+ * ## Why a slow failure is not retried in-call (NEO-301)
+ *
+ * With a 30 s timeout an unconditional retry would hold one of the pool's five
+ * slots for 30 + 1.5 + 30 s on a request the service has already shown it
+ * cannot answer quickly — the measured slow failures (the 40 s+ hangs, the
+ * ~36 s 502s) came in runs, not singly. The pool's retry ladder waits OUTSIDE
+ * the slot (a retrying item goes back to the pending queue for its backoff),
+ * so a slow failure is handed to it: `runSparql` gives up, trips
+ * `LookupTrace.unavailable`, and the work item throws for a later attempt.
  */
 const WIKIDATA_RETRY_BACKOFF_MS = 1_500;
 
-/** Attempts per `runSparql` call, including the first. Exactly two. */
+/**
+ * NEO-301 — the line between a blip and a degradation, for the in-call retry
+ * above. A failed attempt that ended within this long is retried once after
+ * `WIKIDATA_RETRY_BACKOFF_MS`; a slower one is left to the pool's ladder.
+ * 5 s is ~10× a healthy round trip (0.16–0.49 s measured) and a sixth of the
+ * timeout, so it separates "the gateway bounced us" from "the query engine is
+ * struggling" without needing to know which status code said so.
+ */
+export const WIKIDATA_FAST_FAILURE_MS = 5_000;
+
+/** Attempts per `runSparql` call, including the first. At most two. */
 const WIKIDATA_MAX_ATTEMPTS = 2;
 
 /**
@@ -264,25 +297,27 @@ function sleep(ms: number): Promise<void> {
 /**
  * Run a SPARQL query against Wikidata. Returns null on any non-OK
  * response (including 429 rate-limit and 5xx), and null on a timeout or
- * network error — a throttled or slow request aborts after
- * `WIKIDATA_FETCH_TIMEOUT_MS` and is mapped to null like any other failure,
- * so the caller resolves its row to "error" rather than awaiting forever.
+ * network error — a slow request aborts after `WIKIDATA_FETCH_TIMEOUT_MS`.
+ * Never throws: every adapter in this directory is no-throw (see
+ * `LookupTrace` for why, and for how a caller tells a failure from a miss).
  *
- * NEO-288: a TRANSPORT failure (5xx, 429, timeout, thrown fetch) on the
- * first attempt is retried exactly once after `WIKIDATA_RETRY_BACKOFF_MS`;
- * the arithmetic and the reasoning live on that constant. A 4xx other than
- * 429 is not retried, and a 200 is never retried. The `LookupTrace` marker
- * trips only when the LAST attempt also failed on transport — a recovered
- * retry is a success, not a transport failure, and the fixture capture
- * (`captureOne`) relies on exactly that reading.
+ * NEO-288 / NEO-301: a FAST transport failure (5xx, 429, thrown fetch, ended
+ * within `WIKIDATA_FAST_FAILURE_MS`) on the first attempt is retried exactly
+ * once after `WIKIDATA_RETRY_BACKOFF_MS`; a slow one — every timeout included
+ * — is not, and is left to the pool's ladder. The arithmetic and the
+ * reasoning live on those constants. A 4xx other than 429 is not retried,
+ * and a 200 is never retried. The `LookupTrace` markers trip only when the
+ * LAST attempt failed — a recovered retry is a success, not a transport
+ * failure, and the fixture capture (`captureOne`) relies on exactly that
+ * reading.
  *
  * Concurrency is NOT this function's concern: the `wikidataPool` bounds how
  * many of these run at once across the whole deployment (≤5). The timeout
  * bounds how LONG any single one may run. Together they are what make the
  * "Looking up…" hang impossible — the pool keeps us under Wikidata's
  * 5-parallel-per-IP ceiling so it does not throttle us, and the timeout
- * guarantees termination even if it does. The retry happens INSIDE the
- * caller's pooled slot, so it never adds a parallel request.
+ * guarantees termination even if it does. The in-call retry happens INSIDE
+ * the caller's pooled slot, so it never adds a parallel request.
  *
  * Exported for the retry tests (`wikidata.retry.test.ts`); no caller outside
  * this module should reach for it — the `lookup*` functions are the surface.
@@ -290,36 +325,96 @@ function sleep(ms: number): Promise<void> {
 export async function runSparql(query: string, trace?: LookupTrace): Promise<SparqlResults | null> {
   const url = `${SPARQL_ENDPOINT}?query=${encodeURIComponent(query)}&format=json`;
   for (let attempt = 1; ; attempt++) {
+    const startedAt = Date.now();
     const outcome = await sparqlAttempt(url);
     if (outcome.ok) return outcome.results;
-    if (outcome.retryable && attempt < WIKIDATA_MAX_ATTEMPTS) {
+    const fast = Date.now() - startedAt < WIKIDATA_FAST_FAILURE_MS;
+    if (outcome.retryable && fast && attempt < WIKIDATA_MAX_ATTEMPTS) {
       // Structured, and deliberately WITHOUT the query: the existing lines
       // never carry it, and a query embeds operator-typed names.
       console.warn(JSON.stringify({ msg: "wikidata_sparql_retry", reason: outcome.reason }));
       await sleep(WIKIDATA_RETRY_BACKOFF_MS);
       continue;
     }
-    if (trace) trace.transportFailed = true;
+    if (trace) {
+      trace.transportFailed = true;
+      // NEO-301: only the endpoint's "not right now" — a timeout, a thrown
+      // fetch, a 5xx or a 429 — is UNAVAILABLE. A 400 or an unreadable 200 is
+      // a round trip that did not complete (so a capture must not record it),
+      // but asking again later would get the same answer, so the work item
+      // must not retry it either: it stays the no-match it always was.
+      if (outcome.retryable) {
+        trace.unavailable = true;
+        trace.unavailableReason = outcome.reason;
+      }
+    }
     return null;
   }
 }
 
 /**
- * NEO-289 — a marker `runSparql` sets when a round trip did not complete:
- * a non-OK status, a timeout, or a thrown fetch. Every caller maps those to
- * `null`, which is the right answer for the wizard ("no usable data right
- * now") and the wrong one for a RECORDING: a fixture capture that wrote a
- * transport failure down as a no-match would freeze an outage into the repo.
- * The capture threads one of these through each lookup and drops any entry
- * whose trace tripped. Optional everywhere; no live caller passes one, and
- * nothing about a lookup's behaviour changes when it is present.
+ * NEO-289 / NEO-301 — markers `runSparql` sets when a round trip did not
+ * complete. The lookups map every such failure to `null`, the same value a
+ * genuine no-match returns, and they must keep doing so:
+ *
+ * ## Why the adapters stay no-throw
+ *
+ * A lookup is not the unit that decides what a failure MEANS. The fixture
+ * capture wants "drop this entry"; the review wizard's row wants "stay pending
+ * and ask again later"; a created player wants "stay bare, retry, and log if
+ * it never comes back". A throwing adapter would force every caller (and every
+ * `lookup*` return shape the tests and the capture read) to grow a try/catch
+ * that re-derives the same verdict. So the adapter answers, the trace
+ * RECORDS, and the caller that owns the policy reads the trace. For the pool
+ * work items that caller is the action wrapper, which throws a
+ * `WikidataUnavailableError` (lib/errors/wikidata-unavailable.ts) that the
+ * pool retries — see `throwIfUnavailable`.
+ *
+ *   - `transportFailed`: ANY failed last attempt — a non-OK status, a timeout,
+ *     a thrown fetch, an unreadable 200. The capture drops such an entry, so
+ *     an outage is never frozen into the repo as a no-match.
+ *   - `unavailable`: the retryable subset — a timeout, a thrown fetch, a 5xx
+ *     or a 429 on the last attempt. This is what a work item turns into a
+ *     retry. A 400 (a bad query) is `transportFailed` but not `unavailable`.
+ *
+ * Optional on the `*Live` bodies and on the three fixture-reading wrappers; a
+ * fixture HIT makes no request, so it never trips either marker and never
+ * causes a retry.
  */
 export interface LookupTrace {
   transportFailed: boolean;
+  unavailable: boolean;
+  /** `runSparql`'s reason for the last unavailable attempt, e.g. "timeout". */
+  unavailableReason?: string;
 }
 
 export function newLookupTrace(): LookupTrace {
-  return { transportFailed: false };
+  return { transportFailed: false, unavailable: false };
+}
+
+/**
+ * NEO-301 — the pool work items' half of the contract above: if the lookup
+ * could not reach Wikidata, say so in a structured line and throw a RETRYABLE
+ * error so `wikidataPool` asks again after its backoff. A no-match (a trace
+ * that did not trip `unavailable`) returns normally and is never retried.
+ *
+ * Called BEFORE any write, so an unavailable attempt leaves the row exactly as
+ * it found it — which is what keeps the creation-only marker guards honest on
+ * the retry (nothing this attempt learned half-way can make the next attempt
+ * skip as "already enriched").
+ */
+function throwIfUnavailable(
+  kind: WikidataLookupKind,
+  id: string,
+  trace: LookupTrace,
+): void {
+  if (!trace.unavailable) return;
+  const reason = trace.unavailableReason ?? "unknown";
+  // Ids, kinds and the transport reason — never the name (observability.ts).
+  console.warn(
+    JSON.stringify({ msg: "wikidata_lookup_unavailable", kind, id, reason }),
+  );
+  throw new WikidataUnavailableError(kind, reason);
 }
 
 /**
@@ -995,6 +1090,12 @@ export interface TeamLookupResult {
 export async function lookupPlayerEnrichment(
   name: string,
   sport: SportEnrichmentContext,
+  /**
+   * NEO-301 — optional; the pool work items pass one to tell "Wikidata could
+   * not be asked" from "Wikidata has no such player". A fixture hit never
+   * touches it.
+   */
+  trace?: LookupTrace,
 ): Promise<PlayerLookupResult | null> {
   // NEO-289: the recording first. A hit — including a recorded no-match —
   // makes no request at all; a miss (or fixtures off, which is every
@@ -1004,7 +1105,7 @@ export async function lookupPlayerEnrichment(
     const recorded = readFixture("player", sportQid, name);
     if (recorded.hit) return recorded.result;
   }
-  return lookupPlayerEnrichmentLive(name, sport);
+  return lookupPlayerEnrichmentLive(name, sport, trace);
 }
 
 /**
@@ -1014,9 +1115,12 @@ export async function lookupPlayerEnrichment(
 export async function lookupPlayerEnrichmentLive(
   name: string,
   sport: SportEnrichmentContext,
-  trace?: LookupTrace,
+  trace: LookupTrace = newLookupTrace(),
 ): Promise<PlayerLookupResult | null> {
   const qid = await findPlayerQid(name, sport.wikidata?.sportQid, trace);
+  // NEO-301: a search that never completed is not a no-match, and must not
+  // be logged as one — `runSparql` has already warned about the failure.
+  if (!qid && trace.transportFailed) return null;
   if (!qid) {
     // NEO-208 security condition: structured, not concatenated. `name` is
     // operator-typed free text (the quick-add form, the review wizard, the
@@ -1444,7 +1548,13 @@ export const enrichPlayer = internalAction({
     );
     if (!sportCtx) return null;
 
-    const result = await lookupPlayerEnrichment(player.name, sportCtx);
+    // NEO-301: "could not ask" throws for the pool's retry ladder; "asked, and
+    // there is no such player" returns and is final. Before any write, so an
+    // unavailable attempt leaves the row bare and the marker guard above still
+    // lets the retry through.
+    const trace = newLookupTrace();
+    const result = await lookupPlayerEnrichment(player.name, sportCtx, trace);
+    throwIfUnavailable("player", args.playerId, trace);
     if (!result) return null;
 
     // NEO-212: the SAME `(teamId, fromYear)` key and the same ordering the
@@ -1590,6 +1700,8 @@ export async function lookupTeamEnrichment(
    * query below.
    */
   knownQid?: string,
+  /** NEO-301 — see `lookupPlayerEnrichment`. A fixture hit never touches it. */
+  trace?: LookupTrace,
 ): Promise<TeamLookupResult | null> {
   // NEO-289: the recording first — see `lookupPlayerEnrichment`. A hit skips
   // ESPN as well as Wikidata; every request this lookup makes sits below.
@@ -1598,18 +1710,26 @@ export async function lookupTeamEnrichment(
     const recorded = readFixture("team", sportQid, name, knownQid);
     if (recorded.hit) return recorded.result;
   }
-  return lookupTeamEnrichmentLive(name, sport, knownQid);
+  return lookupTeamEnrichmentLive(name, sport, knownQid, trace);
 }
 
 /**
  * The live body of `lookupTeamEnrichment`. Exported for the fixture capture,
  * which must bypass the recording it is producing.
+ *
+ * NEO-301: when a Wikidata call is unavailable this still returns whatever it
+ * has (ESPN's answer, or a QID without its detail) — the adapter answers, the
+ * trace records. `enrichTeam` discards such a partial and retries the whole
+ * lookup: on a `teams` row a written `wikidataId` or `espnId` is an
+ * enrichment MARKER, and would make the retry skip the row as already
+ * enriched. A team REVIEW row is the opposite case — it writes the partial as
+ * "ready" and then retries (see `runEntityReviewLookupImpl`).
  */
 export async function lookupTeamEnrichmentLive(
   name: string,
   sport: SportEnrichmentContext,
   knownQid?: string,
-  trace?: LookupTrace,
+  trace: LookupTrace = newLookupTrace(),
 ): Promise<TeamLookupResult | null> {
   const espnInfo = await fetchEspnTeamInfo(sport.espn, name);
 
@@ -1618,6 +1738,9 @@ export async function lookupTeamEnrichmentLive(
       ? knownQid
       : await findTeamQid(name, sport.wikidata?.sportQid, trace);
   if (!qid) {
+    // NEO-301: a search that never completed is not a no-match — see the
+    // player twin. ESPN's answer, if any, still comes back as before.
+    if (!espnInfo && trace.transportFailed) return null;
     if (!espnInfo) {
       // NEO-208: structured for the same reason as the player no-match log
       // above. This one also fixes a latent defect the concatenation hid —
@@ -1763,7 +1886,21 @@ export const enrichTeam = internalAction({
       // NEO-236: the FULL name. ESPN matches on `displayName` and Wikidata on
       // the entity label, both of which are "San Diego Padres" — a split row's
       // `name` alone ("Padres") matches neither.
-      const result = await lookupTeamEnrichment(teamFullName(team), sportCtx);
+      //
+      // NEO-301: an unavailable Wikidata call throws for the pool's retry
+      // ladder BEFORE anything is written, ESPN's half included, and before
+      // the colour leg below — a partial write would stamp a marker
+      // (`espnId`, `wikidataId`) that makes every retry skip the row, and the
+      // colour read is the expensive leg this action must not repeat for
+      // nothing. The retry redoes the whole lookup.
+      const trace = newLookupTrace();
+      const result = await lookupTeamEnrichment(
+        teamFullName(team),
+        sportCtx,
+        undefined,
+        trace,
+      );
+      throwIfUnavailable("team", args.teamId, trace);
       if (result) {
         await ctx.runMutation(internal.teams.applyEnrichmentInternal, {
           id: args.teamId,
@@ -1838,12 +1975,20 @@ function reviewEnrichmentFor(
  * so rows stream in as the pool works through them.
  *
  * Self-contained on purpose: the pool coordinates concurrency and the fetch
- * timeout bounds duration, so a single item completes fast (success, a
- * no-match "error", or a timed-out "error") and never blocks the lane. The row
- * is patched for BOTH a successful and a failed lookup here — the pool's
+ * timeout bounds duration, so a single attempt completes in bounded time
+ * (success, or a no-match "error") and never blocks the lane. The row is
+ * patched for BOTH a match and a no-match here — the pool's
  * `onEntityReviewLookupComplete` is a further backstop for the residue this
  * cannot reach on its own (an UNCAUGHT throw, an action-level timeout, or a
  * pool cancellation), so a row can never be stranded on `pending`.
+ *
+ * NEO-301: an attempt that could not reach Wikidata at all (timeout, network,
+ * 5xx, 429) is neither — it writes nothing, THROWS, and the pool retries it on
+ * its ladder (convex/wikidataPool.ts). The row stays `pending` until an
+ * attempt gets an answer, or until the final attempt fails and the backstop
+ * ages it to "error". The exception is a team row with a partial (ESPN)
+ * answer, which is written "ready" before the throw and kept "ready" after
+ * the ladder — see `runEntityReviewLookupImpl`.
  *
  * Deliberately catches the LOOKUP rather than letting it propagate to the
  * pool: resolving the row here keeps every lookup outcome in one place and
@@ -1921,15 +2066,19 @@ export type EntityReviewLookupCtx = Pick<ActionCtx, "runQuery" | "runMutation">;
  * with the work item's `resultKind`, and the failure is attributable in the
  * pool's own telemetry rather than disguised as a lookup that found nothing.
  * The operator ends up at the same wizard step either way; the difference is
- * that this one leaves a trail. The pool does not retry (see wikidataPool.ts),
- * so the throw costs no second SPARQL round trip.
+ * that this one leaves a trail. The throw is a `NonRetryableError` (NEO-301:
+ * the pool retries other throws now), so it costs no second SPARQL round trip.
  *
- * ## Telling the three outcomes apart in the logs
+ * ## Telling the four outcomes apart in the logs
  *
  * Before this they were indistinguishable, which is why it went unnoticed for
  * so long. Now: a genuine no-match logs `entity_review_lookup_no_match`, a
- * lookup that threw logs the `[entity-review-lookup]` line it always has, and
- * a write that could not be landed logs `entity_review_lookup_write_failed`.
+ * lookup that threw logs the `[entity-review-lookup]` line it always has, a
+ * write that could not be landed logs `entity_review_lookup_write_failed`,
+ * and (NEO-301) a lookup that could not reach Wikidata logs
+ * `wikidata_lookup_unavailable` on every attempt, with the backstop's
+ * `entity_review_row_backstopped` carrying `wikidataUnavailable: true` once
+ * the ladder is spent.
  * Ids, kinds and counts only — never the name on the row (observability.ts).
  */
 export async function runEntityReviewLookupImpl(
@@ -1951,6 +2100,9 @@ export async function runEntityReviewLookupImpl(
 
   // Decided inside the try, WRITTEN outside it — see the docblock.
   let payload: EntityReviewLookupPayload;
+  // NEO-301: records whether Wikidata could be ASKED. Read after the try,
+  // before any write — an unavailable lookup writes nothing and throws.
+  const trace = newLookupTrace();
   try {
     const sportCtx = await ctx.runQuery(
       internal.selectorOptions.getSportEnrichmentContext,
@@ -1959,7 +2111,7 @@ export async function runEntityReviewLookupImpl(
     const result = !sportCtx
       ? null
       : row.kind === "player"
-        ? await lookupPlayerEnrichment(row.name, sportCtx)
+        ? await lookupPlayerEnrichment(row.name, sportCtx, trace)
         : row.kind === "league"
           ? /*
              * NEO-254 — a staged New League step, pre-filled.
@@ -1981,17 +2133,18 @@ export async function runEntityReviewLookupImpl(
               row.name,
               sportCtx.wikidata?.sportQid,
               row.source?.wikidataId,
+              trace,
             )
           : // NEO-236: a row staged off a player's career list carries the QID
             // Wikidata attached to that P54 membership. Reading THAT record is
             // not a search — it is the same club by construction, which is what
             // gets "Sydney Blue Sox" its league instead of a null match from an
             // EntitySearch that has no `wdt:P641` to filter on.
-            await lookupTeamEnrichment(row.name, sportCtx, row.source?.wikidataId);
+            await lookupTeamEnrichment(row.name, sportCtx, row.source?.wikidataId, trace);
     payload = result
       ? { status: "ready", enrichment: reviewEnrichmentFor(row.kind, result) }
       : { status: "error" };
-    if (!result) {
+    if (!result && !trace.unavailable) {
       // The genuine no-match — and the ONLY place this file produces the
       // `status: "error"` with no enrichment shape from a lookup that ran and
       // answered. `sportContext: false` is the other way a row lands here: the
@@ -2012,6 +2165,32 @@ export async function runEntityReviewLookupImpl(
     // end state. What is no longer inside this catch is the WRITE.
     console.error(`[entity-review-lookup] lookup for ${args.rowId} failed:`, error);
     payload = { status: "error" };
+  }
+
+  // NEO-301: Wikidata could not be ASKED — a timeout, a thrown fetch, a 5xx
+  // or a 429 on a call's last attempt. That is not an answer, so nothing is
+  // written: the row stays `pending` ("Looking up…", which is the truth) and
+  // the throw hands it to `wikidataPool`'s retry ladder. Only after the
+  // ladder's FINAL attempt does the pool's onComplete backstop
+  // (`backstopEntityReviewRowImpl`) age it to "error".
+  //
+  // ONE exception (Jason, NEO-301): a TEAM row whose lookup still produced a
+  // partial answer — ESPN's league, location and colours, and a QID if the
+  // search got through before the detail query failed. That half is written
+  // as "ready" NOW, so the operator can act on it, and THEN the item throws
+  // for the retry that fetches the Wikidata half. `applyLookupResult` merges
+  // each later result over it and never downgrades it to "error", and the
+  // final backstop leaves a non-pending row alone, so after a spent ladder the
+  // row keeps its ESPN answer (the backstop still logs the unavailable line).
+  // Teams only: for a team this lookup is the only automatic source of these
+  // fields (NEO-254 — teams are never enriched at creation). A player or
+  // league partial is still discarded. Row ENRICHMENT (`enrichTeam`) never
+  // writes a partial: there `espnId` is a creation-only marker and would make
+  // the retry skip the row.
+  const writePartialThenRetry =
+    trace.unavailable && row.kind === "team" && payload.status === "ready";
+  if (trace.unavailable && !writePartialThenRetry) {
+    throwIfUnavailable(row.kind, args.rowId, trace);
   }
 
   try {
@@ -2038,12 +2217,29 @@ export async function runEntityReviewLookupImpl(
         attempts: occRetry.attempts ?? OCC_RETRY_ATTEMPTS,
       }),
     );
+    // NEO-301: a partial whose write failed is still an unavailable lookup —
+    // the retry has to go back to Wikidata anyway, and it redoes this write
+    // with it — so the retryable signal wins over NEO-294's non-retryable
+    // rethrow below. The row stays `pending` in the meantime.
+    if (writePartialThenRetry) throwIfUnavailable(row.kind, args.rowId, trace);
     // Rethrown deliberately (NEO-294): the row stays `pending`, the pool's
     // onComplete backstop ages it to "error" off a single-document read set,
     // and the failure is attributable rather than fabricated into an answer
     // about Wikidata. Never a second `applyLookupResult` call from here.
-    throw error;
+    //
+    // NEO-301: rethrown as NON-retryable. The pool retries throws now, and a
+    // retry of THIS failure would spend a second SPARQL round trip (on the
+    // shared 5-wide lane) to re-derive an answer we already had, then lose
+    // the same race against the same commit — which is the contention that
+    // caused it. NEO-294's contract, "the backstop settles it at once",
+    // stays exactly as it was. The original message is kept in the wrapper.
+    throw new NonRetryableError(
+      error instanceof Error ? error.message : String(error),
+      { cause: error },
+    );
   }
+  // The partial landed; now ask the pool for the Wikidata half.
+  if (writePartialThenRetry) throwIfUnavailable(row.kind, args.rowId, trace);
   return null;
 }
 
@@ -2104,6 +2300,8 @@ export async function lookupLeagueEnrichment(
    * id, and the name search runs instead.
    */
   knownQid?: string,
+  /** NEO-301 — see `lookupPlayerEnrichment`. A fixture hit never touches it. */
+  trace?: LookupTrace,
 ): Promise<LeagueLookupResult | null> {
   // NEO-289: the recording first — see `lookupPlayerEnrichment`. A league
   // with no sport QID (a custom sport) has no fixture key and always goes live.
@@ -2111,23 +2309,30 @@ export async function lookupLeagueEnrichment(
     const recorded = readFixture("league", sportQid, name, knownQid);
     if (recorded.hit) return recorded.result;
   }
-  return lookupLeagueEnrichmentLive(name, sportQid, knownQid);
+  return lookupLeagueEnrichmentLive(name, sportQid, knownQid, trace);
 }
 
 /**
  * The live body of `lookupLeagueEnrichment`. Exported for the fixture
  * capture, which must bypass the recording it is producing.
+ *
+ * NEO-301: a detail query that is unavailable still yields `{ wikidataId }`
+ * here (the adapter answers, the trace records); the pool work items discard
+ * that partial and retry — see `lookupTeamEnrichmentLive`.
  */
 export async function lookupLeagueEnrichmentLive(
   name: string,
   sportQid?: string,
   knownQid?: string,
-  trace?: LookupTrace,
+  trace: LookupTrace = newLookupTrace(),
 ): Promise<LeagueLookupResult | null> {
   const qid =
     knownQid && isWikidataQid(knownQid)
       ? knownQid
       : await findLeagueQid(name, sportQid, trace);
+  // NEO-301: a search that never completed is not a no-match — see the
+  // player twin.
+  if (!qid && trace.transportFailed) return null;
   if (!qid) {
     // Structured for the same reason as the player/team no-match lines
     // (NEO-208): a league name is operator input and must not be able to shape
@@ -2233,11 +2438,13 @@ function leagueEnrichmentMarkers(league: {
  * trips. `force` is the operator exception, reachable only through the
  * admin-gated `leagues.enrichFromWikidata`.
  *
- * Never throws. An enrichment failure has no user waiting on it and nothing to
- * age (the pool takes no `onComplete` for this lane, deliberately — see
- * `wikidataPool.enqueueEnrichment`), so an escaping error would buy a red pool
- * item and change nothing about the row. A miss and a thrown error are the same
- * outcome here: the league keeps the fields the operator can already see.
+ * Throws for exactly ONE reason (NEO-301): the lookup could not reach
+ * Wikidata. That `WikidataUnavailableError` is the pool's retry signal, and it
+ * is raised OUTSIDE the catch below so nothing swallows it. Every other failure
+ * is still caught and logged, as before: an enrichment failure has no user
+ * waiting on it, and a thrown query or write is not something a later
+ * SPARQL round trip would fix. A miss and a caught error are the same outcome
+ * here: the league keeps the fields the operator can already see.
  */
 export const enrichLeague = internalAction({
   args: { leagueId: v.id("leagues"), force: v.optional(v.boolean()) },
@@ -2260,6 +2467,9 @@ export const enrichLeague = internalAction({
       return null;
     }
 
+    // NEO-301: recorded inside the try, acted on outside it — the catch is for
+    // query and write failures, and must not swallow the retry signal.
+    const trace = newLookupTrace();
     try {
       // The sport's Wikidata context, resolved the same way `enrichTeam` does
       // it — from the sport ROW's `sportConfig`, never from a name-keyed map
@@ -2274,20 +2484,28 @@ export const enrichLeague = internalAction({
       const result = await lookupLeagueEnrichment(
         league.name,
         sportCtx?.wikidata?.sportQid,
+        undefined,
+        trace,
       );
-      if (!result) return null;
-
-      // `country` is deliberately not passed: the mutation has no such arg and
-      // the table has no such column. See `LeagueLookupResult.country`.
-      await ctx.runMutation(internal.leagues.applyEnrichmentInternal, {
-        id: args.leagueId,
-        abbreviation: result.abbreviation,
-        yearsActive: result.yearsActive,
-        wikidataId: result.wikidataId,
-      });
+      // A partial answer from an unavailable detail query is NOT written: a
+      // `wikidataId` alone would mark the row enriched and the retry would
+      // skip it without ever fetching the abbreviation or the span.
+      if (result && !trace.unavailable) {
+        // `country` is deliberately not passed: the mutation has no such arg
+        // and the table has no such column. See `LeagueLookupResult.country`.
+        await ctx.runMutation(internal.leagues.applyEnrichmentInternal, {
+          id: args.leagueId,
+          abbreviation: result.abbreviation,
+          yearsActive: result.yearsActive,
+          wikidataId: result.wikidataId,
+        });
+      }
     } catch (error) {
       console.error(`[wikidata] enrichLeague for ${args.leagueId} failed:`, error);
     }
+    // `unavailable` implies the write above was skipped, so the row is
+    // untouched when this throws.
+    throwIfUnavailable("league", args.leagueId, trace);
     return null;
   },
 });

@@ -26,12 +26,16 @@ vi.mock("../../convex/_generated/api", () => ({
       getAncestorChain: "getAncestorChain",
       getUsedInsertIdentifiersBySet: "getUsedInsertIdentifiersBySet",
       getSelectorOptions: "getSelectorOptions",
+      getInsertTreeByVariantType: "getInsertTreeByVariantType",
     },
   },
 }));
 
 const mockFetchRawOptions = vi.fn();
 const mockStore = vi.fn();
+// NEO-300: what getInsertTreeByVariantType answers. Loaded-but-empty by
+// default — the auto-sync is gated on it, so `undefined` would never sync.
+let insertTree: unknown[] = [];
 
 vi.mock("convex/react", () => ({
   useAction: (ref: string) =>
@@ -41,6 +45,7 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string) => {
     if (ref === "getAncestorChain") return CHAIN;
     if (ref === "getSelectorOptions") return [];
+    if (ref === "getInsertTreeByVariantType") return insertTree;
     if (ref === "getUsedInsertIdentifiersBySet")
       return { slPlatformValues: [], bscPlatformValues: [] };
     return undefined;
@@ -85,6 +90,7 @@ async function renderForm(onDone = vi.fn()) {
 beforeEach(() => {
   vi.clearAllMocks();
   mockStore.mockResolvedValue({ success: true, unlinked: [] });
+  insertTree = [];
 });
 
 describe("ParallelForm — single-platform store (NEO-211 plan B)", () => {
@@ -492,6 +498,162 @@ describe("ParallelForm — the store is replayed until it is finished (NEO-296)"
     expect(alert.textContent).toContain("1 of 1 not reached this time");
     // Still in the dialog, with Save ready to continue the walk.
     expect(screen.getByText(/Save 1 sets/)).toBeTruthy();
+    expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * NEO-300 — the symmetric half. Syncing THIS insert's parallels must not
+ * re-create a set another row in the variant type already holds: another
+ * insert, or a parallel grouped under another insert. This insert's own
+ * parallels are the sync's own rows and still come back as Ready.
+ */
+describe("ParallelForm — sets held elsewhere in the variant type (NEO-300)", () => {
+  function tree() {
+    return [
+      {
+        // The insert being synced. Its own parallel is NOT held elsewhere.
+        insert: { _id: "ins1", value: "Anime", platformData: { bsc: { b0: "bsc-anime" } } },
+        parallels: [
+          { _id: "p-own", value: "Anime Gold", platformData: { bsc: { b0: "bsc-own" } } },
+        ],
+      },
+      {
+        insert: { _id: "ins2", value: "Chrome Stars", platformData: { bsc: { b0: "bsc-stars" } } },
+        parallels: [
+          { _id: "p-kanji", value: "Stars Kanji", platformData: { bsc: { b0: "bsc-kanji" } } },
+        ],
+      },
+    ];
+  }
+
+  it("single platform: skips what another insert or its parallels hold, and says where", async () => {
+    insertTree = tree();
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [
+        { value: "Gold", platformValue: "bsc-own" },
+        { value: "Stars Kanji", platformValue: "bsc-kanji" },
+        { value: "Chrome Stars", platformValue: "bsc-stars" },
+      ],
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+    });
+    const { onDone } = await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    expect(
+      args.reconciledItems.map((i: { platformData: { bsc?: string } }) => i.platformData.bsc),
+    ).toEqual(["bsc-own"]);
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "2 already live elsewhere in Inserts. Leaving those be.",
+    );
+    const toggle = screen.getByRole("button", { name: "Show where" });
+    // a11y: the toggle and the list it opens sit outside the live region.
+    expect(status.contains(toggle)).toBe(false);
+    fireEvent.click(toggle);
+    expect(status.contains(screen.getByRole("group"))).toBe(false);
+    // An insert is named on its own; a parallel with the insert it sits under.
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Chrome Stars",
+      "Stars Kanji→grouped under Chrome Stars",
+    ]);
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("modal: a pair held by another insert's parallel is not seeded Ready", async () => {
+    insertTree = tree();
+    const KANJI_BSC = { value: "Stars Kanji", platformValue: "bsc-kanji" };
+    const KANJI_SL = { value: "Stars Kanji", platformValue: "sl-kanji" };
+    const GOLD_BSC = { value: "Gold", platformValue: "bsc-own" };
+    const GOLD_SL = { value: "Gold", platformValue: "sl-own" };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [KANJI_BSC, GOLD_BSC],
+      slOptions: [KANJI_SL, GOLD_SL],
+      autoMatched: [
+        { displayName: "Stars Kanji", bsc: KANJI_BSC, sl: KANJI_SL, confidence: 0.9 },
+        { displayName: "Gold", bsc: GOLD_BSC, sl: GOLD_SL, confidence: 0.9 },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+    });
+    await renderForm();
+
+    expect(await screen.findByText(/Save 1 sets/)).toBeTruthy();
+    expect(
+      screen.getByText("1 already lives elsewhere in Inserts. Leaving it be."),
+    ).toBeTruthy();
+    // Kanji's SL half is not held by anyone, so it is an ordinary unassigned
+    // set: in Pending, not silently dropped along with its held partner. (The
+    // SL column's set-name prefix filter hides it from the default view,
+    // hence "0 of 1".)
+    expect(screen.getByText(/Pending \(1\)/)).toBeTruthy();
+    expect(screen.getByText(/SportLots \(0\s*of 1\)/)).toBeTruthy();
+  });
+
+  it("single platform: an insert the STORE left alone joins the note, named on its own", async () => {
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+      heldElsewhere: [
+        { id: "ins9", value: "Chrome Stars", level: "insert", parentId: "vt1", parentValue: "Insert" },
+      ],
+      heldElsewhereTotal: 1,
+    });
+    const { onDone } = await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already lives elsewhere in Inserts. Leaving it be.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show where" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Chrome Stars",
+    ]);
+    expect(onDone).not.toHaveBeenCalled();
+  });
+
+  it("single platform: a withheld item and a skipped check both show, and the panel stays up", async () => {
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 0,
+      hasMore: false,
+      withheldElsewhere: [
+        {
+          label: "Gold",
+          reason: "idsDisagree",
+          holders: [
+            { id: "ins9", value: "Chrome Stars", level: "insert", parentId: "vt1", parentValue: "Insert" },
+          ],
+        },
+      ],
+      withheldElsewhereTotal: 1,
+      subtreeWalkSkipped: true,
+    });
+    const { onDone } = await renderForm();
+
+    expect(
+      await screen.findByText("Hold up: 1 not added. It clashes with rows already in Inserts."),
+    ).toBeTruthy();
+    expect(screen.getByText("Points at a row linked to a different set:")).toBeTruthy();
+    // An insert holder is named on its own.
+    expect(screen.getByText("Chrome Stars", { selector: "li" })).toBeTruthy();
+    expect(screen.getByText(/Inserts is too big to check for grouped parallels/)).toBeTruthy();
     expect(onDone).not.toHaveBeenCalled();
   });
 });

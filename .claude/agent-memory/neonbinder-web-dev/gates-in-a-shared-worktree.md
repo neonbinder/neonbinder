@@ -41,6 +41,12 @@ Things that look like failures during the apps/web fast gates but are not.
    the shared install's contents go with it) and runs `npm ci` in the
    worktree's `apps/web`. Never install into or around the shared
    `main/` tree, and never leave a scratch symlink for a gate run (NEO-291).
+   A symlink into a sibling worktree that has since been REMOVED dangles:
+   vitest dies with `Cannot resolve 'vitest/config'` and `ls` of the target
+   says "No such file". Nothing can be sharing a dangling install, so after
+   `pgrep -f "npm ci"` shows no sibling install, the builder may do the
+   `rm apps/web/node_modules` + `npm ci` itself (~10s) and say so in the
+   report (NEO-300).
 
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.

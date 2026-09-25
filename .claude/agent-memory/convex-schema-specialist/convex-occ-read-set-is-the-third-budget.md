@@ -1,6 +1,6 @@
 ---
 name: convex-occ-read-set-is-the-third-budget
-description: A .collect() has a THIRD cost beyond system ops and doc reads — its OCC read set; and paging a mutation cuts its own conflict risk while multiplying invalidation events for every concurrent wide reader.
+description: A .collect() or .take() has a THIRD cost beyond system ops — its OCC read set (whole page, open interval when short, phantoms on status flips); paging redistributes contention; point reads are the fix.
 metadata:
   type: project
 ---
@@ -42,6 +42,28 @@ index range wide, and narrow those reads in the same PR. When reviewing a hot
 mutation, grep its call tree for `.collect()` / `.take()` on a broad `eq`
 prefix and ask what the narrowest range that answers the question is — a
 prefix of an existing index usually exists and needs no schema change.
+
+**A `.take(n)` page has the same trap, twice over.** (1) All n rows it
+returned are in the read set even if the loop that consumes them `break`s after
+a small decide budget — a "scan 200, decide 25" page carries 200 rows of
+exposure. (2) A take that comes back SHORT exhausted its range, so its read set
+is the whole interval to the end of the `eq` prefix: every later insert into the
+batch, and every patch of a row after the cursor, invalidates it. The last page
+of every pass is short by definition.
+
+**A narrower index does not fix a status-keyed walk.** Indexing
+`[batch, kind, status]` and reading `status = "ready"` looks like it drops the
+pending rows a background writer is patching — but a pending→ready patch MOVES
+that row INTO the range (a phantom), and a short page's open interval catches
+every such move later in the batch. The fix that actually removes the overlap
+is point reads: select candidate ids in a QUERY (snapshot, no OCC), then have
+the mutation `db.get` each id, re-validate it, and write. A mutation's read set
+is then exactly the rows it writes plus its helpers' reads. When the caller must
+keep one server round trip, wrap query + internal mutation in a public action.
+
+**How to apply (take):** for any mutation that walks a range another mutation
+is writing, ask "is the range I read wider than the rows I write?" and "can my
+page come back short?" — if either is yes, move the scan into a query.
 
 Related: [[convex-two-transaction-limits]],
 [[convex-per-row-cost-hides-in-entity-helpers]].
