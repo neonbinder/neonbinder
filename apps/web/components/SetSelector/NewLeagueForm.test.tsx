@@ -400,3 +400,36 @@ describe("NewLeagueForm — detailsDefaultOpen", () => {
     expect(screen.queryByLabelText("New league abbreviation")).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-307 — the help line: the wizard keeps it, the picker drops it
+// ---------------------------------------------------------------------------
+
+describe("NewLeagueForm — showHelp", () => {
+  const HELP = "The competition this team plays in. One league, asked once for the whole batch.";
+  const nameField = () => screen.getByLabelText("New league name");
+
+  it("default (the wizard's New League step): shows the line and describes the name by it", () => {
+    render(<NewLeagueForm draft={NHL} onChange={vi.fn()} />);
+    const help = screen.getByText(HELP);
+    expect(nameField().getAttribute("aria-describedby")?.split(" ")).toContain(help.id);
+  });
+
+  it("false (the picker): no line, and no aria-describedby left pointing at it", () => {
+    render(<NewLeagueForm draft={NHL} onChange={vi.fn()} showHelp={false} />);
+    expect(screen.queryByText(HELP)).toBeNull();
+    expect(nameField().hasAttribute("aria-describedby")).toBe(false);
+  });
+
+  it("false keeps the host's own describedBy, and every id resolves", () => {
+    render(
+      <>
+        <p id="host-reason">Why this is blocked.</p>
+        <NewLeagueForm draft={NHL} onChange={vi.fn()} showHelp={false} describedBy="host-reason" />
+      </>,
+    );
+    const ids = nameField().getAttribute("aria-describedby")!.split(" ");
+    expect(ids).toEqual(["host-reason"]);
+    for (const id of ids) expect(document.getElementById(id)).not.toBeNull();
+  });
+});

@@ -7069,6 +7069,19 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
     });
   });
 
+  it("keeps the 'asked once for the whole batch' help line on the New League step", () => {
+    // NEO-307: the picker drops it (no batch there); the wizard is where it is
+    // true, so it stays — and the name field is described by it.
+    seedLeagueStep();
+    renderWizard();
+    const help = screen.getByText(
+      "The competition this team plays in. One league, asked once for the whole batch.",
+    );
+    expect(
+      screen.getByLabelText("New league name").getAttribute("aria-describedby")?.split(" "),
+    ).toContain(help.id);
+  });
+
   it("offers 'Skip — no league', not 'not a league'", () => {
     // A skip here is an answer about the TEAM (it belongs to no league), not a
     // judgement about the string — and the commit does not record it in

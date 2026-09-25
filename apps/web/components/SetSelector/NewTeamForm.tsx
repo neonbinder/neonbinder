@@ -997,6 +997,9 @@ export default function NewTeamForm({
             }
             disabled={disabled || leagueBusy}
             detailsDefaultOpen={false}
+            // No batch here, so the wizard's "asked once for the whole batch"
+            // line is noise (Jason, 2026-09-25).
+            showHelp={false}
           />
           {/* `data-new-league-actions`: how the open path finds this row to
               scroll it into view. A data attribute, never an id — an id

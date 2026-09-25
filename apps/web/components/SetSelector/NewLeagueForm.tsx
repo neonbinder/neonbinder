@@ -228,6 +228,7 @@ export default function NewLeagueForm({
   levelGroupId,
   disabled,
   detailsDefaultOpen,
+  showHelp = true,
 }: {
   draft: NewLeagueDraft;
   onChange: (patch: Partial<NewLeagueDraft>) => void;
@@ -248,6 +249,17 @@ export default function NewLeagueForm({
    * passes nothing and keeps the default — it has its own fixed footer.
    */
   detailsDefaultOpen?: boolean;
+  /**
+   * NEO-307 — the "The competition this team plays in…" line under the name.
+   *
+   * On by default: the wizard's New League step is asked once for a whole
+   * batch, and the line says so. The PICKER passes `false` — there is no batch
+   * there, and Jason, 2026-09-25: "just extra text on the screen that doesn't
+   * provide much use". Off means the element is not rendered at all, and the
+   * name field's `aria-describedby` drops its id rather than pointing at a
+   * node that does not exist.
+   */
+  showHelp?: boolean;
 }) {
   const helpId = useId();
   const summary = leagueDetailSummary(draft);
@@ -279,13 +291,18 @@ export default function NewLeagueForm({
         value={draft.name}
         placeholder="National Hockey League"
         disabled={disabled}
-        aria-describedby={[helpId, describedBy].filter(Boolean).join(" ") || undefined}
+        aria-describedby={
+          [showHelp ? helpId : undefined, describedBy].filter(Boolean).join(" ") ||
+          undefined
+        }
         onChange={(e) => onChange({ name: e.target.value })}
       />
-      <p id={helpId} className="text-xs text-gray-400">
-        The competition this team plays in. One league, asked once for the whole
-        batch.
-      </p>
+      {showHelp && (
+        <p id={helpId} className="text-xs text-gray-400">
+          The competition this team plays in. One league, asked once for the
+          whole batch.
+        </p>
+      )}
 
       <div {...(levelGroupId ? { id: levelGroupId } : {})}>
         <LevelGroup

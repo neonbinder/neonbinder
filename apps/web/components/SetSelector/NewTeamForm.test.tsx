@@ -1287,6 +1287,19 @@ describe("NewTeamForm — Create “<typed>”", () => {
     }
   });
 
+  it("PICKER: drops the wizard's 'whole batch' help line, and the name field describes nothing missing", () => {
+    currentLeagues = [];
+    renderForm({ onCreateLeague: vi.fn() });
+    typeLeague("WHA");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
+
+    expect(screen.queryByText(/One league, asked once for the whole batch/)).toBeNull();
+    const described = screen.getByLabelText("New league name").getAttribute("aria-describedby");
+    for (const id of (described ?? "").split(" ").filter(Boolean)) {
+      expect(document.getElementById(id)).not.toBeNull();
+    }
+  });
+
   it("PICKER: opens the league form with its details COLLAPSED, one tap away", () => {
     // A typed name is all the prefill there is, and the form's own default
     // would open every detail field — taller than the dialog body at 629px.
