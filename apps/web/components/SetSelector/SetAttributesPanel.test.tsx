@@ -101,6 +101,17 @@ vi.mock("../../convex/_generated/api", () => ({
       getBrandsForYearOfSet: "brandView.getBrandsForYearOfSet",
       moveSetToBrand: "brandView.moveSetToBrand",
     },
+    // NEO-305 — "Make parallel of…" and "Promote to set", each asking the
+    // server whether it applies to the row, at render.
+    setParallelConversion: {
+      getSetToParallelEligibility: "spc.getSetToParallelEligibility",
+      getSetToParallelTargets: "spc.getSetToParallelTargets",
+      getSetToParallelTargetDetail: "spc.getSetToParallelTargetDetail",
+      convertSetToParallel: "spc.convertSetToParallel",
+      getParallelPromotionEligibility: "spc.getParallelPromotionEligibility",
+      getParallelPromotionPreview: "spc.getParallelPromotionPreview",
+      promoteParallelToSet: "spc.promoteParallelToSet",
+    },
   },
 }));
 
@@ -143,6 +154,11 @@ vi.mock("convex/react", () => ({
     if (query === "getSelectorOptionHoldings") return currentHoldings;
     if (query === "teams.getManyByIds") return currentTeamRows;
     if (query === "brandView.getBrandsForYearOfSet") return currentYearBrands;
+    // NEO-305 — both answers "yes"; the panel decides by LEVEL which one
+    // mounts, and the controls' own tests cover the server's answer.
+    if (query === "spc.getSetToParallelEligibility") return { eligible: true };
+    if (query === "spc.getParallelPromotionEligibility")
+      return { eligible: true, links: [{ slot: "s0", label: "Bowman Blue" }] };
     return undefined;
   },
   useMutation: (mutation: string) => {
@@ -2919,4 +2935,44 @@ describe("SetAttributesPanel — reporting a completed move (NEO-294)", () => {
 
     await waitFor(() => expect(onMoved).toHaveBeenCalledWith("bowman-id"));
   });
+});
+
+/**
+ * NEO-305 — "Make parallel of…" and "Promote to set": which rows carry them.
+ * Each also asks the server whether it applies (mocked "yes" above); that
+ * half, the dialogs and the refusals are covered in `MakeParallelControl`'s
+ * and `PromoteToSetControl`'s own tests.
+ */
+describe("SetAttributesPanel — set ⇄ parallel row actions (NEO-305)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain("Baseball");
+    currentHoldings = { holds: [], protected: false };
+  });
+
+  it("offers Make parallel of… on a set row, beside the other set-row actions", () => {
+    currentRow = makeRow({ level: "setName", value: "Bowman Blue" });
+    renderPanel();
+    const make = screen.getByRole("button", { name: "Make parallel of…" });
+    const move = screen.getByRole("button", { name: "Move to another brand" });
+    expect(make.parentElement).toBe(move.parentElement);
+    expect(screen.queryByRole("button", { name: "Promote to set" })).toBeNull();
+  });
+
+  it("offers Promote to set on an insert-level row, and nothing to make a parallel of", () => {
+    currentRow = makeRow({ level: "insert", value: "Blue" });
+    renderPanel();
+    expect(screen.getByRole("button", { name: "Promote to set" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Make parallel of…" })).toBeNull();
+  });
+
+  it.each(["sport", "year", "manufacturer", "variantType", "parallel"])(
+    "offers neither at level %s",
+    (level) => {
+      currentRow = makeRow({ level, value: "Whatever" });
+      renderPanel();
+      expect(screen.queryByRole("button", { name: "Make parallel of…" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Promote to set" })).toBeNull();
+    },
+  );
 });

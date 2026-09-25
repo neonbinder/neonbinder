@@ -95,6 +95,7 @@ import type * as selectorOptions from "../selectorOptions.js";
 import type * as selectorSyncMatch from "../selectorSyncMatch.js";
 import type * as selectorSyncStore from "../selectorSyncStore.js";
 import type * as setFromMarketplace from "../setFromMarketplace.js";
+import type * as setParallelConversion from "../setParallelConversion.js";
 import type * as setReconciliation from "../setReconciliation.js";
 import type * as shipmentTracking from "../shipmentTracking.js";
 import type * as shipping from "../shipping.js";
@@ -205,6 +206,7 @@ declare const fullApi: ApiFromModules<{
   selectorSyncMatch: typeof selectorSyncMatch;
   selectorSyncStore: typeof selectorSyncStore;
   setFromMarketplace: typeof setFromMarketplace;
+  setParallelConversion: typeof setParallelConversion;
   setReconciliation: typeof setReconciliation;
   shipmentTracking: typeof shipmentTracking;
   shipping: typeof shipping;

@@ -151,9 +151,11 @@ vi.mock("../SetSelector/SetAttributesPanel", () => ({
   default: ({
     selectorOptionId,
     onMoved,
+    onReshaped,
   }: {
     selectorOptionId: string;
     onMoved?: (brandId: string) => void;
+    onReshaped?: (path: Array<{ _id: string; level: string }>) => void;
   }) => (
     <div>
       <span data-testid="attributes-panel-target">{selectorOptionId}</span>
@@ -161,6 +163,19 @@ vi.mock("../SetSelector/SetAttributesPanel", () => ({
           OUTSIDE the target span so its label never joins that element's
           textContent, which other tests here read as the id. */}
       <button onClick={() => onMoved?.("mfr-2")}>pick-set-moved</button>
+      {/* NEO-305 — stands in for a completed "Make parallel of…": the set is
+          gone and its link lives on a parallel of another set. */}
+      <button
+        onClick={() =>
+          onReshaped?.([
+            { _id: "set-9", level: "setName" },
+            { _id: "vt-9", level: "variantType" },
+            { _id: "ins-9", level: "insert" },
+          ])
+        }
+      >
+        pick-set-reshaped
+      </button>
     </div>
   ),
 }));
@@ -310,5 +325,33 @@ describe("SetSelector — a moved set keeps its place (NEO-294)", () => {
     expect(screen.getByTestId("attributes-panel-target").textContent).toContain(
       "set-1",
     );
+  });
+});
+
+/**
+ * NEO-305 — "Make parallel of…" deletes the set the operator is standing on
+ * and "Promote to set" mints one. Either way the cascade DRILLS to where the
+ * result lives, and focus parks on the column row, as after a delete.
+ */
+describe("SetSelector — a reshaped row is followed (NEO-305)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("drills to the new parallel under the set it now belongs to, and parks focus", () => {
+    render(<SetSelector />);
+    pick("sport");
+    pick("year");
+    pick("manufacturer");
+    pick("set-with-parent");
+
+    pick("set-reshaped");
+
+    expect(screen.getByTestId("column-variantType").getAttribute("data-parent-id")).toBe("set-9");
+    expect(screen.getByTestId("column-insert").getAttribute("data-parent-id")).toBe("vt-9");
+    expect(screen.getByTestId("attributes-panel-target").textContent).toBe("ins-9");
+    // The brand is unchanged: a set becomes a parallel within its own brand.
+    expect(screen.getByTestId("column-setName").getAttribute("data-parent-id")).toBe("mfr-1");
+    expect(document.activeElement?.hasAttribute("data-set-selector-scroll")).toBe(true);
   });
 });

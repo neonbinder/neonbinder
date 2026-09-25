@@ -88,6 +88,7 @@ BuySportsCards alone for the whole run:
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; every set the year-wide Sync Sets saves from SportLots' lists (a `setName` row plus a `Base` carrying the SportLots id per new root — dozens, names never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
 | Baseball → 2026 → Bowman → Bowman | `Insert` — reconciled in-flow (NOT pre-synced); the BSC insert `Anime Kanji` is promoted to a parallel of `Anime` by Group Parallels and its checklist is fetched and COMMITTED in-flow | `flows/set-selector/parallel-grouping-promoted-insert-fetches-from-bsc.yaml` — **sole writer**. Requested by the owner 2026-09-21 (NEO-293), replacing a rejected hand-made-parent fixture |
+| Baseball → 2026 → Bowman → Bowman `Parallel` (and a transient set `Bowman Blue`) | `Parallel` — reconciled in-flow (NOT pre-synced), every Ready set saved; then `Blue`'s SportLots link is promoted to a set `Bowman Blue` and folded back with Make parallel of…, leaving `Blue` holding both links and no `Bowman Blue` set. Also READS Bowman's Sets column (the three BSC sets, none of SportLots' colours). | `flows/set-selector/flagship-colour-is-a-parallel-both-ways.yaml` — **sole writer of Bowman's `Parallel`**. ⚠️ **PROPOSED (NEO-305), NEEDS OWNER APPROVAL** — see the 2026 Bowman section |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
@@ -310,6 +311,36 @@ all at the head of every run):
 **Sole writer.** No other flow may drill into 2026 Bowman. A re-run against the
 same deployment finds the rows already reconciled and promoted and fails at
 "Reconcile Inserts" (live) or "Accept all suggestions" — by name.
+
+#### ⚠️ PROPOSED second writer: Bowman's `Parallel` (NEO-305) — needs owner approval
+
+`flagship-colour-is-a-parallel-both-ways.yaml` proves the NEO-305 boundary on
+the brand-year the bug was reported on: Sync Sets leaves SportLots' colours
+("Bowman Blue", "Bowman Gold", "Bowman Neon Green" …) out of Bowman's Sets
+column, Bowman › Parallel's sync pairs SportLots' `Blue` with BSC's `Blue`,
+`Promote to set` lifts that link out as the set `Bowman Blue`, and
+`Make parallel of…` folds it back onto `Blue`. Asked for because every claim
+needs a real brand whose flagship BSC lists AND whose colours SportLots lists
+as sets — and 2026 Bowman is the one observed on production.
+
+| | |
+| -- | -- |
+| drills | Baseball → 2026 → Bowman (Sets column), then → Bowman → `Parallel`, all COLD on a fresh preview |
+| writes | Bowman's `Parallel` rows (the reconcile save); the set `Bowman Blue` (promote) and its deletion (convert back); `Blue`'s SportLots link moves out and back |
+| leaves | `Blue` with BSC + SportLots links, no `Bowman Blue` set — the round trip restores what the save made |
+| never touches | Bowman's `Insert` (the sibling's), Base, any checklist |
+| re-runs | **fresh-only per deployment**: a second run finds the Parallels stored, no reconcile opens, and it fails on `Reconcile Parallels` by name |
+
+**Open question for the owner — the shared cold drills.** Both flows open
+2026 → Bowman → Bowman on a fresh preview, so whichever runs first pays the
+Manufacturers, Sets and Variant Types syncs and the other finds them warm.
+If both start inside the same window, `ensureSelectorOptions` has no
+"already syncing" guard and the same sync can run twice. Every write on that
+path is id-keyed and additive (a set clash is refused inside the mutation),
+so the expected cost is a duplicated round-trip, not a duplicated row — but
+it has not been observed either way. The alternative is a different real
+brand-year with the same shape (a BSC flagship plus SportLots colour "sets"),
+which would have to be measured first.
 
 ### The one sanctioned read-only visitor
 

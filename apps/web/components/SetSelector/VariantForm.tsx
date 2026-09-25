@@ -21,6 +21,7 @@ import { storeReconciledUntilDone } from "./store-reconciled-until-done";
 import StoreHoldNotices from "./StoreHoldNotices";
 import HeldElsewhereNote, {
   groupedAsParallelsSummary,
+  linkedInBrandSummary,
   savedSetsMessage,
 } from "./HeldElsewhereNote";
 import {
@@ -55,6 +56,9 @@ const SYNC_FAILED_PREFIX = "Sync failed: could not load variants";
 // NEO-300: the disclosure's accessible name. Distinct from ParallelForm's, which
 // can be on screen in the next column at the same time.
 const GROUPED_TOGGLE_LABEL = "Show grouped";
+// NEO-305: the brand-wide hold's disclosure — its own name, so it never
+// collides with "Show grouped" when both notes are up.
+const LINKED_TOGGLE_LABEL = "Show linked sets";
 
 export default function VariantForm({
   variantTypeId,
@@ -87,12 +91,17 @@ export default function VariantForm({
   const [heldSkipped, setHeldSkipped] = useState<HeldRow[]>([]);
   // The true count behind `heldSkipped`: the store's list is a capped sample.
   const [heldTotal, setHeldTotal] = useState(0);
+  // NEO-305: fetched SportLots sets the single-platform store skipped because
+  // another SET in the brand already holds them. Its own note, beside the
+  // grouped one.
+  const [brandHeldSkipped, setBrandHeldSkipped] = useState<HeldRow[]>([]);
   // NEO-300: what the store itself withheld, or could not check. Holds the
   // panel open — see StoreHoldNotices.
   const [storeHolds, setStoreHolds] = useState<StoreHolds | null>(null);
   // a11y: the held-rows summary lives INSIDE the status region; its toggle and
   // list render after it, labelled by this id (see HeldElsewhereNote).
   const heldSummaryId = useId();
+  const brandHeldSummaryId = useId();
   const triggered = useRef(false);
   // a11y: a11y-focus-park landing spot for the two moments below where the
   // control that had focus unmounts out from under it.
@@ -161,10 +170,29 @@ export default function VariantForm({
     ? parallelsInTree(insertTree)
     : [];
 
+  // NEO-305: SportLots ids held by rows under the brand's OTHER sets.
+  // SportLots answers this sync with the brand's whole list, and the used-id
+  // check above only looks inside this set — so a set like "Bowman Blue",
+  // whose Base already holds the id, came back as a fresh candidate here and
+  // taking it put one SportLots id on two rows. Held the way a grouped
+  // parallel is: not offered, not auto-matched, and named in a note.
+  const brandHolders = useQuery(api.setParallelConversion.getBrandSlHolders, {
+    variantTypeId,
+  });
+  const brandHeldRows: HeldRow[] = (brandHolders?.rows ?? []).map((r) => ({
+    key: r.key,
+    name: r.name,
+    bsc: [],
+    sportlots: r.sportlots,
+  }));
+
   // The subset the open reconcile modal was told about, so its confirm can
   // tell the store's extras from what the header already named.
   const modalHeldRows: HeldRow[] = reconciliationData
     ? heldRowsReturnedBy(groupedParallels, reconciliationData)
+    : [];
+  const modalBrandHeldRows: HeldRow[] = reconciliationData
+    ? heldRowsReturnedBy(brandHeldRows, reconciliationData)
     : [];
 
   const doSync = async () => {
@@ -173,6 +201,7 @@ export default function VariantForm({
     setMessage(null);
     setHeldSkipped([]);
     setHeldTotal(0);
+    setBrandHeldSkipped([]);
     setStoreHolds(null);
     try {
       const result = await fetchRawOptions({
@@ -273,7 +302,9 @@ export default function VariantForm({
         // stays the whole fetch, because the grouped row's link is still
         // listed and must not read as delisted.
         const skipped = heldRowsReturnedBy(groupedParallels, result);
-        const held = heldIdSets(skipped);
+        // NEO-305: and a set another set in the brand already holds.
+        const brandSkipped = heldRowsReturnedBy(brandHeldRows, result);
+        const held = heldIdSets([...skipped, ...brandSkipped]);
         const items = [
           ...result.bscOptions
             .filter((o: PlatformItem) => !held.bsc.has(o.platformValue))
@@ -292,9 +323,10 @@ export default function VariantForm({
         // NEO-300: everything that came back is already grouped. Nothing to
         // store, but the operator is told why rather than the panel closing on
         // a sync that looked like it did nothing.
-        if (items.length === 0 && skipped.length > 0) {
+        if (items.length === 0 && skipped.length + brandSkipped.length > 0) {
           setHeldSkipped(skipped);
           setHeldTotal(skipped.length);
+          setBrandHeldSkipped(brandSkipped);
           setMessage(`No new ${variantsLabel.toLowerCase()} to add.`);
           return;
         }
@@ -351,6 +383,7 @@ export default function VariantForm({
         const heldAll = mergeServerHeld(skipped, stored);
         setHeldSkipped(heldAll.rows);
         setHeldTotal(heldAll.total);
+        setBrandHeldSkipped(brandSkipped);
         const holds = storeHoldsOf(stored);
         setStoreHolds(holds);
         setMessage(
@@ -383,6 +416,7 @@ export default function VariantForm({
           converged &&
           unlinkedRows.length === 0 &&
           heldAll.total === 0 &&
+          brandSkipped.length === 0 &&
           holds === null
         ) {
           onDone?.();
@@ -504,18 +538,21 @@ export default function VariantForm({
     // NEO-300: gated on the insert tree too. The single-platform branch filters
     // against it, and a sync that fired before it loaded would re-create every
     // grouped parallel as an insert — the bug this gate exists to prevent.
+    // NEO-305: and on the brand's other sets' SportLots ids, for the same
+    // reason — a sync before they load would offer them as new.
     if (
       sportValue &&
       yearValue &&
       baseVariant !== undefined &&
       insertTree !== undefined &&
+      brandHolders !== undefined &&
       !triggered.current
     ) {
       triggered.current = true;
       doSync();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- doSync deliberately omitted — same one-shot auto-sync latch; including it would loop
-  }, [sportValue, yearValue, baseVariant, insertTree]);
+  }, [sportValue, yearValue, baseVariant, insertTree, brandHolders]);
 
   // a11y: `loading` hides the ENTIRE button row below (Retry/Cancel), so a
   // click on Retry unmounts itself on the very next render — the browser
@@ -606,6 +643,11 @@ export default function VariantForm({
                       {groupedAsParallelsSummary(heldTotal)}
                     </p>
                   )}
+                  {!isError && brandHeldSkipped.length > 0 && (
+                    <p id={brandHeldSummaryId} className="mt-1">
+                      {linkedInBrandSummary(brandHeldSkipped.length)}
+                    </p>
+                  )}
                 </div>
               )}
 
@@ -624,6 +666,20 @@ export default function VariantForm({
                   />
                 </div>
               )}
+              {message &&
+                !showReconciliation &&
+                !isError &&
+                brandHeldSkipped.length > 0 && (
+                  <div className="-mt-2 mb-4 px-3">
+                    <HeldElsewhereNote
+                      tone="panel"
+                      rows={brandHeldSkipped}
+                      summary={linkedInBrandSummary(brandHeldSkipped.length)}
+                      summaryId={brandHeldSummaryId}
+                      toggleLabel={LINKED_TOGGLE_LABEL}
+                    />
+                  </div>
+                )}
 
               {storeHolds && !showReconciliation && !isError && (
                 <StoreHoldNotices
@@ -695,6 +751,11 @@ export default function VariantForm({
             rows: modalHeldRows,
             summary: groupedAsParallelsSummary(modalHeldRows.length),
             toggleLabel: GROUPED_TOGGLE_LABEL,
+          }}
+          heldInBrand={{
+            rows: modalBrandHeldRows,
+            summary: linkedInBrandSummary(modalBrandHeldRows.length),
+            toggleLabel: LINKED_TOGGLE_LABEL,
           }}
           existingRows={existingVariantRows?.map((r) => ({
             // NEO-211 (plan E): carried through the modal so a rename inside it

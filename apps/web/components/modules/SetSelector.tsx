@@ -487,6 +487,24 @@ export default function SetSelector() {
     }
   };
 
+  /**
+   * NEO-305: the row the attributes panel was describing changed shape — a
+   * set became a parallel of another set ("Make parallel of…", and the set is
+   * gone), or a parallel's SportLots set became a set of its own ("Promote to
+   * set"). The panel hands over where the result now lives, set first, and
+   * the cascade DRILLS there: the operator sees the row they made, under the
+   * set it now belongs to, rather than a column that silently lost one. Same
+   * move as the custom form's "go to existing". The control that did it
+   * unmounts with the old selection, so focus parks on the column row, as it
+   * does after a delete.
+   */
+  const handleRowReshaped = (
+    path: Array<{ _id: GenericId<"selectorOptions">; level: SelectorLevel }>,
+  ) => {
+    handleDrillToExisting(path);
+    columnRowRef.current?.focus();
+  };
+
   // CardChecklist attaches to the deepest selected node — for Base
   // variantTypes that's the variantType row itself (Base is terminal).
   const cardChecklistId =
@@ -900,6 +918,7 @@ export default function SetSelector() {
           defaultCollapsed={true}
           onDeleted={handleRowDeleted}
           onMoved={handleSetMoved}
+          onReshaped={handleRowReshaped}
         />
       )}
 

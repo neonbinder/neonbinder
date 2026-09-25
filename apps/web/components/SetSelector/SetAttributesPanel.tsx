@@ -34,6 +34,8 @@ import BaseRoleControl from "./BaseRoleControl";
 import { isBaseRole } from "./baseRole";
 import FillTeamsControl from "./FillTeamsControl";
 import MoveSetToBrandControl from "./MoveSetToBrandControl";
+import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
+import PromoteToSetControl from "./PromoteToSetControl";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
 import {
   ALL_SIDES,
@@ -178,6 +180,7 @@ export default function SetAttributesPanel({
   defaultCollapsed,
   onDeleted,
   onMoved,
+  onReshaped,
 }: {
   selectorOptionId: Id<"selectorOptions">;
   /** Start collapsed (cards present) so the panel doesn't push them off-screen. */
@@ -199,6 +202,14 @@ export default function SetAttributesPanel({
    * only it knows what the cascade above this panel is showing.
    */
   onMoved?: (brandId: Id<"selectorOptions">) => void;
+  /**
+   * NEO-305 — the row this panel describes changed shape: a set became a
+   * parallel ("Make parallel of…", the set is gone) or a parallel's SportLots
+   * set became a set ("Promote to set"). `path` is where the result lives,
+   * set first; the owner drills the cascade there and parks focus, the same
+   * division as `onDeleted` and `onMoved`.
+   */
+  onReshaped?: (path: ReshapeStep[]) => void;
 }) {
   const row = useQuery(api.selectorOptions.getSelectorOptionById, {
     id: selectorOptionId,
@@ -571,6 +582,29 @@ export default function SetAttributesPanel({
                 yearLabel={ancestorYear}
                 showToast={showToast}
                 onMoved={onMoved}
+              />
+            )}
+            {/* NEO-305: the other two things that can happen to a set ROW's
+                shape — a SportLots-filed "set" that is really a parallel
+                folds into its set, and the way back out. Each renders
+                nothing unless the server says it could work here. Keyed with
+                their own prefixes for the reason the controls above are. */}
+            {leafLevel === "setName" && (
+              <MakeParallelControl
+                key={`make-parallel-${selectorOptionId}`}
+                setId={selectorOptionId}
+                setValue={row.value}
+                showToast={showToast}
+                onReshaped={onReshaped}
+              />
+            )}
+            {leafLevel === "insert" && (
+              <PromoteToSetControl
+                key={`promote-set-${selectorOptionId}`}
+                parallelId={selectorOptionId}
+                parallelValue={row.value}
+                showToast={showToast}
+                onReshaped={onReshaped}
               />
             )}
           </div>
