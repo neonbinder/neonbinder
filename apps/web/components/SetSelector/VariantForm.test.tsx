@@ -37,6 +37,10 @@ vi.mock("../../convex/_generated/api", () => ({
       getInsertTreeByVariantType: "getInsertTreeByVariantType",
       getBaseVariantBySet: "getBaseVariantBySet",
     },
+    // NEO-305 — the brand-wide SportLots hold the auto-sync waits on.
+    setParallelConversion: {
+      getBrandSlHolders: "getBrandSlHolders",
+    },
   },
 }));
 
@@ -45,6 +49,11 @@ const mockStore = vi.fn();
 // NEO-300: what getInsertTreeByVariantType answers. Loaded-but-empty by
 // default — the auto-sync is gated on it, so `undefined` would never sync.
 let insertTree: unknown[] = [];
+// NEO-305: what getBrandSlHolders answers. Loaded-but-empty by default.
+let brandHolders: { rows: unknown[]; truncated: boolean } = {
+  rows: [],
+  truncated: false,
+};
 
 vi.mock("convex/react", () => ({
   useAction: (ref: string) =>
@@ -60,6 +69,8 @@ vi.mock("convex/react", () => ({
     if (ref === "getInsertTreeByVariantType") return insertTree;
     if (ref === "getUsedInsertIdentifiersBySet")
       return { slPlatformValues: [], bscPlatformValues: [] };
+    // NEO-305 — loaded-but-empty: the auto-sync is gated on it too.
+    if (ref === "getBrandSlHolders") return brandHolders;
     return undefined;
   },
 }));
@@ -111,6 +122,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStore.mockResolvedValue({ success: true, unlinked: [] });
   insertTree = [];
+  brandHolders = { rows: [], truncated: false };
 });
 
 describe("VariantForm — single-platform store (NEO-211 plan B)", () => {
@@ -1066,5 +1078,104 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     mockFetchRawOptions.mockResolvedValue(bscOnly());
     await renderForm();
     expect(mockFetchRawOptions).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * NEO-305 — SportLots answers a Parallels/Inserts sync with the brand's whole
+ * list, and the used-id check only looked inside this set. So "Topps Blue", a
+ * SET whose Base already holds that SportLots id, came back as a fresh
+ * candidate and taking it put one id on two rows. It is now held exactly like
+ * a grouped parallel, with a note of its own.
+ */
+describe("VariantForm — ids another set in the brand holds are left alone (NEO-305)", () => {
+  const BLUE_BSC = { value: "Blue", platformValue: "bsc-blue" };
+  const BLUE_SL = { value: "Topps Blue", platformValue: "sl-blue" };
+  const NEW_BSC = { value: "Chrome Stars", platformValue: "bsc-stars" };
+  const NEW_SL = { value: "Chrome Stars", platformValue: "sl-stars" };
+
+  function blueHeldByASet() {
+    brandHolders = {
+      rows: [{ key: "base-topps-blue", name: "Topps Blue", sportlots: ["sl-blue"] }],
+      truncated: false,
+    };
+  }
+
+  it("waits for the brand's holders before it syncs", async () => {
+    brandHolders = undefined as unknown as typeof brandHolders;
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    await renderForm();
+    expect(mockFetchRawOptions).not.toHaveBeenCalled();
+  });
+
+  it("does not auto-match a held SportLots set, releases its BSC half to Pending, and names the holder", async () => {
+    blueHeldByASet();
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [BLUE_BSC, NEW_BSC],
+      slOptions: [BLUE_SL, NEW_SL],
+      autoMatched: [
+        { displayName: "Blue", bsc: BLUE_BSC, sl: BLUE_SL, confidence: 0.95 },
+        { displayName: "Chrome Stars", bsc: NEW_BSC, sl: NEW_SL, confidence: 0.95 },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+    });
+    await renderForm();
+
+    expect(await screen.findByText(/Save 1 sets/)).toBeTruthy();
+    expect(
+      screen.getByText("1 already linked to another set in this brand. Leaving it be."),
+    ).toBeTruthy();
+    // The grouped-parallels note is untouched: nothing here is grouped.
+    expect(screen.queryByRole("button", { name: "Show grouped" })).toBeNull();
+    const toggle = screen.getByRole("button", { name: "Show linked sets" });
+    fireEvent.click(toggle);
+    expect(screen.getByText("Topps Blue", { selector: "li > span" })).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Save 1 sets/));
+    });
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    const saved = args.reconciledItems.flatMap(
+      (i: { platformData: { sportlots?: string | string[] } }) =>
+        [i.platformData.sportlots ?? []].flat(),
+    );
+    expect(saved).not.toContain("sl-blue");
+    // Still LISTED upstream, so never read as delisted.
+    expect(args.returnedIds.sportlots).toContain("sl-blue");
+  });
+
+  it("single platform: stores only what no other set holds, and keeps the panel up to say so", async () => {
+    blueHeldByASet();
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [],
+      slOptions: [BLUE_SL, NEW_SL],
+      message: "BSC: 0, SL: 2",
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+    });
+    const { onDone } = await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    expect(args.reconciledItems).toHaveLength(1);
+    expect(args.reconciledItems[0].platformData.sportlots).toBe("sl-stars");
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already linked to another set in this brand. Leaving it be.",
+    );
+    const toggle = screen.getByRole("button", { name: "Show linked sets" });
+    expect(status.contains(toggle)).toBe(false);
+    expect(onDone).not.toHaveBeenCalled();
   });
 });

@@ -116,6 +116,9 @@ import {
   matchesBrandPrefix,
   routeBscSets,
   routeSlSets,
+  // NEO-305 — whether a scope's flagship absorbs its SportLots-only names.
+  slFlagshipAbsorbs,
+  type BscSetPhaseOutcome,
   stripMatchedBrandPrefix,
   MAX_SL_SETS_PER_SYNC,
   type BscSetHolder,
@@ -4045,8 +4048,12 @@ const ALL_SELECTOR_LEVELS = [
  * `selectorSyncStatus` are NOT holdings. They are transient per-batch or
  * per-column state whose only meaning is "a fetch is/was in flight here";
  * nothing an operator would mourn, and they go with the row.
+ *
+ * NEO-305 — exported so `setParallelConversion.promoteParallelToSet` can ask
+ * "is the parallel empty now?" before ending it through
+ * `deleteEmptySelectorOptionRow`, rather than catching that helper's refusal.
  */
-async function collectSelectorOptionHoldings(
+export async function collectSelectorOptionHoldings(
   ctx: { db: QueryCtx["db"] },
   row: Doc<"selectorOptions">,
 ): Promise<Holding[]> {
@@ -4227,6 +4234,106 @@ export const getSelectorOptionHoldings = query({
 });
 
 /**
+ * NEO-219 C — the delete itself, for ONE row that must be empty.
+ *
+ * Refuses, writing nothing, when anything hangs off the row
+ * (`SELECTOR_ROW_NOT_EMPTY` with the holdings); otherwise sweeps the transient
+ * state keyed on it, deletes it, drops it from its parent's `children` and
+ * writes the audit log line. Every caller has already gated on `requireAdmin`
+ * and passes the identity it returned, because this log line is the only
+ * trace a deleted row leaves.
+ *
+ * NEO-305 — extracted from `deleteSelectorOption` so the set-builder doors
+ * that EMPTY a row as part of a larger move (`setParallelConversion.ts`) end
+ * it through exactly the same checks and sweeps the trash icon does, inside
+ * their own transaction. The holdings are re-read here, after the caller's
+ * writes, so a row the caller failed to empty refuses and the whole
+ * transaction rolls back.
+ */
+export async function deleteEmptySelectorOptionRow(
+  ctx: MutationCtx,
+  row: Doc<"selectorOptions">,
+  adminUserId: string,
+): Promise<{ syncedBack: boolean }> {
+  const holds = await collectSelectorOptionHoldings(ctx, row);
+  if (holds.length > 0) {
+    throw new ConvexError({ code: "SELECTOR_ROW_NOT_EMPTY", holds });
+  }
+
+  // ── transient state keyed on the row, deleted WITH it ──────────────────
+  //
+  // `checklistCandidates` and `entityReviewQueue` are NOT here: staged
+  // review work is a HOLDING now (see collectSelectorOptionHoldings), so
+  // reaching this line already proves both are empty. Deleting another
+  // operator's live review was the point of security condition 2.
+  //
+  // What is left is state that means nothing without the row, and every
+  // sweep is bounded: the holdings check above refused anything carrying
+  // more than TRANSIENT_DELETE_CAP skips, so the `.take` here is a belt on
+  // top of that rather than a silent truncation.
+  const skips = await ctx.db
+    .query("entityReviewSkips")
+    .withIndex("by_selector_option_and_kind_and_name", (q) =>
+      q.eq("selectorOptionId", row._id),
+    )
+    .take(TRANSIENT_DELETE_CAP);
+  for (const doc of skips) await ctx.db.delete(doc._id);
+
+  // A status row is keyed on (childLevel, parentId), so the ones belonging
+  // to this row are its CHILD columns' — one indexed lookup per level.
+  // `setSelectorSyncStatus` keeps at most one row per (level, parentId), so
+  // this is ≤ 7 rows in practice; the cap only exists so a future writer
+  // that stops upserting cannot turn this into an unbounded batch.
+  for (const level of ALL_SELECTOR_LEVELS) {
+    const statuses = await ctx.db
+      .query("selectorSyncStatus")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", level).eq("parentId", row._id),
+      )
+      .take(TRANSIENT_DELETE_CAP);
+    for (const doc of statuses) await ctx.db.delete(doc._id);
+  }
+
+  await ctx.db.delete(row._id);
+
+  // NEO-85: write-if-changed, same discipline as every other children patch
+  // in this file — a byte-identical patch still invalidates every query that
+  // read the parent and reflows the SetSelector columns.
+  if (row.parentId) {
+    const parent = await ctx.db.get(row.parentId);
+    if (parent) {
+      const next = (parent.children ?? []).filter(
+        (childId) => childId !== row._id,
+      );
+      if (!valuesDeepEqual(parent.children ?? [], next)) {
+        await ctx.db.patch(row.parentId, { children: next });
+      }
+    }
+  }
+
+  const syncedBack =
+    slotIds(row, "bsc").length > 0 || slotIds(row, "sportlots").length > 0;
+
+  console.log(
+    JSON.stringify({
+      msg: "selector_option_deleted",
+      adminUserId,
+      id: row._id,
+      level: row.level,
+      value: truncateForLog(row.value),
+      // NEO-239 — `isCustom` is not logged: nothing writes it any more, so
+      // it would read `false` on every row including the hand-added ones and
+      // say the opposite of what it looks like it says. `syncedBack` below
+      // carries the fact that actually distinguishes them.
+      syncedBack,
+      parentId: row.parentId ?? null,
+    }),
+  );
+
+  return { syncedBack };
+}
+
+/**
  * NEO-219 C — delete ONE empty selectorOptions row.
  *
  * Refuses, writing nothing, when anything hangs off it —
@@ -4268,79 +4375,10 @@ export const deleteSelectorOption = mutation({
       throw new Error(`selectorOptions row not found: ${args.id}`);
     }
 
-    const holds = await collectSelectorOptionHoldings(ctx, row);
-    if (holds.length > 0) {
-      throw new ConvexError({ code: "SELECTOR_ROW_NOT_EMPTY", holds });
-    }
-
-    // ── transient state keyed on the row, deleted WITH it ──────────────────
-    //
-    // `checklistCandidates` and `entityReviewQueue` are NOT here: staged
-    // review work is a HOLDING now (see collectSelectorOptionHoldings), so
-    // reaching this line already proves both are empty. Deleting another
-    // operator's live review was the point of security condition 2.
-    //
-    // What is left is state that means nothing without the row, and every
-    // sweep is bounded: the holdings check above refused anything carrying
-    // more than TRANSIENT_DELETE_CAP skips, so the `.take` here is a belt on
-    // top of that rather than a silent truncation.
-    const skips = await ctx.db
-      .query("entityReviewSkips")
-      .withIndex("by_selector_option_and_kind_and_name", (q) =>
-        q.eq("selectorOptionId", row._id),
-      )
-      .take(TRANSIENT_DELETE_CAP);
-    for (const doc of skips) await ctx.db.delete(doc._id);
-
-    // A status row is keyed on (childLevel, parentId), so the ones belonging
-    // to this row are its CHILD columns' — one indexed lookup per level.
-    // `setSelectorSyncStatus` keeps at most one row per (level, parentId), so
-    // this is ≤ 7 rows in practice; the cap only exists so a future writer
-    // that stops upserting cannot turn this into an unbounded batch.
-    for (const level of ALL_SELECTOR_LEVELS) {
-      const statuses = await ctx.db
-        .query("selectorSyncStatus")
-        .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", level).eq("parentId", row._id),
-        )
-        .take(TRANSIENT_DELETE_CAP);
-      for (const doc of statuses) await ctx.db.delete(doc._id);
-    }
-
-    await ctx.db.delete(row._id);
-
-    // NEO-85: write-if-changed, same discipline as every other children patch
-    // in this file — a byte-identical patch still invalidates every query that
-    // read the parent and reflows the SetSelector columns.
-    if (row.parentId) {
-      const parent = await ctx.db.get(row.parentId);
-      if (parent) {
-        const next = (parent.children ?? []).filter(
-          (childId) => childId !== row._id,
-        );
-        if (!valuesDeepEqual(parent.children ?? [], next)) {
-          await ctx.db.patch(row.parentId, { children: next });
-        }
-      }
-    }
-
-    const syncedBack =
-      slotIds(row, "bsc").length > 0 || slotIds(row, "sportlots").length > 0;
-
-    console.log(
-      JSON.stringify({
-        msg: "selector_option_deleted",
-        adminUserId,
-        id: row._id,
-        level: row.level,
-        value: truncateForLog(row.value),
-        // NEO-239 — `isCustom` is not logged: nothing writes it any more, so
-        // it would read `false` on every row including the hand-added ones and
-        // say the opposite of what it looks like it says. `syncedBack` below
-        // carries the fact that actually distinguishes them.
-        syncedBack,
-        parentId: row.parentId ?? null,
-      }),
+    const { syncedBack } = await deleteEmptySelectorOptionRow(
+      ctx,
+      row,
+      adminUserId,
     );
 
     return {
@@ -11082,11 +11120,24 @@ export const syncSetsAcrossManufacturers = action({
      * nothing user-facing reads it.
      */
     slCreated: v.number(),
+    /**
+     * NEO-305 — SportLots names NOT made sets because BSC answered for the
+     * year and they extend the brand's flagship: they are the flagship's
+     * parallels, and its Parallel variant-type sync is where they land.
+     * Summed across every brand scope. Written nowhere by this sync.
+     */
+    slFlagshipParallels: v.number(),
   }),
   handler: async (
     ctx,
     args,
-  ): Promise<AggregatedSyncResult & { totalSets: number; slCreated: number }> => {
+  ): Promise<
+    AggregatedSyncResult & {
+      totalSets: number;
+      slCreated: number;
+      slFlagshipParallels: number;
+    }
+  > => {
     // The identity is threaded to `createSetsFromSlRoots` as the audit
     // `createdByUserId` of every set the SportLots phase mints.
     const adminUserId = await requireAdmin(ctx);
@@ -11105,6 +11156,7 @@ export const syncSetsAcrossManufacturers = action({
           message: "Could not resolve sport/year ancestors",
           totalSets: 0,
           slCreated: 0,
+          slFlagshipParallels: 0,
         };
       }
 
@@ -11117,6 +11169,12 @@ export const syncSetsAcrossManufacturers = action({
       let totalStored = 0;
       // Sets the SportLots phase minted (D13), reported to the column.
       let slCreatedTotal = 0;
+      // NEO-305 — SportLots names left to a flagship's Parallels sync.
+      let slFlagshipParallelsTotal = 0;
+      // NEO-305 — how the BSC phase ended. Only `filed` lets a SportLots
+      // scope's flagship absorb (`slFlagshipAbsorbs`); every assignment
+      // below is on the path that decides it, and nothing else writes it.
+      let bscPhase: BscSetPhaseOutcome = "skipped";
       // NEO-294 — brands minted from the KNOWN BRANDS list this run, and the
       // sets filed under them. Both phases add to these and the summary says
       // them once, so the operator reads one number per fact.
@@ -11142,6 +11200,7 @@ export const syncSetsAcrossManufacturers = action({
         );
         skippedSides.push("bsc");
         if (bscResolution.bsc.paused) pausedList.push("bsc");
+        bscPhase = bscResolution.bsc.paused ? "paused" : "skipped";
       } else {
         // Slot ids only — resolvability above already guaranteed both.
         const bscResult: {
@@ -11170,6 +11229,7 @@ export const syncSetsAcrossManufacturers = action({
               `${bscResult.message || "No sets returned from BSC"}`,
           );
           failedPlatforms.push("bsc");
+          bscPhase = "failed";
         } else {
           console.log(
             `[syncSetsAcrossManufacturers] BSC returned ${bscResult.options.length} sets`,
@@ -11216,6 +11276,7 @@ export const syncSetsAcrossManufacturers = action({
             summary.push(
               "too many sets this year to file BSC's list — none were filed",
             );
+            bscPhase = "index_truncated";
           } else {
             const holdersByBscId = new Map<
               string,
@@ -11378,6 +11439,9 @@ export const syncSetsAcrossManufacturers = action({
                 BRAND_UNKNOWN_VALUE;
               summary.push(`${name}: ${sets.length}`);
             }
+            // NEO-305 — set only once every bucket is stored: a throw above
+            // leaves the phase un-filed (and the outer catch fails the sync).
+            bscPhase = "filed";
           }
         }
       }
@@ -11403,6 +11467,7 @@ export const syncSetsAcrossManufacturers = action({
           skippedSides,
           pausedSides: pausedList,
           slCreated: 0,
+          slFlagshipParallels: 0,
         };
       }
 
@@ -11457,6 +11522,12 @@ export const syncSetsAcrossManufacturers = action({
         if (index.truncated) {
           summary.push("too many sets this year to sort SportLots' list");
         }
+        // NEO-305 (b) — the brands holding at least one set with a BSC id,
+        // read from the same post-BSC index. A truncated index under-reports,
+        // which can only turn absorption OFF for a brand it did not reach.
+        const scopesWithBscSet = new Set(
+          index.sets.filter((row) => row.bscIds.length > 0).map((row) => row.parentId),
+        );
 
         const slSport = slotIds(sportAncestor, "sportlots")[0];
         const slYear = slotIds(yearAncestor, "sportlots")[0];
@@ -11644,8 +11715,15 @@ export const syncSetsAcrossManufacturers = action({
             coveredSlIds: new Set(covered.ids),
             knownSetNameKeys: known,
             scopePrefix: scope.metadata?.setNamePrefix,
+            // NEO-305 — decided here, once, from what this sync already has.
+            flagshipAbsorbs: slFlagshipAbsorbs({
+              bscPhase,
+              scopeHasBscSet: scopesWithBscSet.has(scope._id),
+              scopeIsBrandUnknown: scope.metadata?.isBrandUnknown === true,
+            }),
           });
           slVariantsOfKnown += routed.variants;
+          slFlagshipParallelsTotal += routed.flagshipParallels;
           slRootsTruncated += routed.rootsTruncated;
           slUnnameable += routed.unnameable;
           if (routed.rootsTruncated > 0 || routed.membersTruncated > 0) {
@@ -11803,6 +11881,13 @@ export const syncSetsAcrossManufacturers = action({
               `sets you already have`,
           );
         }
+        // NEO-305 — draft copy, pending Jason's sign-off (no copywriter).
+        if (slFlagshipParallelsTotal > 0) {
+          summary.push(
+            `${countNoun(slFlagshipParallelsTotal, "SportLots parallel")} ` +
+              `parked for the flagship's Parallels sync`,
+          );
+        }
       }
 
       // NEO-294 — said once for both phases.
@@ -11841,6 +11926,7 @@ export const syncSetsAcrossManufacturers = action({
         skippedSides,
         pausedSides: pausedList,
         slCreated: slCreatedTotal,
+        slFlagshipParallels: slFlagshipParallelsTotal,
       };
     } catch (error) {
       console.error("[syncSetsAcrossManufacturers] Error:", error);
@@ -11850,6 +11936,7 @@ export const syncSetsAcrossManufacturers = action({
         message: `Failed: ${error instanceof Error ? error.message : "Unknown error"}`,
         totalSets: 0,
         slCreated: 0,
+        slFlagshipParallels: 0,
       };
     }
   },

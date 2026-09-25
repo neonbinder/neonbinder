@@ -1548,6 +1548,11 @@ export type SlSetRoutePlan = {
   membersTruncated: number;
   /** Entries dropped because their label exceeds `MAX_SLOT_LABEL_LENGTH`. */
   unnameable: number;
+  /**
+   * NEO-305 — entries left to the flagship's Parallels sync instead of being
+   * made sets (`flagshipAbsorbs`). Always 0 when the flag is off.
+   */
+  flagshipParallels: number;
 };
 
 /**
@@ -1611,6 +1616,23 @@ export function knownSetNameKeys(
  *              same list keep the same window: what was cut off last time is
  *              exactly what the next sync (with last time's roots now
  *              covered) reaches first.
+ *   flagship parallel — NEO-305, only under `flagshipAbsorbs`. The NEO-237
+ *              carve-out above keeps the flagship from hiding "Heritage"
+ *              under Topps, and that is right when nothing else speaks for
+ *              the brand. But it also let every SportLots-only name that
+ *              extends the flagship through as a root: 2026 Bowman became
+ *              "Bowman Blue", "Bowman Gold", "Bowman Neon Green" … as SETS,
+ *              where BSC lists three (Bowman, Chrome, Sapphire Edition) and
+ *              the colours are Bowman's parallels. Jason, 2026-09-24: BSC's
+ *              set list decides. So when the caller says BSC answered for
+ *              this brand-year (the flag), and the flagship is among the
+ *              known names (a key that IS the scope prefix), every entry
+ *              still standing after covered / variant — and with something
+ *              left after the prefix — is counted here and written nowhere.
+ *              The flagship's Parallel variant-type sync lists the same
+ *              SportLots set, where the operator pairs or adds it. Off (the
+ *              default) is NEO-237 exactly: "Heritage" under a bare "Topps"
+ *              is still a root when BSC did not answer.
  *
  * Pure. `entries` are the adapter's (already prefix-stripped) labels: the
  * whole-word, case-insensitive strip of `stripMatchedBrandPrefix` for a
@@ -1626,6 +1648,13 @@ export function routeSlSets(args: {
   knownSetNameKeys: ReadonlySet<string>;
   /** The scope's `setNamePrefix`; absent for Unknown (no re-prefixed form). */
   scopePrefix?: string;
+  /**
+   * NEO-305 — BSC's set list answered for this brand-year, so a SportLots-only
+   * name extending the flagship is the flagship's parallel, not a set. The
+   * caller decides it (`slFlagshipAbsorbs` in selectorSyncMatch.ts); absent or
+   * false leaves the NEO-237 classification untouched.
+   */
+  flagshipAbsorbs?: boolean;
 }): SlSetRoutePlan {
   const prefix = args.scopePrefix?.trim();
   const foldedPrefix = prefix ? selectorValueKey(prefix) : "";
@@ -1643,6 +1672,13 @@ export function routeSlSets(args: {
   // The prefix-hiders: what remains of each known name after the scope
   // prefix. The flagship named after its brand contributes nothing here.
   const knownHiders = [...new Set(known.map(stripScopePrefix))].filter(Boolean);
+  // NEO-305 — the flagship absorbs only when the caller says BSC answered AND
+  // a known name IS the scope prefix. No prefix (Unknown) means no key ever
+  // strips to "", so Unknown can never absorb, whatever the caller passes.
+  const flagshipAbsorbs =
+    args.flagshipAbsorbs === true &&
+    foldedPrefix !== "" &&
+    known.some((key) => stripScopePrefix(key) === "");
   const isVariantOfKnown = (label: string): boolean => {
     const key = selectorValueKey(label);
     if (knownSet.has(key)) return true;
@@ -1660,6 +1696,7 @@ export function routeSlSets(args: {
   let covered = 0;
   let variants = 0;
   let unnameable = 0;
+  let flagshipParallels = 0;
   const fresh: Array<{ id: string; label: string; key: string }> = [];
   const seenIds = new Set<string>();
   for (const entry of args.entries) {
@@ -1677,6 +1714,10 @@ export function routeSlSets(args: {
     }
     if (isVariantOfKnown(label)) {
       variants++;
+      continue;
+    }
+    if (flagshipAbsorbs && stripScopePrefix(selectorValueKey(label)) !== "") {
+      flagshipParallels++;
       continue;
     }
     fresh.push({ id: entry.id, label, key: selectorValueKey(label) });
@@ -1712,5 +1753,49 @@ export function routeSlSets(args: {
     rootsTruncated: roots.length - kept.length,
     membersTruncated: kept.reduce((n, r) => n + r.dropped, 0),
     unnameable,
+    flagshipParallels,
   };
+}
+
+/**
+ * NEO-305 — how the BSC phase of THIS Sync Sets ended for the year. Only
+ * `filed` means BSC answered and its sets were stored; every other outcome is
+ * a phase that did not speak for the year, so nothing may be absorbed on its
+ * strength.
+ *
+ *   skipped         — no BSC ids on the sport/year path
+ *   paused          — the operator paused BSC (NEO-287)
+ *   failed          — asked, and it errored or answered empty
+ *   index_truncated — answered, but the year's set index was over its cap
+ *                     and the phase filed nothing (NEO-296)
+ *   filed           — answered, and its list was filed under the brands
+ */
+export type BscSetPhaseOutcome =
+  | "skipped"
+  | "paused"
+  | "failed"
+  | "index_truncated"
+  | "filed";
+
+/**
+ * NEO-305 — the `flagshipAbsorbs` decision for one SportLots scope, made once
+ * inside the sync boundary. True only when ALL of:
+ *
+ *   (a) the BSC phase of this sync filed BSC's list for the year — not
+ *       skipped, not paused, not failed, not stopped by a truncated index;
+ *   (b) the scope holds at least one set carrying a BSC id, so BSC's list
+ *       actually spoke for this brand (a SportLots-only brand has nothing
+ *       from BSC to decide by);
+ *   (c) the scope is not the brand-unknown row, which has no flagship.
+ *
+ * Reads what the sync already has; asks no marketplace anything.
+ */
+export function slFlagshipAbsorbs(args: {
+  bscPhase: BscSetPhaseOutcome;
+  scopeHasBscSet: boolean;
+  scopeIsBrandUnknown: boolean;
+}): boolean {
+  return (
+    args.bscPhase === "filed" && args.scopeHasBscSet && !args.scopeIsBrandUnknown
+  );
 }

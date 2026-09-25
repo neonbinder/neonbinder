@@ -61,3 +61,5 @@
 - [dnd-kit row control is a handle sibling](reference_dndkit_row_control_is_a_handle_sibling.md) — button beside the handle, not inside; set an activator node or Enter on a child button starts a drag
 - [dnd-kit pointerWithin kills keyboard drops](reference_dndkit_pointerwithin_kills_keyboard_drops.md) — use lib/dnd/keyboard-aware-collision; lib/testing/keyboard-drag runs a REAL keyboard drag in happy-dom
 - [Maestro resource-id is id || aria-label](reference_maestro_resource_id_is_id_or_aria_label.md) — a DOM id on a control hides its aria-label from `id:`; find controls by data attribute
+- [Moving cards remaps the src slot key](reference_moving_cards_remaps_the_src_slot_key.md) — card src is a per-row slot key; remap via dest allocateSlots, clear an unmapped src, refuse a split pair; delete helpers exported
+- [An inert trigger still names a button](reference_an_inert_trigger_still_names_a_button.md) — confirm must not reuse the trigger's text; pin unique button names with the dialog open
