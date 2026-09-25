@@ -33,44 +33,12 @@ export const MAKE_PARALLEL_LABEL = "Make parallel of…";
 export const MAKE_PARALLEL_TOOLTIP =
   "Turn this set into a parallel of another set in the same brand. Its SportLots link and cards come along.";
 
-/**
- * NEO-306 — what moves, said only as far as it is true: a row with no
- * SportLots link behaves exactly like one with (product invariant 6), so the
- * sentence never claims a link that is not there.
- *
- *   2 links, 3 cards  "Its 2 SportLots links and 3 cards move over"
- *   1 link            "Its SportLots link moves over"
- *   1 card            "Its 1 card moves over"
- *   nothing           null — the caller says only what happens to the row
- *
- * Shared by "Make parallel of…" and "Make insert of…" so the two doors say
- * it the same way. DRAFT copy — pending Jason's sign-off (NEO-245).
- */
-export function movesOverClause(links: number, cards: number): string | null {
-  const parts: string[] = [];
-  if (links === 1) parts.push("SportLots link");
-  else if (links > 1) parts.push(`${links} SportLots links`);
-  if (cards > 0) parts.push(`${cards} ${cards === 1 ? "card" : "cards"}`);
-  if (parts.length === 0) return null;
-  const plural = parts.length > 1 || links > 1 || cards > 1;
-  return `Its ${parts.join(" and ")} ${plural ? "move" : "moves"} over`;
-}
-
-/**
- * "{moves over}, and {what happens to the row}." — or just the second half,
- * capitalised as it stands, when nothing moves.
- */
-export function movesSentence(links: number, cards: number, rowFate: string): string {
-  const moves = movesOverClause(links, cards);
-  return moves ? `${moves}, and ${rowFate}.` : `${rowFate}.`;
-}
-
 /** DRAFT copy — pending Jason's sign-off (NEO-245). */
 export const makeParallelCopy = {
   title: (set: string) => `Make “${set}” a parallel`,
-  description: (set: string, cards: number, links: number) =>
-    `Pick the set it belongs to. ${movesSentence(links, cards, `“${set}” stops being a set`)}`,
   targetsLegend: "Parallel of",
+  /** The folded "Parallel of" line's button (NEO-306). */
+  changeTarget: "Change parallel of",
   targetsFilter: "Find a set",
   noParallelType: "no Parallel type yet",
   destinationLegend: "Where it goes",
@@ -207,6 +175,14 @@ function MakeParallelDialog({
   const targets = useQuery(api.setParallelConversion.getSetToParallelTargets, { setId });
   const [targetSetId, setTargetSetId] = useState<Id<"selectorOptions"> | null>(null);
   const [destination, setDestination] = useState<string | null>(null);
+  /**
+   * NEO-306 — the operator unfolded "Parallel of" to change it. Until then a
+   * valid set (the server's preselection, or one picked with a click or
+   * Enter) shows as one line, so "Where it goes" is what the dialog opens on.
+   */
+  const [targetExpanded, setTargetExpanded] = useState(false);
+  /** Which list takes focus next, once it can (see `ChoiceList.takeFocus`). */
+  const [focusTo, setFocusTo] = useState<"target" | "destination" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const convert = useMutation(api.setParallelConversion.convertSetToParallel);
@@ -298,10 +274,22 @@ function MakeParallelDialog({
       : undefined;
   const leftBehind = loss ? lossItems(loss) : [];
 
+  // Folded only while the chosen set can be chosen and its detail has not
+  // come back refused: an invalid preselection stays open, with its reason.
+  const targetFolded =
+    !targetExpanded &&
+    chosenTarget !== null &&
+    targetChoices.some((c) => c.id === chosenTarget && c.unavailable === undefined) &&
+    targetReason === undefined;
+  // A refused set has no "Where it goes" to hand focus to: its own list keeps it.
+  const focusList = focusTo === "destination" && targetReason ? "target" : focusTo;
+
   const pickTarget = (id: string) => {
     setError(null);
     setTargetSetId(id as Id<"selectorOptions">);
     setDestination(null);
+    // Browsing (an arrow key) keeps the list open; `onPick` folds it after.
+    setTargetExpanded(true);
   };
 
   const handleConfirm = async () => {
@@ -362,9 +350,21 @@ function MakeParallelDialog({
           choices={targetChoices}
           selectedId={chosenTarget}
           onSelect={pickTarget}
+          onPick={() => {
+            setTargetExpanded(false);
+            setFocusTo("destination");
+          }}
           autofocusId={chosenTarget}
           filterLabel={makeParallelCopy.targetsFilter}
           describedBy={targetReason ? targetReasonId : undefined}
+          collapsed={targetFolded}
+          changeLabel={makeParallelCopy.changeTarget}
+          onExpand={() => {
+            setTargetExpanded(true);
+            setFocusTo("target");
+          }}
+          takeFocus={focusList === "target"}
+          onTookFocus={() => setFocusTo(null)}
         />
         {targetReason && (
           // The server's own sentence: most often "no Parallel type yet",
@@ -384,6 +384,9 @@ function MakeParallelDialog({
             }}
             filterLabel={makeParallelCopy.destinationFilter}
             describedBy={destinationReason ? destinationReasonId : undefined}
+            // The last question: never folded, so it is always answerable here.
+            takeFocus={focusList === "destination"}
+            onTookFocus={() => setFocusTo(null)}
           />
         )}
         {destinationReason && (
@@ -400,12 +403,9 @@ function MakeParallelDialog({
     );
   }
 
-  const cardCount = targets?.ok ? targets.cardCount : 0;
-  const linkCount = targets?.ok ? targets.linkCount : 0;
   return (
     <SetShapeDialog
       title={makeParallelCopy.title(setValue)}
-      description={makeParallelCopy.description(setValue, cardCount, linkCount)}
       preview={
         detailOk && destinationValid && destinationName ? (
           <LandingPath

@@ -7,12 +7,7 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { Input } from "../primitives/Input";
 import { ChoiceList, LandingPath, SetShapeDialog, type Choice } from "./SetShapeDialog";
 import SetRowActionButton from "./SetRowActionButton";
-import {
-  lossItems,
-  makeParallelCopy,
-  movesSentence,
-  type ReshapeStep,
-} from "./MakeParallelControl";
+import { lossItems, makeParallelCopy, type ReshapeStep } from "./MakeParallelControl";
 
 /**
  * NEO-306 — "Make insert of…" on a set row or an insert-level row.
@@ -33,6 +28,12 @@ import {
  * Its SportLots link and cards move by id; the emptied row goes
  * (`convex/setInsertConversion.ts`, which re-checks every guard shown here).
  *
+ * Settled answers fold (NEO-306): the preselected set opens as one line,
+ * "Insert of: {set}", and "Where it goes" folds once an existing insert (or
+ * "New insert named…") is picked, so the question still open — "Under
+ * {insert} as", or the name — is on screen rather than under the pinned
+ * preview. `Change` unfolds a line. The last list to decide never folds.
+ *
  * Offered only when the server says the move could work for SOME target
  * (`getMakeInsertEligibility`); the target-dependent checks happen in the
  * dialog. Same skeleton as `MakeParallelControl`: a `SetRowActionButton` chip
@@ -51,25 +52,10 @@ export const makeInsertCopy = {
   /** The title follows the landing: an insert, or a parallel of one. */
   title: (row: string) => `Make “${row}” an insert`,
   titleParallel: (row: string) => `Make “${row}” a parallel`,
-  /**
-   * What moves (only as far as it is true — see `movesOverClause`), and what
-   * happens to the row: a set stops being one; an insert-level row leaves the
-   * set › type it sits under now.
-   */
-  description: (
-    row: string,
-    source: { kind: "set" } | { kind: "row"; ownSet: string; ownType: string },
-    cards: number,
-    links: number,
-  ) =>
-    `Pick the set it belongs to, then where it goes. ${movesSentence(
-      links,
-      cards,
-      source.kind === "set"
-        ? `“${row}” stops being a set`
-        : `“${row}” leaves ${source.ownSet} › ${source.ownType}`,
-    )}`,
   targetsLegend: "Insert of",
+  /** The folded lines' buttons (NEO-306): "Change" first, as the button reads. */
+  changeTarget: "Change insert of",
+  changeWhere: "Change where it goes",
   targetsFilter: "Find a set",
   noInsertType: "no Insert type yet",
   whereLegend: "Where it goes",
@@ -215,6 +201,17 @@ function MakeInsertDialog({
   /** SELF, NEW_PARALLEL, or a parallel's id — only once an insert is chosen. */
   const [under, setUnder] = useState<string | null>(null);
   const [typedName, setTypedName] = useState("");
+  /**
+   * NEO-306 — folding. "Insert of" is folded unless the operator unfolded it;
+   * "Where it goes" only once they PICKED somewhere with a next question
+   * (click or Enter on an existing insert or "New insert named…"). Either
+   * shows as one line only while its answer is valid (below).
+   */
+  const [targetExpanded, setTargetExpanded] = useState(false);
+  const [whereFoldedByPick, setWhereFoldedByPick] = useState(false);
+  /** Which control takes focus next, once it exists. */
+  const [focusTo, setFocusTo] = useState<"target" | "where" | "under" | "name" | null>(null);
+  const nameFieldRef = useRef<HTMLDivElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -368,6 +365,32 @@ function MakeInsertDialog({
   }
   const leftBehind = plan ? lossItems(plan.loss) : [];
 
+  // ── folding and focus (NEO-306) ───────────────────────────────────────
+  // A line is folded only while its answer stands: a set whose detail came
+  // back refused, or an insert whose own detail did, unfolds with its reason.
+  const insertRefused = insertDetail !== undefined && !insertDetail.ok;
+  const whereFolded =
+    whereFoldedByPick &&
+    !blockedByLink &&
+    (naming || (chosenInsert !== undefined && !chosenInsert.holdsLink && !insertRefused));
+  // Focus follows the next question; when that question turned out not to
+  // exist (a refused set or insert), the list whose answer failed keeps it.
+  const focusList =
+    focusTo === "where" && targetReason
+      ? "target"
+      : focusTo === "under" && insertRefused
+        ? "where"
+        : focusTo;
+  const tookFocus = () => setFocusTo(null);
+
+  // The name field is not a ChoiceList: focus it here. It renders in the same
+  // commit that asks for it (choosing "New insert named…" shows it at once).
+  // The request is left standing: it names no list, and runs only on a change.
+  useEffect(() => {
+    if (focusList !== "name") return;
+    nameFieldRef.current?.querySelector<HTMLInputElement>("input")?.focus();
+  }, [focusList]);
+
   // ── choices ───────────────────────────────────────────────────────────
   const targetChoices: Choice[] = targets?.ok
     ? targets.targets.map((t) => ({
@@ -442,6 +465,12 @@ function MakeInsertDialog({
       ]
     : [];
 
+  const targetFolded =
+    !targetExpanded &&
+    chosenTarget !== null &&
+    targetChoices.some((c) => c.id === chosenTarget && c.unavailable === undefined) &&
+    targetReason === undefined;
+
   // ── actions ───────────────────────────────────────────────────────────
   const pickTarget = (id: string) => {
     setError(null);
@@ -449,12 +478,23 @@ function MakeInsertDialog({
     setWhere(null);
     setUnder(null);
     setTypedName("");
+    setWhereFoldedByPick(false);
+    // Browsing (an arrow key) keeps the list open; `onPick` folds it after.
+    setTargetExpanded(true);
   };
 
   const pickWhere = (id: string) => {
     setError(null);
     setWhere(id);
     setUnder(null);
+    setWhereFoldedByPick(false);
+  };
+
+  /** A click or Enter on "Where it goes": fold it when a question follows. */
+  const commitWhere = (id: string) => {
+    if (id === NEW) return; // the last decision: nothing follows, nothing folds
+    setWhereFoldedByPick(true);
+    setFocusTo(id === NAMED ? "name" : "under");
   };
 
   const handleConfirm = async () => {
@@ -509,9 +549,21 @@ function MakeInsertDialog({
           choices={targetChoices}
           selectedId={chosenTarget}
           onSelect={pickTarget}
+          onPick={() => {
+            setTargetExpanded(false);
+            setFocusTo("where");
+          }}
           autofocusId={chosenTarget}
           filterLabel={makeInsertCopy.targetsFilter}
           describedBy={targetReason ? targetReasonId : undefined}
+          collapsed={targetFolded}
+          changeLabel={makeInsertCopy.changeTarget}
+          onExpand={() => {
+            setTargetExpanded(true);
+            setFocusTo("target");
+          }}
+          takeFocus={focusList === "target"}
+          onTookFocus={tookFocus}
         />
         {targetReason && (
           // The server's own sentence: most often "no Insert type yet", with
@@ -526,8 +578,17 @@ function MakeInsertDialog({
             choices={whereChoices}
             selectedId={blockedByLink ? null : chosenWhere}
             onSelect={pickWhere}
+            onPick={commitWhere}
             filterLabel={makeInsertCopy.whereFilter}
             describedBy={whereReason ? whereReasonId : undefined}
+            collapsed={whereFolded}
+            changeLabel={makeInsertCopy.changeWhere}
+            onExpand={() => {
+              setWhereFoldedByPick(false);
+              setFocusTo("where");
+            }}
+            takeFocus={focusList === "where"}
+            onTookFocus={tookFocus}
           />
         )}
         {whereReason && (
@@ -539,7 +600,7 @@ function MakeInsertDialog({
           // Right under the choice that opened it, so the Tab order runs
           // choice → name → confirm. Enter here confirms, as it does on the
           // confirm button; Escape reaches the dialog and cancels.
-          <div>
+          <div ref={nameFieldRef}>
             <Input
               label={makeInsertCopy.nameLabel}
               // The same words as the label: Maestro finds a field by its
@@ -579,6 +640,9 @@ function MakeInsertDialog({
             }}
             filterLabel={makeInsertCopy.underFilter}
             describedBy={underReason ? underReasonId : undefined}
+            // The last question: never folded.
+            takeFocus={focusList === "under"}
+            onTookFocus={tookFocus}
           />
         )}
         {underReason && (
@@ -607,16 +671,6 @@ function MakeInsertDialog({
         ...(underReason ? [underReasonId] : []),
       ];
 
-  const cardCount = targets?.ok ? targets.cardCount : 0;
-  const linkCount = targets?.ok ? targets.linkCount : 0;
-  const source =
-    targets?.ok && targets.kind === "row"
-      ? {
-          kind: "row" as const,
-          ownSet: targets.ownSetValue ?? "",
-          ownType: targets.ownTypeValue ?? "",
-        }
-      : { kind: "set" as const };
   const asParallel =
     plan !== null &&
     (plan.landing.kind === "newParallel" ||
@@ -627,7 +681,6 @@ function MakeInsertDialog({
       title={
         asParallel ? makeInsertCopy.titleParallel(rowValue) : makeInsertCopy.title(rowValue)
       }
-      description={makeInsertCopy.description(rowValue, source, cardCount, linkCount)}
       preview={
         plan ? (
           <LandingPath

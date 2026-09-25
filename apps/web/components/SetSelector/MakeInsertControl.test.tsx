@@ -1,8 +1,9 @@
 /**
  * NEO-306 — "Make insert of…": when the row action shows, the dialog's three
- * lists and what each preselects, the typed-name landing and its preview,
- * the confirm's reasons, the keyboard, the `landing` each choice sends and
- * where the operator is sent after.
+ * lists and what each preselects, how a settled list folds to one line and
+ * unfolds on Change (and where focus goes each time), the typed-name landing
+ * and its preview, the confirm's reasons, the keyboard, the `landing` each
+ * choice sends and where the operator is sent after.
  *
  * `convex/react` is module-mocked and routed by the (string) query reference,
  * the house pattern for these components (`MakeParallelControl.test.tsx`).
@@ -175,6 +176,11 @@ async function confirm(name?: string) {
   });
 }
 
+/** Unfold "Insert of" (it opens folded on the server's preselection). */
+function changeTarget() {
+  fireEvent.click(screen.getByRole("button", { name: makeInsertCopy.changeTarget }));
+}
+
 /** An element's `aria-describedby` ids, resolved to their text. */
 function describedText(el: HTMLElement): string {
   return (el.getAttribute("aria-describedby") ?? "")
@@ -208,22 +214,33 @@ describe("MakeInsertControl — when it shows", () => {
 });
 
 describe("MakeInsertControl — the three lists", () => {
-  it("opens on the suggested set, preselects a new insert and previews where it lands", async () => {
+  it("opens on the suggested set FOLDED to one line, lands on “Where it goes” with a new insert preselected, and previews where it lands", async () => {
     renderControl();
     open();
     const dialog = screen.getByRole("dialog", { name: makeInsertCopy.title(ROW) });
     expect(dialog.getAttribute("aria-modal")).toBe("true");
+    // The preselected set is one line and a Change button — not a radio group.
+    expect(screen.getByText("Insert of: Bowman")).toBeTruthy();
+    expect(screen.queryByRole("radiogroup", { name: makeInsertCopy.targetsLegend })).toBeNull();
+    expect(screen.queryByRole("radio", { name: "Insert of Bowman" })).toBeNull();
+    const change = screen.getByRole("button", { name: makeInsertCopy.changeTarget });
+    // 2.5.3 — the accessible name starts with the visible text.
+    expect(change.textContent).toBe("Change");
+    expect(makeInsertCopy.changeTarget.startsWith(change.textContent!)).toBe(true);
+    const newInsert = screen.getByRole("radio", {
+      name: makeInsertCopy.newInsert("All-America Game Autos Red Ink"),
+    });
+    expect(newInsert.getAttribute("aria-checked")).toBe("true");
+    // Focus opens on the question still open: the checked "Where it goes" choice.
+    await waitFor(() => expect(document.activeElement).toBe(newInsert));
+    // Change unfolds it, the preselection still checked; a set with no Insert
+    // type yet is listed but cannot be picked.
+    changeTarget();
     const bowman = screen.getByRole("radio", { name: "Insert of Bowman" });
     expect(bowman.getAttribute("aria-checked")).toBe("true");
-    await waitFor(() => expect(document.activeElement).toBe(bowman));
-    // A set with no Insert type yet is listed but cannot be picked.
+    expect(document.activeElement).toBe(bowman);
     expect(
       screen.getByRole("radio", { name: "Insert of Bowman Draft" }).getAttribute("aria-disabled"),
-    ).toBe("true");
-    expect(
-      screen
-        .getByRole("radio", { name: makeInsertCopy.newInsert("All-America Game Autos Red Ink") })
-        .getAttribute("aria-checked"),
     ).toBe("true");
     // Existing inserts, and the typed-name choice last.
     const where = screen.getByRole("radiogroup", { name: makeInsertCopy.whereLegend });
@@ -240,38 +257,18 @@ describe("MakeInsertControl — the three lists", () => {
     expect(screen.queryByRole("radiogroup", { name: /^Under / })).toBeNull();
   });
 
-  it("the description says what moves and where the row leaves from, as the server counts it", () => {
+  it("carries no description paragraph: the title, the lists and the preview say it all (NEO-306)", () => {
     renderControl();
     open();
-    expect(screen.getByRole("dialog").textContent).toContain(
-      `Pick the set it belongs to, then where it goes. Its SportLots link and 4 cards move over, and “${ROW}” leaves Bowman › Parallel.`,
-    );
-  });
-
-  it("the description never claims a SportLots link that is not there, and pluralises links (NEO-306)", () => {
-    const row = { kind: "row" as const, ownSet: "Bowman", ownType: "Parallel" };
-    const set = { kind: "set" as const };
-    expect(makeInsertCopy.description("Bowman Red Ink", set, 1, 1)).toBe(
-      "Pick the set it belongs to, then where it goes. Its SportLots link and 1 card move over, and “Bowman Red Ink” stops being a set.",
-    );
-    expect(makeInsertCopy.description("Red Ink", row, 0, 2)).toBe(
-      "Pick the set it belongs to, then where it goes. Its 2 SportLots links move over, and “Red Ink” leaves Bowman › Parallel.",
-    );
-    expect(makeInsertCopy.description("Red Ink", row, 3, 0)).toBe(
-      "Pick the set it belongs to, then where it goes. Its 3 cards move over, and “Red Ink” leaves Bowman › Parallel.",
-    );
-    expect(makeInsertCopy.description("Bowman Red Ink", set, 0, 0)).toBe(
-      "Pick the set it belongs to, then where it goes. “Bowman Red Ink” stops being a set.",
-    );
-  });
-
-  it("the dialog reads the server's link count: none means no SportLots claim", () => {
-    targets = { ...(targets as object), linkCount: 0 };
-    renderControl();
-    open();
-    const text = screen.getByRole("dialog").textContent ?? "";
-    expect(text).toContain(`Its 4 cards move over, and “${ROW}” leaves Bowman › Parallel.`);
+    const dialog = screen.getByRole("dialog");
+    const text = dialog.textContent ?? "";
+    expect(text).not.toContain("Pick the set it belongs to");
+    expect(text).not.toContain("move over");
+    expect(text).not.toContain("moves over");
     expect(text).not.toContain("SportLots link");
+    // Nothing to describe the dialog by until a refusal lands.
+    expect(dialog.getAttribute("aria-describedby")).toBeNull();
+    expect("description" in makeInsertCopy).toBe(false);
   });
 
   it("choosing an existing insert opens “Under {insert} as”, preselecting a new parallel", () => {
@@ -336,7 +333,11 @@ describe("MakeInsertControl — the three lists", () => {
     renderControl();
     open();
     fireEvent.click(screen.getByRole("radio", { name: "Add to All-America Game Autos" }));
+    changeTarget();
     fireEvent.click(screen.getByRole("radio", { name: "Insert of Bowman Chrome" }));
+    // The new pick folds too, and "Where it goes" is open again, unfolded.
+    expect(screen.getByText("Insert of: Bowman Chrome")).toBeTruthy();
+    expect(screen.getByRole("radiogroup", { name: makeInsertCopy.whereLegend })).toBeTruthy();
     expect(screen.queryByRole("radio", { name: "Add to All-America Game Autos" })).toBeNull();
     expect(screen.queryByRole("radiogroup", { name: /^Under / })).toBeNull();
     expect(
@@ -354,6 +355,8 @@ describe("MakeInsertControl — the three lists", () => {
     expect(screen.getByRole("dialog").textContent).toContain(reason);
     expect(confirmButton().getAttribute("aria-disabled")).toBe("true");
     expect(describedText(confirmButton())).toContain(reason);
+    // A refused preselection is never folded: the list stays open, with its reason.
+    expect(screen.queryByRole("button", { name: makeInsertCopy.changeTarget })).toBeNull();
     expect(
       describedText(screen.getByRole("radiogroup", { name: makeInsertCopy.targetsLegend })),
     ).toContain(reason);
@@ -403,6 +406,140 @@ describe("MakeInsertControl — the three lists", () => {
   });
 });
 
+describe("MakeInsertControl — settled lists fold to one line (NEO-306)", () => {
+  it("picking an existing insert folds “Where it goes” and hands focus to “Under {insert} as”", () => {
+    renderControl();
+    open();
+    fireEvent.click(screen.getByRole("radio", { name: "Add to All-America Game Autos" }));
+    expect(screen.getByText("Where it goes: All-America Game Autos")).toBeTruthy();
+    expect(screen.queryByRole("radiogroup", { name: makeInsertCopy.whereLegend })).toBeNull();
+    const change = screen.getByRole("button", { name: makeInsertCopy.changeWhere });
+    expect(change.textContent).toBe("Change");
+    const newParallel = screen.getByRole("radio", { name: makeInsertCopy.newParallel("Red Ink") });
+    expect(newParallel.getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(newParallel);
+    // Both answers are one line each; the last question stays a radio group.
+    expect(screen.getByText("Insert of: Bowman")).toBeTruthy();
+    expect(
+      screen.getByRole("radiogroup", { name: makeInsertCopy.underLegend("All-America Game Autos") }),
+    ).toBeTruthy();
+  });
+
+  it("Enter on a choice folds it too; the arrow keys only browse", () => {
+    renderControl();
+    open();
+    const newInsert = screen.getByRole("radio", {
+      name: makeInsertCopy.newInsert("All-America Game Autos Red Ink"),
+    });
+    fireEvent.keyDown(newInsert, { key: "ArrowDown" });
+    const aag = screen.getByRole("radio", { name: "Add to All-America Game Autos" });
+    expect(aag.getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(aag);
+    // Still a list to browse, with the next question already below it.
+    expect(screen.getByRole("radiogroup", { name: makeInsertCopy.whereLegend })).toBeTruthy();
+    expect(
+      screen.getByRole("radiogroup", { name: makeInsertCopy.underLegend("All-America Game Autos") }),
+    ).toBeTruthy();
+    fireEvent.keyDown(aag, { key: "Enter" });
+    expect(screen.getByText("Where it goes: All-America Game Autos")).toBeTruthy();
+    expect(document.activeElement).toBe(
+      screen.getByRole("radio", { name: makeInsertCopy.newParallel("Red Ink") }),
+    );
+  });
+
+  it("Change unfolds the list with the choice still checked and focused, and the next list kept", () => {
+    renderControl();
+    open();
+    fireEvent.click(screen.getByRole("radio", { name: "Add to All-America Game Autos" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Add to Blue Ink" }));
+    fireEvent.keyDown(screen.getByRole("button", { name: makeInsertCopy.changeWhere }), {
+      key: "Enter",
+    });
+    const aag = screen.getByRole("radio", { name: "Add to All-America Game Autos" });
+    expect(aag.getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(aag);
+    expect(screen.queryByRole("button", { name: makeInsertCopy.changeWhere })).toBeNull();
+    // Unfolding changes nothing chosen: the parallel is still the landing.
+    expect(screen.getByRole("radio", { name: "Add to Blue Ink" }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
+    expect(screen.getByRole("dialog").textContent).toContain("Blue Inkjoins");
+  });
+
+  it("picking the new insert does not fold “Where it goes”: nothing is left to decide below it", () => {
+    renderControl();
+    open();
+    fireEvent.click(screen.getByRole("radio", { name: "Add to All-America Game Autos" }));
+    fireEvent.click(screen.getByRole("button", { name: makeInsertCopy.changeWhere }));
+    fireEvent.click(
+      screen.getByRole("radio", { name: makeInsertCopy.newInsert("All-America Game Autos Red Ink") }),
+    );
+    expect(screen.getByRole("radiogroup", { name: makeInsertCopy.whereLegend })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: makeInsertCopy.changeWhere })).toBeNull();
+  });
+
+  it("picking a set folds it and hands focus to that set's “Where it goes”", () => {
+    renderControl();
+    open();
+    changeTarget();
+    // A real click focuses the radio first; folding then removes it.
+    const chrome = screen.getByRole("radio", { name: "Insert of Bowman Chrome" });
+    chrome.focus();
+    fireEvent.click(chrome);
+    expect(screen.getByText("Insert of: Bowman Chrome")).toBeTruthy();
+    expect(document.activeElement).toBe(
+      screen.getByRole("radio", {
+        name: makeInsertCopy.newInsert("All-America Game Autos Red Ink"),
+      }),
+    );
+  });
+
+  it("an arrow key in the unfolded set list browses without folding it", () => {
+    renderControl();
+    open();
+    changeTarget();
+    fireEvent.keyDown(screen.getByRole("radio", { name: "Insert of Bowman" }), { key: "ArrowDown" });
+    expect(
+      screen.getByRole("radio", { name: "Insert of Bowman Chrome" }).getAttribute("aria-checked"),
+    ).toBe("true");
+    expect(screen.getByRole("radiogroup", { name: makeInsertCopy.targetsLegend })).toBeTruthy();
+  });
+
+  it("a preselected set that can't be chosen is never folded", () => {
+    targets = { ...(targets as object), suggestedSetId: "s-draft" };
+    renderControl();
+    open();
+    expect(screen.queryByRole("button", { name: makeInsertCopy.changeTarget })).toBeNull();
+    expect(screen.getByRole("radiogroup", { name: makeInsertCopy.targetsLegend })).toBeTruthy();
+  });
+
+  it("an insert the server refuses unfolds again, its list keeping focus, with the reason", () => {
+    const reason = "That insert moved. Pick it again.";
+    insertDetails["i-aag"] = { ok: false, reason };
+    renderControl();
+    open();
+    fireEvent.click(screen.getByRole("radio", { name: "Add to All-America Game Autos" }));
+    expect(screen.queryByRole("button", { name: makeInsertCopy.changeWhere })).toBeNull();
+    const aag = screen.getByRole("radio", { name: "Add to All-America Game Autos" });
+    expect(document.activeElement).toBe(aag);
+    expect(screen.getByRole("dialog").textContent).toContain(reason);
+    expect(describedText(confirmButton())).toContain(reason);
+  });
+
+  it("with every list folded or open, no two controls share a name", () => {
+    renderControl();
+    open();
+    fireEvent.click(screen.getByRole("radio", { name: "Add to All-America Game Autos" }));
+    const names = [...screen.getAllByRole("button"), ...screen.getAllByRole("radio")].map(
+      (b) => b.getAttribute("aria-label") ?? b.textContent,
+    );
+    expect(names).toEqual(
+      expect.arrayContaining([makeInsertCopy.changeTarget, makeInsertCopy.changeWhere]),
+    );
+    expect(new Set(names).size).toBe(names.length);
+  });
+});
+
 describe("MakeInsertControl — New insert named…", () => {
   it("shows the name field only for that choice, previews the insert → parallel once typing rests, and confirms it", async () => {
     namedPreviews["All-America Game Autos"] = {
@@ -427,6 +564,9 @@ describe("MakeInsertControl — New insert named…", () => {
     fireEvent.click(screen.getByRole("radio", { name: makeInsertCopy.namedChoice }));
     const input = screen.getByLabelText(makeInsertCopy.nameLabel) as HTMLInputElement;
     expect(input.tagName).toBe("INPUT");
+    // "Where it goes" folds to the choice, and the field right under it has focus.
+    expect(screen.getByText(`Where it goes: ${makeInsertCopy.namedChoice}`)).toBeTruthy();
+    expect(document.activeElement).toBe(input);
     // Nothing typed: nothing to confirm, and saying so on press.
     expect(confirmButton().getAttribute("aria-disabled")).toBe("true");
 
@@ -679,16 +819,22 @@ describe("MakeInsertControl — keyboard, focus and refusals", () => {
     },
   );
 
-  it("choice buttons carry no DOM id, so their aria-label stays their E2E name", () => {
+  it("choice and Change buttons carry no DOM id, so their aria-label stays their E2E name", () => {
     renderControl();
     open();
     fireEvent.click(screen.getByRole("radio", { name: "Add to All-America Game Autos" }));
+    for (const name of [makeInsertCopy.changeTarget, makeInsertCopy.changeWhere]) {
+      expect(screen.getByRole("button", { name }).getAttribute("id")).toBeNull();
+    }
+    for (const name of [makeInsertCopy.insertItself, "Add to Blue Ink"]) {
+      expect(screen.getByRole("radio", { name }).getAttribute("id")).toBeNull();
+    }
+    changeTarget();
+    fireEvent.click(screen.getByRole("button", { name: makeInsertCopy.changeWhere }));
     for (const name of [
       "Insert of Bowman",
       "Add to All-America Game Autos",
       makeInsertCopy.namedChoice,
-      makeInsertCopy.insertItself,
-      "Add to Blue Ink",
     ]) {
       expect(screen.getByRole("radio", { name }).getAttribute("id")).toBeNull();
     }

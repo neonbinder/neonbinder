@@ -67,3 +67,4 @@
 - [Count-gated row tears out its own dialog](reference_count_gated_row_tears_out_its_own_dialog.md) — a live-count gate unmounts the control mid-dialog; onActiveChange window; `empty:hidden` pinned by childNodes
 - [Rerender same element bails out](reference_rerender_same_element_bails_out.md) — module-state useQuery mocks need a FRESH element per rerender; a live region repeating text doubles getByText
 - [Absence assertions go vacuous on a rename](reference_absence_assertions_go_vacuous_on_a_rename.md) — queryBy…toBeNull on an old name passes forever; change the builder signature so root tsc flags stale calls
+- [Visual harness: fake Convex client](reference_visual_harness_fake_convex_client.md) — screenshot a dialog dev cannot show: iframe + real component + 3-method fake client; hidden tab = no rAF/RO
