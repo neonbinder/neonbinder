@@ -1008,3 +1008,118 @@ describe("the operation budget is alias-weighted, and a partial run is legible",
     expect(res.results[0].status).toBe("ambiguous");
   });
 });
+
+describe("NEO-307: the loader never creates a team under another team's alias", () => {
+  /*
+   * The reverse order of the alias rule. LA (1958–) already answers to
+   * "Brooklyn Dodgers"; a dataset row for the 1911–1957 Brooklyn Dodgers must
+   * not be created beside it, or two teams answer to one string and the
+   * resolver's era narrowing picks between them on every card.
+   */
+  const BROOKLYN = {
+    key: "bkn",
+    location: "Brooklyn",
+    name: "Dodgers",
+    yearsActive: { from: 1911, to: 1957 },
+  };
+  const seedLa = (t: T, sportId: Id<"selectorOptions">) =>
+    seedTeam(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      years: { from: 1958 },
+      aliases: ["Brooklyn Dodgers"],
+    });
+  const teamCount = (t: T) => t.run(async (ctx) => (await ctx.db.query("teams").collect()).length);
+
+  test("the create branch reports ambiguous + nameHeldAsAliasBy, in the dry run and the write run, and writes nothing", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const la = await seedLa(t, sportId);
+
+    const preview = await t.query(internal.bulkLoad.previewTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [BROOKLYN],
+    });
+    const written = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [BROOKLYN],
+    });
+    for (const report of [preview, written]) {
+      expect(report.results[0]).toMatchObject({
+        key: "bkn",
+        id: null,
+        status: "ambiguous",
+        nameHeldAsAliasBy: [{ alias: "Brooklyn Dodgers", id: la, name: "Los Angeles Dodgers" }],
+      });
+    }
+    expect(await teamCount(t)).toBe(1);
+  });
+
+  test("a replayed `create: true` does NOT settle it — same report, nothing written", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const la = await seedLa(t, sportId);
+
+    const written = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ ...BROOKLYN, decision: { create: true } }],
+    });
+    expect(written.results[0]).toMatchObject({
+      status: "ambiguous",
+      nameHeldAsAliasBy: [{ id: la }],
+    });
+    expect(await teamCount(t)).toBe(1);
+  });
+
+  test("it settles by `adopt: <holder>` when the holder IS the program", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const la = await seedLa(t, sportId);
+
+    const written = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ ...BROOKLYN, decision: { adopt: la } }],
+    });
+    expect(written.results[0]).toMatchObject({ id: la, status: "adopted", matchedBy: "decision" });
+    expect(await teamCount(t)).toBe(1);
+  });
+
+  test("…or by removing the alias from the holder, after which the same `create` lands", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const la = await seedLa(t, sportId);
+    await t.withIdentity(ADMIN).mutation(api.teams.saveTeamFields, { id: la, aliases: [] });
+
+    const written = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ ...BROOKLYN, decision: { create: true } }],
+    });
+    expect(written.results[0]).toMatchObject({ status: "created" });
+    expect(written.results[0].nameHeldAsAliasBy).toBeUndefined();
+    expect(await teamCount(t)).toBe(2);
+  });
+
+  test("same sport only: an NFL team's alias does not block a baseball create", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const football = await seedSport(t, "Football");
+    await seedTeam(t, football, { location: "Boston", name: "Yanks", aliases: ["Brooklyn Dodgers"] });
+
+    const written = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [BROOKLYN],
+    });
+    expect(written.results[0]).toMatchObject({ status: "created" });
+  });
+});

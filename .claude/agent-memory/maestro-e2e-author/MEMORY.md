@@ -109,3 +109,5 @@ Non-markdown helpers: `tools/`
 - [childOf searches under the FIRST parent match](patterns_childof_parent_is_first_match.md) — trigger + list sharing a name → `index:` (positional) or a distinct list name
 - [NEO-306 SL review, Make insert of…, Fill button](reference_neo306_sl_review_and_insert_door.md) — picker names lead with the choice; populated insert column never auto-reconciles
 - [Flow `name:` is a directory name](patterns_flow_name_is_a_directory_name.md) — >255 BYTES = "File name too long" in CI before command one; keep names <~200 bytes
+- [NEO-307 League combobox + Search all teams](reference_neo307_league_combobox.md) — `id: "League"`, Create only on no-match (end minted names in a letter); team steps link via "Search all teams"
+- [Wizard headings include staged career teams](patterns_wizard_headings_include_staged_career_teams.md) — a `New Team:` heading ≠ a checklist club; verify on a committed card/alias first

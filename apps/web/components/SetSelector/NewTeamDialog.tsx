@@ -1,5 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { inertBackground } from "../../lib/dom/inert-background";
+import { focusWithoutOpening } from "../primitives/Autocomplete";
 import { Theme } from "@radix-ui/themes";
 import { useMutation } from "convex/react";
 import { ConvexError } from "convex/values";
@@ -143,15 +145,36 @@ export default function NewTeamDialog({
   const titleId = useId();
 
   useEffect(() => {
+    // Captured FIRST: making the background inert (below) blurs whatever held
+    // focus, and a trigger read after that would be `<body>`.
     triggerRef.current = document.activeElement as HTMLElement | null;
+    /*
+     * NEO-307 (a11y audit) — everything behind this dialog goes `inert` for as
+     * long as it is open: the page, and any other portal, the review wizard's
+     * included. Opened from a picker while the wizard is showing its own New
+     * Team step, both forms carried a combobox named "League" and neither was
+     * hidden, so two identical controls were live in the tree at once — a
+     * Tab trap stops keyboard focus crossing between them, not a screen
+     * reader's browse cursor or a selector. `inertBackground` stacks and
+     * restores exactly, so closing this never releases what the wizard (or
+     * anyone else) is still holding.
+     */
+    const releaseBackground = dialogRef.current
+      ? inertBackground(dialogRef.current)
+      : () => {};
     // Opens on the field the operator came to type in, not on Cancel: nothing
     // here is destructive, so the safe thing and the intended thing coincide.
     // Same departure from `ConfirmDialog`, and the same reasoning, as
     // `AddLeagueDialog`.
     nameInputRef.current?.focus();
     return () => {
+      // Released BEFORE focus goes back: focusing an element that is still
+      // inert is a no-op.
+      releaseBackground();
       const trigger = triggerRef.current;
-      if (trigger?.isConnected) trigger.focus();
+      // Quietly: when the opener is a combobox, a restored focus must not
+      // open its list (NEO-307).
+      if (trigger?.isConnected) focusWithoutOpening(trigger);
     };
   }, []);
 
@@ -161,8 +184,8 @@ export default function NewTeamDialog({
    *
    * Enter inside a field is the documented way to submit this dialog, so the
    * focused element at the moment `creating` flips true is normally one of the
-   * two text inputs — and `disabled={creating}` reaches every input and every
-   * League pill through `NewTeamForm`. Disabling the CURRENTLY FOCUSED element
+   * two text inputs — and `disabled={creating}` reaches every input, the League
+   * combobox included, through `NewTeamForm`. Disabling the CURRENTLY FOCUSED element
    * blurs it, and the browser drops focus to `<body>`: outside the portal, so
    * this dialog's `onKeyDown` (a React-tree handler) stops firing entirely and
    * neither the Tab trap nor Escape works until the round-trip finishes.
@@ -293,10 +316,13 @@ export default function NewTeamDialog({
     const dialog = dialogRef.current;
     if (!dialog) return;
     // `:not([tabindex="-1"])` on the element selectors as well as the attribute
-    // one: `NewTeamForm`'s League pills are real `<button>`s carrying a roving
-    // tabindex, so all but one of them are deliberately NOT Tab stops. Matching
-    // them as `button:not([disabled])` would have put unreachable elements into
-    // the list this computes `first` and `last` from.
+    // one: a roving-tabindex group keeps all but one of its `<button>`s out of
+    // the Tab order, and matching those as `button:not([disabled])` would put
+    // unreachable elements into the list this computes `first` and `last`
+    // from. `NewTeamForm`'s League was such a group until NEO-307 made it a
+    // single combobox (one Tab stop; its options carry no tabindex). The guard
+    // stays, because it costs nothing and a group of that shape added to this
+    // form later would otherwise break the wrap silently.
     const focusable = Array.from(
       dialog.querySelectorAll<HTMLElement>(
         'button:not([disabled]):not([tabindex="-1"]), input:not([disabled]):not([tabindex="-1"]), a[href], select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
@@ -337,8 +363,9 @@ export default function NewTeamDialog({
 
           The panel used to be one box that grew as tall as its contents, inside
           a centred flex container with no maximum. That was survivable while the
-          form was four fields; the era fields added ~60px, and an expanded
-          league pill list adds a scroll box of its own, which between them push
+          form was four fields; the era fields added ~60px, and the League
+          picker (a pill list then, a type-ahead since NEO-307) and the inline
+          New League form add more still, which between them push
           the button row and the `role="alert"` refusal off the bottom of the
           1024x629 viewport CI runs at. An operator cannot press a button they
           cannot reach, and a refusal nobody can see reads as the dialog doing

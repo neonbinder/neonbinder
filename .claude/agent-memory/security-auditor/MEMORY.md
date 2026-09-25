@@ -56,3 +56,4 @@
 - [Patterns neo304 armed subtree wipe](patterns_neo304_armed_subtree_wipe.md) — name-only confirm phrase does not bind a target among duplicates; per-mutation re-arm + membership walk; schema graph pin
 - [Patterns neo305 set parallel conversion](patterns_neo305_set_parallel_conversion.md) — two-mode destination guard drift (attach skipped sibling holder scan); slot-key string args; row-delete doors drop operator NB fields
 - [Patterns neo306 sl review insert door](patterns_neo306_sl_review_insert_door.md) — staging doc = allowlist + mutex for client SL ids; assert-on-upstream-field aborts whole sync; sticky adds-only flags
+- [Patterns neo307 alias reverse order](patterns_neo307_alias_reverse_order.md) — both alias orders at every teams insert site; classify resolver callers by year kind; exact-object log pin

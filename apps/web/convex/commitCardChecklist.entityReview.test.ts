@@ -39,6 +39,7 @@ import {
   SKIPPED_NAME_LOOKUP_PAGE,
 } from "./selectorOptions";
 import { normalizePlayerName } from "./players";
+import { normalizeTeamName } from "./teams";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -3856,4 +3857,251 @@ describe("the prelude's phases keep the fold across a page boundary (NEO-296)", 
       expect(card.playerIds).toEqual([accentedRow._id]);
     }
   }, 30_000);
+});
+
+// ===========================================================================
+// NEO-307 — a card can show a team's past, never its future
+// ===========================================================================
+//
+// Jason, 2026-09-25: "a card can show a team's past, never its future."
+//
+// A 2026 Donruss card of the Brooklyn Dodgers is a retro card of the one
+// Brooklyn Dodgers row the sport holds (1911–1957). NEO-254 rule 1 refused it
+// — the set year was outside the row's era — so the review gate raised a New
+// Team step for a team we already hold. These tests drive the gate and the
+// commit through their public entry points; the rule itself is
+// `pickTeamForCardYear` (lib/teams/team-era.ts), behind `resolveTeamForSetYear`.
+
+/** The Chrome fixture, re-dated to a 2026 release. */
+async function seed2026Set(t: ReturnType<typeof convexTest>) {
+  const seeded = await seedVariantTypeUnderChromeSet(t);
+  await t.run(async (ctx) => {
+    for (const id of [seeded.setNameId, seeded.variantTypeId]) {
+      await ctx.db.patch(id, { features: { manufacturer: "Donruss", season: "2026" } });
+    }
+  });
+  return seeded;
+}
+
+async function insertDatedTeam(
+  t: ReturnType<typeof convexTest>,
+  sportId: Id<"selectorOptions">,
+  row: { location: string; name: string; from: number; to?: number },
+): Promise<Id<"teams">> {
+  return t.run(async (ctx) =>
+    ctx.db.insert("teams", {
+      location: row.location,
+      name: row.name,
+      nameNormalized: normalizeTeamName(`${row.location} ${row.name}`),
+      sportId,
+      yearsActive: { from: row.from, ...(row.to !== undefined ? { to: row.to } : {}) },
+      lastUpdated: Date.now(),
+    }),
+  );
+}
+
+async function insertFootballSport(t: ReturnType<typeof convexTest>) {
+  return t.run(async (ctx) =>
+    ctx.db.insert("selectorOptions", {
+      level: "sport",
+      value: "Football",
+      platformData: {},
+      children: [],
+      lastUpdated: Date.now(),
+    }),
+  );
+}
+
+describe("NEO-307: the review gate lets a card show a team's past", () => {
+  test("a 2026 set carrying the lone 1911–1957 Brooklyn Dodgers raises no New Team step", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seed2026Set(t);
+    await insertDatedTeam(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      from: 1911,
+      to: 1957,
+    });
+
+    const resolved = await asAdmin.action(
+      api.selectorOptions.resolveChecklistEntities,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", teams: ["Brooklyn Dodgers"] })],
+      },
+    );
+
+    expect(resolved.unknownTeams).toEqual([]);
+    expect(resolved.batchId).toBeUndefined();
+    expect(
+      await t.run(async (ctx) => ctx.db.query("entityReviewQueue").collect()),
+    ).toHaveLength(0);
+  });
+
+  test("the NFL Brooklyn Dodgers (1930–1943) never answers for a baseball set — the baseball row does", async () => {
+    // Sport scoping is unchanged: the football row is another sport's team,
+    // and it neither adds a candidate nor steals the link.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seed2026Set(t);
+    const footballId = await insertFootballSport(t);
+    await insertDatedTeam(t, footballId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      from: 1930,
+      to: 1943,
+    });
+    const baseball = await insertDatedTeam(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      from: 1911,
+      to: 1957,
+    });
+
+    const resolved = await asAdmin.action(
+      api.selectorOptions.resolveChecklistEntities,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", teams: ["Brooklyn Dodgers"] })],
+      },
+    );
+    expect(resolved.unknownTeams).toEqual([]);
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", teams: ["Brooklyn Dodgers"] })],
+    });
+    const [card] = await readCards(t, variantTypeId);
+    expect(card.teamOnCardIds).toEqual([baseball]);
+  });
+
+  test("with ONLY the NFL row held, a baseball set still gets a New Team step", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seed2026Set(t);
+    const footballId = await insertFootballSport(t);
+    await insertDatedTeam(t, footballId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      from: 1930,
+      to: 1943,
+    });
+
+    const resolved = await asAdmin.action(
+      api.selectorOptions.resolveChecklistEntities,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", teams: ["Brooklyn Dodgers"] })],
+      },
+    );
+
+    expect(resolved.unknownTeams).toEqual(["Brooklyn Dodgers"]);
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("entityReviewQueue").collect(),
+    );
+    expect(rows.map((row) => [row.kind, row.name])).toEqual([
+      ["team", "Brooklyn Dodgers"],
+    ]);
+    await cancelScheduled(t);
+  });
+});
+
+describe("NEO-307: a commit links a retro card to the team's past era", () => {
+  test("a 2026 Brooklyn Dodgers card lands on the 1911–1957 row, and says so in the log", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seed2026Set(t);
+    const brooklyn = await insertDatedTeam(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      from: 1911,
+      to: 1957,
+    });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [
+          makeCard({ cardNumber: "1", cardName: "Jackie Robinson", teams: ["Brooklyn Dodgers"] }),
+        ],
+      });
+      expect(result.success).toBe(true);
+      expect(result.unreviewedNameCount).toBe(0);
+
+      const [card] = await readCards(t, variantTypeId);
+      expect(card.teamOnCardIds).toEqual([brooklyn]);
+      expect(card.pendingTeamNames ?? []).toEqual([]);
+      // No second franchise was minted beside the one we hold.
+      expect(
+        await t.run(async (ctx) => ctx.db.query("teams").collect()),
+      ).toHaveLength(1);
+
+      const pastEraLines = logSpy.mock.calls
+        .map(([line]) => line)
+        .filter(
+          (line): line is string =>
+            typeof line === "string" && line.includes("team_linked_past_era"),
+        )
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      expect(pastEraLines.length).toBeGreaterThan(0);
+      expect(pastEraLines[0]).toEqual({
+        msg: "team_linked_past_era",
+        sportId,
+        teamId: brooklyn,
+        setYear: 2026,
+        eraFrom: 1911,
+        eraTo: 1957,
+      });
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+});
+
+describe("NEO-307: a stale Create decision does not mint a second past-era team", () => {
+  test("a 'create' recorded for Brooklyn Dodgers before the rule changed links the 1911–1957 row instead", async () => {
+    // A review row answered BEFORE NEO-307 — when the 2026 set could not see
+    // the lone 1911–1957 row, so the operator was asked to create one. The
+    // commit's create guard now resolves the name with the same card rule the
+    // gate uses, finds the row, and links it rather than minting a rival.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seed2026Set(t);
+    const brooklyn = await insertDatedTeam(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      from: 1911,
+      to: 1957,
+    });
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      batchId: "batch-1",
+      kind: "team",
+      name: "Brooklyn Dodgers",
+      decision: {
+        action: "create",
+        create: { location: "Brooklyn", name: "Dodgers" },
+      },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardNumber: "1", teams: ["Brooklyn Dodgers"] })],
+      batchId: "batch-1",
+    });
+
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams.map((row) => row._id)).toEqual([brooklyn]);
+    const [card] = await readCards(t, variantTypeId);
+    expect(card.teamOnCardIds).toEqual([brooklyn]);
+  });
 });

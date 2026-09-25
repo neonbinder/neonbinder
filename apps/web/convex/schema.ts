@@ -2068,6 +2068,19 @@ export default defineSchema({
           location: v.optional(v.string()),
           name: v.string(),
         }))),
+        // NEO-307, player-only: a `createTeams` entry whose composed name is
+        // held as an ALIAS by exactly one other team in the sport, turned into
+        // a link to that team by `recordDecision` — as if the operator had
+        // picked it. A team may never take another team's alias as its name,
+        // so the create could never land; the commit links the stint to
+        // `teamId` instead (re-validated there: it must still exist and be in
+        // this sport). Keyed by `sourceName` exactly like `createTeams`. By id,
+        // never by name: a rename of the holder between decision and commit
+        // must not turn this back into a create.
+        linkTeams: v.optional(v.array(v.object({
+          sourceName: v.string(),
+          teamId: v.id("teams"),
+        }))),
         /**
          * ── NEO-254: the whole league record, league-kind only ──────────────
          *

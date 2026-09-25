@@ -16,9 +16,9 @@
  *    listbox existed but never which row was highlighted.
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import React, { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Autocomplete } from "./Autocomplete";
 
 type Row = { id: string; name: string; sport?: string };
@@ -34,12 +34,21 @@ function Harness({
   onSelect = vi.fn(),
   loading = false,
   initialQuery = "Ken",
+  ...picker
 }: {
   items?: Row[];
   onSelect?: (row: Row) => void;
   loading?: boolean;
   initialQuery?: string;
-}) {
+} & Pick<
+  React.ComponentProps<typeof Autocomplete<Row>>,
+  | "openOnEmpty"
+  | "selectedKey"
+  | "onDismiss"
+  | "selectOnFocus"
+  | "listMaxHeightClassName"
+  | "inputGeometryClassName"
+>) {
   const [query, setQuery] = useState(initialQuery);
   return (
     <Autocomplete<Row>
@@ -52,6 +61,7 @@ function Harness({
       onSelect={onSelect}
       label="Player name"
       loading={loading}
+      {...picker}
     />
   );
 }
@@ -166,6 +176,30 @@ describe("Autocomplete — ARIA", () => {
     );
   });
 
+  it("never points aria-controls at a listbox that is not rendered", () => {
+    // An IDREF to a missing element is invalid; ARIA 1.2 lets a collapsed
+    // combobox omit it. So it comes and goes with the popup.
+    render(<Harness />);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(input().hasAttribute("aria-controls")).toBe(false);
+
+    openList();
+    const id = input().getAttribute("aria-controls");
+    expect(id).toBeTruthy();
+    expect(document.getElementById(id!)).toBe(screen.getByRole("listbox"));
+
+    fireEvent.keyDown(input(), { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(input().hasAttribute("aria-controls")).toBe(false);
+  });
+
+  it("drops aria-controls in the empty-query state a search caller starts in", () => {
+    render(<Harness initialQuery="" />);
+    openList();
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(input().hasAttribute("aria-controls")).toBe(false);
+  });
+
   it("points aria-activedescendant at the highlighted option", () => {
     render(<Harness />);
     openList();
@@ -247,5 +281,468 @@ describe("Autocomplete — states", () => {
     rerender(<Harness items={[...ROWS]} />);
 
     expect(screen.getByText("Ken Caminiti").closest("li")!.getAttribute("aria-selected")).toBe("true");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 — the picker props (the New Team form's League field)
+//
+// All optional and all off by default, so the search callers above keep the
+// behaviour they were written against. These pin what they add.
+// ---------------------------------------------------------------------------
+
+describe("Autocomplete — picker mode", () => {
+  const optionFor = (name: string) => screen.getByText(name).closest("li")!;
+
+  it("opens on focus with nothing typed when openOnEmpty is set", () => {
+    render(<Harness initialQuery="" openOnEmpty />);
+    openList();
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    expect(input().getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getAllByRole("option")).toHaveLength(3);
+  });
+
+  it("opens with the highlight on the selected item, not row 0", () => {
+    render(<Harness selectedKey="3" />);
+    openList();
+    expect(optionFor("Kenny Lofton").getAttribute("aria-selected")).toBe("true");
+    expect(input().getAttribute("aria-activedescendant")).toBe(
+      optionFor("Kenny Lofton").id,
+    );
+  });
+
+  it("marks the selected item with a check that stays out of its name and text", () => {
+    render(<Harness selectedKey="2" />);
+    openList();
+    const marked = optionFor("Ken Caminiti");
+    const mark = marked.querySelector('[aria-hidden="true"]');
+    expect(mark?.textContent).toBe("✓");
+    // The label is still the option's accessible name, exactly.
+    expect(screen.getByRole("option", { name: /^Ken Caminiti/ })).toBe(marked);
+    // Every row gets the slot, so labels stay aligned; only one is checked.
+    const checks = screen
+      .getAllByRole("option")
+      .map((o) => o.querySelector('[aria-hidden="true"]')?.textContent);
+    expect(checks.map((c) => c ?? "")).toEqual(["", "✓", ""]);
+  });
+
+  it("renders no check slot at all without a selectedKey", () => {
+    render(<Harness />);
+    openList();
+    expect(optionFor("Ken Caminiti").querySelector('[aria-hidden="true"]')).toBeNull();
+  });
+
+  it("tells the caller when the list is dismissed by blur or Escape, not by a pick", () => {
+    const onDismiss = vi.fn();
+    const onSelect = vi.fn();
+    render(<Harness onDismiss={onDismiss} onSelect={onSelect} />);
+
+    openList();
+    fireEvent.keyDown(input(), { key: "Escape" });
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+
+    openList();
+    fireEvent.mouseDown(screen.getByText("Kenny Lofton"));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+
+    fireEvent.blur(input());
+    expect(onDismiss).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not report a dismissal for Escape on a list that is already shut", () => {
+    const onDismiss = vi.fn();
+    render(<Harness onDismiss={onDismiss} />);
+    fireEvent.keyDown(input(), { key: "Escape" });
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it("selects the text on focus when selectOnFocus is set, so typing replaces it", () => {
+    render(<Harness initialQuery="Ken Griffey Jr." selectOnFocus />);
+    openList();
+    const el = input() as HTMLInputElement;
+    expect(el.selectionStart).toBe(0);
+    expect(el.selectionEnd).toBe("Ken Griffey Jr.".length);
+  });
+
+  it("keeps a click-to-focus selection by cancelling only the first mouseup", () => {
+    render(<Harness initialQuery="Ken" selectOnFocus />);
+    openList();
+    // `false` from fireEvent means preventDefault was called.
+    expect(fireEvent.mouseUp(input())).toBe(false);
+    // A later click inside the text places the caret normally.
+    expect(fireEvent.mouseUp(input())).toBe(true);
+  });
+
+  it("leaves mouseup alone without selectOnFocus", () => {
+    render(<Harness />);
+    openList();
+    expect(fireEvent.mouseUp(input())).toBe(true);
+  });
+
+  it("reopens on a click after a pick closed the list", () => {
+    render(<Harness />);
+    openList();
+    fireEvent.mouseDown(screen.getByText("Kenny Lofton"));
+    expect(screen.queryByRole("listbox")).toBeNull();
+
+    fireEvent.click(input());
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  it("replaces the list's height cap and the input's geometry rather than stacking them", () => {
+    render(
+      <Harness
+        listMaxHeightClassName="max-h-40"
+        inputGeometryClassName="py-1.5 pl-1.5 text-sm"
+      />,
+    );
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.className).toContain("max-h-40");
+    expect(list.className).not.toContain("max-h-60");
+    expect(input().className).toContain("py-1.5 pl-1.5 text-sm");
+    expect(input().className).not.toContain("px-3");
+  });
+
+  it("keeps the old cap and geometry by default", () => {
+    render(<Harness />);
+    openList();
+    expect(screen.getByRole("listbox").className).toContain("max-h-60");
+    expect(input().className).toContain("px-3 py-2 text-base");
+  });
+
+  it("scrolls the highlighted option into view as the arrows move", () => {
+    const scrolled: string[] = [];
+    const original = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = function (this: Element) {
+      scrolled.push(this.textContent ?? "");
+    };
+    try {
+      render(<Harness />);
+      openList();
+      fireEvent.keyDown(input(), { key: "ArrowDown" });
+      expect(scrolled.at(-1)).toContain("Ken Caminiti");
+    } finally {
+      Element.prototype.scrollIntoView = original;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 — the list is a fixed layer anchored to the field, portalled into
+// the nearest dialog, so a scrolling host can never clip it
+//
+// CI, 1024x629: in NewTeamDialog the League list opened under the field inside
+// the body's `overflow-y-auto` and ran on under the pinned footer; the tap on
+// "No league" (last) hit the footer. happy-dom has no layout, so geometry is
+// asserted from a stubbed field rect and viewport height.
+// ---------------------------------------------------------------------------
+
+describe("Autocomplete — the list's layer", () => {
+  const originalInnerHeight = window.innerHeight;
+  const stubField = (rect: { top: number; bottom: number; left: number; width: number }) => {
+    vi.spyOn(input(), "getBoundingClientRect").mockReturnValue({
+      ...rect,
+      right: rect.left + rect.width,
+      height: rect.bottom - rect.top,
+      x: rect.left,
+      y: rect.top,
+      toJSON: () => ({}),
+    } as DOMRect);
+  };
+  const setViewport = (h: number) =>
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: h });
+
+  afterEach(() => {
+    setViewport(originalInnerHeight);
+    vi.restoreAllMocks();
+  });
+
+  it("portals the list into the field's own dialog, so an overflow ancestor cannot clip it", () => {
+    render(
+      <div role="dialog" aria-label="Host dialog">
+        <div data-testid="scroll-body" style={{ overflowY: "auto", height: 100 }}>
+          <Harness />
+        </div>
+      </div>,
+    );
+    openList();
+    const list = screen.getByRole("listbox");
+    const hostDialog = screen.getByRole("dialog", { name: "Host dialog" });
+    expect(list.parentElement).toBe(hostDialog);
+    expect(screen.getByTestId("scroll-body").contains(list)).toBe(false);
+    expect(list.className).toContain("fixed");
+  });
+
+  it("portals into <body> when there is no dialog around the field", () => {
+    const { container } = render(<Harness />);
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.parentElement).toBe(document.body);
+    expect(container.contains(list)).toBe(false);
+  });
+
+  it("keeps the ARIA wiring across the portal", () => {
+    render(<Harness />);
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(input().getAttribute("aria-controls")).toBe(list.id);
+    fireEvent.keyDown(input(), { key: "ArrowDown" });
+    const active = input().getAttribute("aria-activedescendant")!;
+    expect(document.getElementById(active)?.closest('[role="listbox"]')).toBe(list);
+  });
+
+  it("still picks from a portalled option", () => {
+    const onSelect = vi.fn();
+    render(<Harness onSelect={onSelect} />);
+    openList();
+    fireEvent.mouseDown(screen.getByText("Kenny Lofton"));
+    expect(onSelect.mock.calls[0][0].name).toBe("Kenny Lofton");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("opens BELOW the field when there is room, anchored to its left edge and width", () => {
+    render(<Harness />);
+    setViewport(629);
+    stubField({ top: 100, bottom: 130, left: 40, width: 300 });
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.dataset.placement).toBe("bottom");
+    expect(list.style.top).toBe("134px");
+    expect(list.style.left).toBe("40px");
+    expect(list.style.width).toBe("300px");
+    expect(list.style.maxHeight).toBe("240px");
+  });
+
+  it("flips ABOVE the field when the room below is short — the CI footer case", () => {
+    // A field low in a 629px viewport: 64px of room below, 508 above.
+    render(<Harness />);
+    setViewport(629);
+    stubField({ top: 520, bottom: 553, left: 270, width: 470 });
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.dataset.placement).toBe("top");
+    expect(list.style.top).toBe("");
+    expect(list.style.bottom).toBe(`${629 - 520 + 4}px`);
+    expect(list.style.maxHeight).toBe("240px");
+  });
+
+  it("shrinks to the room it has rather than running off the viewport", () => {
+    render(<Harness />);
+    setViewport(300);
+    // 100 above, 150 below: stays below (more room), capped to what fits.
+    stubField({ top: 100, bottom: 138, left: 0, width: 200 });
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.dataset.placement).toBe("bottom");
+    expect(list.style.maxHeight).toBe(`${300 - 138 - 4 - 8}px`);
+  });
+
+  it("follows the field when an ancestor scrolls", () => {
+    render(<Harness />);
+    setViewport(629);
+    stubField({ top: 100, bottom: 130, left: 40, width: 300 });
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.style.top).toBe("134px");
+
+    stubField({ top: 60, bottom: 90, left: 40, width: 300 });
+    fireEvent.scroll(document.body);
+    expect(list.style.top).toBe("94px");
+  });
+
+  it("does not treat a press on the list as an outside click, nor let it blur the field", () => {
+    render(<Harness />);
+    openList();
+    const list = screen.getByRole("listbox");
+    // `false` = preventDefault, which is what keeps focus in the field.
+    expect(fireEvent.mouseDown(list)).toBe(false);
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    // A press genuinely outside still closes it.
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("stays live when its dialog holds the page inert", async () => {
+    const { inertBackground } = await import("../../lib/dom/inert-background");
+    render(
+      <div role="dialog" aria-label="Host dialog">
+        <Harness />
+      </div>,
+    );
+    const hostDialog = screen.getByRole("dialog", { name: "Host dialog" });
+    const release = inertBackground(hostDialog);
+    try {
+      openList();
+      const list = screen.getByRole("listbox");
+      expect(list.closest("[inert]")).toBeNull();
+      const onSelectOption = screen.getByText("Kenny Lofton").closest("li")!;
+      expect(onSelectOption.closest("[inert]")).toBeNull();
+    } finally {
+      release();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 — a focus handed back by code never opens the list; only a person
+// does. And an open list never swallows a click aimed outside it.
+// ---------------------------------------------------------------------------
+
+describe("Autocomplete — focusWithoutOpening", () => {
+  it("focuses the field and leaves the list closed", async () => {
+    const { focusWithoutOpening } = await import("./Autocomplete");
+    render(<Harness initialQuery="" openOnEmpty />);
+    // act: a programmatic focus outside a Testing Library event is not
+    // flushed otherwise, and "closed" would pass vacuously.
+    act(() => focusWithoutOpening(input()));
+    expect(document.activeElement).toBe(input());
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(input().getAttribute("aria-expanded")).toBe("false");
+    // The flag lives for one focus only.
+    expect(input().hasAttribute("data-quiet-focus")).toBe(false);
+  });
+
+  it("still selects the text, so typing replaces the label", async () => {
+    const { focusWithoutOpening } = await import("./Autocomplete");
+    render(<Harness initialQuery="Ken Griffey Jr." openOnEmpty selectOnFocus />);
+    // act: a programmatic focus outside a Testing Library event is not
+    // flushed otherwise, and "closed" would pass vacuously.
+    act(() => focusWithoutOpening(input()));
+    const el = input() as HTMLInputElement;
+    expect(el.selectionStart).toBe(0);
+    expect(el.selectionEnd).toBe("Ken Griffey Jr.".length);
+    // No pointer followed, so no mouseup is being guarded.
+    expect(fireEvent.mouseUp(el)).toBe(true);
+  });
+
+  it("opens as soon as a person clicks, types or arrows", async () => {
+    const { focusWithoutOpening } = await import("./Autocomplete");
+    render(<Harness initialQuery="" openOnEmpty />);
+    // act: a programmatic focus outside a Testing Library event is not
+    // flushed otherwise, and "closed" would pass vacuously.
+    act(() => focusWithoutOpening(input()));
+    fireEvent.click(input());
+    expect(screen.getByRole("listbox")).toBeTruthy();
+
+    fireEvent.keyDown(input(), { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    fireEvent.keyDown(input(), { key: "ArrowDown" });
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  it("a normal (person's) focus still opens it", () => {
+    render(<Harness initialQuery="" openOnEmpty />);
+    fireEvent.focus(input());
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  it("is harmless on an element that is not a combobox", async () => {
+    const { focusWithoutOpening } = await import("./Autocomplete");
+    render(<button type="button">Elsewhere</button>);
+    const button = screen.getByRole("button", { name: "Elsewhere" });
+    // act: a programmatic focus outside a Testing Library event is not
+    // flushed otherwise, and "closed" would pass vacuously.
+    act(() => focusWithoutOpening(button));
+    expect(document.activeElement).toBe(button);
+    expect(button.hasAttribute("data-quiet-focus")).toBe(false);
+    focusWithoutOpening(null);
+  });
+});
+
+describe("Autocomplete — an open list never swallows a click outside it", () => {
+  const originalInnerHeight = window.innerHeight;
+  afterEach(() => {
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: originalInnerHeight,
+    });
+    vi.restoreAllMocks();
+  });
+
+  it("a press on another control closes the list, and that control's click acts", () => {
+    const onFooter = vi.fn();
+    const onSelect = vi.fn();
+    render(
+      <div>
+        <Harness onSelect={onSelect} />
+        <button type="button" onClick={onFooter}>
+          Create team
+        </button>
+      </div>,
+    );
+    openList();
+    const footer = screen.getByRole("button", { name: "Create team" });
+    fireEvent.mouseDown(footer);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    fireEvent.click(footer);
+    expect(onFooter).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("occupies only its own box — anchored left/top/width, never stretched over the page", () => {
+    render(<Harness />);
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 629 });
+    vi.spyOn(input(), "getBoundingClientRect").mockReturnValue({
+      top: 100, bottom: 130, left: 40, right: 340, width: 300, height: 30, x: 40, y: 100,
+      toJSON: () => ({}),
+    } as DOMRect);
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.style.width).toBe("300px");
+    expect(list.style.left).toBe("40px");
+    expect(list.style.right).toBe("");
+    expect(list.style.inset).toBe("");
+    expect(list.className).not.toMatch(/\binset-0\b|\bh-full\b|\bw-full\b|\bw-screen\b/);
+  });
+
+  it("stays inside the field's scrolling body, so it never covers a pinned footer beside it", () => {
+    // The CI dialog: body y 82-538 (footer from ~538), League field at y
+    // 420-453. In a 900px viewport the PAGE has 435px below the field — the
+    // viewport alone would open the list downward, over the footer — but the
+    // body has only 73, so it opens ABOVE, inside the body.
+    render(
+      <div data-testid="body" style={{ overflowY: "auto" }}>
+        <Harness />
+      </div>,
+    );
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+    vi.spyOn(screen.getByTestId("body"), "getBoundingClientRect").mockReturnValue({
+      top: 82, bottom: 538, left: 250, right: 760, width: 510, height: 456, x: 250, y: 82,
+      toJSON: () => ({}),
+    } as DOMRect);
+    vi.spyOn(input(), "getBoundingClientRect").mockReturnValue({
+      top: 420, bottom: 453, left: 270, right: 740, width: 470, height: 33, x: 270, y: 420,
+      toJSON: () => ({}),
+    } as DOMRect);
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.dataset.placement).toBe("top");
+    const bottomEdge = 900 - Number.parseFloat(list.style.bottom);
+    const topEdge = bottomEdge - Number.parseFloat(list.style.maxHeight);
+    expect(bottomEdge).toBeLessThanOrEqual(420);
+    expect(topEdge).toBeGreaterThanOrEqual(82);
+  });
+
+  it("falls back to the viewport when the body leaves no useful room either side", () => {
+    render(
+      <div data-testid="body" style={{ overflowY: "auto" }}>
+        <Harness />
+      </div>,
+    );
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 629 });
+    vi.spyOn(screen.getByTestId("body"), "getBoundingClientRect").mockReturnValue({
+      top: 100, bottom: 160, left: 0, right: 500, width: 500, height: 60, x: 0, y: 100,
+      toJSON: () => ({}),
+    } as DOMRect);
+    vi.spyOn(input(), "getBoundingClientRect").mockReturnValue({
+      top: 110, bottom: 140, left: 0, right: 500, width: 500, height: 30, x: 0, y: 110,
+      toJSON: () => ({}),
+    } as DOMRect);
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.dataset.placement).toBe("bottom");
+    expect(list.style.maxHeight).toBe("240px");
   });
 });

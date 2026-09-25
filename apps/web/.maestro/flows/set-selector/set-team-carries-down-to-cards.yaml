@@ -39,10 +39,26 @@ tags:
 #   (SET-REGISTRY.md, prefix `stt-`). Per-attempt because the confirm's body
 #   is an EXACT count of cards, which is only knowable on a checklist this
 #   attempt created from empty (the cna-/cnw-/tlf- precedent). The synthetic
-#   sport rather than Baseball because the New Team dialog's League row
-#   renders every league the sport holds in a `max-h-40` inner scroller
-#   maestro-web cannot drive; under this sport there are none, so the one
-#   pill this flow answers with ("No league") is always in view.
+#   sport rather than Baseball keeps the League combobox's option list to
+#   what THIS worker minted, so the league this flow creates is the only
+#   one its typed filter can match.
+#
+# NEO-307 — THE DIALOG'S LEAGUE COMBOBOX, answered three ways across the three
+#   teams (it replaced the pill radiogroup; one input named "League" over a
+#   listbox of options). Each team is created through the New Team dialog
+#   anyway, so each one answers the League question a DIFFERENT way rather
+#   than a new flow repeating the drill (R3):
+#     STA — `Create “STL<token>L”`: typed text no league answers to offers a
+#           create option, which opens the dialog's league form pre-filled;
+#           "Add league" writes the row and answers the team with it.
+#     STB — picks that league as an EXISTING option by typing a substring of
+#           it. This is the proof STA's create was real: the option exists only
+#           if a `leagues` row named STL<token>L now exists in this sport.
+#     STC — `No league`.
+#   The feature under test is still the set-level team (R1); the league answer
+#   is the question the dialog asks on the way, and these are its only E2E
+#   picks of an existing league and of "No league" (the wizard's create is
+#   proven in checklist-wizard-career-team-entry.yaml).
 #
 # R9 — both Sport › Year › Manufacturer › Set drills (Step 1, and the Step 5
 #   return to the set) go through util-drill-to-custom.yaml; see the note at
@@ -64,6 +80,16 @@ tags:
 #   a picker, so it is never queried — which makes the composed full name
 #   ("Loc<token> STA<token>", what card rows and chips print) distinct from the
 #   short name ("STA<token>", what the collapsed panel bar prints in livery).
+#   The one LEAGUE, STL<token>L, diverges from all three at the third character
+#   too. The trailing "L" is load-bearing (NEO-307): `Create “<typed>”` is
+#   offered only when the typed text matches NOTHING, by substring, and every
+#   earlier attempt left its own STL league in this worker's sport. The token's
+#   random tail varies in length, so a bare `STL<token>` can be a PREFIX of an
+#   older one (`…a1123` inside `…a11234`) and would then offer no create at
+#   all; a letter after the digits makes this attempt's name contained in no
+#   other. STB filters for `<token>L` — a strict substring of the name that,
+#   for the same reason, no older league contains — so the input's own text can
+#   never answer to the option's full name.
 
 # ============================================================
 # LAUNCH + SIGN IN
@@ -148,13 +174,44 @@ tags:
 
 # The three questions a team row needs. Location by its explicit aria-label
 # (NewTeamForm sets one; `primitives/Input` never does), regex brackets
-# escaped. League: the "No league" pill — under this sport it is the only
-# league pill there is, so it is always on the row and never inside the
-# league box's inner scroller.
+# escaped.
 - tapOn:
     id: "New team location \\(optional\\)"
 - inputText: "Loc${output.ATTEMPT_TOKEN}"
-- tapOn: "No league"
+
+# League (NEO-307) — CREATE a league from the combobox. The input's
+# accessible name is exactly "League" (`id:`); focusing it opens the list.
+# Typing a name no league answers to offers `Create “STL<token>L”`. The curly
+# quotes are matched with "." to keep literal non-ASCII out of the matcher
+# (the en-dash convention elsewhere in the suite). Matching is full-node, so
+# the input — whose own text is the bare typed "STL<token>L" — cannot answer
+# to it.
+- tapOn:
+    id: "League"
+- inputText: "STL${output.ATTEMPT_TOKEN}L"
+- tapOn: "Create .STL${output.ATTEMPT_TOKEN}L."
+
+# In the DIALOG a create is a real write, so the pick opens the full league
+# form under the field, pre-filled with the typed name (the wizard stages a
+# step instead — checklist-wizard-career-team-entry.yaml). Name is the only
+# required field; "Add league" writes the row and makes it this team's answer.
+- extendedWaitUntil:
+    visible:
+      id: "New league name"
+      text: "STL${output.ATTEMPT_TOKEN}L"
+    timeout: 7000
+- tapOn: "Add league"
+
+# The read-back is decisive here, unlike a read right after the create pick:
+# choosing the create option clears the typed text and the box falls back to
+# its placeholder until "Add league" lands, so "STL<token>L" in it now can
+# only be the created league as the team's answer. STB then proves the row is
+# real by picking it as an EXISTING league.
+- extendedWaitUntil:
+    visible:
+      id: "League"
+      text: "STL${output.ATTEMPT_TOKEN}L"
+    timeout: 7000
 
 # THE WRITE. The Create button's accessible name is the COMPOSED full name,
 # so targeting it is itself the assertion that Location + Name composed in
@@ -415,7 +472,24 @@ tags:
 - tapOn:
     id: "New team location \\(optional\\)"
 - inputText: "Loc${output.ATTEMPT_TOKEN}"
-- tapOn: "No league"
+# League (NEO-307) — pick an EXISTING league by typing. "<token>L" is a
+# strict substring of "STL<token>L" (case-insensitive name filter) that no
+# older STL league contains (see the minted-names note at the top), so the
+# only LEAGUE the filter leaves is the one STA's create stored — and because
+# something matches, no `Create “…”` option is offered beside it and the
+# always-present "No league". It is offered under its plain name — no
+# "Create", no "(new)" — only because the row exists. Then the input must read
+# the picked name at rest: the typed text was "<token>L", so "STL<token>L" in
+# the box is the pick, not the typing.
+- tapOn:
+    id: "League"
+- inputText: "${output.ATTEMPT_TOKEN}L"
+- tapOn: "STL${output.ATTEMPT_TOKEN}L"
+- extendedWaitUntil:
+    visible:
+      id: "League"
+      text: "STL${output.ATTEMPT_TOKEN}L"
+    timeout: 7000
 - tapOn:
     id: "Create team Loc${output.ATTEMPT_TOKEN} STB${output.ATTEMPT_TOKEN}"
 # The chip is the pick landing. Its persistence is proven twice further down:
@@ -545,7 +619,19 @@ tags:
 - tapOn:
     id: "New team location \\(optional\\)"
 - inputText: "Loc${output.ATTEMPT_TOKEN}"
+# League (NEO-307) — "No league". "No lea" is a strict substring of the
+# option, never the whole of it, so the input's text cannot answer to the
+# tap; STL<token>L cannot contain it. The read-back is decisive for the same
+# reason: "No league" in the box can only be the pick.
+- tapOn:
+    id: "League"
+- inputText: "No lea"
 - tapOn: "No league"
+- extendedWaitUntil:
+    visible:
+      id: "League"
+      text: "No league"
+    timeout: 7000
 - tapOn:
     id: "Create team Loc${output.ATTEMPT_TOKEN} STC${output.ATTEMPT_TOKEN}"
 

@@ -246,3 +246,179 @@ describe("NEO-254: a career stint resolves on the STINT's year", () => {
     ).toBeNull();
   });
 });
+
+describe("NEO-307: a card can show a team's past, never its future", () => {
+  /*
+   * Jason, 2026-09-25: "a card can show a team's past, never its future."
+   *
+   * The NEO-254 rule refused a lone dated row for any year outside its era, so
+   * a 2026 Donruss Brooklyn Dodgers card — a retro card of the only Brooklyn
+   * Dodgers the sport holds — came back `null` and raised a New Team step. The
+   * past is now an answer for a LONE row; the future still is not, and between
+   * several rows nothing about the rule has changed.
+   */
+  async function seedTeam(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    row: { location: string; name: string; from: number; to?: number },
+  ) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        location: row.location,
+        name: row.name,
+        nameNormalized: normalizeTeamName(`${row.location} ${row.name}`),
+        sportId,
+        yearsActive: {
+          from: row.from,
+          ...(row.to !== undefined ? { to: row.to } : {}),
+        },
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
+  test("the lone 1911–1957 Brooklyn Dodgers answers for a 2026 set", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const brooklyn = await seedTeam(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      from: 1911,
+      to: 1957,
+    });
+
+    expect(
+      (
+        await t.withIdentity(ADMIN_IDENTITY).query(api.teams.findByNameAndSport, {
+          name: "Brooklyn Dodgers",
+          sportId,
+          setYear: 2026,
+        })
+      )?._id,
+    ).toBe(brooklyn);
+  });
+
+  test("the lone 2011– Winnipeg Jets still does NOT answer for a 1985 set", async () => {
+    // The future is never an answer: a 1985 card is not about a team that did
+    // not exist until 2011.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedTeam(t, sportId, { location: "Winnipeg", name: "Jets", from: 2011 });
+
+    expect(
+      await t.withIdentity(ADMIN_IDENTITY).query(api.teams.findByNameAndSport, {
+        name: "Winnipeg Jets",
+        sportId,
+        setYear: 1985,
+      }),
+    ).toBeNull();
+  });
+
+  test("both Jets and 1999 is still no answer — the past-era link is for a lone row", async () => {
+    // 1999 is after the first Jets folded, which a lone row would now allow.
+    // With the 2011 row beside it, choosing the old one is a guess.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedBothJets(t, sportId);
+
+    expect(
+      await t.withIdentity(ADMIN_IDENTITY).query(api.teams.findByNameAndSport, {
+        name: "Winnipeg Jets",
+        sportId,
+        setYear: 1999,
+      }),
+    ).toBeNull();
+  });
+
+  test("two CLOSED eras both before the set year: never guess between them", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    // The two Washington Senators: 1901–1960 (became the Twins) and
+    // 1961–1971 (became the Rangers). A 2026 retro card could mean either.
+    await seedTeam(t, sportId, { location: "Washington", name: "Senators", from: 1901, to: 1960 });
+    await seedTeam(t, sportId, { location: "Washington", name: "Senators", from: 1961, to: 1971 });
+
+    expect(
+      await t.withIdentity(ADMIN_IDENTITY).query(api.teams.findByNameAndSport, {
+        name: "Washington Senators",
+        sportId,
+        setYear: 2026,
+      }),
+    ).toBeNull();
+  });
+
+  test("a 2015 CARD with only the 1972–1996 Jets held links it — a retro card", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const original = await seedTeam(t, sportId, {
+      location: "Winnipeg",
+      name: "Jets",
+      from: 1972,
+      to: 1996,
+    });
+
+    expect(
+      (
+        await t.withIdentity(ADMIN_IDENTITY).query(api.teams.findByNameAndSport, {
+          name: "Winnipeg Jets",
+          sportId,
+          setYear: 2015,
+        })
+      )?._id,
+    ).toBe(original);
+  });
+});
+
+describe("NEO-307: the past-era allowance is CARD-ONLY — a stint keeps the strict rule", () => {
+  /*
+   * `findByFullNameInternal`'s one caller is the Wikidata career-team
+   * resolver, and its year is a STINT's start: a season the player actually
+   * played. Nobody plays for a team after it folds, so a 2015 "Winnipeg Jets"
+   * stint cannot mean the 1972–1996 franchise even when that is the only Jets
+   * row we hold. Linking it would file a modern player's stint under the
+   * wrong club; leaving it unmatched is what lets the 2011 era get created.
+   */
+  async function seedOriginalJetsOnly(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+  ) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        location: "Winnipeg",
+        name: "Jets",
+        nameNormalized: normalizeTeamName("Winnipeg Jets"),
+        sportId,
+        yearsActive: { from: 1972, to: 1996 },
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
+  test("a 2015 stint with only the 1972–1996 Jets held is unmatched", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedOriginalJetsOnly(t, sportId);
+
+    expect(
+      await t.query(internal.teams.findByFullNameInternal, {
+        name: "Winnipeg Jets",
+        sportId,
+        setYear: 2015,
+      }),
+    ).toBeNull();
+  });
+
+  test("…while a stint INSIDE the era still links", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const original = await seedOriginalJetsOnly(t, sportId);
+
+    expect(
+      await t.query(internal.teams.findByFullNameInternal, {
+        name: "Winnipeg Jets",
+        sportId,
+        setYear: 1985,
+      }),
+    ).toBe(original);
+  });
+});

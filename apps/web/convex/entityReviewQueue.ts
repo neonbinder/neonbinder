@@ -29,7 +29,13 @@ import { MIN_CAREER_YEAR } from "../lib/players/career-years";
 // Team step's "Also known as" list is validated HERE, at decision time, so the
 // queue never holds an over-bound or self-referential list for the commit to
 // trip over with no operator in front of it.
-import { normalizeTeamAliasList, normalizeTeamName } from "./teams";
+import {
+  assertAliasesNotPrimaryNames,
+  assertNameNotAnotherTeamsAlias,
+  findAliasHoldersOfName,
+  normalizeTeamAliasList,
+  normalizeTeamName,
+} from "./teams";
 import { teamFullName } from "../lib/teams/team-name";
 // NEO-254 — the New League step collects everything League Management edits, so
 // it validates against the SAME bounds. Imported rather than restated: two
@@ -264,6 +270,12 @@ const decisionValidator = v.union(
     // NEO-236: player-kind only — Location + Name for each accepted career
     // team that matched no existing row. See schema.ts.
     createTeams: v.optional(v.array(careerTeamCreateValidator)),
+    // NEO-307: player-kind only — a career-team create `recordDecision` turned
+    // into a link, because exactly one other team holds its name as an alias.
+    // See schema.ts.
+    linkTeams: v.optional(
+      v.array(v.object({ sourceName: v.string(), teamId: v.id("teams") })),
+    ),
     // NEO-254: league-kind only — the whole record. See schema.ts.
     createLeague: v.optional(leagueCreateValidator),
   }),
@@ -1985,6 +1997,10 @@ async function stageCareerTeamRowsImpl(
     // a step so the operator picks the era. Without the year here, a 1979
     // Winnipeg Jets stint would be silently satisfied by the 2011 row simply
     // because it exists.
+    //
+    // NEO-307: STRICT — no `allowPastEra`. This is a stint's year, and nobody
+    // plays for a team after it folds: a 2015 stint with only the 1972-1996
+    // Jets held gets its step, so the 2011 era can be created.
     const { teamId: heldTeamId } = await resolveTeamForSetYear(
       ctx,
       playerRow.sportId,
@@ -2711,6 +2727,65 @@ export const recordDecision = mutation({
         row.kind === "league" && args.createLeague
           ? requireLeagueCreate(args.createLeague)
           : undefined;
+      /*
+       * NEO-307 — the alias rule, refused HERE because the operator is at the
+       * step. Without it "Add as New Team" could record a create the commit
+       * then silently drops: the commit will not create a team under a name
+       * another team in the sport holds as an alias, and will not store an
+       * alias that is another team's own name (both whatever the eras). Same
+       * refusals, same wording, as Team Management and the New Team dialog.
+       *
+       * Stricter than the commit in one place, deliberately: the commit ADOPTS
+       * an alias holder whose era overlaps the answer, but the step refuses
+       * any alias holder, because "Add as New Team" that quietly becomes a
+       * link is not what the button says. The step shows the holder with a
+       * Link action instead (`teams.nameHeldAsAliasBy`).
+       */
+      if (create) {
+        await assertNameNotAnotherTeamsAlias(ctx, {
+          sportId: row.sportId,
+          fullName: teamFullName(create),
+        });
+        if (create.aliases?.length) {
+          await assertAliasesNotPrimaryNames(ctx, {
+            sportId: row.sportId,
+            aliases: create.aliases,
+          });
+        }
+      }
+      /*
+       * The pre-staging per-career-team creates build team rows at commit the
+       * same way, so they obey the same reverse rule — with one difference,
+       * Jason's call for NEO-307: a career team is a STINT the player already
+       * has, not a team the operator is standing up, so refusing the whole
+       * player over it is the wrong answer when the name points at exactly one
+       * team. That create becomes a link to the holder, as if the operator had
+       * picked it, and the player decision saves. The commit then files the
+       * stint (with its years) on the holder and mints no team.
+       *
+       * EXACTLY one holder, never more: two teams answering to the name is a
+       * question only the operator can settle, so that still refuses, with
+       * the Team Management wording. Same sport only, by the index.
+       */
+      const createTeamsKept: typeof createTeams = [];
+      const linkTeams: Array<{ sourceName: string; teamId: Id<"teams"> }> = [];
+      for (const entry of createTeams) {
+        const holders = await findAliasHoldersOfName(ctx, {
+          sportId: row.sportId,
+          fullName: teamFullName(entry),
+        });
+        if (holders.length === 1) {
+          linkTeams.push({ sourceName: entry.sourceName, teamId: holders[0]._id });
+          continue;
+        }
+        if (holders.length > 1) {
+          await assertNameNotAnotherTeamsAlias(ctx, {
+            sportId: row.sportId,
+            fullName: teamFullName(entry),
+          });
+        }
+        createTeamsKept.push(entry);
+      }
       await ctx.db.patch(args.reviewRowId, {
         decision: {
           action: "create",
@@ -2719,7 +2794,8 @@ export const recordDecision = mutation({
           ...(manualCareerTeams.length ? { manualCareerTeams } : {}),
           ...(excludedCareerTeamNames.length ? { excludedCareerTeamNames } : {}),
           ...(create ? { create } : {}),
-          ...(createTeams.length ? { createTeams } : {}),
+          ...(createTeamsKept.length ? { createTeams: createTeamsKept } : {}),
+          ...(linkTeams.length ? { linkTeams } : {}),
           ...(createLeague ? { createLeague } : {}),
         },
         lastTouchedAt: Date.now(),

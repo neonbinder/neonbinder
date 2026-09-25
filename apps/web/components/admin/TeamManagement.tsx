@@ -4,6 +4,8 @@ import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { Input, Textarea } from "@/components/primitives";
+import { Autocomplete } from "@/components/primitives/Autocomplete";
+import { normalizeOrderedEntityName } from "@/lib/entities/normalize-name";
 import NeonButton from "@/components/modules/NeonButton";
 import { parseAliases } from "@/components/SetSelector/NewLeagueForm";
 import { AddLeagueDialog } from "./AddLeagueDialog";
@@ -90,17 +92,8 @@ const ALL_LEAGUES = "all";
 /** NEO-254 — the franchise field's "not on a thread" value. */
 const NO_FRANCHISE = "";
 
-/**
- * NEO-254 — how many franchise pills render before the filter box appears.
- *
- * The League group next door bounds itself with `max-h-40 overflow-y-auto` and
- * a "Change league" disclosure, which works because a sport holds tens of
- * leagues. Franchises are about to be different: the NEO-254 preload mints one
- * per franchise thread across five sports, so a scroll box would become a
- * hundred-pill haystack with no way to aim at one. Past the cap the group grows
- * a filter instead, and says how many it is hiding.
- */
-const FRANCHISE_PILL_CAP = 24;
+/** NEO-307 — the Franchise field's "not on a thread" option, as a list key. */
+const NO_FRANCHISE_KEY = "no-franchise";
 
 /**
  * NEO-284 — how long the "also answers to" note has to hold still before it
@@ -115,53 +108,6 @@ const FRANCHISE_PILL_CAP = 24;
  * Same number and same reasoning as League Management's counter.
  */
 const ALIAS_NOTE_ANNOUNCE_DEBOUNCE_MS = 400;
-
-/**
- * Pill styling, copied deliberately from `SetSelector/NewTeamForm.tsx` and kept
- * in step with it — the two are the same control answering two versions of the
- * same question, and an operator should not have to learn it twice. The
- * accessibility reasoning behind each line lives on the original:
- *
- *  - `py-1` not `py-0.5`: a text-xs pill at py-0.5 is 22px and only clears
- *    SC 2.5.8's 24px floor by leaning on the spacing exception.
- *  - The focus ring is declared on BOTH states: an indicator that only changed
- *    the unchecked border left the checked pill with no visible focus at all,
- *    so arrowing through the group was invisible (SC 2.4.7).
- *  - `border-slate-500` not `slate-700`: slate-700 on this panel is ~1.7:1, so
- *    an unchecked option's boundary was effectively not there (SC 1.4.11).
- *
- * The CHECKED state deliberately diverges from that file — see the comment on
- * the branch below. Copying its filled-pill treatment would have failed
- * contrast, because the colour differs.
- */
-function franchisePillClass(picked: boolean): string {
-  return [
-    "rounded-full border px-2 py-1 text-xs transition-colors",
-    "focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue",
-    "focus-visible:ring-offset-2 focus-visible:ring-offset-slate-950",
-    "disabled:opacity-50 disabled:cursor-not-allowed",
-    picked
-      ? // A SOLID fill with a black label, not the translucent tint
-        // `NewTeamForm`'s green pills use. Measured, not copied: this project's
-        // own note is that raising opacity on a SAME-HUE tint lowers contrast,
-        // and `bg-neon-purple/20` over this panel's ground composites to
-        // #29173b, on which #A44AFF text is 3.91:1 — under SC 1.4.3's 4.5:1
-        // floor for text this size, so the checked pill would have been the one
-        // option in the group nobody could read. Dropping the tint gets 4.72:1,
-        // a hairline pass; black on the solid colour is 5.00:1, and it is the
-        // black-on-neon convention `NeonButton`'s primary variant already uses.
-        // Green survives its own tint (it is far brighter); purple does not.
-        //
-        // The fill is also the non-colour cue (SC 1.4.1) — checked and
-        // unchecked differ by presence of a fill and by weight, not by hue
-        // alone.
-        "border-neon-purple bg-neon-purple font-semibold text-black"
-      : // border-slate-500, not slate-700 (SC 1.4.11): slate-700 here is ~1.7:1,
-        // so an unchecked option's boundary was effectively invisible.
-        // slate-500 is 4.16:1 on this ground.
-        "border-slate-500 text-slate-300 hover:border-neon-purple",
-  ].join(" ");
-}
 
 /**
  * Competitive tier, most prominent first.
@@ -271,28 +217,26 @@ function TeamDetail({
   >([]);
   const leagueSelectRef = useRef<HTMLSelectElement>(null);
   /**
-   * NEO-254 — the franchise thread, and the inline "start a new one" box.
+   * NEO-254 — the franchise thread. NEO-307 — picked from a type-ahead.
    *
-   * A box rather than a dialog, unlike leagues: a franchise has exactly one
-   * field, so a modal would be three clicks and a focus trap around a single
-   * text input. `newFranchises` is the same optimistic tail `addedLeagues` is,
-   * and exists for the same reason — a controlled select whose value names an
-   * option it does not have renders BLANK, so the thread the operator just
-   * created would vanish for the moment before the query catches up.
+   * `newFranchises` is the same optimistic tail `addedLeagues` is, and exists
+   * for the same reason: a thread the operator just started is the answer the
+   * moment `findOrCreate` returns, but `franchises.list` catches up a round
+   * trip later, and without the tail the field would read blank until it did.
+   *
+   * `franchiseQuery` is what the operator has typed into the field, or `null`
+   * while they have not — the same resting/typing split `NewTeamForm`'s League
+   * field uses. `null` shows the current answer's label and the whole list;
+   * typing narrows the list WITHOUT changing the answer, and a pick, a blur or
+   * Escape puts it back to `null`.
    */
   const [franchiseId, setFranchiseId] = useState<string>(
     team.franchiseId ?? NO_FRANCHISE,
   );
-  const [newFranchiseName, setNewFranchiseName] = useState("");
-  const [namingFranchise, setNamingFranchise] = useState(false);
-  const [franchiseFilter, setFranchiseFilter] = useState("");
+  const [franchiseQuery, setFranchiseQuery] = useState<string | null>(null);
   const [newFranchises, setNewFranchises] = useState<
     { id: Id<"franchises">; name: string }[]
   >([]);
-  const franchiseGroupRef = useRef<HTMLDivElement>(null);
-  const startFranchiseRef = useRef<HTMLButtonElement>(null);
-  const franchiseGroupLabelId = useId();
-  const franchiseFormId = useId();
   const [location, setLocation] = useState(team.location ?? "");
   const [fromYear, setFromYear] = useState(
     team.yearsActive?.from ? String(team.yearsActive.from) : "",
@@ -386,9 +330,7 @@ function TeamDetail({
     setAddingLeague(false);
     setAddedLeagues([]);
     setFranchiseId(team.franchiseId ?? NO_FRANCHISE);
-    setNamingFranchise(false);
-    setNewFranchiseName("");
-    setFranchiseFilter("");
+    setFranchiseQuery(null);
     setNewFranchises([]);
     setLocation(team.location ?? "");
     setFromYear(team.yearsActive?.from ? String(team.yearsActive.from) : "");
@@ -500,121 +442,77 @@ function TeamDetail({
       ...franchises
         .map((f) => ({ id: f._id as string, label: f.name }))
         .sort((a, b) => a.label.localeCompare(b.label)),
-      // The optimistic tail: a thread started from the box below is offered at
+      // The optimistic tail: a thread started from the field is offered at
       // once rather than disappearing for the moment before `franchises.list`
-      // re-runs. Deliberately unsorted — a pill that moved somewhere else while
-      // the operator was looking at it is worse than one out of order.
+      // re-runs. Deliberately unsorted — an option that moved somewhere else
+      // while the operator was looking at it is worse than one out of order.
       ...newFranchises
         .filter((f) => !known.has(f.id as string))
         .map((f) => ({ id: f.id as string, label: f.name })),
     ];
   }, [franchises, newFranchises]);
 
-  /**
-   * The filtered, capped slice actually rendered, and whether the filter box is
-   * needed at all.
+  /*
+   * ── NEO-307: the Franchise options, as the type-ahead lists them ─────────
    *
-   * The currently-picked thread is always kept, even when the filter would
-   * exclude it: a radio group whose checked option is not in the DOM announces
-   * "nothing selected" and leaves the roving tab stop with nowhere to sit.
-   */
-  const franchiseListing = useMemo(() => {
-    const needle = franchiseFilter.trim().toLowerCase();
-    const matching = needle
-      ? franchiseOptions.filter((f) => f.label.toLowerCase().includes(needle))
-      : franchiseOptions;
-    const capped = matching.slice(0, FRANCHISE_PILL_CAP);
-    const picked = franchiseOptions.find((f) => f.id === franchiseId);
-    if (picked && !capped.some((f) => f.id === picked.id))
-      capped.unshift(picked);
-    return {
-      shown: capped,
-      hidden: Math.max(0, matching.length - capped.length),
-      filterable: franchiseOptions.length > FRANCHISE_PILL_CAP,
-    };
-  }, [franchiseOptions, franchiseFilter, franchiseId]);
-
-  /**
-   * The Franchise options IN RENDERED ORDER — one model the JSX, the roving
-   * tabindex and the arrow keys all read from. Same shape, and the same
-   * reasoning, as `NewTeamForm`'s league pills.
+   * Jason, 2026-09-25, approving the change after League went the same way:
+   * the franchise pills, capped at 24 behind a filter box, were the control he
+   * had just called "a terrible interface" for leagues, and the NEO-254
+   * preload mints one franchise per thread across five sports.
    *
-   * Every entry is a VALUE, and exactly one is checked at any moment, because
-   * each `checked` is the same comparison against `franchiseId`. "Start a new
-   * franchise" is deliberately NOT in here: it is a command that reveals a text
-   * box and never becomes the answer, so its checked-ness was an independent
-   * boolean — select a franchise, then open the box, and the group reported TWO
-   * checked radios, which is a single-selection contract broken for anyone
-   * reading it through assistive tech (SC 4.1.2) and invisible to everyone
-   * else. It is a disclosure button beside the group instead, the same shape
-   * `NewTeamForm` gives its "Change league" toggle.
+   * At rest the whole sport, alphabetical, then "No franchise" — always there,
+   * because taking a team OFF its thread is an answer (Save sends `null`).
+   * Typing narrows on the name, case-insensitive, raw or normalized (so
+   * "titans oilers" finds "Titans / Oilers"); franchises carry no aliases.
+   * `Start “<typed>”` is offered ONLY when the typed text matches no franchise
+   * at all — the same rule Jason set for League, and for the same reason: a
+   * partial match means the thread is probably already here.
    */
-  const franchisePills: Array<{
-    key: string;
-    label: string;
-    checked: boolean;
-    choose: () => void;
-  }> = [
-    {
-      key: NO_FRANCHISE,
-      // "No franchise", not "— none —". This is a BUTTON now, so its label is
-      // spoken, and an em dash either side reads as punctuation noise; it is
-      // also the string a Maestro `text:` selector has to match.
-      label: "No franchise",
-      checked: franchiseId === NO_FRANCHISE,
-      choose: () => {
-        setNamingFranchise(false);
-        setFranchiseId(NO_FRANCHISE);
-      },
-    },
-    ...franchiseListing.shown.map((franchise) => ({
-      key: franchise.id,
-      label: franchise.label,
-      checked: franchiseId === franchise.id,
-      choose: () => {
-        setNamingFranchise(false);
-        setFranchiseId(franchise.id);
-      },
-    })),
-  ];
-
-  const checkedFranchiseIndex = franchisePills.findIndex((p) => p.checked);
-  /** Roving tabindex: the checked pill is the group's single Tab stop, and the
-   *  first pill is when nothing is checked — a native radio group's behaviour. */
-  const franchiseTabStop =
-    checkedFranchiseIndex === -1 ? 0 : checkedFranchiseIndex;
-
-  /**
-   * Focus follows selection, which the APG radio pattern requires and which is
-   * the only thing that makes the arrow keys usable: the pill that becomes
-   * checked becomes the Tab stop, so it has to end up focused. Re-queried after
-   * the render rather than held as a ref, because the newly-checked pill only
-   * carries `tabindex="0"` once the state change has committed.
-   */
-  const refocusFranchisePill = () => {
-    requestAnimationFrame(() => {
-      franchiseGroupRef.current
-        ?.querySelector<HTMLElement>('[role="radio"][tabindex="0"]')
-        ?.focus();
+  type FranchiseOption = { key: string; label: string; choose: () => void };
+  const noFranchiseOption: FranchiseOption = {
+    key: NO_FRANCHISE_KEY,
+    label: "No franchise",
+    choose: () => setFranchiseId(NO_FRANCHISE),
+  };
+  const franchiseTyped = franchiseQuery?.trim() ?? "";
+  const franchiseTypedLower = franchiseTyped.toLowerCase();
+  const franchiseTypedKey = franchiseTyped
+    ? normalizeOrderedEntityName(franchiseTyped)
+    : "";
+  const franchiseMatches = franchiseTyped
+    ? franchiseOptions.filter(
+        (f) =>
+          f.label.toLowerCase().includes(franchiseTypedLower) ||
+          (franchiseTypedKey !== "" &&
+            normalizeOrderedEntityName(f.label).includes(franchiseTypedKey)),
+      )
+    : franchiseOptions;
+  const franchiseListOptions: FranchiseOption[] = franchiseMatches.map((f) => ({
+    key: f.id,
+    label: f.label,
+    choose: () => setFranchiseId(f.id),
+  }));
+  if (
+    franchiseTyped &&
+    franchiseTypedKey &&
+    franchiseMatches.length === 0 &&
+    franchiseTypedKey !== normalizeOrderedEntityName(noFranchiseOption.label)
+  ) {
+    franchiseListOptions.push({
+      key: `start:${franchiseTypedKey}`,
+      label: `Start “${franchiseTyped}”`,
+      choose: () => void createFranchise(franchiseTyped),
     });
-  };
+  }
+  franchiseListOptions.push(noFranchiseOption);
 
-  const onFranchiseKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const step =
-      e.key === "ArrowLeft" || e.key === "ArrowUp"
-        ? -1
-        : e.key === "ArrowRight" || e.key === "ArrowDown"
-          ? 1
-          : 0;
-    if (step === 0) return;
-    // Also stops the arrow scrolling the panel out from under the group.
-    e.preventDefault();
-    const from = checkedFranchiseIndex === -1 ? 0 : checkedFranchiseIndex;
-    franchisePills[
-      (from + step + franchisePills.length) % franchisePills.length
-    ].choose();
-    refocusFranchisePill();
-  };
+  /** The current answer — its option key, and the words the field shows. */
+  const franchiseCurrentKey =
+    franchiseId === NO_FRANCHISE ? NO_FRANCHISE_KEY : franchiseId;
+  const franchiseCurrentLabel =
+    franchiseId === NO_FRANCHISE
+      ? noFranchiseOption.label
+      : (franchiseOptions.find((f) => f.id === franchiseId)?.label ?? "");
 
   /**
    * Create the thread the operator just named and put this team's draft on it.
@@ -625,9 +523,9 @@ function TeamDetail({
    * starting a franchise and deciding this team belongs to it are two
    * decisions, and Save still commits the second.
    */
-  const createFranchise = async () => {
-    const name = newFranchiseName.trim();
-    if (!name) return;
+  const createFranchise = async (typed: string) => {
+    const name = typed.trim();
+    if (!name || busy !== null) return;
     setBusy("franchise");
     setSaveError(null);
     try {
@@ -639,17 +537,12 @@ function TeamDetail({
         rows.some((row) => row.id === id) ? rows : [...rows, { id, name }],
       );
       setFranchiseId(id);
-      setNamingFranchise(false);
-      setNewFranchiseName("");
-      setFranchiseFilter("");
       setPanelStatus({
         text: created
           ? `Started the ${name} franchise. Save the team to put it on there.`
           : `${name} was already a franchise. Save the team to put it on there.`,
         isError: false,
       });
-      // The new thread is now the checked pill, so focus lands there.
-      refocusFranchisePill();
     } catch (e) {
       setSaveError(
         userFacingMessage(e, "Could not start that franchise. Try again."),
@@ -1083,148 +976,72 @@ function TeamDetail({
             if that should also include Houston Oilers and Tennessee Oilers
             players."
 
-            ## Why this is a radio group and not a `<select>`
+            ## Why it is a type-ahead (NEO-307)
 
-            It WAS a select, and that made it untappable in E2E. Maestro's web
-            driver gives every `<option>` synthetic tap bounds from its index
-            inside its own parent, then resolves a tap by scanning
-            `document.querySelectorAll('option')` and taking the FIRST bounds
-            match — so on a page with more than one select, only the first in
-            document order is reachable, and a tap meant for a later one
-            silently mutates the earlier. This panel already had two selects
-            above it (the screen's league filter and this panel's League), so
-            the Franchise select was the third and could never be driven.
-            `SetSelector/NewTeamForm.tsx` hit the identical trap and documents
-            it; this is the same remedy, deliberately.
+            It was a `<select>`, which Maestro's web driver cannot reach as
+            the third select on a page (it resolves an `<option>` tap against
+            the FIRST bounds match across every `<option>` in the document).
+            It then became a radiogroup of pills, capped at 24 behind a filter
+            box — fine for a handful of threads, not for the NEO-254 preload's
+            one per franchise across five sports. Jason, 2026-09-25, approving
+            this after League went the same way, having called the league
+            pills "a terrible interface for selecting a league. It should be a
+            type ahead select like we use for lots of other teams and such
+            things."
 
-            The League select beside it has the same defect and is NOT converted
-            here — it is pre-existing, it is not what this ticket changed, and
-            swapping a control an E2E suite already drives is its own change.
-            Filed as a follow-up. */}
-        <div>
-          <span
-            id={franchiseGroupLabelId}
-            className="block text-sm font-medium mb-1 text-slate-300"
-          >
+            So it is the shared `Autocomplete` combobox, exactly as
+            `NewTeamForm`'s League is: the field shows the current answer at
+            rest, focus opens the whole list, typing narrows it, and a name
+            that matches nothing is offered as `Start “<typed>”` — which
+            replaced the "+ Start a new franchise…" box and its Start button.
+            Its options are `<li role="option">`, which Maestro taps like any
+            element, so the select trap does not apply.
+
+            The League select beside it still has that defect and is NOT
+            converted here — swapping a control an E2E suite already drives is
+            its own change. */}
+        <div id="team-franchise">
+          {/* The visible caption. Not a <label>: the combobox's accessible
+              name is its own `aria-label` ("Franchise", which this text
+              matches for SC 2.5.3), and a <label> may not contain the list.
+              The id sits on the WRAPPER above, never on the input — an id
+              there would replace "Franchise" as its Maestro resource-id. */}
+          <span className="block text-sm font-medium mb-1 text-slate-300">
             Franchise
           </span>
-
-          {/* The filter appears only past the cap — see FRANCHISE_PILL_CAP.
-              Outside the radiogroup, because a text box is not one of the
-              options and a non-radio child of a radiogroup is a shape
-              assistive tech cannot read. */}
-          {franchiseListing.filterable && (
-            <div className="mb-1.5">
-              <Input
-                label="Filter franchises"
-                value={franchiseFilter}
-                placeholder="Start typing a franchise name…"
-                onChange={(e) => setFranchiseFilter(e.target.value)}
-              />
-            </div>
-          )}
-
-          <div
-            id="team-franchise"
-            ref={franchiseGroupRef}
-            role="radiogroup"
-            aria-labelledby={franchiseGroupLabelId}
-            className="flex max-h-40 flex-wrap items-center gap-1.5 overflow-y-auto"
-            onKeyDown={onFranchiseKeyDown}
-          >
-            {franchisePills.map((pill, idx) => (
-              <button
-                key={pill.key}
-                type="button"
-                role="radio"
-                aria-checked={pill.checked}
-                // Roving tabindex — one Tab stop for the whole group; the
-                // arrow keys move within it. See `franchiseTabStop`.
-                tabIndex={idx === franchiseTabStop ? 0 : -1}
-                // SC 4.1.2: counted against what is RENDERED, which past the
-                // cap is a filtered slice. The hidden count is announced by
-                // the status line below rather than being folded in here,
-                // where "3 of 41" would claim the other 38 are arrowable.
-                aria-posinset={idx + 1}
-                aria-setsize={franchisePills.length}
-                onClick={() => pill.choose()}
-                className={franchisePillClass(pill.checked)}
-              >
-                {pill.label}
-              </button>
-            ))}
-            {/* Outside the radiogroup on purpose — see the note on
-                `franchisePills`. It is a command, not one of the options, and a
-                non-radio child of a radiogroup is a shape assistive tech cannot
-                read. Styled as a pill anyway: it belongs to this control
-                visually, and `aria-expanded` is what says it is a disclosure.
-                Rendered inside the same flex row so it still sits at the end of
-                the pills, which is where an operator looks for it. */}
+          <div className="relative">
+            <Autocomplete<{ key: string; label: string; choose: () => void }>
+              label="Franchise"
+              query={franchiseQuery ?? franchiseCurrentLabel}
+              onQueryChange={setFranchiseQuery}
+              items={franchiseListOptions}
+              getKey={(o) => o.key}
+              getLabel={(o) => o.label}
+              onSelect={(o) => {
+                setFranchiseQuery(null);
+                // A thread being started is the answer the moment it lands;
+                // a second pick in that window would race it.
+                if (busy === "franchise") return;
+                o.choose();
+              }}
+              onDismiss={() => setFranchiseQuery(null)}
+              selectedKey={franchiseCurrentKey}
+              openOnEmpty
+              selectOnFocus
+              placeholder="Pick a franchise or type a new one"
+              // Room on the right for the chevron; the default geometry
+              // otherwise, so it lines up with every other field in the panel.
+              inputGeometryClassName="py-2 pl-3 pr-8 text-base"
+            />
+            {/* The one cue that this box opens a list rather than taking free
+                text. Decorative; the combobox role says it to assistive tech. */}
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400"
+            >
+              ▾
+            </span>
           </div>
-
-          <button
-            type="button"
-            ref={startFranchiseRef}
-            aria-expanded={namingFranchise}
-            aria-controls={franchiseFormId}
-            onClick={() => setNamingFranchise((open) => !open)}
-            className={`${franchisePillClass(false)} mt-1.5`}
-          >
-            + Start a new franchise…
-          </button>
-
-          {franchiseListing.filterable && (
-            /* SC 4.1.3: the group changes shape as the filter bites, so the
-               count that explains why is announced, not only drawn.
-
-               Mounted for as long as the filter exists, EMPTY included, rather
-               than only while something is hidden. A live region that appears
-               at the same moment its text does is frequently missed entirely —
-               the region has to already exist for the change to be a CHANGE.
-               Same rule as the counter on Franchise Management. */
-            <p role="status" className="mt-1 text-xs text-slate-400">
-              {franchiseListing.hidden > 0
-                ? `${franchiseListing.hidden} more — keep typing to narrow it down.`
-                : ""}
-            </p>
-          )}
-
-          {namingFranchise && (
-            <div id={franchiseFormId} className="mt-2 flex items-end gap-2">
-              <Input
-                label="New franchise name"
-                value={newFranchiseName}
-                maxLength={MAX_TEAM_NAME_LENGTH}
-                placeholder="Titans / Oilers"
-                autoFocus
-                onKeyDown={(e) => {
-                  // Keyboard-first: Enter commits, Escape backs out. The whole
-                  // control is one text box, so a form round trip would be
-                  // ceremony around a single keystroke.
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    void createFranchise();
-                  }
-                  if (e.key === "Escape") {
-                    e.preventDefault();
-                    setNamingFranchise(false);
-                    setNewFranchiseName("");
-                    // Back to the disclosure that opened it, not to `<body>` —
-                    // closing unmounts the focused input.
-                    startFranchiseRef.current?.focus();
-                  }
-                }}
-                onChange={(e) => setNewFranchiseName(e.target.value)}
-              />
-              <NeonButton
-                type="button"
-                onClick={() => void createFranchise()}
-                disabled={busy !== null || !newFranchiseName.trim()}
-              >
-                {busy === "franchise" ? "Starting…" : "Start"}
-              </NeonButton>
-            </div>
-          )}
 
           {/* Deep-linked to the thread in hand, because "see the franchise"
               from here nearly always means this one. Same 24px pointer-target

@@ -748,7 +748,10 @@ describe("TeamPicker", () => {
     openPopover();
 
     openNewTeamDialog("Savannah Bananas");
-    fireEvent.click(screen.getByRole("radio", { name: "Savannah Banana Ball" }));
+    // NEO-307: League is a type-ahead — focus opens the list, a pick is a
+    // mouse down on the option.
+    fireEvent.focus(screen.getByRole("combobox", { name: "League" }));
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Savannah Banana Ball" }));
     fireEvent.click(
       screen.getByRole("button", { name: "Create team Savannah Bananas" }),
     );

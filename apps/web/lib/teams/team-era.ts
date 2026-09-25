@@ -36,6 +36,16 @@
  *
  * That mirrors the player side exactly — see `lib/players/career-span.ts`,
  * where a player with no stints has no span and is never filtered out.
+ *
+ * ## …and the one direction a lone row may be out of its era (NEO-307)
+ *
+ * Jason, 2026-09-25: "a card can show a team's past, never its future." A
+ * retro card of a team that folded is still that team's card, so a LONE dated
+ * row answers for a SET year after its era ended — and never for one before
+ * it began. A career stint's year gets no such allowance: nobody plays for a
+ * team after it folds. `pickTeamForYear` is where that is decided, opt-in per
+ * caller; the filters below stay strict, because between SEVERAL rows a closed
+ * era is still no answer.
  */
 
 /** A team's lifespan. `to` absent means "still going". */
@@ -113,6 +123,86 @@ export function teamsActiveInYear<T extends TeamEraRow>(
 ): T[] {
   if (year === undefined || !Number.isInteger(year)) return [...rows];
   return rows.filter((row) => eraCoversYear(row.yearsActive, year));
+}
+
+/**
+ * What `pickTeamForYear` concluded: the row, and whether it won only because a
+ * card may show a team's PAST.
+ */
+export type TeamEraPick<T> = { row: T; pastEra: boolean };
+
+/** How `pickTeamForYear` may read a year. */
+export type TeamEraPickOptions = {
+  /**
+   * NEO-307 — `true` only when `year` is a CARD's (set) year. A card can show
+   * a team's past; a career stint cannot be after its team folded, so a stint
+   * caller leaves this off and a lone row outside its era stays a question.
+   * Off by default: a new caller has to decide which kind of year it holds.
+   */
+  allowPastEra?: boolean;
+};
+
+/**
+ * NEO-254 + NEO-307 — which of a name's rows `year` means, or `null` when a
+ * human has to decide.
+ *
+ * ## Rule 1: a card can show a team's past, never its future
+ *
+ * Jason, 2026-09-25: "a card can show a team's past, never its future."
+ *
+ * A 2026 Donruss card of the Brooklyn Dodgers is a retro card. It is still a
+ * Brooklyn Dodgers card, and when the sport holds exactly one row under that
+ * name — dated 1911–1957 — that row is the one it means. Refusing it (the
+ * NEO-254 behaviour) raised a New Team step for a team we already hold.
+ *
+ * The other direction is still a refusal. A 1985 card cannot show a team that
+ * did not exist until 2011, so a lone Winnipeg Jets row dated 2011– is
+ * positive evidence the card means some other Jets, and the answer is `null`:
+ * we hold a Winnipeg Jets, it is not this one, and a human decides whether the
+ * earlier era needs creating.
+ *
+ * The allowance is a CARD rule, so it is opt-in (`allowPastEra`). A career
+ * stint is a season a player actually played: a 2015 stint at "Winnipeg Jets"
+ * cannot mean the 1972–1996 franchise, so with only that row held the stint
+ * gets a step to create the 2011 era rather than a link to the wrong one.
+ *
+ * In full:
+ *
+ * - **One row, and its era covers the year (or it has none)** → that row.
+ *   Unknown years cannot contradict anything.
+ * - **One row, and the year is after its era ended** → with `allowPastEra`,
+ *   that row with `pastEra: true` (the card shows the team's past); without
+ *   it, `null`.
+ * - **One row, and the year is before its era began** → `null`. Nothing shows
+ *   a team's future.
+ * - **Several rows** → the one whose era covers the year, when exactly one
+ *   does; otherwise `null`, whatever `allowPastEra` says. Two closed eras both
+ *   before the year are two franchises a retro card could equally mean, and
+ *   choosing between them is a guess. Never guess.
+ * - **No year** → nothing is narrowed, so one row is the row and several are
+ *   a question. See `teamsActiveInYear`.
+ *
+ * Pure and era-only by design. It reads `yearsActive` and nothing else — never
+ * a name, never a marketplace value — so what the card said has already done
+ * its only job (finding the candidates) before this runs.
+ */
+export function pickTeamForYear<T extends TeamEraRow>(
+  rows: readonly T[],
+  year: number | undefined,
+  options: TeamEraPickOptions = {},
+): TeamEraPick<T> | null {
+  const survivors = teamsActiveInYear(rows, year);
+  if (survivors.length === 1) return { row: survivors[0], pastEra: false };
+  if (survivors.length > 0 || rows.length !== 1) return null;
+  if (!options.allowPastEra) return null;
+  // Exactly one row and its era excludes the year — which can only happen when
+  // the year is an integer and the row is dated. Past, or future?
+  const lone = rows[0];
+  const end = lone.yearsActive?.to;
+  if (year !== undefined && end !== undefined && year > end) {
+    return { row: lone, pastEra: true };
+  }
+  return null;
 }
 
 /**
