@@ -26,6 +26,7 @@ import {
   ALL_BRANDS_VIEW_REFUSAL,
   isAllBrandsViewName,
   knownSetNameKeys,
+  MAX_SL_ID_LENGTH,
   MAX_SL_SETS_PER_SYNC,
   matchesBrandPrefix,
   routeBscSets,
@@ -530,6 +531,25 @@ describe("routeSlSets", () => {
     });
     expect(plan.unnameable).toBe(1);
     expect(plan.entries).toEqual([]);
+  });
+
+  test("an empty or over-long SportLots id is dropped and counted, beside the label cap — never an entry", () => {
+    // NEO-306 security condition: the review's `replaceScope` asserts on the
+    // id; dropping it here keeps that assert a backstop, so one bad id in
+    // SportLots' list cannot abort a whole Sync Sets.
+    const plan = routeSlSets({
+      entries: [
+        { id: "", label: "No Id" },
+        { id: "x".repeat(MAX_SL_ID_LENGTH + 1), label: "Long Id" },
+        { id: "x".repeat(MAX_SL_ID_LENGTH), label: "Just Fits" },
+      ],
+      coveredSlIds: new Set(),
+      knownSetNameKeys: new Set(),
+    });
+    expect(plan.badIds).toBe(2);
+    expect(plan.entries).toEqual([
+      { id: "x".repeat(MAX_SL_ID_LENGTH), label: "Just Fits" },
+    ]);
   });
 
   test("an entry with a blank label is dropped silently (not unnameable, not an entry)", () => {

@@ -58,8 +58,9 @@ import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { matchKnownBrand } from "./knownBrands";
 import { inheritedTeamIds } from "./lib/selectorTeams";
 import { MAX_SLOT_LABEL_LENGTH, initialSlots, slotIds } from "./platformSlots";
-import { createSetsFromSlRootsImpl } from "./selectorOptions";
+import { brandSubtreeSlIds, createSetsFromSlRootsImpl } from "./selectorOptions";
 import {
+  MAX_SL_ID_LENGTH,
   MAX_SL_SETS_PER_SYNC,
   checkCustomSelectorValue,
   matchesBrandPrefix,
@@ -82,14 +83,18 @@ type ReviewDoc = Doc<"slSetReviews">;
 export const MAX_REVIEW_DECISIONS = 200;
 /** Rows one write transaction files, in either phase. */
 export const REVIEW_CHUNK_SIZE = MAX_SL_SETS_PER_MUTATION;
-/** A SportLots set id is a short slug; anything longer is not one. */
-export const MAX_SL_ID_LENGTH = 64;
+/** A SportLots set id is a short slug (defined beside `routeSlSets`). */
+export { MAX_SL_ID_LENGTH };
 /** The brand's sets read for the "Variant of" picker. */
 export const MAX_REVIEW_TARGET_SETS = 500;
 /** Variant types read under one set for the "Variant type" picker. */
 const MAX_VARIANT_TYPES_PER_SET = 100;
-/** Siblings read under one variant type for the same-key check. */
-const MAX_SIBLINGS_PER_TYPE = 3000;
+/**
+ * Siblings read under one variant type for the same-key check. Past it the
+ * chunk is REFUSED (fail closed): with siblings unread, "no row by that name"
+ * cannot be answered, and a guess would put a second row under one name.
+ */
+export const MAX_SIBLINGS_PER_TYPE = 3000;
 
 const entryValidator = v.object({ slId: v.string(), label: v.string() });
 
@@ -219,6 +224,31 @@ function entriesStillInDoc(
     else notInReview++;
   }
   return { entries, notInReview };
+}
+
+/**
+ * Every SportLots id already linked under `brandIds`, read INSIDE the write
+ * transaction that is about to link more (NEO-306 security audit): the
+ * action's own read is a moment earlier, and a door attaching the same id in
+ * between would otherwise put one id on two rows. Each walk is bounded at
+ * `MAX_SYNC_ITEMS` rows; a brand too big to walk refuses the chunk, because
+ * "not linked" cannot be answered for it.
+ */
+async function linkedUnderBrands(
+  ctx: { db: QueryCtx["db"] },
+  brandIds: readonly RowId[],
+): Promise<Set<string>> {
+  const linked = new Set<string>();
+  for (const brandId of new Set(brandIds)) {
+    const walked = await brandSubtreeSlIds(ctx, brandId);
+    if (walked.truncated) {
+      throw new ConvexError(
+        "This brand has too many rows to check its SportLots links. Nothing more was saved.",
+      );
+    }
+    for (const id of walked.ids) linked.add(id);
+  }
+  return linked;
 }
 
 /** Drop `slIds` from the doc; delete it when nothing is left. */
@@ -553,6 +583,7 @@ export const saveSetsChunk = internalMutation({
     existsElsewhere: v.number(),
     invalid: v.number(),
     notInReview: v.number(),
+    alreadyLinked: v.number(),
     indexTruncated: v.boolean(),
     remaining: v.number(),
   }),
@@ -562,26 +593,47 @@ export const saveSetsChunk = internalMutation({
     }
     const doc = await reviewDocFor(ctx, args.yearId, args.reviewManufacturerId);
     const { entries, notInReview } = entriesStillInDoc(doc, args.slIds);
-    if (entries.length === 0) {
-      return {
-        created: 0,
-        clashedAtTarget: 0,
-        existsElsewhere: 0,
-        invalid: 0,
-        notInReview,
-        indexTruncated: false,
-        remaining: doc?.entries.length ?? 0,
-      };
+    const nothing = {
+      created: 0,
+      clashedAtTarget: 0,
+      existsElsewhere: 0,
+      invalid: 0,
+      notInReview,
+      alreadyLinked: 0,
+      indexTruncated: false,
+      remaining: doc?.entries.length ?? 0,
+    };
+    if (entries.length === 0) return nothing;
+    // Already linked under the review's brand, or under the known brand the
+    // Unknown review files it to — decided here, in this transaction.
+    const linked = await linkedUnderBrands(ctx, [
+      args.reviewManufacturerId,
+      args.targetManufacturerId,
+    ]);
+    const toCreate = entries.filter((e) => !linked.has(e.slId));
+    const alreadyLinked = entries.length - toCreate.length;
+    const written =
+      toCreate.length > 0
+        ? await createSetsFromSlRootsImpl(ctx, {
+            manufacturerId: args.targetManufacturerId,
+            roots: toCreate.map((e) => ({ id: e.slId, label: e.label })),
+            createdByUserId: args.createdByUserId,
+          })
+        : { ...nothing, notInReview: 0 };
+    if (written.indexTruncated) {
+      return { ...written, notInReview, alreadyLinked: 0, remaining: nothing.remaining };
     }
-    const written = await createSetsFromSlRootsImpl(ctx, {
-      manufacturerId: args.targetManufacturerId,
-      roots: entries.map((e) => ({ id: e.slId, label: e.label })),
-      createdByUserId: args.createdByUserId,
-    });
-    const remaining = written.indexTruncated
-      ? (doc?.entries.length ?? 0)
-      : await removeFromDoc(ctx, doc, new Set(entries.map((e) => e.slId)));
-    return { ...written, notInReview, remaining };
+    const remaining = await removeFromDoc(ctx, doc, new Set(entries.map((e) => e.slId)));
+    return {
+      created: written.created,
+      clashedAtTarget: written.clashedAtTarget,
+      existsElsewhere: written.existsElsewhere,
+      invalid: written.invalid,
+      indexTruncated: false,
+      notInReview,
+      alreadyLinked,
+      remaining,
+    };
   },
 });
 
@@ -640,9 +692,18 @@ export const createSlRowsUnderVariantType = internalMutation({
       .withIndex("by_level_and_parent", (q) =>
         q.eq("level", "insert").eq("parentId", type._id),
       )
-      .take(MAX_SIBLINGS_PER_TYPE);
+      .take(MAX_SIBLINGS_PER_TYPE + 1);
+    if (siblings.length > MAX_SIBLINGS_PER_TYPE) {
+      throw new ConvexError(
+        `${type.value} under ${set.value} has more than ${MAX_SIBLINGS_PER_TYPE} rows, ` +
+          `so a new one can't be checked against them. Nothing more was saved.`,
+      );
+    }
     const siblingKeys = new Set(siblings.map((s) => selectorValueKey(s.value)));
-    const heldIds = new Set(siblings.flatMap((s) => slotIds(s, "sportlots")));
+    // Every id already linked anywhere under the brand, read in THIS
+    // transaction (the type's own siblings are part of that walk).
+    const heldIds = await linkedUnderBrands(ctx, [brand._id]);
+    for (const id of siblings.flatMap((s) => slotIds(s, "sportlots"))) heldIds.add(id);
 
     const flags = derivedVariantFlags("insert", type);
     const teamIds = inheritedTeamIds(type);
@@ -946,6 +1007,7 @@ export async function applySlSetReviewImpl(
           break phase1;
         }
         result.sets += written.created;
+        skip("alreadyLinked", written.alreadyLinked);
         skip("nameTaken", written.clashedAtTarget);
         skip("existsElsewhere", written.existsElsewhere);
         skip("invalid", written.invalid);

@@ -22,12 +22,16 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_CARDS_PER_MOVE, sourceDataOfRow } from "./setShapeMove";
-import { MAX_INSERT_TREE_ROWS, insertConversionRefusal } from "./setInsertConversion";
+import {
+  MAX_INSERT_TREE_ROWS,
+  MAX_VARIANT_TYPES_PER_SET,
+  insertConversionRefusal,
+} from "./setInsertConversion";
 
 const modules = (
   import.meta as unknown as {
@@ -1239,5 +1243,52 @@ describe("set → parallel of an insert → set", () => {
     });
     expect(again.landedValue).toBe("Red Ink");
     expect(await covered(t, ids.brandId)).toContain(link.id);
+  });
+});
+
+describe("insertTypeOf is bounded (NEO-306 security audit)", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("an Insert type past MAX_VARIANT_TYPES_PER_SET is not looked for: the set reads as having none (fail closed)", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    // Chrome already has one (Parallel) type; fill it past the cap with
+    // role-less types, then add its Insert type after them in index order.
+    await t.run(async (ctx) => {
+      for (let i = 0; i < MAX_VARIANT_TYPES_PER_SET; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "variantType",
+          value: `Promo ${i}`,
+          parentId: ids.chromeId,
+          platformData: {},
+          children: [],
+          lastUpdated: 1_700_000_000_000,
+        });
+      }
+    });
+    await insertRow(t, {
+      level: "variantType",
+      value: "Insert",
+      parentId: ids.chromeId,
+      ...roleType("insert"),
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { setId } = await slSet(t, ids.brandId, "Bowman All-America", [
+      { id: "SL-AA", label: "Bowman All-America" },
+    ]);
+
+    const targets = await t
+      .withIdentity(ADMIN)
+      .query(api.setInsertConversion.getMakeInsertTargets, { rowId: setId });
+
+    if (!targets.ok) throw new Error("unreachable");
+    const chrome = targets.targets.find((x) => x.setId === ids.chromeId);
+    expect(chrome).toEqual({ setId: ids.chromeId, value: "Bowman Chrome" });
+    // Bowman's Insert type, within the cap, is found exactly as before.
+    expect(targets.targets.find((x) => x.setId === ids.bowmanId)?.insertTypeId).toBe(
+      ids.insertTypeId,
+    );
   });
 });

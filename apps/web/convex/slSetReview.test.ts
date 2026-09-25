@@ -31,7 +31,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
-import { applySlSetReviewImpl, rowNameUnderSet } from "./slSetReview";
+import {
+  MAX_SIBLINGS_PER_TYPE,
+  applySlSetReviewImpl,
+  rowNameUnderSet,
+} from "./slSetReview";
 
 type Option = { value: string; platformValue: string };
 
@@ -46,6 +50,8 @@ const mockState = vi.hoisted(() => ({
     options: Option[];
     message?: string;
   },
+  /** Per-brand SportLots lists, keyed by the brand's SportLots id. */
+  slByBrand: {} as Record<string, Option[]>,
 }));
 
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
@@ -103,7 +109,11 @@ vi.mock("./adapters/sportlots", async (importOriginal) => {
         options: v.array(v.object({ value: v.string(), platformValue: v.string() })),
         message: v.optional(v.string()),
       }),
-      handler: async () => mockState.sl,
+      handler: async (_ctx, args) => {
+        const brand = args.platformFilters?.manufacturer;
+        const own = brand ? mockState.slByBrand[brand] : undefined;
+        return own ? { success: true, options: own } : mockState.sl;
+      },
     }),
   };
 });
@@ -149,6 +159,7 @@ beforeEach(() => {
   delete process.env[PAUSE_ENV];
   mockState.bsc = { success: true, options: BOWMAN_BSC };
   mockState.sl = { success: true, options: BOWMAN_SL };
+  mockState.slByBrand = {};
 });
 
 afterEach(() => {
@@ -417,6 +428,37 @@ describe("Sync Sets writes the SportLots-only names into the brand's review", ()
     await sync(t, yearId, bowmanId);
 
     expect(await reviews(t)).toEqual([]);
+  });
+
+  test("one over-long SportLots id is dropped and counted; the sync still succeeds and every other scope gets its review", async () => {
+    // NEO-306 security condition: `replaceScope` asserts on the id, so an id
+    // that reached it would throw and abort the whole Sync Sets.
+    // `routeSlSets` drops it first; the assert stays a backstop.
+    //
+    // Topps is linked through SportLots' all-brands option, so the two
+    // scopes' lists are fetched one after the other (the all-brands list
+    // first). Two real brands would be fetched concurrently, and convex-test
+    // runs only the first concurrent call through the module mock.
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId, toppsId } = await seedYear(t);
+    await t.run(async (ctx) =>
+      ctx.db.patch(toppsId, { platformData: { sportlots: { s0: "All Brands" } } }),
+    );
+    mockState.slByBrand = {
+      BOW: [
+        { value: "Gold", platformValue: "sl-gold" },
+        { value: "Broken", platformValue: "x".repeat(65) },
+      ],
+      "All Brands": [{ value: "Topps Heritage", platformValue: "sl-heritage" }],
+    };
+
+    const result = await sync(t, yearId);
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain("1 SportLots set skipped — not a usable id");
+    const byBrand = new Map((await reviews(t)).map((d) => [d.manufacturerId, d.entries]));
+    expect(byBrand.get(bowmanId)).toEqual([{ slId: "sl-gold", label: "Gold" }]);
+    expect(byBrand.get(toppsId)).toEqual([{ slId: "sl-heritage", label: "Heritage" }]);
   });
 });
 
@@ -956,4 +998,150 @@ describe("applySlSetReview — a save resumed after a thrown chunk", () => {
     expect(remaining.entries.map((e) => e.slId).sort()).toEqual(["sl-98", "sl-99"]);
     expect(result.remaining).toBe(2);
   });
+});
+
+describe("applySlSetReview — the brand's links are re-read inside every chunk (NEO-306 security audit)", () => {
+  type Ctx = Parameters<typeof applySlSetReviewImpl>[0];
+
+  /**
+   * The two action capabilities over the real test backend, running `before`
+   * just ahead of the Nth call to `chunkFn` — a door attaching an id while
+   * the save is between two chunks.
+   */
+  function interleaved(
+    t: T,
+    chunkFn: FunctionReference<"mutation", "internal">,
+    n: number,
+    before: () => Promise<void>,
+  ): Ctx {
+    const name = getFunctionName(chunkFn);
+    let calls = 0;
+    return {
+      runQuery: ((ref: FunctionReference<"query">, args: Record<string, unknown>) =>
+        t.query(ref, args)) as Ctx["runQuery"],
+      runMutation: (async (
+        ref: FunctionReference<"mutation">,
+        args: Record<string, unknown>,
+      ) => {
+        if (getFunctionName(ref) === name && ++calls === n) await before();
+        return t.mutation(ref, args);
+      }) as Ctx["runMutation"],
+    };
+  }
+
+  const colours = Array.from({ length: 45 }, (_, i) => ({
+    slId: `sl-${String(i).padStart(2, "0")}`,
+    label: `Colour ${String(i).padStart(2, "0")}`,
+  }));
+
+  async function holdersOf(t: T, slId: string) {
+    return t.run(async (ctx) =>
+      (await ctx.db.query("selectorOptions").collect()).filter((r) =>
+        Object.values(r.platformData.sportlots ?? {}).includes(slId),
+      ),
+    );
+  }
+
+  test("phase 2: an id attached elsewhere between chunks is skipped as already linked — one id, one row", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const ids = await seedBowmanSets(t, bowmanId);
+    await seedReviewDoc(t, yearId, bowmanId, colours);
+    const ctx = interleaved(t, internal.slSetReview.createSlRowsUnderVariantType, 2, async () => {
+      await insertRow(t, {
+        level: "insert",
+        value: "Colour 42 Refractor",
+        parentId: ids.insertTypeId,
+        platformData: { sportlots: { s0: "sl-42" } },
+        platformSlotSeq: { sportlots: 1 },
+      });
+    });
+
+    const result = await applySlSetReviewImpl(ctx, ADMIN.subject, {
+      manufacturerId: bowmanId,
+      decisions: colours.map((c) => ({ slId: c.slId, variantTypeId: ids.parallelTypeId })),
+    });
+
+    expect(result.underType.parallel).toBe(44);
+    expect(result.skippedByReason.alreadyLinked).toBe(1);
+    expect(result.incomplete).toBe(false);
+    expect((await holdersOf(t, "sl-42")).map((r) => r.value)).toEqual([
+      "Colour 42 Refractor",
+    ]);
+    expect(await reviews(t)).toEqual([]);
+  });
+
+  test("phase 1: an id attached elsewhere between chunks is not made a second set", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const ids = await seedBowmanSets(t, bowmanId);
+    await seedReviewDoc(t, yearId, bowmanId, colours);
+    const ctx = interleaved(t, internal.slSetReview.saveSetsChunk, 2, async () => {
+      await insertRow(t, {
+        level: "insert",
+        value: "Colour 42 Refractor",
+        parentId: ids.insertTypeId,
+        platformData: { sportlots: { s0: "sl-42" } },
+        platformSlotSeq: { sportlots: 1 },
+      });
+    });
+
+    const result = await applySlSetReviewImpl(ctx, ADMIN.subject, {
+      manufacturerId: bowmanId,
+      decisions: colours.map((c) => ({ slId: c.slId })),
+    });
+
+    expect(result.sets).toBe(44);
+    expect(result.skippedByReason.alreadyLinked).toBe(1);
+    expect((await holdersOf(t, "sl-42")).map((r) => r.value)).toEqual([
+      "Colour 42 Refractor",
+    ]);
+    expect(await reviews(t)).toEqual([]);
+  });
+});
+
+describe("createSlRowsUnderVariantType — the sibling read is bounded and fails closed", () => {
+  test(`a type with more than MAX_SIBLINGS_PER_TYPE rows refuses the chunk and writes nothing`, async () => {
+    // Called directly: through the action, the brand-wide link walk
+    // (MAX_SYNC_ITEMS) refuses such a brand first. This pins the chunk's own
+    // guard, which must not answer "no row by that name" from a partial read.
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const ids = await seedBowmanSets(t, bowmanId);
+    await t.run(async (ctx) => {
+      for (let i = 0; i <= MAX_SIBLINGS_PER_TYPE; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "insert",
+          value: `Filler ${i}`,
+          parentId: ids.parallelTypeId,
+          platformData: {},
+          children: [],
+          lastUpdated: 1_700_000_000_000,
+        });
+      }
+    });
+    await seedReviewDoc(t, yearId, bowmanId, [{ slId: "sl-gold", label: "Gold" }]);
+    const before = await reviews(t);
+
+    await expect(
+      t.mutation(internal.slSetReview.createSlRowsUnderVariantType, {
+        yearId,
+        manufacturerId: bowmanId,
+        typeId: ids.parallelTypeId,
+        slIds: ["sl-gold"],
+        createdByUserId: ADMIN.subject,
+      }),
+    ).rejects.toThrow(/more than 3000 rows/);
+
+    expect(await reviews(t)).toEqual(before);
+    expect(await holdersOf(t, "sl-gold")).toEqual([]);
+  });
+
+  async function holdersOf(t: T, slId: string) {
+    return t.run(async (ctx) =>
+      (await ctx.db.query("selectorOptions").collect()).filter((r) =>
+        Object.values(r.platformData.sportlots ?? {}).includes(slId),
+      ),
+    );
+  }
 });

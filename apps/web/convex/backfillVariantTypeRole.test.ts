@@ -227,6 +227,45 @@ describe("backfillVariantTypeRole", () => {
     expect(rows.every((r) => r.metadata?.variantRole === "insert")).toBe(true);
   });
 
+  test("a run that stops at its page cap returns continueCursor, and a run given it carries on from there", async () => {
+    vi.stubEnv("ALLOW_SELECTOR_BACKFILL", "1");
+    const t = convexTest(schema, modules);
+    const n = PAGE_SIZE + 7;
+    await t.run(async (ctx) => {
+      for (let i = 0; i < n; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "variantType",
+          value: `Parallels ${i}`,
+          platformData: { bsc: { b0: "parallel" } },
+          platformFacets: { bsc: { b0: "variant" } },
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+    });
+
+    const first = await t.action(internal.backfillVariantTypeRole.run, {
+      confirm: "BACKFILL",
+      maxPages: 1,
+    });
+    expect(first.truncated).toBe(true);
+    expect(first.counts.flagged).toBe(PAGE_SIZE);
+    expect(first.message).toMatch(/continueCursor/);
+    expect(first.continueCursor).toEqual(expect.any(String));
+
+    const second = await t.action(internal.backfillVariantTypeRole.run, {
+      confirm: "BACKFILL",
+      cursor: first.continueCursor,
+    });
+    // Only the rows past the first page: the cursor, not a restart.
+    expect(second.counts.scanned).toBe(7);
+    expect(second.counts.flagged).toBe(7);
+    expect(second.truncated).toBe(false);
+    expect(second.continueCursor).toBeUndefined();
+    const rows = await allRows(t);
+    expect(rows.every((r) => r.metadata?.variantRole === "parallel")).toBe(true);
+  });
+
   test("both functions are internal: no client can reach the backfill", () => {
     const src = readFileSync(join(__dirname, "backfillVariantTypeRole.ts"), "utf8");
     expect(src).toContain("export const runPage = internalMutation({");

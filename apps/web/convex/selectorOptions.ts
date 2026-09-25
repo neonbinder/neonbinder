@@ -695,6 +695,12 @@ export const getSelectorOptions = query({
   },
 });
 
+/**
+ * NEO-306 — parallels read under one insert by `getUsedInsertIdentifiersBySet`.
+ * An insert with more is refused rather than half-reported.
+ */
+export const MAX_PARALLELS_PER_INSERT = 1000;
+
 // Returns all identifiers (display values + platform values) already used by
 // inserts under the given setId, across every variantType sibling. Useful for
 // excluding already-linked sets from reconciliation/picker dialogs.
@@ -751,12 +757,23 @@ export const getUsedInsertIdentifiersBySet = query({
         // "one SL id on two rows" bug, one level deeper. Ids only: a
         // parallel's NAME ("Red Ink") says nothing about which top-level
         // insert is taken, so it stays out of `values`.
+        //
+        // Bounded (NEO-306 security audit), and FAIL CLOSED past it: a short
+        // list here would re-offer an id that is already placed, so the query
+        // refuses rather than answer with ids missing.
         const parallels = await ctx.db
           .query("selectorOptions")
           .withIndex("by_level_and_parent", (q) =>
             q.eq("level", "parallel").eq("parentId", ins._id),
           )
-          .collect();
+          .take(MAX_PARALLELS_PER_INSERT + 1);
+        if (parallels.length > MAX_PARALLELS_PER_INSERT) {
+          throw new ConvexError(
+            `${ins.value} has more than ${MAX_PARALLELS_PER_INSERT} parallels, so ` +
+              `this sync can't check which SportLots and BuySportsCards sets are ` +
+              `already taken.`,
+          );
+        }
         for (const par of parallels) {
           slPlatformValues.push(...slotIds(par, "sportlots"));
           bscPlatformValues.push(...slotIds(par, "bsc"));
@@ -10753,31 +10770,43 @@ export const listYearSetRows = internalQuery({
  * means the classification for that brand is SKIPPED and reported, because
  * an incomplete covered-set would offer an operator a set they already link.
  */
+/**
+ * Every SportLots id attached anywhere under a brand (setName → variantType
+ * → insert → parallel), bounded at `MAX_SYNC_ITEMS` rows read. Exported so a
+ * write transaction can ask "is this id already linked under the brand?"
+ * inside the same transaction that would link it (NEO-306: the review's
+ * save chunks), not only from an action that read it earlier.
+ */
+export async function brandSubtreeSlIds(
+  ctx: { db: QueryCtx["db"] },
+  manufacturerId: Id<"selectorOptions">,
+): Promise<{ ids: string[]; truncated: boolean }> {
+  const ids = new Set<string>();
+  let frontier: Id<"selectorOptions">[] = [manufacturerId];
+  let read = 0;
+  while (frontier.length > 0) {
+    const next: Id<"selectorOptions">[] = [];
+    for (const parentId of frontier) {
+      const rows = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_parent", (q) => q.eq("parentId", parentId))
+        .take(MAX_SYNC_ITEMS - read + 1);
+      read += rows.length;
+      if (read > MAX_SYNC_ITEMS) return { ids: [...ids], truncated: true };
+      for (const row of rows) {
+        for (const id of slotIds(row, "sportlots")) ids.add(id);
+        if (row.level !== "parallel") next.push(row._id);
+      }
+    }
+    frontier = next;
+  }
+  return { ids: [...ids], truncated: false };
+}
+
 export const listBrandSubtreeSlIds = internalQuery({
   args: { manufacturerId: v.id("selectorOptions") },
   returns: v.object({ ids: v.array(v.string()), truncated: v.boolean() }),
-  handler: async (ctx, args) => {
-    const ids = new Set<string>();
-    let frontier: Id<"selectorOptions">[] = [args.manufacturerId];
-    let read = 0;
-    while (frontier.length > 0) {
-      const next: Id<"selectorOptions">[] = [];
-      for (const parentId of frontier) {
-        const rows = await ctx.db
-          .query("selectorOptions")
-          .withIndex("by_parent", (q) => q.eq("parentId", parentId))
-          .take(MAX_SYNC_ITEMS - read + 1);
-        read += rows.length;
-        if (read > MAX_SYNC_ITEMS) return { ids: [...ids], truncated: true };
-        for (const row of rows) {
-          for (const id of slotIds(row, "sportlots")) ids.add(id);
-          if (row.level !== "parallel") next.push(row._id);
-        }
-      }
-      frontier = next;
-    }
-    return { ids: [...ids], truncated: false };
-  },
+  handler: async (ctx, args) => brandSubtreeSlIds(ctx, args.manufacturerId),
 });
 
 /**
@@ -11694,6 +11723,8 @@ export const syncSetsAcrossManufacturers = action({
         let slRootsTruncated = 0;
         // Entries whose label no slot can carry (`MAX_SLOT_LABEL_LENGTH`).
         let slUnnameable = 0;
+        // Entries whose SportLots id is empty or not an id (`MAX_SL_ID_LENGTH`).
+        let slBadIds = 0;
         // Entries hidden as a variant of a set NB already has. Not offered,
         // but not invisible either: the operator reaches them from that
         // set's Base picker / attach pane, and the summary says how many
@@ -11733,6 +11764,7 @@ export const syncSetsAcrossManufacturers = action({
           slVariantsOfKnown += routed.variants;
           slRootsTruncated += routed.truncated;
           slUnnameable += routed.unnameable;
+          slBadIds += routed.badIds;
           if (routed.truncated > 0) {
             console.warn(
               `[syncSetsAcrossManufacturers] SportLots list truncated for one ` +
@@ -11813,6 +11845,11 @@ export const syncSetsAcrossManufacturers = action({
         if (slUnnameable > 0) {
           summary.push(
             `${countNoun(slUnnameable, "SportLots set")} skipped — name too long`,
+          );
+        }
+        if (slBadIds > 0) {
+          summary.push(
+            `${countNoun(slBadIds, "SportLots set")} skipped — not a usable id`,
           );
         }
         if (slVariantsOfKnown > 0) {

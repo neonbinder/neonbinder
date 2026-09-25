@@ -14,6 +14,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+import { MAX_PARALLELS_PER_INSERT } from "./selectorOptions";
 
 const modules = (
   import.meta as unknown as {
@@ -103,5 +104,37 @@ describe("getUsedInsertIdentifiersBySet — parallels of inserts (NEO-306)", () 
         excludeVariantTypeId: insertTypeId,
       });
     expect(used).toEqual({ values: [], slPlatformValues: [], bscPlatformValues: [] });
+  });
+
+  test("an insert with more than MAX_PARALLELS_PER_INSERT parallels is refused, never half-reported (fail closed)", async () => {
+    // A short list would re-offer an id already placed on an unread
+    // parallel; the security audit asked for a bound that refuses instead.
+    const t = convexTest(schema, modules);
+    const { setId, parallelTypeId } = await seed(t);
+    await t.run(async (ctx) => {
+      const autos = (
+        await ctx.db
+          .query("selectorOptions")
+          .withIndex("by_level_and_parent", (q) => q.eq("level", "insert"))
+          .collect()
+      )[0];
+      for (let i = 0; i < MAX_PARALLELS_PER_INSERT; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "parallel",
+          value: `Colour ${i}`,
+          parentId: autos._id,
+          platformData: {},
+          children: [],
+          lastUpdated: 1_700_000_000_000,
+        });
+      }
+    });
+
+    await expect(
+      t.withIdentity(ADMIN).query(api.selectorOptions.getUsedInsertIdentifiersBySet, {
+        setId,
+        excludeVariantTypeId: parallelTypeId,
+      }),
+    ).rejects.toThrow(/more than 1000 parallels/);
   });
 });

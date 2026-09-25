@@ -55,3 +55,4 @@
 - [Patterns neo300 held elsewhere](patterns_neo300_held_elsewhere.md) — subtree walk charges ranges not bytes; 400 cap falls back silently; dup-parallel guard vs legal M:1; tier-0 existingId drops ids
 - [Patterns neo304 armed subtree wipe](patterns_neo304_armed_subtree_wipe.md) — name-only confirm phrase does not bind a target among duplicates; per-mutation re-arm + membership walk; schema graph pin
 - [Patterns neo305 set parallel conversion](patterns_neo305_set_parallel_conversion.md) — two-mode destination guard drift (attach skipped sibling holder scan); slot-key string args; row-delete doors drop operator NB fields
+- [Patterns neo306 sl review insert door](patterns_neo306_sl_review_insert_door.md) — staging doc = allowlist + mutex for client SL ids; assert-on-upstream-field aborts whole sync; sticky adds-only flags

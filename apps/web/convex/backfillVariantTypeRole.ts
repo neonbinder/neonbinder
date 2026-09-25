@@ -28,6 +28,10 @@
  *   npx convex run backfillVariantTypeRole:run '{"confirm":"BACKFILL"}'
  *   npx convex env remove ALLOW_SELECTOR_BACKFILL
  *
+ *   # a run that stops at the page cap says so and returns continueCursor:
+ *   npx convex run backfillVariantTypeRole:run \
+ *     '{"confirm":"BACKFILL","cursor":"<continueCursor>"}'
+ *
  *   # production: the same steps with --prod
  *
  * Two independent arms, the house rule (`backfillBrandUnknownRole` explains
@@ -100,9 +104,12 @@ const APPLIED_MESSAGE = "Applied. Re-run to confirm the steady state.";
 const DRY_RUN_MESSAGE =
   `Dry run — nothing written. Arm with ${ENV_FLAG}=1 on the deployment and ` +
   `re-run with {"confirm":"${CONFIRM_TOKEN}"} to apply.`;
-const TRUNCATED_MESSAGE =
-  `Stopped after ${MAX_PAGES} pages with rows left. Re-run the same command: ` +
-  `a page that is already flagged writes nothing, so the next run walks on.`;
+function truncatedMessage(pages: number): string {
+  return (
+    `Stopped after ${pages} pages with rows left. Re-run the same command with ` +
+    `"cursor" set to the continueCursor below; the run carries on from there.`
+  );
+}
 
 const countsValidator = v.object({
   scanned: v.number(),
@@ -203,22 +210,36 @@ export const run = internalAction({
   args: {
     /** `"BACKFILL"` to write; anything else (or nothing) is a dry run. */
     confirm: v.optional(v.string()),
+    /**
+     * Resume point: a previous run's `continueCursor`. Absent starts from the
+     * first variant type. (Re-running from the top is also safe — flagged
+     * rows write nothing — but only a cursor gets PAST the page cap.)
+     */
+    cursor: v.optional(v.string()),
+    /** Pages this run walks, 1..`MAX_PAGES` (default `MAX_PAGES`). */
+    maxPages: v.optional(v.number()),
   },
   returns: v.object({
     armed: v.boolean(),
     message: v.string(),
     pages: v.number(),
     truncated: v.boolean(),
+    /** Present when `truncated`: pass it back as `cursor` to carry on. */
+    continueCursor: v.optional(v.string()),
     counts: countsValidator,
   }),
   handler: async (ctx, args) => {
     const totals = emptyCounts();
-    let cursor: string | null = null;
+    let cursor: string | null = args.cursor ?? null;
+    const maxPages = Math.max(
+      1,
+      Math.min(MAX_PAGES, Math.floor(args.maxPages ?? MAX_PAGES)),
+    );
     let pages = 0;
     let armed = false;
     let refusedForFlag = false;
     let isDone = false;
-    while (pages < MAX_PAGES) {
+    while (pages < maxPages) {
       const page: {
         armed: boolean;
         refusedForFlag: boolean;
@@ -247,12 +268,13 @@ export const run = internalAction({
       message: refusedForFlag
         ? NOT_ARMED_MESSAGE
         : truncated
-          ? TRUNCATED_MESSAGE
+          ? truncatedMessage(pages)
           : armed
             ? APPLIED_MESSAGE
             : DRY_RUN_MESSAGE,
       pages,
       truncated,
+      ...(truncated && cursor !== null ? { continueCursor: cursor } : {}),
       counts: totals,
     };
   },

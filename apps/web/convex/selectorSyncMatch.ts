@@ -1527,6 +1527,14 @@ export function routeBscSets<TId extends string>(args: {
  */
 export const MAX_SL_SETS_PER_SYNC = 200;
 
+/**
+ * NEO-306 — a SportLots set id is a short slug; anything longer is not one.
+ * `routeSlSets` drops (and counts) an entry whose id is empty or longer, so
+ * the review's own assert (`replaceScope`) stays a backstop and one bad id
+ * can never abort a whole Sync Sets.
+ */
+export const MAX_SL_ID_LENGTH = 64;
+
 export type SlSetEntry = { id: string; label: string };
 
 export type SlSetRoutePlan = {
@@ -1544,6 +1552,11 @@ export type SlSetRoutePlan = {
   truncated: number;
   /** Entries dropped because their label exceeds `MAX_SLOT_LABEL_LENGTH`. */
   unnameable: number;
+  /**
+   * NEO-306 — entries dropped because their SportLots id is empty or longer
+   * than `MAX_SL_ID_LENGTH`: not an id NB could store or list against.
+   */
+  badIds: number;
 };
 
 /**
@@ -1656,10 +1669,17 @@ export function routeSlSets(args: {
   let covered = 0;
   let variants = 0;
   let unnameable = 0;
+  let badIds = 0;
   const fresh: Array<{ id: string; label: string; key: string }> = [];
   const seenIds = new Set<string>();
   for (const entry of args.entries) {
-    if (!entry.id || seenIds.has(entry.id)) continue;
+    // Beside the label cap: an id no slot can carry is dropped and counted
+    // here, before anything downstream asserts on it.
+    if (!entry.id || entry.id.length > MAX_SL_ID_LENGTH) {
+      badIds++;
+      continue;
+    }
+    if (seenIds.has(entry.id)) continue;
     seenIds.add(entry.id);
     if (args.coveredSlIds.has(entry.id)) {
       covered++;
@@ -1690,5 +1710,6 @@ export function routeSlSets(args: {
     entries: kept.map(({ id, label }) => ({ id, label })),
     truncated: fresh.length - kept.length,
     unnameable,
+    badIds,
   };
 }
