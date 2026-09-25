@@ -1217,6 +1217,21 @@ itself drains within a run like the other committing fixtures (a committed
 set's names are known; a re-sync raises no review), and CI reseeds every run.
 A LOCAL re-run needs a fresh seed.
 
+**NEO-307 — the retro-card proof rides here (approved by Jason 2026-09-25).**
+Before the fetch the flow also creates `Homestead Grays` with the era
+1912–1950 through the same career-editor picker. It is a REAL name, the suite's
+one exception to "minted names are single tokens", because the rule under test
+is about a checklist's own spelling. The 2024 set is after that era, and the
+sport holds exactly one row of the name, so the review gate links it
+(`allowPastEra`) and raises no step. The flow reads every team step's heading
+to prove it, then checks that the committed card's sub-line prints the name
+(not `… (unconfirmed)`) and that Team Management still lists one
+`Homestead Grays`. The era spans the club's whole life, so any real Grays stint
+(the cached lookups give Josh Gibson's 1937–1946) resolves strictly inside it
+and stages no career step of the same name. The row is inert elsewhere: no
+other flow fetches this set or types "Homestead"/"Grays" into a search, and the
+run-start reset wipes it.
+
 **Concurrency.** No other flow reads this set, and nothing reads
 `Loc<token> Ali<token>`. The four read-only Big League flows and the three
 committing fixtures share no `selectorOptionId` with it.

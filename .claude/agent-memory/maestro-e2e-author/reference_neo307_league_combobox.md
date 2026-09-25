@@ -63,3 +63,14 @@ pre-filled with the row's name and selecting it on focus. Option direct text is
 back (`{id: "Search all teams", text: <typed>}`) before tapping the option, so
 that typing into the pre-fill instead of replacing it fails where it happened.
 Worked example: `checklist-wizard-link-team-saves-alias.yaml` PART 4.
+
+**Retro rule proof (`allowPastEra`) and the commit fast path.** At commit,
+`commitCardChecklistPrelude` links any name that resolves to exactly one row
+BEFORE it reads the row's decision. So a linked card cannot tell "never raised"
+from "raised and skipped". Prove "not raised" in the wizard itself: walk each
+team step, `copyTextFrom "New Team: .*"`, compare, and skip. A card's sub-line
+prints an unresolved team as "<name> (unconfirmed)", so match the link with a
+negative lookahead. Cached Wikidata career stints (for sizing an era so the
+strict stint resolver stages nothing) are in
+`convex/adapters/__fixtures__/enrichment-lookups.json`. Worked example: the
+alias flow's R2(h).
