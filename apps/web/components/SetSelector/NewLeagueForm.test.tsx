@@ -362,3 +362,74 @@ describe("NewLeagueForm — a prefill that lands while the form is open", () => 
     expect(screen.getByRole("button", { name: "Hide details" })).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-307 — the picker opens the details collapsed; the wizard keeps its rule
+// ---------------------------------------------------------------------------
+
+describe("NewLeagueForm — detailsDefaultOpen", () => {
+  it("false: a name-only draft starts COLLAPSED, and a tap opens it", () => {
+    render(
+      <NewLeagueForm
+        draft={{ ...EMPTY, name: "World Hockey Association" }}
+        onChange={vi.fn()}
+        detailsDefaultOpen={false}
+      />,
+    );
+    expect(screen.queryByLabelText("New league abbreviation")).toBeNull();
+    const disclosure = screen.getByRole("button", {
+      name: "Add abbreviation, years and aliases",
+    });
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(disclosure);
+    expect(screen.getByLabelText("New league abbreviation")).toBeTruthy();
+  });
+
+  it("true: a prefilled draft starts OPEN", () => {
+    render(<NewLeagueForm draft={NHL} onChange={vi.fn()} detailsDefaultOpen />);
+    expect(screen.getByLabelText("New league abbreviation")).toBeTruthy();
+  });
+
+  it("absent: the wizard's rule is unchanged — open only when nothing is prefilled", () => {
+    const { unmount } = render(
+      <NewLeagueForm draft={{ ...EMPTY, name: "WHA" }} onChange={vi.fn()} />,
+    );
+    expect(screen.getByLabelText("New league abbreviation")).toBeTruthy();
+    unmount();
+    render(<NewLeagueForm draft={NHL} onChange={vi.fn()} />);
+    expect(screen.queryByLabelText("New league abbreviation")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 — the help line: the wizard keeps it, the picker drops it
+// ---------------------------------------------------------------------------
+
+describe("NewLeagueForm — showHelp", () => {
+  const HELP = "The competition this team plays in. One league, asked once for the whole batch.";
+  const nameField = () => screen.getByLabelText("New league name");
+
+  it("default (the wizard's New League step): shows the line and describes the name by it", () => {
+    render(<NewLeagueForm draft={NHL} onChange={vi.fn()} />);
+    const help = screen.getByText(HELP);
+    expect(nameField().getAttribute("aria-describedby")?.split(" ")).toContain(help.id);
+  });
+
+  it("false (the picker): no line, and no aria-describedby left pointing at it", () => {
+    render(<NewLeagueForm draft={NHL} onChange={vi.fn()} showHelp={false} />);
+    expect(screen.queryByText(HELP)).toBeNull();
+    expect(nameField().hasAttribute("aria-describedby")).toBe(false);
+  });
+
+  it("false keeps the host's own describedBy, and every id resolves", () => {
+    render(
+      <>
+        <p id="host-reason">Why this is blocked.</p>
+        <NewLeagueForm draft={NHL} onChange={vi.fn()} showHelp={false} describedBy="host-reason" />
+      </>,
+    );
+    const ids = nameField().getAttribute("aria-describedby")!.split(" ");
+    expect(ids).toEqual(["host-reason"]);
+    for (const id of ids) expect(document.getElementById(id)).not.toBeNull();
+  });
+});

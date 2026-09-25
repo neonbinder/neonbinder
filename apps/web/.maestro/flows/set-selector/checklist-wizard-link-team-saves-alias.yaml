@@ -4,11 +4,12 @@ name: "Entity review — linking a checklist TEAM to an existing team remembers 
 tags:
   - set-selector
 ---
-# R1 — ONE FEATURE (NEO-284): a "Link to Existing…" decision on a TEAM row
-# carries the row's raw marketplace string into the linked team's aliases,
-# and it does so by default. The wizard shows the operator a ticked
-# "Remember “<string>” as a name for this team" box the moment a link control
-# is on screen; the decision reads "· remembered as …"; the COMMIT writes the
+# R1 — ONE FEATURE (NEO-284): a LINK decision on a TEAM row carries the row's
+# raw marketplace string into the linked team's aliases, and it does so by
+# default. Since NEO-307 a team is linked from the step's one "Search all
+# teams" combobox (the near-match buttons and "Link to Existing…" are gone for
+# teams). The wizard shows the operator a ticked "Remember “<string>” as a
+# name for this team" box beside it; the decision reads "· remembered as …"; the COMMIT writes the
 # alias; and Team Management then lists it under "Current aliases", where the
 # operator can take it back out again.
 #
@@ -17,9 +18,10 @@ tags:
 #         editor proves `teams.findOrCreate` returned;
 #     (b) the wizard opens with nothing decided ("0 of N reviewed") and the row
 #         under test is a TEAM row: its skip control says "not a team";
-#     (c) the remember-box is on screen, quoting THIS row's raw name, as soon
-#         as the link search is open;
-#     (d) the search finds the fixture BY ITS NAME and taking it records a
+#     (c) the remember-box is on screen, quoting THIS row's raw name, beside
+#         the "Search all teams" combobox, which opens seeded with that name;
+#     (d) the combobox finds the fixture BY ITS NAME (typing replaces the
+#         seeded text) and picking it records a
 #         LINK WITH THE ALIAS — the read-back line is
 #         "Linked to <team> · remembered as “<row>”", a string `describeDecision`
 #         composes ONLY when `decision.saveAsAlias` is true on a team link.
@@ -37,6 +39,55 @@ tags:
 #     (g) SELF-CLEANING (R7): clearing the box and saving removes the alias,
 #         and a RELOAD shows the box empty (its placeholder is the text) with no
 #         "Current aliases" list — a negative paired with a positive.
+#     (i) NEO-307 — a New Team name that is another team's ALIAS is refused.
+#         Pittsburgh Crawfords is created with the alias `Pca<token>`. On the
+#         first team step the Team name is edited to it, and the step then
+#         prints "Pittsburgh Crawfords already answers to this name as an alias —
+#         remove it there before a team can take the name.", offers
+#         "Link to Pittsburgh Crawfords · 1926–1940", and "Add as New Team" records
+#         nothing (the header's reviewed-count is unchanged seconds later).
+#         About 10s, on a step the flow already stands on.
+#     (h) NEO-307 — A CARD CAN SHOW A TEAM'S PAST. A club on this checklist,
+#         "Pittsburgh Crawfords" (card RW-2's), is created through the UI
+#         first with the era 1926–1940, which ended before this 2024 set. Because the sport holds
+#         exactly ONE row of that full name and the set year is after its era,
+#         the review gate resolves it (`resolveTeamForSetYear`, `allowPastEra`
+#         for card callers): it is NOT raised as a New Team step — asserted on
+#         every team step the wizard presents, by reading each heading — and
+#         on commit the card carrying it LINKS to that row (its sub-line prints
+#         the name, not "… (unconfirmed)"), with Team Management still holding
+#         exactly one "Pittsburgh Crawfords". This is Jason's approved Option A
+#         (2026-09-25): the one committing fixture whose teams are defunct
+#         clubs, so the retro rule rides here rather than on a new real set.
+#
+# ── THE RETRO CLUB, AND WHY ITS NAME IS REAL ────────────────────────────────
+#   The one exception in the suite to "minted names are single tokens", and
+#   an unavoidable one: the rule is about a name ON A CHECKLIST, so the team
+#   must carry the checklist's own spelling. "Pittsburgh Crawfords" is that
+#   spelling, and it is the TEAM ON CARD RW-2 (Josh Gibson). MEASURED on the
+#   PR preview 2026-09-25: a committed run linked that card's club to
+#   Loc<token> Ali<token>, and the alias it saved reads exactly
+#   "Pittsburgh Crawfords". The name was "Homestead Grays" until then, taken
+#   from SET-REGISTRY's list of the wizard's headings. CI run 36139385192
+#   showed that heading is a STAGED career team (Gibson's Wikidata stint), not
+#   a checklist club, so no card could ever carry it. Approved by Jason for
+#   this flow only (as "Homestead Grays"; the swap needs his re-approval). It
+#   is inert to every other flow: nothing else fetches this set, and no flow
+#   types "Pittsburgh" or "Crawfords" into a search. The run-start reset
+#   wipes it.
+#
+#   WHY 1926–1940, and why the Wikidata stints cannot red this. The span is
+#   the club's whole life, so any real Crawfords stint falls inside it. The
+#   career-team staging resolves a STINT strictly (no `allowPastEra`): a stint
+#   INSIDE the era links to this row and stages nothing, a stint outside it
+#   would stage a legitimate career step of the same name and false-red (h).
+#   The cached lookups (`convex/adapters/__fixtures__/enrichment-lookups.json`)
+#   give the only dated Crawfords stint among this set's four players as Josh
+#   Gibson's 1932–1936, which is inside. Paige's teams are undated, which the
+#   resolver answers without a year. Robinson and Mays carry none.
+#
+#   FRESH-ONLY, like the rest of this flow: a re-run in the same deployment
+#   finds the row and the "No matches." precondition fails. CI reseeds.
 #
 # ── THE FIXTURE, AND WHY IT IS ONE-SIDED ────────────────────────────────────
 #   `Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues
@@ -190,6 +241,49 @@ tags:
 - extendedWaitUntil:
     visible:
       id: "Remove team Loc${output.TOKEN} Ali${output.TOKEN}"
+    timeout: 7000
+
+# ── R2(h) NEO-307: the retro club, with a CLOSED era, through the same picker
+# The trigger is `setPopoverOpen(true)`, never a toggle, so reopening is safe
+# whatever state the first create left the popover in.
+# MEASURED (green local run, 2026-09-25): after the first chip "+ Add team"
+# is at y=495-517, on screen with no scroll.
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: "Pittsburgh Crawfords"
+# The precondition (h) needs: no row of this name exists yet. A second row
+# would make the name ambiguous and the rule would, correctly, not fire.
+- assertVisible: "No matches."
+- pressKey: Enter
+# The heading echoes the query, so it also proves the search box held exactly
+# the club's name and not text left over from the first create.
+- assertVisible: "New team: Pittsburgh Crawfords"
+# The era, by the fields' explicit aria-labels (NewTeamForm; regex brackets
+# escaped). "to" stays disabled until a start year exists, so from first.
+# MEASURED (same run): both era boxes at y=266-300, inside the dialog body's
+# visible slice.
+- tapOn:
+    id: "New team active from \\(optional\\)"
+- inputText: "1926"
+- tapOn:
+    id: "New team active to"
+- inputText: "1940"
+# R2(i) NEO-307: one alias on the retro club, `Pca<token>`, for the wizard's
+# alias-clash warning in PART 4. Typed here because the dialog already asks
+# for aliases, which costs one field instead of a Team Management detour. It
+# is inert: no checklist carries it, and the flow never searches for it.
+- tapOn:
+    id: "New team aliases \\(optional\\)"
+- inputText: "Pca${output.TOKEN}"
+# No Location and no League typed: the composed full name is exactly the
+# checklist's string, which is what the Create button's name asserts.
+- tapOn:
+    id: "Create team Pittsburgh Crawfords"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team Pittsburgh Crawfords"
     timeout: 7000
 
 # ============================================================
@@ -358,40 +452,110 @@ tags:
     text: "New Team: .*"
 - evalScript: '${output.ROW_NAME = maestro.copiedText.replace(/^New Team: /, "")}'
 - assertTrue: ${output.ROW_NAME.length > 0}
+# R2(h), first of the team steps: the row the batch presents first is not the
+# retro club. Every later team step is read the same way in PART 5.
+- assertTrue: '${output.ROW_NAME !== "Pittsburgh Crawfords"}'
 
 # ============================================================
 # PART 4 — LINK, WITH THE REMEMBER-BOX ON (R2c, R2d)
 # ============================================================
-# Retry the open, because the row can grow UNDER the tap: a near-match panel
-# arriving on its own query pushes "Link to Existing…" down between the bounds
-# read and the click (measured on Topps Brooklyn Collection; see
-# checklist-wizard-link-commits). The wait doubles as the R2 precondition —
-# this panel is labelled for TEAMS.
-- retry:
-    maxRetries: 2
-    commands:
-      - tapOn:
-          id: "Link to existing instead"
-          retryTapIfNoChange: true
-      - extendedWaitUntil:
-          visible:
-            id: "Search existing teams"
-          timeout: 7000
+# NEO-307 — a team step no longer has "Link to Existing…" or near-match Link
+# buttons. Every team step carries ONE combobox, "Search all teams", pre-filled
+# with the row's own name and opening on the near matches; a pick links through
+# the same `handleLink` path, "Remember …" answer included.
+#
+# R2 precondition: the combobox is on THIS team step. It sits in the step body
+# above the New Team form, inside the body's visible slice (README "Asserting
+# inside a dialog"); its value is the row's raw name, which is also the proof
+# that it was seeded from this row and not left over from another.
+- extendedWaitUntil:
+    visible:
+      id: "Search all teams"
+      text: "${output.ROW_NAME}"
+    timeout: 7000
 
-# R2(c) — the box is offered, quoting THIS row's raw name (curly quotes are
-# the product's). Its checked state is proven by (d) below, not here.
+# R2(c) — the box is offered beside the combobox, quoting THIS row's raw name
+# (curly quotes are the product's). Its checked state is proven by (d) below.
 - assertVisible:
     text: "Remember “${output.ROW_NAME}” as a name for this team"
 
+# ── R2(i) NEO-307: a New Team name that is another team's ALIAS is refused ──
+# Edit this step's Team name to `Pca<token>`, the alias PART 1 gave Pittsburgh
+# Crawfords. The step must then say so in the product's one sentence (body and
+# footer carry the same text node), offer the holder's link, and refuse
+# "Add as New Team". The edited name is then LEFT in place: this row's
+# decision is the LINK below, which never reads the create draft.
+#
+# Why no restore (CI run 36139385192, runner 6, step 125): the warning block
+# is inserted ABOVE the Location/Name fields, so it pushes the Team name box
+# ~114px down, from y=432-466 to y=546-580. That is below the wizard body's
+# visible bottom (~475), under the pinned footer, so the restore tap landed
+# on the footer and the name was never put back. The body is an inner
+# scroller maestro cannot see the clip of (README "Asserting inside a dialog").
+#
+# The field is found by its VALUE under its caption. In the wizard the input
+# carries a stable DOM id, which becomes its resource-id and shadows the
+# aria-label, and flows never target a DOM id. `below:` the "Team name"
+# caption picks the nearest match, which is the input and not the "Shows as:"
+# preview further down. The "Search all teams" box, which also holds the row's
+# name, sits above the form. MEASURED in that run: the prefill's Location is
+# empty (the row was "Montreal Royals", and the whole name was in Team name),
+# the box sat at y=432-466 inside the body's visible slice, and a centre tap
+# put the caret at the end (the erase cleared it).
 - tapOn:
-    id: "Search existing teams"
+    text: "${output.ROW_NAME}"
+    below:
+      text: "Team name"
+- eraseText: 60
+- inputText: "Pca${output.TOKEN}"
+# The holder's full name, then the sentence. Em dash matched with ".".
+- extendedWaitUntil:
+    visible: "Pittsburgh Crawfords already answers to this name as an alias . remove it there before a team can take the name\\."
+    timeout: 7000
+# The fix offered in place: the holder's link, era included (middle dot and
+# en dash matched with "."). Asserted only. The flow's own link is to
+# Loc<token> Ali<token>, below.
+- assertVisible: "Link to Pittsburgh Crawfords . 1926.1940"
+# The refused create. The header's counter counts every decision, so it is
+# read before the tap and must still read the same after it. A recorded
+# create would also move the walk off this row, and the next steps read the
+# "Search all teams" box seeded with THIS row's name, which a moved walk
+# would fail.
+- copyTextFrom:
+    text: "[0-9]+ of [0-9]+ reviewed.*"
+- evalScript: '${output.COUNT_BEFORE = maestro.copiedText}'
+- tapOn:
+    id: "Add as New Team"
+
+# The field selects its pre-filled text on focus, so typing REPLACES the row's
+# name. That is read back before the option is looked for: if the typing had
+# landed inside the pre-fill instead (a caret dropped mid-string), the search
+# would be for a string no team carries and the failure would read as "no such
+# team" rather than what it is. `Ali<token>` is a strict substring of the
+# option's "Loc<token> Ali<token>", so the input's own text cannot answer to
+# the tap.
+- tapOn:
+    id: "Search all teams"
 - inputText: "Ali${output.TOKEN}"
 - extendedWaitUntil:
     visible:
-      id: "Link to Loc${output.TOKEN} Ali${output.TOKEN}"
+      id: "Search all teams"
+      text: "Ali${output.TOKEN}"
+    timeout: 7000
+# R2(i), the refusal's second reading: seconds after the tap on the refused
+# "Add as New Team", nothing has been decided (a create would have counted).
+- copyTextFrom:
+    text: "[0-9]+ of [0-9]+ reviewed.*"
+- assertTrue: '${maestro.copiedText === output.COUNT_BEFORE}'
+# The option's only direct text node is the composed full name (its "League ·
+# years" line is a separate node; this fixture has neither, so there is none).
+# It comes back from `teams.search` after a 200ms debounce — in-app, 7000.
+- extendedWaitUntil:
+    visible:
+      text: "Loc${output.TOKEN} Ali${output.TOKEN}"
     timeout: 7000
 - tapOn:
-    id: "Link to Loc${output.TOKEN} Ali${output.TOKEN}"
+    text: "Loc${output.TOKEN} Ali${output.TOKEN}"
 # The decision landing is what moves the wizard OFF this row (an implicit row
 # advances the moment it is settled). Waiting for the heading to go is the
 # only honest "it landed" here — the counter already moved for the league skip
@@ -420,8 +584,72 @@ tags:
       text: "Already decided:.*"
 
 # ============================================================
-# PART 5 — COMMIT (R2e)
+# PART 5 — COMMIT (R2e), after reading every other team step (R2h)
 # ============================================================
+# R2(h) — the retro club is NOT raised. The wizard presents every settled
+# undecided TEAM (and LEAGUE) row before any player row, one row at a time
+# (`entity-review-nav.ts`), and the batch settled in PART 3. So walking the
+# remaining team steps one by one, reading each heading and skipping it,
+# reads EVERY team step the batch raised; a player row coming up is the
+# product saying there are no more. A bulk skip here would decide them
+# unseen, and the commit alone cannot tell "never raised" from "raised and
+# skipped": its exactly-one fast path links a resolvable name BEFORE it reads
+# the decision (`commitCardChecklistPrelude`).
+#
+# LEAGUE STEPS COME THROUGH THIS WALK TOO (CI run 36166081072, runner 7, step
+# 146). A staged career team (here "Homestead Grays", from Josh Gibson's
+# Wikidata stints) raises its own `New League:` step. Since NEO-307 a league
+# step is presented while its lookup is still pending, so it can come up at
+# any point in this walk, before, between or after team steps. A loop that
+# only knew "Skip … not a team" stalled on "New League: Negro league baseball"
+# and the player-row wait below failed. So the walk takes every team OR
+# league step, one presented row at a time, and reads each one before
+# skipping it. A skip creates nothing (R7).
+#
+# Per row, two readings that must agree:
+#   * the step's HEADING ("New Team: …" or "New League: …", the body's top
+#     line, a copied node, so it cannot pass on a dead page); and
+#   * the skip CONTROL's own text ("Skip — not a team" / "Skip — no league"),
+#     which says which kind of step the footer is acting on.
+# A league skip must sit under a `New League:` heading, and a team skip under
+# a `New Team:` heading that is not the retro club. So no team step, the retro
+# club's above all, can be skipped as if it were a league, and every team
+# heading the batch raised is read.
+#
+# ONE guard for both kinds, the same selector `util-wizard-walk-to-player-
+# row.yaml` drains with: a second `when:` that does not match costs ~6.6s per
+# pass (a non-matching `runFlow when` waits out its lookup). The `optional:
+# true` tap is that util's mechanism, noted there and not duplicated (R3).
+- repeat:
+    times: 20
+    while:
+      notVisible:
+        id: "Skip .* not a person"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "Skip .*(not a team|has no league)"
+          commands:
+            - copyTextFrom:
+                text: "New (Team|League): .*"
+            - evalScript: '${output.STEP_HEADING = maestro.copiedText}'
+            - copyTextFrom:
+                id: "Skip .*(not a team|has no league)"
+            - evalScript: >-
+                ${output.STEP_OK = (maestro.copiedText.indexOf("no league") >= 0)
+                  ? output.STEP_HEADING.indexOf("New League: ") === 0
+                  : (output.STEP_HEADING.indexOf("New Team: ") === 0
+                     && output.STEP_HEADING !== "New Team: Pittsburgh Crawfords")}
+            - assertTrue: ${output.STEP_OK}
+            - tapOn:
+                id: "Skip .*(not a team|has no league)"
+                optional: true
+- extendedWaitUntil:
+    visible:
+      id: "Skip .* not a person"
+    timeout: 7000
+
 # Everything else is a skip: skips create nothing, so the only entity this
 # commit could mint is the one the link deliberately avoided. The batch is
 # settled (PART 3), so the bulk skip is one mutation — in-app, 7000.
@@ -436,6 +664,23 @@ tags:
 - extendedWaitUntil:
     visible:
       text: ".*Saved [0-9]+ cards.*"
+    timeout: 7000
+
+# R2(h) — the card LINKED to the retro club. A card's sub-line prints its
+# resolved teams by full name (`CardChecklistItem`: `teamFullName` over
+# `teamOnCardIds`) and an unresolved one as "<name> (unconfirmed)", so the
+# negative lookahead is what makes this the link and not the raw string.
+# The club is on card RW-2 (Gibson's). The page position after the commit
+# varies: one local run left RW-2's sub-line at y=2-18 under the sticky
+# header (RW-1 above y=0), which is why the scroll goes UP. The green local
+# run (2026-09-25) found it at try 0 with the sub-line at y=510-526, fully
+# visible, and accepted it without a swipe. The sub-line is one text node
+# (`subParts.join`), which the regex assumes.
+- scrollUntilVisible:
+    element:
+      text: ".*Pittsburgh Crawfords(?! \\(unconfirmed\\)).*"
+    direction: UP
+    centerElement: true
     timeout: 7000
 
 # ============================================================
@@ -530,3 +775,20 @@ tags:
     text: "LSU, Louisiana State, LSU Tigers baseball"
     below:
       text: "Also known as"
+
+# ============================================================
+# PART 8 — THE RETRO CLUB IS STILL ONE ROW (R2h)
+# ============================================================
+# The link must not have minted a second era of the club. A fresh load, so the
+# filter box starts empty (the one above still holds "Ali<token>", and a label
+# tap would put the caret at 0). The counter is the page's own count of rows
+# matching the filter.
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 30000
+- tapOn: "Filter teams"
+- inputText: "Pittsburgh Crawfords"
+- extendedWaitUntil:
+    visible: "1 of .* teams.*"
+    timeout: 7000

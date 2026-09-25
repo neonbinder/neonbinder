@@ -40,7 +40,7 @@
  * about.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConvexError } from "convex/values";
@@ -53,19 +53,23 @@ import type { Id } from "../../convex/_generated/dataModel";
 vi.mock("../../convex/_generated/api", () => ({
   api: {
     teams: { findOrCreate: "teams.findOrCreate" },
-    leagues: { list: "leagues.list" },
+    leagues: { list: "leagues.list", createByAdmin: "leagues.createByAdmin" },
   },
 }));
 
 let currentLeagues: unknown;
 const mockFindOrCreate = vi.fn();
+/** NEO-307 — the picker's "Add league" writes through `createByAdmin`. */
+const mockCreateLeague = vi.fn();
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string) => (ref === "leagues.list" ? currentLeagues : undefined),
   useMutation: (ref: string) =>
     ref === "teams.findOrCreate"
       ? mockFindOrCreate
-      : vi.fn(() => Promise.resolve(undefined)),
+      : ref === "leagues.createByAdmin"
+        ? mockCreateLeague
+        : vi.fn(() => Promise.resolve(undefined)),
 }));
 
 // ---------------------------------------------------------------------------
@@ -127,6 +131,14 @@ const nameField = () => screen.getByLabelText("New team name") as HTMLInputEleme
 const locationField = () =>
   screen.getByLabelText("New team location (optional)") as HTMLInputElement;
 const dialog = () => screen.getByRole("dialog");
+/** NEO-307 — League is a type-ahead: focus opens the list, a pick is a mouse
+ *  down on the option (the combobox selects before its own blur can close). */
+const leagueField = () =>
+  screen.getByRole("combobox", { name: "League" }) as HTMLInputElement;
+function pickLeague(label: string): void {
+  fireEvent.focus(leagueField());
+  fireEvent.mouseDown(screen.getByRole("option", { name: label }));
+}
 const scrim = () => dialog();
 
 beforeEach(() => {
@@ -186,13 +198,12 @@ describe("NewTeamDialog — what it shows", () => {
     expect(nameField().value).toBe("Los Angeles Angels");
   });
 
-  it("passes the league suggestion through to the pills", () => {
+  it("passes the league suggestion through to the League field", () => {
     currentLeagues = [];
     renderDialog({ leagueSuggestion: "Australian Baseball League" });
 
-    expect(
-      screen.getByRole("radio", { name: "Create Australian Baseball League" }),
-    ).toBeTruthy();
+    // The standing answer while nothing else is picked.
+    expect(leagueField().value).toBe("Create Australian Baseball League");
   });
 });
 
@@ -317,7 +328,7 @@ describe("NewTeamDialog — creating", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderDialog({ initialName: "Padres" });
 
-    fireEvent.click(screen.getByRole("radio", { name: "MLB" }));
+    pickLeague("MLB");
     fireEvent.click(screen.getByRole("button", { name: "Create team Padres" }));
 
     await waitFor(() => {
@@ -335,7 +346,7 @@ describe("NewTeamDialog — creating", () => {
     // the two would file every league-less team under the sport default.
     renderDialog({ initialName: "Orix Buffaloes" });
 
-    fireEvent.click(screen.getByRole("radio", { name: "No league" }));
+    pickLeague("No league");
     fireEvent.click(screen.getByRole("button", { name: "Create team Orix Buffaloes" }));
 
     await waitFor(() => {
@@ -366,9 +377,7 @@ describe("NewTeamDialog — creating", () => {
       leagueSuggestion: "Australian Baseball League",
     });
 
-    fireEvent.click(
-      screen.getByRole("radio", { name: "Create Australian Baseball League" }),
-    );
+    pickLeague("Create Australian Baseball League");
     fireEvent.click(screen.getByRole("button", { name: "Create team Sydney Blue Sox" }));
 
     await waitFor(() => {
@@ -384,10 +393,8 @@ describe("NewTeamDialog — creating", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderDialog({ initialName: "Padres", leagueSuggestion: "Nippon Professional Baseball" });
 
-    fireEvent.click(
-      screen.getByRole("radio", { name: "Create Nippon Professional Baseball" }),
-    );
-    fireEvent.click(screen.getByRole("radio", { name: "MLB" }));
+    pickLeague("Create Nippon Professional Baseball");
+    pickLeague("MLB");
     fireEvent.click(screen.getByRole("button", { name: "Create team Padres" }));
 
     await waitFor(() => expect(mockFindOrCreate).toHaveBeenCalledTimes(1));
@@ -658,15 +665,17 @@ describe("NewTeamDialog — focus", () => {
     expect(document.activeElement).toBe(button);
   });
 
-  it("does not count the untabbable League pills as Tab stops", () => {
-    // The pills are a roving-tabindex radiogroup: all but one carry
-    // `tabindex="-1"`, so counting them would make the trap wrap at the wrong
-    // element.
+  it("wraps at the true ends with the League combobox and its open list inside", () => {
+    // NEO-307: League is one combobox — one Tab stop — and its options are
+    // `<li role="option">` with no tabindex, so an open list adds no stops for
+    // the trap to miscount.
     currentLeagues = [
       { _id: lid("l1"), name: "MLB" },
       { _id: lid("l2"), name: "NPB" },
     ];
     renderDialog();
+    fireEvent.focus(leagueField());
+    expect(screen.getAllByRole("option").length).toBeGreaterThan(0);
 
     const cancel = screen.getByRole("button", { name: "Cancel" });
     cancel.focus();
@@ -703,7 +712,7 @@ describe("NewTeamDialog — end to end", () => {
 
     fireEvent.change(nameField(), { target: { value: "Padres" } });
     fireEvent.change(locationField(), { target: { value: "San Diego" } });
-    fireEvent.click(screen.getByRole("radio", { name: "MLB" }));
+    pickLeague("MLB");
 
     await act(async () => {
       fireEvent.keyDown(nameField(), { key: "Enter" });
@@ -863,5 +872,197 @@ describe("NewTeamDialog — a second era", () => {
     fireEvent.click(screen.getByRole("button", { name: /^Create team/ }));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("Could not create team.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 (a11y audit) — everything behind the dialog is inert while it is up
+//
+// Opened from a picker while the review wizard shows its own New Team step,
+// both forms carried a combobox named "League" and neither was hidden. The
+// name is an E2E contract and stays; the background goes `inert` instead.
+// happy-dom does not drop inert subtrees from role queries, so "reachable" is
+// asserted as "not inside an [inert] ancestor" — the attribute is the contract.
+// ---------------------------------------------------------------------------
+
+describe("NewTeamDialog — the background is inert while it is open", () => {
+  const live = (el: Element) => el.closest("[inert]") === null;
+
+  /** Stand-in for the wizard: another body-level portal holding its own
+   *  "League" combobox, as EntityReviewWizard's New Team step does. */
+  function mountWizardStandIn(): HTMLElement {
+    const portal = document.createElement("div");
+    portal.setAttribute("data-testid", "wizard-portal");
+    const league = document.createElement("input");
+    league.setAttribute("role", "combobox");
+    league.setAttribute("aria-label", "League");
+    portal.appendChild(league);
+    document.body.appendChild(portal);
+    return portal;
+  }
+
+  afterEach(() => {
+    document.querySelectorAll('[data-testid="wizard-portal"], [data-testid="someone-elses"]').forEach((n) => n.remove());
+  });
+
+  it("leaves exactly one live 'League' combobox — its own — over another portal's", () => {
+    const wizard = mountWizardStandIn();
+    const { container } = renderDialog();
+
+    const leagues = screen.getAllByRole("combobox", { name: "League" });
+    expect(leagues).toHaveLength(2);
+    const reachable = leagues.filter(live);
+    expect(reachable).toHaveLength(1);
+    expect(dialog().contains(reachable[0])).toBe(true);
+    // The wizard's portal and the page (the render container) are both held.
+    expect(wizard.hasAttribute("inert")).toBe(true);
+    expect(container.hasAttribute("inert")).toBe(true);
+    // The dialog itself never is.
+    expect(live(dialog())).toBe(true);
+  });
+
+  it("restores the background exactly on close", () => {
+    const wizard = mountWizardStandIn();
+    const { rerender, props, container } = renderDialog();
+    rerender(<Host open={false} {...props} />);
+
+    expect(wizard.hasAttribute("inert")).toBe(false);
+    expect(container.hasAttribute("inert")).toBe(false);
+    expect(screen.getAllByRole("combobox", { name: "League" }).filter(live)).toHaveLength(1);
+  });
+
+  it("never clears an inert or aria-hidden that someone else set", () => {
+    const theirs = document.createElement("div");
+    theirs.setAttribute("data-testid", "someone-elses");
+    theirs.setAttribute("inert", "");
+    theirs.setAttribute("aria-hidden", "true");
+    document.body.appendChild(theirs);
+
+    const { rerender, props } = renderDialog();
+    expect(theirs.hasAttribute("inert")).toBe(true);
+    rerender(<Host open={false} {...props} />);
+
+    expect(theirs.hasAttribute("inert")).toBe(true);
+    expect(theirs.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("still hands focus back to the opener on close — released before focusing", () => {
+    const props = { initialName: "Padres", onCreated: vi.fn(), onClose: vi.fn() };
+    const { rerender } = render(<Host open={false} {...props} />);
+    const opener = screen.getByRole("button", { name: "Opener" });
+    opener.focus();
+    rerender(<Host open {...props} />);
+    expect(opener.closest("[inert]")).not.toBeNull();
+
+    rerender(<Host open={false} {...props} />);
+    expect(opener.closest("[inert]")).toBeNull();
+    expect(document.activeElement).toBe(opener);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 (a11y audit) — Escape in the inline league form is ONE level
+// ---------------------------------------------------------------------------
+
+describe("NewTeamDialog — Escape inside the inline New League form", () => {
+  it("cancels only the league form; the dialog and the team draft survive", async () => {
+    currentLeagues = [];
+    const { onClose } = renderDialog({ initialName: "Lincoln Stars" });
+    fireEvent.change(locationField(), { target: { value: "Lincoln" } });
+    fireEvent.change(nameField(), { target: { value: "Stars" } });
+
+    const league = screen.getByRole("combobox", { name: "League" });
+    fireEvent.focus(league);
+    fireEvent.change(league, { target: { value: "USHL" } });
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “USHL”" }));
+    const leagueName = screen.getByLabelText("New league name");
+
+    fireEvent.keyDown(leagueName, { key: "Escape" });
+
+    expect(screen.queryByLabelText("New league name")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(dialog()).toBeTruthy();
+    expect(locationField().value).toBe("Lincoln");
+    expect(nameField().value).toBe("Stars");
+    // And a second Escape, now outside the sub-form, is the dialog's again.
+    fireEvent.keyDown(nameField(), { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 — a focus handed BACK to the League field never opens its list
+//
+// Found locally: after "Add league" the form returned focus to the League
+// combobox, its open-on-focus list floated over the footer, and the next click
+// on "Create team" picked "No league" — throwing away the league just added.
+// ---------------------------------------------------------------------------
+
+describe("NewTeamDialog — after Add league, Create team records THAT league", () => {
+  async function addLeagueFromTyped(typed: string) {
+    const league = screen.getByRole("combobox", { name: "League" });
+    fireEvent.focus(league);
+    fireEvent.change(league, { target: { value: typed } });
+    fireEvent.mouseDown(screen.getByRole("option", { name: `Create “${typed}”` }));
+    fireEvent.click(screen.getByRole("button", { name: "Add league" }));
+    await waitFor(() => expect(screen.queryByLabelText("New league name")).toBeNull());
+  }
+
+  it("returns focus to the League field with its list CLOSED, and keeps the new league", async () => {
+    currentLeagues = [];
+    mockCreateLeague.mockResolvedValue({ id: lid("l-ushl"), created: true });
+    renderDialog({ initialName: "Lincoln Stars" });
+
+    await addLeagueFromTyped("USHL");
+
+    const league = screen.getByRole("combobox", { name: "League" });
+    expect(document.activeElement).toBe(league);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(league.getAttribute("aria-expanded")).toBe("false");
+    // The answer is the league just added, shown at rest.
+    expect((league as HTMLInputElement).value).toBe("USHL");
+  });
+
+  it("Create team, pressed next, sends the league just added — not 'No league'", async () => {
+    currentLeagues = [];
+    mockCreateLeague.mockResolvedValue({ id: lid("l-ushl"), created: true });
+    mockFindOrCreate.mockResolvedValue(tid("team-stars"));
+    renderDialog({ initialName: "Lincoln Stars" });
+
+    await addLeagueFromTyped("USHL");
+    fireEvent.click(screen.getByRole("button", { name: "Create team Lincoln Stars" }));
+
+    await waitFor(() => expect(mockFindOrCreate).toHaveBeenCalledTimes(1));
+    expect(mockFindOrCreate.mock.calls[0][0]).toMatchObject({
+      name: "Lincoln Stars",
+      leagueId: lid("l-ushl"),
+    });
+  });
+
+  it("returns focus quietly after the league form's Cancel too", () => {
+    currentLeagues = [];
+    renderDialog({ initialName: "Lincoln Stars" });
+    const league = screen.getByRole("combobox", { name: "League" });
+    fireEvent.focus(league);
+    fireEvent.change(league, { target: { value: "USHL" } });
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “USHL”" }));
+
+    // The league form's own Cancel, in its actions row — not the dialog's.
+    const actions = document.querySelector<HTMLElement>("[data-new-league-actions]")!;
+    fireEvent.click(within(actions).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByLabelText("New league name")).toBeNull();
+    expect(document.activeElement).toBe(league);
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("a person clicking the field afterwards still opens it", async () => {
+    currentLeagues = [];
+    mockCreateLeague.mockResolvedValue({ id: lid("l-ushl"), created: true });
+    renderDialog({ initialName: "Lincoln Stars" });
+    await addLeagueFromTyped("USHL");
+
+    fireEvent.click(screen.getByRole("combobox", { name: "League" }));
+    expect(screen.getByRole("listbox")).toBeTruthy();
   });
 });

@@ -21,16 +21,14 @@
  *  2. **The preview composes.** "Shows as: …" is `teamFullName` over the draft,
  *     so the operator reads the row they are about to write, composed the way
  *     it will read everywhere else.
- *  3. **League is a RADIOGROUP of pills, not a `<select>`.** Maestro's web
- *     driver can only reach the first `<select>` on a page and both hosts
- *     render over pages that already have one — a dropdown here would be
- *     untappable by every flow that has to use it. So the group's role, its
- *     accessible name, and each pill's `aria-checked` are contracts, not
- *     styling.
+ *  3. **League is a type-ahead combobox named "League" (NEO-307), not a
+ *     `<select>`.** Its accessible name and each option's text are the E2E
+ *     contract; its options are `<li role="option">`, which Maestro can tap —
+ *     a second native `<select>` on a page it cannot.
  *  4. **The two league answers are alternatives.** Picking either clears the
  *     other, so a draft can never carry an id AND a name and leave the server's
  *     resolution order to decide which one the operator meant.
- *  5. **The suggestion reads as checked while unanswered.** That is not a
+ *  5. **The suggestion is the standing answer while unanswered.** That is not a
  *     pre-selection pretending to be an answer: with nothing recorded the
  *     server falls back to the enrichment's league, so the suggestion IS what
  *     will happen.
@@ -147,24 +145,47 @@ function renderForm(
 ): ReturnType<typeof render> {
   return render(<Harness {...props} />);
 }
-
 /**
- * Reveal the whole league list.
+ * NEO-307 — the League combobox and its list, read the way a flow reads them.
  *
- * NEO-236 (CI run 8): the picker collapses to the standing answer plus a
- * "Change league" disclosure whenever there IS one, because rendering every
- * league in the sport measured 250px and pushed the review wizard's primary
- * action off the bottom of its dialog. With no standing answer there is nothing
- * to summarise and the list is already open, so this is a no-op then — which is
- * why it probes rather than asserts.
+ * `optionLabels` takes each option's DIRECT text nodes only — the label —
+ * which is exactly what a Maestro `text:` selector matches. The current
+ * answer's check mark is a child `<span>`, so it never joins the label.
  */
+const leagueField = () =>
+  screen.getByRole("combobox", { name: "League" }) as HTMLInputElement;
+/** Focus opens the whole list — no typing needed. */
 function openLeagueList(): void {
-  // NEO-254 renamed it: "Show all leagues" says what it does, where "Change
-  // league" read as "the one you want is not here" to an operator hunting for
-  // a league they had just created.
-  const toggle = screen.queryByRole("button", { name: "Show all leagues" });
-  if (toggle) fireEvent.click(toggle);
+  fireEvent.focus(leagueField());
 }
+function typeLeague(text: string): void {
+  openLeagueList();
+  fireEvent.change(leagueField(), { target: { value: text } });
+}
+function pickLeague(label: string): void {
+  openLeagueList();
+  fireEvent.mouseDown(screen.getByRole("option", { name: label }));
+}
+const directText = (el: Element) =>
+  Array.from(el.childNodes)
+    .filter((n) => n.nodeType === Node.TEXT_NODE)
+    .map((n) => n.textContent)
+    .join("");
+const optionLabels = () => screen.queryAllByRole("option").map(directText);
+/** The option the arrows are on (`aria-selected`, the combobox's highlight). */
+const highlightedLabel = () => {
+  const option = screen
+    .queryAllByRole("option")
+    .find((o) => o.getAttribute("aria-selected") === "true");
+  return option ? directText(option) : null;
+};
+/** The option marked as the field's current answer. */
+const currentOptionLabel = () => {
+  const option = screen
+    .queryAllByRole("option")
+    .find((o) => o.querySelector('[aria-hidden="true"]')?.textContent === "✓");
+  return option ? directText(option) : null;
+};
 
 const locationField = () =>
   screen.getByLabelText("New team location (optional)") as HTMLInputElement;
@@ -262,7 +283,6 @@ describe("draftFullName", () => {
 describe("NewTeamForm — fields", () => {
   it("renders the draft into the two boxes", () => {
     renderForm({ initial: { ...EMPTY, location: "San Diego", name: "Padres" } });
-    openLeagueList();
 
     expect(locationField().value).toBe("San Diego");
     expect(nameField().value).toBe("Padres");
@@ -270,7 +290,6 @@ describe("NewTeamForm — fields", () => {
 
   it("composes the two boxes into the 'Shows as' preview as they are typed", () => {
     renderForm();
-    openLeagueList();
 
     fireEvent.change(nameField(), { target: { value: "Padres" } });
     expect(previewText()).toBe("Shows as: Padres");
@@ -281,7 +300,6 @@ describe("NewTeamForm — fields", () => {
 
   it("shows an em dash rather than an empty preview while both boxes are blank", () => {
     renderForm();
-    openLeagueList();
     expect(previewText()).toBe("Shows as: —");
   });
 
@@ -289,7 +307,6 @@ describe("NewTeamForm — fields", () => {
     // WCAG 2.2 SC 2.5.3 (label in name): the visible label is "Location
     // (optional)", so a voice-control user saying it has to match.
     renderForm();
-    openLeagueList();
     expect(locationField().getAttribute("aria-label")).toBe(
       "New team location (optional)",
     );
@@ -298,7 +315,6 @@ describe("NewTeamForm — fields", () => {
 
   it("spells out what counts as a location, because the split is not obvious", () => {
     renderForm();
-    openLeagueList();
     expect(
       screen.getByText(/Location is where they are from/),
     ).toBeTruthy();
@@ -311,7 +327,6 @@ describe("NewTeamForm — fields", () => {
 
     renderForm();
 
-    openLeagueList();
     expect(screen.queryByText(/Needed by:/)).toBeNull();
   });
 
@@ -323,7 +338,6 @@ describe("NewTeamForm — fields", () => {
     // the preview, and Location at the help line — so this is a containment
     // check, not an equality one.
     renderForm({ describedBy: "why-blocked" });
-    openLeagueList();
 
     expect(locationField().getAttribute("aria-describedby")).toContain(
       "why-blocked",
@@ -336,7 +350,6 @@ describe("NewTeamForm — fields", () => {
     // at, so tabbing into Location announced "New team location (optional),
     // edit text" and nothing about what a location IS.
     renderForm({ initial: { ...EMPTY, location: "San Diego", name: "Padres" } });
-    openLeagueList();
 
     const help = screen.getByText(/^Location is where they are from/);
     const preview = screen.getByText("Shows as:");
@@ -358,7 +371,6 @@ describe("NewTeamForm — fields", () => {
 
   it("emits no dangling or empty aria-describedby when the host gives no reason", () => {
     renderForm();
-    openLeagueList();
 
     for (const field of [locationField(), nameField()]) {
       const value = field.getAttribute("aria-describedby");
@@ -367,32 +379,6 @@ describe("NewTeamForm — fields", () => {
         expect(document.getElementById(id)).not.toBeNull();
       }
     }
-  });
-
-  it("disables every control while the host is busy", () => {
-    currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
-    renderForm({ disabled: true });
-    openLeagueList();
-
-    expect(locationField().disabled).toBe(true);
-    expect(nameField().disabled).toBe(true);
-    expect(
-      (screen.getByRole("radio", { name: "MLB" }) as HTMLButtonElement).disabled,
-    ).toBe(true);
-    expect(
-      (screen.getByRole("radio", { name: "No league" }) as HTMLButtonElement)
-        .disabled,
-    ).toBe(true);
-  });
-
-  it("does not record a league pick while disabled", () => {
-    currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
-    const onChangeSpy = vi.fn();
-    renderForm({ disabled: true, onChangeSpy });
-    openLeagueList();
-
-    fireEvent.click(screen.getByRole("radio", { name: "MLB" }));
-    expect(onChangeSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -406,7 +392,6 @@ describe("NewTeamForm — aliases field", () => {
 
   it("renders the draft's raw text verbatim, unparsed", () => {
     renderForm({ initial: { ...EMPTY, aliases: "Bananas, The Bananas" } });
-    openLeagueList();
 
     expect(aliasField().value).toBe("Bananas, The Bananas");
   });
@@ -414,7 +399,6 @@ describe("NewTeamForm — aliases field", () => {
   it("reports every keystroke to the host as a raw `aliases` patch, not a parsed list", () => {
     const onChangeSpy = vi.fn();
     renderForm({ onChangeSpy });
-    openLeagueList();
 
     fireEvent.change(aliasField(), { target: { value: "Bananas" } });
     expect(onChangeSpy).toHaveBeenCalledWith({ aliases: "Bananas" });
@@ -423,7 +407,6 @@ describe("NewTeamForm — aliases field", () => {
 
   it("carries the whole visible label in its accessible name (SC 2.5.3)", () => {
     renderForm();
-    openLeagueList();
     expect(aliasField().getAttribute("aria-label")).toBe(
       "New team aliases (optional)",
     );
@@ -439,7 +422,6 @@ describe("NewTeamForm — Enter in a field", () => {
   it("calls onSubmit from either box and swallows the key", () => {
     const onSubmit = vi.fn();
     renderForm({ onSubmit });
-    openLeagueList();
 
     const nameEvent = fireEvent.keyDown(nameField(), { key: "Enter" });
     // `false` from fireEvent means preventDefault was called: the key must not
@@ -454,62 +436,125 @@ describe("NewTeamForm — Enter in a field", () => {
     // The wizard's primary action is a walker button, not a submit, so Enter
     // there belongs to whatever the wizard does with it.
     renderForm();
-    openLeagueList();
     expect(fireEvent.keyDown(nameField(), { key: "Enter" })).toBe(true);
   });
 
   it("ignores other keys", () => {
     const onSubmit = vi.fn();
     renderForm({ onSubmit });
-    openLeagueList();
 
     fireEvent.keyDown(nameField(), { key: "a" });
     expect(onSubmit).not.toHaveBeenCalled();
   });
 });
-
 // ---------------------------------------------------------------------------
-// The League pills
+// NEO-307 — the League field is a type-ahead
+//
+// Jason, 2026-09-25, on the New Team step: "This is a terrible interface for
+// selecting a league. It should be a type ahead select like we use for lots of
+// other teams and such things." Baseball's bulk-loaded leagues had turned the
+// pill row into line after line of buttons behind a "Show all leagues" toggle.
+//
+// The combobox's accessible name ("League") and its option TEXT are the E2E
+// contract, so the labels are asserted exactly — read off the option's own
+// direct text nodes, which is what a Maestro `text:` selector matches.
 // ---------------------------------------------------------------------------
 
-describe("NewTeamForm — the League control", () => {
-  it("is a named radiogroup of pills, never a select", () => {
-    // Maestro's web driver resolves an <option> tap by scanning every <option>
-    // on the page and taking the first bounds match, so with more than one
-    // <select> on screen only the first is reachable. Both hosts render over a
-    // page that already has selects.
+describe("NewTeamForm — the League field", () => {
+  it("is a combobox named exactly 'League' — no radiogroup, no toggle, no select", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
-    const { container } = renderForm();
+    const { container } = renderForm({ onStageLeague: vi.fn() });
 
-    const group = screen.getByRole("radiogroup", { name: "New team league" });
-    expect(group).toBeTruthy();
+    expect(leagueField().tagName).toBe("INPUT");
+    // The pill row's furniture is gone, not hidden.
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    expect(screen.queryByRole("radio")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Show all leagues" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Hide leagues" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "+ New league…" })).toBeNull();
+    // Maestro can only reach the first native <select> on a page.
     expect(container.querySelector("select")).toBeNull();
-    expect(screen.getByRole("radio", { name: "MLB" })).toBeTruthy();
+  });
+
+  it("never carries the host's id on the input, so 'League' stays its resource-id", () => {
+    renderForm();
+    expect(leagueField().id).toBe("");
+    expect(document.getElementById("test-league")?.contains(leagueField())).toBe(true);
   });
 
   it("queries the leagues of THIS sport", () => {
     renderForm();
-    openLeagueList();
     expect(queryCalls).toContainEqual({
       ref: "leagues.list",
       args: { sportId: SPORT_ID },
     });
   });
 
-  it("says it is still loading rather than rendering an empty group", () => {
+  it("says it is still loading, and still offers 'No league'", () => {
     currentLeagues = undefined;
     renderForm();
     openLeagueList();
 
-    // SC 4.1.3: the group changes shape under the operator when the query
+    // SC 4.1.3: the list changes shape under the operator when the query
     // lands, so the wait is announced rather than only drawn.
     const loading = screen.getByText("Loading leagues…");
     expect(loading.getAttribute("role")).toBe("status");
     // "No league" is always available — it is an answer, not a league row.
-    expect(screen.getByRole("radio", { name: "No league" })).toBeTruthy();
+    expect(optionLabels()).toEqual(["No league"]);
   });
 
-  it("records an existing league as leagueId and clears any league NAME answer", () => {
+  it("opens on focus with nothing typed: the suggestion, then staged, then every league, then No league", () => {
+    // Sources 1, 2, 3 and 5 in one list, in the order an operator looks.
+    currentLeagues = [
+      { _id: lid("l1"), name: "Atlantic League" },
+      { _id: lid("l2"), name: "MLB" },
+    ];
+    renderForm({
+      leagueSuggestion: "Australian Baseball League",
+      stagedLeagueNames: ["United States Hockey League"],
+    });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    openLeagueList();
+
+    expect(leagueField().getAttribute("aria-expanded")).toBe("true");
+    expect(optionLabels()).toEqual([
+      "Create Australian Baseball League",
+      "United States Hockey League (new)",
+      "Atlantic League",
+      "MLB",
+      "No league",
+    ]);
+  });
+
+  it("lifts an existing suggested league to the top instead of listing it twice", () => {
+    currentLeagues = [
+      { _id: lid("l1"), name: "Atlantic League" },
+      { _id: lid("l2"), name: "MLB" },
+    ];
+    renderForm({ leagueSuggestion: "MLB" });
+    openLeagueList();
+
+    expect(optionLabels()).toEqual(["MLB", "Atlantic League", "No league"]);
+  });
+
+  it("caps the list's height and scrolls it, so a long list cannot grow the dialog", () => {
+    currentLeagues = Array.from({ length: 40 }, (_, i) => ({
+      _id: lid(`l${i}`),
+      name: `League ${i}`,
+    }));
+    renderForm();
+    openLeagueList();
+
+    const list = screen.getByRole("listbox");
+    expect(list.className).toContain("max-h-40");
+    expect(list.className).toContain("overflow-y-auto");
+    // Floats over the form rather than pushing what is under it down — in a
+    // fixed layer, so a scrolling host cannot clip it (NEO-307, CI 1024x629).
+    expect(list.className).toContain("fixed");
+    expect(screen.getAllByRole("option")).toHaveLength(41);
+  });
+
+  it("records an existing league as leagueId, clears any league NAME, and shows it at rest", () => {
     currentLeagues = [
       { _id: lid("l1"), name: "MLB" },
       { _id: lid("l2"), name: "Australian Baseball League" },
@@ -519,9 +564,8 @@ describe("NewTeamForm — the League control", () => {
       initial: { ...EMPTY, leagueName: "Something Else" },
       onChangeSpy,
     });
-    openLeagueList();
 
-    fireEvent.click(screen.getByRole("radio", { name: "MLB" }));
+    pickLeague("MLB");
 
     // The two answers are alternatives; carrying both would leave which one
     // the server honoured up to its resolution order.
@@ -529,320 +573,305 @@ describe("NewTeamForm — the League control", () => {
       leagueId: lid("l1"),
       leagueName: undefined,
     });
-    expect(
-      screen.getByRole("radio", { name: "MLB" }).getAttribute("aria-checked"),
-    ).toBe("true");
+    expect(leagueField().value).toBe("MLB");
+    expect(screen.queryByRole("listbox")).toBeNull();
   });
 
   it("records 'No league' as a deliberate null, distinct from unanswered", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     const onChangeSpy = vi.fn();
     renderForm({ onChangeSpy });
-    openLeagueList();
 
-    fireEvent.click(screen.getByRole("radio", { name: "No league" }));
+    pickLeague("No league");
 
     expect(onChangeSpy).toHaveBeenCalledWith({
       leagueId: null,
       leagueName: undefined,
     });
-    expect(
-      screen.getByRole("radio", { name: "No league" }).getAttribute("aria-checked"),
-    ).toBe("true");
+    expect(leagueField().value).toBe("No league");
   });
 
-  it("checks nothing by default when there is no suggestion to fall back on", () => {
+  it("reads empty, with a placeholder, when there is no answer and no suggestion", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm();
-    openLeagueList();
 
-    expect(
-      screen.getByRole("radio", { name: "MLB" }).getAttribute("aria-checked"),
-    ).toBe("false");
-    expect(
-      screen.getByRole("radio", { name: "No league" }).getAttribute("aria-checked"),
-    ).toBe("false");
+    expect(leagueField().value).toBe("");
+    expect(leagueField().placeholder).toBe("Pick a league");
+    openLeagueList();
+    expect(currentOptionLabel()).toBeNull();
   });
 
-  it("marks the row it already picked, from a draft that carries one", () => {
+  it("invites typing a new league in its placeholder only when it can create one", () => {
+    renderForm({ onStageLeague: vi.fn() });
+    expect(leagueField().placeholder).toBe("Pick a league or type a new one");
+  });
+
+  it("shows a draft's existing pick at rest, and opens on it rather than on row 0", () => {
     currentLeagues = [
       { _id: lid("l1"), name: "MLB" },
       { _id: lid("l2"), name: "NPB" },
     ];
     renderForm({ initial: { ...EMPTY, leagueId: lid("l2") } });
+
+    expect(leagueField().value).toBe("NPB");
     openLeagueList();
-
-    expect(
-      screen.getByRole("radio", { name: "NPB" }).getAttribute("aria-checked"),
-    ).toBe("true");
-    expect(
-      screen.getByRole("radio", { name: "MLB" }).getAttribute("aria-checked"),
-    ).toBe("false");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// The League group is a REAL radio group, not a row of buttons
-//
-// SC 2.1.1 / 4.1.2: `role="radiogroup"` of `role="radio"` is a promise about
-// the keyboard, not only about the announcement. A native radio group is ONE
-// Tab stop and moves between its options with the arrow keys. Before this,
-// every pill was an ordinary button — a keyboard operator paid one Tab stop per
-// league (a sport with a dozen of them buried the Create button behind twelve
-// stops) and the arrows did nothing at all.
-// ---------------------------------------------------------------------------
-
-describe("NewTeamForm — the League group's keyboard", () => {
-  const pillTabIndexes = () =>
-    screen.getAllByRole("radio").map((el) => ({
-      label: el.textContent,
-      tabIndex: (el as HTMLButtonElement).tabIndex,
-    }));
-
-  it("is a single Tab stop, on the first pill while nothing is checked", () => {
-    currentLeagues = [
-      { _id: lid("l1"), name: "MLB" },
-      { _id: lid("l2"), name: "NPB" },
-    ];
-    renderForm();
-    openLeagueList();
-
-    expect(pillTabIndexes()).toEqual([
-      { label: "MLB", tabIndex: 0 },
-      { label: "NPB", tabIndex: -1 },
-      { label: "No league", tabIndex: -1 },
-    ]);
+    // Enter on a freshly-focused field re-confirms the answer, not "MLB".
+    expect(highlightedLabel()).toBe("NPB");
+    expect(currentOptionLabel()).toBe("NPB");
   });
 
-  it("moves the Tab stop onto whichever pill is checked", () => {
-    currentLeagues = [
-      { _id: lid("l1"), name: "MLB" },
-      { _id: lid("l2"), name: "NPB" },
-    ];
-    renderForm({ initial: { ...EMPTY, leagueId: lid("l2") } });
-    openLeagueList();
-
-    expect(pillTabIndexes()).toEqual([
-      { label: "MLB", tabIndex: -1 },
-      { label: "NPB", tabIndex: 0 },
-      { label: "No league", tabIndex: -1 },
-    ]);
-  });
-
-  it("puts the Tab stop on the suggestion while it is the standing answer", () => {
+  it("selects the field's text on focus, so typing replaces the label shown", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
-    renderForm({ leagueSuggestion: "Australian Baseball League" });
+    renderForm({ initial: { ...EMPTY, leagueId: lid("l1") } });
     openLeagueList();
 
-    expect(pillTabIndexes()).toEqual([
-      { label: "Create Australian Baseball League", tabIndex: 0 },
-      { label: "MLB", tabIndex: -1 },
-      { label: "No league", tabIndex: -1 },
-    ]);
+    expect(leagueField().selectionStart).toBe(0);
+    expect(leagueField().selectionEnd).toBe("MLB".length);
   });
 
-  it("moves selection with ArrowRight/ArrowDown", () => {
-    currentLeagues = [
-      { _id: lid("l1"), name: "MLB" },
-      { _id: lid("l2"), name: "NPB" },
-    ];
-    renderForm();
-    openLeagueList();
-
-    const group = screen.getByRole("radiogroup", { name: "New team league" });
-    fireEvent.keyDown(group, { key: "ArrowRight" });
-    expect(
-      screen.getByRole("radio", { name: "NPB" }).getAttribute("aria-checked"),
-    ).toBe("true");
-
-    fireEvent.keyDown(group, { key: "ArrowDown" });
-    expect(
-      screen
-        .getByRole("radio", { name: "No league" })
-        .getAttribute("aria-checked"),
-    ).toBe("true");
-  });
-
-  it("moves selection with ArrowLeft/ArrowUp", () => {
-    currentLeagues = [
-      { _id: lid("l1"), name: "MLB" },
-      { _id: lid("l2"), name: "NPB" },
-    ];
-    renderForm({ initial: { ...EMPTY, leagueId: lid("l2") } });
-    openLeagueList();
-
-    const group = screen.getByRole("radiogroup", { name: "New team league" });
-    fireEvent.keyDown(group, { key: "ArrowLeft" });
-    expect(
-      screen.getByRole("radio", { name: "MLB" }).getAttribute("aria-checked"),
-    ).toBe("true");
-
-    fireEvent.keyDown(group, { key: "ArrowUp" });
-    // Wrapped backwards off the front onto the last pill.
-    expect(
-      screen
-        .getByRole("radio", { name: "No league" })
-        .getAttribute("aria-checked"),
-    ).toBe("true");
-  });
-
-  it("wraps forward off the end", () => {
-    currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
-    renderForm({ initial: { ...EMPTY, leagueId: null } });
-    openLeagueList();
-
-    const group = screen.getByRole("radiogroup", { name: "New team league" });
-    expect(
-      screen
-        .getByRole("radio", { name: "No league" })
-        .getAttribute("aria-checked"),
-    ).toBe("true");
-
-    fireEvent.keyDown(group, { key: "ArrowRight" });
-    expect(
-      screen.getByRole("radio", { name: "MLB" }).getAttribute("aria-checked"),
-    ).toBe("true");
-  });
-
-  it("takes focus with the selection, as the APG pattern requires", async () => {
-    // The pill that becomes checked is the one that becomes the Tab stop, so
-    // it has to end up focused too — otherwise the next arrow press starts
-    // from a control the operator can no longer see they are on.
-    currentLeagues = [
-      { _id: lid("l1"), name: "MLB" },
-      { _id: lid("l2"), name: "NPB" },
-    ];
-    renderForm();
-    openLeagueList();
-
-    const group = screen.getByRole("radiogroup", { name: "New team league" });
-    screen.getByRole("radio", { name: "MLB" }).focus();
-    fireEvent.keyDown(group, { key: "ArrowRight" });
-
-    await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByRole("radio", { name: "NPB" })),
-    );
-  });
-
-  it("swallows the arrow key so it cannot scroll the host out from under the group", () => {
-    currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
-    renderForm();
-    openLeagueList();
-
-    const group = screen.getByRole("radiogroup", { name: "New team league" });
-    // `false` from fireEvent means preventDefault was called.
-    expect(fireEvent.keyDown(group, { key: "ArrowRight" })).toBe(false);
-    // Anything else is left alone.
-    expect(fireEvent.keyDown(group, { key: "a" })).toBe(true);
-  });
-
-  it("ignores the arrows entirely while disabled", () => {
+  it("disables the field while the host is busy, and records nothing", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     const onChangeSpy = vi.fn();
     renderForm({ disabled: true, onChangeSpy });
-    openLeagueList();
 
-    fireEvent.keyDown(
-      screen.getByRole("radiogroup", { name: "New team league" }),
-      { key: "ArrowRight" },
-    );
+    expect(leagueField().disabled).toBe(true);
+    openLeagueList();
+    for (const option of screen.queryAllByRole("option")) {
+      fireEvent.mouseDown(option);
+    }
     expect(onChangeSpy).not.toHaveBeenCalled();
+  });
+
+  it("says the sport has no leagues yet when there is nothing but 'No league'", () => {
+    currentLeagues = [];
+    renderForm({ onStageLeague: vi.fn() });
+    expect(screen.getByText("No leagues in this sport yet.")).toBeTruthy();
+  });
+
+  it("says nothing of the kind once a league is offered", () => {
+    currentLeagues = [];
+    renderForm({ stagedLeagueNames: ["United States Hockey League"] });
+    expect(screen.queryByText("No leagues in this sport yet.")).toBeNull();
   });
 });
 
 // ---------------------------------------------------------------------------
-// The suggestion pill — the lookup's league, resolved against what we hold
+// Typing narrows — on name, alias and abbreviation — and never answers
+// ---------------------------------------------------------------------------
+
+describe("NewTeamForm — typing in the League field", () => {
+  const BASEBALL = [
+    {
+      _id: lid("l1"),
+      name: "American Association of Professional Baseball",
+      aliases: ["AA"],
+    },
+    { _id: lid("l2"), name: "Major League Baseball", abbreviation: "MLB" },
+    {
+      _id: lid("l3"),
+      name: "National League",
+      aliases: ["The Senior Circuit"],
+    },
+  ];
+
+  it("filters on the league name, case-insensitive substring", () => {
+    currentLeagues = BASEBALL;
+    renderForm();
+    typeLeague("LEAGUE");
+
+    expect(optionLabels()).toEqual([
+      "Major League Baseball",
+      "National League",
+      "No league",
+    ]);
+  });
+
+  it("finds a league by one of its aliases", () => {
+    currentLeagues = BASEBALL;
+    renderForm();
+    typeLeague("senior circ");
+
+    // Listed by its NAME — the alias is how it was found, not what it is.
+    expect(optionLabels()).toEqual(["National League", "No league"]);
+  });
+
+  it("finds a league by its abbreviation", () => {
+    currentLeagues = BASEBALL;
+    renderForm();
+    typeLeague("mlb");
+    expect(optionLabels()).toEqual(["Major League Baseball", "No league"]);
+  });
+
+  it("matches through punctuation and accents", () => {
+    currentLeagues = [
+      { _id: lid("l1"), name: "St. Louis Amateur League" },
+      { _id: lid("l2"), name: "Ligue Panaméricaine" },
+    ];
+    renderForm();
+    typeLeague("st louis");
+    expect(optionLabels()).toEqual(["St. Louis Amateur League", "No league"]);
+    typeLeague("panamer");
+    expect(optionLabels()).toEqual(["Ligue Panaméricaine", "No league"]);
+  });
+
+  it("filters staged and suggested leagues on their names too", () => {
+    currentLeagues = BASEBALL;
+    renderForm({
+      leagueSuggestion: "Australian Baseball League",
+      stagedLeagueNames: ["United States Hockey League"],
+    });
+    typeLeague("hockey");
+    expect(optionLabels()).toEqual(["United States Hockey League (new)", "No league"]);
+    typeLeague("australian");
+    expect(optionLabels()).toEqual(["Create Australian Baseball League", "No league"]);
+  });
+
+  it("keeps 'No league' on offer whatever is typed", () => {
+    currentLeagues = BASEBALL;
+    renderForm();
+    typeLeague("zzzz");
+    expect(optionLabels()).toEqual(["No league"]);
+  });
+
+  it("does not change the answer while typing, clearing, or walking away", () => {
+    currentLeagues = BASEBALL;
+    const onChangeSpy = vi.fn();
+    renderForm({ initial: { ...EMPTY, leagueId: lid("l2") }, onChangeSpy });
+
+    typeLeague("");
+    // Cleared: the whole list again, and nothing recorded.
+    expect(optionLabels()).toHaveLength(4);
+    typeLeague("Nat");
+    expect(onChangeSpy).not.toHaveBeenCalled();
+
+    fireEvent.blur(leagueField());
+    // The answer's label comes back; the half-typed text was not an answer.
+    expect(leagueField().value).toBe("Major League Baseball");
+    expect(onChangeSpy).not.toHaveBeenCalled();
+  });
+
+  it("puts the answer's label back on Escape, too", () => {
+    currentLeagues = BASEBALL;
+    renderForm({ initial: { ...EMPTY, leagueId: null } });
+    typeLeague("Nat");
+
+    fireEvent.keyDown(leagueField(), { key: "Escape" });
+    expect(leagueField().value).toBe("No league");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("picks the highlighted option with Enter, and Enter does not also submit", () => {
+    currentLeagues = BASEBALL;
+    const onSubmit = vi.fn();
+    const onChangeSpy = vi.fn();
+    renderForm({ onSubmit, onChangeSpy });
+    typeLeague("national");
+
+    const event = fireEvent.keyDown(leagueField(), { key: "Enter" });
+    expect(event).toBe(false);
+    expect(onChangeSpy).toHaveBeenCalledWith({
+      leagueId: lid("l3"),
+      leagueName: undefined,
+    });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(leagueField().value).toBe("National League");
+  });
+
+  it("submits the host's form on Enter once the list is closed, like the other fields", () => {
+    currentLeagues = BASEBALL;
+    const onSubmit = vi.fn();
+    renderForm({ onSubmit, initial: { ...EMPTY, leagueId: lid("l2") } });
+    openLeagueList();
+    fireEvent.keyDown(leagueField(), { key: "Escape" });
+
+    fireEvent.keyDown(leagueField(), { key: "Enter" });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it("walks the list with the arrow keys", () => {
+    currentLeagues = BASEBALL;
+    renderForm();
+    openLeagueList();
+
+    expect(highlightedLabel()).toBe("American Association of Professional Baseball");
+    fireEvent.keyDown(leagueField(), { key: "ArrowDown" });
+    expect(highlightedLabel()).toBe("Major League Baseball");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The suggestion — the lookup's league, resolved against what we hold
 // ---------------------------------------------------------------------------
 
 describe("NewTeamForm — the league suggestion", () => {
-  it("selects the existing row and reads as checked while nothing else is answered", () => {
+  it("is the standing answer while nothing else is answered, when we hold it", () => {
     // With no answer recorded the server falls back to the enrichment's league,
-    // so the suggestion IS what will happen — showing it checked states the
-    // truth rather than pre-selecting on the operator's behalf.
+    // so the suggestion IS what will happen — showing it as the answer states
+    // the truth rather than pre-selecting on the operator's behalf.
     currentLeagues = [
       { _id: lid("l1"), name: "MLB" },
       { _id: lid("l2"), name: "Australian Baseball League" },
     ];
-    renderForm({ leagueSuggestion: "Australian Baseball League" });
-    openLeagueList();
+    const onChangeSpy = vi.fn();
+    renderForm({ leagueSuggestion: "Australian Baseball League", onChangeSpy });
 
-    expect(
-      screen
-        .getByRole("radio", { name: "Australian Baseball League" })
-        .getAttribute("aria-checked"),
-    ).toBe("true");
+    expect(leagueField().value).toBe("Australian Baseball League");
+    openLeagueList();
+    expect(currentOptionLabel()).toBe("Australian Baseball League");
+    expect(highlightedLabel()).toBe("Australian Baseball League");
     // It resolved to a row we hold, so there is nothing to create.
-    expect(screen.queryByRole("radio", { name: /^Create / })).toBeNull();
+    expect(optionLabels().some((l) => l.startsWith("Create "))).toBe(false);
+    // Standing, not recorded: the draft is still unanswered.
+    expect(onChangeSpy).not.toHaveBeenCalled();
   });
 
-  it("stops reading as checked the moment another answer is given", () => {
+  it("stops being the answer the moment another is picked", () => {
     currentLeagues = [
       { _id: lid("l1"), name: "MLB" },
       { _id: lid("l2"), name: "Australian Baseball League" },
     ];
     renderForm({ leagueSuggestion: "Australian Baseball League" });
+
+    pickLeague("MLB");
+    expect(leagueField().value).toBe("MLB");
     openLeagueList();
-
-    fireEvent.click(screen.getByRole("radio", { name: "MLB" }));
-
-    expect(
-      screen
-        .getByRole("radio", { name: "Australian Baseball League" })
-        .getAttribute("aria-checked"),
-    ).toBe("false");
-    expect(
-      screen.getByRole("radio", { name: "MLB" }).getAttribute("aria-checked"),
-    ).toBe("true");
+    expect(currentOptionLabel()).toBe("MLB");
   });
 
   it("matches an existing league on a normalized name, so punctuation is not a new league", () => {
-    // A false negative costs one pill's wording; a false POSITIVE would file
+    // A false negative costs one option's wording; a false POSITIVE would file
     // the team under the wrong league. The comparison is deliberately cheap
     // and exact-after-normalizing.
     currentLeagues = [{ _id: lid("l1"), name: "St. Louis Amateur League" }];
     renderForm({ leagueSuggestion: "St Louis Amateur League" });
-    openLeagueList();
 
-    expect(screen.queryByRole("radio", { name: /^Create / })).toBeNull();
-    expect(
-      screen
-        .getByRole("radio", { name: "St. Louis Amateur League" })
-        .getAttribute("aria-checked"),
-    ).toBe("true");
+    expect(leagueField().value).toBe("St. Louis Amateur League");
+    openLeagueList();
+    expect(optionLabels()).toEqual(["St. Louis Amateur League", "No league"]);
   });
 
   it("matches across accents, so a source's spelling is not a new league (NEO-253)", () => {
-    // The comparison here is between a name a SOURCE supplied and a name NB
-    // stores, which is exactly where the two spellings disagree. Before the
-    // fold this key dropped every accented character rather than folding it,
-    // so "Ligue Panaméricaine" and "Ligue Panamericaine" shared no key at all
-    // and the pill offered to CREATE a league the sport already held — the
-    // duplicate-league failure this comparison exists to prevent, arrived at
-    // from the other direction.
+    // Before the fold this key dropped every accented character rather than
+    // folding it, so "Ligue Panaméricaine" and "Ligue Panamericaine" shared no
+    // key at all and the form offered to CREATE a league the sport held.
     currentLeagues = [{ _id: lid("l1"), name: "Ligue Panaméricaine" }];
     renderForm({ leagueSuggestion: "Ligue Panamericaine" });
-    openLeagueList();
 
-    expect(screen.queryByRole("radio", { name: /^Create / })).toBeNull();
-    expect(
-      screen
-        .getByRole("radio", { name: "Ligue Panaméricaine" })
-        .getAttribute("aria-checked"),
-    ).toBe("true");
+    expect(leagueField().value).toBe("Ligue Panaméricaine");
+    openLeagueList();
+    expect(optionLabels()).toEqual(["Ligue Panaméricaine", "No league"]);
   });
 
-  it("offers 'Create {name}' only when this sport holds no matching league", () => {
+  it("offers 'Create {name}' when this sport holds no matching league, and it is the default", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm({ leagueSuggestion: "Australian Baseball League" });
-    openLeagueList();
 
-    const create = screen.getByRole("radio", {
-      name: "Create Australian Baseball League",
-    });
-    // The label says the commitment: pressing it creates a league as well as a
-    // team.
-    expect(create.textContent).toBe("Create Australian Baseball League");
-    expect(create.getAttribute("aria-checked")).toBe("true");
+    // The label says the commitment: picking it creates a league as well as a
+    // team — and until something else is picked, that is what will happen.
+    expect(leagueField().value).toBe("Create Australian Baseball League");
+    openLeagueList();
+    expect(optionLabels()[0]).toBe("Create Australian Baseball League");
+    expect(currentOptionLabel()).toBe("Create Australian Baseball League");
   });
 
   it("records the create-a-league pick as a NAME, clearing any id", () => {
@@ -853,56 +882,44 @@ describe("NewTeamForm — the league suggestion", () => {
       leagueSuggestion: "Australian Baseball League",
       onChangeSpy,
     });
-    openLeagueList();
 
-    fireEvent.click(
-      screen.getByRole("radio", { name: "Create Australian Baseball League" }),
-    );
+    pickLeague("Create Australian Baseball League");
 
     expect(onChangeSpy).toHaveBeenCalledWith({
       leagueId: undefined,
       leagueName: "Australian Baseball League",
     });
+    expect(leagueField().value).toBe("Create Australian Baseball League");
   });
 
-  it("offers no suggestion pill when the lookup proposed nothing", () => {
+  it("offers no suggestion when the lookup proposed nothing", () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm();
     openLeagueList();
-
-    expect(screen.queryByRole("radio", { name: /^Create / })).toBeNull();
-    expect(screen.getAllByRole("radio").map((el) => el.textContent)).toEqual([
-      "MLB",
-      "No league",
-    ]);
+    expect(optionLabels()).toEqual(["MLB", "No league"]);
   });
 
   it("treats a whitespace-only suggestion as no suggestion", () => {
     currentLeagues = [];
     renderForm({ leagueSuggestion: "   " });
     openLeagueList();
-
-    expect(screen.getAllByRole("radio").map((el) => el.textContent)).toEqual([
-      "No league",
-    ]);
+    expect(optionLabels()).toEqual(["No league"]);
+    expect(leagueField().value).toBe("");
   });
 
-  it("does not resolve a suggestion against another sport's rows while leagues load", () => {
+  it("offers 'Create X' while leagues load, and flips to the held row when they land", () => {
     // `leagues` is undefined until the query answers. Offering "Create X"
-    // during that window is right — it is the honest answer to "we hold no
-    // matching row" — and it flips to the existing row when the list lands.
+    // during that window is the honest answer to "we hold no matching row".
     currentLeagues = undefined;
     const { unmount } = renderForm({ leagueSuggestion: "MLB" });
-    expect(screen.getByRole("radio", { name: "Create MLB" })).toBeTruthy();
+    expect(leagueField().value).toBe("Create MLB");
     unmount();
 
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
     renderForm({ leagueSuggestion: "MLB" });
+    expect(leagueField().value).toBe("MLB");
     openLeagueList();
-    expect(screen.queryByRole("radio", { name: "Create MLB" })).toBeNull();
-    expect(
-      screen.getByRole("radio", { name: "MLB" }).getAttribute("aria-checked"),
-    ).toBe("true");
+    expect(optionLabels()).toEqual(["MLB", "No league"]);
   });
 });
 
@@ -914,78 +931,160 @@ describe("NewTeamForm — a league the batch has already staged", () => {
   it("states the fact instead of re-offering 'Create'", () => {
     // The reported bug: every hockey team row showed `Create National Hockey
     // League`, because nothing is written until commit so `leagues.list` never
-    // saw it. Once the New League step has answered, the pill says so.
+    // saw it. Once the New League step has answered, the option says so.
     renderForm({
       leagueSuggestion: "National Hockey League",
       stagedLeagueNames: ["National Hockey League"],
     });
-    expect(
-      screen.getByRole("radio", { name: "National Hockey League (new)" }),
-    ).toBeTruthy();
-    expect(
-      screen.queryByRole("radio", { name: "Create National Hockey League" }),
-    ).toBeNull();
+    openLeagueList();
+    expect(optionLabels()).toEqual(["National Hockey League (new)", "No league"]);
+    // Still the standing answer: the server's fallback resolves the
+    // suggestion's name onto the staged league.
+    expect(leagueField().value).toBe("National Hockey League (new)");
   });
 
   it("still offers Create when nothing has answered for it yet", () => {
     renderForm({ leagueSuggestion: "National Hockey League" });
-    expect(
-      screen.getByRole("radio", { name: "Create National Hockey League" }),
-    ).toBeTruthy();
+    openLeagueList();
+    expect(optionLabels()).toContain("Create National Hockey League");
   });
 
-  it("matches on the league key, not the raw string", () => {
-    // The staged pill carries the STAGED spelling — that is the name the batch
-    // will create the league under, and offering the suggestion's spelling
-    // instead would invite two rows for one league.
+  it("matches on the league key, and carries the STAGED spelling", () => {
+    // The staged option carries the name the batch will create the league
+    // under; offering the suggestion's spelling instead would invite two rows
+    // for one league.
     renderForm({
       leagueSuggestion: "National Hockey League",
       stagedLeagueNames: ["  national hockey league  "],
     });
-    expect(
-      screen.getByRole("radio", { name: "national hockey league (new)" }),
-    ).toBeTruthy();
-    expect(
-      screen.queryByRole("radio", { name: "Create National Hockey League" }),
-    ).toBeNull();
+    openLeagueList();
+    expect(optionLabels()).toEqual(["national hockey league (new)", "No league"]);
+  });
+
+  it("offers it to a team whose enrichment suggested nothing", () => {
+    // Jason's addendum: "we should also have a way to select USHL once we've
+    // created it." The Lincoln Stars had no suggestion at all.
+    currentLeagues = [];
+    renderForm({ stagedLeagueNames: ["United States Hockey League"] });
+    openLeagueList();
+    expect(optionLabels()).toEqual(["United States Hockey League (new)", "No league"]);
+  });
+
+  it("selects it, recording the NAME the commit will resolve", () => {
+    const onChange = vi.fn();
+    currentLeagues = [];
+    renderForm({
+      stagedLeagueNames: ["United States Hockey League"],
+      onChangeSpy: onChange,
+    });
+    pickLeague("United States Hockey League (new)");
+    expect(onChange).toHaveBeenCalledWith({
+      leagueName: "United States Hockey League",
+      leagueId: undefined,
+    });
+    expect(leagueField().value).toBe("United States Hockey League (new)");
+  });
+
+  it("does not double up when the sport already holds that league", () => {
+    currentLeagues = [{ _id: lid("l1"), name: "United States Hockey League" }];
+    renderForm({ stagedLeagueNames: ["United States Hockey League"] });
+    openLeagueList();
+    expect(optionLabels()).toEqual(["United States Hockey League", "No league"]);
   });
 });
 
 // ---------------------------------------------------------------------------
-// NEO-254 — naming a league that does not exist yet
+// NEO-254 / NEO-307 — creating a league from what was typed
 //
 // Jason, preview 2026-09-07, on "New Team: Lincoln Stars" (USHL): Wikidata
 // carried no league, the sport had none, and the step offered a lone
-// `No league` pill. There was nowhere to say what the league IS, so an
-// operator who knew the answer could not record it.
+// `No league` pill. There was nowhere to say what the league IS. The
+// "+ New league…" button that answered that is now an option: type the name,
+// pick `Create “<typed>”`.
 // ---------------------------------------------------------------------------
 
-describe("NewTeamForm — the + New league… control", () => {
-  it("is absent when neither context can act on it", () => {
+describe("NewTeamForm — Create “<typed>”", () => {
+  it("is not offered when neither context can act on it", () => {
+    currentLeagues = [];
     renderForm();
-    expect(screen.queryByRole("button", { name: "+ New league…" })).toBeNull();
+    typeLeague("United States Hockey League");
+    expect(optionLabels()).toEqual(["No league"]);
   });
 
-  it("is present even when the sport has no leagues at all, and says so", () => {
-    // The case it exists for. An empty row is an invitation to act, not a
-    // dead end.
-    currentLeagues = [];
+  it("is offered, in curly quotes, for text that names nothing we have", () => {
+    currentLeagues = [{ _id: lid("l1"), name: "Western Hockey League" }];
     renderForm({ onStageLeague: vi.fn() });
-    expect(screen.getByRole("button", { name: "+ New league…" })).toBeTruthy();
-    expect(screen.getByText("No leagues in this sport yet.")).toBeTruthy();
+    typeLeague("  United States Hockey League ");
+    expect(optionLabels()).toEqual([
+      "Create “United States Hockey League”",
+      "No league",
+    ]);
+    // First, so Enter on a name that matches nothing creates it.
+    expect(highlightedLabel()).toBe("Create “United States Hockey League”");
   });
 
-  it("is a disclosure outside the radiogroup, never an option", () => {
-    // A non-radio child of a radiogroup is a shape assistive tech cannot read.
+  it("is not offered while anything partially matches — Jason, 2026-09-25", () => {
+    // A partial match means the league is probably already here under a
+    // longer name; a Create beside it invites the duplicate.
+    currentLeagues = [{ _id: lid("l1"), name: "National League Central" }];
+    renderForm({ onStageLeague: vi.fn() });
+    typeLeague("National League");
+    expect(optionLabels()).toEqual(["National League Central", "No league"]);
+  });
+
+  it("is not offered for a partial match on an alias, an abbreviation, a staged league or the suggestion", () => {
+    currentLeagues = [
+      {
+        _id: lid("l1"),
+        name: "United States Hockey League",
+        abbreviation: "USHL",
+        aliases: ["U.S. Hockey League"],
+      },
+    ];
+    renderForm({
+      onStageLeague: vi.fn(),
+      stagedLeagueNames: ["North American Hockey League"],
+      leagueSuggestion: "Western Hockey League",
+    });
+    for (const text of [
+      // exact and partial on the held league's name, abbreviation, alias
+      "united states hockey league",
+      "united states",
+      "ushl",
+      "USH",
+      "US Hockey League",
+      "U.S. Hock",
+      // staged, exact and partial
+      "north american hockey league",
+      "north american",
+      // the suggestion, exact and partial
+      "Western Hockey League",
+      "western",
+      // matches every hockey option at once
+      "hockey",
+    ]) {
+      typeLeague(text);
+      expect(
+        optionLabels().some((l) => l.startsWith("Create “")),
+        `offered Create for "${text}"`,
+      ).toBe(false);
+    }
+  });
+
+  it("is not offered for 'No league', which is an answer rather than a league", () => {
     currentLeagues = [];
     renderForm({ onStageLeague: vi.fn() });
-    const trigger = screen.getByRole("button", { name: "+ New league…" });
-    expect(trigger.getAttribute("role")).not.toBe("radio");
-    expect(trigger.getAttribute("aria-checked")).toBeNull();
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-    expect(
-      screen.getByRole("radiogroup", { name: "New team league" }).contains(trigger),
-    ).toBe(false);
+    typeLeague("no league");
+    expect(optionLabels()).toEqual(["No league"]);
+  });
+
+  it("comes back the moment the typed text stops matching", () => {
+    currentLeagues = [{ _id: lid("l1"), name: "National League Central" }];
+    renderForm({ onStageLeague: vi.fn() });
+    typeLeague("National League");
+    expect(optionLabels()).toEqual(["National League Central", "No league"]);
+    typeLeague("National League East");
+    expect(optionLabels()).toEqual(["Create “National League East”", "No league"]);
   });
 
   it("WIZARD: stages the typed name and selects it", async () => {
@@ -995,13 +1094,12 @@ describe("NewTeamForm — the + New league… control", () => {
     const onChange = vi.fn();
     const onLeagueStatus = vi.fn();
     currentLeagues = [];
-    render(<Harness onStageLeague={onStageLeague} onLeagueStatus={onLeagueStatus} onChangeSpy={onChange} />);
+    renderForm({ onStageLeague, onLeagueStatus, onChangeSpy: onChange });
 
-    fireEvent.click(screen.getByRole("button", { name: "+ New league…" }));
-    fireEvent.change(screen.getByLabelText("New league name"), {
-      target: { value: "United States Hockey League" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    typeLeague("United States Hockey League");
+    fireEvent.mouseDown(
+      screen.getByRole("option", { name: "Create “United States Hockey League”" }),
+    );
 
     await waitFor(() =>
       expect(onStageLeague).toHaveBeenCalledWith("United States Hockey League"),
@@ -1018,11 +1116,12 @@ describe("NewTeamForm — the + New league… control", () => {
       text: "United States Hockey League will be added. You'll fill in the details next.",
       isError: false,
     });
+    expect(leagueField().value).toBe("United States Hockey League (new)");
   });
 
   it("WIZARD: an existing name selects that league instead of staging a second", async () => {
     // The alias case is why the SERVER decides this: the client cannot know
-    // that "USHL" is an alias of a league the sport already holds.
+    // every alias a league the sport holds answers to.
     const onStageLeague = vi.fn().mockResolvedValue({
       kind: "existing",
       leagueId: "lg-1",
@@ -1031,13 +1130,10 @@ describe("NewTeamForm — the + New league… control", () => {
     const onChange = vi.fn();
     const onLeagueStatus = vi.fn();
     currentLeagues = [];
-    render(<Harness onStageLeague={onStageLeague} onLeagueStatus={onLeagueStatus} onChangeSpy={onChange} />);
+    renderForm({ onStageLeague, onLeagueStatus, onChangeSpy: onChange });
 
-    fireEvent.click(screen.getByRole("button", { name: "+ New league…" }));
-    fireEvent.change(screen.getByLabelText("New league name"), {
-      target: { value: "USHL" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    typeLeague("USHL");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “USHL”" }));
 
     await waitFor(() =>
       expect(onChange).toHaveBeenCalledWith({
@@ -1056,13 +1152,10 @@ describe("NewTeamForm — the + New league… control", () => {
     const onChange = vi.fn();
     const onLeagueStatus = vi.fn();
     currentLeagues = [];
-    render(<Harness onStageLeague={onStageLeague} onLeagueStatus={onLeagueStatus} onChangeSpy={onChange} />);
+    renderForm({ onStageLeague, onLeagueStatus, onChangeSpy: onChange });
 
-    fireEvent.click(screen.getByRole("button", { name: "+ New league…" }));
-    fireEvent.change(screen.getByLabelText("New league name"), {
-      target: { value: "WHA" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Stage" }));
+    typeLeague("WHA");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
 
     await waitFor(() =>
       expect(onLeagueStatus).toHaveBeenCalledWith({
@@ -1073,22 +1166,51 @@ describe("NewTeamForm — the + New league… control", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("PICKER: collects the whole record and selects what it created", async () => {
+  it("WIZARD: a failed stage says so and changes nothing", async () => {
+    const onStageLeague = vi.fn().mockRejectedValue(new Error("boom"));
+    const onChange = vi.fn();
+    const onLeagueStatus = vi.fn();
+    currentLeagues = [];
+    renderForm({ onStageLeague, onLeagueStatus, onChangeSpy: onChange });
+
+    typeLeague("WHA");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
+
+    await waitFor(() =>
+      expect(onLeagueStatus).toHaveBeenCalledWith({
+        text: "Could not add that league. Try again.",
+        isError: true,
+      }),
+    );
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("PICKER: opens the whole record pre-filled with the typed name, and selects what it created", async () => {
     // No batch and no later step, so this is the only chance to get the
     // record — which is why this shape opens the full NewLeagueForm.
     const onCreateLeague = vi
       .fn()
       .mockResolvedValue({ id: "lg-9", name: "United States Hockey League" });
     const onChange = vi.fn();
+    const onLeagueStatus = vi.fn();
     currentLeagues = [];
-    render(<Harness onCreateLeague={onCreateLeague} onChangeSpy={onChange} />);
+    renderForm({ onCreateLeague, onLeagueStatus, onChangeSpy: onChange });
 
-    fireEvent.click(screen.getByRole("button", { name: "+ New league…" }));
-    fireEvent.change(screen.getByLabelText("New league name"), {
-      target: { value: "United States Hockey League" },
-    });
+    typeLeague("United States Hockey League");
+    fireEvent.mouseDown(
+      screen.getByRole("option", { name: "Create “United States Hockey League”" }),
+    );
+    // Opening the form records nothing yet.
+    expect(onChange).not.toHaveBeenCalled();
+
+    expect((screen.getByLabelText("New league name") as HTMLInputElement).value).toBe(
+      "United States Hockey League",
+    );
     // A field the wizard shape does not have — proof the full form is here.
-    expect(screen.getByLabelText("New league abbreviation")).toBeTruthy();
+    // Collapsed by default in the picker (NEO-307), so it is opened first.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add abbreviation, years and aliases" }),
+    );
     fireEvent.change(screen.getByLabelText("New league abbreviation"), {
       target: { value: "USHL" },
     });
@@ -1105,71 +1227,120 @@ describe("NewTeamForm — the + New league… control", () => {
         leagueName: undefined,
       }),
     );
+    expect(onLeagueStatus).toHaveBeenCalledWith({
+      text: "Added United States Hockey League. It is this team's league.",
+      isError: false,
+    });
+    // The form closed, and the field reads the new league even before the
+    // reactive list reports it.
+    expect(screen.queryByLabelText("New league name")).toBeNull();
+    expect(leagueField().value).toBe("United States Hockey League");
   });
 
-  it("Escape closes and hands focus back to the trigger", () => {
+  it("PICKER: brings the form and then its ACTIONS row into view, then focuses the name without scrolling again", async () => {
+    // CI, 1024x629: `nearest` on a form taller than the dialog body aligns its
+    // TOP, so "Add league" stayed under the footer and a tap landed on
+    // "Create team". The actions row is scrolled into view last, so the button
+    // that finishes the form is on screen whatever the form's height.
+    const calls: string[] = [];
+    const originalScroll = Element.prototype.scrollIntoView;
+    const originalFocus = HTMLElement.prototype.focus;
+    const scrollArgs: unknown[] = [];
+    const focusArgs: unknown[] = [];
+    Element.prototype.scrollIntoView = function (this: Element, arg?: unknown) {
+      if (this.hasAttribute?.("data-new-league-actions")) {
+        calls.push("scroll-actions");
+        scrollArgs.push(arg);
+      } else if (this.querySelector?.('[aria-label="New league name"]')) {
+        calls.push("scroll-form");
+        scrollArgs.push(arg);
+      }
+    };
+    HTMLElement.prototype.focus = function (this: HTMLElement, arg?: FocusOptions) {
+      if (this.getAttribute("aria-label") === "New league name") {
+        calls.push("focus-name");
+        focusArgs.push(arg);
+      }
+      return originalFocus.call(this, arg);
+    };
+    try {
+      currentLeagues = [];
+      renderForm({ onCreateLeague: vi.fn() });
+      typeLeague("WHA");
+      fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
+
+      await waitFor(() =>
+        expect(calls).toEqual(["scroll-form", "scroll-actions", "focus-name"]),
+      );
+      expect(scrollArgs).toEqual([{ block: "nearest" }, { block: "nearest" }]);
+      expect(focusArgs).toEqual([{ preventScroll: true }]);
+      expect(document.activeElement).toBe(screen.getByLabelText("New league name"));
+      // The row scrolled is the one holding the button that must be reachable.
+      expect(
+        document
+          .querySelector("[data-new-league-actions]")
+          ?.contains(screen.getByRole("button", { name: "Add league" })),
+      ).toBe(true);
+    } finally {
+      Element.prototype.scrollIntoView = originalScroll;
+      HTMLElement.prototype.focus = originalFocus;
+    }
+  });
+
+  it("PICKER: drops the wizard's 'whole batch' help line, and the name field describes nothing missing", () => {
     currentLeagues = [];
-    renderForm({ onStageLeague: vi.fn() });
-    const trigger = screen.getByRole("button", { name: "+ New league…" });
-    fireEvent.click(trigger);
-    const input = screen.getByLabelText("New league name");
-    fireEvent.keyDown(input, { key: "Escape" });
+    renderForm({ onCreateLeague: vi.fn() });
+    typeLeague("WHA");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
+
+    expect(screen.queryByText(/One league, asked once for the whole batch/)).toBeNull();
+    const described = screen.getByLabelText("New league name").getAttribute("aria-describedby");
+    for (const id of (described ?? "").split(" ").filter(Boolean)) {
+      expect(document.getElementById(id)).not.toBeNull();
+    }
+  });
+
+  it("PICKER: opens the league form with its details COLLAPSED, one tap away", () => {
+    // A typed name is all the prefill there is, and the form's own default
+    // would open every detail field — taller than the dialog body at 629px.
+    currentLeagues = [];
+    renderForm({ onCreateLeague: vi.fn() });
+    typeLeague("WHA");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
+
+    expect(screen.queryByLabelText("New league abbreviation")).toBeNull();
+    const disclosure = screen.getByRole("button", {
+      name: "Add abbreviation, years and aliases",
+    });
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    // Add league is usable straight away: the name is the only required field.
+    expect(
+      (screen.getByRole("button", { name: "Add league" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+
+    fireEvent.click(disclosure);
+    expect(screen.getByLabelText("New league abbreviation")).toBeTruthy();
+  });
+
+  it("PICKER: Escape closes the form and hands focus back to the League field", () => {
+    currentLeagues = [];
+    renderForm({ onCreateLeague: vi.fn() });
+    typeLeague("WHA");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
+
+    fireEvent.keyDown(screen.getByLabelText("New league name"), { key: "Escape" });
 
     expect(screen.queryByLabelText("New league name")).toBeNull();
     // Not `<body>`: closing unmounts the focused field.
-    expect(document.activeElement).toBe(trigger);
+    expect(document.activeElement).toBe(leagueField());
   });
 
-  it("uses no <select> anywhere — Maestro can only reach the first one on a page", () => {
+  it("uses no <select> anywhere, the league form included", () => {
     currentLeagues = [];
-    const { container } = render(<Harness onCreateLeague={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "+ New league…" }));
+    const { container } = renderForm({ onCreateLeague: vi.fn() });
+    typeLeague("WHA");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
     expect(container.querySelectorAll("select")).toHaveLength(0);
-  });
-});
-
-describe("NewTeamForm — a league staged earlier in the batch is selectable", () => {
-  it("offers it to a team whose enrichment suggested nothing", () => {
-    // Jason's addendum: "we should also have a way to select USHL once we've
-    // created it." The Lincoln Stars had no suggestion at all, so a pill that
-    // only appeared alongside a matching suggestion would never reach them.
-    currentLeagues = [];
-    renderForm({ stagedLeagueNames: ["United States Hockey League"] });
-    expect(
-      screen.getByRole("radio", { name: "United States Hockey League (new)" }),
-    ).toBeTruthy();
-  });
-
-  it("selects it, recording the NAME the commit will resolve", () => {
-    const onChange = vi.fn();
-    currentLeagues = [];
-    render(
-      <Harness
-        stagedLeagueNames={["United States Hockey League"]}
-        onChangeSpy={onChange}
-      />,
-    );
-    fireEvent.click(
-      screen.getByRole("radio", { name: "United States Hockey League (new)" }),
-    );
-    expect(onChange).toHaveBeenCalledWith({
-      leagueName: "United States Hockey League",
-      leagueId: undefined,
-    });
-  });
-
-  it("does not double up when the sport already holds that league", () => {
-    // A staged name the sport already answers to is that league, not a second
-    // option beside it.
-    currentLeagues = [{ _id: lid("l1"), name: "United States Hockey League" }];
-    renderForm({ stagedLeagueNames: ["United States Hockey League"] });
-    openLeagueList();
-    expect(
-      screen.queryByRole("radio", { name: "United States Hockey League (new)" }),
-    ).toBeNull();
-    expect(
-      screen.getByRole("radio", { name: "United States Hockey League" }),
-    ).toBeTruthy();
   });
 });
 

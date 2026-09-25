@@ -38,3 +38,11 @@ statement, not evidence. See [[reference_confirmdialog_owns_the_word_cancel]]
 for the other constraint this dialog puts on an inline picker that raises it.
 
 Worked example: `components/SetSelector/MoveSetToBrandControl.tsx` (NEO-294).
+
+**Portalled modals (NEO-307):** a `createPortal`-to-body modal holds the page
+with `lib/dom/inertBackground(dialogEl)`, which inerts every other body child,
+ref-counts across nested modals (either close order is safe) and never clears
+an `inert` it did not set. Capture the opener BEFORE calling it, call the
+release BEFORE refocusing the opener. `EntityReviewWizard` and `NewTeamDialog`
+both use it. happy-dom's role queries do NOT exclude inert subtrees, so assert
+"live" as `el.closest("[inert]") === null`.

@@ -37,8 +37,9 @@
  *   These are record-keeping the operator is INVITED to complete while they are
  *   here, which is exactly what Jason asked for; none of them blocks the step.
  *
- * The disclosure follows the rule `NewTeamForm`'s league pill row already uses:
- * **collapsed means answered**. It starts collapsed when the Wikidata lookup
+ * The disclosure follows the rule the New Team step's League field uses: **the
+ * answer shows at rest, and the choosing opens only when asked for** —
+ * collapsed means answered. It starts collapsed when the Wikidata lookup
  * pre-filled something (there is nothing to do) and open when it did not (there
  * is). And collapsed it shows the VALUES rather than the word "details", so the
  * common case — the lookup got it right — costs zero taps and the operator can
@@ -46,13 +47,14 @@
  *
  * ## Level is `aria-pressed` toggles, not a radiogroup
  *
- * Deliberately different from the league pill row next door, and it reuses
+ * Deliberately not a type-ahead like the New Team step's League field
+ * (NEO-307): Level is a small FIXED set, not a table that grows, and it reuses
  * `LevelGroup` from the admin form verbatim. Level is OPTIONAL, and pressing
  * the pressed button clears it back to null — a radiogroup has no "none" state
  * without a synthetic extra radio. It also means the control an operator learns
  * here is byte-identical to the one on League Management, including its Maestro
  * selectors (`tapOn: "Major"`). Consistency with the other place this exact
- * field is edited beats consistency with the pill row beside it.
+ * field is edited beats consistency with the League field on the team step.
  *
  * ## No generated ids on inputs
  *
@@ -225,6 +227,8 @@ export default function NewLeagueForm({
   nameFieldId,
   levelGroupId,
   disabled,
+  detailsDefaultOpen,
+  showHelp = true,
 }: {
   draft: NewLeagueDraft;
   onChange: (patch: Partial<NewLeagueDraft>) => void;
@@ -234,6 +238,28 @@ export default function NewLeagueForm({
   nameFieldId?: string;
   levelGroupId?: string;
   disabled?: boolean;
+  /**
+   * NEO-307 — overrides the "open only when nothing is prefilled" default.
+   *
+   * The PICKER (`NewTeamForm` inside `NewTeamDialog`) passes `false`: it
+   * opens this form from a typed name alone, so the default would open all
+   * seven fields at once, and at CI's 1024x629 that made the form taller than
+   * the dialog's body and put "Add league" below the viewport. The details
+   * stay one tap away behind the disclosure. The wizard's New League step
+   * passes nothing and keeps the default — it has its own fixed footer.
+   */
+  detailsDefaultOpen?: boolean;
+  /**
+   * NEO-307 — the "The competition this team plays in…" line under the name.
+   *
+   * On by default: the wizard's New League step is asked once for a whole
+   * batch, and the line says so. The PICKER passes `false` — there is no batch
+   * there, and Jason, 2026-09-25: "just extra text on the screen that doesn't
+   * provide much use". Off means the element is not rendered at all, and the
+   * name field's `aria-describedby` drops its id rather than pointing at a
+   * node that does not exist.
+   */
+  showHelp?: boolean;
 }) {
   const helpId = useId();
   const summary = leagueDetailSummary(draft);
@@ -242,11 +268,11 @@ export default function NewLeagueForm({
    *
    * Default = open only when there is nothing to show. Collapsed on a
    * pre-filled step means "the lookup answered this"; open on an empty one
-   * means "nobody has". The same "collapsed means answered" rule the New Team
-   * step's league pill row uses, so the two steps read the same way.
+   * means "nobody has". The same "the answer shows at rest" rule the New Team
+   * step's League field follows, so the two steps read the same way.
    */
   const [detailsOpen, setDetailsOpen] = useState<boolean | null>(null);
-  const open = detailsOpen ?? summary === null;
+  const open = detailsOpen ?? detailsDefaultOpen ?? summary === null;
 
   const maxYear = useMemo(() => new Date().getFullYear() + 1, []);
   const error = leagueDraftError(draft, maxYear);
@@ -265,13 +291,18 @@ export default function NewLeagueForm({
         value={draft.name}
         placeholder="National Hockey League"
         disabled={disabled}
-        aria-describedby={[helpId, describedBy].filter(Boolean).join(" ") || undefined}
+        aria-describedby={
+          [showHelp ? helpId : undefined, describedBy].filter(Boolean).join(" ") ||
+          undefined
+        }
         onChange={(e) => onChange({ name: e.target.value })}
       />
-      <p id={helpId} className="text-xs text-gray-400">
-        The competition this team plays in. One league, asked once for the whole
-        batch.
-      </p>
+      {showHelp && (
+        <p id={helpId} className="text-xs text-gray-400">
+          The competition this team plays in. One league, asked once for the
+          whole batch.
+        </p>
+      )}
 
       <div {...(levelGroupId ? { id: levelGroupId } : {})}>
         <LevelGroup

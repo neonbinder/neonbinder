@@ -203,6 +203,7 @@ import {
   // NEO-284 security audit: the warn-and-skip flavour of the primary-name
   // lock-out check, for the two commit-time alias writers below.
   dropAliasesThatArePrimaryNames,
+  findAliasHoldersOfName,
   normalizeTeamAliasList,
   normalizeTeamName,
   syncTeamAliases,
@@ -14339,6 +14340,9 @@ export const commitCardChecklistPrelude = internalMutation({
       rawName: string,
       forYear: number | undefined,
     ): Promise<Id<"teams"> | null> => {
+      // NEO-307: STRICT — no `allowPastEra`. The one caller is
+      // `resolveCareerTeamId`, whose year is a stint's start; a card's teams
+      // resolve in the team loop further down, which opts in.
       const { teamId } = await resolveTeamForSetYear(
         ctx,
         args.sportId,
@@ -14454,6 +14458,26 @@ export const commitCardChecklistPrelude = internalMutation({
        * and it is the only screen that can.
        */
       if (colliding.length > 1) return null;
+      /*
+       * NEO-307 — the reverse order of S1, fail-soft. No overlapping row
+       * answers to this name, but a team in a disjoint era may hold it as an
+       * ALIAS ("Brooklyn Dodgers" on the 1958– Los Angeles Dodgers). Creating
+       * the row would leave two teams answering to one string, with the era
+       * narrowing choosing between them silently. Team Management refuses the
+       * same create; here nobody is standing at a form, so nothing is written
+       * and the name comes back unresolved, like the mess above. The warn
+       * names the HOLDING team, never the checklist string.
+       */
+      const aliasHolders = await findAliasHoldersOfName(ctx, {
+        sportId: args.sportId,
+        fullName: teamFullName(fields),
+      });
+      if (aliasHolders.length > 0) {
+        console.warn(
+          `commitCardChecklistPrelude: ${teamFullName(aliasHolders[0])} already answers to a New Team's name as an alias. Not created.`,
+        );
+        return null;
+      }
       // NEO-156: every team-creation path attaches a league. The caller
       // supplies one when the enrichment named it; otherwise the sport's
       // default.
@@ -14482,7 +14506,7 @@ export const commitCardChecklistPrelude = internalMutation({
       if (aliases.length) {
         /*
          * NEO-284 security audit — an alias that is another team's PRIMARY
-         * name in this sport (same era) is dropped, not written. Such an
+         * name in this sport (any era, since NEO-307) is dropped, not written. Such an
          * alias locks that team out of its own edits (`findCollidingTeams`
          * would hit it as NAME_TAKEN). The New Team step refuses it where the
          * operator can see; here there is nobody to tell, so the alias is
@@ -14492,7 +14516,6 @@ export const commitCardChecklistPrelude = internalMutation({
         const { aliases: safe, dropped } = await dropAliasesThatArePrimaryNames(ctx, {
           sportId: args.sportId,
           aliases,
-          yearsActive: extra.yearsActive,
         });
         for (const { teamName } of dropped) {
           // The owning team's display name only — never the alias string.
@@ -14974,15 +14997,16 @@ export const commitCardChecklistPrelude = internalMutation({
       }
       if (additions.length === 0) continue;
       // NEO-284 security audit — a string that is another team's PRIMARY name
-      // in this sport (overlapping era) is not remembered: stored as an alias
-      // it would lock that team out of its own edits (NAME_TAKEN on every
-      // save). Warn-and-skip, like the caps above; the link itself still
-      // lands. `selfId` so the linked team's own name is not a clash.
+      // in this sport is not remembered: stored as an alias it would lock that
+      // team out of its own edits (NAME_TAKEN on every save). NEO-307: in ANY
+      // era — a disjoint one cannot lock anyone out, but it steals the other
+      // team's retro cards (a 2026 "Brooklyn Dodgers" card resolving to LA).
+      // Warn-and-skip, like the caps above; the link itself still lands.
+      // `selfId` so the linked team's own name is not a clash.
       const { aliases: safeAdditions, dropped } = await dropAliasesThatArePrimaryNames(ctx, {
         sportId: args.sportId,
         aliases: additions,
         selfId: linked._id,
-        yearsActive: linked.yearsActive,
       });
       for (const { teamName } of dropped) {
         // The owning team's display name only — never the parked string.
@@ -15211,6 +15235,8 @@ export const commitCardChecklistPrelude = internalMutation({
           args.sportId,
           name,
           setYear,
+          // NEO-307: a SET year — must agree with the resolve phase below.
+          { allowPastEra: true },
         );
         // Already resolves on its own — the resolve phase will link it, and
         // minting a rival row is exactly what the guard in the combined loop
@@ -15247,6 +15273,8 @@ export const commitCardChecklistPrelude = internalMutation({
         args.sportId,
         name,
         setYear,
+        // NEO-307: a SET year — a card can show a team's past.
+        { allowPastEra: true },
       );
       if (existingTeamId) {
         const existing = (await ctx.db.get(existingTeamId))!;
@@ -15456,6 +15484,22 @@ export const commitCardChecklistPrelude = internalMutation({
           });
         }
       }
+      /*
+       * NEO-307 — career-team creates `recordDecision` turned into links:
+       * exactly one other team holds the label's composed name as an alias,
+       * so no team may be created under it, and the operator's answer is
+       * taken to mean that team. By id, first occurrence wins (the same rule
+       * as `careerTeamCreateBySource`).
+       */
+      const careerTeamLinkBySource = new Map<string, Id<"teams">>();
+      if (decision.action === "create") {
+        for (const entry of decision.linkTeams ?? []) {
+          const key = norm(entry.sourceName);
+          if (!careerTeamLinkBySource.has(key)) {
+            careerTeamLinkBySource.set(key, entry.teamId);
+          }
+        }
+      }
       const resolveCareerTeamId = async (
         label: string,
         /**
@@ -15474,6 +15518,14 @@ export const commitCardChecklistPrelude = internalMutation({
         // by linking to a differently-named row, is unreachable by matching.
         const answered = stagedTeamIdByLabel.get(norm(label));
         if (answered) return answered;
+        // NEO-307: the operator's answer by id, re-validated the way a link
+        // decision is — a team deleted or moved to another sport since the
+        // decision leaves the label to the ordinary path below.
+        const linkedId = careerTeamLinkBySource.get(norm(label));
+        if (linkedId) {
+          const linked = await ctx.db.get(linkedId);
+          if (linked && linked.sportId === args.sportId) return linkedId;
+        }
         const matched = await resolveTeamIdByName(label, stintYear);
         if (matched) return matched;
         const create = careerTeamCreateBySource.get(norm(label));

@@ -44,3 +44,11 @@ non-`radio` children of the `radiogroup` — invalid owned-children, mostly
 tolerated by AT. Moving them out is the correct fix but it re-flows the exact
 flex container whose height caused the CI failure, so it is not worth the risk
 in a layout-fix ticket.
+
+## OBSOLETE as of NEO-307 (2026-09-25)
+
+The radiogroup this memory describes is GONE. `NewTeamForm`'s League field is
+now the shared `Autocomplete` combobox (no `role="radio"`/`radiogroup`
+anywhere in the file — verified). Do not apply this posinset/setsize fix to
+current code; see [[league-combobox-name-collision-neo307]] for the current
+shape and its own open finding (accessible-name collision, not posinset).

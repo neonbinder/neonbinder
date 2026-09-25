@@ -39,7 +39,7 @@
  * mocked and routed by the (string-mocked) function reference.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ConvexError } from "convex/values";
 import { MemoryRouter, useLocation } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -379,29 +379,6 @@ describe("TeamManagement — saving a team confirms in the panel", () => {
   });
 });
 
-/**
- * NEO-254 — the Franchise field, a `role="radiogroup"` of pills.
- *
- * ## Why it is not a `<select>`, and why that is asserted here
- *
- * It was one, and that made it undrivable in E2E. Maestro's web driver gives
- * every `<option>` synthetic tap bounds from its index inside its own parent,
- * then resolves a tap by scanning `document.querySelectorAll('option')` and
- * taking the first bounds match — so only the FIRST select on a page is ever
- * reachable and a tap meant for a later one silently mutates the earlier. This
- * panel already had two selects above Franchise. `SetSelector/NewTeamForm.tsx`
- * documents the identical trap and uses the identical remedy.
- *
- * The first test below is the regression pin for that: it asserts the control
- * is not a select at all, because "it works" and "a flow can drive it" are
- * different facts and only the second one is at stake.
- *
- * ## The behavioural failure this whole block guards
- *
- * The one every re-seeded panel field has: forget to reset it on selection
- * change and the operator saves the PREVIOUS team's franchise onto this one,
- * silently, with the right-looking value on screen.
- */
 describe("TeamManagement — team aliases (NEO-284)", () => {
   /** The "also known as" textarea. */
   const box = () =>
@@ -545,45 +522,88 @@ describe("TeamManagement — team aliases (NEO-284)", () => {
 });
 
 describe("TeamManagement — the Franchise field", () => {
-  const group = () => document.getElementById("team-franchise")!;
-  const pills = () =>
-    Array.from(group().querySelectorAll<HTMLButtonElement>('[role="radio"]'));
-  const pillLabels = () => pills().map((b) => b.textContent);
-  const pill = (label: string) =>
-    pills().find((b) => b.textContent === label)!;
-  const checkedPill = () =>
-    pills().find((b) => b.getAttribute("aria-checked") === "true");
-  const startFranchise = () =>
-    screen.getByRole("button", { name: "+ Start a new franchise…" });
+  /** The combobox, found by the accessible name flows use. */
+  const field = () =>
+    screen.getByRole("combobox", { name: "Franchise" }) as HTMLInputElement;
+  const open = () => fireEvent.focus(field());
+  const type = (text: string) => {
+    open();
+    fireEvent.change(field(), { target: { value: text } });
+  };
+  /** The Franchise field's own list — scoped, because the panel's two league
+   *  <select>s carry `option`s of their own. */
+  const franchiseOptions = () => {
+    const list = screen.queryByRole("listbox", { name: "Franchise suggestions" });
+    return list ? within(list).queryAllByRole("option") : [];
+  };
+  /** Option text as a Maestro `text:` selector matches it: direct text only. */
+  const optionLabels = () =>
+    franchiseOptions()
+      .map((o) =>
+        Array.from(o.childNodes)
+          .filter((n) => n.nodeType === Node.TEXT_NODE)
+          .map((n) => n.textContent)
+          .join(""),
+      );
+  const pick = (label: string) => {
+    open();
+    fireEvent.mouseDown(
+      within(screen.getByRole("listbox", { name: "Franchise suggestions" })).getByRole(
+        "option",
+        { name: label },
+      ),
+    );
+  };
+  const currentOption = () =>
+    franchiseOptions()
+      .find((o) => o.querySelector('[aria-hidden="true"]')?.textContent === "✓");
 
-  it("is a radio group, not a select — a select here is undrivable in E2E", () => {
+  it("is a combobox named 'Franchise' — no radiogroup, no select, no start box", () => {
     renderAt("/admin/teams?team=t-sf-giants");
-    expect(group().getAttribute("role")).toBe("radiogroup");
-    expect(group().tagName).not.toBe("SELECT");
-    expect(group().querySelector("select")).toBeNull();
-    // Named by the visible "Franchise" label rather than an aria-label, so the
-    // two cannot drift apart.
+    expect(field().tagName).toBe("INPUT");
+    const wrapper = document.getElementById("team-franchise")!;
+    expect(wrapper.contains(field())).toBe(true);
+    // The id is on the wrapper, never the input, so "Franchise" stays the
+    // input's Maestro resource-id.
+    expect(field().id).toBe("");
+    expect(wrapper.querySelector('[role="radiogroup"], [role="radio"], select')).toBeNull();
     expect(
-      document.getElementById(group().getAttribute("aria-labelledby")!)
-        ?.textContent,
-    ).toBe("Franchise");
+      screen.queryByRole("button", { name: "+ Start a new franchise…" }),
+    ).toBeNull();
+    expect(screen.queryByLabelText("New franchise name")).toBeNull();
+    expect(screen.queryByLabelText("Filter franchises")).toBeNull();
+    // The visible caption matches the accessible name (SC 2.5.3).
+    expect(wrapper.textContent).toContain("Franchise");
   });
 
-  it("offers every franchise in the sport, plus none", () => {
+  it("shows 'No franchise' at rest for a team on no thread, and opens on every franchise plus none", () => {
     renderAt("/admin/teams?team=t-sf-giants");
-    // "Start a new franchise" is NOT one of these — it is a command, and a
-    // command inside a radiogroup made two radios report checked at once.
-    expect(pillLabels()).toEqual(["No franchise", "Giants"]);
-    // Nothing picked yet, so "No franchise" is the answer AND the Tab stop.
-    expect(checkedPill()?.textContent).toBe("No franchise");
-    expect(pill("No franchise").tabIndex).toBe(0);
-    expect(pill("Giants").tabIndex).toBe(-1);
+    expect(field().value).toBe("No franchise");
+    expect(screen.queryByRole("listbox")).toBeNull();
+
+    open();
+    expect(optionLabels()).toEqual(["Giants", "No franchise"]);
+    // The current answer is marked and highlighted, so Enter re-confirms it.
+    expect(currentOption()?.textContent).toContain("No franchise");
+    expect(
+      franchiseOptions()
+        .find((o) => o.textContent?.endsWith("No franchise"))
+        ?.getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+
+  it("shows the team's own thread at rest", () => {
+    currentTeams = TEAMS.map((t) =>
+      t._id === "t-sf-giants" ? { ...t, franchiseId: "f-giants" } : t,
+    );
+    renderAt("/admin/teams?team=t-sf-giants");
+    expect(field().value).toBe("Giants");
   });
 
   it("sends the picked franchise on save", async () => {
     renderAt("/admin/teams?team=t-sf-giants");
-    fireEvent.click(pill("Giants"));
-    expect(checkedPill()?.textContent).toBe("Giants");
+    pick("Giants");
+    expect(field().value).toBe("Giants");
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
@@ -597,8 +617,9 @@ describe("TeamManagement — the Franchise field", () => {
     // `null` is the clear, and it is the same value the franchise view's
     // "Remove" sends. Omitting the field would leave the link in place.
     renderAt("/admin/teams?team=t-sf-giants");
-    fireEvent.click(pill("Giants"));
-    fireEvent.click(pill("No franchise"));
+    pick("Giants");
+    pick("No franchise");
+    expect(field().value).toBe("No franchise");
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => expect(mockSaveTeamFields).toHaveBeenCalled());
@@ -607,91 +628,114 @@ describe("TeamManagement — the Franchise field", () => {
     });
   });
 
-  it("moves between pills with the arrow keys, as one Tab stop", () => {
-    // The promise `role="radiogroup"` makes. Before the pills were radios,
-    // every option was its own Tab stop and the arrows did nothing.
+  it("narrows on the name as it is typed, raw or normalized, and never changes the answer by typing", () => {
+    franchiseRows = [
+      ...FRANCHISES,
+      {
+        _id: "f-titans",
+        _creationTime: 0,
+        name: "Titans / Oilers",
+        nameNormalized: "titans oilers",
+        sportId: "sport-baseball",
+        lastUpdated: 0,
+        teamCount: 0,
+      },
+    ];
     renderAt("/admin/teams?team=t-sf-giants");
-    fireEvent.keyDown(group(), { key: "ArrowRight" });
-    expect(checkedPill()?.textContent).toBe("Giants");
-    expect(pill("Giants").tabIndex).toBe(0);
-    expect(pill("No franchise").tabIndex).toBe(-1);
+    type("GIA");
+    expect(optionLabels()).toEqual(["Giants", "No franchise"]);
+    type("titans oilers");
+    expect(optionLabels()).toEqual(["Titans / Oilers", "No franchise"]);
 
-    // Wraps, like a native radio group.
-    fireEvent.keyDown(group(), { key: "ArrowLeft" });
-    expect(checkedPill()?.textContent).toBe("No franchise");
+    // Walking away puts the answer's label back; nothing was picked.
+    fireEvent.blur(field());
+    expect(field().value).toBe("No franchise");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    return waitFor(() =>
+      expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({ franchiseId: null }),
+    );
   });
 
-  it("never reports two checked radios at once", () => {
-    // The defect that put the command pill outside the group: with it inside,
-    // picking a franchise and then opening the name box left BOTH checked, and
-    // a radiogroup that reports two selections is a broken contract for anyone
-    // reading it through assistive tech — and invisible to everyone else.
+  it("puts the answer back on Escape", () => {
     renderAt("/admin/teams?team=t-sf-giants");
-    const checkedCount = () =>
-      pills().filter((b) => b.getAttribute("aria-checked") === "true").length;
-
-    expect(checkedCount()).toBe(1);
-    fireEvent.click(pill("Giants"));
-    expect(checkedCount()).toBe(1);
-    fireEvent.click(startFranchise());
-    expect(checkedCount()).toBe(1);
-    expect(checkedPill()?.textContent).toBe("Giants");
+    pick("Giants");
+    type("zz");
+    fireEvent.keyDown(field(), { key: "Escape" });
+    expect(field().value).toBe("Giants");
+    expect(screen.queryByRole("listbox")).toBeNull();
   });
 
-  it("the start-a-franchise control is a disclosure beside the group, not a radio", () => {
+  it("walks and picks with the keyboard", () => {
     renderAt("/admin/teams?team=t-sf-giants");
-    const trigger = startFranchise();
-    expect(trigger.getAttribute("role")).toBeNull();
-    expect(group().contains(trigger)).toBe(false);
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
-
-    fireEvent.click(trigger);
-    expect(trigger.getAttribute("aria-expanded")).toBe("true");
-    // …and it names the region it opened.
-    expect(document.getElementById(trigger.getAttribute("aria-controls")!)).toBeTruthy();
+    open();
+    // Opens on the current answer ("No franchise", last); Up reaches Giants.
+    fireEvent.keyDown(field(), { key: "ArrowUp" });
+    fireEvent.keyDown(field(), { key: "Enter" });
+    expect(field().value).toBe("Giants");
   });
 
-  it("starts a franchise from the panel and selects it without saving the team", async () => {
+  it("offers Start “<typed>” only when the text matches no franchise", () => {
     renderAt("/admin/teams?team=t-sf-giants");
-    fireEvent.click(startFranchise());
-    fireEvent.change(screen.getByLabelText("New franchise name"), {
-      target: { value: "Giants" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    // A partial match: the thread is probably already here.
+    type("gi");
+    expect(optionLabels()).toEqual(["Giants", "No franchise"]);
+    // An exact match.
+    type("giants");
+    expect(optionLabels()).toEqual(["Giants", "No franchise"]);
+    // "No franchise" is an answer, not a thread to start.
+    type("no franchise");
+    expect(optionLabels()).toEqual(["No franchise"]);
+    // Nothing matches: first, so Enter starts it.
+    type("  Titans ");
+    expect(optionLabels()).toEqual(["Start “Titans”", "No franchise"]);
+  });
+
+  it("starts a franchise from the field and selects it without saving the team", async () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    type("Titans");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Start “Titans”" }));
 
     await waitFor(() =>
       expect(mockFindOrCreateFranchise).toHaveBeenCalledWith({
-        name: "Giants",
+        name: "Titans",
         sportId: "sport-baseball",
       }),
     );
     // Creating a thread and putting this team on it are two decisions.
     expect(mockSaveTeamFields).not.toHaveBeenCalled();
-    // The new row is offered immediately, rather than the group losing its
-    // answer until `franchises.list` catches up.
-    await waitFor(() => expect(checkedPill()?.textContent).toBe("Giants"));
+    // The new row is the answer immediately, rather than the field reading
+    // blank until `franchises.list` catches up.
+    await waitFor(() => expect(field().value).toBe("Titans"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() =>
+      expect(mockSaveTeamFields.mock.calls[0][0]).toMatchObject({ franchiseId: "f-new" }),
+    );
+  });
+
+  it("starts one with Enter when the text matches nothing", async () => {
+    renderAt("/admin/teams?team=t-sf-giants");
+    type("Titans");
+    fireEvent.keyDown(field(), { key: "Enter" });
+    await waitFor(() =>
+      expect(mockFindOrCreateFranchise).toHaveBeenCalledWith({
+        name: "Titans",
+        sportId: "sport-baseball",
+      }),
+    );
   });
 
   /**
-   * NEO-260 — the franchise box reports into the Save row, not the top of the
-   * page.
-   *
-   * "Started the <name> franchise. Save the team to put it on there." is an
-   * instruction to press Save, and it was being hoisted to the screen-level
-   * status line ~570px above the button it names — the third time this screen
-   * made the same mistake, after NEO-236 (the refusal) and NEO-254
-   * (`Saved <name>`) had each already moved one message out of that line.
+   * NEO-260 — the franchise message reports into the Save row, not the top of
+   * the page: it is an instruction to press Save.
    */
   it("says a new franchise was started in the Save button's own row", async () => {
     renderAt("/admin/teams?team=t-sf-giants");
-    fireEvent.click(startFranchise());
-    fireEvent.change(screen.getByLabelText("New franchise name"), {
-      target: { value: "Giants" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    type("Titans");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Start “Titans”" }));
 
     const line = await screen.findByText(
-      "Started the Giants franchise. Save the team to put it on there.",
+      "Started the Titans franchise. Save the team to put it on there.",
     );
     expect(screen.getByRole("button", { name: "Save" }).parentElement).toBe(
       line.parentElement,
@@ -699,53 +743,37 @@ describe("TeamManagement — the Franchise field", () => {
     expect(line.getAttribute("role")).toBe("status");
   });
 
-  it("backs out of the name box on Escape without changing the answer", () => {
+  it("says so when the typed thread already existed under another spelling", async () => {
+    mockFindOrCreateFranchise.mockResolvedValue({ id: "f-giants", created: false });
     renderAt("/admin/teams?team=t-sf-giants");
-    fireEvent.click(pill("Giants"));
-    fireEvent.click(startFranchise());
-    fireEvent.keyDown(screen.getByLabelText("New franchise name"), {
-      key: "Escape",
-    });
-
-    expect(screen.queryByLabelText("New franchise name")).toBeNull();
-    // The draft's franchise never moved — the control is a command, not a value.
-    expect(checkedPill()?.textContent).toBe("Giants");
-    // Focus goes back to the trigger, not to `<body>`: closing unmounts the
-    // input that had it.
-    expect(document.activeElement).toBe(startFranchise());
+    type("SF Giants");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Start “SF Giants”" }));
+    expect(
+      await screen.findByText(
+        "SF Giants was already a franchise. Save the team to put it on there.",
+      ),
+    ).toBeTruthy();
+    expect(field().value).toBe("Giants");
   });
 
   it("re-seeds the field when a different team is selected", () => {
     renderAt("/admin/teams?team=t-sf-giants");
-    fireEvent.click(pill("Giants"));
-    expect(checkedPill()?.textContent).toBe("Giants");
+    pick("Giants");
+    expect(field().value).toBe("Giants");
 
     fireEvent.click(row("Seattle Mariners"));
-    expect(checkedPill()?.textContent).toBe("No franchise");
-  });
-
-  it("shows no filter box while the list is short", () => {
-    renderAt("/admin/teams?team=t-sf-giants");
-    expect(screen.queryByLabelText("Filter franchises")).toBeNull();
+    expect(field().value).toBe("No franchise");
   });
 });
 
 /**
- * NEO-254 — the bound on the pill group.
- *
- * The League group next door bounds itself with a scroll box, which works
- * because a sport holds tens of leagues. The preload is about to mint one
- * franchise per thread across five sports, and a hundred-pill scroll box with
- * no way to aim at one is not a control. Past the cap the group grows a filter
- * and says how many it is hiding.
+ * NEO-254 capped the pills at 24 behind a filter; NEO-307's type-ahead has no
+ * cap to hit. What stays pinned is that a sport with many threads is still one
+ * field, every thread is offered, and typing finds one.
  */
-describe("TeamManagement — the Franchise group past its cap", () => {
-  const group = () => document.getElementById("team-franchise")!;
-  const pillLabels = () =>
-    Array.from(group().querySelectorAll('[role="radio"]')).map(
-      (b) => b.textContent,
-    );
-
+describe("TeamManagement — the Franchise field with many threads", () => {
+  const field = () =>
+    screen.getByRole("combobox", { name: "Franchise" }) as HTMLInputElement;
   const many = Array.from({ length: 30 }, (_, i) => ({
     _id: `f-${i}`,
     _creationTime: 0,
@@ -756,46 +784,28 @@ describe("TeamManagement — the Franchise group past its cap", () => {
     teamCount: 0,
   }));
 
-  it("caps the pills, offers a filter, and says how many are hidden", () => {
+  it("offers all of them in one capped, scrolling list", () => {
     franchiseRows = many;
     renderAt("/admin/teams?team=t-sf-giants");
-
-    // 24 franchises + "No franchise". The disclosure is not a radio.
-    expect(pillLabels()).toHaveLength(25);
-    expect(screen.getByLabelText("Filter franchises")).toBeTruthy();
-    expect(screen.getByText("6 more — keep typing to narrow it down.")).toBeTruthy();
+    fireEvent.focus(field());
+    const list = screen.getByRole("listbox", { name: "Franchise suggestions" });
+    expect(within(list).getAllByRole("option")).toHaveLength(31);
+    expect(list.className).toContain("max-h-60");
+    expect(list.className).toContain("overflow-y-auto");
   });
 
   it("narrows to what was typed", () => {
     franchiseRows = many;
     renderAt("/admin/teams?team=t-sf-giants");
-
-    fireEvent.change(screen.getByLabelText("Filter franchises"), {
-      target: { value: "Franchise 07" },
-    });
-    expect(pillLabels()).toEqual(["No franchise", "Franchise 07"]);
-  });
-
-  it("keeps the picked franchise visible even when the filter excludes it", () => {
-    // A radio group whose checked option is not in the DOM announces "nothing
-    // selected" and leaves the roving Tab stop with nowhere to sit.
-    franchiseRows = many;
-    renderAt("/admin/teams?team=t-sf-giants");
-
-    const target = Array.from(
-      group().querySelectorAll<HTMLButtonElement>('[role="radio"]'),
-    ).find((b) => b.textContent === "Franchise 03")!;
-    fireEvent.click(target);
-
-    fireEvent.change(screen.getByLabelText("Filter franchises"), {
-      target: { value: "Franchise 21" },
-    });
-    expect(pillLabels()).toContain("Franchise 03");
-    expect(
-      Array.from(group().querySelectorAll('[role="radio"]')).find(
-        (b) => b.getAttribute("aria-checked") === "true",
-      )?.textContent,
-    ).toBe("Franchise 03");
+    fireEvent.focus(field());
+    fireEvent.change(field(), { target: { value: "Franchise 07" } });
+    const list = screen.getByRole("listbox", { name: "Franchise suggestions" });
+    // `✓` is the current answer's mark ("No franchise" here), in its own
+    // aria-hidden span beside the label.
+    expect(within(list).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Franchise 07",
+      "✓No franchise",
+    ]);
   });
 });
 

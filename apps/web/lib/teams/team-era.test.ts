@@ -17,6 +17,7 @@ import {
   eraCoversYear,
   eraLabel,
   erasOverlap,
+  pickTeamForYear,
   teamOptionLabel,
   teamsActiveInYear,
 } from "./team-era";
@@ -121,6 +122,116 @@ describe("teamsActiveInYear", () => {
   test("returns a new array — the caller's list is never mutated", () => {
     const out = teamsActiveInYear(rows, undefined);
     expect(out).not.toBe(rows);
+  });
+});
+
+describe("pickTeamForYear — a card can show a team's past, never its future", () => {
+  // NEO-307. Jason, 2026-09-25: "a card can show a team's past, never its
+  // future."
+  const BROOKLYN = { yearsActive: { from: 1911, to: 1957 } };
+  // The card callers' mode. The allowance is opt-in; see the describe below.
+  const CARD = { allowPastEra: true };
+
+  test("a lone CLOSED era links a later set year — the retro card", () => {
+    // A 2026 Donruss Brooklyn Dodgers card is a Brooklyn Dodgers card.
+    expect(pickTeamForYear([BROOKLYN], 2026, CARD)).toEqual({
+      row: BROOKLYN,
+      pastEra: true,
+    });
+    // The first season after the end is already the past.
+    expect(pickTeamForYear([BROOKLYN], 1958, CARD)).toEqual({
+      row: BROOKLYN,
+      pastEra: true,
+    });
+  });
+
+  test("a lone era never links a set year BEFORE it began", () => {
+    // The NEO-254 case, unchanged: a 1985 card is not about the 2011 Jets.
+    expect(pickTeamForYear([NEW_JETS], 1985, CARD)).toBeNull();
+    expect(pickTeamForYear([OLD_JETS], 1971, CARD)).toBeNull();
+  });
+
+  test("a lone era covering the year links it, and is NOT a past-era link", () => {
+    expect(pickTeamForYear([BROOKLYN], 1957, CARD)).toEqual({
+      row: BROOKLYN,
+      pastEra: false,
+    });
+    expect(pickTeamForYear([NEW_JETS], 2015, CARD)).toEqual({
+      row: NEW_JETS,
+      pastEra: false,
+    });
+  });
+
+  test("a lone UNDATED row links every year, and with no year", () => {
+    for (const year of [1800, 2026, undefined]) {
+      expect(pickTeamForYear([UNDATED], year, CARD)).toEqual({
+        row: UNDATED,
+        pastEra: false,
+      });
+    }
+  });
+
+  test("with no year a lone dated row still links — no evidence is not counter-evidence", () => {
+    expect(pickTeamForYear([BROOKLYN], undefined, CARD)).toEqual({
+      row: BROOKLYN,
+      pastEra: false,
+    });
+  });
+
+  test("both Jets and a year between their eras: still no answer", () => {
+    // 1999 is after the first Jets ended — but there are TWO rows, and the
+    // past-era allowance is for a lone row only.
+    expect(pickTeamForYear([OLD_JETS, NEW_JETS], 1999, CARD)).toBeNull();
+  });
+
+  test("two CLOSED eras both before the set year: never guess between them", () => {
+    const first = { yearsActive: { from: 1901, to: 1910 } };
+    const second = { yearsActive: { from: 1920, to: 1930 } };
+    expect(pickTeamForYear([first, second], 2026, CARD)).toBeNull();
+  });
+
+  test("several rows with exactly one covering the year: that one", () => {
+    expect(pickTeamForYear([OLD_JETS, NEW_JETS], 1985, CARD)).toEqual({
+      row: OLD_JETS,
+      pastEra: false,
+    });
+    expect(pickTeamForYear([OLD_JETS, NEW_JETS], 2015, CARD)).toEqual({
+      row: NEW_JETS,
+      pastEra: false,
+    });
+  });
+
+  test("no rows is no answer", () => {
+    expect(pickTeamForYear([], 2026, CARD)).toBeNull();
+  });
+});
+
+describe("pickTeamForYear — the past-era allowance is CARD-ONLY and opt-in", () => {
+  // A career stint is a season a player actually played, and nobody plays for
+  // a team after it folds. So a stint caller leaves `allowPastEra` off, and a
+  // new caller that forgets to choose gets the strict rule.
+  const BROOKLYN = { yearsActive: { from: 1911, to: 1957 } };
+
+  test("by default a lone closed era does NOT answer for a later year", () => {
+    expect(pickTeamForYear([BROOKLYN], 2026)).toBeNull();
+    expect(pickTeamForYear([BROOKLYN], 2026, {})).toBeNull();
+    expect(pickTeamForYear([BROOKLYN], 2026, { allowPastEra: false })).toBeNull();
+  });
+
+  test("a 2015 stint with only the 1972–1996 Jets held is a question, not a link", () => {
+    expect(pickTeamForYear([OLD_JETS], 2015)).toBeNull();
+    // …while a 2015 CARD of the same lone row is a retro card and links.
+    expect(pickTeamForYear([OLD_JETS], 2015, { allowPastEra: true })).toEqual({
+      row: OLD_JETS,
+      pastEra: true,
+    });
+  });
+
+  test("strict mode changes nothing else: covered, undated and no-year still link", () => {
+    expect(pickTeamForYear([BROOKLYN], 1950)).toEqual({ row: BROOKLYN, pastEra: false });
+    expect(pickTeamForYear([UNDATED], 2026)).toEqual({ row: UNDATED, pastEra: false });
+    expect(pickTeamForYear([BROOKLYN], undefined)).toEqual({ row: BROOKLYN, pastEra: false });
+    expect(pickTeamForYear([OLD_JETS, NEW_JETS], 1985)).toEqual({ row: OLD_JETS, pastEra: false });
   });
 });
 

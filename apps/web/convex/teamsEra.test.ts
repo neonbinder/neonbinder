@@ -251,7 +251,11 @@ describe("a card's team name resolves by the set's year", () => {
     }
   });
 
-  test("a lone DATED row answers only for the years it covers", async () => {
+  test("a lone DATED row never answers for a year BEFORE its era began", async () => {
+    // NEO-307 retitle: "only the years it covers" stopped being true for card
+    // callers, which may now link a lone row for a year AFTER its era (a retro
+    // card). What holds in every mode is the future: no card or stint can
+    // show a team that did not exist yet.
     /*
      * The subtler half of the rule, and the one with no second row to make the
      * mistake visible.
@@ -792,6 +796,65 @@ describe("the card-linking paths narrow by the set's year", () => {
 
     const card = await t.run(async (ctx) => ctx.db.get(cardId));
     expect(card?.teamOnCardIds).toEqual([old]);
+  });
+
+  test("NEO-307: the backfill links a 2015 retro card to the lone 1972–1996 row", async () => {
+    // A card can show a team's past: with only the original Jets held, a 2015
+    // "Winnipeg Jets" card is a retro card of that row.
+    const t = convexTest(schema, modules);
+    const { sportId, setId } = await seedSportWithSet(t, "2015");
+    const original = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Jets",
+        location: "Winnipeg",
+        nameNormalized: normalizeTeamName(JETS),
+        sportId,
+        yearsActive: { from: 1972, to: 1996 },
+        lastUpdated: 1,
+      }),
+    );
+    const cardId = await seedCard(t, setId, JETS);
+
+    await t.mutation(internal.cardChecklist.backfillTeamToOnCardIds, {
+      batchSize: 10,
+    });
+
+    const card = await t.run(async (ctx) => ctx.db.get(cardId));
+    expect(card?.teamOnCardIds).toEqual([original]);
+  });
+
+  test("NEO-307: BSC's team string links a 2015 retro card to the lone 1972–1996 row", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, setId } = await seedSportWithSet(t, "2015");
+    const original = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Jets",
+        location: "Winnipeg",
+        nameNormalized: normalizeTeamName(JETS),
+        sportId,
+        yearsActive: { from: 1972, to: 1996 },
+        lastUpdated: 1,
+      }),
+    );
+    const cardId = await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: setId,
+        cardNumber: "1",
+        cardName: "Dale Hawerchuk",
+        platformData: {},
+        sortOrder: 1,
+        lastUpdated: 1,
+      }),
+    );
+
+    const result = await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: cardId,
+      teamName: JETS,
+    });
+
+    expect(result).toEqual({ applied: true, unmatched: false });
+    const card = await t.run(async (ctx) => ctx.db.get(cardId));
+    expect(card?.teamOnCardIds).toEqual([original]);
   });
 
   test("…and leaves the string alone when the year cannot separate the eras", async () => {

@@ -44,7 +44,7 @@
 - [Component tests hand-build the api mock](reference_component_tests_hand_build_the_api_mock.md) — `api.<newModule>` in a tested component fails every test at render; sibling-component mocks export only `default`; route reads through slot props, sentinels in pure modules
 - [Maestro web text is direct text nodes only](reference_maestro_web_text_is_direct_text_nodes_only.md) — a description line in a sibling element never joins a row's `text:`; the name span stays its own match (verified from maestro-web.js 2.8.0)
 - [Confirmdialog owns the word cancel](reference_confirmdialog_owns_the_word_cancel.md) — the shared ConfirmDialog always renders a button named "Cancel"; an inline picker that raises it must be a disclosure toggle, not a second Cancel
-- [Inert the opener behind ConfirmDialog](reference_inert_the_opener_behind_confirmdialog.md) — not portalled and traps only Tab; use `inert` not `aria-hidden`, and restore focus in an effect because inert blurs
+- [Inert the opener behind ConfirmDialog](reference_inert_the_opener_behind_confirmdialog.md) — not portalled, Tab-only trap: use `inert`; portalled modals use lib/dom/inertBackground (stacks); restore focus after release
 - [A re-parent drops a row out of its open column](reference_a_reparent_drops_a_row_out_of_its_open_column.md) — SetSelector columns are scoped to the parent id; re-point the parent column, never clear the selection
 - [Wrap-boundary toolbars move under the cursor](reference_wrap_boundary_toolbar_moves_under_the_cursor.md) — fix the width, not the flow; all 4 admin screens carry it, and the width follows the longest realistic option
 - [Undefined error_class is transient](reference_undefined_error_class_is_transient.md) — an untagged login failure gets the "didn't answer" copy; a test stub must set error_class to reach the refused-credentials wording
@@ -64,3 +64,7 @@
 - [Subtree delete intra-table pointers](reference_subtree_delete_intra_table_pointers.md) — leaf-first paging still dangles sync-status notices (keyed on parent) and queue `source`; delete them with their target
 - [Moving cards remaps the src slot key](reference_moving_cards_remaps_the_src_slot_key.md) — card src is a per-row slot key; remap via dest allocateSlots, clear an unmapped src, refuse a split pair; delete helpers exported
 - [An inert trigger still names a button](reference_an_inert_trigger_still_names_a_button.md) — confirm must not reuse the trigger's text; pin unique button names with the dialog open
+- [Growing lists are type-ahead](feedback-growing-lists-are-type-ahead.md) — one-of-N over a growing table = Autocomplete picker mode, never pills/radiogroup; Jason on NEO-307 League pills
+- [Team resolver serves card and stint years](reference_team_resolver_serves_card_and_stint_years.md) — card callers opt into allowPastEra, stint callers stay strict (resolveTeamIdByName is a stint path); an alias is never another team's name, any era
+- [Bulkload budget tests pin exact ops](reference_bulkload_budget_tests_pin_exact_ops.md) — 854/989 opsSpent are asserted exactly; reuse a read the row loop already made, and run the whole file
+- [Autocomplete list is a fixed layer](reference_autocomplete_list_is_a_fixed_layer.md) — portalled into nearest role=dialog, fixed, body-bounded; focus returns use focusWithoutOpening; act() around el.focus() in tests

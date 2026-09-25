@@ -1567,3 +1567,60 @@ describe("security review 1: recordDecision refuses a league it cannot stand beh
     expect((row!.decision as { create: { leagueId: unknown } }).create.leagueId).toBeNull();
   });
 });
+
+describe("NEO-307: a stint never links to a team's past — it gets its step", () => {
+  /*
+   * NEO-307 lets a CARD link a lone team row whose era has ended (a 2026 retro
+   * card of the 1911–1957 Brooklyn Dodgers). That allowance is card-only.
+   * This path asks "do we already hold this career team?" with the stint's own
+   * start year, and nobody plays for a team after it folds: a 2015 Winnipeg
+   * Jets stint with only the 1972–1996 row held is NOT held — it needs the
+   * 2011 era created, so it gets a New Team step.
+   */
+  async function insertOriginalJets(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+  ) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        location: "Winnipeg",
+        name: "Jets",
+        nameNormalized: normalizeTeamName("Winnipeg Jets"),
+        sportId,
+        yearsActive: { from: 1972, to: 1996 },
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
+  test("a 2015 stint with only the 1972–1996 Jets held stages a step", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await insertOriginalJets(t, sportId);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Blake Wheeler",
+    });
+
+    await landLookup(t, playerRowId, [{ name: "Winnipeg Jets", fromYear: 2015 }]);
+
+    const staged = await stagedRows(t);
+    expect(staged.map((r) => r.name)).toEqual(["Winnipeg Jets"]);
+  });
+
+  test("a 1985 stint at the same lone row is held — a link, no step", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await insertOriginalJets(t, sportId);
+    const playerRowId = await insertRow(t, {
+      sportId,
+      kind: "player",
+      name: "Dale Hawerchuk",
+    });
+
+    await landLookup(t, playerRowId, [{ name: "Winnipeg Jets", fromYear: 1985 }]);
+
+    expect(await stagedRows(t)).toEqual([]);
+  });
+});

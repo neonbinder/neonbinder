@@ -63,8 +63,9 @@ import { teamFullName } from "../../lib/teams/team-name";
 import { normalizeEntityName } from "./entityNearMatch";
 import {
   erasOverlap,
-  teamsActiveInYear,
+  pickTeamForYear,
   type TeamEra,
+  type TeamEraPickOptions,
 } from "../../lib/teams/team-era";
 
 export type TeamIdentityInput = { name: string; location?: string | null };
@@ -262,20 +263,33 @@ export type TeamNameResolution = {
 };
 
 /**
- * NEO-254 — the ONE place a card's team name becomes a team id.
+ * NEO-254 — the ONE place a team name off a card or a career stint becomes a
+ * team id.
  *
  * The team counterpart of `players.narrowSameNamePlayersByCardYear`, and it
  * follows the same rules for the same reasons:
  *
- * 1. **One row is the row — unless its era rules the card out.** A single
- *    match used never to be a question, and for an UNDATED row it still is not:
- *    unknown years cannot contradict anything. But a lone row dated 2011- is
- *    positive evidence that a 1985 card does NOT mean it, and linking anyway is
- *    the same wrong answer this function exists to stop — just harder to see,
- *    because there is no second row to make the mistake obvious. So a dated
- *    lone row whose era excludes the set year returns `null`, with itself as
- *    the candidate: we hold a Winnipeg Jets, it is not this one, and a human
- *    decides whether the other era needs creating.
+ * 1. **One row is the row — a card can show a team's past, never its
+ *    future.** Jason, 2026-09-25 (NEO-307): "a card can show a team's past,
+ *    never its future." A single match used never to be a question, and for an
+ *    UNDATED row it still is not: unknown years cannot contradict anything.
+ *    A lone dated row answers for every year its era covers — and, for a CARD
+ *    caller that passes `{ allowPastEra: true }`, every year after it ended:
+ *    a 2026 Donruss Brooklyn Dodgers card is a retro card of the 1911–1957
+ *    row, and refusing it raised a New Team step for a team we already hold.
+ *    What a lone row never answers for is a year BEFORE its era began: a row
+ *    dated 2011- is positive evidence that a 1985 card does NOT mean it, so
+ *    that returns `null` with itself as the candidate — we hold a Winnipeg
+ *    Jets, it is not this one, and a human decides whether the other era needs
+ *    creating. The past-era link is logged as `team_linked_past_era`.
+ *
+ *    The allowance is opt-in because this function also answers for career
+ *    STINTS, whose year is a season the player actually played. Nobody plays
+ *    for a team after it folds, so a 2015 "Winnipeg Jets" stint with only the
+ *    1972–1996 row held must stay a question, not link to the wrong
+ *    franchise. A caller passing a stint's year leaves `allowPastEra` off.
+ *    The rule lives in `pickTeamForYear` (`lib/teams/team-era.ts`); callers
+ *    choose the mode and never restate it.
  * 2. **No set year → nothing is narrowed.** The year is the evidence; with
  *    none, several rows stay several and the name goes to a human. Never the
  *    first row an index returned.
@@ -284,7 +298,10 @@ export type TeamNameResolution = {
  *    absent.
  * 4. **Exactly one survivor wins; anything else is review.** The product
  *    invariant's card-number rule (#7) applied to team names: never key logic
- *    on a value that is not unique without an exactly-one guard.
+ *    on a value that is not unique without an exactly-one guard. Rule 1's
+ *    past-era allowance does NOT reach this case: two closed eras both before
+ *    the set year are two franchises a retro card could equally mean, and
+ *    picking one is a guess.
  *
  * There is no team-name tie-breaker equivalent to the player narrowing's
  * "which team is printed on the card", because the team name IS the thing being
@@ -296,18 +313,38 @@ export async function resolveTeamForSetYear(
   sportId: Id<"selectorOptions">,
   fullName: string,
   setYear: number | undefined,
+  /**
+   * NEO-307 — `{ allowPastEra: true }` ONLY when `setYear` is a card's set
+   * year. Omitted for a career stint's year. See rule 1 above.
+   */
+  options: TeamEraPickOptions = {},
 ): Promise<TeamNameResolution> {
   const candidates = await findTeamsByFullName(ctx, sportId, fullName);
   if (candidates.length === 0) return { teamId: null, candidates };
-  // Rule 1 — and `teamsActiveInYear` is what encodes both halves of it: an
-  // undated row survives every year, a dated one only its own. Running it over
-  // a single candidate rather than short-circuiting is what makes the lone
-  // dated row obey the same rule as a row with rivals.
-  const survivors = teamsActiveInYear(candidates, setYear);
-  return {
-    teamId: survivors.length === 1 ? survivors[0]._id : null,
-    candidates,
-  };
+  // Rules 1-4 — all of them in `pickTeamForYear`, which reads the eras and
+  // nothing else. Running it over a single candidate rather than
+  // short-circuiting is what makes a lone dated row obey its era: covered
+  // links, past links only for a card caller, future never does.
+  const pick = pickTeamForYear(candidates, setYear, options);
+  if (pick?.pastEra) {
+    /*
+     * NEO-307 — the one link this function makes OUTSIDE a row's era, so it
+     * is the one worth being able to find afterwards. Ids and years only: the
+     * string that found the row came off a checklist, and the id is what an
+     * operator looks up.
+     */
+    console.log(
+      JSON.stringify({
+        msg: "team_linked_past_era",
+        sportId,
+        teamId: pick.row._id,
+        setYear,
+        eraFrom: pick.row.yearsActive?.from,
+        eraTo: pick.row.yearsActive?.to,
+      }),
+    );
+  }
+  return { teamId: pick ? pick.row._id : null, candidates };
 }
 
 /**
