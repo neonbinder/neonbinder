@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "2026 Bowman end to end, the SportLots boundary — Sync Sets sends SportLots-only names to a review that files them; Sync Inserts + Group Parallels promote a BSC insert that stays grouped and fetches from BSC; the Parallels sync pairs BSC's Blue with the filed row; Promote / Make parallel of… move it both ways; Make insert of… files a Parallel row as a parallel of an insert (NEO-293, NEO-300, NEO-305, NEO-306)"
+name: "2026 Bowman end to end — the SportLots review files SportLots-only names, grouped BSC inserts keep their source, and rows move between set, parallel and insert with their links (NEO-293…306)"
 tags:
   - set-selector
   - parallel-grouping
@@ -15,7 +15,7 @@ tags:
 #   1. Sync Sets mints NO SportLots-only set; the brand's review offers them
 #      (the pill `N SportLots sets to sort`) and files them: every row under
 #      Bowman › Parallel in bulk (picking Bowman syncs its Variant Types
-#      inside the dialog), `All-America` back to its own set through its own
+#      inside the dialog), `Bowman Sterling` back to its own set through its own
 #      picker, `All-America Game Autos` under Bowman › Insert through its row
 #      tick and the bulk bar. The save toasts what it filed (STEP 1).
 #   2. Bowman › Insert — populated by the review, so the operator's `Sync
@@ -37,6 +37,12 @@ tags:
 #   8. `Make insert of…` on the review's Parallel row `All-America Game Autos
 #      Red Ink` files it under Bowman › Insert › `All-America Game Autos` as
 #      the new parallel `Red Ink` (STEP 14; NEO-306).
+#
+# THE `name:` STAYS UNDER ~200 BYTES. Maestro names the flow's debug
+# directory after it (TestDebugReporter.createFlowDir), and Linux refuses a
+# path component over 255 BYTES — "—" and "…" are 3 each. CI run
+# 36164550212 lost this flow before its first command to `File name too
+# long` on a 417-byte name. The claims live in this header, not the name.
 #
 # ONE FLOW, BY OWNER DECISION (Jason, 2026-09-25). It merged
 # `parallel-grouping-promoted-insert-fetches-from-bsc` into this one, keeping
@@ -153,44 +159,47 @@ tags:
 # ============================================================
 # STEP 0 — THE FIXTURE, IN ONE PLACE
 #
-# ⚠️ MEASURE on the first preview run and record in SET-REGISTRY.md → "2026
-# Bowman". Every label below is SportLots' own, brand-stripped by the adapter
-# as the review shows it; a guess that is wrong fails on the step that reads
-# it, by name. None may carry a regex metacharacter (they are full-match
-# regexes in `text:`/`id:`); escape one if a measured label has it. The
-# Anime names are BSC's and were measured green (NEO-293, NEO-300).
+# MEASURED 2026-09-25 on PR #288's preview (local Vite → the preview, the
+# review read straight out of `slSetReviews`): Bowman's review holds **81**
+# SportLots-only names, brand-stripped as the dialog shows them, in folded
+# order — `All-America Game Autos`, `All-America Game Autos Red Ink`, `Base
+# Set`, the colours (`Black` … `Blue` … `Yellow Pattern`), `Bowman Logo
+# Pattern`, the `Bowman Sterling` family (12), `Prospects` (33),
+# `Rookies and Veterans Autos` (8), `Printing Plates …`. There is NO bare
+# `All-America`: the first guess was wrong, and `Bowman Sterling` — a
+# product of its own — is the row filed as its own set instead. None of
+# these carries a regex metacharacter (they are full-match regexes in
+# `text:`/`id:`); escape one if a re-measure finds it. The Anime names are
+# BSC's and were measured green (NEO-293, NEO-300); `Insert` and `Parallel`
+# are the names Bowman's Variant Types column has shown in both old flows'
+# green runs (CI 36090079736).
 #
 #   BRAND          the brand and its flagship set
-#   COLOUR         the SportLots colour BSC also lists as a Bowman parallel
+#   COLOUR         a SportLots colour BSC also lists as a Bowman parallel
 #   SL_SET         the set Promote makes of it (Bowman's prefix + the label)
-#   OWN_LABEL      the review row filed as its own set          [MEASURE]
-#   OWN_SET        the set that row becomes (prefix + label)    [MEASURE]
+#   OWN_LABEL      the review row filed as its own set (MEASURED)
+#   OWN_SET        the set that row becomes: the label already starts with
+#                  the brand, so `candidateDefaultName` keeps it as is
 #   INSERT_ROW     the review row filed under Bowman › Insert — as a label
-#                  AND as the row (Bowman's name off the front); it must
-#                  START with OWN_LABEL (STEP 1 extends that filter) [MEASURE]
-#   SOURCE_ROW     the Red Ink row, left under Bowman › Parallel by the
-#                  bulk mark: Make insert of…'s source           [MEASURE]
+#                  AND as the row (MEASURED; the review's FIRST row)
+#   SOURCE_ROW     its Red Ink row, left under Bowman › Parallel by the bulk
+#                  mark: Make insert of…'s source (MEASURED; the SECOND row)
 #   NEW_PARALLEL   SOURCE_ROW with INSERT_ROW taken off the front — the name
 #                  Make insert of… derives for the new parallel
-#   TYPE_PARALLEL  Bowman's parallel-role variant type          [MEASURE]
-#   TYPE_INSERT    Bowman's insert-role variant type (the Variant Types
-#                  column has always read "Insert" here)
+#   TYPE_PARALLEL  Bowman's parallel-role variant type
+#   TYPE_INSERT    Bowman's insert-role variant type
 # ============================================================
 
 - evalScript: '${output.BRAND = "Bowman"}'
 - evalScript: '${output.COLOUR = "Blue"}'
 - evalScript: '${output.SL_SET = "Bowman Blue"}'
-- evalScript: '${output.OWN_LABEL = "All-America"}'
-- evalScript: '${output.OWN_SET = "Bowman All-America"}'
+- evalScript: '${output.OWN_LABEL = "Bowman Sterling"}'
+- evalScript: '${output.OWN_SET = "Bowman Sterling"}'
 - evalScript: '${output.INSERT_ROW = "All-America Game Autos"}'
 - evalScript: '${output.SOURCE_ROW = "All-America Game Autos Red Ink"}'
 - evalScript: '${output.NEW_PARALLEL = "Red Ink"}'
 - evalScript: '${output.TYPE_PARALLEL = "Parallel"}'
 - evalScript: '${output.TYPE_INSERT = "Insert"}'
-# What STEP 1 types after OWN_LABEL to narrow the review to INSERT_ROW. A
-# fixture that breaks the "starts with" premise fails here, by name.
-- assertTrue: "${output.INSERT_ROW.indexOf(output.OWN_LABEL) === 0}"
-- evalScript: '${output.INSERT_SUFFIX = output.INSERT_ROW.slice(output.OWN_LABEL.length)}'
 
 - runFlow:
     file: ../util/util-paused-platforms.yaml
@@ -308,19 +317,29 @@ tags:
       # The bulk set picker, in the pinned header. Every picker's accessible
       # name STARTS with its visible text — the current choice — then says
       # what it chooses (SC 2.5.3), so before a pick it reads `Pick a set: set
-      # the selected rows belong to`; matched on the fixed tail. Its open list
-      # has its own name. The options are the brand's sets that can sync
-      # variant types, so `Bowman` is there.
+      # the selected rows belong to`; matched on the fixed tail.
+      #
+      # THE OPEN LIST IS NOT ADDRESSABLE BY ITS NAME. It carries a React
+      # `useId` DOM id (the trigger's `aria-controls` needs one), and
+      # maestro-web's resource-id is `node.id || ariaLabel`, so the id
+      # shadows the list's aria-label (local run against PR #288's preview,
+      # 2026-09-25: the list was on screen, its node read `_r_…_`, and `id:
+      # "Sets the selected rows can belong to"` never matched). So: gate on
+      # the list's own footer sentence, and take the option NEAREST BELOW the
+      # trigger — `below:` sorts by distance, and the list hangs directly
+      # under its trigger (screenshot: trigger bottom y=200, `Bowman` at
+      # y=216; the page's own `Bowman` rows sit ABOVE the trigger, behind the
+      # dialog). The options are the brand's sets that can sync variant
+      # types, so `Bowman` is there.
       - tapOn:
           id: ".*: set the selected rows belong to"
       - extendedWaitUntil:
-          visible:
-            id: "Sets the selected rows can belong to"
+          visible: "Missing a set\\? Only sets that can sync their variant types show here\\."
           timeout: 7000
       - tapOn:
           text: "${output.BRAND}"
-          childOf:
-            id: "Sets the selected rows can belong to"
+          below:
+            id: ".*: set the selected rows belong to"
       # PICKING THE SET RUNS ITS VARIANT TYPES SYNC, forced, once per dialog
       # (`SlSetReviewModal` → `ensureSelectorOptions({level: "variantType",
       # force: true})`), and the type picker is `inert` until it lands. R5
@@ -336,16 +355,21 @@ tags:
           timeout: 60000
       - assertVisible:
           id: "${output.BRAND}: set the selected rows belong to"
+      # The type list has the same shadowed name (`Types under Bowman`):
+      # the option nearest below its trigger is taken, as above. Before the
+      # Apply no row reads a type, so nothing else on screen says `Parallel`.
       - tapOn:
           id: ".*: where the selected rows are filed"
       - extendedWaitUntil:
           visible:
-            id: "Types under ${output.BRAND}"
+            text: "${output.TYPE_PARALLEL}"
+            below:
+              id: ".*: where the selected rows are filed"
           timeout: 7000
       - tapOn:
           text: "${output.TYPE_PARALLEL}"
-          childOf:
-            id: "Types under ${output.BRAND}"
+          below:
+            id: ".*: where the selected rows are filed"
       # The trigger's name now leads with the type it holds.
       - extendedWaitUntil:
           visible:
@@ -358,67 +382,35 @@ tags:
           visible: "Apply to 0 selected"
           timeout: 7000
 
-      # 1d — PER ROW: ALL-AMERICA BACK TO ITS OWN SET, through its own
-      # "Belongs to" picker. The filter is in the pinned header and empty, so
-      # typing into it needs no erase. The review is sorted by folded label,
-      # so the bare label is the FIRST row the filter shows and its list
-      # opens at the top of the body, well inside the body's fold (R8 case 2:
-      # nothing here can be scrolled).
-      - tapOn:
-          id: "Find a SportLots set"
-      - inputText: ${output.OWN_LABEL}
-      # The row's picker names its current choice first: 1c's bulk mark put
-      # it under Bowman (the precondition, R2). Full match — `…: set
-      # All-America Game Autos belongs to` does not answer.
-      - tapOn:
-          id: "${output.BRAND}: set ${output.OWN_LABEL} belongs to"
-      - extendedWaitUntil:
-          visible:
-            id: "Where ${output.OWN_LABEL} goes"
-          timeout: 7000
-      - tapOn:
-          text: "Its own set"
-          childOf:
-            id: "Where ${output.OWN_LABEL} goes"
-      # The trigger's name leads with the new choice (its list has closed).
-      - extendedWaitUntil:
-          visible:
-            id: "Its own set: set ${output.OWN_LABEL} belongs to"
-          timeout: 7000
-
-      # 1e — ONE ROW → filed under Bowman › Insert, through its row tick and
-      # the bulk bar. Only `All-America Game Autos` goes there: its Red Ink
-      # row STAYS under Bowman › Parallel, where 1c put it — the shape
-      # (a Parallels-filed row that is really a parallel of an insert) STEP 14
+      # 1d — ONE ROW → filed under Bowman › Insert, through its row tick and
+      # the bulk bar. INSERT_ROW is the review's FIRST row (folded order,
+      # measured), so with the filter still empty its tick is at the top of
+      # the body — no filter, nothing to erase. Only it goes there: its Red
+      # Ink row STAYS under Bowman › Parallel, where 1c put it — the shape (a
+      # Parallels-filed row that is really a parallel of an insert) STEP 14
       # moves with Make insert of…. Keeping Red Ink out of the Insert type
       # also keeps Group Parallels (STEP 4) from nesting it under its insert
       # by prefix before STEP 14 gets to.
-      #
-      # Narrow to the insert by EXTENDING the filter: the box holds the short
-      # OWN_LABEL, so a centre tap lands past its end and the caret is there
-      # (memory: eraseText needs the caret at the end) — no erase needed. The
-      # insert then sorts FIRST (a label sits above its longer siblings), so
-      # its tick is at the top of the body.
-      - tapOn:
-          id: "Find a SportLots set"
-      - inputText: ${output.INSERT_SUFFIX}
       - tapOn:
           id: "Select ${output.INSERT_ROW}"
       - extendedWaitUntil:
           visible: "Apply to 1 selected"
           timeout: 7000
       # The bulk set is still Bowman (already synced — no second sync), so
-      # only the type changes.
+      # only the type changes. Rows now read `Parallel` further down the
+      # body; the list's `Insert` option is the nearest below the trigger.
       - tapOn:
           id: "${output.TYPE_PARALLEL}: where the selected rows are filed"
       - extendedWaitUntil:
           visible:
-            id: "Types under ${output.BRAND}"
+            text: "${output.TYPE_INSERT}"
+            below:
+              id: "${output.TYPE_PARALLEL}: where the selected rows are filed"
           timeout: 7000
       - tapOn:
           text: "${output.TYPE_INSERT}"
-          childOf:
-            id: "Types under ${output.BRAND}"
+          below:
+            id: "${output.TYPE_PARALLEL}: where the selected rows are filed"
       - extendedWaitUntil:
           visible:
             id: "${output.TYPE_INSERT}: where the selected rows are filed"
@@ -428,17 +420,48 @@ tags:
       - extendedWaitUntil:
           visible: "Apply to 0 selected"
           timeout: 7000
-      # Per row, as the filter lists them: the insert is filed under Insert,
-      # its Red Ink row is still under Parallel (R2 — the preconditions of
-      # STEP 14's source and destination).
+      # Per row, the first two rows of the body: the insert is filed under
+      # Insert, its Red Ink row is still under Parallel (R2 — the
+      # preconditions of STEP 14's source and destination).
       - assertVisible:
           id: "${output.TYPE_INSERT}: where ${output.INSERT_ROW} is filed"
       - assertVisible:
           id: "${output.TYPE_PARALLEL}: where ${output.SOURCE_ROW} is filed"
 
+      # 1e — PER ROW: BOWMAN STERLING BACK TO ITS OWN SET, through its own
+      # "Belongs to" picker. The filter is in the pinned header and still
+      # empty, so typing into it needs no erase. The review is sorted by
+      # folded label, so the bare label is the FIRST row the filter shows
+      # (ahead of its eleven longer siblings) and its list opens at the top
+      # of the body, well inside the body's fold (R8 case 2: nothing here
+      # can be scrolled).
+      - tapOn:
+          id: "Find a SportLots set"
+      - inputText: ${output.OWN_LABEL}
+      # The row's picker names its current choice first: 1c's bulk mark put
+      # it under Bowman (the precondition, R2). Full match — `…: set Bowman
+      # Sterling Autos belongs to` does not answer.
+      - tapOn:
+          id: "${output.BRAND}: set ${output.OWN_LABEL} belongs to"
+      # Its list's name is shadowed like the bulk one's: gate on the list's
+      # footer, take the option nearest below the trigger. Every other row
+      # under this filter reads `Bowman`, so `Its own set` is the list's.
+      - extendedWaitUntil:
+          visible: "Missing a set\\? Only sets that can sync their variant types show here\\."
+          timeout: 7000
+      - tapOn:
+          text: "Its own set"
+          below:
+            id: "${output.BRAND}: set ${output.OWN_LABEL} belongs to"
+      # The trigger's name leads with the new choice (its list has closed).
+      - extendedWaitUntil:
+          visible:
+            id: "Its own set: set ${output.OWN_LABEL} belongs to"
+          timeout: 7000
+
       # 1f — SAVE. The footer's tally is what Save will do, over EVERY row
       # (the filter narrows the view, not the save): exactly one set — the
-      # All-America row — one insert, and every other row a parallel, joined
+      # Bowman Sterling row — one insert, and every other row a parallel, joined
       # by " · " with no closing period. Pinned footer, so it is on screen;
       # the parallel count is SportLots' business and matched by shape.
       - assertVisible: "Save will file: 1 set · [0-9]+ parallels? · 1 insert"
@@ -1128,9 +1151,12 @@ tags:
           text: ".*Match Cards — Anime Kanji.*"
       - tapOn:
           id: "Confirm card matches"
+      # The pairing commit — an NB write, the 7000 bar (R5; MEASURED 1.06s
+      # against PR #288's preview, 2026-09-25, where it was 60000 by
+      # inheritance). The Confirm above is what waited on the fetch.
       - extendedWaitUntil:
           notVisible: "Match Cards.*"
-          timeout: 60000
+          timeout: 7000
 
 # ============================================================
 # STEP 8 — COMMIT. Fresh cards normally surface unknown prospects and the
@@ -1171,13 +1197,15 @@ tags:
       - tapOn:
           text: ".*Confirm & Save.*"
 
-# ASSERTION 2a: the checklist HAS cards — at least one saved. The commit of a
-# live fetch is the sanctioned wait (60000, as checklist-one-marketplace-…
-# STEP 7 gives the same commit).
+# ASSERTION 2a: the checklist HAS cards — at least one saved. The commit is
+# an NB write, so the 7000 bar (R5): MEASURED 0.36s after the Confirm & Save
+# tap against PR #288's preview, 2026-09-25 (it was 60000 by inheritance
+# from checklist-one-marketplace-…, whose own step is its business). The
+# marketplace-class waits are the gates above it.
 - extendedWaitUntil:
     visible:
       text: ".*Saved [1-9][0-9]* cards?.*"
-    timeout: 60000
+    timeout: 7000
 
 # ============================================================
 # STEP 9 — ASSERTION 2b: BSC'S OWN PER-SLOT COUNT IS > 0 (NEO-219 pattern,
@@ -1307,16 +1335,19 @@ tags:
           visible: ".*Search parallels.*"
           timeout: 240000
       - assertNotVisible: "Reconcile ${output.TYPE_PARALLEL}s"
-# Both modes: the Parallels column is populated (dozens of rows, so its
-# search box).
-- extendedWaitUntil:
-    visible: ".*Search parallels.*"
-    timeout: 7000
-
-# Select the colour's row: search, then the exact row under the box.
+# Select the colour's row: search, then the exact row under the box. Both
+# modes, the column is populated (dozens of rows, so its search box), and the
+# box sits at the TOP of the column's list — ABOVE the page's position on
+# the live branch, which centred `Sync Parallels` UNDER the list before the
+# reconcile (R5: an anchor above takes UP; a non-scrolling wait here failed
+# on a box that was rendered 30px above the viewport — local run against
+# PR #288's preview, 2026-09-25). Paused, the 240000 wait above already saw
+# the box on screen, so this exits at try 0 either way. Centred for the tap
+# (R8).
 - scrollUntilVisible:
     element:
       text: ".*Search parallels.*"
+    direction: UP
     centerElement: true
     timeout: 7000
 - tapOn:
@@ -1437,7 +1468,7 @@ tags:
           timeout: 7000
       # Nothing is tapped in the body: the target is PRESELECTED (Bowman is
       # the longest whole-word prefix of the set's name among the brand's
-      # sets with a Parallel type — `Bowman All-America` has none, it is
+      # sets with a Parallel type — `Bowman Sterling` has none, it is
       # SportLots-only) and so is the destination — a NEW `Blue` is refused
       # because Bowman already has one, so the dialog defaults to the
       # parallel the refusal names (`sameAsId`), and `Blue` no longer holds

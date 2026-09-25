@@ -108,3 +108,4 @@ Non-markdown helpers: `tools/`
 - [NEO-300 Group Parallels multi-select](reference_neo300_grouping_multi_select.md) — `Select <row>` tick (no text), `N selected` pill, N-row hints; a focus-m…
 - [childOf searches under the FIRST parent match](patterns_childof_parent_is_first_match.md) — trigger + list sharing a name → `index:` (positional) or a distinct list name
 - [NEO-306 SL review, Make insert of…, Fill button](reference_neo306_sl_review_and_insert_door.md) — picker names lead with the choice; populated insert column never auto-reconciles
+- [Flow `name:` is a directory name](patterns_flow_name_is_a_directory_name.md) — >255 BYTES = "File name too long" in CI before command one; keep names <~200 bytes
