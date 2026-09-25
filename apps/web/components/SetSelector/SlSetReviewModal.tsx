@@ -22,14 +22,15 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
  * NEO-306 — the SportLots-only review: "Sort SportLots sets for {brand}".
  *
  * Sync Sets no longer decides what a SportLots-only name is. Each one is a
- * row here, and the operator files it as its own set (the default) or as a
- * variant of one of the brand's sets, under one of that set's variant types
+ * row here, and the operator files it as its own set (the default) or under
+ * one of the brand's sets, in one of that set's variant types
  * (`convex/slSetReview.ts` has the why). Three columns, in the order the
- * question is asked: SportLots set | Variant of | Variant type.
+ * question is asked: SportLots set | Belongs to | Filed under (Jason's words,
+ * 2026-09-25; the bulk bar says the same: "File selected under" set › type).
  *
- * ## Variant of → Variant type
+ * ## Belongs to → Filed under
  *
- * - "Variant of" is a disclosure button opening a list of BUTTONS (never a
+ * - "Belongs to" is a disclosure button opening a list of BUTTONS (never a
  *   `<select>`: the Maestro web driver reaches options only in the first
  *   native select on a page). "Its own set" first, then the set the server
  *   suggests (tagged "suggested", NEVER preselected — a name-derived guess is
@@ -39,7 +40,7 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
  *   Base would otherwise never re-sync, and its Insert/Parallel types are what
  *   the next column lists. The write is additive and stays if the operator
  *   cancels (accepted, Jason 2026-09-25). Retry is the only second call.
- * - "Variant type" lists that set's types (Base excluded server-side: it is
+ * - "Filed under" lists that set's types (Base excluded server-side: it is
  *   terminal in the builder), each tagged with its NB role. Required once a
  *   set is chosen; the row says so, and so does the Save button's
  *   description.
@@ -124,29 +125,33 @@ export const slReviewCopy = {
   title: (brand: string) => `Sort SportLots sets for ${brand}`,
   titleEmpty: "Sort SportLots sets",
   description: (brand: string) =>
-    `SportLots lists these under ${brand}. Each is a set of its own unless it belongs to one.`,
+    `SportLots lists these under ${brand}. Leave each as its own set, or file it under one of ${brand}'s sets. Parallels of an insert? File them as inserts here, then use Make insert of… on each.`,
   moreNextSync: (n: number) =>
     `${plural(n, "more SportLots set")} will show up after the next Sync Sets.`,
   partial: "A save stopped part-way. What it saved is saved; save again to finish.",
   empty: "Nothing left to sort here.",
   loading: "Loading the SportLots sets…",
   headerName: "SportLots set",
-  headerOf: "Variant of",
-  headerType: "Variant type",
+  headerOf: "Belongs to",
+  headerType: "Filed under",
   filter: "Find a SportLots set",
   selectAllShown: "Select all shown",
   selectRow: (name: string) => `Select ${name}`,
   ownSet: "Its own set",
   suggested: "suggested",
-  pickType: "Pick a type",
+  /** The one prompt for the type, on the row's picker and the bulk bar's alike. */
+  pickType: "Pick where it's filed",
   pickSet: "Pick a set",
-  setPicker: (name: string) => `Variant of set for ${name}`,
-  typePicker: (name: string) => `Variant type for ${name}`,
+  /**
+   * SC 2.5.3 — each picker's accessible name STARTS with its visible text (the
+   * current choice), then says what it chooses for which row.
+   */
+  setPicker: (text: string, name: string) => `${text}: set ${name} belongs to`,
+  typePicker: (text: string, name: string) => `${text}: where ${name} is filed`,
   setList: (name: string) => `Where ${name} goes`,
   typeList: (set: string) => `Types under ${set}`,
   roleTag: { insert: "inserts", parallel: "parallels" } as const,
-  onlyLinkedSets:
-    "Only sets with BSC variant types are listed; their types come from BSC.",
+  onlyLinkedSets: "Missing a set? Only sets that can sync their variant types show here.",
   setsTruncated: (n: number) => `Showing the first ${n} sets.`,
   syncing: (set: string) => `Syncing ${set}'s variant types…`,
   syncFailed: (set: string) => `Couldn't sync ${set}'s variant types.`,
@@ -154,19 +159,21 @@ export const slReviewCopy = {
   retry: "Retry",
   retryLabel: (set: string) => `Retry syncing ${set}'s variant types`,
   noTypes: (set: string) => `${set} has no variant types to file under yet.`,
-  needsType: "Pick a variant type.",
-  rowsNeedType: (n: number) =>
-    `${plural(n, "row")} ${n === 1 ? "needs" : "need"} a variant type.`,
-  bulkLead: "Mark selected as variant of",
-  bulkSetPicker: "Set for selected rows",
-  bulkTypePicker: "Type for selected rows",
+  needsType: "Pick where it's filed.",
+  rowsNeedType: (n: number) => `Pick where it's filed on ${plural(n, "row")}.`,
+  bulkLead: "File selected under",
+  bulkSetPicker: (text: string) => `${text}: set the selected rows belong to`,
+  bulkTypePicker: (text: string) => `${text}: where the selected rows are filed`,
+  bulkSetList: "Sets the selected rows can belong to",
   bulkApply: (n: number) => `Apply to ${n} selected`,
-  bulkOwn: "Mark selected as their own sets",
+  bulkOwn: "Make selected their own sets",
   bulkNeedsRows: "Select rows first.",
-  bulkNeedsType: "Pick a set and a type first.",
+  bulkNeedsType: "Pick a set and where it's filed first.",
   bulkMarked: (n: number, set: string, type: string) =>
-    `Marked ${plural(n, "row")} as ${set} › ${type}.`,
-  bulkMarkedOwn: (n: number) => `Marked ${plural(n, "row")} as their own sets.`,
+    `Filed ${plural(n, "row")} under ${set} › ${type}.`,
+  bulkMarkedOwn: (n: number) => `Made ${plural(n, "row")} their own sets.`,
+  /** What Save will do, in the toast's own nouns. */
+  willFile: (parts: string[]) => `Save will file: ${parts.join(" · ")}`,
   save: (n: number) => `Save ${plural(n, "SportLots set")}`,
   saving: "Saving…",
   cancel: "Cancel",
@@ -179,7 +186,7 @@ export const slReviewCopy = {
 } as const;
 
 const SKIP_REASON_TEXT: Record<keyof SlSetReviewResult["skippedByReason"], (n: number) => string> = {
-  alreadyLinked: (n) => `${n} already linked`,
+  alreadyLinked: (n) => `${n} already filed`,
   notInReview: (n) => `${n} already sorted`,
   nameTaken: (n) => `${n} already there by that name`,
   existsElsewhere: (n) => `${n} already a set under another brand`,
@@ -270,7 +277,8 @@ function pickerKey(rowKey: string, kind: "set" | "type"): string {
 
 /**
  * The disclosure button a picker opens from. Visible text = the choice;
- * `aria-label` = what it chooses, for which row.
+ * `aria-label` = that same text FIRST, then what it chooses for which row
+ * (SC 2.5.3: a speech user says what they see).
  */
 function PickerTrigger({
   label,
@@ -556,7 +564,7 @@ function ReviewRow({
           {slReviewCopy.headerOf}
         </span>
         <PickerTrigger
-          label={slReviewCopy.setPicker(name)}
+          label={slReviewCopy.setPicker(setId ? setLabel : slReviewCopy.ownSet, name)}
           text={setId ? setLabel : slReviewCopy.ownSet}
           muted={!setId}
           open={openKind === "set"}
@@ -594,7 +602,10 @@ function ReviewRow({
               {slReviewCopy.headerType}
             </span>
             <PickerTrigger
-              label={slReviewCopy.typePicker(name)}
+              label={slReviewCopy.typePicker(
+                chosenType ? chosenType.value : slReviewCopy.pickType,
+                name,
+              )}
               text={chosenType ? chosenType.value : slReviewCopy.pickType}
               muted={!chosenType}
               open={openKind === "type"}
@@ -713,7 +724,7 @@ function BulkBar({
         </span>
         <div className="w-44" aria-busy={phase === "syncing" || undefined}>
           <PickerTrigger
-            label={slReviewCopy.bulkSetPicker}
+            label={slReviewCopy.bulkSetPicker(setId ? setLabel : slReviewCopy.pickSet)}
             text={setId ? setLabel : slReviewCopy.pickSet}
             muted={!setId}
             open={openKind === "set"}
@@ -725,7 +736,7 @@ function BulkBar({
             <PickerList
               listId={setListId}
               pkey={pickerKey(BULK, "set")}
-              label={slReviewCopy.bulkSetPicker}
+              label={slReviewCopy.bulkSetList}
               options={ofSets.map((s) => ({ key: s._id, label: s.value, current: s._id === setId }))}
               onPick={(key) => onPickSet(key as RowId)}
               onClose={onClosePicker}
@@ -742,7 +753,7 @@ function BulkBar({
         </span>
         <div className="w-40">
           <PickerTrigger
-            label={slReviewCopy.bulkTypePicker}
+            label={slReviewCopy.bulkTypePicker(chosenType ? chosenType.value : slReviewCopy.pickType)}
             text={chosenType ? chosenType.value : slReviewCopy.pickType}
             muted={!chosenType}
             open={openKind === "type"}
@@ -1293,7 +1304,7 @@ export default function SlSetReviewModal({
                 // The one loud line: what Save will do, in the words its
                 // toast will use ("Saved …").
                 <p className="font-semibold text-[#00D558] tabular-nums">
-                  {`Saves as ${tallyParts.join(", ")}.`}
+                  {slReviewCopy.willFile(tallyParts)}
                 </p>
               )}
               {needingType > 0 && (

@@ -124,7 +124,8 @@ export const MAX_INSERT_TREE_ROWS = 2000;
 
 export const insertConversionRefusal = {
   rowGone: () => "That row is gone. Refresh and try again.",
-  notEligible: () => "Only a set, or an insert or parallel of one, can become an insert.",
+  notEligible: () =>
+    "Only a set, or an insert or parallel filed straight under a set, can move here.",
   onBsc: (set: string) => `BSC lists “${set}” as a set, so it stays a set.`,
   onBscRow: (row: string) => `BSC lists “${row}” where it is, so it stays there.`,
   noBase: (set: string) => `“${set}” has no Base to move.`,
@@ -156,8 +157,8 @@ export const insertConversionRefusal = {
     `“${insert}” already has a “${name}” parallel. Add it to that one instead.`,
   insertOwnName: (label: string, insert: string) =>
     `“${label}” is “${insert}”’s own name, so add it to “${insert}” itself.`,
-  wholeName: (label: string) =>
-    `“${label}” is the whole of that name — pick New insert instead.`,
+  wholeName: () =>
+    "That's the whole name, so there's no parallel left over. Pick New insert instead.",
   linkTaken: (holder: string, target: string, row: string) =>
     `“${holder}” under ${target} already has this SportLots link. Remove it from “${holder}” first if “${row}” is the one to keep.`,
   badName: (reason: string) => `That name won't work: ${reason}.`,
@@ -193,6 +194,8 @@ type InsertSource = {
   brand: Row;
   /** S2 only: the set the row sits under now. */
   ownSet: Row | null;
+  /** S2 only: the variant type the row sits under now. */
+  ownType: Row | null;
   /** The label new rows are named from. */
   label: string;
   /** Operator-typed data the move carries onto a new row. */
@@ -224,6 +227,7 @@ async function readInsertConversionSource(
       rows,
       brand: s1.brand,
       ownSet: null,
+      ownType: null,
       label: namingLabel(rows, s1.set.value),
       data: sourceDataOf(s1.set, s1.base),
     };
@@ -251,6 +255,7 @@ async function readInsertConversionSource(
     rows: [row],
     brand,
     ownSet: set,
+    ownType: type,
     label: namingLabel([row], row.value),
     data: sourceDataOfRow(row),
   };
@@ -502,7 +507,7 @@ function parallelNameCheck(
           reason: insertConversionRefusal.insertOwnName(source.label, insertValue),
           sameAsInsertSelf: true,
         }
-      : { ok: false, reason: insertConversionRefusal.wholeName(source.label) };
+      : { ok: false, reason: insertConversionRefusal.wholeName() };
   }
   const checked = checkCustomSelectorValue("parallel", derived);
   if (!checked.ok) {
@@ -604,7 +609,11 @@ export const getMakeInsertTargets = query({
       /** S2: the set the row sits under now. */
       ownSetId: v.optional(v.id("selectorOptions")),
       ownSetValue: v.optional(v.string()),
+      /** S2: the variant type the row sits under now ("Parallel", "Insert"…). */
+      ownTypeValue: v.optional(v.string()),
       cardCount: v.number(),
+      /** Distinct SportLots links that move — 0 is a real answer (invariant 6). */
+      linkCount: v.number(),
       targets: v.array(targetSetValidator),
       suggestedSetId: v.optional(v.id("selectorOptions")),
       truncated: v.boolean(),
@@ -663,7 +672,9 @@ export const getMakeInsertTargets = query({
       rowValue: source.row.value,
       brandValue: source.brand.value,
       ...(source.ownSet ? { ownSetId: source.ownSet._id, ownSetValue: source.ownSet.value } : {}),
+      ...(source.ownType ? { ownTypeValue: source.ownType.value } : {}),
       cardCount: await sourceCardCount(ctx, source),
+      linkCount: movingIds(source).size,
       targets,
       ...(suggestedSetId ? { suggestedSetId } : {}),
       truncated,

@@ -167,10 +167,10 @@ describe("SetRowActionButton", () => {
   it("attention is the amber pill with the exclamation icon, and the same ring", () => {
     render(
       <SetRowActionButton tone="attention" onActivate={vi.fn()}>
-        Fill 3 missing teams
+        3 cards need a team
       </SetRowActionButton>,
     );
-    const button = screen.getByRole("button", { name: "Fill 3 missing teams" });
+    const button = screen.getByRole("button", { name: "3 cards need a team" });
     expect(hasAll(button, SET_ROW_ACTION_TONE_CLASSES.attention)).toBe(true);
     for (const cls of [
       "min-h-8",

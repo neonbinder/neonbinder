@@ -35,10 +35,11 @@ export const PROMOTE_TOOLTIP =
 /** DRAFT copy — pending Jason's sign-off (NEO-245). */
 export const promoteCopy = {
   title: (row: string) => `Promote “${row}” to a set`,
+  /** "Its SportLots set becomes…" alone; "…set and 3 cards become…" with cards. */
   description: (brand: string, cards: number) =>
-    `Its SportLots set${
-      cards > 0 ? ` and ${cards} ${cards === 1 ? "card" : "cards"}` : ""
-    } become a set of its own under ${brand}.`,
+    cards > 0
+      ? `Its SportLots set and ${cards} ${cards === 1 ? "card" : "cards"} become a set of its own under ${brand}.`
+      : `Its SportLots set becomes a set of its own under ${brand}.`,
   rowStays: (row: string) => `“${row}” stays, keeping everything else on it.`,
   rowGoes: (row: string) => `Nothing else is on “${row}”, so it goes.`,
   linksLegend: "Which SportLots set?",
@@ -59,6 +60,7 @@ export const promoteCopy = {
     created ? `“${set}” is its own set now.` : `Added to “${set}”’s Base.`,
   newTag: "new",
   joinsTag: "joins",
+  failed: "Couldn't promote this. Nothing changed.",
 };
 
 export default function PromoteToSetControl({
@@ -178,7 +180,8 @@ function PromoteDialog({
         { _id: result.baseId, level: "variantType" },
       ]);
     } catch (e) {
-      setError(userFacingMessage(e, "Couldn't promote this parallel. Nothing changed."));
+      // Not "this parallel": NEO-306 offers it on insert rows too.
+      setError(userFacingMessage(e, promoteCopy.failed));
       setBusy(false);
     }
   };

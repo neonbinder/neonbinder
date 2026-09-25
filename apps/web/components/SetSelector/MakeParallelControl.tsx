@@ -33,13 +33,43 @@ export const MAKE_PARALLEL_LABEL = "Make parallel of…";
 export const MAKE_PARALLEL_TOOLTIP =
   "Turn this set into a parallel of another set in the same brand. Its SportLots link and cards come along.";
 
+/**
+ * NEO-306 — what moves, said only as far as it is true: a row with no
+ * SportLots link behaves exactly like one with (product invariant 6), so the
+ * sentence never claims a link that is not there.
+ *
+ *   2 links, 3 cards  "Its 2 SportLots links and 3 cards move over"
+ *   1 link            "Its SportLots link moves over"
+ *   1 card            "Its 1 card moves over"
+ *   nothing           null — the caller says only what happens to the row
+ *
+ * Shared by "Make parallel of…" and "Make insert of…" so the two doors say
+ * it the same way. DRAFT copy — pending Jason's sign-off (NEO-245).
+ */
+export function movesOverClause(links: number, cards: number): string | null {
+  const parts: string[] = [];
+  if (links === 1) parts.push("SportLots link");
+  else if (links > 1) parts.push(`${links} SportLots links`);
+  if (cards > 0) parts.push(`${cards} ${cards === 1 ? "card" : "cards"}`);
+  if (parts.length === 0) return null;
+  const plural = parts.length > 1 || links > 1 || cards > 1;
+  return `Its ${parts.join(" and ")} ${plural ? "move" : "moves"} over`;
+}
+
+/**
+ * "{moves over}, and {what happens to the row}." — or just the second half,
+ * capitalised as it stands, when nothing moves.
+ */
+export function movesSentence(links: number, cards: number, rowFate: string): string {
+  const moves = movesOverClause(links, cards);
+  return moves ? `${moves}, and ${rowFate}.` : `${rowFate}.`;
+}
+
 /** DRAFT copy — pending Jason's sign-off (NEO-245). */
 export const makeParallelCopy = {
   title: (set: string) => `Make “${set}” a parallel`,
-  description: (set: string, cards: number) =>
-    `Pick the set it belongs to. Its SportLots link${
-      cards > 0 ? ` and ${cards} ${cards === 1 ? "card" : "cards"}` : ""
-    } move over, and “${set}” stops being a set.`,
+  description: (set: string, cards: number, links: number) =>
+    `Pick the set it belongs to. ${movesSentence(links, cards, `“${set}” stops being a set`)}`,
   targetsLegend: "Parallel of",
   targetsFilter: "Find a set",
   noParallelType: "no Parallel type yet",
@@ -371,10 +401,11 @@ function MakeParallelDialog({
   }
 
   const cardCount = targets?.ok ? targets.cardCount : 0;
+  const linkCount = targets?.ok ? targets.linkCount : 0;
   return (
     <SetShapeDialog
       title={makeParallelCopy.title(setValue)}
-      description={makeParallelCopy.description(setValue, cardCount)}
+      description={makeParallelCopy.description(setValue, cardCount, linkCount)}
       preview={
         detailOk && destinationValid && destinationName ? (
           <LandingPath

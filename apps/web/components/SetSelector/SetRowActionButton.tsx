@@ -26,8 +26,8 @@ import { activateOnEnter } from "@/lib/dom/activate-on-enter";
  *   4.90:1 border in dark mode per the badge's own measurement), with a
  *   leading exclamation icon. Amber, not green: green is "go", amber is "a
  *   person should look at this" everywhere in this codebase. Used where it
- *   answers a count the screen is already showing (the checklist's "Fill N
- *   missing teams"). It sits on the checklist card, which has a light-mode
+ *   answers a count the screen is already showing (the checklist's "N cards
+ *   need a team"). It sits on the checklist card, which has a light-mode
  *   surface too, so its ring offset follows the theme.
  *
  * ## One focus ring

@@ -399,13 +399,13 @@ describe("FillTeamsControl", () => {
   });
 
   it("says how many cards it is for, singular and plural (NEO-306)", () => {
-    expect(fillTeamsLabel(1)).toBe("Fill 1 missing team");
-    expect(fillTeamsLabel(3)).toBe("Fill 3 missing teams");
+    expect(fillTeamsLabel(1)).toBe("1 card needs a team");
+    expect(fillTeamsLabel(3)).toBe("3 cards need a team");
     const { rerender } = renderControl(vi.fn(), 1);
-    expect(screen.getByRole("button", { name: "Fill 1 missing team" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "1 card needs a team" })).toBeTruthy();
     // The count is live: the checklist's subscription moves it, the name follows.
     rerender(<FillTeamsControl setId={SET_ID} missingCount={4} showToast={vi.fn()} />);
-    expect(screen.getByRole("button", { name: "Fill 4 missing teams" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "4 cards need a team" })).toBeTruthy();
   });
 
   it("wears the attention tone: the amber pill with the exclamation icon, hidden from the name", () => {

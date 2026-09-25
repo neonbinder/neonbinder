@@ -7,7 +7,12 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { Input } from "../primitives/Input";
 import { ChoiceList, LandingPath, SetShapeDialog, type Choice } from "./SetShapeDialog";
 import SetRowActionButton from "./SetRowActionButton";
-import { lossItems, makeParallelCopy, type ReshapeStep } from "./MakeParallelControl";
+import {
+  lossItems,
+  makeParallelCopy,
+  movesSentence,
+  type ReshapeStep,
+} from "./MakeParallelControl";
 
 /**
  * NEO-306 — "Make insert of…" on a set row or an insert-level row.
@@ -39,15 +44,31 @@ import { lossItems, makeParallelCopy, type ReshapeStep } from "./MakeParallelCon
 export const MAKE_INSERT_LABEL = "Make insert of…";
 /** DRAFT copy — pending Jason's sign-off (NEO-245). */
 export const MAKE_INSERT_TOOLTIP =
-  "Turn this into an insert of another set in the same brand — or a parallel of one of its inserts. Its SportLots link and cards come along.";
+  "File this as an insert of a set in this brand, or as a parallel of one of its inserts. Its cards come along.";
 
-/** DRAFT copy — pending Jason's sign-off (NEO-245). */
+/** DRAFT copy — Jason's decisions 2026-09-25 folded in; the rest pending sign-off. */
 export const makeInsertCopy = {
+  /** The title follows the landing: an insert, or a parallel of one. */
   title: (row: string) => `Make “${row}” an insert`,
-  description: (row: string, kind: "set" | "row", cards: number) =>
-    `Pick the set it belongs to, then where it goes. Its SportLots link${
-      cards > 0 ? ` and ${cards} ${cards === 1 ? "card" : "cards"}` : ""
-    } move over${kind === "set" ? `, and “${row}” stops being a set` : ""}.`,
+  titleParallel: (row: string) => `Make “${row}” a parallel`,
+  /**
+   * What moves (only as far as it is true — see `movesOverClause`), and what
+   * happens to the row: a set stops being one; an insert-level row leaves the
+   * set › type it sits under now.
+   */
+  description: (
+    row: string,
+    source: { kind: "set" } | { kind: "row"; ownSet: string; ownType: string },
+    cards: number,
+    links: number,
+  ) =>
+    `Pick the set it belongs to, then where it goes. ${movesSentence(
+      links,
+      cards,
+      source.kind === "set"
+        ? `“${row}” stops being a set`
+        : `“${row}” leaves ${source.ownSet} › ${source.ownType}`,
+    )}`,
   targetsLegend: "Insert of",
   targetsFilter: "Find a set",
   noInsertType: "no Insert type yet",
@@ -64,7 +85,15 @@ export const makeInsertCopy = {
   newParallelUnavailable: "New parallel",
   loading: "Finding this brand's sets…",
   noTargets: (brand: string) => `${brand} has no set to file this under. Sync Sets first.`,
+  /** The confirm follows the landing too; this is the one before anything is chosen. */
   confirm: "Make it an insert",
+  confirmParallel: "Make it a parallel",
+  /**
+   * Joining an existing row. "Add it to", not "Add to": the choice the
+   * operator just pressed is named "Add to {row}", and a confirm with the
+   * same name would make two buttons one name in the same dialog.
+   */
+  confirmJoin: (row: string) => `Add it to ${row}`,
   busy: "Moving…",
   pickTarget: "Pick the set it's an insert of.",
   pickDestination: "Pick where it goes.",
@@ -72,19 +101,14 @@ export const makeInsertCopy = {
   newTag: "new",
   joinsTag: "joins",
   failed: "Couldn't make this an insert. Nothing changed.",
-  /** Built from the server's own `path`: 3 steps land on an insert, 4 on a parallel. */
+  /**
+   * Jason, 2026-09-25: the PATH form, built from the server's own `path`
+   * (set › type › insert[ › parallel]) — every segment NB's name for the row
+   * that is actually there.
+   */
   done: (row: string, path: ReadonlyArray<{ value: string }>, created: boolean) => {
-    const set = path[0]?.value ?? "";
-    const insert = path[2]?.value ?? "";
-    if (path.length >= 4) {
-      const parallel = path[3].value;
-      return created
-        ? `“${row}” is now “${insert}”’s “${parallel}” parallel.`
-        : `“${row}” joined “${insert}”’s “${parallel}” parallel.`;
-    }
-    return created
-      ? `“${row}” is now ${set}’s “${insert}” insert.`
-      : `“${row}” joined ${set}’s “${insert}” insert.`;
+    const where = path.map((step) => step.value).join(" › ");
+    return created ? `“${row}” now lives at ${where}.` : `“${row}” joined ${where}.`;
   },
 };
 
@@ -286,6 +310,19 @@ function MakeInsertDialog({
     created: boolean;
     loss: Parameters<typeof lossItems>[0];
   };
+  /** The confirm's words for a landing, and whether it lands as a parallel. */
+  const confirmFor = (p: Plan): string => {
+    switch (p.landing.kind) {
+      case "newInsert":
+        return makeInsertCopy.confirm;
+      case "joinInsert":
+      case "joinParallel":
+        return makeInsertCopy.confirmJoin(p.segments[p.segments.length - 1]);
+      case "newParallel":
+      case "newInsertNamed":
+        return makeInsertCopy.confirmParallel;
+    }
+  };
   let plan: Plan | null = null;
   if (detailOk && !blockedByLink) {
     const head = [detailOk.targetSetValue, detailOk.insertTypeValue];
@@ -397,7 +434,7 @@ function MakeInsertDialog({
         ...insertDetailOk.parallels.map((p) => ({
           id: p._id,
           label: p.value,
-          ariaLabel: `Parallel of ${p.value}`,
+          ariaLabel: `Add to ${p.value}`,
           // A parallel holding a moving link blocks the whole Insert type
           // (the server's tree-wide rule), so `underBlocked` covers it.
           ...(underBlocked ? { unavailable: underBlocked } : {}),
@@ -571,11 +608,26 @@ function MakeInsertDialog({
       ];
 
   const cardCount = targets?.ok ? targets.cardCount : 0;
-  const kind = targets?.ok ? targets.kind : "set";
+  const linkCount = targets?.ok ? targets.linkCount : 0;
+  const source =
+    targets?.ok && targets.kind === "row"
+      ? {
+          kind: "row" as const,
+          ownSet: targets.ownSetValue ?? "",
+          ownType: targets.ownTypeValue ?? "",
+        }
+      : { kind: "set" as const };
+  const asParallel =
+    plan !== null &&
+    (plan.landing.kind === "newParallel" ||
+      plan.landing.kind === "joinParallel" ||
+      plan.landing.kind === "newInsertNamed");
   return (
     <SetShapeDialog
-      title={makeInsertCopy.title(rowValue)}
-      description={makeInsertCopy.description(rowValue, kind, cardCount)}
+      title={
+        asParallel ? makeInsertCopy.titleParallel(rowValue) : makeInsertCopy.title(rowValue)
+      }
+      description={makeInsertCopy.description(rowValue, source, cardCount, linkCount)}
       preview={
         plan ? (
           <LandingPath
@@ -584,7 +636,7 @@ function MakeInsertDialog({
           />
         ) : null
       }
-      confirmLabel={makeInsertCopy.confirm}
+      confirmLabel={plan ? confirmFor(plan) : makeInsertCopy.confirm}
       busyLabel={makeInsertCopy.busy}
       busy={busy}
       confirmDisabled={plan === null}

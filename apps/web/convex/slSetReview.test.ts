@@ -584,7 +584,7 @@ describe("applySlSetReview — validation by id writes nothing on a refusal", ()
     [
       "a type under a set with no BSC id",
       (ids: Awaited<ReturnType<typeof refusalSeed>>) => ids.slOnlyTypeId,
-      /isn't linked to BuySportsCards/,
+      /isn't linked to BSC,/,
     ],
     [
       "a row that is not a variant type",

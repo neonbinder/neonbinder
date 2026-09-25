@@ -127,10 +127,20 @@ function renderModal(props: Partial<React.ComponentProps<typeof SlSetReviewModal
   return { ...utils, rerenderSame: () => utils.rerender(ui()) };
 }
 
-const setPicker = (name: string) =>
-  screen.getByRole("button", { name: slReviewCopy.setPicker(name) });
-const typePicker = (name: string) =>
-  screen.getByRole("button", { name: slReviewCopy.typePicker(name) });
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/**
+ * A row's pickers, found by the half of their name that does not move: the
+ * name STARTS with the visible choice (SC 2.5.3) and ends with the row.
+ */
+const setPickerName = (name: string) =>
+  new RegExp(`: set ${escapeRe(name)} belongs to$`);
+const typePickerName = (name: string) => new RegExp(`: where ${escapeRe(name)} is filed$`);
+const setPicker = (name: string) => screen.getByRole("button", { name: setPickerName(name) });
+const typePicker = (name: string) => screen.getByRole("button", { name: typePickerName(name) });
+const bulkSetPicker = () =>
+  screen.getByRole("button", { name: /: set the selected rows belong to$/ });
+const bulkTypePicker = () =>
+  screen.getByRole("button", { name: /: where the selected rows are filed$/ });
 
 async function click(el: Element) {
   await act(async () => {
@@ -156,7 +166,7 @@ const noVisible = (text: string) =>
 const optionName = (b: Element) =>
   (b.textContent ?? "").replace(/^✓/, "").replace(/, suggested$/, "");
 
-/** Open a row's "Variant of" list and pick `setLabel` from it. */
+/** Open a row's "Belongs to" list and pick `setLabel` from it. */
 async function pickSet(rowName: string, setLabel: string) {
   await click(setPicker(rowName));
   const list = screen.getByRole("group", { name: slReviewCopy.setList(rowName) });
@@ -192,21 +202,48 @@ describe("SlSetReviewModal — defaults (NEO-306)", () => {
     expect(screen.getByRole("dialog", { name: "Sort SportLots sets for Bowman" })).toBeTruthy();
     expect(
       screen.getByText(
-        "SportLots lists these under Bowman. Each is a set of its own unless it belongs to one.",
+        "SportLots lists these under Bowman. Leave each as its own set, or file it under one of Bowman's sets. Parallels of an insert? File them as inserts here, then use Make insert of… on each.",
       ),
     ).toBeTruthy();
     const headers = screen.getAllByRole("columnheader").map((h) => h.textContent);
-    expect(headers.slice(1)).toEqual(["SportLots set", "Variant of", "Variant type"]);
+    expect(headers.slice(1)).toEqual(["SportLots set", "Belongs to", "Filed under"]);
+  });
+
+  it("SC 2.5.3: every picker's name starts with the text it shows, then says which row it is for", async () => {
+    renderModal();
+    const set = setPicker("Gold");
+    expect(set.getAttribute("aria-label")).toBe("Its own set: set Gold belongs to");
+    expect(set.getAttribute("aria-label")!.startsWith(set.textContent!.replace(/[▾▴]$/, ""))).toBe(
+      true,
+    );
+    await pickSet("Gold", "Bowman");
+    expect(setPicker("Gold").getAttribute("aria-label")).toBe("Bowman: set Gold belongs to");
+    expect(typePicker("Gold").getAttribute("aria-label")).toBe(
+      "Pick where it's filed: where Gold is filed",
+    );
+    await pickType("Gold", "Parallel");
+    expect(typePicker("Gold").getAttribute("aria-label")).toBe("Parallel: where Gold is filed");
+    // The bulk bar's pickers follow the same rule.
+    expect(bulkSetPicker().getAttribute("aria-label")).toBe(
+      "Pick a set: set the selected rows belong to",
+    );
+    expect(bulkTypePicker().getAttribute("aria-label")).toBe(
+      "Pick where it's filed: where the selected rows are filed",
+    );
+    for (const trigger of [setPicker("Gold"), typePicker("Gold"), bulkSetPicker(), bulkTypePicker()]) {
+      const shown = (trigger.textContent ?? "").replace(/[▾▴]$/, "");
+      expect(trigger.getAttribute("aria-label")!.startsWith(shown)).toBe(true);
+    }
   });
 
   it("files every row as its own set by default, and says so on Save", () => {
     renderModal();
     for (const { label } of ENTRIES) {
       expect(setPicker(label).textContent).toContain("Its own set");
-      expect(screen.queryByRole("button", { name: slReviewCopy.typePicker(label) })).toBeNull();
+      expect(screen.queryByRole("button", { name: typePickerName(label) })).toBeNull();
     }
     expect(screen.getByRole("button", { name: "Save 3 SportLots sets" })).toBeTruthy();
-    expect(screen.getByText("Saves as 3 sets.")).toBeTruthy();
+    expect(screen.getByText("Save will file: 3 sets")).toBeTruthy();
   });
 
   it("tags the suggested set in the list but does NOT choose it", async () => {
@@ -272,8 +309,8 @@ describe("SlSetReviewModal — a pick syncs that set's variant types, once per s
     renderModal();
     await pickSet("Gold", "Bowman");
     await pickSet("Blue", "Bowman");
-    await click(screen.getByRole("button", { name: slReviewCopy.bulkSetPicker }));
-    const bulkList = screen.getByRole("group", { name: slReviewCopy.bulkSetPicker });
+    await click(bulkSetPicker());
+    const bulkList = screen.getByRole("group", { name: slReviewCopy.bulkSetList });
     await click(within(bulkList).getByText("Bowman"));
     expect(mockEnsure).toHaveBeenCalledTimes(1);
     expect(mockEnsure).toHaveBeenCalledWith({
@@ -387,11 +424,11 @@ describe("SlSetReviewModal — the variant type", () => {
   it("is required once a set is chosen: the row and Save both say so, and Save writes nothing", async () => {
     renderModal();
     await pickSet("Gold", "Bowman");
-    expect(screen.getByText("Pick a variant type.")).toBeTruthy();
+    expect(screen.getByText("Pick where it's filed.")).toBeTruthy();
     const save = screen.getByRole("button", { name: "Save 3 SportLots sets" });
     expect(save.getAttribute("aria-disabled")).toBe("true");
     const reason = document.getElementById(save.getAttribute("aria-describedby")!);
-    expect(reason?.textContent).toBe("1 row needs a variant type.");
+    expect(reason?.textContent).toBe("Pick where it's filed on 1 row.");
     await click(save);
     await act(async () => {
       fireEvent.keyDown(save, { key: "Enter" });
@@ -401,8 +438,8 @@ describe("SlSetReviewModal — the variant type", () => {
     await pickType("Gold", "Parallel");
     expect(typePicker("Gold").textContent).toContain("Parallel");
     expect(save.getAttribute("aria-disabled")).toBeNull();
-    expect(screen.queryByText("Pick a variant type.")).toBeNull();
-    expect(screen.getByText("Saves as 2 sets, 1 parallel.")).toBeTruthy();
+    expect(screen.queryByText("Pick where it's filed.")).toBeNull();
+    expect(screen.getByText("Save will file: 2 sets · 1 parallel")).toBeTruthy();
   });
 
   it("changing the set clears the type", async () => {
@@ -411,12 +448,12 @@ describe("SlSetReviewModal — the variant type", () => {
     await pickSet("Gold", "Bowman");
     await pickType("Gold", "Parallel");
     await pickSet("Gold", "Bowman Chrome");
-    expect(typePicker("Gold").textContent).toContain("Pick a type");
+    expect(typePicker("Gold").textContent).toContain("Pick where it's filed");
   });
 });
 
 describe("SlSetReviewModal — the bulk bar", () => {
-  it("marks every selected row as a variant of the chosen set and type", async () => {
+  it("files every selected row under the chosen set and type", async () => {
     renderModal();
     await click(screen.getByRole("checkbox", { name: "Select all shown" }));
     expect(
@@ -426,11 +463,11 @@ describe("SlSetReviewModal — the bulk bar", () => {
     const apply = screen.getByRole("button", { name: "Apply to 3 selected" });
     expect(apply.getAttribute("aria-disabled")).toBe("true");
 
-    await click(screen.getByRole("button", { name: slReviewCopy.bulkSetPicker }));
+    await click(bulkSetPicker());
     await click(
-      within(screen.getByRole("group", { name: slReviewCopy.bulkSetPicker })).getByText("Bowman"),
+      within(screen.getByRole("group", { name: slReviewCopy.bulkSetList })).getByText("Bowman"),
     );
-    await click(screen.getByRole("button", { name: slReviewCopy.bulkTypePicker }));
+    await click(bulkTypePicker());
     await click(
       within(screen.getByRole("group", { name: slReviewCopy.typeList("Bowman") })).getByText(
         "Parallel",
@@ -443,7 +480,7 @@ describe("SlSetReviewModal — the bulk bar", () => {
       expect(typePicker(label).textContent).toContain("Parallel");
     }
     expect(document.querySelector("[aria-live='polite']")?.textContent).toBe(
-      "Marked 3 rows as Bowman › Parallel.",
+      "Filed 3 rows under Bowman › Parallel.",
     );
     // The selection clears, so a second Apply cannot re-mark by accident.
     expect(screen.getByRole("button", { name: "Apply to 0 selected" })).toBeTruthy();
@@ -459,14 +496,14 @@ describe("SlSetReviewModal — the bulk bar", () => {
     });
   });
 
-  it("'Mark selected as their own sets' puts selected rows back", async () => {
+  it("'Make selected their own sets' puts selected rows back", async () => {
     renderModal();
     await pickSet("Gold", "Bowman");
     await pickType("Gold", "Parallel");
     await click(screen.getByRole("checkbox", { name: "Select Gold" }));
-    await click(screen.getByRole("button", { name: "Mark selected as their own sets" }));
+    await click(screen.getByRole("button", { name: "Make selected their own sets" }));
     expect(setPicker("Gold").textContent).toContain("Its own set");
-    expect(screen.getByText("Saves as 3 sets.")).toBeTruthy();
+    expect(screen.getByText("Save will file: 3 sets")).toBeTruthy();
   });
 
   it("the filter narrows the rows, and 'Select all shown' selects only those", async () => {
@@ -475,7 +512,7 @@ describe("SlSetReviewModal — the bulk bar", () => {
     await act(async () => {
       fireEvent.change(filter, { target: { value: "gol" } });
     });
-    expect(screen.queryByRole("button", { name: slReviewCopy.setPicker("Blue") })).toBeNull();
+    expect(screen.queryByRole("button", { name: setPickerName("Blue") })).toBeNull();
     expect(screen.getByText("1 match")).toBeTruthy();
     await click(screen.getByRole("checkbox", { name: "Select all shown" }));
     await act(async () => {
@@ -643,7 +680,7 @@ describe("SlSetReviewModal — the review is shared", () => {
     await click(screen.getByRole("checkbox", { name: "Select Gold" }));
     review = makeReview({ entries: [ENTRIES[0], ENTRIES[2]] });
     rerenderSame();
-    expect(screen.queryByRole("button", { name: slReviewCopy.setPicker("Gold") })).toBeNull();
+    expect(screen.queryByRole("button", { name: setPickerName("Gold") })).toBeNull();
     expect(screen.getByRole("button", { name: "Save 2 SportLots sets" })).toBeTruthy();
     // The vanished row's selection does not count.
     expect(screen.getByRole("button", { name: "Apply to 0 selected" })).toBeTruthy();
@@ -708,7 +745,7 @@ describe("slReviewSavedText", () => {
           },
         }) as never,
       ),
-    ).toBe("Saved 2 sets. 3 skipped: 1 already linked, 2 already there by that name.");
+    ).toBe("Saved 2 sets. 3 skipped: 1 already filed, 2 already there by that name.");
   });
 
   it("says nothing new when nothing was written", () => {

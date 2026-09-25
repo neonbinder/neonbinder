@@ -2701,7 +2701,7 @@ describe("teamCascadeConfirmCopy / teamClearConfirmCopy / teamSavedToast (NEO-27
 
 /**
  * NEO-306 — Fill teams LEFT the panel for the card checklist's header
- * ("Fill N missing teams", beside the attention chip — pinned in
+ * ("N cards need a team", beside the attention chip — pinned in
  * CardChecklist.fillTeams.test.tsx). What this pins is that nothing of it is
  * left behind here, at any level, and that the one set-row control it used to
  * sit beside still renders exactly once across a selection move (the NEO-279
@@ -2719,7 +2719,7 @@ describe("SetAttributesPanel — Fill teams is not a panel control any more (NEO
     (level) => {
       currentRow = makeRow({ level });
       renderPanel();
-      expect(screen.queryByRole("button", { name: /^Fill\b/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /\bneeds? a team$/ })).toBeNull();
       expect(document.getElementById("fill-teams")).toBeNull();
     },
   );

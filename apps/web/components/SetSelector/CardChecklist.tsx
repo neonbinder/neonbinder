@@ -57,7 +57,7 @@ type CardChecklistProps = {
     sportlots: Record<string, string>;
   };
   /**
-   * NEO-306 — the SET this checklist sits under. "Fill N missing teams" is a
+   * NEO-306 — the SET this checklist sits under. "N cards need a team" is a
    * whole-set operation (the server refuses any other node), and the
    * checklist is attached to a Base, insert or parallel row, so the owner —
    * which holds the cascade's selection — hands the set id down. Without it
@@ -585,6 +585,12 @@ export default function CardChecklist({
    * `tabIndex={-1}` container, and here the progress line IS that container.
    */
   const soloFetchRef = useRef<HTMLDivElement>(null);
+  /**
+   * a11y (NEO-306) — the notice line, as a focus park: a fill that empties
+   * the missing-team lane unmounts the button that was pressed, and the
+   * notice is where its result is said. See `fillParkRef`.
+   */
+  const syncNoticeRef = useRef<HTMLDivElement>(null);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>({
     bsc: null,
     sportlots: null,
@@ -1556,7 +1562,7 @@ export default function CardChecklist({
   );
 
   /**
-   * NEO-306 — the N in "Fill N missing teams": cards on THIS checklist whose
+   * NEO-306 — the N in "N cards need a team": cards on THIS checklist whose
    * attention items include `missingTeam`. The same live derivation as
    * `attentionCount` above, so filling a card drops it without anything
    * having to invalidate it. The preview then says how many the set's own
@@ -1581,9 +1587,12 @@ export default function CardChecklist({
    * a11y (WCAG 2.4.3) — armed when a fill window closes. A fill that empties
    * the lane unmounts the trigger the dialog just handed focus back to, and
    * the browser drops it to `<body>`. Once the trigger is gone, focus is
-   * parked on the Sync button — this header's one control that survives the
-   * change — but only if it really was dropped: anywhere else, the operator
-   * put it there. Disarmed as soon as the trigger survives without focus.
+   * parked on the notice line that just said "Filled teams on N cards" — the
+   * result of what the operator pressed, and where the next thing to read is
+   * (the soloFetch park's shape: a `tabIndex={-1}` region, named by its own
+   * text). With no notice showing, the Sync button is the fallback. Only if
+   * focus really was dropped: anywhere else, the operator put it there.
+   * Disarmed as soon as the trigger survives without focus.
    */
   const fillParkRef = useRef(false);
   const handleFillActiveChange = useCallback((active: boolean) => {
@@ -1600,7 +1609,8 @@ export default function CardChecklist({
       return;
     }
     fillParkRef.current = false;
-    if (document.activeElement === document.body) syncButtonRef.current?.focus();
+    if (document.activeElement !== document.body) return;
+    (syncNoticeRef.current ?? syncButtonRef.current)?.focus();
   }, [fillActive, missingTeamCount]);
 
   /**
@@ -2181,6 +2191,10 @@ export default function CardChecklist({
           // also set to "polite" for that case.
           <div
             key={syncNotice.tone}
+            ref={syncNoticeRef}
+            // NEO-306: a programmatic focus park (see `syncNoticeRef`) —
+            // reachable by script, never a Tab stop, with its own ring (2.4.7).
+            tabIndex={-1}
             role={syncNotice.tone === "error" ? "alert" : "status"}
             aria-live={syncNotice.tone === "error" ? undefined : "polite"}
             aria-atomic="true"
@@ -2195,8 +2209,8 @@ export default function CardChecklist({
               // paired the same way `blue-*` already is below, measures
               // 6.7:1 light / 10.1:1 dark.
               syncNotice.tone === "error"
-                ? "p-2 mb-3 bg-pink-100 dark:bg-pink-900/30 border border-pink-300 dark:border-pink-700 rounded-md text-pink-800 dark:text-pink-200 text-sm"
-                : "p-2 mb-3 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm"
+                ? "p-2 mb-3 bg-pink-100 dark:bg-pink-900/30 border border-pink-300 dark:border-pink-700 rounded-md text-pink-800 dark:text-pink-200 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-pink-600 dark:focus-visible:ring-pink-300"
+                : "p-2 mb-3 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
             }
           >
             {syncNotice.text}
@@ -2309,7 +2323,7 @@ export default function CardChecklist({
               active={attentionOnly}
               onClick={() => setAttentionOnly((v) => !v)}
             />
-            {/* NEO-306 — "Fill N missing teams", directly beside the chip
+            {/* NEO-306 — "N cards need a team", directly beside the chip
                 whose lane it clears: the one amber, prominent control in this
                 row, because it is the one that fixes many cards at once. It
                 renders nothing at N = 0 unless a fill it started is still

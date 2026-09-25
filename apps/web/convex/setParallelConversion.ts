@@ -182,7 +182,7 @@ export const conversionRefusal = {
 export const promotionRefusal = {
   rowGone: () => "That row is gone. Refresh and try again.",
   /** Kept under its NEO-305 key; NEO-306 promotes inserts and parallels of inserts too. */
-  notAParallel: (row: string) => `“${row}” isn't under a set, so it can't become one.`,
+  notAParallel: () => "Only an insert or a parallel can be promoted to a set.",
   linkGone: (row: string) =>
     `That SportLots link isn't on “${row}” any more. Refresh and try again.`,
   noBrand: () => "This row has no brand above it. Refresh and try again.",
@@ -406,6 +406,8 @@ export const getSetToParallelTargets = query({
       setValue: v.string(),
       brandValue: v.string(),
       cardCount: v.number(),
+      /** Distinct SportLots links that move — 0 is a real answer (invariant 6). */
+      linkCount: v.number(),
       targets: v.array(targetSetValidator),
       suggestedSetId: v.optional(v.id("selectorOptions")),
       truncated: v.boolean(),
@@ -459,6 +461,7 @@ export const getSetToParallelTargets = query({
       setValue: set.value,
       brandValue: brand.value,
       cardCount: cards,
+      linkCount: new Set(linksOnRows([base, set]).map((l) => l.id)).size,
       targets,
       ...(suggestedSetId ? { suggestedSetId } : {}),
       truncated,
@@ -837,7 +840,7 @@ async function readPromotionSource(
 ): Promise<PromotionSource> {
   const row = await ctx.db.get(parallelId);
   if (!row) return { ok: false, reason: promotionRefusal.rowGone() };
-  const notUnderASet = { ok: false as const, reason: promotionRefusal.notAParallel(row.value) };
+  const notUnderASet = { ok: false as const, reason: promotionRefusal.notAParallel() };
   let insertRow: Row | null = row;
   if (row.level === "parallel") {
     insertRow = row.parentId ? await ctx.db.get(row.parentId) : null;

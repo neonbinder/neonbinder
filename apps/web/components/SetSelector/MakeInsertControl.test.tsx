@@ -105,7 +105,9 @@ beforeEach(() => {
     brandValue: "Bowman",
     ownSetId: "s-bowman",
     ownSetValue: "Bowman",
+    ownTypeValue: "Parallel",
     cardCount: 4,
+    linkCount: 1,
     targets: [
       { setId: "s-bowman", value: "Bowman", insertTypeId: "it-bowman", insertTypeValue: "Insert" },
       { setId: "s-chrome", value: "Bowman Chrome", insertTypeId: "it-chrome", insertTypeValue: "Insert" },
@@ -163,11 +165,13 @@ function open() {
   fireEvent.click(screen.getByRole("button", { name: MAKE_INSERT_LABEL }));
 }
 
-const confirmButton = () => screen.getByRole("button", { name: makeInsertCopy.confirm });
+/** The confirm, by the name the landing gives it ("Make it an insert" before any choice). */
+const confirmButton = (name: string = makeInsertCopy.confirm) =>
+  screen.getByRole("button", { name });
 
-async function confirm() {
+async function confirm(name?: string) {
   await act(async () => {
-    fireEvent.click(confirmButton());
+    fireEvent.click(confirmButton(name));
   });
 }
 
@@ -236,15 +240,38 @@ describe("MakeInsertControl — the three lists", () => {
     expect(screen.queryByRole("radiogroup", { name: /^Under / })).toBeNull();
   });
 
-  it("the row description says what moves (S2: nothing about stopping being a set)", () => {
+  it("the description says what moves and where the row leaves from, as the server counts it", () => {
     renderControl();
     open();
     expect(screen.getByRole("dialog").textContent).toContain(
-      makeInsertCopy.description(ROW, "row", 4),
+      `Pick the set it belongs to, then where it goes. Its SportLots link and 4 cards move over, and “${ROW}” leaves Bowman › Parallel.`,
     );
-    expect(makeInsertCopy.description("Bowman Red Ink", "set", 1)).toBe(
+  });
+
+  it("the description never claims a SportLots link that is not there, and pluralises links (NEO-306)", () => {
+    const row = { kind: "row" as const, ownSet: "Bowman", ownType: "Parallel" };
+    const set = { kind: "set" as const };
+    expect(makeInsertCopy.description("Bowman Red Ink", set, 1, 1)).toBe(
       "Pick the set it belongs to, then where it goes. Its SportLots link and 1 card move over, and “Bowman Red Ink” stops being a set.",
     );
+    expect(makeInsertCopy.description("Red Ink", row, 0, 2)).toBe(
+      "Pick the set it belongs to, then where it goes. Its 2 SportLots links move over, and “Red Ink” leaves Bowman › Parallel.",
+    );
+    expect(makeInsertCopy.description("Red Ink", row, 3, 0)).toBe(
+      "Pick the set it belongs to, then where it goes. Its 3 cards move over, and “Red Ink” leaves Bowman › Parallel.",
+    );
+    expect(makeInsertCopy.description("Bowman Red Ink", set, 0, 0)).toBe(
+      "Pick the set it belongs to, then where it goes. “Bowman Red Ink” stops being a set.",
+    );
+  });
+
+  it("the dialog reads the server's link count: none means no SportLots claim", () => {
+    targets = { ...(targets as object), linkCount: 0 };
+    renderControl();
+    open();
+    const text = screen.getByRole("dialog").textContent ?? "";
+    expect(text).toContain(`Its 4 cards move over, and “${ROW}” leaves Bowman › Parallel.`);
+    expect(text).not.toContain("SportLots link");
   });
 
   it("choosing an existing insert opens “Under {insert} as”, preselecting a new parallel", () => {
@@ -256,7 +283,7 @@ describe("MakeInsertControl — the three lists", () => {
     });
     expect(
       Array.from(under.querySelectorAll('[role="radio"]')).map((r) => r.getAttribute("aria-label")),
-    ).toEqual([makeInsertCopy.insertItself, makeInsertCopy.newParallel("Red Ink"), "Parallel of Blue Ink"]);
+    ).toEqual([makeInsertCopy.insertItself, makeInsertCopy.newParallel("Red Ink"), "Add to Blue Ink"]);
     expect(
       screen.getByRole("radio", { name: makeInsertCopy.newParallel("Red Ink") }).getAttribute("aria-checked"),
     ).toBe("true");
@@ -372,7 +399,7 @@ describe("MakeInsertControl — the three lists", () => {
     fireEvent.click(screen.getByRole("radio", { name: makeInsertCopy.insertItself }));
     const sentence = "Not coming along: its card prefix and its team.";
     expect(screen.getByRole("dialog").textContent).toContain(sentence);
-    expect(describedText(confirmButton())).toContain(sentence);
+    expect(describedText(confirmButton("Add it to All-America Game Autos"))).toContain(sentence);
   });
 });
 
@@ -413,7 +440,9 @@ describe("MakeInsertControl — New insert named…", () => {
         ),
       { timeout: NAMED_PREVIEW_DEBOUNCE_MS + 1000 },
     );
-    expect(confirmButton().getAttribute("aria-disabled")).toBeNull();
+    // The title and the confirm follow the landing: it becomes a PARALLEL.
+    expect(confirmButton(makeInsertCopy.confirmParallel).getAttribute("aria-disabled")).toBeNull();
+    expect(screen.getByRole("dialog", { name: makeInsertCopy.titleParallel(ROW) })).toBeTruthy();
 
     // Enter in the field confirms, as it does on the confirm button.
     await act(async () => {
@@ -425,7 +454,7 @@ describe("MakeInsertControl — New insert named…", () => {
       landing: { kind: "newInsertNamed", name: "All-America Game Autos" },
     });
     expect(showToast).toHaveBeenCalledWith(
-      `“${ROW}” is now “All-America Game Autos”’s “Red Ink” parallel.`,
+      `“${ROW}” now lives at Bowman › Insert › All-America Game Autos › Red Ink.`,
     );
     expect(onReshaped).toHaveBeenCalledWith([
       { _id: "s-bowman", level: "setName" },
@@ -482,7 +511,7 @@ describe("MakeInsertControl — each landing sends what it says", () => {
       landing: { kind: "newInsert" },
     });
     expect(showToast).toHaveBeenCalledWith(
-      `“${ROW}” is now Bowman’s “All-America Game Autos Red Ink” insert.`,
+      `“${ROW}” now lives at Bowman › Insert › All-America Game Autos Red Ink.`,
     );
     expect(onReshaped).toHaveBeenCalledWith([
       { _id: "s-bowman", level: "setName" },
@@ -503,14 +532,16 @@ describe("MakeInsertControl — each landing sends what it says", () => {
     open();
     fireEvent.click(screen.getByRole("radio", { name: "Add to All-America Game Autos" }));
     fireEvent.click(screen.getByRole("radio", { name: makeInsertCopy.insertItself }));
-    await confirm();
+    // Joining: the confirm names the row it joins; the title stays "an insert".
+    expect(screen.getByRole("dialog", { name: makeInsertCopy.title(ROW) })).toBeTruthy();
+    await confirm(makeInsertCopy.confirmJoin("All-America Game Autos"));
     expect(mockConvert).toHaveBeenCalledWith({
       rowId: ROW_ID,
       targetInsertTypeId: "it-bowman",
       landing: { kind: "joinInsert", insertId: "i-aag" },
     });
     expect(showToast).toHaveBeenCalledWith(
-      `“${ROW}” joined Bowman’s “All-America Game Autos” insert.`,
+      `“${ROW}” joined Bowman › Insert › All-America Game Autos.`,
     );
   });
 
@@ -527,14 +558,15 @@ describe("MakeInsertControl — each landing sends what it says", () => {
     const { showToast, onReshaped } = renderControl();
     open();
     fireEvent.click(screen.getByRole("radio", { name: "Add to All-America Game Autos" }));
-    await confirm();
+    expect(screen.getByRole("dialog", { name: makeInsertCopy.titleParallel(ROW) })).toBeTruthy();
+    await confirm(makeInsertCopy.confirmParallel);
     expect(mockConvert).toHaveBeenCalledWith({
       rowId: ROW_ID,
       targetInsertTypeId: "it-bowman",
       landing: { kind: "newParallel", insertId: "i-aag" },
     });
     expect(showToast).toHaveBeenCalledWith(
-      `“${ROW}” is now “All-America Game Autos”’s “Red Ink” parallel.`,
+      `“${ROW}” now lives at Bowman › Insert › All-America Game Autos › Red Ink.`,
     );
     expect(onReshaped).toHaveBeenCalledWith([
       { _id: "s-bowman", level: "setName" },
@@ -557,16 +589,17 @@ describe("MakeInsertControl — each landing sends what it says", () => {
     const { showToast } = renderControl();
     open();
     fireEvent.click(screen.getByRole("radio", { name: "Add to All-America Game Autos" }));
-    fireEvent.click(screen.getByRole("radio", { name: "Parallel of Blue Ink" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Add to Blue Ink" }));
     expect(screen.getByRole("dialog").textContent).toContain("Blue Inkjoins");
-    await confirm();
+    expect(screen.getByRole("dialog", { name: makeInsertCopy.titleParallel(ROW) })).toBeTruthy();
+    await confirm(makeInsertCopy.confirmJoin("Blue Ink"));
     expect(mockConvert).toHaveBeenCalledWith({
       rowId: ROW_ID,
       targetInsertTypeId: "it-bowman",
       landing: { kind: "joinParallel", parallelId: "p-blue-ink" },
     });
     expect(showToast).toHaveBeenCalledWith(
-      `“${ROW}” joined “All-America Game Autos”’s “Blue Ink” parallel.`,
+      `“${ROW}” joined Bowman › Insert › All-America Game Autos › Blue Ink.`,
     );
   });
 
@@ -628,6 +661,24 @@ describe("MakeInsertControl — keyboard, focus and refusals", () => {
     expect(new Set(names).size).toBe(names.length);
   });
 
+  it.each([
+    ["the insert itself", makeInsertCopy.insertItself, "Add it to All-America Game Autos"],
+    ["an existing parallel", "Add to Blue Ink", "Add it to Blue Ink"],
+  ])(
+    "joining %s: the confirm never takes the chosen radio's name",
+    (_what, radio, confirmName) => {
+      renderControl();
+      open();
+      fireEvent.click(screen.getByRole("radio", { name: "Add to All-America Game Autos" }));
+      fireEvent.click(screen.getByRole("radio", { name: radio }));
+      expect(confirmButton(confirmName)).toBeTruthy();
+      const names = [...screen.getAllByRole("button"), ...screen.getAllByRole("radio")].map(
+        (b) => b.getAttribute("aria-label") ?? b.textContent,
+      );
+      expect(new Set(names).size).toBe(names.length);
+    },
+  );
+
   it("choice buttons carry no DOM id, so their aria-label stays their E2E name", () => {
     renderControl();
     open();
@@ -637,7 +688,7 @@ describe("MakeInsertControl — keyboard, focus and refusals", () => {
       "Add to All-America Game Autos",
       makeInsertCopy.namedChoice,
       makeInsertCopy.insertItself,
-      "Parallel of Blue Ink",
+      "Add to Blue Ink",
     ]) {
       expect(screen.getByRole("radio", { name }).getAttribute("id")).toBeNull();
     }

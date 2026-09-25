@@ -41,7 +41,11 @@ vi.mock("convex/react", () => ({
   useMutation: (ref: string) => (ref === "convert" ? mockConvert : vi.fn()),
 }));
 
-import MakeParallelControl, { MAKE_PARALLEL_LABEL, makeParallelCopy } from "./MakeParallelControl";
+import MakeParallelControl, {
+  MAKE_PARALLEL_LABEL,
+  makeParallelCopy,
+  movesOverClause,
+} from "./MakeParallelControl";
 
 const SET_ID = "set-bowman-blue" as never;
 const NO_LOSS = { cardPrefix: false, featureKeys: [], team: false, dismissedNames: false };
@@ -70,6 +74,7 @@ beforeEach(() => {
     setValue: "Bowman Fuchsia",
     brandValue: "Bowman",
     cardCount: 3,
+    linkCount: 1,
     targets: [
       { setId: "s-bowman", value: "Bowman", parallelTypeId: "pt-bowman", parallelTypeValue: "Parallel" },
       { setId: "s-chrome", value: "Bowman Chrome", parallelTypeId: "pt-chrome", parallelTypeValue: "Parallel" },
@@ -132,6 +137,39 @@ describe("MakeParallelControl — when it shows", () => {
     expect(
       screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }).getAttribute("aria-label"),
     ).toBeNull();
+  });
+});
+
+describe("what moves, said only as far as it is true (NEO-306)", () => {
+  it("names links and cards, pluralising each, and nothing that is not there", () => {
+    expect(movesOverClause(1, 3)).toBe("Its SportLots link and 3 cards move over");
+    expect(movesOverClause(2, 1)).toBe("Its 2 SportLots links and 1 card move over");
+    expect(movesOverClause(1, 0)).toBe("Its SportLots link moves over");
+    expect(movesOverClause(2, 0)).toBe("Its 2 SportLots links move over");
+    expect(movesOverClause(0, 1)).toBe("Its 1 card moves over");
+    expect(movesOverClause(0, 5)).toBe("Its 5 cards move over");
+    expect(movesOverClause(0, 0)).toBeNull();
+  });
+
+  it("the description never claims a SportLots link a set without one does not have", () => {
+    expect(makeParallelCopy.description("Bowman Fuchsia", 3, 1)).toBe(
+      "Pick the set it belongs to. Its SportLots link and 3 cards move over, and “Bowman Fuchsia” stops being a set.",
+    );
+    expect(makeParallelCopy.description("Bowman Fuchsia", 2, 0)).toBe(
+      "Pick the set it belongs to. Its 2 cards move over, and “Bowman Fuchsia” stops being a set.",
+    );
+    expect(makeParallelCopy.description("Bowman Fuchsia", 0, 0)).toBe(
+      "Pick the set it belongs to. “Bowman Fuchsia” stops being a set.",
+    );
+  });
+
+  it("the dialog reads the server's link count", () => {
+    targets = { ...(targets as object), linkCount: 0, cardCount: 0 };
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: MAKE_PARALLEL_LABEL }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toContain("“Bowman Fuchsia” stops being a set.");
+    expect(dialog.textContent).not.toContain("SportLots link");
   });
 });
 

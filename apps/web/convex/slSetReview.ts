@@ -197,7 +197,7 @@ async function typeRefusal(
   }
   if (slotIds(set, "bsc").length === 0) {
     return {
-      reason: `${set.value} isn't linked to BuySportsCards, so it can't take variants here.`,
+      reason: `${set.value} isn't linked to BSC, so it can't take variants here.`,
     };
   }
   return { type, set };
@@ -385,7 +385,7 @@ export const getSlSetReviewSummary = query({
 
 /**
  * The review for one brand: its entries, and the sets an entry may be filed
- * under (the brand's sets holding a BSC id — the "Variant of" picker).
+ * under (the brand's sets holding a BSC id — the "Belongs to" picker).
  *
  * `suggestedOfSetId` is computed HERE, at read time, and is display only: the
  * picker's first option with a `suggested` tag, never preselected, never

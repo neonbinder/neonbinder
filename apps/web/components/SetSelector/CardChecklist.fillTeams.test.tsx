@@ -1,5 +1,5 @@
 /**
- * NEO-306 — "Fill N missing teams" in the card checklist's header.
+ * NEO-306 — "N cards need a team" in the card checklist's header.
  *
  * Fill teams left the Set attributes panel for the checklist, beside the
  * attention chip whose lane it clears, as the amber attention pill. Pinned
@@ -166,7 +166,7 @@ function makePreview(fillable: number) {
 const attentionChip = () =>
   screen.getByRole("button", { name: /Show only cards needing attention/ });
 
-describe("CardChecklist — Fill N missing teams (NEO-306)", () => {
+describe("CardChecklist — N cards need a team (NEO-306)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.cards = [teamless(1), teamless(2), overLongTitle(3), settled(4)];
@@ -176,7 +176,7 @@ describe("CardChecklist — Fill N missing teams (NEO-306)", () => {
     render(ui());
     // Three cards need attention, two of them for a missing team.
     expect(attentionChip().textContent).toContain("3 need attention");
-    const fill = screen.getByRole("button", { name: "Fill 2 missing teams" });
+    const fill = screen.getByRole("button", { name: "2 cards need a team" });
     // Directly after the chip, in the same row.
     expect(attentionChip().nextElementSibling).toBe(fill);
     for (const cls of SET_ROW_ACTION_TONE_CLASSES.attention.split(" ")) {
@@ -188,19 +188,19 @@ describe("CardChecklist — Fill N missing teams (NEO-306)", () => {
   it("is singular for one card", () => {
     state.cards = [teamless(1), settled(2)];
     render(ui());
-    expect(screen.getByRole("button", { name: "Fill 1 missing team" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "1 card needs a team" })).toBeTruthy();
   });
 
   it("is absent when no card on the checklist is missing a team, even with other attention", () => {
     state.cards = [overLongTitle(1), settled(2)];
     render(ui());
     expect(attentionChip()).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^Fill\b/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /\bneeds? a team$/ })).toBeNull();
   });
 
   it("is absent without the set id — it never guesses the set from the open node", () => {
     render(ui(null));
-    expect(screen.queryByRole("button", { name: /^Fill\b/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /\bneeds? a team$/ })).toBeNull();
   });
 
   it("previews and fills the SET, not the checklist's own node", async () => {
@@ -211,7 +211,7 @@ describe("CardChecklist — Fill N missing teams (NEO-306)", () => {
       byRule: { samePlayerInSet: 2, oneTeamCareer: 0, oneStintInYear: 0 },
     });
     render(ui());
-    fireEvent.click(screen.getByRole("button", { name: "Fill 2 missing teams" }));
+    fireEvent.click(screen.getByRole("button", { name: "2 cards need a team" }));
     await screen.findByRole("dialog");
     expect(mockPreview).toHaveBeenCalledWith({ selectorOptionId: SET_ID });
     fireEvent.click(screen.getByRole("button", { name: "Yes, fill" }));
@@ -230,7 +230,7 @@ describe("CardChecklist — Fill N missing teams (NEO-306)", () => {
       }),
     );
     const { rerender } = render(ui());
-    fireEvent.click(screen.getByRole("button", { name: "Fill 1 missing team" }));
+    fireEvent.click(screen.getByRole("button", { name: "1 card needs a team" }));
     await screen.findByRole("dialog");
     fireEvent.click(screen.getByRole("button", { name: "Yes, fill" }));
 
@@ -254,14 +254,43 @@ describe("CardChecklist — Fill N missing teams (NEO-306)", () => {
       .find((el) => el.textContent === "Filled teams on 1 card");
     expect(notice).toBeTruthy();
     // Window closed, nothing left: the row and the trigger are gone.
-    expect(screen.queryByRole("button", { name: /^Fill\b/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /\bneeds? a team$/ })).toBeNull();
     expect(screen.queryByText(/need attention/)).toBeNull();
+  });
+
+  it("parks focus on the notice line when the fill empties the lane and takes its button with it (WCAG 2.4.3)", async () => {
+    state.cards = [teamless(1), settled(2)];
+    mockPreview.mockResolvedValue(makePreview(1));
+    mockApply.mockResolvedValue({
+      applied: 1,
+      skipped: 0,
+      byRule: { samePlayerInSet: 1, oneTeamCareer: 0, oneStintInYear: 0 },
+    });
+    const { rerender } = render(ui());
+    const trigger = screen.getByRole("button", { name: "1 card needs a team" });
+    trigger.focus();
+    fireEvent.click(trigger);
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "Yes, fill" }));
+    // The fill lands on the card: the lane empties under the open dialog.
+    state.cards = [settled(1), settled(2)];
+    rerender(ui());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /\bneeds? a team$/ })).toBeNull(),
+    );
+    const notice = screen
+      .getAllByRole("status")
+      .find((el) => el.textContent === "Filled teams on 1 card")!;
+    // A programmatic park, never a Tab stop — and the one it lands on.
+    expect(notice.getAttribute("tabindex")).toBe("-1");
+    await waitFor(() => expect(document.activeElement).toBe(notice));
   });
 
   it("a failed check is an alert in the notice line, never a quiet status", async () => {
     mockPreview.mockRejectedValue(new Error("network blew up"));
     render(ui());
-    fireEvent.click(screen.getByRole("button", { name: "Fill 2 missing teams" }));
+    fireEvent.click(screen.getByRole("button", { name: "2 cards need a team" }));
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe("Failed: Could not check the cards. Nothing changed.");
   });

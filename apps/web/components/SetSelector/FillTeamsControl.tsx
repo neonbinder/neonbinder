@@ -29,7 +29,7 @@ import SetRowActionButton from "./SetRowActionButton";
  * ## Where it lives (NEO-306)
  *
  * In the card checklist's header, directly beside the "N need attention"
- * filter chip, as the amber attention pill: "Fill 3 missing teams". It used to
+ * filter chip, as the amber attention pill: "3 cards need a team". It used to
  * be grey text in the attributes panel's title line, which is not where an
  * operator looking at teamless cards is looking, and did not say how many.
  * N is the open checklist's `missingTeam` count (the same live derivation as
@@ -45,7 +45,7 @@ import SetRowActionButton from "./SetRowActionButton";
  * Four states, all stated in words on the trigger or in the dialog. The
  * trigger's text IS its accessible name — no `aria-label` — so a screen
  * reader hears the same state change a sighted operator sees:
- *   • idle       — "Fill 3 missing teams"
+ *   • idle       — "3 cards need a team"
  *   • checking   — "Checking…", `aria-busy` + `aria-disabled` (never native
  *                  `disabled`: the button that was just pressed would blur to
  *                  <body>)
@@ -111,11 +111,11 @@ export type TeamFillResult = {
 
 /**
  * The trigger's idle text, which is also its accessible name — one string, so
- * SC 2.5.3 holds. DRAFT copy (NEO-306): "Fill 1 missing team", "Fill 3
- * missing teams".
+ * SC 2.5.3 holds. Jason, 2026-09-25: "1 card needs a team", "12 cards need a
+ * team" — the count says what is wrong, and the amber tone says press here.
  */
 export function fillTeamsLabel(missing: number): string {
-  return `Fill ${missing} missing ${missing === 1 ? "team" : "teams"}`;
+  return missing === 1 ? "1 card needs a team" : `${missing} cards need a team`;
 }
 
 /** The trigger's text while the preview is in flight. */
@@ -311,7 +311,7 @@ export default function FillTeamsControl({
    * The count on the trigger while it is working. The live count can fall
    * while the dialog is up (the fill is what clears it), and the button
    * behind the dialog should keep naming what was pressed rather than read
-   * "Fill 0 missing teams".
+   * "0 cards need a team".
    */
   const [heldCount, setHeldCount] = useState(missingCount);
 

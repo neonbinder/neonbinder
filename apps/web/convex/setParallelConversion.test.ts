@@ -920,10 +920,10 @@ describe("promoteParallelToSet — guards", () => {
     const as = t.withIdentity(ADMIN);
     const promote = (parallelId: RowId) =>
       as.mutation(api.setParallelConversion.promoteParallelToSet, { parallelId, slSlotKey: "s0" });
-    await expectRefusal(t, () => promote(underBase), promotionRefusal.notAParallel("Stray"));
-    await expectRefusal(t, () => promote(ids.bowmanId), promotionRefusal.notAParallel("Bowman"));
-    await expectRefusal(t, () => promote(ids.parallelTypeId), promotionRefusal.notAParallel("Parallel"));
-    expect(promotionRefusal.notAParallel("Stray")).toBe("“Stray” isn't under a set, so it can't become one.");
+    await expectRefusal(t, () => promote(underBase), promotionRefusal.notAParallel());
+    await expectRefusal(t, () => promote(ids.bowmanId), promotionRefusal.notAParallel());
+    await expectRefusal(t, () => promote(ids.parallelTypeId), promotionRefusal.notAParallel());
+    expect(promotionRefusal.notAParallel()).toBe("Only an insert or a parallel can be promoted to a set.");
   });
 
   test("the row must carry that SportLots link", async () => {
@@ -1377,6 +1377,8 @@ describe("the queries behind the dialogs", () => {
     expect(result.targets.find((x) => x.value === "Bowman Red")!.parallelTypeId).toBeUndefined();
     expect(result.suggestedSetId).toBe(ids.chromeId);
     expect(result.cardCount).toBe(0);
+    // NEO-306: the description says a link moves only when one does.
+    expect(result.linkCount).toBe(1);
   });
 
   test("target detail: parallels listed, a clash preselects the one to add to, a held link is flagged", async () => {

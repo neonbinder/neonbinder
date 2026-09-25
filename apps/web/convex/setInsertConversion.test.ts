@@ -443,10 +443,13 @@ describe("eligibility", () => {
       rowValue: "Bowman All-America",
       brandValue: "Bowman",
       cardCount: 2,
+      linkCount: 1,
       truncated: false,
       suggestedSetId: ids.bowmanId,
     });
     if (!s1.ok) throw new Error("unreachable");
+    // S1 sits under no variant type of its own.
+    expect(s1.ownTypeValue).toBeUndefined();
     expect(s1.targets).toEqual([
       { setId: ids.bowmanId, value: "Bowman", insertTypeId: ids.insertTypeId, insertTypeValue: "Insert" },
       { setId: ids.chromeId, value: "Bowman Chrome" },
@@ -461,6 +464,9 @@ describe("eligibility", () => {
       kind: "row",
       ownSetId: ids.bowmanId,
       ownSetValue: "Bowman",
+      // NEO-306: what the dialog's description says the row leaves.
+      ownTypeValue: "Parallel",
+      linkCount: 1,
       suggestedSetId: ids.bowmanId,
     });
     if (!s2.ok) throw new Error("unreachable");
@@ -469,6 +475,21 @@ describe("eligibility", () => {
       "Bowman All-America",
       "Bowman Chrome",
     ]);
+  });
+
+  test("targets: the link count is the distinct SportLots ids that move — 0 for a row with none (invariant 6)", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const bare = await slRow(t, ids.parallelTypeId, "Hand Made", []);
+    const two = await slRow(t, ids.parallelTypeId, "Two Links", [
+      { id: "SL-TWO-A", label: "Two A" },
+      { id: "SL-TWO-B", label: "Two B" },
+    ]);
+    const as = t.withIdentity(ADMIN);
+    const none = await as.query(api.setInsertConversion.getMakeInsertTargets, { rowId: bare });
+    expect(none).toMatchObject({ ok: true, linkCount: 0, cardCount: 0 });
+    const both = await as.query(api.setInsertConversion.getMakeInsertTargets, { rowId: two });
+    expect(both).toMatchObject({ ok: true, linkCount: 2 });
   });
 
   test("target detail: inserts listed without the source, the derived name, a clash, a set with no Insert type", async () => {
@@ -630,7 +651,7 @@ describe("eligibility", () => {
     });
     expect(await preview("Rookie Autos Blue Ink")).toEqual({
       ok: false,
-      reason: insertConversionRefusal.wholeName("Bowman Rookie Autos Blue Ink"),
+      reason: insertConversionRefusal.wholeName(),
     });
     expect(await preview("all-america game autos")).toEqual({
       ok: false,
@@ -1085,7 +1106,7 @@ describe("convertToInsert — refusals", () => {
           kind: "newInsertNamed",
           name: "All-America Game Autos Gold",
         }),
-      insertConversionRefusal.wholeName("All-America Game Autos Gold"),
+      insertConversionRefusal.wholeName(),
     );
     const already = await slRow(t, ids.insertTypeId, "Stars", [{ id: "SL-STARS", label: "Stars" }]);
     await expectRefusal(
