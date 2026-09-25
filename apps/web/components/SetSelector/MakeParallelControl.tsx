@@ -3,8 +3,9 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
-import { activateOnEnter } from "@/lib/dom/activate-on-enter";
+import { Square2StackIcon } from "@heroicons/react/24/outline";
 import { ChoiceList, LandingPath, SetShapeDialog, type Choice } from "./SetShapeDialog";
+import SetRowActionButton from "./SetRowActionButton";
 import type { SelectorLevel } from "./selector-sync-feedback";
 import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
 
@@ -22,9 +23,10 @@ import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
  * nothing under the Base). The target-dependent checks happen in the dialog,
  * which reads the brand's sets only while it is open.
  *
- * Same shape as `MoveSetToBrandControl` beside it: a text button in the
- * attributes panel header, `inert` while the dialog is up, refusals inside
- * the dialog, the result on the panel's own `role="status"` toast.
+ * Same shape as `MoveSetToBrandControl` beside it: a `SetRowActionButton`
+ * chip in the panel's "Set actions" row (NEO-306), `inert` while the dialog is
+ * up, refusals inside the dialog, the result on the panel's own
+ * `role="status"` toast.
  */
 
 export const MAKE_PARALLEL_LABEL = "Make parallel of…";
@@ -132,18 +134,16 @@ export default function MakeParallelControl({
 
   return (
     <>
-      <button
+      <SetRowActionButton
         ref={triggerRef}
-        type="button"
-        onClick={openDialog}
-        onKeyDown={(event) => activateOnEnter(event, openDialog)}
+        icon={Square2StackIcon}
+        onActivate={openDialog}
         aria-haspopup="dialog"
         inert={open}
         title={MAKE_PARALLEL_TOOLTIP}
-        className="shrink-0 text-xs py-1.5 text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus-visible:ring-2 focus-visible:ring-[#00D558] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
       >
         {MAKE_PARALLEL_LABEL}
-      </button>
+      </SetRowActionButton>
       {open && (
         <MakeParallelDialog
           setId={setId}

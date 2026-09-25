@@ -3,9 +3,10 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
-import { activateOnEnter } from "@/lib/dom/activate-on-enter";
+import { ArrowUpOnSquareIcon } from "@heroicons/react/24/outline";
 import { ChoiceList, LandingPath, SetShapeDialog, type Choice } from "./SetShapeDialog";
 import type { ReshapeStep } from "./MakeParallelControl";
+import SetRowActionButton from "./SetRowActionButton";
 
 /**
  * NEO-305 Part C — "Promote to set" on a parallel row, the way back from
@@ -20,13 +21,16 @@ import type { ReshapeStep } from "./MakeParallelControl";
  * instead. The parallel row stays while it still holds anything (a BSC link,
  * other cards) and goes once it is empty.
  *
- * Offered only on a parallel of a set that carries a SportLots link
- * (`getParallelPromotionEligibility`).
+ * Offered only where the server says it could work
+ * (`getParallelPromotionEligibility`). NEO-306: the panel mounts it on insert
+ * AND parallel rows — a parallel of an insert can hold a SportLots link too —
+ * and the eligibility query, not the level, decides whether it renders.
  */
 
 export const PROMOTE_LABEL = "Promote to set";
+/** DRAFT copy (NEO-306) — "this row's", since it is offered below inserts too. */
 export const PROMOTE_TOOLTIP =
-  "Turn this parallel's SportLots set into a set of its own in the same brand. Its cards come along.";
+  "Turn this row's SportLots set into a set of its own in the same brand. Its cards come along.";
 
 /** DRAFT copy — pending Jason's sign-off (NEO-245). */
 export const promoteCopy = {
@@ -88,18 +92,16 @@ export default function PromoteToSetControl({
 
   return (
     <>
-      <button
+      <SetRowActionButton
         ref={triggerRef}
-        type="button"
-        onClick={openDialog}
-        onKeyDown={(event) => activateOnEnter(event, openDialog)}
+        icon={ArrowUpOnSquareIcon}
+        onActivate={openDialog}
         aria-haspopup="dialog"
         inert={open}
         title={PROMOTE_TOOLTIP}
-        className="shrink-0 text-xs py-1.5 text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus-visible:ring-2 focus-visible:ring-[#00D558] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
       >
         {PROMOTE_LABEL}
-      </button>
+      </SetRowActionButton>
       {open && (
         <PromoteDialog
           parallelId={parallelId}

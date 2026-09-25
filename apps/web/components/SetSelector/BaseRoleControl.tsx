@@ -55,6 +55,17 @@ import { isBaseRole } from "./baseRole";
  * error can embed a marketplace URL or a credential hint, and none of that is
  * user-facing copy (NEO-47 / NEO-211 B).
  */
+/**
+ * NEO-306 — "Mark as base set" / "Clear base set" as a quiet outlined tag.
+ * `slate-500` is the boundary tone that clears SC 1.4.11's 3:1 on the panel's
+ * dark surface (slate-600 measured 2.4:1); the ring matches every other
+ * control in the panel header and the action row.
+ */
+const BASE_ROLE_TAG =
+  "shrink-0 inline-flex items-center min-h-6 px-2 rounded border border-slate-500 text-[11px] text-gray-200 " +
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 " +
+  "disabled:opacity-50";
+
 export default function BaseRoleControl({
   id,
   value,
@@ -170,11 +181,13 @@ export default function BaseRoleControl({
           disabled={busy}
           aria-label={`Clear base set from ${value}`}
           title="Leaves this set with no base until you mark one."
-          // py-1.5 takes a text-xs line box past WCAG 2.5.8's 24x24 minimum
-          // target; the ring is focus-VISIBLE so a mouse click does not draw
-          // one, and it replaces `focus:outline-none` rather than sitting
-          // beside it — an invisible focus is the bug that pattern causes.
-          className="text-xs py-1.5 text-gray-400 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus-visible:ring-2 focus-visible:ring-[#00D558] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 disabled:opacity-50"
+          // NEO-306: the quiet outlined TAG beside the title — smaller than
+          // the action row's 32px chips because this is identity, not an
+          // action on the row, but still visibly a control. min-h-6 keeps
+          // WCAG 2.5.8's 24px minimum target; the ring is the panel's one
+          // focus ring (2px #00B7FF, offset), focus-VISIBLE so a mouse click
+          // does not draw it.
+          className={`${BASE_ROLE_TAG} hover:border-[#FF2EB3] hover:text-[#FF2EB3]`}
         >
           Clear base set
         </button>
@@ -190,8 +203,8 @@ export default function BaseRoleControl({
       disabled={busy}
       aria-label={`Mark ${value} as the base set`}
       title="A set has one base — this clears any other."
-      // See the clear button above for py-1.5 and the focus-visible ring.
-      className="shrink-0 text-xs py-1.5 text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus-visible:ring-2 focus-visible:ring-[#00D558] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 disabled:opacity-50"
+      // See the clear button above for the tag and the ring.
+      className={`${BASE_ROLE_TAG} hover:border-[#00D558] hover:text-[#00D558]`}
     >
       Mark as base set
     </button>

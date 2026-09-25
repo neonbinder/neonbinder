@@ -931,6 +931,10 @@ export default function SetSelector() {
           variantId={cardChecklistId}
           sourceChips={sourceChips}
           sourceLabelMaps={sourceLabelMaps}
+          // NEO-306: "Fill N missing teams" lives in the checklist header now
+          // and fills the whole SET, so it needs the set's id — which only
+          // this cascade holds.
+          setId={selectedSetId ?? undefined}
         />
       )}
 

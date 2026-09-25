@@ -29,7 +29,8 @@ import ChecklistSourceFilter, {
 import CrossListingImportModal from "./CrossListingImportModal";
 import CardAttentionWalker from "./CardAttentionWalker";
 import SkippedNamesPanel from "./SkippedNamesPanel";
-import { needsAttention } from "./card-attention";
+import { deriveCardAttention, needsAttention } from "./card-attention";
+import FillTeamsControl from "./FillTeamsControl";
 import { Input } from "../primitives/Input";
 import TeamPicker from "./TeamPicker";
 import PlayerPicker, { type PlayerPickerLabels } from "./PlayerPicker";
@@ -55,6 +56,14 @@ type CardChecklistProps = {
     bsc: Record<string, string>;
     sportlots: Record<string, string>;
   };
+  /**
+   * NEO-306 — the SET this checklist sits under. "Fill N missing teams" is a
+   * whole-set operation (the server refuses any other node), and the
+   * checklist is attached to a Base, insert or parallel row, so the owner —
+   * which holds the cascade's selection — hands the set id down. Without it
+   * the Fill control is not offered.
+   */
+  setId?: Id<"selectorOptions">;
 };
 
 /**
@@ -253,6 +262,7 @@ export default function CardChecklist({
   variantId,
   sourceChips,
   sourceLabelMaps,
+  setId,
 }: CardChecklistProps) {
   const cards = useQuery(api.selectorOptions.getCardChecklist, {
     selectorOptionId: variantId,
@@ -1546,6 +1556,54 @@ export default function CardChecklist({
   );
 
   /**
+   * NEO-306 — the N in "Fill N missing teams": cards on THIS checklist whose
+   * attention items include `missingTeam`. The same live derivation as
+   * `attentionCount` above, so filling a card drops it without anything
+   * having to invalidate it. The preview then says how many the set's own
+   * evidence can fill, counted over the whole set — possibly fewer.
+   */
+  const missingTeamCount = useMemo(
+    () =>
+      (cards ?? []).filter((c) =>
+        deriveCardAttention(c).some((item) => item.kind === "missingTeam"),
+      ).length,
+    [cards],
+  );
+  /**
+   * True while the Fill control is checking, asking or filling. The fill is
+   * what empties the missing-team lane — and often the whole attention row —
+   * so the row stays mounted for this window rather than tearing the open
+   * dialog out from under "Filling…".
+   */
+  const [fillActive, setFillActive] = useState(false);
+  const fillTriggerRef = useRef<HTMLButtonElement | null>(null);
+  /**
+   * a11y (WCAG 2.4.3) — armed when a fill window closes. A fill that empties
+   * the lane unmounts the trigger the dialog just handed focus back to, and
+   * the browser drops it to `<body>`. Once the trigger is gone, focus is
+   * parked on the Sync button — this header's one control that survives the
+   * change — but only if it really was dropped: anywhere else, the operator
+   * put it there. Disarmed as soon as the trigger survives without focus.
+   */
+  const fillParkRef = useRef(false);
+  const handleFillActiveChange = useCallback((active: boolean) => {
+    setFillActive(active);
+    if (!active) fillParkRef.current = true;
+  }, []);
+  useEffect(() => {
+    if (fillActive || !fillParkRef.current) return;
+    const trigger = fillTriggerRef.current;
+    if (trigger) {
+      // Still on screen: nothing to park yet. Keep watching only while focus
+      // is on it — it may still go when the count lands.
+      if (document.activeElement !== trigger) fillParkRef.current = false;
+      return;
+    }
+    fillParkRef.current = false;
+    if (document.activeElement === document.body) syncButtonRef.current?.focus();
+  }, [fillActive, missingTeamCount]);
+
+  /**
    * NEO-221 (D6) — what the wizard's final step promises to save.
    *
    * The wizard used to be told only `cardCount`, so "All reviewed — save 712
@@ -2231,7 +2289,7 @@ export default function CardChecklist({
             link opens the walker ("fix them"). Overloading one control would
             make it impossible to look at the list without being put into a
             modal. */}
-        {(attentionCount > 0 || attentionOnly) && (
+        {(attentionCount > 0 || attentionOnly || fillActive) && (
           <div className="flex items-center gap-2 flex-wrap mb-3">
             {/* a11y (1.4.3): text-gray-400 with no dark: variant measures
                 2.60:1 against this container's light-mode bg-white (needs
@@ -2251,6 +2309,24 @@ export default function CardChecklist({
               active={attentionOnly}
               onClick={() => setAttentionOnly((v) => !v)}
             />
+            {/* NEO-306 — "Fill N missing teams", directly beside the chip
+                whose lane it clears: the one amber, prominent control in this
+                row, because it is the one that fixes many cards at once. It
+                renders nothing at N = 0 unless a fill it started is still
+                open (see `fillActive`). Keyed on the set so a dialog opened
+                for one set can never ask about the next — the checklist does
+                not remount when the selection moves. Its results land in the
+                notice line above, where every other checklist result reads. */}
+            {setId && (
+              <FillTeamsControl
+                key={`fill-teams-${setId}`}
+                setId={setId}
+                missingCount={missingTeamCount}
+                showToast={setSyncMessage}
+                onActiveChange={handleFillActiveChange}
+                triggerRef={fillTriggerRef}
+              />
+            )}
             {attentionCount > 0 && (
               <button
                 type="button"

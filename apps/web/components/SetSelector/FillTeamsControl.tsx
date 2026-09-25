@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
 import { useAction } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
-import type { SelectorLevel } from "./selector-sync-feedback";
+import SetRowActionButton from "./SetRowActionButton";
 
 /**
  * NEO-279 — fill the teams a set's cards are missing, from evidence the set
@@ -23,12 +23,29 @@ import type { SelectorLevel } from "./selector-sync-feedback";
  * which is where it was.
  *
  * Set level only. The base card is a whole-set fact, and the server refuses
- * any other node with a `ConvexError` whose text is shown as written.
+ * any other node with a `ConvexError` whose text is shown as written — so the
+ * control is handed the SET's id wherever it is mounted.
+ *
+ * ## Where it lives (NEO-306)
+ *
+ * In the card checklist's header, directly beside the "N need attention"
+ * filter chip, as the amber attention pill: "Fill 3 missing teams". It used to
+ * be grey text in the attributes panel's title line, which is not where an
+ * operator looking at teamless cards is looking, and did not say how many.
+ * N is the open checklist's `missingTeam` count (the same live derivation as
+ * the attention chip), and the control renders nothing when it is 0. The
+ * preview still says how many the set's evidence can actually fill — possibly
+ * fewer, and counted over the whole set.
+ *
+ * It stays mounted while it is working even if N drops to 0 underneath it —
+ * the fill itself is what empties the lane — so the dialog is never torn out
+ * mid-"Filling…". `onActiveChange` tells the owner, whose row this sits in,
+ * to keep that row up for the same window.
  *
  * Four states, all stated in words on the trigger or in the dialog. The
  * trigger's text IS its accessible name — no `aria-label` — so a screen
  * reader hears the same state change a sighted operator sees:
- *   • idle       — "Fill teams"
+ *   • idle       — "Fill 3 missing teams"
  *   • checking   — "Checking…", `aria-busy` + `aria-disabled` (never native
  *                  `disabled`: the button that was just pressed would blur to
  *                  <body>)
@@ -92,8 +109,14 @@ export type TeamFillResult = {
   byRule: Record<TeamFillRule, number>;
 };
 
-/** The trigger's idle text, which is also its accessible name — one string, so SC 2.5.3 holds. */
-export const FILL_TEAMS_LABEL = "Fill teams";
+/**
+ * The trigger's idle text, which is also its accessible name — one string, so
+ * SC 2.5.3 holds. DRAFT copy (NEO-306): "Fill 1 missing team", "Fill 3
+ * missing teams".
+ */
+export function fillTeamsLabel(missing: number): string {
+  return `Fill ${missing} missing ${missing === 1 ? "team" : "teams"}`;
+}
 
 /** The trigger's text while the preview is in flight. */
 export const FILL_TEAMS_CHECKING_LABEL = "Checking…";
@@ -249,14 +272,33 @@ export const CHECK_FAILED_FALLBACK = "Could not check the cards. Nothing changed
 export const FILL_FAILED_FALLBACK = "Could not fill teams. Nothing changed.";
 
 export default function FillTeamsControl({
-  id,
-  level,
+  setId,
+  missingCount,
   showToast,
+  onActiveChange,
+  triggerRef: ownerTriggerRef,
 }: {
-  id: Id<"selectorOptions">;
-  level: SelectorLevel;
-  /** The panel's own toast, so this reads where every other confirmation does. */
-  showToast: (message: string) => void;
+  /** The SET row — the fill is a whole-set operation whatever checklist is open. */
+  setId: Id<"selectorOptions">;
+  /** Cards on the open checklist with no team yet; the control hides at 0. */
+  missingCount: number;
+  /**
+   * The owner's notice line, so this reads where every other checklist
+   * result does. `"error"` is passed structurally for a failed check — never
+   * inferred from the text.
+   */
+  showToast: (message: string, tone?: "status" | "error") => void;
+  /**
+   * True from the press until the dialog closes. The owner keeps the row this
+   * sits in mounted for that window: the fill empties the missing-team lane,
+   * and a row that unmounted with it would take the open dialog along.
+   */
+  onActiveChange?: (active: boolean) => void;
+  /**
+   * The trigger, for an owner that parks focus once the trigger is gone (a
+   * fill that empties the lane unmounts it with focus on it).
+   */
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const previewTeamFill = useAction(api.teamFill.previewTeamFill);
   const applyTeamFill = useAction(api.teamFill.applyTeamFill);
@@ -265,16 +307,53 @@ export default function FillTeamsControl({
   const [filling, setFilling] = useState(false);
   const [preview, setPreview] = useState<TeamFillPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * The count on the trigger while it is working. The live count can fall
+   * while the dialog is up (the fill is what clears it), and the button
+   * behind the dialog should keep naming what was pressed rather than read
+   * "Fill 0 missing teams".
+   */
+  const [heldCount, setHeldCount] = useState(missingCount);
 
-  // Set level only — see the header comment. The panel gates this the same
-  // way; the guard here is what keeps a direct mount honest.
-  if (level !== "setName") return null;
+  const active = checking || filling || preview !== null;
+
+  const ownTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const triggerRef = ownerTriggerRef ?? ownTriggerRef;
+  /**
+   * Armed when the dialog closes (cancel or a completed fill). The trigger is
+   * `inert` while the dialog is up, and going inert blurs it, so
+   * `ConfirmDialog`'s own restore captured `<body>`; this puts focus back on
+   * the trigger in an effect, after the commit that lifts `inert` — focusing
+   * a still-inert element is a no-op. If the fill emptied the lane the
+   * trigger is gone, and the owner parks focus instead.
+   */
+  const restoreRef = useRef(false);
+  useEffect(() => {
+    if (preview !== null || !restoreRef.current) return;
+    restoreRef.current = false;
+    triggerRef.current?.focus();
+  }, [preview, triggerRef]);
+
+  // Tell the owner when the working window opens and closes, and — if this
+  // unmounts mid-window (the checklist moved to another set) — that it is
+  // over. A ref so the cleanup always reaches the current callback.
+  const onActiveChangeRef = useRef(onActiveChange);
+  useEffect(() => {
+    onActiveChangeRef.current = onActiveChange;
+  });
+  useEffect(() => {
+    onActiveChangeRef.current?.(active);
+  }, [active]);
+  useEffect(() => () => onActiveChangeRef.current?.(false), []);
+
+  if (missingCount <= 0 && !active) return null;
 
   const check = async () => {
     if (checking || filling) return;
+    setHeldCount(missingCount);
     setChecking(true);
     try {
-      const result = await previewTeamFill({ selectorOptionId: id });
+      const result = await previewTeamFill({ selectorOptionId: setId });
       if (result.fillable === 0) {
         showToast(nothingToFillToast(result.remaining));
         return;
@@ -284,7 +363,7 @@ export default function FillTeamsControl({
     } catch (e) {
       // Only a ConvexError's text was written for a person (the server's
       // "Fill teams from the set row…" is one); anything else is the fallback.
-      showToast(`Failed: ${userFacingMessage(e, CHECK_FAILED_FALLBACK)}`);
+      showToast(`Failed: ${userFacingMessage(e, CHECK_FAILED_FALLBACK)}`, "error");
     } finally {
       setChecking(false);
     }
@@ -299,9 +378,10 @@ export default function FillTeamsControl({
       // to fill MORE cards than this, so the operator never confirms one
       // number and gets another.
       const result = await applyTeamFill({
-        selectorOptionId: id,
+        selectorOptionId: setId,
         expectedFillable: preview?.fillable ?? 0,
       });
+      restoreRef.current = true;
       setPreview(null);
       showToast(fillResultToast(result));
     } catch (e) {
@@ -319,25 +399,30 @@ export default function FillTeamsControl({
 
   return (
     <>
-      <button
+      <SetRowActionButton
         // A stable id so the E2E driver's `pressKey` can re-find this exact
-        // control; the header shares one text-button idiom across levels.
+        // control; there is one per checklist.
         id="fill-teams"
-        type="button"
-        onClick={() => void check()}
-        // aria-disabled, not `disabled`: this is the button the operator just
-        // pressed, and native `disabled` would blur focus to <body> the moment
-        // the request started. aria-busy says WHY it is inert. No aria-label:
-        // the text content is the name, so it follows the state.
-        aria-disabled={checking || undefined}
-        aria-busy={checking || undefined}
+        ref={triggerRef}
+        // Amber: the house "needs a human" tone, beside the attention chip
+        // whose count it acts on (NEO-306).
+        tone="attention"
+        onActivate={() => void check()}
+        // aria-busy + aria-disabled, never native `disabled`: this is the
+        // button the operator just pressed, and native `disabled` would blur
+        // focus to <body> the moment the request started. No aria-label: the
+        // text content is the name, so it follows the state.
+        busy={checking}
+        // `inert` while the dialog is up: `ConfirmDialog` is aria-modal, and
+        // a screen reader's virtual cursor would otherwise reach a trigger
+        // that cannot be pressed behind it.
+        inert={preview !== null}
         title={FILL_TEAMS_TOOLTIP}
-        // Same weight, colour and ring as "Mark as base set": it stands in the
-        // same header slot at a different level, so it wears the same clothes.
-        className="shrink-0 text-xs py-1.5 text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus-visible:ring-2 focus-visible:ring-[#00D558] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-400"
       >
-        {checking ? FILL_TEAMS_CHECKING_LABEL : FILL_TEAMS_LABEL}
-      </button>
+        {checking
+          ? FILL_TEAMS_CHECKING_LABEL
+          : fillTeamsLabel(active ? heldCount : missingCount)}
+      </SetRowActionButton>
       {preview && copy && (
         <ConfirmDialog
           title={copy.title}
@@ -351,6 +436,7 @@ export default function FillTeamsControl({
           onCancel={() => {
             if (filling) return;
             setError(null);
+            restoreRef.current = true;
             setPreview(null);
           }}
         >
