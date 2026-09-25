@@ -26,3 +26,13 @@ body ran under the pinned footer, so a tap on the last option hit the footer.
   suggestions"`) — a page's native `<select>` options share `role="option"`.
 - happy-dom has no layout: stub the input's `getBoundingClientRect` and
   `window.innerHeight` to test placement.
+- Placement measures room inside the field's nearest scrolling ancestor (a
+  dialog body) first, so the list does not cover a pinned footer; viewport
+  only when the body leaves < 96px on both sides.
+- **Programmatic focus onto a combobox goes through `focusWithoutOpening(el)`**
+  (exported from the primitive). An open-on-focus list opened by a focus
+  RETURN floated over NewTeamDialog's footer and turned "Create team" into a
+  pick of "No league". Use it for every restore/return, even onto an element
+  that "is probably not a combobox" (opener restores).
+- Test pitfall: `el.focus()` called outside a Testing Library event is not
+  flushed — wrap it in `act()` or "list stays closed" passes vacuously.

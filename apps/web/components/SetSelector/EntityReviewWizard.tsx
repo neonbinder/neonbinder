@@ -1,6 +1,7 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { inertBackground } from "../../lib/dom/inert-background";
+import { focusWithoutOpening } from "../primitives/Autocomplete";
 import { Theme } from "@radix-ui/themes";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
@@ -1961,7 +1962,8 @@ export default function EntityReviewWizard({
         opener.isConnected &&
         !root.contains(opener)
       ) {
-        opener.focus();
+        // Quietly: an opener that is a combobox must not reopen its list.
+        focusWithoutOpening(opener);
       }
     };
   }, [wizardMounted]);

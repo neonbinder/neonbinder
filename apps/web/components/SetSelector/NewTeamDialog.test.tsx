@@ -40,7 +40,7 @@
  * about.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ConvexError } from "convex/values";
@@ -53,19 +53,23 @@ import type { Id } from "../../convex/_generated/dataModel";
 vi.mock("../../convex/_generated/api", () => ({
   api: {
     teams: { findOrCreate: "teams.findOrCreate" },
-    leagues: { list: "leagues.list" },
+    leagues: { list: "leagues.list", createByAdmin: "leagues.createByAdmin" },
   },
 }));
 
 let currentLeagues: unknown;
 const mockFindOrCreate = vi.fn();
+/** NEO-307 — the picker's "Add league" writes through `createByAdmin`. */
+const mockCreateLeague = vi.fn();
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string) => (ref === "leagues.list" ? currentLeagues : undefined),
   useMutation: (ref: string) =>
     ref === "teams.findOrCreate"
       ? mockFindOrCreate
-      : vi.fn(() => Promise.resolve(undefined)),
+      : ref === "leagues.createByAdmin"
+        ? mockCreateLeague
+        : vi.fn(() => Promise.resolve(undefined)),
 }));
 
 // ---------------------------------------------------------------------------
@@ -983,5 +987,82 @@ describe("NewTeamDialog — Escape inside the inline New League form", () => {
     // And a second Escape, now outside the sub-form, is the dialog's again.
     fireEvent.keyDown(nameField(), { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 — a focus handed BACK to the League field never opens its list
+//
+// Found locally: after "Add league" the form returned focus to the League
+// combobox, its open-on-focus list floated over the footer, and the next click
+// on "Create team" picked "No league" — throwing away the league just added.
+// ---------------------------------------------------------------------------
+
+describe("NewTeamDialog — after Add league, Create team records THAT league", () => {
+  async function addLeagueFromTyped(typed: string) {
+    const league = screen.getByRole("combobox", { name: "League" });
+    fireEvent.focus(league);
+    fireEvent.change(league, { target: { value: typed } });
+    fireEvent.mouseDown(screen.getByRole("option", { name: `Create “${typed}”` }));
+    fireEvent.click(screen.getByRole("button", { name: "Add league" }));
+    await waitFor(() => expect(screen.queryByLabelText("New league name")).toBeNull());
+  }
+
+  it("returns focus to the League field with its list CLOSED, and keeps the new league", async () => {
+    currentLeagues = [];
+    mockCreateLeague.mockResolvedValue({ id: lid("l-ushl"), created: true });
+    renderDialog({ initialName: "Lincoln Stars" });
+
+    await addLeagueFromTyped("USHL");
+
+    const league = screen.getByRole("combobox", { name: "League" });
+    expect(document.activeElement).toBe(league);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(league.getAttribute("aria-expanded")).toBe("false");
+    // The answer is the league just added, shown at rest.
+    expect((league as HTMLInputElement).value).toBe("USHL");
+  });
+
+  it("Create team, pressed next, sends the league just added — not 'No league'", async () => {
+    currentLeagues = [];
+    mockCreateLeague.mockResolvedValue({ id: lid("l-ushl"), created: true });
+    mockFindOrCreate.mockResolvedValue(tid("team-stars"));
+    renderDialog({ initialName: "Lincoln Stars" });
+
+    await addLeagueFromTyped("USHL");
+    fireEvent.click(screen.getByRole("button", { name: "Create team Lincoln Stars" }));
+
+    await waitFor(() => expect(mockFindOrCreate).toHaveBeenCalledTimes(1));
+    expect(mockFindOrCreate.mock.calls[0][0]).toMatchObject({
+      name: "Lincoln Stars",
+      leagueId: lid("l-ushl"),
+    });
+  });
+
+  it("returns focus quietly after the league form's Cancel too", () => {
+    currentLeagues = [];
+    renderDialog({ initialName: "Lincoln Stars" });
+    const league = screen.getByRole("combobox", { name: "League" });
+    fireEvent.focus(league);
+    fireEvent.change(league, { target: { value: "USHL" } });
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “USHL”" }));
+
+    // The league form's own Cancel, in its actions row — not the dialog's.
+    const actions = document.querySelector<HTMLElement>("[data-new-league-actions]")!;
+    fireEvent.click(within(actions).getByRole("button", { name: "Cancel" }));
+
+    expect(screen.queryByLabelText("New league name")).toBeNull();
+    expect(document.activeElement).toBe(league);
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("a person clicking the field afterwards still opens it", async () => {
+    currentLeagues = [];
+    mockCreateLeague.mockResolvedValue({ id: lid("l-ushl"), created: true });
+    renderDialog({ initialName: "Lincoln Stars" });
+    await addLeagueFromTyped("USHL");
+
+    fireEvent.click(screen.getByRole("combobox", { name: "League" }));
+    expect(screen.getByRole("listbox")).toBeTruthy();
   });
 });

@@ -16,7 +16,7 @@
  *    listbox existed but never which row was highlighted.
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import React, { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Autocomplete } from "./Autocomplete";
@@ -582,5 +582,167 @@ describe("Autocomplete — the list's layer", () => {
     } finally {
       release();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 — a focus handed back by code never opens the list; only a person
+// does. And an open list never swallows a click aimed outside it.
+// ---------------------------------------------------------------------------
+
+describe("Autocomplete — focusWithoutOpening", () => {
+  it("focuses the field and leaves the list closed", async () => {
+    const { focusWithoutOpening } = await import("./Autocomplete");
+    render(<Harness initialQuery="" openOnEmpty />);
+    // act: a programmatic focus outside a Testing Library event is not
+    // flushed otherwise, and "closed" would pass vacuously.
+    act(() => focusWithoutOpening(input()));
+    expect(document.activeElement).toBe(input());
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(input().getAttribute("aria-expanded")).toBe("false");
+    // The flag lives for one focus only.
+    expect(input().hasAttribute("data-quiet-focus")).toBe(false);
+  });
+
+  it("still selects the text, so typing replaces the label", async () => {
+    const { focusWithoutOpening } = await import("./Autocomplete");
+    render(<Harness initialQuery="Ken Griffey Jr." openOnEmpty selectOnFocus />);
+    // act: a programmatic focus outside a Testing Library event is not
+    // flushed otherwise, and "closed" would pass vacuously.
+    act(() => focusWithoutOpening(input()));
+    const el = input() as HTMLInputElement;
+    expect(el.selectionStart).toBe(0);
+    expect(el.selectionEnd).toBe("Ken Griffey Jr.".length);
+    // No pointer followed, so no mouseup is being guarded.
+    expect(fireEvent.mouseUp(el)).toBe(true);
+  });
+
+  it("opens as soon as a person clicks, types or arrows", async () => {
+    const { focusWithoutOpening } = await import("./Autocomplete");
+    render(<Harness initialQuery="" openOnEmpty />);
+    // act: a programmatic focus outside a Testing Library event is not
+    // flushed otherwise, and "closed" would pass vacuously.
+    act(() => focusWithoutOpening(input()));
+    fireEvent.click(input());
+    expect(screen.getByRole("listbox")).toBeTruthy();
+
+    fireEvent.keyDown(input(), { key: "Escape" });
+    expect(screen.queryByRole("listbox")).toBeNull();
+    fireEvent.keyDown(input(), { key: "ArrowDown" });
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  it("a normal (person's) focus still opens it", () => {
+    render(<Harness initialQuery="" openOnEmpty />);
+    fireEvent.focus(input());
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  it("is harmless on an element that is not a combobox", async () => {
+    const { focusWithoutOpening } = await import("./Autocomplete");
+    render(<button type="button">Elsewhere</button>);
+    const button = screen.getByRole("button", { name: "Elsewhere" });
+    // act: a programmatic focus outside a Testing Library event is not
+    // flushed otherwise, and "closed" would pass vacuously.
+    act(() => focusWithoutOpening(button));
+    expect(document.activeElement).toBe(button);
+    expect(button.hasAttribute("data-quiet-focus")).toBe(false);
+    focusWithoutOpening(null);
+  });
+});
+
+describe("Autocomplete — an open list never swallows a click outside it", () => {
+  const originalInnerHeight = window.innerHeight;
+  afterEach(() => {
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: originalInnerHeight,
+    });
+    vi.restoreAllMocks();
+  });
+
+  it("a press on another control closes the list, and that control's click acts", () => {
+    const onFooter = vi.fn();
+    const onSelect = vi.fn();
+    render(
+      <div>
+        <Harness onSelect={onSelect} />
+        <button type="button" onClick={onFooter}>
+          Create team
+        </button>
+      </div>,
+    );
+    openList();
+    const footer = screen.getByRole("button", { name: "Create team" });
+    fireEvent.mouseDown(footer);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    fireEvent.click(footer);
+    expect(onFooter).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("occupies only its own box — anchored left/top/width, never stretched over the page", () => {
+    render(<Harness />);
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 629 });
+    vi.spyOn(input(), "getBoundingClientRect").mockReturnValue({
+      top: 100, bottom: 130, left: 40, right: 340, width: 300, height: 30, x: 40, y: 100,
+      toJSON: () => ({}),
+    } as DOMRect);
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.style.width).toBe("300px");
+    expect(list.style.left).toBe("40px");
+    expect(list.style.right).toBe("");
+    expect(list.style.inset).toBe("");
+    expect(list.className).not.toMatch(/\binset-0\b|\bh-full\b|\bw-full\b|\bw-screen\b/);
+  });
+
+  it("stays inside the field's scrolling body, so it never covers a pinned footer beside it", () => {
+    // The CI dialog: body y 82-538 (footer from ~538), League field at y
+    // 420-453. In a 900px viewport the PAGE has 435px below the field — the
+    // viewport alone would open the list downward, over the footer — but the
+    // body has only 73, so it opens ABOVE, inside the body.
+    render(
+      <div data-testid="body" style={{ overflowY: "auto" }}>
+        <Harness />
+      </div>,
+    );
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 900 });
+    vi.spyOn(screen.getByTestId("body"), "getBoundingClientRect").mockReturnValue({
+      top: 82, bottom: 538, left: 250, right: 760, width: 510, height: 456, x: 250, y: 82,
+      toJSON: () => ({}),
+    } as DOMRect);
+    vi.spyOn(input(), "getBoundingClientRect").mockReturnValue({
+      top: 420, bottom: 453, left: 270, right: 740, width: 470, height: 33, x: 270, y: 420,
+      toJSON: () => ({}),
+    } as DOMRect);
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.dataset.placement).toBe("top");
+    const bottomEdge = 900 - Number.parseFloat(list.style.bottom);
+    const topEdge = bottomEdge - Number.parseFloat(list.style.maxHeight);
+    expect(bottomEdge).toBeLessThanOrEqual(420);
+    expect(topEdge).toBeGreaterThanOrEqual(82);
+  });
+
+  it("falls back to the viewport when the body leaves no useful room either side", () => {
+    render(
+      <div data-testid="body" style={{ overflowY: "auto" }}>
+        <Harness />
+      </div>,
+    );
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 629 });
+    vi.spyOn(screen.getByTestId("body"), "getBoundingClientRect").mockReturnValue({
+      top: 100, bottom: 160, left: 0, right: 500, width: 500, height: 60, x: 0, y: 100,
+      toJSON: () => ({}),
+    } as DOMRect);
+    vi.spyOn(input(), "getBoundingClientRect").mockReturnValue({
+      top: 110, bottom: 140, left: 0, right: 500, width: 500, height: 30, x: 0, y: 110,
+      toJSON: () => ({}),
+    } as DOMRect);
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.dataset.placement).toBe("bottom");
+    expect(list.style.maxHeight).toBe("240px");
   });
 });

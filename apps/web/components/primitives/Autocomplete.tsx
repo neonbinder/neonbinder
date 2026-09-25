@@ -59,6 +59,40 @@ import { Input } from "./Input";
  * not; that carry-over from `CareerTeamEntry` is load-bearing and easy to lose.
  */
 
+/**
+ * NEO-307 — the attribute a quiet focus sets for the length of one `.focus()`.
+ * Read by the combobox's own `onFocus`; see {@link focusWithoutOpening}.
+ */
+const QUIET_FOCUS_ATTR = "data-quiet-focus";
+
+/**
+ * NEO-307 — move focus to an element WITHOUT opening a combobox's list.
+ *
+ * A picker-mode combobox opens on focus (`openOnEmpty`), which is right for a
+ * person tabbing or clicking in, and wrong for code handing focus BACK — after
+ * "Add league", after a sub-form's Cancel, when a dialog restores its opener.
+ * CI and a local run both found the cost: the list opened by a focus return
+ * floated over NewTeamDialog's footer, the operator's next click on "Create
+ * team" landed on "No league", and the league they had just added was thrown
+ * away. Every programmatic focus that can land on a combobox goes through here.
+ *
+ * Safe on any element: on one that is not a combobox the attribute is
+ * meaningless and removed again at once. `focus()` dispatches `focus`
+ * synchronously, so the flag is set exactly for the handler it is meant for.
+ */
+export function focusWithoutOpening(
+  el: HTMLElement | null | undefined,
+  options?: FocusOptions,
+): void {
+  if (!el) return;
+  el.setAttribute(QUIET_FOCUS_ATTR, "");
+  try {
+    el.focus(options);
+  } finally {
+    el.removeAttribute(QUIET_FOCUS_ATTR);
+  }
+}
+
 export interface AutocompleteProps<T> {
   /** Current text in the field. Controlled — the caller owns the query. */
   query: string;
@@ -269,14 +303,38 @@ export function Autocomplete<T>({
       if (!list || !field) return;
       const rect = field.getBoundingClientRect();
       const viewport = window.innerHeight;
+      /*
+       * Room is measured inside the field's nearest SCROLLING ancestor (a
+       * dialog body), not only the viewport, so the list opens on the side
+       * where it stays inside that body and never covers a pinned footer
+       * beside it — a list over "Create team" is a list that eats the click
+       * meant for it. Falls back to the viewport when the body leaves too
+       * little room on both sides to be worth honouring.
+       */
+      let boundTop = 0;
+      let boundBottom = viewport;
+      for (let el = field.parentElement; el; el = el.parentElement) {
+        const overflowY = getComputedStyle(el).overflowY;
+        if (overflowY === "auto" || overflowY === "scroll" || overflowY === "hidden") {
+          const box = el.getBoundingClientRect();
+          boundTop = Math.max(0, box.top);
+          boundBottom = Math.min(viewport, box.bottom);
+          break;
+        }
+      }
       list.style.maxHeight = "";
       const capped = Number.parseFloat(getComputedStyle(list).maxHeight);
       const cap = Number.isFinite(capped) ? capped : 240;
       const wanted = Math.min(cap, list.scrollHeight || cap);
       const gap = 4;
       const margin = 8;
-      const below = viewport - rect.bottom - gap - margin;
-      const above = rect.top - gap - margin;
+      const MIN_USEFUL = 96;
+      let below = boundBottom - rect.bottom - gap - margin;
+      let above = rect.top - boundTop - gap - margin;
+      if (Math.max(below, above) < Math.min(wanted, MIN_USEFUL)) {
+        below = viewport - rect.bottom - gap - margin;
+        above = rect.top - gap - margin;
+      }
       const flip = below < wanted && above > below;
       list.style.left = `${rect.left}px`;
       list.style.width = `${rect.width}px`;
@@ -350,12 +408,17 @@ export function Autocomplete<T>({
           openFrom(e.currentTarget);
         }}
         onFocus={(e) => {
-          openFrom(e.currentTarget);
+          // A focus handed back by code (`focusWithoutOpening`) never opens
+          // the list — only a person tabbing, clicking or typing does. The
+          // text is still selected, so typing replaces the label.
+          const quiet = e.currentTarget.hasAttribute(QUIET_FOCUS_ATTR);
+          if (!quiet) openFrom(e.currentTarget);
           // Open on the current answer, not on row 0 — see `selectedKey`.
           if (selectedIdx !== -1) setHighlightIdx(selectedIdx);
           if (selectOnFocus) {
             e.currentTarget.select();
-            justFocusedRef.current = true;
+            // Only a pointer focus is followed by the mouseup this guards.
+            justFocusedRef.current = !quiet;
           }
         }}
         // A click on a field that already has focus fires no focus event, so

@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { inertBackground } from "../../lib/dom/inert-background";
+import { focusWithoutOpening } from "../primitives/Autocomplete";
 import { Theme } from "@radix-ui/themes";
 import { useMutation } from "convex/react";
 import { ConvexError } from "convex/values";
@@ -171,7 +172,9 @@ export default function NewTeamDialog({
       // inert is a no-op.
       releaseBackground();
       const trigger = triggerRef.current;
-      if (trigger?.isConnected) trigger.focus();
+      // Quietly: when the opener is a combobox, a restored focus must not
+      // open its list (NEO-307).
+      if (trigger?.isConnected) focusWithoutOpening(trigger);
     };
   }, []);
 

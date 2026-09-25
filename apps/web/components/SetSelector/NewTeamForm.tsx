@@ -6,7 +6,7 @@ import { splitTeamName, teamFullName } from "../../lib/teams/team-name";
 import { eraLabel } from "../../lib/teams/team-era";
 import { normalizeOrderedEntityName } from "../../lib/entities/normalize-name";
 import { Input } from "../primitives/Input";
-import { Autocomplete } from "../primitives/Autocomplete";
+import { Autocomplete, focusWithoutOpening } from "../primitives/Autocomplete";
 import NeonButton from "../modules/NeonButton";
 import NewLeagueForm, {
   leagueDraftError,
@@ -389,10 +389,14 @@ export default function NewTeamForm({
   } | null>(null);
 
   const leagueFieldRef = useRef<HTMLDivElement>(null);
+  /** Hand focus back to the League field WITHOUT opening its list — see
+   *  `focusWithoutOpening`. A list opened by this return floated over the
+   *  dialog's footer and turned the next "Create team" click into a pick of
+   *  "No league", discarding the league just added. */
   const focusLeagueField = () =>
-    leagueFieldRef.current
-      ?.querySelector<HTMLInputElement>('[role="combobox"]')
-      ?.focus();
+    focusWithoutOpening(
+      leagueFieldRef.current?.querySelector<HTMLInputElement>('[role="combobox"]'),
+    );
 
   // ── NEO-254: naming a league that does not exist yet ──────────────────────
   const newLeagueFormId = useId();
