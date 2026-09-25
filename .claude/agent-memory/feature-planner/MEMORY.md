@@ -5,3 +5,4 @@
 - [External lookup determinism for E2E](external-lookup-determinism-for-e2e.md) — record at the lookup-input boundary, double-gated; never bulk-decide no-match rows (NEO-289)
 - [Per-row editable facts live in SetAttributesPanel](per-row-editable-facts-live-in-set-attributes-panel.md) — "Value for {label}" row + narrow mutation; role flags derive at creation, never checkboxes
 - [Marketplace sentinel options get adapter predicates](marketplace-sentinel-options-get-adapter-predicates.md) — SL All Brands / BSC base: id predicate in an env-free module + NB flag on the row; keep the id in returnedIds; selectorOptions.ts is single-owner
+- [Set-shape doors need both source shapes](set-shape-doors-need-both-source-shapes.md) — post-NEO-305 absorb: SL-only sets never minted under a bare-brand flagship; doors accept leftover sets AND Parallels-reconcile rows; E2E source comes from that reconcile

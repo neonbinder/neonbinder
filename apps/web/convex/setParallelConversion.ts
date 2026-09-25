@@ -40,6 +40,10 @@
  *    side of the split (it carries the promoted SportLots link AND a live BSC
  *    link that stays behind) refuses the whole promote, rather than choosing.
  *
+ * The helpers that carry these rules (the bounds, the card and cross-listing
+ * moves, the link list, the loss report, the S1 source guards) live in
+ * `setShapeMove.ts`, shared with "Make insert of…" (NEO-306).
+ *
  * ## Sync stickiness
  *
  * `listBrandSubtreeSlIds` walks setName → variantType → insert → parallel, so
@@ -57,9 +61,8 @@
  */
 
 import { mutation, query } from "./_generated/server";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
-import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
@@ -70,15 +73,12 @@ import {
   idForSlot,
   initialSlots,
   isSlotKeyForSide,
-  primarySlot,
   slotEntries,
   slotForId,
   slotIds,
   slotLabel,
-  type PlatformSide,
 } from "./platformSlots";
 import {
-  RESTAMP_MAX_PAGES,
   collectSelectorOptionHoldings,
   deleteEmptySelectorOptionRow,
 } from "./selectorOptions";
@@ -86,7 +86,6 @@ import {
   checkCustomSelectorValue,
   matchesBrandPrefix,
   selectorValueKey,
-  stripMatchedBrandPrefix,
 } from "./selectorSyncMatch";
 import { unionChildren } from "./selectorSyncStore";
 import {
@@ -94,44 +93,48 @@ import {
   candidateDefaultName,
   insertSetWithBaseFromSl,
 } from "./setFromMarketplace";
+import {
+  MAX_CARDS_PER_MOVE,
+  MAX_CARDS_PER_ROW_READ,
+  MAX_CROSS_LISTINGS_PER_MOVE,
+  MAX_TARGET_SETS,
+  baseOf,
+  brandSetsByKey,
+  cardsOn,
+  childrenOf,
+  hasOpenReview,
+  holdsAnyLink,
+  linksOnRows,
+  lossFieldNames,
+  lossOnto,
+  lossValidator,
+  moveCards,
+  moveGuestCrossListings,
+  nameAfterPrefixes,
+  namingLabel,
+  readConversionSource,
+  sourceDataOf,
+  splitCardsForSlot,
+  targetNamePrefixes,
+  type ConversionLoss,
+  type ConversionSource,
+} from "./setShapeMove";
 import { derivedVariantFlags, variantTypeRole } from "./variantRole";
-import { compareCardNumbers } from "../lib/cards/card-number";
 
 type Row = Doc<"selectorOptions">;
 type RowId = Id<"selectorOptions">;
-type Card = Doc<"cardChecklist">;
 
-// ───────────────────────────────────────────────────────────────────────────
-// Bounds
-// ───────────────────────────────────────────────────────────────────────────
-
-/**
- * Cards one move re-parents. Every moved card is one `patch`, and the move is
- * one transaction on purpose (a half-moved checklist is a split set nobody
- * asked for), so this is the transaction bound: the house calibration is
- * ~900 system operations comfortable, ~1,800 straining, ~4,000 failing
- * (`CARDS_PER_COMMIT_CHUNK`). A parallel's checklist mirrors its base set's,
- * and the biggest real base set is well under this, so the refusal exists to
- * fail closed rather than to be met.
- */
-export const MAX_CARDS_PER_MOVE = 1500;
-
-/**
- * Guest cross-listings (NEO-21) one convert carries from the emptied rows to
- * the destination. Same reasoning as `MAX_CARDS_PER_MOVE`; a guest list is a
- * handful of cards in practice.
- */
-export const MAX_CROSS_LISTINGS_PER_MOVE = 200;
-
-/**
- * Cards a promote READS off the parallel to find the ones attributed to the
- * promoted link (the rest stay). One `.take()` is one operation however many
- * rows it returns, so this bounds document size, not the write budget.
- */
-export const MAX_CARDS_PER_ROW_READ = MAX_CARDS_PER_MOVE * 4;
-
-/** Sets the "Make parallel of…" picker lists for one brand. */
-export const MAX_TARGET_SETS = 500;
+// The bounds and the shared move helpers live in `setShapeMove.ts` (NEO-306),
+// so every shape-changing door keeps one set of invariants. Re-exported here
+// for the callers and tests that import them from this module.
+export {
+  MAX_CARDS_PER_MOVE,
+  MAX_CARDS_PER_ROW_READ,
+  MAX_CROSS_LISTINGS_PER_MOVE,
+  MAX_TARGET_SETS,
+  type ConversionLoss,
+};
+export { remapCardPlatformData } from "./setShapeMove";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Operator sentences (DRAFT — pending Jason's sign-off)
@@ -225,101 +228,21 @@ export const promotionRefusal = {
  * `null` when the label IS the target's name: that entry is the target's own
  * checklist, not a parallel of it, and a parallel called "Bowman" under
  * Bowman is a row nobody wants. Derived once, at creation, and never re-read.
+ *
+ * A thin wrapper over `nameAfterPrefixes` (NEO-306), kept so its callers and
+ * tests stand unchanged.
  */
 export function parallelNameFromLabel(
   label: string,
   targetSetValue: string,
   brandSetNamePrefix?: string,
 ): string | null {
-  const trimmed = label.trim();
-  const prefixes = [targetSetValue.trim()];
-  const brandPrefix = brandSetNamePrefix?.trim();
-  if (brandPrefix && matchesBrandPrefix(targetSetValue, brandPrefix)) {
-    const bare = stripMatchedBrandPrefix(targetSetValue, brandPrefix);
-    if (bare !== targetSetValue.trim()) prefixes.push(bare);
-  }
-  for (const prefix of prefixes) {
-    if (!prefix || !matchesBrandPrefix(trimmed, prefix)) continue;
-    const rest = stripMatchedBrandPrefix(trimmed, prefix);
-    // `stripMatchedBrandPrefix` never strips to nothing — it hands the label
-    // back whole — so an unchanged result after a MATCH means "all prefix".
-    return rest === trimmed ? null : rest;
-  }
-  return trimmed;
-}
-
-/**
- * A card's `platformData` as it must read on its NEW parent row.
- *
- * `slotMap[side]` maps the SOURCE row's slot keys to the destination's. A ref
- * whose `src` is in the map follows it; a ref whose `src` is not (it pointed
- * at a slot the source row no longer holds, or that stays behind) keeps its
- * ref and loses the `src` — carrying the key over would make it point at
- * whatever the destination happens to hold under that key. Refs are never
- * dropped.
- */
-export function remapCardPlatformData(
-  platformData: Card["platformData"],
-  slotMap: Partial<Record<PlatformSide, ReadonlyMap<string, string>>>,
-): Card["platformData"] {
-  const out: Card["platformData"] = {};
-  for (const side of ["bsc", "sportlots"] as const) {
-    const ref = platformData[side];
-    if (!ref) continue;
-    const next = ref.src !== undefined ? slotMap[side]?.get(ref.src) : undefined;
-    out[side] = next !== undefined ? { ref: ref.ref, src: next } : { ref: ref.ref };
-  }
-  return out;
+  return nameAfterPrefixes(label, targetNamePrefixes(targetSetValue, brandSetNamePrefix));
 }
 
 // ───────────────────────────────────────────────────────────────────────────
 // Shared reads
 // ───────────────────────────────────────────────────────────────────────────
-
-async function childrenOf(
-  ctx: { db: QueryCtx["db"] },
-  parentId: RowId,
-  limit: number,
-): Promise<Row[]> {
-  return ctx.db
-    .query("selectorOptions")
-    .withIndex("by_parent", (q) => q.eq("parentId", parentId))
-    .take(limit);
-}
-
-async function cardsOn(
-  ctx: { db: QueryCtx["db"] },
-  rowId: RowId,
-  limit: number,
-): Promise<Card[]> {
-  return ctx.db
-    .query("cardChecklist")
-    .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", rowId))
-    .take(limit);
-}
-
-/**
- * Staged checklist review on a row — the in-flight work the trash icon also
- * refuses to delete under (NEO-219 security condition 2). Checked up front
- * so the operator gets a sentence rather than the delete helper's holdings.
- */
-async function hasOpenReview(
-  ctx: { db: QueryCtx["db"] },
-  rowId: RowId,
-): Promise<boolean> {
-  const staged = await ctx.db
-    .query("checklistCandidates")
-    .withIndex("by_selector_option_and_user", (q) =>
-      q.eq("selectorOptionId", rowId),
-    )
-    .first();
-  if (staged) return true;
-  const queued = await ctx.db
-    .query("entityReviewQueue")
-    .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", rowId))
-    .first();
-  return queued !== null;
-}
 
 /** The first variant type under `setId` whose NB role is "parallel". */
 async function parallelTypeOf(
@@ -336,182 +259,20 @@ async function parallelTypeOf(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Card move (shared by both doors)
-// ───────────────────────────────────────────────────────────────────────────
-
-/**
- * Re-parent `moves` onto `destId`, each card with its own slot map, and put
- * them in card-number order.
- *
- * An EMPTY destination gets `sortOrder` 0..n-1 in `compareCardNumbers` order
- * in the same patch that moves each card, so nothing else is written. A
- * destination that already holds cards gets the moved ones appended after
- * its highest `sortOrder`, and the existing restamp chain is scheduled to
- * interleave them — the house shape for a re-number that may exceed one
- * transaction (`restampCardChecklistSortOrdersBatch`). The only field that
- * chain writes is `sortOrder`, so its worst case is a display-order wobble.
- */
-async function moveCards(
-  ctx: MutationCtx,
-  destId: RowId,
-  moves: ReadonlyArray<{
-    card: Card;
-    slotMap: Partial<Record<PlatformSide, ReadonlyMap<string, string>>>;
-  }>,
-  now: number,
-): Promise<void> {
-  if (moves.length === 0) return;
-  const existing = await ctx.db
-    .query("cardChecklist")
-    .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", destId))
-    .take(1);
-  const ordered = [...moves].sort((a, b) =>
-    compareCardNumbers(a.card.cardNumber, b.card.cardNumber),
-  );
-  let base = 0;
-  if (existing.length > 0) {
-    // The highest sortOrder on the destination, read in full: `take(1)` above
-    // only answered "is it empty?".
-    const all = await ctx.db
-      .query("cardChecklist")
-      .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", destId))
-      .collect();
-    base = all.reduce((max, c) => Math.max(max, c.sortOrder), -1) + 1;
-  }
-  for (let i = 0; i < ordered.length; i++) {
-    const { card, slotMap } = ordered[i];
-    await ctx.db.patch(card._id, {
-      selectorOptionId: destId,
-      platformData: remapCardPlatformData(card.platformData, slotMap),
-      sortOrder: base + i,
-      lastUpdated: now,
-    });
-  }
-  if (existing.length > 0) {
-    await ctx.scheduler.runAfter(
-      0,
-      internal.selectorOptions.restampCardChecklistSortOrdersBatch,
-      { selectorOptionId: destId, from: 0, pagesLeft: RESTAMP_MAX_PAGES },
-    );
-  }
-}
-
-/**
- * Carry NEO-21 guest cross-listings from a row that is about to be deleted
- * onto `destId`. A link whose card now LIVES on the destination, or that the
- * destination already lists, is redundant and is deleted rather than
- * duplicated; every other link is re-pointed. Nothing about the card changes.
- */
-async function moveGuestCrossListings(
-  ctx: MutationCtx,
-  links: ReadonlyArray<Doc<"cardCrossListings">>,
-  destId: RowId,
-  now: number,
-): Promise<void> {
-  if (links.length === 0) return;
-  const destLinks = await ctx.db
-    .query("cardCrossListings")
-    .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", destId))
-    .collect();
-  const listed = new Set<string>(destLinks.map((l) => l.cardChecklistId));
-  for (const link of links) {
-    const card = await ctx.db.get(link.cardChecklistId);
-    if (!card || card.selectorOptionId === destId || listed.has(link.cardChecklistId)) {
-      await ctx.db.delete(link._id);
-      continue;
-    }
-    listed.add(link.cardChecklistId);
-    await ctx.db.patch(link._id, { selectorOptionId: destId, lastUpdated: now });
-  }
-}
-
-// ───────────────────────────────────────────────────────────────────────────
 // Part B — "Make parallel of…"
 // ───────────────────────────────────────────────────────────────────────────
 
-type ConversionSource =
-  | { ok: false; reason: string }
-  | {
-      ok: true;
-      set: Row;
-      base: Row;
-      brand: Row;
-    };
-
-/**
- * Every guard that depends on the SOURCE set alone — the ones the row action
- * is shown or hidden by. Reads a handful of rows: the set, at most two of its
- * children, at most one of the Base's, the brand. The review and card checks
- * are the mutation's; the eligibility query does not need them to decide
- * whether to offer the door.
- */
-async function readConversionSource(
+/** S1 source guards, refused in this door's own sentences. */
+function readSetSource(
   ctx: { db: QueryCtx["db"] },
   setId: RowId,
 ): Promise<ConversionSource> {
-  const set = await ctx.db.get(setId);
-  if (!set) return { ok: false, reason: conversionRefusal.setGone() };
-  if (set.level !== "setName") {
-    return { ok: false, reason: conversionRefusal.notASet() };
-  }
-  if (slotIds(set, "bsc").length > 0) {
-    return { ok: false, reason: conversionRefusal.onBsc(set.value) };
-  }
-  const children = await childrenOf(ctx, set._id, 2);
-  if (children.length === 0) {
-    return { ok: false, reason: conversionRefusal.noBase(set.value) };
-  }
-  const base = children[0];
-  if (
-    children.length > 1 ||
-    base.level !== "variantType" ||
-    base.metadata?.isBase !== true
-  ) {
-    return { ok: false, reason: conversionRefusal.moreThanBase(set.value) };
-  }
-  if (slotIds(base, "bsc").length > 0) {
-    return { ok: false, reason: conversionRefusal.onBsc(set.value) };
-  }
-  if ((await childrenOf(ctx, base._id, 1)).length > 0) {
-    return { ok: false, reason: conversionRefusal.baseHasRows(set.value) };
-  }
-  const brand = set.parentId ? await ctx.db.get(set.parentId) : null;
-  if (!brand || brand.level !== "manufacturer") {
-    return { ok: false, reason: conversionRefusal.setGone() };
-  }
-  return { ok: true, set, base, brand };
+  return readConversionSource(ctx, setId, conversionRefusal);
 }
 
-/**
- * The SportLots links a convert carries, Base first (its primary leading),
- * then any the set row itself holds. Each entry names the row and slot it
- * leaves, so every card's `src` can be remapped by the row it sits on.
- */
-function linksToMove(
-  set: Row,
-  base: Row,
-): Array<{ from: RowId; slot: string; id: string; label: string }> {
-  const out: Array<{ from: RowId; slot: string; id: string; label: string }> = [];
-  for (const row of [base, set]) {
-    const primary = primarySlot(row, "sportlots");
-    const entries = slotEntries(row, "sportlots").sort((a, b) =>
-      a.slot === primary ? -1 : b.slot === primary ? 1 : 0,
-    );
-    for (const { slot, id } of entries) {
-      out.push({ from: row._id, slot, id, label: slotLabel(row, "sportlots", slot) });
-    }
-  }
-  return out;
-}
-
-/**
- * The label a new parallel is named from: the Base's primary SportLots label,
- * or — for a set carrying no SportLots link at all, which behaves the same
- * way (invariant 6) — the set's own NB name.
- */
-function namingLabel(set: Row, base: Row): string {
-  const links = linksToMove(set, base);
-  return links[0]?.label ?? set.value;
+/** The rows a convert empties, child first: the Base, then the set. */
+function sourceRows(source: { set: Row; base: Row }): Row[] {
+  return [source.base, source.set];
 }
 
 type TargetResolution =
@@ -565,7 +326,7 @@ function newParallelCheck(
 ):
   | { ok: true; name: string }
   | { ok: false; reason: string; name: string | null; sameAs?: RowId } {
-  const label = namingLabel(source.set, source.base);
+  const label = namingLabel(sourceRows(source), source.set.value);
   const derived = parallelNameFromLabel(
     label,
     targetSet.value,
@@ -592,7 +353,7 @@ function newParallelCheck(
       sameAs: clash._id,
     };
   }
-  const holder = siblings.find((s) => holdsAnyLink(s, source));
+  const holder = siblings.find((s) => holdsAnyLink(s, sourceRows(source)));
   if (holder) {
     // No `sameAs`: adding to the holder is refused for the same reason.
     return {
@@ -602,115 +363,6 @@ function newParallelCheck(
     };
   }
   return { ok: true, name: checked.value };
-}
-
-// ───────────────────────────────────────────────────────────────────────────
-// Operator-typed data on the rows a convert deletes (security audit, NEO-305)
-// ───────────────────────────────────────────────────────────────────────────
-
-/**
- * Feature keys a variant type derives for ITSELF (`deriveOwnLevelFeatures`
- * at variantType: "cardType", "parallelName"). On a Base they say "Base" —
- * a fact about the Base, never about a parallel — so they are never carried.
- */
-const BASE_OWN_FEATURE_KEYS = ["cardType", "parallelName"];
-
-/**
- * What the operator may have typed onto the set or its Base, which the
- * delete at the end of a convert would otherwise throw away. The Base's own
- * value wins over the set's (it is the row the checklist hangs off).
- */
-type SourceData = {
-  cardNumberPrefix?: string;
-  features: Record<string, string>;
-  teamIds?: Array<Id<"teams">>;
-  /** A "no" to an upstream rename suggestion is on one of the rows. */
-  declined: boolean;
-};
-
-function sourceDataOf(set: Row, base: Row): SourceData {
-  const features: Record<string, string> = {
-    ...(set.features ?? {}),
-    ...(base.features ?? {}),
-  };
-  for (const key of BASE_OWN_FEATURE_KEYS) delete features[key];
-  const cardNumberPrefix =
-    base.metadata?.cardNumberPrefix ?? set.metadata?.cardNumberPrefix;
-  const teamIds =
-    base.teamIds && base.teamIds.length > 0
-      ? base.teamIds
-      : set.teamIds && set.teamIds.length > 0
-        ? set.teamIds
-        : undefined;
-  const declined = [set, base].some(
-    (r) =>
-      r.declinedUpstreamLabels?.bsc !== undefined ||
-      r.declinedUpstreamLabels?.sportlots !== undefined,
-  );
-  return {
-    ...(cardNumberPrefix !== undefined ? { cardNumberPrefix } : {}),
-    features,
-    ...(teamIds ? { teamIds } : {}),
-    declined,
-  };
-}
-
-/** What a convert would leave behind, per field. */
-export type ConversionLoss = {
-  cardPrefix: boolean;
-  /** Feature keys whose value the destination would not keep. */
-  featureKeys: string[];
-  team: boolean;
-  /** Turned-down rename suggestions — never carried: they were about THOSE rows' names. */
-  dismissedNames: boolean;
-};
-
-const lossValidator = v.object({
-  cardPrefix: v.boolean(),
-  featureKeys: v.array(v.string()),
-  team: v.boolean(),
-  dismissedNames: v.boolean(),
-});
-
-/**
- * Onto a NEW parallel everything but the turned-down names is carried
- * (`dest` null). Onto an EXISTING parallel nothing is written over the
- * operator's own data there, so whatever differs stays behind.
- */
-function lossOnto(data: SourceData, dest: Row | null): ConversionLoss {
-  if (dest === null) {
-    return { cardPrefix: false, featureKeys: [], team: false, dismissedNames: data.declined };
-  }
-  const destTeams = new Set<string>(dest.teamIds ?? []);
-  return {
-    cardPrefix:
-      data.cardNumberPrefix !== undefined &&
-      data.cardNumberPrefix !== dest.metadata?.cardNumberPrefix,
-    featureKeys: Object.keys(data.features)
-      .filter((k) => dest.features?.[k] !== data.features[k])
-      .sort(),
-    team:
-      data.teamIds !== undefined &&
-      (data.teamIds.length !== destTeams.size ||
-        data.teamIds.some((id) => !destTeams.has(id))),
-    dismissedNames: data.declined,
-  };
-}
-
-/** The dropped fields, by schema name, for the audit log line. */
-function lossFieldNames(loss: ConversionLoss): string[] {
-  return [
-    ...(loss.cardPrefix ? ["metadata.cardNumberPrefix"] : []),
-    ...loss.featureKeys.map((k) => `features.${k}`),
-    ...(loss.team ? ["teamIds"] : []),
-    ...(loss.dismissedNames ? ["declinedUpstreamLabels"] : []),
-  ];
-}
-
-/** Does `row` already hold any SportLots id the convert would move? By id. */
-function holdsAnyLink(row: Row, source: { set: Row; base: Row }): boolean {
-  const moving = new Set(linksToMove(source.set, source.base).map((l) => l.id));
-  return slotIds(row, "sportlots").some((id) => moving.has(id));
 }
 
 async function parallelsUnder(
@@ -735,7 +387,7 @@ export const getSetToParallelEligibility = query({
   returns: v.object({ eligible: v.boolean() }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const source = await readConversionSource(ctx, args.setId);
+    const source = await readSetSource(ctx, args.setId);
     return { eligible: source.ok };
   },
 });
@@ -773,7 +425,7 @@ export const getSetToParallelTargets = query({
   ),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const source = await readConversionSource(ctx, args.setId);
+    const source = await readSetSource(ctx, args.setId);
     if (!source.ok) return { ok: false as const, reason: source.reason };
     const { set, base, brand } = source;
 
@@ -896,7 +548,7 @@ export const getSetToParallelTargetDetail = query({
   ),
   handler: async (ctx, args): Promise<TargetDetail> => {
     await requireAdmin(ctx);
-    const source = await readConversionSource(ctx, args.setId);
+    const source = await readSetSource(ctx, args.setId);
     if (!source.ok) return { ok: false as const, reason: source.reason };
     const targetSet = await ctx.db.get(args.targetSetId);
     if (!targetSet || targetSet.level !== "setName") {
@@ -922,7 +574,7 @@ export const getSetToParallelTargetDetail = query({
       a.value.localeCompare(b.value),
     );
     const check = newParallelCheck(source, targetSet, parallels);
-    const holder = parallels.find((p) => holdsAnyLink(p, source));
+    const holder = parallels.find((p) => holdsAnyLink(p, sourceRows(source)));
     const data = sourceDataOf(source.set, source.base);
     return {
       ok: true as const,
@@ -932,7 +584,7 @@ export const getSetToParallelTargetDetail = query({
       parallels: parallels.map((p) => ({
         _id: p._id,
         value: p.value,
-        holdsLink: holdsAnyLink(p, source),
+        holdsLink: holdsAnyLink(p, sourceRows(source)),
         loses: lossOnto(data, p),
       })),
       newLoses: lossOnto(data, null),
@@ -989,7 +641,7 @@ export const convertSetToParallel = mutation({
   }),
   handler: async (ctx, args) => {
     const adminUserId = await requireAdmin(ctx);
-    const source = await readConversionSource(ctx, args.setId);
+    const source = await readSetSource(ctx, args.setId);
     if (!source.ok) throw new ConvexError(source.reason);
     const { set, base, brand } = source;
 
@@ -1022,7 +674,7 @@ export const convertSetToParallel = mutation({
       );
     }
 
-    const links = linksToMove(set, base);
+    const links = linksOnRows([base, set]);
     const now = Date.now();
     const sourceData = sourceDataOf(set, base);
     let loss: ConversionLoss;
@@ -1040,7 +692,7 @@ export const convertSetToParallel = mutation({
       // one picked (security audit, NEO-305): the same rule as new mode, or
       // the link would land on a second row of one Parallel type.
       const holder = (await parallelsUnder(ctx, targetType._id)).find((p) =>
-        holdsAnyLink(p, source),
+        holdsAnyLink(p, sourceRows(source)),
       );
       if (holder) {
         throw new ConvexError(
@@ -1205,64 +857,6 @@ async function readPromotionSource(
     return { ok: false, reason: promotionRefusal.noBrand() };
   }
   return { ok: true, row, set, brand };
-}
-
-/** The Base of a set: its variant type carrying the NB base role. */
-async function baseOf(
-  ctx: { db: QueryCtx["db"] },
-  setId: RowId,
-): Promise<Row | null> {
-  const types = await ctx.db
-    .query("selectorOptions")
-    .withIndex("by_level_and_parent", (q) =>
-      q.eq("level", "variantType").eq("parentId", setId),
-    )
-    .collect();
-  return types.find((t) => t.metadata?.isBase === true) ?? null;
-}
-
-/**
- * The cards a promote carries: exactly those whose SportLots ref is
- * attributed to `slot` on the parallel. A card also carrying a BSC ref
- * attributed to a slot that STAYS on the row is paired across the split and
- * is counted, never moved — the caller refuses on any.
- */
-function splitCardsForSlot(
-  row: Row,
-  cards: ReadonlyArray<Card>,
-  slot: string,
-): { moving: Card[]; paired: number } {
-  const moving: Card[] = [];
-  let paired = 0;
-  for (const card of cards) {
-    if (card.platformData.sportlots?.src !== slot) continue;
-    const bscSrc = card.platformData.bsc?.src;
-    if (bscSrc !== undefined && idForSlot(row, "bsc", bscSrc) !== undefined) {
-      paired++;
-      continue;
-    }
-    moving.push(card);
-  }
-  return { moving, paired };
-}
-
-/** The brand's sets folded by name, bounded like the sync's year index. */
-async function brandSetsByKey(
-  ctx: { db: QueryCtx["db"] },
-  brandId: RowId,
-): Promise<{ byKey: Map<string, Row>; truncated: boolean }> {
-  const rows = await ctx.db
-    .query("selectorOptions")
-    .withIndex("by_level_and_parent", (q) =>
-      q.eq("level", "setName").eq("parentId", brandId),
-    )
-    .take(MAX_YEAR_SET_ROWS + 1);
-  const byKey = new Map<string, Row>();
-  for (const r of rows.slice(0, MAX_YEAR_SET_ROWS)) {
-    const key = selectorValueKey(r.value);
-    if (!byKey.has(key)) byKey.set(key, r);
-  }
-  return { byKey, truncated: rows.length > MAX_YEAR_SET_ROWS };
 }
 
 /**
