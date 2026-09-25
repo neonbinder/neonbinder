@@ -42,6 +42,11 @@ type OptionId = GenericId<"selectorOptions">;
 // Module mocks — hoisted before the component import resolves these paths
 // ---------------------------------------------------------------------------
 
+// NEO-306 — the Sets column's "N SportLots sets to sort" pill owns its own
+// query (`api.slSetReview`), which this file's api mock does not carry. It
+// is not what this file tests; `EntityColumn.slReview.test.tsx` covers it.
+vi.mock("./SlSetReviewPill", () => ({ default: () => null }));
+
 vi.mock("../../convex/_generated/api", () => ({
   api: {
     selectorOptions: {
