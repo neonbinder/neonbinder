@@ -119,6 +119,7 @@ import {
   targetNamePrefixes,
   type ConversionLoss,
   type ConversionSource,
+  variantTypeWithRole,
 } from "./setShapeMove";
 import { derivedVariantFlags, variantTypeRole } from "./variantRole";
 
@@ -245,18 +246,16 @@ export function parallelNameFromLabel(
 // Shared reads
 // ───────────────────────────────────────────────────────────────────────────
 
-/** The first variant type under `setId` whose NB role is "parallel". */
-async function parallelTypeOf(
+/**
+ * The first variant type under `setId` whose NB role is "parallel". Bounded
+ * at `MAX_VARIANT_TYPES_PER_SET` and fail closed past it ("no Parallel type
+ * yet"); see `variantTypeWithRole`.
+ */
+function parallelTypeOf(
   ctx: { db: QueryCtx["db"] },
   setId: RowId,
 ): Promise<Row | null> {
-  const types = await ctx.db
-    .query("selectorOptions")
-    .withIndex("by_level_and_parent", (q) =>
-      q.eq("level", "variantType").eq("parentId", setId),
-    )
-    .collect();
-  return types.find((t) => variantTypeRole(t) === "parallel") ?? null;
+  return variantTypeWithRole(ctx, setId, "parallel");
 }
 
 // ───────────────────────────────────────────────────────────────────────────

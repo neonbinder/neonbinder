@@ -20,7 +20,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -33,6 +33,7 @@ import {
   remapCardPlatformData,
 } from "./setParallelConversion";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { MAX_VARIANT_TYPES_PER_SET } from "./setShapeMove";
 import { teamRowFields } from "./lib/teamRow";
 
 const modules = (
@@ -1666,5 +1667,65 @@ describe("security audit — promoteParallelToSet", () => {
         }),
       promotionRefusal.reviewOpen("Bowman Sapphire"),
     );
+  });
+});
+
+describe("parallelTypeOf is bounded (NEO-306 security audit)", () => {
+  test("a Parallel type past MAX_VARIANT_TYPES_PER_SET is not looked for: the set reads as having none (fail closed)", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    // A BSC set whose Parallel type sits after MAX_VARIANT_TYPES_PER_SET
+    // role-less types in index order.
+    const sapphireId = await insertRow(t, {
+      level: "setName",
+      value: "Bowman Sapphire",
+      parentId: ids.brandId,
+      platformData: { bsc: { b0: "bowman-sapphire" } },
+      platformSlotSeq: { bsc: 1 },
+    });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < MAX_VARIANT_TYPES_PER_SET; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "variantType",
+          value: `Promo ${i}`,
+          parentId: sapphireId,
+          platformData: {},
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+    });
+    await insertRow(t, {
+      level: "variantType",
+      value: "Parallel",
+      parentId: sapphireId,
+      ...roleType("parallel"),
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const sl = await slSets(t, ids.brandId, [{ id: "SL-RED", label: "Bowman Red" }]);
+      const as = t.withIdentity(ADMIN);
+
+      const targets = await as.query(api.setParallelConversion.getSetToParallelTargets, {
+        setId: sl["Bowman Red"].setId,
+      });
+      if (!targets.ok) throw new Error(targets.reason);
+      expect(targets.targets.find((x) => x.setId === sapphireId)).toEqual({
+        setId: sapphireId,
+        value: "Bowman Sapphire",
+      });
+      // Chrome's Parallel type, within the cap, is found exactly as before.
+      expect(targets.targets.find((x) => x.setId === ids.chromeId)?.parallelTypeId).toBe(
+        ids.chromeParallelTypeId,
+      );
+
+      const detail = await as.query(api.setParallelConversion.getSetToParallelTargetDetail, {
+        setId: sl["Bowman Red"].setId,
+        targetSetId: sapphireId,
+      });
+      expect(detail).toEqual({ ok: false, reason: noParallelTypeYet("Bowman Sapphire") });
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

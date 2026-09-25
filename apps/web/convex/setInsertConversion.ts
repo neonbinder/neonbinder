@@ -92,8 +92,12 @@ import {
   type ConversionSourceRefusals,
   type MovingLink,
   type SourceData,
+  variantTypeWithRole,
 } from "./setShapeMove";
 import { derivedVariantFlags, variantTypeRole } from "./variantRole";
+
+// Shared with the Parallel door (NEO-306); re-exported for this door's tests.
+export { MAX_VARIANT_TYPES_PER_SET } from "./setShapeMove";
 
 type Row = Doc<"selectorOptions">;
 type RowId = Id<"selectorOptions">;
@@ -256,42 +260,12 @@ async function readInsertConversionSource(
 // Target
 // ───────────────────────────────────────────────────────────────────────────
 
-/**
- * Variant types read under one set when looking for its Insert type. A real
- * set has a handful (Base, Insert, Parallel, Promo…); this bounds the read
- * because the targets list asks it for up to `MAX_TARGET_SETS` sets.
- */
-export const MAX_VARIANT_TYPES_PER_SET = 50;
-
-/**
- * The first variant type under `setId` whose NB role is "insert". Never by name.
- *
- * Bounded (NEO-306 security audit). An Insert-role type within the first
- * `MAX_VARIANT_TYPES_PER_SET` is exactly the answer an unbounded read gives
- * (the index order is the same). Past the cap with none found, the answer is
- * FAIL CLOSED: null, which the doors show as "no Insert type yet" and refuse
- * on — nothing is written under a type NB could not read.
- */
-async function insertTypeOf(
+/** The first variant type under `setId` whose NB role is "insert" (bounded; see `variantTypeWithRole`). */
+function insertTypeOf(
   ctx: { db: QueryCtx["db"] },
   setId: RowId,
 ): Promise<Row | null> {
-  const types = await ctx.db
-    .query("selectorOptions")
-    .withIndex("by_level_and_parent", (q) =>
-      q.eq("level", "variantType").eq("parentId", setId),
-    )
-    .take(MAX_VARIANT_TYPES_PER_SET + 1);
-  const found = types
-    .slice(0, MAX_VARIANT_TYPES_PER_SET)
-    .find((t) => variantTypeRole(t) === "insert");
-  if (!found && types.length > MAX_VARIANT_TYPES_PER_SET) {
-    console.warn(
-      `[setInsertConversion] set=${setId} has more than ${MAX_VARIANT_TYPES_PER_SET} ` +
-        `variant types; its Insert type was not looked for past them`,
-    );
-  }
-  return found ?? null;
+  return variantTypeWithRole(ctx, setId, "insert");
 }
 
 /** A target set the source may move under: a set of its own brand, and (S1) not itself. */

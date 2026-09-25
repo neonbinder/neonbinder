@@ -48,6 +48,7 @@ import {
   stripMatchedBrandPrefix,
 } from "./selectorSyncMatch";
 import { MAX_YEAR_SET_ROWS } from "./setFromMarketplace";
+import { variantTypeRole } from "./variantRole";
 import { compareCardNumbers } from "../lib/cards/card-number";
 
 type Row = Doc<"selectorOptions">;
@@ -85,6 +86,14 @@ export const MAX_CARDS_PER_ROW_READ = MAX_CARDS_PER_MOVE * 4;
 
 /** Sets a door's target picker lists for one brand. */
 export const MAX_TARGET_SETS = 500;
+
+/**
+ * Variant types read under one set when looking for its Insert or Parallel
+ * type. A real set has a handful (Base, Insert, Parallel, Promo…); this
+ * bounds the read because a door's targets list asks it for up to
+ * `MAX_TARGET_SETS` sets.
+ */
+export const MAX_VARIANT_TYPES_PER_SET = 50;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Pure helpers
@@ -352,6 +361,40 @@ export function lossFieldNames(loss: ConversionLoss): string[] {
 // ───────────────────────────────────────────────────────────────────────────
 // Shared reads
 // ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The first variant type under `setId` whose NB role is `role`. Never by
+ * name: the role is `variantTypeRole`, NB's flag.
+ *
+ * Bounded (NEO-306 security audit). A matching type within the first
+ * `MAX_VARIANT_TYPES_PER_SET` is exactly the answer an unbounded read gives
+ * (the index order is the same). Past the cap with none found, the answer is
+ * FAIL CLOSED: null plus a warning, which the doors show as "no Insert /
+ * Parallel type yet" and refuse on — nothing is written under a type NB
+ * could not read.
+ */
+export async function variantTypeWithRole(
+  ctx: { db: QueryCtx["db"] },
+  setId: RowId,
+  role: "insert" | "parallel",
+): Promise<Row | null> {
+  const types = await ctx.db
+    .query("selectorOptions")
+    .withIndex("by_level_and_parent", (q) =>
+      q.eq("level", "variantType").eq("parentId", setId),
+    )
+    .take(MAX_VARIANT_TYPES_PER_SET + 1);
+  const found = types
+    .slice(0, MAX_VARIANT_TYPES_PER_SET)
+    .find((t) => variantTypeRole(t) === role);
+  if (!found && types.length > MAX_VARIANT_TYPES_PER_SET) {
+    console.warn(
+      `[setShapeMove] set=${setId} has more than ${MAX_VARIANT_TYPES_PER_SET} ` +
+        `variant types; its ${role} type was not looked for past them`,
+    );
+  }
+  return found ?? null;
+}
 
 export async function childrenOf(
   ctx: { db: QueryCtx["db"] },
