@@ -1625,12 +1625,49 @@ tags:
           visible:
             id: "Add to ${output.INSERT_ROW}$"
           timeout: 7000
+      # BRING THE RADIO INTO THE BODY'S OWN VIEWPORT BEFORE TAPPING IT. The
+      # dialog body is its dialog's only scroller, and the destination preview
+      # and footer are pinned under it. CI run 36172808297 (step 561): at
+      # 1024×629 the body ended at y≈468, the first radio (`New insert: …`)
+      # was cut in half by that edge, and `Add to …` sat BELOW it, under the
+      # pinned preview (y≈472+). Maestro cannot see an inner scroller's clip
+      # (memory: inner-scroller-clip-is-invisible-to-maestro), so it reported
+      # the radio visible and tapped its coordinates — which landed on the
+      # preview box, and `New insert` stayed selected.
+      #
+      # A POINT-TO-POINT swipe is a touch drag and scrolls the scroller under
+      # the finger (memory: touch-swipe-scrolls-a-dialog-body). Not
+      # `scrollUntilVisible` and not a `direction:` swipe — with or without
+      # `from:` — both are `window.scroll` in CdpWebDriver
+      # (`swipe(SwipeDirection)` / `swipe(Point, SwipeDirection)`, javap on
+      # the pinned 2.8.0 client) and cannot move this body (R8 case 2).
+      #
+      # WHERE THE TOUCH STARTS, from that screenshot: this dialog is ~445px
+      # wide, centred in the 1009px layout viewport, so it spans x≈282–727,
+      # and its body's own left padding (px-5) is x≈282–302. x=29% is ~293
+      # (of 1009) or ~297 (of 1024): inside that padding either way, so the
+      # touch starts on no control. y=70% (~440) is inside the body
+      # (y≈172–468). ONE UP swipe (~283px) pins the body to its END: it
+      # overflows by only the short filtered list (~80px here), so the
+      # overshoot is a no-op and the end state is the same wherever the body
+      # started. At its end the list's last radio sits on the body's bottom
+      # edge, so `Add to …` (the list's second radio) is inside the band.
+      - swipe:
+          start: "29%, 70%"
+          end: "29%, 25%"
       - tapOn:
           id: "Add to ${output.INSERT_ROW}$"
-      # "Under <insert> as" then defaults to `New parallel: Red Ink` — the
-      # name left when the insert's is taken off the row's — so nothing more
-      # is tapped in the body (its third list opens below the other two, and
-      # the body's fold is not something a flow can see). GATE on the
+      # THE TAP TOOK — the hard gate before the preview (R2). "Under <insert>
+      # as" is rendered only once an existing insert is the chosen "Where it
+      # goes"; with `New insert` still chosen (the CI failure above) it does
+      # not exist, so a tap that landed elsewhere fails HERE, by name, not on
+      # the preview two steps later.
+      - extendedWaitUntil:
+          visible: "Under ${output.INSERT_ROW} as"
+          timeout: 7000
+      # "Under <insert> as" defaults to `New parallel: Red Ink` — the name left
+      # when the insert's is taken off the row's — so nothing more is tapped
+      # in the body (that third list opens below the other two). GATE on the
       # destination preview, pinned between body and footer and rendered only
       # for a VALID landing: its last segment is the new parallel's name.
       # Full match: no other text node on screen is exactly that. The title

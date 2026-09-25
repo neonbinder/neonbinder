@@ -22,6 +22,13 @@ ParallelGroupingModal the ✕ column's x falls inside the footer's Save button.
 NEO-300 removed the modal's auto-scroll-to-last-✕, which is what had been
 hiding that.
 
+**Only a POINT-TO-POINT swipe is a touch drag.** `swipe: {start: "x%, y%",
+end: "x%, y%"}` → `CdpWebDriver.swipe(Point, Point)` (touch). `swipe:
+{direction: UP}` AND `swipe: {from: <selector>, direction: UP}` both go to
+`swipe(SwipeDirection)` / `swipe(Point, SwipeDirection)`, which ignore the
+element and run `window.scroll(± innerHeight/2)` (javap, 2.8.0) — they can
+never move a dialog body. The YAML parses fine either way, so nothing warns.
+
 **How to apply:**
 - Make the swipe's END STATE position-independent: two DOWN swipes (30%→80%)
   pin the body to its top, one UP swipe (75%→25%, ~312px of the 625px Maestro
@@ -43,7 +50,9 @@ hiding that.
   Escape `(`/`)` in either. resource-id is `node.id || ariaLabel || …`, so a DOM
   id on an element shadows its aria-label.
 
-Worked examples: `parallel-grouping-reject-parallel.yaml` (pin to end, then
+Worked examples: `flagship-colour-is-a-parallel-both-ways.yaml` STEP 14 (pin a short
+Make insert of… body to its end, then tap a radio that sat under the pinned
+preview — CI 36172808297), `parallel-grouping-reject-parallel.yaml` (pin to end, then
 ✕), `parallel-grouping-demoted-parallel-takes-parallels.yaml` (click-to-place
 instead of drag), `flagship-colour-is-a-parallel-both-ways.yaml` STEP 2 (merged from `parallel-grouping-promoted-insert-fetches-from-bsc`)
 (ReconciliationModal row button + Keep all), `inserts-1996-score-one-nb-set-two-bsc-sources.yaml`
