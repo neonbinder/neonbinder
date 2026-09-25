@@ -1,59 +1,86 @@
-# R1 — Single feature: the placeholder pipeline's HEAVY escalation path and its
-# cold-start notice (NEO-175). ONE INSET-on-noise scan PAIR (two images) goes in;
-# the fast classical service DECLINES both (there is a card to crop out of a
-# background), so Convex re-enqueues each to the HEAVY BiRefNet service, which
-# cold-loads the ~191s model. The one thing this flow exists to prove is that
-# WHILE that heavy cold start runs, the user is TOLD — the "A few of these need
-# a closer look…" notice is on screen, and each escalating image shows an
-# "Escalating — deeper processing…" badge — rather than staring at a frozen
-# screen. It then proves the batch still finishes correctly through the heavy
-# service — both images resolve and the pair forms.
+# R1 — Single feature: the placeholder pipeline's HEAVY escalation path under
+# more load than the heavy service has instances, from a cold start (NEO-175,
+# NEO-299). SIX INSET-on-noise scans (three front/back pairs) go in; the fast
+# classical service DECLINES all six (each has a card to crop out of a
+# background), so Convex re-enqueues every one to the HEAVY BiRefNet service,
+# which cold-loads the ~191s model. The flow proves two things a collector sees:
+#   1. WHILE that cold start runs they are TOLD — the "A few of these need a
+#      closer look…" notice is on screen and each escalating photo shows
+#      "Escalating — deeper processing…" — rather than a frozen screen.
+#   2. More escalations than the heavy service has instances still ALL finish:
+#      every photo is read and all three pairs form, with no photo lost to
+#      "couldn't be read".
 #
-# The FAST path (frame-filling scans → accepted in seconds → no cold start) is the
-# opposite user case, proved by pipeline-pairs-uploaded-scans.yaml. This flow is
-# the escalation half.
+# The FAST path (frame-filling scans → accepted in seconds → no cold start) is
+# the opposite user case, proved by pipeline-pairs-uploaded-scans.yaml. This flow
+# is the escalation half.
 #
-# ── WHY ONE PAIR (not six images) ─────────────────────────────────────────
-# An all-heavy batch is CPU-bound: the heavy service runs BiRefNet on CPU (GPU is
-# NEO-173, quota-blocked), so each image costs ~124s of inference on top of the
-# ~191s one-time model cold load. Six images would run many minutes past the
-# 5-minute cold-start bar the user set. A single pair (cold load ~191s + ~124s
-# inference ≈ ~315s) lands NEAR that bar — a little over is fine — while still
-# proving the whole escalation story end to end: fast decline → escalate →
-# cold-start notice → per-image escalating badge → heavy completion → pairing. And
-# crucially, every second the user waits is covered by VISIBLE progress (the
-# notice, Step 3 + the per-image badge, Step 4), so they always know what is
-# happening — the user's hard requirement for this multi-minute path.
+# ── WHY SIX IMAGES (it used to be one pair, deliberately) ─────────────────
+# This flow ran ONE inset pair until NEO-299, on the reasoning that an all-heavy
+# CPU batch runs long (GPU is NEO-173, quota-blocked) and two images already
+# proved fast decline → escalate → notice → badge → heavy completion → pairing.
+# That is now the opposite decision, because two escalations never exceed the
+# heavy capacity and so could never catch the bug NEO-299 fixed:
+#
+#   * The heavy pool's parallelism, the heavy Cloud Run service's max instances
+#     and the Terraform value had drifted to three different numbers. Surplus
+#     requests came back as 429 / "no available instance" while instances were
+#     still cold-loading the model, and the old retry ladder (3 attempts, 5s then
+#     10s) spent every attempt inside one ~180-240s cold load. Prod photos failed
+#     "couldn't be read" that way.
+#   * NEO-299 made one number the truth (convex/preprocessCapacity.json; a PR
+#     preview's heavy cap is 3), routed the heavy warm-ups THROUGH the heavy pool
+#     so they share its slots instead of competing for instances, and lengthened
+#     the heavy retry ladder (5 attempts, 40s base, x2) so a shed request outlasts
+#     a cold load.
+#
+# Six escalations against a preview cap of 3 is the smallest batch that forces
+# the pool past its cap: the batch-start warm-ups hold all three slots through the
+# cold load, then the six photos drain in TWO rounds of three. Anything at or
+# under the cap (the old two images) exercises none of that. The ticket's proof
+# requirement is exactly this: a batch escalating more than the cap at once
+# completes with zero failed photos.
+#
+# Every second of the resulting multi-minute wait is still covered by VISIBLE
+# progress (the notice, Step 3; the per-photo badge, Step 4), which is the user's
+# hard requirement for this path.
 #
 # R2 — It cannot go green without the feature.
 #   * If nothing escalated (a regression where the fast path accepted these inset
 #     cards), `heavyWarming` never turns true, the notice never renders, and
-#     Step 3 times out and FAILS.
-#   * If images escalated but the notice was never shown — the exact "frozen
-#     screen" bug this flow is the guard against — Step 3 FAILS.
-#   * If the heavy service dropped or failed an image, the batch cannot end on
-#     "1 pair ready to print." and Step 7 FAILS. That count is the load-bearing
-#     one, and it subsumes the old "0 failed" assertion: with exactly two images
-#     in the batch, a pair can only form if BOTH resolved successfully through
-#     the heavy service and side-classified as a front and a back. One failure
-#     yields zero pairs.
+#     Step 3 FAILS.
+#   * If photos escalated but the notice was never shown — the "frozen screen"
+#     bug this flow first existed to guard — Step 3 FAILS.
+#   * If the heavy service dropped or failed ANY of the six — the NEO-299 shape,
+#     a 429 exhausting the retry ladder — the batch cannot end on "3 pairs ready
+#     to print." and Step 7 FAILS. Pairing reads only photos whose status is
+#     "done" (convex/placeholderPairing.ts filters `status === "done"`), so three
+#     pairs out of six photos is arithmetic proof that all six were read. One
+#     failure leaves at most two pairs.
 #
-#     This matters because NEO-152 changed what the intermediate copy proves.
-#     "All 2 photos read." (Step 6) means every row has SETTLED, and deriveStage
-#     counts a failed row as settled — so that line alone no longer implies zero
-#     failures the way the old "2 of 2 … 0 failed" line did. Step 6 is therefore
-#     the wait for heavy completion; Step 7 is the correctness assertion.
+#     "All 6 photos read." (Step 6) is NOT that proof on its own: it is the
+#     stage-`waiting` copy, meaning every row has SETTLED, and a failed row
+#     counts as settled. Step 6 is the wait for heavy completion; Step 7 is the
+#     correctness assertion.
+#
+#     An explicit absence check on "N photos couldn't be read" is expressible in
+#     user-visible text, and is deliberately NOT here. That summary renders at
+#     the very bottom of the session panel (below the review grid and the print
+#     run), the maestro-web hierarchy is viewport-clipped, and nothing stable and
+#     user-visible sits below it to scroll to. An `assertNotVisible` would
+#     therefore pass whether or not the line exists — a check that cannot fail
+#     is worse than none. The pair count carries the zero-failures proof instead.
 # There is no `when:` branch anywhere in it, and the precondition proves a real
-# two-image job exists before any wait.
+# job exists before any wait.
 #
-# R3 — Nothing else covers the escalation path. The fast-path and print-layout
-# placeholders flows do not. Both fixture sets are described in
-# apps/web/scripts/generate-placeholder-fixtures.py.
+# R3 — Nothing else covers the escalation path. The fast-path and flip-edge
+# placeholder flows both use the full-bleed set, which never escalates. The
+# fixture sets are described in apps/web/scripts/generate-placeholder-fixtures.py.
 #
 # R4 — Standard /testing/sign-in entry, no in-body login. The only addition to the
-# entry URL is `fixtures=placeholder-fixtures-escalation-pair`, which tells the
-# seed page to push the one-pair inset set through the real upload path (the same
-# pattern the fast-path flow uses to select its full-bleed set).
+# entry URL is `fixtures=placeholder-fixtures`, which tells the seed page to push
+# the six-image inset set through the real upload path. It is the seed page's
+# default set; it is named explicitly so the flow does not depend on the default.
 #
 # R7 — Non-destructive: a per-user placeholder job under the signed-in worker's
 # own account; no shared/marketplace data. It never taps "Discard this batch".
@@ -65,26 +92,27 @@
 # pipeline kickoff); only the OS picker is bypassed. Gated on
 # VITE_CLERK_TESTING_ENABLED plus a server-side secret unset in production.
 #
-# ── WHY THE INSET FIXTURES ESCALATE ───────────────────────────────────────
-# apps/web/public/placeholder-fixtures-escalation-pair/ — ONE inset pair (Marcus
-# QUILLDEN: 03-quillden-front.jpg + 04-quillden-back.jpg, manifest.json pairCount
-# 1), copied byte-for-byte from the full inset set. Each card is a rectangle INSET
-# on a grainy scanner bed — a smaller card on a uniform margin. The fast classical
-# pass sees a card to crop OUT of a background, which is NOT the "already a
-# frame-filling card" identity case, so it declines and BOTH images escalate to
-# the heavy model (the inset recipe is validated against the real fast_tiered_crop:
-# inset cards return None → escalate). Both sides print the same full name so the
-# identity pool pairs them into ONE card.
+# ── WHY THE INSET FIXTURES ESCALATE — all six, checked ────────────────────
+# apps/web/public/placeholder-fixtures/ — three inset pairs, in upload order:
+# Grebble VORKLE (01 front, 02 back #17), Marcus QUILLDEN (03, 04 #42) and Teodor
+# MOSSBAUM (05, 06 #83); manifest.json pairCount 3. Each card is a rectangle INSET
+# on a grainy scanner bed. The fast classical pass sees a card to crop OUT of a
+# background, which is NOT the "already a frame-filling card" identity case, so it
+# declines. Checked 2026-09-24 by running the service's own
+# app.cropper.tiered.fast_tiered_crop over the committed bytes: all six return
+# None (escalate), while the six full-bleed fixtures all return the input (fast
+# accept). Front and back print the same full name, so the identity pool pairs
+# each into one card. Do not regenerate this set: the flow depends on these bytes.
 appId: com.neonbinder.web
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures-escalation-pair&worker=${WORKER_INDEX || "0"}
-name: Placeholder pipeline (heavy escalation) — inset pair, cold-start notice, one pair
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures&worker=${WORKER_INDEX || "0"}
+name: Placeholder pipeline (heavy escalation) — six photos past the heavy cap, cold-start notice, three pairs, none failed
 tags:
   - placeholders
 ---
-# Step 1: sign in, then the seed page uploads the two inset fixtures and forwards
-# to the run view. This wait covers cold Clerk sign-in, fetching the fixtures, and
-# two real signed-POST uploads to GCS — an external round-trip, which is why it is
-# allowed past the 7s budget.
+# Step 1: sign in, then the seed page uploads the six inset fixtures and forwards
+# to the run view. This is the post-launchApp heading gate (R5's sanctioned
+# exception): it covers cold Clerk sign-in, fetching the fixtures, and six real
+# signed-POST uploads to GCS — an external round-trip.
 - launchApp
 - extendedWaitUntil:
     visible: "Upload your cards"
@@ -93,125 +121,120 @@ tags:
 # Step 2: PRECONDITION — a real session exists behind this view. The panel
 # renders as soon as a job id is in the URL.
 #
-# This used to assert a composed status line ("… of 2 images processed …").
-# NEO-152 replaced that with stage-specific copy — "Getting your photos ready…"
-# before any row exists, then "Reading your cards — N of 2 done.", then "All 2
-# photos read." — so no single line is true at every moment and a precondition
-# cannot depend on catching one. It asserts the panel; Step 3 and Step 6 gate on
-# the real states.
-# The session panel sits BELOW THE FOLD on the CI viewport (1024x625), so it has
-# to be scrolled to before anything in it can be asserted. Measured on the real
-# page: "Upload your cards" is at y=533 — the last thing on screen — while the
-# session heading is at y=653 and the status line at y=714. `assertVisible` and
-# `extendedWaitUntil` never scroll, so they can only ever see the top of the
-# page. `scrollUntilVisible` scrolls AND is the assertion (it fails if it
-# reaches the end without a match), so it does both jobs here.
+# NEO-152's stage copy ("Getting your photos ready…", then "Reading your cards —
+# N of 6 done.", then "All 6 photos read.") means no single status line is true
+# at every moment, so the precondition asserts the panel heading; Step 3 and
+# Step 6 gate on the real states.
 #
-# This is what NEO-152 changed out from under these flows: the old /placeholders
-# stopgap was a short page whose status line was above the fold, and the flows
-# were written against that. The real tool leads with the dropzone.
+# The session panel sits BELOW THE FOLD on the CI viewport (1024x625): "Upload
+# your cards" is the last thing on screen at rest. `assertVisible` and
+# `extendedWaitUntil` never scroll, so `scrollUntilVisible` both reaches the
+# heading and IS the assertion (it fails if it never finds it).
 - scrollUntilVisible:
     element:
       text: "Your cards"
     centerElement: true
     timeout: 7000
 
-# Step 3a: bring the session panel into view so the cold-start notice's location
-# is on screen when it appears. The notice renders asynchronously (only once the
-# first fast decline has escalated an image), and extendedWaitUntil never scrolls,
-# so we position first on a STABLE element present from the start and sitting just
-# ABOVE where the notice appears.
+# Step 3a: position the session panel so the cold-start notice's location is on
+# screen when it appears. The notice renders asynchronously (only once the first
+# fast decline has escalated a photo), and extendedWaitUntil never scrolls, so we
+# anchor first on a STABLE element present from the start and sitting just ABOVE
+# where the notice appears: the panel heading. The notice renders inside the
+# panel, directly below the status box.
 #
-# That anchor used to be the "resolver calls" line. NEO-152 removed it from the
-# UI: it is a diagnostics tally (a Map lookup since NEO-170, not spend) and had
-# no business on a collector's screen. The section heading is the stable
-# replacement — it renders as soon as a job id is in the URL, which is the same
-# moment the old line did, and the notice renders inside the panel below it.
-#
-# No centerElement — this sits high on the page with little above it to centre
-# against, and this is a position-only scroll, not a scroll-to-tap.
+# No centerElement — this is a position-only scroll, not a scroll-to-tap.
 - scrollUntilVisible:
     element:
       text: "Your cards"
     timeout: 7000
 
 # ── Step 3: THE hard requirement — the user is told during the cold start ──────
-# `heavyWarming` turns true the moment the first image escalates and stays true
-# until the first HEAVY result lands — a window of at least the heavy inference
-# (~124s) and up to the full ~191s model cold load when it has not finished warming
-# — so this notice is on screen for that whole window: the visible progress the
-# user must see instead of a frozen screen. (Convex now pre-warms the heavy service
-# UPFRONT at batch start so its ~191s load overlaps the fast phase, but the notice
-# still fires on the first escalation exactly as before.) This is the sanctioned
-# wait on a live compute round-trip: the fast declines that trigger it are a real
-# fast-service pass. It resolves the instant the notice appears (well within the
-# window above, since the fast instances are pre-warmed and declines are quick), so
-# the 120s ceiling is margin, not time this burns. The regex tolerates the exact
-# The copy is NEO-152's, not the old "Warming up the full card processor…".
-# That string no longer exists anywhere in the app — this flow was still waiting
-# on it, which is why it timed out for 120s while the notice was on screen the
-# whole time. Anchored on the distinctive phrase and wrapped in `.*` because
-# Maestro's text selector is a FULL match against the element's whole text, and
-# this <p> carries a second sentence ("The rest keep coming in below.").
+# `heavyWarming` turns true the moment the first photo escalates and stays true
+# until the first HEAVY result lands — at least one ~124s inference and, on a
+# cold service, the ~191s model load before it — so the notice is on screen for
+# that whole window. Convex pre-warms the heavy service at batch start (through
+# the heavy pool since NEO-299), so the load overlaps the fast phase, but the
+# notice still fires on the first escalation.
+#
+# This waits on a live compute round-trip: the fast declines that trigger it are
+# a real fast-service pass on the preview's own (possibly cold) fast revision. It
+# resolves the instant the notice appears, so the ceiling is margin, not time
+# the run burns. The copy is NEO-152's; anchored on the distinctive phrase and
+# wrapped in `.*` because Maestro's text selector is a FULL match against the
+# element's whole text and this <p> carries a second sentence ("The rest keep
+# coming in below.").
 - extendedWaitUntil:
     visible: ".*A few of these need a closer look.*"
     timeout: 120000
 
-# Step 4: the per-image "Escalating — deeper processing…" badge. While
-# `heavyWarming` is true (which Step 3 just proved), NO escalated image has
-# resolved yet, so every escalated row is still processing on the heavy service
-# and badged. scrollUntilVisible scrolls DOWN into the Images section and IS the
-# assertion (R6): if nothing is escalating, it scrolls to the end and fails.
+# Step 4: the per-photo "Escalating — deeper processing…" badge, in the "Still
+# reading" list. An escalated row keeps status `processing` with `escalated` set
+# while it waits for or occupies a heavy slot, and while `heavyWarming` is true
+# (Step 3 just proved it) no escalated photo has resolved yet, so every one is
+# badged. scrollUntilVisible scrolls DOWN into that list and IS the assertion
+# (R6): if nothing is escalating it finds nothing and fails.
 - scrollUntilVisible:
     element:
       text: ".*Escalating.*deeper processing.*"
     timeout: 7000
 
 # Step 5: re-anchor the status line into view for the completion wait. Step 4
-# scrolled down to the Images section, so the status line is now ABOVE — scroll
-# UP to it. Plain scroll (no centerElement): it leaves the line low in the
-# viewport, which keeps it on screen even after the cold-start notice above it
-# disappears (the first heavy result clears `heavyWarming`, removing ~70px above
-# the line). extendedWaitUntil below never scrolls, so the line must be in view
-# before it runs.
+# may have scrolled down into the "Still reading" list, which puts the panel
+# heading ABOVE the page's position, so this scrolls UP to it (an anchor above
+# takes direction UP; it cannot rely on the document bottoming out). The status
+# line sits directly under the heading, and everything that changes during the
+# wait — the notice disappearing, rows leaving "Still reading", pairs arriving —
+# is BELOW it, so the line stays put. extendedWaitUntil below never scrolls, so
+# the line must be in view before it runs.
 - scrollUntilVisible:
     direction: UP
     element:
       text: "Your cards"
     timeout: 7000
 
-# ── Step 6: the pair finishes through the HEAVY service (~5 min) ───────────────
-# This is the ONE sanctioned multi-minute wait, and it is legitimate ONLY because
-# every second of it is covered by VISIBLE progress: the "closer look" notice
-# (Step 3) is up from the first escalation until the first heavy result, and the
-# per-image "Escalating — deeper processing…" badge (Step 4) sits on each row until
-# it resolves — the user is never left staring at a frozen screen. The wait must
-# cover a COLD heavy run for the pair: ~191s BiRefNet model cold load + ~124s CPU
-# inference per image (GPU is NEO-173, quota-blocked) ≈ ~315s, so 480s gives margin
-# without burning time — it resolves the instant the pair completes. Every number
-# A batch that genuinely needs longer than this is a heavy-capacity PRODUCT
-# finding to raise, never a timeout to inflate.
+# ── Step 6: all six photos finish through the HEAVY service ────────────────────
+# The ONE multi-minute wait in the flow. It is legitimate only because every
+# second of it is covered by visible progress (the notice from Step 3 until the
+# first heavy result; each row's "Escalating" badge until it resolves).
 #
-# "All 2 photos read." is the stage-`waiting` copy: every row in a two-image
+# BUDGET: 600000 ms, approved by Jason 2026-09-24 (NEO-299; it was 480000 for
+# the two-image version of this flow). The arithmetic, on a PR preview whose
+# heavy cap is 3 and whose heavy revision is cold:
+#     ~191s  BiRefNet model cold load
+#   + ~248s  two rounds of ~124s CPU inference (six photos, three at a time)
+#   +  ~30s  fast phase: uploads settle, six fast declines, escalations enqueued
+#   = ~469s, leaving ~131s of margin under 600s.
+# That is a conservative sum: the batch-start warm-up overlaps the load with the
+# fast phase. The margin covers about one heavy retry backoff (40s nominal, 20-60s
+# with jitter); it does not cover a whole extra round of inference.
+#
+# It resolves the instant the last photo settles, so the ceiling is not time a
+# healthy run burns. What voids it: a different preview heavy cap, a different
+# fixture count, or GPU inference (NEO-173) — recompute and re-approve then. A
+# batch that genuinely needs longer is a heavy-capacity PRODUCT finding to raise,
+# never a number to inflate.
+#
+# "All 6 photos read." is the stage-`waiting` copy: every row in the six-image
 # batch has settled, which on this path can only happen once the heavy service
-# has returned for both. It is the heavy-completion wait, not the correctness
+# has returned for all six. It is the completion wait, not the correctness
 # assertion — see the R2 note about failed rows counting as settled.
 - extendedWaitUntil:
-    visible: "All 2 photos read."
-    timeout: 480000
+    visible: "All 6 photos read."
+    timeout: 600000
 
 # ── Step 7: close the batch, and assert the pairing arithmetic ────────────────
-# The pair count is only written by the FINAL pairing run, which fires when the
-# stream is CLOSED — so the batch has to be finished to see it. For a two-image
-# batch this finalizes inline in the close mutation (no scheduler hop), so the
-# panel flips almost immediately.
+# The final pair count is written by the FINAL pairing run, which fires when the
+# stream is CLOSED — so the batch has to be finished to see it. For a batch of
+# up to 100 photos that run is INLINE in the close mutation (no scheduler hop,
+# convex/placeholderStream.ts INLINE_FINALIZE_MAX_IMAGES), so the panel flips to
+# the finished copy as soon as the "Finish it" mutation returns — an in-app
+# response, held to R5's 7s bar.
 #
-# "1 pair ready to print." is the load-bearing assertion of this whole flow's
-# second half: with two images, one pair proves both resolved through the heavy
-# service AND side-classified correctly. Zero pairs — the shape a dropped or
-# failed heavy crop produces — fails here. (NEO-152 pluralizes correctly, so the
-# copy really is "1 pair", singular; the old flow worked around a "1 pairs" bug
-# that no longer exists.)
+# "3 pairs ready to print." is the load-bearing assertion of the flow's second
+# half: six photos, three pairs, so all six were read through the heavy service
+# and side-classified correctly. The NEO-299 failure shape — a photo lost to a
+# 429 — leaves fewer pairs and fails here.
 - scrollUntilVisible:
     element:
       text: "Finish the batch"
@@ -221,5 +244,5 @@ tags:
 - assertVisible: "Finish this batch?"
 - tapOn: "Finish it"
 - extendedWaitUntil:
-    visible: "1 pair ready to print."
-    timeout: 30000
+    visible: "3 pairs ready to print."
+    timeout: 7000

@@ -6,8 +6,11 @@
  *
  *   - `warmupPreprocess` (internal): fires PREPROCESS_MAX_PARALLELISM FAST warm-ups
  *     CONCURRENTLY (one warm-up warms one fast instance, container_concurrency = 1),
- *     PLUS one HEAVY warm-up upfront (NEO-175: the ~191s heavy load starts here so
- *     it overlaps the fast phase). N+1 calls in flight at once.
+ *     and ENQUEUES the HEAVY warm-ups on the heavy workpool (NEO-299), so they
+ *     share its slots with escalations. convex-test cannot mount the workpool
+ *     component, so here the enqueue fails and is swallowed; what these tests
+ *     pin on the heavy side is that NO heavy `/warmup` is ever fired directly,
+ *     beside the pool.
  *   - Both start paths schedule it fire-and-forget, so the model loads while a
  *     zip extracts / a scanner collects.
  *   - `warmPreprocess` (public, authed): lets a client fire the same fan-out
@@ -40,9 +43,9 @@ const USER_A = { subject: "user_warmAAAA1111" };
 
 const WARMUP_FN = "placeholderBatch:warmupPreprocess";
 
-// Distinct loopback URLs so a stub can tell a FAST warm-up from the HEAVY one:
-// warmupPreprocess fires the fast fan-out PLUS one heavy warm-up upfront
-// (NEO-175 — the ~191s heavy load starts here so it overlaps the fast phase).
+// Distinct loopback URLs so a stub can tell a FAST warm-up from a HEAVY one:
+// warmupPreprocess fires the fast fan-out directly, and must never fire a heavy
+// warm-up directly — heavy goes through the heavy workpool (NEO-299).
 const FAST_URL = "http://localhost:9997";
 const HEAVY_URL = "http://localhost:9998";
 const fastCount = (urls: string[]) => urls.filter((u) => u.startsWith(FAST_URL)).length;
@@ -173,25 +176,27 @@ async function scheduledNames(t: ReturnType<typeof convexTest>): Promise<string[
 // ---------------------------------------------------------------------------
 
 describe("warmupPreprocess", () => {
-  test("fires PREPROCESS_MAX_PARALLELISM fast warm-ups + one heavy, all concurrently", async () => {
+  test("fires PREPROCESS_MAX_PARALLELISM fast warm-ups concurrently, and no heavy warm-up directly", async () => {
     const t = convexTest(schema, modules);
     const N = PREPROCESS_MAX_PARALLELISM;
-    const barrier = makeWarmupBarrier(N + 1);
+    const barrier = makeWarmupBarrier(N);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await t.action(internal.placeholderBatch.warmupPreprocess, {});
+    warn.mockRestore();
 
-    // One warm-up per fast instance the pool will run, PLUS one heavy warm-up
-    // (NEO-175: the heavy load starts here so it overlaps the fast phase), and
-    // all N+1 in flight at once — one warm-up warms one instance.
+    // One warm-up per fast instance the pool will run, all N in flight at once
+    // — one warm-up warms one instance. Heavy warm-ups are enqueued on the
+    // heavy pool (NEO-299), never fired beside it.
     expect(fastCount(barrier.calls)).toBe(N);
-    expect(heavyCount(barrier.calls)).toBe(1);
-    expect(barrier.maxInFlight).toBe(N + 1);
+    expect(heavyCount(barrier.calls)).toBe(0);
+    expect(barrier.maxInFlight).toBe(N);
   });
 
   test("a throwing fetch is swallowed — the action still resolves", async () => {
     const t = convexTest(schema, modules);
     const N = PREPROCESS_MAX_PARALLELISM;
-    makeWarmupBarrier(N + 1, { fail: true });
+    makeWarmupBarrier(N, { fail: true });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     // Every warm-up throws inside; the fan-out must not.
@@ -233,7 +238,7 @@ describe("warmPreprocess", () => {
     // run, so a left-behind schedule would leak into the next test).
     await drain(t);
     expect(fastCount(counter.calls)).toBe(PREPROCESS_MAX_PARALLELISM);
-    expect(heavyCount(counter.calls)).toBe(1);
+    expect(heavyCount(counter.calls)).toBe(0);
   });
 
   test("end to end, fires PREPROCESS_MAX_PARALLELISM warm-ups when the scheduled fan-out runs", async () => {
@@ -248,7 +253,7 @@ describe("warmPreprocess", () => {
     await drain(t);
 
     expect(fastCount(counter.calls)).toBe(N);
-    expect(heavyCount(counter.calls)).toBe(1);
+    expect(heavyCount(counter.calls)).toBe(0);
   });
 
   test("a warm-up failure never reaches the caller", async () => {
@@ -284,10 +289,11 @@ describe("both start paths warm the service", () => {
 
     expect(await scheduledNames(t)).toContain(WARMUP_FN);
 
-    // Drain to clean up, and confirm end to end that it warms N fast + 1 heavy.
+    // Drain to clean up, and confirm end to end that it warms N fast directly
+    // and no heavy outside the heavy pool.
     await drain(t);
     expect(fastCount(counter.calls)).toBe(PREPROCESS_MAX_PARALLELISM);
-    expect(heavyCount(counter.calls)).toBe(1);
+    expect(heavyCount(counter.calls)).toBe(0);
   });
 
   test("startPlaceholderBatch schedules the warm-up fan-out", async () => {
@@ -315,7 +321,7 @@ describe("both start paths warm the service", () => {
     // shared queue empty for the next test.
     await drain(t);
     expect(fastCount(stub.warmups)).toBe(PREPROCESS_MAX_PARALLELISM);
-    expect(heavyCount(stub.warmups)).toBe(1);
+    expect(heavyCount(stub.warmups)).toBe(0);
   });
 
   test("a start returns promptly and stays successful even when every warm-up fails", async () => {

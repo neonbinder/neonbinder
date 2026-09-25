@@ -41,9 +41,13 @@ import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import {
   runEntityReviewLookupImpl,
+  WIKIDATA_FETCH_TIMEOUT_MS,
   type EntityReviewLookupCtx,
 } from "./wikidata";
 import { OCC_RETRY_ATTEMPTS } from "../../lib/errors/occ-retry";
+import { isNonRetryableError } from "@convex-dev/workpool";
+import { WikidataUnavailableError } from "../../lib/errors/wikidata-unavailable";
+import { __resetEspnTeamListCache } from "./espn";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -138,13 +142,16 @@ type WriteArgs = { id: Id<"entityReviewQueue">; status: string; enrichment?: unk
  * exactly the bug (the old code's second, fabricated call), so it must fail
  * the test rather than pass silently.
  */
-function stubCtx(writeOutcomes: Array<"ok" | Error>, options: { lookupThrows?: Error } = {}) {
+function stubCtx(
+  writeOutcomes: Array<"ok" | Error>,
+  options: { lookupThrows?: Error; row?: Record<string, unknown> } = {},
+) {
   const writes: WriteArgs[] = [];
   const ctx = {
     runQuery: async (ref: FunctionReference<"query">, _args: unknown) => {
       switch (getFunctionName(ref)) {
         case getFunctionName(internal.entityReviewQueue.getInternal):
-          return ROW;
+          return options.row ?? ROW;
         case getFunctionName(internal.selectorOptions.getSportEnrichmentContext):
           if (options.lookupThrows) throw options.lookupThrows;
           return SPORT_CTX;
@@ -203,6 +210,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 // ===========================================================================
@@ -261,6 +269,10 @@ describe("a lookup that MATCHED, whose write loses an OCC race", () => {
     // resultKind — an attributable failure instead of a fabricated answer.
     expect(outcome).toBeInstanceOf(Error);
     expect(String(outcome)).toMatch(/changed while this mutation was being run/);
+    // NEO-301: the pool retries throws now. This one must opt out — a retry
+    // would spend a second SPARQL round trip to lose the same race — so the
+    // backstop still settles the row at once, exactly as NEO-294 designed.
+    expect(isNonRetryableError(outcome)).toBe(true);
   });
 
   test("the failure is logged as a WRITE failure, with ids and counts only", async () => {
@@ -347,8 +359,11 @@ describe("a lookup that genuinely found nothing (unchanged)", () => {
 
 /**
  * NOTE on what "threw" means here. A dead `fetch` does NOT reach this catch:
- * `runSparql` absorbs a transport failure and answers `null` (NEO-288), so a
- * network outage arrives as a no-match, not as a throw. What does reach it is
+ * `runSparql` absorbs a transport failure and answers `null` (NEO-288). Since
+ * NEO-301 the impl reads that failure off the `LookupTrace` AFTER the catch
+ * and throws a retryable `WikidataUnavailableError` itself (see the NEO-301
+ * block at the end of this file), so an outage is neither a no-match nor this
+ * catch's "error". What does reach the catch is
  * everything else in the try — the sport-config query, a malformed response a
  * parser chokes on — so these drive it through the query.
  */
@@ -386,5 +401,183 @@ describe("a lookup that threw (unchanged)", () => {
     // concluded, not a second, different verdict invented by a catch.
     expect(writes).toHaveLength(2);
     expect(writes.every(isNoMatchWrite)).toBe(true);
+  });
+});
+
+// ===========================================================================
+// NEO-301 — a lookup that could not reach Wikidata is not an answer
+// ===========================================================================
+
+/**
+ * A `fetch` that fails the way query.wikidata.org did under load: each call
+ * takes `elapsedMs` (the clock is moved, not waited on) and then answers
+ * `status`, or rejects with a TimeoutError when `status` is "timeout".
+ */
+function stubDegradedFetch(status: number | "timeout", elapsedMs = WIKIDATA_FETCH_TIMEOUT_MS) {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  let calls = 0;
+  vi.stubGlobal(
+    "fetch",
+    (async () => {
+      calls += 1;
+      vi.setSystemTime(Date.now() + elapsedMs);
+      if (status === "timeout") {
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }
+      return new Response("upstream error", { status });
+    }) as unknown as typeof fetch,
+  );
+  return { calls: () => calls };
+}
+
+describe("a lookup whose SPARQL call is UNAVAILABLE (NEO-301)", () => {
+  test.each([
+    ["a 502", 502 as const, "http_502"],
+    ["a 429", 429 as const, "http_429"],
+    ["a timeout", "timeout" as const, "timeout"],
+  ])("%s writes NOTHING and throws a retryable WikidataUnavailableError", async (_label, status, reason) => {
+    stubDegradedFetch(status);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    // An empty script: ANY write fails the test on what it tried to do.
+    const { ctx, writes } = stubCtx([]);
+
+    const outcome = await runEntityReviewLookupImpl(ctx, { rowId: ROW_ID }, NO_SLEEP).then(
+      () => "resolved" as const,
+      (error: unknown) => error,
+    );
+
+    // First what got written: nothing. The row stays `pending` for the
+    // pool's next attempt; above all it is NOT the no-match shape.
+    expect(writes).toEqual([]);
+    // Then how it ended: the retryable signal, carrying kind and reason.
+    expect(outcome).toBeInstanceOf(WikidataUnavailableError);
+    expect(isNonRetryableError(outcome)).toBe(false);
+    expect(String(outcome)).toContain(`wikidata_unavailable kind=player reason=${reason}`);
+    // Not logged as a no-match, and the unavailable line carries no name.
+    expect(linesFor(logSpy, "entity_review_lookup_no_match")).toEqual([]);
+    const unavailable = linesFor(warnSpy, "wikidata_lookup_unavailable");
+    expect(unavailable).toEqual([
+      { msg: "wikidata_lookup_unavailable", kind: "player", id: ROW_ID, reason },
+    ]);
+    expect(JSON.stringify(unavailable)).not.toContain(ROW.name);
+  });
+
+  test("a search that MATCHED but whose detail query is unavailable is not written either", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        const decoded = decodeURIComponent(String(url));
+        if (decoded.includes("p:P54") || decoded.includes("wdt:P166")) {
+          vi.setSystemTime(Date.now() + WIKIDATA_FETCH_TIMEOUT_MS);
+          throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+        }
+        return jsonResponse({ results: { bindings: [{ player: uriBinding(MATCHED_QID) }] } });
+      }) as unknown as typeof fetch,
+    );
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { ctx, writes } = stubCtx([]);
+
+    await expect(
+      runEntityReviewLookupImpl(ctx, { rowId: ROW_ID }, NO_SLEEP),
+    ).rejects.toBeInstanceOf(WikidataUnavailableError);
+    expect(writes).toEqual([]);
+  });
+
+  test("a 400 (a bad query, not a bad day) stays the no-match it always was — no throw, no retry", async () => {
+    const stub = stubDegradedFetch(400, 0);
+    const { ctx, writes } = stubCtx(["ok"]);
+
+    await expect(
+      runEntityReviewLookupImpl(ctx, { rowId: ROW_ID }, NO_SLEEP),
+    ).resolves.toBeNull();
+
+    expect(stub.calls()).toBe(1);
+    expect(writes).toHaveLength(1);
+    expect(isNoMatchWrite(writes[0])).toBe(true);
+  });
+});
+
+// ===========================================================================
+// NEO-301 — a TEAM row's ESPN partial is written, then retried
+// ===========================================================================
+
+describe("a team row whose ESPN answered but whose Wikidata is unavailable (NEO-301)", () => {
+  const TEAM_ROW = { ...ROW, kind: "team" as const, name: "Washington Nationals" };
+
+  function stubEspnUpWikidataTimingOut(): void {
+    __resetEspnTeamListCache();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL) => {
+        if (String(url).includes("site.web.api.espn.com")) {
+          return jsonResponse({
+            sports: [
+              {
+                leagues: [
+                  {
+                    teams: [
+                      {
+                        team: {
+                          id: "20",
+                          displayName: "Washington Nationals",
+                          location: "Washington",
+                          color: "ab0003",
+                          alternateColor: "14225a",
+                        },
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
+          });
+        }
+        vi.setSystemTime(Date.now() + WIKIDATA_FETCH_TIMEOUT_MS);
+        throw new DOMException("The operation was aborted due to timeout", "TimeoutError");
+      }) as unknown as typeof fetch,
+    );
+  }
+
+  test("writes the partial as 'ready' exactly once, THEN throws retryable", async () => {
+    stubEspnUpWikidataTimingOut();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { ctx, writes } = stubCtx(["ok"], { row: TEAM_ROW });
+
+    const outcome = await runEntityReviewLookupImpl(ctx, { rowId: ROW_ID }, NO_SLEEP).then(
+      () => "resolved" as const,
+      (error: unknown) => error,
+    );
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0].status).toBe("ready");
+    expect(writes[0].enrichment).toMatchObject({ espnId: "20", location: "Washington" });
+    expect(outcome).toBeInstanceOf(WikidataUnavailableError);
+    expect(isNonRetryableError(outcome)).toBe(false);
+  });
+
+  test("a partial whose write keeps conflicting still throws RETRYABLE — the retry redoes lookup and write", async () => {
+    stubEspnUpWikidataTimingOut();
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { ctx, writes } = stubCtx(
+      Array.from({ length: OCC_RETRY_ATTEMPTS }, () => occConflictError()),
+      { row: TEAM_ROW },
+    );
+
+    const outcome = await runEntityReviewLookupImpl(ctx, { rowId: ROW_ID }, NO_SLEEP).then(
+      () => "resolved" as const,
+      (error: unknown) => error,
+    );
+
+    expect(writes).toHaveLength(OCC_RETRY_ATTEMPTS);
+    expect(writes.every((w) => w.status === "ready")).toBe(true);
+    // Not NEO-294's non-retryable settle: Wikidata still has to be asked.
+    expect(outcome).toBeInstanceOf(WikidataUnavailableError);
+    expect(isNonRetryableError(outcome)).toBe(false);
+    expect(linesFor(errorSpy, "entity_review_lookup_write_failed")[0]).toMatchObject({
+      kind: "team",
+      attempted: "ready",
+    });
   });
 });

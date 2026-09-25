@@ -395,23 +395,18 @@ describe("the heavy warm-gate", () => {
     // Exactly one warm-up fan-out scheduled — not one per escalation.
     expect(scheduled.filter((n) => n === HEAVY_WARMUP_FN)).toHaveLength(1);
 
-    // …and it is OWNED: run it, and assert what it actually did. Scheduling is
-    // half the guarantee; the warm-up has to reach the heavy service, and
-    // asserting the call proves the schedule carried a usable target rather
-    // than merely existing.
     // …and it is OWNED: run it, and assert what it actually did.
     //
-    // A LOWER BOUND, not an exact count, and the reason matters: convex-test's
-    // scheduler queue is shared across every `convexTest()` instance in a file
-    // (see the same note in placeholderWarmup.test.ts), so the first test that
-    // drains also sweeps up whatever the earlier tests left behind. Pinning an
-    // exact number here would be pinning THEIR behaviour, from a test that
-    // does not own it. What this test owns is that its own warm-up reached the
-    // heavy service — and that no warm-up went anywhere else.
+    // NEO-299: the warm-gate no longer calls `/warmup` itself. It enqueues the
+    // heavy warm-up fan-out on the heavy workpool, which convex-test cannot
+    // mount, so the enqueue fails here and the action swallows it (a warm-up
+    // must never fail a batch). What this drain still proves is that the
+    // warm-gate runs to completion without throwing, and that it never fires a
+    // heavy warm-up directly, beside the pool whose slots it has to share.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await drain(t);
-    const warmups = calls.filter((u) => u.endsWith("/warmup"));
-    expect(warmups.length).toBeGreaterThan(0);
-    expect(warmups.every((u) => u === `${HEAVY_URL}/warmup`)).toBe(true);
+    warn.mockRestore();
+    expect(calls.filter((u) => u.endsWith("/warmup"))).toHaveLength(0);
   });
 
   test("a SECOND escalation enqueues heavy but does NOT re-fire the warm-gate", async () => {
@@ -470,10 +465,14 @@ describe("the heavy warm-gate", () => {
     );
     expect(images.every((i) => i.escalated === true)).toBe(true);
 
-    // One schedule, one call. The de-duplication has to hold all the way to
-    // the wire, not just in the scheduler table.
+    // One schedule (asserted above). NEO-299: the scheduled warm-gate enqueues
+    // its warm-ups on the heavy workpool rather than calling `/warmup` itself,
+    // and convex-test cannot mount that component — so the drain proves only
+    // that nothing reaches the wire directly, beside the pool.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await drain(t);
-    expect(calls.filter((u) => u === `${HEAVY_URL}/warmup`)).toHaveLength(1);
+    warn.mockRestore();
+    expect(calls.filter((u) => u === `${HEAVY_URL}/warmup`)).toHaveLength(0);
   });
 });
 

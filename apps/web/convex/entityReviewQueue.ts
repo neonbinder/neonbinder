@@ -1,14 +1,20 @@
 import {
+  action,
   mutation,
   query,
   internalMutation,
   internalQuery,
 } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RunResult } from "@convex-dev/workpool";
+// NEO-301: the backstop says whether a failed item gave up on Wikidata.
+import {
+  isWikidataUnavailableResult,
+  parseWikidataUnavailable,
+} from "../lib/errors/wikidata-unavailable";
 import { getCurrentUserId, requireAdmin } from "./auth";
 import {
   buildExistingPlayerCandidates,
@@ -2910,6 +2916,11 @@ export const clearDecision = mutation({
  *   create — 200 reads + 25 × ~28 ≈ 900
  *   skip   — 200 reads + 200 × 1 patch ≈ 400
  *
+ * NEO-301 split those across two transactions: the `scan` reads (and the
+ * ambiguity reads that choose the page) happen in `listBulkCandidates`, a
+ * query, and only the `decide` half — one `db.get` more per row — happens in
+ * `decideRowsByIds`. Neither budget grew; the mutation's got smaller.
+ *
  * One bound would have to be the small one, and then a PASS over a batch whose
  * rows are mostly decided already would cost a call per 25 rows. That is not
  * hypothetical: the wizard re-walks the batch each time a round of lookups
@@ -2943,7 +2954,24 @@ export type BulkDecideResult = {
 };
 
 /**
- * Shared body of the two bulk fast-paths below: walk ONE PAGE of a batch and
+ * The bulk walk behind the two fast-paths below — `decideAllRemaining` until
+ * NEO-301, which split it into a query that chooses the page
+ * (`listBulkCandidates`), a mutation that writes it (`decideRowsByIds`) and an
+ * action that runs one after the other (`runBulkDecidePage`).
+ *
+ * ## NEO-301 — why the page is READ in a query
+ *
+ * The walk used to open a 200-row `by_selector_option_and_batch` range inside
+ * the mutation that wrote the decisions. OCC validates a mutation's whole read
+ * set, so every lookup `applyLookupResult` landed on a row in that window —
+ * and every staged row it inserted at the batch tail, which a short last page's
+ * open-ended range covers — invalidated the transaction. During a lookup storm
+ * the mutation exhausted its retries (five such failures in one seed log), and
+ * the wizard's armed loop turned itself off. A query takes no part in OCC, so
+ * the window now lives there, and the mutation reads only the rows it writes.
+ * Everything below still describes the walk exactly.
+ *
+ * Walk ONE PAGE of a batch and
  * decide every row in it that carries NO decision yet, leaving already-decided
  * rows exactly as the operator left them, and report what this call did.
  *
@@ -2991,9 +3019,10 @@ export type BulkDecideResult = {
  * cannot drift on batch scoping, on the already-decided rule, or on what the
  * returned count means — the only difference between them is the decision they
  * write, and (NEO-221) whether a row whose lookup is still in flight is in
- * scope. Private, and assumes its caller has already run `requireAdmin`.
+ * scope. The action runs `requireAdmin`; both internal halves take the
+ * caller's id and enforce row ownership with it.
  *
- * ## NEO-221 — `includePending` is not a preference, it is the difference
+ * ## NEO-221 — whether a pending row is in scope is not a preference, it is the difference
  * between the two fast paths
  *
  * A `pending` row is one whose Wikidata lookup has not come back. What that
@@ -3007,12 +3036,12 @@ export type BulkDecideResult = {
  *     players, and NEO-254 removed the automatic TEAM leg altogether, so a
  *     team decided while pending has no later automatic path at all). The
  *     operator asked for "everything else is new", not "everything else is new
- *     and unenriched". So create passes `false` and the caller re-arms as
+ *     and unenriched". So create leaves pending rows out and the caller re-arms as
  *     lookups land.
  *   - SKIP consumes nothing. Nothing is created, nothing is linked, and no
  *     enrichment is ever read — so waiting on the lookup buys the operator
  *     precisely nothing, and making them wait to say "none of this is an
- *     entity" would be a worse wizard, not a safer one. Skip passes `true`.
+ *     entity" would be a worse wizard, not a safer one. Skip takes them.
  *
  * ## NEO-254 — and create also skips a row that is a CHOICE
  *
@@ -3040,24 +3069,89 @@ export type BulkDecideResult = {
  * most one index lookup per undecided player row in the batch, which is the
  * same order as the loop it sits in.
  */
-async function decideAllRemaining(
-  ctx: MutationCtx,
+/** NEO-301 — which bulk decision one walk writes. */
+type BulkAction = "create" | "skip";
+
+const bulkActionValidator = v.union(v.literal("create"), v.literal("skip"));
+
+/**
+ * NEO-301 — what `listBulkCandidates` hands the action: the rows ONE page of
+ * the walk would decide, and where the next page resumes.
+ */
+export type BulkCandidatePage = {
+  /** At most `ENTITY_REVIEW_BULK_PAGE[action].decide` rows, in batch order. */
+  ids: Array<Id<"entityReviewQueue">>;
+  /** Same meaning as `BulkDecideResult.hasMore`. */
+  hasMore: boolean;
+  /** Same meaning as `BulkDecideResult.cursor`. */
+  cursor: number | null;
+};
+
+/**
+ * NEO-301 — is this row one the bulk walk may decide, as of the snapshot `ctx`
+ * reads?
+ *
+ * One predicate, asked TWICE: by `listBulkCandidates` to choose a page, and by
+ * `decideRowsByIds` again, live, on each row it is about to write. The query's
+ * answer is a snapshot that can be seconds old by the time the mutation runs
+ * (the Wikidata pool keeps landing lookups in between), so the mutation never
+ * trusts it — and because both sides call this, they cannot drift on what is
+ * in scope.
+ *
+ * The rules are `decideAllRemaining`'s, unchanged (see the doc above):
+ *  - a row that carries a decision is never touched (both actions);
+ *  - SKIP takes every other row, pending lookups and team/league rows included;
+ *  - CREATE takes only a settled PLAYER row (NEO-221: not `pending`; NEO-236:
+ *    never a team or a league) whose name the LIVE index does not make
+ *    ambiguous (NEO-254).
+ *
+ * The kind test runs before the ambiguity read so a team row on the create
+ * path costs nothing beyond the row itself — the same result the old walk
+ * reached, since its ambiguity check only ever applied to players.
+ */
+async function isBulkCandidate(
+  ctx: QueryCtx | MutationCtx,
+  row: Doc<"entityReviewQueue">,
+  action: BulkAction,
+): Promise<boolean> {
+  if (row.decision) return false;
+  if (action === "skip") return true;
+  if (row.status === "pending") return false;
+  if (row.kind !== "player") return false;
+  return !(await isAmbiguousPlayerName(ctx, row.name, row.sportId));
+}
+
+/**
+ * NEO-301 — the READ half of one bulk page: choose which rows it decides.
+ *
+ * This is the 200-row `by_selector_option_and_batch` window the old mutation
+ * opened, moved into a query. A query takes no part in OCC, so the window no
+ * longer lands in any transaction's read set — which is the whole fix: the
+ * lookup storm (`applyLookupResult` patching rows in the window and inserting
+ * staged rows at the batch tail) used to invalidate that range on nearly every
+ * retry, and the mutation exhausted its retries.
+ *
+ * Walk semantics are exactly the old ones: `scan` rows from the cursor, at
+ * most `decide` of them chosen, the cursor on the last row EXAMINED so a spent
+ * budget leaves the unread rows for the next call, and `hasMore` true on a
+ * spent budget or a full scan.
+ *
+ * Ownership is checked over EVERY row of the window before anything is
+ * returned, so a stale batchId from another session refuses the page (and, a
+ * batch being one session, the whole run) before a single write — the same
+ * guarantee the mutation used to give by checking before its first patch.
+ */
+async function listBulkCandidatesImpl(
+  ctx: QueryCtx,
   args: {
     selectorOptionId: Id<"selectorOptions">;
     batchId: string;
-    /**
-     * NEO-294 — resume point: the `cursor` a previous call returned. Absent
-     * starts a fresh pass at the head of the batch. A garbage value from a
-     * direct API call can only make this walk examine fewer rows (an admin
-     * skipping their own work), never a row of a batch they do not own.
-     */
     cursor?: number;
+    action: BulkAction;
+    callerId: string;
   },
-  decision: { action: "create" } | { action: "skip" },
-  includePending: boolean,
-  callerId: string,
-): Promise<BulkDecideResult> {
-  const page = ENTITY_REVIEW_BULK_PAGE[decision.action];
+): Promise<BulkCandidatePage> {
+  const page = ENTITY_REVIEW_BULK_PAGE[args.action];
   const after = args.cursor;
   const rows = await ctx.db
     .query("entityReviewQueue")
@@ -3070,16 +3164,8 @@ async function decideAllRemaining(
             .gt("_creationTime", after),
     )
     .take(page.scan);
-  // NEO-221 — same second layer as `recordDecision` and `cancelBatch`, and it
-  // matters MORE here than on either of them: one call rules on every open row
-  // in the page, so a stale batchId from another session would decide a
-  // colleague's review. Checked over every row before the first patch, so a
-  // refused PAGE writes nothing at all — and because a batch is one
-  // (selectorOptionId, user) session (`startBatch` keys it that way), the first
-  // page refusing is the whole run refusing before anything is written.
-  for (const row of rows) assertOwnsRow(row, callerId);
-  const now = Date.now();
-  let count = 0;
+  for (const row of rows) assertOwnsRow(row, args.callerId);
+  const ids: Array<Id<"entityReviewQueue">> = [];
   /**
    * NEO-294 — the last row this call actually looked at, and therefore where
    * the next one resumes. Tracked rather than taken from the end of the page,
@@ -3089,56 +3175,132 @@ async function decideAllRemaining(
   let lastExamined: Doc<"entityReviewQueue"> | undefined;
   let budgetSpent = false;
   for (const row of rows) {
-    if (count >= page.decide) {
+    if (ids.length >= page.decide) {
       budgetSpent = true;
       break;
     }
     lastExamined = row;
-    if (row.decision) continue;
-    // NEO-221: a row whose lookup has not landed is skipped on the CREATE
-    // path (see the note above) and included on SKIP.
-    if (!includePending && row.status === "pending") continue;
-    // NEO-254 — a player name TWO OR MORE NB rows already carry is never
-    // decided in bulk: a human picks which "Bob Allen" the card means, and
-    // "create all remaining" would mint a third one behind their back. Asked
-    // of the LIVE index rather than the row's stored marker — see the doc
-    // above for why that distinction is the point.
-    //
-    // `includePending` is reused as the create-versus-skip discriminator
-    // deliberately: both exclusions exist for the same reason (create consumes
-    // something the operator has not looked at yet) and splitting them into two
-    // flags would let a future caller turn one off without the other.
-    if (
-      !includePending &&
-      row.kind === "player" &&
-      (await isAmbiguousPlayerName(ctx, row.name, row.sportId))
-    ) {
+    if (await isBulkCandidate(ctx, row, args.action)) ids.push(row._id);
+  }
+  return {
+    ids,
+    hasMore: budgetSpent || rows.length === page.scan,
+    cursor: lastExamined ? lastExamined._creationTime : null,
+  };
+}
+
+/** NEO-301 — `listBulkCandidatesImpl`, callable from the bulk actions. */
+export const listBulkCandidates = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    batchId: v.string(),
+    cursor: v.optional(v.number()),
+    action: bulkActionValidator,
+    callerId: v.string(),
+  },
+  returns: v.object({
+    ids: v.array(v.id("entityReviewQueue")),
+    hasMore: v.boolean(),
+    cursor: v.union(v.number(), v.null()),
+  }),
+  handler: async (ctx, args): Promise<BulkCandidatePage> =>
+    await listBulkCandidatesImpl(ctx, args),
+});
+
+/**
+ * NEO-301 — the WRITE half of one bulk page: decide exactly the rows it is
+ * handed, re-checking each one live, and return how many it decided.
+ *
+ * ## The read set is the rows it writes, and nothing wider
+ *
+ * No range over the batch. Each id is fetched with `db.get`; beyond those
+ * point reads, the only reads are the name/alias lookups `isBulkCandidate`
+ * makes for a player and — on create — the player's OWN staged rows
+ * (`by_source_player`, keyed on that player's id) plus the per-name dedupe and
+ * team resolution `stageCareerTeamRowsImpl` performs. A lookup landing on some
+ * OTHER row of the batch therefore no longer conflicts with this transaction;
+ * only a write to one of these very rows can, and then a retry re-reads a
+ * handful of documents rather than a 200-row window. Pinned structurally in
+ * entityReviewQueue.bulkReadSet.test.ts.
+ *
+ * ## Every candidate is re-validated, and a stale one is skipped, not refused
+ *
+ * The ids come from a query that ran moments ago. Between the two, a row can
+ * be decided by the operator, turned back to `pending` by "Change decision",
+ * deleted by a cancel, or have its name become ambiguous — so each is run
+ * through `isBulkCandidate` again, against what the database holds NOW, and
+ * a row that no longer qualifies is left exactly as it is. That is the
+ * already-decided rule doing its job, not an error.
+ *
+ * Two checks are refusals rather than skips:
+ *  - OWNERSHIP throws, over every fetched row before the first write, so a
+ *    page that is not the caller's writes nothing. It cannot legitimately
+ *    fail here (the query already checked, and a row never changes owner),
+ *    which is precisely why a mismatch must stop rather than be passed over.
+ *  - More ids than a page may decide throws: this is internal and the only
+ *    caller hands it a page, so an oversized list is a bug that would
+ *    reintroduce the unbounded transaction NEO-294 removed.
+ *
+ * A row from another batch or selector option is skipped: it cannot be in a
+ * page this walk chose, and skipping keeps a wrong id from writing anywhere.
+ *
+ * The decision written is exactly the old walk's — including NEO-236's
+ * career-team staging (Jason kept it on this path) and NEO-248's hand-typed
+ * stints carried onto the create decision.
+ */
+export async function decideRowsByIdsImpl(
+  ctx: MutationCtx,
+  args: {
+    ids: ReadonlyArray<Id<"entityReviewQueue">>;
+    selectorOptionId: Id<"selectorOptions">;
+    batchId: string;
+    action: BulkAction;
+    callerId: string;
+  },
+): Promise<number> {
+  const unique = [...new Set(args.ids)];
+  if (unique.length > ENTITY_REVIEW_BULK_PAGE[args.action].decide) {
+    throw new Error("Too many review rows for one bulk page");
+  }
+  const rows: Array<Doc<"entityReviewQueue">> = [];
+  for (const id of unique) {
+    const row = await ctx.db.get(id);
+    // Gone since the query ran — a cancel or a commit deleted the batch.
+    if (!row) continue;
+    assertOwnsRow(row, args.callerId);
+    rows.push(row);
+  }
+  // NEO-221: one timestamp for the whole call — this IS one operator action,
+  // and stamping each row a millisecond apart would only make the sweep's
+  // arithmetic harder to read.
+  const now = Date.now();
+  let count = 0;
+  for (const row of rows) {
+    if (row.selectorOptionId !== args.selectorOptionId || row.batchId !== args.batchId) {
       continue;
     }
+    // NEO-221 / NEO-236 / NEO-254 — asked again, LIVE; see `isBulkCandidate`.
+    if (!(await isBulkCandidate(ctx, row, args.action))) continue;
     // Each row is patched with its OWN fresh object literal, never a shared
-    // reference to `decision`.
-    //
-    // NEO-221: one timestamp for the whole call — this IS one operator action,
-    // and stamping each row a millisecond apart would only make the sweep's
-    // arithmetic harder to read.
+    // reference to a decision.
     //
     // Branched rather than spread-with-a-conditional-key so a `create` payload
     // cannot even be expressed on the "skip" arm, which does not carry one.
-    if (decision.action === "create") {
+    if (args.action === "create") {
       /*
        * ── NEO-236: the bulk create decides PLAYERS ONLY ────────────────────
        *
        * Jason, 2026-09-05, verbatim: "add all remaining as new should still
        * process teams, it should only apply to players."
        *
-       * A team row is left UNDECIDED here, whichever kind it is — a name off
-       * the checklist or a career team this batch staged. Both get their own
-       * New Team step, because both need the one question this path cannot
-       * answer: which LEAGUE. The old behaviour pre-filled that from the
-       * enrichment's suggestion, so a club side pulled off a player's career
-       * list could be filed under a league no human ever looked at — which is
-       * the whole defect this ticket exists to close, re-entering through the
-       * one door that was still open.
+       * A team row is left UNDECIDED (`isBulkCandidate` refuses it), whichever
+       * kind it is — a name off the checklist or a career team this batch
+       * staged. Both get their own New Team step, because both need the one
+       * question this path cannot answer: which LEAGUE. The old behaviour
+       * pre-filled that from the enrichment's suggestion, so a club side pulled
+       * off a player's career list could be filed under a league no human ever
+       * looked at — which is the whole defect this ticket exists to close,
+       * re-entering through the one door that was still open.
        *
        * Nothing is lost by deciding the player first. Its stints resolve by
        * NAME in the commit prelude, against teams the staged steps create
@@ -3151,7 +3313,6 @@ async function decideAllRemaining(
        * batch to be answered. Idempotent, so on the common path (the lookup
        * already staged them) it reads a few index ranges and inserts nothing.
        */
-      if (row.kind !== "player") continue;
       await stageCareerTeamRowsImpl(ctx, row);
       /*
        * ── NEO-248: the bulk carries this player's hand-typed stints ─────────
@@ -3165,8 +3326,8 @@ async function decideAllRemaining(
        * That matters here more than it looks, because this path is not only
        * the "Add All Remaining as New" button. The wizard re-arms it on a
        * TIMER as lookups land, so a player row the operator has typed years on
-       * can be decided by a mutation nobody pressed — and before this, decided
-       * as though those years had never been typed.
+       * can be decided by a call nobody pressed — and before this, decided as
+       * though those years had never been typed.
        *
        * Read through `by_source_player` rather than off the batch: the same
        * narrow index the staging pass uses, for the same NEO-189 reason, and
@@ -3212,17 +3373,75 @@ async function decideAllRemaining(
     }
     count++;
   }
-  return {
-    decided: count,
-    hasMore: budgetSpent || rows.length === page.scan,
-    cursor: lastExamined ? lastExamined._creationTime : null,
-  };
+  return count;
+}
+
+/** NEO-301 — `decideRowsByIdsImpl`, callable from the bulk actions. */
+export const decideRowsByIds = internalMutation({
+  args: {
+    ids: v.array(v.id("entityReviewQueue")),
+    selectorOptionId: v.id("selectorOptions"),
+    batchId: v.string(),
+    action: bulkActionValidator,
+    callerId: v.string(),
+  },
+  returns: v.number(),
+  handler: async (ctx, args): Promise<number> => await decideRowsByIdsImpl(ctx, args),
+});
+
+/**
+ * NEO-301 — one page of a bulk walk: read the page in a query, write it in a
+ * mutation, report what happened.
+ *
+ * Shared by `recordAllRemainingAsCreate` and `recordAllRemainingAsSkip` so the
+ * two cannot drift on batch scoping, the already-decided rule or what the
+ * returned count means. `decided` is what the MUTATION decided — a candidate
+ * that went stale in between is not counted — while `hasMore` and `cursor`
+ * are the query's, because the walk's position is about which rows were
+ * examined, not which were written.
+ *
+ * The admin gate runs here, in the action, on the caller's own identity:
+ * `requireAdmin` reads only `ctx.auth`, which an action has. The caller's id is
+ * then handed to both internal halves, which enforce row ownership with it.
+ * An empty page skips the mutation entirely.
+ */
+async function runBulkDecidePage(
+  ctx: ActionCtx,
+  args: {
+    selectorOptionId: Id<"selectorOptions">;
+    batchId: string;
+    cursor?: number;
+  },
+  action: BulkAction,
+): Promise<BulkDecideResult> {
+  const callerId = await requireAdmin(ctx);
+  const page: BulkCandidatePage = await ctx.runQuery(
+    internal.entityReviewQueue.listBulkCandidates,
+    {
+      selectorOptionId: args.selectorOptionId,
+      batchId: args.batchId,
+      ...(args.cursor !== undefined ? { cursor: args.cursor } : {}),
+      action,
+      callerId,
+    },
+  );
+  const decided: number =
+    page.ids.length === 0
+      ? 0
+      : await ctx.runMutation(internal.entityReviewQueue.decideRowsByIds, {
+          ids: page.ids,
+          selectorOptionId: args.selectorOptionId,
+          batchId: args.batchId,
+          action,
+          callerId,
+        });
+  return { decided, hasMore: page.hasMore, cursor: page.cursor };
 }
 
 
 /**
  * Bulk fast-path: mark every not-yet-decided PLAYER row in this batch as
- * "create", in one mutation. A first-time real-set sync can surface
+ * "create". A first-time real-set sync can surface
  * hundreds of genuinely-new names (the common case, not the exception —
  * e.g. every rookie in a brand-new set) where reviewing one at a time has
  * real value ONLY when something looks wrong; when everything's fine, the
@@ -3232,7 +3451,7 @@ async function decideAllRemaining(
  * are now EXCLUDED, where they used to be swept up with the rest. Deciding one
  * "create" mints a permanently bare player/team for a name Wikidata could have
  * enriched, with no later path back (enrichment is creation-only); see
- * `decideAllRemaining` for the full argument. The wizard re-calls this as
+ * `isBulkCandidate` for the full argument. The wizard re-calls this as
  * lookups land, so the operator still taps once — the count just fills in
  * over a few seconds instead of all at once.
  *
@@ -3245,8 +3464,8 @@ async function decideAllRemaining(
  * This decides at most `ENTITY_REVIEW_BULK_PAGE.create.decide` rows and hands
  * back `{ hasMore, cursor }`; the caller re-calls with that cursor until `hasMore`
  * is false. Deciding a whole 419-entity review in one transaction is what blew
- * Convex's system-operation budget on the seed job — see `decideAllRemaining`
- * for the measurement and for what an interrupted walk leaves behind.
+ * Convex's system-operation budget on the seed job — see
+ * `ENTITY_REVIEW_BULK_PAGE` for the measurement and for what an interrupted walk leaves behind.
  *
  * ## NEO-236 — teams are NOT decided here, and the count says players
  *
@@ -3255,8 +3474,17 @@ async function decideAllRemaining(
  * team this batch staged — is left undecided for its own New Team step,
  * because that step asks which LEAGUE and this path can only guess. So the
  * returned count is a count of PLAYERS, and the button that calls this says so.
+ *
+ * ## NEO-301 — an ACTION, so the page it reads is outside every transaction
+ *
+ * It was a mutation whose read set held the 200-row page it walked, so a
+ * lookup storm writing anywhere in that window made it exhaust its OCC
+ * retries. It is now `runBulkDecidePage`: a query picks the page and a
+ * mutation decides exactly those rows, re-checking each one live. The name,
+ * the arguments and the `{ decided, hasMore, cursor }` contract are unchanged;
+ * a client calls it with `useAction`. Admin-gated in the action itself.
  */
-export const recordAllRemainingAsCreate = mutation({
+export const recordAllRemainingAsCreate = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     batchId: v.string(),
@@ -3269,10 +3497,8 @@ export const recordAllRemainingAsCreate = mutation({
     hasMore: v.boolean(),
     cursor: v.union(v.number(), v.null()),
   }),
-  handler: async (ctx, args): Promise<BulkDecideResult> => {
-    const callerId = await requireAdmin(ctx);
-    return await decideAllRemaining(ctx, args, { action: "create" }, false, callerId);
-  },
+  handler: async (ctx, args): Promise<BulkDecideResult> =>
+    await runBulkDecidePage(ctx, args, "create"),
 });
 
 /**
@@ -3285,7 +3511,8 @@ export const recordAllRemainingAsCreate = mutation({
  *
  * Same admin gate, same batch scoping, same already-decided rule and the same
  * bounded `{ decided, hasMore, cursor }` walk as the create variant; both run
- * through `decideAllRemaining` so the two cannot drift. Its page is larger
+ * through `runBulkDecidePage` so the two cannot drift, and it is an action
+ * for the same NEO-301 reason. Its page is larger
  * (`ENTITY_REVIEW_BULK_PAGE.skip`) because a skip costs a read and a patch and
  * nothing else — see the arithmetic there.
  *
@@ -3303,7 +3530,7 @@ export const recordAllRemainingAsCreate = mutation({
  * also the operator's explicit "none of this is an entity", which is exactly
  * the case where blocking on a lookup would be perverse.
  */
-export const recordAllRemainingAsSkip = mutation({
+export const recordAllRemainingAsSkip = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     batchId: v.string(),
@@ -3316,10 +3543,8 @@ export const recordAllRemainingAsSkip = mutation({
     hasMore: v.boolean(),
     cursor: v.union(v.number(), v.null()),
   }),
-  handler: async (ctx, args): Promise<BulkDecideResult> => {
-    const callerId = await requireAdmin(ctx);
-    return await decideAllRemaining(ctx, args, { action: "skip" }, true, callerId);
-  },
+  handler: async (ctx, args): Promise<BulkDecideResult> =>
+    await runBulkDecidePage(ctx, args, "skip"),
 });
 
 /**
@@ -3566,6 +3791,34 @@ export const getInternal = internalQuery({
  * see `backstopEntityReviewRowImpl`, which carries the same guard and the
  * argument for why.
  */
+/**
+ * NEO-301 — lay a team lookup's later result over the partial answer already
+ * on the row (see `applyLookupResult`). A field the new result leaves
+ * `undefined` keeps its stored value; `colors` is merged per swatch for the
+ * same reason. Everything the new result DOES carry wins, so a Wikidata answer
+ * adds `wikidataId`, `yearsActive` and `leagueWikidataId` and an ESPN answer
+ * refreshes its own fields with the same values.
+ */
+export function overlayTeamEnrichment(
+  prior: Doc<"entityReviewQueue">["enrichment"],
+  next: Doc<"entityReviewQueue">["enrichment"],
+): Doc<"entityReviewQueue">["enrichment"] {
+  if (!next) return prior;
+  if (!prior) return next;
+  const merged: Record<string, unknown> = { ...prior };
+  for (const [key, value] of Object.entries(next)) {
+    if (value !== undefined) merged[key] = value;
+  }
+  if (prior.colors || next.colors) {
+    const colors: Record<string, unknown> = { ...(prior.colors ?? {}) };
+    for (const [key, value] of Object.entries(next.colors ?? {})) {
+      if (value !== undefined) colors[key] = value;
+    }
+    merged.colors = colors;
+  }
+  return merged as Doc<"entityReviewQueue">["enrichment"];
+}
+
 export const applyLookupResult = internalMutation({
   args: {
     id: v.id("entityReviewQueue"),
@@ -3581,6 +3834,33 @@ export const applyLookupResult = internalMutation({
     // Decided: the operator has ruled and commit is imminent or done. Writing
     // here would only contend with the commit's read of this same row.
     if (row.decision) return null;
+
+    /*
+     * NEO-301 — a TEAM row can already be "ready" with a PARTIAL answer here.
+     *
+     * When a team's Wikidata lookup is unavailable but ESPN answered,
+     * `runEntityReviewLookupImpl` writes that ESPN half as "ready" (league,
+     * location, colours — the operator can act on it now, and for a team this
+     * lookup is the only automatic source of them, NEO-254) and then throws so
+     * `wikidataPool` retries the Wikidata half. Each later attempt lands here
+     * on a row that already holds an answer, and must ADD to it, never take
+     * from it:
+     *   - a result is overlaid field by field, keeping every field the new
+     *     one leaves undefined — a retry whose ESPN fetch failed (ESPN is
+     *     no-throw, so that reads as "no ESPN data") must not erase the
+     *     colours the first attempt found;
+     *   - an "error" (a retry whose lookup found nothing at all) does not
+     *     downgrade it — the ESPN answer it already holds is still true.
+     *
+     * Scoped to team rows that are already "ready" because that shape has
+     * exactly one producer: a team row is staged `pending` and its lookup is
+     * enqueued once (NEO-99's creation-only contract), so before NEO-301 no
+     * team row was ever written twice. League rows, which ARE staged "ready"
+     * before their first lookup, are deliberately not included.
+     */
+    const priorTeamAnswer =
+      row.kind === "team" && row.status === "ready" ? row.enrichment : undefined;
+    if (priorTeamAnswer && args.status === "error") return null;
 
     /**
      * NEO-254 — attach NB's OWN answer to the same question the lookup asked.
@@ -3622,7 +3902,9 @@ export const applyLookupResult = internalMutation({
     const enrichment =
       existingCandidates.length > 0
         ? { ...(args.enrichment ?? {}), existingCandidates }
-        : args.enrichment;
+        : priorTeamAnswer
+          ? overlayTeamEnrichment(priorTeamAnswer, args.enrichment)
+          : args.enrichment;
 
     await ctx.db.patch(args.id, {
       status: args.status,
@@ -3660,8 +3942,8 @@ export const applyLookupResult = internalMutation({
      * the career-team staging runs here: `nextUndecided` only ever presents a
      * settled row, and this mutation is what settles it.
      */
-    if (row.kind === "team" && args.enrichment?.league) {
-      await stageLeagueRowsImpl(ctx, { ...row, enrichment: args.enrichment });
+    if (row.kind === "team" && enrichment?.league) {
+      await stageLeagueRowsImpl(ctx, { ...row, enrichment });
     }
     return null;
   },
@@ -3714,6 +3996,26 @@ export async function backstopEntityReviewRowImpl(
   const row = await ctx.db.get(rowId);
   // Gone (a Cancel deleted the batch while this item drained) — nothing to age.
   if (!row) return null;
+  // NEO-301 — the retry ladder ran out without ever reaching Wikidata. Said
+  // for EVERY surviving row, before the guards below, because the row it
+  // matters most for is one they leave alone: a team row already "ready"
+  // with the ESPN half of its answer keeps it (it has data; flipping it to
+  // "error" would throw that away), and this line is then the only record
+  // that its Wikidata half never came. Ids, kinds and the transport reason
+  // only — never the name (observability.ts).
+  const unavailable =
+    result.kind === "failed" ? parseWikidataUnavailable(result.error) : null;
+  if (unavailable) {
+    console.warn(
+      JSON.stringify({
+        msg: "wikidata_review_unavailable",
+        rowId,
+        kind: row.kind,
+        reason: unavailable.reason,
+        rowStatus: row.status,
+      }),
+    );
+  }
   // Already resolved by the action itself — the common path. Leave it be.
   if (row.status !== "pending") return null;
   // NEO-189: decided by the operator — commit is imminent or done, and this
@@ -3724,11 +4026,17 @@ export async function backstopEntityReviewRowImpl(
   // observability.ts). `result.kind` tells triage HOW the work item ended
   // without the row having been resolved — the fingerprint of the residue this
   // backstop exists for.
+  //
+  // NEO-301: `wikidataUnavailable` says the item gave up because every attempt
+  // of the pool's retry ladder failed to reach Wikidata (the backstop only
+  // runs after the LAST attempt), as opposed to a thrown write or a
+  // cancellation — the one question triage asks of this line first.
   console.warn(
     JSON.stringify({
       msg: "entity_review_row_backstopped",
       rowId,
       resultKind: result.kind,
+      wikidataUnavailable: isWikidataUnavailableResult(result),
     }),
   );
   await ctx.db.patch(rowId, { status: "error" });
@@ -3749,6 +4057,16 @@ export async function backstopEntityReviewRowImpl(
  * half an hour, Wikidata is down and "error" is the correct outcome anyway.
  * Erring long mirrors the placeholder wedge watchdog's exact philosophy: a
  * safety net must never fire on healthy work.
+ *
+ * NEO-301: a lookup that cannot reach Wikidata is now RETRIED by the pool, and
+ * the row stays `pending` across the whole ladder — at worst 18.2 minutes from
+ * the item's first start to its final failure (the arithmetic is on
+ * `WIKIDATA_POOL_RETRY` in wikidataPool.ts), inside this 30-minute window for
+ * any row that starts promptly. A row queued behind a large batch during a
+ * sustained outage can outlast it and be aged here mid-ladder; that is
+ * self-correcting (a later successful attempt still writes "ready", and the
+ * final backstop no-ops on a non-pending row), so this stays a clock from
+ * creation rather than growing a heartbeat.
  */
 export const ENTITY_REVIEW_STALE_MS = 30 * 60 * 1000;
 

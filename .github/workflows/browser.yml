@@ -40,6 +40,18 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # NEO-299: today's PR preview inherits whatever --max-instances the LAST
+  # `gcloud run deploy` of the shared dev browser service happened to carry
+  # (browser-deploy.yml's dev lane sets 20) — a tagged no-traffic preview
+  # revision does not honour the service-level cap. Capped explicitly at the
+  # dealer-preview scale agreed in NEO-299 (Jason, 2026-09-24: "Fast: ...
+  # Browser preview: 3"), sized so a preview burst can't add to the 400 GiB
+  # dev quota alongside the preprocess previews. Not part of
+  # apps/web/convex/preprocessCapacity.json (that file is preprocess-only) —
+  # capacity-parity in pr-pipeline.yml checks this literal directly.
+  PREVIEW_BROWSER_MAX_INSTANCES: 3
+
 defaults:
   run:
     working-directory: services/browser
@@ -127,6 +139,11 @@ jobs:
           env_vars: ENVIRONMENT=dev
           no_traffic: true
           tag: pr-${{ github.event.pull_request.number }}
+          # NEO-299: explicit per-deploy cap — see the env block comment above.
+          # Without this the preview inherited the shared dev service's last
+          # deployed --max-instances (20), unbounded by anything this
+          # workflow controls.
+          flags: "--max-instances=${{ env.PREVIEW_BROWSER_MAX_INSTANCES }}"
 
       - id: capture
         name: Capture preview URL
