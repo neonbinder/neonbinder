@@ -31,8 +31,9 @@ refused overlapping eras, which let a dated successor (LA Dodgers 1958–) carry
 narrowing picks the one covering row. The reverse order (creating or renaming
 a team onto another team's alias) is `assertNameNotAnotherTeamsAlias` /
 `findAliasHoldersOfName`, gated on the key changing so a legacy pair cannot
-lock a team out of its own saves. The bulk loader's forward check was already
-era-blind; its reverse order still creates beside an alias holder.
+lock a team out of its own saves. The bulk loader checks both orders: forward in
+step 4 (`aliasOwnedBy`), reverse in step 4b (`nameHeldAsAliasBy`, status
+`ambiguous`, nothing written).
 
 **How to apply:** when touching era narrowing or alias writers, test both the
 card and stint callers, and a successor row wearing its predecessor's name.

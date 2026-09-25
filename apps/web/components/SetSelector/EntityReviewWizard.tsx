@@ -29,6 +29,7 @@ import { CopyButton } from "../primitives/CopyButton";
 import { NearMatchPanel, type NearMatch } from "../entities/NearMatchPanel";
 import { TeamMatchSearch } from "../entities/TeamMatchSearch";
 import { teamOptionLabel } from "../../lib/teams/team-era";
+import { useStaleWhileLoading } from "@/src/hooks/useStaleWhileLoading";
 import EntityLinkSearch from "./EntityLinkSearch";
 import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
 // NEO-236: the one form a team is created from, shared with NewTeamDialog.
@@ -218,6 +219,10 @@ export function teamCreatePrefill(row: {
     ...(row.enrichment?.location ? { location: row.enrichment.location } : {}),
   });
 }
+/** NEO-307 — the "no team holds this name as an alias" answer, one stable
+ *  reference; see `nameAliasHolders`. */
+const NO_ALIAS_HOLDERS: ReadonlyArray<never> = [];
+
 /** Past this many decided rows the history list collapses behind a disclosure. */
 const DECIDED_LIST_INLINE_MAX = 5;
 
@@ -738,11 +743,24 @@ export default function EntityReviewWizard({
     current && !reviewingDecided && current.kind === "team"
       ? draftFullName(teamCreateByRow[current._id] ?? teamCreatePrefill(current)).trim()
       : "";
-  const nameAliasHolders = useQuery(
+  const nameAliasHoldersLive = useQuery(
     api.teams.nameHeldAsAliasBy,
     current && aliasCheckName
       ? { sportId: current.sportId, name: aliasCheckName }
       : "skip",
+  );
+  /*
+   * Held through each keystroke's reload, so the warning and the create
+   * control's `aria-disabled` do not blink off between keystrokes while the
+   * next answer is in flight. Keyed by ROW: a different step never inherits
+   * this one's answer. A skipped query (no name, not a team step) is a
+   * definite "nothing to warn about", not a load, so it is passed as an
+   * empty list — a module constant, because the hook holds by reference and a
+   * fresh `[]` per render would set its state on every render.
+   */
+  const nameAliasHolders = useStaleWhileLoading(
+    aliasCheckName ? nameAliasHoldersLive : NO_ALIAS_HOLDERS,
+    current?._id ?? "",
   );
   // Widened to a single array type on the way out. The two queries return
   // differently-branded ids, and a `Id<"players">[] | Id<"teams">[]`-shaped

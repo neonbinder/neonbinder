@@ -7427,6 +7427,45 @@ describe("EntityReviewWizard — NEO-307 a New Team name another team holds as a
     expect(decision.contains(links[0])).toBe(true);
   });
 
+  it("keeps the warning and the disabled create up while the next keystroke's answer loads", () => {
+    currentAliasHolders = [LA];
+    currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];
+    renderWizard();
+    expect(screen.getAllByText(CLASH)).toHaveLength(2);
+
+    // Mid-typing: the query for the new name has not answered yet.
+    currentAliasHolders = undefined;
+    fireEvent.change(teamNameField(), { target: { value: "Brooklyn Dodgers " } });
+
+    expect(screen.getAllByText(CLASH)).toHaveLength(2);
+    expect(
+      screen.getByRole("button", { name: "Add as New Team" }).getAttribute("aria-disabled"),
+    ).toBe("true");
+
+    // The next answer lands and says the new name is clear.
+    currentAliasHolders = [];
+    fireEvent.change(teamNameField(), { target: { value: "Brooklyn Robins" } });
+    expect(screen.queryByText(CLASH)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Add as New Team" }).getAttribute("aria-disabled"),
+    ).toBeNull();
+  });
+
+  it("drops the held warning at once when the name is cleared (no query is asked)", () => {
+    currentAliasHolders = [LA];
+    currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];
+    renderWizard();
+    expect(screen.getAllByText(CLASH)).toHaveLength(2);
+
+    fireEvent.change(teamLocationField(), { target: { value: "" } });
+    fireEvent.change(teamNameField(), { target: { value: "  " } });
+
+    // The blank-name reason takes over; the alias warning is not held through
+    // a skipped query.
+    expect(screen.queryByText(CLASH)).toBeNull();
+    expect(screen.getByText("Enter a team name before adding it.")).toBeTruthy();
+  });
+
   it("shows nothing and blocks nothing when no team holds the name", () => {
     currentAliasHolders = [];
     currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];
