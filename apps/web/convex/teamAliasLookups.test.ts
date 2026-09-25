@@ -35,7 +35,7 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
@@ -1285,5 +1285,259 @@ describe("NEO-307: commit-time alias writers ignore eras when a string is anothe
     // The name goes to the prelude's unresolved list, the same outcome the
     // "two overlapping rows" refusal beside it has.
     expect((result as { createdTeamIds?: unknown[] }).createdTeamIds).toEqual([]);
+  });
+});
+
+// ===========================================================================
+// NEO-307 — the wizard's New Team step: recordDecision refuses a create the
+// commit would silently drop, and the step can ask ahead of the click
+// ===========================================================================
+
+describe("NEO-307: recordDecision refuses a create that breaks the alias rule", () => {
+  async function teamRow(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    name: string,
+    kind: "team" | "player" = "team",
+  ) {
+    return t.run((ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: sportId,
+        batchId: "batch-307-decide",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind,
+        name,
+        nameNormalized: normalizeTeamName(name),
+        sportId,
+        status: "ready",
+      }),
+    );
+  }
+
+  test("reverse: a New Team name another team holds as an alias is refused with the Team Management wording, and nothing is recorded", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+      yearsActive: { from: 1958 },
+    });
+    const rowId = await teamRow(t, sportId, "BKN Dodgers");
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        create: { location: "Brooklyn", name: "Dodgers", yearsActive: { from: 1911, to: 1957 } },
+      }),
+    ).rejects.toThrow(
+      "Los Angeles Dodgers already answers to this name as an alias — remove it there before a team can take the name.",
+    );
+    expect((await t.run((ctx) => ctx.db.get(rowId)))!.decision).toBeUndefined();
+  });
+
+  test("reverse, same sport only: an NFL team's alias does not block a baseball New Team", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const football = await t.run((ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    await insertTeamWithAliases(t, football, {
+      location: "Boston",
+      name: "Yanks",
+      aliases: ["Brooklyn Dodgers"],
+    });
+    const rowId = await teamRow(t, sportId, "Brooklyn Dodgers");
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      create: { location: "Brooklyn", name: "Dodgers" },
+    });
+    expect((await t.run((ctx) => ctx.db.get(rowId)))!.decision).toMatchObject({
+      action: "create",
+      create: { location: "Brooklyn", name: "Dodgers" },
+    });
+  });
+
+  test("forward: an alias on the create that is another team's own name is refused — the commit would have dropped it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertTeamWithAliases(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      yearsActive: { from: 1911, to: 1957 },
+    });
+    const rowId = await teamRow(t, sportId, "LA Dodgers");
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        create: {
+          location: "Los Angeles",
+          name: "Dodgers",
+          yearsActive: { from: 1958 },
+          aliases: ["Dodger Blue", "Brooklyn Dodgers"],
+        },
+      }),
+    ).rejects.toThrow(/Brooklyn Dodgers is already a team in this sport/);
+    expect((await t.run((ctx) => ctx.db.get(rowId)))!.decision).toBeUndefined();
+  });
+
+  test("the legacy per-career-team creates on a PLAYER row obey the reverse rule too", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+    });
+    const rowId = await teamRow(t, sportId, "Pee Wee Reese", "player");
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        createTeams: [{ sourceName: "Brooklyn Dodgers", location: "Brooklyn", name: "Dodgers" }],
+      }),
+    ).rejects.toThrow(/Los Angeles Dodgers already answers to this name as an alias/);
+  });
+});
+
+describe("NEO-307: teams.nameHeldAsAliasBy — the step's look-ahead", () => {
+  test("names the holder, with its era, for the composed name", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const la = await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+      yearsActive: { from: 1958 },
+    });
+
+    expect(
+      await asAdmin.query(api.teams.nameHeldAsAliasBy, { sportId, name: "  Brooklyn Dodgers " }),
+    ).toEqual([{ id: la, name: "Los Angeles Dodgers", yearsActive: { from: 1958 } }]);
+  });
+
+  test("a team that merely HAS the name is not reported; nor is another sport's holder; blank and over-long names answer empty", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const football = await t.run((ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    await insertTeamWithAliases(t, sportId, { location: "Brooklyn", name: "Dodgers" });
+    await insertTeamWithAliases(t, football, {
+      location: "Boston",
+      name: "Yanks",
+      aliases: ["Brooklyn Dodgers"],
+    });
+
+    for (const name of ["Brooklyn Dodgers", "   ", "x".repeat(121)]) {
+      expect(await asAdmin.query(api.teams.nameHeldAsAliasBy, { sportId, name })).toEqual([]);
+    }
+  });
+});
+
+describe("NEO-307: teams.reportAliasNameConflicts — the read-only report for pairs written before the rule", () => {
+  async function seedLegacyState(t: ReturnType<typeof convexTest>) {
+    const sportId = await seedSport(t);
+    const football = await t.run((ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    // The conflict: LA holds Brooklyn's own name.
+    const brooklyn = await insertTeamWithAliases(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      yearsActive: { from: 1911, to: 1957 },
+    });
+    const la = await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Dodger Blue", "Brooklyn Dodgers"],
+      yearsActive: { from: 1958 },
+    });
+    // Not conflicts: alias-vs-alias, and another sport's holder.
+    await insertTeamWithAliases(t, sportId, { location: "Miami", name: "RedHawks", aliases: ["Miami"] });
+    await insertTeamWithAliases(t, sportId, { location: "Miami", name: "Hurricanes", aliases: ["Miami"] });
+    await insertTeamWithAliases(t, football, { location: "Boston", name: "Yanks", aliases: ["Brooklyn Dodgers"] });
+    return { sportId, brooklyn, la };
+  }
+
+  test("reports the pair with sport, the stored alias, and both teams' ids, names and years", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, brooklyn, la } = await seedLegacyState(t);
+
+    const report = await t.query(internal.teams.reportAliasNameConflicts, {});
+    expect(report.conflicts).toEqual([
+      {
+        sport: "Baseball",
+        sportId,
+        alias: "Brooklyn Dodgers",
+        holder: { id: la, name: "Los Angeles Dodgers", yearsActive: { from: 1958 } },
+        owner: { id: brooklyn, name: "Brooklyn Dodgers", yearsActive: { from: 1911, to: 1957 } },
+      },
+    ]);
+    expect(report.scanned).toBe(5);
+    expect(report.nextCursor).toBeUndefined();
+  });
+
+  test("pages with nextCursor until the table is walked, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { la } = await seedLegacyState(t);
+    const before = await t.run(async (ctx) => ({
+      teams: await ctx.db.query("teams").collect(),
+      aliases: await ctx.db.query("teamAliases").collect(),
+    }));
+
+    const found: Array<{ holder: { id: string } }> = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const page: {
+        conflicts: Array<{ holder: { id: string } }>;
+        nextCursor?: string;
+      } = await t.query(internal.teams.reportAliasNameConflicts, {
+        batchSize: 1,
+        ...(cursor ? { cursor } : {}),
+      });
+      found.push(...page.conflicts);
+      cursor = page.nextCursor;
+      pages += 1;
+    } while (cursor && pages < 20);
+
+    expect(pages).toBeGreaterThanOrEqual(5);
+    expect(found.map((c) => c.holder.id)).toEqual([la]);
+    const after = await t.run(async (ctx) => ({
+      teams: await ctx.db.query("teams").collect(),
+      aliases: await ctx.db.query("teamAliases").collect(),
+    }));
+    expect(after).toEqual(before);
   });
 });

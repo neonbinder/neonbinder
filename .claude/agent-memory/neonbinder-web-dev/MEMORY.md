@@ -66,3 +66,4 @@
 - [An inert trigger still names a button](reference_an_inert_trigger_still_names_a_button.md) — confirm must not reuse the trigger's text; pin unique button names with the dialog open
 - [Growing lists are type-ahead](feedback-growing-lists-are-type-ahead.md) — one-of-N over a growing table = Autocomplete picker mode, never pills/radiogroup; Jason on NEO-307 League pills
 - [Team resolver serves card and stint years](reference_team_resolver_serves_card_and_stint_years.md) — card callers opt into allowPastEra, stint callers stay strict (resolveTeamIdByName is a stint path); an alias is never another team's name, any era
+- [Bulkload budget tests pin exact ops](reference_bulkload_budget_tests_pin_exact_ops.md) — 854/989 opsSpent are asserted exactly; reuse a read the row loop already made, and run the whole file

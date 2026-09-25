@@ -29,7 +29,12 @@ import { MIN_CAREER_YEAR } from "../lib/players/career-years";
 // Team step's "Also known as" list is validated HERE, at decision time, so the
 // queue never holds an over-bound or self-referential list for the commit to
 // trip over with no operator in front of it.
-import { normalizeTeamAliasList, normalizeTeamName } from "./teams";
+import {
+  assertAliasesNotPrimaryNames,
+  assertNameNotAnotherTeamsAlias,
+  normalizeTeamAliasList,
+  normalizeTeamName,
+} from "./teams";
 import { teamFullName } from "../lib/teams/team-name";
 // NEO-254 — the New League step collects everything League Management edits, so
 // it validates against the SAME bounds. Imported rather than restated: two
@@ -2715,6 +2720,40 @@ export const recordDecision = mutation({
         row.kind === "league" && args.createLeague
           ? requireLeagueCreate(args.createLeague)
           : undefined;
+      /*
+       * NEO-307 — the alias rule, refused HERE because the operator is at the
+       * step. Without it "Add as New Team" could record a create the commit
+       * then silently drops: the commit will not create a team under a name
+       * another team in the sport holds as an alias, and will not store an
+       * alias that is another team's own name (both whatever the eras). Same
+       * refusals, same wording, as Team Management and the New Team dialog.
+       *
+       * Stricter than the commit in one place, deliberately: the commit ADOPTS
+       * an alias holder whose era overlaps the answer, but the step refuses
+       * any alias holder, because "Add as New Team" that quietly becomes a
+       * link is not what the button says. The step shows the holder with a
+       * Link action instead (`teams.nameHeldAsAliasBy`).
+       */
+      if (create) {
+        await assertNameNotAnotherTeamsAlias(ctx, {
+          sportId: row.sportId,
+          fullName: teamFullName(create),
+        });
+        if (create.aliases?.length) {
+          await assertAliasesNotPrimaryNames(ctx, {
+            sportId: row.sportId,
+            aliases: create.aliases,
+          });
+        }
+      }
+      // The pre-staging per-career-team creates build team rows at commit the
+      // same way, so they obey the same reverse rule.
+      for (const entry of createTeams) {
+        await assertNameNotAnotherTeamsAlias(ctx, {
+          sportId: row.sportId,
+          fullName: teamFullName(entry),
+        });
+      }
       await ctx.db.patch(args.reviewRowId, {
         decision: {
           action: "create",

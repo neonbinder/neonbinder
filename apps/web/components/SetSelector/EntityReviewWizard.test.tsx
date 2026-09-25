@@ -132,6 +132,8 @@ vi.mock("../../convex/_generated/api", () => ({
       search: "teams.search",
       getManyByIds: "teams.getManyByIds",
       resolveNames: "teams.resolveNames",
+      // NEO-307: which other team already answers to the step's name as an alias.
+      nameHeldAsAliasBy: "teams.nameHeldAsAliasBy",
     },
     // NEO-236: NewTeamForm's League field reads the sport's leagues.
     leagues: {
@@ -149,6 +151,8 @@ let currentResolvedNames: unknown;
 let currentLinkedTeams: unknown;
 /** Rows served to players.getManyByIds (linked-player canonical names). */
 let currentLinkedPlayers: unknown;
+/** NEO-307 — rows served to teams.nameHeldAsAliasBy (the step's alias clash). */
+let currentAliasHolders: unknown;
 /** Every (ref, args) pair useQuery saw, so arg-shaping can be asserted. */
 let queryCalls: Array<{ ref: string; args: unknown }>;
 
@@ -179,6 +183,7 @@ vi.mock("convex/react", () => ({
     if (ref === "teams.getManyByIds") return currentLinkedTeams;
     if (ref === "players.getManyByIds") return currentLinkedPlayers;
     if (ref === "leagues.list") return currentLeagues;
+    if (ref === "teams.nameHeldAsAliasBy") return currentAliasHolders;
     return undefined;
   },
   useMutation: (ref: string) => {
@@ -474,6 +479,7 @@ beforeEach(() => {
   mockClearCareerTeamStint.mockResolvedValue(null);
   mockStageLeagueRows.mockResolvedValue(undefined);
   currentRows = [];
+  currentAliasHolders = undefined;
   currentLeagues = [];
   currentNearMatches = [];
   currentResolvedNames = undefined;
@@ -7339,5 +7345,96 @@ describe("EntityReviewWizard — modal isolation", () => {
     const back = screen.getAllByRole("combobox", { name: "League" });
     expect(back).toHaveLength(1);
     expect(live(back[0])).toBe(true);
+  });
+});
+
+// ===========================================================================
+// NEO-307 — the New Team step's name is already another team's alias
+// ===========================================================================
+
+describe("EntityReviewWizard — NEO-307 a New Team name another team holds as an alias", () => {
+  const CLASH =
+    "Los Angeles Dodgers already answers to this name as an alias — remove it there before a team can take the name.";
+  const LA = {
+    id: "team-la" as unknown as Id<"teams">,
+    name: "Los Angeles Dodgers",
+    yearsActive: { from: 1958 },
+  };
+
+  it("asks about the COMPOSED name the step would create, tracking the operator's edit", () => {
+    const row = makeRow({ kind: "team", name: "Dodgers", status: "ready" });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.change(teamLocationField(), { target: { value: "Brooklyn" } });
+
+    const asked = queryCalls
+      .filter((call) => call.ref === "teams.nameHeldAsAliasBy" && call.args !== "skip")
+      .map((call) => (call.args as { name: string }).name);
+    expect(asked[0]).toBe("Dodgers");
+    expect(asked[asked.length - 1]).toBe("Brooklyn Dodgers");
+  });
+
+  it("says so on the step, disables Add as New Team with the reason, and offers the holder as the link", async () => {
+    currentAliasHolders = [LA];
+    const row = makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" });
+    currentRows = [row];
+    renderWizard();
+
+    // The whole sentence in the body, and again as the footer's blocked
+    // reason the create control is described by.
+    const copies = screen.getAllByText(CLASH);
+    expect(copies).toHaveLength(2);
+    const primary = screen.getByRole("button", { name: "Add as New Team" });
+    expect(primary.getAttribute("aria-disabled")).toBe("true");
+    const describedBy = primary.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    expect(document.getElementById(describedBy!)?.textContent).toBe(CLASH);
+
+    fireEvent.click(primary);
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Link to Los Angeles Dodgers · 1958–present" }),
+    );
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewRowId: row._id,
+          action: "link",
+          linkedTeamId: LA.id,
+          saveAsAlias: true,
+        }),
+      );
+    });
+  });
+
+  it("offers no second Link button when the holder is already the footer's exact-match link", () => {
+    currentAliasHolders = [LA];
+    currentNearMatches = [
+      { _id: LA.id, name: LA.name, confidence: "exact", yearsActive: LA.yearsActive },
+    ];
+    currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];
+    renderWizard();
+
+    expect(screen.getAllByText(CLASH).length).toBeGreaterThan(0);
+    const links = screen.getAllByRole("button", {
+      name: "Link to Los Angeles Dodgers · 1958–present",
+    });
+    expect(links).toHaveLength(1);
+    // …and the one there is the footer primary, not the body's.
+    const decision = screen.getByRole("group", { name: "Decision for Brooklyn Dodgers" });
+    expect(decision.contains(links[0])).toBe(true);
+  });
+
+  it("shows nothing and blocks nothing when no team holds the name", () => {
+    currentAliasHolders = [];
+    currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];
+    renderWizard();
+
+    expect(screen.queryByText(CLASH)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Add as New Team" }).getAttribute("aria-disabled"),
+    ).toBeNull();
   });
 });

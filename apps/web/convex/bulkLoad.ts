@@ -93,6 +93,11 @@
  *     aliases are skipped and reported as `aliasesSkipped` while the rest
  *     land — otherwise an `aliasOwnedBy` row would have no expressible answer
  *     and the run could never converge.
+ *  4b. **Our NAME held as an alias (NEO-307).** A row whose composed full name
+ *     another row in the sport holds as an ALIAS is never created — not by
+ *     the create branch and not by a replayed `create` decision. It comes back
+ *     `ambiguous` with `nameHeldAsAliasBy`, and settles once the alias is
+ *     removed from the holder or the answer becomes `adopt: <holder id>`.
  *  5. **Adopt** gap-fills ABSENT fields only: `leagueId` (clearing the legacy
  *     `league` string), `yearsActive`, `externalIds.wikidataId`; aliases are
  *     unioned. A different `wikidataId` already on the row is reported as
@@ -440,6 +445,13 @@ const teamResultValidator = v.object({
   candidates: v.optional(v.array(candidateValidator)),
   /** `ambiguous`: incoming aliases another row already holds. */
   aliasOwnedBy: v.optional(v.array(aliasOwnerValidator)),
+  /**
+   * NEO-307 — `ambiguous`: the rows that already hold this row's OWN full name
+   * as an alias, so it cannot be created. `alias` is the full name. Settles by
+   * removing the alias from the holder, or by answering `adopt: <holder id>`;
+   * a replayed `create` stays here. See `create` in `loadTeams`.
+   */
+  nameHeldAsAliasBy: v.optional(v.array(aliasOwnerValidator)),
   /** `created`: rows in the sport that look like the same program. */
   nearExisting: v.optional(
     v.array(
@@ -804,6 +816,7 @@ type TeamResult = {
     aliases?: string[];
   }[];
   aliasOwnedBy?: AliasOwner[];
+  nameHeldAsAliasBy?: AliasOwner[];
   nearExisting?: {
     id: Id<"teams">;
     name: string;
@@ -1124,7 +1137,59 @@ async function loadTeams(
       };
     };
 
+    /**
+     * NEO-307 — the rows holding this row's full name as an ALIAS, when step
+     * 3's alias leg has already read them (it asks exactly this question when
+     * the name found nothing). `create` reuses it so the ordinary create path
+     * pays no extra operation; a replayed `create` decision, or a name that
+     * found a same-name era, never reached step 3 and reads it itself.
+     */
+    let aliasHoldersOfName: Doc<"teams">[] | undefined;
+
     const create = async (skipped: AliasOwner[]): Promise<TeamResult> => {
+      /*
+       * NEO-307 — the reverse order of the alias rule: a team may never take a
+       * name another team in the sport already holds as an ALIAS, whatever the
+       * eras. "Brooklyn Dodgers" on the 1958– Los Angeles Dodgers, then a
+       * dataset row for the 1911–1957 Brooklyn Dodgers: creating it would
+       * leave two teams answering to one string, and the resolver's era
+       * narrowing would then pick between them silently on every card.
+       *
+       * Checked HERE, inside `create`, so the unanswered create branch and a
+       * replayed `create: true` decision both pass through it. Reported, not
+       * thrown: `ambiguous` with `nameHeldAsAliasBy`, nothing written — the
+       * loader's style for "there is a question and this row cannot answer
+       * it". A replayed `create` does NOT settle it (the decision says "none
+       * of these", and the problem is not a choice between candidates). It
+       * settles one of two ways: remove the alias from the holder in Team
+       * Management, after which the same `create` replays and lands; or
+       * answer `adopt: <holder id>` when the holder IS the program — legal,
+       * because the holder answers to the incoming name.
+       *
+       * Alias leg only: a row holding the name as its own PRIMARY name is a
+       * same-name era, which the by-name leg and `eraMatch` already govern.
+       */
+      let holdersOfName = aliasHoldersOfName;
+      if (holdersOfName === undefined) {
+        holdersOfName = await findTeamsByAlias(ctx, sportId, fullName);
+        // One `teamAliases` index read plus one `db.get` per holder resolved.
+        ops += 1 + holdersOfName.length;
+      }
+      const nameHolders = holdersOfName.filter(
+        (holder) => holder.nameNormalized !== fields.nameNormalized,
+      );
+      if (nameHolders.length > 0) {
+        return {
+          key,
+          id: null,
+          status: "ambiguous",
+          nameHeldAsAliasBy: nameHolders.map((holder) => ({
+            alias: fullName,
+            id: holder._id,
+            name: teamFullName(holder),
+          })),
+        };
+      }
       const skippedKeys = new Set(skipped.map((s) => normalizeTeamName(s.alias)));
       const safeAliases = aliases.filter(
         (alias) => !skippedKeys.has(normalizeTeamName(alias)),
@@ -1272,6 +1337,8 @@ async function loadTeams(
       const byAlias = await findTeamsByAlias(ctx, sportId, fullName);
       // One `teamAliases` index read plus one `db.get` per row it resolved.
       ops += 1 + byAlias.length;
+      // NEO-307 — the same question `create` asks; see `aliasHoldersOfName`.
+      aliasHoldersOfName = byAlias;
       for (const team of byAlias) {
         add(team, fullName, true);
       }

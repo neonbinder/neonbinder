@@ -62,6 +62,7 @@ expect from the report, not a checklist to police.
 | `ambiguous` + `candidates` (no `matchedOn`) | several eras overlap, or an undated row met a CLOSED incoming era | answer `adopt: <id>` or `create: true`. For an undated prod row and a closed era (ABL 1989–1999 vs an undated "Adelaide Giants"), the usual answer is: let the OPEN era adopt the undated row first (load order below does this), then the closed era creates beside it |
 | `ambiguous` + `candidates` + `matchedOn` | exactly one row found ONLY through a shared alias — both sides say "also known as X" and nothing else links them | look at the candidate. Same program → `adopt`; different program → `create` (the shared alias is then skipped and reported) |
 | `ambiguous` + `aliasOwnedBy` | an incoming alias is another row's name or alias; nothing written | decide whose alias it is. Remove it from the other row, or answer `adopt`/`create` for this key — owned aliases are skipped on a decided row |
+| `ambiguous` + `nameHeldAsAliasBy` (NEO-307) | this row's OWN full name is another row's alias in the sport (any era), so it cannot be created; nothing written. A replayed `create: true` lands here too | same program → answer `adopt: <holder id>`. Different program → remove the alias from the holder in Team Management, then replay; the `create` then lands |
 
 Every result also carries `leagues: [{ name, id }]` for the chunk. `id: null`
 means the write run WOULD CREATE that league. For "NCAA" that is the signal

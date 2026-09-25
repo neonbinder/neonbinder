@@ -723,6 +723,27 @@ export default function EntityReviewWizard({
       ? { name: current.name, sportId: current.sportId }
       : "skip",
   );
+  /**
+   * NEO-307 — the teams that already answer to the New Team step's name as an
+   * ALIAS.
+   *
+   * A team may never take a name another team in the sport holds as an alias,
+   * whatever the eras, so `recordDecision` refuses that create. Asked ahead of
+   * the click so the step can say so, disable "Add as New Team", and offer the
+   * holder as the link. Keyed on the COMPOSED name the step would create — the
+   * operator's edit when there is one — not the checklist string, because the
+   * Name field is what the operator changes to get into (or out of) the clash.
+   */
+  const aliasCheckName =
+    current && !reviewingDecided && current.kind === "team"
+      ? draftFullName(teamCreateByRow[current._id] ?? teamCreatePrefill(current)).trim()
+      : "";
+  const nameAliasHolders = useQuery(
+    api.teams.nameHeldAsAliasBy,
+    current && aliasCheckName
+      ? { sportId: current.sportId, name: aliasCheckName }
+      : "skip",
+  );
   // Widened to a single array type on the way out. The two queries return
   // differently-branded ids, and a `Id<"players">[] | Id<"teams">[]`-shaped
   // union is not callable through `.find` — nor is it what NearMatchPanel
@@ -2122,6 +2143,13 @@ export default function EntityReviewWizard({
       if (composed.length > MAX_TEAM_FULL_NAME_LENGTH) {
         return `That name is ${composed.length} characters; the limit is ${MAX_TEAM_FULL_NAME_LENGTH}.`;
       }
+      // NEO-307 — the server refuses this create (`recordDecision`); saying
+      // so here keeps "Add as New Team" from being the thing that finds out.
+      // The approved Team Management wording, verbatim.
+      const holder = nameAliasHolders?.[0];
+      if (holder) {
+        return `${holder.name} already answers to this name as an alias — remove it there before a team can take the name.`;
+      }
       return null;
     }
     if (unansweredCareerTeams.length > 0) {
@@ -3338,6 +3366,68 @@ export default function EntityReviewWizard({
                         />
                       )
                     )}
+
+                    {/*
+                      NEO-307 — the New Team step's name is ALREADY another
+                      team's alias, so creating it is refused (the server's
+                      `recordDecision`, and `createBlocked` in the footer). The
+                      fix is almost always "this IS that team", so the holder's
+                      link sits right here, above the Location and Name fields
+                      that caused the clash — rather than as an extra option in
+                      Search all teams, whose list answers the checklist string,
+                      not the edited name, and whose ranking it would fight.
+
+                      Not a live region, like the footer's blocked line: it is
+                      a standing precondition, and "Add as New Team" points at
+                      the footer copy of the sentence by `aria-describedby`.
+                      The footer line truncates at CI's 1024 width; this one is
+                      where the whole sentence is readable.
+
+                      A holder that is ALSO the footer's lone exact match gets
+                      no button here: the footer primary is already
+                      "Link to {it}", and two buttons with one name is the
+                      duplicate-name trap.
+                    */}
+                    {current.kind === "team" &&
+                      nameAliasHolders &&
+                      nameAliasHolders.length > 0 && (
+                        <div className="rounded-md border border-[#FF2EB3]/40 bg-[#FF2EB3]/10 p-3 space-y-2">
+                          {/* One text node, so a direct-text matcher (the
+                              E2E driver's) reads the whole sentence. */}
+                          <p className="text-sm text-[#FF2EB3]">
+                            {`${nameAliasHolders[0].name} already answers to this name as an alias — remove it there before a team can take the name.`}
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {nameAliasHolders
+                              .filter(
+                                (holder) =>
+                                  !(
+                                    showExactHierarchy &&
+                                    exactMatch &&
+                                    exactMatch._id === holder.id
+                                  ),
+                              )
+                              .map((holder) => (
+                                <NeonButton
+                                  key={holder.id}
+                                  size="1"
+                                  aria-disabled={busy ? true : undefined}
+                                  onClick={() => {
+                                    if (busy) return;
+                                    void handleLink(
+                                      current._id,
+                                      "team",
+                                      holder.id,
+                                      linkOptions,
+                                    );
+                                  }}
+                                >
+                                  {`Link to ${teamOptionLabel(holder.name, holder.yearsActive)}`}
+                                </NeonButton>
+                              ))}
+                          </div>
+                        </div>
+                      )}
 
                     {linkingOpen ? (
                       <EntityLinkSearch

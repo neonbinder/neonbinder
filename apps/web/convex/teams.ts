@@ -694,6 +694,53 @@ export const aliasesInUse = query({
 });
 
 /**
+ * NEO-307 — which OTHER teams in this sport already answer to `name` as an
+ * ALIAS, for the review wizard's New Team step.
+ *
+ * The reverse order of the alias rule: a team may never take a name another
+ * team holds as an alias, whatever the eras, and `entityReviewQueue.
+ * recordDecision` refuses such a create. This is the same lookup
+ * (`findAliasHoldersOfName`) read ahead of the click, so the step can say so,
+ * disable "Add as New Team", and offer the holder as the link instead.
+ *
+ * `name` is the FULL name the step would create (Location + Name, composed by
+ * the client with `teamFullName`). One indexed read plus a `db.get` per
+ * holder, capped like every alias lookup; an over-long name can never be a
+ * stored alias and answers empty. Admin-gated like `aliasesInUse`, its sibling
+ * behind the same editors.
+ */
+export const nameHeldAsAliasBy = query({
+  args: {
+    sportId: v.id("selectorOptions"),
+    name: v.string(),
+  },
+  returns: v.array(
+    v.object({
+      id: v.id("teams"),
+      /** The holder's FULL name. */
+      name: v.string(),
+      yearsActive: v.optional(
+        v.object({ from: v.number(), to: v.optional(v.number()) }),
+      ),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const name = args.name.trim();
+    if (!name || name.length > MAX_TEAM_ALIAS_LENGTH) return [];
+    const holders = await findAliasHoldersOfName(ctx, {
+      sportId: args.sportId,
+      fullName: name,
+    });
+    return holders.map((team) => ({
+      id: team._id,
+      name: teamFullName(team),
+      ...(team.yearsActive ? { yearsActive: team.yearsActive } : {}),
+    }));
+  },
+});
+
+/**
  * NEO-236 — Location + Name, never a full string.
  *
  * Jason, 2026-09-05: "We simply shouldn't allow for full string creation.
@@ -2255,5 +2302,122 @@ export const nearMatches = query({
           ? { matchedAlias: rows[index].matchedAlias }
           : {}),
       }));
+  },
+});
+
+const conflictTeamValidator = v.object({
+  id: v.id("teams"),
+  /** The team's composed full name. */
+  name: v.string(),
+  yearsActive: v.optional(
+    v.object({ from: v.number(), to: v.optional(v.number()) }),
+  ),
+});
+
+/**
+ * NEO-307 — READ-ONLY report: every stored alias that equals ANOTHER team's
+ * primary full name in the same sport.
+ *
+ * Since NEO-307 no writer can create such a pair, in either order (see
+ * `findAliasPrimaryNameOwners` and `findAliasHoldersOfName`). Aliases written
+ * before it — the NEO-284 preload among them — went through a guard that only
+ * refused OVERLAPPING eras, so disjoint pairs may already exist. Each one
+ * decides retro cards silently: with "Brooklyn Dodgers" on the 1958– Los
+ * Angeles Dodgers, a 2026 Brooklyn Dodgers card resolves to LA. This finds
+ * them so an operator can remove the alias in Team Management. It fixes
+ * nothing and writes nothing, so it needs no arming.
+ *
+ * Internal, so it is run from the CLI WITHOUT `--identity` (an identity
+ * cannot reach an internal function). Pages through `teamAliases` in
+ * `_creationTime` order; pass back `nextCursor` until it is absent:
+ *
+ *     npx convex run teams:reportAliasNameConflicts '{}'
+ *     npx convex run teams:reportAliasNameConflicts '{"cursor":"<nextCursor>"}'
+ *
+ * Add `--prod` to run it against production:
+ *
+ *     npx convex run --prod teams:reportAliasNameConflicts '{}'
+ *
+ * Cost per page: one paginated read, then per alias row one `db.get` for the
+ * holder and one indexed read for same-name owners (plus a get per sport,
+ * memoised). At the default 200 rows that is ~400 reads; `batchSize` is
+ * clamped to 1–500.
+ */
+export const reportAliasNameConflicts = internalQuery({
+  args: {
+    cursor: v.optional(v.string()),
+    batchSize: v.optional(v.number()),
+  },
+  returns: v.object({
+    conflicts: v.array(
+      v.object({
+        /** The sport row's display value ("Baseball"). */
+        sport: v.string(),
+        sportId: v.id("selectorOptions"),
+        /** The alias as the holder stores it, or its normalised key if absent. */
+        alias: v.string(),
+        /** The team carrying the alias. */
+        holder: conflictTeamValidator,
+        /** The team whose own name the alias is. */
+        owner: conflictTeamValidator,
+      }),
+    ),
+    /** How many alias rows this page examined. */
+    scanned: v.number(),
+    /** Absent when the table has been walked to the end. */
+    nextCursor: v.optional(v.string()),
+  }),
+  handler: async (ctx, args) => {
+    const batchSize = Math.min(Math.max(Math.floor(args.batchSize ?? 200), 1), 500);
+    const page = await ctx.db
+      .query("teamAliases")
+      .paginate({ numItems: batchSize, cursor: args.cursor ?? null });
+
+    const sportNames = new Map<string, string>();
+    const sportName = async (id: Id<"selectorOptions">): Promise<string> => {
+      const key = id as string;
+      if (!sportNames.has(key)) {
+        sportNames.set(key, (await ctx.db.get(id))?.value ?? "");
+      }
+      return sportNames.get(key)!;
+    };
+    const describe = (team: Doc<"teams">) => ({
+      id: team._id,
+      name: teamFullName(team),
+      ...(team.yearsActive ? { yearsActive: team.yearsActive } : {}),
+    });
+
+    const conflicts = [];
+    for (const row of page.page) {
+      const holder = await ctx.db.get(row.teamId);
+      // A side row whose team is gone, or has moved sport, is not a conflict
+      // this report can point an operator at.
+      if (!holder || holder.sportId !== row.sportId) continue;
+      const owners = await ctx.db
+        .query("teams")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", row.aliasNormalized).eq("sportId", row.sportId),
+        )
+        .take(TEAM_ERA_SCAN_LIMIT);
+      const stored =
+        (holder.aliases ?? []).find(
+          (alias) => normalizeTeamName(alias) === row.aliasNormalized,
+        ) ?? row.aliasNormalized;
+      for (const owner of owners) {
+        if (owner._id === holder._id) continue;
+        conflicts.push({
+          sport: await sportName(row.sportId),
+          sportId: row.sportId,
+          alias: stored,
+          holder: describe(holder),
+          owner: describe(owner),
+        });
+      }
+    }
+    return {
+      conflicts,
+      scanned: page.page.length,
+      ...(page.isDone ? {} : { nextCursor: page.continueCursor }),
+    };
   },
 });

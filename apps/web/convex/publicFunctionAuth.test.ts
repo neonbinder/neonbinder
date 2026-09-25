@@ -249,6 +249,9 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // editors (`findOrCreate`, `saveTeamFields`) that write aliases in the
     // first place.
     ["teams.aliasesInUse", (t, sportId) => t.query(api.teams.aliasesInUse, { sportId, aliases: ["Friars"] })],
+    // NEO-307. The reverse-order twin of `aliasesInUse`: which OTHER team holds
+    // a New Team step's name as an alias. Same editors, same gate.
+    ["teams.nameHeldAsAliasBy", (t, sportId) => t.query(api.teams.nameHeldAsAliasBy, { sportId, name: "Brooklyn Dodgers" })],
     // NEO-301: both bulk fast paths are public ACTIONS now (a query picks the
     // page, an internal mutation writes it), and the admin gate runs in the
     // action before either half is reached. The create twin was never pinned
