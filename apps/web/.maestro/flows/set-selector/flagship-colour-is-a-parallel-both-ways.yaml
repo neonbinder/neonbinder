@@ -1469,13 +1469,20 @@ tags:
       # Nothing is tapped in the body: the target is PRESELECTED (Bowman is
       # the longest whole-word prefix of the set's name among the brand's
       # sets with a Parallel type — `Bowman Sterling` has none, it is
-      # SportLots-only) and so is the destination — a NEW `Blue` is refused
-      # because Bowman already has one, so the dialog defaults to the
-      # parallel the refusal names (`sameAsId`), and `Blue` no longer holds
-      # this link (STEP 11 moved it out), so adding to it is allowed. GATE on
-      # the destination preview — pinned between the body and the footer,
-      # rendered only once a VALID destination is chosen, its verb `joins`
-      # for an existing parallel — so the confirm is not tapped while inert.
+      # SportLots-only). A preselected set opens FOLDED to one line, its
+      # visible text the single node "{legend}: {chosen}" beside a `Change`
+      # button — the proof the target is Bowman, read on screen. The
+      # destination is preselected too — a NEW `Blue` is refused because
+      # Bowman already has one, so the dialog defaults to the parallel the
+      # refusal names (`sameAsId`), and `Blue` no longer holds this link
+      # (STEP 11 moved it out), so adding to it is allowed.
+      - extendedWaitUntil:
+          visible: "Parallel of: ${output.BRAND}"
+          timeout: 7000
+      # GATE on the destination preview — pinned between the body and the
+      # footer, rendered only once a VALID destination is chosen, its verb
+      # `joins` for an existing parallel — so the confirm is not tapped while
+      # inert.
       - extendedWaitUntil:
           visible: "joins"
           timeout: 7000
@@ -1599,9 +1606,13 @@ tags:
           visible: "Make “${output.SOURCE_ROW}” (an insert|a parallel)"
           timeout: 7000
       # "Insert of" is PRESELECTED — for an insert-level row, its own set,
-      # Bowman — and "Where it goes" (its legend) renders once that set's
-      # detail lands, one query after the dialog. The legend is the gate:
-      # the list is only built for a chosen set.
+      # Bowman — and opens FOLDED to the one-node line "Insert of: Bowman"
+      # (plus `Change`). "Where it goes" (its legend) renders once that set's
+      # detail lands, one query after the dialog: the list is only built for
+      # a chosen set.
+      - extendedWaitUntil:
+          visible: "Insert of: ${output.BRAND}"
+          timeout: 7000
       - extendedWaitUntil:
           visible: "Where it goes"
           timeout: 7000
@@ -1625,46 +1636,30 @@ tags:
           visible:
             id: "Add to ${output.INSERT_ROW}$"
           timeout: 7000
-      # BRING THE RADIO INTO THE BODY'S OWN VIEWPORT BEFORE TAPPING IT. The
-      # dialog body is its dialog's only scroller, and the destination preview
-      # and footer are pinned under it. CI run 36172808297 (step 561): at
-      # 1024×629 the body ended at y≈468, the first radio (`New insert: …`)
-      # was cut in half by that edge, and `Add to …` sat BELOW it, under the
-      # pinned preview (y≈472+). Maestro cannot see an inner scroller's clip
-      # (memory: inner-scroller-clip-is-invisible-to-maestro), so it reported
-      # the radio visible and tapped its coordinates — which landed on the
-      # preview box, and `New insert` stayed selected.
-      #
-      # A POINT-TO-POINT swipe is a touch drag and scrolls the scroller under
-      # the finger (memory: touch-swipe-scrolls-a-dialog-body). Not
-      # `scrollUntilVisible` and not a `direction:` swipe — with or without
-      # `from:` — both are `window.scroll` in CdpWebDriver
-      # (`swipe(SwipeDirection)` / `swipe(Point, SwipeDirection)`, javap on
-      # the pinned 2.8.0 client) and cannot move this body (R8 case 2).
-      #
-      # WHERE THE TOUCH STARTS, from that screenshot: this dialog is ~445px
-      # wide, centred in the 1009px layout viewport, so it spans x≈282–727,
-      # and its body's own left padding (px-5) is x≈282–302. x=29% is ~293
-      # (of 1009) or ~297 (of 1024): inside that padding either way, so the
-      # touch starts on no control. y=70% (~440) is inside the body
-      # (y≈172–468). ONE UP swipe (~283px) pins the body to its END: it
-      # overflows by only the short filtered list (~80px here), so the
-      # overshoot is a no-op and the end state is the same wherever the body
-      # started. At its end the list's last radio sits on the body's bottom
-      # edge, so `Add to …` (the list's second radio) is inside the band.
-      - swipe:
-          start: "29%, 70%"
-          end: "29%, 25%"
+      # IN THE BODY'S BAND WITHOUT A SCROLL. CI run 36172808297 (step 561)
+      # found this radio under the pinned preview, outside the body's
+      # scroller, so the tap landed on the preview. Since the set-shape
+      # dialogs FOLD each answered question to one line (47e5167), the
+      # preselected "Insert of" is one line at the top of the body and "Where
+      # it goes" is the first open list, directly under it; filtered, its two
+      # matches (`New insert: …` and this insert) are its first two radios,
+      # at the top of the body (builder's harness screenshots,
+      # screenshots/dialog-after-insert-open.png). The touch swipe that
+      # pinned the old, taller body is therefore gone: on this layout its
+      # touch point would start on a radio. The gates below are what prove
+      # the tap took.
       - tapOn:
           id: "Add to ${output.INSERT_ROW}$"
-      # THE TAP TOOK — the hard gate before the preview (R2). "Under <insert>
-      # as" is rendered only once an existing insert is the chosen "Where it
-      # goes"; with `New insert` still chosen (the CI failure above) it does
-      # not exist, so a tap that landed elsewhere fails HERE, by name, not on
-      # the preview two steps later.
+      # THE TAP TOOK — the hard gates before the preview (R2). Picking an
+      # existing insert FOLDS "Where it goes" to the one-node line
+      # "Where it goes: <insert>" (picking `New insert: …` does not fold), and
+      # "Under <insert> as" opens directly below it. With `New insert` still
+      # chosen (the CI failure above) neither exists, so a tap that landed
+      # elsewhere fails HERE, by name, not on the preview two steps later.
       - extendedWaitUntil:
-          visible: "Under ${output.INSERT_ROW} as"
+          visible: "Where it goes: ${output.INSERT_ROW}"
           timeout: 7000
+      - assertVisible: "Under ${output.INSERT_ROW} as"
       # "Under <insert> as" defaults to `New parallel: Red Ink` — the name left
       # when the insert's is taken off the row's — so nothing more is tapped
       # in the body (that third list opens below the other two). GATE on the
