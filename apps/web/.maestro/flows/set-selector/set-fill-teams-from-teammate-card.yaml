@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Fill teams — a teamless card borrows the team its player carries on another card of the same set, from the checklist's \"N cards need a team\" button, after a preview the operator confirms (NEO-279, NEO-306)"
+name: "Fill teams — a teamless card borrows the team its player carries on another card of the same set, from the checklist's N-cards-need-a-team button, after a preview the operator confirms (NEO-279, NEO-306)"
 tags:
   - set-selector
 ---
