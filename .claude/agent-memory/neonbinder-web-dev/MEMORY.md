@@ -64,3 +64,4 @@
 - [Subtree delete intra-table pointers](reference_subtree_delete_intra_table_pointers.md) — leaf-first paging still dangles sync-status notices (keyed on parent) and queue `source`; delete them with their target
 - [Moving cards remaps the src slot key](reference_moving_cards_remaps_the_src_slot_key.md) — card src is a per-row slot key; remap via dest allocateSlots, clear an unmapped src, refuse a split pair; delete helpers exported
 - [An inert trigger still names a button](reference_an_inert_trigger_still_names_a_button.md) — confirm must not reuse the trigger's text; pin unique button names with the dialog open
+- [Count-gated row tears out its own dialog](reference_count_gated_row_tears_out_its_own_dialog.md) — a live-count gate unmounts the control mid-dialog; onActiveChange window; `empty:hidden` pinned by childNodes
