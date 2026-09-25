@@ -40,44 +40,51 @@ tags:
 #         and a RELOAD shows the box empty (its placeholder is the text) with no
 #         "Current aliases" list — a negative paired with a positive.
 #     (i) NEO-307 — a New Team name that is another team's ALIAS is refused.
-#         Homestead Grays is created with the alias `Hga<token>`. On the
+#         Pittsburgh Crawfords is created with the alias `Pca<token>`. On the
 #         first team step the Team name is edited to it, and the step then
-#         prints "Homestead Grays already answers to this name as an alias —
+#         prints "Pittsburgh Crawfords already answers to this name as an alias —
 #         remove it there before a team can take the name.", offers
-#         "Link to Homestead Grays · 1912–1950", and "Add as New Team" records
-#         nothing (the row is still presented after the name is restored).
-#         About 15s, on a step the flow already stands on.
+#         "Link to Pittsburgh Crawfords · 1926–1940", and "Add as New Team" records
+#         nothing (the header's reviewed-count is unchanged seconds later).
+#         About 10s, on a step the flow already stands on.
 #     (h) NEO-307 — A CARD CAN SHOW A TEAM'S PAST. A club on this checklist,
-#         "Homestead Grays", is created through the UI first with the era
-#         1912–1950, which ended before this 2024 set. Because the sport holds
+#         "Pittsburgh Crawfords" (card RW-2's), is created through the UI
+#         first with the era 1926–1940, which ended before this 2024 set. Because the sport holds
 #         exactly ONE row of that full name and the set year is after its era,
 #         the review gate resolves it (`resolveTeamForSetYear`, `allowPastEra`
 #         for card callers): it is NOT raised as a New Team step — asserted on
 #         every team step the wizard presents, by reading each heading — and
 #         on commit the card carrying it LINKS to that row (its sub-line prints
 #         the name, not "… (unconfirmed)"), with Team Management still holding
-#         exactly one "Homestead Grays". This is Jason's approved Option A
+#         exactly one "Pittsburgh Crawfords". This is Jason's approved Option A
 #         (2026-09-25): the one committing fixture whose teams are defunct
 #         clubs, so the retro rule rides here rather than on a new real set.
 #
 # ── THE RETRO CLUB, AND WHY ITS NAME IS REAL ────────────────────────────────
 #   The one exception in the suite to "minted names are single tokens", and
 #   an unavoidable one: the rule is about a name ON A CHECKLIST, so the team
-#   must carry the checklist's own spelling. "Homestead Grays" is that spelling
-#   — the wizard printed it as a `New Team:` heading when this fixture was
-#   measured (SET-REGISTRY, the Rickwood section), and a heading prints the raw
-#   checklist string. Approved by Jason for this flow only. It is inert to
-#   every other flow: nothing else fetches this set, and no flow types
-#   "Homestead" or "Grays" into a search. The run-start reset wipes it.
+#   must carry the checklist's own spelling. "Pittsburgh Crawfords" is that
+#   spelling, and it is the TEAM ON CARD RW-2 (Josh Gibson). MEASURED on the
+#   PR preview 2026-09-25: a committed run linked that card's club to
+#   Loc<token> Ali<token>, and the alias it saved reads exactly
+#   "Pittsburgh Crawfords". The name was "Homestead Grays" until then, taken
+#   from SET-REGISTRY's list of the wizard's headings. CI run 36139385192
+#   showed that heading is a STAGED career team (Gibson's Wikidata stint), not
+#   a checklist club, so no card could ever carry it. Approved by Jason for
+#   this flow only (as "Homestead Grays"; the swap needs his re-approval). It
+#   is inert to every other flow: nothing else fetches this set, and no flow
+#   types "Pittsburgh" or "Crawfords" into a search. The run-start reset
+#   wipes it.
 #
-#   WHY 1912–1950, and why the Wikidata stints cannot red this. The span is
-#   the club's whole life, so any real Grays stint falls inside it. The
+#   WHY 1926–1940, and why the Wikidata stints cannot red this. The span is
+#   the club's whole life, so any real Crawfords stint falls inside it. The
 #   career-team staging resolves a STINT strictly (no `allowPastEra`): a stint
 #   INSIDE the era links to this row and stages nothing, a stint outside it
 #   would stage a legitimate career step of the same name and false-red (h).
 #   The cached lookups (`convex/adapters/__fixtures__/enrichment-lookups.json`)
-#   give the only Grays stint among this set's four players as Josh Gibson's
-#   1937–1946 — inside. Paige, Robinson and Mays carry none.
+#   give the only dated Crawfords stint among this set's four players as Josh
+#   Gibson's 1932–1936, which is inside. Paige's teams are undated, which the
+#   resolver answers without a year. Robinson and Mays carry none.
 #
 #   FRESH-ONLY, like the rest of this flow: a re-run in the same deployment
 #   finds the row and the "No matches." precondition fails. CI reseeds.
@@ -245,38 +252,38 @@ tags:
     id: "Add team"
 - tapOn:
     id: "Search teams"
-- inputText: "Homestead Grays"
+- inputText: "Pittsburgh Crawfords"
 # The precondition (h) needs: no row of this name exists yet. A second row
 # would make the name ambiguous and the rule would, correctly, not fire.
 - assertVisible: "No matches."
 - pressKey: Enter
 # The heading echoes the query, so it also proves the search box held exactly
 # the club's name and not text left over from the first create.
-- assertVisible: "New team: Homestead Grays"
+- assertVisible: "New team: Pittsburgh Crawfords"
 # The era, by the fields' explicit aria-labels (NewTeamForm; regex brackets
 # escaped). "to" stays disabled until a start year exists, so from first.
 # MEASURE: both era boxes are in the dialog body's visible slice at 1024x629
 #   (they sit directly under Location/Name, above Aliases and League).
 - tapOn:
     id: "New team active from \\(optional\\)"
-- inputText: "1912"
+- inputText: "1926"
 - tapOn:
     id: "New team active to"
-- inputText: "1950"
-# R2(i) NEO-307: one alias on the retro club, `Hga<token>`, for the wizard's
+- inputText: "1940"
+# R2(i) NEO-307: one alias on the retro club, `Pca<token>`, for the wizard's
 # alias-clash warning in PART 4. Typed here because the dialog already asks
 # for aliases, which costs one field instead of a Team Management detour. It
 # is inert: no checklist carries it, and the flow never searches for it.
 - tapOn:
     id: "New team aliases \\(optional\\)"
-- inputText: "Hga${output.TOKEN}"
+- inputText: "Pca${output.TOKEN}"
 # No Location and no League typed: the composed full name is exactly the
 # checklist's string, which is what the Create button's name asserts.
 - tapOn:
-    id: "Create team Homestead Grays"
+    id: "Create team Pittsburgh Crawfords"
 - extendedWaitUntil:
     visible:
-      id: "Remove team Homestead Grays"
+      id: "Remove team Pittsburgh Crawfords"
     timeout: 7000
 
 # ============================================================
@@ -447,7 +454,7 @@ tags:
 - assertTrue: ${output.ROW_NAME.length > 0}
 # R2(h), first of the team steps: the row the batch presents first is not the
 # retro club. Every later team step is read the same way in PART 5.
-- assertTrue: '${output.ROW_NAME !== "Homestead Grays"}'
+- assertTrue: '${output.ROW_NAME !== "Pittsburgh Crawfords"}'
 
 # ============================================================
 # PART 4 — LINK, WITH THE REMEMBER-BOX ON (R2c, R2d)
@@ -473,60 +480,52 @@ tags:
     text: "Remember “${output.ROW_NAME}” as a name for this team"
 
 # ── R2(i) NEO-307: a New Team name that is another team's ALIAS is refused ──
-# Edit this step's Team name to `Hga<token>`, the alias PART 1 gave Homestead
-# Grays. The step must then say so in the product's one sentence (body and
+# Edit this step's Team name to `Pca<token>`, the alias PART 1 gave Pittsburgh
+# Crawfords. The step must then say so in the product's one sentence (body and
 # footer carry the same text node), offer the holder's link, and refuse
-# "Add as New Team". Then the name is put back and the flow carries on
-# exactly as before.
+# "Add as New Team". The edited name is then LEFT in place: this row's
+# decision is the LINK below, which never reads the create draft.
+#
+# Why no restore (CI run 36139385192, runner 6, step 125): the warning block
+# is inserted ABOVE the Location/Name fields, so it pushes the Team name box
+# ~114px down, from y=432-466 to y=546-580. That is below the wizard body's
+# visible bottom (~475), under the pinned footer, so the restore tap landed
+# on the footer and the name was never put back. The body is an inner
+# scroller maestro cannot see the clip of (README "Asserting inside a dialog").
 #
 # The field is found by its VALUE under its caption. In the wizard the input
 # carries a stable DOM id, which becomes its resource-id and shadows the
 # aria-label, and flows never target a DOM id. `below:` the "Team name"
 # caption picks the nearest match, which is the input and not the "Shows as:"
 # preview further down. The "Search all teams" box, which also holds the row's
-# name, sits above the form. A centre tap on a short value in the wide field
-# puts the caret past the end, so `eraseText` clears it.
-# MEASURE: (1) the prefill's Location is empty for these clubs (no ESPN
-#   location), so Team name holds the WHOLE row name and editing it alone
-#   makes the composed name `Hga<token>`. If a Location is pre-filled, clear
-#   it the same way first. (2) The Team name field is inside the body's
-#   visible slice on this step. (3) The caret lands at the end.
+# name, sits above the form. MEASURED in that run: the prefill's Location is
+# empty (the row was "Montreal Royals", and the whole name was in Team name),
+# the box sat at y=432-466 inside the body's visible slice, and a centre tap
+# put the caret at the end (the erase cleared it).
 - tapOn:
     text: "${output.ROW_NAME}"
     below:
       text: "Team name"
 - eraseText: 60
-- inputText: "Hga${output.TOKEN}"
+- inputText: "Pca${output.TOKEN}"
 # The holder's full name, then the sentence. Em dash matched with ".".
 - extendedWaitUntil:
-    visible: "Homestead Grays already answers to this name as an alias . remove it there before a team can take the name\\."
+    visible: "Pittsburgh Crawfords already answers to this name as an alias . remove it there before a team can take the name\\."
     timeout: 7000
 # The fix offered in place: the holder's link, era included (middle dot and
 # en dash matched with "."). Asserted only. The flow's own link is to
 # Loc<token> Ali<token>, below.
-- assertVisible: "Link to Homestead Grays . 1912.1950"
-# The refused create. The button is aria-disabled, so the tap must record
-# nothing. The proof is two steps down: after the restore (several seconds of
-# typing), the row is STILL this one, and a recorded create would have moved
-# the walk on long before that.
+- assertVisible: "Link to Pittsburgh Crawfords . 1926.1940"
+# The refused create. The header's counter counts every decision, so it is
+# read before the tap and must still read the same after it. A recorded
+# create would also move the walk off this row, and the next steps read the
+# "Search all teams" box seeded with THIS row's name, which a moved walk
+# would fail.
+- copyTextFrom:
+    text: "[0-9]+ of [0-9]+ reviewed.*"
+- evalScript: '${output.COUNT_BEFORE = maestro.copiedText}'
 - tapOn:
     id: "Add as New Team"
-
-# Put the name back. The prefill held the whole row name (see MEASURE above),
-# so retyping ROW_NAME restores the step exactly.
-- tapOn:
-    text: "Hga${output.TOKEN}"
-    below:
-      text: "Team name"
-- eraseText: 60
-- inputText: "${output.ROW_NAME}"
-- extendedWaitUntil:
-    visible: "New Team: ${output.ROW_NAME}"
-    timeout: 7000
-# Negative paired with the positive above: the clash cleared with the name.
-- extendedWaitUntil:
-    notVisible: ".*already answers to this name as an alias.*"
-    timeout: 7000
 
 # The field selects its pre-filled text on focus, so typing REPLACES the row's
 # name. That is read back before the option is looked for: if the typing had
@@ -543,6 +542,11 @@ tags:
       id: "Search all teams"
       text: "Ali${output.TOKEN}"
     timeout: 7000
+# R2(i), the refusal's second reading: seconds after the tap on the refused
+# "Add as New Team", nothing has been decided (a create would have counted).
+- copyTextFrom:
+    text: "[0-9]+ of [0-9]+ reviewed.*"
+- assertTrue: '${maestro.copiedText === output.COUNT_BEFORE}'
 # The option's only direct text node is the composed full name (its "League ·
 # years" line is a separate node; this fixture has neither, so there is none).
 # It comes back from `teams.search` after a 200ms debounce — in-app, 7000.
@@ -609,7 +613,7 @@ tags:
           commands:
             - copyTextFrom:
                 text: "New Team: .*"
-            - assertTrue: '${maestro.copiedText !== "New Team: Homestead Grays"}'
+            - assertTrue: '${maestro.copiedText !== "New Team: Pittsburgh Crawfords"}'
             - tapOn:
                 id: "Skip .* not a team"
                 optional: true
@@ -638,13 +642,16 @@ tags:
 # resolved teams by full name (`CardChecklistItem`: `teamFullName` over
 # `teamOnCardIds`) and an unresolved one as "<name> (unconfirmed)", so the
 # negative lookahead is what makes this the link and not the raw string.
-# MEASURE: where the page sits after the wizard closes and which of the four
-#   rows carries the club (Gibson's, by the cached stint); whether this scroll
-#   centres inside 7000 or the rows' block needs R8 case 2 (no centring). The
-#   sub-line is one text node (`subParts.join`), which the regex assumes.
+# The club is on card RW-2 (Gibson's). MEASURED locally 2026-09-25: after the
+# commit the page leaves the four rows at the TOP of the viewport, with RW-2's
+# sub-line at y=2-18, under the sticky binder header (RW-1 is above y=0), so
+# the scroll goes UP. Centring from there is still unmeasured.
+# MEASURE: that this UP scroll centres inside 7000. The sub-line is one text
+#   node (`subParts.join`), which the regex assumes.
 - scrollUntilVisible:
     element:
-      text: ".*Homestead Grays(?! \\(unconfirmed\\)).*"
+      text: ".*Pittsburgh Crawfords(?! \\(unconfirmed\\)).*"
+    direction: UP
     centerElement: true
     timeout: 7000
 
@@ -753,7 +760,7 @@ tags:
     visible: ".*of .* teams.*"
     timeout: 30000
 - tapOn: "Filter teams"
-- inputText: "Homestead Grays"
+- inputText: "Pittsburgh Crawfords"
 - extendedWaitUntil:
     visible: "1 of .* teams.*"
     timeout: 7000

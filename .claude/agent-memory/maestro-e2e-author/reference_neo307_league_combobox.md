@@ -73,7 +73,7 @@ prints an unresolved team as "<name> (unconfirmed)", so match the link with a
 negative lookahead. Cached Wikidata career stints (for sizing an era so the
 strict stint resolver stages nothing) are in
 `convex/adapters/__fixtures__/enrichment-lookups.json`. Worked example: the
-alias flow's R2(h).
+alias flow's R2(h), on card RW-2's "Pittsburgh Crawfords".
 
 **Team Management Franchise field (same ticket).** It is the same combobox:
 `id: "Franchise"` (the `team-franchise` id is on the wrapper). It rests on
@@ -93,3 +93,15 @@ The alias-clash sentence ("<holder> already answers to this name as an alias
 — remove it there …") is one text node, in both the body and the footer. Prove
 "Add as New Team" refused by the row still being presented after the restore
 typing. Worked example: the alias flow's R2(i).
+
+**Wizard body geometry after NEO-307 (measured 2026-09-25).**
+- "Search all teams" pushed a New Team step's League field below the wizard
+  body's visible slice, and below 629px. Pin the body to its end with ONE UP
+  swipe from x=18% (the dialog's left padding) before tapping League.
+- The body keeps its scroll position from row to row. Pin it back to the top
+  with ONE long DOWN swipe (18%,20% → 18%,95%). Two DOWN swipes chain to the
+  WINDOW once the body is at its top, and move the page behind the wizard.
+- The alias-clash warning block inserts above Location/Name and pushes them
+  ~114px down, out of the visible slice.
+- Programmatic focus uses `focusWithoutOpening` (the list never opens on a
+  focus return), and the list stays inside the dialog body.

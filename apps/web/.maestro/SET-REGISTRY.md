@@ -1188,7 +1188,7 @@ lists under 2024 Topps this is the smallest with that shape:
 | | |
 | -- | -- |
 | BSC cards | **4** — RW-1 Satchel Paige, RW-2 Josh Gibson, RW-3 Jackie Robinson, RW-4 Willie Mays |
-| unknown names | **8** — 4 players, the Negro League clubs (Pittsburgh Crawfords, Homestead Grays, …), and ONE staged league ("Negro league baseball", raised by the first club's Wikidata lookup and asked once for the batch) |
+| unknown names | **8** — 4 players, the Negro League clubs (Pittsburgh Crawfords on RW-2, …; "Homestead Grays" is a STAGED career team from Gibson's Wikidata stint, not a card's club), and ONE staged league ("Negro league baseball", raised by the first club's Wikidata lookup and asked once for the batch) |
 | first row presented | the staged **League** step; the flow skips it ("Skip — no league") and the first **team** row follows |
 | cost | ~60s to the wizard on a warm Baseball drill, ~3 min end to end |
 
@@ -1217,20 +1217,25 @@ itself drains within a run like the other committing fixtures (a committed
 set's names are known; a re-sync raises no review), and CI reseeds every run.
 A LOCAL re-run needs a fresh seed.
 
-**NEO-307 — the retro-card proof rides here (approved by Jason 2026-09-25).**
-Before the fetch the flow also creates `Homestead Grays` with the era
-1912–1950 through the same career-editor picker. It is a REAL name, the suite's
-one exception to "minted names are single tokens", because the rule under test
-is about a checklist's own spelling. The 2024 set is after that era, and the
-sport holds exactly one row of the name, so the review gate links it
-(`allowPastEra`) and raises no step. The flow reads every team step's heading
-to prove it, then checks that the committed card's sub-line prints the name
-(not `… (unconfirmed)`) and that Team Management still lists one
-`Homestead Grays`. The era spans the club's whole life, so any real Grays stint
-(the cached lookups give Josh Gibson's 1937–1946) resolves strictly inside it
-and stages no career step of the same name. The row is inert elsewhere: no
-other flow fetches this set or types "Homestead"/"Grays" into a search, and the
-run-start reset wipes it.
+**NEO-307 — the retro-card proof rides here (approved by Jason 2026-09-25 as
+"Homestead Grays"; the swap to the club below needs his re-approval).**
+Before the fetch the flow also creates `Pittsburgh Crawfords` with the era
+1926–1940 through the same career-editor picker. It is a REAL name, the
+suite's one exception to "minted names are single tokens", because the rule
+under test is about a checklist's own spelling. It is the club on card RW-2
+(Josh Gibson), MEASURED on the PR preview 2026-09-25 (a committed run's link
+saved exactly that string as the alias). "Homestead Grays", the first pick,
+is NOT on any card: it is a STAGED career team raised by Gibson's Wikidata
+stint (CI run 36139385192). The 2024 set is after the era, and the sport holds
+exactly one row of the name, so the review gate links it (`allowPastEra`) and
+raises no step. The flow reads every team step's heading to prove it, then
+checks that card RW-2's sub-line prints the name (not `… (unconfirmed)`), and
+that Team Management still lists one `Pittsburgh Crawfords`. The era spans
+the club's whole life, so any real Crawfords stint resolves strictly inside it
+and stages no career step of the same name (the cached lookups give Gibson's
+1932–1936; Paige's teams are undated). The row is inert elsewhere: no other
+flow fetches this set or types "Pittsburgh"/"Crawfords" into a search, and
+the run-start reset wipes it.
 
 **Concurrency.** No other flow reads this set, and nothing reads
 `Loc<token> Ali<token>`. The four read-only Big League flows and the three

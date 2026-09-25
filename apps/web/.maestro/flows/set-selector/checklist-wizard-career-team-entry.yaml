@@ -253,10 +253,55 @@ tags:
 # wizard that option STAGES the league rather than writing it. The input's
 # own text is the bare typed name, which the full-match regex cannot confuse
 # with the option.
+# PIN THE STEP BODY TO ITS END FIRST (CI run 36139385192, runner 4, step 164).
+# NEO-307 put "Search all teams" on every team step, and it pushed the New
+# Team form's League field to y=624-658: below the wizard body's visible
+# bottom (~475) AND below the 629px viewport, so maestro pruned it and
+# `id: "League"` found nothing. The body is an inner `overflow-y-auto`
+# scroller, which `scrollUntilVisible` (a window scroll) cannot move. A
+# `swipe` is a touch drag that scrolls the scroller under the finger
+# (memory: touch-swipe-scrolls-a-dialog-body). One UP drag of ~314px pins
+# this short body to its end, a no-op past the limit, so the end state does
+# not depend on where the body was. Started at x=18%, in the body's left
+# padding (dialog x=170-840, content from x=194), never on a control or the
+# backdrop; y=70% is inside the body (y=96-475).
+# MEASURED locally against the PR preview (2026-09-25, green run): after the
+# drag League sits at y=327-361 and the list's first option (the one this
+# flow taps on both steps) at y=366-402, both inside the body's visible slice
+# (y=96-475); re-measured identical after the list became a fixed layer
+# (green run, same day). The pin is for the League INPUT, which is still in
+# the scrolling body. The list itself is a position:fixed layer in the
+# wizard's dialog that flips above the field or floats over the footer, so
+# no option needs the body scrolled.
+- swipe:
+    start: "18%, 70%"
+    end: "18%, 20%"
+    duration: 600
+- extendedWaitUntil:
+    visible:
+      id: "League"
+    timeout: 7000
 - tapOn:
     id: "League"
 - inputText: "Lg${output.ATTEMPT_TOKEN}"
 - tapOn: "Create .Lg${output.ATTEMPT_TOKEN}."
+# PIN THE BODY BACK TO ITS TOP. The body keeps its scroll position from one
+# row to the next (measured locally 2026-09-25: the New League step came up
+# with its heading scrolled above the viewport and pruned, and the heading
+# wait failed on a step that was on screen). ONE long DOWN drag (~470px, more
+# than the pin-end drag or the list's scroll-into-view can have moved it) pins
+# it to the top, so every heading and body read below sees the geometry this
+# flow was written against.
+#
+# ONE drag, never two. A touch gesture latches to the scroller it starts on,
+# and a second drag that starts on a body ALREADY at its top chains to the
+# WINDOW. Measured locally 2026-09-25: two drags left the page behind the
+# wizard at scroll 0, and after Discard the "Fetch cancelled" notice was below
+# the fold.
+- swipe:
+    start: "18%, 20%"
+    end: "18%, 95%"
+    duration: 800
 
 # The pick stages a `New League: Lg<token>` step (`stageLeagueRows`) sourced
 # from THIS team, and this team now waits on it (`waitingOnStagedLeagues`), so
@@ -282,16 +327,32 @@ tags:
 # now reads the STAGED option's label at rest, "Lg<token> (new)" — the typed
 # text was the bare name, so the "(new)" suffix can only come from the team's
 # recorded answer surviving the hop to the league step and back. Read on the
-# control itself: it was tapped in place above, so it is in the body's
-# visible slice (README "Asserting inside a dialog").
+# control itself, once the body is pinned so it is in the visible slice
+# (README "Asserting inside a dialog").
 - extendedWaitUntil:
     visible: "New Team: ProbeTeam${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+# The step re-mounted with its body scrolled to the top, so League is below
+# the fold again; the same pin as above.
+- swipe:
+    start: "18%, 70%"
+    end: "18%, 20%"
+    duration: 600
+- extendedWaitUntil:
+    visible:
+      id: "League"
     timeout: 7000
 - extendedWaitUntil:
     visible:
       id: "League"
       text: "Lg${output.ATTEMPT_TOKEN} \\(new\\)"
     timeout: 7000
+# Back to the top before leaving the step. The player row this hands back to
+# is read in its body (the career-team form and chips).
+- swipe:
+    start: "18%, 20%"
+    end: "18%, 95%"
+    duration: 800
 
 # One tap accepts the Location and Name as pre-filled and the league as
 # answered. Safe to match by text: the button only relabels itself to
@@ -352,6 +413,15 @@ tags:
 # happened to contain the token could not take it. The read-back is decisive
 # because the typed text carries neither "Lg" nor "(new)". No second league
 # step follows: the batch has already staged this name.
+# Same pin as ProbeTeam's step: League is below the fold on every team step.
+- swipe:
+    start: "18%, 70%"
+    end: "18%, 20%"
+    duration: 600
+- extendedWaitUntil:
+    visible:
+      id: "League"
+    timeout: 7000
 - tapOn:
     id: "League"
 - inputText: "${output.ATTEMPT_TOKEN}"
@@ -361,6 +431,11 @@ tags:
       id: "League"
       text: "Lg${output.ATTEMPT_TOKEN} \\(new\\)"
     timeout: 7000
+# Back to the top before leaving the step, as on ProbeTeam's.
+- swipe:
+    start: "18%, 20%"
+    end: "18%, 95%"
+    duration: 800
 - tapOn: "Add as New Team"
 - extendedWaitUntil:
     visible:
