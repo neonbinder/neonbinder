@@ -548,8 +548,9 @@ describe("NewTeamForm — the League field", () => {
     const list = screen.getByRole("listbox");
     expect(list.className).toContain("max-h-40");
     expect(list.className).toContain("overflow-y-auto");
-    // Floats over the form rather than pushing what is under it down.
-    expect(list.className).toContain("absolute");
+    // Floats over the form rather than pushing what is under it down — in a
+    // fixed layer, so a scrolling host cannot clip it (NEO-307, CI 1024x629).
+    expect(list.className).toContain("fixed");
     expect(screen.getAllByRole("option")).toHaveLength(41);
   });
 
@@ -1206,6 +1207,10 @@ describe("NewTeamForm — Create “<typed>”", () => {
       "United States Hockey League",
     );
     // A field the wizard shape does not have — proof the full form is here.
+    // Collapsed by default in the picker (NEO-307), so it is opened first.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Add abbreviation, years and aliases" }),
+    );
     fireEvent.change(screen.getByLabelText("New league abbreviation"), {
       target: { value: "USHL" },
     });
@@ -1232,17 +1237,21 @@ describe("NewTeamForm — Create “<typed>”", () => {
     expect(leagueField().value).toBe("United States Hockey League");
   });
 
-  it("PICKER: scrolls the WHOLE league form into view, then focuses its name without scrolling again", async () => {
-    // In NewTeamDialog's scrolling body, focusing the name field alone would
-    // scroll only that field into view and leave "Add league" under the
-    // footer, where a tap lands on "Create team" instead.
+  it("PICKER: brings the form and then its ACTIONS row into view, then focuses the name without scrolling again", async () => {
+    // CI, 1024x629: `nearest` on a form taller than the dialog body aligns its
+    // TOP, so "Add league" stayed under the footer and a tap landed on
+    // "Create team". The actions row is scrolled into view last, so the button
+    // that finishes the form is on screen whatever the form's height.
     const calls: string[] = [];
     const originalScroll = Element.prototype.scrollIntoView;
     const originalFocus = HTMLElement.prototype.focus;
     const scrollArgs: unknown[] = [];
     const focusArgs: unknown[] = [];
     Element.prototype.scrollIntoView = function (this: Element, arg?: unknown) {
-      if (this.querySelector?.('[aria-label="New league name"]')) {
+      if (this.hasAttribute?.("data-new-league-actions")) {
+        calls.push("scroll-actions");
+        scrollArgs.push(arg);
+      } else if (this.querySelector?.('[aria-label="New league name"]')) {
         calls.push("scroll-form");
         scrollArgs.push(arg);
       }
@@ -1260,22 +1269,44 @@ describe("NewTeamForm — Create “<typed>”", () => {
       typeLeague("WHA");
       fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
 
-      await waitFor(() => expect(calls).toEqual(["scroll-form", "focus-name"]));
-      expect(scrollArgs).toEqual([{ block: "nearest" }]);
+      await waitFor(() =>
+        expect(calls).toEqual(["scroll-form", "scroll-actions", "focus-name"]),
+      );
+      expect(scrollArgs).toEqual([{ block: "nearest" }, { block: "nearest" }]);
       expect(focusArgs).toEqual([{ preventScroll: true }]);
       expect(document.activeElement).toBe(screen.getByLabelText("New league name"));
-      // The form scrolled is the one holding the button that must be reachable.
+      // The row scrolled is the one holding the button that must be reachable.
       expect(
         document
-          .getElementById(
-            screen.getByLabelText("New league name").closest("[id]")!.id,
-          )
+          .querySelector("[data-new-league-actions]")
           ?.contains(screen.getByRole("button", { name: "Add league" })),
       ).toBe(true);
     } finally {
       Element.prototype.scrollIntoView = originalScroll;
       HTMLElement.prototype.focus = originalFocus;
     }
+  });
+
+  it("PICKER: opens the league form with its details COLLAPSED, one tap away", () => {
+    // A typed name is all the prefill there is, and the form's own default
+    // would open every detail field — taller than the dialog body at 629px.
+    currentLeagues = [];
+    renderForm({ onCreateLeague: vi.fn() });
+    typeLeague("WHA");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
+
+    expect(screen.queryByLabelText("New league abbreviation")).toBeNull();
+    const disclosure = screen.getByRole("button", {
+      name: "Add abbreviation, years and aliases",
+    });
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    // Add league is usable straight away: the name is the only required field.
+    expect(
+      (screen.getByRole("button", { name: "Add league" }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+
+    fireEvent.click(disclosure);
+    expect(screen.getByLabelText("New league abbreviation")).toBeTruthy();
   });
 
   it("PICKER: Escape closes the form and hands focus back to the League field", () => {

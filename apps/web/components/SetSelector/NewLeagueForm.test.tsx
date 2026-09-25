@@ -362,3 +362,41 @@ describe("NewLeagueForm — a prefill that lands while the form is open", () => 
     expect(screen.getByRole("button", { name: "Hide details" })).toBeTruthy();
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-307 — the picker opens the details collapsed; the wizard keeps its rule
+// ---------------------------------------------------------------------------
+
+describe("NewLeagueForm — detailsDefaultOpen", () => {
+  it("false: a name-only draft starts COLLAPSED, and a tap opens it", () => {
+    render(
+      <NewLeagueForm
+        draft={{ ...EMPTY, name: "World Hockey Association" }}
+        onChange={vi.fn()}
+        detailsDefaultOpen={false}
+      />,
+    );
+    expect(screen.queryByLabelText("New league abbreviation")).toBeNull();
+    const disclosure = screen.getByRole("button", {
+      name: "Add abbreviation, years and aliases",
+    });
+    expect(disclosure.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(disclosure);
+    expect(screen.getByLabelText("New league abbreviation")).toBeTruthy();
+  });
+
+  it("true: a prefilled draft starts OPEN", () => {
+    render(<NewLeagueForm draft={NHL} onChange={vi.fn()} detailsDefaultOpen />);
+    expect(screen.getByLabelText("New league abbreviation")).toBeTruthy();
+  });
+
+  it("absent: the wizard's rule is unchanged — open only when nothing is prefilled", () => {
+    const { unmount } = render(
+      <NewLeagueForm draft={{ ...EMPTY, name: "WHA" }} onChange={vi.fn()} />,
+    );
+    expect(screen.getByLabelText("New league abbreviation")).toBeTruthy();
+    unmount();
+    render(<NewLeagueForm draft={NHL} onChange={vi.fn()} />);
+    expect(screen.queryByLabelText("New league abbreviation")).toBeNull();
+  });
+});

@@ -67,3 +67,4 @@
 - [Growing lists are type-ahead](feedback-growing-lists-are-type-ahead.md) — one-of-N over a growing table = Autocomplete picker mode, never pills/radiogroup; Jason on NEO-307 League pills
 - [Team resolver serves card and stint years](reference_team_resolver_serves_card_and_stint_years.md) — card callers opt into allowPastEra, stint callers stay strict (resolveTeamIdByName is a stint path); an alias is never another team's name, any era
 - [Bulkload budget tests pin exact ops](reference_bulkload_budget_tests_pin_exact_ops.md) — 854/989 opsSpent are asserted exactly; reuse a read the row loop already made, and run the whole file
+- [Autocomplete list is a fixed layer](reference_autocomplete_list_is_a_fixed_layer.md) — portalled into nearest role=dialog, fixed + flip; transformed dialog roots break it; never portal to body from a modal

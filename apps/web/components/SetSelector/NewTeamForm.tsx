@@ -477,9 +477,21 @@ export default function NewTeamForm({
     // field into view, which in NewTeamDialog's scrolling body leaves
     // "Add league" below the fold, under the footer — where a tap meant for
     // it lands on "Create team" instead.
+    //
+    // NEO-307 (CI, 1024x629): the form alone was not enough. With every detail
+    // field open it was taller than the dialog body, and `nearest` on an
+    // element taller than its scroller aligns the TOP — so "Add league" stayed
+    // under the footer. The details now open collapsed here
+    // (`detailsDefaultOpen={false}`), and the ACTIONS row is brought into view
+    // last, so whatever the form's height the button that finishes it is on
+    // screen. `nearest` on the row: no jump when it is already visible, its
+    // bottom aligned to the body's bottom when it is not.
     requestAnimationFrame(() => {
       const form = document.getElementById(newLeagueFormId);
       form?.scrollIntoView?.({ block: "nearest" });
+      form
+        ?.querySelector<HTMLElement>("[data-new-league-actions]")
+        ?.scrollIntoView?.({ block: "nearest" });
       form
         ?.querySelector<HTMLInputElement>("input")
         ?.focus({ preventScroll: true });
@@ -980,8 +992,12 @@ export default function NewTeamForm({
               setNewLeagueDraft((prev) => ({ ...prev, ...patch }))
             }
             disabled={disabled || leagueBusy}
+            detailsDefaultOpen={false}
           />
-          <div className="flex items-center gap-2">
+          {/* `data-new-league-actions`: how the open path finds this row to
+              scroll it into view. A data attribute, never an id — an id
+              would be nothing a user can see, and no flow targets it. */}
+          <div data-new-league-actions="" className="flex items-center gap-2">
             <NeonButton
               type="button"
               onClick={() => void submitNewLeague()}

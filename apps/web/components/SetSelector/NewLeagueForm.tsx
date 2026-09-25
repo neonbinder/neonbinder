@@ -227,6 +227,7 @@ export default function NewLeagueForm({
   nameFieldId,
   levelGroupId,
   disabled,
+  detailsDefaultOpen,
 }: {
   draft: NewLeagueDraft;
   onChange: (patch: Partial<NewLeagueDraft>) => void;
@@ -236,6 +237,17 @@ export default function NewLeagueForm({
   nameFieldId?: string;
   levelGroupId?: string;
   disabled?: boolean;
+  /**
+   * NEO-307 — overrides the "open only when nothing is prefilled" default.
+   *
+   * The PICKER (`NewTeamForm` inside `NewTeamDialog`) passes `false`: it
+   * opens this form from a typed name alone, so the default would open all
+   * seven fields at once, and at CI's 1024x629 that made the form taller than
+   * the dialog's body and put "Add league" below the viewport. The details
+   * stay one tap away behind the disclosure. The wizard's New League step
+   * passes nothing and keeps the default — it has its own fixed footer.
+   */
+  detailsDefaultOpen?: boolean;
 }) {
   const helpId = useId();
   const summary = leagueDetailSummary(draft);
@@ -248,7 +260,7 @@ export default function NewLeagueForm({
    * step's League field follows, so the two steps read the same way.
    */
   const [detailsOpen, setDetailsOpen] = useState<boolean | null>(null);
-  const open = detailsOpen ?? summary === null;
+  const open = detailsOpen ?? detailsDefaultOpen ?? summary === null;
 
   const maxYear = useMemo(() => new Date().getFullYear() + 1, []);
   const error = leagueDraftError(draft, maxYear);

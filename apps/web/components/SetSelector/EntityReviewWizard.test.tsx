@@ -6043,7 +6043,14 @@ describe("EntityReviewWizard — the decision lives in the fixed footer", () => 
     // capped and scrolls however many leagues the sport holds.
     fireEvent.focus(teamLeagueField());
     const list = teamLeagueList();
-    expect(list.className).toContain("absolute");
+    expect(list.className).toContain("fixed");
+    // Portalled into the wizard's OWN dialog: outside the scrolling body that
+    // clipped it, inside the subtree `inertBackground` leaves live.
+    const wizardDialog = screen.getByRole("dialog", {
+      name: "Confirm New Players & Teams",
+    });
+    expect(list.parentElement).toBe(wizardDialog);
+    expect(list.closest("[inert]")).toBeNull();
     expect(list.className).toContain("max-h-40");
     expect(list.className).toContain("overflow-y-auto");
     expect(within(list).getAllByRole("option")).toHaveLength(21);

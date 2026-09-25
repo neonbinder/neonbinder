@@ -1,4 +1,5 @@
-import React, { useEffect, useId, useRef, useState } from "react";
+import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Input } from "./Input";
 
 /**
@@ -27,6 +28,29 @@ import { Input } from "./Input";
  * `<li role="option">` rather than nested `<button>`s — a button inside an
  * option is not a valid child of a listbox and made the arrow-key focus model
  * ambiguous.
+ *
+ * ## Layer (NEO-307)
+ * The open list is `position: fixed`, anchored to the field (below it, or
+ * above when there is not room below), and PORTALLED into the nearest
+ * `role="dialog"` around the field — `<body>` when there is none.
+ *
+ * It used to be `absolute` under the field, which a scrolling ancestor clips.
+ * CI caught it at 1024x629: in NewTeamDialog the League field sits near the
+ * bottom of an `overflow-y-auto` body, the list ran on under the pinned footer,
+ * and a tap on "No league" (always last) landed on the footer instead. Only the
+ * HIGHLIGHTED option was ever scrolled into view, so everything under it was
+ * cut off for every operator, not only for the driver. Scrolling the list into
+ * view on open was the cheaper fix and was rejected: it moves the page under a
+ * keyboard user who only focused a field, it cannot help when the body has no
+ * scroll left, and it does nothing for the next host that clips.
+ *
+ * Why the DIALOG, not `<body>`: `inertBackground` makes every body child but
+ * the open modal inert, so a list portalled to `<body>` from inside a modal
+ * would be inert — untappable and out of the tree. Inside the dialog's own
+ * subtree it is live whenever the dialog is, and a fixed element there is not
+ * clipped by the panel's overflow (the dialog roots here are full-viewport
+ * overlays with no transform). The ids, `aria-controls` and
+ * `aria-activedescendant` are unchanged: they are document-wide.
  *
  * ## Keyboard
  * Arrow keys move the highlight, Enter confirms, Escape cancels — the
@@ -143,6 +167,18 @@ export function Autocomplete<T>({
   const [open, setOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  /**
+   * NEO-307 — where the open list is rendered: the nearest `role="dialog"`
+   * around the field, or `<body>` when there is none. See "Layer" in the
+   * module doc. Captured when the list OPENS, from the event's own element,
+   * rather than read off a ref during render.
+   */
+  const [layer, setLayer] = useState<Element | null>(null);
+  const openFrom = (el: Element) => {
+    setLayer(el.closest('[role="dialog"]') ?? el.ownerDocument.body);
+    setOpen(true);
+  };
   const listRef = useRef<HTMLUListElement>(null);
   /** Set by a focus, consumed by the mouseup that follows a click-to-focus —
    *  see `selectOnFocus`. */
@@ -176,7 +212,15 @@ export function Autocomplete<T>({
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: MouseEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      // The list is portalled out of the container, so a press inside IT (on
+      // its scrollbar, say) is not an outside click.
+      if (
+        !containerRef.current?.contains(target) &&
+        !listRef.current?.contains(target)
+      ) {
+        setOpen(false);
+      }
     };
     document.addEventListener("mousedown", onPointerDown);
     return () => document.removeEventListener("mousedown", onPointerDown);
@@ -203,6 +247,60 @@ export function Autocomplete<T>({
     option?.scrollIntoView?.({ block: "nearest" });
   }, [showPopup, hasResults, highlightIdx, listboxId]);
 
+  /*
+   * NEO-307 — anchor the fixed-position list to the field, below it or,
+   * when there is not room for it there, above.
+   *
+   * Written straight to the list's style in a layout effect (before paint, so
+   * it never flashes at 0,0) rather than through state: it is geometry the
+   * browser owns, re-measured on every scroll and resize while open, and a
+   * render per scroll event would be pure cost.
+   *
+   * The height cap is whatever `listMaxHeightClassName` resolves to, read
+   * back from the computed style with the inline value cleared, so a caller's
+   * cap stays the cap; the list only ever SHRINKS below it, to fit the room
+   * on the side it opened. 240px when no stylesheet answers (tests).
+   */
+  useLayoutEffect(() => {
+    if (!showPopup) return;
+    const place = () => {
+      const list = listRef.current;
+      const field = inputRef.current;
+      if (!list || !field) return;
+      const rect = field.getBoundingClientRect();
+      const viewport = window.innerHeight;
+      list.style.maxHeight = "";
+      const capped = Number.parseFloat(getComputedStyle(list).maxHeight);
+      const cap = Number.isFinite(capped) ? capped : 240;
+      const wanted = Math.min(cap, list.scrollHeight || cap);
+      const gap = 4;
+      const margin = 8;
+      const below = viewport - rect.bottom - gap - margin;
+      const above = rect.top - gap - margin;
+      const flip = below < wanted && above > below;
+      list.style.left = `${rect.left}px`;
+      list.style.width = `${rect.width}px`;
+      if (flip) {
+        list.style.top = "";
+        list.style.bottom = `${viewport - rect.top + gap}px`;
+      } else {
+        list.style.bottom = "";
+        list.style.top = `${rect.bottom + gap}px`;
+      }
+      list.dataset.placement = flip ? "top" : "bottom";
+      list.style.maxHeight = `${Math.max(0, Math.min(cap, flip ? above : below))}px`;
+    };
+    place();
+    // Capture: `scroll` does not bubble, and the ancestor that scrolls (a
+    // dialog body) is not known here.
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [showPopup, signature, layer]);
+
   const select = (item: T) => {
     onSelect(item);
     setOpen(false);
@@ -224,6 +322,7 @@ export function Autocomplete<T>({
     <div ref={containerRef} className={`relative ${className}`}>
       <Input
         bare
+        ref={inputRef}
         type="text"
         value={query}
         disabled={disabled}
@@ -248,10 +347,10 @@ export function Autocomplete<T>({
         autoComplete="off"
         onChange={(e) => {
           onQueryChange(e.target.value);
-          setOpen(true);
+          openFrom(e.currentTarget);
         }}
         onFocus={(e) => {
-          setOpen(true);
+          openFrom(e.currentTarget);
           // Open on the current answer, not on row 0 — see `selectedKey`.
           if (selectedIdx !== -1) setHighlightIdx(selectedIdx);
           if (selectOnFocus) {
@@ -262,7 +361,7 @@ export function Autocomplete<T>({
         // A click on a field that already has focus fires no focus event, so
         // after a pick (the list closes, focus stays) clicking the field again
         // would do nothing. Reopen on click too.
-        onClick={() => setOpen(true)}
+        onClick={(e) => openFrom(e.currentTarget)}
         onMouseUp={(e) => {
           // A click-to-focus runs focus (which selects) and THEN mouseup, and
           // the mouseup's default is to drop a caret where the pointer is —
@@ -280,7 +379,7 @@ export function Autocomplete<T>({
         onKeyDown={(e) => {
           if (e.key === "ArrowDown") {
             e.preventDefault();
-            setOpen(true);
+            openFrom(e.currentTarget);
             setHighlightIdx((i) => (hasResults ? Math.min(i + 1, items.length - 1) : 0));
           } else if (e.key === "ArrowUp") {
             e.preventDefault();
@@ -317,13 +416,17 @@ export function Autocomplete<T>({
         className={`w-full ${inputGeometryClassName} ${inputClassName}`}
       />
 
-      {showPopup && (
+      {showPopup && layer && createPortal(
         <ul
           ref={listRef}
           id={listboxId}
           role="listbox"
           aria-label={`${label} suggestions`}
-          className={`absolute z-20 left-0 right-0 mt-1 ${listMaxHeightClassName} overflow-y-auto rounded-md border border-gray-700 bg-gray-900 shadow-lg`}
+          // A press on the list itself (its scrollbar, its padding) must not
+          // blur the field: blur dismisses, and the list would vanish under
+          // the pointer. Options already do this for the same reason.
+          onMouseDown={(e) => e.preventDefault()}
+          className={`fixed z-[70] ${listMaxHeightClassName} overflow-y-auto rounded-md border border-gray-700 bg-gray-900 shadow-lg`}
         >
           {!hasResults && (
             // role="option" + aria-disabled, NOT role="presentation": per the
@@ -400,7 +503,8 @@ export function Autocomplete<T>({
               </li>
             );
           })}
-        </ul>
+        </ul>,
+        layer,
       )}
     </div>
   );

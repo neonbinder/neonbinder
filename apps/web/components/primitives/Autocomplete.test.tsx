@@ -18,7 +18,7 @@
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import React, { useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Autocomplete } from "./Autocomplete";
 
 type Row = { id: string; name: string; sport?: string };
@@ -425,6 +425,162 @@ describe("Autocomplete — picker mode", () => {
       expect(scrolled.at(-1)).toContain("Ken Caminiti");
     } finally {
       Element.prototype.scrollIntoView = original;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-307 — the list is a fixed layer anchored to the field, portalled into
+// the nearest dialog, so a scrolling host can never clip it
+//
+// CI, 1024x629: in NewTeamDialog the League list opened under the field inside
+// the body's `overflow-y-auto` and ran on under the pinned footer; the tap on
+// "No league" (last) hit the footer. happy-dom has no layout, so geometry is
+// asserted from a stubbed field rect and viewport height.
+// ---------------------------------------------------------------------------
+
+describe("Autocomplete — the list's layer", () => {
+  const originalInnerHeight = window.innerHeight;
+  const stubField = (rect: { top: number; bottom: number; left: number; width: number }) => {
+    vi.spyOn(input(), "getBoundingClientRect").mockReturnValue({
+      ...rect,
+      right: rect.left + rect.width,
+      height: rect.bottom - rect.top,
+      x: rect.left,
+      y: rect.top,
+      toJSON: () => ({}),
+    } as DOMRect);
+  };
+  const setViewport = (h: number) =>
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: h });
+
+  afterEach(() => {
+    setViewport(originalInnerHeight);
+    vi.restoreAllMocks();
+  });
+
+  it("portals the list into the field's own dialog, so an overflow ancestor cannot clip it", () => {
+    render(
+      <div role="dialog" aria-label="Host dialog">
+        <div data-testid="scroll-body" style={{ overflowY: "auto", height: 100 }}>
+          <Harness />
+        </div>
+      </div>,
+    );
+    openList();
+    const list = screen.getByRole("listbox");
+    const hostDialog = screen.getByRole("dialog", { name: "Host dialog" });
+    expect(list.parentElement).toBe(hostDialog);
+    expect(screen.getByTestId("scroll-body").contains(list)).toBe(false);
+    expect(list.className).toContain("fixed");
+  });
+
+  it("portals into <body> when there is no dialog around the field", () => {
+    const { container } = render(<Harness />);
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.parentElement).toBe(document.body);
+    expect(container.contains(list)).toBe(false);
+  });
+
+  it("keeps the ARIA wiring across the portal", () => {
+    render(<Harness />);
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(input().getAttribute("aria-controls")).toBe(list.id);
+    fireEvent.keyDown(input(), { key: "ArrowDown" });
+    const active = input().getAttribute("aria-activedescendant")!;
+    expect(document.getElementById(active)?.closest('[role="listbox"]')).toBe(list);
+  });
+
+  it("still picks from a portalled option", () => {
+    const onSelect = vi.fn();
+    render(<Harness onSelect={onSelect} />);
+    openList();
+    fireEvent.mouseDown(screen.getByText("Kenny Lofton"));
+    expect(onSelect.mock.calls[0][0].name).toBe("Kenny Lofton");
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("opens BELOW the field when there is room, anchored to its left edge and width", () => {
+    render(<Harness />);
+    setViewport(629);
+    stubField({ top: 100, bottom: 130, left: 40, width: 300 });
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.dataset.placement).toBe("bottom");
+    expect(list.style.top).toBe("134px");
+    expect(list.style.left).toBe("40px");
+    expect(list.style.width).toBe("300px");
+    expect(list.style.maxHeight).toBe("240px");
+  });
+
+  it("flips ABOVE the field when the room below is short — the CI footer case", () => {
+    // A field low in a 629px viewport: 64px of room below, 508 above.
+    render(<Harness />);
+    setViewport(629);
+    stubField({ top: 520, bottom: 553, left: 270, width: 470 });
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.dataset.placement).toBe("top");
+    expect(list.style.top).toBe("");
+    expect(list.style.bottom).toBe(`${629 - 520 + 4}px`);
+    expect(list.style.maxHeight).toBe("240px");
+  });
+
+  it("shrinks to the room it has rather than running off the viewport", () => {
+    render(<Harness />);
+    setViewport(300);
+    // 100 above, 150 below: stays below (more room), capped to what fits.
+    stubField({ top: 100, bottom: 138, left: 0, width: 200 });
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.dataset.placement).toBe("bottom");
+    expect(list.style.maxHeight).toBe(`${300 - 138 - 4 - 8}px`);
+  });
+
+  it("follows the field when an ancestor scrolls", () => {
+    render(<Harness />);
+    setViewport(629);
+    stubField({ top: 100, bottom: 130, left: 40, width: 300 });
+    openList();
+    const list = screen.getByRole("listbox");
+    expect(list.style.top).toBe("134px");
+
+    stubField({ top: 60, bottom: 90, left: 40, width: 300 });
+    fireEvent.scroll(document.body);
+    expect(list.style.top).toBe("94px");
+  });
+
+  it("does not treat a press on the list as an outside click, nor let it blur the field", () => {
+    render(<Harness />);
+    openList();
+    const list = screen.getByRole("listbox");
+    // `false` = preventDefault, which is what keeps focus in the field.
+    expect(fireEvent.mouseDown(list)).toBe(false);
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    // A press genuinely outside still closes it.
+    fireEvent.mouseDown(document.body);
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("stays live when its dialog holds the page inert", async () => {
+    const { inertBackground } = await import("../../lib/dom/inert-background");
+    render(
+      <div role="dialog" aria-label="Host dialog">
+        <Harness />
+      </div>,
+    );
+    const hostDialog = screen.getByRole("dialog", { name: "Host dialog" });
+    const release = inertBackground(hostDialog);
+    try {
+      openList();
+      const list = screen.getByRole("listbox");
+      expect(list.closest("[inert]")).toBeNull();
+      const onSelectOption = screen.getByText("Kenny Lofton").closest("li")!;
+      expect(onSelectOption.closest("[inert]")).toBeNull();
+    } finally {
+      release();
     }
   });
 });
