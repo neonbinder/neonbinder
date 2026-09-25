@@ -78,6 +78,11 @@ const FULLY_POPULATED = {
     // validator has to name every key or it throws on any real row carrying
     // one this fixture omits.
     setNamePrefix: "Topps",
+    // NEO-294 — `brandSetByOperator`, and NEO-306 — `variantRole`, for the
+    // same reason: the fixture had gone without the first, which left the
+    // drift guard dead for it.
+    brandSetByOperator: true,
+    variantRole: "parallel",
   },
   sportConfig: {
     skuCode: "BB",

@@ -14,6 +14,10 @@
  * brands whose prefixes both match, a holder whose parent was deleted, and
  * the root cap's stability across runs are asserted here rather than left to
  * the happy path.
+ *
+ * NEO-306 — `routeSlSets` no longer groups names into roots and members, and
+ * the NEO-305 flagship absorb is gone: every SportLots-only name is one entry
+ * of the brand's review (`slSetReview.test.ts` pins the review itself).
  */
 
 import { describe, expect, test } from "vitest";
@@ -22,15 +26,12 @@ import {
   ALL_BRANDS_VIEW_REFUSAL,
   isAllBrandsViewName,
   knownSetNameKeys,
-  MAX_SL_SET_MEMBERS,
   MAX_SL_SETS_PER_SYNC,
   matchesBrandPrefix,
   routeBscSets,
   routeSlSets,
-  slFlagshipAbsorbs,
   stripMatchedBrandPrefix,
   type BrandRouteManufacturer,
-  type BscSetPhaseOutcome,
   type BscSetHolder,
   type MarketplaceSetEntry,
 } from "./selectorSyncMatch";
@@ -377,7 +378,7 @@ describe("knownSetNameKeys", () => {
 });
 
 describe("routeSlSets", () => {
-  test("an entry whose id is already covered is not offered as new, and is not double-counted with variants", () => {
+  test("an entry whose id is already covered is not offered, and is not double-counted with variants", () => {
     const plan = routeSlSets({
       entries: [{ id: "sl-1", label: "Series 1" }],
       coveredSlIds: new Set(["sl-1"]),
@@ -385,17 +386,17 @@ describe("routeSlSets", () => {
     });
     expect(plan.covered).toBe(1);
     expect(plan.variants).toBe(0);
-    expect(plan.roots).toEqual([]);
+    expect(plan.entries).toEqual([]);
   });
 
-  test("a label equal to a known set is a variant, not new", () => {
+  test("a label equal to a known set is a variant, not an entry", () => {
     const plan = routeSlSets({
       entries: [{ id: "sl-1", label: "Chrome" }],
       coveredSlIds: new Set(),
       knownSetNameKeys: new Set(["chrome"]),
     });
     expect(plan.variants).toBe(1);
-    expect(plan.roots).toEqual([]);
+    expect(plan.entries).toEqual([]);
   });
 
   test("a label that is a known set + suffix is a variant (word-boundary prefix)", () => {
@@ -427,90 +428,66 @@ describe("routeSlSets", () => {
     const plan = routeSlSets({
       entries: [
         { id: "sl-1", label: "Topps" }, // exact match to the flagship — hidden
-        { id: "sl-2", label: "Heritage" }, // a real new set — must surface
+        { id: "sl-2", label: "Heritage" }, // a real SportLots-only name — offered
       ],
       coveredSlIds: new Set(),
       knownSetNameKeys: new Set(["topps"]),
       scopePrefix: "Topps",
     });
     expect(plan.variants).toBe(1);
-    expect(plan.roots.map((r) => r.label)).toEqual(["Heritage"]);
+    expect(plan.entries.map((e) => e.label)).toEqual(["Heritage"]);
   });
 
-  test("Topps Heritage surfaces as a root when only 'Topps' (the flagship) is known", () => {
-    const plan = routeSlSets({
-      entries: [{ id: "sl-1", label: "Heritage" }],
-      coveredSlIds: new Set(),
-      knownSetNameKeys: new Set(["topps"]),
-      scopePrefix: "Topps",
-    });
-    expect(plan.variants).toBe(0);
-    expect(plan.roots.map((r) => r.label)).toEqual(["Heritage"]);
-  });
-
-  test("a label NOT prefixing any known set, and not prefixed BY one, is new", () => {
+  test("a label NOT prefixing any known set, and not prefixed BY one, is an entry", () => {
     const plan = routeSlSets({
       entries: [{ id: "sl-1", label: "Finest" }],
       coveredSlIds: new Set(),
       knownSetNameKeys: new Set(["chrome"]),
     });
     expect(plan.variants).toBe(0);
-    expect(plan.roots.map((r) => r.label)).toEqual(["Finest"]);
+    expect(plan.entries).toEqual([{ id: "sl-1", label: "Finest" }]);
   });
 
-  test("two roots where one prefixes the other join into one root with the shorter as root", () => {
+  test("names are FLATTENED: a name and its longer siblings are each an entry, sorted so they sit together", () => {
+    // NEO-306 coordinator ruling 1 — each SportLots name is its own row of
+    // the review. "Finest Refractor" is no longer a hidden member of the
+    // "Finest" root: the operator may file it as a parallel of a set.
     const plan = routeSlSets({
       entries: [
+        { id: "sl-3", label: "Heritage" },
         { id: "sl-2", label: "Finest Refractor" },
         { id: "sl-1", label: "Finest" },
       ],
       coveredSlIds: new Set(),
       knownSetNameKeys: new Set(),
     });
-    expect(plan.roots).toHaveLength(1);
-    expect(plan.roots[0].label).toBe("Finest");
-    expect(plan.roots[0].members).toEqual([
+    expect(plan.entries).toEqual([
+      { id: "sl-1", label: "Finest" },
       { id: "sl-2", label: "Finest Refractor" },
+      { id: "sl-3", label: "Heritage" },
     ]);
+    expect(plan.truncated).toBe(0);
   });
 
-  test("two entries with the identical folded label fold together, the first becomes the root", () => {
+  test("two ids with one folded label are two entries, in id order", () => {
     const plan = routeSlSets({
       entries: [
-        { id: "sl-1", label: "Finest" },
         { id: "sl-2", label: "finest" },
+        { id: "sl-1", label: "Finest" },
       ],
       coveredSlIds: new Set(),
       knownSetNameKeys: new Set(),
     });
-    expect(plan.roots).toHaveLength(1);
-    // The shortest-first / stable-tie sort makes sl-1 the root deterministically.
-    expect(plan.roots[0].id).toBe("sl-1");
-    expect(plan.roots[0].members.map((m) => m.id)).toEqual(["sl-2"]);
+    expect(plan.entries.map((e) => e.id)).toEqual(["sl-1", "sl-2"]);
   });
 
-  test("members past MAX_SL_SET_MEMBERS are dropped and counted, root kept", () => {
-    const entries = [{ id: "root", label: "Finest" }];
-    for (let i = 0; i < MAX_SL_SET_MEMBERS + 5; i++) {
-      entries.push({ id: `m${i}`, label: `Finest Variant ${i}` });
-    }
-    const plan = routeSlSets({
-      entries,
-      coveredSlIds: new Set(),
-      knownSetNameKeys: new Set(),
-    });
-    expect(plan.roots).toHaveLength(1);
-    expect(plan.roots[0].members).toHaveLength(MAX_SL_SET_MEMBERS);
-    expect(plan.membersTruncated).toBe(5);
-  });
-
-  test("roots past MAX_SL_SETS_PER_SYNC are dropped AFTER sorting by folded label, and the cap is stable across runs", () => {
+  test("entries past MAX_SL_SETS_PER_SYNC are dropped AFTER sorting by folded label, and the cap is stable across runs", () => {
+    // The cap counts ENTRIES (coordinator ruling 1): a name and 60 longer
+    // siblings are 61 entries, not one root.
     const entries = Array.from({ length: MAX_SL_SETS_PER_SYNC + 3 }, (_, i) => ({
       id: `id-${i}`,
-      // Distinct, unrelated stems so every entry is its own root.
-      label: `Root-${String(i).padStart(4, "0")}`,
+      label: `Finest ${String(i).padStart(4, "0")}`,
     }));
-    // Shuffle the input order — the cap must not depend on scan order.
     const shuffled = [...entries].reverse();
 
     const planA = routeSlSets({
@@ -524,35 +501,13 @@ describe("routeSlSets", () => {
       knownSetNameKeys: new Set(),
     });
 
-    expect(planA.roots).toHaveLength(MAX_SL_SETS_PER_SYNC);
-    expect(planA.rootsTruncated).toBe(3);
-    // Same window of roots (by id) regardless of input order.
-    expect(planA.roots.map((r) => r.id)).toEqual(planB.roots.map((r) => r.id));
-    // And it is the alphabetically-FIRST window that survives — "Root-0000"
-    // through the 200th, never a rotating tail.
-    expect(planA.roots[0].label).toBe("Root-0000");
-  });
-
-  test("a root near the truncation boundary keeps its slot across two runs with the same input", () => {
-    // Sorting before the cap means the same input always yields the same
-    // surviving root set, so what one sync cut off is exactly what the next
-    // sync (with this one's roots now covered) reaches first — nothing past
-    // the cap is lost, only deferred.
-    const entries = Array.from({ length: MAX_SL_SETS_PER_SYNC + 1 }, (_, i) => ({
-      id: `id-${i}`,
-      label: `Root-${String(i).padStart(4, "0")}`,
-    }));
-    const first = routeSlSets({
-      entries,
-      coveredSlIds: new Set(),
-      knownSetNameKeys: new Set(),
-    });
-    const second = routeSlSets({
-      entries,
-      coveredSlIds: new Set(),
-      knownSetNameKeys: new Set(),
-    });
-    expect(first.roots.map((r) => r.id)).toEqual(second.roots.map((r) => r.id));
+    expect(planA.entries).toHaveLength(MAX_SL_SETS_PER_SYNC);
+    expect(planA.truncated).toBe(3);
+    // Same window (by id) regardless of input order.
+    expect(planA.entries.map((e) => e.id)).toEqual(planB.entries.map((e) => e.id));
+    // And it is the alphabetically-FIRST window that survives, never a
+    // rotating tail: what one sync cut off is what the next reaches first.
+    expect(planA.entries[0].label).toBe("Finest 0000");
   });
 
   test("duplicate ids in the entry list are counted once", () => {
@@ -564,35 +519,34 @@ describe("routeSlSets", () => {
       coveredSlIds: new Set(),
       knownSetNameKeys: new Set(),
     });
-    expect(plan.roots).toHaveLength(1);
-    expect(plan.roots[0].members).toEqual([]);
+    expect(plan.entries).toEqual([{ id: "sl-1", label: "Finest" }]);
   });
 
-  test("an unnameable (over-length) label is dropped and counted, never becomes a root", () => {
+  test("an unnameable (over-length) label is dropped and counted, never becomes an entry", () => {
     const plan = routeSlSets({
       entries: [{ id: "sl-1", label: "X".repeat(500) }],
       coveredSlIds: new Set(),
       knownSetNameKeys: new Set(),
     });
     expect(plan.unnameable).toBe(1);
-    expect(plan.roots).toEqual([]);
+    expect(plan.entries).toEqual([]);
   });
 
-  test("an entry with a blank label is dropped silently (not unnameable, not a root)", () => {
+  test("an entry with a blank label is dropped silently (not unnameable, not an entry)", () => {
     const plan = routeSlSets({
       entries: [{ id: "sl-1", label: "   " }],
       coveredSlIds: new Set(),
       knownSetNameKeys: new Set(),
     });
     expect(plan.unnameable).toBe(0);
-    expect(plan.roots).toEqual([]);
+    expect(plan.entries).toEqual([]);
     expect(plan.variants).toBe(0);
     expect(plan.covered).toBe(0);
   });
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// NEO-305 — the flagship absorbs its SportLots-only names when BSC answered
+// NEO-306 — no flagship absorb: 2026 Bowman's colours are review entries
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
@@ -613,174 +567,40 @@ const BOWMAN_2026_SL = [
   { id: "sl-blue", label: "Blue" },
   { id: "sl-gold", label: "Gold" },
   { id: "sl-neon-green", label: "Neon Green" },
+  { id: "sl-aa", label: "All-America" },
+  { id: "sl-aa-autos", label: "All-America Game Autos" },
 ];
 
-describe("routeSlSets — flagshipAbsorbs (NEO-305)", () => {
-  test("2026 Bowman: with the flag, the colours are the flagship's parallels, not sets", () => {
+describe("routeSlSets — the flagship absorbs nothing (NEO-306)", () => {
+  test("2026 Bowman: every SportLots-only name, colours included, is a review entry — nothing is parked", () => {
     const plan = routeSlSets({
       entries: BOWMAN_2026_SL,
       coveredSlIds: new Set(),
       knownSetNameKeys: BOWMAN_2026_KNOWN,
       scopePrefix: "Bowman",
-      flagshipAbsorbs: true,
     });
-    expect(plan.roots).toEqual([]);
-    expect(plan.flagshipParallels).toBe(3); // Blue, Gold, Neon Green
+    expect(plan.entries.map((e) => e.label)).toEqual([
+      "All-America",
+      "All-America Game Autos",
+      "Blue",
+      "Gold",
+      "Neon Green",
+    ]);
     // The flagship itself, Chrome (+ its refractor) and Sapphire Edition are
-    // variants of sets BSC already filed — unchanged by the flag.
+    // variants of sets BSC already filed.
     expect(plan.variants).toBe(4);
-    expect(plan.covered).toBe(0);
+    expect(plan).not.toHaveProperty("flagshipParallels");
   });
 
-  test("2026 Bowman: without the flag (absent), the colours become roots exactly as before", () => {
+  test("a covered colour is not offered again", () => {
     const plan = routeSlSets({
       entries: BOWMAN_2026_SL,
-      coveredSlIds: new Set(),
+      coveredSlIds: new Set(["sl-gold"]),
       knownSetNameKeys: BOWMAN_2026_KNOWN,
       scopePrefix: "Bowman",
-    });
-    expect(plan.roots.map((r) => r.label)).toEqual(["Blue", "Gold", "Neon Green"]);
-    expect(plan.flagshipParallels).toBe(0);
-    expect(plan.variants).toBe(4);
-  });
-
-  test("flag false is byte-identical to the flag absent", () => {
-    const base = {
-      entries: BOWMAN_2026_SL,
-      coveredSlIds: new Set<string>(["sl-gold"]),
-      knownSetNameKeys: BOWMAN_2026_KNOWN,
-      scopePrefix: "Bowman",
-    };
-    expect(routeSlSets({ ...base, flagshipAbsorbs: false })).toEqual(routeSlSets(base));
-  });
-
-  test("NEO-237 Topps/Heritage still pins when the flag is unset or false", () => {
-    for (const flagshipAbsorbs of [undefined, false]) {
-      const plan = routeSlSets({
-        entries: [
-          { id: "sl-1", label: "Topps" },
-          { id: "sl-2", label: "Heritage" },
-        ],
-        coveredSlIds: new Set(),
-        knownSetNameKeys: new Set(["topps"]),
-        scopePrefix: "Topps",
-        ...(flagshipAbsorbs !== undefined ? { flagshipAbsorbs } : {}),
-      });
-      expect(plan.variants).toBe(1);
-      expect(plan.roots.map((r) => r.label)).toEqual(["Heritage"]);
-      expect(plan.flagshipParallels).toBe(0);
-    }
-  });
-
-  test("with the flag, a SportLots-only name under a bare Topps flagship is absorbed too (decision 1: BSC's list decides)", () => {
-    const plan = routeSlSets({
-      entries: [{ id: "sl-2", label: "Heritage" }],
-      coveredSlIds: new Set(),
-      knownSetNameKeys: new Set(["topps"]),
-      scopePrefix: "Topps",
-      flagshipAbsorbs: true,
-    });
-    expect(plan.roots).toEqual([]);
-    expect(plan.flagshipParallels).toBe(1);
-  });
-
-  test("with the flag but no flagship among the known names, nothing is absorbed", () => {
-    const plan = routeSlSets({
-      entries: [{ id: "sl-2", label: "Heritage" }],
-      coveredSlIds: new Set(),
-      knownSetNameKeys: new Set(["topps chrome"]),
-      scopePrefix: "Topps",
-      flagshipAbsorbs: true,
-    });
-    expect(plan.roots.map((r) => r.label)).toEqual(["Heritage"]);
-    expect(plan.flagshipParallels).toBe(0);
-  });
-
-  test("with no scope prefix (Unknown), the flag absorbs nothing — no key can be the flagship", () => {
-    const plan = routeSlSets({
-      entries: [{ id: "sl-1", label: "Bowman Blue" }],
-      coveredSlIds: new Set(),
-      knownSetNameKeys: new Set(["bowman"]),
-      flagshipAbsorbs: true,
-    });
-    // "bowman" prefix-hides "Bowman Blue" when there is no scope prefix to
-    // strip (the pre-NEO-305 rule), so it is a variant — never a parallel.
-    expect(plan.flagshipParallels).toBe(0);
-    expect(plan.variants).toBe(1);
-  });
-
-  test("covered, unnameable and variant still win over absorption, and each entry is counted once", () => {
-    const plan = routeSlSets({
-      entries: [
-        { id: "sl-blue", label: "Blue" }, // covered by id
-        { id: "sl-long", label: "X".repeat(500) }, // unnameable
-        { id: "sl-chrome", label: "Chrome" }, // variant of a known set
-        { id: "sl-gold", label: "Gold" }, // absorbed
-        { id: "sl-gold", label: "Gold" }, // duplicate id, ignored
-      ],
-      coveredSlIds: new Set(["sl-blue"]),
-      knownSetNameKeys: BOWMAN_2026_KNOWN,
-      scopePrefix: "Bowman",
-      flagshipAbsorbs: true,
     });
     expect(plan.covered).toBe(1);
-    expect(plan.unnameable).toBe(1);
-    expect(plan.variants).toBe(1);
-    expect(plan.flagshipParallels).toBe(1);
-    expect(plan.roots).toEqual([]);
-  });
-
-  test("a label the case-sensitive adapter strip missed is judged after the prefix and absorbed", () => {
-    const plan = routeSlSets({
-      entries: [{ id: "sl-1", label: "BOWMAN Blue" }],
-      coveredSlIds: new Set(),
-      knownSetNameKeys: BOWMAN_2026_KNOWN,
-      scopePrefix: "Bowman",
-      flagshipAbsorbs: true,
-    });
-    expect(plan.flagshipParallels).toBe(1);
-    expect(plan.roots).toEqual([]);
-  });
-});
-
-describe("slFlagshipAbsorbs (NEO-305)", () => {
-  test("true only when BSC filed, the scope holds a BSC set, and it is not Unknown", () => {
-    expect(
-      slFlagshipAbsorbs({
-        bscPhase: "filed",
-        scopeHasBscSet: true,
-        scopeIsBrandUnknown: false,
-      }),
-    ).toBe(true);
-  });
-
-  test.each<BscSetPhaseOutcome>(["skipped", "paused", "failed", "index_truncated"])(
-    "false when the BSC phase was %s",
-    (bscPhase) => {
-      expect(
-        slFlagshipAbsorbs({ bscPhase, scopeHasBscSet: true, scopeIsBrandUnknown: false }),
-      ).toBe(false);
-    },
-  );
-
-  test("false when the scope holds no set with a BSC id", () => {
-    expect(
-      slFlagshipAbsorbs({
-        bscPhase: "filed",
-        scopeHasBscSet: false,
-        scopeIsBrandUnknown: false,
-      }),
-    ).toBe(false);
-  });
-
-  test("false for the brand-unknown scope", () => {
-    expect(
-      slFlagshipAbsorbs({
-        bscPhase: "filed",
-        scopeHasBscSet: true,
-        scopeIsBrandUnknown: true,
-      }),
-    ).toBe(false);
+    expect(plan.entries.map((e) => e.id)).not.toContain("sl-gold");
   });
 });
 

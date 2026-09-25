@@ -31,7 +31,11 @@ const ADMIN_IDENTITY = {
 
 const SENTINEL = 1_000_000;
 
-/** A variant type whose `variant`-tagged BSC slot carries `role`'s token. */
+/**
+ * A variant type carrying `role` as its NB flag (NEO-306: the role is read
+ * from `metadata.variantRole`, conferred once at sync time from the tagged
+ * BSC slot kept here beside it).
+ */
 async function insertVariantType(
   t: ReturnType<typeof convexTest>,
   role: "insert" | "parallel",
@@ -42,6 +46,7 @@ async function insertVariantType(
       value: role === "insert" ? "Inserts" : "Base",
       platformData: { bsc: { b0: role } },
       platformFacets: { bsc: { b0: "variant" } },
+      metadata: { variantRole: role },
       children: [],
       lastUpdated: SENTINEL,
     }),

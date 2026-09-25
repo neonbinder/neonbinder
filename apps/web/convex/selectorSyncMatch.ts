@@ -1510,49 +1510,40 @@ export function routeBscSets<TId extends string>(args: {
 
   return { buckets, unknown, moves, knownBrandRequests: [...requests.values()] };
 }
-
 // ───────────────────────────────────────────────────────────────────────────
 // NEO-237 — Sync Sets classification, SportLots phase (D11)
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Bounds on what one Sync Sets writes from SportLots for one brand scope.
- * Every root the classifier keeps becomes an NB set in that sync
- * (`createSetsFromSlRoots`, the sole writer), so the cap is a write bound:
- * a SportLots year lists ~2,500 sets, and a brand with more than 200 NEW
- * roots in one sync is a data-quality problem to look at, not a batch to
- * insert blind — the rest are counted and land on the next sync. Members
- * only shape the grouping (which entries are roots); they are never written.
+ * Bound on what one Sync Sets offers from SportLots for one brand scope.
+ *
+ * NEO-306 — every SportLots-only name the classifier keeps becomes an ENTRY
+ * in that brand's review (`slSetReviews`, `convex/slSetReview.ts`), where the
+ * operator files it as its own set or under one of the brand's sets' variant
+ * types. So this caps ENTRIES, not roots: a SportLots year lists ~2,500 sets,
+ * and a brand with more than 200 new names in one sync is a data-quality
+ * problem to look at, not a 200+-row dialog. The rest are counted and are
+ * the first thing the next sync reaches once these are covered.
  */
-export const MAX_SL_SET_MEMBERS = 50;
 export const MAX_SL_SETS_PER_SYNC = 200;
 
 export type SlSetEntry = { id: string; label: string };
-
-export type SlSetRoot = {
-  id: string;
-  label: string;
-  members: SlSetEntry[];
-};
 
 export type SlSetRoutePlan = {
   /** Entries whose id is already attached somewhere under the brand. */
   covered: number;
   /** Entries hidden as a variant of a set NB already has (year-wide). */
   variants: number;
-  /** The SportLots-only roots that become sets, sorted by folded label, capped. */
-  roots: SlSetRoot[];
-  /** Roots past `MAX_SL_SETS_PER_SYNC`, dropped after the sort. */
-  rootsTruncated: number;
-  /** Members past `MAX_SL_SET_MEMBERS` across all roots. */
-  membersTruncated: number;
+  /**
+   * The SportLots-only names for the brand's review, one entry each, sorted
+   * by folded label (so "All-America" sits right above "All-America Game
+   * Autos"), capped at `MAX_SL_SETS_PER_SYNC`.
+   */
+  entries: SlSetEntry[];
+  /** Entries past `MAX_SL_SETS_PER_SYNC`, dropped after the sort. */
+  truncated: number;
   /** Entries dropped because their label exceeds `MAX_SLOT_LABEL_LENGTH`. */
   unnameable: number;
-  /**
-   * NEO-305 — entries left to the flagship's Parallels sync instead of being
-   * made sets (`flagshipAbsorbs`). Always 0 when the flag is off.
-   */
-  flagshipParallels: number;
 };
 
 /**
@@ -1604,35 +1595,18 @@ export function knownSetNameKeys(
  *              it hides an exact match and nothing by prefix. Without this
  *              the flagship hid the whole brand: "Topps" prefixed the
  *              re-prefixed form of every entry ("Topps Heritage", "Topps
- *              Finest", …) the moment the Topps row existed. Now "Heritage"
- *              under Topps is tested as "heritage" against "" (skipped) and
- *              is NEW; "Chrome Sepia Refractor" is tested as "chrome sepia
- *              refractor" against "Topps Chrome" → "chrome" and is a VARIANT.
- *   new      — everything else, grouped by ROOT: an entry is a root when no
- *              other new entry's label word-boundary-prefixes it; every other
- *              entry joins the LONGEST root that prefixes it. Two entries with
- *              one label fold together (the first is the root). Roots are
- *              sorted by folded label BEFORE the cap so two syncs over the
- *              same list keep the same window: what was cut off last time is
- *              exactly what the next sync (with last time's roots now
- *              covered) reaches first.
- *   flagship parallel — NEO-305, only under `flagshipAbsorbs`. The NEO-237
- *              carve-out above keeps the flagship from hiding "Heritage"
- *              under Topps, and that is right when nothing else speaks for
- *              the brand. But it also let every SportLots-only name that
- *              extends the flagship through as a root: 2026 Bowman became
- *              "Bowman Blue", "Bowman Gold", "Bowman Neon Green" … as SETS,
- *              where BSC lists three (Bowman, Chrome, Sapphire Edition) and
- *              the colours are Bowman's parallels. Jason, 2026-09-24: BSC's
- *              set list decides. So when the caller says BSC answered for
- *              this brand-year (the flag), and the flagship is among the
- *              known names (a key that IS the scope prefix), every entry
- *              still standing after covered / variant — and with something
- *              left after the prefix — is counted here and written nowhere.
- *              The flagship's Parallel variant-type sync lists the same
- *              SportLots set, where the operator pairs or adds it. Off (the
- *              default) is NEO-237 exactly: "Heritage" under a bare "Topps"
- *              is still a root when BSC did not answer.
+ *              Finest", …) the moment the Topps row existed.
+ *   entry    — everything else: a SportLots-only name, ONE review entry each
+ *              (NEO-306). Nothing is written here or by the caller's sync:
+ *              the operator decides in the brand's review whether "Bowman
+ *              Gold" is its own set or a parallel of Bowman. That replaced
+ *              NEO-305's flagship absorb, which counted such names as the
+ *              flagship's parallels and wrote them nowhere, and NEO-237's
+ *              roots-become-sets, which wrote every one of them as a set.
+ *              Entries are sorted by folded label BEFORE the cap, so two
+ *              syncs over the same list keep the same window: what was cut
+ *              off last time is exactly what the next sync (with last time's
+ *              entries now covered) reaches first.
  *
  * Pure. `entries` are the adapter's (already prefix-stripped) labels: the
  * whole-word, case-insensitive strip of `stripMatchedBrandPrefix` for a
@@ -1648,13 +1622,6 @@ export function routeSlSets(args: {
   knownSetNameKeys: ReadonlySet<string>;
   /** The scope's `setNamePrefix`; absent for Unknown (no re-prefixed form). */
   scopePrefix?: string;
-  /**
-   * NEO-305 — BSC's set list answered for this brand-year, so a SportLots-only
-   * name extending the flagship is the flagship's parallel, not a set. The
-   * caller decides it (`slFlagshipAbsorbs` in selectorSyncMatch.ts); absent or
-   * false leaves the NEO-237 classification untouched.
-   */
-  flagshipAbsorbs?: boolean;
 }): SlSetRoutePlan {
   const prefix = args.scopePrefix?.trim();
   const foldedPrefix = prefix ? selectorValueKey(prefix) : "";
@@ -1672,13 +1639,6 @@ export function routeSlSets(args: {
   // The prefix-hiders: what remains of each known name after the scope
   // prefix. The flagship named after its brand contributes nothing here.
   const knownHiders = [...new Set(known.map(stripScopePrefix))].filter(Boolean);
-  // NEO-305 — the flagship absorbs only when the caller says BSC answered AND
-  // a known name IS the scope prefix. No prefix (Unknown) means no key ever
-  // strips to "", so Unknown can never absorb, whatever the caller passes.
-  const flagshipAbsorbs =
-    args.flagshipAbsorbs === true &&
-    foldedPrefix !== "" &&
-    known.some((key) => stripScopePrefix(key) === "");
   const isVariantOfKnown = (label: string): boolean => {
     const key = selectorValueKey(label);
     if (knownSet.has(key)) return true;
@@ -1696,7 +1656,6 @@ export function routeSlSets(args: {
   let covered = 0;
   let variants = 0;
   let unnameable = 0;
-  let flagshipParallels = 0;
   const fresh: Array<{ id: string; label: string; key: string }> = [];
   const seenIds = new Set<string>();
   for (const entry of args.entries) {
@@ -1716,86 +1675,20 @@ export function routeSlSets(args: {
       variants++;
       continue;
     }
-    if (flagshipAbsorbs && stripScopePrefix(selectorValueKey(label)) !== "") {
-      flagshipParallels++;
-      continue;
-    }
     fresh.push({ id: entry.id, label, key: selectorValueKey(label) });
   }
 
-  // Shortest first, so every root an entry could join has been decided
-  // before the entry is looked at; ties by key keep the grouping stable
-  // across syncs.
-  fresh.sort(
-    (a, b) => a.key.length - b.key.length || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0),
+  // Folded label, then id: a stable total order, so the capped window is the
+  // same across syncs and a name sits directly above its longer siblings.
+  fresh.sort((a, b) =>
+    a.key < b.key ? -1 : a.key > b.key ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
   );
-  const roots: Array<SlSetRoot & { key: string; dropped: number }> = [];
-  for (const entry of fresh) {
-    let best: (typeof roots)[number] | undefined;
-    for (const root of roots) {
-      if (!foldedPrefixMatches(entry.key, root.key)) continue;
-      if (!best || root.key.length > best.key.length) best = root;
-    }
-    if (!best) {
-      roots.push({ id: entry.id, label: entry.label, members: [], key: entry.key, dropped: 0 });
-      continue;
-    }
-    if (best.members.length >= MAX_SL_SET_MEMBERS) best.dropped++;
-    else best.members.push({ id: entry.id, label: entry.label });
-  }
-
-  roots.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-  const kept = roots.slice(0, MAX_SL_SETS_PER_SYNC);
+  const kept = fresh.slice(0, MAX_SL_SETS_PER_SYNC);
   return {
     covered,
     variants,
-    roots: kept.map(({ id, label, members }) => ({ id, label, members })),
-    rootsTruncated: roots.length - kept.length,
-    membersTruncated: kept.reduce((n, r) => n + r.dropped, 0),
+    entries: kept.map(({ id, label }) => ({ id, label })),
+    truncated: fresh.length - kept.length,
     unnameable,
-    flagshipParallels,
   };
-}
-
-/**
- * NEO-305 — how the BSC phase of THIS Sync Sets ended for the year. Only
- * `filed` means BSC answered and its sets were stored; every other outcome is
- * a phase that did not speak for the year, so nothing may be absorbed on its
- * strength.
- *
- *   skipped         — no BSC ids on the sport/year path
- *   paused          — the operator paused BSC (NEO-287)
- *   failed          — asked, and it errored or answered empty
- *   index_truncated — answered, but the year's set index was over its cap
- *                     and the phase filed nothing (NEO-296)
- *   filed           — answered, and its list was filed under the brands
- */
-export type BscSetPhaseOutcome =
-  | "skipped"
-  | "paused"
-  | "failed"
-  | "index_truncated"
-  | "filed";
-
-/**
- * NEO-305 — the `flagshipAbsorbs` decision for one SportLots scope, made once
- * inside the sync boundary. True only when ALL of:
- *
- *   (a) the BSC phase of this sync filed BSC's list for the year — not
- *       skipped, not paused, not failed, not stopped by a truncated index;
- *   (b) the scope holds at least one set carrying a BSC id, so BSC's list
- *       actually spoke for this brand (a SportLots-only brand has nothing
- *       from BSC to decide by);
- *   (c) the scope is not the brand-unknown row, which has no flagship.
- *
- * Reads what the sync already has; asks no marketplace anything.
- */
-export function slFlagshipAbsorbs(args: {
-  bscPhase: BscSetPhaseOutcome;
-  scopeHasBscSet: boolean;
-  scopeIsBrandUnknown: boolean;
-}): boolean {
-  return (
-    args.bscPhase === "filed" && args.scopeHasBscSet && !args.scopeIsBrandUnknown
-  );
 }

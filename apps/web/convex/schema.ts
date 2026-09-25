@@ -204,6 +204,25 @@ export const selectorOptionMetadataFields = {
    */
   isBase: v.optional(v.boolean()),
   /**
+   * NEO-306 — "the rows under this variantType row are inserts" / "are
+   * parallels", as an NB ROLE on a `variantType` row.
+   *
+   * Until NEO-306 this was re-read at RUNTIME from the id in the row's
+   * `variant`-tagged BSC slot, every time a child was created or a door asked
+   * what a type was — an NB behaviour keyed on a marketplace value (product
+   * invariant 4). It is now derived ONCE, when a sync writes the row (the
+   * adds-only conferral in `storeSelectorOptions` / `storeReconciledOptions`,
+   * `bscVariantEvidence` in variantRole.ts) or by the armed
+   * `backfillVariantTypeRole`, and read from here afterwards. The BSC slot
+   * itself is untouched: listing needs it.
+   *
+   * Never written on a row whose `isBase` is true (the reader checks `isBase`
+   * first, so un-marking the Base brings this back), never flipped or cleared
+   * by a sync or the backfill. Absent means "no known role": the rows beneath
+   * get no insert/parallel flag and read by level alone.
+   */
+  variantRole: v.optional(v.union(v.literal("insert"), v.literal("parallel"))),
+  /**
    * NEO-272 — "NB has not identified the brand of this row's sets", as an NB
    * ROLE on a `manufacturer` row.
    *
@@ -803,6 +822,32 @@ export default defineSchema({
     unlinkedTotal: v.optional(v.number()),
     updatedAt: v.number(),
   }).index("by_level_and_parent", ["level", "parentId"]),
+
+  // NEO-306 — the SportLots-only names a Sync Sets run found under one brand
+  // (`manufacturerId`, the Unknown brand included) of one year, waiting for
+  // the operator to file each as its own set or as a row under one of the
+  // brand's BSC-linked sets' variant types (`convex/slSetReview.ts`).
+  //
+  // One doc per (year, brand), because a single-brand Sync Sets must not wipe
+  // the other brands' pending reviews and a per-year doc can pass 1 MiB. The
+  // doc holds only what SportLots lists minus what NB already covers — no
+  // operator decision — so it is not per-operator. Replaced by the next sync
+  // of that brand only when its SportLots list came back ok; entries leave as
+  // the save files them; the doc is deleted when none are left. Transient:
+  // swept with its brand row, never a holding.
+  slSetReviews: defineTable({
+    yearId: v.id("selectorOptions"),
+    manufacturerId: v.id("selectorOptions"),
+    // Bounded at MAX_SL_SETS_PER_SYNC, sorted by folded label; labels are the
+    // brand-stripped SportLots names (≤ MAX_SLOT_LABEL_LENGTH).
+    entries: v.array(v.object({ slId: v.string(), label: v.string() })),
+    // How many SportLots-only names did not fit this sync ("more next sync").
+    rootsTruncated: v.optional(v.number()),
+    classifiedAt: v.number(),
+    // Set when a save starts; cleared when a sync changes the entries. A doc
+    // that still has entries and a `saveStartedAt` is a partial save.
+    saveStartedAt: v.optional(v.number()),
+  }).index("by_year_and_manufacturer", ["yearId", "manufacturerId"]),
 
   // NEO-237 history: a `setCandidates` table (per-brand "new on SportLots"
   // roots with an operator Create / Skip) existed only on this branch and was

@@ -1444,3 +1444,122 @@ describe("NEO-306: the Make insert of… door is admin-gated", () => {
     expect(result.landedValue).toBe("Red Ink");
   });
 });
+
+describe("NEO-306: the SportLots-only review is admin-gated", () => {
+  /**
+   * Three reads and one write. The reads enumerate a brand's pending
+   * SportLots names, its BSC-linked sets and a set's variant types; the save
+   * mints sets and rows carrying SportLots links. Every one is `requireAdmin`
+   * like every other set-builder door, and a refused save writes nothing: the
+   * review keeps its entry and no set appears.
+   */
+  async function seedReview(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const insert = (fields: Record<string, unknown>) =>
+        ctx.db.insert("selectorOptions", {
+          platformData: {},
+          children: [],
+          lastUpdated: 1_700_000_000_000,
+          ...fields,
+        } as never);
+      const sportId = await insert({ level: "sport", value: "Baseball" });
+      const yearId = await insert({ level: "year", value: "2026", parentId: sportId });
+      const brandId = await insert({
+        level: "manufacturer",
+        value: "Bowman",
+        parentId: yearId,
+        metadata: { setNamePrefix: "Bowman" },
+      });
+      const setId = await insert({
+        level: "setName",
+        value: "Bowman",
+        parentId: brandId,
+        platformData: { bsc: { b0: "bowman" } },
+      });
+      const parallelTypeId = await insert({
+        level: "variantType",
+        value: "Parallel",
+        parentId: setId,
+        metadata: { variantRole: "parallel" },
+      });
+      await ctx.db.patch(setId, { children: [parallelTypeId] });
+      await ctx.db.patch(brandId, { children: [setId] });
+      await ctx.db.insert("slSetReviews", {
+        yearId,
+        manufacturerId: brandId,
+        entries: [{ slId: "SL-GOLD", label: "Gold" }],
+        classifiedAt: 1_700_000_000_000,
+      });
+      return { brandId, setId, parallelTypeId };
+    });
+  }
+
+  type Ids = Awaited<ReturnType<typeof seedReview>>;
+
+  test.each([
+    [
+      "slSetReview.applySlSetReview",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.action(api.slSetReview.applySlSetReview, {
+          manufacturerId: ids.brandId,
+          decisions: [{ slId: "SL-GOLD", variantTypeId: ids.parallelTypeId }],
+        }),
+    ],
+    [
+      "slSetReview.getSlSetReview",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.slSetReview.getSlSetReview, { manufacturerId: ids.brandId }),
+    ],
+    [
+      "slSetReview.getSlSetReviewSummary",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.slSetReview.getSlSetReviewSummary, { manufacturerId: ids.brandId }),
+    ],
+    [
+      "slSetReview.getVariantTypesOfSet",
+      (tt: ReturnType<typeof convexTest>, ids: Ids) =>
+        tt.query(api.slSetReview.getVariantTypesOfSet, { setId: ids.setId }),
+    ],
+  ])("%s refuses a signed-in non-admin and a signed-out caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedReview(t);
+    await expect(call(t.withIdentity(SIGNED_IN), ids)).rejects.toThrow();
+    await expect(call(t, ids)).rejects.toThrow();
+    const after = await t.run(async (ctx) => ({
+      reviews: await ctx.db.query("slSetReviews").collect(),
+      underType: await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "insert").eq("parentId", ids.parallelTypeId),
+        )
+        .collect(),
+    }));
+    expect(after.reviews.map((r) => r.entries)).toEqual([
+      [{ slId: "SL-GOLD", label: "Gold" }],
+    ]);
+    expect(after.underType).toEqual([]);
+  });
+
+  test("and an admin gets through (the gate is the refusal, not the arguments)", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedReview(t);
+    const result = await t.withIdentity(ADMIN).action(api.slSetReview.applySlSetReview, {
+      manufacturerId: ids.brandId,
+      decisions: [{ slId: "SL-GOLD", variantTypeId: ids.parallelTypeId }],
+    });
+    expect(result.underType.parallel).toBe(1);
+  });
+
+  test.each([
+    ["replaceScope", "internalMutation"],
+    ["saveSetsChunk", "internalMutation"],
+    ["createSlRowsUnderVariantType", "internalMutation"],
+    ["removeReviewEntries", "internalMutation"],
+    ["markSaveStarted", "internalMutation"],
+    ["readReviewForSave", "internalQuery"],
+    ["validateReviewTypes", "internalQuery"],
+  ])("slSetReview.ts :: %s is declared %s (they trust their arguments)", (fn, keyword) => {
+    const src = readFileSync(join(__dirname, "slSetReview.ts"), "utf8");
+    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+  });
+});

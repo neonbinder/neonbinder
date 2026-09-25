@@ -106,6 +106,7 @@ On success it prints the per-table counts:
   "playerAliasesDeleted": 41,
   "playersDeleted": 288,
   "selectorOptionsDeleted": 9134,
+  "slSetReviewsDeleted": 2,
   "teamAliasesDeleted": 9,
   "teamsDeleted": 76,
   "complete": true
