@@ -91,7 +91,10 @@ def _call_haiku(
     response = client.messages.create(
         model=model,
         max_tokens=MAX_TOKENS,
-        temperature=TEMPERATURE,
+        # anthropic>=1.0 dropped `temperature` from the create() signature
+        # (a direct kwarg is a TypeError). The API still honours it for this
+        # model, and the SDK merges `extra_body` into the request JSON as-is.
+        extra_body={"temperature": TEMPERATURE},
         messages=[
             {
                 "role": "user",
