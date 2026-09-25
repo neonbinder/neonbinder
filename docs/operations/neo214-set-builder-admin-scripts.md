@@ -106,6 +106,7 @@ On success it prints the per-table counts:
   "playerAliasesDeleted": 41,
   "playersDeleted": 288,
   "selectorOptionsDeleted": 9134,
+  "slSetReviewsDeleted": 2,
   "teamAliasesDeleted": 9,
   "teamsDeleted": 76,
   "complete": true
@@ -319,6 +320,50 @@ deployment armed for one cannot be mistaken for one armed for another:
   `ALLOW_SPLIT_TEAM_LOCATIONS`, the one-shot Location / Name split.
 - [`neo254-backfill-player-links.md`](./neo254-backfill-player-links.md) —
   `ALLOW_BACKFILL_PLAYER_LINKS`, the `cardChecklist.playerLinks` backfill.
+
+### 6.1 Variant-type roles: `backfillVariantTypeRole` (NEO-306)
+
+Since NEO-306 a variant type's insert/parallel role is an NB flag,
+`metadata.variantRole`, read by `variantTypeRole`; the BSC id is no longer
+read at runtime. Syncs confer the flag on the rows they write. Older rows get
+it from this one-shot, which reads the row's `variant`-tagged BSC slot once
+and writes metadata only (the BSC slots are never touched). It shares
+`ALLOW_SELECTOR_BACKFILL` with the other `selectorOptions` backfills. Add
+`--prod` to every command for production, after the deploy is READY.
+
+Run it in this order:
+
+```bash
+# 1. The NEO-239 tag backfill first. This one reads only variant-TAGGED
+#    slots, so an untagged legacy row would land in noEvidence.
+npx convex run backfillVariantFacetAndBaseRole:run '{}'            # dry run
+npx convex env set ALLOW_SELECTOR_BACKFILL 1
+npx convex run backfillVariantFacetAndBaseRole:run '{"confirm":"BACKFILL"}'  # only if the dry run shows writes
+
+# 2. The role backfill: dry run, read the five counts
+#    (flagged / alreadyFlagged / base / ambiguous / noEvidence).
+npx convex run backfillVariantTypeRole:run '{}'
+
+# 3. Armed.
+npx convex run backfillVariantTypeRole:run '{"confirm":"BACKFILL"}'
+#    If it answers "truncated": true, carry on from where it stopped:
+npx convex run backfillVariantTypeRole:run '{"confirm":"BACKFILL","cursor":"<continueCursor>"}'
+
+# 4. Confirm the steady state: an armed re-run reports "flagged": 0.
+npx convex run backfillVariantTypeRole:run '{"confirm":"BACKFILL"}'
+npx convex env remove ALLOW_SELECTOR_BACKFILL
+```
+
+`ambiguous` and `noEvidence` rows are left without a role. The set-shape
+doors refuse on them ("no Insert type yet"), and rows created beneath them
+get no insert/parallel flag. That is the fail-closed answer, not an error.
+
+**A wrong `variantRole`.** No sync and no backfill ever flips or clears the
+flag, and there is no app door for it. To correct one, edit that
+`variantType` row in the Convex dashboard (Data → `selectorOptions`): remove
+`metadata.variantRole`, or set it to the other value, and leave every other
+key and every platform field as it is. Rows already created under the type
+keep the `isInsert`/`isParallel` they were born with.
 
 ## 7. Fixture teams and players
 

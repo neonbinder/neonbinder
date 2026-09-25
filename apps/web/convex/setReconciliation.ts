@@ -55,7 +55,7 @@ import {
 } from "./bscFacets";
 // NEO-291 — the insert/parallel flags are derived from where a row sits, not
 // taken from the client. See convex/variantRole.ts.
-import { derivedVariantFlags } from "./variantRole";
+import { conferredVariantRole, derivedVariantFlags } from "./variantRole";
 // NEO-291 — the one rule for a card number prefix, shared with
 // `setSelectorOptionCardNumberPrefix` so the modal and the panel agree.
 import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
@@ -1942,6 +1942,14 @@ export const storeReconciledOptions = mutation({
           w.metadata = { ...(w.metadata ?? {}), isBase: true };
         }
 
+        // NEO-306 — the variant type's insert/parallel ROLE, read once from
+        // its `variant`-tagged BSC slot as refreshed above and recorded as an
+        // NB flag. ADDS ONLY, never on a Base row; metadata only.
+        if (level === "variantType") {
+          const role = conferredVariantRole(w.metadata, w);
+          if (role) w.metadata = { ...(w.metadata ?? {}), variantRole: role };
+        }
+
         // NEO-291 — same ADDS-ONLY rule for the insert/parallel flags: a row
         // carrying neither gets the derived pair, a row carrying either keeps
         // what it has. Never flipped here; a level move
@@ -2020,9 +2028,20 @@ export const storeReconciledOptions = mutation({
         item.metadata?.cardNumberPrefix === undefined
           ? undefined
           : normalizeCardNumberPrefix(item.metadata.cardNumberPrefix);
+      // NEO-306 — and a variant type's insert/parallel role, from the tagged
+      // slot this insert creates. Never on the Base.
+      const insertBase = confersBaseRole(parsed.ids);
+      const insertRole =
+        level === "variantType"
+          ? conferredVariantRole(insertBase ? { isBase: true } : undefined, {
+              platformData: alloc.platformData,
+              platformFacets: insertFacets,
+            })
+          : undefined;
       const insertMetadata = {
         ...(insertPrefix ? { cardNumberPrefix: insertPrefix } : {}),
-        ...(confersBaseRole(parsed.ids) ? { isBase: true } : {}),
+        ...(insertBase ? { isBase: true } : {}),
+        ...(insertRole ? { variantRole: insertRole } : {}),
         ...(variantFlags ?? {}),
       };
 

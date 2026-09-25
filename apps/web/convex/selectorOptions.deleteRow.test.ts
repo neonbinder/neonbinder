@@ -231,6 +231,48 @@ describe("deleteSelectorOption — empty row", () => {
     expect(leftovers).toEqual({ skips: 0, statuses: 0 });
   });
 
+  test("NEO-306: a brand whose names all wait in the SportLots review is empty — it deletes, and its review goes with it", async () => {
+    // The review is transient (what SportLots lists minus what NB covers,
+    // re-derived by the next Sync Sets), never a holding. Another brand's
+    // review in the same year is untouched.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const sportId = await insertRow(t, "sport", "Baseball");
+    const yearId = await insertRow(t, "year", "2026", { parentId: sportId });
+    const doomedId = await insertRow(t, "manufacturer", "Bowman", {
+      parentId: yearId,
+    });
+    const keeperId = await insertRow(t, "manufacturer", "Topps", {
+      parentId: yearId,
+    });
+    await t.run(async (ctx) => {
+      for (const manufacturerId of [doomedId, keeperId]) {
+        await ctx.db.insert("slSetReviews", {
+          yearId,
+          manufacturerId,
+          entries: [{ slId: "sl-1", label: "Gold" }],
+          classifiedAt: SENTINEL_LAST_UPDATED,
+        });
+      }
+    });
+
+    const holdings = await asAdmin.query(
+      api.selectorOptions.getSelectorOptionHoldings,
+      { id: doomedId },
+    );
+    expect(holdings.holds).toEqual([]);
+
+    await asAdmin.mutation(api.selectorOptions.deleteSelectorOption, {
+      id: doomedId,
+    });
+
+    const reviews = await t.run(async (ctx) =>
+      ctx.db.query("slSetReviews").collect(),
+    );
+    expect(reviews.map((r) => r.manufacturerId)).toEqual([keeperId]);
+  });
+
   // ── security condition 2: staged review work is a HOLDING, not transient ──
   //
   // A set under review has ~900 checklistCandidates and a queue of unresolved

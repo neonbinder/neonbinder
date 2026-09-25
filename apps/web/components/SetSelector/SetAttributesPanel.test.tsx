@@ -87,7 +87,10 @@ vi.mock("../../convex/_generated/api", () => ({
     teams: {
       getManyByIds: "teams.getManyByIds",
     },
-    // NEO-279 — the header's Fill teams control reads these at render.
+    // NEO-279 — Fill teams used to mount in the header and read these at
+    // render. NEO-306 moved it to the checklist; kept so a regression that
+    // re-mounts it here renders (and fails the "left the panel" pin) rather
+    // than crashing on a missing reference.
     teamFill: {
       previewTeamFill: "teamFill.previewTeamFill",
       applyTeamFill: "teamFill.applyTeamFill",
@@ -111,6 +114,15 @@ vi.mock("../../convex/_generated/api", () => ({
       getParallelPromotionEligibility: "spc.getParallelPromotionEligibility",
       getParallelPromotionPreview: "spc.getParallelPromotionPreview",
       promoteParallelToSet: "spc.promoteParallelToSet",
+    },
+    // NEO-306 — "Make insert of…", asking the server at render.
+    setInsertConversion: {
+      getMakeInsertEligibility: "sic.getMakeInsertEligibility",
+      getMakeInsertTargets: "sic.getMakeInsertTargets",
+      getMakeInsertTargetDetail: "sic.getMakeInsertTargetDetail",
+      getMakeInsertInsertDetail: "sic.getMakeInsertInsertDetail",
+      getMakeInsertNamedPreview: "sic.getMakeInsertNamedPreview",
+      convertToInsert: "sic.convertToInsert",
     },
   },
 }));
@@ -146,6 +158,13 @@ let currentTeamRows: unknown;
 let pickNext = "team-bulls";
 /** NEO-294: the year's brands the move control offers. */
 let currentYearBrands: unknown;
+/** NEO-306: `getMakeInsertEligibility` — "yes" unless a test says no. */
+let currentInsertEligibility: unknown = { eligible: true };
+/** NEO-306: `getParallelPromotionEligibility` — "yes" unless a test says no. */
+let currentPromotionEligibility: unknown = {
+  eligible: true,
+  links: [{ slot: "s0", label: "Bowman Blue" }],
+};
 
 vi.mock("convex/react", () => ({
   useQuery: (query: string) => {
@@ -158,7 +177,8 @@ vi.mock("convex/react", () => ({
     // mounts, and the controls' own tests cover the server's answer.
     if (query === "spc.getSetToParallelEligibility") return { eligible: true };
     if (query === "spc.getParallelPromotionEligibility")
-      return { eligible: true, links: [{ slot: "s0", label: "Bowman Blue" }] };
+      return currentPromotionEligibility;
+    if (query === "sic.getMakeInsertEligibility") return currentInsertEligibility;
     return undefined;
   },
   useMutation: (mutation: string) => {
@@ -177,8 +197,7 @@ vi.mock("convex/react", () => ({
     return vi.fn();
   },
   useConvex: () => ({ query: mockConvexQuery }),
-  // NEO-279 — FillTeamsControl mounts on every setName row; its actions are
-  // inert here (its own behaviour is covered in FillTeamsControl's tests).
+  // NEO-279 — inert here; see the `teamFill` note on the api mock above.
   useAction: () => vi.fn(),
 }));
 
@@ -251,7 +270,8 @@ import SetAttributesPanel, {
   teamSavedToast,
 } from "./SetAttributesPanel";
 import { DEFAULT_TEAM_PICKER_LABELS } from "./TeamPicker";
-import { FILL_TEAMS_LABEL, FILL_TEAMS_LIST_LABEL } from "./FillTeamsControl";
+import { fillTeamsLabel, FILL_TEAMS_LIST_LABEL } from "./FillTeamsControl";
+import { SET_ROW_ACTION_TONE_CLASSES } from "./SetRowActionButton";
 
 /** The set row's picker trigger — see SET_TEAM_PICKER_LABELS. */
 const PICK = SET_TEAM_PICKER_LABELS.trigger;
@@ -2679,26 +2699,43 @@ describe("teamCascadeConfirmCopy / teamClearConfirmCopy / teamSavedToast (NEO-27
   });
 });
 
-describe("SetAttributesPanel — Fill teams render gate (NEO-279)", () => {
-  it("renders Fill teams at setName, named by its text so the name follows its state", () => {
-    currentRow = makeRow({ level: "setName" });
-    renderPanel();
-    const button = screen.getByRole("button", { name: FILL_TEAMS_LABEL });
-    expect(button.getAttribute("aria-label")).toBeNull();
-    expect(button.textContent).toBe(FILL_TEAMS_LABEL);
+/**
+ * NEO-306 — Fill teams LEFT the panel for the card checklist's header
+ * ("N cards need a team", beside the attention chip — pinned in
+ * CardChecklist.fillTeams.test.tsx). What this pins is that nothing of it is
+ * left behind here, at any level, and that the one set-row control it used to
+ * sit beside still renders exactly once across a selection move (the NEO-279
+ * duplicate-key incident, CI run 34930152576).
+ */
+describe("SetAttributesPanel — Fill teams is not a panel control any more (NEO-306)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain("Baseball");
+    currentHoldings = { holds: [], protected: false };
   });
 
-  it("renders exactly ONE Fill teams button after the selection moves to another set row", () => {
-    // CI run 34930152576: the control and the delete control beside it were
-    // both keyed on the bare row id. Two siblings with one key is undefined
-    // for React ("children may be duplicated and/or omitted"), and after a
-    // drill the header carried three Fill teams buttons with the dialog's
-    // state landing on the wrong one. The panel does not remount when the
-    // selection moves, so this is the shape that has to stay clean.
+  it.each(["sport", "year", "manufacturer", "setName", "variantType", "insert", "parallel"])(
+    "renders no Fill button at %s",
+    (level) => {
+      currentRow = makeRow({ level });
+      renderPanel();
+      expect(screen.queryByRole("button", { name: /\bneeds? a team$/ })).toBeNull();
+      expect(document.getElementById("fill-teams")).toBeNull();
+    },
+  );
+
+  it("renders exactly ONE of each set action after the selection moves to another set row", () => {
+    // CI run 34930152576: two siblings with one key is undefined for React
+    // ("children may be duplicated and/or omitted"); after a drill the header
+    // once carried three copies of a control, with its dialog's state landing
+    // on the wrong one. The panel does not remount when the selection moves,
+    // so this is the shape that has to stay clean.
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     currentRow = makeRow({ level: "setName" });
     const { rerender } = renderPanel();
-    expect(screen.getAllByRole("button", { name: FILL_TEAMS_LABEL })).toHaveLength(1);
+    for (const name of ["Move to another brand", "Make parallel of…", "Make insert of…"]) {
+      expect(screen.getAllByRole("button", { name })).toHaveLength(1);
+    }
 
     currentRow = makeRow({ level: "setName", value: "Another set" });
     rerender(
@@ -2707,7 +2744,9 @@ describe("SetAttributesPanel — Fill teams render gate (NEO-279)", () => {
         defaultCollapsed={false}
       />,
     );
-    expect(screen.getAllByRole("button", { name: FILL_TEAMS_LABEL })).toHaveLength(1);
+    for (const name of ["Move to another brand", "Make parallel of…", "Make insert of…"]) {
+      expect(screen.getAllByRole("button", { name })).toHaveLength(1);
+    }
     expect(
       consoleError.mock.calls.some((args) =>
         args.some((a) => typeof a === "string" && a.includes("same key")),
@@ -2716,26 +2755,175 @@ describe("SetAttributesPanel — Fill teams render gate (NEO-279)", () => {
     consoleError.mockRestore();
   });
 
-  it.each(["variantType", "insert", "parallel"])(
-    "does not render Fill teams at %s",
+  it("names its trigger and its ledger distinctly from BOTH team pickers on the page — no shared substring in either direction", () => {
+    // The checklist it moved to sits under this panel: the panel's set team
+    // picker and the checklist's quick-add picker (the defaults) share the
+    // page with it, and Maestro's `id:` is a regex find over names.
+    for (const own of [fillTeamsLabel(1), fillTeamsLabel(12), FILL_TEAMS_LIST_LABEL]) {
+      for (const labels of [SET_TEAM_PICKER_LABELS, DEFAULT_TEAM_PICKER_LABELS]) {
+        for (const key of ["root", "trigger", "search", "results"] as const) {
+          const picker = labels[key];
+          expect(own).not.toBe(picker);
+          expect(own.includes(picker)).toBe(false);
+          expect(picker.includes(own)).toBe(false);
+        }
+      }
+    }
+  });
+});
+
+/**
+ * NEO-306 — the set actions are their own row under the breadcrumb, out of the
+ * title line: a `role="group"` named "Set actions", rendered at the levels that
+ * can carry one and hidden while empty. The title line keeps identity only —
+ * the name, its pencil, the base tag and the delete.
+ */
+describe("SetAttributesPanel — the Set actions row (NEO-306)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain("Baseball");
+    currentHoldings = { holds: [], protected: false };
+    currentPromotionEligibility = {
+      eligible: true,
+      links: [{ slot: "s0", label: "Bowman Blue" }],
+    };
+    currentInsertEligibility = { eligible: true };
+  });
+
+  function actionsGroup() {
+    return screen.getByRole("group", { name: "Set actions" });
+  }
+
+  it("on a set row: Move to another brand, Make parallel of…, Make insert of…, in that order, and nothing else", () => {
+    currentRow = makeRow({ level: "setName", value: "Bowman Blue" });
+    renderPanel();
+    const names = within(actionsGroup())
+      .getAllByRole("button")
+      .map((b) => b.textContent);
+    expect(names).toEqual(["Move to another brand", "Make parallel of…", "Make insert of…"]);
+  });
+
+  it("sits under the breadcrumb, and the title line keeps only the row's identity", () => {
+    currentRow = makeRow({ level: "setName", value: "Bowman Blue" });
+    renderPanel();
+    const group = actionsGroup();
+    const heading = screen.getByRole("heading", { name: /Bowman Blue|Set/ });
+    const titleLine = heading.parentElement!;
+    // Nothing the operator DOES to the row is in the title line any more…
+    expect(within(titleLine).queryByRole("button", { name: "Move to another brand" })).toBeNull();
+    expect(within(titleLine).queryByRole("button", { name: "Make parallel of…" })).toBeNull();
+    // …which keeps the pencil and the delete beside the name.
+    expect(within(titleLine).getByRole("button", { name: "Rename Bowman Blue" })).toBeTruthy();
+    expect(within(titleLine).getByLabelText("Delete Bowman Blue")).toBeTruthy();
+    // And the row follows the header (breadcrumb included) in document order.
+    expect(
+      titleLine.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(titleLine.contains(group)).toBe(false);
+  });
+
+  it("wraps as a flex row and hides itself while empty", () => {
+    currentRow = makeRow({ level: "setName" });
+    renderPanel();
+    const group = actionsGroup();
+    for (const cls of ["flex", "flex-wrap", "gap-2", "empty:hidden"]) {
+      expect(group.classList.contains(cls)).toBe(true);
+    }
+  });
+
+  it("every action is a quiet chip named by its text", () => {
+    currentRow = makeRow({ level: "setName" });
+    renderPanel();
+    for (const button of within(actionsGroup()).getAllByRole("button")) {
+      expect(button.getAttribute("aria-label")).toBeNull();
+      for (const cls of SET_ROW_ACTION_TONE_CLASSES.quiet.split(" ")) {
+        expect(button.classList.contains(cls)).toBe(true);
+      }
+    }
+  });
+
+  it("on an eligible insert row: Make insert of…, then Promote to set", () => {
+    currentRow = makeRow({ level: "insert", value: "Blue" });
+    renderPanel();
+    const names = within(actionsGroup())
+      .getAllByRole("button")
+      .map((b) => b.textContent);
+    expect(names).toEqual(["Make insert of…", "Promote to set"]);
+  });
+
+  it("on an eligible parallel row: Promote to set only — a parallel is never a Make insert source", () => {
+    currentRow = makeRow({ level: "parallel", value: "Blue" });
+    renderPanel();
+    const names = within(actionsGroup())
+      .getAllByRole("button")
+      .map((b) => b.textContent);
+    expect(names).toEqual(["Promote to set"]);
+  });
+
+  it("Make insert of… follows the server: absent on a set row it does not apply to", () => {
+    currentInsertEligibility = { eligible: false };
+    currentRow = makeRow({ level: "setName", value: "Bowman Blue" });
+    renderPanel();
+    expect(screen.queryByRole("button", { name: "Make insert of…" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Make parallel of…" })).toBeTruthy();
+  });
+
+  it("on an insert row the server says no to, the row is present but EMPTY, so `:empty` hides it", () => {
+    // Each control renders nothing when it does not apply; with no whitespace
+    // text nodes the group matches `:empty`, and `empty:hidden` takes it out
+    // of the layout and the accessibility tree.
+    currentPromotionEligibility = { eligible: false };
+    currentInsertEligibility = { eligible: false };
+    currentRow = makeRow({ level: "insert", value: "Blue" });
+    renderPanel();
+    const group = screen.getByRole("group", { name: "Set actions", hidden: true });
+    expect(group.childNodes).toHaveLength(0);
+    expect(group.classList.contains("empty:hidden")).toBe(true);
+  });
+
+  it.each(["sport", "year", "manufacturer", "variantType"])(
+    "is not rendered at %s — no set action applies there",
     (level) => {
-      currentRow = makeRow({ level });
+      currentRow = makeRow({ level, value: "Whatever" });
       renderPanel();
-      expect(screen.queryByRole("button", { name: FILL_TEAMS_LABEL })).toBeNull();
+      expect(screen.queryByRole("group", { name: "Set actions" })).toBeNull();
     },
   );
 
-  it("names its trigger and its ledger distinctly from the set team picker — no shared substring in either direction", () => {
-    currentRow = makeRow({ level: "setName", teamIds: [] });
-    renderPanel();
+  it("Edit attributes and Hide attributes keep their text, and wear the one focus ring", () => {
+    currentRow = makeRow({ level: "setName" });
+    render(
+      <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={true} />,
+    );
+    const edit = screen.getByRole("button", { name: "Edit attributes" });
+    expect(edit.textContent).toBe("Edit attributes ▾");
+    for (const cls of ["py-1", "focus-visible:ring-2", "focus-visible:ring-[#00B7FF]"]) {
+      expect(edit.classList.contains(cls)).toBe(true);
+    }
+    fireEvent.click(edit);
+    const hide = screen.getByRole("button", { name: "Hide attributes" });
+    expect(hide.textContent).toBe("Hide attributes ▴");
+    expect(hide.classList.contains("focus-visible:ring-[#00B7FF]")).toBe(true);
+  });
 
-    for (const own of [FILL_TEAMS_LABEL, FILL_TEAMS_LIST_LABEL]) {
-      for (const key of ["root", "trigger", "search", "results"] as const) {
-        const picker = SET_TEAM_PICKER_LABELS[key];
-        expect(own).not.toBe(picker);
-        expect(own.includes(picker)).toBe(false);
-        expect(picker.includes(own)).toBe(false);
+  it("the pencil and the delete stay small, low-key and ≥24px, with the one ring", () => {
+    currentRow = makeRow({ level: "setName", value: "Bowman Blue" });
+    renderPanel();
+    for (const el of [
+      screen.getByRole("button", { name: "Rename Bowman Blue" }),
+      screen.getByLabelText("Delete Bowman Blue"),
+    ]) {
+      for (const cls of [
+        "min-w-6",
+        "min-h-6",
+        "text-gray-500",
+        "focus-visible:ring-2",
+        "focus-visible:ring-[#00B7FF]",
+      ]) {
+        expect(el.classList.contains(cls)).toBe(true);
       }
+      // No chip: no border, no fill.
+      expect(el.classList.contains("border")).toBe(false);
     }
   });
 });
@@ -2764,15 +2952,18 @@ describe("SetAttributesPanel — move to another brand (NEO-294)", () => {
     vi.restoreAllMocks();
   });
 
-  it("sits beside the delete on a set row, under a name of its own", () => {
+  it("sits in the Set actions row, apart from the delete, under a name of its own", () => {
     currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
     renderPanel();
 
     const move = screen.getByRole("button", { name: "Move to another brand" });
     const trash = screen.getByLabelText("Delete 2024 Topps Chrome");
-    // Siblings in the same header row, and no operator — or flow — can
-    // confuse the two by name.
-    expect(move.parentElement).toBe(trash.parentElement);
+    // NEO-306: the action row, not the title line the delete stays in — and
+    // no operator, or flow, can confuse the two by name.
+    expect(move.parentElement).toBe(
+      screen.getByRole("group", { name: "Set actions" }),
+    );
+    expect(move.parentElement).not.toBe(trash.parentElement);
     expect(move.getAttribute("aria-label")).toBeNull();
   });
 
@@ -2959,19 +3150,23 @@ describe("SetAttributesPanel — set ⇄ parallel row actions (NEO-305)", () => 
     expect(screen.queryByRole("button", { name: "Promote to set" })).toBeNull();
   });
 
-  it("offers Promote to set on an insert-level row, and nothing to make a parallel of", () => {
-    currentRow = makeRow({ level: "insert", value: "Blue" });
-    renderPanel();
-    expect(screen.getByRole("button", { name: "Promote to set" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Make parallel of…" })).toBeNull();
-  });
+  it.each(["insert", "parallel"])(
+    "offers Promote to set on a %s-level row (NEO-306: parallels of inserts too), and nothing to make a parallel of",
+    (level) => {
+      currentRow = makeRow({ level, value: "Blue" });
+      renderPanel();
+      expect(screen.getByRole("button", { name: "Promote to set" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Make parallel of…" })).toBeNull();
+    },
+  );
 
-  it.each(["sport", "year", "manufacturer", "variantType", "parallel"])(
-    "offers neither at level %s",
+  it.each(["sport", "year", "manufacturer", "variantType"])(
+    "offers none of them at level %s",
     (level) => {
       currentRow = makeRow({ level, value: "Whatever" });
       renderPanel();
       expect(screen.queryByRole("button", { name: "Make parallel of…" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Make insert of…" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Promote to set" })).toBeNull();
     },
   );

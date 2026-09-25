@@ -1,36 +1,38 @@
 /**
- * NEO-291 — `variantTypeRole` / `derivedVariantFlags` / `withVariantFlags`.
+ * NEO-291 / NEO-306 — `variantTypeRole` / `bscVariantEvidence` /
+ * `conferredVariantRole` / `derivedVariantFlags` / `withVariantFlags`.
  *
  * These are the pure rules that replaced the Insert/Parallel checkboxes: what
- * NB role a variant-type row plays (from `metadata.isBase` or its
- * `variant`-tagged BSC slot, never its name), and what flags a fresh row
- * beneath it is born with. See the file-level comment in convex/variantRole.ts
- * for the fuller "why" — these tests pin the matrix it promises.
+ * NB role a variant-type row plays, and what flags a fresh row beneath it is
+ * born with. Since NEO-306 the role is an NB FLAG (`metadata.isBase`, then
+ * `metadata.variantRole`) and the BSC slot is read only at write time, by
+ * `bscVariantEvidence` through `conferredVariantRole`. See the file-level
+ * comment in convex/variantRole.ts for the fuller "why".
  */
 
 import { describe, expect, test } from "vitest";
 import {
+  bscVariantEvidence,
+  conferredVariantRole,
   derivedVariantFlags,
   variantTypeRole,
   withVariantFlags,
-  type VariantRoleRow,
+  type VariantEvidenceRow,
 } from "./variantRole";
 
-/** A variant-type row. `bsc` slot → id; `facets` slot → tag (omit for untagged). */
-function row(
+/** A variant-type row's slots. `bsc` slot → id; `facets` slot → tag (omit for untagged). */
+function slots(
   bsc: Record<string, string>,
   facets?: Record<string, "setName" | "variantName" | "variant">,
-  metadata?: { isBase?: boolean },
-): VariantRoleRow {
+): VariantEvidenceRow {
   return {
     platformData: { bsc },
     platformFacets: facets ? { bsc: facets } : undefined,
-    metadata,
   };
 }
 
 // ===========================================================================
-// variantTypeRole
+// variantTypeRole — flags only (NEO-306)
 // ===========================================================================
 
 describe("variantTypeRole", () => {
@@ -39,65 +41,106 @@ describe("variantTypeRole", () => {
     expect(variantTypeRole(undefined)).toBeUndefined();
   });
 
-  test("metadata.isBase wins outright — no slot is even consulted", () => {
-    // An id that would otherwise read as insert; isBase still wins.
+  test("metadata.isBase wins outright, over a variantRole too", () => {
     expect(
-      variantTypeRole(
-        row({ b0: "insert" }, { b0: "variant" }, { isBase: true }),
-      ),
+      variantTypeRole({ metadata: { isBase: true, variantRole: "insert" } }),
     ).toBe("base");
   });
 
+  test("metadata.variantRole is the role", () => {
+    expect(variantTypeRole({ metadata: { variantRole: "insert" } })).toBe("insert");
+    expect(variantTypeRole({ metadata: { variantRole: "parallel" } })).toBe(
+      "parallel",
+    );
+  });
+
+  test("a tagged BSC slot with no flag is NOT read at runtime — no role", () => {
+    // The shape every pre-NEO-306 row has until a sync or the backfill
+    // confers the flag. Reading the slot here would key NB behaviour on a
+    // marketplace id (invariant 4); the answer is fail-closed.
+    expect(
+      variantTypeRole({ ...slots({ b0: "insert" }, { b0: "variant" }), metadata: undefined }),
+    ).toBeUndefined();
+    expect(
+      variantTypeRole({ ...slots({ b0: "parallel" }, { b0: "variant" }), metadata: undefined }),
+    ).toBeUndefined();
+  });
+
+  test("the flag wins over a slot that says otherwise", () => {
+    expect(
+      variantTypeRole({
+        ...slots({ b0: "insert" }, { b0: "variant" }),
+        metadata: { variantRole: "parallel" },
+      }),
+    ).toBe("parallel");
+  });
+
+  test("no metadata is no role", () => {
+    expect(variantTypeRole({})).toBeUndefined();
+    expect(variantTypeRole({ metadata: {} })).toBeUndefined();
+  });
+});
+
+// ===========================================================================
+// bscVariantEvidence — write time only
+// ===========================================================================
+
+describe("bscVariantEvidence", () => {
+  test("null/undefined row is undefined", () => {
+    expect(bscVariantEvidence(null)).toBeUndefined();
+    expect(bscVariantEvidence(undefined)).toBeUndefined();
+  });
+
   test("a `variant`-tagged slot whose id carries the insert token reads as insert", () => {
-    expect(variantTypeRole(row({ b0: "insert" }, { b0: "variant" }))).toBe(
+    expect(bscVariantEvidence(slots({ b0: "insert" }, { b0: "variant" }))).toBe(
       "insert",
     );
   });
 
   test("Insert-Cards (mixed case, hyphenated) still reads as insert", () => {
     expect(
-      variantTypeRole(row({ b0: "Insert-Cards" }, { b0: "variant" })),
+      bscVariantEvidence(slots({ b0: "Insert-Cards" }, { b0: "variant" })),
     ).toBe("insert");
   });
 
   test("a `variant`-tagged slot whose id carries the parallel token reads as parallel", () => {
-    expect(variantTypeRole(row({ b0: "parallel" }, { b0: "variant" }))).toBe(
-      "parallel",
-    );
-  });
-
-  test("an id carrying BOTH the insert and parallel tokens is no evidence", () => {
     expect(
-      variantTypeRole(row({ b0: "base-parallel-insert" }, { b0: "variant" })),
-    ).toBeUndefined();
-    expect(
-      variantTypeRole(row({ b0: "insert-parallel" }, { b0: "variant" })),
-    ).toBeUndefined();
-  });
-
-  test("`base-parallel` reads as neither — base isn't checked here at all, and the parallel token is ambiguous with the insert check", () => {
-    // Only insert/parallel roles are decided by this function (base comes
-    // from metadata.isBase, checked first above) — an id that is only ever
-    // "parallel"-tagged with no insert token reads as parallel; this case
-    // exercises an id that is unambiguous for parallel and confirms no
-    // spurious insert match sneaks in.
-    expect(
-      variantTypeRole(row({ b0: "base-parallel" }, { b0: "variant" })),
+      bscVariantEvidence(slots({ b0: "parallel" }, { b0: "variant" })),
     ).toBe("parallel");
   });
 
+  test("an id carrying BOTH the insert and parallel tokens is ambiguous", () => {
+    expect(
+      bscVariantEvidence(slots({ b0: "base-parallel-insert" }, { b0: "variant" })),
+    ).toBe("ambiguous");
+    expect(
+      bscVariantEvidence(slots({ b0: "insert-parallel" }, { b0: "variant" })),
+    ).toBe("ambiguous");
+  });
+
+  test("`base-parallel` reads as parallel — base is not this function's question", () => {
+    expect(
+      bscVariantEvidence(slots({ b0: "base-parallel" }, { b0: "variant" })),
+    ).toBe("parallel");
+  });
+
+  test("BSC's `base` and `promo` ids name neither role", () => {
+    expect(bscVariantEvidence(slots({ b0: "base" }, { b0: "variant" }))).toBeUndefined();
+    expect(bscVariantEvidence(slots({ b0: "promo" }, { b0: "variant" }))).toBeUndefined();
+  });
+
   test("an untagged slot is no evidence, whatever the id says", () => {
-    expect(variantTypeRole(row({ b0: "insert" }))).toBeUndefined();
+    expect(bscVariantEvidence(slots({ b0: "insert" }))).toBeUndefined();
   });
 
   test("a row with no BSC ids at all is no evidence", () => {
-    expect(variantTypeRole(row({}))).toBeUndefined();
+    expect(bscVariantEvidence(slots({}))).toBeUndefined();
   });
 
   test("a `setName`-tagged extra slot is ignored, not read as the role", () => {
     expect(
-      variantTypeRole(
-        row(
+      bscVariantEvidence(
+        slots(
           { b0: "insert", b1: "topps-series-1" },
           { b0: "variant", b1: "setName" },
         ),
@@ -105,23 +148,60 @@ describe("variantTypeRole", () => {
     ).toBe("insert");
   });
 
-  test("two disagreeing `variant`-tagged slots are no evidence", () => {
+  test("two disagreeing `variant`-tagged slots are ambiguous", () => {
     expect(
-      variantTypeRole(
-        row({ b0: "insert", b1: "parallel" }, { b0: "variant", b1: "variant" }),
+      bscVariantEvidence(
+        slots({ b0: "insert", b1: "parallel" }, { b0: "variant", b1: "variant" }),
       ),
-    ).toBeUndefined();
+    ).toBe("ambiguous");
   });
 
   test("two AGREEING `variant`-tagged slots still resolve", () => {
     expect(
-      variantTypeRole(
-        row(
+      bscVariantEvidence(
+        slots(
           { b0: "insert-set-a", b1: "insert-set-b" },
           { b0: "variant", b1: "variant" },
         ),
       ),
     ).toBe("insert");
+  });
+});
+
+// ===========================================================================
+// conferredVariantRole — the adds-only guard every writer shares
+// ===========================================================================
+
+describe("conferredVariantRole", () => {
+  const insertSlot = slots({ b0: "insert" }, { b0: "variant" });
+
+  test("an unflagged row with single evidence gets the role", () => {
+    expect(conferredVariantRole(undefined, insertSlot)).toBe("insert");
+    expect(
+      conferredVariantRole({}, slots({ b0: "parallel" }, { b0: "variant" })),
+    ).toBe("parallel");
+  });
+
+  test("never over a role already there — even a different one", () => {
+    expect(
+      conferredVariantRole({ variantRole: "parallel" }, insertSlot),
+    ).toBeUndefined();
+    expect(conferredVariantRole({ variantRole: "insert" }, insertSlot)).toBeUndefined();
+  });
+
+  test("never on the Base", () => {
+    expect(conferredVariantRole({ isBase: true }, insertSlot)).toBeUndefined();
+  });
+
+  test("ambiguous or absent evidence confers nothing", () => {
+    expect(
+      conferredVariantRole(
+        undefined,
+        slots({ b0: "insert-parallel" }, { b0: "variant" }),
+      ),
+    ).toBeUndefined();
+    expect(conferredVariantRole(undefined, slots({ b0: "insert" }))).toBeUndefined();
+    expect(conferredVariantRole(undefined, null)).toBeUndefined();
   });
 });
 
@@ -135,37 +215,42 @@ describe("derivedVariantFlags", () => {
       isParallel: true,
     });
     expect(
-      derivedVariantFlags("parallel", row({ b0: "insert" }, { b0: "variant" })),
+      derivedVariantFlags("parallel", { metadata: { variantRole: "insert" } }),
     ).toEqual({ isParallel: true });
   });
 
   test("an insert-level row under an insert-role parent is an insert", () => {
     expect(
-      derivedVariantFlags("insert", row({ b0: "insert" }, { b0: "variant" })),
+      derivedVariantFlags("insert", { metadata: { variantRole: "insert" } }),
     ).toEqual({ isInsert: true });
   });
 
   test("an insert-level row under a parallel-role parent is a parallel (a parallel of the base set)", () => {
     expect(
-      derivedVariantFlags("insert", row({ b0: "parallel" }, { b0: "variant" })),
+      derivedVariantFlags("insert", { metadata: { variantRole: "parallel" } }),
     ).toEqual({ isParallel: true });
   });
 
   test("an insert-level row under a base-role parent gets no flag", () => {
     expect(
-      derivedVariantFlags("insert", row({}, undefined, { isBase: true })),
+      derivedVariantFlags("insert", { metadata: { isBase: true } }),
     ).toBeUndefined();
   });
 
-  test("an insert-level row under a parent with no resolvable role gets no flag", () => {
-    expect(derivedVariantFlags("insert", row({ b0: "insert" }))).toBeUndefined();
+  test("an insert-level row under an unflagged parent gets no flag, whatever its BSC slot says", () => {
+    expect(
+      derivedVariantFlags("insert", {
+        ...slots({ b0: "insert" }, { b0: "variant" }),
+        metadata: undefined,
+      }),
+    ).toBeUndefined();
     expect(derivedVariantFlags("insert", undefined)).toBeUndefined();
   });
 
   test("any other level gets no flag", () => {
     for (const level of ["sport", "year", "manufacturer", "setName", "variantType"]) {
       expect(
-        derivedVariantFlags(level, row({ b0: "insert" }, { b0: "variant" })),
+        derivedVariantFlags(level, { metadata: { variantRole: "insert" } }),
       ).toBeUndefined();
     }
   });

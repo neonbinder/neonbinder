@@ -27,3 +27,10 @@ finds exactly the span; the description never concatenates into it.
   giving a row button an `aria-label` changes its `id:` handle but not the
   `text:` of the span inside it.
 - Inputs are the exception: their `text` is `value || placeholder || ariaLabel`.
+
+**Type-ahead hazard (NEO-307):** because an input's `text` is its value, a flow
+that types a combobox's full option label and then does `tapOn: "<label>"` has
+TWO matches — the input and the `<li role="option">`. Tell flow authors to type
+a distinguishing substring (e.g. the per-attempt token alone) so only the
+option carries the whole label. A resting combobox showing its answer ("MLB",
+"Giants") also satisfies `assertVisible: "<label>"` through its value.

@@ -49,6 +49,15 @@ throws — a slow failure is not retried in-call. See [[workpool-retry-semantics
 Also: **`runWithOccRetry` (`lib/errors/occ-retry`) takes an injectable
 `sleep`**, so pass `{ sleep: async () => {} }` instead of fake timers.
 
+**Resume tests over real data:** the stub need not be scripted. Forward to
+the convex-test backend (`runQuery: (ref, a) => t.query(ref, a)`, same for
+`runMutation` → `t.mutation`, which accept internal refs) and throw only on
+the Nth call whose `getFunctionName(ref)` matches the chunk writer. The first
+chunks commit for real, the test asserts the partial state, then re-runs the
+public action to prove the resume finishes with no duplicate (NEO-306
+`slSetReview.test.ts`). Type the stub as `Parameters<typeof fooImpl>[0]` with
+`FunctionReference<"query"|"mutation">` params to stay out of `never`.
+
 Mutation-test the result: move the write back inside the lookup's `try` and
 confirm the red lands on the *payload* assertion, not on a stub running out of
 script — order the assertions so the "what got written" one comes first.

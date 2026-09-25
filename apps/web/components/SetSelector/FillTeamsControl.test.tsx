@@ -38,9 +38,9 @@ import FillTeamsControl, {
   fillGroupLine,
   fillResultToast,
   fillRuleLabel,
+  fillTeamsLabel,
   FILL_FAILED_FALLBACK,
   FILL_TEAMS_CHECKING_LABEL,
-  FILL_TEAMS_LABEL,
   FILL_TEAMS_LIST_LABEL,
   FILL_TEAMS_TOOLTIP,
   nothingToFillToast,
@@ -48,6 +48,7 @@ import FillTeamsControl, {
   type TeamFillPreview,
   type TeamFillResult,
 } from "./FillTeamsControl";
+import { SET_ROW_ACTION_TONE_CLASSES } from "./SetRowActionButton";
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -95,13 +96,20 @@ function makeGroup(overrides: Partial<TeamFillGroup> = {}): TeamFillGroup {
   };
 }
 
-const SELECTOR_OPTION_ID = "selector-option-1" as unknown as Parameters<
+const SET_ID = "set-row-1" as unknown as Parameters<
   typeof FillTeamsControl
->[0]["id"];
+>[0]["setId"];
 
-function renderControl(showToast: (message: string) => void = vi.fn()) {
+/** Cards on the open checklist with no team — the N on the trigger. */
+const MISSING = 3;
+const LABEL = fillTeamsLabel(MISSING);
+
+function renderControl(
+  showToast: (message: string, tone?: "status" | "error") => void = vi.fn(),
+  missingCount = MISSING,
+) {
   return render(
-    <FillTeamsControl id={SELECTOR_OPTION_ID} level="setName" showToast={showToast} />,
+    <FillTeamsControl setId={SET_ID} missingCount={missingCount} showToast={showToast} />,
   );
 }
 
@@ -385,23 +393,109 @@ describe("fillResultToast", () => {
 // ===========================================================================
 
 describe("FillTeamsControl", () => {
-  it("hides entirely when level is not setName", () => {
-    const { container } = render(
+  it("renders nothing when no card on the open checklist is missing a team", () => {
+    const { container } = renderControl(vi.fn(), 0);
+    expect(container.innerHTML).toBe("");
+  });
+
+  it("says how many cards it is for, singular and plural (NEO-306)", () => {
+    expect(fillTeamsLabel(1)).toBe("1 card needs a team");
+    expect(fillTeamsLabel(3)).toBe("3 cards need a team");
+    const { rerender } = renderControl(vi.fn(), 1);
+    expect(screen.getByRole("button", { name: "1 card needs a team" })).toBeTruthy();
+    // The count is live: the checklist's subscription moves it, the name follows.
+    rerender(<FillTeamsControl setId={SET_ID} missingCount={4} showToast={vi.fn()} />);
+    expect(screen.getByRole("button", { name: "4 cards need a team" })).toBeTruthy();
+  });
+
+  it("wears the attention tone: the amber pill with the exclamation icon, hidden from the name", () => {
+    renderControl();
+    const button = screen.getByRole("button", { name: LABEL });
+    for (const cls of SET_ROW_ACTION_TONE_CLASSES.attention.split(" ")) {
+      expect(button.classList.contains(cls)).toBe(true);
+    }
+    expect(button.classList.contains("border-slate-500")).toBe(false);
+    const icon = button.querySelector("svg");
+    expect(icon?.getAttribute("aria-hidden")).toBe("true");
+  });
+
+  it("previews and fills the SET it was handed, whatever checklist it sits on", async () => {
+    mockPreview.mockResolvedValue(makePreview());
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
+    await screen.findByRole("dialog");
+    expect(mockPreview).toHaveBeenCalledWith({ selectorOptionId: SET_ID });
+  });
+
+  it("Enter on the focused trigger starts the check, as a click does (maestro pressKey)", async () => {
+    mockPreview.mockResolvedValue(makePreview());
+    renderControl();
+    fireEvent.keyDown(screen.getByRole("button", { name: LABEL }), { key: "Enter" });
+    await screen.findByRole("dialog");
+    expect(mockPreview).toHaveBeenCalledTimes(1);
+  });
+
+  it("stays up, still naming what was pressed, while its dialog is open and the live count falls to 0", async () => {
+    mockPreview.mockResolvedValue(makePreview());
+    mockApply.mockResolvedValue({
+      applied: 14,
+      skipped: 0,
+      byRule: { samePlayerInSet: 14, oneTeamCareer: 0, oneStintInYear: 0 },
+    });
+    const onActiveChange = vi.fn();
+    const showToast = vi.fn();
+    const { rerender, container } = render(
       <FillTeamsControl
-        id={SELECTOR_OPTION_ID}
-        level="variantType"
-        showToast={vi.fn()}
+        setId={SET_ID}
+        missingCount={MISSING}
+        showToast={showToast}
+        onActiveChange={onActiveChange}
       />,
     );
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
+    await screen.findByRole("dialog");
+    expect(onActiveChange).toHaveBeenLastCalledWith(true);
+
+    // The fill (or a teammate's) empties the lane under the open dialog.
+    rerender(
+      <FillTeamsControl
+        setId={SET_ID}
+        missingCount={0}
+        showToast={showToast}
+        onActiveChange={onActiveChange}
+      />,
+    );
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    const trigger = container.querySelector("#fill-teams");
+    expect(trigger?.textContent).toBe(LABEL);
+    // Out of reach behind the aria-modal dialog.
+    expect(trigger?.hasAttribute("inert")).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Yes, fill" }));
+    await waitFor(() => expect(showToast).toHaveBeenCalledWith("Filled teams on 14 cards"));
+    // Done, and nothing left to fill: the window closes and the trigger goes.
+    await waitFor(() => expect(onActiveChange).toHaveBeenLastCalledWith(false));
     expect(container.innerHTML).toBe("");
+  });
+
+  it("hands focus back to the trigger when the dialog is cancelled", async () => {
+    mockPreview.mockResolvedValue(makePreview());
+    renderControl();
+    const trigger = screen.getByRole("button", { name: LABEL });
+    fireEvent.click(trigger);
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(trigger.hasAttribute("inert")).toBe(false);
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
   it("is idle at first: the trigger is named by its text, not an aria-label, and carries the tooltip", () => {
     renderControl();
-    const button = screen.getByRole("button", { name: FILL_TEAMS_LABEL });
+    const button = screen.getByRole("button", { name: LABEL });
     expect(button).toBeTruthy();
     expect(button.getAttribute("aria-label")).toBeNull();
-    expect(button.textContent).toBe(FILL_TEAMS_LABEL);
+    expect(button.textContent).toBe(LABEL);
     expect(button.getAttribute("aria-disabled")).toBeNull();
     expect(button.getAttribute("aria-busy")).toBeNull();
     expect(button.getAttribute("title")).toBe(FILL_TEAMS_TOOLTIP);
@@ -416,13 +510,13 @@ describe("FillTeamsControl", () => {
     );
     renderControl();
 
-    const button = screen.getByRole("button", { name: FILL_TEAMS_LABEL });
+    const button = screen.getByRole("button", { name: LABEL });
     fireEvent.click(button);
     await waitFor(() =>
       expect(screen.getByRole("button", { name: FILL_TEAMS_CHECKING_LABEL })).toBe(button),
     );
     // The idle name is gone for the duration — the state IS the name.
-    expect(screen.queryByRole("button", { name: FILL_TEAMS_LABEL })).toBeNull();
+    expect(screen.queryByRole("button", { name: LABEL })).toBeNull();
     expect(button.getAttribute("aria-disabled")).toBe("true");
     expect(button.getAttribute("aria-busy")).toBe("true");
 
@@ -431,7 +525,7 @@ describe("FillTeamsControl", () => {
 
     resolvePreview(makePreview({ fillable: 0, candidates: 0, remaining: 0 }));
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: FILL_TEAMS_LABEL })).toBe(button),
+      expect(screen.getByRole("button", { name: LABEL })).toBe(button),
     );
     expect(button.getAttribute("aria-busy")).toBeNull();
     expect(button.getAttribute("aria-disabled")).toBeNull();
@@ -444,7 +538,7 @@ describe("FillTeamsControl", () => {
     const showToast = vi.fn();
     renderControl(showToast);
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith(
         "Nothing to fill — the 3 still without a team need your call.",
@@ -460,7 +554,7 @@ describe("FillTeamsControl", () => {
     const showToast = vi.fn();
     renderControl(showToast);
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith("Nothing to fill — every card here has its team."),
     );
@@ -471,7 +565,7 @@ describe("FillTeamsControl", () => {
     mockPreview.mockResolvedValue(makePreview());
     renderControl();
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     const dialog = await screen.findByRole("dialog");
     expect(dialog.textContent).toContain("Fill teams on 14 cards?");
     expect(dialog.textContent).toContain("Johnny Bench");
@@ -522,7 +616,7 @@ describe("FillTeamsControl", () => {
     );
     renderControl();
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await screen.findByRole("dialog");
     const rows = screen
       .getByLabelText(FILL_TEAMS_LIST_LABEL)
@@ -540,7 +634,7 @@ describe("FillTeamsControl", () => {
     mockPreview.mockResolvedValue(makePreview({ groupsTotal: 205 }));
     renderControl();
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await screen.findByRole("dialog");
     expect(screen.getByText("…and 204 more")).toBeTruthy();
   });
@@ -555,7 +649,7 @@ describe("FillTeamsControl", () => {
     const showToast = vi.fn();
     renderControl(showToast);
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await screen.findByRole("dialog");
     fireEvent.click(screen.getByRole("button", { name: "Yes, fill" }));
 
@@ -565,7 +659,7 @@ describe("FillTeamsControl", () => {
     expect(mockApply).toHaveBeenCalledTimes(1);
     // The preview's fillable goes back as the number the operator said yes to.
     expect(mockApply).toHaveBeenCalledWith({
-      selectorOptionId: SELECTOR_OPTION_ID,
+      selectorOptionId: SET_ID,
       expectedFillable: 14,
     });
     // The dialog closes on success.
@@ -582,7 +676,7 @@ describe("FillTeamsControl", () => {
     const showToast = vi.fn();
     renderControl(showToast);
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await screen.findByRole("dialog");
     fireEvent.click(screen.getByRole("button", { name: "Yes, fill" }));
 
@@ -601,7 +695,7 @@ describe("FillTeamsControl", () => {
     const showToast = vi.fn();
     renderControl(showToast);
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await screen.findByRole("dialog");
     fireEvent.click(screen.getByRole("button", { name: "Yes, fill" }));
 
@@ -616,7 +710,7 @@ describe("FillTeamsControl", () => {
     // Cancel is the way out; re-checking is a fresh preview.
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await waitFor(() => expect(mockPreview).toHaveBeenCalledTimes(2));
   });
 
@@ -625,7 +719,7 @@ describe("FillTeamsControl", () => {
     mockApply.mockRejectedValue(new Error("network blew up"));
     renderControl();
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await screen.findByRole("dialog");
     fireEvent.click(screen.getByRole("button", { name: "Yes, fill" }));
 
@@ -640,7 +734,7 @@ describe("FillTeamsControl", () => {
     mockApply.mockRejectedValue(new ConvexError("Something changed underneath you."));
     renderControl();
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await screen.findByRole("dialog");
     fireEvent.click(screen.getByRole("button", { name: "Yes, fill" }));
 
@@ -657,7 +751,7 @@ describe("FillTeamsControl", () => {
     mockPreview.mockResolvedValue(makePreview());
     renderControl();
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.keyDown(dialog, { key: "Escape" });
 
@@ -672,10 +766,12 @@ describe("FillTeamsControl", () => {
     const showToast = vi.fn();
     renderControl(showToast);
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await waitFor(() =>
+      // Structurally an error — the owner's notice becomes role="alert".
       expect(showToast).toHaveBeenCalledWith(
         "Failed: Fill teams from the set row, not a variant or parallel.",
+        "error",
       ),
     );
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -686,9 +782,9 @@ describe("FillTeamsControl", () => {
     const showToast = vi.fn();
     renderControl(showToast);
 
-    fireEvent.click(screen.getByRole("button", { name: FILL_TEAMS_LABEL }));
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await waitFor(() =>
-      expect(showToast).toHaveBeenCalledWith(`Failed: ${CHECK_FAILED_FALLBACK}`),
+      expect(showToast).toHaveBeenCalledWith(`Failed: ${CHECK_FAILED_FALLBACK}`, "error"),
     );
     expect(CHECK_FAILED_FALLBACK).toBe("Could not check the cards. Nothing changed.");
   });

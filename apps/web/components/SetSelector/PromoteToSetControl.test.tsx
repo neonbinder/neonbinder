@@ -75,6 +75,24 @@ function renderControl() {
   return { showToast, onReshaped };
 }
 
+describe("promoteCopy — grammar (NEO-306)", () => {
+  it("a lone SportLots set becomes; a set and its cards become", () => {
+    expect(promoteCopy.description("Topps", 0)).toBe(
+      "Its SportLots set becomes a set of its own under Topps.",
+    );
+    expect(promoteCopy.description("Topps", 1)).toBe(
+      "Its SportLots set and 1 card become a set of its own under Topps.",
+    );
+    expect(promoteCopy.description("Topps", 12)).toBe(
+      "Its SportLots set and 12 cards become a set of its own under Topps.",
+    );
+  });
+
+  it("the failure fallback does not call every row a parallel", () => {
+    expect(promoteCopy.failed).toBe("Couldn't promote this. Nothing changed.");
+  });
+});
+
 describe("PromoteToSetControl — when it shows", () => {
   it("shows on a parallel carrying a SportLots set", () => {
     renderControl();
@@ -200,6 +218,16 @@ describe("PromoteToSetControl — the dialog", () => {
     });
     expect(screen.getByRole("alert").textContent).toContain("already has a set called");
     expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("an unworded failure says the row-neutral fallback inside the dialog (NEO-306)", async () => {
+    mockPromote.mockRejectedValue(new Error("network blew up"));
+    renderControl();
+    fireEvent.click(screen.getByRole("button", { name: PROMOTE_LABEL }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: promoteCopy.confirmNew }));
+    });
+    expect(screen.getByRole("alert").textContent).toBe("Couldn't promote this. Nothing changed.");
   });
 
   it("no two buttons share a name while the dialog is up (the trigger is still in the document)", () => {

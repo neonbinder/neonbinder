@@ -35,6 +35,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 type OptionId = GenericId<"selectorOptions">;
 
+// NEO-306 — the Sets column's "N SportLots sets to sort" pill owns its own
+// query (`api.slSetReview`), which this file's api mock does not carry. It
+// is not what this file tests; `EntityColumn.slReview.test.tsx` covers it.
+vi.mock("./SlSetReviewPill", () => ({ default: () => null }));
+
 vi.mock("../../convex/_generated/api", () => ({
   api: {
     selectorOptions: {

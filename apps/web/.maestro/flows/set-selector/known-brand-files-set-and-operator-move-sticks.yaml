@@ -281,17 +281,17 @@ tags:
 # ============================================================
 # STEP 3 — CLAIM 2, first half: THE OPERATOR MOVES IT TO `Unknown`
 #
-# `SetAttributesPanel` renders the move trigger in its ALWAYS-VISIBLE header
-# row, beside the delete and the `Edit attributes` toggle — set rows only,
-# because a brand is a set's parent and nothing else here has one. So the
-# panel does not need opening.
+# `SetAttributesPanel` renders the move trigger in its ALWAYS-VISIBLE
+# `Set actions` row (NEO-306: its own row of chips directly under the
+# breadcrumb) — set rows only, because a brand is a set's parent and nothing
+# else here has one. So the panel does not need opening.
 #
 # DOWN and centred: `SetSelector.tsx` renders the selector columns, then the
 # base-mapping button, then MultiSourcePanel, then SetAttributesPanel, so the
 # panel is below the page's position after the pick. THIS STEP DEPENDS ON THE
 # NEO-260 208px spacer in src/layouts/binder-layout.tsx for its scroll
 # headroom (R8 case 1), exactly as every other `Edit attributes` step does —
-# this control sits on the same header line.
+# this row sits one line under that toggle's.
 # ============================================================
 
 - scrollUntilVisible:
@@ -302,8 +302,8 @@ tags:
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 
-# The move and the delete are siblings on that header line, and they are
-# told apart by NAME, never by position: the delete is `Delete <the set's
+# The move (in the `Set actions` row) and the delete (on the title line just
+# above it) are told apart by NAME, never by position: the delete is `Delete <the set's
 # own name>` (which this flow cannot spell — the name is BSC's) and the move
 # is the fixed sentence above. Asserting the delete's shape here is what
 # makes the tap below unambiguous.
@@ -373,9 +373,12 @@ tags:
 - extendedWaitUntil:
     visible: "Moved to Unknown"
     timeout: 7000
+# UP — since NEO-306 the breadcrumb sits ABOVE the `Set actions` row the move
+# was made from (R5 direction); normally on screen at try 0.
 - scrollUntilVisible:
     element:
       text: ".*${output.YEAR} › Unknown › .*"
+    direction: UP
     timeout: 7000
 
 # ============================================================

@@ -183,8 +183,8 @@ tags:
 # across every centring try, move-parallels-of-inserts-custom.yaml). The
 # body is scrolled with a real touch swipe instead (maestro-web swipes with a
 # TOUCH pointer, so the scroller under the finger moves), as
-# parallel-grouping-promoted-insert-fetches-from-bsc.yaml does inside
-# ReconciliationModal. PIN THE BODY TO ITS END: the ✕ is the last row of the
+# flagship-colour-is-a-parallel-both-ways.yaml (2026 Bowman, STEP 2) does
+# inside ReconciliationModal. PIN THE BODY TO ITS END: the ✕ is the last row of the
 # last box, so at maximum scroll it sits ~30px above the body's bottom (the
 # box's p-3 + border + the body's pb-4) — exactly where the old auto-scroll
 # parked it, and fully inside the viewport. One swipe is ~312px (75%→25% of

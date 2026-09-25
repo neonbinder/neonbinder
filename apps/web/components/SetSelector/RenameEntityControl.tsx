@@ -173,12 +173,14 @@ export default function RenameEntityControl({
         onClick={() => setEditing(true)}
         aria-label={`Rename ${currentValue}`}
         title={`Rename ${currentValue}`}
-        // p-1: a bare 16x16 icon with no padding is a ~16x16 hit target,
-        // under WCAG 2.5.8's 24x24 CSS pixel minimum. p-1 (4px/side) brings
-        // it to 24x24.
-        className="shrink-0 p-1 text-gray-500 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none disabled:opacity-50"
+        // min-w-6 min-h-6: a bare 16x16 icon is a ~16x16 hit target, under
+        // WCAG 2.5.8's 24x24 CSS pixel minimum. NEO-306: no chip — the pencil
+        // stays small beside the name it edits — but it wears the panel's one
+        // focus ring (2px #00B7FF, offset). The old `focus:outline-none` with
+        // only a colour change was a focus indicator in name only.
+        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-gray-500 hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 disabled:opacity-50"
       >
-        <PencilSquareIcon className="w-4 h-4" />
+        <PencilSquareIcon className="w-4 h-4" aria-hidden="true" />
       </button>
     );
   }

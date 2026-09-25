@@ -204,6 +204,20 @@ async function setsUnder(t: ReturnType<typeof convexTest>, parentId: Id<"selecto
   );
 }
 
+/**
+ * NEO-306 — the SportLots-only names a Sync Sets found under a brand wait in
+ * that brand's review (`slSetReviews`); the sync mints no set for them.
+ */
+async function reviewLabels(
+  t: ReturnType<typeof convexTest>,
+  manufacturerId: Id<"selectorOptions">,
+) {
+  const review = await t
+    .withIdentity(ADMIN)
+    .query(api.slSetReview.getSlSetReview, { manufacturerId });
+  return (review?.entries ?? []).map((e) => e.label);
+}
+
 describe("ensureSelectorOptions(setName) from the All Brands view (year parent)", () => {
   test("'populated' means SOME manufacturer under the year has a set — no fetch happens", async () => {
     const t = convexTest(schema, modules);
@@ -278,9 +292,9 @@ describe("ensureSelectorOptions(setName) from the All Brands view (year parent)"
         return jsonResponse({ token: "SLSESSION=stub", expiresAt: Date.now() + 86_400_000 });
       }
       if (href.includes("dealsets.tpl")) {
-        // Both brands' SL lists are fetched; the SportLots-only entry is
-        // SAVED as a set under EACH brand — proof the view-mode sync did not
-        // scope to a single manufacturer.
+        // Both brands' SL lists are fetched; the SportLots-only entry lands
+        // in EACH brand's review — proof the view-mode sync did not scope to
+        // a single manufacturer.
         return htmlResponse(slSetListHtml([["901", "Something New"]]));
       }
       if (isTokenUrl(href, "buysportscards")) {
@@ -298,8 +312,8 @@ describe("ensureSelectorOptions(setName) from the All Brands view (year parent)"
     });
     expect(result.ran).toBe(true);
 
-    expect((await setsUnder(t, topps)).map((r) => r.value)).toEqual(["Topps Something New"]);
-    expect((await setsUnder(t, score)).map((r) => r.value)).toEqual(["Score Something New"]);
+    expect(await reviewLabels(t, topps)).toEqual(["Something New"]);
+    expect(await reviewLabels(t, score)).toEqual(["Something New"]);
   });
 });
 
@@ -333,7 +347,7 @@ describe("ensureSelectorOptions(setName) — the SportLots attach-rule gate (D14
     expect(result.reason).not.toBe("no_marketplace_ids");
     expect(result.ran).toBe(true);
     expect(fetched.some((u) => u.includes("dealsets.tpl"))).toBe(true);
-    expect((await setsUnder(t, score)).map((r) => r.value)).toEqual(["Score Board"]);
+    expect(await reviewLabels(t, score)).toEqual(["Board"]);
   });
 
   test("a SportLots skip at setName is NOTIFIABLE — it is not swallowed as structural", async () => {
@@ -374,7 +388,7 @@ describe("ensureSelectorOptions(setName) — the SportLots attach-rule gate (D14
   });
 });
 
-describe("ensureSelectorOptions(setName) — sets added from SportLots are NOT announced (NEO-294, was D13)", () => {
+describe("ensureSelectorOptions(setName) — SportLots-only names are NOT announced (NEO-294, was D13; NEO-306: the review's pill is the surface)", () => {
   function stubBothSides(slSets: Array<[string, string]>, bscSets: Array<[string, string]>) {
     stubFetch(async (url) => {
       const href = String(url);
@@ -394,7 +408,7 @@ describe("ensureSelectorOptions(setName) — sets added from SportLots are NOT a
     });
   }
 
-  test("one brand, one SportLots-only set: the set is stored and the status row is CLEARED, exactly as when none was added", async () => {
+  test("one brand, one SportLots-only name: it waits in the review and the status row is CLEARED, exactly as when none was found", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const { yearId } = await seedSportAndYear(t);
@@ -408,12 +422,10 @@ describe("ensureSelectorOptions(setName) — sets added from SportLots are NOT a
       parentId: score,
     });
     expect(result).toEqual({ ran: true, reason: "synced", skippedSides: [], pausedSides: [] });
-    expect((await setsUnder(t, score)).map((r) => r.value).sort()).toEqual([
-      "Score Board",
-      "Score Series 1",
-    ]);
+    expect((await setsUnder(t, score)).map((r) => r.value)).toEqual(["Score Series 1"]);
+    expect(await reviewLabels(t, score)).toEqual(["Board"]);
 
-    // A clean sync says nothing, whether or not the SportLots phase minted.
+    // A clean sync says nothing, whether or not SportLots had names to sort.
     expect(
       await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
         level: "setName",
@@ -422,14 +434,14 @@ describe("ensureSelectorOptions(setName) — sets added from SportLots are NOT a
     ).toBeNull();
   });
 
-  test("from the view, sets minted across every brand scope are equally silent", async () => {
+  test("from the view, names found across every brand scope are equally silent", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const { yearId } = await seedSportAndYear(t);
     const topps = await insertManufacturer(t, yearId, "Topps", { slId: "1", prefix: "Topps" });
     const score = await insertManufacturer(t, yearId, "Score", { slId: "7", prefix: "Score" });
-    // Both brands' lists carry the same SportLots-only entry: two sets minted.
-    // BSC stores its own under Topps.
+    // Both brands' lists carry the same SportLots-only entry: two review
+    // entries. BSC stores its own under Topps.
     stubBothSides([["901", "Something New"]], [["topps-series-1", "Topps Series 1"]]);
 
     const result = await asAdmin.action(api.selectorOptions.ensureSelectorOptions, {
@@ -442,7 +454,9 @@ describe("ensureSelectorOptions(setName) — sets added from SportLots are NOT a
       [...(await setsUnder(t, topps)), ...(await setsUnder(t, score))]
         .map((r) => r.value)
         .sort(),
-    ).toEqual(["Score Something New", "Topps Series 1", "Topps Something New"]);
+    ).toEqual(["Topps Series 1"]);
+    expect(await reviewLabels(t, topps)).toEqual(["Something New"]);
+    expect(await reviewLabels(t, score)).toEqual(["Something New"]);
     expect(
       await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
         level: "setName",
@@ -499,7 +513,8 @@ describe("ensureSelectorOptions(setName) — sets added from SportLots are NOT a
 
   test("sets ADDED beside a paused side: the paused sentence is byte-identical and stands alone", async () => {
     // The N > 0 half of the byte-identity claim. BSC is paused, so the BSC
-    // phase is skipped while the SportLots phase runs and mints — the case
+    // phase is skipped while the SportLots phase runs (NEO-306: it now fills
+    // the review rather than minting) — the case
     // that used to read "BuySportsCards is on pause: … 1 set added from
     // SportLots." The paused sentence must now be the whole message.
     process.env[PAUSED_PLATFORMS_ENV] = "buysportscards";
@@ -515,7 +530,7 @@ describe("ensureSelectorOptions(setName) — sets added from SportLots are NOT a
       parentId: score,
     });
     expect(result.pausedSides).toEqual(["bsc"]);
-    expect((await setsUnder(t, score)).map((r) => r.value)).toEqual(["Score Board"]);
+    expect(await reviewLabels(t, score)).toEqual(["Board"]);
 
     const status = await asAdmin.query(api.selectorOptions.getSelectorSyncStatus, {
       level: "setName",

@@ -520,3 +520,45 @@ export function totalsBySideFor(
   const [only] = [...sides];
   return { [only]: unlinkedTotal } as Partial<Record<SyncSide, number>>;
 }
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-306 — the SportLots-only review
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * What Sync Sets leaves behind for the operator, said the same way on every
+ * surface. Sync Sets no longer creates SportLots-only sets or parks the
+ * flagship's colours (NEO-237 / NEO-305): every SportLots-only name waits in
+ * a review (`convex/slSetReview.ts`) until the operator files it. The sync
+ * result reports that count as `slPendingReview`, and the server's own summary
+ * line ("… 3 SportLots sets to sort") uses these exact words, so the Sets
+ * column's pill and the sync's summary cannot drift apart.
+ *
+ * DRAFT copy (NEO-306), accepted for now; Jason signs off on local Vite.
+ */
+export function slSetsToSortText(count: number): string {
+  return `${count} SportLots set${count === 1 ? "" : "s"} to sort`;
+}
+
+/**
+ * A save that stopped part-way: what it filed stays filed, the rest is still
+ * in the review, and saving again finishes it (the save is resumable). The
+ * sentence tells the operator the one thing to do.
+ */
+export function slSetsLeftText(count: number): string {
+  return `${count} SportLots set${count === 1 ? "" : "s"} left — save again`;
+}
+
+/**
+ * The Sets column's pill, from `getSlSetReviewSummary`. `partial` is set by a
+ * save that started and has not finished (on this admin's screen or anyone
+ * else's — the review is shared).
+ */
+export function slReviewPillText(summary: {
+  pending: number;
+  partial: boolean;
+}): string {
+  return summary.partial
+    ? slSetsLeftText(summary.pending)
+    : slSetsToSortText(summary.pending);
+}

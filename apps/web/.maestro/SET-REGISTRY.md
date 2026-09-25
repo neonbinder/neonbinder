@@ -85,10 +85,9 @@ BuySportsCards alone for the whole run:
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
 | Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
-| Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; every set the year-wide Sync Sets saves from SportLots' lists (a `setName` row plus a `Base` carrying the SportLots id per new root — dozens, names never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
+| Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; the per-brand SportLots reviews the year-wide Sync Sets leaves behind (NEO-306: SportLots-only names are no longer saved as sets; the reviews stay unsaved, labels never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
-| Baseball → 2026 → Bowman → Bowman | `Insert` — reconciled in-flow (NOT pre-synced); the BSC insert `Anime Kanji` is promoted to a parallel of `Anime` by Group Parallels and its checklist is fetched and COMMITTED in-flow | `flows/set-selector/parallel-grouping-promoted-insert-fetches-from-bsc.yaml` — **sole writer**. Requested by the owner 2026-09-21 (NEO-293), replacing a rejected hand-made-parent fixture |
-| Baseball → 2026 → Bowman → Bowman `Parallel` (and a transient set `Bowman Blue`) | `Parallel` — reconciled in-flow (NOT pre-synced), every Ready set saved; then `Blue`'s SportLots link is promoted to a set `Bowman Blue` and folded back with Make parallel of…, leaving `Blue` holding both links and no `Bowman Blue` set. Also READS Bowman's Sets column (the three BSC sets, none of SportLots' colours). | `flows/set-selector/flagship-colour-is-a-parallel-both-ways.yaml` — **sole writer of Bowman's `Parallel`**. ⚠️ **PROPOSED (NEO-305), NEEDS OWNER APPROVAL** — see the 2026 Bowman section |
+| Baseball → 2026 → Bowman (the whole brand-year) | the brand's SportLots review SAVED in-flow (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman › `Insert` reconciled (NOT pre-synced) and grouped — the BSC insert `Anime Kanji` promoted to a parallel of `Anime`, re-synced, its checklist fetched and COMMITTED; Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `flows/set-selector/flagship-colour-is-a-parallel-both-ways.yaml` — **sole writer** of the brand-year. Requested by the owner 2026-09-21 (NEO-293); one ordered flow by owner decision 2026-09-25 (NEO-306), merging `parallel-grouping-promoted-insert-fetches-from-bsc` into it |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
@@ -266,81 +265,122 @@ data that isn't in the table above, it must either sync it itself (and accept th
 30–90s cost, with owner approval) or — far more often the right answer — use a
 per-worker custom set (see below).
 
-### 2026 Bowman — NEO-293, sole-writer (requested by the owner 2026-09-21)
+### 2026 Bowman — ONE sole writer, the whole brand-year (NEO-293, NEO-300, NEO-305, NEO-306)
 
-`parallel-grouping-promoted-insert-fetches-from-bsc.yaml` proves that a
-BSC-synced insert row promoted under the insert it parallels keeps a working
-BSC source: BSC files a parallel of an insert as a `variantName` under
-`variant=insert`, so "Sync Inserts" lists it as an insert; after Group
-Parallels moves it, its Multi-source panel must show the BSC id as an ordinary
-chip and Fetch from Marketplaces must bring its cards back FROM BSC.
+`flows/set-selector/flagship-colour-is-a-parallel-both-ways.yaml` is the only
+flow on Baseball → 2026 → Bowman. It proves, in order, where each
+marketplace "set" of the brand belongs in NB and that the operator can move
+rows across that line with their links intact:
 
-**Why this set.** The feature needs a REAL BSC insert whose REAL BSC parallel
-word-prefixes it, so the Group Parallels modal suggests the nesting on its own
-(maestro-web cannot drive the modal's drag). Observed on production by the
-owner, 2026-09-21: under Baseball → 2026 → Bowman → Bowman › Insert, BSC lists
-`Anime` and its parallels `Anime Kanji`, `Anime Black Refractors`, `Anime Red
-Refractors` and `Anime SuperFractors` as insert-level variantNames; SportLots
-carries `Chrome Anime Kanji` (id 378117) among ~479 sets for the year. No
-smaller real pair was verifiable from a workstation (BSC's API needs a bearer
-token; production reads are gated), so the observed one is used. The
-alternative — nesting BSC-synced rows under a hand-made parent on 1996 Score —
-was rejected by the owner: a hand-made row must never anchor marketplace data,
-and the harness must never dictate the data shape.
+1. Sync Sets mints no SportLots-only set; the brand's review (the pill `N
+   SportLots sets to sort`) files them — every row under Bowman › Parallel in
+   bulk, `Bowman Sterling` as its own set, `All-America Game Autos` under
+   Bowman › Insert (NEO-306).
+2. Bowman › Insert — populated by the review, so an explicit `Sync Inserts` —
+   reconciles BSC's inserts with SportLots'; `Anime` and its parallels become
+   NB sets ("Make its own set", "Keep all"); Group Parallels nests `Anime
+   Kanji` under `Anime`; a second `Sync Inserts` leaves the grouped rows alone
+   (NEO-293, NEO-300).
+3. The promoted `Anime Kanji` keeps its BSC id as a working source: a chip
+   tagged as a BSC variant, no "Needs re-mapping", Fetch from Marketplaces
+   saves cards, and the chip's per-slot count is > 0 (NEO-293).
+4. Bowman › Parallel's sync pairs BSC's `Blue` with the review's `Blue`;
+   `Promote to set` and `Make parallel of…` move that link out and back
+   (NEO-305).
+5. `Make insert of…` moves the review's Parallel row `All-America Game Autos
+   Red Ink` under Bowman › Insert › `All-America Game Autos` as the new
+   parallel `Red Ink` (NEO-306).
+
+**Why one flow (owner decision, 2026-09-25).** It was two:
+`parallel-grouping-promoted-insert-fetches-from-bsc` (NEO-293/300, Bowman ›
+Insert) and this one. They could not share a preview in either order: an
+insert column auto-syncs only when EMPTY, so whichever flow wrote Bowman ›
+Insert first stopped the other's first reconcile from ever opening, and the
+CI queue orders nothing. They were merged with every assertion of both kept.
+
+**Why this set.** Every claim needs what the marketplaces ANSWER: a REAL BSC
+insert whose REAL BSC parallel word-prefixes it (so Group Parallels suggests
+the nesting — maestro-web cannot drive the modal's drag), a brand whose
+flagship BSC lists AND whose colours SportLots lists as sets, and SportLots
+names that belong under an insert. Observed on production by the owner,
+2026-09-21/24: BSC lists the sets Bowman, Bowman Chrome, Bowman Sapphire
+Edition; under Bowman › Insert, `Anime` and its parallels `Anime Kanji`,
+`Anime Black Refractors`, `Anime Red Refractors`, `Anime SuperFractors` as
+insert-level variantNames; SportLots carries `Chrome Anime Kanji` (id 378117)
+among ~479 sets for the year, plus the colours and the All-America products.
+The alternative — nesting BSC-synced rows under a hand-made parent on 1996
+Score — was rejected by the owner: a hand-made row must never anchor
+marketplace data, and the harness must never dictate the data shape.
 
 | | |
 | -- | -- |
-| drills | Baseball → 2026 → Bowman → Bowman, all four levels COLD; under the pause the manufacturer row `Bowman` is hand-made by the drill (`CREATE_MANUFACTURER`), exactly as `Score` is for 1996 |
-| reconcile (live) | filters Ready and BSC to "Anime"; makes `Anime` its own NeonBinder set with its row's "Make its own set" when the auto-matcher left it Pending, then presses **"Keep all"** on the "Anime"-filtered BSC column (NEO-300), making every still-Pending Anime item (`Anime Black Refractors`, `Anime Red Refractors`, `Anime SuperFractors`, and `Anime Kanji` if unpaired) its own BSC-only set — the same rows the paused branch stores; **saves every Ready set** — the filter narrows the view, not the write, as on 1996 Score |
-| paused | no reconcile — the column fills straight from BSC |
-| grouping | Group Parallels → Accept all suggestions → Save; every prefix pair in the set nests, `Anime Kanji` and the other three Anime parallels (Keep all made them sets live; the paused sync stores them) under `Anime` |
-| re-sync (NEO-300) | "Sync Inserts" again after the grouping; live, the reconcile dialog re-opens and is **saved with no edits**, paused the single-platform store runs; both must say "N already grouped as parallels. Leaving those be." and must not re-create a grouped row as an insert |
+| drills | Baseball → 2026 → Bowman, every level COLD on a fresh preview; under the pause the manufacturer row `Bowman` is hand-made by the drill (`CREATE_MANUFACTURER`), exactly as `Score` is for 1996 |
+| review (live) | bulk: every row → Bowman › `Parallel` (picking Bowman force-syncs its Variant Types inside the dialog, additive); row tick + bulk: `All-America Game Autos` → Bowman › `Insert`; per row: `Bowman Sterling` → its own set; saved at the 7000 bar |
+| Insert reconcile (live) | `Sync Inserts` (the column holds the review's row); filters Ready and BSC to "Anime"; `Anime` its own set when Pending; "Keep all" on the "Anime"-filtered BSC column; **saves every Ready set** (the review's row comes back restored) |
+| grouping | Group Parallels → Accept all suggestions → Save; every prefix pair nests, `Anime Kanji` and the other Anime parallels under `Anime` |
+| re-sync (NEO-300) | "Sync Inserts" again; live the reconcile re-opens and is saved with no edits, paused the single-platform store runs; both say "N already grouped as parallels. Leaving those be." and do not re-create a grouped row as an insert |
 | fetch | on the promoted `Anime Kanji`: the pairing dialog when SportLots paired a set with it, the one-marketplace path otherwise; the review is drained with "Skip remaining names" (no players created) |
-| asserts | after the re-sync: the "already grouped" line, `Anime Kanji` absent from the "Anime"-filtered Inserts column and listed under `Anime` in Parallels; then `Remove Anime Kanji` chip + "attached as a BSC variant", no "Needs re-mapping"; `Saved N cards` with N ≥ 1; the chip's detach confirm reads a BSC per-slot count ≥ 1, then Cancel |
+| Parallel reconcile (live) | `Sync Parallels` (the column holds the review's rows); BSC's `Blue` lands on the review's restored `Blue` row (attached by id, the NEO-306 reconcile fix); every Ready set saved |
+| promote / fold | `Blue`'s SportLots link → the set `Bowman Blue` (the row stays: BSC holds it) → `Make parallel of…` folds it back onto `Blue` |
+| make insert | Bowman › Parallel › `All-America Game Autos Red Ink` → Bowman › Insert › `All-America Game Autos` › new parallel `Red Ink` (the dialog's `Find an insert` filter used when the list is over 12) |
+| paused | no review, no pill; Insert and Parallel fill from BSC alone; grouping, re-sync, chip and one-marketplace fetch as live; `Blue` offers no Promote, and the SportLots-only claims have no paused form |
 
 **What the flow leaves behind** (fresh-only; `setup.yaml`'s reset removes it
 all at the head of every run):
 
 | | |
 | -- | -- |
-| insert rows | every set the reconcile's auto-match put in Ready plus every "Anime" BSC item Keep all made its own set (live), or every BSC insert (paused), each with the ids the sync gave it — nothing hand-made below the manufacturer |
-| nesting | every word-prefix pair among them nested by Accept All; `Anime Kanji` (and, in both branches, the other three Anime parallels) is a `parallel` under `Anime`, its BSC slot tagged `variantName` |
+| sets | `Bowman Sterling` (+ Base holding its SportLots id); no `Bowman Blue` |
+| Insert | every set the Insert reconcile saved, with the ids the sync gave it; every word-prefix pair nested by Accept All (`Anime Kanji` a parallel under `Anime`, its BSC slot tagged `variantName`); `All-America Game Autos` with the parallel `Red Ink` |
+| Parallel | every SportLots-only colour the review filed, plus BSC's parallels; `Blue` with BSC + SportLots links |
 | `Anime Kanji` checklist | COMMITTED, every card from BSC (plus SportLots' when paired); its unknown names SKIPPED, so no players or teams are minted |
-| everything else | untouched — Base is never selected, no card is edited |
+| never touched | Base, any other checklist, any card edit |
 
-**Sole writer.** No other flow may drill into 2026 Bowman. A re-run against the
-same deployment finds the rows already reconciled and promoted and fails at
-"Reconcile Inserts" (live) or "Accept all suggestions" — by name.
+**Sole writer, fresh-only.** No other flow may drill into 2026 Bowman. A
+re-run against the same deployment finds the review saved and fails on the
+pill by name.
 
-#### ⚠️ PROPOSED second writer: Bowman's `Parallel` (NEO-305) — needs owner approval
+**MEASURED 2026-09-25 on PR #288's Convex preview** (local Vite → the
+preview; the review read out of `slSetReviews`, the rest from the flow's own
+step timings):
 
-`flagship-colour-is-a-parallel-both-ways.yaml` proves the NEO-305 boundary on
-the brand-year the bug was reported on: Sync Sets leaves SportLots' colours
-("Bowman Blue", "Bowman Gold", "Bowman Neon Green" …) out of Bowman's Sets
-column, Bowman › Parallel's sync pairs SportLots' `Blue` with BSC's `Blue`,
-`Promote to set` lifts that link out as the set `Bowman Blue`, and
-`Make parallel of…` folds it back onto `Blue`. Asked for because every claim
-needs a real brand whose flagship BSC lists AND whose colours SportLots lists
-as sets — and 2026 Bowman is the one observed on production.
+* **the review: 81 SportLots-only names** (the pill read 81 and `Apply to 81
+  selected`), brand-stripped, in folded order: `All-America Game Autos`,
+  `All-America Game Autos Red Ink`, `Base Set`, the colours (`Black` …
+  `Yellow Pattern`, 26), `Bowman Logo Pattern`, the `Bowman Sterling` family
+  (12), `Prospects` (33), `Printing Plates …` (4), `Rookies and Veterans
+  Autos` (8). **There is no bare `All-America`** (the first guess): the row
+  filed as its own set is `Bowman Sterling`, a product of its own, which
+  keeps its name as the set (`candidateDefaultName` adds no prefix to a
+  label that already starts with the brand). So the save files **1 set, 79
+  parallels, 1 insert**.
+* Bowman's variant types: `Base`, `Insert`, `Parallel` — the names both old
+  flows' green runs already read.
+* the review save: the toast landed **0.71s** after the Save tap's ~2s — well
+  inside 7000;
+* the in-dialog Variant Types sync (forced, BSC + SportLots): **7.8s** against
+  its 60000 marketplace ceiling;
+* the Inserts reconcile opened in 7.3s and saved in 1.1s; the re-sync opened
+  in 6.8s and saved in 1.0s;
+* the checklist's own writes: the Match Cards close **1.06s** and `Saved N
+  cards` **0.36s** after Confirm & Save — both now on the 7000 bar (they were
+  60000 by inheritance);
+* STEP 10's pairing landed: the Parallels column lists `Blue` with both `SL`
+  and `BSC` badges (the NEO-306 reconcile fix attaching BSC's `Blue` to the
+  review's row by id).
+* still to read on the next run: STEP 14 (the Make insert of… path toast and
+  whether "Where it goes" crossed 12 choices).
 
-| | |
-| -- | -- |
-| drills | Baseball → 2026 → Bowman (Sets column), then → Bowman → `Parallel`, all COLD on a fresh preview |
-| writes | Bowman's `Parallel` rows (the reconcile save); the set `Bowman Blue` (promote) and its deletion (convert back); `Blue`'s SportLots link moves out and back |
-| leaves | `Blue` with BSC + SportLots links, no `Bowman Blue` set — the round trip restores what the save made |
-| never touches | Bowman's `Insert` (the sibling's), Base, any checklist |
-| re-runs | **fresh-only per deployment**: a second run finds the Parallels stored, no reconcile opens, and it fails on `Reconcile Parallels` by name |
+**Two traps the first runs found** (both fixed in the flow):
+* the flow's `name:` was 417 bytes; Maestro names a debug directory after it
+  and Linux refuses a path component over 255 bytes, so CI run 36164550212
+  lost the flow before its first command (`File name too long`);
+* the review's picker LISTS carry a React `useId` DOM id, which shadows their
+  aria-label as Maestro's resource-id — the flow takes each list's option
+  nearest below its trigger instead of naming the list.
 
-**Open question for the owner — the shared cold drills.** Both flows open
-2026 → Bowman → Bowman on a fresh preview, so whichever runs first pays the
-Manufacturers, Sets and Variant Types syncs and the other finds them warm.
-If both start inside the same window, `ensureSelectorOptions` has no
-"already syncing" guard and the same sync can run twice. Every write on that
-path is id-keyed and additive (a set clash is refused inside the mutation),
-so the expected cost is a duplicated round-trip, not a duplicated row — but
-it has not been observed either way. The alternative is a different real
-brand-year with the same shape (a BSC flagship plus SportLots colour "sets"),
-which would have to be measured first.
+`ensureSelectorOptions` has no "already syncing" guard; with one flow on the
+brand-year nothing races it any more.
 
 ### The one sanctioned read-only visitor
 
@@ -937,11 +977,12 @@ real YEAR — **Hockey → 1997** — owned end to end by exactly one flow,
 on live marketplace data that a brand SportLots has no entry for can be linked
 THROUGH SportLots' "All Brands" option, narrowed by an NB-owned set-name
 prefix, and that Sync Sets is two-sided (BSC filed by prefix / into `Unknown`,
-SportLots' extra sets SAVED as NB sets with a Base carrying the SportLots id —
-no review step; Jason, 2026-09-21: "if a set exists in a marketplace it should
-be saved whether it is in SL or BSC or both"). The save itself is not
-assertable — see (3) below; what the flow reads of the SportLots phase is
-that it RAN.
+then SportLots asked per brand). **NEO-306 changed what the SportLots phase
+does with what it finds:** SportLots-only names are no longer saved as sets
+(the 2026-09-21 auto-save is gone); each waits in its brand's review, opened
+from the "N SportLots sets to sort" pill on that brand's own Sets column. This
+flow never opens one (it works in the All Brands view, which has no pill);
+what it reads of the SportLots phase is that it RAN — see (3) below.
 
 Why 1997: the same SportLots brand list as 1995 (measurement 2 above — 18
 entries, "1997 returns the identical list"), a full hockey year on both
@@ -951,7 +992,7 @@ every CI run; the flow pays its own syncs on its own runner.
 | | |
 | -- | -- |
 | ancestors | `Hockey → 1997` |
-| what the flow WRITES | a manufacturer row **`SPx`** (via "+ Custom"; the create itself links it through All Brands because the year carries SportLots ids — there is no opt-in on the confirm since Jason's 2026-09-21 preview pass; prefix defaulted to its name); EVERY set the year-wide sync saves from SportLots' lists (one `setName` row named `<brand prefix> <label>` — the label as-is under `Unknown` — plus a `Base` carrying the SportLots id, per new root; 74 roots measured, see (3) below; their names are never read or asserted); the year-wide BSC filing (every brand plus `Unknown`) and the re-home of `SPx…` sets out of `Unknown` |
+| what the flow WRITES | a manufacturer row **`SPx`** (via "+ Custom"; the create itself links it through All Brands because the year carries SportLots ids — there is no opt-in on the confirm since Jason's 2026-09-21 preview pass; prefix defaulted to its name); the per-brand SportLots reviews the year-wide sync writes (NEO-306; 74 SportLots-only names measured on the first run, see (3) below — unsaved, never read or asserted); the year-wide BSC filing (every brand plus `Unknown`) and the re-home of `SPx…` sets out of `Unknown` |
 | what it never does | fetch a checklist, map a Base (the picker is cancelled), rename or delete anything |
 | writer | **sole writer** of the whole year; no other flow may drill Hockey 1997 |
 | pre-synced by `setup.yaml` | **no** |
@@ -994,14 +1035,11 @@ read:
 2. SportLots' all-brands list for 1997 holds 1–8 entries starting with
    `SPx` — **read: ≥1 `SportLots base candidate: …` and no search box** in
    STEP 4's picker pane (`BaseSetPicker` renders the box above 8);
-3. the year-wide sync ASKS SportLots per brand and saves the roots NB has no
-   row for — **read: 74** roots classified as new on the first run, measured
-   through the review modal that stood in for the auto-save until 2026-09-21.
-   **Since 2026-09-22 that save has NO on-screen surface** (Jason: "We don't
-   do it for other marketplaces we shouldn't do it here" —
-   `ensureSelectorOptions` no longer composes "N sets added from SportLots."
-   into the done row, and that sentence was the only thing the product ever
-   said about it). STEP 2 therefore reads what the sync still says about the
+3. the year-wide sync ASKS SportLots per brand — **read: 74** SportLots-only
+   names classified as new on the first run, measured through the review
+   modal that stood here until 2026-09-21. Since NEO-306 those names are
+   written to each brand's review, not saved as sets, and the view says
+   nothing about them. STEP 2 therefore reads what the sync says about the
    SportLots side: the notice `SportLots skipped: no SportLots ids on this
    path.`, asserted ABSENT live and PRESENT under the pause —
    `syncSetsAcrossManufacturers` puts "sportlots" into `skippedSides` only
@@ -1011,8 +1049,11 @@ read:
    answered, not as anything a step reads, and the labels behind it are
    SportLots' business — no flow may assert one as a literal.
 
-   **The gap, and the affordance that would close it.** No step proves a set
-   was SAVED, because nothing on screen tells an SL-minted set from a
+   **Superseded by NEO-306 (kept for the record).** The review is now the
+   surface where SportLots-only names are seen and filed, proved on 2026
+   Bowman (`flagship-colour-is-a-parallel-both-ways`, STEP 1). What follows
+   described the auto-save world. **The gap, and the affordance that would
+   close it.** No step proves a set was SAVED, because nothing on screen tells an SL-minted set from a
    BSC-filed one: a set row is not terminal, so the view shows no `SL` pill
    on it (the id is on its Base, reachable only once the set is picked BY
    NAME), and a minted row's name is a SportLots label behind a brand prefix
@@ -1048,10 +1089,10 @@ spelled "Upper Deck Black Diamond"), `Leaf` (real brand, but ~10+ SportLots
 entries, so (2) needs the search-box assertion rethought). Avoid names with
 apostrophes or regex metacharacters (`Collector's Choice`, `McDonald's`).
 
-The auto-save is year-wide (every brand's own list, the all-brands list once
-per via-All-Brands brand and once for `Unknown`), so the saved sets land under
-whichever brands own the roots; no brand, name or count is asserted at all
-(2026-09-22 — see (3)). A set row is not a terminal row, so the view shows no
+The SportLots phase is year-wide (every brand's own list, the all-brands list
+once per via-All-Brands brand and once for `Unknown`), so its reviews land
+under whichever brands own the names; no brand, name or count is asserted at
+all (see (3)). A set row is not a terminal row, so the view shows no
 `SL` pill on one — the Base-carries-the-id shape is the helper's unit test,
 and the link this fixture proves live is STEP 4's narrowed picker pane under
 `SPx`.

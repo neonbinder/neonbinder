@@ -3,8 +3,9 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
-import { activateOnEnter } from "@/lib/dom/activate-on-enter";
+import { Square2StackIcon } from "@heroicons/react/24/outline";
 import { ChoiceList, LandingPath, SetShapeDialog, type Choice } from "./SetShapeDialog";
+import SetRowActionButton from "./SetRowActionButton";
 import type { SelectorLevel } from "./selector-sync-feedback";
 import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
 
@@ -22,9 +23,10 @@ import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
  * nothing under the Base). The target-dependent checks happen in the dialog,
  * which reads the brand's sets only while it is open.
  *
- * Same shape as `MoveSetToBrandControl` beside it: a text button in the
- * attributes panel header, `inert` while the dialog is up, refusals inside
- * the dialog, the result on the panel's own `role="status"` toast.
+ * Same shape as `MoveSetToBrandControl` beside it: a `SetRowActionButton`
+ * chip in the panel's "Set actions" row (NEO-306), `inert` while the dialog is
+ * up, refusals inside the dialog, the result on the panel's own
+ * `role="status"` toast.
  */
 
 export const MAKE_PARALLEL_LABEL = "Make parallel of…";
@@ -34,11 +36,9 @@ export const MAKE_PARALLEL_TOOLTIP =
 /** DRAFT copy — pending Jason's sign-off (NEO-245). */
 export const makeParallelCopy = {
   title: (set: string) => `Make “${set}” a parallel`,
-  description: (set: string, cards: number) =>
-    `Pick the set it belongs to. Its SportLots link${
-      cards > 0 ? ` and ${cards} ${cards === 1 ? "card" : "cards"}` : ""
-    } move over, and “${set}” stops being a set.`,
   targetsLegend: "Parallel of",
+  /** The folded "Parallel of" line's button (NEO-306). */
+  changeTarget: "Change parallel of",
   targetsFilter: "Find a set",
   noParallelType: "no Parallel type yet",
   destinationLegend: "Where it goes",
@@ -132,18 +132,16 @@ export default function MakeParallelControl({
 
   return (
     <>
-      <button
+      <SetRowActionButton
         ref={triggerRef}
-        type="button"
-        onClick={openDialog}
-        onKeyDown={(event) => activateOnEnter(event, openDialog)}
+        icon={Square2StackIcon}
+        onActivate={openDialog}
         aria-haspopup="dialog"
         inert={open}
         title={MAKE_PARALLEL_TOOLTIP}
-        className="shrink-0 text-xs py-1.5 text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus-visible:ring-2 focus-visible:ring-[#00D558] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
       >
         {MAKE_PARALLEL_LABEL}
-      </button>
+      </SetRowActionButton>
       {open && (
         <MakeParallelDialog
           setId={setId}
@@ -177,6 +175,14 @@ function MakeParallelDialog({
   const targets = useQuery(api.setParallelConversion.getSetToParallelTargets, { setId });
   const [targetSetId, setTargetSetId] = useState<Id<"selectorOptions"> | null>(null);
   const [destination, setDestination] = useState<string | null>(null);
+  /**
+   * NEO-306 — the operator unfolded "Parallel of" to change it. Until then a
+   * valid set (the server's preselection, or one picked with a click or
+   * Enter) shows as one line, so "Where it goes" is what the dialog opens on.
+   */
+  const [targetExpanded, setTargetExpanded] = useState(false);
+  /** Which list takes focus next, once it can (see `ChoiceList.takeFocus`). */
+  const [focusTo, setFocusTo] = useState<"target" | "destination" | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const convert = useMutation(api.setParallelConversion.convertSetToParallel);
@@ -268,10 +274,22 @@ function MakeParallelDialog({
       : undefined;
   const leftBehind = loss ? lossItems(loss) : [];
 
+  // Folded only while the chosen set can be chosen and its detail has not
+  // come back refused: an invalid preselection stays open, with its reason.
+  const targetFolded =
+    !targetExpanded &&
+    chosenTarget !== null &&
+    targetChoices.some((c) => c.id === chosenTarget && c.unavailable === undefined) &&
+    targetReason === undefined;
+  // A refused set has no "Where it goes" to hand focus to: its own list keeps it.
+  const focusList = focusTo === "destination" && targetReason ? "target" : focusTo;
+
   const pickTarget = (id: string) => {
     setError(null);
     setTargetSetId(id as Id<"selectorOptions">);
     setDestination(null);
+    // Browsing (an arrow key) keeps the list open; `onPick` folds it after.
+    setTargetExpanded(true);
   };
 
   const handleConfirm = async () => {
@@ -332,9 +350,21 @@ function MakeParallelDialog({
           choices={targetChoices}
           selectedId={chosenTarget}
           onSelect={pickTarget}
+          onPick={() => {
+            setTargetExpanded(false);
+            setFocusTo("destination");
+          }}
           autofocusId={chosenTarget}
           filterLabel={makeParallelCopy.targetsFilter}
           describedBy={targetReason ? targetReasonId : undefined}
+          collapsed={targetFolded}
+          changeLabel={makeParallelCopy.changeTarget}
+          onExpand={() => {
+            setTargetExpanded(true);
+            setFocusTo("target");
+          }}
+          takeFocus={focusList === "target"}
+          onTookFocus={() => setFocusTo(null)}
         />
         {targetReason && (
           // The server's own sentence: most often "no Parallel type yet",
@@ -354,6 +384,9 @@ function MakeParallelDialog({
             }}
             filterLabel={makeParallelCopy.destinationFilter}
             describedBy={destinationReason ? destinationReasonId : undefined}
+            // The last question: never folded, so it is always answerable here.
+            takeFocus={focusList === "destination"}
+            onTookFocus={() => setFocusTo(null)}
           />
         )}
         {destinationReason && (
@@ -370,11 +403,9 @@ function MakeParallelDialog({
     );
   }
 
-  const cardCount = targets?.ok ? targets.cardCount : 0;
   return (
     <SetShapeDialog
       title={makeParallelCopy.title(setValue)}
-      description={makeParallelCopy.description(setValue, cardCount)}
       preview={
         detailOk && destinationValid && destinationName ? (
           <LandingPath

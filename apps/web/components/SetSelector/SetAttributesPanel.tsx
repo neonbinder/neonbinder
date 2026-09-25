@@ -32,9 +32,9 @@ import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl from "./RenameEntityControl";
 import BaseRoleControl from "./BaseRoleControl";
 import { isBaseRole } from "./baseRole";
-import FillTeamsControl from "./FillTeamsControl";
 import MoveSetToBrandControl from "./MoveSetToBrandControl";
 import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
+import MakeInsertControl from "./MakeInsertControl";
 import PromoteToSetControl from "./PromoteToSetControl";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
 import {
@@ -128,6 +128,15 @@ import {
  * the reason when the row holds a SportLots brand of its own (a real link is
  * never overwritten) or when the year has no SportLots link to go through.
  */
+
+/**
+ * NEO-306 — "Edit attributes ▾" / "Hide attributes ▴". Their text stays (flows
+ * target it); they gain the panel's one focus ring and a taller line box. The
+ * old `focus:outline-none` with only a colour change left a keyboard operator
+ * a focus indicator in name only.
+ */
+const ATTRIBUTES_TOGGLE_CLASS =
+  "text-xs py-1 rounded text-gray-400 hover:text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900";
 
 /**
  * NEO-291 — where the Card prefix row is editable.
@@ -465,6 +474,16 @@ export default function SetAttributesPanel({
     }
   };
 
+  /**
+   * NEO-306 — the levels whose rows can carry a set action (Move, Make
+   * parallel of…, Make insert of…, Promote to set). Whether one actually
+   * renders is each control's own call; see the "Set actions" row.
+   */
+  const hasRowActions =
+    leafLevel === "setName" ||
+    leafLevel === "insert" ||
+    leafLevel === "parallel";
+
   return (
     <div
       className="border border-gray-700 rounded-lg bg-gray-900/60 p-4 space-y-3"
@@ -512,30 +531,6 @@ export default function SetAttributesPanel({
                 onResult={showToast}
               />
             )}
-            {/* NEO-279: fill the teams this set's cards are missing from the
-                set's own evidence. Set level only — "the same player elsewhere
-                in this set" is a whole-set fact — and up here with the name
-                rather than in the grid below because it is an ACTION on the
-                cards, not an attribute of the row, and because it has to be
-                reachable while the panel is collapsed, which is the state an
-                operator reviewing a freshly synced checklist meets it in.
-                Keyed on the row for the same reason the delete is: the panel
-                does not remount when the selection moves, and a preview
-                dialog opened for one set must never ask about the next. The
-                key carries its own prefix because the delete control beside
-                it is keyed on the same id, and two siblings sharing a key is
-                the one thing React refuses to reconcile — CI run 34930152576
-                rendered this button THREE times after a drill and routed the
-                dialog's state updates to the wrong copy, so "Filling…" never
-                ended. */}
-            {leafLevel === "setName" && (
-              <FillTeamsControl
-                key={`fill-teams-${selectorOptionId}`}
-                id={selectorOptionId}
-                level={leafLevel}
-                showToast={showToast}
-              />
-            )}
             {/* NEO-219: the one sanctioned delete, next to the pencil for the
                 same reason the pencil is next to the title — the title IS the
                 row it acts on.
@@ -561,52 +556,6 @@ export default function SetAttributesPanel({
               level={leafLevel}
               onDeleted={onDeleted}
             />
-            {/* NEO-294: the operator's undo for every automatic placement —
-                the prefix re-home, the known-brands list, the sync's own
-                bucketing into Unknown. Beside the delete because those two
-                are the whole of what can be done to the set ROW, as opposed
-                to its attributes, and because a set filed under the wrong
-                brand is the case an operator would otherwise "fix" by
-                deleting and rebuilding it. Set level only: a brand is a
-                set's parent, and nothing else here has one.
-
-                Keyed with its own prefix for the reason the Fill teams
-                control is: the delete beside it is keyed on the same row id,
-                and two siblings sharing a key is the one thing React refuses
-                to reconcile. */}
-            {leafLevel === "setName" && (
-              <MoveSetToBrandControl
-                key={`move-brand-${selectorOptionId}`}
-                setId={selectorOptionId}
-                setValue={row.value}
-                yearLabel={ancestorYear}
-                showToast={showToast}
-                onMoved={onMoved}
-              />
-            )}
-            {/* NEO-305: the other two things that can happen to a set ROW's
-                shape — a SportLots-filed "set" that is really a parallel
-                folds into its set, and the way back out. Each renders
-                nothing unless the server says it could work here. Keyed with
-                their own prefixes for the reason the controls above are. */}
-            {leafLevel === "setName" && (
-              <MakeParallelControl
-                key={`make-parallel-${selectorOptionId}`}
-                setId={selectorOptionId}
-                setValue={row.value}
-                showToast={showToast}
-                onReshaped={onReshaped}
-              />
-            )}
-            {leafLevel === "insert" && (
-              <PromoteToSetControl
-                key={`promote-set-${selectorOptionId}`}
-                parallelId={selectorOptionId}
-                parallelValue={row.value}
-                showToast={showToast}
-                onReshaped={onReshaped}
-              />
-            )}
           </div>
           <p className="text-xs text-gray-500 mt-0.5 truncate" title={breadcrumb}>
             {breadcrumb}
@@ -626,7 +575,7 @@ export default function SetAttributesPanel({
             type="button"
             onClick={() => setExpanded(false)}
             aria-label="Hide attributes"
-            className="shrink-0 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+            className={`shrink-0 ${ATTRIBUTES_TOGGLE_CLASS}`}
           >
             Hide attributes ▴
           </button>
@@ -636,13 +585,94 @@ export default function SetAttributesPanel({
               type="button"
               onClick={() => setExpanded(true)}
               aria-label="Edit attributes"
-              className="text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
+              className={ATTRIBUTES_TOGGLE_CLASS}
             >
               Edit attributes ▾
             </button>
           </div>
         )}
       </div>
+
+      {/* NEO-306: the things that can be DONE to this row, as its own row of
+          visibly-button chips under the breadcrumb — out of the title line,
+          where they were grey text beside the name and did not read as
+          controls. The title line keeps what is about the row's identity:
+          its name (pencil), whether it is the base (tag) and the delete.
+
+          Rendered only at the levels that can carry an action, and hidden
+          while empty (`empty:hidden` — each control renders nothing when the
+          server says it does not apply, and JSX leaves no whitespace nodes, so
+          an empty row is `:empty` and leaves the accessibility tree with its
+          `display: none`). A wrapping flex row, so at the E2E viewport's
+          1024px it breaks between chips rather than squeezing them.
+
+          Every control keeps its own `key` prefix: the panel does not remount
+          when the selection moves, and two siblings sharing a key is the one
+          thing React refuses to reconcile (NEO-279, CI run 34930152576). */}
+      {hasRowActions && (
+        <div
+          role="group"
+          aria-label="Set actions"
+          className="flex flex-wrap items-center gap-2 empty:hidden"
+        >
+          {/* NEO-294: the operator's undo for every automatic placement —
+              the prefix re-home, the known-brands list, the sync's own
+              bucketing into Unknown. A set filed under the wrong brand is
+              the case an operator would otherwise "fix" by deleting and
+              rebuilding it. Set level only: a brand is a set's parent, and
+              nothing else here has one. First in the row: it is the one
+              action every set row carries. */}
+          {leafLevel === "setName" && (
+            <MoveSetToBrandControl
+              key={`move-brand-${selectorOptionId}`}
+              setId={selectorOptionId}
+              setValue={row.value}
+              yearLabel={ancestorYear}
+              showToast={showToast}
+              onMoved={onMoved}
+            />
+          )}
+          {/* NEO-305: the other things that can happen to a set ROW's
+              shape — a SportLots-filed "set" that is really a parallel folds
+              into its set, and the way back out. Each renders nothing unless
+              the server says it could work here. */}
+          {leafLevel === "setName" && (
+            <MakeParallelControl
+              key={`make-parallel-${selectorOptionId}`}
+              setId={selectorOptionId}
+              setValue={row.value}
+              showToast={showToast}
+              onReshaped={onReshaped}
+            />
+          )}
+          {/* NEO-306: "Make insert of…", after Make parallel of…. Offered on
+              set rows AND insert-level rows (a SportLots set, or a row the
+              Parallels reconcile filed, that is really an insert or a
+              parallel of one); its own eligibility query decides. */}
+          {(leafLevel === "setName" || leafLevel === "insert") && (
+            <MakeInsertControl
+              key={`make-insert-${selectorOptionId}`}
+              rowId={selectorOptionId}
+              rowValue={row.value}
+              showToast={showToast}
+              onReshaped={onReshaped}
+            />
+          )}
+          {/* NEO-306: the way back from an insert OR a parallel row — a
+              parallel of an insert can hold a SportLots link too. The level
+              only says where it could apply; the control's eligibility
+              query decides whether it does. */}
+          {(leafLevel === "insert" || leafLevel === "parallel") && (
+            <PromoteToSetControl
+              key={`promote-set-${selectorOptionId}`}
+              parallelId={selectorOptionId}
+              parallelValue={row.value}
+              showToast={showToast}
+              onReshaped={onReshaped}
+            />
+          )}
+        </div>
+      )}
 
       {toast && (
         // NEO-47: position the save confirmation FIXED in the viewport, not
@@ -895,9 +925,9 @@ function BrandUnknownRenameNotice({ value }: { value: string }) {
         aria-describedby={reasonId}
         onClick={reveal}
         onKeyDown={(event) => activateOnEnter(event, reveal)}
-        // p-1 for the same reason the real pencil carries it: a bare 16x16
-        // icon is under WCAG 2.5.8's 24x24 minimum target.
-        className="shrink-0 p-1 text-gray-500 opacity-50 cursor-not-allowed focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+        // min-w-6 min-h-6 and the ring, as the real pencil carries them: a
+        // bare 16x16 icon is under WCAG 2.5.8's 24x24 minimum target.
+        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-gray-500 opacity-50 cursor-not-allowed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
       >
         <PencilSquareIcon className="w-4 h-4" aria-hidden="true" />
       </button>
@@ -2018,10 +2048,14 @@ function DeleteSelectorRowControl({
         aria-describedby={blocked ? reasonId : undefined}
         aria-label={`Delete ${row.value}`}
         title={`Delete ${row.value}`}
-        // p-1: a bare 16x16 icon is under WCAG 2.5.8's 24x24 minimum target.
-        className="shrink-0 p-1 text-gray-500 hover:text-[#FF2EB3] focus:text-[#FF2EB3] focus:outline-none aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-500"
+        // min-w-6 min-h-6: a bare 16x16 icon is under WCAG 2.5.8's 24x24
+        // minimum target. NEO-306: the panel's one focus ring, and otherwise
+        // as low-key as it was — a grey icon, pink only on hover — because
+        // deleting is the rare act here (NEO-219), and a chip would advertise
+        // it beside every name.
+        className="shrink-0 inline-flex items-center justify-center min-w-6 min-h-6 rounded text-gray-500 hover:text-[#FF2EB3] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-500"
       >
-        <TrashIcon className="w-4 h-4" />
+        <TrashIcon className="w-4 h-4" aria-hidden="true" />
       </button>
       {blocked && (
         <span

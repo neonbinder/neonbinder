@@ -341,6 +341,13 @@ in `admin/player-live-wikidata-enrichment.yaml` (NEO-289, see "Enrichment
 fixtures"), recorded at the site. A slow non-marketplace response
 is a product finding to raise, never a timeout to inflate.
 
+**A multi-transaction NB write is not an exception.** An action that saves in
+chunks (the SportLots review's save, a reconcile store replayed to completion)
+is still our own server answering a user, so it gets 7000 like any mutation;
+only a live marketplace round-trip earns a longer wait. Jason, 2026-09-25: "A
+real user will never wait 30 seconds." A save that misses 7000 is a product
+finding (make the save faster), never a bigger number.
+
 **`flows/setup.yaml` is exempt as a class, and that is not a loophole.** R5
 already names "the setup track's cold sync" as a sanctioned exception, and the
 seed is the one flow that reseeds from empty — so every step in it runs the COLD

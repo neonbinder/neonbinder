@@ -731,3 +731,222 @@ describe("ReconciliationModal — a keyboard drop lands", () => {
     expect(items[0].platformData.sportlots).toEqual(["884412"]);
   });
 });
+
+/**
+ * NEO-306 — an auto-match whose ONE half a restored row already holds.
+ *
+ * The SportLots review files "Blue" as a parallel holding its SportLots id.
+ * The next Sync Parallels auto-matches BSC "Blue Refractor" with that same
+ * SportLots id. The seeding used to skip any pair with either half already
+ * mapped, so BSC Blue landed in neither Ready nor Pending: a link the operator
+ * could never make. The free half now joins the row that holds its partner's
+ * id — by id, never by name — or, with no single such row, goes to Pending.
+ */
+describe("ReconciliationModal — half an auto-match is already restored (NEO-306)", () => {
+  const BLUE_ROW_ID = "selopt_blue" as Id<"selectorOptions">;
+  const BSC_BLUE: PlatformItem = { value: "Blue Refractor", platformValue: "bsc-blue" };
+  const SL_BLUE: PlatformItem = { value: "Blue Parallel", platformValue: "sl-blue" };
+  const BLUE_PAIR = {
+    displayName: "Blue Refractor",
+    bsc: BSC_BLUE,
+    sl: SL_BLUE,
+    confidence: 0.9,
+  };
+
+  type ModalProps = Parameters<typeof ReconciliationModal>[0];
+
+  function renderRestored(
+    existingRows: NonNullable<ModalProps["existingRows"]>,
+    extra: Partial<ModalProps> = {},
+    autoMatched: InitialData["autoMatched"] = [BLUE_PAIR],
+  ) {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ReconciliationModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        level="parallel"
+        initialData={{
+          autoMatched,
+          unmatchedBsc: [],
+          unmatchedSl: [],
+          slCandidates: [],
+        }}
+        existingRows={existingRows}
+        {...extra}
+      />,
+    );
+    return { onConfirm };
+  }
+
+  test("a restored row holding the SL id takes the free BSC half, and saves it", async () => {
+    const { onConfirm } = renderRestored([
+      {
+        existingId: BLUE_ROW_ID,
+        value: "Blue",
+        platformData: { sportlots: ["sl-blue"] },
+      },
+    ]);
+
+    // One set, nothing pending: the BSC half is on the restored row, not lost.
+    expect(screen.getByText("1 ready")).toBeTruthy();
+    expect(screen.getByText(/Pending \(0\)/)).toBeTruthy();
+    // An ordinary attached chip — the ✕ that sends it back to Pending.
+    expect(
+      screen.getByLabelText(`Remove ${BSC_BLUE.value} from Blue`),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items).toHaveLength(1);
+    // Our row, our title, now carrying both links.
+    expect((items[0] as { existingId?: unknown }).existingId).toBe(BLUE_ROW_ID);
+    expect(items[0].value).toBe("Blue");
+    expect(items[0].platformData.bsc).toEqual(["bsc-blue"]);
+    expect(items[0].platformData.sportlots).toEqual(["sl-blue"]);
+    expect(items[0].platformLabels?.bsc).toEqual({ "bsc-blue": BSC_BLUE.value });
+  });
+
+  test("the attached half is one ✕ from Pending, like any attach", () => {
+    renderRestored([{ value: "Blue", platformData: { sportlots: ["sl-blue"] } }]);
+
+    fireEvent.click(screen.getByLabelText(`Remove ${BSC_BLUE.value} from Blue`));
+
+    expect(screen.getByText("1 ready, 1 pending")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: `Make its own set: ${BSC_BLUE.value}` }),
+    ).toBeTruthy();
+  });
+
+  test("the reverse: a restored row holding the BSC id takes the free SL half", async () => {
+    const { onConfirm } = renderRestored([
+      { value: "Blue", platformData: { bsc: ["bsc-blue"] } },
+    ]);
+
+    expect(screen.getByText("1 ready")).toBeTruthy();
+    expect(screen.getByLabelText(`Remove ${SL_BLUE.value} from Blue`)).toBeTruthy();
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items).toHaveLength(1);
+    expect(items[0].platformData.bsc).toEqual(["bsc-blue"]);
+    expect(items[0].platformData.sportlots).toEqual(["sl-blue"]);
+  });
+
+  test("both halves already restored: nothing is duplicated", async () => {
+    const { onConfirm } = renderRestored([
+      { value: "Blue", platformData: { sportlots: ["sl-blue"] } },
+      { value: "Blue Refractor", platformData: { bsc: ["bsc-blue"] } },
+    ]);
+
+    expect(screen.getByText("2 ready")).toBeTruthy();
+
+    fireEvent.click(screen.getByText(/Save 2 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items).toHaveLength(2);
+    const blue = items.find((i) => i.value === "Blue")!;
+    const refractor = items.find((i) => i.value === "Blue Refractor")!;
+    // Each row keeps exactly what it had — no cross-attach, no third set.
+    expect(blue.platformData.sportlots).toEqual(["sl-blue"]);
+    expect(blue.platformData.bsc).toBeUndefined();
+    expect(refractor.platformData.bsc).toEqual(["bsc-blue"]);
+    expect(refractor.platformData.sportlots).toBeUndefined();
+  });
+
+  test("a free half held elsewhere is not attached, and stays out", async () => {
+    const { onConfirm } = renderRestored(
+      [{ value: "Blue", platformData: { sportlots: ["sl-blue"] } }],
+      {
+        heldElsewhere: {
+          rows: [
+            {
+              key: "par-blue",
+              name: "Blue Refractor",
+              parentName: "Chrome",
+              bsc: ["bsc-blue"],
+              sportlots: [],
+            },
+          ],
+          summary: "1 already grouped as parallels. Leaving those be.",
+          toggleLabel: "Show grouped",
+        },
+      },
+    );
+
+    expect(screen.getByText("1 ready")).toBeTruthy();
+    expect(screen.getByText(/Pending \(0\)/)).toBeTruthy();
+    expect(
+      screen.queryByLabelText(`Remove ${BSC_BLUE.value} from Blue`),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items[0].platformData.sportlots).toEqual(["sl-blue"]);
+    expect(items[0].platformData.bsc).toBeUndefined();
+  });
+
+  test("two restored rows share the SL id: no single row to join, so Pending", async () => {
+    const { onConfirm } = renderRestored([
+      { value: "Blue", platformData: { sportlots: ["sl-blue"] } },
+      { value: "Blue Wave", platformData: { sportlots: ["sl-blue"] } },
+    ]);
+
+    expect(screen.getByText("2 ready, 1 pending")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: `Make its own set: ${BSC_BLUE.value}` }),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByText(/Save 2 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items.every((i) => i.platformData.bsc === undefined)).toBe(true);
+  });
+
+  test("a half an earlier AUTO-MATCH placed is not joined: the free half goes to Pending", () => {
+    // Two BSC sets the reconciler both paired with one SL set. The second
+    // guess is not merged into the first guess's set.
+    const BSC_BLUE_WAVE: PlatformItem = { value: "Blue Wave", platformValue: "bsc-wave" };
+    renderRestored([], {}, [
+      BLUE_PAIR,
+      { displayName: "Blue Wave", bsc: BSC_BLUE_WAVE, sl: SL_BLUE, confidence: 0.7 },
+    ]);
+
+    expect(screen.getByText("1 ready, 1 pending")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: `Make its own set: ${BSC_BLUE_WAVE.value}` }),
+    ).toBeTruthy();
+  });
+
+  test("a free half the caller says another level uses is not attached", async () => {
+    const { onConfirm } = renderRestored(
+      [{ value: "Blue", platformData: { sportlots: ["sl-blue"] } }],
+      { usedBscPlatformValues: ["bsc-blue"] },
+    );
+
+    expect(
+      screen.queryByLabelText(`Remove ${BSC_BLUE.value} from Blue`),
+    ).toBeNull();
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items[0].platformData.bsc).toBeUndefined();
+  });
+
+  test("regression: an auto-match colliding with nothing is still its own Ready set", async () => {
+    const { onConfirm } = renderRestored([
+      { value: "Gold", platformData: { bsc: ["bsc-gold"], sportlots: ["sl-gold"] } },
+    ]);
+
+    expect(screen.getByText("2 ready")).toBeTruthy();
+    expect(screen.getByText(/90%/)).toBeTruthy();
+
+    fireEvent.click(screen.getByText(/Save 2 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items).toHaveLength(2);
+    const gold = items.find((i) => i.value === "Gold")!;
+    const blue = items.find((i) => i.value === "Blue Refractor")!;
+    expect(gold.platformData.bsc).toEqual(["bsc-gold"]);
+    expect(gold.platformData.sportlots).toEqual(["sl-gold"]);
+    expect(blue.platformData.bsc).toEqual(["bsc-blue"]);
+    expect(blue.platformData.sportlots).toEqual(["sl-blue"]);
+  });
+});
