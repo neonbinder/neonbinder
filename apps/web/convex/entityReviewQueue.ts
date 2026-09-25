@@ -32,6 +32,7 @@ import { MIN_CAREER_YEAR } from "../lib/players/career-years";
 import {
   assertAliasesNotPrimaryNames,
   assertNameNotAnotherTeamsAlias,
+  findAliasHoldersOfName,
   normalizeTeamAliasList,
   normalizeTeamName,
 } from "./teams";
@@ -269,6 +270,12 @@ const decisionValidator = v.union(
     // NEO-236: player-kind only — Location + Name for each accepted career
     // team that matched no existing row. See schema.ts.
     createTeams: v.optional(v.array(careerTeamCreateValidator)),
+    // NEO-307: player-kind only — a career-team create `recordDecision` turned
+    // into a link, because exactly one other team holds its name as an alias.
+    // See schema.ts.
+    linkTeams: v.optional(
+      v.array(v.object({ sourceName: v.string(), teamId: v.id("teams") })),
+    ),
     // NEO-254: league-kind only — the whole record. See schema.ts.
     createLeague: v.optional(leagueCreateValidator),
   }),
@@ -2746,13 +2753,38 @@ export const recordDecision = mutation({
           });
         }
       }
-      // The pre-staging per-career-team creates build team rows at commit the
-      // same way, so they obey the same reverse rule.
+      /*
+       * The pre-staging per-career-team creates build team rows at commit the
+       * same way, so they obey the same reverse rule — with one difference,
+       * Jason's call for NEO-307: a career team is a STINT the player already
+       * has, not a team the operator is standing up, so refusing the whole
+       * player over it is the wrong answer when the name points at exactly one
+       * team. That create becomes a link to the holder, as if the operator had
+       * picked it, and the player decision saves. The commit then files the
+       * stint (with its years) on the holder and mints no team.
+       *
+       * EXACTLY one holder, never more: two teams answering to the name is a
+       * question only the operator can settle, so that still refuses, with
+       * the Team Management wording. Same sport only, by the index.
+       */
+      const createTeamsKept: typeof createTeams = [];
+      const linkTeams: Array<{ sourceName: string; teamId: Id<"teams"> }> = [];
       for (const entry of createTeams) {
-        await assertNameNotAnotherTeamsAlias(ctx, {
+        const holders = await findAliasHoldersOfName(ctx, {
           sportId: row.sportId,
           fullName: teamFullName(entry),
         });
+        if (holders.length === 1) {
+          linkTeams.push({ sourceName: entry.sourceName, teamId: holders[0]._id });
+          continue;
+        }
+        if (holders.length > 1) {
+          await assertNameNotAnotherTeamsAlias(ctx, {
+            sportId: row.sportId,
+            fullName: teamFullName(entry),
+          });
+        }
+        createTeamsKept.push(entry);
       }
       await ctx.db.patch(args.reviewRowId, {
         decision: {
@@ -2762,7 +2794,8 @@ export const recordDecision = mutation({
           ...(manualCareerTeams.length ? { manualCareerTeams } : {}),
           ...(excludedCareerTeamNames.length ? { excludedCareerTeamNames } : {}),
           ...(create ? { create } : {}),
-          ...(createTeams.length ? { createTeams } : {}),
+          ...(createTeamsKept.length ? { createTeams: createTeamsKept } : {}),
+          ...(linkTeams.length ? { linkTeams } : {}),
           ...(createLeague ? { createLeague } : {}),
         },
         lastTouchedAt: Date.now(),

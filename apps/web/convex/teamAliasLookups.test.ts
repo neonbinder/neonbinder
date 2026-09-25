@@ -1395,24 +1395,31 @@ describe("NEO-307: recordDecision refuses a create that breaks the alias rule", 
     expect((await t.run((ctx) => ctx.db.get(rowId)))!.decision).toBeUndefined();
   });
 
-  test("the legacy per-career-team creates on a PLAYER row obey the reverse rule too", async () => {
+  test("the legacy per-career-team creates on a PLAYER row: one alias holder becomes a LINK, not a refusal", async () => {
+    // Was a refusal until Jason's call later in NEO-307: a career team is a
+    // stint the player already has, so a name exactly one team answers to
+    // links to that team and the player decision saves. Several holders still
+    // refuse — see commitCardChecklist.careerTeamRows.test.ts for both, end to
+    // end through the commit.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const sportId = await seedSport(t);
-    await insertTeamWithAliases(t, sportId, {
+    const la = await insertTeamWithAliases(t, sportId, {
       location: "Los Angeles",
       name: "Dodgers",
       aliases: ["Brooklyn Dodgers"],
     });
     const rowId = await teamRow(t, sportId, "Pee Wee Reese", "player");
 
-    await expect(
-      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
-        reviewRowId: rowId,
-        action: "create",
-        createTeams: [{ sourceName: "Brooklyn Dodgers", location: "Brooklyn", name: "Dodgers" }],
-      }),
-    ).rejects.toThrow(/Los Angeles Dodgers already answers to this name as an alias/);
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      createTeams: [{ sourceName: "Brooklyn Dodgers", location: "Brooklyn", name: "Dodgers" }],
+    });
+    expect((await t.run((ctx) => ctx.db.get(rowId)))!.decision).toEqual({
+      action: "create",
+      linkTeams: [{ sourceName: "Brooklyn Dodgers", teamId: la }],
+    });
   });
 });
 

@@ -15484,6 +15484,22 @@ export const commitCardChecklistPrelude = internalMutation({
           });
         }
       }
+      /*
+       * NEO-307 — career-team creates `recordDecision` turned into links:
+       * exactly one other team holds the label's composed name as an alias,
+       * so no team may be created under it, and the operator's answer is
+       * taken to mean that team. By id, first occurrence wins (the same rule
+       * as `careerTeamCreateBySource`).
+       */
+      const careerTeamLinkBySource = new Map<string, Id<"teams">>();
+      if (decision.action === "create") {
+        for (const entry of decision.linkTeams ?? []) {
+          const key = norm(entry.sourceName);
+          if (!careerTeamLinkBySource.has(key)) {
+            careerTeamLinkBySource.set(key, entry.teamId);
+          }
+        }
+      }
       const resolveCareerTeamId = async (
         label: string,
         /**
@@ -15502,6 +15518,14 @@ export const commitCardChecklistPrelude = internalMutation({
         // by linking to a differently-named row, is unreachable by matching.
         const answered = stagedTeamIdByLabel.get(norm(label));
         if (answered) return answered;
+        // NEO-307: the operator's answer by id, re-validated the way a link
+        // decision is — a team deleted or moved to another sport since the
+        // decision leaves the label to the ordinary path below.
+        const linkedId = careerTeamLinkBySource.get(norm(label));
+        if (linkedId) {
+          const linked = await ctx.db.get(linkedId);
+          if (linked && linked.sportId === args.sportId) return linkedId;
+        }
         const matched = await resolveTeamIdByName(label, stintYear);
         if (matched) return matched;
         const create = careerTeamCreateBySource.get(norm(label));

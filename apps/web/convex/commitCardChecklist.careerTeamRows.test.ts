@@ -1124,3 +1124,210 @@ describe("NEO-307: a commit never files a stint under a team that had folded", (
     await cancelScheduled(t);
   });
 });
+
+// ===========================================================================
+// NEO-307 — a career-team create whose name exactly one team holds as an
+// alias becomes a link to that team (Jason's call), never a refusal
+// ===========================================================================
+
+describe("NEO-307: a career team held as an alias by ONE team links to it, and the player saves", () => {
+  /** A team plus its alias index rows, as `syncTeamAliases` would leave them. */
+  async function insertAliasedTeam(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    opts: { location: string; name: string; aliases?: string[]; from?: number },
+  ): Promise<Id<"teams">> {
+    return t.run(async (ctx) => {
+      const id = await ctx.db.insert("teams", {
+        location: opts.location,
+        name: opts.name,
+        nameNormalized: normalizeTeamName(`${opts.location} ${opts.name}`),
+        sportId,
+        ...(opts.aliases?.length ? { aliases: opts.aliases } : {}),
+        ...(opts.from !== undefined ? { yearsActive: { from: opts.from } } : {}),
+        lastUpdated: Date.now(),
+      });
+      for (const alias of opts.aliases ?? []) {
+        await ctx.db.insert("teamAliases", {
+          teamId: id,
+          sportId,
+          aliasNormalized: normalizeTeamName(alias),
+        });
+      }
+      return id;
+    });
+  }
+
+  /** Pee Wee Reese, whose Wikidata career is one Brooklyn Dodgers stint. */
+  async function reeseRow(
+    t: ReturnType<typeof convexTest>,
+    variantTypeId: Id<"selectorOptions">,
+    sportId: Id<"selectorOptions">,
+  ) {
+    return insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "player",
+      name: "Pee Wee Reese",
+      // `recordDecision` is called for real here, so the row must belong to
+      // the calling operator.
+      createdByUserId: ADMIN_IDENTITY.subject,
+      enrichment: {
+        careerTeams: [{ name: "Brooklyn Dodgers", fromYear: 1940, toYear: 1957 }],
+      },
+    });
+  }
+
+  const BROOKLYN_CREATE = [
+    { sourceName: "Brooklyn Dodgers", location: "Brooklyn", name: "Dodgers" },
+  ];
+
+  const commitReese = (
+    asAdmin: ReturnType<ReturnType<typeof convexTest>["withIdentity"]>,
+    variantTypeId: Id<"selectorOptions">,
+    sportId: Id<"selectorOptions">,
+  ) =>
+    asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardName: "Pee Wee Reese", players: ["Pee Wee Reese"] })],
+      batchId: BATCH,
+    });
+
+  test("ONE holder: the decision saves as a link, the stint lands on the holder with its years, and no team is inserted", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+    const la = await insertAliasedTeam(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+      from: 1958,
+    });
+    const rowId = await reeseRow(t, variantTypeId, sportId);
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      createTeams: BROOKLYN_CREATE,
+    });
+    const decided = await t.run((ctx) => ctx.db.get(rowId));
+    expect(decided!.decision).toEqual({
+      action: "create",
+      linkTeams: [{ sourceName: "Brooklyn Dodgers", teamId: la }],
+    });
+
+    await commitReese(asAdmin, variantTypeId, sportId);
+
+    const teams = await allTeams(t);
+    expect(teams.map((row) => row._id)).toEqual([la]);
+    const player = await playerNamed(t, "Pee Wee Reese");
+    // A 1940 stint cannot resolve to a 1958– row by name (a stint never shows
+    // a team's past), so this can only have come through the link.
+    expect(player!.teamYears).toEqual([{ teamId: la, fromYear: 1940, toYear: 1957 }]);
+    await cancelScheduled(t);
+  });
+
+  test("TWO holders: still refused — never guess between them — and nothing is recorded", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+    await insertAliasedTeam(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+    });
+    await insertAliasedTeam(t, sportId, {
+      location: "Brooklyn",
+      name: "Robins",
+      aliases: ["Brooklyn Dodgers"],
+    });
+    const rowId = await reeseRow(t, variantTypeId, sportId);
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        createTeams: BROOKLYN_CREATE,
+      }),
+    ).rejects.toThrow(/already answers to this name as an alias/);
+    expect((await t.run((ctx) => ctx.db.get(rowId)))!.decision).toBeUndefined();
+  });
+
+  test("an NFL holder does not count for baseball: the create stays a create and makes the baseball team", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+    const football = await t.run((ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Football",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const yanks = await insertAliasedTeam(t, football, {
+      location: "Boston",
+      name: "Yanks",
+      aliases: ["Brooklyn Dodgers"],
+    });
+    const rowId = await reeseRow(t, variantTypeId, sportId);
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      createTeams: BROOKLYN_CREATE,
+    });
+    expect((await t.run((ctx) => ctx.db.get(rowId)))!.decision).toEqual({
+      action: "create",
+      createTeams: BROOKLYN_CREATE,
+    });
+
+    await commitReese(asAdmin, variantTypeId, sportId);
+    const baseballTeams = (await allTeams(t)).filter((row) => row.sportId === sportId);
+    expect(baseballTeams.map((row) => `${row.location} ${row.name}`)).toEqual([
+      "Brooklyn Dodgers",
+    ]);
+    const player = await playerNamed(t, "Pee Wee Reese");
+    expect(player!.teamYears).toEqual([
+      { teamId: baseballTeams[0]._id, fromYear: 1940, toYear: 1957 },
+    ]);
+    expect((await t.run((ctx) => ctx.db.get(yanks)))!.aliases).toEqual(["Brooklyn Dodgers"]);
+    await cancelScheduled(t);
+  });
+
+  test("a linked holder deleted before the commit mints nothing: the stint is left off, the commit still lands", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+    const la = await insertAliasedTeam(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+      from: 1958,
+    });
+    const rowId = await reeseRow(t, variantTypeId, sportId);
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      createTeams: BROOKLYN_CREATE,
+    });
+    await t.run(async (ctx) => {
+      for (const alias of await ctx.db
+        .query("teamAliases")
+        .withIndex("by_team_id", (q) => q.eq("teamId", la))
+        .collect()) {
+        await ctx.db.delete(alias._id);
+      }
+      await ctx.db.delete(la);
+    });
+
+    const result = await commitReese(asAdmin, variantTypeId, sportId);
+    expect(result.success).toBe(true);
+    expect(await allTeams(t)).toEqual([]);
+    const player = await playerNamed(t, "Pee Wee Reese");
+    expect(player!.teamYears ?? []).toEqual([]);
+    await cancelScheduled(t);
+  });
+});
