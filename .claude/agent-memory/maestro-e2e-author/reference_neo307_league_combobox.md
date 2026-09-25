@@ -74,3 +74,12 @@ negative lookahead. Cached Wikidata career stints (for sizing an era so the
 strict stint resolver stages nothing) are in
 `convex/adapters/__fixtures__/enrichment-lookups.json`. Worked example: the
 alias flow's R2(h).
+
+**Team Management Franchise field (same ticket).** It is the same combobox:
+`id: "Franchise"` (the `team-franchise` id is on the wrapper). It rests on
+"No franchise" or the thread's name. `Start “<typed>”` appears only when
+nothing matches, and picking it starts the thread without saving the team.
+The status line "Started the X franchise. Save the team to put it on there."
+renders UNDER the Save row, so read it after centring Save. That line is the
+decisive check: a box read-back cannot tell a landed pick from a missed tap
+that left the typing in place. Worked example: `admin/admin-franchises-link-teams.yaml`.
