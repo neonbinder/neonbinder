@@ -112,4 +112,25 @@ describe("Maestro flow names are usable as artifact paths", () => {
         : "",
     ).toEqual([]);
   });
+
+  /**
+   * NEO-306: Linux refuses a path COMPONENT over 255 bytes (NAME_MAX), and
+   * Maestro's debug reporter creates the flow's directory before running a
+   * single command. A 417-byte name ("—" and "…" are 3 bytes each) failed
+   * the flow with `FileSystemException: File name too long` and no
+   * screenshot, a whole CI round trip to learn it. Bytes, not characters.
+   */
+  test("no flow name is longer than a directory name can be", () => {
+    const NAME_MAX_BYTES = 255;
+    const offenders = flowNames()
+      .map(({ rel, name }) => ({ rel, bytes: Buffer.byteLength(name, "utf8") }))
+      .filter(({ bytes }) => bytes > NAME_MAX_BYTES);
+
+    expect(
+      offenders,
+      offenders
+        .map((o) => `  ${o.rel}: ${o.bytes} bytes (max ${NAME_MAX_BYTES})`)
+        .join("\n"),
+    ).toEqual([]);
+  });
 });

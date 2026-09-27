@@ -341,6 +341,13 @@ in `admin/player-live-wikidata-enrichment.yaml` (NEO-289, see "Enrichment
 fixtures"), recorded at the site. A slow non-marketplace response
 is a product finding to raise, never a timeout to inflate.
 
+**A multi-transaction NB write is not an exception.** An action that saves in
+chunks (the SportLots review's save, a reconcile store replayed to completion)
+is still our own server answering a user, so it gets 7000 like any mutation;
+only a live marketplace round-trip earns a longer wait. Jason, 2026-09-25: "A
+real user will never wait 30 seconds." A save that misses 7000 is a product
+finding (make the save faster), never a bigger number.
+
 **`flows/setup.yaml` is exempt as a class, and that is not a loophole.** R5
 already names "the setup track's cold sync" as a sanctioned exception, and the
 seed is the one flow that reseeds from empty — so every step in it runs the COLD
@@ -362,7 +369,8 @@ completed at 19:37:50 and the button "had still not flipped" fourteen seconds
 later — is wrong, and both failure hierarchy dumps disprove it. Each shows root
 bounds `[0,-680][1009,625]`, i.e. the page pinned at MAXIMUM SCROLL, with
 `Set attributes panel` as the first thing on screen at y=49 and its
-`Clear base set from Base` control present: the mapping had landed, the button
+`Clear base set from Base` control present (a control NEO-306 has since
+retired; a base row now carries only its `Base set` tag): the mapping had landed, the button
 read `Re-map Base`, and it was simply ABOVE the top of the viewport. The step
 scrolls DOWN, and `scrollUntilVisible` with `direction: DOWN` only ever travels
 away from an anchor that sits above the current position — so it burned all

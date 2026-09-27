@@ -408,7 +408,9 @@ describe("createSetsFromSlRoots — idempotent across syncs", () => {
       { id: "503", label: "Heritage Minors" },
     ];
 
-    // Sync 1: the classifier sees nothing covered; the root is written.
+    // Sync 1: the classifier sees nothing covered; both names are review
+    // entries (NEO-306 flattens them) and the operator files "Heritage" as
+    // its own set.
     const first = routeSlSets({
       entries,
       coveredSlIds: new Set(
@@ -421,12 +423,12 @@ describe("createSetsFromSlRoots — idempotent across syncs", () => {
       knownSetNameKeys: new Set(),
       scopePrefix: "Topps",
     });
-    expect(first.roots.map((r) => r.id)).toEqual(["502"]);
-    await create(t, topps, first.roots.map(({ id, label }) => ({ id, label })));
+    expect(first.entries.map((r) => r.id)).toEqual(["502", "503"]);
+    await create(t, topps, [first.entries[0]]);
     const afterFirst = await rowCount(t);
 
     // Sync 2: the same list. The brand subtree now holds "502" on the Base;
-    // "503" is the new set's variant (prefix of a known name). Zero roots.
+    // "503" is the new set's variant (prefix of a known name). Zero entries.
     const covered = await t.query(internal.selectorOptions.listBrandSubtreeSlIds, {
       manufacturerId: topps,
     });
@@ -439,7 +441,7 @@ describe("createSetsFromSlRoots — idempotent across syncs", () => {
     });
     expect(second.covered).toBe(1);
     expect(second.variants).toBe(1);
-    expect(second.roots).toEqual([]);
+    expect(second.entries).toEqual([]);
     expect(await rowCount(t)).toBe(afterFirst);
   });
 
@@ -484,8 +486,9 @@ type ScopeBudget = { overBudget: boolean };
  * of `MAX_SL_SETS_PER_MUTATION`, one call each, counts summed, stopping at a
  * truncated index — and, once truncated, not calling again at all, because
  * the index is YEAR-wide and each call rebuilds it (≤ `MAX_YEAR_SET_ROWS`
- * reads) only to report the same truncation. Mirrors `writeRoots` /
- * `classify` in `syncSetsAcrossManufacturers`.
+ * reads) only to report the same truncation. Mirrors phase 1 of
+ * `applySlSetReviewImpl` (slSetReview.ts), which took this loop over from
+ * `syncSetsAcrossManufacturers` in NEO-306.
  */
 async function createChunked(
   t: T,
@@ -648,8 +651,8 @@ describe("createSetsFromSlRoots — the per-call cap, and the chunking above it"
       knownSetNameKeys: new Set(),
       scopePrefix: "Topps",
     });
-    expect(plan.roots.map((r) => r.label)).toEqual(["Finest", "Gallery", "Heritage"]);
-    await create(t, topps, plan.roots.map(({ id, label }) => ({ id, label })));
+    expect(plan.entries.map((r) => r.label)).toEqual(["Finest", "Gallery", "Heritage"]);
+    await create(t, topps, plan.entries.map(({ id, label }) => ({ id, label })));
 
     const sets = await setsUnder(t, topps);
     const byCreation = [...sets].sort((a, b) => a._creationTime - b._creationTime);

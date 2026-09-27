@@ -2,7 +2,7 @@
 
 - [Eslint does not cover plain ts](reference_eslint_does_not_cover_plain_ts.md) — apps/web `npm run lint` visits no plain `.ts` file, so Convex adapters and lib/ are gated only by tsc + vitest
 - [Worktree node_modules linking](reference_worktree_node_modules_linking.md) — link-deps.sh checks the repo root, not apps/web; symlink main/apps/web/node_modules by hand after cmp on the lockfile
-- [Generated api.d.ts needs a hand edit in worktrees](reference_generated_api_needs_hand_edit_in_worktrees.md) — new convex module → add its two lines to `_generated/api.d.ts` when `npx convex codegen` has no CONVEX_DEPLOYMENT; V8 files cannot import "use node" files
+- [Generated api.d.ts needs a hand edit in worktrees](reference_generated_api_needs_hand_edit_in_worktrees.md) — add a new module's two lines by hand; an entry for a missing file typechecks green (skipLibCheck) and reads as any
 - [Narrowing a Convex validator is a runtime break](reference_narrowing_convex_validator_is_a_runtime_break.md) — tsc stays green; grep FE forwards of stored sub-objects (modal `metadata: r.metadata`) before narrowing
 - [Swept log markers are pinned](reference_swept_log_markers_are_pinned.md) — resolvabilityLogSafety.test.ts asserts exact skip/coverage log prefixes exist; keep the marker text, append detail after it
 - [PRODUCT BUG tests are fix requests](feedback_product_bug_tests_are_fix_requests.md) — a red test titled "PRODUCT BUG (file:line)" is a fix for the file owner; run untracked sibling tests in the fast gate, never edit the test
@@ -13,8 +13,7 @@
 - [Sync action `message` is log-only](reference_sync_action_message_is_log_only.md) — legacy *Form components render it but `useEnsureSync` columns never mount them; the status row is the only surface
 - [Marketplace bucket words leak into set names](reference_marketplace_bucket_words_leak_into_set_names.md) — "Other ONIT Athlete …" is stored as the NB name; start-anchored matchers miss it; fix at the adapter boundary, never widen the matcher
 - [Convex op budget: count writes, not items](reference_convex_op_budget_count_writes_not_items.md) — count ops at the call sites; budgeting writes makes a truncated call finishable by replaying the same list; a shared dry run must pay the write cost
-- [Stub ctx for an action's write failures](reference_action_impl_stub_ctx_for_write_failures.md) — export a plain *Impl + Pick<ActionCtx> stub; convex-test can't make an OCC conflict; adapters are no-throw, so a throwing fetch stub never reaches a catch (Wikidata pool items throw via LookupTrace since NEO-301)
+- [Stub ctx for an action's write failures](reference_action_impl_stub_ctx_for_write_failures.md) — plain *Impl + Pick<ActionCtx> stub; forward to t.query/t.mutation and throw on the Nth chunk for resume tests; adapters are no-throw
 - [Workpool retry semantics](reference_workpool_retry_semantics.md) — every throw retries unless NonRetryableError; onComplete only after the final attempt; error arrives as a string
 - [Convex test files are not typechecked](reference_convex_test_files_are_not_typechecked.md) — convex tsconfig excludes *.test.ts and eslint skips .ts; typecheck new tests with a scratch tsconfig
 - [Store loops fall through to insert](reference_store_loops_fall_through_to_insert.md) — a new MatchOutcome kind becomes a NEW ROW in both stores until each gets an explicit branch
-- [Stub ctx for an action's write failures](reference_action_impl_stub_ctx_for_write_failures.md) — export a plain *Impl + Pick<ActionCtx> stub; convex-test can't make an OCC conflict; adapters are no-throw, so a throwing fetch stub never reaches a catch

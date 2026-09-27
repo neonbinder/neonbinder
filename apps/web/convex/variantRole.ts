@@ -17,20 +17,21 @@
  * it are. So the flags are DERIVED here, once, at creation, and the box is
  * gone.
  *
- * ## Why the parent's role comes from a marketplace ID and never its name
+ * ## Where the parent's role comes from
  *
  * The invariant (CLAUDE.md, "Product invariant") allows exactly one
  * direction: a row may be derived from marketplace data when it is CREATED.
- * `metadata.isBase` is conferred that way — from BSC's own `base` variant id,
- * read out of the row's `variant`-tagged BSC slot by the sync that wrote it
- * (`syncWrittenBscFacet`, and the NEO-239 backfill for older rows). This
- * module reads the same slot for the other two roles, with the same token
- * rule (`isBscInsertVariantId` / `isBscParallelVariantId` beside
- * `isBscBaseVariantId` in bscFacets.ts). It never reads `row.value`: a
- * variant type called "Parallel" by an operator with no marketplace ids is a
- * row called "Parallel", and its children get no flag. That is the
- * fail-closed answer the invariant asks for, and the operator's per-row
- * attributes panel still shows what the derivation produced.
+ * `metadata.isBase` (NEO-239) and, since NEO-306, `metadata.variantRole` are
+ * conferred that way: the sync that writes a variantType row reads BSC's own
+ * id out of the row's `variant`-tagged BSC slot ONCE (`bscVariantEvidence`,
+ * with the token rule of `isBscInsertVariantId` / `isBscParallelVariantId` /
+ * `isBscBaseVariantId` in bscFacets.ts) and records the answer as an NB flag;
+ * the armed `backfillVariantTypeRole` does the same for older rows. From then
+ * on `variantTypeRole` reads the flag and nothing else: until NEO-306 it
+ * re-read the BSC slot at runtime, which keyed NB behaviour on a marketplace
+ * value every time a child was created. It never reads `row.value`: a variant
+ * type called "Parallel" by an operator is a row called "Parallel", and its
+ * children get no flag.
  *
  * ## Pure on purpose
  *
@@ -51,9 +52,65 @@ export type VariantTypeRole = "base" | "insert" | "parallel";
  * subset of `Doc<"selectorOptions">`, so a fetched row passes as-is; typed
  * loosely so the tests can hand it a literal.
  */
-export type VariantRoleRow = Pick<SlotBearingRow, "platformData" | "platformFacets"> & {
-  metadata?: { isBase?: boolean } | undefined;
+export type VariantRoleRow = {
+  metadata?:
+    | { isBase?: boolean; variantRole?: "insert" | "parallel" }
+    | undefined;
 };
+
+/**
+ * What `bscVariantEvidence` reads: the row's BSC slots and their facet tags.
+ * Structurally a subset of `Doc<"selectorOptions">`, or of the row a store is
+ * about to insert (its allocated `platformData` plus the tagged facets).
+ */
+export type VariantEvidenceRow = Pick<SlotBearingRow, "platformData" | "platformFacets">;
+
+/**
+ * What the ids in a row's `variant`-tagged BSC slots say it is: `"insert"`,
+ * `"parallel"`, `"ambiguous"` (an id carrying both tokens, or two tagged
+ * slots that disagree) or `undefined` (no tagged slot, or tagged ids that
+ * name neither role, e.g. BSC's `base` or `promo`).
+ *
+ * WRITE TIME ONLY (NEO-306). The conferral in both stores and the backfill
+ * call it to decide `metadata.variantRole` once; no runtime reader may, which
+ * is why `variantTypeRole` below does not. Fail-closed: `"ambiguous"` and
+ * `undefined` write nothing. An untagged legacy slot or a `setName`-tagged
+ * extra is no evidence, so a row whose slots were never tagged `variant`
+ * needs `backfillVariantFacetAndBaseRole` first.
+ */
+export function bscVariantEvidence(
+  row: VariantEvidenceRow | null | undefined,
+): "insert" | "parallel" | "ambiguous" | undefined {
+  if (!row) return undefined;
+  let sawInsert = false;
+  let sawParallel = false;
+  for (const { slot, id } of slotEntries(row, "bsc")) {
+    if (slotFacet(row, "bsc", slot) !== "variant") continue;
+    if (isBscInsertVariantId(id)) sawInsert = true;
+    if (isBscParallelVariantId(id)) sawParallel = true;
+  }
+  if (sawInsert && sawParallel) return "ambiguous";
+  if (sawInsert) return "insert";
+  if (sawParallel) return "parallel";
+  return undefined;
+}
+
+/**
+ * The `variantRole` a sync may ADD to a variantType row's metadata, or
+ * `undefined` when it must add nothing: the row already carries a role, is
+ * the Base, or its tagged BSC slots give no single answer. The one guard both
+ * stores' patch and insert sites and the backfill share, so they cannot
+ * decide differently.
+ */
+export function conferredVariantRole(
+  metadata: { isBase?: boolean; variantRole?: string } | undefined,
+  evidenceRow: VariantEvidenceRow | null | undefined,
+): "insert" | "parallel" | undefined {
+  if (metadata?.variantRole !== undefined) return undefined;
+  if (metadata?.isBase === true) return undefined;
+  const evidence = bscVariantEvidence(evidenceRow);
+  return evidence === "insert" || evidence === "parallel" ? evidence : undefined;
+}
 
 /**
  * The flags a fresh row beneath a variant type is born with. Absent means
@@ -64,34 +121,20 @@ export type DerivedVariantFlags = { isInsert?: true; isParallel?: true };
 
 /**
  * The role of a variant-type row: `"base"` when NB has said so
- * (`metadata.isBase`), else whatever the id in the row's `variant`-tagged
- * BSC slot says, else `undefined`.
+ * (`metadata.isBase`), else NB's `metadata.variantRole`, else `undefined`.
  *
- * Fail-closed at every step. No tagged slot — an untagged legacy slot, a row
- * with no BSC ids, or a `setName`-tagged extra — is no evidence. An id that
- * carries both the `insert` and `parallel` tokens, or two tagged slots that
- * disagree, is no evidence either: a guess here would put the wrong
- * `cardType` on every card created under the row, silently.
+ * Flags only (NEO-306). No marketplace id is read here: the BSC slot was read
+ * once, when the flag was conferred. A row with no flag has no role and the
+ * rows beneath it get no insert/parallel flag, which is the fail-closed
+ * answer — a guess would put the wrong `cardType` on every card created
+ * under the row, silently.
  */
 export function variantTypeRole(
   row: VariantRoleRow | null | undefined,
 ): VariantTypeRole | undefined {
   if (!row) return undefined;
   if (row.metadata?.isBase === true) return "base";
-
-  let sawInsert = false;
-  let sawParallel = false;
-  let sawTagged = false;
-  for (const { slot, id } of slotEntries(row, "bsc")) {
-    if (slotFacet(row, "bsc", slot) !== "variant") continue;
-    sawTagged = true;
-    if (isBscInsertVariantId(id)) sawInsert = true;
-    if (isBscParallelVariantId(id)) sawParallel = true;
-  }
-  if (!sawTagged) return undefined;
-  if (sawInsert && !sawParallel) return "insert";
-  if (sawParallel && !sawInsert) return "parallel";
-  return undefined;
+  return row.metadata?.variantRole;
 }
 
 /**

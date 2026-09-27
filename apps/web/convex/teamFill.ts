@@ -556,7 +556,7 @@ async function computeTeamFillPlan(
     });
   }
   // The base checklist, by ROLE. Exactly one flagged variantType is the
-  // normal shape (`setBaseVariantType` clears the siblings); none means a set
+  // normal shape (`setBaseVariantType` refuses a second one); none means a set
   // that has not been told which is its base, and tier 3 is skipped rather
   // than guessed. More than one is a data fault, and guessing between them
   // would be a fill from the wrong checklist — skipped the same way.

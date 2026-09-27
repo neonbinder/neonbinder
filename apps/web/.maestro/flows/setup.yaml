@@ -1694,7 +1694,8 @@ tags:
 # 29 ElementNotFound retries. Both failure hierarchy dumps show root bounds
 # [0,-680][1009,625] (maximum scroll) with `Set attributes panel` — the panel
 # BELOW this button — as the first thing on screen at y=49, and the panel
-# carrying "Clear base set from Base", i.e. the mapping this step waits for had
+# carrying "Clear base set from Base" (a control NEO-306 retired: a base row
+# now shows only its "Base set" tag), i.e. the mapping this step waits for had
 # already landed. The button was rendered the whole time; DOWN simply could
 # not reach it.
 #

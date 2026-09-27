@@ -186,6 +186,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
     fields: ["sportId"],
     handling: "sport-level only. Untouched",
   },
+  slSetReviews: {
+    fields: ["yearId", "manufacturerId"],
+    handling:
+      "year- and brand-level only (NEO-306); a subtree row is never a year or a brand. Untouched",
+  },
 } as const;
 
 /** The tables this wipe deletes rows from. */

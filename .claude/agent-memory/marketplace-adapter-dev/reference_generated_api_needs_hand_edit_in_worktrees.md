@@ -19,6 +19,12 @@ coordinator's `convex dev`/deploy will regenerate identically. Bundle-check a
 JSON or cross-runtime import with `node_modules/.bin/esbuild <file> --bundle
 --platform=node|browser --external:convex` as a proxy for the Convex bundler.
 
+**The reverse is silent.** `api.d.ts` is a `.d.ts` and the convex tsconfig
+sets `skipLibCheck`, so an entry whose module file does NOT exist yet (or was
+deleted) typechecks green and every `internal.<module>.x` through it is `any`.
+Typecheck proves nothing about a reference to a module you are about to
+write; re-run it after the file exists.
+
 Related house rule: a V8 module (no `"use node"`) cannot import a `"use node"`
 module, so validators shared between the node adapter and a V8 action file
 live in a pure module (e.g. `adapters/enrichmentFixtures.ts`) and the V8 side

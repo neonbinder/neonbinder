@@ -5,6 +5,8 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
+import { FolderArrowDownIcon } from "@heroicons/react/24/outline";
+import SetRowActionButton from "./SetRowActionButton";
 
 /**
  * NEO-294 — move this set under a different brand.
@@ -21,8 +23,8 @@ import { activateOnEnter } from "@/lib/dom/activate-on-enter";
  *
  * ## The shape
  *
- * A text button in the panel header (the "Fill teams" idiom — same weight,
- * same ring), which opens a LIST of the brands in this set's own year, Unknown
+ * A `SetRowActionButton` chip in the panel's "Set actions" row (NEO-306),
+ * which opens a LIST of the brands in this set's own year, Unknown
  * among them and the set's current brand left out. Picking one raises the
  * house `ConfirmDialog`, which names the destination and answers the question
  * the operator actually has — do my cards and my marketplace links come with
@@ -265,23 +267,21 @@ export default function MoveSetToBrandControl({
 
   return (
     <>
-      <button
+      <SetRowActionButton
         // A stable id so the E2E driver's `pressKey` can re-find this exact
-        // control; the header shares one text-button idiom across levels.
+        // control; the action row's chips share one class string.
         id="move-set-brand"
         ref={triggerRef}
-        type="button"
-        onClick={() => toggleList()}
-        // maestro-web's `pressKey: Enter` is a synthetic event with no default
-        // action, so a focused button is never clicked by it — anything a flow
-        // drives from the keyboard spells the activation out.
-        onKeyDown={(event) => activateOnEnter(event, toggleList, busy)}
+        icon={FolderArrowDownIcon}
+        // Enter is spelled out by the primitive (maestro-web's `pressKey` is
+        // synthetic), and swallowed while `busy`, as a click is.
+        onActivate={toggleList}
         aria-expanded={open}
         aria-controls={open ? listId : undefined}
-        // aria-disabled, never native `disabled`: this is the button the
-        // operator just pressed, and disabling it would blur focus to <body>.
-        aria-disabled={busy || undefined}
-        aria-busy={busy || undefined}
+        // aria-disabled + aria-busy (the primitive's `busy`), never native
+        // `disabled`: this is the button the operator just pressed, and
+        // disabling it would blur focus to <body>.
+        busy={busy}
         // NEO-294 (a11y) — the barrier has to cover the TRIGGER as well as
         // the list. Both are DOM siblings of the dialog, so `aria-modal`
         // alone hides neither: Tab cannot reach the trigger and the backdrop
@@ -292,19 +292,23 @@ export default function MoveSetToBrandControl({
         // `toggleList` for the second lock.
         inert={target !== null}
         title={MOVE_SET_TOOLTIP}
-        className="shrink-0 text-xs py-1.5 text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus-visible:ring-2 focus-visible:ring-[#00D558] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900 aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-400"
       >
         {MOVE_SET_LABEL}
-      </button>
+      </SetRowActionButton>
       {open && (
         <div
           id={listId}
           ref={listRef}
-          // Full width of the wrapping header row, so a year's worth of brands
+          // Full width of the wrapping action row, so a year's worth of brands
           // is a column rather than a wrapped ribbon of buttons.
+          // `order-last` (NEO-306): it drops BELOW every chip in the "Set
+          // actions" row instead of wedging in after this one — in flow, a
+          // full-width list would push "Make parallel of…" onto a new line,
+          // moving it out from under a pointer on its way there. The DOM order
+          // (and so the Tab order) is unchanged: trigger, then its list.
           // border-gray-500: the 3:1 boundary tone on this panel's surface;
           // gray-600 measures ~2.0:1 against gray-800 and fails SC 1.4.11.
-          className="w-full mt-1 rounded border border-gray-500 bg-gray-900/40 p-2"
+          className="order-last w-full mt-1 rounded border border-gray-500 bg-gray-900/40 p-2"
           // NEO-294 (a11y) — the list stays MOUNTED behind the confirm so
           // Cancel returns to the same open list rather than making the
           // operator find their brand again. Mounted is not the same as

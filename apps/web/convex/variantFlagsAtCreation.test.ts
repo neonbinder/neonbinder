@@ -41,8 +41,9 @@ const ADMIN_IDENTITY = {
 const SENTINEL = 1_000_000;
 
 /**
- * A variantType row whose `variant`-tagged BSC slot carries `role`'s token —
- * exactly the shape a real variantType sync writes (`syncWrittenBscFacet`).
+ * A variantType row whose `variant`-tagged BSC slot carries `role`'s token,
+ * with the NB role flag the sync confers from it (NEO-306) — exactly the
+ * shape a real variantType sync writes.
  */
 async function insertVariantType(
   t: ReturnType<typeof convexTest>,
@@ -57,6 +58,7 @@ async function insertVariantType(
       children: [],
       platformData: { bsc: { b0: role } },
       platformFacets: { bsc: { b0: "variant" } },
+      metadata: { variantRole: role },
       lastUpdated: SENTINEL,
     }),
   );

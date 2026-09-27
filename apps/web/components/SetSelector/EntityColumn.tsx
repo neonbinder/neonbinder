@@ -11,6 +11,8 @@ import SelectorSyncReviewModal, {
   type SelectorSyncSuggestion,
 } from "./SelectorSyncReviewModal";
 import SyncDoneNotice from "./SyncDoneNotice";
+import SlSetReviewPill from "./SlSetReviewPill";
+import SlSetReviewModal from "./SlSetReviewModal";
 import {
   buildUnlinkedNotices,
   levelLabelPlural,
@@ -297,6 +299,13 @@ export default function EntityColumn({
   // a11y: the pill the suggestions dialog was opened from, so focus comes back
   // to it on close rather than dropping to <body>.
   const suggestionsBtnRef = useRef<HTMLButtonElement | null>(null);
+  // NEO-306 — the SportLots-only review ("N SportLots sets to sort"). Held
+  // HERE, not in the pill, so the dialog survives the idle button row
+  // unmounting under it (a sync starting, the custom form opening) and a
+  // save in flight still reports back. The pill is the focus return target.
+  const [showSlReview, setShowSlReview] = useState(false);
+  const slReviewBtnRef = useRef<HTMLButtonElement | null>(null);
+  const slReviewToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // NEO-71-74 follow-up: always start false, regardless of this column's
   // isVisible prop at mount. Columns 6/7 (Variant / Variant of Variant) are
   // conditionally MOUNTED (not just conditionally rendered null like columns
@@ -343,6 +352,15 @@ export default function EntityColumn({
   // `items === []`, defined), so the backstop only ever fires on a genuine read
   // stall, never during an in-flight marketplace fetch. No-op for a level-less
   // column (query skipped → nothing to load).
+  // NEO-306 — the review's result toast owns a timer; never let it fire into
+  // an unmounted column.
+  useEffect(
+    () => () => {
+      if (slReviewToastTimerRef.current) clearTimeout(slReviewToastTimerRef.current);
+    },
+    [],
+  );
+
   useEffect(() => {
     onLoadingChange?.(!!level && items === undefined);
   }, [onLoadingChange, level, items]);
@@ -1276,6 +1294,22 @@ export default function EntityColumn({
       </button>
     ) : null;
 
+  // NEO-306 — the SportLots-only review is kept per BRAND, so its pill belongs
+  // to a Sets column scoped to one brand. `hideCustom` is how this column
+  // knows it is the All Brands VIEW over a year (its parent is the year), where
+  // there is no one brand to review.
+  const slReviewScope =
+    level === "setName" && parentId && !hideCustom ? parentId : undefined;
+
+  const showSlReviewToast = (text: string) => {
+    if (slReviewToastTimerRef.current) clearTimeout(slReviewToastTimerRef.current);
+    setToast(text);
+    slReviewToastTimerRef.current = setTimeout(() => {
+      slReviewToastTimerRef.current = null;
+      setToast(null);
+    }, 6000);
+  };
+
   // Sync and "+ Custom" get the same marker-class + explicit-Enter treatment as
   // the form's own buttons: they are identically-classed NeonButton siblings
   // too, and they are the gate a keyboard-only pass through the cascade has to
@@ -1304,6 +1338,13 @@ export default function EntityColumn({
         {/* After Sync, before "+ Custom", so `extraActions` ("Group Parallels")
             still sits last. */}
         {suggestionsPill}
+        {slReviewScope && (
+          <SlSetReviewPill
+            manufacturerId={slReviewScope}
+            buttonRef={slReviewBtnRef}
+            onOpen={() => setShowSlReview(true)}
+          />
+        )}
         {level && !hideCustom && (
           <NeonButton
             secondary
@@ -1443,6 +1484,22 @@ export default function EntityColumn({
           restoreFocusRef={suggestionsBtnRef}
           onClose={() => setShowSuggestions(false)}
           onConfirm={(result) => void handleApplySuggestions(result.decisions)}
+        />
+      )}
+
+      {showSlReview && slReviewScope && (
+        <SlSetReviewModal
+          // A different brand is a different review: never carry one brand's
+          // choices into another's.
+          key={slReviewScope}
+          manufacturerId={slReviewScope}
+          restoreFocusRef={slReviewBtnRef}
+          fallbackFocusRef={containerRef}
+          onClose={() => setShowSlReview(false)}
+          onSaved={(text) => {
+            setShowSlReview(false);
+            showSlReviewToast(text);
+          }}
         />
       )}
 

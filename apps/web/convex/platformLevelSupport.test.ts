@@ -566,7 +566,7 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
     expect(fetched.some((u) => u.includes("sportlots"))).toBe(false);
   });
 
-  test("a brand with its own SportLots id runs the SportLots phase: BSC sets filed by prefix, a SportLots-only set is CREATED with a Base carrying the SportLots id", async () => {
+  test("a brand with its own SportLots id runs the SportLots phase: BSC sets filed by prefix, SportLots-only names go to the review, and a saved one is a set with a Base carrying the SportLots id", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const { yearId } = await seedSportAndYear(t);
@@ -587,9 +587,8 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
         // "Topps Series 1" is the set BSC just filed under Topps (its
         // stripped label re-prefixed with Topps' own prefix equals the NB
         // name, so it is a variant of a known set, not a new one). "Topps
-        // Heritage" is SportLots-only: it becomes a set. "Topps Heritage
-        // Minors" shares its stem and is a member of that root, not a second
-        // set — the next sync files it as a variant of "Topps Heritage".
+        // Heritage" and "Topps Heritage Minors" are SportLots-only: each is
+        // a review entry (NEO-306), and nothing is minted by the sync.
         return htmlResponse(
           slSetListHtml([
             ["501", "Topps Series 1"],
@@ -619,9 +618,23 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
     // brand id, never by name.
     expect(fetched.some((u) => u.includes("dealsets.tpl"))).toBe(true);
 
-    // BSC's set is filed under Topps by prefix; the SportLots-only root is
-    // SAVED beside it under the brand's prefix + the stripped label, and
-    // its member ("Heritage Minors") is NOT a second set.
+    // BSC's set is filed under Topps by prefix; the SportLots-only names
+    // wait in Topps' review — the sync mints nothing.
+    expect((await setsUnder(t, topps)).map((r) => r.value)).toEqual([
+      "Topps Series 1",
+    ]);
+    expect(await reviewLabels(t, topps)).toEqual([
+      "502:Heritage",
+      "503:Heritage Minors",
+    ]);
+    expect(result.message).toContain("2 SportLots sets to sort");
+    expect(result.slPendingReview).toBe(2);
+
+    // The operator saves "Heritage" as its own set: it is filed beside BSC's
+    // under the brand's prefix + the stripped label.
+    const saved = await saveReviewAsSets(t, topps, ["502"]);
+    expect(saved.sets).toBe(1);
+    expect(saved.remaining).toBe(1);
     const toppsSets = await setsUnder(t, topps);
     expect(toppsSets.map((r) => r.value).sort()).toEqual([
       "Topps Heritage",
@@ -642,7 +655,6 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
     expect(heritageVariants[0].metadata?.isBase).toBe(true);
     expect(heritageVariants[0].platformData.sportlots).toEqual({ s0: "502" });
     expect(heritage.children).toEqual([heritageVariants[0]._id]);
-    expect(result.message).toContain("1 set added from SportLots");
 
     // No row was minted for a brand NB has not identified: every BSC set
     // matched a brand, so the year has no Unknown row.
@@ -716,7 +728,11 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
     expect(fetched.some((u) => u.includes("buysportscards"))).toBe(false);
     expect(fetched.some((u) => u.includes("dealsets.tpl"))).toBe(true);
 
-    // The SportLots-only set is saved under the brand's prefix + label.
+    // The SportLots-only name waits in the review; saved, it is a set under
+    // the brand's prefix + label.
+    expect(await setsUnder(t, score)).toEqual([]);
+    expect(await reviewLabels(t, score)).toEqual(["701:Board"]);
+    await saveReviewAsSets(t, score);
     const scoreSets = await setsUnder(t, score);
     expect(scoreSets.map((r) => r.value)).toEqual(["Score Board"]);
     const [base] = await variantsUnder(t, scoreSets[0]._id);
@@ -778,8 +794,19 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
     expect(fetched.filter((u) => u.includes("dealsets.tpl"))).toHaveLength(1);
 
     // Bandai sees only its prefix's sets, stripped, by whole word: "Bandaids"
-    // is not "Bandai " and stays out. The set is filed as prefix + label
-    // ("Bandai Carddass") with its Base carrying the SportLots id.
+    // is not "Bandai " and stays out. Unknown sees the rest, unstripped.
+    // Each brand's names wait in its OWN review (one doc per brand).
+    expect(await reviewLabels(t, bandai)).toEqual(["801:Carddass"]);
+    expect(await reviewLabels(t, unknown)).toEqual([
+      "802:Bandaids Promo",
+      "803:Roanoke Express ECHL",
+    ]);
+    expect(result.message).toContain("3 SportLots sets to sort");
+    await saveReviewAsSets(t, bandai);
+    await saveReviewAsSets(t, unknown);
+
+    // Saved, the set is filed as prefix + label ("Bandai Carddass") with its
+    // Base carrying the SportLots id.
     const bandaiSets = await setsUnder(t, bandai);
     expect(bandaiSets.map((r) => r.value)).toEqual(["Bandai Carddass"]);
     const [bandaiBase] = await variantsUnder(t, bandaiSets[0]._id);
@@ -799,14 +826,14 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
       }),
     );
     expect(unknownSlIds.sort()).toEqual(["802", "803"]);
-    expect(result.message).toContain("3 sets added from SportLots");
   });
 
-  test("a second sync over the same SportLots list creates nothing: the ids on the new Bases are covered", async () => {
-    // Idempotency at the action door. Sync 1 mints the set + Base; sync 2
-    // reads the SportLots id off that Base (`listBrandSubtreeSlIds`) and
-    // `routeSlSets` files the entry as covered before it can reach the
-    // writer. Its longer sibling is a variant of the set that now exists.
+  test("a second sync over the same SportLots list offers nothing: the ids on the saved Bases are covered", async () => {
+    // Idempotency at the action door. Sync 1 writes the review; the save
+    // mints the set + Base; sync 2 reads the SportLots id off that Base
+    // (`listBrandSubtreeSlIds`) and `routeSlSets` files the entry as covered.
+    // Its longer sibling is a variant of the set that now exists, so the
+    // review empties and its doc goes.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const { yearId } = await seedSportAndYear(t);
@@ -845,7 +872,8 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
       { yearId, manufacturerId: topps },
     );
     expect(first.success).toBe(true);
-    expect(first.message).toContain("1 set added from SportLots");
+    expect(first.message).toContain("2 SportLots sets to sort");
+    await saveReviewAsSets(t, topps, ["502"]);
     const afterFirst = await t.run(async (ctx) =>
       (await ctx.db.query("selectorOptions").collect()).length,
     );
@@ -856,9 +884,11 @@ describe("syncSetsAcrossManufacturers reports each side for what it was (NEO-216
     );
     expect(second.success).toBe(true);
     expect(second.failedPlatforms).toEqual([]);
-    expect(second.message).toContain("0 sets added from SportLots");
-    // Not a clash either — the entry never reached the writer.
-    expect(second.message).not.toContain("already had a set by that name");
+    expect(second.message).toContain("0 SportLots sets to sort");
+    expect(await reviewLabels(t, topps)).toEqual([]);
+    expect(
+      await t.run(async (ctx) => ctx.db.query("slSetReviews").collect()),
+    ).toEqual([]);
     const afterSecond = await t.run(async (ctx) =>
       (await ctx.db.query("selectorOptions").collect()).length,
     );
@@ -898,6 +928,41 @@ async function insertSet(
     await ctx.db.patch(parentId, { children: [...(parent?.children ?? []), id] });
     return id;
   });
+}
+
+/**
+ * NEO-306 — Sync Sets no longer mints SportLots-only sets: it writes them
+ * into the brand's review, and the review's save files them. This reads the
+ * review and saves the chosen entries (all of them by default) as their own
+ * sets — what the operator does by pressing Save with every row at its
+ * default. Returns the save's counts.
+ */
+async function saveReviewAsSets(
+  t: ReturnType<typeof convexTest>,
+  manufacturerId: Id<"selectorOptions">,
+  only?: string[],
+) {
+  const asAdmin = t.withIdentity(ADMIN);
+  const review = await asAdmin.query(api.slSetReview.getSlSetReview, {
+    manufacturerId,
+  });
+  const entries = (review?.entries ?? []).filter(
+    (e) => !only || only.includes(e.slId),
+  );
+  return asAdmin.action(api.slSetReview.applySlSetReview, {
+    manufacturerId,
+    decisions: entries.map((e) => ({ slId: e.slId })),
+  });
+}
+
+async function reviewLabels(
+  t: ReturnType<typeof convexTest>,
+  manufacturerId: Id<"selectorOptions">,
+) {
+  const review = await t
+    .withIdentity(ADMIN)
+    .query(api.slSetReview.getSlSetReview, { manufacturerId });
+  return (review?.entries ?? []).map((e) => `${e.slId}:${e.label}`);
 }
 
 async function manufacturersOf(
@@ -1045,9 +1110,11 @@ describe("syncSetsAcrossManufacturers files a known brand's sets under it (NEO-2
     ]);
   });
 
-  test("a SportLots root that would be created under Unknown is created under its known brand instead", async () => {
-    // A year SportLots serves and BSC does not: the SportLots phase is the
+  test("a SportLots name saved as a set from Unknown's review is created under its known brand instead", async () => {
+    // A year SportLots serves and BSC does not: the SportLots review is the
     // only writer, so this pins the second half of the ticket's requirement 4.
+    // NEO-306 — the split moved from the sync into the review's save; it is
+    // a placement of the names filed as sets, not a role.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const yearId = await t.run(async (ctx) => {
@@ -1101,9 +1168,15 @@ describe("syncSetsAcrossManufacturers files a known brand's sets under it (NEO-2
       { yearId, manufacturerId: unknown },
     );
     expect(result.success).toBe(true);
-    expect(result.message).toContain("1 brand added from the known list");
-    expect(result.message).toContain("1 set filed under a known brand");
-    expect(result.message).toContain("2 sets added from SportLots");
+    expect(result.message).toContain("2 SportLots sets to sort");
+    // The sync minted nothing, not even the brand.
+    expect((await manufacturersOf(t, yearId)).map((m) => m.value)).toEqual([
+      "Unknown",
+    ]);
+    const saved = await saveReviewAsSets(t, unknown);
+    expect(saved.knownBrandsAdded).toBe(1);
+    expect(saved.sets).toBe(2);
+    expect(saved.remaining).toBe(0);
 
     const mfrs = await manufacturersOf(t, yearId);
     expect(mfrs.map((m) => m.value).sort()).toEqual(["Pucko", "Unknown"]);

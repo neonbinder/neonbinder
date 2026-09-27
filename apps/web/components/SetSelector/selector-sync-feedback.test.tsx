@@ -16,6 +16,9 @@
 import { describe, expect, it } from "vitest";
 import { MAX_RETURNED_IDS } from "../../convex/selectorSyncStore";
 import {
+  slReviewPillText,
+  slSetsLeftText,
+  slSetsToSortText,
   blockedMessageFromErrors,
   buildUnlinkedNotices,
   returnedIdsFromFetch,
@@ -520,5 +523,24 @@ describe("buildUnlinkedNotices", () => {
     expect(notices[0].count).toBe(4);
     expect(notices[1].side).toBe("sportlots");
     expect(notices[1].count).toBe(3);
+  });
+});
+
+describe("the SportLots-only review count (NEO-306)", () => {
+  it("says what Sync Sets left to sort, in the server summary's words", () => {
+    expect(slSetsToSortText(1)).toBe("1 SportLots set to sort");
+    expect(slSetsToSortText(3)).toBe("3 SportLots sets to sort");
+  });
+
+  it("says what a stopped save left, and what to do", () => {
+    expect(slSetsLeftText(1)).toBe("1 SportLots set left — save again");
+    expect(slSetsLeftText(4)).toBe("4 SportLots sets left — save again");
+  });
+
+  it("the pill picks between them on `partial`", () => {
+    expect(slReviewPillText({ pending: 2, partial: false })).toBe("2 SportLots sets to sort");
+    expect(slReviewPillText({ pending: 2, partial: true })).toBe(
+      "2 SportLots sets left — save again",
+    );
   });
 });

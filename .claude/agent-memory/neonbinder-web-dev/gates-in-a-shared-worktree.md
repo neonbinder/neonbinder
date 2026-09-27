@@ -48,6 +48,18 @@ Things that look like failures during the apps/web fast gates but are not.
    `rm apps/web/node_modules` + `npm ci` itself (~10s) and say so in the
    report (NEO-300).
 
+6. A whole-project `npx vitest run --project convex-lib` in a worktree where
+   sibling builders are mid-edit reds on THEIR in-flight files, and the set
+   of red files changes run to run. Attribute before reacting: list the
+   failing files, `grep -l` each for your own module names, and check
+   `git status` for who touched the module under test. A red file that
+   imports none of yours and passes alone a minute later is a sibling's
+   window, not your regression. Separately, a sibling can change a shared
+   reader under you (NEO-306: `variantTypeRole` went flag-only mid-build and
+   every fixture that conferred a role by BSC slot alone went red); give
+   fixtures BOTH the old evidence and the new flag so they read right under
+   either version (NEO-306).
+
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.
 

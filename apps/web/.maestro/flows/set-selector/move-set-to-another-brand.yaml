@@ -6,8 +6,8 @@ tags:
 ---
 # ════════════════════════════════════════════════════════════════════════════
 # R1 — ONE FEATURE (NEO-294): an operator can re-file a set under a different
-# brand of the SAME YEAR, from the control beside the delete in the set's
-# attributes panel. What the operator sees, and what this flow asserts:
+# brand of the SAME YEAR, from the `Move to another brand` control in the
+# set's attributes panel (its `Set actions` row since NEO-306). What the operator sees, and what this flow asserts:
 #
 #   1. `Move to another brand` opens a list of that year's brands, named as
 #      such (`Brands in 2026`), with the set's CURRENT brand left out —
@@ -63,7 +63,8 @@ tags:
 #
 # HANDLES (visible text and accessible names; never a DOM id):
 #   trigger   `Move to another brand` — its visible text IS its accessible
-#             name; its sibling on that header line is `Delete <set>`, a
+#             name; it sits in the `Set actions` row under the breadcrumb,
+#             and the delete beside the title is `Delete <set>`, a
 #             different name, which is how the two are told apart
 #   list      `Move to which brand?`, the group `Brands in 2026`,
 #             `Move to <brand>` per option (aria-label; the visible text is
@@ -129,17 +130,18 @@ tags:
 # PART 2 — CLAIMS 1 AND 2: THE LIST, THE CONFIRM, AND A CANCEL THAT MOVES
 #          NOTHING
 #
-# `SetAttributesPanel` renders the move trigger in its ALWAYS-VISIBLE header
-# row, beside the delete and the `Edit attributes` toggle — set rows only,
-# because a brand is a set's parent and nothing else in the hierarchy has
-# one. So the panel does not need opening.
+# `SetAttributesPanel` renders the move trigger in its ALWAYS-VISIBLE
+# `Set actions` row (NEO-306: its own row of chips directly under the
+# breadcrumb, first in the row) — set rows only, because a brand is a set's
+# parent and nothing else in the hierarchy has one. So the panel does not
+# need opening.
 #
 # DOWN and centred: `SetSelector.tsx` renders the selector columns, then the
 # base-mapping button, then MultiSourcePanel, then SetAttributesPanel, so the
 # panel is below where the drill left the page. THIS STEP DEPENDS ON THE
 # NEO-260 208px spacer in src/layouts/binder-layout.tsx for its scroll
 # headroom (R8 case 1), exactly as every `Edit attributes` step does — this
-# control sits on the same header line.
+# row sits one line under that toggle's.
 # ============================================================
 
 - scrollUntilVisible:
@@ -151,7 +153,7 @@ tags:
     timeout: 7000
 
 # HARD PRECONDITION (R2): the panel is scoped to the row this flow means, and
-# the move's SIBLING on that header line is a different control with a
+# the delete on the title line just above is a different control with a
 # different name. Nothing below is meaningful if the panel followed some
 # other selection.
 - assertVisible:
@@ -207,13 +209,15 @@ tags:
     notVisible: "Yes, move it"
     timeout: 7000
 - assertVisible: 'Move to which brand\?'
-# A SCROLL, not a bare assert: the open list sits between the header line this
-# step centred and the breadcrumb `<p>` beneath it, so the breadcrumb is a
-# couple of rows further down than it was. No tap follows, so no centring —
-# the scroll is the assertion (R6).
+# A SCROLL, not a bare assert. Since NEO-306 the breadcrumb `<p>` sits ABOVE
+# the `Set actions` row whose trigger this step centred (the open list hangs
+# under the trigger), so UP (R5: an anchor above the page's position takes
+# UP); a line or two above the centre, it is normally on screen at try 0. No
+# tap follows, so no centring — the scroll is the assertion (R6).
 - scrollUntilVisible:
     element:
       text: ".*2026 › Topps › msb-a-${WORKER_INDEX || 0}.*"
+    direction: UP
     timeout: 7000
 
 # ============================================================
@@ -252,9 +256,12 @@ tags:
 - extendedWaitUntil:
     visible: "Moved to Panini"
     timeout: 7000
+# UP — the breadcrumb is above the `Set actions` row the move was made from
+# (NEO-306), as in PART 2.
 - scrollUntilVisible:
     element:
       text: ".*2026 › Panini › msb-a-${WORKER_INDEX || 0}.*"
+    direction: UP
     timeout: 7000
 # The collapsed cards are UP in the columns row, above the panel this step is
 # standing on. No tap follows, so no centring — the scroll is the assertion

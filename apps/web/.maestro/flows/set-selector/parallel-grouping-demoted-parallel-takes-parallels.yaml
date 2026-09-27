@@ -16,8 +16,8 @@ tags:
 # same save. The proof is the columns after the Save: the demoted row is an
 # insert and the moved parallel is listed under it.
 #
-# WHY NOT INSIDE parallel-grouping-promoted-insert-fetches-from-bsc.yaml
-# (2026 Bowman). That modal lists every top-level insert of a real variant
+# WHY NOT INSIDE the 2026 Bowman flow (flagship-colour-is-a-parallel-both-
+# ways.yaml, STEP 4). That modal lists every top-level insert of a real variant
 # type — ~15 rows plus a box each after its Accept All — in a body that only
 # a fixed-length touch swipe can scroll (a `fixed inset-0` portal; R8 case
 # 2), while Maestro's hierarchy cannot see the body's clip (README →

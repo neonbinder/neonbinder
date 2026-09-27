@@ -289,8 +289,8 @@ describe("full copy-down from parent to child", () => {
    * `{ cardNumberPrefix? }`); a client that still sends one gets an
    * argument-validation error, not a silent write. The flag instead comes
    * from `derivedVariantFlags`, read off the row's variant-type PARENT — so
-   * the parent here carries a `variant`-tagged BSC slot whose id contains the
-   * `insert` token (see `isBscInsertVariantId` in bscFacets.ts), exactly what
+   * the parent here carries `metadata.variantRole: "insert"` beside the
+   * `variant`-tagged BSC slot it was conferred from (NEO-306), exactly what
    * a real variantType sync would have written.
    */
   test("storeReconciledOptions: fresh insert under an insert-role variant type derives isInsert and cardType Insert", async () => {
@@ -309,12 +309,14 @@ describe("full copy-down from parent to child", () => {
       api.selectorOptions.addCustomSelectorOption,
       { level: "variantType", value: "Inserts", parentId: setNameId },
     );
-    // A `variant`-tagged BSC slot whose id carries the `insert` token — the
-    // shape a real variantType sync writes (`syncWrittenBscFacet`).
+    // A `variant`-tagged BSC slot whose id carries the `insert` token, and
+    // the NB role the sync confers from it (NEO-306) — the shape a real
+    // variantType sync writes.
     await t.run(async (ctx) =>
       ctx.db.patch(variantTypeId, {
         platformData: { bsc: { b0: "insert" } },
         platformFacets: { bsc: { b0: "variant" } },
+        metadata: { variantRole: "insert" },
       }),
     );
 
@@ -383,6 +385,7 @@ describe("full copy-down from parent to child", () => {
       ctx.db.patch(variantTypeId, {
         platformData: { bsc: { b0: "parallel" } },
         platformFacets: { bsc: { b0: "variant" } },
+        metadata: { variantRole: "parallel" },
       }),
     );
 
