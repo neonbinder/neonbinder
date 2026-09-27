@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { useMutation } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
+import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { isBaseRole } from "./baseRole";
 
 /**
@@ -15,51 +16,44 @@ import { isBaseRole } from "./baseRole";
  * see ./baseRole), which is what finally made variant types renameable — and it
  * left hand entry with no way to set the flag at all. This is that way.
  *
- * ## Why it is an action and not a toggle
+ * ## NEO-306 — the role and the row are one thing
  *
- * A set has exactly ONE base, and the mutation clears the siblings. So "off" is
- * not a state this row owns: turning it on turns another row off. A switch or a
- * checked box would promise a per-row setting and quietly do something else, so
- * the non-base row gets a verb — "Mark as base set", which is precisely what
- * happens — and the base row gets a static tag plus a SEPARATE verb for the one
- * thing it can still do. The side effect rides in the `title` at the point of
- * decision rather than in a confirm dialog: both actions are one tap to
- * reverse, and a modal for a reversible role change would be a stop sign in
- * front of a signpost.
+ * Jason, 2026-09-27: `isBase` and the Base row must never move independently.
+ * Clearing the flag and keeping the row is what broke a preview — the row
+ * stopped being terminal, the cascade opened an Inserts column under it, and a
+ * SportLots auto-sync filled that column with the brand's whole set list.
  *
- * Clearing is its own control rather than a second meaning for the tag, because
- * the two states are not symmetric. Marking is a transfer — it always lands the
- * role somewhere. Clearing leaves the set with NO base, which is legitimate
- * (`clear: true` exists precisely so an operator who set the wrong row has a way
- * back that does not require guessing a right one) but is a different act, and
- * an operator who can only reach it by promoting some other row would be forced
- * into exactly that guess.
+ * So the control only ever GRANTS the role, and only to a set that has none:
+ * "Mark as base set" renders on a non-base variant type only while
+ * `getBaseVariantBySet` answers null for its set (and not while that answer is
+ * still loading — offering it for a beat on a set that has a base would be a
+ * button the server refuses). There is no transfer and no clear. The way to
+ * take the role away is to delete the row, and that is the panel's ordinary
+ * delete control beside this tag — one delete per row, with the same
+ * emptiness check and the same explained refusal as every other row, and a
+ * confirm that says what deleting a base means. The server refuses a second
+ * base as well (`setBaseVariantType`), for a stale tab.
  *
- * Both states occupy the same slot in the panel header, so the row of controls
- * does not reflow when the role moves.
+ * ## The base row
  *
  * The panel scopes itself to ONE row, so the operator never sees the group from
- * here. That is the whole reason the base row shows an indicator rather than
- * nothing: without it, "which one is the base?" would need a column-by-column
- * hunt — and it is why the two halves of the side effect are split across two
- * moments. The `title` states the rule while the operator is deciding; the
- * confirmation reports what the server actually did, counted from its own
- * `clearedIds`, once it is done. Neither is a guess, and neither is a hedge.
+ * here. That is why the base row shows an indicator rather than nothing:
+ * without it, "which one is the base?" would need a column-by-column hunt.
  *
  * ## Copy
  *
  * The button, its aria-label and the confirmation all use the same verb, so the
- * control that says "Mark as base set" produces "Marked Base as the base set"
- * — the vocabulary stays put across the flow. The failure says what did not
- * happen and that nothing changed, and carries no thrown text: a Convex/adapter
- * error can embed a marketplace URL or a credential hint, and none of that is
- * user-facing copy (NEO-47 / NEO-211 B).
+ * control that says "Mark as base set" produces "Marked Base as the base set".
+ * A failure says what did not happen and that nothing changed; the only thrown
+ * text it ever shows is a ConvexError sentence the server wrote for a person
+ * (`userFacingMessage`) — a Convex/adapter error can embed a marketplace URL or
+ * a credential hint, and none of that is user-facing copy (NEO-47 / NEO-211 B).
  */
 /**
- * NEO-306 — "Mark as base set" / "Clear base set" as a quiet outlined tag.
- * `slate-500` is the boundary tone that clears SC 1.4.11's 3:1 on the panel's
- * dark surface (slate-600 measured 2.4:1); the ring matches every other
- * control in the panel header and the action row.
+ * NEO-306 — "Mark as base set" as a quiet outlined tag. `slate-500` is the
+ * boundary tone that clears SC 1.4.11's 3:1 on the panel's dark surface
+ * (slate-600 measured 2.4:1); the ring matches every other control in the
+ * panel header and the action row.
  */
 const BASE_ROLE_TAG =
   "shrink-0 inline-flex items-center min-h-6 px-2 rounded border border-slate-500 text-[11px] text-gray-200 " +
@@ -70,6 +64,7 @@ export default function BaseRoleControl({
   id,
   value,
   metadata,
+  setId,
   onResult,
 }: {
   id: Id<"selectorOptions">;
@@ -77,22 +72,30 @@ export default function BaseRoleControl({
   value: string;
   /** The row's `metadata`, read for `isBase` only. */
   metadata: unknown;
+  /** The set this variant type belongs to (its `parentId`). */
+  setId: Id<"selectorOptions"> | undefined;
   /** Hands the panel a sentence to put in its own toast. */
   onResult: (message: string) => void;
 }) {
   const setBaseVariantType = useMutation(
     api.selectorOptions.setBaseVariantType,
   );
-  const [busy, setBusy] = useState(false);
   const isBase = isBaseRole(metadata);
-  const markRef = useRef<HTMLButtonElement>(null);
-  const clearRef = useRef<HTMLButtonElement>(null);
+  // Asked only for a row that could be offered the role. `null` is the one
+  // answer that offers it; `undefined` (loading, or no set to ask about) and a
+  // base found elsewhere both render nothing.
+  const setBase = useQuery(
+    api.selectorOptions.getBaseVariantBySet,
+    !isBase && setId ? { setId } : "skip",
+  );
+  const [busy, setBusy] = useState(false);
+  const tagRef = useRef<HTMLSpanElement>(null);
   const prevIsBaseRef = useRef(isBase);
   /**
    * This component's own write is what is about to swap the control.
    *
    * The role arrives from the server, so it can also flip while the operator is
-   * doing nothing here — another tab, or a parallel worker, marking a sibling.
+   * doing nothing here — another tab, or a parallel worker, marking this row.
    * Moving focus on THAT would be focus theft, so the restore below fires only
    * when this instance's own button was the thing that caused the change. Same
    * shape as RenameEntityControl's `wasEditingRef`, except that one guards a
@@ -100,59 +103,32 @@ export default function BaseRoleControl({
    */
   const actedRef = useRef(false);
 
-  // The acting button unmounts the instant the role lands — "Mark as base set"
-  // is replaced by the indicator plus "Clear base set", and vice versa — and
-  // with nothing to move focus onto, the browser drops it to <body>. A
-  // keyboard operator would be returned to the top of the document mid-task.
+  // The Mark button unmounts the instant the role lands, and with nothing to
+  // move focus onto the browser drops it to <body> — a keyboard operator would
+  // be returned to the top of the document mid-task. The tag that took its
+  // place is the one thing in that slot now, and it says what just happened.
   useEffect(() => {
     if (prevIsBaseRef.current === isBase) return;
     const acted = actedRef.current;
     prevIsBaseRef.current = isBase;
     actedRef.current = false;
-    if (!acted) return;
-    // Focus the control that took the other one's place: the two are each
-    // other's undo, so this is also where the operator is most likely headed.
-    if (isBase) clearRef.current?.focus();
-    else markRef.current?.focus();
+    if (acted && isBase) tagRef.current?.focus();
   }, [isBase]);
 
   const markAsBase = async () => {
     if (busy) return;
     setBusy(true);
     try {
-      const result = await setBaseVariantType({ variantTypeId: id });
-      // Optional-chained: a mocked or older deployment can answer with nothing,
-      // and a missing count is a reason to say less, never to throw away a
-      // confirmation for a write that succeeded.
+      await setBaseVariantType({ variantTypeId: id });
       actedRef.current = true;
-      const cleared = result?.clearedIds?.length ?? 0;
+      onResult(`Marked ${value} as the base set`);
+    } catch (e) {
+      actedRef.current = false;
+      // The server's own sentence when it refused (the set got a base in
+      // another tab); otherwise the generic line, never the thrown text.
       onResult(
-        cleared > 0
-          ? `Marked ${value} as the base set — cleared ${cleared} other${
-              cleared === 1 ? "" : "s"
-            }`
-          : `Marked ${value} as the base set`,
+        userFacingMessage(e, "Couldn't set the base set. Nothing changed."),
       );
-    } catch {
-      actedRef.current = false;
-      onResult("Couldn't set the base set. Nothing changed.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const clearBase = async () => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await setBaseVariantType({ variantTypeId: id, clear: true });
-      actedRef.current = true;
-      // No count here, unlike marking: clearing touches exactly the row the
-      // operator is looking at, so there is no off-screen side effect to report.
-      onResult("Cleared the base set");
-    } catch {
-      actedRef.current = false;
-      onResult("Couldn't clear the base set. Nothing changed.");
     } finally {
       setBusy(false);
     }
@@ -160,50 +136,39 @@ export default function BaseRoleControl({
 
   if (isBase) {
     return (
-      <span className="shrink-0 flex items-center gap-1.5">
-        {/* Not a control, and deliberately not styled like one: the same 10px
-            uppercase tag idiom MultiSourcePanel uses for a slot's facet, which
-            this UI already reads as "a fact about the row". Green rather than
-            that idiom's grey because it is the single most consequential fact
-            a variant type carries — it decides whether the row is terminal and
-            holds the checklist — and it is the one place this control spends
-            colour. */}
-        <span
-          className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-[#00D558]/50 text-[#00D558]"
-          title="This variant type holds the set's base checklist."
-        >
-          Base set
-        </span>
-        <button
-          ref={clearRef}
-          type="button"
-          onClick={clearBase}
-          disabled={busy}
-          aria-label={`Clear base set from ${value}`}
-          title="Leaves this set with no base until you mark one."
-          // NEO-306: the quiet outlined TAG beside the title — smaller than
-          // the action row's 32px chips because this is identity, not an
-          // action on the row, but still visibly a control. min-h-6 keeps
-          // WCAG 2.5.8's 24px minimum target; the ring is the panel's one
-          // focus ring (2px #00B7FF, offset), focus-VISIBLE so a mouse click
-          // does not draw it.
-          className={`${BASE_ROLE_TAG} hover:border-[#FF2EB3] hover:text-[#FF2EB3]`}
-        >
-          Clear base set
-        </button>
+      // Not a control, and deliberately not styled like one: the same 10px
+      // uppercase tag idiom MultiSourcePanel uses for a slot's facet, which
+      // this UI already reads as "a fact about the row". Green rather than
+      // that idiom's grey because it is the single most consequential fact a
+      // variant type carries — it decides whether the row is terminal and
+      // holds the checklist — and it is the one place this control spends
+      // colour. `tabIndex={-1}`: focusable by script only, so marking has
+      // somewhere to put focus without adding a tab stop.
+      <span
+        ref={tagRef}
+        tabIndex={-1}
+        className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-[#00D558]/50 text-[#00D558] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
+        title="This variant type holds the set's base checklist."
+      >
+        Base set
       </span>
     );
   }
 
+  if (setBase !== null) return null;
+
   return (
     <button
-      ref={markRef}
       type="button"
       onClick={markAsBase}
       disabled={busy}
       aria-label={`Mark ${value} as the base set`}
-      title="A set has one base — this clears any other."
-      // See the clear button above for the tag and the ring.
+      title="A set has one base set. Once marked, it stays until you delete it."
+      // NEO-306: the quiet outlined TAG beside the title — smaller than the
+      // action row's 32px chips because this is identity, not an action on the
+      // row, but still visibly a control. min-h-6 keeps WCAG 2.5.8's 24px
+      // minimum target; the ring is the panel's one focus ring (2px #00B7FF,
+      // offset), focus-VISIBLE so a mouse click does not draw it.
       className={`${BASE_ROLE_TAG} hover:border-[#00D558] hover:text-[#00D558]`}
     >
       Mark as base set

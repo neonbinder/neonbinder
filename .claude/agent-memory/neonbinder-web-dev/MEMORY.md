@@ -72,3 +72,4 @@
 - [Team resolver serves card and stint years](reference_team_resolver_serves_card_and_stint_years.md) — card callers opt into allowPastEra, stint callers stay strict (resolveTeamIdByName is a stint path); an alias is never another team's name, any era
 - [Bulkload budget tests pin exact ops](reference_bulkload_budget_tests_pin_exact_ops.md) — 854/989 opsSpent are asserted exactly; reuse a read the row loop already made, and run the whole file
 - [Autocomplete list is a fixed layer](reference_autocomplete_list_is_a_fixed_layer.md) — portalled into nearest role=dialog, fixed, body-bounded; focus returns use focusWithoutOpening; act() around el.focus() in tests
+- [Base role and row are one thing](project_base_role_and_row_are_one_thing.md) — isBase never cleared/transferred; delete the empty Base row instead (NEO-306)

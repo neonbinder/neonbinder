@@ -95,7 +95,7 @@ export const bscFacetValidator = v.union(
  * sync that inserts the row (or, for `variantTypeRole`, on the creation of a
  * child that asks what its parent is). They never read the NB display value,
  * and nothing re-derives afterwards — a rename cannot move the role, and
- * `setBaseVariantType` overrides it.
+ * `setBaseVariantType` grants it only to a set that has none (NEO-306).
  *
  * ## What the ids actually are
  *

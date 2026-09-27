@@ -235,6 +235,7 @@ import {
 import {
   conferredVariantRole,
   derivedVariantFlags,
+  variantTypeRole,
   withVariantFlags,
 } from "./variantRole";
 // NEO-291 — the one rule for a card number prefix, shared with the
@@ -827,6 +828,14 @@ export const getBaseVariantBySet = query({
 });
 
 /**
+ * NEO-306 — the refusal `setBaseVariantType` gives when the set already has
+ * its base. Exported so the tests pin the operator's sentence, not a paraphrase.
+ */
+export function baseRoleTakenMessage(holderValue: string): string {
+  return `${holderValue} is already this set's base set. A set has one — delete ${holderValue} first to mark another.`;
+}
+
+/**
  * NEO-239 — declare which variantType row holds the set's BASE role.
  *
  * The role used to be a name check (`value.toLowerCase() === "base"`) in five
@@ -834,28 +843,34 @@ export const getBaseVariantBySet = query({
  * broke the moment an operator renamed the row — which is now allowed, since
  * the rename refusal that protected the name is gone. The sync derives the role
  * once from BSC's own `base` variant id; this is the operator's door for a set
- * that never synced, or one whose base is not what the sync guessed.
+ * that has no base row.
  *
- * EXACTLY ONE BASE PER SET. Setting the role on a row clears it from every
- * sibling variantType under the same setName parent, in the same transaction —
- * two base rows would make `getBaseVariantBySet` (and the Base mapping form
- * behind it) answer differently depending on document order.
+ * NEO-306 — THE ROLE AND THE ROW ARE ONE THING (Jason, 2026-09-27). This door
+ * only ever GRANTS the role, and only to a set that has no base: when a sibling
+ * already holds it the call refuses, writing nothing, with a sentence the
+ * operator can act on. There is no transfer and no clear any more.
  *
- * `clear: true` removes the role without giving it to anyone: a set may
- * legitimately have no base row, and an operator who set the wrong one needs a
- * way back that does not require guessing a right one.
+ * The old `clear: true` path is what broke a preview: it removed `isBase` and
+ * left the row, so the row stopped being terminal, the cascade opened an
+ * Inserts column under it, and a SportLots-only auto-sync filled that column
+ * with the brand's whole flat set list — junk rows whose SL ids then counted
+ * as "covered" and hid real sets from Sync Sets and the review. The way to
+ * take the role away now is to delete the row, through the ordinary empty-row
+ * delete (`deleteSelectorOption`), which refuses while anything hangs off it.
+ * The transfer went for the same reason: moving the flag off a row is the
+ * same act as clearing it.
+ *
+ * The sync's conferral at creation is a separate path (`storeSelectorOptions`
+ * / the reconcile store) and already never grants the role to a set that has
+ * one, so the two cannot produce two bases between them.
  */
 export const setBaseVariantType = mutation({
   args: {
     variantTypeId: v.id("selectorOptions"),
-    /** Remove the role instead of granting it. Siblings are cleared either way. */
-    clear: v.optional(v.boolean()),
   },
   returns: v.object({
-    /** The row now holding the role, or null after a clear. */
-    baseId: v.union(v.null(), v.id("selectorOptions")),
-    /** Siblings (and, on a clear, the target) whose role this call removed. */
-    clearedIds: v.array(v.id("selectorOptions")),
+    /** The row now holding the role. */
+    baseId: v.id("selectorOptions"),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -869,47 +884,48 @@ export const setBaseVariantType = mutation({
       );
     }
 
-    const clear = args.clear === true;
-    const clearedIds: Array<Id<"selectorOptions">> = [];
+    // NEO-85: re-marking the row that already holds the role writes nothing.
+    // Checked before the siblings, so a legacy set carrying two base rows does
+    // not refuse an operator re-confirming one of them.
+    if (row.metadata?.isBase === true) {
+      return { baseId: args.variantTypeId };
+    }
 
     // The sibling snapshot is scoped exactly the way the matcher scopes itself
-    // — (level, parentId) — so this can only ever touch variantTypes of the
-    // one set the target belongs to.
+    // — (level, parentId) — so this can only ever read variantTypes of the one
+    // set the target belongs to.
     const siblings = await ctx.db
       .query("selectorOptions")
       .withIndex("by_level_and_parent", (q) =>
         q.eq("level", "variantType").eq("parentId", row.parentId),
       )
       .collect();
-
-    for (const sib of siblings) {
-      const shouldHoldRole = !clear && sib._id === args.variantTypeId;
-      const holdsRole = sib.metadata?.isBase === true;
-      if (shouldHoldRole === holdsRole) continue; // NEO-85: no churn on a no-op
-
-      const nextMetadata = { ...(sib.metadata ?? {}) };
-      if (shouldHoldRole) nextMetadata.isBase = true;
-      else delete nextMetadata.isBase;
-
-      await ctx.db.patch(sib._id, {
-        metadata:
-          Object.keys(nextMetadata).length > 0 ? nextMetadata : undefined,
-        lastUpdated: Date.now(),
-      });
-      if (!shouldHoldRole) clearedIds.push(sib._id);
+    const holder = siblings.find(
+      (sib) => sib._id !== args.variantTypeId && sib.metadata?.isBase === true,
+    );
+    if (holder) {
+      // A ConvexError STRING, so the panel reads it through
+      // `userFacingMessage` rather than production's redacted "Server Error".
+      // Reachable only from a stale client or two tabs: the panel does not
+      // offer the action on a set that has a base.
+      throw new ConvexError(baseRoleTakenMessage(holder.value));
     }
+
+    await ctx.db.patch(row._id, {
+      metadata: { ...(row.metadata ?? {}), isBase: true },
+      lastUpdated: Date.now(),
+    });
 
     console.log(
       JSON.stringify({
         msg: "set_base_variant_type",
         userId: await getCurrentUserId(ctx),
         parentId: row.parentId ?? null,
-        baseId: clear ? null : args.variantTypeId,
-        cleared: clearedIds.length,
+        baseId: args.variantTypeId,
       }),
     );
 
-    return { baseId: clear ? null : args.variantTypeId, clearedIds };
+    return { baseId: args.variantTypeId };
   },
 });
 
@@ -9490,6 +9506,53 @@ export const ensureSelectorOptions = action({
           reason: paused.length > 0 ? "paused" : "no_marketplace_ids",
           skippedSides: ["bsc", "sportlots"] as Array<"bsc" | "sportlots">,
           pausedSides: paused,
+        };
+      }
+      // NEO-306 — BACKSTOP: no SportLots-only auto-sync of the rows under a
+      // variant type that has NO role.
+      //
+      // SportLots has no notion of "the variants of this set": asked at
+      // `insert`, it answers with every set the brand has that year. Under a
+      // variant type NB knows is an Insert or Parallel type that flat list is
+      // the candidate pool the column is for; under a type with no role it
+      // is just junk rows, and their SL ids then count as "covered" and hide
+      // real sets from Sync Sets and the review. That is exactly what a Base
+      // that lost its flag did (the retired "Clear base set"), and a legacy
+      // row can still be in that state.
+      //
+      // Deliberately narrow:
+      //   - drill only (`!force`): an explicit Sync is the operator's call;
+      //   - only when BSC was not asked FOR WANT OF IDS. A role-less type
+      //     with a `variant`-tagged BSC id (an "Autographs" type, say) syncs
+      //     its rows from BSC exactly as before, SportLots alongside; and a
+      //     BSC side that is merely PAUSED keeps the pause's own notice
+      //     rather than a silent skip;
+      //   - the role is read off NB's flags (`variantTypeRole`), never the
+      //     row's name or a marketplace id.
+      // The column goes idle, the same instant state a hand-made subtree
+      // gets, so rows can still be added by hand.
+      if (
+        !force &&
+        level === "insert" &&
+        parentRow?.level === "variantType" &&
+        variantTypeRole(parentRow) === undefined &&
+        !resolution.bsc.resolvable &&
+        !resolution.bsc.paused &&
+        resolution.sportlots.resolvable
+      ) {
+        console.log(
+          `[ensureSelectorOptions] SportLots-only insert sync under a ` +
+            `variant type with no role — not run on drill (parentId=${parentId})`,
+        );
+        await ctx.runMutation(internal.selectorOptions.setSelectorSyncStatus, {
+          level,
+          parentId,
+        });
+        return {
+          ran: false,
+          reason: "no_variant_role",
+          skippedSides: ["bsc", "sportlots"] as Array<"bsc" | "sportlots">,
+          pausedSides: [],
         };
       }
       for (const a of chain) {

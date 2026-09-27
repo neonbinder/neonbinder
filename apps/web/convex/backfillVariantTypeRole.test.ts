@@ -19,7 +19,11 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
-import { PAGE_SIZE } from "./backfillVariantTypeRole";
+import {
+  PAGE_SIZE,
+  REPORT_PAGE_SIZE,
+  REPORT_SAMPLE_LIMIT,
+} from "./backfillVariantTypeRole";
 
 const modules = (
   import.meta as unknown as {
@@ -271,5 +275,134 @@ describe("backfillVariantTypeRole", () => {
     expect(src).toContain("export const runPage = internalMutation({");
     expect(src).toContain("export const run = internalAction({");
     expect(src).not.toMatch(/export const \w+ = (query|mutation|action)\(/);
+  });
+});
+
+/**
+ * NEO-306 — `reportBaseAnomalies`: the base role and the Base row are one
+ * thing now, and data written before that rule can break it. The report
+ * COUNTS the two shapes, per set, and never writes.
+ */
+describe("reportBaseAnomalies", () => {
+  async function seedSet(
+    t: T,
+    value: string,
+    types: Array<{ value: string; isBase?: boolean; cards?: number }>,
+  ): Promise<{ setId: Id<"selectorOptions">; typeIds: Array<Id<"selectorOptions">> }> {
+    return t.run(async (ctx) => {
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value,
+        platformData: {},
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const typeIds: Array<Id<"selectorOptions">> = [];
+      for (const type of types) {
+        const typeId = await ctx.db.insert("selectorOptions", {
+          level: "variantType",
+          value: type.value,
+          platformData: {},
+          ...(type.isBase !== undefined ? { metadata: { isBase: type.isBase } } : {}),
+          parentId: setId,
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+        typeIds.push(typeId);
+        for (let i = 0; i < (type.cards ?? 0); i++) {
+          await ctx.db.insert("cardChecklist", {
+            selectorOptionId: typeId,
+            cardNumber: String(i + 1),
+            cardName: `Card ${i + 1}`,
+            platformData: {},
+            sortOrder: i,
+            lastUpdated: SENTINEL,
+          });
+        }
+      }
+      return { setId, typeIds };
+    });
+  }
+
+  test("counts each anomaly once per set, names the sets, and ignores the healthy shapes", async () => {
+    const t = convexTest(schema, modules);
+    // Healthy: exactly one base (with cards), or no base and no cards anywhere
+    // (a hand-built set not yet told which is its base).
+    await seedSet(t, "Healthy", [
+      { value: "Base", isBase: true, cards: 2 },
+      { value: "Inserts" },
+    ]);
+    await seedSet(t, "Unbuilt", [{ value: "Base" }, { value: "Inserts" }]);
+    // Two base rows.
+    const twoBases = await seedSet(t, "Two bases", [
+      { value: "Base", isBase: true },
+      { value: "Base Set", isBase: true, cards: 1 },
+    ]);
+    // No base, but a type holding cards straight off it — the shape a Base
+    // that lost its flag leaves. Two such types still count the SET once.
+    const lostFlag = await seedSet(t, "Lost flag", [
+      { value: "Base", cards: 3 },
+      { value: "Other", isBase: false, cards: 1 },
+    ]);
+    const before = await allRows(t);
+
+    const res = await t.action(internal.backfillVariantTypeRole.reportBaseAnomalies, {});
+
+    expect(res.counts).toEqual({
+      setsScanned: 4,
+      multipleBase: 1,
+      noBaseWithCards: 1,
+    });
+    expect(res.multipleBaseSetIds).toEqual([twoBases.setId]);
+    expect(res.noBaseWithCardsSetIds).toEqual([lostFlag.setId]);
+    expect(res.truncated).toBe(false);
+    expect(res.message).toMatch(/^Report only — nothing written\./);
+    // NEVER auto-fixed: every row is byte-identical afterwards.
+    expect(await allRows(t)).toEqual(before);
+  });
+
+  test("walks every page and caps the sample ids", async () => {
+    const t = convexTest(schema, modules);
+    const total = REPORT_PAGE_SIZE + REPORT_SAMPLE_LIMIT;
+    for (let i = 0; i < total; i++) {
+      await seedSet(t, `Set ${i}`, [
+        { value: "A", isBase: true },
+        { value: "B", isBase: true },
+      ]);
+    }
+
+    const res = await t.action(internal.backfillVariantTypeRole.reportBaseAnomalies, {});
+
+    expect(res.pages).toBeGreaterThan(1);
+    expect(res.counts.setsScanned).toBe(total);
+    expect(res.counts.multipleBase).toBe(total);
+    expect(res.multipleBaseSetIds).toHaveLength(REPORT_SAMPLE_LIMIT);
+  });
+
+  test("a truncated report says so and resumes from its cursor", async () => {
+    const t = convexTest(schema, modules);
+    for (let i = 0; i < REPORT_PAGE_SIZE + 3; i++) {
+      await seedSet(t, `Set ${i}`, [{ value: "Base", cards: 1 }]);
+    }
+
+    const first = await t.action(internal.backfillVariantTypeRole.reportBaseAnomalies, {
+      maxPages: 1,
+    });
+    expect(first.truncated).toBe(true);
+    expect(first.continueCursor).toBeDefined();
+    expect(first.counts.setsScanned).toBe(REPORT_PAGE_SIZE);
+
+    const second = await t.action(internal.backfillVariantTypeRole.reportBaseAnomalies, {
+      cursor: first.continueCursor,
+    });
+    expect(second.truncated).toBe(false);
+    expect(second.counts.setsScanned).toBe(3);
+    expect(second.counts.noBaseWithCards).toBe(3);
+  });
+
+  test("the report is internal, and a query: it cannot write", () => {
+    const src = readFileSync(join(__dirname, "backfillVariantTypeRole.ts"), "utf8");
+    expect(src).toContain("export const reportBaseAnomaliesPage = internalQuery({");
+    expect(src).toContain("export const reportBaseAnomalies = internalAction({");
   });
 });

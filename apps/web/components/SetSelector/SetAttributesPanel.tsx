@@ -276,6 +276,9 @@ export default function SetAttributesPanel({
   if (!row || !chain) return null;
 
   const leafLevel = row.level as Level;
+  // NEO-306 — the base role, read once for the header's two controls.
+  const isBaseVariantType =
+    leafLevel === "variantType" && isBaseRole(row.metadata);
   // NEO-294 — the year the move picker's brands belong to, named so the list
   // says WHICH year's brands it is offering. Not a memo: it is one find over a
   // chain of at most seven, below the guard that makes `chain` non-null.
@@ -522,12 +525,16 @@ export default function SetAttributesPanel({
                 below — and stays reachable while the panel is collapsed, which
                 is how an operator building a set by hand will meet it. Only
                 variant types have the role; nothing else in the hierarchy can
-                be a base set. */}
+                be a base set.
+                NEO-306: the tag on the base row, "Mark as base set" on a type
+                of a set that has no base, and nothing otherwise. Taking the
+                role away is deleting the row — the delete control below. */}
             {leafLevel === "variantType" && (
               <BaseRoleControl
                 id={selectorOptionId}
                 value={row.value}
                 metadata={row.metadata}
+                setId={row.parentId}
                 onResult={showToast}
               />
             )}
@@ -554,6 +561,7 @@ export default function SetAttributesPanel({
               id={selectorOptionId}
               row={row}
               level={leafLevel}
+              isBase={isBaseVariantType}
               onDeleted={onDeleted}
             />
           </div>
@@ -1967,11 +1975,18 @@ function DeleteSelectorRowControl({
   id,
   row,
   level,
+  isBase = false,
   onDeleted,
 }: {
   id: Id<"selectorOptions">;
   row: Pick<SlotBearingRow, "platformData"> & { value: string };
   level: SelectorLevel;
+  /**
+   * NEO-306 — the row is the set's base. The role and the row are one thing,
+   * so deleting this row is how a set loses its base, and the confirm says so.
+   * Same control, same emptiness check, same refusal as any other row.
+   */
+  isBase?: boolean;
   onDeleted?: (level: SelectorLevel) => void;
 }) {
   const holdings: SelectorHoldings | undefined = useQuery(
@@ -2005,6 +2020,7 @@ function DeleteSelectorRowControl({
 
   const description =
     "Nothing is below it. This cannot be undone." +
+    (isBase ? " The set will have no base set until you mark one." : "") +
     (linkedSides.length > 0
       ? ` It is linked to ${joinLabels(
           linkedSides,
@@ -2071,7 +2087,11 @@ function DeleteSelectorRowControl({
       )}
       {open && (
         <ConfirmDialog
-          title={`Delete ${LEVEL_SINGULAR[level]} "${row.value}"?`}
+          title={
+            isBase
+              ? `Delete base set "${row.value}"?`
+              : `Delete ${LEVEL_SINGULAR[level]} "${row.value}"?`
+          }
           description={description}
           confirmLabel="Yes, delete"
           busyLabel="Deleting…"

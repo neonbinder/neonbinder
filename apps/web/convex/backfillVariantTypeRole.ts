@@ -34,6 +34,10 @@
  *
  *   # production: the same steps with --prod
  *
+ *   # NEO-306 — READ-ONLY: sets whose base role is not exactly one row
+ *   npx convex run backfillVariantTypeRole:reportBaseAnomalies '{}'
+ *   # (resumes the same way: '{"cursor":"<continueCursor>"}')
+ *
  * Two independent arms, the house rule (`backfillBrandUnknownRole` explains
  * why both): `confirm: "BACKFILL"` per invocation, `ALLOW_SELECTOR_BACKFILL`
  * per deployment. Dry run is the default; an armed invocation on an unarmed
@@ -71,6 +75,23 @@
  * bumped: it is the optimistic version open dialogs compare against, and a
  * role flag is not an edit an operator made.
  *
+ * ## The base-role anomaly report (NEO-306)
+ *
+ * The base role and the Base row are one thing: `setBaseVariantType` grants
+ * the role only to a set that has none, and the only way to take it away is
+ * to delete the (empty) row. Data written before that rule can still break
+ * it, and `reportBaseAnomalies` counts the two shapes that matter, per SET:
+ *
+ *   multipleBase      more than one variant type carries `isBase` — the
+ *                     readers pick by document order, or (teamFill) give up
+ *   noBaseWithCards   no variant type carries `isBase`, yet one of them has
+ *                     cards hanging straight off it — the shape a Base that
+ *                     lost its flag leaves behind (the retired "Clear base
+ *                     set"); the row is no longer terminal in the builder
+ *
+ * It NEVER writes and needs no arm: which row is the base is the operator's
+ * decision, so the report hands back sample set ids and stops there.
+ *
  * ## Deploy the validator first; roll forward only
  *
  * `metadata` is an exact object validator, validated on read. Deploy the
@@ -80,7 +101,8 @@
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { internalAction, internalMutation } from "./_generated/server";
+import { internalAction, internalMutation, internalQuery } from "./_generated/server";
+import type { Id } from "./_generated/dataModel";
 import { bscVariantEvidence, conferredVariantRole } from "./variantRole";
 
 const CONFIRM_TOKEN = "BACKFILL";
@@ -276,6 +298,189 @@ export const run = internalAction({
       truncated,
       ...(truncated && cursor !== null ? { continueCursor: cursor } : {}),
       counts: totals,
+    };
+  },
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-306 — the base-role anomaly report. READ-ONLY.
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Sets per report page. A set is read with ALL its variant types (each
+ * carrying its `children` id array) plus one card probe per type, so the
+ * per-transaction read budget, not a row count, is the bound — hence far
+ * fewer than `PAGE_SIZE`.
+ */
+export const REPORT_PAGE_SIZE = 50;
+/** Pages per `reportBaseAnomalies`: 20,000 sets. Resume with the cursor. */
+export const REPORT_MAX_PAGES = 400;
+/** Set ids returned per anomaly, so a deployment-wide fault stays readable. */
+export const REPORT_SAMPLE_LIMIT = 25;
+
+const anomalyCountsValidator = v.object({
+  setsScanned: v.number(),
+  multipleBase: v.number(),
+  noBaseWithCards: v.number(),
+});
+type AnomalyCounts = {
+  setsScanned: number;
+  multipleBase: number;
+  noBaseWithCards: number;
+};
+
+export const reportBaseAnomaliesPage = internalQuery({
+  args: { cursor: v.union(v.string(), v.null()) },
+  returns: v.object({
+    counts: anomalyCountsValidator,
+    multipleBaseSetIds: v.array(v.id("selectorOptions")),
+    noBaseWithCardsSetIds: v.array(v.id("selectorOptions")),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const page = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level", (q) => q.eq("level", "setName"))
+      .paginate({ numItems: REPORT_PAGE_SIZE, cursor: args.cursor });
+
+    const counts: AnomalyCounts = {
+      setsScanned: 0,
+      multipleBase: 0,
+      noBaseWithCards: 0,
+    };
+    const multipleBaseSetIds: Array<Id<"selectorOptions">> = [];
+    const noBaseWithCardsSetIds: Array<Id<"selectorOptions">> = [];
+
+    for (const set of page.page) {
+      if (set.level !== "setName") continue;
+      counts.setsScanned++;
+      const types = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "variantType").eq("parentId", set._id),
+        )
+        .collect();
+      const bases = types.filter((type) => type.metadata?.isBase === true);
+      if (bases.length > 1) {
+        counts.multipleBase++;
+        multipleBaseSetIds.push(set._id);
+        continue;
+      }
+      if (bases.length === 1) continue;
+      for (const type of types) {
+        const card = await ctx.db
+          .query("cardChecklist")
+          .withIndex("by_selector_option", (q) =>
+            q.eq("selectorOptionId", type._id),
+          )
+          .first();
+        if (card) {
+          counts.noBaseWithCards++;
+          noBaseWithCardsSetIds.push(set._id);
+          break;
+        }
+      }
+    }
+
+    return {
+      counts,
+      multipleBaseSetIds,
+      noBaseWithCardsSetIds,
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+    };
+  },
+});
+
+/**
+ * NEO-306 — count the sets whose base role is not exactly one row. Writes
+ * nothing, ever; see the header. Ids only in the result and the log line —
+ * a set's name is operator content.
+ */
+export const reportBaseAnomalies = internalAction({
+  args: {
+    /** A previous report's `continueCursor`; absent starts at the first set. */
+    cursor: v.optional(v.string()),
+    /** Pages this report walks, 1..`REPORT_MAX_PAGES` (default the max). */
+    maxPages: v.optional(v.number()),
+  },
+  returns: v.object({
+    message: v.string(),
+    pages: v.number(),
+    truncated: v.boolean(),
+    continueCursor: v.optional(v.string()),
+    counts: anomalyCountsValidator,
+    /** Up to `REPORT_SAMPLE_LIMIT` of each, in scan order. */
+    multipleBaseSetIds: v.array(v.id("selectorOptions")),
+    noBaseWithCardsSetIds: v.array(v.id("selectorOptions")),
+  }),
+  handler: async (ctx, args) => {
+    const totals: AnomalyCounts = {
+      setsScanned: 0,
+      multipleBase: 0,
+      noBaseWithCards: 0,
+    };
+    const multipleBaseSetIds: Array<Id<"selectorOptions">> = [];
+    const noBaseWithCardsSetIds: Array<Id<"selectorOptions">> = [];
+    let cursor: string | null = args.cursor ?? null;
+    const maxPages = Math.max(
+      1,
+      Math.min(REPORT_MAX_PAGES, Math.floor(args.maxPages ?? REPORT_MAX_PAGES)),
+    );
+    let pages = 0;
+    let isDone = false;
+    while (pages < maxPages) {
+      const page: {
+        counts: AnomalyCounts;
+        multipleBaseSetIds: Array<Id<"selectorOptions">>;
+        noBaseWithCardsSetIds: Array<Id<"selectorOptions">>;
+        isDone: boolean;
+        continueCursor: string;
+      } = await ctx.runQuery(
+        internal.backfillVariantTypeRole.reportBaseAnomaliesPage,
+        { cursor },
+      );
+      pages++;
+      for (const key of Object.keys(totals) as Array<keyof AnomalyCounts>) {
+        totals[key] += page.counts[key];
+      }
+      for (const id of page.multipleBaseSetIds) {
+        if (multipleBaseSetIds.length < REPORT_SAMPLE_LIMIT) multipleBaseSetIds.push(id);
+      }
+      for (const id of page.noBaseWithCardsSetIds) {
+        if (noBaseWithCardsSetIds.length < REPORT_SAMPLE_LIMIT) {
+          noBaseWithCardsSetIds.push(id);
+        }
+      }
+      if (page.isDone) {
+        isDone = true;
+        break;
+      }
+      cursor = page.continueCursor;
+    }
+    const truncated = !isDone;
+
+    console.log(
+      JSON.stringify({
+        msg: "report_base_role_anomalies",
+        ...totals,
+        pages,
+        truncated,
+      }),
+    );
+
+    return {
+      message: truncated
+        ? truncatedMessage(pages)
+        : "Report only — nothing written. The set ids are samples; which row " +
+          "is each set's base is the operator's decision.",
+      pages,
+      truncated,
+      ...(truncated && cursor !== null ? { continueCursor: cursor } : {}),
+      counts: totals,
+      multipleBaseSetIds,
+      noBaseWithCardsSetIds,
     };
   },
 });

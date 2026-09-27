@@ -369,7 +369,8 @@ completed at 19:37:50 and the button "had still not flipped" fourteen seconds
 later — is wrong, and both failure hierarchy dumps disprove it. Each shows root
 bounds `[0,-680][1009,625]`, i.e. the page pinned at MAXIMUM SCROLL, with
 `Set attributes panel` as the first thing on screen at y=49 and its
-`Clear base set from Base` control present: the mapping had landed, the button
+`Clear base set from Base` control present (a control NEO-306 has since
+retired; a base row now carries only its `Base set` tag): the mapping had landed, the button
 read `Re-map Base`, and it was simply ABOVE the top of the viewport. The step
 scrolls DOWN, and `scrollUntilVisible` with `direction: DOWN` only ever travels
 away from an anchor that sits above the current position — so it burned all
