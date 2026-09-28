@@ -71,25 +71,35 @@ done
 echo "service=$SERVICE project=$PROJECT region=$REGION keep=$KEEP apply=$APPLY"
 echo
 
-SVC_JSON="$(gcloud run services describe "$SERVICE" \
-  --project="$PROJECT" --region="$REGION" --format=json)"
-REV_JSON="$(gcloud run revisions list --service="$SERVICE" \
-  --project="$PROJECT" --region="$REGION" --format=json)"
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+
+# Fleets with many revisions (dev has produced 400+KB of revision JSON) blow
+# past Linux's per-string exec limit (MAX_ARG_STRLEN, ~128KiB) if the JSON is
+# handed to python3 via an environment variable — execve then fails with
+# E2BIG ("Argument list too long"), which bash reports as exit 126. Writing
+# the JSON to files and handing python3 only the (tiny) file PATHS avoids
+# that ceiling entirely; there is no limit on file contents.
+gcloud run services describe "$SERVICE" \
+  --project="$PROJECT" --region="$REGION" --format=json \
+  > "$WORK/svc.json"
+gcloud run revisions list --service="$SERVICE" \
+  --project="$PROJECT" --region="$REGION" --format=json \
+  > "$WORK/rev.json"
 
 # The plan is computed in Python: the tag/traffic/minScale correlation is too
 # fiddly for shell, and getting it wrong here deletes a live revision. Python
 # prints the report itself and drops two machine-readable files for the apply
 # phase, so no JSON has to survive a round-trip through shell quoting.
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
-SVC_JSON="$SVC_JSON" REV_JSON="$REV_JSON" KEEP="$KEEP" WORK="$WORK" python3 <<'PY'
+if ! KEEP="$KEEP" WORK="$WORK" python3 >"$WORK/plan.out" 2>"$WORK/plan.err" <<'PY'
 import json, os
 
-svc  = json.loads(os.environ["SVC_JSON"])
-revs = json.loads(os.environ["REV_JSON"])
-keep = int(os.environ["KEEP"])
 work = os.environ["WORK"]
+with open(os.path.join(work, "svc.json")) as f:
+    svc = json.load(f)
+with open(os.path.join(work, "rev.json")) as f:
+    revs = json.load(f)
+keep = int(os.environ["KEEP"])
 
 traffic = svc["status"].get("traffic", [])
 # Any revision with a non-zero percent is live. Treat missing percent as 0.
@@ -142,6 +152,12 @@ with open(os.path.join(work, "tags.txt"), "w") as f:
 with open(os.path.join(work, "revisions.txt"), "w") as f:
     f.write("\n".join(r["name"] for r in deletable))
 PY
+then
+  echo "ERROR: failed to compute the revision GC plan (python3 exited $?):" >&2
+  cat "$WORK/plan.err" >&2
+  exit 2
+fi
+cat "$WORK/plan.out"
 
 if [[ "$APPLY" != true ]]; then
   echo "DRY RUN — nothing changed. Re-run with --apply to execute."
