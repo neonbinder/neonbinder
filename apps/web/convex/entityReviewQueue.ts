@@ -278,6 +278,9 @@ const decisionValidator = v.union(
     ),
     // NEO-254: league-kind only — the whole record. See schema.ts.
     createLeague: v.optional(leagueCreateValidator),
+    // NEO-313: player-kind only — at COMMIT, also add the set's sport to the
+    // created player's `playerSports`. Absent is a guest link. See schema.ts.
+    addSetSport: v.optional(v.boolean()),
   }),
   v.object({
     action: v.literal("link"),
@@ -288,6 +291,9 @@ const decisionValidator = v.union(
     // NEO-284: team-kind only — at COMMIT, remember the parked string as an
     // alias of `linkedTeamId`. Stored only when true. See schema.ts.
     saveAsAlias: v.optional(v.boolean()),
+    // NEO-313: player-kind only — at COMMIT, also add the set's sport to
+    // `linkedPlayerId`'s `playerSports`. Absent is a guest link. See schema.ts.
+    addSetSport: v.optional(v.boolean()),
   }),
   // NEO-212: "not a person / not a team" — the card keeps the raw name, and
   // nothing is created or linked. See schema.ts.
