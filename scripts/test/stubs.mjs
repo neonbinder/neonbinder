@@ -80,6 +80,25 @@ echo "gcloud stub: unhandled invocation: $*" >&2
 exit 3
 `;
 
+// Environment keys that must never reach the child: an exported shell
+// function (BASH_FUNC_gcloud%%=, BASH_FUNC_python3%%=) or a BASH_ENV startup
+// file can define a function named `gcloud`/`python3` that bash resolves
+// *before* consulting PATH, silently bypassing the stub in this file and
+// running the real CLI instead — and, verified empirically, bash honors
+// both regardless of --norc/--noprofile (those flags only govern
+// interactive/login startup files; BASH_ENV and inherited BASH_FUNC_*
+// exports are a separate, always-on mechanism for non-interactive shells).
+// This is the load-bearing guard; run-script.mjs's `bash --norc --noprofile`
+// is a secondary one for the startup-file path this doesn't otherwise touch.
+function withoutShellFunctionEnv(env) {
+  const clean = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (key === "BASH_ENV" || key.startsWith("BASH_FUNC_")) continue;
+    clean[key] = value;
+  }
+  return clean;
+}
+
 /**
  * Writes svc.json / rev.json fixture files plus stub `gcloud` and `python3`
  * executables into a fresh temp bin dir, and returns everything a test needs
@@ -103,12 +122,14 @@ export function makeStubEnv({ service, svc, rev, missingImages = [] }) {
 
   return {
     dir,
-    env: {
+    svcFile,
+    revFile,
+    env: withoutShellFunctionEnv({
       ...process.env,
       PATH: `${dir}:${process.env.PATH}`,
       GCLOUD_STUB_SVC_FILE: svcFile,
       GCLOUD_STUB_REV_FILE: revFile,
       GCLOUD_STUB_MISSING_IMAGES: missingImages.join(","),
-    },
+    }),
   };
 }
