@@ -1,12 +1,14 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
+import { ConvexError } from "convex/values";
 import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { Input } from "@/components/primitives";
 import { CopyButton } from "@/components/primitives/CopyButton";
 import NeonButton from "@/components/modules/NeonButton";
 import TeamPicker from "@/components/SetSelector/TeamPicker";
+import { SportTag } from "@/components/SetSelector/PlayerPicker";
 import {
   NearMatchPanel,
   type NearMatch,
@@ -53,8 +55,30 @@ import { WIKIDATA_QID, wikidataUrl } from "@/lib/players/wikidata-id";
  *     see the comment on the primary action below.
  */
 
-type Player = Omit<Doc<"players">, "createdByUserId">;
+/**
+ * NEO-313 — `alsoSportIds` is the player's ADDITIONAL sports (a multi-sport
+ * athlete: Bo Jackson, Deion Sanders), joined on by the list and the single
+ * reads. Never the home sport, which stays `sportId`. Optional so a row from
+ * `players.search`, which does not join it, is still a `Player`.
+ */
+type Player = Omit<Doc<"players">, "createdByUserId"> & {
+  alsoSportIds?: Array<Id<"selectorOptions">>;
+};
 type SportRow = Doc<"selectorOptions">;
+
+/** NEO-313 — one card that links this player, as `players.cardsForPlayer` returns it. */
+type PlayerCardRow = {
+  cardId: Id<"cardChecklist">;
+  cardNumber?: string;
+  cardName?: string;
+  selectorOptionId: Id<"selectorOptions">;
+  setLabel: string;
+  sportId: Id<"selectorOptions">;
+  sportValue: string;
+};
+
+/** `players.cardsForPlayer` answers at most this many; at the cap the panel says so. */
+const PLAYER_CARDS_CAP = 200;
 
 /** One career stint, in the shape `savePlayerFields` takes. */
 type Stint = { teamId: Id<"teams">; fromYear: number; toYear?: number };
@@ -674,13 +698,269 @@ function AddPlayerForm({
 // Detail panel
 // ---------------------------------------------------------------------------
 
+/**
+ * NEO-313 — a refusal from `players.setAdditionalSports` that means "cards
+ * still depend on this sport". Structured `data`, the only part of a
+ * ConvexError that survives production's redaction.
+ */
+function sportHasCardsRefusal(
+  e: unknown,
+): { sportId: string; count: number } | null {
+  if (!(e instanceof ConvexError)) return null;
+  const data: unknown = e.data;
+  if (
+    data &&
+    typeof data === "object" &&
+    "code" in data &&
+    data.code === "SPORT_HAS_CARDS" &&
+    "count" in data &&
+    typeof data.count === "number" &&
+    "sportId" in data &&
+    typeof data.sportId === "string"
+  ) {
+    return { sportId: data.sportId, count: data.count };
+  }
+  return null;
+}
+
+/**
+ * NEO-313 — the player's sports: the home sport, fixed, and any additional
+ * ones for a multi-sport athlete (case B — Bo Jackson plays for the Royals AND
+ * the Raiders). A player who belongs to Baseball through this list IS a
+ * baseball player: a baseball set's lookup finds him without a review step.
+ *
+ * Written straight through `players.setAdditionalSports`, not through the
+ * panel's Save: membership is its own write with its own refusal (a sport
+ * cannot be removed while cards in that sport's sets still link here), and
+ * folding it into the draft would make one Save report two unrelated answers.
+ *
+ * Buttons rather than a `<select>`: the screen's sport filter is already the
+ * page's one native select, and Maestro can only ever reach the first. Sports
+ * are a small, fixed set, so a short row of buttons is the right control.
+ */
+function PlayerSportsField({
+  player,
+  sports,
+  sportNameById,
+}: {
+  player: Player;
+  sports: SportRow[];
+  sportNameById: Map<string, string>;
+}) {
+  const setAdditionalSports = useMutation(api.players.setAdditionalSports);
+  const [choosing, setChoosing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<Status>(null);
+  const addSportButtonRef = useRef<HTMLButtonElement>(null);
+  const labelId = useId();
+
+  const held = useMemo(() => player.alsoSportIds ?? [], [player.alsoSportIds]);
+  const addable = useMemo(
+    () =>
+      sports
+        .filter((s) => s._id !== player.sportId && !held.includes(s._id))
+        .sort((a, b) => a.value.localeCompare(b.value)),
+    [sports, held, player.sportId],
+  );
+  const nameOf = (id: string) => sportNameById.get(id) ?? "that sport";
+
+  const write = async (next: Array<Id<"selectorOptions">>, done: string) => {
+    if (busy) return;
+    setBusy(true);
+    setMessage(null);
+    try {
+      await setAdditionalSports({ playerId: player._id, sportIds: next });
+      setMessage({ text: done, isError: false });
+    } catch (e) {
+      const refusal = sportHasCardsRefusal(e);
+      setMessage({
+        text: refusal
+          ? `${refusal.count} ${refusal.count === 1 ? "card" : "cards"} in ${nameOf(refusal.sportId)} sets still link to ${player.name}. Unlink those first; they're listed under Cards.`
+          : userFacingMessage(e, "Could not update their sports."),
+        isError: true,
+      });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = async (id: Id<"selectorOptions">) => {
+    setChoosing(false);
+    await write([...held, id], `Added ${nameOf(id)}.`);
+    setTimeout(() => addSportButtonRef.current?.focus(), 0);
+  };
+
+  const remove = (id: Id<"selectorOptions">) =>
+    void write(
+      held.filter((h) => h !== id),
+      `Removed ${nameOf(id)}.`,
+    );
+
+  return (
+    <div role="group" aria-labelledby={labelId} className="space-y-2">
+      <span id={labelId} className="block text-sm font-medium text-slate-300">
+        Sports
+      </span>
+      <div className="flex flex-wrap items-center gap-2">
+        {/* The home sport: fixed, and the one every automated lookup scopes by. */}
+        <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-800 bg-slate-950 px-2.5 py-1 text-sm text-slate-300">
+          {nameOf(player.sportId)}
+          <span className="text-xs text-slate-400">home</span>
+        </span>
+        {held.map((id) => (
+          <span
+            key={id}
+            className="inline-flex items-center gap-1 rounded-full border border-slate-700 bg-slate-900 py-1 pl-2.5 pr-1 text-sm text-slate-200"
+          >
+            {nameOf(id)}
+            <button
+              type="button"
+              onClick={() => remove(id)}
+              aria-disabled={busy || undefined}
+              aria-label={`Remove sport ${nameOf(id)}`}
+              className="min-h-6 min-w-6 rounded-full text-slate-400 transition-colors hover:bg-neon-pink/10 hover:text-neon-pink focus:outline-none focus:ring-2 focus:ring-neon-pink"
+            >
+              ×
+            </button>
+          </span>
+        ))}
+        {addable.length > 0 && (
+          <button
+            ref={addSportButtonRef}
+            type="button"
+            onClick={() => setChoosing((c) => !c)}
+            aria-expanded={choosing}
+            aria-disabled={busy || undefined}
+            className="min-h-6 rounded-full border border-dashed border-slate-500 px-2.5 py-1 text-sm text-slate-300 transition-colors hover:border-neon-green hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green"
+          >
+            Add sport
+          </button>
+        )}
+      </div>
+
+      {choosing && (
+        <div
+          role="group"
+          aria-label="Sports to add"
+          className="flex flex-wrap gap-2"
+          onKeyDown={(e) => {
+            if (e.key !== "Escape") return;
+            e.preventDefault();
+            setChoosing(false);
+            addSportButtonRef.current?.focus();
+          }}
+        >
+          {addable.map((s) => (
+            <button
+              key={s._id}
+              type="button"
+              onClick={() => void add(s._id)}
+              aria-disabled={busy || undefined}
+              aria-label={`Add sport ${s.value}`}
+              className="min-h-6 rounded-full border border-slate-700 px-2.5 py-1 text-sm text-slate-200 transition-colors hover:border-neon-green hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green"
+            >
+              + {s.value}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {message && (
+        <p
+          role={message.isError ? "alert" : "status"}
+          className={`text-sm ${message.isError ? "text-neon-pink" : "text-slate-400"}`}
+        >
+          {message.text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * NEO-313 — every card that links this player, across every set and sport.
+ *
+ * A card in another sport's set is a guest appearance (a football player in
+ * a baseball autograph book), and it carries that sport's tag so it reads as
+ * one at a glance. The set's own sport is never tagged when it is the
+ * player's home sport — that is the ordinary case and tagging it would be
+ * noise.
+ *
+ * Read-only, and capped by the server at {@link PLAYER_CARDS_CAP}: the panel
+ * says so rather than implying it has shown everything.
+ */
+function PlayerCardsSection({ player }: { player: Player }) {
+  const cards: PlayerCardRow[] | undefined = useQuery(
+    api.players.cardsForPlayer,
+    { playerId: player._id },
+  );
+
+  return (
+    <div className="space-y-3 border-t border-slate-800 pt-4">
+      <h3 className="text-base font-semibold">Cards</h3>
+      {cards === undefined ? (
+        <p className="text-sm text-slate-400">Loading cards…</p>
+      ) : cards.length === 0 ? (
+        <p className="rounded-md border border-dashed border-slate-800 px-3 py-2 text-sm text-slate-400">
+          No cards link to {player.name} yet. Link them from a set&apos;s
+          checklist.
+        </p>
+      ) : (
+        <>
+          <ul
+            aria-label={`Cards for ${player.name}`}
+            className="max-h-72 divide-y divide-slate-800 overflow-y-auto rounded-md border border-slate-800"
+          >
+            {cards.map((card) => (
+              <li
+                key={card.cardId}
+                className="grid grid-cols-[3.5rem_minmax(0,1fr)] gap-x-2 px-3 py-1.5 text-sm"
+              >
+                <span className="tabular-nums text-slate-400">
+                  {card.cardNumber ? `#${card.cardNumber}` : ""}
+                </span>
+                <span className="min-w-0">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <span className="truncate text-slate-200">
+                      {card.cardName || "Untitled card"}
+                    </span>
+                    {card.sportId !== player.sportId && (
+                      <SportTag label={card.sportValue} className="shrink-0" />
+                    )}
+                  </span>
+                  <span
+                    className="block truncate text-xs text-slate-400"
+                    title={card.setLabel}
+                  >
+                    {card.setLabel}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+          {cards.length >= PLAYER_CARDS_CAP && (
+            <p className="text-xs text-slate-400">
+              Showing the first {PLAYER_CARDS_CAP} cards.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function PlayerDetail({
   player,
   sportLabel,
+  sports,
+  sportNameById,
   onSelect,
 }: {
   player: Player;
   sportLabel: string;
+  /** NEO-313: every sport row, for the Sports field's "Add sport" choices. */
+  sports: SportRow[];
+  sportNameById: Map<string, string>;
   onSelect: (id: Id<"players">) => void;
 }) {
   const savePlayerFields = useMutation(api.players.savePlayerFields);
@@ -1226,6 +1506,14 @@ function PlayerDetail({
         </div>
       )}
 
+      {/* NEO-313 — below the identity fields rather than beside the home
+          sport, so nothing above it moves for the flows that drive them. */}
+      <PlayerSportsField
+        player={player}
+        sports={sports}
+        sportNameById={sportNameById}
+      />
+
       {/* A hairline, not a card: the career history is a second subject within
           the same panel, and boxing it would have implied a second surface. */}
       <div className="space-y-3 border-t border-slate-800 pt-4">
@@ -1390,6 +1678,11 @@ function PlayerDetail({
           {status.text}
         </p>
       )}
+
+      {/* NEO-313 — after the action row: the cards are read-only and not part
+          of what Save writes, so they sit below it rather than between the
+          fields and their button. */}
+      <PlayerCardsSection player={player} />
     </div>
   );
 }
@@ -1800,6 +2093,10 @@ export default function PlayerManagement() {
                 const isSelected = player._id === selectedId;
                 const sportLabel =
                   sportNameById.get(player.sportId as string) ?? "";
+                const alsoLabel = ((player as Player).alsoSportIds ?? [])
+                  .map((id) => sportNameById.get(id as string))
+                  .filter((n): n is string => !!n)
+                  .join(", ");
                 const rowTeamId = rowTeamIdByPlayer.get(player._id as string);
                 const rowTeam = rowTeamId
                   ? rowTeamById.get(rowTeamId as string)
@@ -1862,6 +2159,16 @@ export default function PlayerManagement() {
                           <span className="shrink-0 text-slate-400">
                             {sportLabel}
                           </span>
+                        )}
+                        {/* NEO-313 — a multi-sport athlete's other sports,
+                            quiet and after the home one. A guest appearance
+                            (a football player on one baseball card) never
+                            gets this: it is not membership. */}
+                        {alsoLabel && (
+                          <SportTag
+                            label={`Also: ${alsoLabel}`}
+                            className="shrink-0"
+                          />
                         )}
                         {/* NEO-254 — the ONE fact NEO-235 moved out of this row
                             that belongs back in it. That edit's rule was "the
@@ -1955,6 +2262,8 @@ export default function PlayerManagement() {
               sportLabel={
                 sportNameById.get(selected.sportId as string) ?? "unknown"
               }
+              sports={sportList}
+              sportNameById={sportNameById}
               onSelect={selectPlayer}
             />
           ) : (

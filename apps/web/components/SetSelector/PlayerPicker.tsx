@@ -9,7 +9,102 @@ import {
   nameMatchesQuery,
 } from "../../lib/entities/name-search";
 import { normalizeEntityName } from "../../lib/entities/normalize-name";
+import { contrastRatio, normalizeHexColor } from "../../lib/print/contrast";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
+import SportSwitch from "./SportSwitch";
+
+/**
+ * NEO-313 — a player row as the cross-sport search returns it. `players.search`
+ * adds the sport's display value and a pre-resolved career line, so a result
+ * from another sport can say WHICH Adrian Peterson it is without a second
+ * round-trip per row. Both optional: the set-sport pool (`players.list`) has
+ * neither, and this one type serves both pools.
+ */
+type PickerPlayerRow = {
+  _id: Id<"players">;
+  name: string;
+  sportId: Id<"selectorOptions">;
+  sportValue?: string;
+  stints?: Array<{
+    label: string;
+    primaryColor?: string;
+    fromYear: number;
+    toYear?: number;
+  }>;
+};
+
+/**
+ * NEO-313 — the quiet sport marker on anything that is NOT from the sport the
+ * picker is anchored to: a cross-sport result, a chip for a guest player or
+ * team, a card in another sport's set.
+ *
+ * A hairline stamp rather than a filled pill, so it reads as a qualifier of
+ * the name beside it and never as a second thing to press. Only ever rendered
+ * when it carries information — the set's own sport is never tagged, because
+ * then every row would carry it and it would stop meaning anything.
+ */
+export function SportTag({
+  label,
+  className = "",
+}: {
+  label: string;
+  className?: string;
+}) {
+  return (
+    <span
+      className={`inline-block rounded-sm border border-gray-400 dark:border-gray-500 px-1 text-[10px] font-normal leading-4 text-gray-700 dark:text-gray-300 align-middle ${className}`}
+    >
+      {label}
+    </span>
+  );
+}
+
+/**
+ * {@link SportTag} for a bare sport id. Its own component so the sport list is
+ * subscribed ONLY when a tag is actually on screen — the set-sport default path
+ * (every picker, nearly always) never reads it. Convex de-duplicates identical
+ * subscriptions, so a popover full of tags is still one query.
+ */
+export function SportTagById({
+  sportId,
+  className,
+}: {
+  sportId: Id<"selectorOptions">;
+  className?: string;
+}) {
+  const sports = useQuery(api.selectorOptions.getSelectorOptions, {
+    level: "sport",
+  });
+  const label = sports?.find((s) => s._id === sportId)?.value;
+  if (!label) return null;
+  return <SportTag label={label} className={className} />;
+}
+
+/** The popover surface, and the same surface under the ArrowDown highlight. */
+const POPOVER_BG = "#1f2937";
+const POPOVER_BG_HIGHLIGHT = "#194b3e";
+
+/**
+ * A team name in its own livery when the colour reads on both backgrounds the
+ * row can sit on (SC 1.4.3, 4.5:1); otherwise null and the row stays muted.
+ * The name is the information, the colour is only the nod.
+ */
+function liveryColor(primary: string | undefined): string | null {
+  if (!primary) return null;
+  const hex = normalizeHexColor(primary);
+  if (!hex) return null;
+  for (const bg of [POPOVER_BG, POPOVER_BG_HIGHLIGHT]) {
+    const ratio = contrastRatio(hex, bg);
+    if (ratio === null || ratio < 4.5) return null;
+  }
+  return hex;
+}
+
+/** A stable empty pool, so a switched-but-untyped popover does not re-memo. */
+const NO_ROWS: PickerPlayerRow[] = [];
+
+/** At most this many career stints on a cross-sport result's second line. */
+const RESULT_STINT_LIMIT = 3;
 
 /**
  * NEO-220 — the four container-level accessible names, overridable per
@@ -106,7 +201,7 @@ export default function PlayerPicker({
   labels?: PlayerPickerLabels;
 }) {
   const selectedRows = useQuery(api.players.getManyByIds, { ids: value });
-  const candidates = useQuery(
+  const setSportPool = useQuery(
     api.players.list,
     sportId ? { sportId, limit: 500 } : { limit: 500 },
   );
@@ -114,6 +209,53 @@ export default function PlayerPicker({
 
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [query, setQuery] = useState("");
+
+  /**
+   * NEO-313 — the sport this popover is searching. Starts as, and returns to,
+   * the set's sport: every open of the popover resets it (see the trigger's
+   * `onClick`), and so does a new `sportId` arriving for a different card. The
+   * switch is an override the operator has to reach for every time — nothing
+   * here remembers a previous cross-sport pick.
+   *
+   * Reset during render rather than in an effect when the prop moves — React's
+   * "adjust state when a prop changes" pattern, as elsewhere in this directory.
+   */
+  const [searchSportId, setSearchSportId] = useState(sportId);
+  const [anchorSportId, setAnchorSportId] = useState(sportId);
+  if (anchorSportId !== sportId) {
+    setAnchorSportId(sportId);
+    setSearchSportId(sportId);
+  }
+  const activeSportId = searchSportId ?? sportId;
+  /** Searching a sport other than the set's. Only ever the operator's doing. */
+  const crossSport =
+    !!sportId && !!activeSportId && activeSportId !== sportId;
+
+  /**
+   * NEO-313 — a cross-sport search goes to the server's search index, never to
+   * a second 500-row pool: this is the rare path, and it should cost nothing
+   * until the operator has switched AND typed. `players.search` also brings
+   * each row's sport and career line, which is what tells a guest apart.
+   */
+  const crossSportResults: PickerPlayerRow[] | undefined = useQuery(
+    api.players.search,
+    crossSport && activeSportId && query.trim()
+      ? { query: query.trim(), sportId: activeSportId, limit: 10 }
+      : "skip",
+  );
+  /**
+   * One pool for everything downstream — options, the exact-match check, the
+   * create offer — so they cannot disagree about which sport they describe.
+   */
+  const candidates: PickerPlayerRow[] | undefined = useMemo(
+    () =>
+      crossSport
+        ? query.trim()
+          ? crossSportResults
+          : NO_ROWS
+        : setSportPool,
+    [crossSport, query, crossSportResults, setSportPool],
+  );
   const [highlightIdx, setHighlightIdx] = useState(0);
   const [creating, setCreating] = useState(false);
   /**
@@ -200,6 +342,22 @@ export default function PlayerPicker({
     return map;
   }, [selectedRows]);
 
+  /**
+   * NEO-313 — the selected players whose sport is not the set's: a guest
+   * appearance. Their chip carries the sport so the card never reads as if a
+   * football player had been filed under baseball.
+   */
+  const guestSportById = useMemo(() => {
+    const map = new Map<string, Id<"selectorOptions">>();
+    if (!sportId) return map;
+    for (const row of selectedRows ?? []) {
+      if (row.sportId !== sportId) {
+        map.set(row._id as unknown as string, row.sportId);
+      }
+    }
+    return map;
+  }, [selectedRows, sportId]);
+
   const matches = useMemo(() => {
     if (!candidates) return [];
     const selectedSet = new Set(value as unknown as string[]);
@@ -247,7 +405,7 @@ export default function PlayerPicker({
   // stays mounted and announces itself `aria-disabled` instead; the `creating`
   // guard inside `createAndAdd` is what actually blocks a second submit.
   const showCreateOption =
-    query.trim().length > 0 && !hasExactMatch && !!sportId;
+    query.trim().length > 0 && !hasExactMatch && !!activeSportId;
 
   const removeChip = (idToRemove: Id<"players">) => {
     if (disabled) return;
@@ -271,8 +429,11 @@ export default function PlayerPicker({
     setCreating(true);
     setCreateError(null);
     try {
-      if (!sportId) return;
-      const id = await findOrCreate({ name, sportId });
+      if (!activeSportId) return;
+      // NEO-313: created in the sport being SEARCHED. After a switch that is
+      // the operator's explicit choice, and the new player is filed under it —
+      // never under the set's sport by default.
+      const id = await findOrCreate({ name, sportId: activeSportId });
       addChip(id);
     } catch (err) {
       // The ConvexError's `data`, never `.message`: production redacts a plain
@@ -348,6 +509,11 @@ export default function PlayerPicker({
           >
             {labelById.get(id as unknown as string) ?? "Loading…"}
           </span>
+          {guestSportById.has(id as unknown as string) && (
+            <SportTagById
+              sportId={guestSportById.get(id as unknown as string)!}
+            />
+          )}
           <button
             type="button"
             disabled={disabled}
@@ -365,7 +531,11 @@ export default function PlayerPicker({
           ref={triggerRef}
           type="button"
           disabled={disabled}
-          onClick={() => setPopoverOpen(true)}
+          onClick={() => {
+            // NEO-313: every open starts on the set's sport.
+            setSearchSportId(sportId);
+            setPopoverOpen(true);
+          }}
           // NEO-272: Tab from the trigger lands in the popover, which is what
           // DOM order did for free until the popover was portalled to the end
           // of `document.body`. The way back out is `PickerPopover`'s own Tab
@@ -482,6 +652,43 @@ export default function PlayerPicker({
                 }`}
               >
                 {m.name}
+                {/* NEO-313 — only on a cross-sport search: the sport, then
+                    the career line that tells two same-name men apart. Never
+                    on the set-sport path, whose rows are exactly as before. */}
+                {crossSport && (
+                  <>
+                    {m.sportValue ? (
+                      <SportTag label={m.sportValue} className="ml-2" />
+                    ) : (
+                      <SportTagById sportId={m.sportId} className="ml-2" />
+                    )}
+                    {m.stints && m.stints.length > 0 && (
+                      <span className="mt-0.5 block truncate text-[11px] text-gray-600 dark:text-gray-400">
+                        {m.stints.slice(0, RESULT_STINT_LIMIT).map((st, i) => {
+                          const color = liveryColor(st.primaryColor);
+                          return (
+                            <span key={i}>
+                              {i > 0 && ", "}
+                              <span
+                                style={color ? { color } : undefined}
+                                className={color ? "" : "text-gray-700 dark:text-gray-300"}
+                              >
+                                {st.label}
+                              </span>{" "}
+                              <span className="tabular-nums">
+                                {st.toYear === undefined
+                                  ? `${st.fromYear}–`
+                                  : st.toYear === st.fromYear
+                                    ? `${st.fromYear}`
+                                    : `${st.fromYear}–${st.toYear}`}
+                              </span>
+                            </span>
+                          );
+                        })}
+                      </span>
+                    )}
+                  </>
+                )}
               </button>
             ))}
             {showCreateOption && (
@@ -506,7 +713,35 @@ export default function PlayerPicker({
                 }`}
               >
                 {creating ? "Creating…" : `+ Create "${query.trim()}"`}
+                {/* NEO-313: after a switch, say where the new player goes. */}
+                {crossSport && activeSportId && !creating && (
+                  <SportTagById sportId={activeSportId} className="ml-2" />
+                )}
               </button>
+            )}
+
+            {/* NEO-313 — the cross-sport override, last in the popover and
+                quiet on purpose: it is used rarely, it must never be the
+                default focus (the search box keeps that), and it sits below
+                the rows so the options land where they always have. Tab from
+                the last option reaches it; Tab again leaves the picker. */}
+            {sportId && (
+              <div className="border-t border-gray-200 dark:border-gray-700 px-2 pt-1">
+                <SportSwitch
+                  // Only one picker's popover is ever open, but the review
+                  // wizard's own switch ("Sport for this name") can share the
+                  // screen, so this one is worded apart from it.
+                  label="Sport to search for players"
+                  value={activeSportId ?? sportId}
+                  setSportId={sportId}
+                  disabled={disabled}
+                  onChange={(next) => {
+                    setSearchSportId(next);
+                    setHighlightIdx(0);
+                    setCreateError(null);
+                  }}
+                />
+              </div>
             )}
           </PickerPopover>
         )}
