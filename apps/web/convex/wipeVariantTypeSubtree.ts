@@ -113,6 +113,9 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { selectorOptionLevelValidator } from "./schema";
 import { selectorValueKey } from "./selectorSyncMatch";
+// NEO-313 — the derived player → cards index goes with each wiped card,
+// through the table's own helper (`cardPlayerLinks.pin.test.ts`).
+import { deleteCardPlayerLinks } from "./cardPlayerLinks";
 
 // ───────────────────────────────────────────────────────────────────────────
 // The reference graph
@@ -144,6 +147,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "both directions deleted: a subtree card's junctions, and junctions listing an outside card into a subtree row (the outside card stays)",
   },
+  cardPlayerLinks: {
+    fields: ["cardChecklistId", "sportId"],
+    handling:
+      "NEO-313 derived index: a wiped card's rows are deleted with it, in the same transaction; sportId is sport-level",
+  },
   entityReviewQueue: {
     fields: [
       "selectorOptionId",
@@ -169,6 +177,10 @@ export const SUBTREE_REFERENCE_GRAPH = {
   playerAliases: {
     fields: ["sportId"],
     handling: "sport-level only. Untouched",
+  },
+  playerSports: {
+    fields: ["sportId"],
+    handling: "NEO-313; sport-level only. Untouched",
   },
   teams: {
     fields: ["sportId"],
@@ -198,6 +210,8 @@ export const WIPED_TABLES = [
   "selectorOptions",
   "cardChecklist",
   "cardCrossListings",
+  // NEO-313 — rows deleted with their card; see the graph above.
+  "cardPlayerLinks",
   "entityReviewQueue",
   "checklistCandidates",
   "entityReviewSkips",
@@ -1062,6 +1076,7 @@ export const wipeCardsPage = internalMutation({
     const deleted = new Set<string>();
     const deletedCards: string[] = [];
     const deletedLinks: string[] = [];
+    const deletedPlayerLinks: string[] = [];
     const dropCard = async (card: Doc<"cardChecklist">): Promise<void> => {
       const links = await ctx.db
         .query("cardCrossListings")
@@ -1073,6 +1088,10 @@ export const wipeCardsPage = internalMutation({
         deletedLinks.push(link._id);
         ops += 1;
       }
+      // NEO-313: one index read plus a delete per player on the card.
+      const playerLinks = await deleteCardPlayerLinks(ctx, card._id);
+      deletedPlayerLinks.push(...playerLinks);
+      ops += 1 + playerLinks.length;
       await ctx.db.delete(card._id);
       deleted.add(card._id);
       deletedCards.push(card._id);
@@ -1128,6 +1147,7 @@ export const wipeCardsPage = internalMutation({
     }
 
     logDeleted(args.variantTypeId, "cardCrossListings", deletedLinks);
+    logDeleted(args.variantTypeId, "cardPlayerLinks", deletedPlayerLinks);
     logDeleted(args.variantTypeId, "cardChecklist", deletedCards);
     return {
       cardChecklist: deletedCards.length,

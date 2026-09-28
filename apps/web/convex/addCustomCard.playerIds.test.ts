@@ -259,48 +259,61 @@ describe("addCustomCard — playerIds validation", () => {
     expect(await allCards(t)).toHaveLength(0);
   });
 
-  test("rejects a player from another sport, and writes NO card at all", async () => {
+  test("NEO-313: accepts a player from another sport as a guest link, and indexes it under the CARD's sport", async () => {
+    // A football player on a baseball card is a guest appearance: the operator
+    // reached him through the picker's explicit sport switch, and his own
+    // sport is untouched. Before NEO-313 this was refused.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { leafId } = await seedTree(t); // Baseball
+    const { sportId, leafId } = await seedTree(t); // Baseball
     const basketballSportId = await insertOtherSport(t, "Basketball");
     const lebron = await insertPlayer(t, basketballSportId, "LeBron James");
 
-    await expect(
-      asAdmin.mutation(api.selectorOptions.addCustomCard, {
-        selectorOptionId: leafId,
-        cardNumber: "611",
-        cardName: "Nope",
-        playerIds: [lebron],
-      }),
-    ).rejects.toThrow(/not a player in this card's sport/);
+    const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "611",
+      cardName: "Guest",
+      playerIds: [lebron],
+    });
 
-    expect(await allCards(t)).toHaveLength(0);
+    const cards = await allCards(t);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].playerIds).toEqual([lebron]);
+    const { player, links } = await t.run(async (ctx) => ({
+      player: await ctx.db.get(lebron),
+      links: await ctx.db
+        .query("cardPlayerLinks")
+        .withIndex("by_card", (q) => q.eq("cardChecklistId", cardId))
+        .collect(),
+    }));
+    // His sport is untouched.
+    expect(player?.sportId).toBe(basketballSportId);
+    // The index row carries the CARD's sport, not his.
+    expect(links.map((l) => [l.playerId, l.sportId])).toEqual([[lebron, sportId]]);
   });
 
-  test("rejects a same-NAMED player from another sport — the check is by sportId, never by name", async () => {
-    // Two rows can legitimately share a display name across sports. This pins
-    // that `resolvePlayerIdsForWrite` compares `player.sportId`, not
-    // `player.name` — a name-based check would let the wrong-sport id through
-    // whenever the names happened to collide. Card numbers are never unique
-    // and neither are names; only ids are.
+  test("links exactly the id it is given when a same-NAMED player exists in the card's sport — ids, never names", async () => {
+    // Two rows can legitimately share a display name across sports. The write
+    // keeps the id the operator picked; it never swaps it for the same-named
+    // row in the card's own sport. Card numbers are never unique and neither
+    // are names; only ids are.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, leafId } = await seedTree(t); // Baseball
     const otherSportId = await insertOtherSport(t, "Other Sport");
     await insertPlayer(t, sportId, "Chris Davis");
-    const wrongSportDavis = await insertPlayer(t, otherSportId, "Chris Davis");
+    const otherSportDavis = await insertPlayer(t, otherSportId, "Chris Davis");
 
-    await expect(
-      asAdmin.mutation(api.selectorOptions.addCustomCard, {
-        selectorOptionId: leafId,
-        cardNumber: "612",
-        cardName: "Nope",
-        playerIds: [wrongSportDavis],
-      }),
-    ).rejects.toThrow(/not a player in this card's sport/);
+    await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "612",
+      cardName: "Guest",
+      playerIds: [otherSportDavis],
+    });
 
-    expect(await allCards(t)).toHaveLength(0);
+    const cards = await allCards(t);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].playerIds).toEqual([otherSportDavis]);
   });
 
   test("dedupes duplicate ids before writing, preserving first-seen order", async () => {

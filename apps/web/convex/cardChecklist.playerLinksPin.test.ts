@@ -70,7 +70,9 @@ describe("NEO-254: no writer sets playerIds without playerLinks", () => {
       SRC.indexOf("export const addCustomCard"),
     );
     expect(helper).toContain("const links = ids.map(");
-    expect(helper).toContain("return { ids, names, links };");
+    // NEO-313 appended the walked sport to the same return; the three lists
+    // are still returned from the one derivation.
+    expect(helper).toMatch(/return \{ ids, names, links[ ,}]/);
   });
 
   test("playerLinks is never an independently diffed content field", () => {

@@ -2199,6 +2199,9 @@ export async function runEntityReviewLookupImpl(
         ctx.runMutation(internal.entityReviewQueue.applyLookupResult, {
           id: args.rowId,
           ...payload,
+          // NEO-313 — the sport this answer is about. A row the operator
+          // switched to another sport while this ran drops it.
+          sportId: row.sportId,
         }),
       occRetry,
     );

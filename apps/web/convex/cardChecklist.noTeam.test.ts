@@ -574,7 +574,7 @@ describe("updateCard — team validation", () => {
     expect(row!.teamOnCardIds).toBeUndefined();
   });
 
-  test("rejects a team from a different sport than the card's, and writes nothing", async () => {
+  test("NEO-313: accepts a team from a different sport than the card's (a guest appearance)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { leafId } = await seedTree(t); // Baseball
@@ -590,15 +590,15 @@ describe("updateCard — team validation", () => {
     );
     const lakers = await insertTeam(t, basketballSportId, "Los Angeles Lakers");
 
-    await expect(
-      asAdmin.mutation(api.selectorOptions.updateCard, {
-        id: cardId,
-        teamOnCardIds: [lakers],
-      }),
-    ).rejects.toThrow(/not a team in this card's sport/);
+    // NEO-313: a card may carry a team from another sport (a football
+    // player's guest card shows his football team) — accepted, by id.
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      teamOnCardIds: [lakers],
+    });
 
     const row = await getCard(t, cardId);
-    expect(row!.teamOnCardIds).toBeUndefined();
+    expect(row!.teamOnCardIds).toEqual([lakers]);
   });
 
   test("accepts a team that matches the card's own sport", async () => {
@@ -999,7 +999,7 @@ describe("addCustomCard — team ids (NEO-208)", () => {
     expect(await allCards(t)).toHaveLength(0);
   });
 
-  test("rejects a team from another sport, and writes NO card at all", async () => {
+  test("NEO-313: accepts a team from another sport on a new card (a guest appearance)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { leafId } = await seedTree(t); // Baseball
@@ -1014,24 +1014,23 @@ describe("addCustomCard — team ids (NEO-208)", () => {
     );
     const lakers = await insertTeam(t, basketballSportId, "Los Angeles Lakers");
 
-    await expect(
-      asAdmin.mutation(api.selectorOptions.addCustomCard, {
-        selectorOptionId: leafId,
-        cardNumber: "505",
-        cardName: "Nope",
-        teamOnCardIds: [lakers],
-      }),
-    ).rejects.toThrow(/not a team in this card's sport/);
+    await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "505",
+      cardName: "Guest",
+      teamOnCardIds: [lakers],
+    });
 
-    expect(await allCards(t)).toHaveLength(0);
+    const cards = await allCards(t);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].teamOnCardIds).toEqual([lakers]);
   });
 
-  test("rejects a same-NAMED team from another sport — the check is by sportId, never by name", async () => {
+  test("links exactly the team id it is given when a same-NAMED team exists in the card's sport — ids, never names", async () => {
     // Two rows can legitimately share a display name across sports (a
-    // "Yankees" in a minor league, say). This pins that
-    // `resolveTeamOnCardIdsForWrite` compares `team.sportId`, not
-    // `team.name` — a name-based check would let the wrong-sport id through
-    // whenever the names happened to collide.
+    // "Yankees" in a minor league, say). NEO-313 lets a card carry another
+    // sport's team; the write must keep the id the operator picked and never
+    // swap it for the same-named row in the card's own sport.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, leafId } = await seedTree(t); // Baseball
@@ -1048,16 +1047,16 @@ describe("addCustomCard — team ids (NEO-208)", () => {
     await insertTeam(t, sportId, "Yankees");
     const wrongSportYankees = await insertTeam(t, otherSportId, "Yankees");
 
-    await expect(
-      asAdmin.mutation(api.selectorOptions.addCustomCard, {
-        selectorOptionId: leafId,
-        cardNumber: "5051",
-        cardName: "Nope",
-        teamOnCardIds: [wrongSportYankees],
-      }),
-    ).rejects.toThrow(/not a team in this card's sport/);
+    await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: leafId,
+      cardNumber: "5051",
+      cardName: "Guest",
+      teamOnCardIds: [wrongSportYankees],
+    });
 
-    expect(await allCards(t)).toHaveLength(0);
+    const cards = await allCards(t);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].teamOnCardIds).toEqual([wrongSportYankees]);
   });
 
   test("dedupes duplicate ids before writing, preserving first-seen order", async () => {

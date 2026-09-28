@@ -305,6 +305,8 @@ async function seed(t: T): Promise<Fixture> {
           cards.p2c1,
         ],
         cardCrossListings: [xOut, xIn, xInternal],
+        // NEO-313 — the fixture's cards are inserted directly, so no index rows.
+        cardPlayerLinks: [],
         entityReviewQueue: [qPlayer, qTeam],
         checklistCandidates: [cand],
         entityReviewSkips: [skipIn],

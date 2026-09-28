@@ -41,6 +41,7 @@ import type * as bscFacets from "../bscFacets.js";
 import type * as bulkLoad from "../bulkLoad.js";
 import type * as cardChecklist from "../cardChecklist.js";
 import type * as cardNumberPrefix from "../cardNumberPrefix.js";
+import type * as cardPlayerLinks from "../cardPlayerLinks.js";
 import type * as checklistCandidates from "../checklistCandidates.js";
 import type * as credentials from "../credentials.js";
 import type * as crons from "../crons.js";
@@ -159,6 +160,7 @@ declare const fullApi: ApiFromModules<{
   bulkLoad: typeof bulkLoad;
   cardChecklist: typeof cardChecklist;
   cardNumberPrefix: typeof cardNumberPrefix;
+  cardPlayerLinks: typeof cardPlayerLinks;
   checklistCandidates: typeof checklistCandidates;
   credentials: typeof credentials;
   crons: typeof crons;
