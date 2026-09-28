@@ -265,7 +265,7 @@ data that isn't in the table above, it must either sync it itself (and accept th
 30–90s cost, with owner approval) or — far more often the right answer — use a
 per-worker custom set (see below).
 
-### 2026 Bowman — ONE sole writer, the whole brand-year (NEO-293, NEO-300, NEO-305, NEO-306)
+### 2026 Bowman — ONE sole writer, the whole brand-year (NEO-293, NEO-300, NEO-305, NEO-306, NEO-308)
 
 `flows/set-selector/flagship-colour-is-a-parallel-both-ways.yaml` is the only
 flow on Baseball → 2026 → Bowman. It proves, in order, where each
@@ -279,8 +279,9 @@ rows across that line with their links intact:
 2. Bowman › Insert — populated by the review, so an explicit `Sync Inserts` —
    reconciles BSC's inserts with SportLots'; `Anime` and its parallels become
    NB sets ("Make its own set", "Keep all"); Group Parallels nests `Anime
-   Kanji` under `Anime`; a second `Sync Inserts` leaves the grouped rows alone
-   (NEO-293, NEO-300).
+   Kanji` under `Anime` — over 200 suggestions, so the one Save goes out as
+   several calls and a re-open finds nothing left to suggest (NEO-308); a
+   second `Sync Inserts` leaves the grouped rows alone (NEO-293, NEO-300).
 3. The promoted `Anime Kanji` keeps its BSC id as a working source: a chip
    tagged as a BSC variant, no "Needs re-mapping", Fetch from Marketplaces
    saves cards, and the chip's per-slot count is > 0 (NEO-293).
@@ -316,8 +317,8 @@ marketplace data, and the harness must never dictate the data shape.
 | -- | -- |
 | drills | Baseball → 2026 → Bowman, every level COLD on a fresh preview; under the pause the manufacturer row `Bowman` is hand-made by the drill (`CREATE_MANUFACTURER`), exactly as `Score` is for 1996 |
 | review (live) | bulk: every row → Bowman › `Parallel` (picking Bowman force-syncs its Variant Types inside the dialog, additive); row tick + bulk: `All-America Game Autos` → Bowman › `Insert`; per row: `Bowman Sterling` → its own set; saved at the 7000 bar |
-| Insert reconcile (live) | `Sync Inserts` (the column holds the review's row); filters Ready and BSC to "Anime"; `Anime` its own set when Pending; "Keep all" on the "Anime"-filtered BSC column; **saves every Ready set** (the review's row comes back restored) |
-| grouping | Group Parallels → Accept all suggestions → Save; every prefix pair nests, `Anime Kanji` and the other Anime parallels under `Anime` |
+| Insert reconcile (live) | `Sync Inserts` (the column holds the review's row); filters Ready and BSC to "Anime"; `Anime` its own set when Pending; the BSC filter cleared, then "Keep all" on the WHOLE BSC column — every pending BSC insert its own set (NEO-308; it was the "Anime"-filtered column before); **saves every Ready set** (the review's row comes back restored) |
+| grouping | Group Parallels → `Accept all suggestions (N)` with N ≥ 201, asserted → `Save N changes` → the modal closes within 7000 (the save cut into ≤200-entry calls, NEO-308); every prefix pair nests, `Anime Kanji` and the other Anime parallels under `Anime`; a re-open reads `No changes yet` with no Accept-all button (every chunk landed) and leaves through Cancel |
 | re-sync (NEO-300) | "Sync Inserts" again; live the reconcile re-opens and is saved with no edits, paused the single-platform store runs; both say "N already grouped as parallels. Leaving those be." and do not re-create a grouped row as an insert |
 | fetch | on the promoted `Anime Kanji`: the pairing dialog when SportLots paired a set with it, the one-marketplace path otherwise; the review is drained with "Skip remaining names" (no players created) |
 | Parallel reconcile (live) | `Sync Parallels` (the column holds the review's rows); BSC's `Blue` lands on the review's restored `Blue` row (attached by id, the NEO-306 reconcile fix); every Ready set saved |
@@ -331,7 +332,7 @@ all at the head of every run):
 | | |
 | -- | -- |
 | sets | `Bowman Sterling` (+ Base holding its SportLots id); no `Bowman Blue` |
-| Insert | every set the Insert reconcile saved, with the ids the sync gave it; every word-prefix pair nested by Accept All (`Anime Kanji` a parallel under `Anime`, its BSC slot tagged `variantName`); `All-America Game Autos` with the parallel `Red Ink` |
+| Insert | every set the Insert reconcile saved, with the ids the sync gave it — every pending BSC insert among them (NEO-308); every word-prefix pair nested by Accept All (`Anime Kanji` a parallel under `Anime`, its BSC slot tagged `variantName`); `All-America Game Autos` with the parallel `Red Ink` |
 | Parallel | every SportLots-only colour the review filed, plus BSC's parallels; `Blue` with BSC + SportLots links |
 | `Anime Kanji` checklist | COMMITTED, every card from BSC (plus SportLots' when paired); its unknown names SKIPPED, so no players or teams are minted |
 | never touched | Base, any other checklist, any card edit |
@@ -339,6 +340,34 @@ all at the head of every run):
 **Sole writer, fresh-only.** No other flow may drill into 2026 Bowman. A
 re-run against the same deployment finds the review saved and fails on the
 pill by name.
+
+**NEO-308 (the chunked Group Parallels save) is proven HERE, not in a flow of
+its own.** Owner's call: live, on 2026 Bowman ("it has plenty"), not a seed
+and not UI-built rows. A second flow on the brand-year was ruled out for the
+same reason NEO-306 merged two into one: Bowman › Insert only exists once
+this flow's reconcile has run, the queue orders nothing, and the grouping it
+would save is the one STEP 4 here saves. Re-runnability is the flow's
+existing one — `setup.yaml`'s reset at the head of every run; nothing
+undoes a grouping inside the run, and nothing needs to:
+
+* there is no bulk ungroup — a demotion is one `✕` or one `Select <row>`
+  tick per row (maestro-web holds no Shift, so no range select), ~2s a tap,
+  so undoing 200+ rows is 400s+ of taps;
+* a re-sync leaves grouped rows alone by design (NEO-300);
+* the only other reset is the scripted one (R7: never a flow step).
+
+What NEO-308 needed from the fixture: a plan PAST 200 entries. Kept to the
+"Anime" family, STEP 4 read `Accept all suggestions (130)` / `Save 130
+changes` (green CI 36324889198; 141 in 35948573036) — one call, proving
+nothing. STEP 2 now keeps the WHOLE pending BSC column (~140 of the 297
+items BSC answers for Bowman's insert level, same run), the shape the
+operator met on production (`Accept all suggestions (212)` → `Save 259
+changes` → refused). ⚠️ NOT YET MEASURED: the resulting suggestion count
+(STEP 4 asserts ≥ 201 and fails by name below it), the ~290-set reconcile
+save and the 200+-entry grouping save against the 7000 bar, and whether BSC
+lists a name the review already filed under Insert (a second
+`All-America Game Autos` would make STEP 14's `Add to …` ambiguous).
+Record them here after the first run.
 
 **MEASURED 2026-09-25 on PR #288's Convex preview** (local Vite → the
 preview; the review read out of `slSetReviews`, the rest from the flow's own

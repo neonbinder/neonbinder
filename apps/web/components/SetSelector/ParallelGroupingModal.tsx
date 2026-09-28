@@ -31,6 +31,7 @@ import { ConfirmDialog } from "../modules/confirm-dialog";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import { keyboardAwareCollision } from "../../lib/dnd/keyboard-aware-collision";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
+import { chunkGroupingPlan } from "../../convex/parallelGroupingPlan";
 
 /** "1 pending move" / "2 pending moves". */
 function plural(n: number, noun: string): string {
@@ -645,6 +646,16 @@ export default function ParallelGroupingModal({
   const [error, setError] = useState<string | null>(null);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * NEO-308 (a11y, WCAG 2.4.7) — where this dialog PARKS focus: on open,
+   * after Clear, and after a save that leaves Save disabled. It used to be
+   * the overlay itself, which is `outline-none` (it is the whole backdrop, so
+   * a ring on it would sit on the viewport edge) and showed nothing. The
+   * heading carries its own ring and names the dialog it is in — the
+   * `session-heading` pattern from the placeholder intake page. It sits
+   * inside the overlay, so Escape still bubbles to the overlay's handler.
+   */
+  const headingRef = useRef<HTMLHeadingElement | null>(null);
   /** What had focus before this opened, so it can go back there on close
    *  rather than falling to `<body>` (WCAG 2.4.3) — matches CardPairingModal. */
   const triggerRef = useRef<HTMLElement | null>(null);
@@ -653,6 +664,13 @@ export default function ParallelGroupingModal({
   // other tabs are intentionally ignored — re-initializing would discard the
   // user's pending edits. The modal closes after a successful confirm so a
   // re-open will fetch fresh data.
+  //
+  // NEO-308 — the one-shot init has a second trigger: a PARTIAL save. When a
+  // chunk is refused after earlier chunks landed, handleConfirm RESETs while
+  // the modal stays open; `hasInitialized` drops to false and this re-INITs
+  // from the live tree, which already holds the landed chunks. The pending
+  // moves that did not land are discarded with the old state — what is on
+  // screen is then exactly what is saved, plus fresh suggestions.
   useEffect(() => {
     if (!isOpen) return;
     if (state.hasInitialized) return;
@@ -910,13 +928,19 @@ export default function ParallelGroupingModal({
     confirmingRef.current = true;
     setConfirming(true);
     setError(null);
+    // NEO-308 — one call per chunk of at most the server's cap, in the order
+    // `chunkGroupingPlan` gives (demotions → reparentings → promotions). Each
+    // chunk is applied whole or not at all; there is deliberately no wrapper
+    // making the SAVE all-or-nothing (Jason's ruling). Sequential, never
+    // parallel: a later chunk's checks rely on the earlier ones having landed.
+    // The in-flight guard above (ref, aria-disabled Save) spans the whole loop.
+    const chunks = chunkGroupingPlan(diff);
+    let applied = 0;
     try {
-      await apply({
-        variantTypeId,
-        promotions: diff.promotions,
-        demotions: diff.demotions,
-        reparentings: diff.reparentings,
-      });
+      for (const chunk of chunks) {
+        await apply({ variantTypeId, ...chunk });
+        applied += 1;
+      }
       // Reset state so re-open rebuilds from fresh tree.
       dispatch({ type: "RESET" });
       onClose();
@@ -932,6 +956,12 @@ export default function ParallelGroupingModal({
           err instanceof Error ? err.message : "Failed to apply changes",
         ),
       );
+      // NEO-308: landed chunks are already in `tree` (a mutation promise
+      // resolves only once this client's subscriptions reflect it). Rebuild
+      // from it; a refusal with nothing landed keeps the pending moves, as
+      // before. `error` is component state, not reducer state, so the
+      // refusal stays on screen across the rebuild.
+      if (applied > 0) dispatch({ type: "RESET" });
     } finally {
       confirmingRef.current = false;
       setConfirming(false);
@@ -943,12 +973,25 @@ export default function ParallelGroupingModal({
   // put it back on Save — beside the footer where a refusal appears — rather
   // than leave a keyboard user at the top of the page. Guarded on the actual
   // blur so it never steals focus the operator moved themselves.
+  //
+  // NEO-308 — a partial save lands here with the state just RESET, so Save
+  // renders natively `disabled` ("No changes") until the rebuild, and a
+  // focused button that becomes disabled drops focus to <body> in the
+  // browser. Focus on a disabled Save, or on <body> with Save disabled, goes
+  // to the dialog's heading instead (as Clear does): still inside the
+  // dialog, where Tab and Escape work, and the refusal is announced by its
+  // role="alert" either way.
   useEffect(() => {
     const was = wasConfirmingRef.current;
     wasConfirmingRef.current = confirming;
-    if (was && !confirming && document.activeElement === document.body) {
-      saveRef.current?.focus();
+    if (!was || confirming) return;
+    const save = saveRef.current;
+    const active = document.activeElement;
+    if (active !== document.body && !(active === save && save?.disabled)) {
+      return;
     }
+    if (save && !save.disabled) save.focus();
+    else headingRef.current?.focus();
   }, [confirming]);
 
   /**
@@ -969,8 +1012,9 @@ export default function ParallelGroupingModal({
   }, [confirming, onClose, totalChanges]);
 
   /**
-   * NEO-220 — focus opens on the dialog container, and returns to whatever
-   * opened it on close.
+   * NEO-220 — focus opens inside the dialog, and returns to whatever opened
+   * it on close. NEO-308: on the heading, not the container — see
+   * `headingRef`.
    *
    * The focus-in-and-back-out half is what makes the root `onKeyDown` below
    * reachable at all: Escape is handled on the overlay element now, not on
@@ -987,7 +1031,7 @@ export default function ParallelGroupingModal({
   useEffect(() => {
     if (!isOpen) return;
     triggerRef.current = document.activeElement as HTMLElement | null;
-    overlayRef.current?.focus();
+    headingRef.current?.focus();
     return () => {
       if (triggerRef.current?.isConnected) triggerRef.current.focus();
     };
@@ -995,7 +1039,10 @@ export default function ParallelGroupingModal({
 
   if (!isOpen) return null;
 
-  const isLoading = tree === undefined;
+  // NEO-308 — also loading while the state is not built from the tree: a
+  // partial save RESETs and the INIT effect rebuilds one commit later, and
+  // without this the body painted zero rows for that commit.
+  const isLoading = tree === undefined || !state.hasInitialized;
   const suggestionCount = state.suggested.size;
   const hasSuggestions = suggestionCount > 0;
 
@@ -1072,7 +1119,9 @@ export default function ParallelGroupingModal({
       aria-labelledby="parallel-grouping-heading"
       ref={overlayRef}
       // Focusable only programmatically — it exists so Escape has somewhere to
-      // land inside this dialog rather than on `window`.
+      // land inside this dialog rather than on `window`. NEO-308: nothing
+      // parks focus here any more (see `headingRef`); it stays focusable so a
+      // pointer click on the panel's blank space keeps focus in the dialog.
       tabIndex={-1}
       onClick={requestClose}
       onKeyDown={(e) => {
@@ -1106,7 +1155,13 @@ export default function ParallelGroupingModal({
         if (focusable.length === 0) return;
         const first = focusable[0];
         const last = focusable[focusable.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
+        // NEO-308 — the heading (and the overlay) are parked-focus targets
+        // outside that list: Shift+Tab from one of them would otherwise walk
+        // out of the dialog, since nothing focusable precedes the heading.
+        const offList = !Array.from(focusable).includes(
+          document.activeElement as HTMLElement,
+        );
+        if (e.shiftKey && (document.activeElement === first || offList)) {
           e.preventDefault();
           last.focus();
         } else if (!e.shiftKey && document.activeElement === last) {
@@ -1124,7 +1179,11 @@ export default function ParallelGroupingModal({
           <div>
             <h2
               id="parallel-grouping-heading"
-              className="text-xl font-semibold text-white"
+              ref={headingRef}
+              // NEO-308 — the parked-focus target (see `headingRef`), so it
+              // needs a visible ring of its own (WCAG 2.4.7).
+              tabIndex={-1}
+              className="text-xl font-semibold text-white rounded-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue"
             >
               Group Parallels
             </h2>
@@ -1314,7 +1373,7 @@ export default function ParallelGroupingModal({
                   dispatch({ type: "CLEAR_SELECTION" });
                   // The button goes with the selection; keep focus inside
                   // the dialog, where Escape and Tab still work.
-                  overlayRef.current?.focus();
+                  headingRef.current?.focus();
                 }}
                 className="rounded-sm px-1 text-gray-300 underline underline-offset-2 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-neon-blue"
               >

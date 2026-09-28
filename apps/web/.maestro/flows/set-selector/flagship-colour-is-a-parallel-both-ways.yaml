@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "2026 Bowman end to end — the SportLots review files SportLots-only names, grouped BSC inserts keep their source, and rows move between set, parallel and insert with their links (NEO-293…306)"
+name: "2026 Bowman end to end — the SportLots review files SportLots-only names, grouped BSC inserts keep their source, and rows move between set, parallel and insert with their links (NEO-293…308)"
 tags:
   - set-selector
   - parallel-grouping
@@ -19,12 +19,14 @@ tags:
 #      picker, `All-America Game Autos` under Bowman › Insert through its row
 #      tick and the bulk bar. The save toasts what it filed (STEP 1).
 #   2. Bowman › Insert — populated by the review, so the operator's `Sync
-#      Inserts` — reconciles BSC's inserts with SportLots'; `Anime` and the
-#      Anime parallels become NB sets ("Make its own set", "Keep all")
-#      (STEPS 2–3; NEO-293, NEO-300).
-#   3. Group Parallels nests `Anime Kanji` under `Anime`; a second `Sync
-#      Inserts` leaves the grouped rows alone ("N already grouped …") and does
-#      not re-create them as inserts (STEPS 4–5; NEO-300).
+#      Inserts` — reconciles BSC's inserts with SportLots'; `Anime` becomes
+#      an NB set and every other pending BSC insert with it ("Make its own
+#      set", "Keep all") (STEPS 2–3; NEO-293, NEO-300, NEO-308).
+#   3. Group Parallels nests `Anime Kanji` under `Anime` — Accept All over
+#      200+ suggestions, one Save that lands whole across several calls and
+#      leaves nothing to suggest on a re-open (STEPS 4–5a; NEO-308); a second
+#      `Sync Inserts` leaves the grouped rows alone ("N already grouped …")
+#      and does not re-create them as inserts (STEP 5b; NEO-300).
 #   4. The promoted `Anime Kanji` keeps its BSC id as a working source: a
 #      chip tagged as a BSC variant, no "Needs re-mapping", Fetch from
 #      Marketplaces saves cards and the chip's per-slot count is > 0
@@ -128,7 +130,9 @@ tags:
 #                 from <set>`, `Save N sets`, `N already grouped …`, `Show
 #                 grouped`
 #   grouping      `Group Parallels`, `Drag inserts under a parent`, `Accept
-#                 all suggestions`, `N promotion…`, `Save N change…`
+#                 all suggestions (N)`, `N promotions, 0 demotions`, `Save N
+#                 changes`, `No changes yet`, row ticks `Select <row>`,
+#                 footer `Cancel`
 #   columns       `Sync Inserts`, `Sync Parallels`, `Search inserts`, `Search
 #                 parallels`, `Parallels`, row text
 #   panel         `Attributes for <row>`, `Multi-source sets`, `Remove <slot>`,
@@ -150,8 +154,9 @@ tags:
 #
 # ── R3 ──────────────────────────────────────────────────────────────────────
 #   The only flow on 2026 Bowman, the only one that opens a SportLots review,
-#   promotes a REAL BSC insert with Group Parallels, or drives Make insert
-#   of…. The three hand-made parallel-grouping flows prove the modal's
+#   promotes a REAL BSC insert with Group Parallels, saves a grouping plan
+#   past one transaction's 200 entries (NEO-308), or drives Make insert
+#   of…. The hand-made parallel-grouping flows prove the modal's
 #   mechanics; `brand-via-all-brands-narrows-sportlots` proves the SportLots
 #   phase RAN on a year seen through All Brands (no pill there).
 # ════════════════════════════════════════════════════════════════════════════
@@ -663,55 +668,87 @@ tags:
             id: "NeonBinder set name for Anime Kanji|Make its own set: Anime Kanji$"
           timeout: 7000
 
-      # ── NEO-300: "Keep all" ON THE "Anime"-FILTERED BSC COLUMN ─────────────
-      # ONE FEATURE, SAME SENTENCE (R1): this is how the Anime rows come to
-      # exist as NeonBinder sets before they are grouped. Keep all makes every
-      # item the column is SHOWING its own set in one action — here the Anime
-      # parallels BSC lists and SportLots does not pair (run 271: "BSC (4 of
-      # 142)" under this filter — Anime, Anime Black Refractors, Anime Red
-      # Refractors, Anime SuperFractors), plus "Anime Kanji" whenever the
-      # matcher left it Pending. SAFE FOR THE SOLE-WRITER CONTRACT (R7a,
-      # SET-REGISTRY.md → "2026 Bowman"): 2026 Bowman is this flow's alone,
-      # every set it creates carries the BSC id the sync gave it, and it is
-      # exactly the row set the SportLots-paused branch below stores anyway —
-      # so the live branch now leaves the SAME Anime family the paused one
-      # does, and STEP 4's Accept All nests all of it under "Anime".
+      # ── NEO-300 + NEO-308: "Keep all" ON THE WHOLE BSC COLUMN ─────────────
+      # ONE FEATURE, SAME SENTENCE (R1): this is how BSC's inserts — the Anime
+      # family among them — come to exist as NeonBinder sets before they are
+      # grouped. Keep all makes every item the column is SHOWING its own set
+      # in one action. Until NEO-308 it was pressed on the "Anime"-filtered
+      # column (run 271: "BSC (4 of 142)" — Anime, Anime Black Refractors,
+      # Anime Red Refractors, Anime SuperFractors); it is now pressed on the
+      # UNFILTERED column, so every pending BSC insert (~140 of the 297 items
+      # BSC answers for Bowman's insert level, CI 36324889198) becomes a set,
+      # "Anime Kanji" included whenever the matcher left it Pending.
+      #
+      # WHY THE WHOLE COLUMN (NEO-308). STEP 4's Accept All has to be a plan
+      # PAST one transaction's cap (200 entries) for its save to prove the
+      # chunked save lands whole. Kept to the Anime family it was not: green
+      # CI 36324889198 read `Accept all suggestions (130)` / `Save 130
+      # changes` (run 35948573036: 141). BSC lists parallels-of-inserts as
+      # insert-level names, so keeping the rest of its column is what brings
+      # the plan past 200 — the shape the operator met on production (`Accept
+      # all suggestions (212)` → `Save 259 changes` → refused). STEP 4
+      # asserts the count, so a column that no longer gets there fails THERE,
+      # by name (R2).
+      #
+      # SAFE FOR THE SOLE-WRITER CONTRACT (R7a, SET-REGISTRY.md → "2026
+      # Bowman"): 2026 Bowman is this flow's alone, every set it creates
+      # carries the BSC id the sync gave it, and it is exactly the row set the
+      # SportLots-paused branch below stores anyway (that branch fills the
+      # column straight from BSC) — so live and paused now leave the SAME
+      # BSC inserts, and STEP 4's Accept All nests every prefix family.
       #
       # PRECONDITION (R2), HARD: the button is enabled only with ≥1 listed
       # item, and its accessible name says how many — `Keep all: <n> BSC
-      # set(s)`. A matcher that one day pairs every Anime item with SportLots
-      # fails here, by name, instead of pressing a disabled button.
+      # set(s)`. Still asserted on the "Anime" filter: a matcher that one day
+      # pairs every Anime item with SportLots fails here, by name.
       - extendedWaitUntil:
           visible:
             id: "Keep all: [1-9][0-9]* BSC sets?"
           timeout: 7000
+      # BRING THE COLUMN HEADER INTO THE BODY'S BAND, as for "Anime" above.
+      # The body is pinned at its top here (the Anime block re-pinned it, or
+      # never moved it). Keep all is in the BSC column's header, which run 271
+      # put at y=376-392 under ONE Ready row; with "Anime" promoted that is
+      # two rows, ~y=456-484 — inside the body but ~40px from its bottom, and
+      # a third Anime row already Ready would clip it. A HALF swipe (75%→50%,
+      # ~157px) puts it at ~y=219-327 for zero to two extra Ready rows, all
+      # inside 118-525; a full swipe would lift the one-row case above 118.
+      # The filter's × sits in the input directly under that header (mb-2 +
+      # one ~28px input), ~y=255-370 after the same swipe, inside the band.
+      - swipe:
+          start: "3%, 75%"
+          end: "3%, 50%"
+      # CLEAR THE BSC FILTER with its own × (`FilterInput`'s `Clear <label>`,
+      # rendered only while the filter holds text). Clearing never moves the
+      # header above it: only the list under the input grows.
+      - tapOn:
+          id: "Clear filter bsc items"
       # THE PROOF IS ARITHMETIC ON THE PINNED HEADER, not a row hunt in the
       # body: "<ready> ready, <pending> pending" sits in the dialog's fixed
       # header (README → "Asserting inside a dialog": header and footer only),
-      # so it reads the same wherever the body is scrolled. Record the ready
-      # count and the button's own count ("Keep all 3" — the visible text
-      # carries the number whenever the filter narrows the column, and this
-      # filter always does: 4 of 142), then require ready to grow by exactly
-      # that many. split(" ") rather than a regex: braces and `$` inside
-      # evalScript collide with Maestro's own ${} interpolation.
+      # so it reads the same wherever the body is scrolled. Unfiltered, the
+      # button's visible text is the bare "Keep all" (the number shows only
+      # while a filter narrows the column), so the count is read off the
+      # column's own header, `BSC (<n>)` — one element of adjacent JSX text
+      # nodes, so one string (memory: maestro-web-getnodetext). Its
+      # UN-narrowed form (no " of N") is also the proof the × took. The
+      # button's accessible name must then carry the same n, which ties the
+      # count read to the control pressed. split() rather than a regex:
+      # braces and `$` inside evalScript collide with Maestro's own ${}
+      # interpolation.
+      - extendedWaitUntil:
+          visible:
+            text: "BSC \\([1-9][0-9]*\\)"
+          timeout: 7000
       - copyTextFrom:
           text: "[0-9]+ ready, [0-9]+ pending"
       - evalScript: '${output.READY_BEFORE = Number(maestro.copiedText.split(" ")[0])}'
       - copyTextFrom:
-          id: "Keep all: [1-9][0-9]* BSC sets?"
-      - evalScript: '${output.KEEP_ALL_N = Number(maestro.copiedText.split(" ")[2])}'
+          text: "BSC \\([1-9][0-9]*\\)"
+      - evalScript: '${output.KEEP_ALL_N = Number(maestro.copiedText.split("(")[1].split(")")[0])}'
       - assertTrue: "${output.READY_BEFORE > 0 && output.KEEP_ALL_N > 0}"
-      # BRING THE BUTTON INTO THE BODY'S BAND, as for "Anime" above. The body
-      # is pinned at its top here (the Anime block re-pinned it, or never
-      # moved it). Keep all is in the BSC column's header, which run 271 put
-      # at y=376-392 under ONE Ready row; with "Anime" promoted that is two
-      # rows, ~y=456-484 — inside the body but ~40px from its bottom, and a
-      # third Anime row already Ready would clip it. A HALF swipe (75%→50%,
-      # ~157px) puts it at ~y=219-327 for zero to two extra Ready rows, all
-      # inside 118-525; a full swipe would lift the one-row case above 118.
-      - swipe:
-          start: "3%, 75%"
-          end: "3%, 50%"
+      - assertVisible:
+          id: "Keep all: ${output.KEEP_ALL_N} BSC sets?"
       - tapOn:
           id: "Keep all: [1-9][0-9]* BSC sets?"
       # ASSERTION: every listed item went up to Ready in the one press — the
@@ -750,9 +787,11 @@ tags:
           timeout: 7000
       - tapOn:
           text: ".*Save [0-9]+ sets.*"
-      # The save writes every Ready set — dozens here, an NB write: the 7000
-      # bar (R5, no multi-transaction exception). MEASURED at 1.0s for 156
-      # sets in green run 35948573036; it returns when the dialog unmounts.
+      # The save writes every Ready set — an NB write: the 7000 bar (R5, no
+      # multi-transaction exception). MEASURED at 1.0s for 156 sets in green
+      # run 35948573036; since NEO-308 keeps the whole BSC column it is ~290
+      # sets, NOT YET MEASURED — a save that misses 7000 is a product
+      # finding, never a bigger number. It returns when the dialog unmounts.
       - extendedWaitUntil:
           notVisible: "Reconcile Inserts"
           timeout: 7000
@@ -838,31 +877,53 @@ tags:
     visible: ".*Drag inserts under a parent.*"
     timeout: 7000
 
-# PRECONDITION (R2): the modal found something to suggest. The button exists
-# only while there are pending suggestions, so its absence means detection did
-# not pair "Anime Kanji" with "Anime" and the flow fails here, by name. Accept
-# All takes every suggestion the set's names produce — the operator's real
-# bulk action, and none of the other nestings is read again.
+# PRECONDITION (R2): the modal found something to suggest — and, NEO-308,
+# MORE THAN ONE TRANSACTION'S WORTH. The button exists only while there are
+# pending suggestions, so its absence means detection did not pair "Anime
+# Kanji" with "Anime" and the flow fails here, by name. Its count must be
+# past `MAX_PARALLEL_GROUPING_ENTRIES` (200, convex/parallelGroupingPlan.ts):
+# every suggestion is a promotion, one plan entry each, so this is the plan's
+# size, and a plan of 200 or fewer is ONE call that proves nothing about the
+# chunked save. The regex is ">= 201" spelled out (full match). Keeping the
+# whole BSC column in STEP 2 is what gets the count here; if BSC's list one
+# day shrinks below it, the flow fails HERE, naming the precondition, not on
+# a save that quietly went through in one call. Accept All takes every
+# suggestion the set's names produce — the operator's real bulk action, and
+# none of the other nestings is read again.
 #
 # R8 case 2, both footer buttons: ParallelGroupingModal's footer sits outside
 # the modal's only scroller (README R8 names this modal; MEASURED on its Save
 # button in move-parallels-of-inserts-custom.yaml — bounds held at y=521
 # across `Scrolling try count: 0`..`5` in CI 34349299679 + 34361627641).
-# Uncentred they settle well under a second.
+# Uncentred they settle well under a second. The button renders only once the
+# tree has loaded and been diffed, so this scroll is also the modal's
+# render-time gate at 200+ rows — the 7000 bar (R5), NOT YET MEASURED at this
+# size (130 rows: 0.9s from open to on-screen, CI 36324889198).
 - scrollUntilVisible:
     element:
-      text: ".*Accept all suggestions.*"
+      text: "Accept all suggestions \\((20[1-9]|2[1-9][0-9]|[3-9][0-9][0-9]|[1-9][0-9]{3,})\\)"
     timeout: 7000
-- tapOn: ".*Accept all suggestions.*"
-- assertVisible: ".*[0-9]+ promotion.*"
+- tapOn: "Accept all suggestions \\([0-9]+\\)"
+# The footer's tally of the plan (pinned, so on screen): the same count, all
+# promotions — Accept All makes no demotion or re-parenting — so the chunked
+# save cuts one class into two or more calls.
+- assertVisible: "(20[1-9]|2[1-9][0-9]|[3-9][0-9][0-9]|[1-9][0-9]{3,}) promotions, 0 demotions"
 - scrollUntilVisible:
     element:
-      text: ".*Save [0-9]+ change.*"
+      text: "Save (20[1-9]|2[1-9][0-9]|[3-9][0-9][0-9]|[1-9][0-9]{3,}) changes"
     timeout: 7000
-- tapOn: ".*Save [0-9]+ change.*"
-# applyParallelGroupings patches the moved rows (and, NEO-293, tags their BSC
-# slots in the same patch) and the modal closes on success — a Convex
-# mutation, the 7000 bar. Negative; the re-drill's positive gate follows.
+- tapOn: "Save [0-9]+ changes"
+# NEO-308 — THE SAVE LANDS WHOLE, IN ONE PRESS. The modal cuts the plan into
+# calls of at most 200 entries and sends them in turn; applyParallelGroupings
+# applies each whole (and, NEO-293, tags the promoted rows' BSC slots in the
+# same patch), and the modal closes only once the LAST call has landed.
+# Before NEO-308 this is the step that failed: one call, refused ("That's
+# more than 200 moves in one save. Save in smaller batches."), and the modal
+# stayed open over the refusal. Our own server answering a user — the 7000
+# bar, no multi-transaction exception (R5, Jason 2026-09-25; 130 entries in
+# one call closed in 1.0s, CI 36324889198). Negative; the positive that
+# every chunk landed is STEP 5a's re-open, and the re-drill below gates on a
+# positive first.
 - extendedWaitUntil:
     notVisible: ".*Drag inserts under a parent.*"
     timeout: 7000
@@ -918,11 +979,67 @@ tags:
       id: "Search inserts"
 
 # ============================================================
+# STEP 5a — NEO-308: EVERY CHUNK LANDED — RE-OPEN, NOTHING LEFT TO SUGGEST
+#
+# A save that stopped part way keeps the chunks before it (each call applies
+# whole) and leaves the rest ungrouped — which the modal would offer again as
+# suggestions, pre-placed in the plan. So a re-open that reads `No changes
+# yet` with no `Accept all suggestions` button is the proof the WHOLE plan
+# landed, not just its first 200 entries. Deterministic, not hopeful:
+# `detectGroupings` picks the longest unclaimed prefix parent and never
+# offers a row that holds parallels as a child, so every pair among the rows
+# still top-level after the save was already suggested — and saved — at open.
+#
+# The column is where STEP 5 left it (a fresh drill, "Anime" searched, the
+# search box centred), so its action row is just under the one-row list:
+# DOWN, centred for the tap (R8) — the same scroll STEP 4 and STEP 5b make
+# to the same row.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Group Parallels"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Group Parallels"
+- extendedWaitUntil:
+    visible: ".*Drag inserts under a parent.*"
+    timeout: 7000
+# THE TREE HAS LOADED AND BEEN DIFFED — the positive the two asserts below
+# ride on (R2). The footer reads `No changes yet` from the first render,
+# while the body is still a skeleton and before INIT has placed a single
+# suggestion, so it cannot be asserted until a ROW exists: every row carries
+# a tick named `Select <row>` (no text; memory: neo300-grouping-multi-select),
+# rendered only from the initialised state, in the same dispatch that places
+# the suggestions. The first rows of the top-level pool are at the top of
+# the body. A Convex read of the tree: the 7000 bar.
+- extendedWaitUntil:
+    visible:
+      id: "Select .+"
+    timeout: 7000
+# Nothing pre-placed, so nothing to save, and no suggestion button in the
+# pinned header. Header and footer only (README → "Asserting inside a
+# dialog").
+- assertVisible: "No changes yet"
+- assertNotVisible: "Accept all suggestions \\([0-9]+\\)"
+# OUT through the footer's Cancel: with no pending move it closes at once
+# (`requestClose`, no discard confirm). Not Escape — maestro-web's pressKey
+# sends Enter only (memory: maestro-web-presskey-and-popovers). Footer, so a
+# direct tap (R8 case 2, as STEP 4's Save). A Convex-free close: the 7000
+# bar; STEP 5b's scroll to `Sync Inserts` is the positive after it.
+- tapOn: "Cancel"
+- extendedWaitUntil:
+    notVisible: ".*Drag inserts under a parent.*"
+    timeout: 7000
+
+# ============================================================
 # STEP 5b — NEO-300: "Sync Inserts" AGAIN, AFTER THE GROUPING
 # The column is expanded (nothing selected), so its action row (Sync Inserts
 # / + Custom / Group Parallels) sits just under the one-row "Anime" list —
-# BELOW the search box that was just centred, hence DOWN (R5 direction). No
-# page-length travel: 7000, centred (R8), as STEP 4's scroll to the same row.
+# the row STEP 5a just centred for its `Group Parallels` tap (the dialog's
+# close hands focus back to that button, which does not scroll), so DOWN
+# (R5 direction) and it exits at try 0. No page-length travel: 7000,
+# centred (R8), as STEP 4's scroll to the same row.
 # ============================================================
 
 - scrollUntilVisible:

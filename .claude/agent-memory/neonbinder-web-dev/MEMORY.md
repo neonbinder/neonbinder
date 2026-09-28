@@ -73,3 +73,4 @@
 - [Bulkload budget tests pin exact ops](reference_bulkload_budget_tests_pin_exact_ops.md) — 854/989 opsSpent are asserted exactly; reuse a read the row loop already made, and run the whole file
 - [Autocomplete list is a fixed layer](reference_autocomplete_list_is_a_fixed_layer.md) — portalled into nearest role=dialog, fixed, body-bounded; focus returns use focusWithoutOpening; act() around el.focus() in tests
 - [Base role and row are one thing](project_base_role_and_row_are_one_thing.md) — isBase never cleared/transferred; delete the empty Base row instead (NEO-306)
+- [Convex mutation resolves after queries reflect it](reference_convex_mutation_resolves_after_queries_reflect_it.md) — after `await apply()` useQuery already holds the writes; rebuild from it via RESET→INIT

@@ -11,7 +11,7 @@
  * now shows.
  */
 
-import { describe, expect, test, vi, beforeEach } from "vitest";
+import { describe, expect, test, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { ConvexError } from "convex/values";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -33,6 +33,29 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string) =>
     ref === "getInsertTreeByVariantType" ? tree : undefined,
 }));
+
+/**
+ * NEO-308 — the real `chunkGroupingPlan`, forced to a limit of 1 entry per
+ * chunk, but ONLY while `forcedChunkLimit` is set. Every describe block
+ * other than "a save larger than one transaction" leaves it `undefined`, so
+ * `chunkGroupingPlan` runs at the real `MAX_PARALLEL_GROUPING_ENTRIES` (200)
+ * for them — this must not change what `mockApply` sees for any existing
+ * test in this file. The modal calls `chunkGroupingPlan(diff)` with no
+ * explicit limit, so the override has to live here rather than be passed by
+ * the caller.
+ */
+let forcedChunkLimit: number | undefined;
+vi.mock("../../convex/parallelGroupingPlan", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../convex/parallelGroupingPlan")>();
+  return {
+    ...actual,
+    chunkGroupingPlan: (
+      plan: Parameters<typeof actual.chunkGroupingPlan>[0],
+      limit?: number,
+    ) => actual.chunkGroupingPlan(plan, forcedChunkLimit ?? limit),
+  };
+});
 
 /**
  * NEO-300 — the drop half of a drag, reached through the real handler.
@@ -112,9 +135,10 @@ function renderModal() {
   return { onClose };
 }
 
-/** The overlay that now owns Escape — focused on open, `tabIndex={-1}`. */
-const overlay = () =>
-  screen.getByText("Group Parallels").closest('[tabindex="-1"]') as HTMLElement;
+/** The dialog element that owns Escape and the Tab trap. */
+const overlay = () => screen.getByRole("dialog", { name: "Group Parallels" });
+/** NEO-308 — the parked-focus target on open and after Clear/a rebuild. */
+const heading = () => screen.getByRole("heading", { name: "Group Parallels" });
 
 /** Demote the one parallel to top level: exactly one pending move. */
 function demoteTheParallel() {
@@ -132,9 +156,9 @@ describe("ParallelGroupingModal — keyboard entry point", () => {
    * it had to go: the discard confirm is a sibling in the same portal, and a
    * window listener would have closed the session behind it on the same key.
    */
-  test("focus opens on the dialog container, so Escape lands inside", () => {
+  test("focus opens on the heading, so Escape lands inside the dialog", () => {
     renderModal();
-    expect(document.activeElement).toBe(overlay());
+    expect(document.activeElement).toBe(heading());
   });
 
   test("Escape on the root closes an untouched session", () => {
@@ -732,7 +756,7 @@ describe("ParallelGroupingModal — several rows at once", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear selection" }));
     expect(picked(SIX)).toEqual([]);
     expect(screen.queryByRole("button", { name: "Clear selection" })).toBeNull();
-    expect(document.activeElement).toBe(overlay());
+    expect(document.activeElement).toBe(heading());
   });
 
   test("keyboard: arrows walk the list, Shift+arrows extend, Space is the tick's own", () => {
@@ -1014,6 +1038,229 @@ describe("ParallelGroupingModal — several rows at once", () => {
     expect(screen.getByText("0 promotions, 1 demotion")).toBeTruthy();
     expect(isPicked(AQUA)).toBe(true);
     expect(isPicked("Wave Red")).toBe(true);
+  });
+});
+
+/**
+ * NEO-308 — `handleConfirm` loops `apply` over `chunkGroupingPlan(diff)`, one
+ * call per chunk, in order. A real tree never needs more than one chunk (the
+ * cap is 200 and this dialog holds one variant type's inserts/parallels), so
+ * this block forces `chunkGroupingPlan` down to a limit of 1 (see the
+ * `../../convex/parallelGroupingPlan` mock above) to make an ordinary
+ * two-move session split into two calls without building a 201-row tree.
+ */
+describe("ParallelGroupingModal — a save larger than one transaction", () => {
+  beforeEach(() => {
+    forcedChunkLimit = 1;
+  });
+
+  afterEach(() => {
+    forcedChunkLimit = undefined;
+  });
+
+  /**
+   * "Chrome" holds one parallel, "Gold"; "Refractor" is a bare top-level
+   * insert. Demoting Gold and moving Refractor under Chrome stages exactly
+   * two moves — a demotion and a promotion — which `chunkGroupingPlan`
+   * flattens D-then-P, so at limit=1 the save is exactly two calls:
+   * [demotion], [promotion].
+   */
+  function twoMoveTree() {
+    return [
+      {
+        insert: { _id: "chrome", value: "Chrome" },
+        parallels: [{ _id: "gold", value: "Gold" }],
+      },
+      { insert: { _id: "refractor", value: "Refractor" }, parallels: [] },
+    ];
+  }
+
+  function stageTwoMoves() {
+    fireEvent.click(screen.getByLabelText("Remove Gold from parallels"));
+    fireEvent.click(screen.getByText("Refractor"));
+    fireEvent.click(screen.getByText('Parallels of "Chrome"'));
+  }
+
+  test("two moves: apply is called twice, in demotion-then-promotion order", async () => {
+    tree = twoMoveTree();
+    const { onClose } = renderModal();
+    stageTwoMoves();
+    expect(screen.getByText("Save 2 changes")).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Save 2 changes"));
+    });
+
+    expect(mockApply).toHaveBeenCalledTimes(2);
+    expect(mockApply.mock.calls[0][0]).toEqual({
+      variantTypeId: VARIANT_TYPE_ID,
+      promotions: [],
+      demotions: [{ parallelId: "gold" }],
+      reparentings: [],
+    });
+    expect(mockApply.mock.calls[1][0]).toEqual({
+      variantTypeId: VARIANT_TYPE_ID,
+      promotions: [{ insertId: "refractor", targetInsertId: "chrome" }],
+      demotions: [],
+      reparentings: [],
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test("onClose fires only after the SECOND call resolves, not the first", async () => {
+    tree = twoMoveTree();
+    const { onClose } = renderModal();
+    stageTwoMoves();
+
+    let resolveFirst!: () => void;
+    let resolveSecond!: () => void;
+    mockApply.mockImplementationOnce(
+      () => new Promise<void>((res) => (resolveFirst = res)),
+    );
+    mockApply.mockImplementationOnce(
+      () => new Promise<void>((res) => (resolveSecond = res)),
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Save 2 changes"));
+    });
+    // The loop is sequential: the second chunk is not sent until the first
+    // call's promise settles.
+    expect(mockApply).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveFirst();
+    });
+    expect(mockApply).toHaveBeenCalledTimes(2);
+    expect(onClose).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveSecond();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  test("Save stays aria-disabled and focused through both calls; a press mid-loop adds no call", async () => {
+    tree = twoMoveTree();
+    renderModal();
+    stageTwoMoves();
+
+    let resolveFirst!: () => void;
+    let resolveSecond!: () => void;
+    mockApply.mockImplementationOnce(
+      () => new Promise<void>((res) => (resolveFirst = res)),
+    );
+    mockApply.mockImplementationOnce(
+      () => new Promise<void>((res) => (resolveSecond = res)),
+    );
+    const save = screen
+      .getByText("Save 2 changes")
+      .closest("button") as HTMLButtonElement;
+    save.focus();
+
+    await act(async () => {
+      fireEvent.click(save);
+    });
+    // In flight on the FIRST chunk.
+    expect(save.hasAttribute("disabled")).toBe(false);
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    expect(document.activeElement).toBe(save);
+
+    // A second press while chunk 1 is in flight does nothing extra.
+    await act(async () => {
+      fireEvent.click(save);
+    });
+    expect(mockApply).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveFirst();
+    });
+    // Now in flight on the SECOND chunk — still disabled, still focused.
+    expect(mockApply).toHaveBeenCalledTimes(2);
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    expect(document.activeElement).toBe(save);
+
+    // A press during the second chunk also adds nothing.
+    await act(async () => {
+      fireEvent.click(save);
+    });
+    expect(mockApply).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      resolveSecond();
+    });
+    expect(save.getAttribute("aria-disabled")).toBeNull();
+  });
+
+  test("a refusal on the SECOND call shows it and rebuilds from the live tree once the first chunk landed", async () => {
+    tree = twoMoveTree();
+    renderModal();
+    stageTwoMoves();
+
+    let resolveFirst!: () => void;
+    mockApply.mockImplementationOnce(
+      () => new Promise<void>((res) => (resolveFirst = res)),
+    );
+    const refusal = '"Refractor" isn\'t an insert here, so nothing can go under it. Refresh and try again.';
+    mockApply.mockRejectedValueOnce(new ConvexError(refusal));
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Save 2 changes"));
+    });
+    // Before the first chunk resolves, switch the mocked tree to the shape
+    // the server would now show: Gold's demotion already landed (Gold is
+    // its own top-level insert), Chrome and Refractor untouched otherwise.
+    // A real re-fetch would report exactly this once the mutation promise
+    // that triggered it resolves.
+    tree = [
+      { insert: { _id: "chrome", value: "Chrome" }, parallels: [] },
+      { insert: { _id: "gold", value: "Gold" }, parallels: [] },
+      { insert: { _id: "refractor", value: "Refractor" }, parallels: [] },
+    ];
+    await act(async () => {
+      resolveFirst();
+    });
+
+    expect(mockApply).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole("alert").textContent).toBe(refusal);
+    // Rebuilt: "Gold" now renders as its own top-level parallels box, which
+    // only happens for a row the CURRENT tree carries as insert-level — the
+    // pre-refusal state never had one for Gold.
+    expect(screen.getByText('Parallels of "Gold"')).toBeTruthy();
+    // The plan that produced the refused chunk is gone: nothing pending.
+    expect(screen.queryByText(/^Save \d+ changes?$/)).toBeNull();
+
+    // NEO-308 a11y — Save just went natively `disabled` ("No changes") for
+    // this rebuilt, empty-diff state, so the focus-park effect moves focus
+    // to the heading rather than letting it drop to <body>.
+    expect(document.activeElement).toBe(heading());
+    // The heading sits outside the Tab-trap's own focusable list, so
+    // Shift+Tab from it wraps to the LAST control — Save being disabled
+    // (excluded), that is Cancel.
+    fireEvent.keyDown(overlay(), { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(
+      screen.getByText("Cancel").closest("button"),
+    );
+  });
+
+  test("a refusal on the FIRST call shows it and keeps every pending move (nothing landed)", async () => {
+    tree = twoMoveTree();
+    renderModal();
+    stageTwoMoves();
+
+    const refusal = '"Refractor" isn\'t an insert here, so nothing can go under it. Refresh and try again.';
+    mockApply.mockRejectedValueOnce(new ConvexError(refusal));
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Save 2 changes"));
+    });
+
+    // Refused on chunk 1: chunk 2 (the promotion) was never even sent.
+    expect(mockApply).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert").textContent).toBe(refusal);
+    // No rebuild — the two pending moves are exactly as staged.
+    expect(screen.getByText("Save 2 changes")).toBeTruthy();
   });
 });
 
