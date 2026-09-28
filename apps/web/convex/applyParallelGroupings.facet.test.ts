@@ -23,6 +23,11 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { bscSourceView, resolveBscFacetFilters } from "./bscFacets";
+import {
+  LEAF_NO_OWN_ID,
+  attachedSidesOf,
+  resolvableSides,
+} from "./marketplaceResolvability";
 
 const modules = (
   import.meta as unknown as {
@@ -527,10 +532,22 @@ describe("after promotion, the full chain resolves the parallel as a BSC source 
     const chain = await chainTo(t, stranded);
     const leaf = chain[chain.length - 1];
     const plan = resolveBscFacetFilters(chain);
-    // The insert ancestor's variantName survives because the leaf contributed
-    // nothing — which is the pre-NEO-293 symptom, and stays the behaviour for
-    // any parallel the promotion did not write.
+    // The facet PLAN still carries the insert ancestor's variantName, because
+    // the leaf contributed nothing and the deepest-contributor rule is
+    // unchanged.
     expect(plan.filters.variantName).toEqual(["anime"]);
+    // NEO-312 — but that plan is never SENT. Before, the checklist fetch
+    // queried it and filed the insert's cards as the parallel's. A parallel
+    // with no source id of its own is skipped on BSC: the checklist gate says
+    // so, and `attachedSidesOf` agrees, so nothing promises a fetch the gate
+    // will not make.
+    const gate = resolvableSides(chain, {
+      bscScope: "checklist",
+      leafGate: true,
+    });
+    expect(gate.bsc.resolvable).toBe(false);
+    expect(gate.bsc.missing).toEqual([LEAF_NO_OWN_ID]);
+    expect(attachedSidesOf(chain)).not.toContain("bsc");
     const view = bscSourceView(leaf, chain);
     expect(view.sources).toEqual([]);
     expect(view.untagged).toEqual([{ slot: "b0", id: "anime-kanji", label: "anime-kanji" }]);

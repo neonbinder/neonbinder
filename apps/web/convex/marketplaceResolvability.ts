@@ -334,6 +334,82 @@ export function rowHasBscFacet(
 }
 
 /**
+ * NEO-312 — the levels whose checklist is a SLICE of the row above it.
+ *
+ * An insert is one slice of its set's inserts and a parallel is one slice of
+ * its insert. At both levels an ancestor's id names a BIGGER pool than the row
+ * itself: the insert above a parallel names the insert's own cards, and the
+ * set above an insert names every insert in the set. Before NEO-312 a row at
+ * either level with no id of its own simply inherited the ancestor's, so a
+ * parallel with no BSC id fetched the INSERT's BSC cards and filed them as the
+ * parallel's (pinned, as the bug it was, in `applyParallelGroupings.facet.test.ts`).
+ * The same fall-through on SportLots is `fetchSportLotsChecklist`'s
+ * `parallel || insert || …` precedence reaching past an empty leaf.
+ *
+ * Base and everything above it are NOT in this set and keep their rules: a
+ * Base row is scoped by its `variant`-tagged slot plus the set above it, and
+ * that pool is the right one.
+ */
+const LEAF_OWNED_SOURCE_LEVELS: ReadonlySet<string> = new Set([
+  "insert",
+  "parallel",
+]);
+
+/**
+ * The `missing` sentinel for a side skipped because the insert or parallel
+ * being fetched holds no id of its own on it. A fixed phrase with no `=`, so
+ * `missingSummary` logs it whole and it can never carry a row's value.
+ */
+export const LEAF_NO_OWN_ID = "no own id";
+
+/**
+ * NEO-312 — does THIS row, on its own, name a place its cards come from on
+ * `side`?
+ *
+ * Reads the row's slots and nothing else: never an ancestor, never a name.
+ *
+ *   BSC — a slot whose facet is a SOURCE facet (`BSC_SOURCE_FACETS`), judged by
+ *         the same `tag ?? legacyBscFacetForLevel(level)` rule the facet plan
+ *         buckets with. So an untagged slot on an insert counts (the level rule
+ *         says `variantName`), a promoted parallel's `variantName`-tagged slot
+ *         counts, a NEO-189 `setName`-tagged slot counts, and an untagged slot
+ *         on a parallel does not — it is inert in the query, so it cannot be
+ *         the row's own source either.
+ *   SL  — any SportLots id on the row. SportLots has one unit of attachment.
+ */
+export function leafOwnsSource(
+  row: Pick<ResolvableRow, "level" | "platformData" | "platformFacets">,
+  side: PlatformSide,
+): boolean {
+  if (side === "sportlots") return rowHasSideId(row, "sportlots");
+  for (const { slot } of slotEntries(row, "bsc")) {
+    const facet = slotFacet(row, "bsc", slot) ?? legacyBscFacetForLevel(row.level);
+    if (facet !== undefined && BSC_SOURCE_FACETS.has(facet)) return true;
+  }
+  return false;
+}
+
+/**
+ * NEO-312 — the sides the LEAF of `chain` may be fetched on, as far as its own
+ * ids go, in the stable `["bsc", "sportlots"]` order.
+ *
+ * `undefined` when the leaf is not an insert or a parallel: the leaf gate does
+ * not apply there and the caller's other rules decide alone. An empty array is
+ * a real answer — an insert or parallel with no ids of its own is fetched on
+ * no side, exactly like a hand-made row (invariant 6).
+ */
+export function leafSourceSides(
+  chain: readonly ResolvableRow[],
+): PlatformSide[] | undefined {
+  const leaf = chain[chain.length - 1];
+  if (!leaf || !LEAF_OWNED_SOURCE_LEVELS.has(leaf.level)) return undefined;
+  const out: PlatformSide[] = [];
+  if (leafOwnsSource(leaf, "bsc")) out.push("bsc");
+  if (leafOwnsSource(leaf, "sportlots")) out.push("sportlots");
+  return out;
+}
+
+/**
  * NEO-255 — the NB levels a SportLots SET id can sit on.
  *
  * SportLots has no setName concept: it files a set as one flat radio-button id
@@ -392,6 +468,16 @@ const SL_SET_LEVELS: ReadonlySet<string> = new Set([
  *
  * There is no "custom" case here and no name-based guess anywhere in it: a row
  * either carries marketplace ids or it does not, and both answers are ordinary.
+ *
+ * ## An insert or parallel is attached only through its OWN ids (NEO-312)
+ *
+ * When the leaf is an insert or a parallel, a side counts only if the leaf
+ * itself holds a source on it (`leafSourceSides`). An ancestor's id names a
+ * bigger pool than the leaf — the insert above a parallel, the set above an
+ * insert — and the checklist gate (`resolvableSides` with `leafGate`) refuses
+ * to fetch it, so calling that side attached would promise a fetch the gate
+ * never makes. The two answers are kept equal by construction: both read
+ * `leafSourceSides`.
  */
 export function attachedSidesOf(
   chain: readonly ResolvableRow[],
@@ -406,7 +492,10 @@ export function attachedSidesOf(
     (row) => SL_SET_LEVELS.has(row.level) && rowHasSideId(row, "sportlots"),
   );
   if (slAttached) out.push("sportlots");
-  return out;
+  const leafSides = leafSourceSides(chain);
+  return leafSides === undefined
+    ? out
+    : out.filter((side) => leafSides.includes(side));
 }
 
 function label(row: ResolvableRow): string {
@@ -452,6 +541,13 @@ function label(row: ResolvableRow): string {
  * change what happens to it. `served` is judged exactly as before. The caller
  * reads the pause (`pausedSides()` in `convex/marketplacePause.ts`) and
  * passes it in; this module never reads the environment.
+ *
+ * `leafGate` (NEO-312) applies the insert/parallel rule to BOTH sides: when
+ * the chain's leaf is an insert or a parallel, a side it holds no source id of
+ * its own on is unresolvable, with `LEAF_NO_OWN_ID` as its `missing` entry —
+ * whatever its ancestors carry. Opt-in, and passed only by the checklist
+ * fetch: a selector sync at `insert` lists the set's inserts FROM the set's
+ * ids and must keep reading them. See `leafSourceSides`.
  */
 export function resolvableSides(
   chain: readonly ResolvableRow[],
@@ -460,6 +556,7 @@ export function resolvableSides(
     slRequired?: ReadonlySet<string>;
     bscScope?: "level" | "checklist";
     paused?: ReadonlySet<PlatformSide>;
+    leafGate?: boolean;
   },
 ): ChainResolution {
   const level = opts?.level;
@@ -566,6 +663,17 @@ export function resolvableSides(
     const setIsLinked =
       (bscFilters().setName?.length ?? 0) > 0 || slLinkedAtOrBelowSet;
     if (!setIsLinked) missingSl.push("unlinked set");
+  }
+
+  // NEO-312 — an insert or parallel is fetched only on the sides it holds an
+  // id of its own on. Part of the id walk, so it runs BEFORE the pause below:
+  // a side refused here is a plain skip, never reported as paused.
+  if (opts?.leafGate) {
+    const leafSides = leafSourceSides(chain);
+    if (leafSides !== undefined) {
+      if (!leafSides.includes("bsc")) missingBsc.push(LEAF_NO_OWN_ID);
+      if (!leafSides.includes("sportlots")) missingSl.push(LEAF_NO_OWN_ID);
+    }
   }
 
   // NEO-287 — the pause is applied AFTER the id walk and only to a side the

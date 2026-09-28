@@ -360,6 +360,29 @@ export function resolveBscFacetFilters(
 }
 
 /**
+ * NEO-312 — the chain a PARALLEL BUILD judges and queries BSC with: the same
+ * root→leaf chain with every INSERT-level ancestor taken out.
+ *
+ * A parallel's cards are re-linked to the parallel's own marketplace cards, so
+ * only the parallel's own slot ids may name where they come from. The insert
+ * above it names the insert's cards, and under the deepest-contributor rule its
+ * `variantName` survives into the plan whenever the parallel's own slot is a
+ * different facet (a NEO-189 `setName` split) — the insert's id would then
+ * scope the parallel's query. Dropping the insert row removes exactly that and
+ * nothing else: sport, year, the set and the `variant` axis all live above it.
+ *
+ * Callers pass the RESULT to both the gate (`resolvableSides`) and
+ * `resolveBscFacetFilters`, so the side that is judged fetchable and the
+ * request that is sent come from one chain.
+ */
+export function chainWithoutInsertAncestors<T extends { level: string }>(
+  chain: readonly T[],
+): T[] {
+  const leafIndex = chain.length - 1;
+  return chain.filter((row, i) => i === leafIndex || row.level !== "insert");
+}
+
+/**
  * NEO-239 / NEO-252 — the facets a CHECKLIST request cannot go out without,
  * and the ONE definition of them.
  *
