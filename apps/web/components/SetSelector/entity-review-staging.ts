@@ -84,9 +84,13 @@ export interface StagingRow {
          * `name` above — is what commit will actually create the row as.
          */
         create?: { location?: string; name: string };
+        /** NEO-313 — see `NavDecision`. Read by nothing here. */
+        addSetSport?: boolean;
       }
     | {
         action: "link";
+        /** NEO-313 — see `NavDecision`. Read by nothing here. */
+        addSetSport?: boolean;
         linkedPlayerId?: string;
         linkedTeamId?: string;
         /** NEO-284 — see `NavDecision`. Read by nothing here; carried so the
