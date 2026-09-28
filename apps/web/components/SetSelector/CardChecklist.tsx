@@ -43,6 +43,12 @@ import {
   candidateToPairingCard,
   candidatesToPairingCards,
 } from "./pairing-cards";
+import ParallelBuildPanel, {
+  ParallelBuildButton,
+  planFailedText,
+  useParallelBuildRun,
+  type ParallelBuildRole,
+} from "./ParallelBuildPanel";
 
 type CardChecklistProps = {
   variantId: GenericId<"selectorOptions">;
@@ -64,6 +70,14 @@ type CardChecklistProps = {
    * the Fill control is not offered.
    */
   setId?: Id<"selectorOptions">;
+  /**
+   * NEO-312 — where this checklist sits in the insert → parallel pair, as the
+   * cascade (which holds both selections) knows it. An insert builds its
+   * parallels after its checklist is saved (J1); a parallel's Sync button
+   * becomes "Build from {insert}" (J4). Absent on Base and anywhere else, which
+   * keep the ordinary sync.
+   */
+  parallelBuild?: ParallelBuildRole;
 };
 
 /**
@@ -263,6 +277,7 @@ export default function CardChecklist({
   sourceChips,
   sourceLabelMaps,
   setId,
+  parallelBuild,
 }: CardChecklistProps) {
   const cards = useQuery(api.selectorOptions.getCardChecklist, {
     selectorOptionId: variantId,
@@ -336,6 +351,14 @@ export default function CardChecklist({
    * snapshot, reviewed, then re-checked server-side at write time.
    */
   const convex = useConvex();
+  /**
+   * NEO-312 (J1) — the run that builds an insert's parallels after its
+   * checklist is saved. Called up here, above the loading early-return, so the
+   * run survives the operator clicking into a parallel it has just built: this
+   * component is reused across that move and its `cards` query is `undefined`
+   * for a beat, which would unmount anything rendered below the return.
+   */
+  const parallelRun = useParallelBuildRun();
 
   const [syncing, setSyncing] = useState(false);
   const [committing, setCommitting] = useState(false);
@@ -591,6 +614,18 @@ export default function CardChecklist({
    * notice is where its result is said. See `fillParkRef`.
    */
   const syncNoticeRef = useRef<HTMLDivElement>(null);
+  /**
+   * a11y (NEO-312, WCAG 2.4.3) — armed when a parallel-row build reports. The
+   * build can swap which button is on screen under the operator's focus: a
+   * first build takes the checklist out of its empty state, whose "Build from
+   * …" button unmounts (the header's "Rebuild from …" replaces it), and a
+   * rebuild that copies nothing does the reverse. The cards land on the
+   * subscription some time after the action resolves, so this waits for the
+   * drop rather than guessing when it happens, then parks on the notice that
+   * just said the result — the fill-teams park's shape. Disarmed the moment
+   * focus is somewhere other than the button that was pressed.
+   */
+  const parallelParkRef = useRef(false);
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>({
     bsc: null,
     sportlots: null,
@@ -1363,14 +1398,31 @@ export default function CardChecklist({
           `${result.unreviewedNameCount} names were not reviewed; those cards have no player/team link.`,
         );
       }
-      setCommittedMessage(
-        [
-          discardError
-            ? `Saved ${result.count} cards. (Could not clear staged candidates.)`
-            : `Saved ${result.count} cards.`,
-          ...notes,
-        ].join(" "),
-      );
+      const committedText = [
+        discardError
+          ? `Saved ${result.count} cards. (Could not clear staged candidates.)`
+          : `Saved ${result.count} cards.`,
+        ...notes,
+      ].join(" ");
+      setCommittedMessage(committedText);
+      // NEO-312 (J1): an insert's checklist is its parallels' checklist too,
+      // so saving it builds them — one at a time, in the panel under this
+      // notice, stoppable between parallels. Not awaited: the commit has
+      // landed and the wizard should close on it now. Only a failure to LIST
+      // the parallels comes back here (nothing was built), and it is said in
+      // the same notice as the save it followed. A failed parallel is that
+      // parallel's line in the panel, never this notice.
+      if (parallelBuild?.role === "insert") {
+        void parallelRun
+          .start(variantId, variantRow?.value ?? "")
+          .then((failure) => {
+            if (failure) {
+              setCommittedMessage(
+                `${committedText} ${planFailedText(failure)}`,
+              );
+            }
+          });
+      }
       // NEO-102: the commit itself never knows whether a card has a team — the
       // BSC team pass runs after it, and a BSC-linked card is not even flagged
       // until that pass has been and gone. So no COUNT is decided here — only
@@ -1612,6 +1664,34 @@ export default function CardChecklist({
     if (document.activeElement !== document.body) return;
     (syncNoticeRef.current ?? syncButtonRef.current)?.focus();
   }, [fillActive, missingTeamCount]);
+
+  // NEO-312 — see `parallelParkRef`. Re-checked whenever the card list or the
+  // notice moves, which is when the pressed button can disappear.
+  const cardCount = cards?.length ?? 0;
+  useEffect(() => {
+    if (!parallelParkRef.current) return;
+    const active = document.activeElement;
+    if (active === document.body) {
+      parallelParkRef.current = false;
+      (syncNoticeRef.current ?? syncButtonRef.current)?.focus();
+      return;
+    }
+    // Still on the button that was pressed: its swap may be yet to come.
+    if (!syncButtonRef.current || active !== syncButtonRef.current) {
+      parallelParkRef.current = false;
+    }
+  }, [cardCount, syncNotice]);
+
+  const handleParallelBuildResult = useCallback(
+    (text: string, tone: "status" | "error", committed: boolean) => {
+      // A build writes cards, so its notice is the committed kind and may
+      // carry the attention call-to-action; a refusal or failure is not.
+      if (committed) setCommittedMessage(text);
+      else setSyncMessage(text, tone);
+      parallelParkRef.current = true;
+    },
+    [setCommittedMessage, setSyncMessage],
+  );
 
   /**
    * NEO-221 (D6) — what the wizard's final step promises to save.
@@ -1905,7 +1985,46 @@ export default function CardChecklist({
     });
   };
 
-  const busy = syncing || committing;
+  /**
+   * NEO-312 — the insert run, as it bears on the checklist on screen. The run
+   * is shown on its insert and on any of its parallels, and anywhere at all
+   * while it is still building (so Stop is never out of reach); a finished
+   * run is not carried onto an unrelated checklist.
+   */
+  const run = parallelRun.run;
+  const runTouchesThis =
+    !!run &&
+    (variantId === run.insertId || run.entries.some((e) => e.id === variantId));
+  const showParallelPanel = !!run && (parallelRun.active || runTouchesThis);
+  // While the insert's parallels are building, neither the insert's Sync (a
+  // new save would start a second run over a checklist being copied) nor a
+  // parallel's own build button (a second build of the same parallel) runs.
+  const heldByRun = parallelRun.active && runTouchesThis;
+  const busy = syncing || committing || heldByRun;
+  /**
+   * NEO-312 (J4) — on a parallel, the Sync slot builds from the insert
+   * instead: no marketplace fetch, no Match Cards, no content review and no
+   * entity wizard. Rendered only once the insert's name and this row are
+   * known, because the name IS the label; until then the slot stays empty
+   * rather than falling back to a Sync that would fetch.
+   */
+  const parallelButton = (primary: boolean) =>
+    parallelBuild?.role === "parallel" &&
+    parallelBuild.insertValue &&
+    variantRow ? (
+      <ParallelBuildButton
+        // A confirm half-open on one parallel says nothing about the next.
+        key={variantId}
+        parallelId={variantId}
+        parallelValue={variantRow.value}
+        insertValue={parallelBuild.insertValue}
+        cardCount={cards.length}
+        primary={primary}
+        held={heldByRun}
+        buttonRef={syncButtonRef}
+        onResult={handleParallelBuildResult}
+      />
+    ) : null;
   const fetchLabel = syncing
     ? "Fetching..."
     : committing
@@ -1938,17 +2057,20 @@ export default function CardChecklist({
               >
                 Add Cross-Release Cards
               </NeonButton>
-              {sortedCards.length > 0 && (
-                <NeonButton
-                  ref={syncButtonRef}
-                  secondary
-                  onClick={handleSync}
-                  disabled={busy}
-                  aria-label="Sync card checklist"
-                >
-                  {fetchLabel}
-                </NeonButton>
-              )}
+              {sortedCards.length > 0 &&
+                (parallelBuild?.role === "parallel" ? (
+                  parallelButton(false)
+                ) : (
+                  <NeonButton
+                    ref={syncButtonRef}
+                    secondary
+                    onClick={handleSync}
+                    disabled={busy}
+                    aria-label="Sync card checklist"
+                  >
+                    {fetchLabel}
+                  </NeonButton>
+                ))}
             </div>
           )}
         </div>
@@ -2263,6 +2385,14 @@ export default function CardChecklist({
           </div>
         )}
 
+        {/* NEO-312 (J1) — the insert's parallels, building one at a time.
+            Directly under the notice that said "Saved N cards.", because that
+            save is what started it and that is where the operator is looking.
+            The panel owns its own live line; see ParallelBuildPanel. */}
+        {showParallelPanel && run && (
+          <ParallelBuildPanel run={run} onStop={parallelRun.stop} />
+        )}
+
         {/* NEO-212 — the see-and-undo record of the review wizard's "Skip —
             not a person/team" decision, for THIS set. It sits with the other
             per-set notices, directly under the sync banner, because a skip is
@@ -2378,14 +2508,18 @@ export default function CardChecklist({
             <p className="text-gray-500 dark:text-gray-400 mb-4">
               No cards in this checklist yet.
             </p>
-            <NeonButton
-              ref={syncButtonRef}
-              onClick={handleSync}
-              disabled={busy}
-              aria-label="Sync card checklist"
-            >
-              {fetchLabel}
-            </NeonButton>
+            {parallelBuild?.role === "parallel" ? (
+              parallelButton(true)
+            ) : (
+              <NeonButton
+                ref={syncButtonRef}
+                onClick={handleSync}
+                disabled={busy}
+                aria-label="Sync card checklist"
+              >
+                {fetchLabel}
+              </NeonButton>
+            )}
           </div>
         ) : (
           <Virtuoso
