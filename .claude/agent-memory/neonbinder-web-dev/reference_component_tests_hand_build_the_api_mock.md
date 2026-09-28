@@ -34,6 +34,13 @@ Two shapes of the same trap, both hit on NEO-237:
   Attributes panel), add the module key to that test's api mock — one block,
   with a `// NEO-nnn` comment, beside the `teamFill` block NEO-279 added the same
   way. Say so in the report: it is a test-file edit outside a builder's list.
+- Third option, when the call must be driven from the tested component's own
+  hooks (a runner that has to live above an early return): read the reference
+  at CALL time through `useConvex()` — `convex.query(api.x.y, …)` /
+  `convex.action(api.x.z, …)` inside the async handler. Tests mock `useConvex`
+  as a plain object, so nothing touches `api.x` until the path actually runs
+  (NEO-312's `useParallelBuildRun`). Keep `useAction(api.x…)` for a child that
+  mounts only on the path that needs it.
 - `onSelect(id)`-style callbacks are asserted with `toHaveBeenCalledWith(id)`
   EXACTLY in the listbox/keyboard tests; adding a second argument breaks them.
   Look the extra datum up from a deduped `useQuery` in the wrapper instead.
