@@ -31,6 +31,7 @@ import { ConfirmDialog } from "../modules/confirm-dialog";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import { keyboardAwareCollision } from "../../lib/dnd/keyboard-aware-collision";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
+import { chunkGroupingPlan } from "../../convex/parallelGroupingPlan";
 
 /** "1 pending move" / "2 pending moves". */
 function plural(n: number, noun: string): string {
@@ -653,6 +654,13 @@ export default function ParallelGroupingModal({
   // other tabs are intentionally ignored — re-initializing would discard the
   // user's pending edits. The modal closes after a successful confirm so a
   // re-open will fetch fresh data.
+  //
+  // NEO-308 — the one-shot init has a second trigger: a PARTIAL save. When a
+  // chunk is refused after earlier chunks landed, handleConfirm RESETs while
+  // the modal stays open; `hasInitialized` drops to false and this re-INITs
+  // from the live tree, which already holds the landed chunks. The pending
+  // moves that did not land are discarded with the old state — what is on
+  // screen is then exactly what is saved, plus fresh suggestions.
   useEffect(() => {
     if (!isOpen) return;
     if (state.hasInitialized) return;
@@ -910,13 +918,19 @@ export default function ParallelGroupingModal({
     confirmingRef.current = true;
     setConfirming(true);
     setError(null);
+    // NEO-308 — one call per chunk of at most the server's cap, in the order
+    // `chunkGroupingPlan` gives (demotions → reparentings → promotions). Each
+    // chunk is applied whole or not at all; there is deliberately no wrapper
+    // making the SAVE all-or-nothing (Jason's ruling). Sequential, never
+    // parallel: a later chunk's checks rely on the earlier ones having landed.
+    // The in-flight guard above (ref, aria-disabled Save) spans the whole loop.
+    const chunks = chunkGroupingPlan(diff);
+    let applied = 0;
     try {
-      await apply({
-        variantTypeId,
-        promotions: diff.promotions,
-        demotions: diff.demotions,
-        reparentings: diff.reparentings,
-      });
+      for (const chunk of chunks) {
+        await apply({ variantTypeId, ...chunk });
+        applied += 1;
+      }
       // Reset state so re-open rebuilds from fresh tree.
       dispatch({ type: "RESET" });
       onClose();
@@ -932,6 +946,12 @@ export default function ParallelGroupingModal({
           err instanceof Error ? err.message : "Failed to apply changes",
         ),
       );
+      // NEO-308: landed chunks are already in `tree` (a mutation promise
+      // resolves only once this client's subscriptions reflect it). Rebuild
+      // from it; a refusal with nothing landed keeps the pending moves, as
+      // before. `error` is component state, not reducer state, so the
+      // refusal stays on screen across the rebuild.
+      if (applied > 0) dispatch({ type: "RESET" });
     } finally {
       confirmingRef.current = false;
       setConfirming(false);
@@ -943,12 +963,25 @@ export default function ParallelGroupingModal({
   // put it back on Save — beside the footer where a refusal appears — rather
   // than leave a keyboard user at the top of the page. Guarded on the actual
   // blur so it never steals focus the operator moved themselves.
+  //
+  // NEO-308 — a partial save lands here with the state just RESET, so Save
+  // renders natively `disabled` ("No changes") until the rebuild, and a
+  // focused button that becomes disabled drops focus to <body> in the
+  // browser. Focus on a disabled Save, or on <body> with Save disabled, goes
+  // to the dialog container instead (as Clear does): still inside the
+  // dialog, where Tab and Escape work, and the refusal is announced by its
+  // role="alert" either way.
   useEffect(() => {
     const was = wasConfirmingRef.current;
     wasConfirmingRef.current = confirming;
-    if (was && !confirming && document.activeElement === document.body) {
-      saveRef.current?.focus();
+    if (!was || confirming) return;
+    const save = saveRef.current;
+    const active = document.activeElement;
+    if (active !== document.body && !(active === save && save?.disabled)) {
+      return;
     }
+    if (save && !save.disabled) save.focus();
+    else overlayRef.current?.focus();
   }, [confirming]);
 
   /**

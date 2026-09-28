@@ -40,6 +40,7 @@ import {
 } from "./features/generateListing";
 import { LISTING_TITLE_MAX } from "./features/listingLimits";
 import { generateSku } from "./sku";
+import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import {
   cardNumberStem,
   resolveVariationParents,
@@ -7257,7 +7258,20 @@ export const getInsertTreeByVariantType = query({
 // parallels of ONE variantType, all of them on screen at once. A caller that
 // somehow needs more is asking for a different feature, not a bigger
 // transaction.
-const MAX_PARALLEL_GROUPING_ENTRIES = 200;
+//
+// ── NEO-308: the cap is per TRANSACTION, not per save ──────────────────────
+//
+// The "half of it applied" reasoning above is superseded. It held while one
+// save was one call, and it made the cap a wall: a session past 200 moves
+// could only be refused. The shipped client now cuts its plan into calls of
+// at most `MAX_PARALLEL_GROUPING_ENTRIES`, ordered demotions → reparentings →
+// promotions (`chunkGroupingPlan` in `parallelGroupingPlan.ts`, which also
+// owns the constant so the two sides cannot drift). Each call is still
+// validated and applied whole, so every chunk leaves a well-formed tree; a
+// save that stops part way keeps the chunks before it, and the modal
+// rebuilds from what landed. That module's comment holds why the order is
+// enough for the checks below, and the one case where a split plan is
+// refused that a single call would have accepted. No logic here changed.
 
 /**
  * NEO-300 — every refusal `applyParallelGroupings` can hand an operator, as
@@ -7286,7 +7300,11 @@ export const groupingRefusal = {
   /** One row both ungrouped and moved under another insert in one save. */
   twoMoves: (value: string) =>
     `"${value}" can't be ungrouped and moved in the same save. Pick one.`,
-  /** Past `MAX_PARALLEL_GROUPING_ENTRIES`. */
+  /**
+   * Past `MAX_PARALLEL_GROUPING_ENTRIES`. NEO-308: the shipped client never
+   * sends more than the cap in one call (it chunks); kept for a stale bundle
+   * mid-deploy and for any caller that is not the modal.
+   */
   tooMany: (limit: number) =>
     `That's more than ${limit} moves in one save. Save in smaller batches.`,
 };
