@@ -159,3 +159,74 @@ jobs:
             cat "$RUNNER_TEMP/gc.log" 2>/dev/null || echo "(no output — the sweep failed before reporting)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # NEO-310: one Discord message when this scheduled sweep fails, one
+  # "recovered" message the next time it goes green after a failure. Never
+  # runs on a fork (schedule/workflow_dispatch only trigger this workflow on
+  # the base repo, so that case doesn't arise here).
+  notify:
+    name: Notify Discord
+    needs: gc
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # `gc` is a single matrix job — its aggregate `result` already reflects
+      # whether ANY leg failed. Cancelled is only treated as a failure if the
+      # whole job (i.e. every leg) was cancelled, which for a single-job
+      # workflow is exactly "result == cancelled".
+      - name: Determine status
+        id: status
+        env:
+          RESULT: ${{ needs.gc.result }}
+        run: |
+          set -euo pipefail
+          if [ "$RESULT" = "failure" ] || [ "$RESULT" = "cancelled" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: List failing legs
+        id: legs
+        if: steps.status.outputs.status == 'failed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/discord-notify-failed-legs.sh "GC " "gc" >> "$GITHUB_OUTPUT"
+
+      - name: Notify on failure
+        if: steps.status.outputs.status == 'failed'
+        uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+          status: failed
+          workflow: "Cloud Run Revision GC"
+          details: ${{ steps.legs.outputs.failed-legs }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ref: ${{ github.ref_name }}
+          event: ${{ github.event_name }}
+
+      - name: Check for recovery
+        id: recovery
+        if: steps.status.outputs.status == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash .github/scripts/discord-notify-recovered.sh \
+            "revision-gc.yml" "${{ github.event_name }}" "${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Notify on recovery
+        if: steps.status.outputs.status == 'success' && steps.recovery.outputs.recovered == 'true'
+        uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+          status: recovered
+          workflow: "Cloud Run Revision GC"
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ref: ${{ github.ref_name }}
+          event: ${{ github.event_name }}

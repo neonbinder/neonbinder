@@ -167,6 +167,11 @@ jobs:
       contents: read
       id-token: write
       issues: write
+      # NEO-310: browser-deploy.yml's trailing `notify` job needs this to
+      # read run/job history for recovery detection (`gh run list`/`run view`).
+      # A called workflow is capped at what the CALLER grants here — omitting
+      # it would make `notify`'s own `actions: read` request a no-op.
+      actions: read
 
   preprocess:
     name: Preprocess service
@@ -178,6 +183,8 @@ jobs:
       contents: read
       id-token: write
       issues: write
+      # NEO-310: see the identical comment on the `browser` call above.
+      actions: read
 
   # The web release. Runs only once every service that changed is serving at
   # 100%. A SKIPPED service lane is fine (it did not change); a failed or
@@ -361,3 +368,81 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "Web release failed: ${SHA}" \
             --body-file body.md
+
+  # NEO-310: one Discord message when the release fails, one "recovered"
+  # message the next time it goes green after a failure. Alongside
+  # report-web-failure (that issue-per-web-failure job is untouched) — this
+  # covers the whole release, not just the web lane, and it is the single
+  # place that can see all three lanes' results at once.
+  notify:
+    name: Notify Discord
+    needs: [changes, preflight, browser, preprocess, web]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # `browser` / `preprocess` are conditional (only run if that service
+      # changed) — "skipped" is neither a failure nor a cancellation, so a
+      # release that skipped both lanes and only ran `web` is judged purely on
+      # what actually ran.
+      - name: Determine status + failed jobs
+        id: status
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          TOTAL=$(jq 'length' <<<"$NEEDS_JSON")
+          FAILED=$(jq -r '[to_entries[] | select(.value.result=="failure") | .key] | join(", ")' <<<"$NEEDS_JSON")
+          CANCELLED_LIST=$(jq -c '[to_entries[] | select(.value.result=="cancelled") | .key]' <<<"$NEEDS_JSON")
+          CANCELLED_COUNT=$(jq 'length' <<<"$CANCELLED_LIST")
+          if [ -n "$FAILED" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "failed-jobs=$FAILED" >> "$GITHUB_OUTPUT"
+          elif [ "$CANCELLED_COUNT" -gt 0 ] && [ "$CANCELLED_COUNT" -eq "$TOTAL" ]; then
+            # Every job in `needs` was cancelled — a systemic cancel (e.g. the
+            # run was force-cancelled), not one operator quietly cancelling a
+            # single stuck job. Worth a page.
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            CJOIN=$(jq -r 'join(", ")' <<<"$CANCELLED_LIST")
+            echo "failed-jobs=${CJOIN} (all cancelled)" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+            echo "failed-jobs=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify on failure
+        if: steps.status.outputs.status == 'failed'
+        uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+          status: failed
+          workflow: "Release"
+          details: ${{ steps.status.outputs.failed-jobs }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ref: ${{ github.ref_name }}
+          event: ${{ github.event_name }}
+
+      - name: Check for recovery
+        id: recovery
+        if: steps.status.outputs.status == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          bash .github/scripts/discord-notify-recovered.sh \
+            "release.yml" "${{ github.event_name }}" "${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Notify on recovery
+        if: steps.status.outputs.status == 'success' && steps.recovery.outputs.recovered == 'true'
+        uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+          status: recovered
+          workflow: "Release"
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ref: ${{ github.ref_name }}
+          event: ${{ github.event_name }}
