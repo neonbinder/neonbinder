@@ -153,3 +153,76 @@ jobs:
             cat "$RUNNER_TEMP/check.log" 2>/dev/null || echo "(no output — the check failed before reporting)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # NEO-310: one Discord message when this detector fails, one "recovered"
+  # message the next time it goes green after a failure. Deliberately
+  # excluded from the pull_request trigger: that trigger exists only to prove
+  # the script + wiring on dev (see the guard step above), runs on every PR
+  # touching this file, and a PR run is not an operational signal worth
+  # paging dev Discord about — the scheduled/workflow_dispatch runs are.
+  notify:
+    name: Notify Discord
+    needs: check
+    if: always() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Determine status
+        id: status
+        env:
+          RESULT: ${{ needs.check.result }}
+        run: |
+          set -euo pipefail
+          if [ "$RESULT" = "failure" ] || [ "$RESULT" = "cancelled" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: List failing legs
+        id: legs
+        if: steps.status.outputs.status == 'failed'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/discord-notify-failed-legs.sh "Image check " "check" >> "$GITHUB_OUTPUT"
+
+      - name: Notify on failure
+        if: steps.status.outputs.status == 'failed'
+        uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+          status: failed
+          workflow: "Cloud Run Revision Image Check"
+          details: ${{ steps.legs.outputs.failed-legs }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ref: ${{ github.ref_name }}
+          event: ${{ github.event_name }}
+
+      - name: Check for recovery
+        id: recovery
+        if: steps.status.outputs.status == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          bash .github/scripts/discord-notify-recovered.sh \
+            "revision-image-check.yml" "$EVENT_NAME" "$REF_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Notify on recovery
+        if: steps.status.outputs.status == 'success' && steps.recovery.outputs.recovered == 'true'
+        uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+          status: recovered
+          workflow: "Cloud Run Revision Image Check"
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ref: ${{ github.ref_name }}
+          event: ${{ github.event_name }}
