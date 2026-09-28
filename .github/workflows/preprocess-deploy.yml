@@ -1100,10 +1100,15 @@ jobs:
 
   # NEO-310: one Discord message when this deploy lane fails, one "recovered"
   # message the next time it goes green after a failure. Alongside
-  # report-failure (the gh-issue job above, untouched) — this fires on BOTH a
-  # real push-driven deploy AND a workflow_dispatch validation run. Covers the
-  # heavy lane AND the fast lane (report-failure above only covers the heavy
-  # lane's stages) since a fast-lane deploy failure is real deploy work too.
+  # report-failure (the gh-issue job above, untouched). Covers the heavy lane
+  # AND the fast lane (report-failure above only covers the heavy lane's
+  # stages) since a fast-lane deploy failure is real deploy work too.
+  #
+  # `workflow_dispatch` ONLY — NOT `push` (security review N4). See the
+  # identical comment on browser-deploy.yml's `notify` job: a push-driven
+  # deploy already gets a Discord message from release.yml's OWN trailing
+  # `notify` job (its `toJSON(needs)` names the `preprocess` job), so firing
+  # here too would double-post every failure/recovery during a real release.
   notify:
     name: Notify Discord
     needs:
@@ -1121,7 +1126,7 @@ jobs:
       - deploy-prod-fast
       - prod-smoke-fast
       - prod-promote-fast
-    if: always()
+    if: always() && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     defaults:
@@ -1132,6 +1137,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # dev-smoke-fast / prod-smoke-fast are advisory (their /health ping step
       # is continue-on-error, see the job above) — they will practically never
@@ -1174,23 +1181,19 @@ jobs:
           ref: ${{ github.ref_name }}
           event: ${{ github.event_name }}
 
-      # See browser-deploy.yml's identical notify job, and
-      # discord-notify-recovered.sh's header comment, for why the lookup
-      # differs by trigger.
+      # This job only runs on `workflow_dispatch` (see the job-level `if:`
+      # above), so it always has its own row under preprocess-deploy.yml's
+      # own run history to compare against — no release.yml lookup needed.
       - name: Check for recovery
         id: recovery
         if: steps.status.outputs.status == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "push" ]; then
-            bash .github/scripts/discord-notify-recovered.sh \
-              "release.yml" "push" "${{ github.ref_name }}" "Preprocess service" >> "$GITHUB_OUTPUT"
-          else
-            bash .github/scripts/discord-notify-recovered.sh \
-              "preprocess-deploy.yml" "${{ github.event_name }}" "${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          fi
+          bash .github/scripts/discord-notify-recovered.sh \
+            "preprocess-deploy.yml" "$EVENT_NAME" "$REF_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Notify on recovery
         if: steps.status.outputs.status == 'success' && steps.recovery.outputs.recovered == 'true'

@@ -175,6 +175,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # `gc` is a single matrix job — its aggregate `result` already reflects
       # whether ANY leg failed. Cancelled is only treated as a failure if the
@@ -216,9 +218,11 @@ jobs:
         if: steps.status.outputs.status == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           bash .github/scripts/discord-notify-recovered.sh \
-            "revision-gc.yml" "${{ github.event_name }}" "${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            "revision-gc.yml" "$EVENT_NAME" "$REF_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Notify on recovery
         if: steps.status.outputs.status == 'success' && steps.recovery.outputs.recovered == 'true'

@@ -539,14 +539,23 @@ jobs:
 
   # NEO-310: one Discord message when this deploy lane fails, one "recovered"
   # message the next time it goes green after a failure. Alongside
-  # report-failure (the gh-issue job above, untouched) — this fires on BOTH a
-  # real push-driven deploy AND a workflow_dispatch validation run, unlike
-  # report-failure which is push-only, since a broken dispatch validation is
-  # also worth a heads-up.
+  # report-failure (the gh-issue job above, untouched).
+  #
+  # `workflow_dispatch` ONLY — NOT `push` (security review N4). A push-driven
+  # deploy is invoked via release.yml's `uses:` call, and release.yml has its
+  # OWN trailing `notify` job that already covers this lane: its
+  # `toJSON(needs)` includes the `browser` job by name, so a browser-deploy
+  # failure during a release already produces a Discord message that names
+  # "browser" as the failed job, and its own recovery check (against
+  # release.yml's history) already covers the browser lane recovering. If
+  # this job also fired on `push`, every browser-deploy failure/recovery
+  # during a real release would post TWICE — once from here, once from
+  # release.yml. A `workflow_dispatch` validation run has no such second
+  # reporter, so it keeps its own notify.
   notify:
     name: Notify Discord
     needs: [test, build-push, deploy-dev, dev-login-probe, dev-promote, deploy-prod, prod-login-probe, prod-promote]
-    if: always()
+    if: always() && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     defaults:
@@ -557,6 +566,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Most of these jobs are conditionally skipped (dispatch-only validation
       # runs, or BROWSER_DEPLOY_ENABLED off) — skipped is neither a failure
@@ -595,26 +606,19 @@ jobs:
           ref: ${{ github.ref_name }}
           event: ${{ github.event_name }}
 
-      # See discord-notify-recovered.sh's header comment for why the lookup
-      # differs by trigger: a `push` run got here via release.yml's `uses:`
-      # call (no separate row under browser-deploy.yml to list), so recovery
-      # is judged from release.yml's history + the "Browser service" job's
-      # conclusion within it. A `workflow_dispatch` validation run DOES get
-      # its own row under this file's own history.
+      # This job only runs on `workflow_dispatch` (see the job-level `if:`
+      # above), so it always has its own row under browser-deploy.yml's own
+      # run history to compare against — no release.yml lookup needed here.
       - name: Check for recovery
         id: recovery
         if: steps.status.outputs.status == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          set -euo pipefail
-          if [ "${{ github.event_name }}" = "push" ]; then
-            bash .github/scripts/discord-notify-recovered.sh \
-              "release.yml" "push" "${{ github.ref_name }}" "Browser service" >> "$GITHUB_OUTPUT"
-          else
-            bash .github/scripts/discord-notify-recovered.sh \
-              "browser-deploy.yml" "${{ github.event_name }}" "${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
-          fi
+          bash .github/scripts/discord-notify-recovered.sh \
+            "browser-deploy.yml" "$EVENT_NAME" "$REF_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Notify on recovery
         if: steps.status.outputs.status == 'success' && steps.recovery.outputs.recovered == 'true'

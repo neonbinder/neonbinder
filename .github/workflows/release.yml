@@ -168,9 +168,13 @@ jobs:
       id-token: write
       issues: write
       # NEO-310: browser-deploy.yml's trailing `notify` job needs this to
-      # read run/job history for recovery detection (`gh run list`/`run view`).
-      # A called workflow is capped at what the CALLER grants here — omitting
-      # it would make `notify`'s own `actions: read` request a no-op.
+      # read run/job history for recovery detection (`gh run list`/`run view`)
+      # on its own workflow_dispatch validation runs. A called workflow is
+      # capped at what the CALLER grants here — a job asking for a scope the
+      # caller did not grant FAILS THE RUN at startup (a permissions error on
+      # the job), it does not silently no-op, so omitting this would break
+      # browser-deploy.yml's `notify` job outright on every push-driven
+      # release, not just leave it toothless.
       actions: read
 
   preprocess:
@@ -385,6 +389,8 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # `browser` / `preprocess` are conditional (only run if that service
       # changed) — "skipped" is neither a failure nor a cancellation, so a
@@ -432,9 +438,11 @@ jobs:
         if: steps.status.outputs.status == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           bash .github/scripts/discord-notify-recovered.sh \
-            "release.yml" "${{ github.event_name }}" "${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+            "release.yml" "$EVENT_NAME" "$REF_NAME" >> "$GITHUB_OUTPUT"
 
       - name: Notify on recovery
         if: steps.status.outputs.status == 'success' && steps.recovery.outputs.recovered == 'true'

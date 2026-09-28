@@ -40,9 +40,11 @@ runs:
   steps:
     - id: guard
       shell: bash
+      env:
+        WEBHOOK_URL: ${{ inputs.webhook-url }}
       run: |
         set -euo pipefail
-        if [ -z "${{ inputs.webhook-url }}" ]; then
+        if [ -z "${WEBHOOK_URL:-}" ]; then
           echo "notify skipped: no webhook"
           echo "send=false" >> "$GITHUB_OUTPUT"
         else
@@ -91,6 +93,11 @@ runs:
           --arg run_url "$RUN_URL" \
           --argjson color "$COLOR" \
           '{
+            # NEO-310 security review (N3): failed-job names or branch names
+            # could coincidentally look like a Discord mention or an @everyone
+            # / @here ping — allowed_mentions suppresses ALL of them
+            # server-side, regardless of what ends up in the text.
+            allowed_mentions: {parse: []},
             embeds: [
               {
                 title: $title,
