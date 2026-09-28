@@ -1566,3 +1566,78 @@ describe("NEO-306: the SportLots-only review is admin-gated", () => {
     expect(src).toContain(`export const ${fn} = ${keyword}({`);
   });
 });
+
+/**
+ * NEO-308 — security audit finding: `applyParallelGroupings` (the Group
+ * Parallels save, now chunked client-side by `chunkGroupingPlan`) had no
+ * entry here. Same shape as NEO-291's `setSelectorOptionCardNumberPrefix`
+ * test: refused before any write, for a signed-in non-admin and for a
+ * signed-out caller. A valid, inert one-entry plan so the refusal is the
+ * gate itself, not argument validation.
+ */
+describe("NEO-308: applyParallelGroupings (the Group Parallels save) is admin-gated", () => {
+  async function seedOneInsertUnderVariantType(t: ReturnType<typeof convexTest>) {
+    const variantTypeId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        platformData: {},
+        metadata: { variantRole: "insert" },
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+    const insertId = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Refractor",
+        parentId: variantTypeId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      await ctx.db.patch(variantTypeId, { children: [id] });
+      return id;
+    });
+    const targetId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Base Refractor",
+        parentId: variantTypeId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+    return { variantTypeId, insertId, targetId };
+  }
+
+  test("refuses a signed-in non-admin and a signed-out caller, writing nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId, insertId, targetId } = await seedOneInsertUnderVariantType(t);
+    const call = (tt: ReturnType<typeof convexTest>) =>
+      tt.mutation(api.selectorOptions.applyParallelGroupings, {
+        variantTypeId,
+        promotions: [{ insertId, targetInsertId: targetId }],
+        demotions: [],
+      });
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    await expect(call(t)).rejects.toThrow();
+
+    // Refused before any patch: the source row never moved.
+    const row = await t.run(async (ctx) => ctx.db.get(insertId));
+    expect(row?.level).toBe("insert");
+    expect(row?.parentId).toBe(variantTypeId);
+  });
+
+  test("and an admin gets through (the gate is the refusal, not the arguments)", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId, insertId, targetId } = await seedOneInsertUnderVariantType(t);
+    const result = await t.withIdentity(ADMIN).mutation(api.selectorOptions.applyParallelGroupings, {
+      variantTypeId,
+      promotions: [{ insertId, targetInsertId: targetId }],
+      demotions: [],
+    });
+    expect(result).toEqual({ success: true, promoted: 1, demoted: 0, reparented: 0 });
+  });
+});
