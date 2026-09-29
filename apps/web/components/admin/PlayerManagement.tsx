@@ -875,7 +875,11 @@ function PlayerSportsField({
       )}
 
       {message && (
+        // Keyed on the text and the role together: a live region whose role
+        // flips in place (status → alert) is not re-announced by every screen
+        // reader, so a change of either remounts it (SC 4.1.3).
         <p
+          key={`${message.isError ? "alert" : "status"}:${message.text}`}
           role={message.isError ? "alert" : "status"}
           className={`text-sm ${message.isError ? "text-neon-pink" : "text-slate-400"}`}
         >
@@ -891,9 +895,9 @@ function PlayerSportsField({
  *
  * A card in another sport's set is a guest appearance (a football player in
  * a baseball autograph book), and it carries that sport's tag so it reads as
- * one at a glance. The set's own sport is never tagged when it is the
- * player's home sport — that is the ordinary case and tagging it would be
- * noise.
+ * one at a glance. A card in ANY of the player's own sports — the home one or
+ * an added one (Bo Jackson's baseball cards) — is never tagged: that is the
+ * ordinary case and tagging it would be noise.
  *
  * Read-only, and capped by the server at {@link PLAYER_CARDS_CAP}: the panel
  * says so rather than implying it has shown everything.
@@ -902,6 +906,15 @@ function PlayerCardsSection({ player }: { player: Player }) {
   const cards: PlayerCardRow[] | undefined = useQuery(
     api.players.cardsForPlayer,
     { playerId: player._id },
+  );
+  /** The player's own sports: home plus every added one. */
+  const ownSports = useMemo(
+    () =>
+      new Set<string>([
+        player.sportId as string,
+        ...((player.alsoSportIds ?? []) as string[]),
+      ]),
+    [player.sportId, player.alsoSportIds],
   );
 
   return (
@@ -933,7 +946,7 @@ function PlayerCardsSection({ player }: { player: Player }) {
                     <span className="truncate text-slate-200">
                       {card.cardName || "Untitled card"}
                     </span>
-                    {card.sportId !== player.sportId && (
+                    {!ownSports.has(card.sportId as string) && (
                       <SportTag label={card.sportValue} className="shrink-0" />
                     )}
                   </span>

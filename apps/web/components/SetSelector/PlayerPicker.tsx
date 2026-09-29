@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
@@ -9,7 +9,11 @@ import {
   nameMatchesQuery,
 } from "../../lib/entities/name-search";
 import { normalizeEntityName } from "../../lib/entities/normalize-name";
-import { contrastRatio, normalizeHexColor } from "../../lib/print/contrast";
+import {
+  contrastRatio,
+  normalizeHexColor,
+  parseHexColor,
+} from "../../lib/print/contrast";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
 import SportSwitch from "./SportSwitch";
 
@@ -25,6 +29,8 @@ type PickerPlayerRow = {
   name: string;
   sportId: Id<"selectorOptions">;
   sportValue?: string;
+  /** The player's sports beyond the home one (search rows only). */
+  alsoSportIds?: Array<Id<"selectorOptions">>;
   stints?: Array<{
     label: string;
     primaryColor?: string;
@@ -80,24 +86,93 @@ export function SportTagById({
   return <SportTag label={label} className={className} />;
 }
 
-/** The popover surface, and the same surface under the ArrowDown highlight. */
-const POPOVER_BG = "#1f2937";
-const POPOVER_BG_HIGHLIGHT = "#194b3e";
+/**
+ * `hex` composited over `base` at `alpha` — what the eye sees under a
+ * translucent Tailwind fill such as `bg-[#00D558]/20`.
+ */
+function composite(base: string, tint: string, alpha: number): string {
+  const b = parseHexColor(base);
+  const t = parseHexColor(tint);
+  if (!b || !t) return base;
+  const mix = (x: number, y: number) =>
+    Math.round(x * (1 - alpha) + y * alpha)
+      .toString(16)
+      .padStart(2, "0");
+  return `#${mix(b.r, t.r)}${mix(b.g, t.g)}${mix(b.b, t.b)}`;
+}
+
+/** The ArrowDown highlight: `bg-[#00D558]/20` in BOTH themes (no dark split). */
+const HIGHLIGHT_TINT = "#00D558";
+const HIGHLIGHT_ALPHA = 0.2;
 
 /**
- * A team name in its own livery when the colour reads on both backgrounds the
- * row can sit on (SC 1.4.3, 4.5:1); otherwise null and the row stays muted.
+ * Every surface a result row can sit on, per theme. The popover is
+ * `bg-white dark:bg-gray-800`, a row under the pointer adds
+ * `hover:bg-gray-100 dark:hover:bg-gray-700`, and the ArrowDown row adds the
+ * green highlight over the base. Tailwind 4's gray-800 / gray-700, as hex.
+ */
+const LIGHT_SURFACES = [
+  "#ffffff",
+  "#f3f4f6",
+  composite("#ffffff", HIGHLIGHT_TINT, HIGHLIGHT_ALPHA),
+];
+const DARK_SURFACES = [
+  "#1e2939",
+  "#364153",
+  composite("#1e2939", HIGHLIGHT_TINT, HIGHLIGHT_ALPHA),
+];
+
+function readsOnAll(hex: string, surfaces: readonly string[]): boolean {
+  return surfaces.every((bg) => {
+    const ratio = contrastRatio(hex, bg);
+    return ratio !== null && ratio >= 4.5;
+  });
+}
+
+/**
+ * A team name in its own livery, decided PER THEME (SC 1.4.3, 4.5:1): the
+ * colour is used in a theme only when it reads on every surface the row can
+ * sit on in that theme, and the row stays muted there otherwise. No single
+ * colour can clear both a white and a gray-800 popover, so the two answers
+ * are independent — navy survives the light popover, gold the dark one.
  * The name is the information, the colour is only the nod.
  */
-function liveryColor(primary: string | undefined): string | null {
-  if (!primary) return null;
-  const hex = normalizeHexColor(primary);
-  if (!hex) return null;
-  for (const bg of [POPOVER_BG, POPOVER_BG_HIGHLIGHT]) {
-    const ratio = contrastRatio(hex, bg);
-    if (ratio === null || ratio < 4.5) return null;
-  }
-  return hex;
+function liveryColors(primary: string | undefined): {
+  light: string | null;
+  dark: string | null;
+} {
+  const hex = primary ? normalizeHexColor(primary) : null;
+  if (!hex) return { light: null, dark: null };
+  return {
+    light: readsOnAll(hex, LIGHT_SURFACES) ? hex : null,
+    dark: readsOnAll(hex, DARK_SURFACES) ? hex : null,
+  };
+}
+
+/**
+ * NEO-313 — the sport tag on a chip whose player's HOME sport is not the
+ * set's. It is shown only for a true guest: a multi-sport member of the set's
+ * sport (Bo Jackson, home football, on a baseball card) is a player of this
+ * sport and carries no tag. Membership is read per chip, and only for chips
+ * that reach here — the ordinary chip, home sport = set's sport, never
+ * subscribes. Nothing is shown until the answer lands, so a member's chip
+ * never flashes a tag it should not have.
+ */
+function PlayerGuestTag({
+  playerId,
+  homeSportId,
+  setSportId,
+}: {
+  playerId: Id<"players">;
+  homeSportId: Id<"selectorOptions">;
+  setSportId: Id<"selectorOptions">;
+}) {
+  const player = useQuery(api.players.getByIdParam, {
+    id: playerId as string,
+  });
+  if (!player) return null;
+  if ((player.alsoSportIds ?? []).includes(setSportId)) return null;
+  return <SportTagById sportId={homeSportId} />;
 }
 
 /** A stable empty pool, so a switched-but-untyped popover does not re-memo. */
@@ -232,30 +307,44 @@ export default function PlayerPicker({
     !!sportId && !!activeSportId && activeSportId !== sportId;
 
   /**
-   * NEO-313 — a cross-sport search goes to the server's search index, never to
-   * a second 500-row pool: this is the rare path, and it should cost nothing
-   * until the operator has switched AND typed. `players.search` also brings
-   * each row's sport and career line, which is what tells a guest apart.
+   * NEO-313 — a typed query also goes to the server's search index, for the
+   * sport being searched. Two jobs, one subscription, and nothing until the
+   * operator types:
+   *
+   *  - Cross-sport, it IS the pool — never a second 500-row fetch for the
+   *    rare path — and each row brings its sport and career line, which is
+   *    what tells a guest apart.
+   *  - On the set's sport it tops up the 500-row pool with what that pool
+   *    cannot hold: a multi-sport member whose HOME sport is another one
+   *    (`players.list` reads the home index only), and anyone past row 500.
+   *    Added to the pool rather than replacing it, so the pool's folded
+   *    substring match ("Jose" finds "José", "york" finds mid-name) is kept.
    */
-  const crossSportResults: PickerPlayerRow[] | undefined = useQuery(
+  const typed = query.trim();
+  const searchResults: PickerPlayerRow[] | undefined = useQuery(
     api.players.search,
-    crossSport && activeSportId && query.trim()
-      ? { query: query.trim(), sportId: activeSportId, limit: 10 }
+    typed && activeSportId
+      ? { query: typed, sportId: activeSportId, limit: 10 }
       : "skip",
+  );
+  /** Rows the server matched by its own rules; the client filter lets them through. */
+  const serverMatchedIds = useMemo(
+    () => new Set((searchResults ?? []).map((r) => r._id as string)),
+    [searchResults],
   );
   /**
    * One pool for everything downstream — options, the exact-match check, the
    * create offer — so they cannot disagree about which sport they describe.
+   * On the set's sport the search is additive: while it is in flight the pool
+   * alone answers, exactly as before this existed.
    */
-  const candidates: PickerPlayerRow[] | undefined = useMemo(
-    () =>
-      crossSport
-        ? query.trim()
-          ? crossSportResults
-          : NO_ROWS
-        : setSportPool,
-    [crossSport, query, crossSportResults, setSportPool],
-  );
+  const candidates: PickerPlayerRow[] | undefined = useMemo(() => {
+    if (crossSport) return typed ? searchResults : NO_ROWS;
+    if (!setSportPool || !typed || !searchResults?.length) return setSportPool;
+    const inPool = new Set(setSportPool.map((r) => r._id as string));
+    const extra = searchResults.filter((r) => !inPool.has(r._id as string));
+    return extra.length ? [...setSportPool, ...extra] : setSportPool;
+  }, [crossSport, typed, searchResults, setSportPool]);
   const [highlightIdx, setHighlightIdx] = useState(0);
   const [creating, setCreating] = useState(false);
   /**
@@ -343,9 +432,9 @@ export default function PlayerPicker({
   }, [selectedRows]);
 
   /**
-   * NEO-313 — the selected players whose sport is not the set's: a guest
-   * appearance. Their chip carries the sport so the card never reads as if a
-   * football player had been filed under baseball.
+   * NEO-313 — the selected players whose HOME sport is not the set's: guest
+   * candidates. Whether they really are guests (and not a multi-sport member
+   * of the set's sport) is `PlayerGuestTag`'s question, asked only for these.
    */
   const guestSportById = useMemo(() => {
     const map = new Map<string, Id<"selectorOptions">>();
@@ -367,7 +456,10 @@ export default function PlayerPicker({
     const q = query.trim();
     return candidates
       .filter((c) => !selectedSet.has(c._id as unknown as string))
-      .filter((c) => nameMatchesQuery(c.name, q))
+      .filter(
+        (c) =>
+          serverMatchedIds.has(c._id as string) || nameMatchesQuery(c.name, q),
+      )
       .sort((a, b) => {
         if (!q) return a.name.localeCompare(b.name);
         const aPrefix = nameHasQueryPrefix(a.name, q) ? 0 : 1;
@@ -376,7 +468,7 @@ export default function PlayerPicker({
         return a.name.localeCompare(b.name);
       })
       .slice(0, 8);
-  }, [candidates, query, value]);
+  }, [candidates, query, value, serverMatchedIds]);
 
   // An exact match already exists — no need to offer "create", it'd just be a
   // confusing duplicate-name affordance.
@@ -509,9 +601,11 @@ export default function PlayerPicker({
           >
             {labelById.get(id as unknown as string) ?? "Loading…"}
           </span>
-          {guestSportById.has(id as unknown as string) && (
-            <SportTagById
-              sportId={guestSportById.get(id as unknown as string)!}
+          {sportId && guestSportById.has(id as unknown as string) && (
+            <PlayerGuestTag
+              playerId={id}
+              homeSportId={guestSportById.get(id as unknown as string)!}
+              setSportId={sportId}
             />
           )}
           <button
@@ -665,13 +759,28 @@ export default function PlayerPicker({
                     {m.stints && m.stints.length > 0 && (
                       <span className="mt-0.5 block truncate text-[11px] text-gray-600 dark:text-gray-400">
                         {m.stints.slice(0, RESULT_STINT_LIMIT).map((st, i) => {
-                          const color = liveryColor(st.primaryColor);
+                          const color = liveryColors(st.primaryColor);
+                          // Each theme reads its own custom property, so a
+                          // colour that fails one theme is dropped there
+                          // only (see `liveryColors`).
+                          const style = {
+                            ...(color.light ? { "--livery-light": color.light } : {}),
+                            ...(color.dark ? { "--livery-dark": color.dark } : {}),
+                          } as CSSProperties;
                           return (
                             <span key={i}>
                               {i > 0 && ", "}
                               <span
-                                style={color ? { color } : undefined}
-                                className={color ? "" : "text-gray-700 dark:text-gray-300"}
+                                style={style}
+                                className={`${
+                                  color.light
+                                    ? "text-[color:var(--livery-light)]"
+                                    : "text-gray-700"
+                                } ${
+                                  color.dark
+                                    ? "dark:text-[color:var(--livery-dark)]"
+                                    : "dark:text-gray-300"
+                                }`}
                               >
                                 {st.label}
                               </span>{" "}

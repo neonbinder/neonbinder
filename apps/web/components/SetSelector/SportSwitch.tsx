@@ -30,10 +30,23 @@ import type { Id } from "../../convex/_generated/dataModel";
  * ## Keyboard
  *
  * Enter / Space / ArrowDown on the closed trigger opens the list with focus on
- * the current sport. Arrow keys move, Home / End jump, Enter or Space picks,
- * Escape closes and returns focus to the trigger. Escape is stopped here while
- * the list is open, so "close this list" can never become "cancel the review"
- * in a host dialog. Tab out of the list closes it.
+ * the current sport. Arrow keys move, Home / End jump, typing a sport's first
+ * letters jumps to it, Enter or Space picks, Escape closes and returns focus to
+ * the trigger. Escape is stopped here while the list is open, so "close this
+ * list" can never become "cancel the review" in a host dialog. Tab out of the
+ * list closes it.
+ *
+ * No host handles Enter at the dialog level (the review wizard's Enter-confirm
+ * lives on its Confirm button alone), so Enter on this trigger or an option
+ * only ever does what the focused button does.
+ *
+ * ## Order and height
+ *
+ * The set's sport first — it is the default and the way back — then the rest
+ * alphabetically. The list is capped at `max-h-48` and scrolls inside itself,
+ * so a deployment with many sport rows never pushes it over a host's footer;
+ * the focused option is always scrolled into view, so typing a sport's first
+ * letters is also how a long list reaches a row below the fold.
  *
  * ## Ids
  *
@@ -81,8 +94,13 @@ export default function SportSwitch({
     () =>
       [...(sports ?? [])]
         .map((s) => ({ id: s._id, name: s.value }))
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    [sports],
+        .sort((a, b) => {
+          // The set's sport leads; everything else is alphabetical.
+          if (a.id === setSportId) return -1;
+          if (b.id === setSportId) return 1;
+          return a.name.localeCompare(b.name);
+        }),
+    [sports, setSportId],
   );
 
   const [open, setOpen] = useState(false);
@@ -90,6 +108,8 @@ export default function SportSwitch({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const listId = useId();
+  /** Letters typed on the open list, for jump-to-sport; cleared after a pause. */
+  const typeahead = useRef({ text: "", at: 0 });
 
   const currentName =
     options.find((o) => o.id === value)?.name ??
@@ -111,8 +131,36 @@ export default function SportSwitch({
     const buttons = listRef.current?.querySelectorAll<HTMLButtonElement>(
       "[data-sport-switch-option]",
     );
-    buttons?.[activeIdx]?.focus();
+    const target = buttons?.[activeIdx];
+    if (!target) return;
+    // Scroll ourselves, to the NEAREST edge: the list scrolls inside a capped
+    // box, and a plain focus() may centre the row or move the page instead.
+    target.focus({ preventScroll: true });
+    target.scrollIntoView?.({ block: "nearest" });
   }, [open, activeIdx]);
+
+  /**
+   * Jump to the first sport whose name starts with the letters typed so far
+   * (the listbox typeahead convention). Repeating one letter cycles through
+   * the sports that start with it.
+   */
+  const jumpTo = (key: string) => {
+    const now = Date.now();
+    const prev = typeahead.current;
+    const text = now - prev.at > 700 ? key : prev.text + key;
+    typeahead.current = { text, at: now };
+    const lower = text.toLocaleLowerCase();
+    const repeat = lower.length > 1 && [...lower].every((c) => c === lower[0]);
+    const needle = repeat ? lower[0] : lower;
+    const start = repeat || needle.length === 1 ? activeIdx + 1 : activeIdx;
+    for (let step = 0; step < options.length; step++) {
+      const idx = (start + step) % options.length;
+      if (options[idx].name.toLocaleLowerCase().startsWith(needle)) {
+        setActiveIdx(idx);
+        return;
+      }
+    }
+  };
 
   const openList = () => {
     if (disabled || options.length === 0) return;
@@ -161,7 +209,10 @@ export default function SportSwitch({
             close(true);
           }
         }}
-        className="inline-flex items-baseline gap-1 rounded-sm text-xs text-gray-400 hover:text-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-400"
+        // `p-1.5 -m-1.5`: a 28px-tall hit area (SC 2.5.8) around text that
+        // still sits exactly where it did — the padding is cancelled by the
+        // margin, so nothing around it moves.
+        className="-m-1.5 inline-flex items-baseline gap-1 rounded-sm p-1.5 text-xs text-gray-400 hover:text-gray-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900 aria-disabled:cursor-not-allowed aria-disabled:hover:text-gray-400"
       >
         {prefix ? <span>{prefix}</span> : null}
         <span
@@ -185,7 +236,7 @@ export default function SportSwitch({
           id={listId}
           role="listbox"
           aria-label="Choose a sport"
-          className="absolute left-0 top-full z-20 mt-1 min-w-[10rem] rounded-md border border-gray-600 bg-gray-950 p-1 shadow-lg shadow-black/60"
+          className="absolute left-0 top-full z-20 mt-1 max-h-48 min-w-[10rem] overflow-y-auto overscroll-contain rounded-md border border-gray-600 bg-gray-950 p-1 shadow-lg shadow-black/60"
           onKeyDown={(e) => {
             const last = options.length - 1;
             if (e.key === "ArrowDown") {
@@ -204,6 +255,15 @@ export default function SportSwitch({
               e.preventDefault();
               e.stopPropagation();
               close(true);
+            } else if (
+              e.key.length === 1 &&
+              e.key !== " " &&
+              !e.ctrlKey &&
+              !e.metaKey &&
+              !e.altKey
+            ) {
+              e.preventDefault();
+              jumpTo(e.key);
             }
           }}
         >
