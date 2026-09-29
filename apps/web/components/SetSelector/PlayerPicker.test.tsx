@@ -35,17 +35,28 @@ vi.mock("../../convex/_generated/api", () => ({
       list: "players.list",
       findOrCreate: "players.findOrCreate",
     },
+    // NEO-313: SportTagById and the popover's SportSwitch both read the sport
+    // list to render (a tag's label, the switch's option list).
+    selectorOptions: {
+      getSelectorOptions: "selectorOptions.getSelectorOptions",
+    },
   },
 }));
 
 let currentSelectedRows: unknown;
 let currentCandidates: unknown;
+// NEO-313: backs SportTagById and the popover's SportSwitch. Most tests never
+// open the switch's list, so an empty pool by default is enough — the
+// trigger button still renders (it does not depend on there being any
+// options), which is what the Tab-order tests below need.
+let currentSports: unknown = [];
 const mockFindOrCreate = vi.fn();
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string) => {
     if (ref === "players.getManyByIds") return currentSelectedRows;
     if (ref === "players.list") return currentCandidates;
+    if (ref === "selectorOptions.getSelectorOptions") return currentSports;
     return undefined;
   },
   useMutation: (ref: string) =>
@@ -99,6 +110,7 @@ describe("PlayerPicker", () => {
     vi.clearAllMocks();
     currentSelectedRows = [];
     currentCandidates = [];
+    currentSports = [];
     mockFindOrCreate.mockResolvedValue(pid("new-player-1"));
   });
 
@@ -705,9 +717,13 @@ describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
     // WCAG 2.4.11 — in the quick-add form this popover covers the Team row and
     // Add/Cancel. Returning focus to the trigger also keeps Tab inside a host
     // dialog whose focus trap cannot see into the portal.
+    //
+    // NEO-313: the SportSwitch trigger is now the LAST focusable row in the
+    // popover (it sits below the options and the create row), so it — not
+    // the last player option — is where Tab actually leaves from.
     renderInScrollBox();
     openPopover();
-    const lastRow = screen.getByLabelText("Add Aaron Judge");
+    const lastRow = screen.getByLabelText("Sport to search for players: …");
     lastRow.focus();
 
     fireEvent.keyDown(lastRow, { key: "Tab" });

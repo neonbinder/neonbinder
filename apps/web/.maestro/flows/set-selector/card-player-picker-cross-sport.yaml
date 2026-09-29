@@ -1,0 +1,334 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Card player picker — switch the search to Football and put a football player on a baseball card; the card carries him with his sport, and he stays out of Baseball's roster (NEO-313)"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE (NEO-313, case A "guest appearance" on the card editor):
+# a card's PlayerPicker searches the SET's sport by default, and its quiet
+# "Sport: Baseball ▾" switch at the foot of the popover lets the operator
+# search another sport and link a player from it. The card then links that
+# player as a GUEST: the chip carries his sport, his own Players page lists
+# the card, and he does NOT become a player of the set's sport.
+#
+# R2 — HARD ASSERTIONS, in order:
+#   (a) PRECONDITION, on the default path: typing his name in the baseball
+#       card's picker offers only "Create player Gp<token>" — the set-sport
+#       search cannot see a football player — and the switch reads
+#       "Sport to search for players: Baseball".
+#   (b) after switching to Football the SAME typed name resolves to the
+#       existing player ("Add Gp<token>"), and picking it makes a chip whose
+#       "Football" tag says he is from another sport;
+#   (c) after a full reload, /admin/players → Gp<token> lists this card
+#       ("#315-<attempt>") under "Cards for Gp<token>", tagged "Baseball"
+#       (the card's sport, printed only because it differs from his);
+#   (d) he is ABSENT from the Baseball list ("No players match that filter.",
+#       "0 matches") and PRESENT once the same list is switched to Football —
+#       the positive half is what stops the negative passing on a dead page;
+#   (e) the drawer, reopened from a re-drill, still shows his chip with its
+#       "Football" tag — the link persisted on the card itself.
+# No `when:` branch wraps any of it.
+#
+# R3 — DEDUP: player-picker-create-custom-card proves create-and-attach on the
+#   default path; set-fill-teams-from-teammate-card picks an existing player on
+#   it. Neither touches the sport switch. The wizard's switch is proved by
+#   checklist-wizard-link-commits; the multi-sport MEMBERSHIP (case B) by
+#   admin/player-sports-multi-sport-membership. Drilling is R9's
+#   util-drill-to-custom; the player is made by ../admin/util-add-player-by-hand.
+#
+# FIXTURES (all from the UI, per attempt):
+#   * the player `Gp<token>` — FOOTBALL, made on /admin/players. One search
+#     token (README → "Minted names are single tokens"); registered in
+#     SET-REGISTRY.md. Nothing deletes a player; the per-attempt name is what
+#     makes that harmless.
+#   * the set `xsp-<worker>` — HAND-MADE under the real Baseball / 2024 /
+#     Topps ancestors (SET-REGISTRY.md → "Preferred shape"), so the set's
+#     sport is really Baseball and the default search is Baseball's. No
+#     marketplace ids anywhere under it, so it costs no sync and nothing is
+#     attached to it (R7a). Registered in SET-REGISTRY.md.
+#   * card `315-<attempt>` — added here, DELETED at the end (self-cleaning).
+#
+# R5 — every in-app wait is 7000. The two openLink gates are 20000, the same
+# figure util-drill-to-custom gives its own openLink gate: a full SPA load and
+# Clerk session check, not a UI response. No marketplace is touched.
+#
+# ⚠️ GEOMETRY RISK, NOT YET MEASURED — the sport list. SportSwitch opens its
+# list DOWNWARD from the foot of the picker's popover, unbounded, holding
+# every sport row alphabetically; in CI each runner's hand-made
+# `E2E Test Sport <w>` sorts ahead of Football, so Football can sit ~300px
+# below the switch — past the 629px viewport from a centred trigger. The
+# popover is `fixed` and FOLLOWS its trigger on window scroll
+# (PickerPopover's capture-phase scroll listener), so a window scroll carries
+# the list up; STEP 3 scrolls for it rather than assuming. If the page has too
+# little scroll left under the add form, that step fails by name and the
+# finding is the list's unbounded height, not this flow.
+
+- launchApp
+# The list COUNTER, not the heading: it renders only once the list query
+# answers (see player-management-add-and-career-history).
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 45000
+
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
+# ============================================================
+# STEP 1 — the football player
+# ============================================================
+- runFlow:
+    file: ../admin/util-add-player-by-hand.yaml
+    env:
+      PLAYER_NAME: "Gp${output.ATTEMPT_TOKEN}"
+      SPORT: "Football"
+
+# ============================================================
+# STEP 2 — a baseball card's add form (R9)
+# ============================================================
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "xsp-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+- scrollUntilVisible:
+    element:
+      id: "Open add card form"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+# The number box has autoFocus (util-add-custom-card STEP 6).
+- inputText: "315-${ATTEMPT_ID}"
+- tapOn: "Player name"
+- inputText: "Guest Card ${ATTEMPT_ID}"
+
+# ============================================================
+# STEP 3 — R2(a)+(b): the default search, then the switch
+# ============================================================
+# The trigger sits below the fold of the open form (the fill-teams flow
+# measured the same fold trap); centred, per R8.
+- scrollUntilVisible:
+    element:
+      id: "Add a player to the new card"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add a player to the new card"
+- tapOn:
+    id: "Find a player for the new card"
+- inputText: "Gp${output.ATTEMPT_TOKEN}"
+
+# R2(a): Baseball's pool has no such player, so the popover offers to CREATE
+# one, and the switch says what is being searched.
+- extendedWaitUntil:
+    visible:
+      id: "Create player Gp${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+- assertVisible:
+    id: "Sport to search for players: Baseball"
+- tapOn:
+    id: "Sport to search for players: Baseball"
+
+# See the GEOMETRY RISK note in the header. A window scroll moves the fixed
+# popover with its trigger, so this is the one scroll that can bring the
+# option on screen; `childOf` the list's own name keeps any other "Football"
+# on the page out of it. Centred because a tap follows (R8).
+- scrollUntilVisible:
+    element:
+      text: "Football"
+      childOf:
+        id: "Choose a sport"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: "Football"
+    childOf:
+      id: "Choose a sport"
+- extendedWaitUntil:
+    visible:
+      id: "Sport to search for players: Football"
+    timeout: 7000
+
+# R2(b): the typed query is kept across the switch, and the cross-sport search
+# (`players.search` in Football) returns him as an existing row. The result
+# row's accessible name is `Add <name>` whichever sport it came from.
+- extendedWaitUntil:
+    visible:
+      id: "Add Gp${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+- tapOn:
+    id: "Add Gp${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible:
+      id: "Remove player Gp${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+# The guest chip carries his sport. Scoped to the picker's ROOT: the popover
+# is portalled to <body>, so its switch (which also reads "Football" now) is
+# not inside it.
+- assertVisible:
+    text: "Football"
+    childOf:
+      id: "Players on the new card"
+
+# Close the popover (it stays open after a pick, by design) with a tap outside
+# it: "Card name" is ABOVE the picker, and the popover hangs below its trigger.
+- tapOn:
+    id: "Card name"
+- extendedWaitUntil:
+    notVisible:
+      id: "Find a player for the new card"
+    timeout: 7000
+
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Submit new card"
+# The form closes only once `addCustomCard` has succeeded.
+- extendedWaitUntil:
+    notVisible:
+      id: "Card name"
+    timeout: 7000
+
+# ============================================================
+# STEP 4 — R2(c)+(d): read it back from the Players admin
+# ============================================================
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/players
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 20000
+
+# (d) FIRST, while no player panel is open: an open panel prints "Football"
+# (his home-sport chip) and "Baseball" (the card's tag), and either would
+# compete with the sport picker's options below.
+- tapOn: "Filter players"
+- inputText: "Gp${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible: ".*matches.*"
+    timeout: 7000
+# Only his row is listed, and it prints "Football" — so "Baseball" is the
+# picker's option alone (memory: native-select-option-taps).
+- tapOn: "All sports"
+- tapOn: "Baseball"
+- extendedWaitUntil:
+    visible: "No players match that filter."
+    timeout: 7000
+- assertVisible: "0 matches"
+# The positive half, on the same screen and the same typed name.
+- tapOn: "Baseball"
+- tapOn: "Football"
+- extendedWaitUntil:
+    visible:
+      text: "Gp${output.ATTEMPT_TOKEN}"
+      below:
+        text: ".*matches.*"
+    timeout: 7000
+
+# (c) Open him. Below the counter: the filter box reports its value (this
+# name) as its text.
+- tapOn:
+    text: "Gp${output.ATTEMPT_TOKEN}"
+    below:
+      text: ".*matches.*"
+# The Cards list is the panel's last section, under Save. The scroll is its
+# own assertion that a card links him (R6): with none the panel says "No cards
+# link to … yet." and renders no list.
+- scrollUntilVisible:
+    element:
+      id: "Cards for Gp${output.ATTEMPT_TOKEN}"
+    centerElement: true
+    timeout: 7000
+- assertVisible:
+    text: "#315-${ATTEMPT_ID}"
+    childOf:
+      id: "Cards for Gp${output.ATTEMPT_TOKEN}"
+- assertVisible:
+    text: "Baseball"
+    childOf:
+      id: "Cards for Gp${output.ATTEMPT_TOKEN}"
+
+# ============================================================
+# STEP 5 — R2(e) and CLEANUP: reopen the card, then delete it
+# ============================================================
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "xsp-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+# The util returns with "Open add card form" in view; the row is in the list
+# BELOW it, so DOWN. Centred so the two scroll authorities agree (the row is
+# in react-virtuoso — util-add-custom-card STEP 10 has the history).
+- scrollUntilVisible:
+    element:
+      id: "Edit card 315-${ATTEMPT_ID}(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Edit card 315-${ATTEMPT_ID}(, .*)?"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+
+# The drawer is a `fixed inset-0` portal the window never moves, so its body
+# is driven with point-to-point (touch) swipes at x=80%, inside the drawer —
+# the recipe and measurement are player-picker-create-custom-card's.
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- swipe:
+    start: "80%, 80%"
+    end: "80%, 20%"
+- assertVisible:
+    id: "Remove player Gp${output.ATTEMPT_TOKEN}"
+- assertVisible:
+    text: "Football"
+    childOf:
+      id: "Player picker"
+
+- tapOn:
+    id: "Done editing card"
+- extendedWaitUntil:
+    notVisible:
+      id: "Card name"
+    timeout: 7000
+
+# UP: the three swipes chained to the window and left it at maximum scroll,
+# with this row off the TOP (player-picker-create-custom-card measures the
+# same row at y=-52). A DOWN scroll would travel away from it (R5).
+- scrollUntilVisible:
+    element:
+      id: "Delete card 315-${ATTEMPT_ID}(, .*)?"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Delete card 315-${ATTEMPT_ID}(, .*)?"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 315-${ATTEMPT_ID}(, .*)?"
+- extendedWaitUntil:
+    notVisible:
+      id: "Edit card 315-${ATTEMPT_ID}(, .*)?"
+    timeout: 7000

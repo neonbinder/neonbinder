@@ -699,26 +699,30 @@ function AddPlayerForm({
 // ---------------------------------------------------------------------------
 
 /**
- * NEO-313 — a refusal from `players.setAdditionalSports` that means "cards
- * still depend on this sport". Structured `data`, the only part of a
- * ConvexError that survives production's redaction.
+ * NEO-313 — a refusal from `players.setAdditionalSports` that means "something
+ * still depends on this sport": cards in its sets that link to the player
+ * (`SPORT_HAS_CARDS`), or career stints at its teams (`SPORT_HAS_STINTS`).
+ * Structured `data`, the only part of a ConvexError that survives
+ * production's redaction.
  */
-function sportHasCardsRefusal(
-  e: unknown,
-): { sportId: string; count: number } | null {
+function sportRemovalRefusal(e: unknown): {
+  code: "SPORT_HAS_CARDS" | "SPORT_HAS_STINTS";
+  sportId: string;
+  count: number;
+} | null {
   if (!(e instanceof ConvexError)) return null;
   const data: unknown = e.data;
   if (
     data &&
     typeof data === "object" &&
     "code" in data &&
-    data.code === "SPORT_HAS_CARDS" &&
+    (data.code === "SPORT_HAS_CARDS" || data.code === "SPORT_HAS_STINTS") &&
     "count" in data &&
     typeof data.count === "number" &&
     "sportId" in data &&
     typeof data.sportId === "string"
   ) {
-    return { sportId: data.sportId, count: data.count };
+    return { code: data.code, sportId: data.sportId, count: data.count };
   }
   return null;
 }
@@ -772,11 +776,16 @@ function PlayerSportsField({
       await setAdditionalSports({ playerId: player._id, sportIds: next });
       setMessage({ text: done, isError: false });
     } catch (e) {
-      const refusal = sportHasCardsRefusal(e);
+      const refusal = sportRemovalRefusal(e);
+      const sport = refusal ? nameOf(refusal.sportId) : "";
       setMessage({
-        text: refusal
-          ? `${refusal.count} ${refusal.count === 1 ? "card" : "cards"} in ${nameOf(refusal.sportId)} sets still link to ${player.name}. Unlink those first; they're listed under Cards.`
-          : userFacingMessage(e, "Could not update their sports."),
+        text: !refusal
+          ? userFacingMessage(e, "Could not update their sports.")
+          : refusal.code === "SPORT_HAS_STINTS"
+            ? refusal.count === 1
+              ? `1 career stint is at a ${sport} team. Remove it first; it's under Career history.`
+              : `${refusal.count} career stints are at ${sport} teams. Remove those first; they're under Career history.`
+            : `${refusal.count} ${refusal.count === 1 ? "card" : "cards"} in ${sport} sets still link to ${player.name}. Unlink those first; they're listed under Cards.`,
         isError: true,
       });
     } finally {

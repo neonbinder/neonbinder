@@ -76,6 +76,11 @@ vi.mock("../../convex/_generated/api", () => ({
     // NEO-236: the New Team dialog this picker opens renders `NewTeamForm`,
     // whose League pills read the sport's leagues.
     leagues: { list: "leagues.list" },
+    // NEO-313: SportTagById and the popover's SportSwitch both read the sport
+    // list to render (a tag's label, the switch's option list).
+    selectorOptions: {
+      getSelectorOptions: "selectorOptions.getSelectorOptions",
+    },
   },
 }));
 
@@ -83,6 +88,11 @@ let queryCalls: Array<{ ref: string; args: unknown }> = [];
 let currentSelectedRows: unknown;
 let currentCandidates: unknown;
 let currentLeagues: unknown;
+// NEO-313: backs SportTagById and the popover's SportSwitch. Most tests never
+// open the switch's list, so an empty pool by default is enough — the
+// trigger button still renders regardless, which is what the Tab-order tests
+// below need.
+let currentSports: unknown = [];
 const mockFindOrCreate = vi.fn();
 
 vi.mock("convex/react", () => ({
@@ -94,6 +104,7 @@ vi.mock("convex/react", () => ({
     if (ref === "teams.getManyByIds") return currentSelectedRows;
     if (ref === "teams.list" || ref === "teams.search") return currentCandidates;
     if (ref === "leagues.list") return currentLeagues;
+    if (ref === "selectorOptions.getSelectorOptions") return currentSports;
     return undefined;
   },
   useMutation: (ref: string) =>
@@ -173,6 +184,7 @@ describe("TeamPicker", () => {
     currentSelectedRows = [];
     currentCandidates = [];
     currentLeagues = [];
+    currentSports = [];
     queryCalls = [];
     mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
   });
@@ -1018,6 +1030,7 @@ describe("TeamPicker — finding past the list window", () => {
     currentSelectedRows = [];
     currentCandidates = [];
     currentLeagues = [];
+    currentSports = [];
     queryCalls = [];
   });
 
@@ -1217,9 +1230,13 @@ describe("TeamPicker — the popover escapes its clip box (NEO-272)", () => {
     // picker, so leaving it forwards has to uncover that. Returning focus to
     // the trigger also means Tab can never walk out of a host dialog whose
     // focus trap cannot see into the portal.
+    //
+    // NEO-313: the SportSwitch trigger is now the LAST focusable row in the
+    // popover, below the options and the create row, so it — not the last
+    // team option — is where Tab actually leaves from.
     renderInScrollBox();
     openPopover();
-    const lastRow = screen.getByLabelText("Add Boston Red Sox");
+    const lastRow = screen.getByLabelText("Sport to search for teams: …");
     lastRow.focus();
 
     fireEvent.keyDown(lastRow, { key: "Tab" });
@@ -1242,6 +1259,7 @@ describe("TeamPicker — labels prop (NEO-277)", () => {
     currentSelectedRows = [makeTeam("t1", "New York Yankees")];
     currentCandidates = [makeTeam("t2", "Boston Red Sox")];
     currentLeagues = [];
+    currentSports = [];
     queryCalls = [];
   });
 
