@@ -202,17 +202,10 @@ tags:
 # "(Player · Baseball ▾)" tag beside the name.
 #
 # SWITCH FIRST, DECIDE NOTHING ON THIS ROW BEFORE IT. `switchRowSport` refuses
-# a row that carries a decision, and refuses a row any of whose STAGED team
-# steps is answered ("Undo the team steps this name raised before changing its
-# sport."). This flow touches nothing on the row between the walk and the
-# switch. It cannot keep the walk from answering the row's staged steps,
-# though: `applyLookupResult` stages a player's career teams when its lookup
-# lands, and the wizard presents every settled team step before any player,
-# so the walk above has already skipped them by the time this row is on
-# screen. If this row raised any, the switch below is refused with that
-# sentence under the name and the wait for "…: Football" fails here — a
-# product finding (the switch is unreachable on such a row through the
-# ordinary walk), not something this flow routes around.
+# a row that carries a decision. The row's STAGED team steps may already be
+# answered by the walk above (the wizard presents settled team steps before
+# any player); the switch discards those, since they were answers about the
+# old sport, and keeps any step another player in the batch still needs.
 - assertVisible:
     id: "Sport for this name: Baseball"
 - tapOn:
