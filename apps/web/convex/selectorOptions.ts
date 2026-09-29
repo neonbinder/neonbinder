@@ -14224,6 +14224,20 @@ export const commitCardChecklistPrelude = internalMutation({
       );
     }
 
+    /**
+     * NEO-313 (security review) — the SET's sport, walked from the set itself
+     * ONCE for the whole prelude call, never taken from `args.sportId`.
+     *
+     * The "also plays the set's sport" writes (`addPlayerSport`, below, for a
+     * link and for a create) add a membership to a player, and every
+     * "was this row switched away from the set's sport?" comparison decides
+     * whether they run. Both answers belong to the set, so both read the
+     * ancestry rather than a caller-supplied id. Undefined (an orphaned
+     * subtree) means there is no set sport to add, and those writes are
+     * skipped rather than guessed.
+     */
+    const setSportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+
     // NEO-251 (security review) — the LAST place these names can be bounded
     // before they become `players` / `teams` rows.
     //
@@ -15335,10 +15349,10 @@ export const commitCardChecklistPrelude = internalMutation({
       if (row.kind !== "player") continue;
       if (row.decision?.action !== "link") continue;
       if (!row.decision.addSetSport || !row.decision.linkedPlayerId) continue;
-      if (row.sportId === args.sportId) continue;
+      if (!setSportId || row.sportId === setSportId) continue;
       const linked = await ctx.db.get(row.decision.linkedPlayerId);
       if (!linked || !(await playerBelongsToSport(ctx, linked, row.sportId))) continue;
-      await addPlayerSport(ctx, linked, args.sportId);
+      await addPlayerSport(ctx, linked, setSportId);
     }
 
     const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
@@ -15868,9 +15882,9 @@ export const commitCardChecklistPrelude = internalMutation({
        * `syncPlayerSports`, the table's one writer. A no-op when the row was
        * never switched: the player's home sport already is the set's.
        */
-      if (decision.addSetSport && playerSportId !== args.sportId) {
+      if (decision.addSetSport && setSportId && playerSportId !== setSportId) {
         const created = await ctx.db.get(id);
-        if (created) await addPlayerSport(ctx, created, args.sportId);
+        if (created) await addPlayerSport(ctx, created, setSportId);
       }
     };
 

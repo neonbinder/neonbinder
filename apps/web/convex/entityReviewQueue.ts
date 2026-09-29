@@ -3034,7 +3034,8 @@ export const clearDecision = mutation({
  *   - The Wikidata lookup is re-enqueued, under the new sport.
  *
  * Refused on a decided row (undo the decision first — it was made about the
- * old sport), on a league row and on any staged row (those follow the row they
+ * old sport), on a row any of whose staged steps is already answered (the
+ * same reason, one level down), on a league row and on any staged row (those follow the row they
  * were raised for). Switching back to the set's sport is allowed and is the
  * same operation. Switching to the sport the row already has is a no-op.
  *
@@ -3078,18 +3079,27 @@ export const switchRowSport = mutation({
             .withIndex("by_source_player", (q) => q.eq("source.playerRowId", row._id))
             .collect()
         : [];
+    const stagedLeagues: Doc<"entityReviewQueue">[] = [];
     for (const teamRowId of [row._id, ...staged.map((r) => r._id)]) {
       const leagues = await ctx.db
         .query("entityReviewQueue")
         .withIndex("by_source_team", (q) => q.eq("source.teamRowId", teamRowId))
         .collect();
-      for (const league of leagues) {
-        if (league.batchId === row.batchId) await ctx.db.delete(league._id);
-      }
+      stagedLeagues.push(...leagues);
     }
-    for (const child of staged) {
-      if (child.batchId === row.batchId) await ctx.db.delete(child._id);
+    const children = [...stagedLeagues, ...staged].filter(
+      (child) => child.batchId === row.batchId,
+    );
+    // NEO-313 (security review) — an answered step is the operator's work in
+    // the OLD sport. Deleting it silently would throw that work away, so the
+    // switch is refused until they walk it back themselves; nothing is
+    // deleted or patched first.
+    if (children.some((child) => child.decision)) {
+      throw new ConvexError(
+        "Undo the team steps this name raised before changing its sport.",
+      );
     }
+    for (const child of children) await ctx.db.delete(child._id);
 
     // What NB alone can say about this name in the NEW sport — the marker
     // `startBatch` writes at insert, for the same reason: a row whose lookup

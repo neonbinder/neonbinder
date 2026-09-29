@@ -147,6 +147,12 @@ const playerWithSportsPublicValidator = v.object({
  */
 const playerSearchResultValidator = v.object({
   ...playerDocPublicValidator.fields,
+  /**
+   * The sports this player belongs to besides his home sport — the same field
+   * `playerWithSportsPublicValidator` carries, so the Players admin's
+   * "Also: Football" chip survives the switch from its list to a typed search.
+   */
+  alsoSportIds: v.array(v.id("selectorOptions")),
   sportValue: v.string(),
   stints: v.array(
     v.object({
@@ -1671,7 +1677,10 @@ export const list = query({
   returns: v.array(playerDocPublicValidator),
   handler: async (ctx, args) => {
     await requireSignedIn(ctx);
-    const limit = args.limit ?? 100;
+    // NEO-313 security review — floored and capped like `listForManagement`:
+    // a caller passing 10_000 gets `PLAYER_LIST_MAX`, and 0 or a negative
+    // number gets one row rather than an error from `.take`.
+    const limit = clampLimit(args.limit, PLAYER_LIST_DEFAULT, PLAYER_LIST_MAX);
     const docs = args.sportId
       ? await playersInSport(ctx, args.sportId, limit)
       : await ctx.db.query("players").take(limit);
@@ -1679,11 +1688,39 @@ export const list = query({
   },
 });
 
+/** `players.list` — default and ceiling for `limit`. */
+const PLAYER_LIST_DEFAULT = 100;
+const PLAYER_LIST_MAX = 500;
+
 /**
- * NEO-313 — the players who belong to a sport: home sport first, then the
- * multi-sport members an operator added through `playerSports`. A guest
- * appearance (a football player linked onto one baseball card) is NOT a
+ * A client-supplied page size, floored at 1 and capped at `max`. A missing or
+ * non-finite value takes `fallback`; a fraction rounds down. `.take` refuses
+ * anything else, and a 0 would read as "nobody here".
+ */
+function clampLimit(value: number | undefined, fallback: number, max: number): number {
+  const n = value !== undefined && Number.isFinite(value) ? Math.floor(value) : fallback;
+  return Math.max(1, Math.min(n, max));
+}
+
+/**
+ * NEO-313 — how many multi-sport members of one sport `playersInSport` reads.
+ * Members are rare (Bo Jackson, Deion Sanders), so this is headroom, not a
+ * page: it is what keeps a runaway `playerSports` table from turning every
+ * picker open into an unbounded read.
+ */
+const PLAYERS_IN_SPORT_MEMBER_CAP = 200;
+
+/**
+ * NEO-313 — the players who belong to a sport: the multi-sport members an
+ * operator added through `playerSports` first, then home-sport players. A
+ * guest appearance (a football player linked onto one baseball card) is NOT a
  * member and does not appear here.
+ *
+ * Members come FIRST and are read whatever the home count. They used to be
+ * appended only while the home players left room, so in a sport with more
+ * home players than the page (baseball, at 500) every member silently fell
+ * off the set-sport picker and the Players list. Home players past the page
+ * still do — that is what the typed search is for.
  *
  * Returns up to `take` rows; the caller probes `take = limit + 1` when it needs
  * to know whether there were more.
@@ -1693,22 +1730,29 @@ async function playersInSport(
   sportId: Id<"selectorOptions">,
   take: number,
 ): Promise<Array<Doc<"players">>> {
-  const home = await ctx.db
-    .query("players")
-    .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
-    .take(take);
-  if (home.length >= take) return home;
   const members = await ctx.db
     .query("playerSports")
     .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
-    .take(take - home.length);
-  const seen = new Set<string>(home.map((p) => p._id as string));
-  const out = [...home];
+    .take(Math.min(take, PLAYERS_IN_SPORT_MEMBER_CAP));
+  const seen = new Set<string>();
+  const out: Array<Doc<"players">> = [];
   for (const row of members) {
     if (seen.has(row.playerId as string)) continue;
     seen.add(row.playerId as string);
     const player = await ctx.db.get(row.playerId);
     if (player) out.push(player);
+  }
+  if (out.length >= take) return out;
+  const home = await ctx.db
+    .query("players")
+    .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+    .take(take - out.length);
+  for (const player of home) {
+    // `syncPlayerSports` never stores a player's home sport, so this only
+    // skips a row written around it.
+    if (seen.has(player._id as string)) continue;
+    seen.add(player._id as string);
+    out.push(player);
   }
   return out;
 }
@@ -1787,7 +1831,7 @@ export const search = query({
     const term = args.query.trim();
     if (!term) return [];
 
-    const limit = Math.min(args.limit ?? SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT);
+    const limit = clampLimit(args.limit, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT);
 
     const docs = await ctx.db
       .query("players")
@@ -1865,6 +1909,8 @@ export const search = query({
       }
       out.push({
         ...toPublicPlayer(doc),
+        // One indexed read per row, bounded by `SEARCH_MAX_LIMIT`.
+        alsoSportIds: await additionalSportIds(ctx, doc._id),
         sportValue: sportValueById.get(sportKey)!,
         stints,
       });
@@ -1878,8 +1924,13 @@ export const search = query({
  * a typed name against. Members are rare (Bo Jackson, Deion Sanders); this is
  * headroom, and past it a member is still found by exact name through the
  * review gate's `sameNamePlayers`.
+ *
+ * Kept small on purpose (security review): it runs on every keystroke of a
+ * typeahead any signed-in user can drive, and the scan is paid before a
+ * single row matches. 64 is far past the multi-sport athletes any one sport
+ * has; `playersInSport` reads more because it runs once per picker open.
  */
-const SEARCH_MEMBER_SCAN = 256;
+const SEARCH_MEMBER_SCAN = 64;
 
 /**
  * How many search-index rows feed the ranker, and how many rank out by default.
