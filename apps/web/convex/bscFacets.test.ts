@@ -31,6 +31,7 @@ import {
   isBscParallelVariantId,
   soleBscBaseVariantId,
   legacyBscFacetForLevel,
+  chainWithoutInsertAncestors,
   planBscFanOut,
   resolveBscFacetFilters,
   syncWrittenBscFacet,
@@ -807,5 +808,65 @@ describe("untaggedBscSlots / withBscFacetTags — the promotion tagger's raw mat
     expect(untaggedBscSlots({ platformData: { sportlots: { s0: "1" } } })).toEqual(
       [],
     );
+  });
+});
+
+describe("chainWithoutInsertAncestors (NEO-312)", () => {
+  test("drops an insert row that is an ANCESTOR of the leaf", () => {
+    const chain = [
+      node("sport", { b0: "baseball" }),
+      node("year", { b0: "2024" }),
+      node("setName", { b0: "topps" }),
+      node("insert", { b0: "dugout-s1" }),
+      node("parallel", { b0: "dugout-s1-gold" }),
+    ];
+    const out = chainWithoutInsertAncestors(chain);
+    expect(out.map((r) => r.level)).toEqual([
+      "sport",
+      "year",
+      "setName",
+      "parallel",
+    ]);
+  });
+
+  test("keeps the leaf itself even when the leaf IS an insert", () => {
+    const chain = [
+      node("sport", { b0: "baseball" }),
+      node("year", { b0: "2024" }),
+      node("setName", { b0: "topps" }),
+      node("insert", { b0: "dugout-s1" }),
+    ];
+    const out = chainWithoutInsertAncestors(chain);
+    expect(out.map((r) => r.level)).toEqual([
+      "sport",
+      "year",
+      "setName",
+      "insert",
+    ]);
+  });
+
+  test("a chain with no insert row at all is unchanged", () => {
+    const chain = [node("sport", { b0: "baseball" }), node("setName", { b0: "topps" })];
+    const out = chainWithoutInsertAncestors(chain);
+    expect(out).toEqual(chain);
+  });
+
+  test("with the insert ancestor dropped, its variantName never reaches the parallel's BSC plan", () => {
+    // The whole point of NEO-312's gate: a parallel whose own slot is tagged
+    // `setName` (a NEO-189 split) must not have the insert's `variantName`
+    // survive into its filters under the deepest-contributor rule.
+    const chain = [
+      node("sport", { b0: "baseball" }),
+      node("year", { b0: "2024" }),
+      node("setName", { b0: "topps" }),
+      node("insert", { b1: "dugout-s1" }, { b1: "variantName" }),
+      node("parallel", { b0: "dugout-s1-gold" }, { b0: "setName" }),
+    ];
+    const withInsert = resolveBscFacetFilters(chain);
+    expect(withInsert.filters.variantName).toEqual(["dugout-s1"]);
+
+    const plan = resolveBscFacetFilters(chainWithoutInsertAncestors(chain));
+    expect(plan.filters.variantName).toBeUndefined();
+    expect(plan.filters.setName).toEqual(["dugout-s1-gold"]);
   });
 });
