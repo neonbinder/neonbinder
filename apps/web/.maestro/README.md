@@ -856,13 +856,11 @@ Two corollaries worth knowing before you write the selector:
   Gold` in `cards-parallel-custom` — is the insert role and keeps the ordinary
   Sync. Saving an INSERT's checklist starts `ParallelBuildPanel` under the
   `Saved N cards.` notice: heading `Building parallels of <insert> — k of M`
-  while it runs, then `Parallels of <insert> — b of M built` or `— stopped, b
-  of M built`; one text node per line, `<parallel> — <status>`; `Stop after
+  while it runs, then `<insert> parallels — b built[, …]` or `<insert> parallels —
+  stopped after b of M`; one text node per line, `<parallel> — <status>`; `Stop after
   this one`, which reads `Stopping after this one…` once pressed. Target all
-  of these by their visible `text:`. Both buttons carry a DOM id
-  (`parallel-build`, `parallel-build-stop`), which REPLACES their
-  `resource-id`, so an `id:` selector on their words matches nothing; the
-  build order is the insert's child order, which a flow does not control
+  of these by their visible `text:`. Both buttons carry a `useFieldTestClass` marker (NEO-260), never a DOM
+  id; the build order is the insert's child order, which a flow does not control
   (`flagship-colour-is-a-parallel-both-ways` STEP 8 says how it presses Stop
   without depending on it).
 

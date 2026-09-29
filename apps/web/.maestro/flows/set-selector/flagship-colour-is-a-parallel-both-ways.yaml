@@ -151,8 +151,8 @@ tags:
 #                 `Saved N cards`; on a parallel `Build from <insert>` /
 #                 `Rebuild from <insert>` in the Sync slot (NEO-312)
 #   build panel   heading `Building parallels of <insert> — k of M` →
-#                 `Parallels of <insert> — stopped, b of M built` (or `— b of
-#                 M built`); one text node per line `<parallel> — <status>`
+#                 `<insert> parallels — stopped after b of M` (or `—
+#                 b built[, x blocked…]`); one text node per line `<parallel> — <status>`
 #                 (`Waiting`, `Building…`, `Built N cards[, …]`, `Blocked —
 #                 …`, `Stopped`, `Failed — …`); `Stop after this one` →
 #                 `Stopping after this one…` (ParallelBuildPanel.tsx)
@@ -1349,8 +1349,8 @@ tags:
 # guessed. Each ledger line is ONE text node, `<parallel> — <status>`
 # (`parallelLineText`); the heading is `panelHeading`:
 #   running  `Building parallels of Anime — k of M`
-#   stopped  `Parallels of Anime — stopped, b of M built`
-#   finished `Parallels of Anime — b of M built`
+#   stopped  `Anime parallels — stopped after b of M`
+#   finished `Anime parallels — b built[, x blocked, s skipped, f failed]`
 # The panel's sr-only live line repeats a heading or a FINISHED line (never
 # "Waiting"/"Building…"), so a regex below may resolve to it instead of the
 # visible node; it says the same thing, and nothing here taps it.
@@ -1366,7 +1366,7 @@ tags:
 # builds no more, in any order. The one ordering that can still miss it is
 # `Anime Kanji` LAST and its build landing inside the ~2s between this gate
 # and the tap; the failure then reads `No visible element found: Stop after
-# this one` with the heading `Parallels of Anime — M of M built` on screen.
+# this one` with the heading `Anime parallels — M built` on screen.
 # ============================================================
 
 # THE HEADING, WHILE STILL BUILDING — it changes on completion, so it is
@@ -1400,7 +1400,7 @@ tags:
 # run has already ended stopped. Client state, the 7000 bar (R5).
 - extendedWaitUntil:
     visible:
-      text: "Stopping after this one…|Parallels of Anime — stopped, [0-9]+ of [0-9]+ built"
+      text: "Stopping after this one…|Anime parallels — stopped after [0-9]+ of [0-9]+"
     timeout: 7000
 
 # `Anime Kanji` reaches a RESULT — R5 marketplace exception, its own build
@@ -1420,10 +1420,10 @@ tags:
 # ends on its result; if it landed during the next parallel's, that one
 # finishes first — one more live fetch, R5 marketplace exception, STEP 6's
 # 120000. Only a stopped run says "stopped"; a missed tap would end on
-# `Parallels of Anime — M of M built` and fail here, by name.
+# `Anime parallels — M built` and fail here, by name.
 - extendedWaitUntil:
     visible:
-      text: "Parallels of Anime — stopped, [0-9]+ of [0-9]+ built"
+      text: "Anime parallels — stopped after [0-9]+ of [0-9]+"
     timeout: 120000
 
 # ============================================================
