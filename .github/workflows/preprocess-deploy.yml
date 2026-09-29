@@ -1097,3 +1097,111 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "Preprocess deploy failed at ${STAGE}: ${SHA}" \
             --body-file body.md
+
+  # NEO-310: one Discord message when this deploy lane fails, one "recovered"
+  # message the next time it goes green after a failure. Alongside
+  # report-failure (the gh-issue job above, untouched). Covers the heavy lane
+  # AND the fast lane (report-failure above only covers the heavy lane's
+  # stages) since a fast-lane deploy failure is real deploy work too.
+  #
+  # `workflow_dispatch` ONLY — NOT `push` (security review N4). See the
+  # identical comment on browser-deploy.yml's `notify` job: a push-driven
+  # deploy already gets a Discord message from release.yml's OWN trailing
+  # `notify` job (its `toJSON(needs)` names the `preprocess` job), so firing
+  # here too would double-post every failure/recovery during a real release.
+  notify:
+    name: Notify Discord
+    needs:
+      - test
+      - build-push
+      - deploy-dev
+      - dev-smoke
+      - dev-promote
+      - deploy-prod
+      - prod-smoke
+      - prod-promote
+      - deploy-dev-fast
+      - dev-smoke-fast
+      - dev-promote-fast
+      - deploy-prod-fast
+      - prod-smoke-fast
+      - prod-promote-fast
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # dev-smoke-fast / prod-smoke-fast are advisory (their /health ping step
+      # is continue-on-error, see the job above) — they will practically never
+      # surface as `failure`, but including them costs nothing and means a
+      # future change to that lane's strictness is covered here without
+      # touching this job. Skipped is neither a failure nor a cancellation, so
+      # a run where the fast service doesn't exist yet, or where
+      # PREPROCESS_DEPLOY_ENABLED is off, is judged only on what actually ran.
+      - name: Determine status + failed jobs
+        id: status
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          TOTAL=$(jq 'length' <<<"$NEEDS_JSON")
+          FAILED=$(jq -r '[to_entries[] | select(.value.result=="failure") | .key] | join(", ")' <<<"$NEEDS_JSON")
+          CANCELLED_LIST=$(jq -c '[to_entries[] | select(.value.result=="cancelled") | .key]' <<<"$NEEDS_JSON")
+          CANCELLED_COUNT=$(jq 'length' <<<"$CANCELLED_LIST")
+          if [ -n "$FAILED" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "failed-jobs=$FAILED" >> "$GITHUB_OUTPUT"
+          elif [ "$CANCELLED_COUNT" -gt 0 ] && [ "$CANCELLED_COUNT" -eq "$TOTAL" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            CJOIN=$(jq -r 'join(", ")' <<<"$CANCELLED_LIST")
+            echo "failed-jobs=${CJOIN} (all cancelled)" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+            echo "failed-jobs=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify on failure
+        if: steps.status.outputs.status == 'failed'
+        uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+          status: failed
+          workflow: "Preprocess deploy"
+          details: ${{ steps.status.outputs.failed-jobs }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ref: ${{ github.ref_name }}
+          event: ${{ github.event_name }}
+
+      # This job only runs on `workflow_dispatch` (see the job-level `if:`
+      # above), so it always has its own row under preprocess-deploy.yml's
+      # own run history to compare against — no release.yml lookup needed.
+      - name: Check for recovery
+        id: recovery
+        if: steps.status.outputs.status == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          bash .github/scripts/discord-notify-recovered.sh \
+            "preprocess-deploy.yml" "$EVENT_NAME" "$REF_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Notify on recovery
+        if: steps.status.outputs.status == 'success' && steps.recovery.outputs.recovered == 'true'
+        uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+          status: recovered
+          workflow: "Preprocess deploy"
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ref: ${{ github.ref_name }}
+          event: ${{ github.event_name }}

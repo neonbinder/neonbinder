@@ -1,0 +1,146 @@
+name: "Notify Discord"
+description: >-
+  Posts a short failed/recovered message for a scheduled or deploy workflow to
+  the dev Discord webhook. Never prints the webhook URL, never fails the
+  calling job if the POST itself fails (see the warn-not-fail step below).
+
+inputs:
+  webhook-url:
+    description: >-
+      Discord webhook URL (repo secret DISCORD_DEV_WEBHOOK_URL). May be empty
+      — an empty value is a deliberate no-op, not an error, so a fork run or a
+      repo that hasn't set the secret yet doesn't turn red.
+    required: true
+  status:
+    description: "'failed' or 'recovered'"
+    required: true
+  workflow:
+    description: "Human-readable workflow name, e.g. 'Cloud Run Revision GC'"
+    required: true
+  details:
+    description: >-
+      Freeform detail line — typically a comma-joined list of failed job/leg
+      names. May be empty.
+    required: false
+    default: ""
+  run-url:
+    description: "Link to the run, e.g. github.server_url/repo/actions/runs/run_id"
+    required: true
+  ref:
+    description: "Branch or ref the run executed on"
+    required: false
+    default: ""
+  event:
+    description: "Triggering event name (schedule, workflow_dispatch, push, ...)"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - id: guard
+      shell: bash
+      env:
+        WEBHOOK_URL: ${{ inputs.webhook-url }}
+      run: |
+        set -euo pipefail
+        if [ -z "${WEBHOOK_URL:-}" ]; then
+          echo "notify skipped: no webhook"
+          echo "send=false" >> "$GITHUB_OUTPUT"
+        else
+          echo "send=true" >> "$GITHUB_OUTPUT"
+        fi
+
+    # Body is built with `jq -n --arg` — every value is passed as a bound
+    # argument, never string-interpolated into the JSON text, so a failed-job
+    # name containing a quote or backslash can't corrupt the payload or inject
+    # extra JSON. Nothing here echoes the webhook URL or any secret value.
+    - id: build
+      if: steps.guard.outputs.send == 'true'
+      shell: bash
+      env:
+        STATUS: ${{ inputs.status }}
+        WORKFLOW: ${{ inputs.workflow }}
+        DETAILS: ${{ inputs.details }}
+        RUN_URL: ${{ inputs.run-url }}
+        REF: ${{ inputs.ref }}
+        EVENT: ${{ inputs.event }}
+      run: |
+        set -euo pipefail
+
+        if [ "$STATUS" = "recovered" ]; then
+          TITLE="✅ Recovered: $WORKFLOW"
+          COLOR=3066993   # green
+        else
+          TITLE="❌ Failed: $WORKFLOW"
+          COLOR=15158332  # red
+        fi
+
+        # Keep the message short (per NEO-310): a handful of fields, no log
+        # excerpts, no env dumps, and cap the details line so one enormous
+        # matrix leg list can't blow past Discord's limits.
+        DETAILS_TRUNC="$DETAILS"
+        if [ ${#DETAILS_TRUNC} -gt 500 ]; then
+          DETAILS_TRUNC="${DETAILS_TRUNC:0:500}… (truncated)"
+        fi
+
+        PAYLOAD_FILE="$RUNNER_TEMP/discord-notify-payload.json"
+        jq -n \
+          --arg title "$TITLE" \
+          --arg branch "${REF:-unknown}" \
+          --arg event "${EVENT:-unknown}" \
+          --arg details "$DETAILS_TRUNC" \
+          --arg run_url "$RUN_URL" \
+          --argjson color "$COLOR" \
+          '{
+            # NEO-310 security review (N3): failed-job names or branch names
+            # could coincidentally look like a Discord mention or an @everyone
+            # / @here ping — allowed_mentions suppresses ALL of them
+            # server-side, regardless of what ends up in the text.
+            allowed_mentions: {parse: []},
+            embeds: [
+              {
+                title: $title,
+                color: $color,
+                fields: (
+                  [
+                    {name: "Branch", value: $branch, inline: true},
+                    {name: "Event", value: $event, inline: true}
+                  ]
+                  + (if ($details | length) > 0 then
+                      [{name: "Failed jobs", value: $details, inline: false}]
+                    else [] end)
+                  + [{name: "Run", value: $run_url, inline: false}]
+                )
+              }
+            ]
+          }' > "$PAYLOAD_FILE"
+        echo "payload-file=$PAYLOAD_FILE" >> "$GITHUB_OUTPUT"
+
+    # A Discord outage or webhook rotation must never mask the workflow's real
+    # result — this is an alerting side-channel, not part of the thing being
+    # alerted on. `continue-on-error: true` keeps this step's OWN conclusion
+    # 'success' even when the request fails, so the notify job (and therefore
+    # ci-gate-style aggregation elsewhere) never goes red because Discord was
+    # unreachable; the next step turns a failed `outcome` into a `::warning::`
+    # instead of silence. Retries + a short timeout absorb a transient blip
+    # without hanging the job.
+    - id: post
+      if: steps.guard.outputs.send == 'true'
+      shell: bash
+      continue-on-error: true
+      env:
+        WEBHOOK_URL: ${{ inputs.webhook-url }}
+        PAYLOAD_FILE: ${{ steps.build.outputs.payload-file }}
+      run: |
+        set -euo pipefail
+        curl --fail-with-body --silent --show-error \
+          --max-time 10 --retry 2 --retry-delay 2 \
+          -H "Content-Type: application/json" \
+          -d @"$PAYLOAD_FILE" \
+          "$WEBHOOK_URL" \
+          -o /dev/null
+
+    - if: steps.guard.outputs.send == 'true' && steps.post.outcome == 'failure'
+      shell: bash
+      run: echo "::warning::Discord notify POST failed (webhook unreachable or rejected) — not failing the run for it."
