@@ -231,14 +231,21 @@ tags:
 - inputText: "F"
 # GEOMETRY GUARD, NOT DECORATION. The box sits inside the wizard's scrolling
 # BODY, above the pinned footer whose controls decide rows on a REAL set
-# (R7a). `above:` the footer's decision group, in the same selector as
-# `childOf`, makes a Football row that is not clear of the footer fail HERE,
-# by name, instead of a tap landing on a decision. No scroll: the dialog is
-# `fixed` and the window cannot move it (R8 case 2).
+# (R7a). A Football row that is not clear of the footer fails HERE, by name,
+# instead of a tap landing on a decision. No scroll: the dialog is `fixed`
+# and the window cannot move it (R8 case 2).
+#
+# NO `childOf` IN THIS GUARD. Orchestra runs the whole selector, relative
+# anchors included, inside the `childOf` parent's subtree, so an `above:`
+# anchor outside the list (the footer) resolves to nothing and the assert can
+# never pass (CI red, PR #292: Football on screen at y=313, footer at y=496).
+# The pair of anchors does the list-scoping instead: the only "Football"
+# between this row's switch and the footer's decision group is the option.
+# The tap below keeps `childOf`, which needs no outside anchor.
 - assertVisible:
     text: "Football"
-    childOf:
-      id: "Choose a sport"
+    below:
+      id: "Sport for this name: Baseball"
     above:
       id: "Decision for .*"
 - tapOn:

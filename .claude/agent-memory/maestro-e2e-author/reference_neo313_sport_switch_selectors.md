@@ -39,7 +39,7 @@ Traps:
   Maestro). Reach it with the component's typeahead: open → wait `id: "Choose a
   sport"` → `inputText: "F"` (ONE char — see [[maestro-web-driver-primitives]]
   §6) → the row is focused and scrolled into the fold → tap its text. In the
-  wizard keep `above: {id: "Decision for .*"}` on the assert before the tap;
+  wizard guard with `below:` the switch + `above: {id: "Decision for .*"}` and NO childOf (it scopes the anchors), then tap with childOf;
   in a picker a centred `scrollUntilVisible` carries the `fixed` popover
   (it follows its trigger on window scroll). The post-pick trigger label is
   the only proof — Maestro exposes no focus/active attribute.
