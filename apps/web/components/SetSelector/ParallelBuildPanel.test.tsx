@@ -518,6 +518,22 @@ describe("useParallelBuildRun — the in-flight registry", () => {
 });
 
 describe("useHostedParallelBuildRun — surviving the checklist unmounting", () => {
+  /**
+   * `leftBehind` (in `ParallelBuildPanel.tsx`) is module-scope state, so a
+   * test that reads it fresh depends on nobody else having left a run behind
+   * first. The mount effect in `useRunnerCore` unconditionally clears it
+   * (`leftBehind = null`) before returning control to this test — mounting
+   * and immediately unmounting a hook that never starts a run is therefore a
+   * reset with no product-code change needed: the mount clears the slot, and
+   * the unmount (of a hook whose `run` is still null) leaves nothing new
+   * behind. Every test in this block can then set up its OWN scenario without
+   * caring what an earlier test in the file left lying around.
+   */
+  beforeEach(() => {
+    const { unmount } = renderHook(() => useHostedParallelBuildRun());
+    unmount();
+  });
+
   test("a run left mid-flight when the host unmounts is picked up by the next mount as 'left'", async () => {
     mockQuery.mockResolvedValue(plan());
     mockActionFn.mockImplementation(() => new Promise<ParallelBuildResult>(() => {}));
@@ -539,10 +555,26 @@ describe("useHostedParallelBuildRun — surviving the checklist unmounting", () 
     expect(byId.get(D)?.kind).toBe("stopped");
   });
 
-  test("the leftBehind record is read once — a THIRD mount starts fresh, not left again", async () => {
-    // The previous test already consumed the module-scope `leftBehind` slot
-    // via the mount effect; a third mount must see a clean slate.
-    const { result } = renderHook(() => useHostedParallelBuildRun());
-    expect(result.current.run).toBeNull();
+  test("the leftBehind record is read once — a second mount after consuming it starts fresh", async () => {
+    // Self-contained: leaves its OWN run behind rather than relying on the
+    // test above having done so.
+    mockQuery.mockResolvedValue(plan());
+    mockActionFn.mockImplementation(() => new Promise<ParallelBuildResult>(() => {}));
+
+    const { result, unmount } = renderHook(() => useHostedParallelBuildRun());
+    act(() => {
+      void result.current.start(INSERT_ID, "Anime", { query: mockQuery, action: mockActionFn });
+    });
+    await waitFor(() => expect(result.current.run?.phase).toBe("running"));
+    unmount(); // leaves this run behind
+
+    const { result: secondMount, unmount: unmountSecond } = renderHook(() =>
+      useHostedParallelBuildRun(),
+    );
+    expect(secondMount.current.run?.phase).toBe("left"); // consumed it
+    unmountSecond(); // never started a run — nothing new left behind
+
+    const { result: thirdMount } = renderHook(() => useHostedParallelBuildRun());
+    expect(thirdMount.current.run).toBeNull();
   });
 });
