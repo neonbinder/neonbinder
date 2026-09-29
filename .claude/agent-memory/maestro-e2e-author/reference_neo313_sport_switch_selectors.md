@@ -1,6 +1,6 @@
 ---
 name: neo313-sport-switch-selectors
-description: NEO-313 cross-sport selectors (wizard/picker SportSwitch, Players admin Sports field + Cards list) and the traps — the switch's list is unbounded and opens downward, and the admin "Also:" tag / multi-sport picker pool were both unreachable at authoring time
+description: NEO-313 cross-sport selectors (wizard/picker SportSwitch, Players admin Sports field + Cards list) and the traps — capped inner-scrolling sport list reached by a ONE-key typeahead, and the wizard switch is refused once the walk has answered the row's staged team steps
 metadata:
   type: reference
 ---
@@ -26,14 +26,25 @@ card-player-picker-cross-sport, admin/player-sports-multi-sport-membership):
   (`Players on the new card` / `Player picker`), never in the portalled popover.
 
 Traps:
-- **The sport list is unbounded and opens DOWNWARD.** In CI every runner's
-  `E2E Test Sport <w>` sorts before Football (~10 rows × 28px). In the wizard it
-  can end under the pinned footer (clip invisible to Maestro — a tap would hit a
-  DECISION control), so guard with `above: {id: "Decision for .*"}` in the same
-  selector as `childOf` (parse-verified to combine). In a picker the popover is
-  `fixed` and follows its trigger on window scroll, so `scrollUntilVisible` on the
-  option is the one way to reach it.
-- At authoring time `players.search` returned no `alsoSportIds` (admin "Also:"
-  tag absent in search mode) and `playersInSport` read members only while home
-  players < limit (a multi-sport member missing from a 500+ sport's picker pool).
-  Check whether those were fixed before trusting a red on them.
+- **The sport list is a `max-h-48` INNER scroller** (set's sport first, then
+  alphabetical; in CI `E2E Test Sport <w>` rows sort before Football). A tap on
+  a row below its fold lands on whatever the box covers (clip invisible to
+  Maestro). Reach it with the component's typeahead: open → wait `id: "Choose a
+  sport"` → `inputText: "F"` (ONE char — see [[maestro-web-driver-primitives]]
+  §6) → the row is focused and scrolled into the fold → tap its text. In the
+  wizard keep `above: {id: "Decision for .*"}` on the assert before the tap;
+  in a picker a centred `scrollUntilVisible` carries the `fixed` popover
+  (it follows its trigger on window scroll). The post-pick trigger label is
+  the only proof — Maestro exposes no focus/active attribute.
+- **Wizard switch refusal:** `switchRowSport` refuses a row whose STAGED team
+  steps carry any decision ("Undo the team steps this name raised…"). Career
+  teams are staged when the LOOKUP lands and teams-first presents them before
+  any player, so after `util-wizard-walk-to-player-row` the presented player's
+  own staged steps are already skipped — the switch is refused on any row that
+  raised one. Reported as a product gap 2026-09-28; check whether it was fixed
+  before reading a red at "Sport for this name: Football".
+- Guest chip tag (`PlayerGuestTag`) renders nothing until its own query
+  answers and nothing at all for a multi-sport member: wait for it with
+  `extendedWaitUntil` 7000; never assert its absence on a chip. The admin
+  Cards list tag is deterministic (derived from the loaded player doc) — assert
+  a member's card has no tag there.

@@ -52,16 +52,16 @@ tags:
 # figure util-drill-to-custom gives its own openLink gate: a full SPA load and
 # Clerk session check, not a UI response. No marketplace is touched.
 #
-# ⚠️ GEOMETRY RISK, NOT YET MEASURED — the sport list. SportSwitch opens its
-# list DOWNWARD from the foot of the picker's popover, unbounded, holding
-# every sport row alphabetically; in CI each runner's hand-made
-# `E2E Test Sport <w>` sorts ahead of Football, so Football can sit ~300px
-# below the switch — past the 629px viewport from a centred trigger. The
-# popover is `fixed` and FOLLOWS its trigger on window scroll
-# (PickerPopover's capture-phase scroll listener), so a window scroll carries
-# the list up; STEP 3 scrolls for it rather than assuming. If the page has too
-# little scroll left under the add form, that step fails by name and the
-# finding is the list's unbounded height, not this flow.
+# THE SPORT LIST (SportSwitch) is capped at `max-h-48` and scrolls INSIDE
+# itself: the set's sport first, then alphabetical. In CI every runner's
+# hand-made `E2E Test Sport <w>` sorts ahead of Football, so Football starts
+# below the list's fold — and Maestro does not see an inner scroller's clip
+# (memory: inner-scroller-clip-is-invisible-to-maestro), so a tap on its text
+# there would land on whatever the list covers. STEP 3 therefore reaches it
+# the keyboard way the component offers: one typed "F" jumps focus to the
+# first sport starting with F and scrolls that row into the fold. Then a
+# window scroll carries the whole `fixed` popover (it follows its trigger) so
+# the row is on screen, and only then is it tapped.
 
 - launchApp
 # The list COUNTER, not the heading: it renders only once the list query
@@ -136,11 +136,25 @@ tags:
     id: "Sport to search for players: Baseball"
 - tapOn:
     id: "Sport to search for players: Baseball"
-
-# See the GEOMETRY RISK note in the header. A window scroll moves the fixed
-# popover with its trigger, so this is the one scroll that can bring the
-# option on screen; `childOf` the list's own name keeps any other "Football"
-# on the page out of it. Centred because a tap follows (R8).
+# The list opened; on open SportSwitch puts focus on the current sport's
+# option, which is where the keystroke below is delivered.
+- extendedWaitUntil:
+    visible:
+      id: "Choose a sport"
+    timeout: 7000
+# TYPEAHEAD, ONE KEY. maestro-web's `inputText` resolves `document.activeElement`
+# ONCE, then sends each character to that element with Selenium `sendKeys`
+# (real key events — the listbox's onKeyDown sees them). `sendKeys` re-focuses
+# its element first, so a SECOND character would yank focus back off the row
+# the first one jumped to, the blur would close the list, and the command
+# would fail. One "F" is the whole jump: Football is the first sport starting
+# with F (checked below by the switch's label, not assumed).
+- inputText: "F"
+# A window scroll moves the fixed popover with its trigger, so this is what
+# brings the (now in-fold) row on screen when the list hangs past the
+# viewport; `childOf` the list's own name keeps any other "Football" on the
+# page out of it. Centred because a tap follows (R8 case 1: the window moves
+# this popover).
 - scrollUntilVisible:
     element:
       text: "Football"
@@ -152,6 +166,9 @@ tags:
     text: "Football"
     childOf:
       id: "Choose a sport"
+# The load-bearing check on the typeahead and the tap together: the switch
+# names what it now searches. A jump that stopped on another F-sport, or a tap
+# that landed under the list's clip, cannot produce this label.
 - extendedWaitUntil:
     visible:
       id: "Sport to search for players: Football"
@@ -172,11 +189,16 @@ tags:
     timeout: 7000
 # The guest chip carries his sport. Scoped to the picker's ROOT: the popover
 # is portalled to <body>, so its switch (which also reads "Football" now) is
-# not inside it.
-- assertVisible:
-    text: "Football"
-    childOf:
-      id: "Players on the new card"
+# not inside it. A WAIT, not an assert: the tag is shown only for a true guest
+# (home sport not the set's AND not a member of it), which the chip reads with
+# its own query and renders nothing until that answers. He is Football only,
+# so he is a true guest.
+- extendedWaitUntil:
+    visible:
+      text: "Football"
+      childOf:
+        id: "Players on the new card"
+    timeout: 7000
 
 # Close the popover (it stays open after a pick, by design) with a tap outside
 # it: "Card name" is ABOVE the picker, and the popover hangs below its trigger.
@@ -301,10 +323,13 @@ tags:
     end: "80%, 20%"
 - assertVisible:
     id: "Remove player Gp${output.ATTEMPT_TOKEN}"
-- assertVisible:
-    text: "Football"
-    childOf:
-      id: "Player picker"
+# The guest tag waits on the chip's own membership query (see STEP 3).
+- extendedWaitUntil:
+    visible:
+      text: "Football"
+      childOf:
+        id: "Player picker"
+    timeout: 7000
 
 - tapOn:
     id: "Done editing card"

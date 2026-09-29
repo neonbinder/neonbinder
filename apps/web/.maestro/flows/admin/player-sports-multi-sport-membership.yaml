@@ -23,6 +23,10 @@ tags:
 #       product's own count sentence ("1 card in Baseball sets still link to
 #       Gm<token>. …") and the chip stays. A remove that were simply broken
 #       could not produce a sentence naming the card count.
+#   (e) his own "Cards for Gm<token>" list shows that card WITHOUT a
+#       "Baseball" tag: the tag marks a guest appearance, and a card in one of
+#       his own sports is not one (card-player-picker-cross-sport asserts the
+#       tag IS there for a true guest).
 # No `when:` branch wraps any of it.
 #
 # R3 — DEDUP: card-player-picker-cross-sport proves the GUEST path (a switch,
@@ -39,26 +43,19 @@ tags:
 #     Registered in SET-REGISTRY.md.
 #   * card `316-<attempt>` — added here, DELETED at the end (self-cleaning).
 #
-# ⚠️ TWO PRODUCT GAPS THIS FLOW WILL MEET — reported to the coordinator, not
-# worked around (a flow that routed around them would go green on a feature
-# that does not work).
-#
-# R2(b): the list row's "Also: …" tag reads `alsoSportIds`, which
-# `players.listForManagement` joins but `players.search` does not return. The
-# screen switches to `players.search` at two typed characters — and a sport
-# with more than PLAYER_MANAGEMENT_CAP players can only be reached by typing —
-# so the tag is missing exactly where an operator would look for it. Until
-# `search` returns `alsoSportIds`, (b) fails on "Also: Baseball".
-#
-# R2(c): The card picker's default path is `players.list({sportId, limit:
-# 500})` filtered in the browser, and `playersInSport` reads HOME players
-# first and consults the added-sport members only while fewer than 500 home
-# players came back. The seed alone commits ~494 baseball players and the
-# suite adds more (the 1996 Score flow ~200), so on a CI preview Baseball
-# passes 500 early and a multi-sport member is never in the pool: (c) would
-# fail on "Add Gm<token>" not visible. That is the product being wrong for
-# every real multi-sport athlete in a sport with more than 500 players, which
-# is every sport in production — the flow is right to fail on it.
+# WHAT THIS FLOW DEPENDS ON (both were product gaps when it was written, and
+# both are fixed on the NEO-313 branch — a red on either is a regression):
+#   * R2(b): `players.search` returns `alsoSportIds`, so the "Also: …" tag is
+#     on the row in search mode (the screen searches from two typed
+#     characters).
+#   * R2(c): the card picker's typed search merges `players.search` into its
+#     500-row pool, and the pool always includes added-sport members, so a
+#     multi-sport member is found in a sport with more than 500 players.
+# The member's CHIP on the card carries no guest tag either, but that is not
+# asserted: the chip renders nothing until its membership query answers, so a
+# negative there cannot tell "not a guest" from "not loaded yet". (e) asserts
+# the same rule where it is deterministic — the Cards list derives its tag
+# from the player document already on screen.
 #
 # R5 — every in-app wait is 7000; the openLink gates are 20000, as in
 # util-drill-to-custom (a full SPA load, not a UI response).
@@ -237,6 +234,28 @@ tags:
 # The refusal wrote nothing: he is still a baseball player.
 - assertVisible:
     id: "Remove sport Baseball"
+
+# R2(e): the Cards list is the panel's LAST section, under Save, so it is
+# below the Sports field — DOWN. The scroll is its own assertion that a card
+# links him (R6): with none the panel says "No cards link to … yet." and
+# renders no list.
+- scrollUntilVisible:
+    element:
+      id: "Cards for Gm${output.ATTEMPT_TOKEN}"
+    centerElement: true
+    timeout: 7000
+- assertVisible:
+    text: "#316-${ATTEMPT_ID}"
+    childOf:
+      id: "Cards for Gm${output.ATTEMPT_TOKEN}"
+# Paired with the positive above, on the same row: the list and his sports
+# are both loaded, so a missing tag is the rule, not a dead page (memory:
+# negative-asserts-pass-on-a-dead-page). The set breadcrumb under the card
+# name is one longer text, so a full-match "Baseball" is the tag alone.
+- assertNotVisible:
+    text: "Baseball"
+    childOf:
+      id: "Cards for Gm${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # CLEANUP — delete this attempt's card

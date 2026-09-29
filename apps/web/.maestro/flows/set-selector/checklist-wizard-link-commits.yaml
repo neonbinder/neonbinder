@@ -200,22 +200,48 @@ tags:
 # R2(e): the default is the set's sport. This is the switch's accessible name
 # ("Sport for this name: <current>"); its visible form is the muted
 # "(Player · Baseball ▾)" tag beside the name.
+#
+# SWITCH FIRST, DECIDE NOTHING ON THIS ROW BEFORE IT. `switchRowSport` refuses
+# a row that carries a decision, and refuses a row any of whose STAGED team
+# steps is answered ("Undo the team steps this name raised before changing its
+# sport."). This flow touches nothing on the row between the walk and the
+# switch. It cannot keep the walk from answering the row's staged steps,
+# though: `applyLookupResult` stages a player's career teams when its lookup
+# lands, and the wizard presents every settled team step before any player,
+# so the walk above has already skipped them by the time this row is on
+# screen. If this row raised any, the switch below is refused with that
+# sentence under the name and the wait for "…: Football" fails here — a
+# product finding (the switch is unreachable on such a row through the
+# ordinary walk), not something this flow routes around.
 - assertVisible:
     id: "Sport for this name: Baseball"
 - tapOn:
     id: "Sport for this name: Baseball"
+- extendedWaitUntil:
+    visible:
+      id: "Choose a sport"
+    timeout: 7000
 
-# ⚠️ GEOMETRY GUARD, NOT DECORATION. The sport list opens DOWNWARD inside the
-# wizard's scrolling BODY, and Maestro does not see an inner scroller's clip
-# (memory: inner-scroller-clip-is-invisible-to-maestro): an option clipped
-# under the pinned footer still reads as visible, and a tap there lands on
-# the FOOTER — whose controls decide rows on a REAL set (R7a). The list holds
-# every sport row, alphabetically, and in CI that includes each runner's
-# hand-made `E2E Test Sport <w>`, all of which sort before Football.
-# Estimated from the markup, not yet measured: options on a 28px pitch from
-# y~145, the footer's decision row from y~485, so Football stays clear while
-# at most ~11 sports sort ahead of it. `above:` the footer's decision group
-# makes an overflow fail HERE, by name, instead of tapping a decision.
+# CAPPED LIST: SportSwitch holds every sport in a `max-h-48` box that scrolls
+# inside itself — the set's sport first, then alphabetical, and in CI each
+# runner's hand-made `E2E Test Sport <w>` sorts ahead of Football, so Football
+# starts BELOW the box's fold. Maestro does not see that clip (memory:
+# inner-scroller-clip-is-invisible-to-maestro), and a tap there would land on
+# whatever the box covers. So the row is reached the keyboard way the
+# component offers: on open, focus sits on the current sport's option, and a
+# typed letter jumps focus to the first sport starting with it and scrolls
+# that row into the fold. ONE key, because maestro-web's `inputText` resolves
+# the focused element once and sends every character to it with Selenium
+# `sendKeys`, which re-focuses that element first — a second character would
+# pull focus back off the row the first one reached, the blur would close the
+# list, and the command would fail.
+- inputText: "F"
+# GEOMETRY GUARD, NOT DECORATION. The box sits inside the wizard's scrolling
+# BODY, above the pinned footer whose controls decide rows on a REAL set
+# (R7a). `above:` the footer's decision group, in the same selector as
+# `childOf`, makes a Football row that is not clear of the footer fail HERE,
+# by name, instead of a tap landing on a decision. No scroll: the dialog is
+# `fixed` and the window cannot move it (R8 case 2).
 - assertVisible:
     text: "Football"
     childOf:
@@ -227,6 +253,9 @@ tags:
     childOf:
       id: "Choose a sport"
 # The switch is one mutation (`switchRowSport`) — our own server, 7000 (R5).
+# This label is also the check on the typeahead and the tap together: a jump
+# that stopped on another F-sport, or a tap under the box's clip, cannot
+# produce it.
 - extendedWaitUntil:
     visible:
       id: "Sport for this name: Football"
