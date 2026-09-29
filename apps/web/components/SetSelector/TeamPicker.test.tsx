@@ -1012,6 +1012,95 @@ describe("TeamPicker", () => {
 });
 
 /**
+ * NEO-313 — the popover's own SportSwitch ("Sport to search for teams") picks
+ * which sport `teams.search`/`teams.list` and the New Team dialog it opens are
+ * scoped to. Its own reset, like "finding past the list window" below: this
+ * asserts on `queryCalls`, and inheriting another test's is how a false
+ * positive would slip in.
+ */
+describe("TeamPicker — cross-sport search switch (NEO-313)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentSelectedRows = [];
+    currentCandidates = [];
+    currentLeagues = [];
+    currentSports = [
+      { _id: SPORT_ID, value: "Baseball" },
+      { _id: OTHER_SPORT_ID, value: "Football" },
+    ];
+    queryCalls = [];
+    mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
+  });
+
+  function switchSearchSport(fromLabel: string, toName: string) {
+    fireEvent.click(
+      screen.getByLabelText(`Sport to search for teams: ${fromLabel}`),
+    );
+    fireEvent.click(
+      within(screen.getByRole("listbox", { name: "Choose a sport" })).getByRole(
+        "option",
+        { name: toName },
+      ),
+    );
+  }
+
+  it("switches teams.search/list to the picked sport", () => {
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    switchSearchSport("Baseball", "Football");
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "packers" },
+    });
+
+    const search = queryCalls.filter((c) => c.ref === "teams.search");
+    expect(search[search.length - 1].args).toMatchObject({
+      query: "packers",
+      sportId: OTHER_SPORT_ID,
+    });
+    const list = queryCalls.filter((c) => c.ref === "teams.list");
+    expect(list[list.length - 1].args).toMatchObject({ sportId: OTHER_SPORT_ID });
+  });
+
+  it("opens the New Team dialog, and creates, on the picked sport rather than the set's", async () => {
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    switchSearchSport("Baseball", "Football");
+    openNewTeamDialog("Green Bay Packers");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create team Green Bay Packers" }),
+    );
+
+    await waitFor(() => {
+      expect(mockFindOrCreate).toHaveBeenCalledWith({
+        name: "Green Bay Packers",
+        sportId: OTHER_SPORT_ID,
+      });
+    });
+  });
+
+  it("resets to the set's sport the next time the popover opens", () => {
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+    switchSearchSport("Baseball", "Football");
+    expect(
+      screen.getByLabelText("Sport to search for teams: Football"),
+    ).toBeTruthy();
+
+    // Closing and reopening is a fresh "which sport am I searching?" ask —
+    // nothing here remembers the operator's last pick.
+    fireEvent.keyDown(screen.getByLabelText("Search teams"), { key: "Escape" });
+    openPopover();
+
+    expect(
+      screen.getByLabelText("Sport to search for teams: Baseball"),
+    ).toBeTruthy();
+    expect(screen.queryByLabelText("Sport to search for teams: Football")).toBeNull();
+  });
+});
+
+/**
  * NEO-254 — the server finds the team; the client only ranks what it is given.
  *
  * This box used to filter a 500-row `teams.list` window client-side. That is
