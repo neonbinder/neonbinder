@@ -12,9 +12,11 @@
  *       one at a time, calling `buildParallelChecklist` for each.
  *   J2  A card is copied only if it links on at least one marketplace side;
  *       the rest are left off and reported.
- *   J3  A parallel that already has cards is REBUILT from a fresh copy.
+ *   J3  A parallel that already has cards is REBUILT from a fresh copy — the
+ *       automatic run included (R1: no confirm, no "empty only").
  *   J4  "Fetch from Marketplaces" on a parallel row runs the same build for
  *       that one parallel.
+ *   R2  A rebuilt card that is clearly the old one keeps the old SKU.
  *
  * ## What a build does, in order (M2)
  *
@@ -24,21 +26,31 @@
  *      out of every request.
  *   2. Refuse, touching nothing, if the parallel is blocked: a card with scans,
  *      a card that is the home of a cross-listing, a checklist review staged on
- *      it, or (on a rebuild) a side whose links would be lost because it is
- *      paused.
+ *      it, more marketplace sets than one build reads, or a side the parallel
+ *      owns that cannot be fetched while its old cards hold links there.
  *   3. Fetch EVERY side. A side that fails blocks the build and nothing changes.
  *   4. Link each insert card per side (`lib/parallelCardLink.ts`, exactly-one on
- *      both ends) and decide the copies.
+ *      both ends; the old cards' links break ties) and decide the copies.
+ *      Classify every old link BEFORE anything is deleted.
  *   5. Check the blocks again, then delete the parallel's old cards (pages of
  *      100), then insert the copies (pages of 150).
  *
  * A crash between 5's delete and insert leaves the parallel short; running the
- * build again rebuilds it (risk 1 in the plan, accepted).
+ * build again rebuilds it (risk 1 in the plan, accepted). A block that fires
+ * partway through the delete says so, with the count removed.
+ *
+ * ## Two builds of one parallel at once (no schema)
+ *
+ * The first insert page requires the parallel to hold NO cards, inside its own
+ * transaction; every later page requires the run's first created card to still
+ * exist. Whichever run loses that race stops with `BLOCKED_CHANGED_MID_BUILD`.
  *
  * ## Operator-facing words
  *
  * `blockedReason` and every ConvexError here are read by an operator. They are
- * fixed sentences: no marketplace string, no internal word.
+ * fixed sentences apart from an NB row's own name: no marketplace string, no
+ * internal word. The one deliberate exception is `extraOnMarketplace.cards`,
+ * see there.
  */
 
 import { ConvexError, v } from "convex/values";
@@ -55,8 +67,11 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import {
+  MAX_BSC_FAN_OUT,
   chainWithoutInsertAncestors,
   bscFacetValidator,
+  missingBscChecklistScope,
+  planBscFanOut,
   resolveBscFacetFilters,
   type BscFacet,
 } from "./bscFacets";
@@ -64,34 +79,42 @@ import {
   leafOwnsSource,
   missingSummary,
   resolvableSides,
+  rowHasSideId,
   type ResolvableRow,
 } from "./marketplaceResolvability";
 import { pausedSides } from "./marketplacePause";
 import { slotIds, type PlatformSide } from "./platformSlots";
 import { platformSideValidator } from "./selectorSyncStore";
 import { orphanVariationsOf, resolveCardSlots } from "./selectorOptions";
-import { insertCardRow, type CardRowSetContext } from "./cardRowCreate";
 import {
+  copyFeaturesForParallel,
+  insertCardRow,
+  type CardRowSetContext,
+} from "./cardRowCreate";
+import {
+  cardKey,
   linkCardsToSide,
   type CardLinkOutcome,
   type FetchedParallelCard,
   type LinkableNbCard,
 } from "./lib/parallelCardLink";
 import { teamFullName } from "../lib/teams/team-name";
+import { safeMarketplaceText } from "../lib/marketplace/safe-text";
 
 // ---------------------------------------------------------------------------
 // Bounds
 // ---------------------------------------------------------------------------
 
-/** The most cards an insert may have for its parallels to be built. */
+/** The most cards an insert (or a parallel being rebuilt) may have. */
 export const MAX_INSERT_CARDS_FOR_BUILD = 5000;
 /** Parallels listed per insert; more sets `truncated`. */
 export const MAX_PARALLELS_PER_INSERT = 500;
 /**
  * Copies inserted per transaction. Per copy: one `db.get` of the source, one
- * insert, one SKU patch, plus a variation-parent `db.get` for a variation and
- * the player/team name reads (cached per page). ~150 × 3 + names ≈ 600–700
- * operations, inside the ~900 `CARDS_PER_COMMIT_CHUNK` is calibrated to.
+ * insert, one SKU patch (none when the old SKU is kept), plus a
+ * variation-parent `db.get` for a variation and the player/team name reads
+ * (cached per page). ~150 × 3 + names ≈ 600–700 operations, inside the ~900
+ * `CARDS_PER_COMMIT_CHUNK` is calibrated to.
  */
 export const INSERT_COPIES_PER_PAGE = 150;
 /**
@@ -104,8 +127,10 @@ export const DELETE_CARDS_PER_PAGE = 100;
  * cross-listing lookup per card.
  */
 export const BLOCK_CHECK_CARDS_PER_PAGE = 400;
-/** SportLots sets fetched per parallel; mirrors `fetchCardChecklist`. */
-const MAX_SL_FAN_OUT = 10;
+/** SportLots sets one build reads; more BLOCKS (never truncated). */
+export const MAX_SL_SETS_PER_BUILD = 10;
+/** Cards named per bucket in the result; the counts stay exact. */
+export const MAX_LISTED_CARDS = 50;
 /**
  * `getParallelsForBuild` is a live subscription over up to 500 parallels, so
  * its block check is budgeted: at most this many cards read and this many
@@ -122,38 +147,66 @@ const LIST_BLOCK_CARDS_PER_PARALLEL = 200;
 // ---------------------------------------------------------------------------
 
 export const BLOCKED_SCANS =
-  "some of its cards have scans on them, and a rebuild would lose them";
+  "some of its cards have scans, and a rebuild would lose them";
 export const BLOCKED_CROSS_LISTED =
-  "some of its cards also show up in another set";
+  "some of its cards also show under another set — take them off there first";
 export const BLOCKED_REVIEW_OPEN =
   "a checklist review is still open on it — finish or discard it first";
-export const BLOCKED_NO_IDS =
-  "it has no marketplace ids of its own to build from";
+export const BLOCKED_NO_IDS = "it isn't linked to a marketplace yet";
+/** The no-name fallback of `blockedIdsUnreachable`. */
 export const BLOCKED_IDS_UNREACHABLE =
-  "its marketplace ids can't be looked up from where it sits — the set above it is missing some";
+  "its marketplace links need the set above it linked too — link that first";
 export const BLOCKED_TOO_MANY_CARDS =
   "the insert has more than 5,000 cards, which is more than one build can copy";
+export const BLOCKED_PARALLEL_TOO_MANY_CARDS =
+  "it has more than 5,000 cards, which is more than one rebuild can replace";
 export const BLOCKED_NOTHING_MATCHED =
-  "none of the insert's cards matched a card on its marketplace sets, so its cards were left alone";
+  "none of the insert's cards turned up on its marketplace checklists, so its cards were left as they were";
 export const BLOCKED_CHANGED_MID_BUILD =
-  "its cards changed while it was being rebuilt — run it again";
+  "its cards changed partway through the rebuild, and some were already cleared — build it again to put them back";
+export const BLOCKED_TOO_MANY_SL_SETS =
+  "it has more than 10 SportLots sets linked, which is more than one build reads — unlink the extras first";
+export const BLOCKED_TOO_MANY_BSC_SETS =
+  "its BSC links add up to more than 10 lookups, which is more than one build reads — unlink the extras first";
 
-const MARKETPLACE_NAME: Record<PlatformSide, string> = {
-  bsc: "BuySportsCards",
+/**
+ * The short marketplace names operators see. Mirrors `SIDE_LABEL` in
+ * `components/SetSelector/selector-sync-feedback.ts`, which a Convex module
+ * cannot import.
+ */
+const SIDE_LABEL: Record<PlatformSide, string> = {
+  bsc: "BSC",
   sportlots: "SportLots",
 };
 
 export function blockedSideFailed(side: PlatformSide): string {
-  return `${MARKETPLACE_NAME[side]} didn't answer, so nothing was changed — try again in a bit`;
+  return `${SIDE_LABEL[side]} didn't answer, so nothing changed — try again in a bit`;
 }
 
+/** A rebuild with a paused side the parallel's old cards hold links on. */
 export function blockedSidePaused(side: PlatformSide): string {
-  return `${MARKETPLACE_NAME[side]} is paused, and a rebuild now would drop its links`;
+  return `${SIDE_LABEL[side]} is paused right now — rebuild once it's back, or its links would drop`;
 }
 
+/** Nothing can be fetched because every side the parallel owns is paused. */
 export function blockedAllPaused(sides: readonly PlatformSide[]): string {
-  const names = sides.map((s) => MARKETPLACE_NAME[s]).join(" and ");
-  return `${names} ${sides.length > 1 ? "are" : "is"} paused right now`;
+  const names = sides.map((s) => SIDE_LABEL[s]).join(" and ");
+  return sides.length > 1
+    ? `${names} are paused right now — build it once they're back`
+    : `${names} is paused right now — build it once it's back`;
+}
+
+/**
+ * A side the parallel owns cannot be asked because a row above it is missing
+ * that side's id. `rowName` is that NB row's own name when it could be found.
+ */
+export function blockedIdsUnreachable(
+  rowName?: string,
+  side?: PlatformSide,
+): string {
+  if (!rowName) return BLOCKED_IDS_UNREACHABLE;
+  const whose = side ? `its ${SIDE_LABEL[side]} links` : "its marketplace links";
+  return `${whose} need ${rowName} linked too — link ${rowName} first`;
 }
 
 const NOT_A_PARALLEL =
@@ -213,10 +266,27 @@ export type ParallelSidePlan = {
   paused: Record<PlatformSide, boolean>;
   /** Log-safe (`missingSummary`) — never shown to an operator. */
   missing: Record<PlatformSide, string>;
+  /**
+   * Per side the parallel OWNS but cannot be asked for want of an ancestor
+   * id: the NB name of the first row missing it, for the operator's sentence.
+   */
+  unreachableRow: Partial<Record<PlatformSide, string>>;
   bscFilters: Record<string, string[]>;
   bscSourceFacet?: BscFacet;
-  /** The parallel's OWN SportLots set ids, in slot order. */
+  /** BSC would need more requests than one build sends (`MAX_BSC_FAN_OUT`). */
+  bscOverCap: boolean;
+  /** The parallel's OWN SportLots set ids, in slot order — never truncated. */
   slIds: string[];
+  /** More SportLots sets than one build reads (`MAX_SL_SETS_PER_BUILD`). */
+  slOverCap: boolean;
+};
+
+/** Which NB level supplies each required BSC checklist facet. */
+const BSC_FACET_LEVEL: Record<string, string> = {
+  sport: "sport",
+  year: "year",
+  setName: "setName",
+  variant: "variantType",
 };
 
 /**
@@ -240,11 +310,36 @@ export function planParallelSides(
     ...(paused ? { paused } : {}),
   });
   const plan = resolveBscFacetFilters(judged);
+  const owned = {
+    bsc: !!leaf && leafOwnsSource(leaf, "bsc"),
+    sportlots: !!leaf && leafOwnsSource(leaf, "sportlots"),
+  };
+
+  // The row an operator has to link for an owned side to become reachable.
+  const unreachableRow: Partial<Record<PlatformSide, string>> = {};
+  const nameAt = (level: string): string | undefined =>
+    judged.find((row) => row.level === level)?.value;
+  if (owned.bsc && !resolution.bsc.resolvable && !resolution.bsc.paused) {
+    const facet = missingBscChecklistScope(plan.filters)[0];
+    const name = facet ? nameAt(BSC_FACET_LEVEL[facet] ?? "") : undefined;
+    if (name) unreachableRow.bsc = name;
+  }
+  if (
+    owned.sportlots &&
+    !resolution.sportlots.resolvable &&
+    !resolution.sportlots.paused
+  ) {
+    const row = judged.find(
+      (r) =>
+        (r.level === "sport" || r.level === "year") &&
+        !rowHasSideId(r, "sportlots"),
+    );
+    if (row?.value) unreachableRow.sportlots = row.value;
+  }
+
+  const slIds = leaf ? slotIds(leaf, "sportlots") : [];
   return {
-    owned: {
-      bsc: !!leaf && leafOwnsSource(leaf, "bsc"),
-      sportlots: !!leaf && leafOwnsSource(leaf, "sportlots"),
-    },
+    owned,
     fetch: {
       bsc: resolution.bsc.resolvable,
       sportlots: resolution.sportlots.resolvable,
@@ -257,9 +352,12 @@ export function planParallelSides(
       bsc: missingSummary(resolution.bsc),
       sportlots: missingSummary(resolution.sportlots),
     },
+    unreachableRow,
     bscFilters: plan.filters,
     ...(plan.sourceFacet ? { bscSourceFacet: plan.sourceFacet } : {}),
-    slIds: leaf ? slotIds(leaf, "sportlots").slice(0, MAX_SL_FAN_OUT) : [],
+    bscOverCap: planBscFanOut(plan.filters, MAX_BSC_FAN_OUT).capped,
+    slIds,
+    slOverCap: slIds.length > MAX_SL_SETS_PER_BUILD,
   };
 }
 
@@ -300,6 +398,45 @@ async function isCrossListingHome(
     .withIndex("by_card", (q) => q.eq("cardChecklistId", cardId))
     .first();
   return link !== null;
+}
+
+// ---------------------------------------------------------------------------
+// The link key, read off a stored card
+// ---------------------------------------------------------------------------
+
+/**
+ * The printed names on a card, as the link key reads them: the resolved ones'
+ * printed spellings, then any still waiting on review. Also what an insert
+ * page compares to tell whether its source card changed mid-build.
+ */
+function namesOnCardOf(row: Doc<"cardChecklist">): string[] {
+  return [
+    ...(row.playerLinks ?? []).map((l) => l.nameOnCard),
+    ...(row.pendingPlayerNames ?? []),
+  ];
+}
+
+/** A stored card reduced to what the link key reads. */
+function linkableOf(row: Doc<"cardChecklist">) {
+  const namesOnCard = namesOnCardOf(row);
+  const hasTeams =
+    (row.teamOnCardIds?.length ?? 0) > 0 ||
+    (row.pendingTeamNames?.length ?? 0) > 0;
+  const hasPlayers = namesOnCard.length > 0 || (row.playerIds?.length ?? 0) > 0;
+  return {
+    _id: row._id,
+    cardNumber: row.cardNumber,
+    cardName: row.cardName,
+    namesOnCard,
+    isTeamCard: !hasPlayers && hasTeams,
+    isVariation: !!row.variationOfCardId || !!row.cardVariation?.trim(),
+    ...(row.cardVariation ? { cardVariation: row.cardVariation } : {}),
+  };
+}
+
+/** The NB display string a result list names a card by: `#12 Player Name`. */
+function cardLabel(card: { cardNumber: string; cardName: string }): string {
+  return `#${card.cardNumber} ${card.cardName}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +552,11 @@ const sideCountsValidator = v.object({
   sportlots: v.number(),
 });
 
+const sideCardListsValidator = v.object({
+  bsc: v.array(v.string()),
+  sportlots: v.array(v.string()),
+});
+
 export const loadParallelBuildContext = internalQuery({
   args: { parallelId: v.id("selectorOptions") },
   returns: v.object({
@@ -423,9 +565,15 @@ export const loadParallelBuildContext = internalQuery({
     fetch: sideFlagsValidator,
     paused: sideFlagsValidator,
     missing: v.object({ bsc: v.string(), sportlots: v.string() }),
+    unreachableRow: v.object({
+      bsc: v.optional(v.string()),
+      sportlots: v.optional(v.string()),
+    }),
     bscFilters: v.record(v.string(), v.array(v.string())),
     bscSourceFacet: v.optional(bscFacetValidator),
+    bscOverCap: v.boolean(),
     slIds: v.array(v.string()),
+    slOverCap: v.boolean(),
     insertPrefix: v.optional(v.string()),
     parallelPrefix: v.optional(v.string()),
   }),
@@ -448,9 +596,12 @@ export const loadParallelBuildContext = internalQuery({
       fetch: plan.fetch,
       paused: plan.paused,
       missing: plan.missing,
+      unreachableRow: plan.unreachableRow,
       bscFilters: plan.bscFilters,
       ...(plan.bscSourceFacet ? { bscSourceFacet: plan.bscSourceFacet } : {}),
+      bscOverCap: plan.bscOverCap,
       slIds: plan.slIds,
+      slOverCap: plan.slOverCap,
       ...(insertPrefix ? { insertPrefix } : {}),
       ...(parallelPrefix ? { parallelPrefix } : {}),
     };
@@ -459,8 +610,8 @@ export const loadParallelBuildContext = internalQuery({
 
 /**
  * One page of the block check over the parallel's current cards, plus how
- * many of them carry a link on each side (for the paused-side rebuild block).
- * The staged-review check runs on the first page only.
+ * many of them carry a link on each side. The staged-review check runs on the
+ * first page only.
  */
 export const checkParallelBuildBlocksPage = internalQuery({
   args: {
@@ -511,7 +662,7 @@ export const checkParallelBuildBlocksPage = internalQuery({
   },
 });
 
-const linkableCardValidator = v.object({
+const linkableCardFields = {
   _id: v.id("cardChecklist"),
   cardNumber: v.string(),
   cardName: v.string(),
@@ -519,6 +670,10 @@ const linkableCardValidator = v.object({
   isTeamCard: v.boolean(),
   isVariation: v.boolean(),
   cardVariation: v.optional(v.string()),
+};
+
+const linkableCardValidator = v.object({
+  ...linkableCardFields,
   variationOfCardId: v.optional(v.id("cardChecklist")),
   sortOrder: v.number(),
 });
@@ -542,28 +697,56 @@ export const loadInsertCardsForLink = internalQuery({
     }
     return {
       overLimit: false,
+      cards: rows.map((row) => ({
+        ...linkableOf(row),
+        ...(row.variationOfCardId
+          ? { variationOfCardId: row.variationOfCardId }
+          : {}),
+        sortOrder: row.sortOrder,
+      })),
+    };
+  },
+});
+
+/**
+ * The parallel's CURRENT (old) cards: the link key, the refs each holds and
+ * its SKU. Read once, before anything is fetched or deleted — it is what the
+ * earlier-link tiebreak, the SKU carry (R2) and the classification of every
+ * old link are computed from.
+ */
+export const loadParallelCardsForLink = internalQuery({
+  args: { parallelId: v.id("selectorOptions") },
+  returns: v.object({
+    cards: v.array(
+      v.object({
+        ...linkableCardFields,
+        bscRef: v.optional(v.string()),
+        slRef: v.optional(v.string()),
+        sku: v.optional(v.string()),
+      }),
+    ),
+    overLimit: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) =>
+        q.eq("selectorOptionId", args.parallelId),
+      )
+      .take(MAX_INSERT_CARDS_FOR_BUILD + 1);
+    if (rows.length > MAX_INSERT_CARDS_FOR_BUILD) {
+      return { cards: [], overLimit: true };
+    }
+    return {
+      overLimit: false,
       cards: rows.map((row) => {
-        const namesOnCard = [
-          ...(row.playerLinks ?? []).map((l) => l.nameOnCard),
-          ...(row.pendingPlayerNames ?? []),
-        ];
-        const hasTeams =
-          (row.teamOnCardIds?.length ?? 0) > 0 ||
-          (row.pendingTeamNames?.length ?? 0) > 0;
-        const hasPlayers =
-          namesOnCard.length > 0 || (row.playerIds?.length ?? 0) > 0;
+        const bscRef = row.platformData?.bsc?.ref;
+        const slRef = row.platformData?.sportlots?.ref;
         return {
-          _id: row._id,
-          cardNumber: row.cardNumber,
-          cardName: row.cardName,
-          namesOnCard,
-          isTeamCard: !hasPlayers && hasTeams,
-          isVariation: !!row.variationOfCardId || !!row.cardVariation?.trim(),
-          ...(row.cardVariation ? { cardVariation: row.cardVariation } : {}),
-          ...(row.variationOfCardId
-            ? { variationOfCardId: row.variationOfCardId }
-            : {}),
-          sortOrder: row.sortOrder,
+          ...linkableOf(row),
+          ...(bscRef ? { bscRef } : {}),
+          ...(slRef ? { slRef } : {}),
+          ...(row.sku ? { sku: row.sku } : {}),
         };
       }),
     };
@@ -666,30 +849,51 @@ async function parallelSetContext(
   };
 }
 
+function sameStrings(a: readonly string[], b: readonly string[]): boolean {
+  return a.length === b.length && a.every((s, i) => s === b[i]);
+}
+
 /**
  * Insert one page of copies onto the parallel.
  *
- * Each copy re-reads its source card HERE, inside the transaction, and copies
- * the NB-owned fields (M3). What is recomputed for the parallel — features,
- * listing text, SKU, `platformData` with `src` on the parallel's own slots,
- * and `printRun` (from the linked SportLots card only) — goes through the
- * shared `insertCardRow`, so a copy is born exactly like a synced card.
- * `imageUrls` is never copied and no team enrichment is queued.
+ * Each copy re-reads its source card HERE, inside the transaction, and skips
+ * it (counted in `skippedChangedSource`) when its number, name or printed
+ * names are no longer what the action linked — or it is gone. The NB-owned
+ * fields are copied (M3); features are the parallel's snapshot, the insert
+ * card's own card-level facts and then its observed facts
+ * (`copyFeaturesForParallel`); listing text, SKU (or the kept SKU, R2) and
+ * `platformData` with `src` on the parallel's own slots go through the shared
+ * `insertCardRow`, so a copy is born exactly like a synced card. `printRun` is
+ * the linked SportLots card's only. `imageUrls` is never copied and no team
+ * enrichment is queued.
  *
  * `remap` carries the new ids of variation PARENTS copied on earlier pages; a
  * variation whose parent was not copied loses the link (and its manual flag)
  * together, never one without the other.
+ *
+ * The concurrency guard runs before any write: with no `firstCreatedId` (this
+ * run has created nothing yet) the parallel must hold no cards; with one, that
+ * card must still exist on the parallel. Otherwise `changed` and nothing is
+ * written.
  */
 export const insertParallelCardsPage = internalMutation({
   args: {
     parallelId: v.id("selectorOptions"),
     insertId: v.id("selectorOptions"),
+    firstCreatedId: v.optional(v.id("cardChecklist")),
     copies: v.array(
       v.object({
         sourceCardId: v.id("cardChecklist"),
+        /** What the action linked; the source must still say exactly this. */
+        expect: v.object({
+          cardNumber: v.string(),
+          cardName: v.string(),
+          namesOnCard: v.array(v.string()),
+        }),
         bsc: v.optional(copyLinkValidator),
         sportlots: v.optional(copyLinkValidator),
         printRun: v.optional(v.number()),
+        keepSku: v.optional(v.string()),
       }),
     ),
     remap: v.array(
@@ -700,16 +904,41 @@ export const insertParallelCardsPage = internalMutation({
     created: v.array(
       v.object({ from: v.id("cardChecklist"), to: v.id("cardChecklist") }),
     ),
+    /** Sources gone since the action read them. */
     missing: v.number(),
+    /** Sources whose number, name or printed names changed since. */
+    skippedChangedSource: v.number(),
+    /** Another build got here first; nothing was written. */
+    changed: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const parallel = await ctx.db.get(args.parallelId);
     if (!parallel || parallel.level !== "parallel") {
       throw new ConvexError(PARALLEL_GONE);
     }
-    if (parallel.parentId !== args.insertId) {
+    const insert = await ctx.db.get(args.insertId);
+    if (parallel.parentId !== args.insertId || !insert) {
       throw new ConvexError(NO_INSERT_ABOVE);
     }
+
+    // ── the concurrency guard, before any write ─────────────────────────────
+    if (args.firstCreatedId === undefined) {
+      const any = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) =>
+          q.eq("selectorOptionId", args.parallelId),
+        )
+        .first();
+      if (any) {
+        return { created: [], missing: 0, skippedChangedSource: 0, changed: true };
+      }
+    } else {
+      const first = await ctx.db.get(args.firstCreatedId);
+      if (!first || first.selectorOptionId !== args.parallelId) {
+        return { created: [], missing: 0, skippedChangedSource: 0, changed: true };
+      }
+    }
+
     const set = await parallelSetContext(ctx, parallel);
     const toStored = await resolveCardSlots(ctx, args.parallelId);
 
@@ -734,10 +963,21 @@ export const insertParallelCardsPage = internalMutation({
 
     const created: Array<{ from: Id<"cardChecklist">; to: Id<"cardChecklist"> }> = [];
     let missing = 0;
+    let skippedChangedSource = 0;
     for (const copy of args.copies) {
       const source = await ctx.db.get(copy.sourceCardId);
       if (!source || source.selectorOptionId !== args.insertId) {
         missing++;
+        continue;
+      }
+      if (
+        source.cardNumber !== copy.expect.cardNumber ||
+        source.cardName !== copy.expect.cardName ||
+        !sameStrings(namesOnCardOf(source), copy.expect.namesOnCard)
+      ) {
+        // The insert card was edited after it was linked: its link may no
+        // longer be its own. Left off rather than copied on a stale match.
+        skippedChangedSource++;
         continue;
       }
 
@@ -801,6 +1041,15 @@ export const insertParallelCardsPage = internalMutation({
           sortOrder: source.sortOrder,
           playerNames,
           teamNames,
+          // Hobby A4 — the insert card's own facts (an autograph, Signed By,
+          // a short print) survive; the parallel's snapshot wins on what the
+          // parallel IS.
+          baseFeatures: copyFeaturesForParallel({
+            insertSnapshot: insert.features,
+            parallelSnapshot: parallel.features,
+            insertCardFeatures: source.features,
+          }),
+          ...(copy.keepSku ? { keepSku: copy.keepSku } : {}),
           carried: {
             teamCheckDoneAt: source.teamCheckDoneAt,
             bscTeamName: source.bscTeamName,
@@ -814,7 +1063,7 @@ export const insertParallelCardsPage = internalMutation({
       newIdOf.set(source._id, newId);
       created.push({ from: source._id, to: newId });
     }
-    return { created, missing };
+    return { created, missing, skippedChangedSource, changed: false };
   },
 });
 
@@ -823,6 +1072,7 @@ export const insertParallelCardsPage = internalMutation({
 // ---------------------------------------------------------------------------
 
 type SideCounts = { bsc: number; sportlots: number };
+type SideLists = { bsc: string[]; sportlots: string[] };
 
 export type BuildParallelResult = {
   status: "built" | "blocked";
@@ -833,6 +1083,19 @@ export type BuildParallelResult = {
   sidesFetched: PlatformSide[];
   sidesSkipped: PlatformSide[];
   earlierLinksMissing: SideCounts;
+  stillListedNotRelinked: SideCounts;
+  legacyLinksRemoved: SideCounts;
+  skippedChangedSource: number;
+  deletedCount?: number;
+  extraOnMarketplace: {
+    bsc: { count: number; cards: string[] };
+    sportlots: { count: number; cards: string[] };
+  };
+  cards: {
+    leftOff: string[];
+    unlinked: SideLists;
+    ambiguous: SideLists;
+  };
   rebuilt: boolean;
   blockedReason?: string;
 };
@@ -865,13 +1128,18 @@ type SideFetch =
   | { ok: true; cards: FetchedParallelCard[] }
   | { ok: false };
 
+const extraValidator = v.object({
+  count: v.number(),
+  cards: v.array(v.string()),
+});
+
 export const buildParallelChecklist = action({
   args: { parallelId: v.id("selectorOptions") },
   returns: v.object({
     status: v.union(v.literal("built"), v.literal("blocked")),
     /** Insert cards copied onto the parallel (linked on at least one side). */
     copied: v.number(),
-    /** Insert cards left off: linked on no side (J2). */
+    /** Insert cards left off: linked on no side (J2), or changed mid-build. */
     notCopied: v.number(),
     /** Per fetched side: COPIED cards with no card on that side. */
     unlinked: sideCountsValidator,
@@ -883,8 +1151,50 @@ export const buildParallelChecklist = action({
     ambiguous: sideCountsValidator,
     sidesFetched: v.array(platformSideValidator),
     sidesSkipped: v.array(platformSideValidator),
-    /** Per side: links the old cards had that no copy carries. */
+    /**
+     * Per side the parallel owns: links the old cards held that the
+     * marketplace no longer lists (invariant 5's "no longer returns it").
+     */
     earlierLinksMissing: sideCountsValidator,
+    /**
+     * Per side the parallel owns: links the old cards held that the
+     * marketplace STILL lists but no copy was re-linked to (the insert card
+     * matched nothing, or more than one, and no earlier link broke the tie).
+     */
+    stillListedNotRelinked: sideCountsValidator,
+    /**
+     * Per side the parallel does NOT own: links the old cards carried anyway —
+     * the pre-NEO-312 inheritance bug, pointing at the insert's cards. Removed
+     * with the old cards and never re-created.
+     */
+    legacyLinksRemoved: sideCountsValidator,
+    /** Insert cards edited or removed after they were linked; left off. */
+    skippedChangedSource: v.number(),
+    /** Old cards deleted — present on a block that fired mid-delete. */
+    deletedCount: v.optional(v.number()),
+    /**
+     * Per fetched side: the parallel's marketplace cards no insert card
+     * matched. The count is exact; `cards` names at most `MAX_LISTED_CARDS`.
+     *
+     * The ONE place a marketplace's display string (its number and name,
+     * passed through `safeMarketplaceText`) is returned to a client. The
+     * caller is an admin, and the string says what to add by hand — there is
+     * no NB card to name it by, because that is the point of the list.
+     */
+    extraOnMarketplace: v.object({
+      bsc: extraValidator,
+      sportlots: extraValidator,
+    }),
+    /**
+     * Which insert cards landed in each bucket, as NB display strings
+     * (`#12 Player Name`), at most `MAX_LISTED_CARDS` each. No marketplace
+     * ref or string.
+     */
+    cards: v.object({
+      leftOff: v.array(v.string()),
+      unlinked: sideCardListsValidator,
+      ambiguous: sideCardListsValidator,
+    }),
     /** The parallel had cards, and they were replaced. */
     rebuilt: v.boolean(),
     blockedReason: v.optional(v.string()),
@@ -893,6 +1203,7 @@ export const buildParallelChecklist = action({
     await requireAdmin(ctx);
     const startedAt = Date.now();
     const zero = (): SideCounts => ({ bsc: 0, sportlots: 0 });
+    const emptyLists = (): SideLists => ({ bsc: [], sportlots: [] });
 
     const plan = await ctx.runQuery(
       internal.parallelChecklistBuild.loadParallelBuildContext,
@@ -903,7 +1214,13 @@ export const buildParallelChecklist = action({
 
     const blocked = (
       blockedReason: string,
-      sidesFetched: PlatformSide[] = [],
+      extra: {
+        sidesFetched?: PlatformSide[];
+        deletedCount?: number;
+        earlierLinksMissing?: SideCounts;
+        stillListedNotRelinked?: SideCounts;
+        legacyLinksRemoved?: SideCounts;
+      } = {},
     ): BuildParallelResult => {
       const result: BuildParallelResult = {
         status: "blocked",
@@ -911,9 +1228,20 @@ export const buildParallelChecklist = action({
         notCopied: 0,
         unlinked: zero(),
         ambiguous: zero(),
-        sidesFetched,
+        sidesFetched: extra.sidesFetched ?? [],
         sidesSkipped: skipped,
-        earlierLinksMissing: zero(),
+        earlierLinksMissing: extra.earlierLinksMissing ?? zero(),
+        stillListedNotRelinked: extra.stillListedNotRelinked ?? zero(),
+        legacyLinksRemoved: extra.legacyLinksRemoved ?? zero(),
+        skippedChangedSource: 0,
+        ...(extra.deletedCount !== undefined
+          ? { deletedCount: extra.deletedCount }
+          : {}),
+        extraOnMarketplace: {
+          bsc: { count: 0, cards: [] },
+          sportlots: { count: 0, cards: [] },
+        },
+        cards: { leftOff: [], unlinked: emptyLists(), ambiguous: emptyLists() },
         rebuilt: false,
         blockedReason,
       };
@@ -932,22 +1260,51 @@ export const buildParallelChecklist = action({
         (side) => plan.owned[side] && plan.paused[side],
       );
       if (pausedOwned.length > 0) return blocked(blockedAllPaused(pausedOwned));
+      const ownedSides = SIDES.filter((side) => plan.owned[side]);
+      if (ownedSides.length === 0) return blocked(BLOCKED_NO_IDS);
+      const side = ownedSides.find((s) => plan.unreachableRow[s]);
       return blocked(
-        SIDES.some((side) => plan.owned[side])
-          ? BLOCKED_IDS_UNREACHABLE
-          : BLOCKED_NO_IDS,
+        side
+          ? blockedIdsUnreachable(
+              plan.unreachableRow[side],
+              ownedSides.length === 1 ? side : undefined,
+            )
+          : BLOCKED_IDS_UNREACHABLE,
       );
+    }
+    // Security 6 — more sets than one build reads is refused, never truncated:
+    // a truncated fetch would call every card of the unread sets unlisted.
+    if (plan.owned.sportlots && plan.slOverCap) {
+      return blocked(BLOCKED_TOO_MANY_SL_SETS);
+    }
+    if (plan.fetch.bsc && plan.bscOverCap) {
+      return blocked(BLOCKED_TOO_MANY_BSC_SETS);
     }
 
     // ── 2. blocks, before any marketplace is asked ──────────────────────────
     const existing = await checkBlocks(ctx, args.parallelId);
     if (existing.blockedReason) return blocked(existing.blockedReason);
+
+    const old = await ctx.runQuery(
+      internal.parallelChecklistBuild.loadParallelCardsForLink,
+      { parallelId: args.parallelId },
+    );
+    if (old.overLimit) return blocked(BLOCKED_PARALLEL_TOO_MANY_CARDS);
+    const oldRefOf = (
+      card: (typeof old.cards)[number],
+      side: PlatformSide,
+    ): string | undefined => (side === "bsc" ? card.bscRef : card.slRef);
+
+    // Security 1 — a side the parallel owns but this build cannot ask, while
+    // old cards hold links there: rebuilding would drop every one of them.
     for (const side of SIDES) {
-      // A rebuild with a side the pause keeps us from asking would drop every
-      // link the old cards hold there (invariant 5).
-      if (plan.owned[side] && plan.paused[side] && existing.linked[side] > 0) {
-        return blocked(blockedSidePaused(side));
-      }
+      if (!plan.owned[side] || plan.fetch[side]) continue;
+      if (!old.cards.some((card) => oldRefOf(card, side))) continue;
+      return blocked(
+        plan.paused[side]
+          ? blockedSidePaused(side)
+          : blockedIdsUnreachable(plan.unreachableRow[side], side),
+      );
     }
 
     const insertCards = await ctx.runQuery(
@@ -1041,8 +1398,14 @@ export const buildParallelChecklist = action({
     if (slFetch) fetched.sportlots = slFetch;
     const answered = SIDES.filter((side) => fetched[side]?.ok);
     for (const side of toFetch) {
-      if (!fetched[side]?.ok) return blocked(blockedSideFailed(side), answered);
+      if (!fetched[side]?.ok) {
+        return blocked(blockedSideFailed(side), { sidesFetched: answered });
+      }
     }
+    const fetchedCards = (side: PlatformSide): FetchedParallelCard[] => {
+      const got = fetched[side];
+      return got?.ok ? got.cards : [];
+    };
 
     // ── 4. link and decide the copies ───────────────────────────────────────
     const linkable: LinkableNbCard[] = insertCards.cards.map((c) => ({
@@ -1054,59 +1417,191 @@ export const buildParallelChecklist = action({
       isVariation: c.isVariation,
       ...(c.cardVariation ? { cardVariation: c.cardVariation } : {}),
     }));
+    const keyOfOld = (card: (typeof old.cards)[number]): string =>
+      cardKey({
+        cardNumber: card.cardNumber,
+        cardName: card.cardName,
+        namesOnCard: card.namesOnCard,
+        isTeamCard: card.isTeamCard,
+        isVariation: card.isVariation,
+        ...(card.cardVariation ? { cardVariation: card.cardVariation } : {}),
+      });
+
+    // Each old card's key, once — every lookup below goes through it.
+    const oldKeys = old.cards.map(keyOfOld);
+
     const outcomes: Partial<Record<PlatformSide, Map<string, CardLinkOutcome>>> = {};
     const ambiguous = zero();
+    const extraOnMarketplace = {
+      bsc: { count: 0, cards: [] as string[] },
+      sportlots: { count: 0, cards: [] as string[] },
+    };
     for (const side of toFetch) {
-      const got = fetched[side];
-      if (!got?.ok) continue;
-      const result = linkCardsToSide(linkable, got.cards, {
-        nb: plan.insertPrefix,
-        fetched: plan.parallelPrefix,
-      });
+      // Security 2 — the old cards' links, by key, break a tie.
+      const earlierRefsByKey = new Map<string, Set<string>>();
+      for (const [i, card] of old.cards.entries()) {
+        const ref = oldRefOf(card, side);
+        if (!ref) continue;
+        const key = oldKeys[i];
+        const refs = earlierRefsByKey.get(key);
+        if (refs) refs.add(ref);
+        else earlierRefsByKey.set(key, new Set([ref]));
+      }
+      const result = linkCardsToSide(
+        linkable,
+        fetchedCards(side),
+        { nb: plan.insertPrefix, fetched: plan.parallelPrefix },
+        { earlierRefsByKey },
+      );
       outcomes[side] = result.outcomes;
       ambiguous[side] = result.ambiguous;
+      extraOnMarketplace[side] = {
+        count: result.unclaimed.length,
+        cards: result.unclaimed
+          .slice(0, MAX_LISTED_CARDS)
+          .map((c) => safeMarketplaceText(cardLabel(c))),
+      };
     }
 
     type Copy = {
       sourceCardId: Id<"cardChecklist">;
+      expect: { cardNumber: string; cardName: string; namesOnCard: string[] };
+      key: string;
       bsc?: { ref: string; setId?: string };
       sportlots?: { ref: string; setId?: string };
       printRun?: number;
+      keepSku?: string;
       variationOfCardId?: Id<"cardChecklist">;
       sortOrder: number;
     };
     const copies: Copy[] = [];
     const unlinked = zero();
+    const lists = {
+      leftOff: [] as string[],
+      unlinked: emptyLists(),
+      ambiguous: emptyLists(),
+    };
+    const listPush = (list: string[], label: string) => {
+      if (list.length < MAX_LISTED_CARDS) list.push(label);
+    };
     for (const card of insertCards.cards) {
+      const label = cardLabel(card);
+      const outcomeOn = (side: PlatformSide) => outcomes[side]?.get(card._id);
+      for (const side of toFetch) {
+        if (outcomeOn(side)?.kind === "ambiguous") {
+          listPush(lists.ambiguous[side], label);
+        }
+      }
       const link = (side: PlatformSide): FetchedParallelCard | undefined => {
-        const outcome = outcomes[side]?.get(card._id);
+        const outcome = outcomeOn(side);
         return outcome?.kind === "linked" ? outcome.card : undefined;
       };
       const bsc = link("bsc");
       const sl = link("sportlots");
-      if (!bsc && !sl) continue;
+      if (!bsc && !sl) {
+        listPush(lists.leftOff, label);
+        continue;
+      }
       for (const side of toFetch) {
-        if (outcomes[side]?.get(card._id)?.kind === "none") unlinked[side]++;
+        if (outcomeOn(side)?.kind === "none") {
+          unlinked[side]++;
+          listPush(lists.unlinked[side], label);
+        }
       }
       copies.push({
         sourceCardId: card._id,
+        expect: {
+          cardNumber: card.cardNumber,
+          cardName: card.cardName,
+          namesOnCard: card.namesOnCard,
+        },
+        key: cardKey({
+          cardNumber: card.cardNumber,
+          cardName: card.cardName,
+          namesOnCard: card.namesOnCard,
+          isTeamCard: card.isTeamCard,
+          isVariation: card.isVariation,
+          ...(card.cardVariation ? { cardVariation: card.cardVariation } : {}),
+        }),
         ...(bsc ? { bsc: { ref: bsc.ref, ...(bsc.setId ? { setId: bsc.setId } : {}) } } : {}),
         ...(sl ? { sportlots: { ref: sl.ref, ...(sl.setId ? { setId: sl.setId } : {}) } } : {}),
-        // M3 — the print run is the PARALLEL's, and only SportLots states it.
+        // M3 — the print run is the PARALLEL's, and only SportLots states it
+        // per card. NB has no parallel-level print run to fall back on.
         ...(sl?.printRun !== undefined ? { printRun: sl.printRun } : {}),
         ...(card.variationOfCardId ? { variationOfCardId: card.variationOfCardId } : {}),
         sortOrder: card.sortOrder,
       });
     }
-    if (copies.length === 0 && existing.cards > 0) {
-      return blocked(BLOCKED_NOTHING_MATCHED, answered);
+    if (copies.length === 0 && old.cards.length > 0) {
+      return blocked(BLOCKED_NOTHING_MATCHED, { sidesFetched: answered });
     }
+
+    // R2 — a copy keeps the SKU of the old card it clearly replaces: same key
+    // (so the same insert card) AND the same marketplace ref on a side.
+    // Exactly one old card for the copy, and that old card claimed by exactly
+    // one copy; anything else gets a fresh SKU.
+    const oldByKey = new Map<string, number[]>();
+    oldKeys.forEach((key, i) => {
+      const bucket = oldByKey.get(key);
+      if (bucket) bucket.push(i);
+      else oldByKey.set(key, [i]);
+    });
+    const oldForCopy = new Map<Copy, number>();
+    const copiesPerOld = new Map<number, number>();
+    for (const copy of copies) {
+      const hits = (oldByKey.get(copy.key) ?? []).filter((i) => {
+        const card = old.cards[i];
+        return (
+          (copy.bsc !== undefined && card.bscRef === copy.bsc.ref) ||
+          (copy.sportlots !== undefined && card.slRef === copy.sportlots.ref)
+        );
+      });
+      if (hits.length === 1) {
+        oldForCopy.set(copy, hits[0]);
+        copiesPerOld.set(hits[0], (copiesPerOld.get(hits[0]) ?? 0) + 1);
+      }
+    }
+    for (const [copy, i] of oldForCopy) {
+      const sku = old.cards[i].sku;
+      if (sku && copiesPerOld.get(i) === 1) copy.keepSku = sku;
+    }
+
+    // Classify every old link BEFORE anything is deleted.
+    const newRefs = { bsc: new Set<string>(), sportlots: new Set<string>() };
+    for (const copy of copies) {
+      if (copy.bsc) newRefs.bsc.add(copy.bsc.ref);
+      if (copy.sportlots) newRefs.sportlots.add(copy.sportlots.ref);
+    }
+    const listedRefs = {
+      bsc: new Set(fetchedCards("bsc").map((c) => c.ref)),
+      sportlots: new Set(fetchedCards("sportlots").map((c) => c.ref)),
+    };
+    const classify = (refsBySide: Record<PlatformSide, Iterable<string>>, relinked: typeof newRefs) => {
+      const gone = zero();
+      const listed = zero();
+      const legacy = zero();
+      for (const side of SIDES) {
+        for (const ref of new Set(refsBySide[side])) {
+          if (!plan.owned[side]) legacy[side]++;
+          else if (!listedRefs[side].has(ref)) gone[side]++;
+          else if (!relinked[side].has(ref)) listed[side]++;
+        }
+      }
+      return { gone, listed, legacy };
+    };
+    const oldRefsBySide = {
+      bsc: old.cards.flatMap((c) => (c.bscRef ? [c.bscRef] : [])),
+      sportlots: old.cards.flatMap((c) => (c.slRef ? [c.slRef] : [])),
+    };
+    const classified = classify(oldRefsBySide, newRefs);
 
     // ── 5. blocks again, then delete, then insert ───────────────────────────
     const recheck = await checkBlocks(ctx, args.parallelId);
-    if (recheck.blockedReason) return blocked(recheck.blockedReason, answered);
+    if (recheck.blockedReason) {
+      return blocked(recheck.blockedReason, { sidesFetched: answered });
+    }
 
-    const oldRefs = { bsc: new Set<string>(), sportlots: new Set<string>() };
+    const dropped = { bsc: [] as string[], sportlots: [] as string[] };
     let deletedTotal = 0;
     for (;;) {
       const page = await ctx.runMutation(
@@ -1114,14 +1609,28 @@ export const buildParallelChecklist = action({
         { parallelId: args.parallelId },
       );
       if (page.blockedReason) {
+        // Security 3 — a block after the first page is a PARTIAL WIPE, and is
+        // said out loud: the sentence, the count removed and the links that
+        // went with them. Before the first page nothing was touched.
+        const lost = classify(dropped, { bsc: new Set(), sportlots: new Set() });
         return blocked(
           deletedTotal > 0 ? BLOCKED_CHANGED_MID_BUILD : page.blockedReason,
-          answered,
+          {
+            sidesFetched: answered,
+            ...(deletedTotal > 0
+              ? {
+                  deletedCount: deletedTotal,
+                  earlierLinksMissing: lost.gone,
+                  stillListedNotRelinked: lost.listed,
+                  legacyLinksRemoved: lost.legacy,
+                }
+              : {}),
+          },
         );
       }
       deletedTotal += page.deleted;
-      for (const ref of page.refs.bsc) oldRefs.bsc.add(ref);
-      for (const ref of page.refs.sportlots) oldRefs.sportlots.add(ref);
+      dropped.bsc.push(...page.refs.bsc);
+      dropped.sportlots.push(...page.refs.sportlots);
       if (page.done) break;
     }
 
@@ -1133,7 +1642,9 @@ export const buildParallelChecklist = action({
       return va - vb || a.sortOrder - b.sortOrder;
     });
     const newIdOf = new Map<string, Id<"cardChecklist">>();
+    let firstCreatedId: Id<"cardChecklist"> | undefined;
     let missing = 0;
+    let changedSources = 0;
     for (let i = 0; i < copies.length; i += INSERT_COPIES_PER_PAGE) {
       const pageCopies = copies.slice(i, i + INSERT_COPIES_PER_PAGE);
       const remap: Array<{ from: Id<"cardChecklist">; to: Id<"cardChecklist"> }> = [];
@@ -1147,33 +1658,51 @@ export const buildParallelChecklist = action({
         {
           parallelId: args.parallelId,
           insertId: plan.insertId,
+          ...(firstCreatedId ? { firstCreatedId } : {}),
           copies: pageCopies.map((c) => ({
             sourceCardId: c.sourceCardId,
+            expect: c.expect,
             ...(c.bsc ? { bsc: c.bsc } : {}),
             ...(c.sportlots ? { sportlots: c.sportlots } : {}),
             ...(c.printRun !== undefined ? { printRun: c.printRun } : {}),
+            ...(c.keepSku ? { keepSku: c.keepSku } : {}),
           })),
           remap,
         },
       );
-      for (const { from, to } of page.created) newIdOf.set(from, to);
+      if (page.changed) {
+        // Security 4 — another build got here first.
+        const lost = classify(dropped, { bsc: new Set(), sportlots: new Set() });
+        return blocked(BLOCKED_CHANGED_MID_BUILD, {
+          sidesFetched: answered,
+          deletedCount: deletedTotal,
+          earlierLinksMissing: lost.gone,
+          stillListedNotRelinked: lost.listed,
+          legacyLinksRemoved: lost.legacy,
+        });
+      }
+      for (const { from, to } of page.created) {
+        newIdOf.set(from, to);
+        firstCreatedId ??= to;
+      }
       missing += page.missing;
+      changedSources += page.skippedChangedSource;
     }
 
-    const newRefs = { bsc: new Set<string>(), sportlots: new Set<string>() };
+    // A copy skipped for a changed source re-links nothing: re-classify with
+    // the refs that actually landed.
+    const landedRefs = { bsc: new Set<string>(), sportlots: new Set<string>() };
     for (const copy of copies) {
       if (!newIdOf.has(copy.sourceCardId)) continue;
-      if (copy.bsc) newRefs.bsc.add(copy.bsc.ref);
-      if (copy.sportlots) newRefs.sportlots.add(copy.sportlots.ref);
+      if (copy.bsc) landedRefs.bsc.add(copy.bsc.ref);
+      if (copy.sportlots) landedRefs.sportlots.add(copy.sportlots.ref);
     }
-    const earlierLinksMissing = zero();
-    for (const side of SIDES) {
-      for (const ref of oldRefs[side]) {
-        if (!newRefs[side].has(ref)) earlierLinksMissing[side]++;
-      }
-    }
+    const final =
+      missing + changedSources > 0
+        ? classify(oldRefsBySide, landedRefs)
+        : classified;
 
-    const copied = copies.length - missing;
+    const copied = newIdOf.size;
     const result: BuildParallelResult = {
       status: "built",
       copied,
@@ -1182,7 +1711,12 @@ export const buildParallelChecklist = action({
       ambiguous,
       sidesFetched: answered,
       sidesSkipped: skipped,
-      earlierLinksMissing,
+      earlierLinksMissing: final.gone,
+      stillListedNotRelinked: final.listed,
+      legacyLinksRemoved: final.legacy,
+      skippedChangedSource: missing + changedSources,
+      extraOnMarketplace,
+      cards: lists,
       rebuilt: deletedTotal > 0,
     };
     logBuild(args.parallelId, result, startedAt);
@@ -1236,10 +1770,21 @@ function logBuild(
       unlinked: result.unlinked,
       ambiguous: result.ambiguous,
       earlierLinksMissing: result.earlierLinksMissing,
+      stillListedNotRelinked: result.stillListedNotRelinked,
+      legacyLinksRemoved: result.legacyLinksRemoved,
+      skippedChangedSource: result.skippedChangedSource,
+      extraOnMarketplace: {
+        bsc: result.extraOnMarketplace.bsc.count,
+        sportlots: result.extraOnMarketplace.sportlots.count,
+      },
       sidesFetched: result.sidesFetched,
       sidesSkipped: result.sidesSkipped,
       rebuilt: result.rebuilt,
       blocked: result.status === "blocked",
+      // Security 3 — a partial wipe is visible in the log, not only the UI.
+      ...(result.deletedCount !== undefined
+        ? { deletedCount: result.deletedCount, partialWipe: result.deletedCount > 0 }
+        : {}),
       duration_ms: Date.now() - startedAt,
     }),
   );

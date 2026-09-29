@@ -92,6 +92,19 @@ export type NewCardRow = {
   /** Canonical team names, for the listing text. */
   teamNames?: string[];
   carried?: CarriedCardFields;
+  /**
+   * NEO-312 — the features map to merge the card's observed facts ONTO,
+   * instead of `set.inheritedFeatures`. A parallel copy passes
+   * `copyFeaturesForParallel`'s answer here so the insert card's own facts
+   * (an autograph, Signed By, a short print) survive the copy. The commit
+   * never passes it.
+   */
+  baseFeatures?: Record<string, string>;
+  /**
+   * NEO-312 (R2) — the SKU of the old parallel card this copy replaces, when
+   * it is clearly the same card. Written as-is instead of generating one.
+   */
+  keepSku?: string;
 };
 
 export type BuiltCardRow = {
@@ -120,7 +133,7 @@ export function buildCardRowForInsert(
   // facts. A fact seen on THIS card (e.g. it's a rookie) beats the
   // inherited values.
   const mergedFeatures: Record<string, string> = {
-    ...(set.inheritedFeatures ?? {}),
+    ...(card.baseFeatures ?? set.inheritedFeatures ?? {}),
     ...deriveCardObservedFeatures({
       isRookie: card.isRookie,
       isRelic: card.isRelic,
@@ -246,9 +259,62 @@ export async function insertCardRow(
   set: CardRowSetContext,
 ): Promise<Id<"cardChecklist">> {
   const built = buildCardRowForInsert(card, set, Date.now());
+  if (card.keepSku) {
+    // NEO-312 (R2): a rebuilt card that is clearly the old one keeps its SKU,
+    // so a label or a listing that already names it still does.
+    return await ctx.db.insert("cardChecklist", {
+      ...built.row,
+      sku: card.keepSku,
+    });
+  }
   const id: Id<"cardChecklist"> = await ctx.db.insert("cardChecklist", built.row);
   await ctx.db.patch(id, {
     sku: generateSku({ ...built.sku, uniqueSuffix: crypto.randomUUID() }),
   });
   return id;
+}
+
+/**
+ * NEO-312 (hobby A4) — the features a PARALLEL copy of an insert card starts
+ * from, before the card's observed facts are applied on top.
+ *
+ * Three layers, in order:
+ *
+ *   1. the parallel's own snapshot — the set-level facts of the row the copy
+ *      now lives under (`cardType: Parallel`, its release date, …);
+ *   2. the insert card's CARD-LEVEL facts — every key whose value on the card
+ *      differs from the insert row's snapshot, i.e. a fact observed on that
+ *      card or set on it by an operator (an autograph, Signed By, a short
+ *      print, a prospect flag). A fact the card merely inherited is not one;
+ *      the parallel's own snapshot already speaks for the set level;
+ *   3. except on PARALLEL facts, where the parallel's snapshot wins: the keys
+ *      in `PARALLEL_FACT_KEYS`, and any key the parallel's snapshot sets to a
+ *      different value than the insert's (an operator's parallel-level edit).
+ *
+ * Pure, and NB data only: both snapshots and the card's features are NB rows.
+ */
+export const PARALLEL_FACT_KEYS: ReadonlySet<string> = new Set([
+  // What the parallel IS. There is no colour or print-run feature key today
+  // (`expectedFeatures.ts`); when one is added it belongs in this set.
+  "parallelName",
+  "cardType",
+]);
+
+export function copyFeaturesForParallel(args: {
+  insertSnapshot: Record<string, string> | undefined;
+  parallelSnapshot: Record<string, string> | undefined;
+  insertCardFeatures: Record<string, string> | undefined;
+}): Record<string, string> {
+  const insertSnapshot = args.insertSnapshot ?? {};
+  const parallelSnapshot = args.parallelSnapshot ?? {};
+  const out: Record<string, string> = { ...parallelSnapshot };
+  const parallelOwns = (key: string): boolean =>
+    key in parallelSnapshot &&
+    (PARALLEL_FACT_KEYS.has(key) || parallelSnapshot[key] !== insertSnapshot[key]);
+  for (const [key, value] of Object.entries(args.insertCardFeatures ?? {})) {
+    if (value === insertSnapshot[key]) continue; // inherited, not a card fact
+    if (parallelOwns(key)) continue;
+    out[key] = value;
+  }
+  return out;
 }

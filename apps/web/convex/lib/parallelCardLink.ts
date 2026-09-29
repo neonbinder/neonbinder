@@ -36,6 +36,19 @@
  * it has EXACTLY ONE candidate there AND that candidate is claimed by no other
  * NB card. Anything else leaves the card unlinked on that side and counts it
  * `ambiguous` — never a guess, never first-wins.
+ *
+ * ## Two second chances, each under the same guard (NEO-312 fix round)
+ *
+ *   • SPELLING (hobby A9). A card whose who-key finds nothing — the two
+ *     marketplaces spell a name differently, or a parallel's row names the
+ *     parallel — links on its NUMBER alone (variation-aware, same tiers) when
+ *     that number has exactly one card in the parallel's list AND that card is
+ *     reachable by number from no other insert card and wanted by nobody else.
+ *   • EARLIER LINK (security 2). An ambiguous card whose candidates include
+ *     exactly one ref that an OLD parallel card with the same key (`cardKey`)
+ *     already held links to that ref: the operator's earlier pairing is the
+ *     tiebreak, and a live link survives the rebuild. Two cards proposing the
+ *     same ref both stay ambiguous.
  */
 
 import { cardNumberStem } from "../../lib/cards/variations";
@@ -70,8 +83,11 @@ export type FetchedParallelCard = {
   printRun?: number;
 };
 
+/** How a link was made: the full key, the number alone, or an earlier link. */
+export type LinkVia = "key" | "number" | "earlierLink";
+
 export type CardLinkOutcome =
-  | { kind: "linked"; card: FetchedParallelCard }
+  | { kind: "linked"; card: FetchedParallelCard; via: LinkVia }
   | { kind: "ambiguous" }
   | { kind: "none" };
 
@@ -81,6 +97,20 @@ export type SideLinkResult = {
   linked: number;
   ambiguous: number;
   none: number;
+  /**
+   * Fetched cards no insert card matched at all — not linked, and not a
+   * candidate of any card (so an ambiguous card's rivals are NOT here). In
+   * fetch order.
+   */
+  unclaimed: FetchedParallelCard[];
+};
+
+export type LinkOptions = {
+  /**
+   * `cardKey` of an OLD parallel card → the refs it held on this side. Read
+   * only to break a tie between candidates (see the header).
+   */
+  earlierRefsByKey?: ReadonlyMap<string, ReadonlySet<string>>;
 };
 
 type Identity =
@@ -99,6 +129,20 @@ function identityOf(card: LinkableNbCard): Identity {
   }
   if (card.isTeamCard) return { kind: "number" };
   return { kind: "name", key: nameKey(card.cardName) };
+}
+
+/**
+ * The identity of an NB card for "is this the same card" questions ACROSS a
+ * rebuild: its number, who is on it, and whether it is a variation. Two NB
+ * rows with the same key are the same checklist entry as far as the build can
+ * tell — used to find the old parallel card a new copy replaces (earlier-link
+ * tiebreak, SKU carry). Never unique on its own: callers apply exactly-one.
+ */
+export function cardKey(card: Omit<LinkableNbCard, "id">): string {
+  const who = identityOf({ ...card, id: "" });
+  const whoKey =
+    who.kind === "number" ? "#team" : who.kind === "players" ? `p:${who.key}` : `n:${who.key}`;
+  return `${card.cardNumber.trim().toUpperCase()}\u0000${whoKey}\u0000${card.isVariation ? 1 : 0}`;
 }
 
 function sameWho(id: Identity, f: FetchedParallelCard): boolean {
@@ -140,6 +184,7 @@ export function linkCardsToSide(
   nbCards: readonly LinkableNbCard[],
   fetched: readonly FetchedParallelCard[],
   prefixes: { nb?: string; fetched?: string } = {},
+  options: LinkOptions = {},
 ): SideLinkResult {
   // Three indexes over the fetched list, one per number tier. Indexed by
   // POSITION so two fetched rows that happen to share a ref (SportLots'
@@ -154,21 +199,23 @@ export function linkCardsToSide(
     push(stem, cardNumberStem(s).toUpperCase(), i);
   });
 
-  const candidatesOf = (card: LinkableNbCard): number[] => {
-    const who = identityOf(card);
-    const accept = (i: number): boolean => {
-      const f = fetched[i];
-      return (
-        fetchedIsVariation(f) === card.isVariation && sameWho(who, f)
-      );
-    };
+  const numberTiers = (card: LinkableNbCard): Array<number[] | undefined> => {
     const s = stripPrefix(card.cardNumber, prefixes.nb);
-    const tiers: Array<number[] | undefined> = [
+    return [
       exact.get(card.cardNumber.trim()),
       stripped.get(s),
       card.isVariation ? stem.get(cardNumberStem(s).toUpperCase()) : undefined,
     ];
-    for (const tier of tiers) {
+  };
+  const sameVariation = (card: LinkableNbCard, i: number): boolean =>
+    fetchedIsVariation(fetched[i]) === card.isVariation;
+
+  /** The full key: number tier, variation, and who. */
+  const candidatesOf = (card: LinkableNbCard): number[] => {
+    const who = identityOf(card);
+    const accept = (i: number): boolean =>
+      sameVariation(card, i) && sameWho(who, fetched[i]);
+    for (const tier of numberTiers(card)) {
       const hits = (tier ?? []).filter(accept);
       if (hits.length === 0) continue;
       if (hits.length > 1 && card.isVariation && card.cardVariation?.trim()) {
@@ -186,36 +233,98 @@ export function linkCardsToSide(
     return [];
   };
 
+  /** The number alone (variation-aware): the first tier with any hit. */
+  const numberCandidatesOf = (card: LinkableNbCard): number[] => {
+    for (const tier of numberTiers(card)) {
+      const hits = (tier ?? []).filter((i) => sameVariation(card, i));
+      if (hits.length > 0) return hits;
+    }
+    return [];
+  };
+
   // Every NB card that COUNTS a fetched card among its candidates claims it,
   // not only the cards with a single candidate: a fetched card two NB cards
   // could both be is not known to be either's.
   const candidates = new Map<string, number[]>();
   const claimsByFetched = new Map<number, number>();
+  // Reachable by NUMBER at any tier, from any card — the reverse end of the
+  // spelling fallback's guard, deliberately wider than the forward end.
+  const numberReach = new Map<number, number>();
   for (const card of nbCards) {
     const hits = candidatesOf(card);
     candidates.set(card.id, hits);
     for (const i of hits) {
       claimsByFetched.set(i, (claimsByFetched.get(i) ?? 0) + 1);
     }
+    const reach = new Set<number>();
+    for (const tier of numberTiers(card)) {
+      for (const i of tier ?? []) if (sameVariation(card, i)) reach.add(i);
+    }
+    for (const i of reach) numberReach.set(i, (numberReach.get(i) ?? 0) + 1);
   }
 
   const outcomes = new Map<string, CardLinkOutcome>();
-  let linked = 0;
-  let ambiguous = 0;
-  let none = 0;
+  const taken = new Set<number>();
   for (const card of nbCards) {
     const hits = candidates.get(card.id) ?? [];
     if (hits.length === 0) {
       outcomes.set(card.id, { kind: "none" });
-      none++;
     } else if (hits.length === 1 && claimsByFetched.get(hits[0]) === 1) {
-      outcomes.set(card.id, { kind: "linked", card: fetched[hits[0]] });
-      linked++;
+      outcomes.set(card.id, { kind: "linked", card: fetched[hits[0]], via: "key" });
+      taken.add(hits[0]);
     } else {
       // Two candidates for this card, or one candidate two cards want.
       outcomes.set(card.id, { kind: "ambiguous" });
-      ambiguous++;
     }
   }
-  return { outcomes, linked, ambiguous, none };
+
+  // Second chances. Each proposes; a fetched card proposed twice, or already
+  // taken, or wanted by any card's full key, is refused for everyone.
+  const proposals = new Map<number, Array<{ id: string; via: LinkVia }>>();
+  const propose = (id: string, i: number, via: LinkVia) => {
+    const list = proposals.get(i);
+    if (list) list.push({ id, via });
+    else proposals.set(i, [{ id, via }]);
+  };
+  for (const card of nbCards) {
+    const outcome = outcomes.get(card.id);
+    if (outcome?.kind === "none") {
+      // Spelling: exactly one by number, reachable by number from this card
+      // alone, and no card's full key wants it.
+      const byNumber = numberCandidatesOf(card);
+      if (
+        byNumber.length === 1 &&
+        numberReach.get(byNumber[0]) === 1 &&
+        (claimsByFetched.get(byNumber[0]) ?? 0) === 0
+      ) {
+        propose(card.id, byNumber[0], "number");
+      }
+    } else if (outcome?.kind === "ambiguous" && options.earlierRefsByKey) {
+      const earlier = options.earlierRefsByKey.get(cardKey(card));
+      if (!earlier || earlier.size === 0) continue;
+      const held = (candidates.get(card.id) ?? []).filter((i) =>
+        earlier.has(fetched[i].ref),
+      );
+      if (held.length === 1) propose(card.id, held[0], "earlierLink");
+    }
+  }
+  for (const [i, list] of proposals) {
+    if (list.length !== 1 || taken.has(i)) continue;
+    const { id, via } = list[0];
+    outcomes.set(id, { kind: "linked", card: fetched[i], via });
+    taken.add(i);
+  }
+
+  let linked = 0;
+  let ambiguous = 0;
+  let none = 0;
+  for (const outcome of outcomes.values()) {
+    if (outcome.kind === "linked") linked++;
+    else if (outcome.kind === "ambiguous") ambiguous++;
+    else none++;
+  }
+  const unclaimed = fetched.filter(
+    (_, i) => !taken.has(i) && (claimsByFetched.get(i) ?? 0) === 0,
+  );
+  return { outcomes, linked, ambiguous, none, unclaimed };
 }
