@@ -27,10 +27,14 @@ tags:
 #      leaves nothing to suggest on a re-open (STEPS 4–5a; NEO-308); a second
 #      `Sync Inserts` leaves the grouped rows alone ("N already grouped …")
 #      and does not re-create them as inserts (STEP 5b; NEO-300).
-#   4. The promoted `Anime Kanji` keeps its BSC id as a working source: a
-#      chip tagged as a BSC variant, no "Needs re-mapping", Fetch from
-#      Marketplaces saves cards and the chip's per-slot count is > 0
-#      (STEPS 6–9; NEO-293).
+#   4. The promoted `Anime Kanji` keeps its BSC id as a working source, and
+#      is built from its insert (NEO-312): Fetch from Marketplaces on `Anime`
+#      saves cards, the save builds `Anime`'s parallels one at a time (the
+#      panel `Building parallels of Anime — k of M`), `Anime Kanji — Built N
+#      cards`, `Stop after this one` ends the run stopped; then `Anime
+#      Kanji`'s chip is tagged as a BSC variant, no "Needs re-mapping", its
+#      per-slot count is > 0 (the copies carry ITS slot) and its Sync slot
+#      reads `Rebuild from Anime` (STEPS 6–9; NEO-293, NEO-312).
 #   5. Bowman › Parallel's sync pairs BSC's `Blue` with the `Blue` row the
 #      review filed — one NB row, both links (STEP 10; NEO-306).
 #   6. `Promote to set` lifts `Blue`'s SportLots link out as the set `Bowman
@@ -63,7 +67,8 @@ tags:
 #   and the All-America products as sets and carries `Chrome Anime Kanji`
 #   (id 378117). Which SportLots set the matcher pairs with `Anime Kanji` is
 #   the matcher's business: STEP 2 makes both NB rows exist whatever it
-#   decided, and STEP 7 handles a one- or two-source fetch. ⚠️ The review's
+#   decided; STEP 6 handles a one- or two-source fetch of `Anime`, and
+#   STEP 8's build fetches whichever sides `Anime Kanji` holds. ⚠️ The review's
 #   labels and the Make insert of… path are NOT YET MEASURED on a preview:
 #   STEP 0 says what to re-read.
 #
@@ -97,8 +102,10 @@ tags:
 #   contract); Bowman's Variant Types sync fired from inside the review
 #   (60000, `util-drill-to-2024-topps-chrome`'s figure for the same fetch);
 #   the Inserts and Parallels fetches and the forced Inserts re-sync
-#   (240000); the checklist fetch and the steps behind it (STEPS 7–8, the
-#   ceilings inserts-1996-score and checklist-one-marketplace-… give them).
+#   (240000); the checklist fetch and the steps behind it (STEPS 6–7, the
+#   ceilings inserts-1996-score and checklist-one-marketplace-… give them);
+#   the parallel build's per-parallel live fetches (STEP 8, 120000 — the
+#   same one-fetch ceiling as STEP 6's, each site says why).
 #
 # ── R8 INSIDE DIALOGS ───────────────────────────────────────────────────────
 #   The review, both reconciles, Group Parallels, the pairing dialog and the
@@ -141,7 +148,14 @@ tags:
 #                 parallel of…`, `Make insert of…`
 #   checklist     `Sync card checklist`, `Match Cards — <row>`, `Confirm card
 #                 matches`, `Skip remaining names (N)`, `Confirm & Save`,
-#                 `Saved N cards`
+#                 `Saved N cards`; on a parallel `Build from <insert>` /
+#                 `Rebuild from <insert>` in the Sync slot (NEO-312)
+#   build panel   heading `Building parallels of <insert> — k of M` →
+#                 `Parallels of <insert> — stopped, b of M built` (or `— b of
+#                 M built`); one text node per line `<parallel> — <status>`
+#                 (`Waiting`, `Building…`, `Built N cards[, …]`, `Blocked —
+#                 …`, `Stopped`, `Failed — …`); `Stop after this one` →
+#                 `Stopping after this one…` (ParallelBuildPanel.tsx)
 #   promote       `Promote “<row>” to a set`, `Promote it`, toast
 #                 `“<set>” is its own set now.`
 #   make parallel `Make “<set>” a parallel`, `Make it a parallel`, toast
@@ -155,8 +169,10 @@ tags:
 # ── R3 ──────────────────────────────────────────────────────────────────────
 #   The only flow on 2026 Bowman, the only one that opens a SportLots review,
 #   promotes a REAL BSC insert with Group Parallels, saves a grouping plan
-#   past one transaction's 200 entries (NEO-308), or drives Make insert
-#   of…. The hand-made parallel-grouping flows prove the modal's
+#   past one transaction's 200 entries (NEO-308), drives Make insert
+#   of…, or builds a REAL insert's parallels from its save (NEO-312 — the
+#   only live proof of the build panel, Stop and the parallel's own slot on
+#   the copies). The hand-made parallel-grouping flows prove the modal's
 #   mechanics; `brand-via-all-brands-narrows-sportlots` proves the SportLots
 #   phase RAN on a year seen through All Brands (no pill there).
 # ════════════════════════════════════════════════════════════════════════════
@@ -660,9 +676,9 @@ tags:
 
       # THE ROW "Anime Kanji" — same two shapes, named by the gate (R2). When
       # SportLots' "Chrome Anime Kanji" was paired with it (every green run so
-      # far), the promoted parallel has TWO sources and STEP 7 meets the
-      # pairing dialog; when it was not, "Keep all" below makes it its own set
-      # and STEP 7 takes the one-marketplace path. Both are handled there.
+      # far), the promoted parallel has TWO sources and STEP 8's build
+      # fetches both; when it was not, "Keep all" below makes it its own set
+      # and the build fetches BSC alone. Both are handled there.
       - extendedWaitUntil:
           visible:
             id: "NeonBinder set name for Anime Kanji|Make its own set: Anime Kanji$"
@@ -931,7 +947,8 @@ tags:
 # ============================================================
 # STEP 5 — THE GROUPING MOVED THE ROW OUT OF THE INSERTS
 # Re-drill first, for the same horizontal-offset reason as STEP 2's. The
-# promoted row is opened as a parallel in STEP 5c, after the re-sync.
+# promoted row is listed as a parallel in STEP 5c, after the re-sync, and
+# opened in STEP 9, after its insert's save has built it.
 # ============================================================
 
 - runFlow:
@@ -1178,7 +1195,10 @@ tags:
 # (c) The Parallels column mounts for "Anime" (whole-text "Parallels" is the
 # column title; the "Group Parallels" button does not match it) and lists the
 # promoted row(s): a Convex read, the existing rows make the column's
-# ensure-sync a no-op.
+# ensure-sync a no-op. The row is NOT opened here: the checklist on screen is
+# the INSERT's, which is the one STEP 6 fetches (NEO-312 — a parallel builds
+# from its insert, so the insert is synced first). `Anime Kanji` is opened in
+# STEP 9, once the build has given it cards.
 - extendedWaitUntil:
     visible: "Parallels"
     timeout: 7000
@@ -1186,50 +1206,26 @@ tags:
     visible:
       text: "^Anime Kanji$"
     timeout: 7000
-- tapOn:
-    text: "^Anime Kanji$"
 
 # ============================================================
-# STEP 6 — ASSERTION 1: THE BSC ID IS A SOURCE, NOT A "NEEDS RE-MAPPING" LINE
-# The panel was already mounted for "Anime" and re-renders in place for the
-# child, so the heading is centred first and the CHILD's chip is waited for
-# underneath it — that wait is what proves the panel on screen is the promoted
-# row's, and it is the positive assertion the negative rides on. DOWN, as in
-# inserts-1996-score STEP 9 (MEASURED there at 1.97s, one centring swipe):
-# the row was just tapped near the top of the page and the panel sits below
-# the columns.
-# ============================================================
-
-- scrollUntilVisible:
-    element:
-      text: "Multi-source sets"
-    centerElement: true
-    timeout: 7000
-# A CHIP: only a chip carries the × — the untagged "Needs re-mapping" list has
-# neither × nor rename, by design. Under the pause the slot label is BSC's
-# name too, so the handle is the same in both branches.
-- extendedWaitUntil:
-    visible:
-      id: "Remove Anime Kanji"
-    timeout: 7000
-# And tagged as a VARIANT, specifically: the facet note's accessible name says
-# which BSC facet the slot filters on. `setName` here would pull the whole
-# set on the fetch below; `variantName` is what the promotion recorded.
-- assertVisible:
-    id: "Anime Kanji is attached as a BSC variant"
-- assertNotVisible: "Needs re-mapping"
-
-# ============================================================
-# STEP 7 — FETCH FROM MARKETPLACES ON THE PROMOTED PARALLEL
+# STEP 6 — FETCH FROM MARKETPLACES ON THE INSERT "Anime" (NEO-312)
+# A parallel no longer fetches its own checklist: its Sync slot reads `Build
+# from Anime` / `Rebuild from Anime` (STEP 9 asserts it). The insert is what
+# the operator syncs, and saving it builds every parallel under it (STEP 8).
 # The checklist is empty (asserted, so the saved count below is a claim about
 # THIS fetch); the button's accessible name is stable in both states.
 # R8: centred — this target depends on the NEO-260 scroll spacer
-# (src/layouts/binder-layout.tsx), see inserts-1996-score STEP 4.
+# (src/layouts/binder-layout.tsx), see inserts-1996-score STEP 4. DOWN: the
+# "Anime" row was just tapped in the columns row, and the checklist renders
+# below MultiSourcePanel and SetAttributesPanel (SetSelector.tsx DOM order).
+# MEASURED on the same geometry (the empty checklist of a row picked from the
+# same columns, CI 36368544641): 3.9s, one centring swipe.
 # ============================================================
 
 - scrollUntilVisible:
     element:
       id: "Sync card checklist"
+    direction: DOWN
     centerElement: true
     timeout: 7000
 - assertVisible: "No cards in this checklist yet."
@@ -1237,16 +1233,31 @@ tags:
     id: "Sync card checklist"
 
 # THE FETCH RESOLVES ONE OF TWO WAYS, and a third is the bug. Two sources
-# (BSC "Anime Kanji" + a SportLots set the reconcile paired with it) open the
-# "Match Cards" dialog; one source takes the NEO-255 one-marketplace path and
-# says "Kept all N cards from BSC". A build that dropped the BSC source would
-# say "Kept all N cards from SportLots" or nothing at all — neither matches,
-# so it fails here, on the sentence that names the missing marketplace. Live
-# BSC (+ SportLots) round-trip: the 120000 inserts-1996-score gives its fetch.
+# (BSC "Anime" + the SportLots set STEP 2's reconcile paired with it — Ready
+# in every green run so far) open the "Match Cards" dialog; one source takes
+# the NEO-255 one-marketplace path and says "Kept all N cards from BSC". A
+# fetch that dropped the BSC source would say "Kept all N cards from
+# SportLots" or nothing at all — neither matches, so it fails here, on the
+# sentence that names the missing marketplace. Live BSC (+ SportLots)
+# round-trip: the 120000 inserts-1996-score gives its fetch (R5 marketplace
+# exception; MEASURED 0.34s after the tap for the same fetch on "Anime Kanji",
+# CI 36368544641 — a ceiling, not an expectation).
 - extendedWaitUntil:
     visible:
       text: "Match Cards.*|.*Kept all [0-9]+ cards? from BSC.*"
     timeout: 120000
+
+# NEO-287 — PAUSED, "Anime" holds BSC's id alone (no reconcile ran, STEP 2),
+# so the pairing dialog is the bug: the gate above just proved the page live,
+# and this negative is what makes the paused branch assert its own shape
+# (R2). LIVE, either shape is legitimate — the matcher may leave "Anime"
+# Pending, which STEP 2 makes its own BSC-only set — so SL_PAUSED alone cannot
+# pick the branch; the dialog's presence does, as below.
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertNotVisible: "Match Cards.*"
 
 # TWO SOURCES — the pairing dialog, handled as inserts-1996-score STEP 5 does.
 # The dialog OPENING is not the fetch FINISHING (NEO-195, streaming): Confirm
@@ -1262,28 +1273,29 @@ tags:
           visible:
             text: "^Confirm$"
           timeout: 120000
-      # Named for the promoted row — the fetch was run on the parallel, not on
-      # its parent.
+      # Named for the INSERT — the fetch was run on "Anime", not on one of
+      # its parallels. The heading is `Match Cards — <row>` (CardPairingModal),
+      # so ending the pattern on "Anime" keeps "Anime Kanji" from answering.
       - assertVisible:
-          text: ".*Match Cards — Anime Kanji.*"
+          text: ".*Match Cards — Anime"
       - tapOn:
           id: "Confirm card matches"
       # The pairing commit — an NB write, the 7000 bar (R5; MEASURED 1.06s
-      # against PR #288's preview, 2026-09-25, where it was 60000 by
-      # inheritance). The Confirm above is what waited on the fetch.
+      # against PR #288's preview, 2026-09-25). The Confirm above is what
+      # waited on the fetch.
       - extendedWaitUntil:
           notVisible: "Match Cards.*"
           timeout: 7000
 
 # ============================================================
-# STEP 8 — COMMIT. Fresh cards normally surface unknown prospects and the
+# STEP 7 — COMMIT. Fresh cards normally surface unknown prospects and the
 # entity-review wizard; a fetch whose every name is already known commits
 # straight to "Saved N cards". The names are not what this flow is about, so
 # the wizard is drained the cheapest way — "Skip remaining names" decides
 # every row in one press, lookups included, creates no players and raises no
 # New Team steps (checklist-one-marketplace-skips-match-dialog STEP 6). The
 # either/or gate is legitimate here because the hard result is the SAME in
-# both shapes and is asserted below: cards saved, and BSC's count on the chip.
+# both shapes and is asserted below: cards saved.
 # 60000 on the gate: the review opens behind the live Wikidata lookup each
 # unknown name queues, and the direct commit behind the card write (R5
 # marketplace-class exceptions, the same ceilings the flows cited use).
@@ -1314,33 +1326,168 @@ tags:
       - tapOn:
           text: ".*Confirm & Save.*"
 
-# ASSERTION 2a: the checklist HAS cards — at least one saved. The commit is
-# an NB write, so the 7000 bar (R5): MEASURED 0.36s after the Confirm & Save
-# tap against PR #288's preview, 2026-09-25 (it was 60000 by inheritance
-# from checklist-one-marketplace-…, whose own step is its business). The
-# marketplace-class waits are the gates above it.
+# The insert's checklist HAS cards — at least one saved. The commit is an NB
+# write, so the 7000 bar (R5): MEASURED 0.36s after the Confirm & Save tap
+# for the same commit on "Anime Kanji" (PR #288's preview, 2026-09-25). This
+# save is also what starts STEP 8's run.
 - extendedWaitUntil:
     visible:
       text: ".*Saved [1-9][0-9]* cards?.*"
     timeout: 7000
 
 # ============================================================
-# STEP 9 — ASSERTION 2b: BSC'S OWN PER-SLOT COUNT IS > 0 (NEO-219 pattern,
-# inserts-1996-score STEP 9)
-# Pressing the chip's × turns it into a question that names the number of
-# cards NeonBinder fetched THROUGH THAT SLOT — per source, not per set. A
-# positive count on the "Anime Kanji" BSC chip is the end-to-end proof that
-# BSC answered `variant=insert` + `variantName=Anime Kanji` for the promoted
-# row; a SportLots-only checklist would read "No cards were fetched from it."
-# and fail here. NON-DESTRUCTIVE (R7): it ends on the confirm's own Cancel,
-# nothing is detached. UP: the fetch button was the last thing centred and
-# the panel sits above the checklist; centred on the × itself (R8).
+# STEP 8 — NEO-312: SAVING THE INSERT BUILDS ITS PARALLELS, AND STOP ENDS THE
+# RUN AFTER THE ONE IN FLIGHT
+# Every parallel under "Anime" (STEP 4 nested `Anime Kanji`, `Anime Black
+# Refractors`, `Anime Red Refractors`, `Anime SuperFractors`) is built one at
+# a time: a copy of "Anime"'s cards, each re-linked to the parallel's OWN
+# marketplace card. `ParallelBuildPanel` renders directly under the "Saved N
+# cards." notice STEP 7 just saw, so it is BELOW that notice in DOM order and
+# DOWN is the only direction that can reach it.
+#
+# Strings are read from components/SetSelector/ParallelBuildPanel.tsx, never
+# guessed. Each ledger line is ONE text node, `<parallel> — <status>`
+# (`parallelLineText`); the heading is `panelHeading`:
+#   running  `Building parallels of Anime — k of M`
+#   stopped  `Parallels of Anime — stopped, b of M built`
+#   finished `Parallels of Anime — b of M built`
+# The panel's sr-only live line repeats a heading or a FINISHED line (never
+# "Waiting"/"Building…"), so a regex below may resolve to it instead of the
+# visible node; it says the same thing, and nothing here taps it.
+#
+# WHY STOP IS PRESSED WHILE `Anime Kanji` IS IN FLIGHT, NOT AFTER IT LANDS.
+# The build order is "Anime"'s own child order (`getParallelsForBuild` sorts
+# by `insert.children`), which STEP 4's grouping save sets from row creation
+# order — not something this flow controls or can read. Stop is rendered only
+# while the run is live. Pressed AFTER `Anime Kanji — Built`, it is missing
+# outright whenever `Anime Kanji` is the LAST parallel. Pressed once `Anime
+# Kanji` has left "Waiting", it means exactly "stop after this one": the run
+# finishes `Anime Kanji` (or, if that already landed, the next one) and
+# builds no more, in any order. The one ordering that can still miss it is
+# `Anime Kanji` LAST and its build landing inside the ~2s between this gate
+# and the tap; the failure then reads `No visible element found: Stop after
+# this one` with the heading `Parallels of Anime — M of M built` on screen.
+# ============================================================
+
+# THE HEADING, WHILE STILL BUILDING — it changes on completion, so it is
+# asserted first. The run starts on the save's own call (`getParallelsForBuild`,
+# a Convex read, then the first build), so 7000 (R5). Centred (R8): the Stop
+# control shares this row and is tapped below; the checklist's card list under
+# the panel gives the document the headroom to centre it.
+- scrollUntilVisible:
+    element:
+      text: "Building parallels of Anime — [0-9]+ of [0-9]+"
+    direction: DOWN
+    centerElement: true
+    timeout: 7000
+
+# `Anime Kanji`'s TURN HAS COME — its line has left "Waiting" (Building…, or
+# already a result). R5 MARKETPLACE EXCEPTION: every parallel ahead of it is
+# one live `fetchBscChecklist` call (+ SportLots for a parallel holding a
+# SportLots id), sequential. 120000 is the ceiling this flow already gives ONE
+# live BSC (+ SportLots) checklist fetch (STEP 6); the BSC-only fetch it
+# mostly is here MEASURED 1.4s / 3.1s (checklist-one-marketplace-skips-match-
+# dialog), and at most three parallels precede `Anime Kanji`. No scroll: the
+# centred heading leaves the four-line ledger (no inner scroller below nine
+# lines, SCROLL_AFTER) inside the viewport.
+- extendedWaitUntil:
+    visible:
+      text: "Anime Kanji — (?!Waiting$).+"
+    timeout: 120000
+- tapOn:
+    text: "Stop after this one"
+# The tap registered: the control says so at once (`STOPPING_LABEL`), or the
+# run has already ended stopped. Client state, the 7000 bar (R5).
+- extendedWaitUntil:
+    visible:
+      text: "Stopping after this one…|Parallels of Anime — stopped, [0-9]+ of [0-9]+ built"
+    timeout: 7000
+
+# `Anime Kanji` reaches a RESULT — R5 marketplace exception, its own build
+# (one live BSC (+ SportLots) fetch, STEP 6's 120000). Gated on leaving
+# "Building…" rather than on "Built", so a Blocked/Failed line fails the
+# assert below at once, with its reason on screen, instead of after 120s.
+- extendedWaitUntil:
+    visible:
+      text: "Anime Kanji — (?!Waiting$|Building…$).+"
+    timeout: 120000
+# THE CLAIM: the copy landed with cards (`builtText`: "Built N cards", then
+# only the clauses that are true — unlinked / ambiguous / left off per side).
+# "Blocked — none of the insert's cards matched…" or "Failed — …" fail here.
+- assertVisible:
+    text: "Anime Kanji — Built [1-9][0-9]* cards?(, .+)?"
+# AND THE RUN STOPPED. If the tap landed during `Anime Kanji`'s build the run
+# ends on its result; if it landed during the next parallel's, that one
+# finishes first — one more live fetch, R5 marketplace exception, STEP 6's
+# 120000. Only a stopped run says "stopped"; a missed tap would end on
+# `Parallels of Anime — M of M built` and fail here, by name.
+- extendedWaitUntil:
+    visible:
+      text: "Parallels of Anime — stopped, [0-9]+ of [0-9]+ built"
+    timeout: 120000
+
+# ============================================================
+# STEP 9 — OPEN "Anime Kanji": ITS BSC ID IS A SOURCE (NOT "NEEDS
+# RE-MAPPING"), THE COPIES CARRY THAT SLOT, AND ITS SYNC SLOT BUILDS FROM
+# "Anime"
+# UP to the Parallels column: STEP 8 left the page on the build panel, inside
+# the checklist, and the columns row is the top of SetSelector's DOM order.
+# Centred for the tap (R8). The row is the only node whose WHOLE text is
+# "Anime Kanji" — the ledger lines carry " — <status>".
 # ============================================================
 
 - scrollUntilVisible:
     element:
-      id: "Remove Anime Kanji"
+      text: "^Anime Kanji$"
     direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: "^Anime Kanji$"
+
+# ASSERTION 1: THE BSC ID IS A SOURCE, NOT A "NEEDS RE-MAPPING" LINE.
+# The panel was already mounted for "Anime" and re-renders in place for the
+# child, so the heading is centred first and the CHILD's chip is waited for
+# underneath it — that wait is what proves the panel on screen is the promoted
+# row's, and it is the positive assertion the negative rides on. DOWN, as in
+# inserts-1996-score STEP 9 (MEASURED there at 1.97s, one centring swipe;
+# 0.5s here in CI 36368544641): the row was just tapped near the top of the
+# page and the panel sits below the columns.
+- scrollUntilVisible:
+    element:
+      text: "Multi-source sets"
+    direction: DOWN
+    centerElement: true
+    timeout: 7000
+# A CHIP: only a chip carries the × — the untagged "Needs re-mapping" list has
+# neither × nor rename, by design. Under the pause the slot label is BSC's
+# name too, so the handle is the same in both branches.
+- extendedWaitUntil:
+    visible:
+      id: "Remove Anime Kanji"
+    timeout: 7000
+# And tagged as a VARIANT, specifically: the facet note's accessible name says
+# which BSC facet the slot filters on. `setName` here would scope the build's
+# fetch to the whole set; `variantName` is what the promotion recorded.
+- assertVisible:
+    id: "Anime Kanji is attached as a BSC variant"
+- assertNotVisible: "Needs re-mapping"
+
+# ASSERTION 2: BSC'S OWN PER-SLOT COUNT IS > 0 (NEO-219 pattern,
+# inserts-1996-score STEP 9). Pressing the chip's × turns it into a question
+# that names the number of cards NeonBinder holds THROUGH THAT SLOT — per
+# source, not per set. The copies were made from "Anime"'s cards, so a
+# positive count on the "Anime Kanji" BSC chip is the end-to-end proof that
+# the build re-linked each copy to `Anime Kanji`'s OWN BSC card (its `src` is
+# the parallel's slot, NEO-312 M3) rather than carrying "Anime"'s links; a copy
+# still pointing at the insert's slot would read "No cards were fetched from
+# it." and fail here. NON-DESTRUCTIVE (R7): it ends on the confirm's own
+# Cancel, nothing is detached. DOWN: the chip sits just under the heading
+# centred above; centred on the × itself (R8).
+- scrollUntilVisible:
+    element:
+      id: "Remove Anime Kanji"
+    direction: DOWN
     centerElement: true
     timeout: 7000
 - tapOn:
@@ -1359,6 +1506,18 @@ tags:
 # rather than merely intended to be, and the one an error page cannot satisfy.
 - assertVisible:
     id: "Remove Anime Kanji"
+
+# ASSERTION 3 (NEO-312 J4): on a parallel the checklist's Sync slot is the
+# build button, and it knows the parallel now has cards — `Rebuild from
+# Anime` (`buildButtonLabel`), not `Sync card checklist` and not `Build from
+# Anime`. Visible text is its name. The checklist header row sits below the
+# Multi-source panel (DOM order), so DOWN; nothing is tapped, so no centring
+# (R8), and the scroll is the assertion (R6). A Convex read, the 7000 bar.
+- scrollUntilVisible:
+    element:
+      text: "Rebuild from Anime"
+    direction: DOWN
+    timeout: 7000
 
 # ============================================================
 # STEP 10 — CLAIM 5: BOWMAN › PARALLEL PAIRS BSC'S BLUE WITH THE FILED ROW

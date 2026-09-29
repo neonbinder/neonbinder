@@ -848,6 +848,24 @@ Two corollaries worth knowing before you write the selector:
   `label()`, not hedging a scope — those are the closed row controls, and they
   still need it.
 
+* **A parallel's checklist has no `Sync card checklist` (NEO-312).** On a row
+  picked from the column BELOW an insert, the Sync slot is `Build from
+  <insert>`, or `Rebuild from <insert>` once the parallel has cards (a
+  confirm, `Replace the cards`, guards the rebuild). A row in the column
+  directly under a variant type — `Blue` under Bowman › `Parallel`, `Prizm
+  Gold` in `cards-parallel-custom` — is the insert role and keeps the ordinary
+  Sync. Saving an INSERT's checklist starts `ParallelBuildPanel` under the
+  `Saved N cards.` notice: heading `Building parallels of <insert> — k of M`
+  while it runs, then `Parallels of <insert> — b of M built` or `— stopped, b
+  of M built`; one text node per line, `<parallel> — <status>`; `Stop after
+  this one`, which reads `Stopping after this one…` once pressed. Target all
+  of these by their visible `text:`. Both buttons carry a DOM id
+  (`parallel-build`, `parallel-build-stop`), which REPLACES their
+  `resource-id`, so an `id:` selector on their words matches nothing; the
+  build order is the insert's child order, which a flow does not control
+  (`flagship-colour-is-a-parallel-both-ways` STEP 8 says how it presses Stop
+  without depending on it).
+
 ## Launching a flow: always gate on the destination heading
 
 Almost every flow's `url:` is **not** the page under test — it's
