@@ -40,10 +40,16 @@
  * ## Two second chances, each under the same guard (NEO-312 fix round)
  *
  *   • SPELLING (hobby A9). A card whose who-key finds nothing — the two
- *     marketplaces spell a name differently, or a parallel's row names the
- *     parallel — links on its NUMBER alone (variation-aware, same tiers) when
- *     that number has exactly one card in the parallel's list AND that card is
- *     reachable by number from no other insert card and wanted by nobody else.
+ *     marketplaces spell a name differently ("Jose Ramirez Jr." against
+ *     "José Ramírez") — links on its NUMBER (variation-aware, same tiers) when
+ *     that number has exactly one card in the parallel's list, that card is
+ *     reachable by number from no other insert card and wanted by nobody else,
+ *     AND the names LOOSELY AGREE: after folding case, accents and
+ *     punctuation and dropping the suffixes Jr/Sr/II/III/IV, at least one
+ *     SURNAME (a name's last remaining word) is the same on both. A different
+ *     player on the same number is a different card and is never linked —
+ *     that would be a guess (invariant 7). Team cards are unaffected: they are
+ *     keyed on the number alone to begin with.
  *   • EARLIER LINK (security 2). An ambiguous card whose candidates include
  *     exactly one ref that an OLD parallel card with the same key (`cardKey`)
  *     already held links to that ref: the operator's earlier pairing is the
@@ -155,6 +161,43 @@ function sameWho(id: Identity, f: FetchedParallelCard): boolean {
   }
   // A card with no recorded names: its title is the only string it kept.
   return id.key.length > 0 && nameKey(f.cardName) === id.key;
+}
+
+/** Name suffixes that are not a surname: "Ken Griffey Jr." → "griffey". */
+const NAME_SUFFIXES: ReadonlySet<string> = new Set(["jr", "sr", "ii", "iii", "iv"]);
+
+/** Each name's surname, folded: its last word once suffixes are dropped. */
+function surnamesOf(names: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const name of names) {
+    const words = nameKey(name)
+      .split(" ")
+      .filter((w) => w.length > 0 && !NAME_SUFFIXES.has(w));
+    const last = words[words.length - 1];
+    if (last) out.add(last);
+  }
+  return out;
+}
+
+/** A marketplace card's names: its roster, else its title split on joiners. */
+function fetchedNames(f: FetchedParallelCard): string[] {
+  const players = (f.players ?? []).map((n) => n.trim()).filter(Boolean);
+  return players.length > 0 ? players : f.cardName.split(/\s*[/|&]\s*/);
+}
+
+/**
+ * The spelling fallback's name test (see the header): at least one surname in
+ * common between the NB card's printed names (else its title) and the
+ * marketplace card's.
+ */
+function namesLooselyAgree(card: LinkableNbCard, f: FetchedParallelCard): boolean {
+  const nbNames = card.namesOnCard.map((n) => n.trim()).filter(Boolean);
+  const mine = surnamesOf(nbNames.length > 0 ? nbNames : [card.cardName]);
+  if (mine.size === 0) return false;
+  for (const surname of surnamesOf(fetchedNames(f))) {
+    if (mine.has(surname)) return true;
+  }
+  return false;
 }
 
 function fetchedIsVariation(f: FetchedParallelCard): boolean {
@@ -290,12 +333,14 @@ export function linkCardsToSide(
     const outcome = outcomes.get(card.id);
     if (outcome?.kind === "none") {
       // Spelling: exactly one by number, reachable by number from this card
-      // alone, and no card's full key wants it.
+      // alone, no card's full key wants it, and a surname agrees — never a
+      // different player on the same number.
       const byNumber = numberCandidatesOf(card);
       if (
         byNumber.length === 1 &&
         numberReach.get(byNumber[0]) === 1 &&
-        (claimsByFetched.get(byNumber[0]) ?? 0) === 0
+        (claimsByFetched.get(byNumber[0]) ?? 0) === 0 &&
+        namesLooselyAgree(card, fetched[byNumber[0]])
       ) {
         propose(card.id, byNumber[0], "number");
       }

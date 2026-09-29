@@ -24,9 +24,11 @@
  *      (`leafGate`, and the chain with the insert row taken out — see
  *      `chainWithoutInsertAncestors`). The insert's ids and every NB name stay
  *      out of every request.
- *   2. Refuse, touching nothing, if the parallel is blocked: a card with scans,
- *      a card that is the home of a cross-listing, a checklist review staged on
- *      it, more marketplace sets than one build reads, or a side the parallel
+ *   2. Clear the parallel's abandoned review state (candidates, entity-review
+ *      rows — transient wizard state a parallel can no longer reach). Then
+ *      refuse, touching nothing else, if the parallel is blocked: a card with
+ *      scans, a card that is the home of a cross-listing, a review live in
+ *      another window, more marketplace sets than one build reads, or a side the parallel
  *      owns that cannot be fetched while its old cards hold links there.
  *   3. Fetch EVERY side. A side that fails blocks the build and nothing changes.
  *   4. Link each insert card per side (`lib/parallelCardLink.ts`, exactly-one on
@@ -140,6 +142,16 @@ export const MAX_LISTED_CARDS = 50;
 const LIST_BLOCK_CARD_BUDGET = 4000;
 const LIST_BLOCK_LOOKUP_BUDGET = 1000;
 const LIST_BLOCK_CARDS_PER_PARALLEL = 200;
+/**
+ * Review state touched within this window is someone's live session and is
+ * left alone (the build blocks instead); anything older is abandoned wizard
+ * state and the build clears it.
+ */
+export const REVIEW_ACTIVE_WINDOW_MS = 15 * 60 * 1000;
+/** Review rows read per scan page (one paginate, no per-row reads). */
+const REVIEW_SCAN_PAGE = 500;
+/** Review rows deleted per transaction (one delete each). */
+const REVIEW_CLEAR_PAGE = 400;
 
 // ---------------------------------------------------------------------------
 // Operator-facing sentences (DRAFT — Jason signs off). Each reads after
@@ -150,8 +162,14 @@ export const BLOCKED_SCANS =
   "some of its cards have scans, and a rebuild would lose them";
 export const BLOCKED_CROSS_LISTED =
   "some of its cards also show under another set — take them off there first";
+/**
+ * Only for a review someone is working in RIGHT NOW (activity within
+ * `REVIEW_ACTIVE_WINDOW_MS`). A parallel has no way to start or reach a review
+ * any more, so stale review state is cleared by the build instead of blocking
+ * it (see `clearStaleReviewState`); a fresh one can only be an old tab.
+ */
 export const BLOCKED_REVIEW_OPEN =
-  "a checklist review is still open on it — finish or discard it first";
+  "a checklist review is running on it in another window — try again in a few minutes";
 export const BLOCKED_NO_IDS = "it isn't linked to a marketplace yet";
 /** The no-name fallback of `blockedIdsUnreachable`. */
 export const BLOCKED_IDS_UNREACHABLE =
@@ -385,6 +403,37 @@ async function reviewStagedOn(
   return queued !== null;
 }
 
+/** The last sign of life of a review row — see `sweepAbandonedBatches`. */
+function reviewRowLastActive(row: Doc<"entityReviewQueue">): number {
+  return Math.max(row._creationTime, row.lastTouchedAt ?? 0);
+}
+
+/**
+ * The list's cheap early warning: the first staged row of each kind, judged
+ * for freshness. Approximate on purpose (one read each); the build scans every
+ * row before it clears anything.
+ */
+async function reviewLooksLive(
+  ctx: { db: QueryCtx["db"] },
+  selectorOptionId: Id<"selectorOptions">,
+  cutoff: number,
+): Promise<boolean> {
+  const candidate = await ctx.db
+    .query("checklistCandidates")
+    .withIndex("by_selector_option_and_user", (q) =>
+      q.eq("selectorOptionId", selectorOptionId),
+    )
+    .first();
+  if (candidate && candidate._creationTime >= cutoff) return true;
+  const queued = await ctx.db
+    .query("entityReviewQueue")
+    .withIndex("by_selector_option", (q) =>
+      q.eq("selectorOptionId", selectorOptionId),
+    )
+    .first();
+  return queued !== null && reviewRowLastActive(queued) >= cutoff;
+}
+
 function hasScans(card: Doc<"cardChecklist">): boolean {
   return !!(card.imageUrls?.front || card.imageUrls?.back);
 }
@@ -511,7 +560,7 @@ export const getParallelsForBuild = query({
       cardBudget -= cards.length;
 
       let blocked: string | undefined;
-      if (await reviewStagedOn(ctx, parallel._id)) {
+      if (await reviewLooksLive(ctx, parallel._id, Date.now() - REVIEW_ACTIVE_WINDOW_MS)) {
         blocked = BLOCKED_REVIEW_OPEN;
       } else if (cards.some(hasScans)) {
         blocked = BLOCKED_SCANS;
@@ -749,6 +798,107 @@ export const loadParallelCardsForLink = internalQuery({
           ...(row.sku ? { sku: row.sku } : {}),
         };
       }),
+    };
+  },
+});
+
+/**
+ * One page of the parallel's staged review state, for the build's freshness
+ * scan: how many rows, and the newest sign of life among them. Reads only;
+ * the clear runs after EVERY page of both tables has been judged, so a live
+ * session is never half-deleted.
+ */
+export const scanParallelReviewPage = internalQuery({
+  args: {
+    parallelId: v.id("selectorOptions"),
+    table: v.union(v.literal("candidates"), v.literal("entityReview")),
+    cursor: v.union(v.string(), v.null()),
+  },
+  returns: v.object({
+    rows: v.number(),
+    lastActiveAt: v.number(),
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const opts = { numItems: REVIEW_SCAN_PAGE, cursor: args.cursor };
+    if (args.table === "candidates") {
+      const page = await ctx.db
+        .query("checklistCandidates")
+        .withIndex("by_selector_option_and_user", (q) =>
+          q.eq("selectorOptionId", args.parallelId),
+        )
+        .paginate(opts);
+      return {
+        rows: page.page.length,
+        lastActiveAt: Math.max(0, ...page.page.map((r) => r._creationTime)),
+        isDone: page.isDone,
+        continueCursor: page.continueCursor,
+      };
+    }
+    const page = await ctx.db
+      .query("entityReviewQueue")
+      .withIndex("by_selector_option", (q) =>
+        q.eq("selectorOptionId", args.parallelId),
+      )
+      .paginate(opts);
+    return {
+      rows: page.page.length,
+      lastActiveAt: Math.max(0, ...page.page.map(reviewRowLastActive)),
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+    };
+  },
+});
+
+/**
+ * Delete one page of the parallel's STALE review state: `checklistCandidates`
+ * first, then `entityReviewQueue`. Both are transient wizard/dialog state
+ * (a Cancel deletes exactly these rows); no player, team, league, card or
+ * `entityReviewSkips` ruling is touched.
+ *
+ * A row fresher than `cutoff` stops the page before anything in it is
+ * deleted and answers `live` — a session started since the scan.
+ */
+export const clearParallelReviewPage = internalMutation({
+  args: { parallelId: v.id("selectorOptions"), cutoff: v.number() },
+  returns: v.object({
+    candidates: v.number(),
+    reviewRows: v.number(),
+    done: v.boolean(),
+    live: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const candidates = await ctx.db
+      .query("checklistCandidates")
+      .withIndex("by_selector_option_and_user", (q) =>
+        q.eq("selectorOptionId", args.parallelId),
+      )
+      .take(REVIEW_CLEAR_PAGE);
+    if (candidates.some((r) => r._creationTime >= args.cutoff)) {
+      return { candidates: 0, reviewRows: 0, done: true, live: true };
+    }
+    for (const row of candidates) await ctx.db.delete(row._id);
+    if (candidates.length === REVIEW_CLEAR_PAGE) {
+      return { candidates: candidates.length, reviewRows: 0, done: false, live: false };
+    }
+    const budget = REVIEW_CLEAR_PAGE - candidates.length;
+    const rows = await ctx.db
+      .query("entityReviewQueue")
+      .withIndex("by_selector_option", (q) =>
+        q.eq("selectorOptionId", args.parallelId),
+      )
+      .take(budget + 1);
+    const page = rows.slice(0, budget);
+    if (page.some((r) => reviewRowLastActive(r) >= args.cutoff)) {
+      return { candidates: candidates.length, reviewRows: 0, done: true, live: true };
+    }
+    for (const row of page) await ctx.db.delete(row._id);
+    return {
+      candidates: candidates.length,
+      reviewRows: page.length,
+      done: rows.length <= budget,
+      live: false,
     };
   },
 });
@@ -1282,6 +1432,11 @@ export const buildParallelChecklist = action({
     }
 
     // ── 2. blocks, before any marketplace is asked ──────────────────────────
+    // A parallel no longer uses candidates or the entity review, so review
+    // state left on it is abandoned and is cleared here; only a live session
+    // (another window, an old tab) blocks.
+    const review = await clearStaleReviewState(ctx, args.parallelId);
+    if (review.live) return blocked(BLOCKED_REVIEW_OPEN);
     const existing = await checkBlocks(ctx, args.parallelId);
     if (existing.blockedReason) return blocked(existing.blockedReason);
 
@@ -1723,6 +1878,64 @@ export const buildParallelChecklist = action({
     return result;
   },
 });
+
+/**
+ * Clear the parallel's stale review state in bounded pages, after judging
+ * EVERY staged row: if any shows life within `REVIEW_ACTIVE_WINDOW_MS`,
+ * nothing is deleted and the answer is `live`. Logs the counts cleared.
+ */
+async function clearStaleReviewState(
+  ctx: Pick<ActionCtx, "runQuery" | "runMutation">,
+  parallelId: Id<"selectorOptions">,
+): Promise<{ live: boolean; candidates: number; reviewRows: number }> {
+  const cutoff = Date.now() - REVIEW_ACTIVE_WINDOW_MS;
+  let staged = 0;
+  for (const table of ["candidates", "entityReview"] as const) {
+    let cursor: string | null = null;
+    for (;;) {
+      const page: {
+        rows: number;
+        lastActiveAt: number;
+        isDone: boolean;
+        continueCursor: string;
+      } = await ctx.runQuery(
+        internal.parallelChecklistBuild.scanParallelReviewPage,
+        { parallelId, table, cursor },
+      );
+      if (page.lastActiveAt >= cutoff) {
+        return { live: true, candidates: 0, reviewRows: 0 };
+      }
+      staged += page.rows;
+      if (page.isDone) break;
+      cursor = page.continueCursor;
+    }
+  }
+  if (staged === 0) return { live: false, candidates: 0, reviewRows: 0 };
+
+  let candidates = 0;
+  let reviewRows = 0;
+  for (;;) {
+    const page = await ctx.runMutation(
+      internal.parallelChecklistBuild.clearParallelReviewPage,
+      { parallelId, cutoff },
+    );
+    candidates += page.candidates;
+    reviewRows += page.reviewRows;
+    if (page.live || page.done) {
+      // Ids and counts only.
+      console.log(
+        JSON.stringify({
+          msg: "parallel_review_state_cleared",
+          parallelId,
+          candidates,
+          reviewRows,
+          stoppedOnLiveSession: page.live,
+        }),
+      );
+      return { live: page.live, candidates, reviewRows };
+    }
+  }
+}
 
 /** Walk every page of the block check; the first block found wins. */
 async function checkBlocks(
