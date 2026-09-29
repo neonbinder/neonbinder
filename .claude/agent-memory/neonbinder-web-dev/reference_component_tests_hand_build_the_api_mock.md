@@ -41,6 +41,11 @@ Two shapes of the same trap, both hit on NEO-237:
   as a plain object, so nothing touches `api.x` until the path actually runs
   (NEO-312's `useParallelBuildRun`). Keep `useAction(api.x…)` for a child that
   mounts only on the path that needs it.
+- The `convex/react` mock is partial too: the `SetSelector.*` tests export no
+  `useConvex`, so a hook hosted in `modules/SetSelector.tsx` that calls it
+  fails 26 tests at render. Host a client-free variant and let the caller that
+  starts the work pass its own client in (NEO-312's
+  `useHostedParallelBuildRun` + `start(…, convex)`).
 - `onSelect(id)`-style callbacks are asserted with `toHaveBeenCalledWith(id)`
   EXACTLY in the listbox/keyboard tests; adding a second argument breaks them.
   Look the extra datum up from a deduped `useQuery` in the wrapper instead.

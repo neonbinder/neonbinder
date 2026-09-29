@@ -45,9 +45,18 @@ import {
 } from "./pairing-cards";
 import ParallelBuildPanel, {
   ParallelBuildButton,
+  ParallelBuildDetails,
+  PARALLEL_BUILD_HEADING_ID,
+  SEE_CARDS_LABEL,
+  detailBuckets,
+  manualBuildNote,
+  parallelLineId,
   planFailedText,
   useParallelBuildRun,
+  type ParallelBuildReport,
+  type ParallelBuildResult,
   type ParallelBuildRole,
+  type ParallelBuildRunner,
 } from "./ParallelBuildPanel";
 
 type CardChecklistProps = {
@@ -78,6 +87,13 @@ type CardChecklistProps = {
    * keep the ordinary sync.
    */
   parallelBuild?: ParallelBuildRole;
+  /**
+   * NEO-312 — the set builder's parallel-build runner. It lives up there so a
+   * run survives this checklist unmounting (the operator moving elsewhere in
+   * the set builder). Absent in isolation (tests), where the checklist runs
+   * its own.
+   */
+  parallelRun?: ParallelBuildRunner;
 };
 
 /**
@@ -265,6 +281,15 @@ const NO_SYNC_DECISIONS: SyncReviewResult = {
  * Module scope, not inline, so the object identity is stable across renders
  * and the E2E author has one place to read the real strings from.
  */
+/**
+ * NEO-312 — the hidden "Building from …" note a held control is described by
+ * while a parallel-row build is in flight. Non-interactive, so an id is safe
+ * for the E2E driver (only a control's own id hides its aria-label).
+ */
+const MANUAL_BUILD_NOTE_ID = "parallel-build-own-note";
+/** The notice's "which cards" lists, for the disclosure's aria-controls. */
+const NOTICE_DETAIL_ID = "parallel-build-notice-detail";
+
 const QUICK_ADD_PLAYER_LABELS: PlayerPickerLabels = {
   root: "Players on the new card",
   trigger: "Add a player to the new card",
@@ -278,6 +303,7 @@ export default function CardChecklist({
   sourceLabelMaps,
   setId,
   parallelBuild,
+  parallelRun: hostedParallelRun,
 }: CardChecklistProps) {
   const cards = useQuery(api.selectorOptions.getCardChecklist, {
     selectorOptionId: variantId,
@@ -353,12 +379,45 @@ export default function CardChecklist({
   const convex = useConvex();
   /**
    * NEO-312 (J1) — the run that builds an insert's parallels after its
-   * checklist is saved. Called up here, above the loading early-return, so the
-   * run survives the operator clicking into a parallel it has just built: this
-   * component is reused across that move and its `cards` query is `undefined`
-   * for a beat, which would unmount anything rendered below the return.
+   * checklist is saved. The set builder's, when it hands one down (so the run
+   * outlives this checklist); otherwise this checklist's own. The local one is
+   * always called — hooks cannot be conditional — and simply sits idle when a
+   * hosted one is in use.
    */
-  const parallelRun = useParallelBuildRun();
+  const localParallelRun = useParallelBuildRun();
+  const parallelRun = hostedParallelRun ?? localParallelRun;
+  /**
+   * NEO-312 (a11y 1) — a build is about to replace this checklist's cards (or,
+   * on the insert, copy them), so the operator's own edits are held until it
+   * lands rather than colliding with it silently: the run touches this row
+   * (the insert, or one of its parallels still to be built), or a build of
+   * this parallel from its own row is in flight. Every held control is
+   * `aria-disabled` and described by the line that says why — the parallel's
+   * ledger line ("Waiting", "Building…"), the panel heading on the insert, or
+   * a hidden "Building from …" note for a parallel-row build.
+   */
+  const buildRun = parallelRun.run;
+  const runTouchesThis =
+    !!buildRun &&
+    (variantId === buildRun.insertId ||
+      buildRun.entries.some((e) => e.id === variantId));
+  const heldByRun = parallelRun.active && runTouchesThis;
+  const heldByOwnBuild = parallelRun.inFlight.has(variantId);
+  const editsHeld = heldByRun || heldByOwnBuild;
+  const heldDescribedBy = heldByRun
+    ? variantId === buildRun?.insertId
+      ? PARALLEL_BUILD_HEADING_ID
+      : parallelLineId(variantId)
+    : heldByOwnBuild
+      ? MANUAL_BUILD_NOTE_ID
+      : undefined;
+  /** The held-control props, spread onto each one. */
+  const heldProps = editsHeld
+    ? {
+        "aria-disabled": true as const,
+        "aria-describedby": heldDescribedBy,
+      }
+    : {};
 
   const [syncing, setSyncing] = useState(false);
   const [committing, setCommitting] = useState(false);
@@ -389,7 +448,14 @@ export default function CardChecklist({
      * every other notice.
      */
     kind?: "committed";
+    /**
+     * NEO-312: a parallel-row build's result, so the notice can offer the
+     * same "which cards" lists the run's ledger does. Carried ON the notice,
+     * so any later notice replaces it along with the text it belonged to.
+     */
+    parallelResult?: { result: ParallelBuildResult; insertValue: string };
   } | null>(null);
+  const [noticeDetailOpen, setNoticeDetailOpen] = useState(false);
   const setSyncMessage = useCallback(
     (text: string | null, tone: "status" | "error" = "status") => {
       setSyncNotice(text === null ? null : { text, tone });
@@ -1414,7 +1480,7 @@ export default function CardChecklist({
       // parallel's line in the panel, never this notice.
       if (parallelBuild?.role === "insert") {
         void parallelRun
-          .start(variantId, variantRow?.value ?? "")
+          .start(variantId, variantRow?.value ?? "", convex)
           .then((failure) => {
             if (failure) {
               setCommittedMessage(
@@ -1683,14 +1749,31 @@ export default function CardChecklist({
   }, [cardCount, syncNotice]);
 
   const handleParallelBuildResult = useCallback(
-    (text: string, tone: "status" | "error", committed: boolean) => {
-      // A build writes cards, so its notice is the committed kind and may
-      // carry the attention call-to-action; a refusal or failure is not.
-      if (committed) setCommittedMessage(text);
-      else setSyncMessage(text, tone);
-      parallelParkRef.current = true;
+    ({
+      parallelId,
+      insertValue,
+      text,
+      tone,
+      committed,
+      result,
+    }: ParallelBuildReport) => {
+      // The build may land after the operator has moved to another checklist
+      // (this component is reused across the move). The notice names the
+      // parallel either way; only the parallel's OWN checklist gets the
+      // committed kind — the attention call-to-action counts the cards on
+      // screen — and the focus park.
+      const here = currentVariantIdRef.current === parallelId;
+      const parallelResult =
+        committed && result ? { result, insertValue } : undefined;
+      setSyncNotice(
+        committed && here
+          ? { text, tone: "status", kind: "committed", parallelResult }
+          : { text, tone, parallelResult },
+      );
+      setNoticeDetailOpen(false);
+      if (here) parallelParkRef.current = true;
     },
-    [setCommittedMessage, setSyncMessage],
+    [],
   );
 
   /**
@@ -1732,8 +1815,10 @@ export default function CardChecklist({
    * way the dialog can come up and it is always a deliberate press.
    */
   const openAttentionWalker = useCallback(() => {
+    // NEO-312: the walker edits cards a build is about to replace.
+    if (editsHeld) return;
     setWalkerOpenedByHand(true);
-  }, []);
+  }, [editsHeld]);
 
   /** Both paths out of the walker: the operator is done, or deferred the rest. */
   const closeAttentionWalker = useCallback(() => {
@@ -1991,15 +2076,11 @@ export default function CardChecklist({
    * while it is still building (so Stop is never out of reach); a finished
    * run is not carried onto an unrelated checklist.
    */
-  const run = parallelRun.run;
-  const runTouchesThis =
-    !!run &&
-    (variantId === run.insertId || run.entries.some((e) => e.id === variantId));
+  const run = buildRun;
   const showParallelPanel = !!run && (parallelRun.active || runTouchesThis);
   // While the insert's parallels are building, neither the insert's Sync (a
   // new save would start a second run over a checklist being copied) nor a
   // parallel's own build button (a second build of the same parallel) runs.
-  const heldByRun = parallelRun.active && runTouchesThis;
   const busy = syncing || committing || heldByRun;
   /**
    * NEO-312 (J4) — on a parallel, the Sync slot builds from the insert
@@ -2021,6 +2102,7 @@ export default function CardChecklist({
         cardCount={cards.length}
         primary={primary}
         held={heldByRun}
+        runner={parallelRun}
         buttonRef={syncButtonRef}
         onResult={handleParallelBuildResult}
       />
@@ -2047,13 +2129,25 @@ export default function CardChecklist({
           </h2>
           {!showAddForm && (
             <div className="flex gap-2">
-              <NeonButton onClick={openAddForm} aria-label="Open add card form">
+              {/* NEO-312 (a11y 1): held while a build is replacing these
+                  cards — aria-disabled (focusable, and described by the line
+                  that says why), never native `disabled`. */}
+              <NeonButton
+                onClick={() => {
+                  if (!editsHeld) openAddForm();
+                }}
+                aria-label="Open add card form"
+                {...heldProps}
+              >
                 Add Card
               </NeonButton>
               <NeonButton
                 secondary
-                onClick={() => setShowCrossListingModal(true)}
+                onClick={() => {
+                  if (!editsHeld) setShowCrossListingModal(true);
+                }}
                 aria-label="Open add cross-release cards form"
+                {...heldProps}
               >
                 Add Cross-Release Cards
               </NeonButton>
@@ -2206,7 +2300,13 @@ export default function CardChecklist({
               />
             </div>
             <div className="flex gap-2">
-              <NeonButton onClick={handleAddCard} aria-label="Submit new card">
+              <NeonButton
+                onClick={() => {
+                  if (!editsHeld) void handleAddCard();
+                }}
+                aria-label="Submit new card"
+                {...heldProps}
+              >
                 Add
               </NeonButton>
               <NeonButton
@@ -2336,6 +2436,37 @@ export default function CardChecklist({
             }
           >
             {syncNotice.text}
+            {/* NEO-312 — a parallel-row build's "which cards" lists, the same
+                ones the run's ledger opens. A disclosure button beside the
+                sentence (the notice's own in-banner button shape), and the
+                lists below it. Only offered when a list has anything in it. */}
+            {syncNotice.parallelResult &&
+              detailBuckets(
+                syncNotice.parallelResult.result,
+                syncNotice.parallelResult.insertValue,
+              ).length > 0 && (
+                <>
+                  {" "}
+                  <button
+                    type="button"
+                    aria-expanded={noticeDetailOpen}
+                    aria-controls={NOTICE_DETAIL_ID}
+                    onClick={() => setNoticeDetailOpen((v) => !v)}
+                    className="rounded-sm font-semibold underline decoration-dotted hover:decoration-solid"
+                  >
+                    {SEE_CARDS_LABEL}
+                  </button>
+                  {noticeDetailOpen && (
+                    <div className="text-xs">
+                      <ParallelBuildDetails
+                        id={NOTICE_DETAIL_ID}
+                        result={syncNotice.parallelResult.result}
+                        insertValue={syncNotice.parallelResult.insertValue}
+                      />
+                    </div>
+                  )}
+                </>
+              )}
             {/* NEO-102 — the post-commit call-to-action, in place of the
                 walker opening itself.
 
@@ -2376,7 +2507,8 @@ export default function CardChecklist({
                 <button
                   type="button"
                   onClick={openAttentionWalker}
-                  className="rounded-sm font-semibold underline decoration-dotted hover:decoration-solid"
+                  className="rounded-sm font-semibold underline decoration-dotted hover:decoration-solid aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
+                  {...heldProps}
                 >
                   {`${attentionCount} need attention — Fix them one at a time`}
                 </button>
@@ -2392,6 +2524,13 @@ export default function CardChecklist({
         {showParallelPanel && run && (
           <ParallelBuildPanel run={run} onStop={parallelRun.stop} />
         )}
+        {heldByOwnBuild &&
+          parallelBuild?.role === "parallel" &&
+          parallelBuild.insertValue && (
+            <span id={MANUAL_BUILD_NOTE_ID} className="sr-only">
+              {manualBuildNote(parallelBuild.insertValue)}
+            </span>
+          )}
 
         {/* NEO-212 — the see-and-undo record of the review wizard's "Skip —
             not a person/team" decision, for THIS set. It sits with the other
@@ -2476,6 +2615,7 @@ export default function CardChecklist({
                 type="button"
                 onClick={openAttentionWalker}
                 aria-label={`Fix cards needing attention one at a time (${attentionCount})`}
+                {...heldProps}
                 // a11y (1.4.3): same gray-400-with-no-dark:-variant fix as the
                 // label above.
                 className="text-xs text-gray-500 dark:text-gray-400 underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
@@ -2522,6 +2662,31 @@ export default function CardChecklist({
             )}
           </div>
         ) : (
+          // NEO-312 (a11y 1) — while a build holds this checklist, the rows'
+          // own controls (Edit, Delete/Remove, the row itself) are held as a
+          // GROUP: `aria-disabled` on a named group, described by the line
+          // that says why, and every press inside it swallowed in the capture
+          // phase before a row's handler sees it. The wrapper is always
+          // rendered, only its attributes change, so the list is never
+          // remounted (and never loses its scroll) when a build starts or
+          // lands. Dimmed to match, as a NeonButton is when aria-disabled.
+          <div
+            role={editsHeld ? "group" : undefined}
+            aria-disabled={editsHeld || undefined}
+            aria-describedby={editsHeld ? heldDescribedBy : undefined}
+            onClickCapture={(event) => {
+              if (!editsHeld) return;
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onKeyDownCapture={(event) => {
+              if (!editsHeld) return;
+              if (event.key !== "Enter" && event.key !== " ") return;
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            className={editsHeld ? "opacity-60 cursor-not-allowed" : undefined}
+          >
           <Virtuoso
             ref={virtuosoRef}
             data={displayRows}
@@ -2558,12 +2723,15 @@ export default function CardChecklist({
             style={{ height: "min(70vh, 800px)" }}
             increaseViewportBy={{ top: 200, bottom: 400 }}
           />
+          </div>
         )}
       </div>
 
       {/* NEO-25: card detail panel. Keyed on the card id so switching cards
           (arrow nav / prev-next) remounts it with fresh draft state. */}
-      {selectedCard && (
+      {/* NEO-312: closed while a build holds this checklist — every field in
+          it autosaves onto a card the build is about to replace. */}
+      {selectedCard && !editsHeld && (
         <CardDetailPanel
           key={selectedCard._id}
           card={selectedCard}
