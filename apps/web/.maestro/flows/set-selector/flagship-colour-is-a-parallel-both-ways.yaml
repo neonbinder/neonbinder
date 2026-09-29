@@ -29,10 +29,9 @@ tags:
 #      and does not re-create them as inserts (STEP 5b; NEO-300).
 #   4. The promoted `Anime Kanji` keeps its BSC id as a working source, and
 #      is built from its insert (NEO-312): Fetch from Marketplaces on `Anime`
-#      saves cards, the save builds `Anime`'s parallels one at a time (the
-#      panel `Building parallels of Anime — k of M`), `Anime Kanji — Built N
-#      cards`, `Stop after this one` ends the run stopped; then `Anime
-#      Kanji`'s chip is tagged as a BSC variant, no "Needs re-mapping", its
+#      saves cards, the save builds every one of `Anime`'s parallels one at
+#      a time (the panel ends `Anime parallels — N built`), `Anime Kanji —
+#      Built N cards`; then `Anime Kanji`'s chip is tagged as a BSC variant, no "Needs re-mapping", its
 #      per-slot count is > 0 (the copies carry ITS slot) and its Sync slot
 #      reads `Rebuild from Anime` (STEPS 6–9; NEO-293, NEO-312).
 #   5. Bowman › Parallel's sync pairs BSC's `Blue` with the `Blue` row the
@@ -151,11 +150,12 @@ tags:
 #                 `Saved N cards`; on a parallel `Build from <insert>` /
 #                 `Rebuild from <insert>` in the Sync slot (NEO-312)
 #   build panel   heading `Building parallels of <insert> — k of M` →
-#                 `<insert> parallels — stopped after b of M` (or `—
-#                 b built[, x blocked…]`); one text node per line `<parallel> — <status>`
-#                 (`Waiting`, `Building…`, `Built N cards[, …]`, `Blocked —
-#                 …`, `Stopped`, `Failed — …`); `Stop after this one` →
-#                 `Stopping after this one…` (ParallelBuildPanel.tsx)
+#                 `<insert> parallels — b built[, x blocked][, s skipped][,
+#                 f failed]`; one text node per line `<parallel> — <status>`
+#                 (`Built N cards[, …]`, `Nothing copied — …`, `Blocked —
+#                 …`, `Failed — …`) (ParallelBuildPanel.tsx). `Stop after
+#                 this one` is never pressed: the run is over before a flow
+#                 can see it (STEP 8)
 #   promote       `Promote “<row>” to a set`, `Promote it`, toast
 #                 `“<set>” is its own set now.`
 #   make parallel `Make “<set>” a parallel`, `Make it a parallel`, toast
@@ -171,8 +171,8 @@ tags:
 #   promotes a REAL BSC insert with Group Parallels, saves a grouping plan
 #   past one transaction's 200 entries (NEO-308), drives Make insert
 #   of…, or builds a REAL insert's parallels from its save (NEO-312 — the
-#   only live proof of the build panel, Stop and the parallel's own slot on
-#   the copies). The hand-made parallel-grouping flows prove the modal's
+#   only live proof of the build panel and the parallel's own slot on the
+#   copies; Stop is unit-tested). The hand-made parallel-grouping flows prove the modal's
 #   mechanics; `brand-via-all-brands-narrows-sportlots` proves the SportLots
 #   phase RAN on a year seen through All Brands (no pill there).
 # ════════════════════════════════════════════════════════════════════════════
@@ -1336,95 +1336,69 @@ tags:
     timeout: 7000
 
 # ============================================================
-# STEP 8 — NEO-312: SAVING THE INSERT BUILDS ITS PARALLELS, AND STOP ENDS THE
-# RUN AFTER THE ONE IN FLIGHT
+# STEP 8 — NEO-312: SAVING THE INSERT BUILDS EVERY ONE OF ITS PARALLELS
 # Every parallel under "Anime" (STEP 4 nested `Anime Kanji`, `Anime Black
 # Refractors`, `Anime Red Refractors`, `Anime SuperFractors`) is built one at
 # a time: a copy of "Anime"'s cards, each re-linked to the parallel's OWN
 # marketplace card. `ParallelBuildPanel` renders directly under the "Saved N
 # cards." notice STEP 7 just saw, so it is BELOW that notice in DOM order and
-# DOWN is the only direction that can reach it.
+# DOWN is the only direction that can reach it (README R5, "never depend on
+# the document bottoming out").
 #
 # Strings are read from components/SetSelector/ParallelBuildPanel.tsx, never
 # guessed. Each ledger line is ONE text node, `<parallel> — <status>`
 # (`parallelLineText`); the heading is `panelHeading`:
 #   running  `Building parallels of Anime — k of M`
-#   stopped  `Anime parallels — stopped after b of M`
-#   finished `Anime parallels — b built[, x blocked, s skipped, f failed]`
-# The panel's sr-only live line repeats a heading or a FINISHED line (never
-# "Waiting"/"Building…"), so a regex below may resolve to it instead of the
-# visible node; it says the same thing, and nothing here taps it.
+#   finished `Anime parallels — b built[, x blocked][, s skipped][, f failed]`
+#            (only the non-zero parts)
+# The panel's sr-only live line repeats the FINISHED heading with a trailing
+# "." (`done.announcement`); the patterns below exclude it by construction
+# (no `.` is allowed at the end), so they resolve to the visible <h3>.
 #
-# WHY STOP IS PRESSED WHILE `Anime Kanji` IS IN FLIGHT, NOT AFTER IT LANDS.
-# The build order is "Anime"'s own child order (`getParallelsForBuild` sorts
-# by `insert.children`), which STEP 4's grouping save sets from row creation
-# order — not something this flow controls or can read. Stop is rendered only
-# while the run is live. Pressed AFTER `Anime Kanji — Built`, it is missing
-# outright whenever `Anime Kanji` is the LAST parallel. Pressed once `Anime
-# Kanji` has left "Waiting", it means exactly "stop after this one": the run
-# finishes `Anime Kanji` (or, if that already landed, the next one) and
-# builds no more, in any order. The one ordering that can still miss it is
-# `Anime Kanji` LAST and its build landing inside the ~2s between this gate
-# and the tap; the failure then reads `No visible element found: Stop after
-# this one` with the heading `Anime parallels — M built` on screen.
+# THE RUNNING HEADING IS NOT ASSERTED, AND STOP IS NOT PRESSED. CI run
+# 36516143308 (PR #291) measured the whole run: all four builds landed within
+# ~3s of the commit (Convex `parallel_checklist_built`, status built, 7 / 29
+# / 29 / 29 cards), BEFORE the `Saved N cards` assert above had even
+# completed — so "Building parallels…" and `Stop after this one` are gone by
+# the time a flow can look, and a flow that waits for them is waiting on a
+# race it loses. Stop's behaviour is proven by ParallelBuildPanel.test.tsx.
 # ============================================================
 
-# THE HEADING, WHILE STILL BUILDING — it changes on completion, so it is
-# asserted first. The run starts on the save's own call (`getParallelsForBuild`,
-# a Convex read, then the first build), so 7000 (R5). Centred (R8): the Stop
-# control shares this row and is tapped below; the checklist's card list under
-# the panel gives the document the headroom to centre it.
+# THE PANEL — in either heading, so this centres whether the run is still
+# going or done. The panel mounts on the save's own `getParallelsForBuild`
+# (a Convex read), so 7000 (R5). Centred (R8, nothing is tapped here but the
+# ledger under the heading must end up in the viewport for the asserts
+# below); the checklist's card list under the panel gives the document the
+# headroom to centre it.
 - scrollUntilVisible:
     element:
-      text: "Building parallels of Anime — [0-9]+ of [0-9]+"
+      text: "Building parallels of Anime — [0-9]+ of [0-9]+|Anime parallels — [^.]+"
     direction: DOWN
     centerElement: true
     timeout: 7000
 
-# `Anime Kanji`'s TURN HAS COME — its line has left "Waiting" (Building…, or
-# already a result). R5 MARKETPLACE EXCEPTION: every parallel ahead of it is
-# one live `fetchBscChecklist` call (+ SportLots for a parallel holding a
-# SportLots id), sequential. 120000 is the ceiling this flow already gives ONE
-# live BSC (+ SportLots) checklist fetch (STEP 6); the BSC-only fetch it
-# mostly is here MEASURED 1.4s / 3.1s (checklist-one-marketplace-skips-match-
-# dialog), and at most three parallels precede `Anime Kanji`. No scroll: the
-# centred heading leaves the four-line ledger (no inner scroller below nine
-# lines, SCROLL_AFTER) inside the viewport.
+# THE RUN FINISHED, AND BUILT AT LEAST ONE PARALLEL. R5 MARKETPLACE
+# EXCEPTION: each parallel is one live `fetchBscChecklist` (+ SportLots for a
+# parallel that holds a SportLots id) inside `buildParallelChecklist`, run
+# sequentially, and that is what this waits on — not UI. MEASURED 4 builds in
+# ~3s (CI 36516143308), already finished before this step began; 60000 is
+# the ceiling this suite gives ONE live BSC checklist fetch
+# (checklist-one-marketplace-skips-match-dialog, measured 1.4s / 3.1s), here
+# spread over four. Raise nothing here: a build that needs more is a finding.
+# `extendedWaitUntil` never scrolls, which is safe only because the scroll
+# above centred this same heading.
 - extendedWaitUntil:
     visible:
-      text: "Anime Kanji — (?!Waiting$).+"
-    timeout: 120000
-- tapOn:
-    text: "Stop after this one"
-# The tap registered: the control says so at once (`STOPPING_LABEL`), or the
-# run has already ended stopped. Client state, the 7000 bar (R5).
-- extendedWaitUntil:
-    visible:
-      text: "Stopping after this one…|Anime parallels — stopped after [0-9]+ of [0-9]+"
-    timeout: 7000
-
-# `Anime Kanji` reaches a RESULT — R5 marketplace exception, its own build
-# (one live BSC (+ SportLots) fetch, STEP 6's 120000). Gated on leaving
-# "Building…" rather than on "Built", so a Blocked/Failed line fails the
-# assert below at once, with its reason on screen, instead of after 120s.
-- extendedWaitUntil:
-    visible:
-      text: "Anime Kanji — (?!Waiting$|Building…$).+"
-    timeout: 120000
-# THE CLAIM: the copy landed with cards (`builtText`: "Built N cards", then
-# only the clauses that are true — unlinked / ambiguous / left off per side).
-# "Blocked — none of the insert's cards matched…" or "Failed — …" fail here.
+      text: "Anime parallels — [1-9][0-9]* built(, [0-9]+ (blocked|skipped|failed))*"
+    timeout: 60000
+# THE CLAIM: `Anime Kanji`'s copy landed with cards (`builtText`: "Built N
+# cards", then only the clauses that are true — unlinked / ambiguous / left
+# off per side, extra marketplace cards). A first build that copied nothing
+# reads "Nothing copied — …", a refusal "Blocked — …", an error "Failed —
+# …"; each fails here with its reason on screen. The run is finished, so
+# this is a plain read (R6: a different element from the scroll's).
 - assertVisible:
     text: "Anime Kanji — Built [1-9][0-9]* cards?(, .+)?"
-# AND THE RUN STOPPED. If the tap landed during `Anime Kanji`'s build the run
-# ends on its result; if it landed during the next parallel's, that one
-# finishes first — one more live fetch, R5 marketplace exception, STEP 6's
-# 120000. Only a stopped run says "stopped"; a missed tap would end on
-# `Anime parallels — M built` and fail here, by name.
-- extendedWaitUntil:
-    visible:
-      text: "Anime parallels — stopped after [0-9]+ of [0-9]+"
-    timeout: 120000
 
 # ============================================================
 # STEP 9 — OPEN "Anime Kanji": ITS BSC ID IS A SOURCE (NOT "NEEDS

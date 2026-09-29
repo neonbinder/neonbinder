@@ -112,4 +112,4 @@ Non-markdown helpers: `tools/`
 - [NEO-307 League combobox + Search all teams](reference_neo307_league_combobox.md) — `id: "League"`, Create only on no-match (end minted names in a letter); team steps link via "Search all teams"
 - [Wizard headings include staged career teams](patterns_wizard_headings_include_staged_career_teams.md) — a `New Team:` heading ≠ a checklist club; verify on a committed card/alias first
 - [Measure a fixture from CI artifacts](patterns_measure_a_fixture_from_ci_artifacts.md) — tap lines log the real text of a regex match; convex-logs carry adapter result_count; Group Parallels re-open gate
-- [Stop a sequential run at a named item](patterns_stop_a_sequential_run_at_a_named_item.md) — gate on the line leaving `Waiting`, tap Stop, then Built; never wait for Built first (Stop unmounts)
+- [Assert a sequential run's finished state](patterns_stop_a_sequential_run_at_a_named_item.md) — builds can end before the prior assert returns; never the running heading/Stop; `[^.]+` skips the sr-only line

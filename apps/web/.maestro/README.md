@@ -860,9 +860,12 @@ Two corollaries worth knowing before you write the selector:
   stopped after b of M`; one text node per line, `<parallel> — <status>`; `Stop after
   this one`, which reads `Stopping after this one…` once pressed. Target all
   of these by their visible `text:`. Both buttons carry a `useFieldTestClass` marker (NEO-260), never a DOM
-  id; the build order is the insert's child order, which a flow does not control
-  (`flagship-colour-is-a-parallel-both-ways` STEP 8 says how it presses Stop
-  without depending on it).
+  id. **Assert the FINISHED heading, never the running one or Stop:** a
+  build without a team lookup or wizard takes about a second a parallel, so
+  CI 36516143308 saw four finish before the flow's `Saved N cards` assert
+  returned. The sr-only live line repeats the finished heading with a
+  trailing `.`, so write the heading pattern so it cannot end in one
+  (`flagship-colour-is-a-parallel-both-ways` STEP 8). Stop is unit-tested.
 
 ## Launching a flow: always gate on the destination heading
 
