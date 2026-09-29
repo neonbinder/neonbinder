@@ -53,6 +53,7 @@ jobs:
       web: ${{ steps.filter.outputs.web }}
       browser: ${{ steps.filter.outputs.browser }}
       preprocess: ${{ steps.filter.outputs.preprocess }}
+      scripts: ${{ steps.filter.outputs.scripts }}
       deps_only: ${{ steps.deps.outputs.deps_only }}
     permissions:
       contents: read
@@ -69,6 +70,16 @@ jobs:
               - 'services/browser/**'
             preprocess:
               - 'services/preprocess/**'
+            # NEO-309/NEO-310: node --test coverage for the ops shell scripts
+            # (revision GC, image check) plus their test helpers, and for the
+            # NEO-310 Discord-notify scripts/action — none of these ship as
+            # part of apps/web, services/browser or services/preprocess, so
+            # they need their own filter rather than piggybacking on one of
+            # those three.
+            scripts:
+              - 'scripts/**'
+              - '.github/scripts/**'
+              - '.github/actions/notify-discord/**'
 
       # May this PR skip the 8-worker matrix? Only if BOTH hold:
       #   1. it was authored by dependabot[bot]  (NEO-108), and
@@ -1101,6 +1112,28 @@ jobs:
       - run: ruff format --check .
       - run: pytest tests/unit --cov=app --cov-report=term-missing --cov-fail-under=80
 
+  # NEO-309/NEO-310: `node --test` over the ops shell scripts' own test
+  # suites. No `npm ci` / package.json involved — these use only Node
+  # built-ins (node:test, node:child_process, node:fs) to spawn the real
+  # bash scripts under a stubbed gcloud/python3/gh PATH, per
+  # scripts/test/stubs.mjs and .github/scripts/*.test.mjs's own stubs. Runs
+  # from the repo root (no working-directory) since that's what both test
+  # suites' own REPO_ROOT resolution (relative to the test file) expects.
+  scripts-test:
+    name: Ops scripts unit tests
+    needs: changes
+    if: needs.changes.outputs.scripts == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/web/.nvmrc
+      - run: node --test scripts/*.test.mjs .github/scripts/*.test.mjs
+
   # Single stable aggregator REQUIRED by the main ruleset. MUST stay in this
   # all-PR workflow (no `paths:` trigger) with `if: always()` so its check
   # registers on EVERY PR — including docs-only PRs where every gated job
@@ -1315,7 +1348,7 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
+    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, scripts-test, preprocess-crop-matrix, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -1330,6 +1363,7 @@ jobs:
           R_WEB_UNIT: ${{ needs.web-unit.result }}
           R_BROWSER_TEST: ${{ needs.browser-test.result }}
           R_PREPROCESS_TEST: ${{ needs.preprocess-test.result }}
+          R_SCRIPTS_TEST: ${{ needs.scripts-test.result }}
           R_CROP_MATRIX: ${{ needs.preprocess-crop-matrix.result }}
           R_WIRE: ${{ needs.wire-browser-url.result }}
           R_WIRE_PREPROCESS: ${{ needs.wire-preprocess-url.result }}
@@ -1341,7 +1375,7 @@ jobs:
           R_CAPACITY_PARITY: ${{ needs.capacity-parity.result }}
         run: |
           set -euo pipefail
-          echo "hygiene=$R_HYGIENE capacity-parity=$R_CAPACITY_PARITY changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS wire-preprocess-capacity=$R_WIRE_CAPACITY e2e=$R_E2E deps_only=$R_DEPS_ONLY"
+          echo "hygiene=$R_HYGIENE capacity-parity=$R_CAPACITY_PARITY changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST scripts-test=$R_SCRIPTS_TEST crop-matrix=$R_CROP_MATRIX wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS wire-preprocess-capacity=$R_WIRE_CAPACITY e2e=$R_E2E deps_only=$R_DEPS_ONLY"
           fail=0
           # changes must SUCCEED (skipped => gate unreliable)
           [ "$R_CHANGES" = "success" ] || { echo "::error::changes=$R_CHANGES (must succeed)"; fail=1; }
@@ -1364,7 +1398,7 @@ jobs:
           # (NEO-162): it is `skipped` exactly when deps_only skips E2E, and any
           # OTHER reason it fails to succeed already reds the gate through the
           # e2e rule above, since e2e `needs:` it.
-          for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-typecheck=$R_WEB_TYPECHECK" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "preprocess-crop-matrix=$R_CROP_MATRIX" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS" "wire-preprocess-capacity=$R_WIRE_CAPACITY"; do
+          for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-typecheck=$R_WEB_TYPECHECK" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "scripts-test=$R_SCRIPTS_TEST" "preprocess-crop-matrix=$R_CROP_MATRIX" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS" "wire-preprocess-capacity=$R_WIRE_CAPACITY"; do
             r="${kv#*=}"
             case "$r" in
               success|skipped) ;;

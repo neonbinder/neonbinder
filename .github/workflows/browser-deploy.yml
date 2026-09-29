@@ -536,3 +536,97 @@ jobs:
             --repo neonbinder/neonbinder \
             --title "Browser deploy failed at ${STAGE}: ${{ github.sha }}" \
             --body-file body.md
+
+  # NEO-310: one Discord message when this deploy lane fails, one "recovered"
+  # message the next time it goes green after a failure. Alongside
+  # report-failure (the gh-issue job above, untouched).
+  #
+  # `workflow_dispatch` ONLY — NOT `push` (security review N4). A push-driven
+  # deploy is invoked via release.yml's `uses:` call, and release.yml has its
+  # OWN trailing `notify` job that already covers this lane: its
+  # `toJSON(needs)` includes the `browser` job by name, so a browser-deploy
+  # failure during a release already produces a Discord message that names
+  # "browser" as the failed job, and its own recovery check (against
+  # release.yml's history) already covers the browser lane recovering. If
+  # this job also fired on `push`, every browser-deploy failure/recovery
+  # during a real release would post TWICE — once from here, once from
+  # release.yml. A `workflow_dispatch` validation run has no such second
+  # reporter, so it keeps its own notify.
+  notify:
+    name: Notify Discord
+    needs: [test, build-push, deploy-dev, dev-login-probe, dev-promote, deploy-prod, prod-login-probe, prod-promote]
+    if: always() && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Most of these jobs are conditionally skipped (dispatch-only validation
+      # runs, or BROWSER_DEPLOY_ENABLED off) — skipped is neither a failure
+      # nor a cancellation, so status reflects only what actually ran.
+      - name: Determine status + failed jobs
+        id: status
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          TOTAL=$(jq 'length' <<<"$NEEDS_JSON")
+          FAILED=$(jq -r '[to_entries[] | select(.value.result=="failure") | .key] | join(", ")' <<<"$NEEDS_JSON")
+          CANCELLED_LIST=$(jq -c '[to_entries[] | select(.value.result=="cancelled") | .key]' <<<"$NEEDS_JSON")
+          CANCELLED_COUNT=$(jq 'length' <<<"$CANCELLED_LIST")
+          if [ -n "$FAILED" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            echo "failed-jobs=$FAILED" >> "$GITHUB_OUTPUT"
+          elif [ "$CANCELLED_COUNT" -gt 0 ] && [ "$CANCELLED_COUNT" -eq "$TOTAL" ]; then
+            echo "status=failed" >> "$GITHUB_OUTPUT"
+            CJOIN=$(jq -r 'join(", ")' <<<"$CANCELLED_LIST")
+            echo "failed-jobs=${CJOIN} (all cancelled)" >> "$GITHUB_OUTPUT"
+          else
+            echo "status=success" >> "$GITHUB_OUTPUT"
+            echo "failed-jobs=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Notify on failure
+        if: steps.status.outputs.status == 'failed'
+        uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+          status: failed
+          workflow: "Browser deploy"
+          details: ${{ steps.status.outputs.failed-jobs }}
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ref: ${{ github.ref_name }}
+          event: ${{ github.event_name }}
+
+      # This job only runs on `workflow_dispatch` (see the job-level `if:`
+      # above), so it always has its own row under browser-deploy.yml's own
+      # run history to compare against — no release.yml lookup needed here.
+      - name: Check for recovery
+        id: recovery
+        if: steps.status.outputs.status == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          bash .github/scripts/discord-notify-recovered.sh \
+            "browser-deploy.yml" "$EVENT_NAME" "$REF_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Notify on recovery
+        if: steps.status.outputs.status == 'success' && steps.recovery.outputs.recovered == 'true'
+        uses: ./.github/actions/notify-discord
+        with:
+          webhook-url: ${{ secrets.DISCORD_DEV_WEBHOOK_URL }}
+          status: recovered
+          workflow: "Browser deploy"
+          run-url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ref: ${{ github.ref_name }}
+          event: ${{ github.event_name }}

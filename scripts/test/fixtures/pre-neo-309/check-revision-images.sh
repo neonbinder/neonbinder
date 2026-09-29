@@ -58,29 +58,18 @@ done
 echo "service=$SERVICE project=$PROJECT region=$REGION"
 echo
 
-# Work dir for the gcloud JSON. A busy service (dev's neonbinder-preprocess has
-# measured 400+KB of revision JSON) blows past Linux's per-string exec limit
-# (MAX_ARG_STRLEN, ~128KiB) if that JSON is handed to python3 via an
-# environment variable — execve then fails with E2BIG ("Argument list too
-# long"), which bash reports as exit 126. Writing it to files and handing
-# python3 only the (tiny) file PATHS avoids that ceiling entirely.
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
 # Revisions actually receiving traffic, and revisions addressable via a tag.
 # Both matter, for different reasons:
 #   - serving  → a missing image is an outage
 #   - tagged   → a missing image breaks that tagged URL (PR previews, probes)
-gcloud run services describe "$SERVICE" \
-  --project="$PROJECT" --region="$REGION" --format=json 2>/dev/null \
-  > "$WORK/svc.json" || {
+SVC_JSON="$(gcloud run services describe "$SERVICE" \
+  --project="$PROJECT" --region="$REGION" --format=json 2>/dev/null)" || {
   echo "ERROR: could not describe service $SERVICE in $PROJECT" >&2
   exit 2
 }
 
-gcloud run revisions list --service="$SERVICE" \
-  --project="$PROJECT" --region="$REGION" --format=json 2>/dev/null \
-  > "$WORK/rev.json" || {
+REV_JSON="$(gcloud run revisions list --service="$SERVICE" \
+  --project="$PROJECT" --region="$REGION" --format=json 2>/dev/null)" || {
   echo "ERROR: could not list revisions for $SERVICE in $PROJECT" >&2
   exit 2
 }
@@ -88,14 +77,11 @@ gcloud run revisions list --service="$SERVICE" \
 # Emits one "<revision>\t<image>\t<role>" line per revision.
 # Fails closed: a malformed response raises rather than yielding an empty list,
 # which would otherwise look like a clean bill of health.
-MAPPING="$(WORK="$WORK" python3 2>"$WORK/mapping.err" <<'PY'
+MAPPING="$(SVC_JSON="$SVC_JSON" REV_JSON="$REV_JSON" python3 <<'PY'
 import json, os, sys
 
-work = os.environ["WORK"]
-with open(os.path.join(work, "svc.json")) as f:
-    svc = json.load(f)
-with open(os.path.join(work, "rev.json")) as f:
-    revs = json.load(f)
+svc = json.loads(os.environ["SVC_JSON"])
+revs = json.loads(os.environ["REV_JSON"])
 
 traffic = svc["status"].get("traffic", [])
 serving = {t["revisionName"] for t in traffic if t.get("percent")}
@@ -117,11 +103,7 @@ for r in revs:
         role = "idle"
     print(f"{name}\t{image}\t{role}")
 PY
-)" || {
-  echo "ERROR: failed to parse service/revision JSON (python3 exited $?):" >&2
-  cat "$WORK/mapping.err" >&2
-  exit 2
-}
+)" || { echo "ERROR: failed to parse service/revision JSON" >&2; exit 2; }
 
 missing_serving=0
 missing_other=0
