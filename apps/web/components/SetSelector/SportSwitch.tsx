@@ -231,76 +231,81 @@ export default function SportSwitch({
       </button>
 
       {open && (
-        <div
-          ref={listRef}
-          id={listId}
-          role="listbox"
-          aria-label="Choose a sport"
-          className="absolute left-0 top-full z-20 mt-1 max-h-48 min-w-[10rem] overflow-y-auto overscroll-contain rounded-md border border-gray-600 bg-gray-950 p-1 shadow-lg shadow-black/60"
-          onKeyDown={(e) => {
-            const last = options.length - 1;
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              setActiveIdx((i) => Math.min(i + 1, last));
-            } else if (e.key === "ArrowUp") {
-              e.preventDefault();
-              setActiveIdx((i) => Math.max(i - 1, 0));
-            } else if (e.key === "Home") {
-              e.preventDefault();
-              setActiveIdx(0);
-            } else if (e.key === "End") {
-              e.preventDefault();
-              setActiveIdx(last);
-            } else if (e.key === "Escape") {
-              e.preventDefault();
-              e.stopPropagation();
-              close(true);
-            } else if (
-              e.key.length === 1 &&
-              e.key !== " " &&
-              !e.ctrlKey &&
-              !e.metaKey &&
-              !e.altKey
-            ) {
-              e.preventDefault();
-              jumpTo(e.key);
-            }
-          }}
-        >
-          {options.map((o, idx) => {
-            const selected = o.id === value;
-            const isSetSport = o.id === setSportId;
-            return (
-              <button
-                key={o.id}
-                type="button"
-                role="option"
-                aria-selected={selected}
-                tabIndex={idx === activeIdx ? 0 : -1}
-                data-sport-switch-option=""
-                // Keep focus where it is on press: Safari does not focus a
-                // clicked button, so the blur would land on <body> and the
-                // wrapper's close would unmount this option before its click.
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => pick(o.id)}
-                onMouseEnter={() => setActiveIdx(idx)}
-                className={`flex w-full items-baseline justify-between gap-3 rounded px-2 py-1.5 text-left text-xs focus:outline-none ${
-                  idx === activeIdx
-                    ? "bg-gray-800 text-gray-100"
-                    : "text-gray-300"
-                } focus-visible:ring-2 focus-visible:ring-[#00B7FF]`}
-              >
-                <span>{o.name}</span>
-                {/* What "default" means here, said once, in the list itself —
+        // The id lives on this non-interactive wrapper, never on the listbox:
+        // maestro-web's resource-id is `node.id || ariaLabel`, so an id on the
+        // listbox would hide "Choose a sport" from every flow. aria-controls
+        // points here; the wrapper's only child is the listbox.
+        <div id={listId} className="absolute left-0 top-full z-20 mt-1">
+          <div
+            ref={listRef}
+            role="listbox"
+            aria-label="Choose a sport"
+            className="max-h-48 min-w-[10rem] overflow-y-auto overscroll-contain rounded-md border border-gray-600 bg-gray-950 p-1 shadow-lg shadow-black/60"
+            onKeyDown={(e) => {
+              const last = options.length - 1;
+              if (e.key === "ArrowDown") {
+                e.preventDefault();
+                setActiveIdx((i) => Math.min(i + 1, last));
+              } else if (e.key === "ArrowUp") {
+                e.preventDefault();
+                setActiveIdx((i) => Math.max(i - 1, 0));
+              } else if (e.key === "Home") {
+                e.preventDefault();
+                setActiveIdx(0);
+              } else if (e.key === "End") {
+                e.preventDefault();
+                setActiveIdx(last);
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                e.stopPropagation();
+                close(true);
+              } else if (
+                e.key.length === 1 &&
+                e.key !== " " &&
+                !e.ctrlKey &&
+                !e.metaKey &&
+                !e.altKey
+              ) {
+                e.preventDefault();
+                jumpTo(e.key);
+              }
+            }}
+          >
+            {options.map((o, idx) => {
+              const selected = o.id === value;
+              const isSetSport = o.id === setSportId;
+              return (
+                <button
+                  key={o.id}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  tabIndex={idx === activeIdx ? 0 : -1}
+                  data-sport-switch-option=""
+                  // Keep focus where it is on press: Safari does not focus a
+                  // clicked button, so the blur would land on <body> and the
+                  // wrapper's close would unmount this option before its click.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => pick(o.id)}
+                  onMouseEnter={() => setActiveIdx(idx)}
+                  className={`flex w-full items-baseline justify-between gap-3 rounded px-2 py-1.5 text-left text-xs focus:outline-none ${
+                    idx === activeIdx
+                      ? "bg-gray-800 text-gray-100"
+                      : "text-gray-300"
+                  } focus-visible:ring-2 focus-visible:ring-[#00B7FF]`}
+                >
+                  <span>{o.name}</span>
+                  {/* What "default" means here, said once, in the list itself —
                     never as a banner outside it. */}
-                <span className="inline-flex items-baseline gap-1.5 text-[0.625rem] text-gray-400">
-                  {isSetSport && <span>set&apos;s sport</span>}
-                  {/* aria-selected carries this for assistive tech. */}
-                  {selected && <span aria-hidden="true">✓</span>}
-                </span>
-              </button>
-            );
-          })}
+                  <span className="inline-flex items-baseline gap-1.5 text-[0.625rem] text-gray-400">
+                    {isSetSport && <span>set&apos;s sport</span>}
+                    {/* aria-selected carries this for assistive tech. */}
+                    {selected && <span aria-hidden="true">✓</span>}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
       )}
     </span>

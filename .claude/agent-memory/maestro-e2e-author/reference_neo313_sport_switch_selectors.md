@@ -26,6 +26,13 @@ card-player-picker-cross-sport, admin/player-sports-multi-sport-membership):
   (`Players on the new card` / `Player picker`), never in the portalled popover.
 
 Traps:
+- **`id: "Choose a sport"` never resolved at c5431c9**: the listbox carried
+  `id={useId()}` beside its aria-label, and maestro-web's resource-id is
+  `node.id || ariaLabel`, so the hierarchy showed `resource-id: "_r_1c_"` on
+  the list (both CI reds, step "assertCondition Choose_a_sport", list visibly
+  open in the screenshot). The component's own header said the id belonged on a
+  non-interactive WRAPPER; fix is product-side (id on a wrapper div, label on
+  the listbox). See [[auto-id-shadows-aria-label]].
 - **The sport list is a `max-h-48` INNER scroller** (set's sport first, then
   alphabetical; in CI `E2E Test Sport <w>` rows sort before Football). A tap on
   a row below its fold lands on whatever the box covers (clip invisible to

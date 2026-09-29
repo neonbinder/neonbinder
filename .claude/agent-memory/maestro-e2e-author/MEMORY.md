@@ -113,3 +113,4 @@ Non-markdown helpers: `tools/`
 - [Wizard headings include staged career teams](patterns_wizard_headings_include_staged_career_teams.md) — a `New Team:` heading ≠ a checklist club; verify on a committed card/alias first
 - [Measure a fixture from CI artifacts](patterns_measure_a_fixture_from_ci_artifacts.md) — tap lines log the real text of a regex match; convex-logs carry adapter result_count; Group Parallels re-open gate
 - [NEO-313 sport switch + Players Sports/Cards](reference_neo313_sport_switch_selectors.md) — capped list: one-key `inputText: "F"` typeahead then tap; switch refused after the walk skips staged steps
+- [Auto id shadows aria-label](patterns_auto_id_shadows_aria_label.md) — `useId()` on a labelled node → resource-id `_r_xx_`; `id: "<label>"` fails on a visible element; fix in product
