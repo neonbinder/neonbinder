@@ -1,0 +1,289 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Player sports — give a football player Baseball too; he is listed as a baseball player, a baseball card's picker finds him without a switch, and Baseball cannot be removed while that card links him (NEO-313)"
+tags:
+  - admin
+---
+# R1 — ONE FEATURE (NEO-313, case B "multi-sport athlete"): the Players admin
+# "Sports" field adds a second sport to a player (Bo Jackson: Royals AND
+# Raiders), and that MEMBERSHIP is real everywhere a sport is: he is listed
+# under the added sport with an "Also: Baseball" tag, the added sport's card
+# picker finds him on its DEFAULT path (no cross-sport switch), and the
+# membership cannot be removed while cards in that sport depend on it.
+#
+# R2 — HARD ASSERTIONS, in order:
+#   (a) the add lands: "Added Baseball." and a "Remove sport Baseball" chip;
+#   (b) after a reload, the list filtered to BASEBALL shows him, tagged
+#       "Also: Baseball" (the tag appears only for an added sport, never for a
+#       home sport or a guest appearance);
+#   (c) a baseball card's player picker, still reading "Sport to search for
+#       players: Baseball", offers "Add Gm<token>" — an existing row — and
+#       not "Create player …";
+#   (d) with that card saved, "Remove sport Baseball" is REFUSED with the
+#       product's own count sentence ("1 card in Baseball sets still link to
+#       Gm<token>. …") and the chip stays. A remove that were simply broken
+#       could not produce a sentence naming the card count.
+#   (e) his own "Cards for Gm<token>" list shows that card WITHOUT a
+#       "Baseball" tag: the tag marks a guest appearance, and a card in one of
+#       his own sports is not one (card-player-picker-cross-sport asserts the
+#       tag IS there for a true guest).
+# No `when:` branch wraps any of it.
+#
+# R3 — DEDUP: card-player-picker-cross-sport proves the GUEST path (a switch,
+#   no membership); checklist-wizard-link-commits the wizard's switch. Nothing
+#   else touches the Sports field. The player is made by
+#   util-add-player-by-hand; drilling is R9's util-drill-to-custom.
+#
+# FIXTURES (all from the UI, per attempt):
+#   * the player `Gm<token>` — FOOTBALL, then given Baseball. One search token;
+#     registered in SET-REGISTRY.md. Players are never deleted; the per-attempt
+#     name is what makes that harmless.
+#   * the set `msp-<worker>` — HAND-MADE under the real Baseball / 2024 / Topps
+#     ancestors, so its sport is really Baseball. No marketplace ids (R7a).
+#     Registered in SET-REGISTRY.md.
+#   * card `316-<attempt>` — added here, DELETED at the end (self-cleaning).
+#
+# WHAT THIS FLOW DEPENDS ON (both were product gaps when it was written, and
+# both are fixed on the NEO-313 branch — a red on either is a regression):
+#   * R2(b): `players.search` returns `alsoSportIds`, so the "Also: …" tag is
+#     on the row in search mode (the screen searches from two typed
+#     characters).
+#   * R2(c): the card picker's typed search merges `players.search` into its
+#     500-row pool, and the pool always includes added-sport members, so a
+#     multi-sport member is found in a sport with more than 500 players.
+# The member's CHIP on the card carries no guest tag either, but that is not
+# asserted: the chip renders nothing until its membership query answers, so a
+# negative there cannot tell "not a guest" from "not loaded yet". (e) asserts
+# the same rule where it is deterministic — the Cards list derives its tag
+# from the player document already on screen.
+#
+# R5 — every in-app wait is 7000; the openLink gates are 20000, as in
+# util-drill-to-custom (a full SPA load, not a UI response).
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 45000
+
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
+# ============================================================
+# STEP 1 — a football player, then Baseball as well — R2(a)
+# ============================================================
+- runFlow:
+    file: util-add-player-by-hand.yaml
+    env:
+      PLAYER_NAME: "Gm${output.ATTEMPT_TOKEN}"
+      SPORT: "Football"
+
+# The Sports field sits under the identity fields of his (open) panel, below
+# the fold where the util left the page. "Add sport" has no aria-label; its
+# text is its name.
+- scrollUntilVisible:
+    element:
+      text: "Add sport"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Add sport"
+# The choices are buttons, not a <select> (the list's sport filter is the
+# page's one native select), each named "Add sport <sport>".
+- extendedWaitUntil:
+    visible:
+      id: "Add sport Baseball"
+    timeout: 7000
+- tapOn:
+    id: "Add sport Baseball"
+- extendedWaitUntil:
+    visible: "Added Baseball\\."
+    timeout: 7000
+- assertVisible:
+    id: "Remove sport Baseball"
+
+# ============================================================
+# STEP 2 — R2(b): he is a baseball player now
+# ============================================================
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/players
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 20000
+# Narrow to him FIRST: every row prints its sport, and with the whole list on
+# screen "Baseball" would not be the picker's option alone. His row prints
+# "Football" and "Also: Baseball" — a full-match "Baseball" matches neither.
+- tapOn: "Filter players"
+- inputText: "Gm${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible: ".*matches.*"
+    timeout: 7000
+- tapOn: "All sports"
+- tapOn: "Baseball"
+# The Baseball-scoped search returns him through the added-sport leg, and the
+# row says why he is there.
+- extendedWaitUntil:
+    visible:
+      text: "Also: Baseball"
+      below:
+        text: ".*matches.*"
+    timeout: 7000
+- assertVisible:
+    text: "Gm${output.ATTEMPT_TOKEN}"
+    below:
+      text: ".*matches.*"
+
+# ============================================================
+# STEP 3 — R2(c): a baseball card's picker finds him on its default path
+# ============================================================
+- runFlow:
+    file: ../set-selector/util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "msp-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+- scrollUntilVisible:
+    element:
+      id: "Open add card form"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+- inputText: "316-${ATTEMPT_ID}"
+- tapOn: "Player name"
+- inputText: "Two Sport Card ${ATTEMPT_ID}"
+- scrollUntilVisible:
+    element:
+      id: "Add a player to the new card"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add a player to the new card"
+- tapOn:
+    id: "Find a player for the new card"
+- inputText: "Gm${output.ATTEMPT_TOKEN}"
+# Nothing was switched: the popover still searches the set's sport.
+- assertVisible:
+    id: "Sport to search for players: Baseball"
+- extendedWaitUntil:
+    visible:
+      id: "Add Gm${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+# An exact existing match hides the create row, so its absence is the other
+# half of "found, not new" — asserted after the positive wait above.
+- assertNotVisible:
+    id: "Create player Gm${output.ATTEMPT_TOKEN}"
+- tapOn:
+    id: "Add Gm${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible:
+      id: "Remove player Gm${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+# "Card name" is ABOVE the picker; a tap there closes the popover.
+- tapOn:
+    id: "Card name"
+- extendedWaitUntil:
+    notVisible:
+      id: "Find a player for the new card"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      id: "Submit new card"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Submit new card"
+- extendedWaitUntil:
+    notVisible:
+      id: "Card name"
+    timeout: 7000
+
+# ============================================================
+# STEP 4 — R2(d): Baseball cannot be removed while that card links him
+# ============================================================
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/players
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 20000
+- tapOn: "Filter players"
+- inputText: "Gm${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible: ".*matches.*"
+    timeout: 7000
+# Below the counter: the filter box reports this same name as its text.
+- tapOn:
+    text: "Gm${output.ATTEMPT_TOKEN}"
+    below:
+      text: ".*matches.*"
+- scrollUntilVisible:
+    element:
+      id: "Remove sport Baseball"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Remove sport Baseball"
+# `players.setAdditionalSports` refuses with SPORT_HAS_CARDS; the panel turns
+# its count into this sentence, in an alert under the field.
+- extendedWaitUntil:
+    visible: ".*1 card in Baseball sets still link to Gm${output.ATTEMPT_TOKEN}\\..*"
+    timeout: 7000
+# The refusal wrote nothing: he is still a baseball player.
+- assertVisible:
+    id: "Remove sport Baseball"
+
+# R2(e): the Cards list is the panel's LAST section, under Save, so it is
+# below the Sports field — DOWN. The scroll is its own assertion that a card
+# links him (R6): with none the panel says "No cards link to … yet." and
+# renders no list.
+- scrollUntilVisible:
+    element:
+      id: "Cards for Gm${output.ATTEMPT_TOKEN}"
+    centerElement: true
+    timeout: 7000
+- assertVisible:
+    text: "#316-${ATTEMPT_ID}"
+    childOf:
+      id: "Cards for Gm${output.ATTEMPT_TOKEN}"
+# Paired with the positive above, on the same row: the list and his sports
+# are both loaded, so a missing tag is the rule, not a dead page (memory:
+# negative-asserts-pass-on-a-dead-page). The set breadcrumb under the card
+# name is one longer text, so a full-match "Baseball" is the tag alone.
+- assertNotVisible:
+    text: "Baseball"
+    childOf:
+      id: "Cards for Gm${output.ATTEMPT_TOKEN}"
+
+# ============================================================
+# CLEANUP — delete this attempt's card
+# ============================================================
+- runFlow:
+    file: ../set-selector/util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "msp-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+# The util leaves "Open add card form" in view; the row is in the list below
+# it, so DOWN, centred (react-virtuoso — util-add-custom-card STEP 10).
+- scrollUntilVisible:
+    element:
+      id: "Delete card 316-${ATTEMPT_ID}(, .*)?"
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+- tapOn:
+    id: "Delete card 316-${ATTEMPT_ID}(, .*)?"
+- assertVisible: "Confirm?"
+- tapOn:
+    id: "Confirm delete card 316-${ATTEMPT_ID}(, .*)?"
+- extendedWaitUntil:
+    notVisible:
+      id: "Edit card 316-${ATTEMPT_ID}(, .*)?"
+    timeout: 7000

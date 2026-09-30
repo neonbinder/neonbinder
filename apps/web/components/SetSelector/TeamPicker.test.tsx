@@ -76,6 +76,11 @@ vi.mock("../../convex/_generated/api", () => ({
     // NEO-236: the New Team dialog this picker opens renders `NewTeamForm`,
     // whose League pills read the sport's leagues.
     leagues: { list: "leagues.list" },
+    // NEO-313: SportTagById and the popover's SportSwitch both read the sport
+    // list to render (a tag's label, the switch's option list).
+    selectorOptions: {
+      getSelectorOptions: "selectorOptions.getSelectorOptions",
+    },
   },
 }));
 
@@ -83,6 +88,11 @@ let queryCalls: Array<{ ref: string; args: unknown }> = [];
 let currentSelectedRows: unknown;
 let currentCandidates: unknown;
 let currentLeagues: unknown;
+// NEO-313: backs SportTagById and the popover's SportSwitch. Most tests never
+// open the switch's list, so an empty pool by default is enough — the
+// trigger button still renders regardless, which is what the Tab-order tests
+// below need.
+let currentSports: unknown = [];
 const mockFindOrCreate = vi.fn();
 
 vi.mock("convex/react", () => ({
@@ -94,6 +104,7 @@ vi.mock("convex/react", () => ({
     if (ref === "teams.getManyByIds") return currentSelectedRows;
     if (ref === "teams.list" || ref === "teams.search") return currentCandidates;
     if (ref === "leagues.list") return currentLeagues;
+    if (ref === "selectorOptions.getSelectorOptions") return currentSports;
     return undefined;
   },
   useMutation: (ref: string) =>
@@ -173,6 +184,7 @@ describe("TeamPicker", () => {
     currentSelectedRows = [];
     currentCandidates = [];
     currentLeagues = [];
+    currentSports = [];
     queryCalls = [];
     mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
   });
@@ -1000,6 +1012,95 @@ describe("TeamPicker", () => {
 });
 
 /**
+ * NEO-313 — the popover's own SportSwitch ("Sport to search for teams") picks
+ * which sport `teams.search`/`teams.list` and the New Team dialog it opens are
+ * scoped to. Its own reset, like "finding past the list window" below: this
+ * asserts on `queryCalls`, and inheriting another test's is how a false
+ * positive would slip in.
+ */
+describe("TeamPicker — cross-sport search switch (NEO-313)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentSelectedRows = [];
+    currentCandidates = [];
+    currentLeagues = [];
+    currentSports = [
+      { _id: SPORT_ID, value: "Baseball" },
+      { _id: OTHER_SPORT_ID, value: "Football" },
+    ];
+    queryCalls = [];
+    mockFindOrCreate.mockResolvedValue(tid("new-team-1"));
+  });
+
+  function switchSearchSport(fromLabel: string, toName: string) {
+    fireEvent.click(
+      screen.getByLabelText(`Sport to search for teams: ${fromLabel}`),
+    );
+    fireEvent.click(
+      within(screen.getByRole("listbox", { name: "Choose a sport" })).getByRole(
+        "option",
+        { name: toName },
+      ),
+    );
+  }
+
+  it("switches teams.search/list to the picked sport", () => {
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    switchSearchSport("Baseball", "Football");
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "packers" },
+    });
+
+    const search = queryCalls.filter((c) => c.ref === "teams.search");
+    expect(search[search.length - 1].args).toMatchObject({
+      query: "packers",
+      sportId: OTHER_SPORT_ID,
+    });
+    const list = queryCalls.filter((c) => c.ref === "teams.list");
+    expect(list[list.length - 1].args).toMatchObject({ sportId: OTHER_SPORT_ID });
+  });
+
+  it("opens the New Team dialog, and creates, on the picked sport rather than the set's", async () => {
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+
+    switchSearchSport("Baseball", "Football");
+    openNewTeamDialog("Green Bay Packers");
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create team Green Bay Packers" }),
+    );
+
+    await waitFor(() => {
+      expect(mockFindOrCreate).toHaveBeenCalledWith({
+        name: "Green Bay Packers",
+        sportId: OTHER_SPORT_ID,
+      });
+    });
+  });
+
+  it("resets to the set's sport the next time the popover opens", () => {
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+    switchSearchSport("Baseball", "Football");
+    expect(
+      screen.getByLabelText("Sport to search for teams: Football"),
+    ).toBeTruthy();
+
+    // Closing and reopening is a fresh "which sport am I searching?" ask —
+    // nothing here remembers the operator's last pick.
+    fireEvent.keyDown(screen.getByLabelText("Search teams"), { key: "Escape" });
+    openPopover();
+
+    expect(
+      screen.getByLabelText("Sport to search for teams: Baseball"),
+    ).toBeTruthy();
+    expect(screen.queryByLabelText("Sport to search for teams: Football")).toBeNull();
+  });
+});
+
+/**
  * NEO-254 — the server finds the team; the client only ranks what it is given.
  *
  * This box used to filter a 500-row `teams.list` window client-side. That is
@@ -1018,6 +1119,7 @@ describe("TeamPicker — finding past the list window", () => {
     currentSelectedRows = [];
     currentCandidates = [];
     currentLeagues = [];
+    currentSports = [];
     queryCalls = [];
   });
 
@@ -1217,9 +1319,13 @@ describe("TeamPicker — the popover escapes its clip box (NEO-272)", () => {
     // picker, so leaving it forwards has to uncover that. Returning focus to
     // the trigger also means Tab can never walk out of a host dialog whose
     // focus trap cannot see into the portal.
+    //
+    // NEO-313: the SportSwitch trigger is now the LAST focusable row in the
+    // popover, below the options and the create row, so it — not the last
+    // team option — is where Tab actually leaves from.
     renderInScrollBox();
     openPopover();
-    const lastRow = screen.getByLabelText("Add Boston Red Sox");
+    const lastRow = screen.getByLabelText("Sport to search for teams: …");
     lastRow.focus();
 
     fireEvent.keyDown(lastRow, { key: "Tab" });
@@ -1242,6 +1348,7 @@ describe("TeamPicker — labels prop (NEO-277)", () => {
     currentSelectedRows = [makeTeam("t1", "New York Yankees")];
     currentCandidates = [makeTeam("t2", "Boston Red Sox")];
     currentLeagues = [];
+    currentSports = [];
     queryCalls = [];
   });
 

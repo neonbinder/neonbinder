@@ -990,9 +990,10 @@ describe("updateCard playerIds validation (NEO-246)", () => {
     expect(stored!.playerIds).toBeUndefined();
   });
 
-  test("rejects a player from another sport, and writes nothing", async () => {
-    // A basketball player on a baseball card is invisible until a listing is
-    // generated from it, which is months later and across a whole set at once.
+  test("NEO-313: accepts a player from another sport as a guest link, and re-indexes the card", async () => {
+    // A guest appearance: the operator reached him through the picker's
+    // explicit sport switch. His sport is untouched; the card carries his id,
+    // and the derived index names the card under the CARD's sport.
     const { asAdmin, cardId } = await seed();
     const basketballSportId = await asAdmin.run(async (ctx) =>
       ctx.db.insert("selectorOptions", {
@@ -1005,15 +1006,37 @@ describe("updateCard playerIds validation (NEO-246)", () => {
     );
     const lebron = await addPlayer(asAdmin, basketballSportId, "LeBron James");
 
-    await expect(
-      asAdmin.mutation(api.selectorOptions.updateCard, {
-        id: cardId,
-        playerIds: [lebron],
-      }),
-    ).rejects.toThrow(/not a player in this card's sport/);
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      playerIds: [lebron],
+    });
 
-    const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
-    expect(stored!.playerIds).toBeUndefined();
+    const { stored, links, player } = await asAdmin.run(async (ctx) => ({
+      stored: await ctx.db.get(cardId),
+      links: await ctx.db
+        .query("cardPlayerLinks")
+        .withIndex("by_card", (q) => q.eq("cardChecklistId", cardId))
+        .collect(),
+      player: await ctx.db.get(lebron),
+    }));
+    expect(stored!.playerIds).toEqual([lebron]);
+    expect(player!.sportId).toBe(basketballSportId);
+    expect(links).toHaveLength(1);
+    expect(links[0].playerId).toBe(lebron);
+    expect(links[0].sportId).not.toBe(basketballSportId);
+
+    // Clearing the list clears the index.
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      playerIds: [],
+    });
+    const after = await asAdmin.run(async (ctx) =>
+      ctx.db
+        .query("cardPlayerLinks")
+        .withIndex("by_card", (q) => q.eq("cardChecklistId", cardId))
+        .collect(),
+    );
+    expect(after).toEqual([]);
   });
 
   test("a refused playerIds write does not let a co-sent field through", async () => {

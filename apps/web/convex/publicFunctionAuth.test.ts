@@ -370,6 +370,60 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
         });
       },
     ],
+    // NEO-313. The operator's cross-sport override: re-points a review row at
+    // another sport, deletes the steps it staged and enqueues a pooled
+    // Wikidata lookup. Same table, same batch, same gate as `recordDecision`.
+    // The ids are read after the gate, so the refusal is the gate.
+    [
+      "entityReviewQueue.switchRowSport",
+      async (t, sportId) => {
+        const rowId = await t.run(async (ctx) =>
+          ctx.db.insert("entityReviewQueue", {
+            selectorOptionId: sportId,
+            batchId: "batch-1",
+            createdByUserId: "somebody",
+            kind: "player" as const,
+            name: "Justin Fields",
+            sportId,
+            status: "ready" as const,
+          }),
+        );
+        return t.mutation(api.entityReviewQueue.switchRowSport, { rowId, sportId });
+      },
+    ],
+    // NEO-313. Writes a player's additional sports — globally-shared
+    // reference data, and it re-derives the alias index. Admin, like
+    // `savePlayerFields` beside it.
+    [
+      "players.setAdditionalSports",
+      async (t, sportId) => {
+        const playerId = await t.run(async (ctx) =>
+          ctx.db.insert("players", {
+            name: "Bo Jackson",
+            nameNormalized: "bo jackson",
+            sportId,
+            lastUpdated: 1_700_000_000_000,
+          }),
+        );
+        return t.mutation(api.players.setAdditionalSports, { playerId, sportIds: [] });
+      },
+    ],
+    // NEO-313. Every card a player is on, across sets and sports — an
+    // operator screen that walks set ancestry per card.
+    [
+      "players.cardsForPlayer",
+      async (t, sportId) => {
+        const playerId = await t.run(async (ctx) =>
+          ctx.db.insert("players", {
+            name: "Bo Jackson",
+            nameNormalized: "bo jackson",
+            sportId,
+            lastUpdated: 1_700_000_000_000,
+          }),
+        );
+        return t.query(api.players.cardsForPlayer, { playerId });
+      },
+    ],
   ];
 
   test.each(ADMIN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
@@ -693,11 +747,15 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
 
   test.each([
     "resetSelectorOptionsBatch",
+    // NEO-313 — the derived card → player index, drained before the cards.
+    "resetCardPlayerLinksBatch",
     "resetCardChecklistBatch",
     "resetCardCrossListingsBatch",
     // NEO-294 — the entity-review staging tables, added to the reset loop.
     "resetEntityReviewQueueBatch",
     "resetChecklistCandidatesBatch",
+    // NEO-313 — a player's additional sports, drained before the players.
+    "resetPlayerSportsBatch",
     "resetPlayersBatch",
     // These three were in the loop but missing from this list; a batch that
     // is not pinned here can be turned public without a test going red, which

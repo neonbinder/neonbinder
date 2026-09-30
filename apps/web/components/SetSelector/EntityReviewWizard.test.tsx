@@ -116,6 +116,13 @@ vi.mock("../../convex/_generated/api", () => ({
       // NEO-254 / NEO-307: a league typed into the New Team step's League
       // field is staged as a New League step of its own.
       stageLeagueRows: "entityReviewQueue.stageLeagueRows",
+      // NEO-313: the operator's per-name sport override.
+      switchRowSport: "entityReviewQueue.switchRowSport",
+    },
+    // NEO-313: the row header's SportSwitch reads the sport list to render
+    // its option list, same as the pickers.
+    selectorOptions: {
+      getSelectorOptions: "selectorOptions.getSelectorOptions",
     },
     players: {
       nearMatches: "players.nearMatches",
@@ -171,6 +178,11 @@ const mockClearCareerTeamStint = vi.fn(() => Promise.resolve(null));
 const mockStageLeagueRows = vi.fn(() => Promise.resolve(undefined as unknown));
 /** Rows served to leagues.list (the New Team step's League field). */
 let currentLeagues: unknown;
+/** NEO-313 — rows served to selectorOptions.getSelectorOptions (SportSwitch's
+ *  own option list). Empty by default: most tests never open it. */
+let currentSports: unknown = [];
+/** NEO-313 — the operator's per-name sport override. */
+const mockSwitchRowSport = vi.fn(() => Promise.resolve(null));
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
@@ -184,6 +196,7 @@ vi.mock("convex/react", () => ({
     if (ref === "players.getManyByIds") return currentLinkedPlayers;
     if (ref === "leagues.list") return currentLeagues;
     if (ref === "teams.nameHeldAsAliasBy") return currentAliasHolders;
+    if (ref === "selectorOptions.getSelectorOptions") return currentSports;
     return undefined;
   },
   useMutation: (ref: string) => {
@@ -195,6 +208,7 @@ vi.mock("convex/react", () => ({
     if (ref === "entityReviewQueue.clearCareerTeamStint")
       return mockClearCareerTeamStint;
     if (ref === "entityReviewQueue.stageLeagueRows") return mockStageLeagueRows;
+    if (ref === "entityReviewQueue.switchRowSport") return mockSwitchRowSport;
     // Every other mutation still has to look like one: the component `await`s
     // what `useMutation` hands back.
     return vi.fn(() => Promise.resolve(undefined));
@@ -253,6 +267,12 @@ type Row = {
   name: string;
   sportId: Id<"selectorOptions">;
   sportValue: string;
+  // NEO-313 — the BATCH's own sport, resolved server-side off the selector
+  // option ancestry. Absent means a fixture predating the feature; present is
+  // what every real `getBatch` row carries. `current.sportId !== setSportId`
+  // is what "this name was moved to another sport" means throughout the file.
+  setSportId?: Id<"selectorOptions">;
+  setSportValue?: string;
   status: "pending" | "ready" | "error";
   enrichment?: Record<string, unknown>;
   /**
@@ -478,9 +498,11 @@ beforeEach(() => {
   mockStageCareerTeamRows.mockResolvedValue(0);
   mockClearCareerTeamStint.mockResolvedValue(null);
   mockStageLeagueRows.mockResolvedValue(undefined);
+  mockSwitchRowSport.mockResolvedValue(null);
   currentRows = [];
   currentAliasHolders = undefined;
   currentLeagues = [];
+  currentSports = [];
   currentNearMatches = [];
   currentResolvedNames = undefined;
   currentLinkedTeams = undefined;
@@ -706,6 +728,316 @@ describe("EntityReviewWizard — decision actions", () => {
     expect(screen.queryByLabelText("Link to existing instead")).toBeNull();
     expect(screen.getByRole("combobox", { name: "Search all teams" })).toBeTruthy();
     // Linking from it is covered in EntityReviewWizard.teamMatchSearch.test.tsx.
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-313 — the per-name sport override (SportSwitch) on the row header
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — NEO-313 sport switch", () => {
+  const SET_SPORT_ID = "selopt-sport-1" as unknown as Id<"selectorOptions">;
+  const OTHER_SPORT_ID = "selopt-sport-9" as unknown as Id<"selectorOptions">;
+
+  beforeEach(() => {
+    currentSports = [
+      { _id: SET_SPORT_ID, value: "Baseball" },
+      { _id: OTHER_SPORT_ID, value: "Football" },
+    ];
+  });
+
+  it("renders on a live player row whose batch carries setSportId", () => {
+    currentRows = [
+      makeRow({ kind: "player", setSportId: SET_SPORT_ID, setSportValue: "Baseball" }),
+    ];
+    renderWizard();
+
+    expect(screen.getByLabelText("Sport for this name: Baseball")).toBeTruthy();
+  });
+
+  it("renders on a live team row the same way", () => {
+    currentRows = [
+      makeRow({ kind: "team", setSportId: SET_SPORT_ID, setSportValue: "Baseball" }),
+    ];
+    renderWizard();
+
+    expect(screen.getByLabelText("Sport for this name: Baseball")).toBeTruthy();
+  });
+
+  it("does NOT render on a league row, even with setSportId present", () => {
+    currentRows = [
+      makeRow({ kind: "league", setSportId: SET_SPORT_ID, setSportValue: "Baseball" }),
+    ];
+    renderWizard();
+
+    expect(screen.queryByLabelText(/Sport for this name/)).toBeNull();
+  });
+
+  it("does NOT render when the batch carries no setSportId of its own", () => {
+    // No `setSportId` override — the pre-NEO-313 fixture shape, which is also
+    // what an orphaned-ancestry batch falls back to server-side.
+    currentRows = [makeRow({ kind: "player" })];
+    renderWizard();
+
+    expect(screen.queryByLabelText(/Sport for this name/)).toBeNull();
+  });
+
+  it("does NOT render on a decided row read back read-only via Back", async () => {
+    const alpha = makeRow({
+      kind: "player",
+      name: "Alpha",
+      setSportId: SET_SPORT_ID,
+      setSportValue: "Baseball",
+    });
+    const bravo = makeRow({
+      kind: "player",
+      name: "Bravo",
+      setSportId: SET_SPORT_ID,
+      setSportValue: "Baseball",
+    });
+    currentRows = [alpha, bravo];
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+
+    currentRows = [{ ...alpha, decision: { action: "create" } }, bravo];
+    rerenderWizard(rerender);
+    fireEvent.click(screen.getByLabelText("Back to previous decision"));
+
+    expect(screen.getByRole("heading", { level: 3, name: "Alpha" })).toBeTruthy();
+    expect(screen.queryByLabelText(/Sport for this name/)).toBeNull();
+  });
+
+  it("picking another sport calls switchRowSport with the row and the picked sport", () => {
+    const row = makeRow({
+      kind: "player",
+      setSportId: SET_SPORT_ID,
+      setSportValue: "Baseball",
+    });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Sport for this name: Baseball"));
+    fireEvent.click(
+      within(screen.getByRole("listbox", { name: "Choose a sport" })).getByRole(
+        "option",
+        { name: "Football" },
+      ),
+    );
+
+    expect(mockSwitchRowSport).toHaveBeenCalledWith({
+      rowId: row._id,
+      sportId: OTHER_SPORT_ID,
+    });
+  });
+
+  it("holds the row's decision buttons aria-disabled while the switch is in flight", async () => {
+    let resolveSwitch: () => void = () => {};
+    mockSwitchRowSport.mockImplementation(
+      () => new Promise((resolve) => { resolveSwitch = () => resolve(null); }),
+    );
+    currentRows = [
+      makeRow({ kind: "player", setSportId: SET_SPORT_ID, setSportValue: "Baseball" }),
+    ];
+    renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Sport for this name: Baseball"));
+    fireEvent.click(
+      within(screen.getByRole("listbox", { name: "Choose a sport" })).getByRole(
+        "option",
+        { name: "Football" },
+      ),
+    );
+
+    expect(
+      screen.getByRole("button", { name: "Add as New Player" }).getAttribute(
+        "aria-disabled",
+      ),
+    ).toBe("true");
+
+    await act(async () => {
+      resolveSwitch();
+    });
+  });
+
+  it("reads the new sport on the header tag once the row's sportId actually changes", () => {
+    const row = makeRow({
+      kind: "player",
+      sportId: SET_SPORT_ID,
+      setSportId: SET_SPORT_ID,
+      setSportValue: "Baseball",
+    });
+    currentRows = [row];
+    const { rerender } = renderWizard();
+    expect(screen.getByLabelText("Sport for this name: Baseball")).toBeTruthy();
+
+    // The reactive `getBatch` push a real switch produces: the row's own
+    // `sportId` moves, `setSportId`/`setSportValue` do not.
+    currentRows = [{ ...row, sportId: OTHER_SPORT_ID }];
+    rerenderWizard(rerender);
+
+    expect(screen.getByLabelText("Sport for this name: Football")).toBeTruthy();
+    expect(screen.queryByLabelText("Sport for this name: Baseball")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-313 — "Also add {sport} to their sports" (the multi-sport athlete)
+// ---------------------------------------------------------------------------
+
+describe("EntityReviewWizard — NEO-313 'also add to their sports' checkbox", () => {
+  const SET_SPORT_ID = "selopt-sport-1" as unknown as Id<"selectorOptions">;
+  const OTHER_SPORT_ID = "selopt-sport-9" as unknown as Id<"selectorOptions">;
+
+  it("does NOT appear on the default path — row sport equal to the set's sport", () => {
+    currentRows = [
+      makeRow({
+        kind: "player",
+        sportId: SET_SPORT_ID,
+        setSportId: SET_SPORT_ID,
+        setSportValue: "Baseball",
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.queryByText(/Also add .* to their sports/)).toBeNull();
+    // Red-proof (reported, not committed as a failing test): asserting the
+    // checkbox IS present against this exact same-sport fixture fails —
+    // confirming this absence assertion is actually exercising the branch
+    // and not just trivially true because nothing rendered at all.
+    expect(screen.queryByRole("button", { name: "Add as New Player" })).toBeTruthy();
+  });
+
+  it("appears, unticked by default, once the name has been moved off the set's sport", () => {
+    currentRows = [
+      makeRow({
+        kind: "player",
+        sportId: OTHER_SPORT_ID,
+        setSportId: SET_SPORT_ID,
+        setSportValue: "Baseball",
+      }),
+    ];
+    renderWizard();
+
+    const checkbox = screen.getByLabelText(
+      "Also add Baseball to their sports",
+    ) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+  });
+
+  it("does NOT appear on a team row, even cross-sport", () => {
+    currentRows = [
+      makeRow({
+        kind: "team",
+        sportId: OTHER_SPORT_ID,
+        setSportId: SET_SPORT_ID,
+        setSportValue: "Baseball",
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.queryByText(/Also add .* to their sports/)).toBeNull();
+  });
+
+  it("ticked: 'Add as New Player' sends addSetSport: true", async () => {
+    const row = makeRow({
+      kind: "player",
+      sportId: OTHER_SPORT_ID,
+      setSportId: SET_SPORT_ID,
+      setSportValue: "Baseball",
+    });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Also add Baseball to their sports"));
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewRowId: row._id,
+          action: "create",
+          addSetSport: true,
+        }),
+      );
+    });
+  });
+
+  it("unticked (the default): 'Add as New Player' sends no addSetSport field at all", async () => {
+    const row = makeRow({
+      kind: "player",
+      sportId: OTHER_SPORT_ID,
+      setSportId: SET_SPORT_ID,
+      setSportValue: "Baseball",
+    });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+    expect(mockRecordDecision.mock.calls[0]![0]).not.toHaveProperty("addSetSport");
+  });
+
+  it("never sends addSetSport on the default path, where sports match", async () => {
+    const row = makeRow({
+      kind: "player",
+      sportId: SET_SPORT_ID,
+      setSportId: SET_SPORT_ID,
+      setSportValue: "Baseball",
+    });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+    expect(mockRecordDecision.mock.calls[0]![0]).not.toHaveProperty("addSetSport");
+  });
+
+  it("ticked: linking to an existing player also sends addSetSport: true", async () => {
+    const row = makeRow({
+      kind: "player",
+      sportId: OTHER_SPORT_ID,
+      setSportId: SET_SPORT_ID,
+      setSportValue: "Baseball",
+    });
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByLabelText("Also add Baseball to their sports"));
+    fireEvent.click(screen.getByLabelText("Link to existing instead"));
+    fireEvent.click(screen.getByText("Stub link select"));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "link",
+        linkedPlayerId: "linked-id-123",
+        linkedTeamId: undefined,
+        addSetSport: true,
+      });
+    });
+  });
+
+  it("the default path renders with no unrelated regressions — same aria-labels, no checkbox", () => {
+    // Locks in that the ordinary (non-cross-sport) row is byte-for-byte what
+    // it was before NEO-313: the same primary control, same link control,
+    // and no new element inserted into its accessible-name surface.
+    currentRows = [
+      makeRow({
+        kind: "player",
+        sportId: SET_SPORT_ID,
+        setSportId: SET_SPORT_ID,
+        setSportValue: "Baseball",
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    expect(screen.getByLabelText("Link to existing instead")).toBeTruthy();
+    expect(screen.queryByLabelText(/Also add .* to their sports/)).toBeNull();
   });
 });
 

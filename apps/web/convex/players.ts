@@ -127,6 +127,46 @@ const playerDocPublicValidator = v.object({
   lastUpdated: v.number(),
 });
 
+/**
+ * NEO-313 — a player row plus the sports it belongs to BESIDES its home sport
+ * (`playerSports`), for the Players admin: the list's "Also: Football" chip and
+ * the detail panel's Sports field. A separate validator so every other public
+ * reader keeps the shape it has.
+ */
+const playerWithSportsPublicValidator = v.object({
+  ...playerDocPublicValidator.fields,
+  alsoSportIds: v.array(v.id("selectorOptions")),
+});
+
+/**
+ * NEO-313 — a typeahead row, with what tells two same-named people apart at a
+ * glance: the player's home sport by name, and up to three career stints
+ * (most recent first) with the team's colour. The pickers render it; the
+ * sport-switch override is useless if "Adrian Peterson" and "Adrian Peterson"
+ * look identical.
+ */
+const playerSearchResultValidator = v.object({
+  ...playerDocPublicValidator.fields,
+  /**
+   * The sports this player belongs to besides his home sport — the same field
+   * `playerWithSportsPublicValidator` carries, so the Players admin's
+   * "Also: Football" chip survives the switch from its list to a typed search.
+   */
+  alsoSportIds: v.array(v.id("selectorOptions")),
+  sportValue: v.string(),
+  stints: v.array(
+    v.object({
+      label: v.string(),
+      primaryColor: v.optional(v.string()),
+      fromYear: v.number(),
+      toYear: v.optional(v.number()),
+    }),
+  ),
+});
+
+/** NEO-313 — stints shown per search result. */
+const SEARCH_RESULT_STINTS = 3;
+
 const playerDocValidator = v.object({
   _id: v.id("players"),
   _creationTime: v.number(),
@@ -247,6 +287,39 @@ export async function sameNamePlayers(
     )
     .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
 
+  const seen = new Set<string>(byName.map((p) => p._id as string));
+  const merged = [...byName];
+
+  /*
+   * ── NEO-313: a player who ALSO belongs to this sport ─────────────────────
+   *
+   * Bo Jackson's home sport is football; an operator added baseball to his
+   * sports in the Players admin. A baseball card that says "Bo Jackson" is
+   * then an ALIGNED lookup, not a cross-sport one: he is a baseball player
+   * too, and this leg is the one indexed read that says so. It reads only
+   * rows for THIS sport — nothing here ever looks at another sport, which is
+   * the rule every automated caller of this function depends on.
+   *
+   * Same footing as the other two legs: one more candidate in the set whose
+   * SIZE is the decision, never a winner on its own.
+   */
+  const memberRows = await ctx.db
+    .query("playerSports")
+    .withIndex("by_name_normalized_and_sport_id", (q) =>
+      q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
+    )
+    .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
+  for (const row of memberRows) {
+    if (merged.length >= PLAYER_AMBIGUITY_SCAN_LIMIT) break;
+    const key = row.playerId as string;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const player = await ctx.db.get(row.playerId);
+    // Stale residue (a player deleted under the row) or a denormalised name
+    // that has drifted — neither is a candidate.
+    if (player && player.nameNormalized === nameNormalized) merged.push(player);
+  }
+
   /*
    * ── NEO-254: a name a player USED TO have answers here too ───────────────
    *
@@ -271,13 +344,10 @@ export async function sameNamePlayers(
       q.eq("aliasNormalized", nameNormalized).eq("sportId", sportId),
     )
     .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
-  if (aliasRows.length === 0) return byName;
 
   // Deduped by id: a row whose alias and primary name both normalise to the
   // query is one candidate, not two. (The writer drops an own-name alias, so
   // this is belt and braces against a legacy row rather than the normal path.)
-  const seen = new Set<string>(byName.map((p) => p._id as string));
-  const merged = [...byName];
   for (const row of aliasRows) {
     if (merged.length >= PLAYER_AMBIGUITY_SCAN_LIMIT) break;
     const key = row.playerId as string;
@@ -287,7 +357,12 @@ export async function sameNamePlayers(
     // A side row whose player is gone is stale index residue, not a candidate.
     // It cannot be cleaned up from a query context, and leaving it out is the
     // whole of the correction the reader needs.
-    if (player && player.sportId === sportId) merged.push(player);
+    //
+    // NEO-313: no `player.sportId === sportId` guard any more. The alias
+    // writer now keeps one row PER SPORT the player belongs to (home plus
+    // `playerSports`), so an alias row keyed on this sport whose player's home
+    // is another sport is exactly the multi-sport case, not residue.
+    if (player) merged.push(player);
   }
   return merged;
 }
@@ -382,19 +457,43 @@ export function normalizePlayerAliasList(
  *
  * `aliases` arrives ALREADY normalised by `normalizePlayerAliasList`, so this
  * only derives the key. Passing raw input here would put an unbounded string
- * in an index.
+ * in an index. Omitted, the list is read off the stored row — that is the
+ * caller `syncPlayerSports` makes, whose job is the SPORT set, not the names.
+ *
+ * ## NEO-313 — one row per alias PER SPORT the player belongs to
+ *
+ * `playerAliases` is keyed `(aliasNormalized, sportId)`, so an alias answers
+ * only in a sport that has a row for it. A multi-sport player (home sport plus
+ * `playerSports`) gets a row per alias per sport, so "Vincent Jackson" finds
+ * Bo in baseball exactly as it does in football and every lookup stays a
+ * single-sport indexed read. The sport set is derived HERE, from the row and
+ * `playerSports`, so no caller can hand it a partial one.
  */
 export async function syncPlayerAliases(
   ctx: MutationCtx,
   args: {
     playerId: Id<"players">;
-    sportId: Id<"selectorOptions">;
-    aliases: ReadonlyArray<string>;
+    aliases?: ReadonlyArray<string>;
   },
 ): Promise<void> {
-  const wanted = new Set(
-    args.aliases.map((a) => normalizePlayerName(a)).filter(Boolean),
+  const player = await ctx.db.get(args.playerId);
+  // Nothing to index for a row that is gone; its alias rows are residue the
+  // reader already ignores.
+  if (!player) return;
+  const aliasKeys = new Set(
+    (args.aliases ?? player.aliases ?? [])
+      .map((a) => normalizePlayerName(a))
+      .filter(Boolean),
   );
+  const sportIds = [player.sportId, ...(await additionalSportIds(ctx, args.playerId))];
+  const pairKey = (sportId: Id<"selectorOptions">, alias: string) =>
+    `${sportId as string}|${alias}`;
+  const wanted = new Map<string, { sportId: Id<"selectorOptions">; aliasNormalized: string }>();
+  for (const sportId of sportIds) {
+    for (const aliasNormalized of aliasKeys) {
+      wanted.set(pairKey(sportId, aliasNormalized), { sportId, aliasNormalized });
+    }
+  }
   const existing = await ctx.db
     .query("playerAliases")
     .withIndex("by_player_id", (q) => q.eq("playerId", args.playerId))
@@ -402,23 +501,167 @@ export async function syncPlayerAliases(
 
   const held = new Set<string>();
   for (const row of existing) {
-    // A row whose sport no longer matches is stale as well as wrong — the
-    // player moved sport, which nothing supports, or the row predates a fix.
-    // Either way it must not keep answering lookups in the old sport.
-    if (wanted.has(row.aliasNormalized) && row.sportId === args.sportId) {
-      held.add(row.aliasNormalized);
+    // A row for a sport the player no longer belongs to is stale as well as
+    // wrong, and must not keep answering lookups there. A duplicate pair is
+    // removed too.
+    const key = pairKey(row.sportId, row.aliasNormalized);
+    if (wanted.has(key) && !held.has(key)) {
+      held.add(key);
       continue;
     }
     await ctx.db.delete(row._id);
   }
-  for (const aliasNormalized of wanted) {
-    if (held.has(aliasNormalized)) continue;
+  for (const [key, pair] of wanted) {
+    if (held.has(key)) continue;
     await ctx.db.insert("playerAliases", {
       playerId: args.playerId,
-      sportId: args.sportId,
-      aliasNormalized,
+      sportId: pair.sportId,
+      aliasNormalized: pair.aliasNormalized,
     });
   }
+}
+
+/**
+ * NEO-313 — how many sports one player may belong to BESIDES their home sport.
+ *
+ * A real multi-sport athlete has one extra (Bo Jackson, Deion Sanders). Four
+ * is headroom, and it is what bounds the per-sport alias rows the writer
+ * above keeps: aliases x (1 + this).
+ */
+export const MAX_PLAYER_EXTRA_SPORTS = 4;
+
+/**
+ * NEO-313 — the sports a player belongs to beyond their home sport, from
+ * `playerSports`. Bounded by the writer's cap; the `.take` is a belt against a
+ * row written around it.
+ */
+export async function additionalSportIds(
+  ctx: QueryCtx | MutationCtx,
+  playerId: Id<"players">,
+): Promise<Array<Id<"selectorOptions">>> {
+  const rows = await ctx.db
+    .query("playerSports")
+    .withIndex("by_player_id", (q) => q.eq("playerId", playerId))
+    .take(MAX_PLAYER_EXTRA_SPORTS * 4);
+  return rows.map((row) => row.sportId);
+}
+
+/**
+ * NEO-313 — does this player belong to this sport: home sport, or one an
+ * operator added? One indexed read when it is not the home sport.
+ */
+export async function playerBelongsToSport(
+  ctx: QueryCtx | MutationCtx,
+  player: Doc<"players">,
+  sportId: Id<"selectorOptions">,
+): Promise<boolean> {
+  if (player.sportId === sportId) return true;
+  return (await additionalSportIds(ctx, player._id)).includes(sportId);
+}
+
+/**
+ * ── NEO-313: the ONE writer of `playerSports` ───────────────────────────────
+ *
+ * Sets a player's ADDITIONAL sports to exactly `sportIds` — the home sport is
+ * dropped from the list if present, never stored here, and a sport is never
+ * stored twice. Diffs against `by_player_id`, so an unchanged list costs one
+ * read.
+ *
+ * It is also the rename rewrite: `nameNormalized` is denormalised onto every
+ * row for the lookup, so a rename calls this with the unchanged list and every
+ * row whose copy is stale is patched. Only when the SET of sports changes does
+ * it re-derive the alias index (`syncPlayerAliases` writes one row per alias
+ * per sport).
+ *
+ * Membership is an operator decision and only ever one (schema.ts): the
+ * Players admin, and the review wizard's `addSetSport` at commit. No lookup,
+ * sync or enrichment calls this. `players.sportsIndexPin.test.ts` greps for
+ * anything else writing the table.
+ *
+ * Validates nothing about whether each id is a SPORT row — the public caller
+ * (`setAdditionalSports`) does, and the commit's caller passes the set's own
+ * sport, which is one by construction.
+ */
+export async function syncPlayerSports(
+  ctx: MutationCtx,
+  playerId: Id<"players">,
+  sportIds: ReadonlyArray<Id<"selectorOptions">>,
+): Promise<void> {
+  const player = await ctx.db.get(playerId);
+  if (!player) throw new ConvexError("Player not found");
+  const wanted: Array<Id<"selectorOptions">> = [];
+  for (const sportId of sportIds) {
+    if (sportId === player.sportId || wanted.includes(sportId)) continue;
+    wanted.push(sportId);
+  }
+  if (wanted.length > MAX_PLAYER_EXTRA_SPORTS) {
+    throw new ConvexError(
+      `A player can belong to at most ${MAX_PLAYER_EXTRA_SPORTS} sports besides their own.`,
+    );
+  }
+  const existing = await ctx.db
+    .query("playerSports")
+    .withIndex("by_player_id", (q) => q.eq("playerId", playerId))
+    .collect();
+
+  let setChanged = false;
+  const held = new Set<string>();
+  for (const row of existing) {
+    const key = row.sportId as string;
+    if (wanted.includes(row.sportId) && !held.has(key)) {
+      held.add(key);
+      if (row.nameNormalized !== player.nameNormalized) {
+        await ctx.db.patch(row._id, { nameNormalized: player.nameNormalized });
+      }
+      continue;
+    }
+    await ctx.db.delete(row._id);
+    setChanged = true;
+  }
+  for (const sportId of wanted) {
+    if (held.has(sportId as string)) continue;
+    await ctx.db.insert("playerSports", {
+      playerId,
+      sportId,
+      nameNormalized: player.nameNormalized,
+    });
+    setChanged = true;
+  }
+  if (setChanged) await syncPlayerAliases(ctx, { playerId });
+}
+
+/**
+ * NEO-313 — add ONE sport to a player's sports, through the one writer. A
+ * no-op when it is their home sport or already listed. The commit's
+ * `addSetSport` path. Returns whether a sport was added.
+ */
+export async function addPlayerSport(
+  ctx: MutationCtx,
+  player: Doc<"players">,
+  sportId: Id<"selectorOptions">,
+): Promise<boolean> {
+  if (player.sportId === sportId) return false;
+  const current = await additionalSportIds(ctx, player._id);
+  if (current.includes(sportId)) return false;
+  /*
+   * Fail-soft at the cap. The caller is a commit with no operator in front of
+   * it, and `syncPlayerSports` would throw — aborting a whole checklist commit
+   * over one membership. The link or create itself still lands; the sport is
+   * not added, and the line says which player (ids only).
+   */
+  if (current.length >= MAX_PLAYER_EXTRA_SPORTS) {
+    console.warn(
+      JSON.stringify({
+        msg: "player_sport_not_added_at_cap",
+        playerId: player._id,
+        sportId,
+        cap: MAX_PLAYER_EXTRA_SPORTS,
+      }),
+    );
+    return false;
+  }
+  await syncPlayerSports(ctx, player._id, [...current, sportId]);
+  return true;
 }
 
 /**
@@ -1434,16 +1677,103 @@ export const list = query({
   returns: v.array(playerDocPublicValidator),
   handler: async (ctx, args) => {
     await requireSignedIn(ctx);
-    const limit = args.limit ?? 100;
+    // NEO-313 security review — floored and capped like `listForManagement`:
+    // a caller passing 10_000 gets `PLAYER_LIST_MAX`, and 0 or a negative
+    // number gets one row rather than an error from `.take`.
+    const limit = clampLimit(args.limit, PLAYER_LIST_DEFAULT, PLAYER_LIST_MAX);
     const docs = args.sportId
-      ? await ctx.db
-          .query("players")
-          .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
-          .take(limit)
+      ? await playersInSport(ctx, args.sportId, limit)
       : await ctx.db.query("players").take(limit);
     return docs.map(toPublicPlayer);
   },
 });
+
+/** `players.list` — default and ceiling for `limit`. */
+const PLAYER_LIST_DEFAULT = 100;
+const PLAYER_LIST_MAX = 500;
+
+/**
+ * A client-supplied page size, floored at 1 and capped at `max`. A missing or
+ * non-finite value takes `fallback`; a fraction rounds down. `.take` refuses
+ * anything else, and a 0 would read as "nobody here".
+ */
+function clampLimit(value: number | undefined, fallback: number, max: number): number {
+  const n = value !== undefined && Number.isFinite(value) ? Math.floor(value) : fallback;
+  return Math.max(1, Math.min(n, max));
+}
+
+/**
+ * NEO-313 — how many multi-sport members of one sport `playersInSport` reads.
+ * Members are rare (Bo Jackson, Deion Sanders), so this is headroom, not a
+ * page: it is what keeps a runaway `playerSports` table from turning every
+ * picker open into an unbounded read.
+ */
+const PLAYERS_IN_SPORT_MEMBER_CAP = 200;
+
+/**
+ * NEO-313 — the players who belong to a sport: the multi-sport members an
+ * operator added through `playerSports` first, then home-sport players. A
+ * guest appearance (a football player linked onto one baseball card) is NOT a
+ * member and does not appear here.
+ *
+ * Members come FIRST and are read whatever the home count. They used to be
+ * appended only while the home players left room, so in a sport with more
+ * home players than the page (baseball, at 500) every member silently fell
+ * off the set-sport picker and the Players list. Home players past the page
+ * still do — that is what the typed search is for.
+ *
+ * Returns up to `take` rows; the caller probes `take = limit + 1` when it needs
+ * to know whether there were more.
+ */
+async function playersInSport(
+  ctx: QueryCtx,
+  sportId: Id<"selectorOptions">,
+  take: number,
+): Promise<Array<Doc<"players">>> {
+  const members = await ctx.db
+    .query("playerSports")
+    .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+    .take(Math.min(take, PLAYERS_IN_SPORT_MEMBER_CAP));
+  const seen = new Set<string>();
+  const out: Array<Doc<"players">> = [];
+  for (const row of members) {
+    if (seen.has(row.playerId as string)) continue;
+    seen.add(row.playerId as string);
+    const player = await ctx.db.get(row.playerId);
+    if (player) out.push(player);
+  }
+  if (out.length >= take) return out;
+  const home = await ctx.db
+    .query("players")
+    .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+    .take(take - out.length);
+  for (const player of home) {
+    // `syncPlayerSports` never stores a player's home sport, so this only
+    // skips a row written around it.
+    if (seen.has(player._id as string)) continue;
+    seen.add(player._id as string);
+    out.push(player);
+  }
+  return out;
+}
+
+/**
+ * NEO-313 — attach `alsoSportIds` to a page of players. One indexed read per
+ * row, bounded by the caller's page.
+ */
+async function withAlsoSports(
+  ctx: QueryCtx,
+  players: ReadonlyArray<Doc<"players">>,
+) {
+  const out = [];
+  for (const player of players) {
+    out.push({
+      ...toPublicPlayer(player),
+      alsoSportIds: await additionalSportIds(ctx, player._id),
+    });
+  }
+  return out;
+}
 
 /**
  * Default and maximum result counts for `search`.
@@ -1494,14 +1824,14 @@ export const search = query({
     sportId: v.optional(v.id("selectorOptions")),
     limit: v.optional(v.number()),
   },
-  returns: v.array(playerDocPublicValidator),
+  returns: v.array(playerSearchResultValidator),
   handler: async (ctx, args) => {
     if (!(await getCurrentUserId(ctx))) return [];
 
     const term = args.query.trim();
     if (!term) return [];
 
-    const limit = Math.min(args.limit ?? SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT);
+    const limit = clampLimit(args.limit, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT);
 
     const docs = await ctx.db
       .query("players")
@@ -1511,9 +1841,96 @@ export const search = query({
       })
       .take(limit);
 
-    return docs.map(toPublicPlayer);
+    /*
+     * NEO-313 — a multi-sport member of THIS sport is a player of this sport.
+     *
+     * The search index filters on the HOME sport only, so Bo Jackson (home:
+     * football, also baseball) would be missing from a baseball picker. The
+     * members of one sport are few — multi-sport athletes are rare — so they
+     * are read from `playerSports.by_sport_id` (bounded) and matched in memory
+     * against the denormalised `nameNormalized`: every typed token must be the
+     * prefix of one of the name's tokens, the same prefix rule the search
+     * index applies to the last term. Only rows for the requested sport are
+     * read; nothing here looks at another sport.
+     */
+    if (args.sportId && docs.length < limit) {
+      const tokens = normalizePlayerName(term).split(" ").filter(Boolean);
+      if (tokens.length > 0) {
+        const members = await ctx.db
+          .query("playerSports")
+          .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
+          .take(SEARCH_MEMBER_SCAN);
+        const seen = new Set<string>(docs.map((d) => d._id as string));
+        for (const row of members) {
+          if (docs.length >= limit) break;
+          if (seen.has(row.playerId as string)) continue;
+          const nameTokens = row.nameNormalized.split(" ");
+          const matches = tokens.every((t) => nameTokens.some((n) => n.startsWith(t)));
+          if (!matches) continue;
+          const player = await ctx.db.get(row.playerId);
+          if (!player) continue;
+          seen.add(row.playerId as string);
+          docs.push(player);
+        }
+      }
+    }
+
+    const sportValueById = new Map<string, string>();
+    const teamById = new Map<string, Doc<"teams"> | null>();
+    const out = [];
+    for (const doc of docs) {
+      const sportKey = doc.sportId as string;
+      if (!sportValueById.has(sportKey)) {
+        const sport = await ctx.db.get(doc.sportId);
+        sportValueById.set(sportKey, sport?.value ?? "");
+      }
+      // Most recent first: an open stint (still there) outranks a closed one,
+      // then by start year. What a picker shows is "who is this now".
+      const recent = [...(doc.teamYears ?? [])]
+        .sort(
+          (a, b) =>
+            (b.toYear ?? Number.POSITIVE_INFINITY) - (a.toYear ?? Number.POSITIVE_INFINITY) ||
+            b.fromYear - a.fromYear,
+        )
+        .slice(0, SEARCH_RESULT_STINTS);
+      const stints = [];
+      for (const stint of recent) {
+        const key = stint.teamId as string;
+        if (!teamById.has(key)) teamById.set(key, await ctx.db.get(stint.teamId));
+        const team = teamById.get(key);
+        // A dangling team id is left out rather than shown as a blank chip.
+        if (!team) continue;
+        stints.push({
+          label: teamFullName(team),
+          ...(team.colors?.primary ? { primaryColor: team.colors.primary } : {}),
+          fromYear: stint.fromYear,
+          ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+        });
+      }
+      out.push({
+        ...toPublicPlayer(doc),
+        // One indexed read per row, bounded by `SEARCH_MAX_LIMIT`.
+        alsoSportIds: await additionalSportIds(ctx, doc._id),
+        sportValue: sportValueById.get(sportKey)!,
+        stints,
+      });
+    }
+    return out;
   },
 });
+
+/**
+ * NEO-313 — how many multi-sport members of one sport `search` reads to match
+ * a typed name against. Members are rare (Bo Jackson, Deion Sanders); this is
+ * headroom, and past it a member is still found by exact name through the
+ * review gate's `sameNamePlayers`.
+ *
+ * Kept small on purpose (security review): it runs on every keystroke of a
+ * typeahead any signed-in user can drive, and the scan is paid before a
+ * single row matches. 64 is far past the multi-sport athletes any one sport
+ * has; `playersInSport` reads more because it runs once per picker open.
+ */
+const SEARCH_MEMBER_SCAN = 64;
 
 /**
  * How many search-index rows feed the ranker, and how many rank out by default.
@@ -1741,13 +2158,19 @@ export const get = query({
  */
 export const getByIdParam = query({
   args: { id: v.string() },
-  returns: v.union(playerDocPublicValidator, v.null()),
+  // NEO-313 — with `alsoSportIds`: this is the Players admin detail's read,
+  // and its Sports field shows the sports beyond the home one.
+  returns: v.union(playerWithSportsPublicValidator, v.null()),
   handler: async (ctx, args) => {
     await requireSignedIn(ctx);
     const id = ctx.db.normalizeId("players", args.id);
     if (id === null) return null;
     const doc = await ctx.db.get(id);
-    return doc ? toPublicPlayer(doc) : null;
+    if (!doc) return null;
+    return {
+      ...toPublicPlayer(doc),
+      alsoSportIds: await additionalSportIds(ctx, doc._id),
+    };
   },
 });
 
@@ -1996,7 +2419,8 @@ export const listForManagement = query({
     limit: v.optional(v.number()),
   },
   returns: v.object({
-    players: v.array(playerDocPublicValidator),
+    // NEO-313 — each row carries `alsoSportIds` for the "Also: Football" chip.
+    players: v.array(playerWithSportsPublicValidator),
     totalCount: v.number(),
     truncated: v.boolean(),
   }),
@@ -2011,15 +2435,16 @@ export const listForManagement = query({
 
     // limit + 1 is the truncation probe — one row past the cap is how we learn
     // there is more without paying for a count of the whole table.
+    //
+    // NEO-313: a sport's list is its home players PLUS the multi-sport members
+    // an operator added (`playerSports`) — Bo Jackson is listed under baseball
+    // as well as football. A guest appearance is not a member and stays out.
     const rows = args.sportId
-      ? await ctx.db
-          .query("players")
-          .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
-          .take(limit + 1)
+      ? await playersInSport(ctx, args.sportId, limit + 1)
       : await ctx.db.query("players").take(limit + 1);
 
     const truncated = rows.length > limit;
-    const players = rows.slice(0, limit).map(toPublicPlayer);
+    const players = await withAlsoSports(ctx, rows.slice(0, limit));
     players.sort((a, b) => a.name.localeCompare(b.name));
 
     return { players, totalCount: players.length, truncated };
@@ -2141,7 +2566,6 @@ export const createByAdmin = mutation({
     if (aliases.length) {
       await syncPlayerAliases(ctx, {
         playerId: id,
-        sportId: args.sportId,
         aliases,
       });
     }
@@ -2353,6 +2777,12 @@ export const savePlayerFields = mutation({
 
       const maxYear = maxCareerYear();
       const seen = new Set<string>();
+      // NEO-313 — a multi-sport player's career spans every sport they belong
+      // to: Bo Jackson's Royals stint and his Raiders stint are both his.
+      const playerSportIds = new Set<string>([
+        existing.sportId,
+        ...(await additionalSportIds(ctx, args.id)),
+      ]);
 
       for (const stint of args.teamYears) {
         const team = await ctx.db.get(stint.teamId);
@@ -2361,8 +2791,9 @@ export const savePlayerFields = mutation({
         }
         // A cross-sport stint is not a harmless oddity: `teams.list` and every
         // picker scope by sport, so the stint would render as a dangling id the
-        // operator cannot see, let alone fix.
-        if (team.sportId !== existing.sportId) {
+        // operator cannot see, let alone fix. NEO-313: "cross-sport" means
+        // outside EVERY sport the player belongs to.
+        if (!playerSportIds.has(team.sportId)) {
           throw new ConvexError(
             `A career stint names a team from another sport: ${team.name}.`,
           );
@@ -2420,12 +2851,232 @@ export const savePlayerFields = mutation({
       patch.aliases = aliases.length > 0 ? aliases : undefined;
       await syncPlayerAliases(ctx, {
         playerId: args.id,
-        sportId: existing.sportId,
         aliases,
       });
     }
 
     await ctx.db.patch(args.id, patch);
+    // NEO-313 — `playerSports.nameNormalized` is a denormalised copy, so a
+    // rename rewrites it through the table's one writer (same list, so the
+    // sport set is unchanged and only the stale copies are patched).
+    if (patch.nameNormalized !== undefined && patch.nameNormalized !== existing.nameNormalized) {
+      await syncPlayerSports(ctx, args.id, await additionalSportIds(ctx, args.id));
+    }
     return null;
+  },
+});
+
+/**
+ * NEO-313 — how many of a player's cards a removal refusal counts before it
+ * stops counting. The number is shown to the operator; past this it is a
+ * floor, and the answer ("remove the cards first") is the same.
+ */
+const SPORT_REMOVAL_COUNT_CAP = 1000;
+
+/**
+ * NEO-313 — the Players admin's Sports field: set the sports this player
+ * belongs to BESIDES their home sport (Bo Jackson: football, also baseball).
+ *
+ * `sportIds` is the whole list, replaced. The home sport is dropped if sent;
+ * changing the home sport is not this mutation's job. At most
+ * `MAX_PLAYER_EXTRA_SPORTS`.
+ *
+ * ## Removing a sport is refused while something depends on it
+ *
+ * - A card in that sport still carries the player (`cardPlayerLinks`, keyed by
+ *   the CARD's sport): `ConvexError({ code: "SPORT_HAS_CARDS", sportId, count })`.
+ *   Removing it would leave the card pointing at a player the sport no longer
+ *   claims — and the next set built in that sport would mint a twin.
+ * - A career stint is at a team in that sport:
+ *   `ConvexError({ code: "SPORT_HAS_STINTS", sportId, count })`. The stint
+ *   editor refuses a stint outside the player's sports, so leaving one behind
+ *   would make every later save of this player's career fail.
+ *
+ * Structured errors so the page can say which sport and how many, and offer
+ * the way out, without parsing a sentence.
+ *
+ * Writes through `syncPlayerSports`, the table's one writer, which also
+ * re-derives the per-sport alias rows.
+ */
+export const setAdditionalSports = mutation({
+  args: {
+    playerId: v.id("players"),
+    sportIds: v.array(v.id("selectorOptions")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const userId = await requireAdmin(ctx);
+    // Bounded before anything is read per entry. Home sport plus the cap is
+    // the most a well-formed call can carry, with room for a repeat.
+    if (args.sportIds.length > (MAX_PLAYER_EXTRA_SPORTS + 1) * 2) {
+      throw new ConvexError(
+        `A player can belong to at most ${MAX_PLAYER_EXTRA_SPORTS} sports besides their own.`,
+      );
+    }
+    const player = await ctx.db.get(args.playerId);
+    if (!player) throw new ConvexError("Player not found");
+
+    const wanted: Array<Id<"selectorOptions">> = [];
+    for (const sportId of args.sportIds) {
+      if (sportId === player.sportId || wanted.includes(sportId)) continue;
+      wanted.push(sportId);
+    }
+    if (wanted.length > MAX_PLAYER_EXTRA_SPORTS) {
+      throw new ConvexError(
+        `A player can belong to at most ${MAX_PLAYER_EXTRA_SPORTS} sports besides their own.`,
+      );
+    }
+    for (const sportId of wanted) {
+      // The validator proves an id in `selectorOptions`, not a SPORT row — a
+      // player "in" a variant type would be unreachable by every sport-keyed
+      // lookup, the check `createByAdmin` makes for the home sport.
+      const sport = await ctx.db.get(sportId);
+      if (!sport || sport.level !== "sport") {
+        throw new ConvexError("Only a sport can be added to a player's sports.");
+      }
+    }
+
+    const current = await additionalSportIds(ctx, args.playerId);
+    const removed = current.filter((sportId) => !wanted.includes(sportId));
+    const teamSportById = new Map<string, Id<"selectorOptions"> | null>();
+    for (const sportId of removed) {
+      const cards = await ctx.db
+        .query("cardPlayerLinks")
+        .withIndex("by_player_and_sport", (q) =>
+          q.eq("playerId", args.playerId).eq("sportId", sportId),
+        )
+        .take(SPORT_REMOVAL_COUNT_CAP);
+      if (cards.length > 0) {
+        throw new ConvexError({ code: "SPORT_HAS_CARDS", sportId, count: cards.length });
+      }
+      let stints = 0;
+      for (const stint of player.teamYears ?? []) {
+        const key = stint.teamId as string;
+        if (!teamSportById.has(key)) {
+          teamSportById.set(key, (await ctx.db.get(stint.teamId))?.sportId ?? null);
+        }
+        if (teamSportById.get(key) === sportId) stints++;
+      }
+      if (stints > 0) {
+        throw new ConvexError({ code: "SPORT_HAS_STINTS", sportId, count: stints });
+      }
+    }
+
+    await syncPlayerSports(ctx, args.playerId, wanted);
+    // Ids and counts only.
+    console.log(
+      JSON.stringify({
+        msg: "player_sports_set",
+        playerId: args.playerId,
+        sportCount: wanted.length,
+        removedCount: removed.length,
+        userId,
+      }),
+    );
+    return null;
+  },
+});
+
+/** NEO-313 — how many of a player's cards the admin detail lists. */
+export const CARDS_FOR_PLAYER_CAP = 200;
+
+/**
+ * NEO-313 — a card's place in the catalogue, for a list that spans sets:
+ * "2026 Bowman Ultimate Autograph Book · Insert". Year, then the set name
+ * (with the brand in front when the set name does not already carry it and
+ * NB knows the brand), then every variant level below the set.
+ *
+ * Display only — nothing keys on it.
+ */
+async function setBreadcrumb(
+  getNode: (id: Id<"selectorOptions">) => Promise<Doc<"selectorOptions"> | null>,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<string> {
+  const chain: Array<Doc<"selectorOptions">> = [];
+  let cursor: Id<"selectorOptions"> | undefined = selectorOptionId;
+  for (let depth = 0; cursor && depth < 16; depth++) {
+    const node = await getNode(cursor);
+    if (!node) break;
+    chain.push(node);
+    if (node.level === "sport") break;
+    cursor = node.parentId;
+  }
+  chain.reverse();
+  const year = chain.find((n) => n.level === "year")?.value;
+  const manufacturer = chain.find((n) => n.level === "manufacturer");
+  const setName = chain.find((n) => n.level === "setName")?.value;
+  let title = setName ?? "";
+  if (
+    manufacturer &&
+    manufacturer.metadata?.isBrandUnknown !== true &&
+    setName &&
+    !setName.toLowerCase().includes(manufacturer.value.toLowerCase())
+  ) {
+    title = `${manufacturer.value} ${setName}`;
+  }
+  const head = [year, title].filter(Boolean).join(" ");
+  const variants = chain
+    .filter((n) => n.level === "variantType" || n.level === "insert" || n.level === "parallel")
+    .map((n) => n.value);
+  return [head, ...variants].filter(Boolean).join(" · ");
+}
+
+/**
+ * NEO-313 — every card that carries this player, across every set and sport,
+ * for the Players admin detail. Read through the derived `cardPlayerLinks`
+ * index (Convex cannot index `cardChecklist.playerIds`). `sportId` is the
+ * CARD's sport, so a football player's guest card in a baseball set comes back
+ * marked baseball.
+ *
+ * Up to `CARDS_FOR_PLAYER_CAP`. Admin-gated: it is an operator screen, and the
+ * breadcrumb walks are a few reads per distinct set.
+ */
+export const cardsForPlayer = query({
+  args: { playerId: v.id("players") },
+  returns: v.array(
+    v.object({
+      cardId: v.id("cardChecklist"),
+      cardNumber: v.string(),
+      cardName: v.string(),
+      selectorOptionId: v.id("selectorOptions"),
+      setLabel: v.string(),
+      sportId: v.id("selectorOptions"),
+      sportValue: v.string(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const links = await ctx.db
+      .query("cardPlayerLinks")
+      .withIndex("by_player_and_sport", (q) => q.eq("playerId", args.playerId))
+      .take(CARDS_FOR_PLAYER_CAP);
+
+    const nodes = new Map<string, Doc<"selectorOptions"> | null>();
+    const getNode = async (id: Id<"selectorOptions">) => {
+      const key = id as string;
+      if (!nodes.has(key)) nodes.set(key, await ctx.db.get(id));
+      return nodes.get(key) ?? null;
+    };
+    const labels = new Map<string, string>();
+    const out = [];
+    for (const link of links) {
+      const card = await ctx.db.get(link.cardChecklistId);
+      // The index is derived; a row that outlived its card is residue.
+      if (!card) continue;
+      const key = card.selectorOptionId as string;
+      if (!labels.has(key)) {
+        labels.set(key, await setBreadcrumb(getNode, card.selectorOptionId));
+      }
+      out.push({
+        cardId: card._id,
+        cardNumber: card.cardNumber,
+        cardName: card.cardName,
+        selectorOptionId: card.selectorOptionId,
+        setLabel: labels.get(key)!,
+        sportId: link.sportId,
+        sportValue: (await getNode(link.sportId))?.value ?? "",
+      });
+    }
+    return out;
   },
 });

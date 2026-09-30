@@ -190,11 +190,17 @@ import {
 } from "./lib/selectorTeams";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
+  addPlayerSport,
   createCardYearTeamCache,
   narrowSameNamePlayersByCardYear,
   normalizePlayerName,
+  playerBelongsToSport,
   sameNamePlayers,
 } from "./players";
+// NEO-313 — the derived player → cards index. Every `cardChecklist.playerIds`
+// writer and every card delete in this file goes through these two; see
+// convex/cardPlayerLinks.ts and `cardPlayerLinks.pin.test.ts`.
+import { deleteCardPlayerLinks, syncCardPlayerLinks } from "./cardPlayerLinks";
 import {
   MAX_TEAM_ALIASES,
   MAX_TEAM_ALIAS_LENGTH,
@@ -5107,9 +5113,25 @@ async function resolveTeamOnCardIdsForWrite(
     // ancestor chain (see the ambiguous-row note on
     // `findSportForSelectorOption`) must not turn an otherwise-valid team
     // edit into a hard failure.
+    //
+    // NEO-313 — enforced for a SET's team only. A CARD may carry a team from
+    // another sport: a football player's guest card in a baseball set shows
+    // his football team, and the operator picked it through the picker's
+    // explicit sport switch. Logged (ids only) so a guest link is findable.
     if (sportId && team.sportId !== sportId) {
-      throw new ConvexError(
-        `"${teamFullName(team)}" is not a team in this ${noun}'s sport.`,
+      if (noun !== "card") {
+        throw new ConvexError(
+          `"${teamFullName(team)}" is not a team in this ${noun}'s sport.`,
+        );
+      }
+      console.log(
+        JSON.stringify({
+          msg: "card_guest_team_link",
+          selectorOptionId,
+          teamId: team._id,
+          cardSportId: sportId,
+          teamSportId: team.sportId,
+        }),
       );
     }
     // NEO-236: the FULL name — "San Diego Padres", not "Padres". These names
@@ -5195,6 +5217,13 @@ async function resolvePlayerIdsForWrite(
   ids: Array<Id<"players">>;
   names: string[];
   links: Array<{ playerId: Id<"players">; nameOnCard: string }>;
+  /**
+   * NEO-313 — the CARD's sport, already walked for the check below, handed
+   * back so the caller's `syncCardPlayerLinks` does not walk it again.
+   * Undefined when there were no ids (nothing was walked) or the chain is
+   * orphaned.
+   */
+  sportId?: Id<"selectorOptions">;
 }> {
   const ids: Array<Id<"players">> = [];
   const seen = new Set<string>();
@@ -5218,13 +5247,20 @@ async function resolvePlayerIdsForWrite(
     if (!player) {
       throw new ConvexError("One of the selected players no longer exists.");
     }
-    // Same rule as teams: only enforced when the card's own sport is
-    // resolvable. An orphaned ancestor chain (see the ambiguous-row note on
-    // `findSportForSelectorOption`) must not turn an otherwise-valid write
-    // into a hard failure.
+    // NEO-313 — NOT enforced any more. A card may carry a player from another
+    // sport: a football player on a baseball card is a guest appearance, and
+    // his sport is untouched. The operator reached him only through the
+    // picker's explicit sport switch; nothing automated writes one. Logged
+    // (ids only) so a guest link is findable.
     if (sportId && player.sportId !== sportId) {
-      throw new ConvexError(
-        `"${player.name}" is not a player in this card's sport.`,
+      console.log(
+        JSON.stringify({
+          msg: "card_guest_player_link",
+          selectorOptionId,
+          playerId: player._id,
+          cardSportId: sportId,
+          playerSportId: player.sportId,
+        }),
       );
     }
     names.push(player.name);
@@ -5238,7 +5274,7 @@ async function resolvePlayerIdsForWrite(
     playerId,
     nameOnCard: nameOnCardById?.get(playerId as string)?.trim() || names[i],
   }));
-  return { ids, names, links };
+  return { ids, names, links, ...(sportId ? { sportId } : {}) };
 }
 
 export const addCustomCard = mutation({
@@ -5333,7 +5369,12 @@ export const addCustomCard = mutation({
     // so a bad id (unknown, wrong sport, over the cap) leaves no half-created
     // card behind. The returned names are the rows this already read; the
     // listing title uses them rather than reading the same players again.
-    const { ids: playerIds, names: linkedPlayerNames, links: playerLinks } =
+    const {
+      ids: playerIds,
+      names: linkedPlayerNames,
+      links: playerLinks,
+      sportId: cardSportId,
+    } =
       await resolvePlayerIdsForWrite(
         ctx,
         args.selectorOptionId,
@@ -5516,6 +5557,11 @@ export const addCustomCard = mutation({
       sortOrder: 0,
       lastUpdated: Date.now(),
     });
+
+    // NEO-313 — the player → cards index, for the card just born linked.
+    if (hasLinkedPlayers) {
+      await syncCardPlayerLinks(ctx, id, playerIds, cardSportId, { fresh: true });
+    }
 
     await restampCardChecklistSortOrders(ctx, args.selectorOptionId);
 
@@ -5754,8 +5800,11 @@ export const updateCard = mutation({
     // the born-with-a-player path and the given-one-later path cannot diverge
     // on what they accept, and the operator sees the same refusal wording
     // whichever one they are standing in.
+    let playerLinksIndexWrite:
+      | { ids: Array<Id<"players">>; sportId: Id<"selectorOptions"> | undefined }
+      | undefined;
     if (Array.isArray(filtered.playerIds)) {
-      const { ids, links } = await resolvePlayerIdsForWrite(
+      const { ids, links, sportId: cardSportId } = await resolvePlayerIdsForWrite(
         ctx,
         (await loadStoredCard()).selectorOptionId,
         filtered.playerIds as Array<Id<"players">>,
@@ -5765,6 +5814,9 @@ export const updateCard = mutation({
       // NEO-254 — written in the same breath as the ids. The two lists are one
       // fact; see the `playerLinks` note in schema.ts.
       filtered.playerLinks = links;
+      // NEO-313 — and the derived index, after the patch below. An emptied
+      // list walked no sport; the card's rows are removed either way.
+      playerLinksIndexWrite = { ids, sportId: cardSportId };
     }
 
     // NEO-246: the TYPED spelling of those same two fields gets the same
@@ -5846,6 +5898,14 @@ export const updateCard = mutation({
 
     if (Object.keys(filtered).length > 0) {
       await ctx.db.patch(id, { ...filtered, lastUpdated: Date.now() });
+    }
+    if (playerLinksIndexWrite) {
+      await syncCardPlayerLinks(
+        ctx,
+        id,
+        playerLinksIndexWrite.ids,
+        playerLinksIndexWrite.sportId,
+      );
     }
     return null;
   },
@@ -6163,6 +6223,8 @@ export const deleteCard = mutation({
     await requireAdmin(ctx);
     await deleteCardCrossListingsFor(ctx, args.id);
     await orphanVariationsOf(ctx, args.id);
+    // NEO-313 — the derived player index goes with the card.
+    await deleteCardPlayerLinks(ctx, args.id);
     await ctx.db.delete(args.id);
     return null;
   },
@@ -8006,12 +8068,16 @@ type SetBuilderResetResult = {
   /** NEO-306 — pending SportLots set reviews, one per (year, brand). */
   slSetReviewsDeleted: number;
   selectorOptionsDeleted: number;
+  /** NEO-313 — the derived player → cards index, drained before the cards. */
+  cardPlayerLinksDeleted: number;
   cardChecklistDeleted: number;
   crossListingsDeleted: number;
   /** NEO-294 — staged review rows, the residue that made CI's reset quadratic. */
   entityReviewQueueDeleted: number;
   /** NEO-294 — staged candidate cards, the other half of an abandoned review. */
   checklistCandidatesDeleted: number;
+  /** NEO-313 — a player's additional sports, drained before the players. */
+  playerSportsDeleted: number;
   playersDeleted: number;
   playerAliasesDeleted: number;
   teamsDeleted: number;
@@ -8062,10 +8128,12 @@ async function runSetBuilderReset(
   const counts = {
     slSetReviewsDeleted: 0,
     selectorOptionsDeleted: 0,
+    cardPlayerLinksDeleted: 0,
     cardChecklistDeleted: 0,
     crossListingsDeleted: 0,
     entityReviewQueueDeleted: 0,
     checklistCandidatesDeleted: 0,
+    playerSportsDeleted: 0,
     playersDeleted: 0,
     playerAliasesDeleted: 0,
     teamsDeleted: 0,
@@ -8087,6 +8155,12 @@ async function runSetBuilderReset(
     [
       "selectorOptionsDeleted",
       internal.selectorOptions.resetSelectorOptionsBatch,
+    ],
+    // NEO-313 — the derived player → cards index, BEFORE the cards it names:
+    // an interrupted reset must never leave a row pointing at a deleted card.
+    [
+      "cardPlayerLinksDeleted",
+      internal.selectorOptions.resetCardPlayerLinksBatch,
     ],
     ["cardChecklistDeleted", internal.selectorOptions.resetCardChecklistBatch],
     // NEO-21: cardCrossListings rows outlive nothing on their own (they're
@@ -8141,6 +8215,9 @@ async function runSetBuilderReset(
     // UnknownEntitiesDialog re-opens for confirmation. Without this,
     // E2E flows that rely on the dialog appearing fail because the
     // entities from prior runs are already known.
+    // NEO-313 — a player's additional sports, BEFORE the players they belong
+    // to, for the reason the index above goes before the cards.
+    ["playerSportsDeleted", internal.selectorOptions.resetPlayerSportsBatch],
     ["playersDeleted", internal.selectorOptions.resetPlayersBatch],
     // NEO-254 — the alias index, drained with the players it describes. A row
     // here that outlived its player keeps answering the alias lookup forever.
@@ -8304,6 +8381,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     // NEO-306 — pending SportLots set reviews, drained first.
     slSetReviewsDeleted: v.number(),
     selectorOptionsDeleted: v.number(),
+    // NEO-313 — the derived player → cards index.
+    cardPlayerLinksDeleted: v.number(),
     cardChecklistDeleted: v.number(),
     crossListingsDeleted: v.number(),
     // NEO-294 — the staging tables. Reported so the CI seed log carries the
@@ -8312,6 +8391,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     // have caught the 15 s → 246 s drift a week earlier.
     entityReviewQueueDeleted: v.number(),
     checklistCandidatesDeleted: v.number(),
+    // NEO-313 — a player's additional sports.
+    playerSportsDeleted: v.number(),
     playersDeleted: v.number(),
     // NEO-254 — reported alongside the players, so a run that drained one and
     // not the other is visible in the operator's own output.
@@ -8645,6 +8726,52 @@ export const backfillPlayerLinks = internalMutation({
       filled,
       ...(page.isDone ? {} : { nextCursor: page.continueCursor }),
     };
+  },
+});
+
+/**
+ * Internal: drain `cardPlayerLinks`, looped by `runSetBuilderReset` BEFORE the
+ * cards. NEO-313. The derived player → cards index; a row that outlived its
+ * card would keep a player's sport-removal refused forever. The one sanctioned
+ * reader and deleter of the table outside convex/cardPlayerLinks.ts —
+ * `cardPlayerLinks.pin.test.ts` checks it by name.
+ */
+export const resetCardPlayerLinksBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("cardPlayerLinks").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `playerSports`, looped by `runSetBuilderReset` BEFORE the
+ * players. NEO-313. Its own batch rather than a cascade inside the players
+ * one, for the read-budget reason the alias twin below gives. The one
+ * sanctioned deleter of the table outside `syncPlayerSports` —
+ * `players.sportsIndexPin.test.ts` checks it by name.
+ */
+export const resetPlayerSportsBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("playerSports").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
   },
 });
 
@@ -14097,6 +14224,20 @@ export const commitCardChecklistPrelude = internalMutation({
       );
     }
 
+    /**
+     * NEO-313 (security review) — the SET's sport, walked from the set itself
+     * ONCE for the whole prelude call, never taken from `args.sportId`.
+     *
+     * The "also plays the set's sport" writes (`addPlayerSport`, below, for a
+     * link and for a create) add a membership to a player, and every
+     * "was this row switched away from the set's sport?" comparison decides
+     * whether they run. Both answers belong to the set, so both read the
+     * ancestry rather than a caller-supplied id. Undefined (an orphaned
+     * subtree) means there is no set sport to add, and those writes are
+     * skipped rather than guessed.
+     */
+    const setSportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+
     // NEO-251 (security review) — the LAST place these names can be bounded
     // before they become `players` / `teams` rows.
     //
@@ -14388,13 +14529,19 @@ export const commitCardChecklistPrelude = internalMutation({
     const resolveTeamIdByName = async (
       rawName: string,
       forYear: number | undefined,
+      /**
+       * NEO-313 — the sport the STINT is in: the set's, unless the player's
+       * review row was switched to another sport by the operator, in which
+       * case his career teams are that sport's.
+       */
+      sportId: Id<"selectorOptions"> = args.sportId,
     ): Promise<Id<"teams"> | null> => {
       // NEO-307: STRICT — no `allowPastEra`. The one caller is
       // `resolveCareerTeamId`, whose year is a stint's start; a card's teams
       // resolve in the team loop further down, which opts in.
       const { teamId } = await resolveTeamForSetYear(
         ctx,
-        args.sportId,
+        sportId,
         rawName,
         forYear,
       );
@@ -14457,6 +14604,12 @@ export const commitCardChecklistPrelude = internalMutation({
          * team is in?"), just moved one layer down.
          */
         leagueChosen?: boolean;
+        /**
+         * NEO-313 — the sport to create (or find) the team in: the review
+         * row's, which is the set's unless the operator switched it. Absent is
+         * the set's sport.
+         */
+        sportId?: Id<"selectorOptions">;
       } = {},
       /**
        * `null` means "this name resolves to two or more overlapping rows, so
@@ -14465,6 +14618,7 @@ export const commitCardChecklistPrelude = internalMutation({
        */
     ): Promise<{ id: Id<"teams">; created: boolean } | null> => {
       const extra = opts.extra ?? {};
+      const teamSportId = opts.sportId ?? args.sportId;
       const fields = teamRowFields(input);
       /**
        * NEO-254 — find the row for THIS ERA, or make one beside it.
@@ -14484,7 +14638,7 @@ export const commitCardChecklistPrelude = internalMutation({
        */
       const colliding = await findCollidingTeams(
         ctx,
-        args.sportId,
+        teamSportId,
         teamFullName(fields),
         extra.yearsActive,
       );
@@ -14518,7 +14672,7 @@ export const commitCardChecklistPrelude = internalMutation({
        * names the HOLDING team, never the checklist string.
        */
       const aliasHolders = await findAliasHoldersOfName(ctx, {
-        sportId: args.sportId,
+        sportId: teamSportId,
         fullName: teamFullName(fields),
       });
       if (aliasHolders.length > 0) {
@@ -14534,7 +14688,7 @@ export const commitCardChecklistPrelude = internalMutation({
         extra.leagueId ??
         (opts.leagueChosen
           ? undefined
-          : await resolveDefaultLeagueId(ctx, args.sportId));
+          : await resolveDefaultLeagueId(ctx, teamSportId));
       /*
        * NEO-284 — the alias list, re-derived against the row's OWN composed
        * name and bounded fail-soft.
@@ -14563,7 +14717,7 @@ export const commitCardChecklistPrelude = internalMutation({
          * the operator typed (or the enrichment's), already on `extra`.
          */
         const { aliases: safe, dropped } = await dropAliasesThatArePrimaryNames(ctx, {
-          sportId: args.sportId,
+          sportId: teamSportId,
           aliases,
         });
         for (const { teamName } of dropped) {
@@ -14577,7 +14731,7 @@ export const commitCardChecklistPrelude = internalMutation({
       const id = await ctx.db.insert("teams", {
         ...extra,
         ...fields,
-        sportId: args.sportId,
+        sportId: teamSportId,
         ...(leagueId ? { leagueId } : {}),
         ...(aliases.length ? { aliases } : {}),
         lastUpdated: Date.now(),
@@ -14587,7 +14741,7 @@ export const commitCardChecklistPrelude = internalMutation({
       // read it would spend is one per created team inside a budgeted
       // mutation.
       if (aliases.length) {
-        await syncTeamAliases(ctx, { teamId: id, sportId: args.sportId, aliases });
+        await syncTeamAliases(ctx, { teamId: id, sportId: teamSportId, aliases });
       }
       return { id, created: true };
     };
@@ -14650,11 +14804,13 @@ export const commitCardChecklistPrelude = internalMutation({
       create: { leagueId?: Id<"leagues"> | null; leagueName?: string },
       suggestion?: string,
       teamRowId?: string,
+      // NEO-313 — the team's sport; see `createTeamFromOperatorInput`.
+      sportId: Id<"selectorOptions"> = args.sportId,
     ): Promise<boolean> => {
       if (create.leagueId === null) return true;
       if (create.leagueId !== undefined) {
         const league = await ctx.db.get(create.leagueId);
-        return !!league && league.sportId === args.sportId;
+        return !!league && league.sportId === sportId;
       }
       // NEO-254 — a skipped league STEP is an answer too, even though the team
       // row itself carries no `leagueId`. Asked only once the explicit fields
@@ -14710,6 +14866,8 @@ export const commitCardChecklistPrelude = internalMutation({
       enrichment: (typeof reviewRows)[number]["enrichment"],
       /** The team's own review-row id — what a skipped league step is keyed to. */
       teamRowId?: string,
+      // NEO-313 — the team's sport; see `createTeamFromOperatorInput`.
+      sportId: Id<"selectorOptions"> = args.sportId,
     ): Promise<Partial<Doc<"teams">>> => {
       let leagueId: Id<"leagues"> | undefined;
       /*
@@ -14736,7 +14894,7 @@ export const commitCardChecklistPrelude = internalMutation({
         ? await (async () => {
             const league = await ctx.db.get(storedLeagueId);
             if (!league) return false;
-            return league.sportId === args.sportId;
+            return league.sportId === sportId;
           })()
         : true;
       if (create.leagueId !== undefined && storedLeagueUsable) {
@@ -14746,7 +14904,7 @@ export const commitCardChecklistPrelude = internalMutation({
         leagueId = create.leagueId ?? undefined;
       } else if (
         create.leagueName?.trim() &&
-        stagedLeagueIdByName.has(normalizeLeagueName(create.leagueName))
+        stagedLeagueIdByName.has(stagedLeagueKey(sportId, create.leagueName))
       ) {
         // NEO-254 — the league this batch just created (or linked) for exactly
         // this name. Consulted BEFORE `findOrCreateLeague` below so the whole
@@ -14754,7 +14912,7 @@ export const commitCardChecklistPrelude = internalMutation({
         // lands on, rather than a second lookup by name that would find the
         // same row anyway but would also be the path that used to mint a
         // name-only league when it did not.
-        leagueId = stagedLeagueIdByName.get(normalizeLeagueName(create.leagueName))!;
+        leagueId = stagedLeagueIdByName.get(stagedLeagueKey(sportId, create.leagueName))!;
       } else if (create.leagueName?.trim()) {
         // The operator's OWN answer, and it outranks the suggestion for the
         // same reason `create.leagueId` does: "Create league X" is a decision
@@ -14765,15 +14923,15 @@ export const commitCardChecklistPrelude = internalMutation({
         // suggestion back, which is the very defect this ticket closes.
         leagueId = await findOrCreateLeague(ctx, {
           name: create.leagueName.trim(),
-          sportId: args.sportId,
+          sportId: sportId,
         });
       } else if (
         enrichment?.league &&
-        stagedLeagueIdByName.has(normalizeLeagueName(enrichment.league))
+        stagedLeagueIdByName.has(stagedLeagueKey(sportId, enrichment.league))
       ) {
         // Same rule for the suggestion the team never overrode: if this batch
         // staged a step for that league, its answer is the one to use.
-        leagueId = stagedLeagueIdByName.get(normalizeLeagueName(enrichment.league))!;
+        leagueId = stagedLeagueIdByName.get(stagedLeagueKey(sportId, enrichment.league))!;
       } else if (leagueStepSkipped(create, teamRowId)) {
         /*
          * NEO-254 — this team's own league step answered "no league".
@@ -14791,7 +14949,7 @@ export const commitCardChecklistPrelude = internalMutation({
       } else if (enrichment?.league) {
         leagueId = await findOrCreateLeague(ctx, {
           name: enrichment.league,
-          sportId: args.sportId,
+          sportId: sportId,
         });
       }
       return {
@@ -14883,6 +15041,14 @@ export const commitCardChecklistPrelude = internalMutation({
      */
     const stagedLeagueIdByName = new Map<string, Id<"leagues">>();
     /**
+     * NEO-313 — the key `stagedLeagueIdByName` is read and written by: the
+     * sport AND the normalised name. A row the operator switched to another
+     * sport stages its own leagues in that sport, and a same-named league in
+     * the set's sport must not answer for it.
+     */
+    const stagedLeagueKey = (sportId: Id<"selectorOptions">, name: string): string =>
+      `${sportId as string}|${normalizeLeagueName(name)}`;
+    /**
      * NEO-254 — "Skip — no league", SCOPED TO THE TEAM THAT RAISED THE STEP.
      *
      * A skip on a league step is an answer about one team: this team belongs
@@ -14905,8 +15071,10 @@ export const commitCardChecklistPrelude = internalMutation({
       // NEO-296 — a WRITE pass; the resolve phase does not run it.
       if (!runCreates) break;
       if (row.kind !== "league") continue;
-      const leagueKey = normalizeLeagueName(row.name);
-      if (!leagueKey) continue;
+      if (!normalizeLeagueName(row.name)) continue;
+      // NEO-313: the league step's own sport — its team's, which is the set's
+      // unless the operator switched that team (or its player) to another.
+      const leagueKey = stagedLeagueKey(row.sportId, row.name);
       if (row.decision?.action === "skip") {
         // Only a STAGED league can be skipped for a team — a league row with no
         // `source` was not raised on anyone's behalf, so there is nobody for
@@ -14924,7 +15092,7 @@ export const commitCardChecklistPrelude = internalMutation({
         // thrown on — there is no operator here, and losing one league must
         // not abort a whole checklist commit.
         const linked = await ctx.db.get(row.decision.linkedLeagueId);
-        if (linked && linked.sportId === args.sportId) {
+        if (linked && linked.sportId === row.sportId) {
           stagedLeagueIdByName.set(leagueKey, linked._id);
         }
         continue;
@@ -14945,7 +15113,7 @@ export const commitCardChecklistPrelude = internalMutation({
        */
       const leagueId = await findOrCreateLeague(ctx, {
         name: createLeague.name,
-        sportId: args.sportId,
+        sportId: row.sportId,
         ...(createLeague.abbreviation ? { abbreviation: createLeague.abbreviation } : {}),
         ...(createLeague.level ? { level: createLeague.level } : {}),
         ...(createLeague.yearsActive ? { yearsActive: createLeague.yearsActive } : {}),
@@ -14957,8 +15125,8 @@ export const commitCardChecklistPrelude = internalMutation({
       // RENAMED the league on the step, register the typed name too, so a team
       // that somehow refers to it by the new spelling still resolves.
       stagedLeagueIdByName.set(leagueKey, leagueId);
-      const typedKey = normalizeLeagueName(createLeague.name);
-      if (typedKey && typedKey !== leagueKey) {
+      const typedKey = stagedLeagueKey(row.sportId, createLeague.name);
+      if (normalizeLeagueName(createLeague.name) && typedKey !== leagueKey) {
         stagedLeagueIdByName.set(typedKey, leagueId);
       }
     }
@@ -15002,6 +15170,9 @@ export const commitCardChecklistPrelude = internalMutation({
      * already pay, and only on rows the operator ticked.
      */
     const aliasNamesByTeamId = new Map<Id<"teams">, string[]>();
+    // NEO-313 — the sport each linked team was answered in (the review row's),
+    // which the team must still belong to. First row wins, like the names.
+    const aliasSportByTeamId = new Map<Id<"teams">, Id<"selectorOptions">>();
     for (const row of reviewRows) {
       if (row.kind !== "team") continue;
       if (row.decision?.action !== "link") continue;
@@ -15009,12 +15180,15 @@ export const commitCardChecklistPrelude = internalMutation({
       const names = aliasNamesByTeamId.get(row.decision.linkedTeamId) ?? [];
       names.push(row.name);
       aliasNamesByTeamId.set(row.decision.linkedTeamId, names);
+      if (!aliasSportByTeamId.has(row.decision.linkedTeamId)) {
+        aliasSportByTeamId.set(row.decision.linkedTeamId, row.sportId);
+      }
     }
     for (const [teamId, names] of aliasNamesByTeamId) {
       // NEO-296 — a WRITE pass; the resolve phase does not run it.
       if (!runCreates) break;
       const linked = await ctx.db.get(teamId);
-      if (!linked || linked.sportId !== args.sportId) continue;
+      if (!linked || linked.sportId !== aliasSportByTeamId.get(teamId)) continue;
       const held = linked.aliases ?? [];
       // Keys the team already answers to: its full name and every alias.
       // `nameNormalized` IS `normalizeTeamName(teamFullName(row))` by
@@ -15053,7 +15227,7 @@ export const commitCardChecklistPrelude = internalMutation({
       // Warn-and-skip, like the caps above; the link itself still lands.
       // `selfId` so the linked team's own name is not a clash.
       const { aliases: safeAdditions, dropped } = await dropAliasesThatArePrimaryNames(ctx, {
-        sportId: args.sportId,
+        sportId: linked.sportId,
         aliases: additions,
         selfId: linked._id,
       });
@@ -15072,10 +15246,18 @@ export const commitCardChecklistPrelude = internalMutation({
         teamFullName(linked),
       );
       await ctx.db.patch(linked._id, { aliases, lastUpdated: Date.now() });
-      await syncTeamAliases(ctx, { teamId: linked._id, sportId: args.sportId, aliases });
+      await syncTeamAliases(ctx, { teamId: linked._id, sportId: linked.sportId, aliases });
     }
 
     const stagedTeamIdByLabel = new Map<string, Id<"teams">>();
+    /**
+     * NEO-313 — `stagedTeamIdByLabel` is keyed by the step's SPORT and label.
+     * A player the operator switched to football stages football career
+     * teams; a baseball player whose career names the same label must not be
+     * handed the football row.
+     */
+    const stagedTeamKey = (sportId: Id<"selectorOptions">, label: string): string =>
+      `${sportId as string}|${norm(label)}`;
 
     for (const row of reviewRows) {
       // NEO-296 — a WRITE pass; the resolve phase does not run it.
@@ -15085,7 +15267,7 @@ export const commitCardChecklistPrelude = internalMutation({
       // A step answered by pointing at a team we already hold. Nothing to
       // create, but the stint still has its answer.
       if (row.decision?.action === "link" && row.decision.linkedTeamId) {
-        stagedTeamIdByLabel.set(norm(row.name), row.decision.linkedTeamId);
+        stagedTeamIdByLabel.set(stagedTeamKey(row.sportId, row.name), row.decision.linkedTeamId);
         continue;
       }
       if (row.decision?.action !== "create") continue;
@@ -15103,7 +15285,12 @@ export const commitCardChecklistPrelude = internalMutation({
         // NEO-254 that lookup is the ONLY enrichment a team ever gets without
         // an operator asking, which is why `recordAllRemainingAsCreate` still
         // refuses to decide a row whose lookup has not landed.
-        extra: await reviewedTeamFields(create, row.enrichment, row._id as string),
+        extra: await reviewedTeamFields(
+          create,
+          row.enrichment,
+          row._id as string,
+          row.sportId,
+        ),
         // NEO-236 security review, finding 1: a league that failed the re-check
         // above is NOT an answer, so it must not suppress the sport default —
         // `reviewedTeamFields` has already fallen through to `leagueName` or
@@ -15113,14 +15300,17 @@ export const commitCardChecklistPrelude = internalMutation({
           create,
           row.enrichment?.league,
           row._id as string,
+          row.sportId,
         ),
+        // NEO-313: in the step's own sport — its player's.
+        sportId: row.sportId,
       });
       // NEO-254: two overlapping rows already hold this name, so nothing was
       // written — see the refusal in `createTeamFromOperatorInput`. The step
       // simply produces no staged id, and every stint that would have used it
       // falls through to the unresolved list.
       if (!made) continue;
-      stagedTeamIdByLabel.set(norm(row.name), made.id);
+      stagedTeamIdByLabel.set(stagedTeamKey(row.sportId, row.name), made.id);
       if (made.created) createdTeamIds.push(made.id);
     }
 
@@ -15139,6 +15329,32 @@ export const commitCardChecklistPrelude = internalMutation({
      * was written for: NEO-254's era work gave teams the same need, and the
      * team loop runs first.
      */
+    /**
+     * ── NEO-313: "he plays the set's sport too", for a LINK ─────────────────
+     *
+     * The operator switched a player row to another sport, linked the person
+     * they meant there, and ticked "Also add <set sport> to his sports". The
+     * create twin is honoured in `createPlayerFromDecision`; this is the link
+     * half. A WRITE pass, so the creates phase only, and at commit only —
+     * Cancel → Discard must leave the player untouched.
+     *
+     * Re-validated like the link itself: the player must still exist and still
+     * belong to the row's sport. Through `addPlayerSport` → `syncPlayerSports`,
+     * the table's one writer; a no-op when he already belongs to the set's
+     * sport. Absent the flag, a switched link is a GUEST link and writes
+     * nothing to the player at all.
+     */
+    for (const row of reviewRows) {
+      if (!runCreates) break;
+      if (row.kind !== "player") continue;
+      if (row.decision?.action !== "link") continue;
+      if (!row.decision.addSetSport || !row.decision.linkedPlayerId) continue;
+      if (!setSportId || row.sportId === setSportId) continue;
+      const linked = await ctx.db.get(row.decision.linkedPlayerId);
+      if (!linked || !(await playerBelongsToSport(ctx, linked, row.sportId))) continue;
+      await addPlayerSport(ctx, linked, setSportId);
+    }
+
     const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
 
     /*
@@ -15238,12 +15454,17 @@ export const commitCardChecklistPrelude = internalMutation({
           create,
           enrichment,
           teamReviewRow?._id as string | undefined,
+          teamReviewRow?.sportId ?? args.sportId,
         ),
         leagueChosen: await leagueAnswered(
           create,
           enrichment?.league,
           teamReviewRow?._id as string | undefined,
+          teamReviewRow?.sportId ?? args.sportId,
         ),
+        // NEO-313: the row's sport — a card's team the operator switched to
+        // another sport (a football player's guest card) is created there.
+        sportId: teamReviewRow?.sportId ?? args.sportId,
       });
       // NEO-254: null means the name resolves to two or more OVERLAPPING rows.
       // Nothing was written, and the name is reported unresolved exactly as an
@@ -15452,7 +15673,16 @@ export const commitCardChecklistPrelude = internalMutation({
       // decision.action === "create" — seed directly from the wizard's own
       // Wikidata preview lookup (already fetched during review); no more
       // post-commit processEnrichmentQueue scheduling needed for this row.
-      const enrichment = reviewByKey.get(`player:${normalized}`)?.enrichment;
+      const playerReviewRow = reviewByKey.get(`player:${normalized}`);
+      const enrichment = playerReviewRow?.enrichment;
+      /**
+       * NEO-313 — the sport the operator answered this name in: the set's,
+       * unless they switched the row ("Add as New Player", Sport = Football).
+       * The player is created THERE (his home sport), and his career teams
+       * resolve and are created there too — the staged New Team steps for a
+       * switched row were raised in that sport.
+       */
+      const playerSportId = playerReviewRow?.sportId ?? args.sportId;
       // Merge the wizard's Wikidata preview career-teams with any the admin
       // added by hand in the review wizard (decision.manualCareerTeams). Both
       // are {name, fromYear, toYear?} — resolve every name to a real team id
@@ -15565,7 +15795,7 @@ export const commitCardChecklistPrelude = internalMutation({
         // NEO-236: the operator's own answer for THIS label, by id, first. See
         // `stagedTeamIdByLabel` — a step answered with a different spelling, or
         // by linking to a differently-named row, is unreachable by matching.
-        const answered = stagedTeamIdByLabel.get(norm(label));
+        const answered = stagedTeamIdByLabel.get(stagedTeamKey(playerSportId, label));
         if (answered) return answered;
         // NEO-307: the operator's answer by id, re-validated the way a link
         // decision is — a team deleted or moved to another sport since the
@@ -15573,16 +15803,18 @@ export const commitCardChecklistPrelude = internalMutation({
         const linkedId = careerTeamLinkBySource.get(norm(label));
         if (linkedId) {
           const linked = await ctx.db.get(linkedId);
-          if (linked && linked.sportId === args.sportId) return linkedId;
+          if (linked && linked.sportId === playerSportId) return linkedId;
         }
-        const matched = await resolveTeamIdByName(label, stintYear);
+        const matched = await resolveTeamIdByName(label, stintYear, playerSportId);
         if (matched) return matched;
         const create = careerTeamCreateBySource.get(norm(label));
         if (!create) return null;
         // The operator answered this label, so it is no longer unresolved —
         // `resolveTeamIdByName` recorded it on the way past.
         unresolvedTeamNames.delete(label.trim());
-        const made = await createTeamFromOperatorInput(create);
+        const made = await createTeamFromOperatorInput(create, {
+          sportId: playerSportId,
+        });
         if (!made) {
           // Two overlapping rows already hold this name — see the refusal in
           // `createTeamFromOperatorInput`. The stint is left without a team
@@ -15621,7 +15853,8 @@ export const commitCardChecklistPrelude = internalMutation({
       const id = await ctx.db.insert("players", {
         name: name.trim(),
         nameNormalized: normalized,
-        sportId: args.sportId,
+        // NEO-313: the row's sport — the set's unless the operator switched it.
+        sportId: playerSportId,
         createdByUserId: userId,
         lastUpdated: Date.now(),
         ...(teamYears.length ? { teamYears } : {}),
@@ -15643,6 +15876,16 @@ export const commitCardChecklistPrelude = internalMutation({
       playerIdByName.set(name, id);
       playerNameById.set(id, name.trim());
       createdPlayerIds.push(id);
+      /*
+       * NEO-313 — "he plays the set's sport too". Written HERE, at commit,
+       * never at decision time (Cancel → Discard leaves no trace), through
+       * `syncPlayerSports`, the table's one writer. A no-op when the row was
+       * never switched: the player's home sport already is the set's.
+       */
+      if (decision.addSetSport && setSportId && playerSportId !== setSportId) {
+        const created = await ctx.db.get(id);
+        if (created) await addPlayerSport(ctx, created, setSportId);
+      }
     };
 
     for (
@@ -15833,7 +16076,14 @@ export const commitCardChecklistPrelude = internalMutation({
            * name — and they are told which name to look at again.
            */
           const linked = await ctx.db.get(decision.linkedPlayerId);
-          if (!linked || linked.sportId !== args.sportId) {
+          // NEO-313 — valid for the sport the ROW was answered in (the set's,
+          // or the one the operator switched it to), where "belongs" is home
+          // sport or `playerSports`. A football player guest-linked onto a
+          // baseball card passes here and the link lands on the first commit;
+          // it is not dropped as "cross-sport" any more.
+          const rowSportId =
+            reviewByKey.get(`player:${normalized}`)?.sportId ?? args.sportId;
+          if (!linked || !(await playerBelongsToSport(ctx, linked, rowSportId))) {
             unreviewedPlayerNames.push(name);
             continue;
           }
@@ -16263,6 +16513,23 @@ export const commitCardChecklistChunk = internalMutation({
       for (const row of rows) rowsById.set(row._id, row);
     }
 
+    /**
+     * NEO-313 — the CARD sport the `cardPlayerLinks` rows are keyed by. Walked
+     * once per chunk, and only when a card in it actually writes players: the
+     * ancestor walk is a handful of reads and most re-sync chunks write none.
+     * Walked here rather than trusted from the action's `sportId`, which is a
+     * client argument.
+     */
+    let chunkSport: { id: Id<"selectorOptions"> | undefined } | undefined;
+    const cardSport = async (): Promise<Id<"selectorOptions"> | undefined> => {
+      if (!chunkSport) {
+        chunkSport = {
+          id: await findSportForSelectorOption(ctx, args.selectorOptionId),
+        };
+      }
+      return chunkSport.id;
+    };
+
     const storedIds: Array<Id<"cardChecklist">> = [];
     // NEO-90: cards touched by this chunk that have a BSC platform ref but no
     // team resolved yet. Returned to the action, which unions every chunk's
@@ -16508,6 +16775,16 @@ export const commitCardChecklistChunk = internalMutation({
           sortOrder: card.sortOrder,
           lastUpdated: Date.now(),
         });
+        // NEO-313 — the derived player index follows the ids, only when the
+        // ids were actually written (an accepted `playerIds` change).
+        if ("playerIds" in contentPatch) {
+          await syncCardPlayerLinks(
+            ctx,
+            existing._id,
+            card.playerIds,
+            await cardSport(),
+          );
+        }
         // Enrichment keys off what the row will actually HAVE after this
         // patch, not off what the marketplace sent: when content was not
         // applied, the stored teams are still the row's answer.
@@ -16700,6 +16977,15 @@ export const commitCardChecklistChunk = internalMutation({
         // has to exist before we can patch it in). Cheap, well-precedented
         // insert-then-patch pattern already used elsewhere in this file.
         storedIds.push(newCardId);
+        // NEO-313 — the derived player index for the new card. `fresh`: the
+        // card was inserted a line ago, so there is nothing to diff against
+        // and the read is skipped (this branch runs up to
+        // CARDS_PER_COMMIT_CHUNK times per transaction).
+        if ((card.playerIds ?? []).length > 0) {
+          await syncCardPlayerLinks(ctx, newCardId, card.playerIds, await cardSport(), {
+            fresh: true,
+          });
+        }
         await ctx.db.patch(newCardId, {
           sku: generateSku({
             skuCode: args.sportSkuCode,
@@ -17091,6 +17377,8 @@ export const commitCardChecklistFinalize = internalMutation({
         // of atomicity that matters. All three run in this transaction, so a
         // row is never half-deleted however the walk is interrupted.
         await orphanVariationsOf(ctx, row._id);
+        // NEO-313 — and the derived player index, in the same transaction.
+        await deleteCardPlayerLinks(ctx, row._id);
         await ctx.db.delete(row._id);
         deletedIds.push(row._id);
         operatorDeleted++;

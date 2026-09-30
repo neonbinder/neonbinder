@@ -3,6 +3,7 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { teamFullName } from "../../lib/teams/team-name";
+import { contrastRatio, normalizeHexColor } from "../../lib/print/contrast";
 import { Input } from "../primitives/Input";
 
 /**
@@ -39,6 +40,54 @@ const SEARCH_DEBOUNCE_MS = 200;
 
 /** How many ranked results the list shows. Unchanged from the pre-NEO-212 cap. */
 const MAX_RESULTS = 8;
+
+/**
+ * NEO-313 — a player result's career line. Several people share a name, often
+ * across sports ("Brian Jordan" the Braves outfielder and "Brian Jordan" the
+ * Falcons safety are the same man; two "Chris Johnson"s are not), and the
+ * teams are how an operator tells them apart.
+ */
+type ResultStint = {
+  label: string;
+  primaryColor?: string;
+  fromYear: number;
+  toYear?: number;
+};
+
+/** Stints shown before "+N more". Three fits one line at the dialog's width. */
+const MAX_STINTS_SHOWN = 3;
+
+/**
+ * The two grounds a result row is ever painted on: the panel over the
+ * dialog's gray-900, and the highlighted row (`bg-[#00D558]/20` composited
+ * over that same gray-900, worked out once here). A livery colour must clear
+ * 4.5:1 on BOTH, or it would read on one row and vanish when highlighted.
+ */
+const RESULT_BG_IDLE = "#111827";
+const RESULT_BG_HIGHLIGHT = "#0e3e31";
+const STINT_TEXT_MIN_CONTRAST = 4.5;
+
+/**
+ * The team's own colour for its name in the career line — the house "Padres
+ * in the Padres colour" pattern — or null to leave it muted. Colour is never
+ * the only carrier: the label reads the same words either way (SC 1.4.1).
+ */
+function stintColor(primaryColor: string | undefined): string | null {
+  if (!primaryColor) return null;
+  const hex = normalizeHexColor(primaryColor);
+  if (!hex) return null;
+  for (const bg of [RESULT_BG_IDLE, RESULT_BG_HIGHLIGHT]) {
+    const ratio = contrastRatio(hex, bg);
+    if (ratio === null || ratio < STINT_TEXT_MIN_CONTRAST) return null;
+  }
+  return hex;
+}
+
+function stintYears(s: ResultStint): string {
+  if (s.toYear === undefined) return `${s.fromYear}–present`;
+  if (s.toYear === s.fromYear) return `${s.fromYear}`;
+  return `${s.fromYear}–${s.toYear}`;
+}
 
 export default function EntityLinkSearch({
   kind,
@@ -103,7 +152,13 @@ export default function EntityLinkSearch({
    * a name an operator can choose between.
    */
   const candidates:
-    | Array<{ _id: Id<"players"> | Id<"teams"> | Id<"leagues">; name: string }>
+    | Array<{
+        _id: Id<"players"> | Id<"teams"> | Id<"leagues">;
+        name: string;
+        // NEO-313 — players only: whose sport they are, and where they played.
+        sportValue?: string;
+        stints?: ResultStint[];
+      }>
     | undefined =
     kind === "player"
       ? players
@@ -207,24 +262,61 @@ export default function EntityLinkSearch({
       )}
       {searching && <div className="text-xs text-gray-500 px-2 py-1">Loading…</div>}
       {empty && <div className="text-xs text-gray-500 px-2 py-1">No matches</div>}
-      {matches.map((m, idx) => (
-        <button
-          key={m._id}
-          type="button"
-          onClick={() => onSelect(m._id, m.name)}
-          onMouseEnter={() => setHighlightIdx(idx)}
-          aria-label={`Link to ${m.name}`}
-          role="option"
-          aria-selected={idx === highlightIdx}
-          className={`w-full text-left px-2 py-1 text-sm rounded ${
-            idx === highlightIdx
-              ? "bg-[#00D558]/20 text-[#00D558]"
-              : "hover:bg-gray-800 text-gray-200"
-          }`}
-        >
-          {m.name}
-        </button>
-      ))}
+      {matches.map((m, idx) => {
+        const stints = m.stints ?? [];
+        const shown = stints.slice(0, MAX_STINTS_SHOWN);
+        const more = stints.length - shown.length;
+        return (
+          <button
+            key={m._id}
+            type="button"
+            onClick={() => onSelect(m._id, m.name)}
+            onMouseEnter={() => setHighlightIdx(idx)}
+            // Unchanged by NEO-313 — an E2E contract. The sport and career
+            // line below are what a sighted operator reads to choose; the
+            // name alone is what a flow and a screen reader select by.
+            aria-label={`Link to ${m.name}`}
+            role="option"
+            aria-selected={idx === highlightIdx}
+            className={`w-full text-left px-2 py-1 text-sm rounded ${
+              idx === highlightIdx
+                ? "bg-[#00D558]/20 text-[#00D558]"
+                : "hover:bg-gray-800 text-gray-200"
+            }`}
+          >
+            {/* The name in its own element, so a flow's `text:` match on it
+                is unaffected by the lines beside it. */}
+            <span className="flex items-baseline gap-2">
+              <span>{m.name}</span>
+              {m.sportValue && (
+                <span className="rounded border border-gray-600 px-1 text-[0.625rem] leading-4 text-gray-400">
+                  {m.sportValue}
+                </span>
+              )}
+            </span>
+            {shown.length > 0 && (
+              <span className="block truncate text-xs text-gray-400">
+                {shown.map((st, i) => {
+                  const color = stintColor(st.primaryColor);
+                  return (
+                    <span key={`${st.label}-${st.fromYear}-${i}`}>
+                      {i > 0 && ", "}
+                      <span
+                        className={color ? "font-medium" : "text-gray-300"}
+                        style={color ? { color } : undefined}
+                      >
+                        {st.label}
+                      </span>{" "}
+                      {stintYears(st)}
+                    </span>
+                  );
+                })}
+                {more > 0 && `, +${more} more`}
+              </span>
+            )}
+          </button>
+        );
+      })}
 
       <button
         type="button"

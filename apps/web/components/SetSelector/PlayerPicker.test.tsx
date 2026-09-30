@@ -17,7 +17,7 @@
  * to its own spy.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // NEO-254: the ambiguity refusal is a ConvexError, and only a ConvexError's
@@ -34,18 +34,44 @@ vi.mock("../../convex/_generated/api", () => ({
       getManyByIds: "players.getManyByIds",
       list: "players.list",
       findOrCreate: "players.findOrCreate",
+      // NEO-313: the cross-sport (and set-sport top-up) typeahead search.
+      search: "players.search",
+      // NEO-313: PlayerGuestTag's "is this really a guest?" read.
+      getByIdParam: "players.getByIdParam",
+    },
+    // NEO-313: SportTagById and the popover's SportSwitch both read the sport
+    // list to render (a tag's label, the switch's option list).
+    selectorOptions: {
+      getSelectorOptions: "selectorOptions.getSelectorOptions",
     },
   },
 }));
 
 let currentSelectedRows: unknown;
 let currentCandidates: unknown;
+// NEO-313: backs SportTagById and the popover's SportSwitch. Most tests never
+// open the switch's list, so an empty pool by default is enough — the
+// trigger button still renders (it does not depend on there being any
+// options), which is what the Tab-order tests below need.
+let currentSports: unknown = [];
+/** NEO-313 — `players.search`'s answer. `undefined` until a test sets it,
+ *  exactly like a query nothing has asked for yet. */
+let currentSearchResults: unknown;
+/** NEO-313 — `players.getByIdParam`, keyed by the id the guest tag asked for. */
+let currentPlayerById: Map<string, { alsoSportIds?: unknown[] }>;
 const mockFindOrCreate = vi.fn();
 
 vi.mock("convex/react", () => ({
-  useQuery: (ref: string) => {
+  useQuery: (ref: string, args: unknown) => {
     if (ref === "players.getManyByIds") return currentSelectedRows;
     if (ref === "players.list") return currentCandidates;
+    if (ref === "players.search") return args === "skip" ? undefined : currentSearchResults;
+    if (ref === "players.getByIdParam") {
+      if (args === "skip") return undefined;
+      const id = (args as { id: string }).id;
+      return currentPlayerById.get(id);
+    }
+    if (ref === "selectorOptions.getSelectorOptions") return currentSports;
     return undefined;
   },
   useMutation: (ref: string) =>
@@ -90,6 +116,20 @@ function openPopover() {
   fireEvent.click(screen.getByLabelText("Add player"));
 }
 
+/** NEO-313 — pick a sport off the popover's own SportSwitch ("Sport to search
+ *  for players"), the same control the operator uses to search another sport. */
+function switchSearchSport(fromLabel: string, toName: string) {
+  fireEvent.click(
+    screen.getByLabelText(`Sport to search for players: ${fromLabel}`),
+  );
+  fireEvent.click(
+    within(screen.getByRole("listbox", { name: "Choose a sport" })).getByRole(
+      "option",
+      { name: toName },
+    ),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -99,6 +139,9 @@ describe("PlayerPicker", () => {
     vi.clearAllMocks();
     currentSelectedRows = [];
     currentCandidates = [];
+    currentSports = [];
+    currentSearchResults = undefined;
+    currentPlayerById = new Map();
     mockFindOrCreate.mockResolvedValue(pid("new-player-1"));
   });
 
@@ -572,6 +615,152 @@ describe("PlayerPicker", () => {
 });
 
 /**
+ * NEO-313 — `liveryColors`' per-theme contrast test is asserted through a
+ * cross-sport search result's stint colour, the only place the wizard renders
+ * it: the function itself is not exported, and a colour that clears 4.5:1 on
+ * one theme's three popover surfaces (white, gray-100, the green-tinted
+ * ArrowDown row) but not the other's (gray-800, gray-700, its own tinted row)
+ * is exactly what "decided PER THEME" in the docstring means. Hex values below
+ * were checked against `contrastRatio` directly (not guessed): navy clears
+ * every light surface and fails every dark one, gold the reverse, and mid-gray
+ * clears neither.
+ */
+describe("PlayerPicker — per-theme livery contrast (NEO-313)", () => {
+  beforeEach(() => {
+    currentSports = [
+      { _id: SPORT_ID, value: "Baseball" },
+      { _id: OTHER_SPORT_ID, value: "Football" },
+    ];
+  });
+
+  /** Cross-sport search for one stint whose team carries `primaryColor`. */
+  function renderCrossSportStint(primaryColor: string) {
+    currentSearchResults = [
+      {
+        _id: pid("bo"),
+        name: "Bo Jackson",
+        sportId: OTHER_SPORT_ID,
+        sportValue: "Football",
+        stints: [{ label: "Raiders", primaryColor, fromYear: 1987, toYear: 1990 }],
+      },
+    ];
+    renderPicker();
+    openPopover();
+    switchSearchSport("Baseball", "Football");
+    fireEvent.change(screen.getByLabelText("Search players"), {
+      target: { value: "Bo Jackson" },
+    });
+  }
+
+  it("uses the colour on the light-theme class+variable when it clears 4.5:1 there", () => {
+    renderCrossSportStint("#001B3D");
+
+    const label = screen.getByText("Raiders");
+    expect(label.className).toContain("text-[color:var(--livery-light)]");
+    expect(label.style.getPropertyValue("--livery-light")).toBe("#001b3d");
+  });
+
+  it("falls back to the muted light class when the colour fails 4.5:1 there, even though it clears dark", () => {
+    renderCrossSportStint("#FFD700");
+
+    const label = screen.getByText("Raiders");
+    expect(label.className).toContain("text-gray-700");
+    expect(label.style.getPropertyValue("--livery-light")).toBe("");
+  });
+
+  it("uses the colour on the dark-theme class+variable when it clears 4.5:1 there", () => {
+    renderCrossSportStint("#FFD700");
+
+    const label = screen.getByText("Raiders");
+    expect(label.className).toContain("dark:text-[color:var(--livery-dark)]");
+    expect(label.style.getPropertyValue("--livery-dark")).toBe("#ffd700");
+  });
+
+  it("drops both themes' colour for one that clears neither surface", () => {
+    renderCrossSportStint("#808080");
+
+    const label = screen.getByText("Raiders");
+    expect(label.className).toContain("text-gray-700");
+    expect(label.className).toContain("dark:text-gray-300");
+    expect(label.style.getPropertyValue("--livery-light")).toBe("");
+    expect(label.style.getPropertyValue("--livery-dark")).toBe("");
+  });
+});
+
+/**
+ * NEO-313 — the guest tag on a selected chip. A player's HOME sport differing
+ * from the set's is necessary but not sufficient: `PlayerGuestTag` also reads
+ * the player's own `alsoSportIds` (a fresher answer than the batch snapshot
+ * `guestSportById` is built from) and hides the tag for a true multi-sport
+ * member of the set's sport.
+ */
+describe("PlayerPicker — guest tag (NEO-313)", () => {
+  beforeEach(() => {
+    currentSports = [
+      { _id: SPORT_ID, value: "Baseball" },
+      { _id: OTHER_SPORT_ID, value: "Football" },
+    ];
+    // Selected chip whose HOME sport (players.getManyByIds) is Football, on a
+    // Baseball-set picker — the shape `guestSportById` reads.
+    currentSelectedRows = [
+      { _id: pid("bo"), name: "Bo Jackson", sportId: OTHER_SPORT_ID },
+    ];
+  });
+
+  it("shows the home-sport tag when alsoSportIds lacks the set's sport", () => {
+    currentPlayerById.set("bo", { alsoSportIds: [] });
+    renderPicker({ value: [pid("bo")] });
+
+    expect(screen.getByText("Football")).toBeTruthy();
+  });
+
+  it("hides the tag once alsoSportIds includes the set's sport", () => {
+    currentPlayerById.set("bo", { alsoSportIds: [SPORT_ID] });
+    renderPicker({ value: [pid("bo")] });
+
+    expect(screen.queryByText("Football")).toBeNull();
+  });
+});
+
+/**
+ * NEO-313 — on the SET'S sport, a typed query tops up the 500-row pool with
+ * `players.search` rather than replacing it (see the docstring above
+ * `candidates` in PlayerPicker.tsx). Two things must both stay true: a member
+ * the pool missed (past row 500, or newly created) is reachable by search, and
+ * the pool's own folded match — "Jose" finding "José" already in the pool —
+ * keeps working independent of whatever search answers.
+ */
+describe("PlayerPicker — typed search merges with the set-sport pool (NEO-313)", () => {
+  it("shows a player the pool does not carry but the server search does", () => {
+    currentCandidates = [makePlayer("p1", "Mike Trout")];
+    currentSearchResults = [makePlayer("p2", "Shohei Ohtani")];
+    renderPicker();
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search players"), {
+      target: { value: "Ohtani" },
+    });
+
+    expect(screen.getByLabelText("Add Shohei Ohtani")).toBeTruthy();
+  });
+
+  it("still finds 'José' already in the pool by typing 'Jose', with no help from search", () => {
+    currentCandidates = [makePlayer("p1", "José Ramírez")];
+    // The server search answers nothing useful here — the fold match on the
+    // pool is what must carry this, not a merge with search.
+    currentSearchResults = [];
+    renderPicker();
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search players"), {
+      target: { value: "Jose" },
+    });
+
+    expect(screen.getByLabelText("Add José Ramírez")).toBeTruthy();
+  });
+});
+
+/**
  * NEO-272 — the popover is portalled, so nothing can clip it.
  *
  * `overflow: auto` establishes a clip box whether or not a scrollbar is
@@ -621,6 +810,9 @@ describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
   beforeEach(() => {
     currentSelectedRows = [];
     currentCandidates = [makePlayer("p1", "Aaron Judge")];
+    // NEO-313: an earlier describe's fixture must not leak the sport list
+    // here — this block's own tests rely on the "no sports yet" "…" label.
+    currentSports = [];
   });
 
   it("renders outside the scrolling ancestor, while the trigger stays inside it", () => {
@@ -705,9 +897,13 @@ describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
     // WCAG 2.4.11 — in the quick-add form this popover covers the Team row and
     // Add/Cancel. Returning focus to the trigger also keeps Tab inside a host
     // dialog whose focus trap cannot see into the portal.
+    //
+    // NEO-313: the SportSwitch trigger is now the LAST focusable row in the
+    // popover (it sits below the options and the create row), so it — not
+    // the last player option — is where Tab actually leaves from.
     renderInScrollBox();
     openPopover();
-    const lastRow = screen.getByLabelText("Add Aaron Judge");
+    const lastRow = screen.getByLabelText("Sport to search for players: …");
     lastRow.focus();
 
     fireEvent.keyDown(lastRow, { key: "Tab" });

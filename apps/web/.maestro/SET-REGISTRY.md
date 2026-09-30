@@ -80,7 +80,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `flows/set-selector/base-mapping-cancel-recovers.yaml` — **sole writer**, and it writes nothing |
 | Baseball → 2024 → Topps → Topps Chicago Cubs | `Base` — variant types synced, Base MAPPED on BOTH sides, checklist deliberately EMPTY | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-skip-commits-and-unskip.yaml` |
 | Baseball → 2024 → Topps → Topps Baltimore Orioles | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-career-team-commits.yaml` |
-| Baseball → 2024 → Topps → Topps Brooklyn Collection | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-link-commits.yaml` |
+| Baseball → 2024 → Topps → Topps Brooklyn Collection | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-link-commits.yaml` — since NEO-313 it also moves ONE review row to Football and links it to the minted football player `Gw<token>` (ticket decision 8: this fixture, no new real set); the committed card then links a player of another sport, which nothing else reads |
 | Baseball → 2024 → Topps → Topps Heritage | `Base` — SportLots base mapping CONFIRMED in-flow (NOT pre-synced) | `flows/set-selector/sets-base.yaml` — **sole writer** of that mapping. ✅ **RATIFIED 2026-09-09** (NEO-260) — it was already in use and had never been listed |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
@@ -1461,6 +1461,7 @@ would put the wrong question on screen.
 | `cvar-` | `variation-link-group-and-unlink.yaml` |
 | `fp-` | `features-propagation.yaml` |
 | `ftl-` | `set-fill-teams-from-teammate-card.yaml` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, the `stt-` shape for the same League-combobox reason. Per-attempt because the Fill teams confirm's title and toast are EXACT card counts. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows, its player `FTP<token>` and its team `FTT<token>` stand. The set is given NO set-level team (NEO-277 would copy it onto every card and leave nothing to fill). |
+| `msp-` | `admin/player-sports-multi-sport-membership.yaml` (NEO-313) — under the REAL `Baseball` › 2024 › `Topps` (the set's sport must be Baseball: the flow gives a football player Baseball and proves a baseball card's picker finds him); `Insert` › `Base`, one card `316-<attempt>` linking the player `Gm<token>`, DELETED at the end. The set and its rows stand. |
 | `msb-` | `move-set-to-another-brand.yaml` — its OWN sport `msb-sport-<worker>`, brand rows `Topps` / `Panini` under it in 2026 (hand-made, no ids), and ONE set `msb-a-<worker>` under `Topps`. The flow moves that set to `Panini` and back, so it ends where it started; `Panini` stays empty. Per-worker only (no count is asserted). **Never under `E2E Test Sport <worker>`** — it adds a brand row, see the fold note below. |
 | `parallel-feature-` | `cards-parallel-custom.yaml` |
 | `pg-cancel-` | `parallel-grouping-cancel-discards.yaml` (also `-${ATTEMPT_ID}`) |
@@ -1476,6 +1477,7 @@ would put the wrong question on screen.
 | `tpc-` | `team-picker-create-custom-card.yaml` |
 | `WOSet3-` | `new-chain-autopopulates-features.yaml` (under synthetic `E2E Test Sport N`) |
 | `xb-` | `all-brands-view-lists-every-set.yaml` — its OWN sport `xb-sport-<worker>`, brand rows `Topps` / `Panini` under it in 2026 (hand-made, no ids), and one set under each: `xb-a-<worker>` (Topps) / `xb-b-<worker>` (Panini). Per-worker only (no count is asserted). **Never under `E2E Test Sport <worker>`** — it adds a brand row, see the fold note below. |
+| `xsp-` | `set-selector/card-player-picker-cross-sport.yaml` (NEO-313) — under the REAL `Baseball` › 2024 › `Topps` (the set's sport must be Baseball: the card's picker defaults to it and the flow switches it to Football); `Insert` › `Base`, one card `315-<attempt>` linking the FOOTBALL player `Gp<token>` as a guest, DELETED at the end. The set and its rows stand. |
 | `xag-`, `xsrc-` | `cross-release-card-appears-in-guest-checklist.yaml` |
 | `xbg-`, `xbs-` | `cross-release-import-reports-missing-numbers.yaml` |
 | `xcg-`, `xsrc-` | `cross-release-hide-toggle-filters-guest-cards.yaml` |
@@ -1760,6 +1762,9 @@ whole thing; never assume which letter the worker half starts with.
 | `FTT` | `set-selector/set-fill-teams-from-teammate-card.yaml` | the team card #781 is born with and card #782 borrows through Fill teams. Carries the Location `Loc<token>` (typed into the DIALOG, never into a picker) so the composed `Loc<token> FTT<token>` is what rows, chips and the Fill teams ledger print |
 | `NBTeam` | `team-picker-create-custom-card.yaml` | created under `E2E Test Sport <w>`, not Baseball |
 | `NBPlayer` | `player-picker-create-custom-card.yaml` | a PLAYER, not a team — `players.search` tokenises identically, and the row persists the same way |
+| `Gw` | `set-selector/checklist-wizard-link-commits.yaml` | a FOOTBALL player (NEO-313), made on `/admin/players` through `admin/util-add-player-by-hand.yaml`, which the review wizard links a Topps Brooklyn Collection name to after switching that row to Football. `Gp`/`Gm` below are its siblings; the three diverge at their SECOND character, so none is a prefix of another |
+| `Gp` | `set-selector/card-player-picker-cross-sport.yaml` | a FOOTBALL player (NEO-313), linked as a guest onto a baseball card from the card picker's sport switch |
+| `Gm` | `admin/player-sports-multi-sport-membership.yaml` | a FOOTBALL player (NEO-313) who is given Baseball as an added sport, then picked on a baseball card |
 | `PM` | `admin/player-management-add-and-career-history.yaml` | the PLAYER this flow adds by hand; `PMT` below is the team it gives him. The two diverge at their THIRD character, so neither name is a prefix of the other and neither picker can be answered by the other's row |
 | `PMT` | `admin/player-management-add-and-career-history.yaml` | |
 | `SLP` | `spine-label/player-team-colors-default-to-longest-tenure.yaml` | the PLAYER; `SLA`/`SLB` are his two teams. This is the one flow that types a strict PREFIX of a minted name — see the prefix note below |

@@ -32,6 +32,7 @@ import { TeamMatchSearch } from "../entities/TeamMatchSearch";
 import { teamOptionLabel } from "../../lib/teams/team-era";
 import { useStaleWhileLoading } from "@/src/hooks/useStaleWhileLoading";
 import EntityLinkSearch from "./EntityLinkSearch";
+import SportSwitch from "./SportSwitch";
 import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
 // NEO-236: the one form a team is created from, shared with NewTeamDialog.
 import NewTeamForm, {
@@ -182,6 +183,12 @@ const TEAM_LEAGUE_FIELD_ID = "entity-review-team-league";
  * visible text, never by this id.
  */
 const TEAM_SAVE_AS_ALIAS_FIELD_ID = "entity-review-team-save-as-alias";
+/**
+ * NEO-313 — the "also add the set's sport" checkbox on a player moved to
+ * another sport. A stable id for the same reasons as the one above; flows
+ * target it by its visible text.
+ */
+const PLAYER_ADD_SET_SPORT_FIELD_ID = "entity-review-player-add-set-sport";
 // NEO-254 — the New League step's two addressable controls. Same reason the
 // three above carry ids: maestro-web derives `resource-id` from `node.id ||
 // node.ariaLabel`, and a stable id is what a flow can target without depending
@@ -401,6 +408,8 @@ export default function EntityReviewWizard({
   const clearCareerTeamStint = useMutation(
     api.entityReviewQueue.clearCareerTeamStint,
   );
+  // NEO-313 — the operator's per-name sport override. See `handleSwitchSport`.
+  const switchRowSport = useMutation(api.entityReviewQueue.switchRowSport);
 
   const [linkingOpen, setLinkingOpen] = useState(false);
   /**
@@ -485,6 +494,24 @@ export default function EntityReviewWizard({
   const [leagueCreateByRow, setLeagueCreateByRow] = useState<
     Record<string, NewLeagueDraft>
   >({});
+  /**
+   * NEO-313 — per PLAYER row moved off the set's sport: "also add the set's
+   * sport to their sports" (the multi-sport athlete, case B). Absent means
+   * OFF — a guest appearance is the common reading and changes nobody's
+   * sports. Keyed and never reset, like the drafts above, so an answer
+   * survives Back. Sent only while the row's sport differs from the set's.
+   */
+  const [addSetSportByRow, setAddSetSportByRow] = useState<
+    Record<string, boolean>
+  >({});
+  /**
+   * NEO-313 — the row whose sport switch is in flight. Holds the switch
+   * disabled (and the row's decisions busy) for the round trip, so a decision
+   * cannot land against the sport the operator is moving it away from.
+   */
+  const [switchingSportRowId, setSwitchingSportRowId] = useState<
+    Id<"entityReviewQueue"> | null
+  >(null);
   /*
    * NEO-236 — there is no per-career-team draft state any more.
    *
@@ -676,6 +703,8 @@ export default function EntityReviewWizard({
   /** NEO-284 — the caption under the "remember this name" checkbox, so the
    *  box announces what ticking it does (SC 3.3.2). */
   const saveAsAliasHelpId = useId();
+  /** NEO-313 — the caption under "Also add {sport} to their sports". */
+  const addSetSportHelpId = useId();
 
   const total = rows?.length ?? 0;
   const decided = useMemo(() => rows?.filter((r) => r.decision).length ?? 0, [rows]);
@@ -1185,7 +1214,11 @@ export default function EntityReviewWizard({
     // not "work in progress on the row on screen"; only an edit made here is.
     (current ? stagedCareerTeamsByRow[current._id] !== undefined : false) ||
     (current ? (excludedCareerTeamsByRow[current._id]?.length ?? 0) > 0 : false) ||
-    (current ? teamCreateByRow[current._id] !== undefined : false);
+    (current ? teamCreateByRow[current._id] !== undefined : false) ||
+    // NEO-313 — a name the operator moved to another sport is work on this
+    // row; the walk must not trade it for a team that settled meanwhile.
+    (current?.setSportId !== undefined && current.sportId !== current.setSportId) ||
+    (current ? addSetSportByRow[current._id] !== undefined : false);
 
   /**
    * NEO-248 — `pinnedRowHasEdits`, readable from inside the auto-add timer.
@@ -1687,6 +1720,8 @@ export default function EntityReviewWizard({
         aliases?: string[];
         wikidataId?: string;
       };
+      // NEO-313 — player rows only. See `addSetSportByRow`.
+      addSetSport?: boolean;
     } = {},
   ) =>
     decide(reviewRowId, () =>
@@ -1705,6 +1740,7 @@ export default function EntityReviewWizard({
           : undefined,
         create: payload.create,
         createLeague: payload.createLeague,
+        ...(payload.addSetSport ? { addSetSport: true } : {}),
       }),
     );
   const handleLink = async (
@@ -1718,7 +1754,7 @@ export default function EntityReviewWizard({
      * cannot disagree. Omitted entirely for players and leagues — the server
      * refuses it on any other kind.
      */
-    options: { saveAsAlias?: boolean } = {},
+    options: { saveAsAlias?: boolean; addSetSport?: boolean } = {},
   ) =>
     decide(reviewRowId, () =>
       recordDecision({
@@ -1732,10 +1768,58 @@ export default function EntityReviewWizard({
         ...(kind === "team" && options.saveAsAlias !== undefined
           ? { saveAsAlias: options.saveAsAlias }
           : {}),
+        // NEO-313 — only ever `true`, and only for a player.
+        ...(kind === "player" && options.addSetSport ? { addSetSport: true } : {}),
       }),
     );
   const handleSkip = async (reviewRowId: Id<"entityReviewQueue">) =>
     decide(reviewRowId, () => recordDecision({ reviewRowId, action: "skip" }));
+
+  /**
+   * NEO-313 — move ONE name to another sport, at the operator's explicit ask.
+   *
+   * Never automatic and never bulk (Jason, 2026-09-28: "it should ask
+   * everytime"). The server re-scopes the row — its lookup, near matches and
+   * career-team steps — so everything on the step that reads
+   * `current.sportId` follows on the next `getBatch`.
+   *
+   * Not routed through `decide`: a switch is not a decision, must not enter
+   * the Back history, and must not unpin the row. It shares `decide`'s guard
+   * instead, so the two can never interleave. The hand-typed career teams
+   * and unticked chips held for this row are dropped: they were answers about
+   * the old sport's teams.
+   */
+  const handleSwitchSport = async (
+    rowId: Id<"entityReviewQueue">,
+    sportId: Id<"selectorOptions">,
+  ) => {
+    if (decidingRef.current !== null || switchingSportRowId !== null) return;
+    if (rowId !== navRef.current.rowId) return;
+    setSwitchingSportRowId(rowId);
+    setRowError(null);
+    try {
+      await switchRowSport({ rowId, sportId });
+      setStagedCareerTeamsByRow((prev) => {
+        if (!(rowId in prev)) return prev;
+        const next = { ...prev };
+        delete next[rowId];
+        return next;
+      });
+      setExcludedCareerTeamsByRow((prev) => {
+        if (!(rowId in prev)) return prev;
+        const next = { ...prev };
+        delete next[rowId];
+        return next;
+      });
+    } catch (e) {
+      setRowError({
+        rowId,
+        message: errorMessage(e, "That sport didn't change. Try again."),
+      });
+    } finally {
+      setSwitchingSportRowId(null);
+    }
+  };
 
   /**
    * Present a row on purpose and clear whatever it was decided as.
@@ -2016,7 +2100,27 @@ export default function EntityReviewWizard({
     current && current.kind === "team"
       ? (saveAsAliasByRow[current._id] ?? true)
       : false;
-  const linkOptions = current?.kind === "team" ? { saveAsAlias } : {};
+  /**
+   * NEO-313 — the current name has been moved off the set's sport, and
+   * whether the operator also wants the set's sport added to the player.
+   * `addSetSport` is only ever sent while `crossSport` holds, so an answer
+   * given before switching back to the set's sport is inert.
+   */
+  const crossSport =
+    !!current &&
+    current.setSportId !== undefined &&
+    current.sportId !== current.setSportId;
+  const addSetSport =
+    !!current &&
+    current.kind === "player" &&
+    crossSport &&
+    (addSetSportByRow[current._id] ?? false);
+  const linkOptions =
+    current?.kind === "team"
+      ? { saveAsAlias }
+      : addSetSport
+        ? { addSetSport: true }
+        : {};
 
   const patchTeamCreate = (rowId: string, patch: Partial<NewTeamDraft>) => {
     setTeamCreateByRow((prev) => ({
@@ -2261,6 +2365,7 @@ export default function EntityReviewWizard({
     return {
       manualCareerTeams: stagedCareerTeams,
       excludedCareerTeamNames: excludedForCurrent,
+      ...(addSetSport ? { addSetSport: true } : {}),
     };
   };
 
@@ -2449,7 +2554,10 @@ export default function EntityReviewWizard({
    */
   const remainingPlayers = countBulkCreatable(rows);
   const remainingNames = countUndecided(rows);
-  const busy = decidingRowId !== null;
+  // NEO-313 — a sport switch in flight holds the row's decisions too: the
+  // row is about to be re-scoped, and a decision made now would be about the
+  // sport the operator is leaving.
+  const busy = decidingRowId !== null || switchingSportRowId !== null;
 
   /** Decided rows, in batch order, for the history list. */
   const decidedRows = rows.filter((r) => r.decision);
@@ -2844,10 +2952,72 @@ export default function EntityReviewWizard({
                       label="name"
                       className="align-middle"
                     />
-                    <span className="text-xs font-normal text-gray-400">
-                      ({kindLabel(current.kind)} · {current.sportValue})
-                    </span>
+                    {/*
+                      NEO-313 — on a live player or team step the sport in
+                      this tag IS the override: same muted words, plus a caret.
+                      Jason: "a very rare occurance", so it adds no row, no
+                      border and no banner — "(Player · Baseball ▾)" reads as
+                      it always did until someone goes looking. Never
+                      autofocused and not on Enter's path; see SportSwitch.
+                      Leagues and decided rows keep the plain tag.
+                    */}
+                    {!reviewingDecided &&
+                    current.kind !== "league" &&
+                    current.setSportId !== undefined ? (
+                      <span className="text-xs font-normal text-gray-400">
+                        ({kindLabel(current.kind)} ·{" "}
+                        <SportSwitch
+                          value={current.sportId}
+                          setSportId={current.setSportId}
+                          disabled={busy}
+                          prefix={null}
+                          onChange={(sportId) => {
+                            void handleSwitchSport(current._id, sportId);
+                          }}
+                        />
+                        )
+                      </span>
+                    ) : (
+                      <span className="text-xs font-normal text-gray-400">
+                        ({kindLabel(current.kind)} · {current.sportValue})
+                      </span>
+                    )}
                   </div>
+
+                  {/*
+                    NEO-313, case B — a multi-sport athlete. Only once the
+                    operator has moved this name off the set's sport, and
+                    unticked: a guest appearance changes nobody's sports.
+                    Under the tag it qualifies, in the body — never the
+                    footer (NEO-110 keeps that row still).
+                  */}
+                  {!reviewingDecided && current.kind === "player" && crossSport && (
+                    <div className="mt-2 space-y-0.5">
+                      <label
+                        htmlFor={PLAYER_ADD_SET_SPORT_FIELD_ID}
+                        className="flex items-center gap-2 text-xs text-gray-300"
+                      >
+                        <input
+                          id={PLAYER_ADD_SET_SPORT_FIELD_ID}
+                          type="checkbox"
+                          checked={addSetSport}
+                          disabled={busy}
+                          aria-describedby={addSetSportHelpId}
+                          onChange={(e) =>
+                            setAddSetSportByRow((prev) => ({
+                              ...prev,
+                              [current._id]: e.target.checked,
+                            }))
+                          }
+                          className="h-4 w-4 rounded accent-[#00D558] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800"
+                        />
+                        <span>Also add {current.setSportValue} to their sports</span>
+                      </label>
+                      <p id={addSetSportHelpId} className="pl-6 text-xs text-gray-400">
+                        Leave it off for a one-off appearance in this set.
+                      </p>
+                    </div>
+                  )}
 
                   {/*
                     NEO-221 — a rejected decide, under the row it belongs to.
@@ -2878,6 +3048,7 @@ export default function EntityReviewWizard({
                         current._id,
                         "player",
                         playerId as Id<"players">,
+                        linkOptions,
                       );
                     }}
                   />

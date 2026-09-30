@@ -16,3 +16,10 @@ Typechecking Convex changes in `apps/web`:
 `ln -sfn <main-checkout>/apps/web/node_modules node_modules`, run tsc, and `rm -f node_modules` afterward so the worktree is left clean.
 
 See [[feedback-no-local-convex-deploy-from-worktrees]].
+
+`apps/web/link-deps.sh` does not work in a monorepo worktree: it takes the
+primary checkout's REPO ROOT (`main/`) and looks for `node_modules` there,
+not in `main/apps/web/`, so it always refuses. Do the manual symlink above
+(after `cmp` of the two `apps/web/package-lock.json`). With parallel builders
+in one worktree, leave the gitignored link for the coordinator to remove
+rather than pulling it out from under another agent's gate run.

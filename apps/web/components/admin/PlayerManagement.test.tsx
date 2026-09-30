@@ -76,6 +76,10 @@ vi.mock("../../convex/_generated/api", () => ({
       createByAdmin: "players.createByAdmin",
       savePlayerFields: "players.savePlayerFields",
       enrichFromWikidata: "players.enrichFromWikidata",
+      // NEO-313: the multi-sport athlete's own sports field, and the
+      // read-only list of every card that links the player.
+      setAdditionalSports: "players.setAdditionalSports",
+      cardsForPlayer: "players.cardsForPlayer",
     },
     teams: {
       getManyByIds: "teams.getManyByIds",
@@ -98,6 +102,8 @@ const lastArgs = (ref: string): Record<string, unknown> | undefined => {
 const mockCreateByAdmin = vi.fn();
 const mockSavePlayerFields = vi.fn();
 const mockEnrich = vi.fn();
+/** NEO-313 — the Sports field's own write, independent of Save. */
+const mockSetAdditionalSports = vi.fn();
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: Args) => {
@@ -108,6 +114,7 @@ vi.mock("convex/react", () => ({
   useMutation: (ref: string) => {
     if (ref === "players.createByAdmin") return mockCreateByAdmin;
     if (ref === "players.savePlayerFields") return mockSavePlayerFields;
+    if (ref === "players.setAdditionalSports") return mockSetAdditionalSports;
     return vi.fn();
   },
   useAction: (ref: string) => {
@@ -374,6 +381,8 @@ const BORDERLINE_PLAYER = {
 let management: unknown;
 let searchResults: unknown;
 let nearMatches: unknown;
+/** NEO-313 — `players.cardsForPlayer`'s answer, keyed by player id. */
+let cardsForPlayerById: Record<string, unknown> = {};
 
 function routeQuery(ref: string, args: Record<string, unknown>): unknown {
   switch (ref) {
@@ -398,6 +407,10 @@ function routeQuery(ref: string, args: Record<string, unknown>): unknown {
       return TEAMS.filter((t) =>
         (args.ids as string[]).includes(t._id),
       );
+    // NEO-313 — the Cards section's read-only list, keyed by the requested
+    // player (so a test can hand different rows to different players).
+    case "players.cardsForPlayer":
+      return cardsForPlayerById[args.playerId as string] ?? [];
     default:
       return undefined;
   }
@@ -418,10 +431,12 @@ beforeEach(() => {
   };
   searchResults = [GRIFFEY, TROUT];
   nearMatches = undefined;
+  cardsForPlayerById = {};
   PLAYERS_BY_ID["p-gwynn"] = GWYNN;
   mockCreateByAdmin.mockResolvedValue({ id: "p-trout", created: true });
   mockSavePlayerFields.mockResolvedValue(null);
   mockEnrich.mockResolvedValue(null);
+  mockSetAdditionalSports.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -1955,5 +1970,154 @@ describe("NEO-254: birth year", () => {
 
     await new Promise((r) => setTimeout(r, 0));
     expect(mockSavePlayerFields).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-313 — the multi-sport athlete: the Sports field and the Cards list
+// ---------------------------------------------------------------------------
+
+/** Bo Jackson: home sport Baseball, with Football as an added sport. */
+const BO_JACKSON = {
+  _id: "p-bo",
+  _creationTime: 6,
+  name: "Bo Jackson",
+  nameNormalized: "bo jackson",
+  sportId: "sport-baseball",
+  alsoSportIds: ["sport-football"],
+  lastUpdated: 1,
+};
+
+/** Render the screen with Bo in the list and his detail panel open. */
+function renderWithBo() {
+  management = {
+    players: [BO_JACKSON, GRIFFEY, TROUT],
+    totalCount: 3,
+    truncated: false,
+  };
+  PLAYERS_BY_ID["p-bo"] = BO_JACKSON;
+  const utils = render(<PlayerManagement />);
+  fireEvent.click(screen.getByRole("button", { name: /Bo Jackson/ }));
+  return utils;
+}
+
+describe("NEO-313: the Sports field", () => {
+  it("adding a sport calls setAdditionalSports with home + new", async () => {
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    fireEvent.click(screen.getByRole("button", { name: "Add sport" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add sport Football" }));
+
+    await waitFor(() => {
+      expect(mockSetAdditionalSports).toHaveBeenCalledWith({
+        playerId: "p-griffey",
+        sportIds: ["sport-football"],
+      });
+    });
+  });
+
+  it("removing a held sport calls setAdditionalSports with it dropped", async () => {
+    renderWithBo();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove sport Football" }));
+
+    await waitFor(() => {
+      expect(mockSetAdditionalSports).toHaveBeenCalledWith({
+        playerId: "p-bo",
+        sportIds: [],
+      });
+    });
+  });
+
+  it("renders the SPORT_HAS_CARDS refusal's message verbatim", async () => {
+    mockSetAdditionalSports.mockRejectedValue(
+      new ConvexError({
+        code: "SPORT_HAS_CARDS",
+        sportId: "sport-football",
+        count: 2,
+      }),
+    );
+    renderWithBo();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove sport Football" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toBe(
+        "2 cards in Football sets still link to Bo Jackson. Unlink those first; they're listed under Cards.",
+      );
+    });
+  });
+
+  it("renders the SPORT_HAS_STINTS refusal's message verbatim", async () => {
+    mockSetAdditionalSports.mockRejectedValue(
+      new ConvexError({
+        code: "SPORT_HAS_STINTS",
+        sportId: "sport-football",
+        count: 1,
+      }),
+    );
+    renderWithBo();
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove sport Football" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert").textContent).toBe(
+        "1 career stint is at a Football team. Remove it first; it's under Career history.",
+      );
+    });
+  });
+});
+
+describe("NEO-313: the Cards list", () => {
+  it("tags a card only when its sport is neither the home sport nor an added one", () => {
+    cardsForPlayerById["p-bo"] = [
+      {
+        cardId: "c1",
+        cardName: "1990 Score",
+        cardNumber: "5",
+        setLabel: "1990 Score Baseball",
+        sportId: "sport-baseball",
+        sportValue: "Baseball",
+      },
+      {
+        cardId: "c2",
+        cardName: "1990 Score Football",
+        cardNumber: "12",
+        setLabel: "1990 Score Football",
+        sportId: "sport-football",
+        sportValue: "Football",
+      },
+      {
+        cardId: "c3",
+        cardName: "Guest hockey card",
+        cardNumber: "1",
+        setLabel: "Upper Deck Hockey",
+        sportId: "sport-hockey",
+        sportValue: "Hockey",
+      },
+    ];
+    renderWithBo();
+
+    const list = screen.getByRole("list", { name: "Cards for Bo Jackson" });
+    // Home sport (Baseball) and an added sport (Football) are never tagged —
+    // both are ordinary membership, not a guest appearance.
+    expect(within(list).queryByText("Baseball")).toBeNull();
+    expect(within(list).queryByText("Football")).toBeNull();
+    // A sport that is neither IS a guest appearance and gets the tag.
+    expect(within(list).getByText("Hockey")).toBeTruthy();
+  });
+
+  it("shows the 'Also: {sport}' chip in the master list for a multi-sport player", () => {
+    renderWithBo();
+
+    const row = screen.getByRole("button", { name: /Bo Jackson/ });
+    expect(within(row).getByText("Also: Football")).toBeTruthy();
+  });
+
+  it("shows no 'Also:' chip for a single-sport player", () => {
+    render(<PlayerManagement />);
+    const row = screen.getByRole("button", { name: /Ken Griffey Jr\./ });
+    expect(within(row).queryByText(/^Also:/)).toBeNull();
   });
 });

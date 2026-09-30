@@ -20,7 +20,11 @@ import {
   buildExistingPlayerCandidates,
   isAmbiguousPlayerName,
   normalizePlayerName,
+  playerBelongsToSport,
 } from "./players";
+// NEO-313 — the set's own sport, walked from the review row's selector row:
+// the default every row is asked in, and what `addSetSport` adds at commit.
+import { findSportForSelectorOption } from "./cardChecklist";
 // NEO-254: ONE floor, shared with `players.savePlayerFields` (the other route
 // into the same `players.teamYears` column) and with the wizard's own year
 // fields. The three used to be separate literals and two of them disagreed.
@@ -278,6 +282,9 @@ const decisionValidator = v.union(
     ),
     // NEO-254: league-kind only — the whole record. See schema.ts.
     createLeague: v.optional(leagueCreateValidator),
+    // NEO-313: player-kind only — at COMMIT, also add the set's sport to the
+    // created player's `playerSports`. Absent is a guest link. See schema.ts.
+    addSetSport: v.optional(v.boolean()),
   }),
   v.object({
     action: v.literal("link"),
@@ -288,6 +295,9 @@ const decisionValidator = v.union(
     // NEO-284: team-kind only — at COMMIT, remember the parked string as an
     // alias of `linkedTeamId`. Stored only when true. See schema.ts.
     saveAsAlias: v.optional(v.boolean()),
+    // NEO-313: player-kind only — at COMMIT, also add the set's sport to
+    // `linkedPlayerId`'s `playerSports`. Absent is a guest link. See schema.ts.
+    addSetSport: v.optional(v.boolean()),
   }),
   // NEO-212: "not a person / not a team" — the card keeps the raw name, and
   // nothing is created or linked. See schema.ts.
@@ -730,6 +740,14 @@ const publicRowValidator = v.object({
   // NEO-96: the sport row's display value, resolved server-side so the wizard
   // can render "(Player \u00b7 Baseball)" without a client-side join.
   sportValue: v.string(),
+  /**
+   * NEO-313 — the SET's sport, beside the row's own. They are the same until
+   * the operator switches a row to another sport (`switchRowSport`); the
+   * wizard compares the two to show the switch and to offer "Also add
+   * <set sport> to his sports" (`addSetSport`).
+   */
+  setSportId: v.id("selectorOptions"),
+  setSportValue: v.string(),
   status: v.union(v.literal("pending"), v.literal("ready"), v.literal("error")),
   enrichment: v.optional(enrichmentValidator),
   decision: v.optional(decisionValidator),
@@ -1028,7 +1046,8 @@ export const ENTITY_REVIEW_START_OPS = 800;
  * afford.
  */
 const REVIEW_NAME_LOOKUP_OPS = {
-  BASE: 2,
+  // NEO-313: three index reads now — `players`, `playerSports`, `playerAliases`.
+  BASE: 3,
   EXTRA: PLAYER_AMBIGUITY_SCAN_LIMIT * (CAREER_SUMMARY_MAX_TEAMS + 1),
 } as const;
 
@@ -2444,17 +2463,33 @@ export const getBatch = query({
     // one sportId, so this is a single extra read regardless of batch size —
     // worth doing here rather than making the wizard join per row.
     const labelCache = new Map<Id<"selectorOptions">, string>();
+    const labelFor = async (sportId: Id<"selectorOptions">): Promise<string> => {
+      let label = labelCache.get(sportId);
+      if (label === undefined) {
+        label = await sportLabel(ctx, sportId);
+        labelCache.set(sportId, label);
+      }
+      return label;
+    };
+    // NEO-313 — one ancestor walk per batch: every row shares the set. An
+    // orphaned chain falls back to each row's own sport, which is what the
+    // row was inserted with.
+    const setSportId =
+      rows.length > 0
+        ? await findSportForSelectorOption(ctx, args.selectorOptionId)
+        : undefined;
     const resolved = [];
     // NEO-236: staged career teams come out ahead of the player who needs
     // them. See `walkOrder` — the wizard's "next undecided" rule reads array
     // order, so this is where the step sequence is decided.
     for (const row of walkOrder(rows)) {
-      let sportValue = labelCache.get(row.sportId);
-      if (sportValue === undefined) {
-        sportValue = await sportLabel(ctx, row.sportId);
-        labelCache.set(row.sportId, sportValue);
-      }
-      resolved.push({ ...toPublicRow(row), sportValue });
+      const rowSetSportId = setSportId ?? row.sportId;
+      resolved.push({
+        ...toPublicRow(row),
+        sportValue: await labelFor(row.sportId),
+        setSportId: rowSetSportId,
+        setSportValue: await labelFor(rowSetSportId),
+      });
     }
     return resolved;
   },
@@ -2592,6 +2627,10 @@ export const recordDecision = mutation({
     // an alias of the linked team when the commit lands. Refused, not
     // ignored, on any other row kind — see the doc comment.
     saveAsAlias: v.optional(v.boolean()),
+    // NEO-313, "create"/"link" and player-kind-only: at COMMIT, also add the
+    // SET's sport to the player's `playerSports` ("he plays baseball too").
+    // Meaningful only on a row switched to another sport; see schema.ts.
+    addSetSport: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -2600,6 +2639,24 @@ export const recordDecision = mutation({
     const row = await ctx.db.get(args.reviewRowId);
     if (!row) throw new Error("Review row not found");
     assertOwnsRow(row, callerId);
+
+    /*
+     * NEO-313 — player-kind only, and refused on another kind for the reason
+     * `saveAsAlias` is: the box only exists on a player step, so its arrival
+     * elsewhere is a client bug naming an intent the commit would drop.
+     *
+     * On a player row it is KEPT only when the row has been switched away from
+     * the set's sport. On an unswitched row it would add the sport the player
+     * already has, so it is dropped as the no-op it is — a box left ticked
+     * after switching back is a leftover, not a mistake worth a refusal.
+     */
+    if (args.addSetSport === true && row.kind !== "player") {
+      throw new ConvexError("Only a player can be added to the set's sport.");
+    }
+    const keepAddSetSport =
+      args.addSetSport === true &&
+      row.kind === "player" &&
+      (await findSportForSelectorOption(ctx, row.selectorOptionId)) !== row.sportId;
 
     /*
      * NEO-284 — team-kind only, and refused rather than dropped.
@@ -2797,6 +2854,8 @@ export const recordDecision = mutation({
           ...(createTeamsKept.length ? { createTeams: createTeamsKept } : {}),
           ...(linkTeams.length ? { linkTeams } : {}),
           ...(createLeague ? { createLeague } : {}),
+          // NEO-313: stored only when true, like `saveAsAlias`.
+          ...(keepAddSetSport ? { addSetSport: true } : {}),
         },
         lastTouchedAt: Date.now(),
       });
@@ -2809,7 +2868,11 @@ export const recordDecision = mutation({
       }
       const linked = await ctx.db.get(args.linkedPlayerId);
       if (!linked) throw new Error("Linked player not found");
-      if (linked.sportId !== row.sportId) {
+      // NEO-313 — against the ROW's sport, which is the set's unless the
+      // operator switched it, and "belongs to" is home sport OR one added in
+      // `playerSports`: Bo Jackson (home football, also baseball) links on a
+      // baseball step exactly as a baseball-only player does.
+      if (!(await playerBelongsToSport(ctx, linked, row.sportId))) {
         // NEO-96: compare ids, but report DISPLAY names — an operator reading
         // "sport (abc123) doesn't match xyz789" learns nothing.
         throw new Error(
@@ -2818,7 +2881,11 @@ export const recordDecision = mutation({
         );
       }
       await ctx.db.patch(args.reviewRowId, {
-        decision: { action: "link", linkedPlayerId: args.linkedPlayerId },
+        decision: {
+          action: "link",
+          linkedPlayerId: args.linkedPlayerId,
+          ...(keepAddSetSport ? { addSetSport: true } : {}),
+        },
         lastTouchedAt: Date.now(),
       });
     } else if (row.kind === "league") {
@@ -2937,6 +3004,347 @@ export const clearDecision = mutation({
         { rowIds: [args.reviewRowId] },
       );
     }
+    return null;
+  },
+});
+
+/**
+ * NEO-313 — how many rows of ONE kind `switchRowSport` reads when looking for
+ * another row to hand a staged step to. Two kinds at most, so ~1,000 reads
+ * plus a handful of writes: the ~900-operation budget `CARDS_PER_COMMIT_CHUNK`
+ * was sized against, and larger than any batch seen so far (754 rows on the
+ * 2024 Topps Chrome seed, players and teams together).
+ */
+const SWITCH_SPORT_HEIR_SCAN_LIMIT = 500;
+
+/**
+ * NEO-313 — does this player row still need the career-team step `child`?
+ *
+ * The same predicate `stageCareerTeamRowsImpl` stages by, so a step is kept
+ * exactly when staging for `player` would have wanted it: a player row in the
+ * step's sport whose career teams — the lookup's `enrichment.careerTeams` plus
+ * the hand-typed `decision.manualCareerTeams` — name it (by `normalizeTeamName`
+ * key), and which has not unchecked it (`decision.excludedCareerTeamNames` on
+ * a create). Returns the QID that player's own proposal carries, when it has
+ * one; `null` when the player does not need the step.
+ */
+function playerNeedsCareerTeam(
+  player: Doc<"entityReviewQueue">,
+  child: Doc<"entityReviewQueue">,
+): { wikidataId?: string } | null {
+  if (player.kind !== "player" || player.sportId !== child.sportId) return null;
+  const key = child.nameNormalized ?? normalizeTeamName(child.name);
+  if (!key) return null;
+  const keyOf = (name: string) => normalizeTeamName(name.trim().replace(/\s+/g, " "));
+  const decision = player.decision?.action === "create" ? player.decision : undefined;
+  if ((decision?.excludedCareerTeamNames ?? []).some((name) => keyOf(name) === key)) {
+    return null;
+  }
+  const fromLookup = (player.enrichment?.careerTeams ?? []).find(
+    (ct) => keyOf(ct.name) === key,
+  );
+  if (fromLookup) return fromLookup.wikidataId ? { wikidataId: fromLookup.wikidataId } : {};
+  if ((decision?.manualCareerTeams ?? []).some((ct) => keyOf(ct.name) === key)) return {};
+  return null;
+}
+
+/**
+ * NEO-313 — does this team row still need the league step `league`?
+ *
+ * The same predicate `stageLeagueRowsImpl` stages and dedupes by: a team row
+ * in the league's sport whose lookup's `enrichment.league` or hand-typed
+ * `decision.create.leagueName` names it (by `normalizeLeagueName` key), or
+ * whose `enrichment.leagueWikidataId` is the step's QID. Returns the team's
+ * league QID when it has one; `null` when the team does not need the step.
+ */
+function teamNeedsLeague(
+  team: Doc<"entityReviewQueue">,
+  league: Doc<"entityReviewQueue">,
+): { wikidataId?: string } | null {
+  if (team.kind !== "team" || team.sportId !== league.sportId) return null;
+  const key = league.nameNormalized ?? normalizeLeagueName(league.name);
+  const leagueQid = league.source?.kind === "leagueOf" ? league.source.wikidataId : undefined;
+  const teamQid = team.enrichment?.leagueWikidataId;
+  const typed =
+    team.decision?.action === "create" ? team.decision.create?.leagueName : undefined;
+  const matches = (name: string | undefined) =>
+    !!key &&
+    name !== undefined &&
+    normalizeLeagueName(name.trim().replace(/\s+/g, " ")) === key;
+  const byLookup = matches(team.enrichment?.league);
+  const byQid = !!leagueQid && teamQid === leagueQid;
+  if (byLookup || byQid) return teamQid ? { wikidataId: teamQid } : {};
+  // A typed league carries no QID of its own; the team's QID is for the
+  // lookup's league, which is a different name here.
+  return matches(typed) ? {} : null;
+}
+
+/**
+ * NEO-313 — answer this row in another sport: the operator's explicit
+ * cross-sport override.
+ *
+ * Every review row is asked in the SET's sport, and nothing automated ever
+ * looks anywhere else (Jason, 2026-09-28: "everything automated should
+ * continue to assume that players, sports, and leagues align to the set").
+ * This is the one door out, and only a person opens it, one name at a time:
+ * a football player on a baseball card, a football team printed beside him.
+ *
+ * What changes is the QUESTION, so everything that answered the old one goes:
+ *
+ *   - `sportId` becomes the chosen sport. Link checks, the create, staged
+ *     career teams and leagues all follow the row's sport from here on.
+ *   - `enrichment` is replaced — the old lookup described somebody else — by
+ *     what `players` alone can say in the new sport (the same-name candidates
+ *     `startBatch` attaches at insert), and the row goes back to `pending`.
+ *   - The steps this row STAGED (career teams via `source.playerRowId`, and
+ *     their leagues via `source.teamRowId`; or a team row's own leagues) are
+ *     deleted, ANSWERED OR NOT: they were raised in the old sport, and an
+ *     answer to one is an answer about the old sport. The wizard walks those
+ *     steps BEFORE the player, so by the time the operator reaches the player
+ *     to switch it they are normally already answered — refusing on that
+ *     (as this first did) made the switch unreachable on the ordinary walk.
+ *     Nothing else holds their ids: a decision names teams and leagues by
+ *     label or by `teams`/`leagues` id, never by review-row id, so the only
+ *     pointers are these `source` fields, and the rows carrying them go in the
+ *     same pass. The new lookup stages the new sport's steps when it lands.
+ *     EXCEPT a step another row of the batch still needs: staging dedupes by
+ *     name across the batch, so a step carries only the first row that raised
+ *     it, and deleting it would take it from every other row too. Such a step
+ *     is handed over — its `source` re-pointed at the first other row that
+ *     needs it, decision intact (see `playerNeedsCareerTeam`,
+ *     `teamNeedsLeague`).
+ *   - The Wikidata lookup is re-enqueued, under the new sport.
+ *
+ * Refused on a decided row (undo the decision first — it was made about the
+ * old sport), on a league row and on any staged row (those follow the row
+ * they were raised for). Switching back to the set's sport is allowed and is
+ * the same operation. Switching to the sport the row already has is a no-op.
+ *
+ * Nothing is stored beyond the row itself, which is a per-batch throwaway:
+ * the next set that prints the name asks again.
+ */
+export const switchRowSport = mutation({
+  args: {
+    rowId: v.id("entityReviewQueue"),
+    sportId: v.id("selectorOptions"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const callerId = await requireAdmin(ctx);
+    const row = await ctx.db.get(args.rowId);
+    if (!row) throw new Error("Review row not found");
+    assertOwnsRow(row, callerId);
+
+    if (row.kind === "league") {
+      throw new ConvexError("A league step takes its sport from its team.");
+    }
+    if (row.source) {
+      throw new ConvexError("This step takes its sport from the step that raised it.");
+    }
+    if (row.decision) {
+      throw new ConvexError("Undo this decision before changing the sport.");
+    }
+    const sport = await ctx.db.get(args.sportId);
+    if (!sport || sport.level !== "sport") {
+      throw new ConvexError("Pick a sport.");
+    }
+    if (row.sportId === args.sportId) return null;
+
+    // The steps this row raised, in the old sport — and the league steps
+    // those raised in turn. Bounded by the staging caps (64 career teams per
+    // player, 4 leagues per team).
+    const staged =
+      row.kind === "player"
+        ? await ctx.db
+            .query("entityReviewQueue")
+            .withIndex("by_source_player", (q) => q.eq("source.playerRowId", row._id))
+            .collect()
+        : [];
+    const stagedLeagues: Doc<"entityReviewQueue">[] = [];
+    for (const teamRowId of [row._id, ...staged.map((r) => r._id)]) {
+      const leagues = await ctx.db
+        .query("entityReviewQueue")
+        .withIndex("by_source_team", (q) => q.eq("source.teamRowId", teamRowId))
+        .collect();
+      stagedLeagues.push(...leagues);
+    }
+    const teamChildren = staged.filter((child) => child.batchId === row.batchId);
+    const leagueChildren = stagedLeagues.filter(
+      (child) => child.batchId === row.batchId,
+    );
+
+    /*
+     * ── A step another row of the batch still needs is HANDED OVER, not lost ─
+     *
+     * Staging dedupes a team step by name across the whole batch and a league
+     * step likewise, so a step carries only the FIRST row that raised it. When
+     * that row is this one, deleting the step would take it — answer and all —
+     * away from every other row that needed the same name, and the wizard's
+     * re-stage only covers some of those rows. So before deleting, each child
+     * is offered to the rest of the batch, using the SAME "needs" predicate
+     * staging uses (`playerNeedsCareerTeam`, `teamNeedsLeague`): the first row
+     * that needs it becomes its `source` parent and the child is kept with its
+     * decision intact. Only a child no other row needs is deleted.
+     *
+     * ## Why a batch read is acceptable HERE
+     *
+     * Everywhere else staging refuses to read the batch — "a collect of the
+     * batch is the NEO-189 optimistic-concurrency storm", because those paths
+     * run five-wide under the lookup pool. This one does not: it is one
+     * operator pressing one button on one row, rarely, and nothing hot writes
+     * alongside it except that row's own lookups. So it reads the batch's
+     * player rows (and, only when a league needs a new parent, its team rows)
+     * through the `by_batch_and_kind_and_name` three-field prefix, capped at
+     * `SWITCH_SPORT_HEIR_SCAN_LIMIT` per kind to stay near the ~900-operation
+     * transaction budget, and skipped entirely when there is nothing to hand
+     * over. Past the cap the unscanned rows cannot inherit and their steps are
+     * deleted as before; the log records that it happened.
+     */
+    const heirScan = async (kind: "player" | "team") => {
+      const page = await ctx.db
+        .query("entityReviewQueue")
+        .withIndex("by_batch_and_kind_and_name", (q) =>
+          q
+            .eq("selectorOptionId", row.selectorOptionId)
+            .eq("batchId", row.batchId)
+            .eq("kind", kind),
+        )
+        .take(SWITCH_SPORT_HEIR_SCAN_LIMIT + 1);
+      return {
+        rows: page.slice(0, SWITCH_SPORT_HEIR_SCAN_LIMIT),
+        truncated: page.length > SWITCH_SPORT_HEIR_SCAN_LIMIT,
+      };
+    };
+
+    let scanTruncated = false;
+    let decidedDeleted = 0;
+    let teamsDeleted = 0;
+    let teamsHandedOver = 0;
+    let leaguesDeleted = 0;
+    let leaguesHandedOver = 0;
+
+    const keptTeamIds = new Set<Id<"entityReviewQueue">>();
+    const deletedTeamIds = new Set<Id<"entityReviewQueue">>();
+    if (teamChildren.length > 0) {
+      const players = await heirScan("player");
+      scanTruncated ||= players.truncated;
+      for (const child of teamChildren) {
+        let handedOver = false;
+        for (const heir of players.rows) {
+          if (heir._id === row._id) continue;
+          const need = playerNeedsCareerTeam(heir, child);
+          if (!need) continue;
+          // The years on `manualStint` were typed for THIS row's stint; they
+          // never travel to another player's (the NEO-248 attribution rule).
+          const wikidataId =
+            need.wikidataId ??
+            (child.source?.kind === "careerTeamOf" ? child.source.wikidataId : undefined);
+          await ctx.db.patch(child._id, {
+            source: {
+              kind: "careerTeamOf",
+              playerRowId: heir._id,
+              ...(wikidataId ? { wikidataId } : {}),
+            },
+          });
+          handedOver = true;
+          break;
+        }
+        if (handedOver) {
+          keptTeamIds.add(child._id);
+          teamsHandedOver++;
+        } else {
+          deletedTeamIds.add(child._id);
+        }
+      }
+    }
+
+    // A league under a team that was handed over simply stays with it. Every
+    // other league lost its parent (this row, or a team step being deleted).
+    const orphanLeagues = leagueChildren.filter(
+      (league) =>
+        !(league.source?.kind === "leagueOf" && keptTeamIds.has(league.source.teamRowId)),
+    );
+    const leaguesToDelete: Array<Doc<"entityReviewQueue">> = [];
+    if (orphanLeagues.length > 0) {
+      const teams = await heirScan("team");
+      scanTruncated ||= teams.truncated;
+      for (const league of orphanLeagues) {
+        let handedOver = false;
+        for (const heir of teams.rows) {
+          if (heir._id === row._id || deletedTeamIds.has(heir._id)) continue;
+          const need = teamNeedsLeague(heir, league);
+          if (!need) continue;
+          const wikidataId =
+            need.wikidataId ??
+            (league.source?.kind === "leagueOf" ? league.source.wikidataId : undefined);
+          await ctx.db.patch(league._id, {
+            source: {
+              kind: "leagueOf",
+              teamRowId: heir._id,
+              ...(wikidataId ? { wikidataId } : {}),
+            },
+          });
+          handedOver = true;
+          break;
+        }
+        if (handedOver) leaguesHandedOver++;
+        else leaguesToDelete.push(league);
+      }
+    }
+
+    // Answered or not — an answer here is about the OLD sport, and nobody else
+    // in the batch needs it. No decision points at a review-row id, so deleting
+    // these leagues and teams together leaves nothing dangling. Leagues first:
+    // a deleted team's leagues are either handed over above or in this list.
+    for (const league of leaguesToDelete) {
+      if (league.decision) decidedDeleted++;
+      leaguesDeleted++;
+      await ctx.db.delete(league._id);
+    }
+    for (const child of teamChildren) {
+      if (!deletedTeamIds.has(child._id)) continue;
+      if (child.decision) decidedDeleted++;
+      teamsDeleted++;
+      await ctx.db.delete(child._id);
+    }
+
+    // What NB alone can say about this name in the NEW sport — the marker
+    // `startBatch` writes at insert, for the same reason: a row whose lookup
+    // never lands must still show its same-name candidates.
+    const enrichment = await initialEnrichmentFor(
+      ctx,
+      row.kind,
+      row.name,
+      args.sportId,
+      await findSetYearForSelectorOption(ctx, row.selectorOptionId),
+    );
+    await ctx.db.patch(row._id, {
+      sportId: args.sportId,
+      status: "pending",
+      enrichment,
+      lastTouchedAt: Date.now(),
+    });
+    // A LOOKUP for a throwaway review row, not entity enrichment — the same
+    // enqueue `clearDecision` and `startBatch` make.
+    await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueEntityReviewLookups, {
+      rowIds: [row._id],
+    });
+    // Ids only — never the name (observability.ts).
+    console.log(
+      JSON.stringify({
+        msg: "entity_review_row_sport_switched",
+        rowId: row._id,
+        kind: row.kind,
+        fromSportId: row.sportId,
+        toSportId: args.sportId,
+        teamsDeleted,
+        teamsHandedOver,
+        leaguesDeleted,
+        leaguesHandedOver,
+        decidedDeleted,
+        scanTruncated,
+      }),
+    );
     return null;
   },
 });
@@ -3900,6 +4308,13 @@ export const applyLookupResult = internalMutation({
     id: v.id("entityReviewQueue"),
     status: v.union(v.literal("ready"), v.literal("error")),
     enrichment: v.optional(enrichmentValidator),
+    /**
+     * NEO-313 — the sport the lookup ran under. When the operator has switched
+     * the row's sport since (`switchRowSport`), this answer is about the old
+     * sport and is dropped; the switch enqueued a lookup of its own. Optional
+     * so a caller that predates it is not refused.
+     */
+    sportId: v.optional(v.id("selectorOptions")),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -3910,6 +4325,8 @@ export const applyLookupResult = internalMutation({
     // Decided: the operator has ruled and commit is imminent or done. Writing
     // here would only contend with the commit's read of this same row.
     if (row.decision) return null;
+    // NEO-313 — an answer to a question the row is no longer asking.
+    if (args.sportId !== undefined && args.sportId !== row.sportId) return null;
 
     /*
      * NEO-301 — a TEAM row can already be "ready" with a PARTIAL answer here.

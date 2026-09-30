@@ -106,9 +106,11 @@ Non-markdown helpers: `tools/`
 - [Heavy-write saturation vs a blanket stall](patterns_heavy_write_saturation_vs_blanket_stall.md) — the create-gate ruler has a ~1s polling floor, so healthy gates disprove…
 - [Guard-then-tap is a TOCTOU](patterns_guard_then_tap_toctou.md) — `when: visible X` + `tapOn X` are two reads 0.33s apart; the test for a…
 - [NEO-300 Group Parallels multi-select](reference_neo300_grouping_multi_select.md) — `Select <row>` tick (no text), `N selected` pill, N-row hints; a focus-m…
-- [childOf searches under the FIRST parent match](patterns_childof_parent_is_first_match.md) — trigger + list sharing a name → `index:` (positional) or a distinct list name
+- [childOf searches under the FIRST parent match](patterns_childof_parent_is_first_match.md) — `index:` for a same-named trigger+list; above/below anchors are scoped to the parent too
 - [NEO-306 SL review, Make insert of…, Fill button](reference_neo306_sl_review_and_insert_door.md) — picker names lead with the choice; populated insert column never auto-reconciles
 - [Flow `name:` is a directory name](patterns_flow_name_is_a_directory_name.md) — >255 BYTES = "File name too long" in CI before command one; keep names <~200 bytes
 - [NEO-307 League combobox + Search all teams](reference_neo307_league_combobox.md) — `id: "League"`, Create only on no-match (end minted names in a letter); team steps link via "Search all teams"
 - [Wizard headings include staged career teams](patterns_wizard_headings_include_staged_career_teams.md) — a `New Team:` heading ≠ a checklist club; verify on a committed card/alias first
 - [Measure a fixture from CI artifacts](patterns_measure_a_fixture_from_ci_artifacts.md) — tap lines log the real text of a regex match; convex-logs carry adapter result_count; Group Parallels re-open gate
+- [NEO-313 sport switch + Players Sports/Cards](reference_neo313_sport_switch_selectors.md) — capped list: one-key `inputText: "F"` typeahead then tap; switch refused after the walk skips staged steps
+- [Auto id shadows aria-label](patterns_auto_id_shadows_aria_label.md) — `useId()` on a labelled node → resource-id `_r_xx_`; `id: "<label>"` fails on a visible element; fix in product

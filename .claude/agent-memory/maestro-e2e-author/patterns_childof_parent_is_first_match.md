@@ -1,6 +1,6 @@
 ---
 name: childof-parent-is-first-match
-description: `childOf:` searches under the FIRST element its parent selector matches (Orchestra.resolveParentHierarchy → firstOrNull), so a disclosure trigger and its open list sharing one aria-label send the child search into the trigger; `index:` inside the parent selector picks by position
+description: `childOf:` searches under the FIRST element its parent selector matches (Orchestra.resolveParentHierarchy → firstOrNull), and the WHOLE selector (above/below/leftOf anchors too) then runs inside that subtree, so an outside anchor never matches; `index:` inside the parent selector picks by position
 metadata:
   type: reference
 ---
@@ -27,6 +27,13 @@ So:
 * A selector's `index:` is positional (top-then-left), not DOM order —
   `assertVisible: {id: "Remove Blue from Blue", index: 1}` is "a SECOND such
   control exists", a clean way to assert two same-named chips on one row.
+
+* **Relative anchors are scoped too.** `findElement` hands the parent's
+  subtree to `findElementWithTimeout` as the hierarchy, so `above:`/`below:`
+  anchors are searched ONLY inside it. `childOf: {id: list}` + `above: {id:
+  footer}` can never pass (NEO-313 CI red: option on screen at y=313, footer at
+  y=496, "Assertion is false"). Scope with a pair of outside anchors instead
+  (`below:` the trigger + `above:` the footer) and keep `childOf` for the tap.
 
 Verify any new idiom with the offline parse harness
 ([[offline-flow-parse-harness]]); the parsed dump shows `childOf=ElementSelector(…, index=1)`.
