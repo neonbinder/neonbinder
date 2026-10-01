@@ -1,6 +1,6 @@
 ---
 name: checklist-sync-is-one-time-never-store-dialog-answers
-description: Jason's ruling (2026-09-28, NEO-312): set/checklist sync is a one-time build event; never persist wizard or dialog answers (pairs, ignores, skips); parallels of an insert are a build-time copy of the insert's NB cards linked to their own marketplace cards; E2E cannot reach two-sided pairing while SportLots is paused
+description: Jason's ruling (2026-09-28, NEO-312): set/checklist sync is a one-time build event; never persist wizard or dialog answers (pairs, ignores, skips); parallels of an insert are a build-time copy of the insert's NB cards linked to their own marketplace cards; E2E reaches two-sided pairing on the live path (SportLots unpaused 2026-09-21)
 metadata:
   type: feedback
 ---
@@ -24,6 +24,10 @@ marketplace data worth keeping is each card's ref per side.
 exactly-one guard; an ignored card was never committed, so nothing has to
 remember it. Do not add tables or fields whose only reader is a later
 re-sync. Also (fact, not ruling): the pairing modal emits only refs on
-cards; ignore = absence, unlink does not stick; with SportLots paused on the
-E2E path every real fixture is BSC-only and Match Cards never opens, so a
-two-sided proof is convex-test only and the plan must say so.
+cards; ignore = absence, unlink does not stick. CORRECTION (2026-09-29):
+this note used to say SportLots was paused on the E2E path so Match Cards
+never opens. It is NOT — the pause was lifted 2026-09-21 and CI passes
+`PAUSED_PLATFORMS` empty, so real fixtures are two-sided and Match Cards does
+open; plan the live E2E proof. The paused branches still exist in the flows;
+check a run with `gh run view <id> --log | grep -m1 "PAUSED_PLATFORMS: "`
+(empty = live) before planning around either mode.

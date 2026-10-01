@@ -7,6 +7,13 @@ metadata:
 
 # Branching a flow on an operator switch (verified on the pinned CLI 2.8.0, 2026-09-17)
 
+**State of the switch: OFF since 2026-09-21** (SportLots unpaused; the repo
+variable deleted), so CI runs every flow's LIVE branch. The paused branches
+and everything below stay true OF the paused mode — keep writing both
+branches — but never write that the suite "is" paused. Check the run you are
+reading: `gh run view <id> --log | grep -m1 "PAUSED_PLATFORMS: "` (empty =
+live). Reading a live failure through the paused section below is a misread.
+
 **Never branch on the visible notice** (`when: visible:` polls the optional-lookup
 timeout on every run the notice is absent — R10). Branch on a script flag:
 
@@ -26,7 +33,7 @@ timeout on every run the notice is absent — R10). Branch on a script flag:
   hard asserts (R2), so a runner whose flag disagrees with its deployment fails by
   name. Helper that does the indent+wrap: scratch `branch.py` (six-space indent).
 
-# What a paused SportLots does to the set builder (drills must know)
+# What a paused SportLots does to the set builder (only when the switch is ON)
 
 0. **Below the root the pause is INDISTINGUISHABLE from a BSC-only tree.** A side
    is "paused" only where it is served AND its ids are complete; the root Sports

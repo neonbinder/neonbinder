@@ -15,11 +15,19 @@ Every set the Maestro suite touches is listed here. Two rules govern this file:
 These are provisioned once by `flows/setup.yaml` at the head of every run and are
 **READ-ONLY for all other flows**.
 
-### While SportLots is on pause (NEO-287) every real set is BSC-ONLY
+### When SportLots is paused (NEO-287) every real set is BSC-ONLY
+
+**Today it is not paused.** SportLots was unpaused on 2026-09-21 (NEO-288's
+automated-access handshake removed the reason; the repository variable was
+deleted), so every CI run passes `PAUSED_PLATFORMS` empty and every set below
+is provisioned LIVE, from both marketplaces. This section describes the
+paused mode the flows still branch on; check which one a run used with
+`gh run view <run-id> --log | grep -m1 "PAUSED_PLATFORMS: "` (empty = live)
+before reading a failure against it.
 
 The operator switch `NEONBINDER_PAUSED_PLATFORMS=sportlots` (mirrored to the
 flows as `-e PAUSED_PLATFORMS`; README → "Operator switches") means nothing is
-asked of SportLots, so every row in this table is provisioned from
+asked of SportLots, so under it every row in this table is provisioned from
 BuySportsCards alone for the whole run:
 
 * **2024 Topps Chrome** — `Base` (335 cards), `Insert` → Future Stars,
@@ -87,7 +95,7 @@ BuySportsCards alone for the whole run:
 | Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; the per-brand SportLots reviews the year-wide Sync Sets leaves behind (NEO-306: SportLots-only names are no longer saved as sets; the reviews stay unsaved, labels never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
-| Baseball → 2026 → Bowman (the whole brand-year) | the brand's SportLots review SAVED in-flow (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman › `Insert` reconciled (NOT pre-synced) and grouped — the BSC insert `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist fetched and COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312) — all 4, `Anime Kanji` among them; Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `flows/set-selector/flagship-colour-is-a-parallel-both-ways.yaml` — **sole writer** of the brand-year. Requested by the owner 2026-09-21 (NEO-293); one ordered flow by owner decision 2026-09-25 (NEO-306), merging `parallel-grouping-promoted-insert-fetches-from-bsc` into it |
+| Baseball → 2026 → Bowman (the whole brand-year) | **setup:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `flows/setup.yaml` (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row), `flows/set-selector/bowman-insert-grouping-builds-parallels.yaml` (Bowman › Insert's BSC inserts and their grouping), `flows/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
@@ -265,12 +273,20 @@ data that isn't in the table above, it must either sync it itself (and accept th
 30–90s cost, with owner approval) or — far more often the right answer — use a
 per-worker custom set (see below).
 
-### 2026 Bowman — ONE sole writer, the whole brand-year (NEO-293, NEO-300, NEO-305, NEO-306, NEO-308)
+### 2026 Bowman — setup + two concurrent flows, one sole writer per row (NEO-293, NEO-300, NEO-305, NEO-306, NEO-308, NEO-312)
 
-`flows/set-selector/flagship-colour-is-a-parallel-both-ways.yaml` is the only
-flow on Baseball → 2026 → Bowman. It proves, in order, where each
-marketplace "set" of the brand belongs in NB and that the operator can move
-rows across that line with their links intact:
+Baseball → 2026 → Bowman is written by `setup.yaml` and two flows that run
+CONCURRENTLY against the same preview. Together they prove, in order, where
+each marketplace "set" of the brand belongs in NB and that the operator can
+move rows across that line with their links intact. Claim numbers are the
+merged flow's (`flagship-colour-is-a-parallel-both-ways`, retired by the
+NEO-312 split):
+
+| claim | proved by | steps |
+| -- | -- | -- |
+| 1 — Sync Sets mints nothing; the review files it | `flows/setup.yaml` (its 2026 Bowman step, last in the seed) | 1 |
+| 2–3 — Insert reconcile, Group Parallels, re-sync; the parallel build | `set-selector/bowman-insert-grouping-builds-parallels.yaml` | 2–9 |
+| 4–5 — `Blue` pairs, Promote / Make parallel of; Make insert of… | `set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` | 10–14 |
 
 1. Sync Sets mints no SportLots-only set; the brand's review (the pill `N
    SportLots sets to sort`) files them — every row under Bowman › Parallel in
@@ -295,12 +311,34 @@ rows across that line with their links intact:
    Red Ink` under Bowman › Insert › `All-America Game Autos` as the new
    parallel `Red Ink` (NEO-306).
 
-**Why one flow (owner decision, 2026-09-25).** It was two:
-`parallel-grouping-promoted-insert-fetches-from-bsc` (NEO-293/300, Bowman ›
-Insert) and this one. They could not share a preview in either order: an
-insert column auto-syncs only when EMPTY, so whichever flow wrote Bowman ›
-Insert first stopped the other's first reconcile from ever opening, and the
-CI queue orders nothing. They were merged with every assertion of both kept.
+**History.** It was two flows until 2026-09-25, merged into one (owner
+decision, NEO-306) because an insert column auto-syncs only when EMPTY and
+whichever wrote Bowman › Insert first broke the other's first reconcile. The
+one flow reached 570 s of the 600 s kill (CI run 36524859308), and NEO-312
+split it again along lines that are measured disjoint (below), with the one
+brand-wide write both halves need — Sync Sets and the review — moved into
+the seed, where nothing races it. Every assertion of the merged flow is kept.
+
+**Why the split is safe — the write sets, measured (code read + CI Convex
+logs, NEO-312).** Flows run concurrently against one preview and set data is
+global, so each brand- or set-wide write was checked for the rows it touches
+and for a client-side plan that could go stale under the other flow:
+
+| write | rows it touches | a stale client plan? |
+| -- | -- | -- |
+| SportLots review save (setup) | the brand's review rows → one set + rows under the Insert / Parallel types (`slSetReview.ts:653`, logged `sl_review_rows_under_type`: insert 1, parallel 40 + 39) | n/a — the seed runs alone |
+| Sync Inserts reconcile (inserts flow, STEPS 2, 5b) | the Insert type's own children only, read fresh at save (`setReconciliation.ts:1505`); changed fields only, never `children` of a child (`:2127-2129`); the type's `children` by UNION (`:2137-2146`); rows elsewhere in the type's subtree HELD, never written (`selectorSyncStore.ts:487-517`; logged `selector_sync_held_elsewhere`, level `insert`) | seeds every existing insert into Ready (`setReconciliation.ts:1397-1398`) — re-stores `All-America Game Autos` as is; a parallel the links flow adds under it is a CHILD, never named, so it survives |
+| Group Parallels Accept all + Save (inserts flow, STEP 4) | only the rows the plan changed (`ParallelGroupingModal.tsx:331-357`); every parent's `children` re-read and unioned at save (`selectorOptions.ts:7384-7392`); one variant type's tree (`selectorOptions.ts:7183`) | none: `Red Ink`, if present, is a parallel with an unchanged placement, so it is not in the diff |
+| Sync Parallels reconcile (links flow, STEP 10) | the Parallel type's own children (same store) | **seeds the Red Ink source row into Ready**; a Make insert of… landing while it is open would make the save re-create that row (`existingId` matched against siblings only, `setReconciliation.ts:1379-1385`; held-elsewhere is per variant type, `selectorSyncStore.ts:504-517`) — **so STEPS 10 and 14 are one flow, in that order** |
+| Promote to set (links flow, STEP 11) | `Blue` (`setParallelConversion.ts:1139`), a minted set + Base under the brand (`:1091`) | none outside the links flow |
+| Make parallel of… (links flow, STEP 12) | `Blue` (`setParallelConversion.ts:702`), deletes the empty set + Base (`:785-786`) | none outside the links flow |
+| Make insert of… (links flow, STEP 14) | a NEW parallel under `All-America Game Autos` (`setInsertConversion.ts:1170` → `:970-985`, parent `children` by union), the source row deleted (`:1256`) | its `Where it goes` list is a reactive query over the Insert type's inserts (`MakeInsertControl.tsx:230`) that the inserts flow's saves reshape — a UI race, not a data one: the pick is retried once, result-keyed |
+
+The inserts flow never writes the Parallel type, `Blue`, a set, or the
+review's `All-America Game Autos` subtree; the links flow never writes an
+insert-level row. The Sets column gains `Bowman Blue` for the seconds
+between STEPS 11 and 12; the inserts flow selects `Bowman` by its exact
+name under the column's search box, so a transient sibling set is inert.
 
 **Why this set.** Every claim needs what the marketplaces ANSWER: a REAL BSC
 insert whose REAL BSC parallel word-prefixes it (so Group Parallels suggests
@@ -318,7 +356,7 @@ marketplace data, and the harness must never dictate the data shape.
 
 | | |
 | -- | -- |
-| drills | Baseball → 2026 → Bowman, every level COLD on a fresh preview; under the pause the manufacturer row `Bowman` is hand-made by the drill (`CREATE_MANUFACTURER`), exactly as `Score` is for 1996 |
+| drills | setup's drill is COLD on a fresh preview; under the pause it hand-makes the manufacturer row `Bowman` (the cold util's guarded create) and then selects the set once to sync its Variant Types. The two flows' drills are WARM and pass no `CREATE_MANUFACTURER` — setup is that row's sole writer, and two concurrent guarded creates could mint it twice |
 | review (live) | bulk: every row → Bowman › `Parallel` (picking Bowman force-syncs its Variant Types inside the dialog, additive); row tick + bulk: `All-America Game Autos` → Bowman › `Insert`; per row: `Bowman Sterling` → its own set; saved at the 7000 bar |
 | Insert reconcile (live) | `Sync Inserts` (the column holds the review's row); filters Ready and BSC to "Anime"; `Anime` its own set when Pending; the BSC filter cleared, then "Keep all" on the WHOLE BSC column — every pending BSC insert its own set (NEO-308; it was the "Anime"-filtered column before); **saves every Ready set** (the review's row comes back restored) |
 | grouping | Group Parallels → `Accept all suggestions (N)` with N ≥ 201, asserted → `Save N changes` → the modal closes within 7000 (the save cut into ≤200-entry calls, NEO-308); every prefix pair nests, `Anime Kanji` and the other Anime parallels under `Anime`; a re-open reads `No changes yet` with no Accept-all button (every chunk landed) and leaves through Cancel |
@@ -330,7 +368,7 @@ marketplace data, and the harness must never dictate the data shape.
 | make insert | Bowman › Parallel › `All-America Game Autos Red Ink` → Bowman › Insert › `All-America Game Autos` › new parallel `Red Ink` (the dialog's `Find an insert` filter used when the list is over 12) |
 | paused | no review, no pill; Insert and Parallel fill from BSC alone; grouping, re-sync, chip and one-marketplace fetch as live; `Blue` offers no Promote, and the SportLots-only claims have no paused form |
 
-**What the flow leaves behind** (fresh-only; `setup.yaml`'s reset removes it
+**What the three leave behind** (fresh-only; the scripted reset removes it
 all at the head of every run):
 
 | | |
@@ -342,16 +380,17 @@ all at the head of every run):
 | `Anime`'s parallels | all 4 built as copies of `Anime`'s cards (NEO-312), each copy linked to its parallel's OWN BSC (and SportLots, when paired) card; nothing pressed `Build`/`Rebuild` on a parallel row |
 | never touched | Base, any other checklist, any card edit |
 
-**Sole writer, fresh-only.** No other flow may drill into 2026 Bowman. A
-re-run against the same deployment finds the review saved and fails on the
-pill by name.
+**One sole writer per row, fresh-only.** No other flow may drill into 2026
+Bowman. A local re-run of either Bowman flow needs a fresh seed (reset +
+`setup.yaml`): the inserts flow's first reconcile and the links flow's
+Promote both assume the seed's state.
 
 **NEO-308 (the chunked Group Parallels save) is proven HERE, not in a flow of
 its own.** Owner's call: live, on 2026 Bowman ("it has plenty"), not a seed
-and not UI-built rows. A second flow on the brand-year was ruled out for the
-same reason NEO-306 merged two into one: Bowman › Insert only exists once
-this flow's reconcile has run, the queue orders nothing, and the grouping it
-would save is the one STEP 4 here saves. Re-runnability is the flow's
+and not UI-built rows. It lives in the inserts flow, the sole writer of
+Bowman › Insert's BSC inserts: Bowman › Insert only exists once that flow's
+reconcile has run, the queue orders nothing, and the grouping it would save
+is the one STEP 4 there saves. Re-runnability is the flow's
 existing one — `setup.yaml`'s reset at the head of every run; nothing
 undoes a grouping inside the run, and nothing needs to:
 
@@ -1085,7 +1124,7 @@ read:
 
    **Superseded by NEO-306 (kept for the record).** The review is now the
    surface where SportLots-only names are seen and filed, proved on 2026
-   Bowman (`flagship-colour-is-a-parallel-both-ways`, STEP 1). What follows
+   Bowman (`setup.yaml`'s 2026 Bowman step, the merged flagship flow's STEP 1). What follows
    described the auto-save world. **The gap, and the affordance that would
    close it.** No step proves a set was SAVED, because nothing on screen tells an SL-minted set from a
    BSC-filed one: a set row is not terminal, so the view shows no `SL` pill

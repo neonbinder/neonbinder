@@ -50,5 +50,5 @@ present), then assert the radio.
 Fill teams: checklist header, amber, `1 card needs a team` / `N cards need a
 team`, only while N > 0; result in the checklist's own notice line.
 
-Worked example: `flagship-colour-is-a-parallel-both-ways.yaml` (all of 2026 Bowman, in order). Selector
+Worked examples (2026 Bowman, split by NEO-312): the review in `setup.yaml`'s 2026 Bowman step; Bowman › Insert in `bowman-insert-grouping-builds-parallels.yaml`; Bowman › Parallel, Promote, Make parallel of… and Make insert of… in `bowman-sportlots-links-move-between-set-parallel-insert.yaml`. Selector
 mechanics: [[childof-parent-is-first-match]].

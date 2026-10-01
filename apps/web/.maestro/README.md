@@ -865,7 +865,7 @@ Two corollaries worth knowing before you write the selector:
   CI 36516143308 saw four finish before the flow's `Saved N cards` assert
   returned. The sr-only live line repeats the finished heading with a
   trailing `.`, so write the heading pattern so it cannot end in one
-  (`flagship-colour-is-a-parallel-both-ways` STEP 8). Stop is unit-tested.
+  (`bowman-insert-grouping-builds-parallels` STEP 8). Stop is unit-tested.
 
 ## Launching a flow: always gate on the destination heading
 
@@ -1007,6 +1007,22 @@ that asserts the paused behaviour (the exact copy in
 `lib/marketplace/pause-notice.ts`), and the live coverage comes back by
 itself when the variable is unset.
 
+**Today the switch is OFF** — SportLots was unpaused on 2026-09-21 (the
+automated-access handshake, NEO-288, replaced the reason for the pause; the
+repository variable was deleted), so every CI run passes `PAUSED_PLATFORMS`
+empty and every flow takes its LIVE branch. The paused branches stay: they
+are what the suite does the day an operator pauses a marketplace again, and
+both branches of a flow still end in hard asserts (R2). Never write a
+comment, a registry entry or a memory that says the suite "is" paused; check
+the run you are reading instead:
+
+```bash
+gh run view <run-id> --log | grep -m1 "PAUSED_PLATFORMS: "
+```
+
+An empty value after the colon means live. A failure diagnosed on the paused
+branch of a live run (or the reverse) is a misread, not a finding.
+
 **How a flow knows.** Both runner scripts pass
 `-e "PAUSED_PLATFORMS=${PAUSED_PLATFORMS:-}"` on every `maestro test` — always,
 empty when unset. CI (`e2e.yml`) exports the shell variable from the GitHub
@@ -1063,8 +1079,8 @@ Paused branches below the root therefore assert THAT state, never the paused
 sentence. Three structural consequences matter to drills: the **Manufacturers
 column holds only the pinned "All Brands" view entry** on a fresh deployment
 (SportLots' brand list is its only source of rows; the view is not a row and
-is rendered in every mode — NEO-237; see `SET-REGISTRY.md` → "While SportLots
-is on pause"), a **brand's Sets column ends "done" with "SportLots skipped:
+is rendered in every mode — NEO-237; see `SET-REGISTRY.md` → "When SportLots
+is paused"), a **brand's Sets column ends "done" with "SportLots skipped:
 no SportLots ids on this path."** now that Sync Sets asks SportLots per brand
 (a notice, not an error — the seed's strict asserts key on failure copy), and
 a **BSC-only Base still reads as unmapped**, so its picker re-opens on every
