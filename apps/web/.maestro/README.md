@@ -866,6 +866,13 @@ Two corollaries worth knowing before you write the selector:
   returned. The sr-only live line repeats the finished heading with a
   trailing `.`, so write the heading pattern so it cannot end in one
   (`bowman-insert-grouping-builds-parallels` STEP 8). Stop is unit-tested.
+  **A moved SportLots link is never re-created by a later sync (NEO-312).**
+  Make insert of… deletes its source row; before NEO-312 the next
+  `Sync <Type>s` on the column the row left brought it back (the reconcile
+  and the single-platform store held ids only within one variant type).
+  `bowman-sportlots-links-move-between-set-parallel-insert` STEPS 15–16 prove
+  the fix: re-sync, search the old name (`No matches found` is the positive,
+  the row's absence the claim), then read the moved row's SportLots chip.
 
 ## Launching a flow: always gate on the destination heading
 

@@ -18,6 +18,13 @@ of… that moved (created-new + deleted-source) one of those rows into another
 variant type while the dialog was open makes the save re-create it — two NB
 rows on one marketplace link. Held-elsewhere protection is per variant type,
 so it does not see across types.
+It turned out to be a PRODUCT bug, not only a race: a plain later
+`Sync <Type>s` after the move re-created the row too. NEO-312 fixed it with a
+whole-set/brand held check at save and a held-list gate on the client's
+auto-store/auto-match. When a split exposes a cross-flow clobber, ask whether
+one flow alone can trigger it — if so, file it and write the regression step
+(the links flow's STEPS 15–16), and keep the sequencing anyway: a withheld
+item still changes what the operator sees.
 
 **How to apply:**
 - List every brand/set-wide write in the flow and, per write, (a) the rows it

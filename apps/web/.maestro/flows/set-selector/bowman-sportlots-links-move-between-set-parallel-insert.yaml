@@ -18,29 +18,42 @@ tags:
 #   8. `Make insert of…` on the review's Parallel row `All-America Game Autos
 #      Red Ink` files it under Bowman › Insert › `All-America Game Autos` as
 #      the new parallel `Red Ink` (STEP 14; NEO-306).
+#   9. A moved SportLots link is never re-created by a later sync: Bowman ›
+#      `Parallel`'s `Sync Parallels`, run again after the move, does not
+#      bring the Red Ink row back, and `Red Ink` under `All-America Game
+#      Autos` still holds the link (STEPS 15–16; NEO-312).
 #
 # CLAIM AND STEP NUMBERS ARE THE MERGED FLOW'S. This flow and
 # `bowman-insert-grouping-builds-parallels` were one flow
 # (`flagship-colour-is-a-parallel-both-ways`) until it reached 570 s of the
 # 600 s kill (CI run 36524859308). Its STEP 1 — Sync Sets and the SportLots
 # review (claim 1) — is now provisioned and asserted by `setup.yaml`; STEPS
-# 2–9 (claims 2–4) are the sibling's; STEPS 10–14 are here.
+# 2–9 (claims 2–4) are the sibling's; STEPS 10–14 are here, and STEPS 15–16
+# (claim 9) were added after the split.
 #
-# WHY STEP 14 IS HERE AND NOT A FLOW OF ITS OWN (measured, NEO-312 split).
+# WHY STEPS 10, 14 AND 15 ARE ONE FLOW (measured, NEO-312 split).
 # STEP 10's `Sync Parallels` opens a reconcile seeded with EVERY row under
 # Bowman › Parallel — the Red Ink row among them — and its Save re-stores
 # every Ready row (convex/setReconciliation.ts:1357, the "seeds every
 # existing row into Ready" note at :1397-1398). `Make insert of…` lands Red
 # Ink as a NEW row under `All-America Game Autos` and DELETES the source
-# (convex/setInsertConversion.ts:1170 → :970-985, :1256). Run concurrently, a
-# Make insert of… that lands while STEP 10's dialog is open leaves that
-# dialog holding a deleted row's id: the store matches `existingId` only
-# against the Parallel type's own children (:1379-1385), finds the
-# SportLots id held nowhere in the PARALLEL type's subtree (the held-
-# elsewhere walk is per variant type — convex/selectorSyncStore.ts:504-517;
-# Red Ink now lives under the INSERT type) and re-creates the row — two NB
-# rows on one SportLots link. Sequenced in one flow, STEP 10 always saves
-# before STEP 14 opens its door.
+# (convex/setInsertConversion.ts:1170 → :970-985, :1256). Before NEO-312 the
+# store matched `existingId` only against the Parallel type's own children
+# (:1379-1385) and held ids only within that variant type
+# (convex/selectorSyncStore.ts:504-517), so ANY later Parallels sync — a
+# stale dialog, or simply opening one after the move — re-created the row:
+# two NB rows on one SportLots link. That was a production bug, and STEPS
+# 15–16 are its proof.
+#
+# NEO-312 FIXES IT IN TWO PLACES: the save checks the whole set and brand for
+# a row already holding the id and WITHHOLDS the item, and the client stops
+# auto-storing or auto-pairing an id the held list names. The one-flow shape
+# stays anyway. A stale STEP 10 dialog saved after a concurrent Make insert
+# of… would now be withheld rather than re-created — but withholding is
+# itself operator-facing (a held/withheld notice in the dialog or the
+# column's status box), which can change what STEP 10 reads and saves. In
+# one flow STEP 10 always saves before STEP 14 opens its door, and STEP 15
+# is by definition a sync AFTER the move.
 #
 # THE `name:` STAYS UNDER ~200 BYTES. Maestro names the flow's debug
 # directory after it, and Linux refuses a path component over 255 BYTES.
@@ -53,7 +66,8 @@ tags:
 #   Variant Types are synced.
 #
 # ── WRITES, AND WHO ELSE IS RUNNING (R7a) ───────────────────────────────────
-#   The SOLE WRITER of Bowman › Parallel's rows, `Blue`, the transient set
+#   The SOLE WRITER of Bowman › Parallel's rows (and its two syncs, STEPS 10
+#   and 15), `Blue`, the transient set
 #   `Bowman Blue`, and the parallel `Red Ink` it creates under `All-America
 #   Game Autos`. The sibling flow runs concurrently and writes Bowman ›
 #   Insert's BSC inserts and their grouping. Disjoint on the server (see the
@@ -69,10 +83,16 @@ tags:
 #   takes the live branches. Paused, Bowman › Parallel fills from BSC alone,
 #   `Blue` carries no SportLots link, and `Promote to set` is NOT offered on
 #   it, which the paused branch asserts. Claims 6–8 have no paused form.
+#   Claim 9's paused form is STEP 15's: the re-sync is the single-platform
+#   store (no reconcile dialog, `Stored N variants (single platform)` in the
+#   column's status box) and the Red Ink name is not in the column (under
+#   the pause the review never filed it, so this is the same negative, read
+#   on the same column). STEP 16 is live-only: there is no moved row.
 #
 # ── R5 ──────────────────────────────────────────────────────────────────────
-#   7000 for every NB write and read. Longer only for the Parallels fetch
-#   (240000, the live marketplace round-trip, named at its site).
+#   7000 for every NB write and read. Longer only for the two Parallels
+#   fetches (STEPS 10 and 15, 240000, the live marketplace round-trip, named
+#   at each site).
 #
 # ── R8 INSIDE DIALOGS ───────────────────────────────────────────────────────
 #   The reconcile and the set-shape dialogs are `fixed inset-0` portals
@@ -84,8 +104,12 @@ tags:
 #   reconcile     `Reconcile Parallels`, `Filter NeonBinder sets`,
 #                 `NeonBinder set name for <set>`, chips `Remove <item> from
 #                 <set>`, `Save N sets`
-#   columns       `Sync Parallels`, `Search parallels`, row text; Sets
+#   columns       `Sync Parallels`, `Search parallels`, `No matches found`,
+#                 `Search inserts`, `Inserts`, `Parallels`, row text; the
+#                 status box's `Stored N variants (single platform)`; Sets
 #                 column `Sync Sets` and its rows
+#   chips         `Remove <SportLots label>`, its confirm `Detach SportLots
+#                 "<label>"? …` and `Cancel detach <label>`
 #   panel         `Attributes for <row>`, the `Set actions` group's
 #                 `Promote to set`, `Make parallel of…`, `Make insert of…`
 #   promote       `Promote “<row>” to a set`, `Promote it`, toast
@@ -615,3 +639,255 @@ tags:
           visibilityPercentage: 10
           waitToSettleTimeoutMs: 1000
           timeout: 7000
+
+# ============================================================
+# STEP 15 — CLAIM 9: A LATER SYNC NEVER RE-CREATES THE MOVED ROW (NEO-312)
+#
+# The production bug this proves: after Make insert of…, an operator who
+# simply opens Bowman › Parallel's `Sync Parallels` got the Red Ink row back
+# — the single-platform path auto-stored it, and the two-sided reconcile
+# auto-paired it into Ready — so two NB rows held one SportLots link. The fix
+# holds every id a row anywhere in the set or brand already carries. So: the
+# operator's own re-sync of the column the row LEFT, then the row's name
+# searched in it.
+#
+# R9 — the warm util selects Bowman (setup synced its Variant Types), then
+# `Parallel`, exactly as STEP 10 does. The util's openLink resets both scroll
+# axes, so the page position is STEP 10's.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2026"
+      MANUFACTURER: ${output.BRAND}
+      SET: ${output.BRAND}
+- scrollUntilVisible:
+    element:
+      text: "${output.TYPE_PARALLEL}"
+    centerElement: true
+    timeout: 7000
+- tapOn: "${output.TYPE_PARALLEL}"
+# The column is POPULATED in both modes (STEP 10 saved or stored it), so it
+# does not auto-sync; `Sync Parallels` sits under the column's list: DOWN,
+# centred for the tap (R8), as STEP 10.
+- scrollUntilVisible:
+    element:
+      text: "Sync ${output.TYPE_PARALLEL}s"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Sync ${output.TYPE_PARALLEL}s"
+
+# LIVE — BSC + SportLots: the reconcile opens (R5 marketplace exception,
+# STEP 10's 240000 for the same fetch on the same column). Save every Ready
+# set, exactly as STEP 10 — the save is where the bug re-created the row, so
+# it has to run for the negative below to mean anything. The footer sits
+# outside the dialog's only scroller: uncentred (R8 case 2, STEP 10's
+# measurement); one Convex write, the 7000 bar.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible: "Reconcile ${output.TYPE_PARALLEL}s"
+          timeout: 240000
+      - scrollUntilVisible:
+          element:
+            text: ".*Save [0-9]+ sets.*"
+          timeout: 7000
+      - tapOn:
+          text: ".*Save [0-9]+ sets.*"
+      - extendedWaitUntil:
+          notVisible: "Reconcile ${output.TYPE_PARALLEL}s"
+          timeout: 7000
+
+# PAUSED — BSC alone: the single-platform store (the path that AUTO-stored
+# the row before the fix) reports in the column's status box. "Sync failed…"
+# is named in the gate so a failed fetch fails here in seconds, on its own
+# sentence; the hard assert below then fails it by name. R5 marketplace
+# exception, the sibling's 240000 for the same store.
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: "Stored [0-9]+ variants \\(single platform\\)|Some variants were not stored.*|Sync failed: could not load variants.*"
+          timeout: 240000
+      - assertVisible:
+          text: "Stored [0-9]+ variants \\(single platform\\)"
+      - assertNotVisible: "Reconcile ${output.TYPE_PARALLEL}s"
+
+# THE ASSERTION, BOTH MODES: the Red Ink row's name finds nothing in the
+# column. The search box sits at the TOP of the column's list — ABOVE the
+# page's position, which centred `Sync Parallels` under the list: UP (R5),
+# centred for the tap (R8), as STEP 10. The POSITIVE is EntitySelector's own
+# empty-search line (`No matches found`), which renders only once the filter
+# has applied to a live column — so the negative after it cannot pass on a
+# dead page or an unfiltered list (README → "Negative asserts pass on a dead
+# page"). A re-created row would be the list's one match, and the positive
+# fails first, with the row on screen. The box's own VALUE is the same
+# words, hence `below:` on the row (README → getNodeText).
+- scrollUntilVisible:
+    element:
+      text: ".*Search parallels.*"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search parallels.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${output.SOURCE_ROW}
+- extendedWaitUntil:
+    visible:
+      text: "No matches found"
+      below:
+        id: "Search parallels"
+    timeout: 7000
+- assertNotVisible:
+    text: "^${output.SOURCE_ROW}$"
+    below:
+      id: "Search parallels"
+
+# ============================================================
+# STEP 16 — CLAIM 9 (cont.): THE MOVED PARALLEL STILL HOLDS THE LINK (live)
+#
+# The other half: the link was not dropped either. Re-drill (R9), open
+# Bowman › Insert › `All-America Game Autos` › `Red Ink` and read its
+# SportLots chip the way STEP 9 of the sibling reads a BSC one: press the ×
+# and read the confirm, which names the SIDE ("Detach SportLots …"), then
+# Cancel — nothing is detached (R7). The chip's text is the slot's stored
+# SportLots label, which the flow does not own, so it is matched on its tail
+# (`.*Red Ink`): the review's label for this row ends in the parallel's name
+# whichever prefix SportLots carries.
+#
+# THE INSERTS COLUMN HAS TWO SHAPES, decided by the sibling flow's progress
+# (the queue orders nothing): one row (`All-America Game Autos`, the review's)
+# before its reconcile saves, ~140 after — and `EntitySelector` shows its
+# search box only above 8 rows. So: search when the box is there, else tap
+# the row under the column's header, and the next column (`Parallels`) is
+# the result both branches gate on. Retried once, result-keyed, for the
+# sibling's save landing between the shape check and the tap (it reshapes
+# the list under the tap — the moving-target class).
+# ============================================================
+
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - runFlow:
+          file: util-drill-to-2024-topps-chrome.yaml
+          env:
+            SPORT: "Baseball"
+            YEAR: "2026"
+            MANUFACTURER: ${output.BRAND}
+            SET: ${output.BRAND}
+      - scrollUntilVisible:
+          element:
+            text: "${output.TYPE_INSERT}"
+          centerElement: true
+          timeout: 7000
+      - tapOn: "${output.TYPE_INSERT}"
+      # Either shape: the box, or the review's row under the header. A
+      # Convex read of a populated column, the 7000 bar.
+      - extendedWaitUntil:
+          visible:
+            text: ".*Search inserts.*|^${output.INSERT_ROW}$"
+          timeout: 7000
+      # The shape is read ONCE per pass into a flag, and the two branches
+      # branch on the flag, not on the screen: selecting a row collapses the
+      # column (the box disappears, the next column appears LATE — memory:
+      # columns-row-clip-and-late-collapse), so two screen conditions read
+      # one after the other are not mutually exclusive, and a second tap on
+      # the selected row deselects it. The box is matched by its accessible
+      # name, which survives a typed value (its node TEXT becomes the value).
+      - retry:
+          maxRetries: 1
+          commands:
+            - evalScript: '${output.INSERTS_SEARCHABLE = false}'
+            - runFlow:
+                when:
+                  visible:
+                    id: "Search inserts"
+                commands:
+                  - evalScript: '${output.INSERTS_SEARCHABLE = true}'
+            - runFlow:
+                when:
+                  true: "${output.INSERTS_SEARCHABLE}"
+                commands:
+                  - tapOn:
+                      id: "Search inserts"
+                      waitToSettleTimeoutMs: 250
+                  # A second pass finds the first pass's text in the box.
+                  - eraseText: 30
+                  - inputText: ${output.INSERT_ROW}
+                  - extendedWaitUntil:
+                      visible:
+                        text: "^${output.INSERT_ROW}$"
+                        below:
+                          id: "Search inserts"
+                      timeout: 7000
+                  - tapOn:
+                      text: "^${output.INSERT_ROW}$"
+                      below:
+                        id: "Search inserts"
+            # One-row shape: no box, so the row is the only thing under the
+            # column's header with that full text.
+            - runFlow:
+                when:
+                  true: "${!output.INSERTS_SEARCHABLE}"
+                commands:
+                  - tapOn:
+                      text: "^${output.INSERT_ROW}$"
+                      below:
+                        text: "Inserts"
+            - extendedWaitUntil:
+                visible: "Parallels"
+                timeout: 7000
+      # `All-America Game Autos` holds exactly one parallel — the one STEP 14
+      # made — so its column has no search box: tap the row under the
+      # column's header.
+      - extendedWaitUntil:
+          visible:
+            text: "^${output.NEW_PARALLEL}$"
+            below:
+              text: "Parallels"
+          timeout: 7000
+      - tapOn:
+          text: "^${output.NEW_PARALLEL}$"
+          below:
+            text: "Parallels"
+      # The panel follows the selection. DOWN, centred, as the sibling's
+      # STEP 9 (the panel sits below the columns).
+      - scrollUntilVisible:
+          element:
+            text: "Multi-source sets"
+          centerElement: true
+          timeout: 7000
+      # THE CHIP — a Convex read of the row just selected, the 7000 bar.
+      # Centred on the × itself for the tap (R8): it sits just under the
+      # heading centred above, so DOWN.
+      - scrollUntilVisible:
+          element:
+            id: "Remove .*${output.NEW_PARALLEL}"
+          direction: DOWN
+          centerElement: true
+          timeout: 7000
+      - tapOn:
+          id: "Remove .*${output.NEW_PARALLEL}"
+      # The confirm names the SIDE: the link on the moved row is SportLots'
+      # (MultiSourcePanel's `detachConfirmSentence`). A Convex read (its
+      # count), the 7000 bar.
+      - extendedWaitUntil:
+          visible:
+            text: "Detach SportLots \".*${output.NEW_PARALLEL}\"\\? .*"
+          timeout: 7000
+      - tapOn:
+          id: "Cancel detach .*${output.NEW_PARALLEL}"
+      - extendedWaitUntil:
+          notVisible: "Detach SportLots .*"
+          timeout: 7000
+      # Still attached — the positive that makes the step non-destructive.
+      - assertVisible:
+          id: "Remove .*${output.NEW_PARALLEL}"
