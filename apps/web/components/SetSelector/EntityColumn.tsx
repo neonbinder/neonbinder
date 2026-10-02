@@ -4,6 +4,7 @@ import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
+import { CUSTOM_BUTTON_LABEL } from "./control-labels";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import SelectorSyncReviewModal, {
@@ -1353,7 +1354,8 @@ export default function EntityColumn({
             onKeyDown={(e) => activateOnEnter(e, openCustomForm)}
             aria-label={`Add custom ${addButtonText.replace(/^Sync /, "")}`}
           >
-            + Custom
+            {/* NEO-312: shared with copy that tells the operator to use it. */}
+            {CUSTOM_BUTTON_LABEL}
           </NeonButton>
         )}
         {level && hideCustom && (

@@ -10,7 +10,12 @@
 import { describe, expect, test } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import type { Id } from "../../convex/_generated/dataModel";
-import StoreHoldNotices from "./StoreHoldNotices";
+import StoreHoldNotices, { UNCHECKED_FIX } from "./StoreHoldNotices";
+import {
+  ATTACH_MORE_LABEL,
+  CUSTOM_BUTTON_LABEL,
+  MULTI_SOURCE_HEADING,
+} from "./control-labels";
 
 const row = (id: string, value: string) => ({
   id: id as Id<"selectorOptions">,
@@ -135,20 +140,22 @@ describe("StoreHoldNotices — where a holder lives (NEO-312)", () => {
     expect(itemLines()).toEqual(["Anime Kanji→grouped under Anime"]);
   });
 
-  test("notChecked: its own line, no rows under it, and try-again guidance", () => {
+  test("notChecked: its own line, no rows under it, and the by-hand fix", () => {
     renderWithheld([{ label: "Gold Refractor", reason: "notChecked", holders: [] }]);
 
     const live = screen.getByText(
-      "Hold up: 1 not added. It couldn't be checked against the rest of the set.",
+      "Hold up: 1 not added. This set is too big to check new links automatically.",
     ).closest('[role="status"]') as HTMLElement;
     expect(live.textContent).toContain(
-      "Try again, or ask for help if it keeps happening.",
+      "You can still add it by hand: pick its row, or make one with + Custom, then use Attach more… under Multi-source sets.",
     );
-    // Nothing clashes, so the clash fix is not offered.
+    // Nothing clashes, so the clash fix is not offered. And no retry: past
+    // the set bound a retry hits the same bound (security audit N2).
     expect(live.textContent).not.toContain("Delete or ungroup");
+    expect(live.textContent).not.toMatch(/try again|ask for help/i);
     const list = screen.getByRole("group");
     expect(list.textContent).toContain(
-      "Couldn't check this link against the rest of the set, so it wasn't added.",
+      "Not added: this set is too big to check new links automatically.",
     );
     expect(list.textContent).not.toContain("Points at a row linked to a different set:");
     // No empty holder list under it.
@@ -169,7 +176,7 @@ describe("StoreHoldNotices — where a holder lives (NEO-312)", () => {
       '[role="status"]',
     ) as HTMLElement;
     expect(live.textContent).toContain("Delete or ungroup the extra row, then sync again.");
-    expect(live.textContent).toContain("Try again, or ask for help if it keeps happening.");
+    expect(live.textContent).toContain("You can still add it by hand: pick its row, or make one with + Custom, then use Attach more… under Multi-source sets.");
   });
 
   test("clashes alone keep the clash summary and fix, wherever the holder is", () => {
@@ -183,7 +190,31 @@ describe("StoreHoldNotices — where a holder lives (NEO-312)", () => {
     const live = screen.getByText("Hold up: 1 not added. It clashes with existing rows.")
       .closest('[role="status"]') as HTMLElement;
     expect(live.textContent).toContain("Delete or ungroup the extra row, then sync again.");
-    expect(live.textContent).not.toContain("Try again");
+    expect(live.textContent).not.toContain("by hand");
+  });
+
+  test("a skipped walk with its unchecked items listed says it once, in the withheld box", () => {
+    renderWithheld([{ label: "Gold", reason: "notChecked", holders: [] }], true);
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    expect(screen.queryByText(/^Heads up:/)).toBeNull();
+  });
+
+  test("a skipped walk beside a clash still gets its own notice", () => {
+    renderWithheld(
+      [
+        {
+          label: "Red Ink",
+          reason: "heldByMany",
+          holders: [holder("p1", "Red Ink", "parallel", "Chrome", ["Bowman", "Insert", "Chrome"])],
+        },
+      ],
+      true,
+    );
+    expect(
+      screen.getByText(
+        "Heads up: this set is too big to check new links automatically, so new ones weren't added.",
+      ),
+    ).toBeTruthy();
   });
 
   test("a skipped walk says new links were held back, not re-added", () => {
@@ -194,7 +225,7 @@ describe("StoreHoldNotices — where a holder lives (NEO-312)", () => {
     );
     const notice = screen.getByRole("status");
     expect(notice.textContent).toBe(
-      "Heads up: this set is too big to check new links against, so new ones weren't added.",
+      "Heads up: this set is too big to check new links automatically, so new ones weren't added.",
     );
     expect(notice.textContent).not.toMatch(/re-added|doubles/);
   });
@@ -234,11 +265,26 @@ describe("StoreHoldNotices — a link left on the row that had it (NEO-312)", ()
     );
     // Nothing clashes and nothing went unchecked: neither of those fixes.
     expect(live.textContent).not.toContain("Delete or ungroup");
-    expect(live.textContent).not.toContain("Try again");
+    expect(live.textContent).not.toContain("by hand");
     const list = screen.getByRole("group");
     expect(list.textContent).toContain(
       "Its link is already on this row, so it stayed there:",
     );
     expect(list.textContent).toContain("Bowman › Insert › Chrome › Blue");
+  });
+});
+
+describe("StoreHoldNotices — the by-hand fix names real controls (NEO-312)", () => {
+  test("built from the labels EntityColumn and MultiSourcePanel render", () => {
+    // A rename in control-labels moves the button and this sentence together.
+    expect(UNCHECKED_FIX).toContain(CUSTOM_BUTTON_LABEL);
+    expect(UNCHECKED_FIX).toContain(ATTACH_MORE_LABEL);
+    expect(UNCHECKED_FIX).toContain(MULTI_SOURCE_HEADING);
+    // And the labels are the ones the operator sees today, byte for byte.
+    expect([CUSTOM_BUTTON_LABEL, ATTACH_MORE_LABEL, MULTI_SOURCE_HEADING]).toEqual([
+      "+ Custom",
+      "Attach more…",
+      "Multi-source sets",
+    ]);
   });
 });

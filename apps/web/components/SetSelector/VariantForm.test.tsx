@@ -1008,7 +1008,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
 
     expect(
       await screen.findByText(
-        "Heads up: this set is too big to check new links against, so new ones weren't added.",
+        "Heads up: this set is too big to check new links automatically, so new ones weren't added.",
       ),
     ).toBeTruthy();
     expect(onDone).not.toHaveBeenCalled();

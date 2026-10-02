@@ -658,7 +658,7 @@ describe("ParallelForm — sets held elsewhere in the variant type (NEO-300)", (
     expect(screen.getByText("Points at a row linked to a different set:")).toBeTruthy();
     // An insert holder is named on its own.
     expect(screen.getByText("Chrome Stars", { selector: "li" })).toBeTruthy();
-    expect(screen.getByText(/this set is too big to check new links against/)).toBeTruthy();
+    expect(screen.getByText(/this set is too big to check new links automatically/)).toBeTruthy();
     expect(onDone).not.toHaveBeenCalled();
   });
 });

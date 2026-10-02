@@ -8,6 +8,11 @@ import {
   holderPathOf,
   type StoreHolds,
 } from "./held-elsewhere";
+import {
+  ATTACH_MORE_LABEL,
+  CUSTOM_BUTTON_LABEL,
+  MULTI_SOURCE_HEADING,
+} from "./control-labels";
 
 /**
  * NEO-300 — the two things a finished sync store can still need the operator
@@ -91,7 +96,9 @@ export default function StoreHoldNotices({ holds }: { holds: StoreHolds }) {
           )}
         </div>
       )}
-      {subtreeWalkSkipped && (
+      {/* N2: when the withheld box already lists the unchecked items, it has
+          said this and what to do; a second box would only repeat it. */}
+      {subtreeWalkSkipped && !(withheldTotal > 0 && kinds.unchecked) && (
         <div role="status" className={box}>
           {SUBTREE_SKIPPED_MESSAGE}
         </div>
@@ -164,9 +171,10 @@ export function withheldSummary(n: number, kinds: WithheldKinds): string {
   const head = `Hold up: ${n} not added.`;
   if (!only) return head;
   if (kinds.unchecked) {
-    return one
-      ? `${head} It couldn't be checked against the rest of the set.`
-      : `${head} They couldn't be checked against the rest of the set.`;
+    // N2 (security audit): past the set bound this is deterministic — a retry
+    // hits the same bound — so the sentence says why, and the fix line says
+    // what still works.
+    return `${head} This set is too big to check new links automatically.`;
   }
   return one
     ? `${head} It clashes with existing rows.`
@@ -178,8 +186,17 @@ export const CLASH_FIX = "Delete or ungroup the extra row, then sync again.";
 /** DRAFT (NEO-312). What to do about a link left on the row that had it. */
 export const LINKED_FIX =
   "If a link belongs here instead, take it off the other row, then sync again.";
-/** DRAFT (NEO-312). What to do about an item the store could not check. */
-export const UNCHECKED_FIX = "Try again, or ask for help if it keeps happening.";
+/**
+ * DRAFT (NEO-312, N2). What to do about an item the store could not check.
+ * A retry hits the same bound, so the fix is the manual attach, named by its
+ * visible labels: the column's "+ Custom" (EntityColumn) makes the row, and
+ * the selected row's "Multi-source sets" panel has "Attach more…"
+ * (MultiSourcePanel). The labels come from `control-labels`, the same
+ * constants those components render, so a rename cannot leave this stale.
+ * `attachPlatformIds` does not walk the set, so it works on a set past the
+ * bound.
+ */
+export const UNCHECKED_FIX = `You can still add it by hand: pick its row, or make one with ${CUSTOM_BUTTON_LABEL}, then use ${ATTACH_MORE_LABEL} under ${MULTI_SOURCE_HEADING}.`;
 
 /** DRAFT. The line under each withheld item, before the rows it names. */
 export function reasonLine(reason: WithheldElsewhereEntry["reason"]): string {
@@ -189,7 +206,7 @@ export function reasonLine(reason: WithheldElsewhereEntry["reason"]): string {
   if (reason === "notChecked") {
     // NEO-312 — no rows follow: there is nothing it clashes with, only a
     // check that could not run.
-    return "Couldn't check this link against the rest of the set, so it wasn't added.";
+    return "Not added: this set is too big to check new links automatically.";
   }
   return "Points at a row linked to a different set:";
 }
@@ -201,4 +218,4 @@ export function reasonLine(reason: WithheldElsewhereEntry["reason"]): string {
  * doubles." said; that no longer happens.
  */
 export const SUBTREE_SKIPPED_MESSAGE =
-  "Heads up: this set is too big to check new links against, so new ones weren't added.";
+  "Heads up: this set is too big to check new links automatically, so new ones weren't added.";
