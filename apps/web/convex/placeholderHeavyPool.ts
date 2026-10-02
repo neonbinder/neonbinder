@@ -108,6 +108,13 @@ export const heavyPreprocessPool = new Workpool(components.heavyPreprocessPool, 
  * the `!image.escalated` guard in settle makes that safe even against a buggy
  * heavy response. Sharing the one settle function is what puts fast and heavy
  * completions of the same job under the same per-job settle lock.
+ *
+ * Passes origin "heavy": settle drops any further FAST delivery for an escalated
+ * row as a duplicate, and the origin is what guarantees this one — the row's
+ * real answer, success or failure — is never mistaken for one. It also lets
+ * settle drop a heavy completion for a row that is NOT escalated, which only a
+ * restart produces (the reset clears `escalated` while the old run's heavy work
+ * drains); the new run's fast result settles that row instead.
  */
 export const onHeavyImageComplete = heavyPreprocessPool.defineOnComplete({
   context: v.object({
@@ -115,7 +122,7 @@ export const onHeavyImageComplete = heavyPreprocessPool.defineOnComplete({
     imageId: v.id("placeholderImages"),
   }),
   handler: async (ctx: MutationCtx, { context, result }) => {
-    await recordImageOutcomeImpl(ctx, context, result);
+    await recordImageOutcomeImpl(ctx, context, result, "heavy");
   },
 });
 

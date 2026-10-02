@@ -1585,6 +1585,55 @@ export function readNeedsEscalation(returnValue: unknown): boolean {
 }
 
 /**
+ * Which workpool delivered a completion. Each pool has its OWN onComplete hook
+ * (`placeholderPool.onImageComplete`, `placeholderHeavyPool.onHeavyImageComplete`),
+ * so the hook knows this with certainty and passes it in. Nothing travels in
+ * the work item's `context`, which is why work enqueued before this existed is
+ * handled exactly like work enqueued after it: the hook that receives it is
+ * the same either way.
+ */
+export type CompletionOrigin = "fast" | "heavy";
+
+/**
+ * A completion from the pool that does NOT own the row's current tier — stale,
+ * so it must be dropped, not settled.
+ *
+ * An ESCALATED row belongs to the heavy pool. Its fast attempt is over: its one
+ * fast completion was the decline that escalated it, and from then on only the
+ * heavy result may settle it. Any further FAST delivery — the decline delivered
+ * twice, or a stale failure/cancel for the same fast item — is a duplicate.
+ * Settling on it would mark the card done off an empty decline body (no crop,
+ * no classification), count it, and leave the real heavy result to no-op
+ * against a terminal row. A HEAVY delivery for it always settles, whatever its
+ * body says: the heavy result is the row's answer, and a heavy body that
+ * wrongly claims `needs_escalation` still terminates the row rather than
+ * stranding it.
+ *
+ * A row that is NOT escalated belongs to the fast pool, and a HEAVY delivery
+ * for it is stale. `enqueueHeavyImage` only enqueues an escalated row, and the
+ * one thing that clears `escalated` is a restart (`registerExtractedImages`
+ * resetting the row to a fresh fast-tier candidate) while the old run's heavy
+ * work may still be draining. That old result belongs to the previous run:
+ * settling on it would count it into the new run and turn the new run's own
+ * fast result into a no-op. Dropped, the new run settles the row normally.
+ *
+ * With no origin (the plain test seam, or `recordImageOutcome` called without
+ * one) the body is the only evidence. It is decisive for the case that
+ * matters — a heavy body never asks for escalation, so a decline for an
+ * escalated row can only be the fast one again — and everything else settles,
+ * as it always has.
+ */
+function isStaleCompletion(
+  rowEscalated: boolean,
+  origin: CompletionOrigin | undefined,
+  result: RunResult,
+): boolean {
+  if (origin === "fast") return rowEscalated;
+  if (origin === "heavy") return !rowEscalated;
+  return rowEscalated && result.kind === "success" && readNeedsEscalation(result.returnValue);
+}
+
+/**
  * Apply one work item's outcome. Three cases (NEO-175):
  *
  *  - a FAST completion that declined (`needs_escalation: true`) → route the row
@@ -1632,9 +1681,10 @@ export function recordImageOutcomeImpl(
   ctx: MutationCtx,
   context: { jobId: string; imageId: Id<"placeholderImages"> },
   result: RunResult,
+  origin?: CompletionOrigin,
 ): Promise<null> {
   return withJobSettleLock(context.jobId, () =>
-    settleImageOutcome(ctx, context, result),
+    settleImageOutcome(ctx, context, result, origin),
   );
 }
 
@@ -1670,6 +1720,7 @@ async function settleImageOutcome(
   ctx: MutationCtx,
   context: { jobId: string; imageId: Id<"placeholderImages"> },
   result: RunResult,
+  origin: CompletionOrigin | undefined,
 ): Promise<null> {
   const image = await ctx.db.get(context.imageId);
   // The row can legitimately be gone: restarting a failed job deletes the
@@ -1678,6 +1729,14 @@ async function settleImageOutcome(
   // succeed.
   if (!image) return null;
   if (image.status === "done" || image.status === "failed") return null;
+  // A delivery from the pool that does not own the row's current tier: a
+  // duplicate FAST completion for a row the fast pass already escalated, or an
+  // old run's HEAVY completion for a row a restart reset to the fast tier. No
+  // patch, no counter, no stamp — the owning pool's result settles this row.
+  // See `isStaleCompletion`.
+  if (isStaleCompletion(image.escalated === true, origin, result)) {
+    return null;
+  }
 
   const job = await findJob(ctx, context.jobId);
   if (!job) return null;
@@ -1689,10 +1748,11 @@ async function settleImageOutcome(
   // it to the heavy pool instead of terminating it, and do NOT touch the
   // counters (it settles when the heavy result lands, exactly once). The
   // `!image.escalated` guard makes this fire only on the FIRST (fast)
-  // completion: a heavy completion carries `needs_escalation: false` and the row
-  // is already `escalated`, so it falls through to the terminal path below —
-  // and even a buggy heavy response claiming escalation cannot loop, because the
-  // guard refuses to escalate an already-escalated row.
+  // completion. Every later FAST delivery for the escalated row was dropped
+  // above; what reaches here for an escalated row is the heavy completion,
+  // which carries `needs_escalation: false` and falls through to the terminal
+  // path below — and even a buggy heavy response claiming escalation cannot
+  // loop, because this guard refuses to escalate an already-escalated row.
   if (succeeded && !image.escalated && readNeedsEscalation(result.returnValue)) {
     const firstEscalation = job.heavyWarmStartedAt === undefined;
     const now = Date.now();
@@ -1853,6 +1913,8 @@ export const recordImageOutcome = internalMutation({
       v.object({ kind: v.literal("failed"), error: v.string() }),
       v.object({ kind: v.literal("canceled") }),
     ),
+    /** Which pool delivered it, when the caller knows; see `CompletionOrigin`. */
+    origin: v.optional(v.union(v.literal("fast"), v.literal("heavy"))),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -1860,6 +1922,7 @@ export const recordImageOutcome = internalMutation({
       ctx,
       { jobId: args.jobId, imageId: args.imageId },
       args.result as RunResult,
+      args.origin,
     );
   },
 });

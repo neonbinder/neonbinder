@@ -19,9 +19,10 @@
 import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+  type CompletionOrigin,
   deriveHeavyWarming,
   readNeedsEscalation,
   recordImageOutcomeImpl,
@@ -271,14 +272,19 @@ async function cancelPairingDebounce(t: ReturnType<typeof convexTest>): Promise<
   });
 }
 
-/** Drive one completion through the shared settle seam. */
+/**
+ * Drive one completion through the shared settle seam. `origin` is what the
+ * pool's own onComplete hook passes ("fast" from `onImageComplete`, "heavy"
+ * from `onHeavyImageComplete`); omitted, the seam judges by the body alone.
+ */
 async function settle(
   t: ReturnType<typeof convexTest>,
   jobId: string,
   imageId: Id<"placeholderImages">,
   result: Parameters<typeof recordImageOutcomeImpl>[2],
+  origin?: CompletionOrigin,
 ) {
-  await t.run(async (ctx) => recordImageOutcomeImpl(ctx, { jobId, imageId }, result));
+  await t.run(async (ctx) => recordImageOutcomeImpl(ctx, { jobId, imageId }, result, origin));
   // NEO-220: completing an image arms `placeholderPairing:runPairing` behind a
   // 5s debounce (`PAIRING_DEBOUNCE_MS`). Nothing in this file asserts on
   // pairing — it covers escalation state — but convex-test leaves that timer
@@ -539,7 +545,15 @@ describe("the heavy completion terminates the escalated row", () => {
       workId: "heavy-work-0",
     });
 
-    await settle(t, jobId, imageId, { kind: "success", returnValue: { ...CROP_BODY, needs_escalation: true } });
+    // Delivered by the HEAVY hook. Without that origin the body alone would read
+    // as a duplicate fast decline and be dropped; with it, it is the row's answer.
+    await settle(
+      t,
+      jobId,
+      imageId,
+      { kind: "success", returnValue: { ...CROP_BODY, needs_escalation: true } },
+      "heavy",
+    );
 
     // The `!image.escalated` guard wins: the row terminates instead of looping.
     const image = await t.run(async (ctx) => ctx.db.get(imageId));
@@ -761,7 +775,7 @@ describe("NEO-315: an escalation stamps escalatedAt and hands the baseline on", 
       workId: "heavy-work-0",
     });
 
-    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE });
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE }, "heavy");
 
     const image = await t.run(async (ctx) => ctx.db.get(imageId));
     // The `!image.escalated` guard wins: it settles, once.
@@ -819,13 +833,19 @@ describe("NEO-315 adversarial: repeated and out-of-order completions", () => {
     await seedJob(t, { jobId, status: "processing", totalImages: 2 });
     const imageId = await seedImage(t, jobId, 0, "processing", { workId: "fast-work-0" });
 
-    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE });
-    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE });
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE }, "fast");
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE }, "fast");
 
     const enqueues = (await scheduledNames(t)).filter((n) => n === ENQUEUE_HEAVY_FN);
     expect(enqueues).toHaveLength(1);
+    // The duplicate settles nothing: the row is still waiting on heavy and
+    // nothing was counted. (This used to allow 1 — the duplicate settling the
+    // row "done" off an empty decline body.)
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe("processing");
+    expect(image?.settledAt).toBeUndefined();
     const job = await getJob(t, jobId);
-    expect(job?.processedImages ?? 0).toBeLessThanOrEqual(1);
+    expect(job?.processedImages ?? 0).toBe(0);
     expect(job?.failedImages ?? 0).toBe(0);
   });
 
@@ -947,6 +967,273 @@ describe("NEO-315 adversarial: repeated and out-of-order completions", () => {
     const image = await t.run(async (ctx) => ctx.db.get(imageId));
     expect(image?.dhash).toBeUndefined();
     expect(((await scheduledEnqueueArgs(t))?.[0] as Record<string, unknown>).dhash).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-315: a duplicate FAST delivery after escalation is dropped
+//
+// The workpool can deliver one fast completion twice. The second copy reaches a
+// row the first already escalated, while heavy is still running. It must not
+// settle the row: that would mark the card done off the decline's empty body,
+// count it, and turn the real heavy result into a no-op.
+// ---------------------------------------------------------------------------
+
+describe("NEO-315: a duplicate fast completion after escalation is dropped", () => {
+  /** A row as settle + `enqueueHeavyImage` leave an escalation: heavy in flight. */
+  async function escalatedRow(t: ReturnType<typeof convexTest>, jobId: string) {
+    await seedJob(t, { jobId, status: "processing", totalImages: 2, processedImages: 1 });
+    const imageId = await seedImage(t, jobId, 0, "processing", { workId: "fast-work-0", queuedAt: 1_000 });
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE }, "fast");
+    await t.run(async (ctx) => ctx.db.patch(imageId, { workId: "heavy-work-0" }));
+    const row = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(row?.escalated).toBe(true);
+    return { imageId, row: row! };
+  }
+
+  /** The escalated row and the job are exactly as the escalation left them. */
+  async function expectUntouched(
+    t: ReturnType<typeof convexTest>,
+    jobId: string,
+    imageId: Id<"placeholderImages">,
+    before: Doc<"placeholderImages">,
+  ) {
+    const after = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(after).toEqual(before);
+    const job = await getJob(t, jobId);
+    expect(job?.processedImages).toBe(1);
+    expect(job?.failedImages).toBe(0);
+    expect(job?.status).toBe("processing");
+    // Still exactly the one heavy enqueue the first decline scheduled.
+    expect((await scheduledNames(t)).filter((n) => n === ENQUEUE_HEAVY_FN)).toHaveLength(1);
+  }
+
+  test("a second fast decline leaves the row untouched; heavy then settles it once with heavy data", async () => {
+    const t = harness();
+    const jobId = "job-dup-fast-1";
+    const { imageId, row } = await escalatedRow(t, jobId);
+
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE }, "fast");
+    await expectUntouched(t, jobId, imageId, row);
+
+    await settle(t, jobId, imageId, { kind: "success", returnValue: CROP_BODY }, "heavy");
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe("done");
+    // Heavy's crop and classification, not the decline's empty body.
+    expect(image?.players).toEqual(CROP_BODY.players);
+    expect(image?.team).toBe(CROP_BODY.team);
+    expect(image?.cardNumber).toBe(CROP_BODY.card_number);
+    expect(image?.croppedSource).toBe(CROP_BODY.cropped_source);
+    expect(image?.dhash).toBe(CROP_BODY.dhash);
+    expect(image?.escalatedAt).toBe(row.escalatedAt);
+    expect(image?.settledAt).toBeGreaterThan(0);
+    const job = await getJob(t, jobId);
+    // Counted once, by heavy, and that completed the batch.
+    expect(job?.processedImages).toBe(2);
+    expect(job?.failedImages).toBe(0);
+    expect(job?.status).toBe("pairing");
+  });
+
+  test.each([
+    ["a late fast failure", { kind: "failed", error: "preprocess HTTP 500: boom" } as const],
+    ["a late fast cancel", { kind: "canceled" } as const],
+    ["a fast crop body", { kind: "success", returnValue: CROP_BODY } as const],
+  ])("%s for the escalated row is dropped too; heavy still settles it", async (_l, result) => {
+    // The fast attempt already ended in the decline. Nothing else the fast pool
+    // says about this row can be its answer.
+    const t = harness();
+    const jobId = "job-dup-fast-2";
+    const { imageId, row } = await escalatedRow(t, jobId);
+
+    await settle(t, jobId, imageId, result, "fast");
+    await expectUntouched(t, jobId, imageId, row);
+
+    await settle(t, jobId, imageId, { kind: "success", returnValue: CROP_BODY }, "heavy");
+    expect((await t.run(async (ctx) => ctx.db.get(imageId)))?.status).toBe("done");
+    expect((await getJob(t, jobId))?.processedImages).toBe(2);
+  });
+
+  test.each([
+    ["a heavy failure", { kind: "failed", error: "preprocess HTTP 500: boom" } as const, "PROCESS_ENTRY_FAILED"],
+    ["a heavy cancel", { kind: "canceled" } as const, "CANCELED"],
+  ])("%s still settles the escalated row failed and counts it", async (_l, result, errorCode) => {
+    const t = harness();
+    const jobId = "job-dup-heavy-fail";
+    const { imageId } = await escalatedRow(t, jobId);
+
+    await settle(t, jobId, imageId, result, "heavy");
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe("failed");
+    expect(image?.errorCode).toBe(errorCode);
+    expect(image?.settledAt).toBeGreaterThan(0);
+    const job = await getJob(t, jobId);
+    expect(job?.failedImages).toBe(1);
+    expect(job?.processedImages).toBe(1);
+    expect(job?.status).toBe("pairing");
+  });
+
+  test("with no origin, a decline for an escalated row is still recognised as the fast duplicate", async () => {
+    // The seam without an origin judges by the body: a heavy body never asks
+    // for escalation, so this can only be the fast decline again.
+    const t = harness();
+    const jobId = "job-dup-no-origin";
+    const { imageId, row } = await escalatedRow(t, jobId);
+
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_BODY });
+    await expectUntouched(t, jobId, imageId, row);
+  });
+
+  test("the registered wrapper carries the origin, and without one behaves as before", async () => {
+    const t = harness();
+    const jobId = "job-dup-wrapper";
+    const { imageId, row } = await escalatedRow(t, jobId);
+    const failure = { kind: "failed" as const, error: "preprocess HTTP 500: boom" };
+
+    // Told it came from the fast pool: dropped.
+    await t.mutation(internal.placeholderPipeline.recordImageOutcome, {
+      jobId,
+      imageId,
+      result: failure,
+      origin: "fast",
+    });
+    await cancelPairingDebounce(t);
+    await expectUntouched(t, jobId, imageId, row);
+
+    // The old argument shape (no origin): a failure cannot be told apart, so it
+    // settles, exactly as it did before the origin existed.
+    await t.mutation(internal.placeholderPipeline.recordImageOutcome, {
+      jobId,
+      imageId,
+      result: failure,
+    });
+    await cancelPairingDebounce(t);
+    expect((await t.run(async (ctx) => ctx.db.get(imageId)))?.status).toBe("failed");
+    expect((await getJob(t, jobId))?.failedImages).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-315: an old run's heavy completion after a restart is dropped
+//
+// A restart resets an escalated row to a fresh fast-tier candidate
+// (`escalated: undefined`) while the previous run's heavy work may still be
+// draining. That heavy result belongs to the old run: it must not settle the
+// row or count into the new run, so the new run's own fast result can.
+// ---------------------------------------------------------------------------
+
+describe("NEO-315: a heavy completion for a row a restart reset is dropped", () => {
+  /**
+   * A 2-image job whose first run left image 0 escalated with heavy in flight
+   * and image 1 done, restarted through the REAL `registerExtractedImages`
+   * reset. Fake timers hold its scheduled prune → enqueue chain (which would
+   * reach the unmounted fast pool); the chain is cancelled, and the new run's
+   * fast enqueue is then applied by hand, as `enqueueImageChunk` would.
+   */
+  async function restartedJob(t: ReturnType<typeof convexTest>, jobId: string) {
+    await seedJob(t, { jobId, status: "processing", totalImages: 2, processedImages: 1 });
+    const imageId = await seedImage(t, jobId, 0, "processing", {
+      escalated: true,
+      escalatedAt: 2_000,
+      workId: "heavy-work-run1",
+    });
+    await seedImage(t, jobId, 1, "done", { settledAt: 3_000 });
+
+    // The run fails and is restarted; extraction lands again.
+    await t.run(async (ctx) => {
+      const job = (await ctx.db.query("placeholderJobs").collect()).find((j) => j.jobId === jobId);
+      await ctx.db.patch(job!._id, { status: "extracting" });
+    });
+    vi.useFakeTimers();
+    try {
+      const result = await t.mutation(internal.placeholderPipeline.registerExtractedImages, {
+        jobId,
+        userId: USER_A.subject,
+        entries: [
+          { index: 0, name: "scan-0.jpg", accepted: true },
+          { index: 1, name: "scan-1.jpg", accepted: true },
+        ],
+      });
+      expect(result.done).toBe(true);
+      await t.run(async (ctx) => {
+        for (const job of await ctx.db.system.query("_scheduled_functions").collect()) {
+          if (job.state.kind === "pending") await ctx.scheduler.cancel(job._id);
+        }
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const reset = await t.run(async (ctx) => ctx.db.get(imageId));
+    // The reset this guard depends on: back to the fast tier, nothing settled.
+    expect(reset?.status).toBe("queued");
+    expect(reset?.escalated).toBeUndefined();
+    expect(reset?.escalatedAt).toBeUndefined();
+    const job = await getJob(t, jobId);
+    expect(job?.status).toBe("processing");
+    expect(job?.processedImages).toBe(1);
+    expect(job?.failedImages).toBe(0);
+    return imageId;
+  }
+
+  const OLD_RUN_HEAVY_BODY = { ...CROP_BODY, players: ["Old Run Heavy"], dhash: "1111111111111111" };
+
+  test.each([
+    ["an old heavy success", { kind: "success", returnValue: OLD_RUN_HEAVY_BODY } as const],
+    ["an old heavy failure", { kind: "failed", error: "preprocess HTTP 500: boom" } as const],
+    ["an old heavy cancel", { kind: "canceled" } as const],
+  ])("%s is dropped; the new run's fast result settles the row and counts once", async (_l, oldHeavy) => {
+    const t = harness();
+    const jobId = "job-restart-heavy";
+    const imageId = await restartedJob(t, jobId);
+
+    // Arriving before the new run has re-enqueued the row…
+    const queued = await t.run(async (ctx) => ctx.db.get(imageId));
+    await settle(t, jobId, imageId, oldHeavy, "heavy");
+    expect(await t.run(async (ctx) => ctx.db.get(imageId))).toEqual(queued);
+
+    // …and after it has.
+    await t.run(async (ctx) =>
+      ctx.db.patch(imageId, { workId: "fast-work-run2", status: "processing" }),
+    );
+    const inFlight = await t.run(async (ctx) => ctx.db.get(imageId));
+    await settle(t, jobId, imageId, oldHeavy, "heavy");
+    expect(await t.run(async (ctx) => ctx.db.get(imageId))).toEqual(inFlight);
+
+    let job = await getJob(t, jobId);
+    expect(job?.processedImages).toBe(1);
+    expect(job?.failedImages).toBe(0);
+    expect(job?.status).toBe("processing");
+
+    // The new run's own fast crop is the row's answer.
+    await settle(t, jobId, imageId, { kind: "success", returnValue: CROP_BODY }, "fast");
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe("done");
+    expect(image?.players).toEqual(CROP_BODY.players);
+    expect(image?.dhash).toBe(CROP_BODY.dhash);
+    expect(image?.escalated).toBeUndefined();
+    job = await getJob(t, jobId);
+    expect(job?.processedImages).toBe(2);
+    expect(job?.failedImages).toBe(0);
+    expect(job?.status).toBe("pairing");
+  });
+
+  test("with no origin, a completion for the reset row settles as it always has", async () => {
+    // Origin-less callers keep today's behaviour: the body alone cannot say
+    // which run a crop came from.
+    const t = harness();
+    const jobId = "job-restart-no-origin";
+    const imageId = await restartedJob(t, jobId);
+    await t.run(async (ctx) =>
+      ctx.db.patch(imageId, { workId: "fast-work-run2", status: "processing" }),
+    );
+
+    await settle(t, jobId, imageId, { kind: "success", returnValue: OLD_RUN_HEAVY_BODY });
+
+    expect((await t.run(async (ctx) => ctx.db.get(imageId)))?.status).toBe("done");
+    expect((await getJob(t, jobId))?.processedImages).toBe(2);
   });
 });
 
