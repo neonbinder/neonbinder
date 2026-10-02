@@ -828,6 +828,10 @@ export const runPairing = internalAction({
   returns: v.null(),
   handler: async (ctx, args) => {
     const final = args.final ?? true;
+    // NEO-315: wall-clock of this run up to its summary log, reads and chunked
+    // writes included — the number that says whether pairing is a meaningful
+    // slice of a batch's end-to-end time.
+    const startedAt = Date.now();
     try {
       // FIRST, before anything is read. Clearing the debounce latch up front is
       // what makes the sequence converge: a completion landing while this run is
@@ -984,6 +988,7 @@ export const runPairing = internalAction({
             revised: diff.patches.length,
             removed: diff.deleteIds.length,
             resolverCalls: diff.resolverCalls,
+            duration_ms: Date.now() - startedAt,
           }),
         );
       }

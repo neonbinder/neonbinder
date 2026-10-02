@@ -2948,6 +2948,19 @@ export default defineSchema({
     // Absent means no rejections. Cleared for a specific partner if the user
     // later pairs them by hand after all.
     unpairedFrom: v.optional(v.array(v.number())),
+    // Stage timestamps (NEO-315), epoch ms, for measuring where an image's time
+    // goes: queued → (escalated →) settled. Each is written by the MUTATION that
+    // already moves the row through that stage, never by a worker action:
+    //   - `queuedAt`    — the row becomes "queued" (stream upload confirmed, or
+    //                     zip registration);
+    //   - `escalatedAt` — settle routes a fast decline to the heavy pool;
+    //   - `settledAt`   — settle marks the row done or failed.
+    // Diagnostics only: nothing branches on them and no index reads them. Absent
+    // on rows from before NEO-315. A restart that re-queues a row restamps
+    // `queuedAt` and clears the other two with the rest of its per-image state.
+    queuedAt: v.optional(v.number()),
+    escalatedAt: v.optional(v.number()),
+    settledAt: v.optional(v.number()),
   })
     // The ONLY index this table needs. It answers both "every image of this
     // job" (prefix `jobId` alone) and "this job's images in zip order", so a

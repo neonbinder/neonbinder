@@ -17,3 +17,5 @@
 - [Workpool retry semantics](reference_workpool_retry_semantics.md) — every throw retries unless NonRetryableError; onComplete only after the final attempt; error arrives as a string
 - [Convex test files are not typechecked](reference_convex_test_files_are_not_typechecked.md) — convex tsconfig excludes *.test.ts and eslint skips .ts; typecheck new tests with a scratch tsconfig
 - [Store loops fall through to insert](reference_store_loops_fall_through_to_insert.md) — a new MatchOutcome kind becomes a NEW ROW in both stores until each gets an explicit branch
+- [Scheduled telemetry unmasks cross-test leaks](reference_scheduled_telemetry_unmasks_cross_test_leaks.md) — recordAdapterCall schedules since NEO-315; drain before asserting captures, scope by requestId, set POSTHOG_API_KEY in stubs
+- [use-node contract narrowers live in lib](reference_use_node_contract_narrowers_live_in_lib.md) — default-runtime settle can't import a "use node" adapter; types/validators/narrowers go in convex/lib, re-exported

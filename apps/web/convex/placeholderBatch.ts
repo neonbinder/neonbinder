@@ -24,6 +24,7 @@ import {
   parsePreprocessErrorCode,
 } from "./adapters/preprocess";
 import { HEAVY_MAX_PARALLELISM, PREPROCESS_MAX_PARALLELISM } from "./preprocessCapacity";
+import { preprocessBaselineValidator } from "./lib/preprocessBaseline";
 
 /**
  * Extract is retried inline rather than through the workpool.
@@ -217,12 +218,21 @@ export const processEntryWorker = internalAction({
  * The heartbeat is best-effort. If the mutation itself fails, that failure is
  * logged and swallowed so the original preprocess error is what the pool
  * records and retries on.
+ *
+ * `baseline` and `dhash` (NEO-315 D4) are the fast pass's own measurements,
+ * carried here from the decline by `settleImageOutcome` → `enqueueHeavyImage`
+ * and handed to the heavy call unchanged. Optional: an escalation from a fast
+ * revision that predates the hand-off has neither, and the heavy request then
+ * goes out exactly as before. Pure pass-through — the worker still writes
+ * nothing; the row's copies are written by settle, a mutation.
  */
 export const processHeavyEntryWorker = internalAction({
   args: {
     jobId: v.string(),
     userId: v.string(),
     entryIndex: v.number(),
+    baseline: v.optional(preprocessBaselineValidator),
+    dhash: v.optional(v.string()),
   },
   returns: v.any(),
   handler: async (ctx, args) => {
@@ -231,6 +241,8 @@ export const processHeavyEntryWorker = internalAction({
         jobId: args.jobId,
         userId: args.userId,
         entryIndex: args.entryIndex,
+        baseline: args.baseline,
+        dhash: args.dhash,
       });
     } catch (err) {
       if (!isNonRetryableError(err)) {

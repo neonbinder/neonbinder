@@ -27,6 +27,7 @@ import { __resetContractCache } from "./credentials";
 import { api } from "./_generated/api";
 import { recordAdapterPhase } from "./observability";
 import type { ActionCtx } from "./_generated/server";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const captureCalls: Array<{
   distinctId: string;
@@ -331,12 +332,25 @@ describe("fetchSportLotsSelectorOptions phase attribution", () => {
       parentFilters: {},
       requestId: "req-neo198-sl-ph",
     });
+    // NEO-315: adapter_sync_call captures are scheduled, not awaited — run them.
+    await drainScheduled(t);
 
+    // Scoped to this test's requestId. The breadcrumb's capture is a floating
+    // promise, and since recordAdapterCall stopped awaiting its own capture
+    // inline (NEO-315) nothing holds the PREVIOUS test's action open until that
+    // promise lands — so its breadcrumb can arrive after this test's reset.
+    const mine = captureCalls.filter((c) => c.properties.requestId === "req-neo198-sl-ph");
     await vi.waitFor(() => {
-      expect(captureCalls.filter((c) => c.event === "adapter_phase")).toHaveLength(1);
+      expect(
+        captureCalls.filter(
+          (c) => c.event === "adapter_phase" && c.properties.requestId === "req-neo198-sl-ph",
+        ),
+      ).toHaveLength(1);
     });
 
-    const phase = captureCalls.find((c) => c.event === "adapter_phase")!;
+    const phase = captureCalls.find(
+      (c) => c.event === "adapter_phase" && c.properties.requestId === "req-neo198-sl-ph",
+    )!;
     expect(phase.properties).toMatchObject({
       requestId: "req-neo198-sl-ph",
       operation: "fetchSportLotsSelectorOptions",
@@ -347,13 +361,12 @@ describe("fetchSportLotsSelectorOptions phase attribution", () => {
     // A breadcrumb is not a call outcome. Folding it into adapter_sync_call
     // would inflate the dashboard's success counts with records that describe
     // nothing having finished.
-    const syncCalls = captureCalls.filter((c) => c.event === "adapter_sync_call");
+    const syncCalls = mine.filter((c) => c.event === "adapter_sync_call");
+    // Non-vacuous: the drained captures are here, and — since `mine` is
+    // filtered on it — they share the aggregator's correlation id, which is the
+    // join that makes a fired deadline attributable.
+    expect(syncCalls.length).toBeGreaterThanOrEqual(1);
     expect(syncCalls.every((c) => c.properties.phase === undefined)).toBe(true);
-    // It shares the aggregator's correlation id — that join is the whole
-    // mechanism by which a fired deadline becomes attributable.
-    expect(
-      syncCalls.every((c) => c.properties.requestId === "req-neo198-sl-ph"),
-    ).toBe(true);
   });
 
   test("no breadcrumb when the token never resolves — absence is the auth-stall signal", async () => {

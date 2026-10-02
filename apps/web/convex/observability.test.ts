@@ -5,7 +5,9 @@
  *  - classifyAdapterError maps common error strings to stable tags
  *  - newRequestId returns a syntactically-valid UUID string and is unique
  *  - recordAdapterCall fires `adapter_sync_call` via PostHog with the
- *    full property bag forwarded verbatim
+ *    full property bag forwarded verbatim. Since NEO-315 the capture is
+ *    SCHEDULED (`runAfter(0)`), so a test that asserts on it drains the
+ *    scheduler first — the event lands after the action returns, by design
  *  - recordAdapterCall never throws when auth context is unavailable
  *  - recordAdapterCall never throws when PostHog capture itself fails
  *  - fetchBscSelectorOptions records an adapter_sync_call event tagged
@@ -24,6 +26,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import schema from "./schema";
 import { internal, api } from "./_generated/api";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 import {
   classifyAdapterError,
   newRequestId,
@@ -246,6 +249,10 @@ describe("fetchBscSelectorOptions instrumentation", () => {
 
     expect(result.success).toBe(false);
 
+    // NEO-315: the captures were scheduled, not awaited, so nothing has reached
+    // PostHog when the action returns. Run the scheduled captures.
+    await drainScheduled(t);
+
     // The adapter path emits two events on this failure mode:
     //   1. getBscToken → adapter_sync_call (platform=bsc, success=false)
     //   2. fetchBscSelectorOptions → adapter_sync_call (platform=bsc, success=false)
@@ -271,5 +278,26 @@ describe("fetchBscSelectorOptions instrumentation", () => {
       error_class: "no_credentials",
     });
     expect(typeof outerEvent!.properties.duration_ms).toBe("number");
+    // Resolved before scheduling: a scheduled function has no auth context,
+    // so an id resolved inside the capture would always read "anonymous".
+    expect(outerEvent!.distinctId).toBe(ADMIN_IDENTITY.subject);
+  });
+
+  test("the capture is scheduled, not run inline — nothing reaches PostHog until it runs", async () => {
+    const t = convexTest(schema, modules);
+    await t.withIdentity(ADMIN_IDENTITY).action(
+      api.adapters.buysportscards.fetchBscSelectorOptions,
+      { level: "sport", parentFilters: {}, requestId: "req-bsc-test-2" },
+    );
+
+    const pending = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).map((r) => r.name),
+    );
+    expect(pending.filter((n) => n === "posthog:captureEvent").length).toBeGreaterThanOrEqual(1);
+
+    await drainScheduled(t);
+    expect(
+      captureCalls.filter((c) => c.properties.requestId === "req-bsc-test-2").length,
+    ).toBeGreaterThanOrEqual(1);
   });
 });

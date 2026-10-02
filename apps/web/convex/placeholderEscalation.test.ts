@@ -181,6 +181,20 @@ const CROP_BODY = {
 /** The fast role's decline: a 200 whose only meaningful field is the flag. */
 const DECLINED_BODY = { needs_escalation: true };
 
+/**
+ * NEO-315 D4: a decline from a fast revision that hands its own measurements to
+ * heavy, as the workpool delivers it — i.e. as `callProcessEntryFast` RETURNED
+ * it, with the wire `baseline` already narrowed and camelCased by the adapter
+ * (adapters/preprocess.ts `normalizeProcessEntry`).
+ */
+const DECLINED_WITH_BASELINE = {
+  needs_escalation: true,
+  baseline: { rotationDegrees: 270, orientConfidence: 0.42, textCount: 7 },
+  dhash: "a1b2c3d4e5f60718",
+};
+
+const BASELINE = { rotationDegrees: 270, orientConfidence: 0.42, textCount: 7 };
+
 async function seedJob(
   t: ReturnType<typeof convexTest>,
   overrides: Partial<Doc<"placeholderJobs">> & { jobId: string },
@@ -578,6 +592,223 @@ describe("a fast-then-heavy image is counted exactly once, end to end", () => {
     const job = await getJob(t, jobId);
     expect(job?.processedImages).toBe(2);
     expect(job?.status).toBe("pairing");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-315: stage timestamps and the D4 baseline hand-off
+// ---------------------------------------------------------------------------
+
+/** The args the settle scheduled `enqueueHeavyImage` with, if it did. */
+async function scheduledEnqueueArgs(
+  t: ReturnType<typeof convexTest>,
+): Promise<unknown[] | undefined> {
+  return t.run(async (ctx) => {
+    const rows = await (
+      ctx as unknown as {
+        db: { system: { query: (n: string) => { collect: () => Promise<Array<{ name: string; args: unknown[] }>> } } };
+      }
+    ).db.system.query("_scheduled_functions").collect();
+    return rows.find((r) => r.name === ENQUEUE_HEAVY_FN)?.args;
+  });
+}
+
+describe("NEO-315: an escalation stamps escalatedAt and hands the baseline on", () => {
+  test("stores the fast baseline on the row and schedules the heavy enqueue with it", async () => {
+    const t = harness();
+    const jobId = "job-d4-1";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2 });
+    const imageId = await seedImage(t, jobId, 0, "processing", {
+      workId: "fast-work-0",
+      queuedAt: 1_000,
+    });
+
+    const before = Date.now();
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE });
+    const after = Date.now();
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.escalated).toBe(true);
+    expect(image?.escalatedAt).toBeGreaterThanOrEqual(before);
+    expect(image?.escalatedAt).toBeLessThanOrEqual(after);
+    // An escalation is a hand-off, not a settle.
+    expect(image?.settledAt).toBeUndefined();
+    expect(image?.queuedAt).toBe(1_000);
+    // The fast pass's measurements land on the row, provisionally.
+    expect(image?.rotationDegrees).toBe(270);
+    expect(image?.orientConfidence).toBe(0.42);
+    expect(image?.textCount).toBe(7);
+    expect(image?.dhash).toBe("a1b2c3d4e5f60718");
+
+    // …and travel with the heavy enqueue unchanged.
+    expect((await scheduledEnqueueArgs(t))?.[0]).toEqual({
+      imageId,
+      baseline: BASELINE,
+      dhash: "a1b2c3d4e5f60718",
+    });
+
+    // Still uncounted, exactly as an escalation without a baseline.
+    const job = await getJob(t, jobId);
+    expect(job?.processedImages).toBe(0);
+    expect(job?.failedImages).toBe(0);
+  });
+
+  test("an old-revision decline (no baseline) behaves exactly as before, plus escalatedAt", async () => {
+    const t = harness();
+    const jobId = "job-d4-2";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2 });
+    const imageId = await seedImage(t, jobId, 0, "processing", { workId: "fast-work-0" });
+
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_BODY });
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.escalated).toBe(true);
+    expect(image?.escalatedAt).toBeGreaterThan(0);
+    expect(image?.rotationDegrees).toBeUndefined();
+    expect(image?.orientConfidence).toBeUndefined();
+    expect(image?.textCount).toBeUndefined();
+    expect(image?.dhash).toBeUndefined();
+    // The schedule carries the image id and NOTHING else — not even an
+    // explicit-undefined baseline key — so the heavy call goes out as it did.
+    const args = (await scheduledEnqueueArgs(t))?.[0] as Record<string, unknown>;
+    expect(Object.keys(args)).toEqual(["imageId"]);
+  });
+
+  test("a malformed hint is neither stored nor forwarded; a sound one beside it still is", async () => {
+    // The adapter narrows on the way in, but the settle re-narrows a value that
+    // crossed the workpool's serialization boundary. 45 is not a quadrant, so
+    // the baseline goes whole; the hash is fine on its own and travels.
+    const t = harness();
+    const jobId = "job-d4-bad";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2 });
+    const imageId = await seedImage(t, jobId, 0);
+
+    await settle(t, jobId, imageId, {
+      kind: "success",
+      returnValue: {
+        ...DECLINED_WITH_BASELINE,
+        baseline: { rotationDegrees: 45, orientConfidence: 0.42, textCount: 7 },
+      },
+    });
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.escalated).toBe(true);
+    expect(image?.rotationDegrees).toBeUndefined();
+    expect(image?.orientConfidence).toBeUndefined();
+    expect(image?.textCount).toBeUndefined();
+    expect(image?.dhash).toBe("a1b2c3d4e5f60718");
+    expect((await scheduledEnqueueArgs(t))?.[0]).toEqual({
+      imageId,
+      dhash: "a1b2c3d4e5f60718",
+    });
+  });
+
+  test("the heavy result overwrites every baseline field, and stamps settledAt", async () => {
+    const t = harness();
+    const jobId = "job-d4-3";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2, processedImages: 1 });
+    const imageId = await seedImage(t, jobId, 0, "processing", { queuedAt: 1_000 });
+
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE });
+    const escalatedAt = (await t.run(async (ctx) => ctx.db.get(imageId)))?.escalatedAt;
+    // As `enqueueHeavyImage` would leave it.
+    await t.run(async (ctx) => ctx.db.patch(imageId, { workId: "heavy-work-0" }));
+
+    const before = Date.now();
+    await settle(t, jobId, imageId, { kind: "success", returnValue: CROP_BODY });
+    const after = Date.now();
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe("done");
+    // Heavy's answer, not the fast pass's guess.
+    expect(image?.rotationDegrees).toBe(CROP_BODY.rotation_degrees);
+    expect(image?.orientConfidence).toBe(CROP_BODY.orient_confidence);
+    expect(image?.textCount).toBe(CROP_BODY.text_count);
+    expect(image?.dhash).toBe(CROP_BODY.dhash);
+    expect(image?.settledAt).toBeGreaterThanOrEqual(before);
+    expect(image?.settledAt).toBeLessThanOrEqual(after);
+    // The earlier stages keep the times they were measured at.
+    expect(image?.escalatedAt).toBe(escalatedAt);
+    expect(image?.queuedAt).toBe(1_000);
+    expect((await getJob(t, jobId))?.processedImages).toBe(2);
+  });
+
+  test("a heavy result missing a field clears the provisional value rather than keeping it", async () => {
+    // The baseline is provisional display data. A heavy crop that reports no
+    // usable text count must not leave the fast pass's count looking like
+    // heavy's answer.
+    const t = harness();
+    const jobId = "job-d4-4";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2 });
+    const imageId = await seedImage(t, jobId, 0);
+
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE });
+    const { text_count: _omit, ...withoutTextCount } = CROP_BODY;
+    await settle(t, jobId, imageId, { kind: "success", returnValue: withoutTextCount });
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe("done");
+    expect(image?.textCount).toBeUndefined();
+  });
+
+  test("a buggy heavy decline with a baseline neither re-escalates nor restamps escalatedAt", async () => {
+    const t = harness();
+    const jobId = "job-d4-5";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2 });
+    const imageId = await seedImage(t, jobId, 0, "processing", {
+      escalated: true,
+      escalatedAt: 2_000,
+      workId: "heavy-work-0",
+    });
+
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE });
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    // The `!image.escalated` guard wins: it settles, once.
+    expect(image?.status).toBe("done");
+    expect(image?.escalatedAt).toBe(2_000);
+    expect(image?.settledAt).toBeGreaterThan(0);
+    expect(await scheduledNames(t)).not.toContain(ENQUEUE_HEAVY_FN);
+    expect((await getJob(t, jobId))?.processedImages).toBe(1);
+  });
+
+  test("two baseline escalations in ONE transaction each enqueue once with their own baseline", async () => {
+    const t = harness();
+    const jobId = "job-d4-6";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2 });
+    const a = await seedImage(t, jobId, 0);
+    const b = await seedImage(t, jobId, 1);
+    const otherBaseline = {
+      needs_escalation: true,
+      baseline: { rotationDegrees: 0, orientConfidence: 0.9, textCount: 55 },
+      dhash: null,
+    };
+
+    await t.run(async (ctx) => {
+      await Promise.all([
+        recordImageOutcomeImpl(ctx, { jobId, imageId: a }, { kind: "success", returnValue: DECLINED_WITH_BASELINE }),
+        recordImageOutcomeImpl(ctx, { jobId, imageId: b }, { kind: "success", returnValue: otherBaseline }),
+      ]);
+    });
+    await cancelPairingDebounce(t);
+
+    const enqueues = await t.run(async (ctx) => {
+      const rows = await (
+        ctx as unknown as {
+          db: { system: { query: (n: string) => { collect: () => Promise<Array<{ name: string; args: unknown[] }>> } } };
+        }
+      ).db.system.query("_scheduled_functions").collect();
+      return rows.filter((r) => r.name === ENQUEUE_HEAVY_FN).map((r) => r.args[0]);
+    });
+    expect(enqueues).toHaveLength(2);
+    expect(enqueues).toContainEqual({ imageId: a, baseline: BASELINE, dhash: "a1b2c3d4e5f60718" });
+    expect(enqueues).toContainEqual({
+      imageId: b,
+      baseline: { rotationDegrees: 0, orientConfidence: 0.9, textCount: 55 },
+    });
+    const job = await getJob(t, jobId);
+    expect(job?.processedImages).toBe(0);
+    expect(job?.failedImages).toBe(0);
   });
 });
 

@@ -690,6 +690,53 @@ describe("registerExtractedImages", () => {
     expect(job?.failedImages).toBe(0);
   });
 
+  test("NEO-315: registration stamps queuedAt; a restart restamps it and clears the later stages", async () => {
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    // A previous attempt's escalated-then-failed row, and a done row it kept.
+    const retriedId = await seedImage(t, JOB_A, 0, USER_A.subject, "failed", {
+      escalated: true,
+      queuedAt: 1_000,
+      escalatedAt: 2_000,
+      settledAt: 3_000,
+    });
+    const keptId = await seedImage(t, JOB_A, 1, USER_A.subject, "done", {
+      queuedAt: 1_000,
+      settledAt: 4_000,
+    });
+
+    const before = Date.now();
+    await registerAll(t, {
+      entries: [
+        { index: 0, name: "a.jpg", accepted: true },
+        { index: 1, name: "b.jpg", accepted: true },
+        { index: 2, name: "c.jpg", accepted: true },
+      ],
+    });
+    const after = Date.now();
+
+    const [retried, kept, fresh] = await getImages(t, JOB_A);
+    expect(retried._id).toBe(retriedId);
+    // The re-queued row's clock starts over with this run…
+    expect(retried.queuedAt).toBeGreaterThanOrEqual(before);
+    expect(retried.queuedAt).toBeLessThanOrEqual(after);
+    // …and the previous attempt's escalation and settle describe work this run
+    // is about to redo, so they go with the rest of its per-image state.
+    expect(retried.escalatedAt).toBeUndefined();
+    expect(retried.settledAt).toBeUndefined();
+
+    // A kept done row is not re-processed, so its timing stays as measured.
+    expect(kept._id).toBe(keptId);
+    expect(kept.queuedAt).toBe(1_000);
+    expect(kept.settledAt).toBe(4_000);
+
+    // A brand-new row is queued from the moment it is registered.
+    expect(fresh.queuedAt).toBeGreaterThanOrEqual(before);
+    expect(fresh.queuedAt).toBeLessThanOrEqual(after);
+    expect(fresh.escalatedAt).toBeUndefined();
+    expect(fresh.settledAt).toBeUndefined();
+  });
+
   test("a duplicated entry index is deduped, first occurrence wins", async () => {
     // (jobId, entryIndex) is the key every read of this table uses, and
     // `unique()` on it throws when two rows match — a duplicate row would not
@@ -1094,6 +1141,46 @@ describe("recordImageOutcomeImpl", () => {
     expect(image?.status).toBe("failed");
     expect(image?.errorCode).toBe("CANCELED");
     expect((await getJob(t, JOB_A))?.failedImages).toBe(1);
+  });
+
+  test.each([
+    ["a success", { kind: "success", returnValue: SUCCESS_BODY } as const, "done"],
+    ["a failure", { kind: "failed", error: "preprocess HTTP 502" } as const, "failed"],
+    ["a cancel", { kind: "canceled" } as const, "failed"],
+  ])("NEO-315: %s stamps settledAt, and leaves queuedAt and escalatedAt alone", async (_label, result, status) => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 2, processedImages: 0, failedImages: 0 });
+    const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "processing", {
+      queuedAt: 1_000,
+    });
+
+    const before = Date.now();
+    await t.run(async (ctx) => recordImageOutcomeImpl(ctx, { jobId: JOB_A, imageId }, result));
+    const after = Date.now();
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe(status);
+    expect(image?.settledAt).toBeGreaterThanOrEqual(before);
+    expect(image?.settledAt).toBeLessThanOrEqual(after);
+    expect(image?.queuedAt).toBe(1_000);
+    // A fast-tier image never escalated, so it has no escalation time.
+    expect(image?.escalatedAt).toBeUndefined();
+  });
+
+  test("NEO-315: a repeated completion does not move settledAt", async () => {
+    const t = harness();
+    await seedJob(t, { status: "processing", totalImages: 2, processedImages: 1, failedImages: 0 });
+    const imageId = await seedImage(t, JOB_A, 0, USER_A.subject, "done", { settledAt: 5_000 });
+
+    await t.run(async (ctx) =>
+      recordImageOutcomeImpl(
+        ctx,
+        { jobId: JOB_A, imageId },
+        { kind: "success", returnValue: SUCCESS_BODY },
+      ),
+    );
+
+    expect((await t.run(async (ctx) => ctx.db.get(imageId)))?.settledAt).toBe(5_000);
   });
 
   test("the invocation that completes the last image moves the job to pairing", async () => {
@@ -1815,6 +1902,27 @@ describe("public queries are scoped to the caller's own jobs", () => {
     await expect(
       t.withIdentity(USER_B).query(api.placeholderPipeline.listPlaceholderImages, { jobId: JOB_A }),
     ).resolves.toEqual([]);
+  });
+
+  test("NEO-315: listPlaceholderImages returns the stage timestamps to the owner", async () => {
+    const t = harness();
+    await seedJob(t, { status: "succeeded" });
+    await seedImage(t, JOB_A, 0, USER_A.subject, "done", {
+      escalated: true,
+      queuedAt: 1_000,
+      escalatedAt: 2_000,
+      settledAt: 3_000,
+    });
+    // A pre-NEO-315 row has none of them, and must still validate.
+    await seedImage(t, JOB_A, 1, USER_A.subject, "done");
+
+    const [stamped, legacy] = await t
+      .withIdentity(USER_A)
+      .query(api.placeholderPipeline.listPlaceholderImages, { jobId: JOB_A });
+    expect(stamped).toMatchObject({ queuedAt: 1_000, escalatedAt: 2_000, settledAt: 3_000 });
+    expect(legacy.queuedAt).toBeUndefined();
+    expect(legacy.escalatedAt).toBeUndefined();
+    expect(legacy.settledAt).toBeUndefined();
   });
 
   test("listPlaceholderPairs returns the owner's pairs, and nothing to user B", async () => {

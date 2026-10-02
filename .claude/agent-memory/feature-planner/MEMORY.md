@@ -8,3 +8,5 @@
 - [Set-shape doors need both source shapes](set-shape-doors-need-both-source-shapes.md) — post-NEO-305 absorb: SL-only sets never minted under a bare-brand flagship; doors accept leftover sets AND Parallels-reconcile rows; E2E source comes from that reconcile
 - [Chunked NB saves: where the loop lives](chunked-nb-saves-where-the-loop-lives.md) — client loop when the screen must rebuild after a partial failure (read-your-writes); action loop for prelude/finalize; big E2E fixtures via the seed hop
 - [Wizard answers are not stored; sync is one-time](wizard-answers-are-not-stored-sync-is-one-time.md) — never plan an answers table or re-sync durability; durable = card→player→team links, player data, or derived indexes
+- [Telemetry awaited in a worker holds the slot](telemetry-awaited-in-a-workpool-worker-holds-the-slot.md) — PostHog via awaited runAction per attempt; plan it as runAfter(0)
+- [Image metadata must survive every re-encode](image-metadata-must-survive-every-re-encode-on-the-intake-path.md) — raw-buffer/sharp re-encodes drop density and blind scan_meta; check `scan_meta:` log ratio

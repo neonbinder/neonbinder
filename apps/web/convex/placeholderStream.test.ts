@@ -459,6 +459,30 @@ describe("confirmPlaceholderImageUpload", () => {
     expect(enqueueCalls).toHaveLength(1);
   });
 
+  test("NEO-315: confirming stamps queuedAt once, and nothing else in the stage clock", async () => {
+    const t = convexTest(schema, modules);
+    const jobId = await openStream(t);
+    await allocate(t, jobId);
+
+    // An allocation is not a queued image: no upload has landed yet.
+    expect((await getImages(t, jobId))[0].queuedAt).toBeUndefined();
+
+    const confirmedAt = Date.now() + 5_000;
+    vi.setSystemTime(confirmedAt);
+    await confirm(t, jobId, 0);
+
+    const image = (await getImages(t, jobId))[0];
+    expect(image.queuedAt).toBe(confirmedAt);
+    // The later stages belong to settle, not to confirmation.
+    expect(image.escalatedAt).toBeUndefined();
+    expect(image.settledAt).toBeUndefined();
+
+    // A repeated confirm is a no-op, so it must not restart the image's clock.
+    vi.setSystemTime(confirmedAt + 60_000);
+    await confirm(t, jobId, 0);
+    expect((await getImages(t, jobId))[0].queuedAt).toBe(confirmedAt);
+  });
+
   test("totalImages counts confirmed images only", async () => {
     const t = convexTest(schema, modules);
     const jobId = await openStream(t);

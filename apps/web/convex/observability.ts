@@ -141,25 +141,44 @@ export type AdapterCallProperties = {
  * (falling back to "anonymous" if auth context is unavailable, e.g. internal
  * actions invoked from cron jobs).
  *
+ * **The PostHog capture is SCHEDULED, never awaited (NEO-315).** It used to be
+ * `await ctx.runAction(internal.posthog.captureEvent)`: a second Node action
+ * invocation plus an HTTPS flush to PostHog (`flushAt: 1` + `shutdown()`, which
+ * carries no timeout), held inline by EVERY caller. Inside a preprocess
+ * workpool worker that hop was paid twice per image on the slot's own clock,
+ * so telemetry about a call made the pool slower than the call it described.
+ * `ctx.scheduler.runAfter(0, …)` is one cheap enqueue; the capture runs on its
+ * own action afterwards and cannot hold a slot, a deadline or a request.
+ *
+ * Consequences, all deliberate:
+ *
+ *  - `distinctId` is resolved HERE, before scheduling. A scheduled function runs
+ *    with no auth context, so resolving it inside `captureEvent` would make
+ *    every event "anonymous".
+ *  - The structured console line stays synchronous and stays first: it is the
+ *    guaranteed channel (Convex logs), PostHog is best-effort on top.
+ *  - Scheduling from an action is not transactional, so a caller that throws
+ *    right after recording (every failure path does) still gets its event.
+ *  - When POSTHOG_API_KEY is unset `captureEvent` is a no-op, so nothing is
+ *    scheduled at all — no point paying a scheduler write to run nothing.
+ *
+ * Marketplace adapters (BSC, SportLots, the aggregator) share this function and
+ * get the same change; none of them reads anything back from the capture.
+ *
  * Never throws — observability must not be able to fail the request it's
- * observing. PostHog client errors are logged and swallowed.
+ * observing. A scheduling failure is logged and swallowed.
  */
 export async function recordAdapterCall(
   ctx: ActionCtx,
   props: AdapterCallProperties,
 ): Promise<void> {
-  let distinctId = "anonymous";
-  try {
-    distinctId = (await getCurrentUserId(ctx)) || "anonymous";
-  } catch {
-    // auth context may not be available (internal callers, cron jobs)
-  }
   // NEO-43: tag the emitting deployment. One PostHog project serves prod, dev
   // and every per-PR preview, so without this every insight and dashboard
   // silently blends environments. See deploymentName().
   const deployment = deploymentName();
   // Also emit a structured console line for cases where PostHog is misconfigured —
-  // Cloud Run / Convex logs are the fallback channel.
+  // Cloud Run / Convex logs are the fallback channel. Synchronous, before any
+  // await, so it lands even if the caller is abandoned at the next yield.
   try {
     console.log(
       JSON.stringify({
@@ -171,15 +190,22 @@ export async function recordAdapterCall(
   } catch {
     // unreachable but defensive
   }
+  if (!process.env.POSTHOG_API_KEY) return;
+  let distinctId = "anonymous";
   try {
-    await ctx.runAction(internal.posthog.captureEvent, {
+    distinctId = (await getCurrentUserId(ctx)) || "anonymous";
+  } catch {
+    // auth context may not be available (internal callers, cron jobs)
+  }
+  try {
+    await ctx.scheduler.runAfter(0, internal.posthog.captureEvent, {
       distinctId,
       event: "adapter_sync_call",
       properties: { ...props, deployment },
     });
   } catch (err) {
     console.error(
-      "[observability.recordAdapterCall] PostHog capture failed:",
+      "[observability.recordAdapterCall] PostHog capture could not be scheduled:",
       err instanceof Error ? err.message : String(err),
     );
   }
@@ -231,10 +257,11 @@ export type AdapterPhaseProperties = {
  *  1. A SEPARATE event name (`adapter_phase`, not `adapter_sync_call`). A
  *     breadcrumb is not a call outcome; folding it in would inflate the
  *     dashboard's success counts with records that describe nothing finishing.
- *  2. The PostHog capture is NOT awaited. `recordAdapterCall` awaits it, and
- *     `posthog.captureEvent`'s `client.shutdown()` carries no timeout — awaiting
- *     one more of those inside a bounded budget would add exactly the kind of
- *     unbounded nested wait this ticket is about. The synchronous console line
+ *  2. The PostHog capture is NOT awaited. (`recordAdapterCall` used to await
+ *     it; since NEO-315 it schedules it instead.) `posthog.captureEvent`'s
+ *     `client.shutdown()` carries no timeout — awaiting one more of those
+ *     inside a bounded budget would add exactly the kind of unbounded nested
+ *     wait this ticket is about. The synchronous console line
  *     is therefore the guaranteed channel (Convex logs; already the documented
  *     fallback for `recordAdapterCall`), and PostHog is best-effort on top. The
  *     floating promise resolves well before the handler returns on every path

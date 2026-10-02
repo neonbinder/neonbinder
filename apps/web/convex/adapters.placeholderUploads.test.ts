@@ -61,6 +61,9 @@ const signedUrlCalls: Array<{ bucket: string; file: string; config: Record<strin
 /** Every `exists()` probe, in order — the probe order is part of the contract. */
 const existsProbes: string[] = [];
 
+/** Every `new Storage(...)` — the client is memoised per credential (NEO-315 C2). */
+const storageConstructions: Array<{ credentials?: unknown }> = [];
+
 vi.mock("@google-cloud/storage", () => {
   class FakeFile {
     constructor(
@@ -102,6 +105,9 @@ vi.mock("@google-cloud/storage", () => {
     }
   }
   class FakeStorage {
+    constructor(opts: { credentials?: unknown } = {}) {
+      storageConstructions.push(opts);
+    }
     bucket(name: string) {
       return new FakeBucket(name);
     }
@@ -141,6 +147,7 @@ beforeEach(() => {
   policyCalls.length = 0;
   signedUrlCalls.length = 0;
   existsProbes.length = 0;
+  storageConstructions.length = 0;
   existingObjects.clear();
   process.env.GOOGLE_APPLICATION_CREDENTIALS_B64 = Buffer.from(
     JSON.stringify({ client_email: "fake@example.com", private_key: "fake" }),
@@ -524,9 +531,12 @@ describe("createPlaceholderImageDownloadUrl", () => {
     expect(Object.keys(result).sort()).toEqual(["entryIndex", "expiresAt", "url"]);
   });
 
-  test("memoises the extension, so a second mint probes once", async () => {
+  test("memoises the extension, so a second mint does not probe at all", async () => {
     // The review UI mints one of these per image on every render; three HEADs
-    // per image per render is the cost this cache exists to remove.
+    // per image per render is the cost this cache exists to remove — and since
+    // NEO-315 the one re-confirming HEAD is gone too: a memoised extension was
+    // written from a successful probe of a write-once output, so it can only
+    // ever say "yes".
     const t = convexTest(schema, modules);
     const { userId, entryIndex } = await seedDownloadable(t);
     existingObjects.add(outputKey(userId, entryIndex, "webp"));
@@ -545,11 +555,94 @@ describe("createPlaceholderImageDownloadUrl", () => {
     expect(stored).toBe("webp");
 
     existsProbes.length = 0;
-    await asUser.action(api.adapters.placeholderUploads.createPlaceholderImageDownloadUrl, {
-      jobId: DOWNLOAD_JOB,
-      entryIndex,
+    signedUrlCalls.length = 0;
+    const second = await asUser.action(
+      api.adapters.placeholderUploads.createPlaceholderImageDownloadUrl,
+      { jobId: DOWNLOAD_JOB, entryIndex },
+    );
+    expect(existsProbes).toEqual([]);
+    // Still signs the memoised key, and only that key.
+    expect(signedUrlCalls.map((c) => c.file)).toEqual([outputKey(userId, entryIndex, "webp")]);
+    expect(second.url).toContain(outputKey(userId, entryIndex, "webp"));
+  });
+
+  test("a row seeded with a memoised extension mints with zero probes and no memo write", async () => {
+    const t = convexTest(schema, modules);
+    const { userId, entryIndex } = await seedDownloadable(t, { outputExtension: "png" });
+    // Deliberately NOT added to existingObjects: a cached mint must not ask.
+
+    const result = await t
+      .withIdentity(USER_IDENTITY)
+      .action(api.adapters.placeholderUploads.createPlaceholderImageDownloadUrl, {
+        jobId: DOWNLOAD_JOB,
+        entryIndex,
+      });
+
+    expect(existsProbes).toEqual([]);
+    expect(result.url).toContain(outputKey(userId, entryIndex, "png"));
+    const stored = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("placeholderImages").collect();
+      return rows[0].outputExtension;
     });
-    expect(existsProbes).toEqual([outputKey(userId, entryIndex, "webp")]);
+    expect(stored).toBe("png");
+  });
+
+  test("an un-memoised row still errors cleanly when no output object exists", async () => {
+    // The probe path keeps its error: with nothing cached, a done row whose
+    // object is missing is "Image not found", and nothing is memoised or signed.
+    const t = convexTest(schema, modules);
+    await seedDownloadable(t);
+
+    await expect(
+      t
+        .withIdentity(USER_IDENTITY)
+        .action(api.adapters.placeholderUploads.createPlaceholderImageDownloadUrl, {
+          jobId: DOWNLOAD_JOB,
+          entryIndex: 7,
+        }),
+    ).rejects.toThrow(/image not found/i);
+    expect(signedUrlCalls).toHaveLength(0);
+    const stored = await t.run(async (ctx) => {
+      const rows = await ctx.db.query("placeholderImages").collect();
+      // t.run serializes, so an absent field would come back null — name it.
+      return rows[0].outputExtension ?? "unset";
+    });
+    expect(stored).toBe("unset");
+  });
+
+  test("reuses one Storage client across mints, and rebuilds it when the key changes (NEO-315)", async () => {
+    // A unique key for this test, so a client memoised by an earlier test in
+    // the file cannot satisfy the first mint.
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_B64 = Buffer.from(
+      JSON.stringify({ client_email: "memo-a@example.com", private_key: "a" }),
+    ).toString("base64");
+    const t = convexTest(schema, modules);
+    const { userId, entryIndex } = await seedDownloadable(t, { outputExtension: "jpg" });
+    const asUser = t.withIdentity(USER_IDENTITY);
+    const mint = () =>
+      asUser.action(api.adapters.placeholderUploads.createPlaceholderImageDownloadUrl, {
+        jobId: DOWNLOAD_JOB,
+        entryIndex,
+      });
+
+    await mint();
+    await mint();
+    await mint();
+    expect(storageConstructions).toHaveLength(1);
+    expect(storageConstructions[0].credentials).toMatchObject({
+      client_email: "memo-a@example.com",
+    });
+
+    // A rotated key must not keep signing with the old one.
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_B64 = Buffer.from(
+      JSON.stringify({ client_email: "memo-b@example.com", private_key: "b" }),
+    ).toString("base64");
+    const result = await mint();
+    expect(storageConstructions).toHaveLength(2);
+    expect(storageConstructions[1].credentials).toMatchObject({
+      client_email: "memo-b@example.com",
+    });
+    expect(result.url).toContain(outputKey(userId, entryIndex, "jpg"));
   });
 
   test("ignores a memoised extension that is not one the service can have written", async () => {
@@ -660,5 +753,233 @@ describe("createPlaceholderImageDownloadUrl", () => {
           entryIndex: 7,
         }),
     ).rejects.toThrow(/GCS_PLACEHOLDER_BUCKET/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createPlaceholderPairDownloadUrls — both faces of a pair in one mint (NEO-315)
+// ---------------------------------------------------------------------------
+
+/** One owned job with done images at the given indexes (and optional memo). */
+async function seedPair(
+  t: ReturnType<typeof convexTest>,
+  images: Array<{ entryIndex: number; outputExtension?: string; status?: "done" | "processing" }>,
+  userId: string = USER_IDENTITY.subject,
+) {
+  await t.run(async (ctx) => {
+    await ctx.db.insert("placeholderJobs", {
+      jobId: DOWNLOAD_JOB,
+      userId,
+      objectPath: `placeholders/${userId}/${DOWNLOAD_JOB}/`,
+      createdAt: 1_700_000_000_000,
+      status: "succeeded",
+    });
+    for (const image of images) {
+      await ctx.db.insert("placeholderImages", {
+        jobId: DOWNLOAD_JOB,
+        userId,
+        entryIndex: image.entryIndex,
+        originalName: `${image.entryIndex}.jpg`,
+        status: image.status ?? "done",
+        ...(image.outputExtension ? { outputExtension: image.outputExtension } : {}),
+      });
+    }
+  });
+}
+
+describe("createPlaceholderPairDownloadUrls", () => {
+  test("throws when unauthenticated, before reading or signing anything", async () => {
+    const t = convexTest(schema, modules);
+    await seedPair(t, [{ entryIndex: 2 }, { entryIndex: 3 }]);
+    await expect(
+      t.action(api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls, {
+        jobId: DOWNLOAD_JOB,
+        frontIndex: 2,
+        backIndex: 3,
+      }),
+    ).rejects.toThrow(/not authenticated/i);
+    expect(existsProbes).toHaveLength(0);
+    expect(signedUrlCalls).toHaveLength(0);
+  });
+
+  test("rejects an identity whose subject doesn't match the expected user_... shape", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t
+        .withIdentity(MALFORMED_IDENTITY)
+        .action(api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls, {
+          jobId: DOWNLOAD_JOB,
+          frontIndex: 2,
+          backIndex: 3,
+        }),
+    ).rejects.toThrow(/unexpected user id shape/i);
+    expect(signedUrlCalls).toHaveLength(0);
+  });
+
+  test("mints both sides, each in the single mint's shape and tagged with its own index", async () => {
+    const t = convexTest(schema, modules);
+    const userId = USER_IDENTITY.subject;
+    await seedPair(t, [{ entryIndex: 2 }, { entryIndex: 3, outputExtension: "png" }]);
+    existingObjects.add(outputKey(userId, 2, "webp"));
+
+    const before = Date.now();
+    const result = await t
+      .withIdentity(USER_IDENTITY)
+      .action(api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls, {
+        jobId: DOWNLOAD_JOB,
+        frontIndex: 2,
+        backIndex: 3,
+      });
+    const after = Date.now();
+
+    expect(Object.keys(result).sort()).toEqual(["back", "front"]);
+    for (const side of [result.front, result.back]) {
+      expect(Object.keys(side).sort()).toEqual(["entryIndex", "expiresAt", "url"]);
+      const FIFTEEN_MIN_MS = 15 * 60 * 1000;
+      expect(side.expiresAt).toBeGreaterThanOrEqual(before + FIFTEEN_MIN_MS - 1000);
+      expect(side.expiresAt).toBeLessThanOrEqual(after + FIFTEEN_MIN_MS + 1000);
+    }
+    expect(result.front.entryIndex).toBe(2);
+    expect(result.front.url).toContain(outputKey(userId, 2, "webp"));
+    expect(result.back.entryIndex).toBe(3);
+    expect(result.back.url).toContain(outputKey(userId, 3, "png"));
+
+    // The un-memoised front probed in order; the memoised back did not probe.
+    expect(existsProbes).toEqual([
+      outputKey(userId, 2, "jpg"),
+      outputKey(userId, 2, "png"),
+      outputKey(userId, 2, "webp"),
+    ]);
+    // And the front's discovery is memoised like the single mint's.
+    const stored = await t.run(async (ctx) =>
+      (await ctx.db.query("placeholderImages").collect()).map((r) => [
+        r.entryIndex,
+        r.outputExtension,
+      ]),
+    );
+    expect(stored).toEqual(
+      expect.arrayContaining([
+        [2, "webp"],
+        [3, "png"],
+      ]),
+    );
+    // No structured copy of a key or the bucket on either side.
+    expect(JSON.stringify(result)).not.toContain('"objectPath"');
+    expect(JSON.stringify(result)).not.toContain('"bucket"');
+  });
+
+  test("a job the caller does not own answers 'Image not found' and signs nothing", async () => {
+    const t = convexTest(schema, modules);
+    await seedPair(t, [
+      { entryIndex: 2, outputExtension: "jpg" },
+      { entryIndex: 3, outputExtension: "jpg" },
+    ]);
+    await expect(
+      t
+        .withIdentity(OTHER_USER_IDENTITY)
+        .action(api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls, {
+          jobId: DOWNLOAD_JOB,
+          frontIndex: 2,
+          backIndex: 3,
+        }),
+    ).rejects.toThrow(/image not found/i);
+    expect(signedUrlCalls).toHaveLength(0);
+    expect(existsProbes).toHaveLength(0);
+  });
+
+  test.each([
+    ["the back side does not exist", [{ entryIndex: 2, outputExtension: "jpg" }], 2, 3],
+    ["the front side does not exist", [{ entryIndex: 3, outputExtension: "jpg" }], 2, 3],
+    [
+      "one side is still processing",
+      [
+        { entryIndex: 2, outputExtension: "jpg" },
+        { entryIndex: 3, status: "processing" as const },
+      ],
+      2,
+      3,
+    ],
+  ])(
+    "all or nothing: %s → 'Image not found', no url for the other side",
+    async (_label, images, frontIndex, backIndex) => {
+      const t = convexTest(schema, modules);
+      await seedPair(t, images);
+      await expect(
+        t
+          .withIdentity(USER_IDENTITY)
+          .action(api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls, {
+            jobId: DOWNLOAD_JOB,
+            frontIndex,
+            backIndex,
+          }),
+      ).rejects.toThrow(/image not found/i);
+    },
+  );
+
+  test("an un-memoised side whose object is gone fails the whole pair cleanly", async () => {
+    const t = convexTest(schema, modules);
+    await seedPair(t, [{ entryIndex: 2, outputExtension: "jpg" }, { entryIndex: 3 }]);
+    await expect(
+      t
+        .withIdentity(USER_IDENTITY)
+        .action(api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls, {
+          jobId: DOWNLOAD_JOB,
+          frontIndex: 2,
+          backIndex: 3,
+        }),
+    ).rejects.toThrow(/image not found/i);
+  });
+
+  test.each([
+    ["a negative front index", -1, 3],
+    ["a fractional back index", 2, 2.5],
+    ["an index past the service's bound", 2, 1_000_000],
+  ])("bounds every index before any read: %s", async (_label, frontIndex, backIndex) => {
+    const t = convexTest(schema, modules);
+    await seedPair(t, [{ entryIndex: 2, outputExtension: "jpg" }]);
+    await expect(
+      t
+        .withIdentity(USER_IDENTITY)
+        .action(api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls, {
+          jobId: DOWNLOAD_JOB,
+          frontIndex,
+          backIndex,
+        }),
+    ).rejects.toThrow(/image not found/i);
+    expect(signedUrlCalls).toHaveLength(0);
+  });
+
+  test("refuses a 'pair' of one entry", async () => {
+    const t = convexTest(schema, modules);
+    await seedPair(t, [{ entryIndex: 2, outputExtension: "jpg" }]);
+    await expect(
+      t
+        .withIdentity(USER_IDENTITY)
+        .action(api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls, {
+          jobId: DOWNLOAD_JOB,
+          frontIndex: 2,
+          backIndex: 2,
+        }),
+    ).rejects.toThrow(/two different entries/i);
+    expect(signedUrlCalls).toHaveLength(0);
+  });
+
+  test("rejects a path-shaped argument — the contract is jobId + two indexes only", async () => {
+    const t = convexTest(schema, modules);
+    await seedPair(t, [
+      { entryIndex: 2, outputExtension: "jpg" },
+      { entryIndex: 3, outputExtension: "jpg" },
+    ]);
+    await expect(
+      t
+        .withIdentity(USER_IDENTITY)
+        .action(api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls, {
+          jobId: DOWNLOAD_JOB,
+          frontIndex: 2,
+          backIndex: 3,
+          objectPath: "placeholders/user_victim/x/output/images/0000.jpg",
+        } as never),
+    ).rejects.toThrow();
+    expect(signedUrlCalls).toHaveLength(0);
   });
 });

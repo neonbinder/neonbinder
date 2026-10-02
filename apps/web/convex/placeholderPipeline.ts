@@ -60,6 +60,7 @@ import type { RunResult, WorkId } from "@convex-dev/workpool";
 import { getCurrentUserId, requireAdmin } from "./auth";
 import { fastPreprocessPool } from "./placeholderPool";
 import { heavyPreprocessPool } from "./placeholderHeavyPool";
+import { readEscalationHints } from "./lib/preprocessBaseline";
 import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
 
 /**
@@ -1237,6 +1238,7 @@ export const registerExtractedImages = internalMutation({
       };
     }
 
+    const now = Date.now();
     for (const entry of accepted.slice(from, from + ENQUEUE_CHUNK_SIZE)) {
       const existing = await ctx.db
         .query("placeholderImages")
@@ -1252,6 +1254,7 @@ export const registerExtractedImages = internalMutation({
           entryIndex: entry.index,
           originalName: entry.name,
           status: "queued",
+          queuedAt: now,
         });
       } else if (existing.status === "done") {
         keptDone += 1;
@@ -1279,6 +1282,12 @@ export const registerExtractedImages = internalMutation({
           errorCode: undefined,
           errorDetail: undefined,
           pairStatus: undefined,
+          // NEO-315 stage timestamps: this run's clock starts now, and the
+          // previous attempt's escalation/settle times describe work this run
+          // is about to redo.
+          queuedAt: now,
+          escalatedAt: undefined,
+          settledAt: undefined,
         });
       }
     }
@@ -1687,10 +1696,32 @@ async function settleImageOutcome(
   if (succeeded && !image.escalated && readNeedsEscalation(result.returnValue)) {
     const firstEscalation = job.heavyWarmStartedAt === undefined;
     const now = Date.now();
+    // NEO-315 D4: what the fast pass measured before it declined, as the
+    // adapter narrowed it (lib/preprocessBaseline.ts). Absent on a pre-NEO-315
+    // fast revision, or dropped when malformed — either way nothing below
+    // changes from the pre-D4 escalation.
+    const { baseline, dhash } = readEscalationHints(result.returnValue);
     // Mark the row heavy-processing and drop the fast workId: from here its
     // handle (once `enqueueHeavyImage` assigns one) is a heavy-pool handle, and
     // cancel keys the pool off `escalated`.
-    await ctx.db.patch(image._id, { escalated: true, workId: undefined });
+    //
+    // The baseline lands on the row as well as travelling to the heavy call, so
+    // a heavy-processing image already carries its orientation, text count and
+    // hash. These are provisional: the heavy result overwrites all four when it
+    // settles the row below.
+    await ctx.db.patch(image._id, {
+      escalated: true,
+      workId: undefined,
+      escalatedAt: now,
+      ...(baseline
+        ? {
+            rotationDegrees: baseline.rotationDegrees,
+            orientConfidence: baseline.orientConfidence,
+            textCount: baseline.textCount,
+          }
+        : {}),
+      ...(dhash ? { dhash } : {}),
+    });
     await ctx.db.patch(job._id, {
       // An escalation is the batch making progress, so refresh the heartbeat the
       // wedged-batch watchdog reads — a batch whose only outstanding work is a
@@ -1705,6 +1736,8 @@ async function settleImageOutcome(
     // (which the unit tests drive directly) never touches the heavy component.
     await ctx.scheduler.runAfter(0, internal.placeholderHeavyPool.enqueueHeavyImage, {
       imageId: image._id,
+      ...(baseline ? { baseline } : {}),
+      ...(dhash ? { dhash } : {}),
     });
     if (firstEscalation) {
       // The warm-gate, fired once per batch: enqueue the heavy warm-up fan-out
@@ -1715,14 +1748,22 @@ async function settleImageOutcome(
     return null;
   }
 
+  // NEO-315: the moment the row leaves the pipeline, for either outcome.
+  const settledAt = Date.now();
   if (succeeded) {
+    // A heavy result overwrites every field the escalation's baseline wrote
+    // provisionally: `imageFieldsFromResult` returns each key (undefined where
+    // the body had no usable value), so the row ends up describing the heavy
+    // crop and nothing the fast pass guessed.
     await ctx.db.patch(image._id, {
       ...imageFieldsFromResult(result.returnValue),
       status: "done",
+      settledAt,
     });
   } else {
     await ctx.db.patch(image._id, {
       status: "failed",
+      settledAt,
       errorCode: result.kind === "canceled" ? "CANCELED" : "PROCESS_ENTRY_FAILED",
       errorDetail:
         result.kind === "failed"
@@ -2329,6 +2370,11 @@ export const listPlaceholderImages = query({
       ),
       errorCode: v.optional(v.string()),
       errorDetail: v.optional(v.string()),
+      // NEO-315 stage timestamps (epoch ms), the owner's own timing data. See
+      // the placeholderImages table comment in schema.ts.
+      queuedAt: v.optional(v.number()),
+      escalatedAt: v.optional(v.number()),
+      settledAt: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2358,6 +2404,9 @@ export const listPlaceholderImages = query({
       pairStatus: r.pairStatus,
       errorCode: r.errorCode,
       errorDetail: r.errorDetail,
+      queuedAt: r.queuedAt,
+      escalatedAt: r.escalatedAt,
+      settledAt: r.settledAt,
       // `workId` is intentionally omitted — it is a handle into the workpool
       // component, not something a client has any use for.
     }));

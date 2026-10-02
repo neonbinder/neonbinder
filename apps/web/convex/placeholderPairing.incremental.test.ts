@@ -954,6 +954,37 @@ describe("unchanged rows are not rewritten", () => {
     expect(after[0]._creationTime).toBe(before[0]._creationTime);
   });
 
+  test("NEO-315: the run's summary line carries its wall-clock as duration_ms", async () => {
+    const JOB = "job-duration";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
+    await seedImage(t, JOB, 0, "done", doneRowFields(ADJ_FRONT(0)));
+    await seedImage(t, JOB, 1, "done", doneRowFields(ADJ_BACK(1)));
+
+    // A clock that ticks on every read, so the field can only be non-zero if it
+    // is the difference of a read at the start of the run and one at its end.
+    // (Under this file's frozen fake timers a real elapsed time is always 0.)
+    let clock = Date.now();
+    const now = vi.spyOn(Date, "now").mockImplementation(() => (clock += 10));
+    const watcher = watchPairingRuns(JOB);
+    try {
+      await t.action(internal.placeholderPairing.runPairing, {
+        jobId: JOB,
+        userId: USER_A.subject,
+        final: false,
+      });
+    } finally {
+      watcher.restore();
+      now.mockRestore();
+    }
+
+    expect(watcher.runs).toHaveLength(1);
+    const duration = watcher.runs[0].duration_ms;
+    expect(typeof duration).toBe("number");
+    expect(Number.isInteger(duration)).toBe(true);
+    expect(duration as number).toBeGreaterThan(0);
+  });
+
   test("applyPairDiff revises a pair in place rather than replacing it", async () => {
     // Same (frontIndex, backIndex), different evidence. Reached in production
     // when the same two images stay each other's best match but the route to

@@ -77,3 +77,4 @@
 - [Review row sport can differ from the set](reference_review_row_sport_can_differ_from_the_set.md) — NEO-313 switchRowSport: prelude decisions use the ROW's sport, staged maps key sport|name; automated paths stay on the set's
 - [Runtime colour needs a per-theme split](reference_runtime_colour_needs_a_per_theme_split.md) — livery on bg-white dark:bg-gray-800 never passes both themes; two CSS vars, per-theme surfaces incl. hover + /20 tint
 - [DOM id shadows aria-label in maestro](dom-id-shadows-aria-label-in-maestro.md) — resource-id is `id || ariaLabel`; ids go on non-interactive wrappers
+- [Placeholder module cycle TDZ](reference_placeholder_module_cycle_tdz.md) — pipeline ↔ pool/heavyPool import each other; a shared const is TDZ at load; shared validators go in pure lib/
