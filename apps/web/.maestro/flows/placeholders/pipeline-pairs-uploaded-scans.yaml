@@ -14,19 +14,23 @@
 # Convex workpool fanning images at the FAST Cloud Run service's capacity, the
 # classical crop, Google Vision OCR, and the pairing port.
 #
-# R2 — It cannot go green without the feature. Three deterministic proofs, none of
-# which a broken fast pipeline can satisfy:
-#   * The completion assert names the exact arithmetic of a finished run ("6 of 6
-#     images processed, 0 failed") — a pipeline that dropped or failed an image
-#     produces different numbers and the flow fails.
+# R2 — It cannot go green without the feature. Four proofs, none of which a
+# broken fast pipeline can satisfy:
+#   * Step 3 waits for "All 6 photos read." — every row has SETTLED. That alone
+#     is not the zero-failures proof (a failed row counts as settled); the
+#     arithmetic in Step 5 is.
 #   * Step 3b asserts the cold-start notice is ABSENT — so a regression that pushed
 #     these frame-filling cards onto the heavy service (the fast path silently
 #     declining them) surfaces here instead of passing unnoticed.
 #   * "2 pairs ready to print." together with "Not paired (2)" (Step 5)
-#     accounts for every image: 2 pairs x 2 + 2 loose = 6. Pairing demonstrably
-#     ran over the whole batch and dropped nothing. A pipeline that lost an
-#     image, or a matcher that paired greedily across sides, lands on different
-#     numbers and fails here.
+#     accounts for every image: 2 pairs x 2 + 2 loose = 6. Both buckets hold only
+#     rows whose status is "done" (review-grid.tsx filters the loose pile on it),
+#     so this is also the proof that none failed. A pipeline that lost an image,
+#     or a matcher that paired greedily across sides, lands on different numbers
+#     and fails here.
+#   * Step 6 asserts the crops the pipeline wrote can be SHOWN back to the
+#     collector: the signed-read mint answers and the review renders an image,
+#     not "Image unavailable" (NEO-315).
 # There is no `when:` branch anywhere in it, and the precondition below proves a
 # real six-image job exists BEFORE the wait.
 #
@@ -256,3 +260,43 @@ tags:
       text: "Not paired (2)"
     centerElement: true
     timeout: 7000
+
+# ── Step 6: the processed crops can be SHOWN back to the collector (NEO-315) ────
+# Each loose card in the pile renders its crop through the signed-read mint
+# (createPlaceholderImageDownloadUrl, via ScanImage). NEO-315 rewrote that mint
+# (the memoised extension skips the storage HEAD, the storage client is cached
+# per isolate) and changed how the pipeline writes the crop it serves (the
+# cascade's already-rotated bytes are stored as-is). If the mint throws — no
+# object at the key the row describes, a signing failure — the card shows
+# "Image unavailable" instead of the scan. Nothing else in the suite looks:
+# PrintRun falls back to numbered pockets in silence, and flip-edge asserts
+# only the pocket numbers. A loose card is minted once, so this is the
+# first-mint path (probe, memoise, sign); the memoised no-HEAD branch runs only
+# on a re-mint and stays with the unit tests.
+#
+# WHY A NEGATIVE CHECK. maestro-web drops <img> from the view hierarchy
+# entirely (`INVALID_TAGS` in the driver's maestro-web.js), so a loaded scan
+# has no user-visible handle at all: its `alt` never reaches a selector. The
+# only states the driver can see are the two placeholders ScanImage draws in
+# the image's own box: "Loading image…" while the mint is in flight, and
+# "Image unavailable" once it has failed (after one re-mint on a load error).
+#
+# WHY THE CHECK CAN FAIL HERE (not a look-somewhere-else no-op). Step 5 leaves
+# "Not paired (2)" centred; CI run 36954152663 accepted it at y=396 (h=28) in
+# the 625px viewport. The loose pile's two image boxes (h-32, 128px) sit
+# directly under that heading and its one-line hint, at roughly y=470-600
+# (computed from review-grid.tsx's spacing, not measured), so each box, and
+# either placeholder text drawn in it, is on screen.
+#
+# Usually these cards have sat in the pile since an earlier provisional pairing
+# run, so their mints answered long ago. The gate below is R5's 7s budget for
+# our own server answering, for the run in which a loose card landed last; it
+# resolves at once otherwise. The order matters for a URL that mints but then
+# fails to load: that slot goes Loading → image → re-mint → "Image
+# unavailable" over a second or two, so the absence check is deterministic for
+# a mint that throws and catches a dead URL only once the slot has had that
+# long, which Steps 4-5 normally give it.
+- extendedWaitUntil:
+    notVisible: ".*Loading image.*"
+    timeout: 7000
+- assertNotVisible: "Image unavailable"
