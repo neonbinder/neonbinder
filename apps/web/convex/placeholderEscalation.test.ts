@@ -812,6 +812,144 @@ describe("NEO-315: an escalation stamps escalatedAt and hands the baseline on", 
   });
 });
 
+describe("NEO-315 adversarial: repeated and out-of-order completions", () => {
+  test("a repeated fast decline schedules exactly one heavy enqueue and counts nothing twice", async () => {
+    const t = harness();
+    const jobId = "job-d4-adv-1";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2 });
+    const imageId = await seedImage(t, jobId, 0, "processing", { workId: "fast-work-0" });
+
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE });
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE });
+
+    const enqueues = (await scheduledNames(t)).filter((n) => n === ENQUEUE_HEAVY_FN);
+    expect(enqueues).toHaveLength(1);
+    const job = await getJob(t, jobId);
+    expect(job?.processedImages ?? 0).toBeLessThanOrEqual(1);
+    expect(job?.failedImages ?? 0).toBe(0);
+  });
+
+  test("a decline arriving for a row that already settled neither escalates nor restamps it", async () => {
+    const t = harness();
+    const jobId = "job-d4-adv-2";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2, processedImages: 1 });
+    const imageId = await seedImage(t, jobId, 0, "done", {
+      queuedAt: 1_000,
+      settledAt: 5_000,
+      dhash: "0f1e2d3c4b5a6978",
+      rotationDegrees: 0,
+    });
+
+    await settle(t, jobId, imageId, { kind: "success", returnValue: DECLINED_WITH_BASELINE });
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.escalated).toBeUndefined();
+    expect(image?.escalatedAt).toBeUndefined();
+    expect(image?.settledAt).toBe(5_000);
+    // The settled row's own hash is not replaced by the late decline's.
+    expect(image?.dhash).toBe("0f1e2d3c4b5a6978");
+    expect(await scheduledNames(t)).not.toContain(ENQUEUE_HEAVY_FN);
+    expect((await getJob(t, jobId))?.processedImages).toBe(1);
+  });
+
+  test.each([
+    ["a heavy failure", { kind: "failed", error: "preprocess HTTP 500: boom" } as const],
+    ["a heavy cancel", { kind: "canceled" } as const],
+  ])("%s keeps escalatedAt, stamps settledAt, counts once and enqueues nothing more", async (_l, result) => {
+    const t = harness();
+    const jobId = "job-d4-adv-3";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2, processedImages: 1 });
+    const imageId = await seedImage(t, jobId, 0, "processing", {
+      escalated: true,
+      escalatedAt: 2_000,
+      queuedAt: 1_000,
+      workId: "heavy-work-0",
+    });
+
+    const before = Date.now();
+    await settle(t, jobId, imageId, result);
+    // A duplicate completion of the same failure changes nothing.
+    await settle(t, jobId, imageId, result);
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.status).toBe("failed");
+    expect(image?.escalatedAt).toBe(2_000);
+    expect(image?.queuedAt).toBe(1_000);
+    expect(image?.settledAt).toBeGreaterThanOrEqual(before);
+    const job = await getJob(t, jobId);
+    expect(job?.failedImages).toBe(1);
+    expect(job?.processedImages).toBe(1);
+    expect(await scheduledNames(t)).not.toContain(ENQUEUE_HEAVY_FN);
+  });
+
+  test("a repeated heavy success does not move settledAt or double-count", async () => {
+    const t = harness();
+    const jobId = "job-d4-adv-4";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2, processedImages: 1 });
+    const imageId = await seedImage(t, jobId, 0, "processing", {
+      escalated: true,
+      escalatedAt: 2_000,
+      workId: "heavy-work-0",
+    });
+
+    await settle(t, jobId, imageId, { kind: "success", returnValue: CROP_BODY });
+    const first = await t.run(async (ctx) => ctx.db.get(imageId));
+    await settle(t, jobId, imageId, { kind: "success", returnValue: { ...CROP_BODY, text_count: 1 } });
+
+    const second = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(second?.settledAt).toBe(first?.settledAt);
+    expect(second?.textCount).toBe(CROP_BODY.text_count);
+    expect((await getJob(t, jobId))?.processedImages).toBe(2);
+  });
+
+  test.each([
+    ["a non-quadrant rotation", { rotationDegrees: 45, orientConfidence: 0.5, textCount: 3 }],
+    ["a confidence above 1", { rotationDegrees: 90, orientConfidence: 1.5, textCount: 3 }],
+    ["a fractional word count", { rotationDegrees: 90, orientConfidence: 0.5, textCount: 2.5 }],
+    ["a missing field", { rotationDegrees: 90, orientConfidence: 0.5 }],
+    ["a string-typed value", { rotationDegrees: "90", orientConfidence: 0.5, textCount: 3 }],
+    ["a wire-shaped (snake_case) baseline", { rotation_degrees: 90, confidence: 0.5, text_count: 3 }],
+  ])("%s never reaches the row or the heavy enqueue", async (_l, baseline) => {
+    const t = harness();
+    const jobId = "job-d4-adv-5";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2 });
+    const imageId = await seedImage(t, jobId, 0);
+
+    await settle(t, jobId, imageId, {
+      kind: "success",
+      returnValue: { needs_escalation: true, baseline },
+    });
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.escalated).toBe(true);
+    expect(image?.rotationDegrees).toBeUndefined();
+    expect(image?.orientConfidence).toBeUndefined();
+    expect(image?.textCount).toBeUndefined();
+    const args = (await scheduledEnqueueArgs(t))?.[0] as Record<string, unknown>;
+    expect(args).toEqual({ imageId });
+  });
+
+  test.each([
+    ["an upper-case hash", "A1B2C3D4E5F60718"],
+    ["a short hash", "a1b2c3"],
+    ["a non-string hash", 1234567890123456],
+  ])("%s is neither stored nor forwarded", async (_l, dhash) => {
+    const t = harness();
+    const jobId = "job-d4-adv-6";
+    await seedJob(t, { jobId, status: "processing", totalImages: 2 });
+    const imageId = await seedImage(t, jobId, 0);
+
+    await settle(t, jobId, imageId, {
+      kind: "success",
+      returnValue: { needs_escalation: true, dhash },
+    });
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.dhash).toBeUndefined();
+    expect(((await scheduledEnqueueArgs(t))?.[0] as Record<string, unknown>).dhash).toBeUndefined();
+  });
+});
+
 // ---------------------------------------------------------------------------
 // enqueueHeavyImage — the guard no-ops reachable without the component
 // ---------------------------------------------------------------------------

@@ -379,4 +379,48 @@ describe("enqueueHeavyImage — baseline passthrough", () => {
     expect(second).toEqual({ enqueued: false });
     expect(spy).toHaveBeenCalledTimes(1);
   });
+
+  test("a partial baseline is refused by the validator and nothing is enqueued", async () => {
+    const t = convexTest(schema, modules);
+    const imageId = await seedEscalated(t, "job-d4-partial");
+    const spy = spyOnEnqueueAction();
+
+    await expect(
+      t.mutation(internal.placeholderHeavyPool.enqueueHeavyImage, {
+        imageId,
+        baseline: { rotationDegrees: 90, orientConfidence: 0.5 } as never,
+      }),
+    ).rejects.toThrow();
+
+    expect(spy).not.toHaveBeenCalled();
+    expect((await t.run(async (ctx) => ctx.db.get(imageId)))?.workId).toBeUndefined();
+  });
+
+  test("a row that never escalated is not enqueued, however well-formed the baseline", async () => {
+    const t = convexTest(schema, modules);
+    const imageId = await seedEscalated(t, "job-d4-fast");
+    await t.run(async (ctx) => ctx.db.patch(imageId, { escalated: undefined }));
+    const spy = spyOnEnqueueAction();
+
+    const result = await t.mutation(internal.placeholderHeavyPool.enqueueHeavyImage, {
+      imageId,
+      baseline: { rotationDegrees: 0, orientConfidence: 0.9, textCount: 40 },
+      dhash: "a1b2c3d4e5f60718",
+    });
+
+    expect(result).toEqual({ enqueued: false });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("a row that already settled is not re-enqueued by a late schedule", async () => {
+    const t = convexTest(schema, modules);
+    const imageId = await seedEscalated(t, "job-d4-settled");
+    await t.run(async (ctx) => ctx.db.patch(imageId, { status: "done" }));
+    const spy = spyOnEnqueueAction();
+
+    const result = await t.mutation(internal.placeholderHeavyPool.enqueueHeavyImage, { imageId });
+
+    expect(result).toEqual({ enqueued: false });
+    expect(spy).not.toHaveBeenCalled();
+  });
 });

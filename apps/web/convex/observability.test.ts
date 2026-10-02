@@ -30,7 +30,9 @@ import { drainScheduled } from "../lib/testing/drain-scheduled";
 import {
   classifyAdapterError,
   newRequestId,
+  recordAdapterCall,
 } from "./observability";
+import type { ActionCtx } from "./_generated/server";
 
 // ---------------------------------------------------------------------------
 // PostHog client mock — captures every `.capture()` call so tests can assert
@@ -299,5 +301,119 @@ describe("fetchBscSelectorOptions instrumentation", () => {
     expect(
       captureCalls.filter((c) => c.properties.requestId === "req-bsc-test-2").length,
     ).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordAdapterCall — the scheduling contract (NEO-315), driven directly with a
+// stub ctx so each property is pinned without a marketplace adapter around it.
+// ---------------------------------------------------------------------------
+
+describe("recordAdapterCall scheduling contract", () => {
+  const PROPS = {
+    requestId: "req-direct",
+    operation: "fetchBscSelectorOptions",
+    platform: "bsc" as const,
+    duration_ms: 12,
+    success: true,
+  };
+
+  type Scheduled = { delayMs: number; args: Record<string, unknown> };
+
+  function stub(opts: {
+    subject?: string;
+    authThrows?: boolean;
+    runAfter?: () => Promise<unknown>;
+  } = {}) {
+    const scheduled: Scheduled[] = [];
+    let runActionCalls = 0;
+    const ctx = {
+      auth: {
+        getUserIdentity: async () => {
+          if (opts.authThrows) throw new Error("auth unavailable");
+          return opts.subject ? { subject: opts.subject } : null;
+        },
+      },
+      runAction: async () => {
+        runActionCalls++;
+        return null;
+      },
+      scheduler: {
+        runAfter: async (delayMs: number, _ref: unknown, args: Record<string, unknown>) => {
+          scheduled.push({ delayMs, args });
+          if (opts.runAfter) return opts.runAfter();
+          return "id";
+        },
+      },
+    } as unknown as ActionCtx;
+    return { ctx, scheduled, runActions: () => runActionCalls };
+  }
+
+  test("schedules the capture at delay 0 and never runs the PostHog action inline", async () => {
+    const { ctx, scheduled, runActions } = stub({ subject: "user_signed_in" });
+    await recordAdapterCall(ctx, PROPS);
+    expect(runActions()).toBe(0);
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].delayMs).toBe(0);
+    expect(scheduled[0].args.event).toBe("adapter_sync_call");
+  });
+
+  test("a signed-in caller's id is resolved before scheduling", async () => {
+    const { ctx, scheduled } = stub({ subject: "user_signed_in" });
+    await recordAdapterCall(ctx, PROPS);
+    expect(scheduled[0].args.distinctId).toBe("user_signed_in");
+  });
+
+  test("an anonymous caller is 'anonymous'", async () => {
+    const { ctx, scheduled } = stub();
+    await recordAdapterCall(ctx, PROPS);
+    expect(scheduled[0].args.distinctId).toBe("anonymous");
+  });
+
+  test("an auth lookup that throws still schedules, as 'anonymous'", async () => {
+    const { ctx, scheduled } = stub({ authThrows: true });
+    await expect(recordAdapterCall(ctx, PROPS)).resolves.toBeUndefined();
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].args.distinctId).toBe("anonymous");
+  });
+
+  test("a scheduler that throws never fails the call and is logged", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { ctx } = stub({
+      subject: "user_signed_in",
+      runAfter: async () => {
+        throw new Error("scheduler down");
+      },
+    });
+    await expect(recordAdapterCall(ctx, PROPS)).resolves.toBeUndefined();
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  test("with POSTHOG_API_KEY unset or empty nothing is scheduled, but the console line still lands", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    for (const value of [undefined, ""]) {
+      if (value === undefined) delete process.env.POSTHOG_API_KEY;
+      else process.env.POSTHOG_API_KEY = value;
+      const { ctx, scheduled, runActions } = stub({ subject: "user_signed_in" });
+      await recordAdapterCall(ctx, PROPS);
+      expect(scheduled).toHaveLength(0);
+      expect(runActions()).toBe(0);
+    }
+    const lines = log.mock.calls.map((c) => String(c[0]));
+    expect(lines.filter((l) => l.includes('"msg":"adapter_sync_call"'))).toHaveLength(2);
+    log.mockRestore();
+  });
+
+  test("the scheduled properties carry the full bag verbatim plus the deployment tag", async () => {
+    const { ctx, scheduled } = stub({ subject: "user_signed_in" });
+    await recordAdapterCall(ctx, { ...PROPS, error_class: "timeout", jobId: "j", entryIndex: 4 });
+    expect(scheduled[0].args.properties).toMatchObject({
+      ...PROPS,
+      error_class: "timeout",
+      jobId: "j",
+      entryIndex: 4,
+    });
+    expect(Object.keys(scheduled[0].args.properties as object)).toContain("deployment");
   });
 });

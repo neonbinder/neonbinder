@@ -737,6 +737,37 @@ describe("registerExtractedImages", () => {
     expect(fresh.settledAt).toBeUndefined();
   });
 
+  test("NEO-315: a restart drops an escalated-then-failed row's provisional fast baseline", async () => {
+    // The escalation wrote the fast pass's orientation, count and hash onto the
+    // row; a heavy failure never overwrote them. The restart must not carry
+    // them into a run that will measure the image afresh.
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    const id = await seedImage(t, JOB_A, 0, USER_A.subject, "failed", {
+      escalated: true,
+      escalatedAt: 2_000,
+      settledAt: 3_000,
+      rotationDegrees: 270,
+      orientConfidence: 0.42,
+      textCount: 7,
+      dhash: "a1b2c3d4e5f60718",
+      workId: "heavy-work-0",
+    });
+
+    await registerAll(t, { entries: [{ index: 0, name: "a.jpg", accepted: true }] });
+
+    const row = await t.run(async (ctx) => ctx.db.get(id));
+    expect(row?.status).toBe("queued");
+    expect(row?.escalated).toBeUndefined();
+    expect(row?.workId).toBeUndefined();
+    expect(row?.rotationDegrees).toBeUndefined();
+    expect(row?.orientConfidence).toBeUndefined();
+    expect(row?.textCount).toBeUndefined();
+    expect(row?.dhash).toBeUndefined();
+    expect(row?.escalatedAt).toBeUndefined();
+    expect(row?.settledAt).toBeUndefined();
+  });
+
   test("a duplicated entry index is deduped, first occurrence wins", async () => {
     // (jobId, entryIndex) is the key every read of this table uses, and
     // `unique()` on it throws when two rows match — a duplicate row would not

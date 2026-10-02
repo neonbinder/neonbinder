@@ -964,6 +964,76 @@ describe("createPlaceholderPairDownloadUrls", () => {
     expect(signedUrlCalls).toHaveLength(0);
   });
 
+  test("every refusal is worded identically, so the error never says which side or why", async () => {
+    const call = (
+      t: ReturnType<typeof convexTest>,
+      identity: typeof USER_IDENTITY,
+      frontIndex: number,
+      backIndex: number,
+    ) =>
+      t
+        .withIdentity(identity)
+        .action(api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls, {
+          jobId: DOWNLOAD_JOB,
+          frontIndex,
+          backIndex,
+        })
+        .then(
+          () => {
+            throw new Error("expected a refusal");
+          },
+          (e: Error) => e.message,
+        );
+
+    const messages: string[] = [];
+    const ok = { entryIndex: 2, outputExtension: "jpg" };
+    const okBack = { entryIndex: 3, outputExtension: "jpg" };
+
+    let t = convexTest(schema, modules);
+    await seedPair(t, [ok, okBack]);
+    messages.push(await call(t, OTHER_USER_IDENTITY, 2, 3)); // not the owner
+    t = convexTest(schema, modules);
+    await seedPair(t, [okBack]);
+    messages.push(await call(t, USER_IDENTITY, 2, 3)); // front missing
+    t = convexTest(schema, modules);
+    await seedPair(t, [ok]);
+    messages.push(await call(t, USER_IDENTITY, 2, 3)); // back missing
+    t = convexTest(schema, modules);
+    await seedPair(t, [ok, { entryIndex: 3, status: "processing" }]);
+    messages.push(await call(t, USER_IDENTITY, 2, 3)); // back not done
+    t = convexTest(schema, modules);
+    await seedPair(t, [{ entryIndex: 2 }, okBack]);
+    messages.push(await call(t, USER_IDENTITY, 2, 3)); // front object gone
+    t = convexTest(schema, modules);
+    await seedPair(t, [ok]);
+    messages.push(await call(t, USER_IDENTITY, 2, 1_000_000)); // out of range
+
+    expect(new Set(messages).size).toBe(1);
+    expect(messages[0]).toMatch(/image not found/i);
+    // And nothing in it names a side, an index or the owner.
+    expect(messages[0]).not.toMatch(/front|back|owner|user_placeholder|\b[23]\b/i);
+  });
+
+  test("an owner's pair maps each url to the index it was asked for, whichever is larger", async () => {
+    const t = convexTest(schema, modules);
+    const userId = USER_IDENTITY.subject;
+    await seedPair(t, [
+      { entryIndex: 2, outputExtension: "jpg" },
+      { entryIndex: 9, outputExtension: "png" },
+    ]);
+    const result = await t
+      .withIdentity(USER_IDENTITY)
+      .action(api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls, {
+        jobId: DOWNLOAD_JOB,
+        frontIndex: 9,
+        backIndex: 2,
+      });
+    expect(result.front.entryIndex).toBe(9);
+    expect(result.front.url).toContain(outputKey(userId, 9, "png"));
+    expect(result.back.entryIndex).toBe(2);
+    expect(result.back.url).toContain(outputKey(userId, 2, "jpg"));
+  });
+
   test("rejects a path-shaped argument — the contract is jobId + two indexes only", async () => {
     const t = convexTest(schema, modules);
     await seedPair(t, [

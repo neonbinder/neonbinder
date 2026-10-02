@@ -1699,3 +1699,31 @@ describe("NEO-308: applyParallelGroupings (the Group Parallels save) is admin-ga
     expect(result).toEqual({ success: true, promoted: 1, demoted: 0, reparented: 0 });
   });
 });
+
+describe("NEO-315: the placeholder download mints refuse a signed-out caller", () => {
+  // `createPlaceholderPairDownloadUrls` is a public action added on this branch.
+  // Pinned here because nothing enumerates the API: the entry is part of adding
+  // the function. The refusal is a rejected promise, before any storage client
+  // is built (no GCS credentials exist in this environment, so reaching one
+  // would fail with a different message).
+  test("createPlaceholderPairDownloadUrls", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t.action(api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls, {
+        jobId: "job-any",
+        frontIndex: 0,
+        backIndex: 1,
+      }),
+    ).rejects.toThrow(/not authenticated/i);
+  });
+
+  test("createPlaceholderImageDownloadUrl (the single mint it shares its checks with)", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t.action(api.adapters.placeholderUploads.createPlaceholderImageDownloadUrl, {
+        jobId: "job-any",
+        entryIndex: 0,
+      }),
+    ).rejects.toThrow(/not authenticated/i);
+  });
+});
