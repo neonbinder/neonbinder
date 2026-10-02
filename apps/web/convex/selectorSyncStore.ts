@@ -494,6 +494,28 @@ export const MAX_SUBTREE_WALK_DOCUMENTS = 6000;
 export const MAX_BRAND_WALK_READS = 600;
 export const MAX_BRAND_WALK_DOCUMENTS = 2000;
 
+/**
+ * NEO-312 (security audit S3) — the bytes a holder walk always leaves unread in
+ * the transaction's 16 MiB read budget. The walks count documents, not bytes,
+ * and a row's size is not known until it is read, so before every read they ask
+ * Convex how much budget is left (`ctx.meta.getTransactionMetrics()`) and stop
+ * below this reserve: the set walk fails closed, the brand walk truncates.
+ *
+ * What the reserve has to cover: the rest of the store's own transaction (the
+ * write pass, the unlink notices' card reads) and one more walk read that is
+ * already in flight when the check passes — at most `WALK_MAX_DOCS_PER_READ`
+ * rows, ~1–2 MB at selectorOptions sizes. 4 MiB is a quarter of the budget.
+ */
+export const WALK_BYTES_RESERVE = 4 * 1024 * 1024;
+
+/**
+ * NEO-312 (security audit S3) — the most rows one walk read may return. A
+ * parent with more children than this is past any real set (an insert's
+ * parallels run to dozens); the read stops there and the walk treats it as a
+ * documents bound, so no single read can carry the walk past the reserve.
+ */
+export const WALK_MAX_DOCS_PER_READ = 1000;
+
 export type SyncHoldersElsewhere = {
   /**
    * Rows that are not siblings of this sync and hold (or, inside the sync's
@@ -600,8 +622,20 @@ function holderView(
  * level, SportLots only (the same walk `getBrandSlHolders` makes for the
  * form).
  *
+ * NEO-312 (audit N4) — level=setName, parent = a manufacturer (Sync Sets): the
+ * siblings are the brand's sets, so there is no set walk; the brand walk runs
+ * from each set downward (variant types, inserts, parallels), SportLots only,
+ * so a link "Make parallel of…" / "Make insert of…" moved DOWN from a set is
+ * not re-created as a set by a stale Sync Sets save. Best effort, like every
+ * brand walk; past its bound the client's `listBrandSubtreeSlIds` filter is
+ * the protection.
+ *
  * Any other level/parent → `null`, today's sibling-only rule. A variant type
  * with no set above it (a bare fixture) walks its own subtree only.
+ *
+ * Every read is bounded three ways: the transaction's remaining read BYTES
+ * (`WALK_BYTES_RESERVE`, asked of Convex before each read), the rows one read
+ * may return (`WALK_MAX_DOCS_PER_READ`), and the walk's documents and reads.
  *
  * ## The set walk fails closed; the brand walk is best effort
  *
@@ -649,8 +683,16 @@ export async function loadSyncHoldersElsewhere(
     const view = holderView(row, sides);
     if (view) target.set(row._id, view);
   };
+  /**
+   * NEO-312 (security audit S3) — is there room in this transaction's 16 MiB
+   * read budget for another walk read AND the store's own reads after it?
+   * Asked before every read; documents are counted too (a second guard),
+   * because a document's size is not known until it is read.
+   */
+  const roomToRead = async () =>
+    (await ctx.meta.getTransactionMetrics()).bytesRead.remaining >= WALK_BYTES_RESERVE;
 
-  let variantType: Doc<"selectorOptions">;
+  let variantType: Doc<"selectorOptions"> | null = null;
   if (level === "insert" && parent.level === "variantType") {
     variantType = parent;
   } else if (
@@ -662,32 +704,31 @@ export async function loadSyncHoldersElsewhere(
     reads++;
     if (!vt || vt.level !== "variantType") return null;
     variantType = vt;
+  } else if (level === "setName" && parent.level === "manufacturer") {
+    // NEO-312 (audit N4) — a Sync Sets save: the siblings are the brand's
+    // sets; see the brand walk below.
+    variantType = null;
   } else {
     return null;
   }
-  parentsById.set(variantType._id, variantType);
   parentsById.set(parent._id, parent);
 
-  const log = (scope: "set" | "brand", bound: string, extra: Record<string, number>) =>
+  const skipAll = (bound: string): SyncHoldersElsewhere => {
     console.warn(
       JSON.stringify({
         msg: "selector_sync_subtree_walk_skipped",
-        scope,
+        scope: "set",
         level,
         parentId: parent._id,
         bound,
         reads,
-        ...extra,
+        inserts: insertsSeen,
+        documents,
+        limitInserts: MAX_SUBTREE_WALK_INSERTS,
+        limitDocuments: MAX_SUBTREE_WALK_DOCUMENTS,
         effect: "items naming an id no sibling holds are withheld, not stored",
       }),
     );
-  const skipAll = (bound: string): SyncHoldersElsewhere => {
-    log("set", bound, {
-      inserts: insertsSeen,
-      documents,
-      limitInserts: MAX_SUBTREE_WALK_INSERTS,
-      limitDocuments: MAX_SUBTREE_WALK_DOCUMENTS,
-    });
     return {
       rows: [],
       parentsById: new Map(),
@@ -697,68 +738,87 @@ export async function loadSyncHoldersElsewhere(
       brandWalkTruncated: false,
     };
   };
+  /** One bounded read of a row's children for the set walk; `null` = stop. */
+  const setRead = async (
+    q: (cap: number) => Promise<Doc<"selectorOptions">[]>,
+  ): Promise<Doc<"selectorOptions">[] | "bytes" | "documents"> => {
+    if (!(await roomToRead())) return "bytes";
+    const rows = await q(WALK_MAX_DOCS_PER_READ + 1);
+    reads++;
+    documents += rows.length;
+    if (rows.length > WALK_MAX_DOCS_PER_READ) return "documents";
+    if (documents > MAX_SUBTREE_WALK_DOCUMENTS) return "documents";
+    return rows;
+  };
 
-  // ── The set ─────────────────────────────────────────────────────────────
+  // ── The set (fails closed) ──────────────────────────────────────────────
   let setRow: Doc<"selectorOptions"> | null = null;
-  if (variantType.parentId !== undefined) {
-    const set = await ctx.db.get(variantType.parentId);
-    reads++;
-    if (set && set.level === "setName") setRow = set;
-  }
-
-  let types: Doc<"selectorOptions">[] = [variantType];
-  if (setRow) {
-    parentsById.set(setRow._id, setRow);
-    const setId = setRow._id;
-    types = await ctx.db
-      .query("selectorOptions")
-      .withIndex("by_level_and_parent", (q) =>
-        q.eq("level", "variantType").eq("parentId", setId),
-      )
-      .collect();
-    reads++;
-    documents += types.length;
-    addHolder(holders, setRow, "sportlots");
-  }
-
-  for (const type of types) {
-    parentsById.set(type._id, type);
-    addHolder(holders, type, "sportlots");
-    let inserts: Doc<"selectorOptions">[];
-    if (level === "insert" && type._id === variantType._id) {
-      // At `insert` the parent variant type's inserts ARE the siblings.
-      inserts = [...siblings];
-    } else {
-      const typeId = type._id;
-      inserts = await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", "insert").eq("parentId", typeId),
-        )
-        .collect();
+  let brandRow: Doc<"selectorOptions"> | null = level === "setName" ? parent : null;
+  if (variantType) {
+    parentsById.set(variantType._id, variantType);
+    if (variantType.parentId !== undefined) {
+      const set = await ctx.db.get(variantType.parentId);
       reads++;
-      documents += inserts.length;
+      if (set && set.level === "setName") setRow = set;
     }
-    insertsSeen += inserts.length;
-    if (insertsSeen > MAX_SUBTREE_WALK_INSERTS) return skipAll("inserts");
-    if (documents > MAX_SUBTREE_WALK_DOCUMENTS) return skipAll("documents");
 
-    for (const insert of inserts) {
-      parentsById.set(insert._id, insert);
-      addHolder(holders, insert, "both");
-      // At `parallel`, the parent insert's own parallels are the siblings.
-      if (insert._id === parent._id) continue;
-      const insertId = insert._id;
-      const parallels = await ctx.db
-        .query("selectorOptions")
-        .withIndex("by_level_and_parent", (q) =>
-          q.eq("level", "parallel").eq("parentId", insertId),
-        )
-        .collect();
-      reads++;
-      documents += parallels.length;
-      if (documents > MAX_SUBTREE_WALK_DOCUMENTS) return skipAll("documents");
-      for (const parallel of parallels) addHolder(holders, parallel, "both");
+    let types: Doc<"selectorOptions">[] = [variantType];
+    if (setRow) {
+      parentsById.set(setRow._id, setRow);
+      const setId = setRow._id;
+      const read = await setRead((cap) =>
+        ctx.db
+          .query("selectorOptions")
+          .withIndex("by_level_and_parent", (q) =>
+            q.eq("level", "variantType").eq("parentId", setId),
+          )
+          .take(cap),
+      );
+      if (!Array.isArray(read)) return skipAll(read);
+      types = read;
+      addHolder(holders, setRow, "sportlots");
+    }
+
+    for (const type of types) {
+      parentsById.set(type._id, type);
+      addHolder(holders, type, "sportlots");
+      let inserts: Doc<"selectorOptions">[];
+      if (level === "insert" && type._id === variantType._id) {
+        // At `insert` the parent variant type's inserts ARE the siblings.
+        inserts = [...siblings];
+      } else {
+        const typeId = type._id;
+        const read = await setRead((cap) =>
+          ctx.db
+            .query("selectorOptions")
+            .withIndex("by_level_and_parent", (q) =>
+              q.eq("level", "insert").eq("parentId", typeId),
+            )
+            .take(cap),
+        );
+        if (!Array.isArray(read)) return skipAll(read);
+        inserts = read;
+      }
+      insertsSeen += inserts.length;
+      if (insertsSeen > MAX_SUBTREE_WALK_INSERTS) return skipAll("inserts");
+
+      for (const insert of inserts) {
+        parentsById.set(insert._id, insert);
+        addHolder(holders, insert, "both");
+        // At `parallel`, the parent insert's own parallels are the siblings.
+        if (insert._id === parent._id) continue;
+        const insertId = insert._id;
+        const read = await setRead((cap) =>
+          ctx.db
+            .query("selectorOptions")
+            .withIndex("by_level_and_parent", (q) =>
+              q.eq("level", "parallel").eq("parentId", insertId),
+            )
+            .take(cap),
+        );
+        if (!Array.isArray(read)) return skipAll(read);
+        for (const parallel of read) addHolder(holders, parallel, "both");
+      }
     }
   }
 
@@ -776,8 +836,7 @@ export async function loadSyncHoldersElsewhere(
     brandWalkTruncated,
   });
 
-  // ── The brand, only for a SportLots id the set did not account for ──────
-  if (!setRow?.parentId) return done();
+  // ── The brand (best effort), only for a SportLots id nobody nearer holds ─
   const heldSl = new Set<string>();
   for (const row of [...siblings, ...holders.values()]) {
     for (const id of Object.values(row.platformData?.sportlots ?? {})) heldSl.add(id);
@@ -787,11 +846,14 @@ export async function loadSyncHoldersElsewhere(
     return id !== undefined && !heldSl.has(id);
   });
   if (!needsBrand) return done();
-
-  const brand = await ctx.db.get(setRow.parentId);
-  reads++;
-  if (!brand || brand.level !== "manufacturer") return done();
-  parentsById.set(brand._id, brand);
+  if (!brandRow) {
+    if (!setRow?.parentId) return done();
+    const brand = await ctx.db.get(setRow.parentId);
+    reads++;
+    if (!brand || brand.level !== "manufacturer") return done();
+    brandRow = brand;
+  }
+  parentsById.set(brandRow._id, brandRow);
 
   const brandHolders = new Map<string, Doc<"selectorOptions">>();
   const brandParents = new Map<string, Doc<"selectorOptions">>();
@@ -803,8 +865,8 @@ export async function loadSyncHoldersElsewhere(
    * only), and let the rest through. Failing closed here would withhold every
    * first-time SportLots set of a big brand-year, since such an id is held by
    * no one and so always sends the store to the brand. The cross-set case is
-   * held by the form (`getBrandSlHolders`); this walk only closes the
-   * stale-dialog race across "Promote to set".
+   * held by the form (`getBrandSlHolders`; Sync Sets: `listBrandSubtreeSlIds`);
+   * this walk only closes the stale-dialog race.
    */
   const truncateBrand = (bound: string): SyncHoldersElsewhere => {
     console.warn(
@@ -825,32 +887,42 @@ export async function loadSyncHoldersElsewhere(
     for (const [id, row] of brandParents) parentsById.set(id, row);
     return done(brandHolders, true);
   };
-  /** One indexed read of a row's children, bounded on both budgets. */
-  const childrenOf = async (
-    q: () => Promise<Doc<"selectorOptions">[]>,
-  ): Promise<Doc<"selectorOptions">[] | null> => {
-    if (brandReads >= MAX_BRAND_WALK_READS) return null;
-    const rows = await q();
+  /** One bounded read of a row's children for the brand walk. */
+  const brandRead = async (
+    q: (cap: number) => Promise<Doc<"selectorOptions">[]>,
+  ): Promise<Doc<"selectorOptions">[] | "reads" | "bytes" | "documents"> => {
+    if (brandReads >= MAX_BRAND_WALK_READS) return "reads";
+    if (!(await roomToRead())) return "bytes";
+    const cap = Math.min(
+      WALK_MAX_DOCS_PER_READ + 1,
+      MAX_BRAND_WALK_DOCUMENTS - brandDocuments + 1,
+    );
+    const rows = await q(cap);
     reads++;
     brandReads++;
     brandDocuments += rows.length;
-    if (brandDocuments > MAX_BRAND_WALK_DOCUMENTS) return null;
+    if (rows.length > WALK_MAX_DOCS_PER_READ) return "documents";
+    if (brandDocuments > MAX_BRAND_WALK_DOCUMENTS) return "documents";
     return rows;
   };
 
-  const remaining = () => MAX_BRAND_WALK_DOCUMENTS - brandDocuments + 1;
-  const brandId = brand._id;
-  const sets = await childrenOf(() =>
-    ctx.db
-      .query("selectorOptions")
-      .withIndex("by_level_and_parent", (q) =>
-        q.eq("level", "setName").eq("parentId", brandId),
-      )
-      .take(remaining()),
-  );
-  if (sets === null) return truncateBrand(brandReads >= MAX_BRAND_WALK_READS ? "reads" : "documents");
-
-  let frontier = sets.filter((s) => s._id !== setRow._id);
+  let frontier: Doc<"selectorOptions">[];
+  if (level === "setName") {
+    // The siblings ARE the brand's sets; walk down from each.
+    frontier = [...siblings];
+  } else {
+    const brandId = brandRow._id;
+    const sets = await brandRead((cap) =>
+      ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "setName").eq("parentId", brandId),
+        )
+        .take(cap),
+    );
+    if (!Array.isArray(sets)) return truncateBrand(sets);
+    frontier = sets.filter((s) => s._id !== setRow?._id);
+  }
   while (frontier.length > 0) {
     const next: Doc<"selectorOptions">[] = [];
     for (const row of frontier) {
@@ -858,15 +930,13 @@ export async function loadSyncHoldersElsewhere(
       addHolder(brandHolders, row, "sportlots");
       if (row.level === "parallel") continue;
       const rowId = row._id;
-      const children = await childrenOf(() =>
+      const children = await brandRead((cap) =>
         ctx.db
           .query("selectorOptions")
           .withIndex("by_parent", (q) => q.eq("parentId", rowId))
-          .take(remaining()),
+          .take(cap),
       );
-      if (children === null) {
-        return truncateBrand(brandReads >= MAX_BRAND_WALK_READS ? "reads" : "documents");
-      }
+      if (!Array.isArray(children)) return truncateBrand(children);
       next.push(...children);
     }
     frontier = next;

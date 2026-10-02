@@ -33,6 +33,7 @@ import { slotIds } from "./platformSlots";
 import {
   MAX_BRAND_WALK_DOCUMENTS,
   MAX_SUBTREE_WALK_INSERTS,
+  WALK_BYTES_RESERVE,
   loadSyncHoldersElsewhere,
 } from "./selectorSyncStore";
 
@@ -239,11 +240,16 @@ function reconcile(
     sportlots?: string;
     existingId?: RowId;
   }>,
-  level: "insert" | "parallel" = "insert",
+  level: "insert" | "parallel" | "setName" = "insert",
+  opts: {
+    coveredSides?: Array<"bsc" | "sportlots">;
+    returnedIds?: { bsc?: string[]; sportlots?: string[] };
+  } = {},
 ) {
   return as(t).mutation(api.setReconciliation.storeReconciledOptions, {
     level,
     parentId,
+    ...opts,
     reconciledItems: items.map((i) => ({
       value: i.value,
       platformData: {
@@ -261,9 +267,10 @@ function storeSelector(
   t: T,
   parentId: RowId,
   options: Array<{ value: string; bsc?: string; sportlots?: string }>,
+  level: "insert" | "setName" = "insert",
 ) {
   return as(t).mutation(api.selectorOptions.storeSelectorOptions, {
-    level: "insert",
+    level,
     parentId,
     options: options.map((o) => ({
       value: o.value,
@@ -684,6 +691,7 @@ describe("the holder walk's bounds (NEO-312)", () => {
       }
     });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    warn.mockClear();
     const before = await rowCount(t);
 
     const res = await reconcile(t, ids.parallelTypeId, [
@@ -791,5 +799,314 @@ describe("the holder walk's bounds (NEO-312)", () => {
     });
     // BSC never reaches past the set.
     expect(await walk([{ value: "B", ids: { bsc: "nowhere" } }])).toEqual(inSet);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Security audit S3 — the walks are bounded by the transaction's read BYTES
+// ───────────────────────────────────────────────────────────────────────────
+
+/** A string of `kb` kilobytes, to give a row real weight in the read budget. */
+const heavy = (kb: number) => "x".repeat(kb * 1024);
+
+/**
+ * convex-test enforces these limits and answers `getTransactionMetrics()`
+ * against them, so a walk that read past the budget would THROW here exactly
+ * as it would on Convex; one that respects it completes.
+ */
+function tightReads(extraBytes: number) {
+  return convexTest({
+    schema,
+    modules,
+    transactionLimits: { bytesRead: WALK_BYTES_RESERVE + extraBytes },
+  });
+}
+
+describe("the holder walks stop on the read-byte budget (NEO-312, audit S3)", () => {
+  test("the SET walk fails closed when the remaining read bytes drop below the reserve", async () => {
+    const t = tightReads(200 * 1024);
+    const ids = await seed(t);
+    // Heavy insert-level rows under the Insert type: one read of them spends
+    // most of the 200 KB the reserve leaves the walk.
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 8; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "insert",
+          value: `Heavy ${i}`,
+          parentId: ids.insertTypeId,
+          platformData: {},
+          platformLabels: { bsc: { b0: heavy(30) } },
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    warn.mockClear();
+
+    const res = await reconcile(t, ids.parallelTypeId, [
+      { value: "New SL Set", sportlots: "SL-NEW" },
+    ]);
+
+    expect(res.subtreeWalkSkipped).toBe(true);
+    expect(res.withheldElsewhere).toEqual([
+      { label: "New SL Set", reason: "notChecked", holders: [] },
+    ]);
+    expect(await childrenAt(t, "insert", ids.parallelTypeId)).toEqual([]);
+    const line = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes("selector_sync_subtree_walk_skipped"))!;
+    expect(JSON.parse(line)).toMatchObject({ scope: "set", bound: "bytes" });
+  });
+
+  test("the BRAND walk truncates on the read-byte budget: a holder found is held, the rest goes through", async () => {
+    const t = tightReads(200 * 1024);
+    const ids = await seed(t);
+    await slSet(t, ids.brandId, "Bowman Sky Blue", [{ id: "SL-SKY", label: "Bowman Sky Blue" }]);
+    await t.run(async (ctx) => {
+      const other = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Bowman Draft",
+        parentId: ids.brandId,
+        platformData: {},
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      const type = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Insert",
+        parentId: other,
+        platformData: {},
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      for (let i = 0; i < 8; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "insert",
+          value: `Heavy ${i}`,
+          parentId: type,
+          platformData: {},
+          platformLabels: { bsc: { b0: heavy(30) } },
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    warn.mockClear();
+
+    const res = await reconcile(t, ids.parallelTypeId, [
+      { value: "Sky Blue", sportlots: "SL-SKY" },
+      { value: "New SL Set", sportlots: "SL-NEW" },
+    ]);
+
+    expect(res.subtreeWalkSkipped).toBe(false);
+    expect(res.heldElsewhereTotal).toBe(1);
+    expect(res.withheldElsewhereTotal).toBe(0);
+    expect((await childrenAt(t, "insert", ids.parallelTypeId)).map((r) => r.value)).toEqual([
+      "New SL Set",
+    ]);
+    const line = warn.mock.calls
+      .map((c) => String(c[0]))
+      .find((l) => l.includes("selector_sync_brand_walk_truncated"))!;
+    expect(JSON.parse(line)).toMatchObject({ brandWalkTruncated: true, bound: "bytes", holdersFound: 1 });
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Audit N1 — a blocked incoming id beside an unlinked old one: both reported
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("a row's old id is unlinked while its new id is blocked: both notices say so (NEO-312, audit N1)", () => {
+  /**
+   * Red Ink (Sync Parallels' own row) holds old SportLots id SL-OLD. The fetch
+   * now lists Red Ink under SL-RED-INK — an id another row holds — and no
+   * longer returns SL-OLD, with SportLots covered. Invariant 5 allows the
+   * unlink (fetched, not returned, operator told); NEO-312 refuses the new
+   * link. Pinned, not changed: the operator must hear about both.
+   */
+  async function fixture(t: T) {
+    const ids = await seed(t);
+    // The store only counts SportLots as covered when the chain can scope it.
+    await t.run(async (ctx) => {
+      const year = await ctx.db.get(ids.yearId);
+      await ctx.db.patch(ids.yearId, { platformData: { sportlots: { s0: "SL-YEAR" } } });
+      await ctx.db.patch(year!.parentId!, { platformData: { sportlots: { s0: "SL-SPORT" } } });
+    });
+    const redInk = await insertRow(t, {
+      level: "insert",
+      value: "Red Ink",
+      parentId: ids.parallelTypeId,
+      platformData: { sportlots: { s0: "SL-OLD" } },
+      platformSlotSeq: { sportlots: 1 },
+      primaryPlatformId: { sportlots: "s0" },
+    });
+    const holder = await insertRow(t, {
+      level: "parallel",
+      value: "Red Ink",
+      parentId: ids.autosId,
+      ...slLinks([RED_INK]),
+    });
+    return { ids, redInk, holder };
+  }
+  const covered = {
+    coveredSides: ["sportlots" as const],
+    returnedIds: { sportlots: [RED_INK.id] },
+  };
+
+  test("held by name only: SL-OLD unlinked (notice), SL-RED-INK held (notice naming the holder)", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, redInk, holder } = await fixture(t);
+
+    const res = await reconcile(
+      t,
+      ids.parallelTypeId,
+      [{ value: "Red Ink", sportlots: RED_INK.id }],
+      "insert",
+      covered,
+    );
+
+    expect(res.unlinked).toEqual([{ id: redInk, value: "Red Ink", side: "sportlots", hasCards: false }]);
+    expect(heldSummary(res.heldElsewhere)).toEqual([
+      { id: String(holder), level: "parallel", path: ["Bowman", "Insert", "All-America Game Autos"] },
+    ]);
+    const after = await t.run(async (ctx) => ctx.db.get(redInk));
+    expect(slotIds(after!, "sportlots")).toEqual([]);
+    expect((await holdersOf(t, "sportlots", RED_INK.id)).map((r) => r._id)).toEqual([holder]);
+  });
+
+  test("matched by existingId: SL-OLD unlinked (notice), SL-RED-INK not attached (linkHeldElsewhere notice)", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, redInk, holder } = await fixture(t);
+
+    const res = await reconcile(
+      t,
+      ids.parallelTypeId,
+      [{ value: "Red Ink", sportlots: RED_INK.id, existingId: redInk }],
+      "insert",
+      covered,
+    );
+
+    expect(res.unlinked.map((u) => [String(u.id), u.side])).toEqual([[String(redInk), "sportlots"]]);
+    expect(res.withheldElsewhere).toHaveLength(1);
+    expect(res.withheldElsewhere[0]).toMatchObject({ label: "Red Ink", reason: "linkHeldElsewhere" });
+    expect(res.withheldElsewhere[0].holders.map((h) => String(h.id))).toEqual([String(holder)]);
+    expect((await holdersOf(t, "sportlots", RED_INK.id)).map((r) => r._id)).toEqual([holder]);
+  });
+
+  test("set walk past its bound: SL-OLD unlinked (notice), SL-RED-INK withheld as notChecked (notice)", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, redInk } = await fixture(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < MAX_SUBTREE_WALK_INSERTS; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "insert",
+          value: `Bulk ${i}`,
+          parentId: ids.insertTypeId,
+          platformData: {},
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+    });
+
+    const res = await reconcile(
+      t,
+      ids.parallelTypeId,
+      [{ value: "Red Ink", sportlots: RED_INK.id }],
+      "insert",
+      covered,
+    );
+
+    expect(res.subtreeWalkSkipped).toBe(true);
+    expect(res.unlinked.map((u) => [String(u.id), u.side])).toEqual([[String(redInk), "sportlots"]]);
+    expect(res.withheldElsewhere).toEqual([
+      { label: "Red Ink", reason: "notChecked", holders: [] },
+    ]);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Audit N4 — a Sync Sets save does not re-create a set whose link moved down
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("Sync Sets: a SportLots id held under any set of the brand is not filed as a set again (NEO-312, audit N4)", () => {
+  async function movedDown(t: T) {
+    const ids = await seed(t);
+    const sky = { id: "SL-SKY", label: "Bowman Sky Blue" };
+    const { setId } = await slSet(t, ids.brandId, "Bowman Sky Blue", [sky]);
+    const moved = await as(t).mutation(api.setParallelConversion.convertSetToParallel, {
+      setId,
+      targetParallelTypeId: ids.parallelTypeId,
+    });
+    return { ids, sky, moved };
+  }
+
+  test("both stores, at setName level: the moved link is held, its holder named; a new set and a BSC set still land", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, sky, moved } = await movedDown(t);
+    const setsBefore = (await childrenAt(t, "setName", ids.brandId)).map((r) => r.value).sort();
+    expect(setsBefore).toEqual(["Bowman"]);
+
+    // A Sync Sets dialog opened before the move (reconcile store).
+    const res = await reconcile(
+      t,
+      ids.brandId,
+      [{ value: "Bowman Sky Blue", sportlots: sky.id }],
+      "setName",
+    );
+    expect(heldSummary(res.heldElsewhere)).toEqual([
+      { id: String(moved.parallelId), level: "insert", path: ["Bowman", "Parallel"] },
+    ]);
+    expect((await childrenAt(t, "setName", ids.brandId)).map((r) => r.value)).toEqual(["Bowman"]);
+
+    // The aggregator's store, with a genuinely new SportLots set and a BSC set.
+    const res2 = await storeSelector(
+      t,
+      ids.brandId,
+      [
+        { value: "Bowman Sky Blue", sportlots: sky.id },
+        { value: "Bowman Gold", sportlots: "SL-GOLD" },
+        { value: "Bowman Chrome", bsc: "bowman-chrome" },
+      ],
+      "setName",
+    );
+    expect(res2.heldElsewhereTotal).toBe(1);
+    expect((await childrenAt(t, "setName", ids.brandId)).map((r) => r.value).sort()).toEqual([
+      "Bowman",
+      "Bowman Chrome",
+      "Bowman Gold",
+    ]);
+    expect((await holdersOf(t, "sportlots", sky.id)).map((r) => r._id)).toEqual([moved.parallelId]);
+  });
+
+  test("past the brand walk's bound the setName save lets the item through (the client's list is the protection) and logs it", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < MAX_BRAND_WALK_DOCUMENTS; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "variantType",
+          value: `Bulk ${i}`,
+          parentId: ids.bowmanId,
+          platformData: {},
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      }
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    warn.mockClear();
+
+    const res = await storeSelector(t, ids.brandId, [{ value: "Bowman Gold", sportlots: "SL-GOLD" }], "setName");
+
+    expect(res.withheldElsewhereTotal).toBe(0);
+    expect((await childrenAt(t, "setName", ids.brandId)).map((r) => r.value).sort()).toEqual([
+      "Bowman",
+      "Bowman Gold",
+    ]);
+    expect(
+      warn.mock.calls.some((c) => String(c[0]).includes("selector_sync_brand_walk_truncated")),
+    ).toBe(true);
   });
 });

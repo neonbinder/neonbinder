@@ -15,7 +15,12 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
-import { REPORT_BRAND_PAGE } from "./slLinkDuplicatesReport";
+import {
+  REPORT_BYTES_RESERVE,
+  REPORT_CARD_COUNT_CAP,
+  REPORT_CARD_ROWS_PER_CALL,
+  REPORT_DOCS_PER_CALL,
+} from "./slLinkDuplicatesReport";
 
 const modules = (
   import.meta as unknown as {
@@ -206,12 +211,11 @@ describe("slLinkDuplicatesReport.run (NEO-312)", () => {
     }
   });
 
-  test("maxBrands pages the run; the cursor resumes without re-reading a brand", async () => {
+  test("maxBrands and the time budget stop a run; continueCursor resumes at exactly the next brand", async () => {
     const t = convexTest(schema, modules);
     await seed(t);
-    // More brands than one page, so the cursor has somewhere to go.
     await t.run(async (ctx) => {
-      for (let i = 0; i < REPORT_BRAND_PAGE; i++) {
+      for (let i = 0; i < 3; i++) {
         await ctx.db.insert("selectorOptions", {
           level: "manufacturer",
           value: `Brand ${i}`,
@@ -224,15 +228,152 @@ describe("slLinkDuplicatesReport.run (NEO-312)", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
 
     const first = await t.action(internal.slLinkDuplicatesReport.run, { maxBrands: 1 });
-    expect(first.truncated).toBe(true);
-    expect(first.brandsScanned).toBe(REPORT_BRAND_PAGE);
+    expect(first).toMatchObject({ truncated: true, brandsScanned: 1, timedOut: false });
     expect(first.continueCursor).toBeDefined();
 
-    const second = await t.action(internal.slLinkDuplicatesReport.run, {
-      cursor: first.continueCursor,
+    // A zero time budget: every run walks exactly one brand (it always
+    // advances), stops on time, and hands back the cursor.
+    let cursor = first.continueCursor;
+    let scanned = first.brandsScanned;
+    let groups = first.groupsTotal;
+    let runs = 0;
+    while (cursor !== undefined) {
+      const res = await t.action(internal.slLinkDuplicatesReport.run, { cursor, timeBudgetMs: 0 });
+      expect(res.brandsScanned).toBe(1);
+      scanned += res.brandsScanned;
+      groups += res.groupsTotal;
+      cursor = res.continueCursor;
+      if (cursor !== undefined) expect(res.timedOut).toBe(true);
+      expect(++runs).toBeLessThan(10);
+    }
+    // Five brands, each read once; the three duplicate groups, each once.
+    expect(scanned).toBe(5);
+    expect(groups).toBe(3);
+  });
+
+  test("cards are counted a few rows per call, capped per row", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < REPORT_CARD_COUNT_CAP + 50; i++) {
+        await ctx.db.insert("cardChecklist", {
+          selectorOptionId: ids.recreated,
+          cardNumber: String(100 + i),
+          cardName: `Bulk ${i}`,
+          platformData: {},
+          sortOrder: 100 + i,
+          lastUpdated: SENTINEL,
+        });
+      }
     });
-    expect(second.truncated).toBe(false);
-    expect(first.brandsScanned + second.brandsScanned).toBe(REPORT_BRAND_PAGE + 2);
-    expect(first.groupsTotal + second.groupsTotal).toBe(3);
+    const rowIds = [ids.recreated, ids.moved, ids.autos, ids.bscDupe, ids.skyBase, ids.skyRow, ids.base];
+    const counted = await t.query(internal.slLinkDuplicatesReport.cardCounts, { rowIds });
+    expect(counted).toHaveLength(REPORT_CARD_ROWS_PER_CALL);
+    expect(counted[0]).toEqual({ id: ids.recreated, cards: REPORT_CARD_COUNT_CAP, capped: true });
+
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    const res = await t.action(internal.slLinkDuplicatesReport.run, {});
+    const holder = res.groups
+      .flatMap((g) => g.holders)
+      .find((h) => h.rowId === ids.recreated)!;
+    expect(holder).toMatchObject({ cards: REPORT_CARD_COUNT_CAP, cardCountCapped: true });
+    expect(res.cardCountsComplete).toBe(true);
+  });
+
+  test("childrenPage reads at most REPORT_DOCS_PER_CALL documents per call; a parent that does not fit is asked again", async () => {
+    const t = convexTest(schema, modules);
+    const { a, b, c } = await t.run(async (ctx) => {
+      const mk = (value: string) =>
+        ctx.db.insert("selectorOptions", {
+          level: "variantType",
+          value,
+          platformData: {},
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      const a = await mk("A");
+      const b = await mk("B");
+      const c = await mk("C");
+      const fill = async (parentId: RowId, n: number) => {
+        for (let i = 0; i < n; i++) {
+          await ctx.db.insert("selectorOptions", {
+            level: "insert",
+            value: `${i}`,
+            parentId,
+            platformData: {},
+            children: [],
+            lastUpdated: SENTINEL,
+          });
+        }
+      };
+      await fill(a, REPORT_DOCS_PER_CALL - 500);
+      await fill(b, 1000);
+      await fill(c, REPORT_DOCS_PER_CALL + 1);
+      return { a, b, c };
+    });
+
+    const ab = await t.query(internal.slLinkDuplicatesReport.childrenPage, { parentIds: [a, b] });
+    expect({ rows: ab.rows.length, parentsDone: ab.parentsDone, overflow: ab.overflow }).toEqual({
+      rows: REPORT_DOCS_PER_CALL - 500,
+      parentsDone: 1,
+      overflow: false,
+    });
+    const bOnly = await t.query(internal.slLinkDuplicatesReport.childrenPage, { parentIds: [b] });
+    expect(bOnly.rows).toHaveLength(1000);
+    const cOnly = await t.query(internal.slLinkDuplicatesReport.childrenPage, { parentIds: [c] });
+    expect({ rows: cOnly.rows.length, overflow: cOnly.overflow }).toEqual({
+      rows: REPORT_DOCS_PER_CALL,
+      overflow: true,
+    });
+  });
+
+  test("the report queries stop on the read-byte budget instead of failing (audit S1/S2)", async () => {
+    // convex-test enforces this limit: a query that read past it would throw.
+    const t = convexTest({
+      schema,
+      modules,
+      transactionLimits: { bytesRead: REPORT_BYTES_RESERVE + 100 * 1024 },
+    });
+    const heavy = "x".repeat(40 * 1024);
+    const { a, b } = await t.run(async (ctx) => {
+      const mk = (value: string) =>
+        ctx.db.insert("selectorOptions", {
+          level: "variantType",
+          value,
+          platformData: {},
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      const a = await mk("A");
+      const b = await mk("B");
+      for (const parentId of [a, b]) {
+        for (let i = 0; i < 3; i++) {
+          const child = await ctx.db.insert("selectorOptions", {
+            level: "insert",
+            value: heavy,
+            parentId,
+            platformData: {},
+            children: [],
+            lastUpdated: SENTINEL,
+          });
+          await ctx.db.insert("cardChecklist", {
+            selectorOptionId: parentId,
+            cardNumber: String(i),
+            cardName: heavy,
+            platformData: {},
+            sortOrder: i,
+            lastUpdated: SENTINEL,
+          });
+          void child;
+        }
+      }
+      return { a, b };
+    });
+
+    const page = await t.query(internal.slLinkDuplicatesReport.childrenPage, { parentIds: [a, b] });
+    expect(page.parentsDone).toBe(1);
+    expect(page.rows).toHaveLength(3);
+    const cards = await t.query(internal.slLinkDuplicatesReport.cardCounts, { rowIds: [a, b] });
+    expect(cards).toEqual([{ id: a, cards: 3, capped: false }]);
   });
 });

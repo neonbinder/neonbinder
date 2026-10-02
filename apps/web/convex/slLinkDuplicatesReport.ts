@@ -27,13 +27,19 @@
  *
  *   npx convex run --prod slLinkDuplicatesReport:run '{}'
  *
- * The action pages the brands (`brandsPage`), walks each brand breadth-first in
- * bounded chunks (`childrenPage`), groups the ids in memory, then counts the
- * cards on each holder (`cardCounts`). Every query is small and indexed, so no
- * transaction nears Convex's read limits however big the deployment is. Pass
- * a previous run's `continueCursor` to resume at the next brand; `truncated`
- * says the run stopped on `maxBrands` (or a brand stopped on its row bound,
- * listed in `brandsTruncated`).
+ * The action pages the brands one at a time (`brandsPage`), walks each brand
+ * breadth-first in bounded chunks (`childrenPage`), turns that brand's
+ * duplicates into output straight away and drops its rows (so the action's
+ * heap holds one brand at a time), then counts the cards on each named holder
+ * (`cardCounts`). Every query is small, indexed and bounded by the documents it
+ * may return AND by the transaction's remaining read bytes
+ * (`ctx.meta.getTransactionMetrics()`), so none nears Convex's 32k-document or
+ * 16 MiB limits however big the deployment is (security audit S1/S2).
+ *
+ * The run stops by itself after `REPORT_TIME_BUDGET_MS` (8 minutes, inside the
+ * 10-minute action timeout) or `maxBrands`, and returns `continueCursor`: pass
+ * it back to resume at exactly the next brand. `truncated` says there is more
+ * to read (or a brand stopped on its row bound, listed in `brandsTruncated`).
  *
  * WRITES NOTHING. No arming flag, because there is nothing to arm. The log
  * line carries counts only — never a marketplace id, label or NB name.
@@ -45,27 +51,44 @@ import { internalAction, internalQuery } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { slotIds } from "./platformSlots";
 
+
 type RowId = Id<"selectorOptions">;
 type Level = Doc<"selectorOptions">["level"];
 
-/** Brands per `brandsPage` call. */
-export const REPORT_BRAND_PAGE = 50;
+/**
+ * Brands per `brandsPage` call. One, so a run that stops on its time budget
+ * mid-way resumes at exactly the next brand — never re-reading one (which
+ * would report its duplicates twice) and never skipping one.
+ */
+export const REPORT_BRAND_PAGE = 1;
 /** Parents one `childrenPage` call reads (one indexed read each). */
 export const REPORT_PARENTS_PER_CALL = 200;
-/** Documents one `childrenPage` call may collect before it hands back. */
-export const REPORT_DOCS_PER_CALL = 4000;
+/** Documents one `childrenPage` call may collect, across all its parents. */
+export const REPORT_DOCS_PER_CALL = 2000;
 /** Rows one brand's walk may collect before the brand is reported truncated. */
 export const REPORT_MAX_ROWS_PER_BRAND = 50_000;
-/** Rows one `cardCounts` call counts for. */
-export const REPORT_CARD_ROWS_PER_CALL = 100;
+/**
+ * Rows one `cardCounts` call counts for. Five rows at `REPORT_CARD_COUNT_CAP`
+ * is ~1,000 card documents — `cardChecklist` rows are several KB each, so this
+ * keeps a call a few MB from the 16 MiB read limit (security audit S1).
+ */
+export const REPORT_CARD_ROWS_PER_CALL = 5;
 /** Cards counted per row; past it the count is a floor (`cardCountCapped`). */
-export const REPORT_CARD_COUNT_CAP = 1000;
+export const REPORT_CARD_COUNT_CAP = 200;
+/**
+ * Read bytes every report query leaves unread: before each further read it
+ * asks Convex what is left and stops below this, handing the rest back to the
+ * action. Covers the one read in flight (≤ `REPORT_DOCS_PER_CALL` rows).
+ */
+export const REPORT_BYTES_RESERVE = 4 * 1024 * 1024;
 /** Duplicate groups returned (the total is always reported). */
 export const REPORT_MAX_GROUPS = 300;
 /** Holders named per group. */
 export const REPORT_MAX_HOLDERS = 25;
 /** Brands per run by default; `maxBrands` raises or lowers it. */
 export const REPORT_DEFAULT_MAX_BRANDS = 1000;
+/** Wall-clock budget per run, inside Convex's 10-minute action timeout. */
+export const REPORT_TIME_BUDGET_MS = 8 * 60 * 1000;
 
 const levelValidator = v.union(
   v.literal("sport"),
@@ -93,6 +116,11 @@ type CompactRow = {
   sportlots: string[];
   bsc: string[];
 };
+
+/** Room in this query's read budget for one more read? */
+async function roomToRead(ctx: { meta: { getTransactionMetrics(): Promise<{ bytesRead: { remaining: number } }> } }) {
+  return (await ctx.meta.getTransactionMetrics()).bytesRead.remaining >= REPORT_BYTES_RESERVE;
+}
 
 /** One page of brands, with their year and sport names for the report. */
 export const brandsPage = internalQuery({
@@ -130,11 +158,16 @@ export const brandsPage = internalQuery({
 });
 
 /**
- * The children of a run of parents, compact (ids and NB names only). Stops
- * early on `REPORT_DOCS_PER_CALL` and says how many parents it finished, so
- * the action resumes at the next one. A single parent with more children than
- * that bound is not read past it; `overflow` says so and the action reports
- * the brand as truncated rather than under-report it.
+ * The children of a run of parents, compact (ids and NB names only).
+ *
+ * At most `REPORT_DOCS_PER_CALL` documents per CALL, not per parent: each
+ * parent's read takes only what is left of that budget (+1 to see whether it
+ * fit). A parent that does not fit is not counted as done, so the action
+ * re-asks for it next call — unless it is the FIRST parent of the call, which
+ * has the whole budget: then it is genuinely bigger than one call can read,
+ * `overflow` says so, and the action reports the brand truncated rather than
+ * under-report it. The call also stops when the transaction's remaining read
+ * bytes drop below `REPORT_BYTES_RESERVE`.
  */
 export const childrenPage = internalQuery({
   args: { parentIds: v.array(v.id("selectorOptions")) },
@@ -149,14 +182,17 @@ export const childrenPage = internalQuery({
     let parentsDone = 0;
     let overflow = false;
     for (const parentId of parentIds) {
-      if (parentsDone > 0 && rows.length >= REPORT_DOCS_PER_CALL) break;
+      const room = REPORT_DOCS_PER_CALL - rows.length;
+      if (parentsDone > 0 && (room <= 0 || !(await roomToRead(ctx)))) break;
       const taken = await ctx.db
         .query("selectorOptions")
         .withIndex("by_parent", (q) => q.eq("parentId", parentId))
-        .take(REPORT_DOCS_PER_CALL + 1);
-      if (taken.length > REPORT_DOCS_PER_CALL) overflow = true;
-      const children = taken.slice(0, REPORT_DOCS_PER_CALL);
-      for (const child of children) {
+        .take(room + 1);
+      if (taken.length > room) {
+        if (parentsDone > 0) break; // re-asked next call, whole budget then
+        overflow = true;
+      }
+      for (const child of taken.slice(0, room)) {
         rows.push({
           id: child._id,
           level: child.level,
@@ -172,7 +208,12 @@ export const childrenPage = internalQuery({
   },
 });
 
-/** Cards on each row, counted up to `REPORT_CARD_COUNT_CAP`. */
+/**
+ * Cards on each row, counted up to `REPORT_CARD_COUNT_CAP`, for at most
+ * `REPORT_CARD_ROWS_PER_CALL` rows — fewer when the read budget runs low (the
+ * first row is always counted, so every call advances). Returns the rows it
+ * counted, in order; the action asks again from the next one.
+ */
 export const cardCounts = internalQuery({
   args: { rowIds: v.array(v.id("selectorOptions")) },
   returns: v.array(
@@ -181,6 +222,7 @@ export const cardCounts = internalQuery({
   handler: async (ctx, args) => {
     const out = [];
     for (const id of args.rowIds.slice(0, REPORT_CARD_ROWS_PER_CALL)) {
+      if (out.length > 0 && !(await roomToRead(ctx))) break;
       const cards = await ctx.db
         .query("cardChecklist")
         .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", id))
@@ -216,16 +258,22 @@ const groupValidator = v.object({
   holders: v.array(holderValidator),
 });
 
-type Group = {
+type HolderOut = {
+  rowId: RowId;
+  level: Level;
+  value: string;
+  path: string[];
+  cards: number;
+  cardCountCapped: boolean;
+};
+type GroupOut = {
   side: "sportlots" | "bsc";
   marketplaceId: string;
   scope: "set" | "brand";
   sport?: string;
   year?: string;
   holderCount: number;
-  holderIds: RowId[];
-  rowsById: Map<string, CompactRow>;
-  brandName: string;
+  holders: HolderOut[];
 };
 
 /**
@@ -308,6 +356,8 @@ export const run = internalAction({
     cursor: v.optional(v.string()),
     /** Brands this run walks (default `REPORT_DEFAULT_MAX_BRANDS`). */
     maxBrands: v.optional(v.number()),
+    /** Wall-clock budget in ms (default `REPORT_TIME_BUDGET_MS`). */
+    timeBudgetMs: v.optional(v.number()),
   },
   returns: v.object({
     message: v.string(),
@@ -315,31 +365,43 @@ export const run = internalAction({
     rowsScanned: v.number(),
     truncated: v.boolean(),
     continueCursor: v.optional(v.string()),
+    /** The run stopped on its wall-clock budget. */
+    timedOut: v.boolean(),
     /** Brands whose walk stopped on `REPORT_MAX_ROWS_PER_BRAND` (ids). */
     brandsTruncated: v.array(v.id("selectorOptions")),
     groupsTotal: v.number(),
     groups: v.array(groupValidator),
+    /** False when the time budget ran out before every named holder was counted. */
+    cardCountsComplete: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const started = Date.now();
+    const budgetMs = Math.max(0, args.timeBudgetMs ?? REPORT_TIME_BUDGET_MS);
+    const overBudget = () => Date.now() - started >= budgetMs;
     const maxBrands = Math.max(1, Math.floor(args.maxBrands ?? REPORT_DEFAULT_MAX_BRANDS));
     let cursor: string | null = args.cursor ?? null;
     let brandsScanned = 0;
     let rowsScanned = 0;
     let isDone = false;
+    let timedOut = false;
     const brandsTruncated: RowId[] = [];
-    const groups: Group[] = [];
+    const groups: GroupOut[] = [];
+    let groupsTotal = 0;
+    let sportlotsGroups = 0;
+    let bscGroups = 0;
 
-    // `maxBrands` is checked per PAGE, so a run never stops inside one and a
-    // resumed run never re-reads a brand (a run may exceed it by < a page).
-    while (brandsScanned < maxBrands) {
+    walk: while (brandsScanned < maxBrands) {
+      // At least one brand per run, so a resumed run always advances.
+      if (brandsScanned > 0 && overBudget()) {
+        timedOut = true;
+        break;
+      }
       const page: {
         brands: Array<{ id: RowId; value: string; year?: string; sport?: string }>;
         isDone: boolean;
         continueCursor: string;
       } = await ctx.runQuery(internal.slLinkDuplicatesReport.brandsPage, { cursor });
       for (const brand of page.brands) {
-        brandsScanned++;
         const rows: CompactRow[] = [];
         let frontier: RowId[] = [brand.id];
         let brandTruncated = false;
@@ -347,6 +409,12 @@ export const run = internalAction({
           const next: RowId[] = [];
           let offset = 0;
           while (offset < frontier.length) {
+            if (brandsScanned > 0 && overBudget()) {
+              // Mid-brand: drop its partial rows; `cursor` still points AT
+              // this brand, so the next run walks it whole.
+              timedOut = true;
+              break walk;
+            }
             const chunk = frontier.slice(offset, offset + REPORT_PARENTS_PER_CALL);
             const res: { rows: CompactRow[]; parentsDone: number; overflow: boolean } =
               await ctx.runQuery(internal.slLinkDuplicatesReport.childrenPage, {
@@ -363,20 +431,37 @@ export const run = internalAction({
           }
           frontier = next;
         }
+        brandsScanned++;
         rowsScanned += rows.length;
         if (brandTruncated) {
           brandsTruncated.push(brand.id);
           continue;
         }
+        // This brand's output, built now; its rows go out of scope after.
         const rowsById = new Map<string, CompactRow>(rows.map((r) => [r.id, r]));
         for (const g of duplicateGroupsInBrand(brand.id, rows)) {
+          groupsTotal++;
+          if (g.side === "sportlots") sportlotsGroups++;
+          else bscGroups++;
+          if (groups.length >= REPORT_MAX_GROUPS) continue;
           groups.push({
-            ...g,
+            side: g.side,
+            marketplaceId: g.marketplaceId,
+            scope: g.scope,
             ...(brand.sport ? { sport: brand.sport } : {}),
             ...(brand.year ? { year: brand.year } : {}),
             holderCount: g.holderIds.length,
-            rowsById,
-            brandName: brand.value,
+            holders: g.holderIds.slice(0, REPORT_MAX_HOLDERS).map((id) => {
+              const row = rowsById.get(id)!;
+              return {
+                rowId: id,
+                level: row.level,
+                value: row.value,
+                path: pathOf(row, rowsById, brand.value),
+                cards: 0,
+                cardCountCapped: false,
+              };
+            }),
           });
         }
       }
@@ -387,40 +472,32 @@ export const run = internalAction({
       cursor = page.continueCursor;
     }
 
-    // Cards on the holders that will be named.
-    const named = groups.slice(0, REPORT_MAX_GROUPS);
-    const wanted = [
-      ...new Set(named.flatMap((g) => g.holderIds.slice(0, REPORT_MAX_HOLDERS))),
-    ];
+    // Cards on the named holders, a few rows per call, inside the same budget.
+    const wanted = [...new Set(groups.flatMap((g) => g.holders.map((h) => h.rowId)))];
     const counts = new Map<string, { cards: number; capped: boolean }>();
-    for (let i = 0; i < wanted.length; i += REPORT_CARD_ROWS_PER_CALL) {
+    let cardCountsComplete = true;
+    for (let i = 0; i < wanted.length; ) {
+      if (overBudget()) {
+        cardCountsComplete = false;
+        timedOut = true;
+        break;
+      }
       const res: Array<{ id: RowId; cards: number; capped: boolean }> = await ctx.runQuery(
         internal.slLinkDuplicatesReport.cardCounts,
         { rowIds: wanted.slice(i, i + REPORT_CARD_ROWS_PER_CALL) },
       );
       for (const c of res) counts.set(c.id, { cards: c.cards, capped: c.capped });
+      i += Math.max(1, res.length);
     }
-
-    const out = named.map((g) => ({
-      side: g.side,
-      marketplaceId: g.marketplaceId,
-      scope: g.scope,
-      ...(g.sport ? { sport: g.sport } : {}),
-      ...(g.year ? { year: g.year } : {}),
-      holderCount: g.holderCount,
-      holders: g.holderIds.slice(0, REPORT_MAX_HOLDERS).map((id) => {
-        const row = g.rowsById.get(id)!;
-        const c = counts.get(id) ?? { cards: 0, capped: false };
-        return {
-          rowId: id,
-          level: row.level,
-          value: row.value,
-          path: pathOf(row, g.rowsById, g.brandName),
-          cards: c.cards,
-          cardCountCapped: c.capped,
-        };
-      }),
-    }));
+    for (const g of groups) {
+      for (const h of g.holders) {
+        const c = counts.get(h.rowId);
+        if (c) {
+          h.cards = c.cards;
+          h.cardCountCapped = c.capped;
+        }
+      }
+    }
 
     const truncated = !isDone || brandsTruncated.length > 0;
     console.log(
@@ -428,11 +505,13 @@ export const run = internalAction({
         msg: "report_marketplace_link_duplicates",
         brandsScanned,
         rowsScanned,
-        groupsTotal: groups.length,
-        sportlotsGroups: groups.filter((g) => g.side === "sportlots").length,
-        bscGroups: groups.filter((g) => g.side === "bsc").length,
+        groupsTotal,
+        sportlotsGroups,
+        bscGroups,
         brandsTruncated: brandsTruncated.length,
         truncated,
+        timedOut,
+        cardCountsComplete,
         durationMs: Date.now() - started,
       }),
     );
@@ -446,14 +525,17 @@ export const run = internalAction({
           : "") +
         (brandsTruncated.length > 0
           ? " Some brands were too big to walk whole: see brandsTruncated."
-          : ""),
+          : "") +
+        (!cardCountsComplete ? " Card counts are incomplete (time budget)." : ""),
       brandsScanned,
       rowsScanned,
       truncated,
       ...(!isDone && cursor !== null ? { continueCursor: cursor } : {}),
+      timedOut,
       brandsTruncated,
-      groupsTotal: groups.length,
-      groups: out,
+      groupsTotal,
+      groups,
+      cardCountsComplete,
     };
   },
 });
