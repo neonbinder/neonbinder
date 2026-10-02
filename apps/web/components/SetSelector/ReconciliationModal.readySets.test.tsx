@@ -950,3 +950,102 @@ describe("ReconciliationModal — half an auto-match is already restored (NEO-30
     expect(blue.platformData.sportlots).toEqual(["sl-blue"]);
   });
 });
+
+/**
+ * NEO-312 — ids the caller says rows ELSEWHERE in the set hold.
+ *
+ * "Make insert of…" moves a SportLots link into another variant type. The
+ * next Sync Parallels fetched that SportLots set again and the reconciler
+ * auto-matched it with its BSC twin. `used*PlatformValues` only hid ids from
+ * Pending, so the pair landed in Ready and the default Save put the one
+ * SportLots link on a second NB row. A caller-held id is now held exactly like
+ * a `heldElsewhere` id: never seeded Ready, its free partner released to
+ * Pending.
+ */
+describe("ReconciliationModal — caller-held ids stay out of Ready (NEO-312)", () => {
+  const BSC_BLUE: PlatformItem = { value: "Blue Refractor", platformValue: "bsc-blue" };
+  const SL_BLUE: PlatformItem = { value: "Blue Parallel", platformValue: "sl-blue" };
+  const BSC_GOLD: PlatformItem = { value: "Gold", platformValue: "bsc-gold" };
+  const SL_GOLD: PlatformItem = { value: "Gold", platformValue: "sl-gold" };
+
+  type ModalProps = Parameters<typeof ReconciliationModal>[0];
+
+  function renderPairs(extra: Partial<ModalProps> = {}) {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    render(
+      <ReconciliationModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        level="insert"
+        initialData={{
+          autoMatched: [
+            { displayName: "Blue Refractor", bsc: BSC_BLUE, sl: SL_BLUE, confidence: 0.9 },
+            { displayName: "Gold", bsc: BSC_GOLD, sl: SL_GOLD, confidence: 0.9 },
+          ],
+          unmatchedBsc: [],
+          unmatchedSl: [],
+          slCandidates: [],
+        }}
+        {...extra}
+      />,
+    );
+    return { onConfirm };
+  }
+
+  test("a pair whose SportLots half is held elsewhere is not Ready; its BSC half goes to Pending", async () => {
+    const { onConfirm } = renderPairs({ usedSlPlatformValues: ["sl-blue"] });
+
+    // Gold is the only Ready set; Blue's BSC half is an ordinary loose item.
+    expect(screen.getByText("1 ready, 1 pending")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: `Make its own set: ${BSC_BLUE.value}` }),
+    ).toBeTruthy();
+    // The held SportLots set is offered nowhere.
+    expect(screen.queryByText(SL_BLUE.value)).toBeNull();
+
+    fireEvent.click(screen.getByText(/Save 1 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    expect(items).toHaveLength(1);
+    expect(items[0].platformData.sportlots).toEqual(["sl-gold"]);
+    const saved = items.flatMap((i) => i.platformData.sportlots ?? []);
+    expect(saved).not.toContain("sl-blue");
+  });
+
+  test("the reverse: a held BSC half keeps the pair out, its SportLots half goes to Pending", () => {
+    renderPairs({ usedBscPlatformValues: ["bsc-blue"] });
+
+    expect(screen.getByText("1 ready, 1 pending")).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: `Make its own set: ${SL_BLUE.value}` }),
+    ).toBeTruthy();
+    expect(screen.queryByText(BSC_BLUE.value)).toBeNull();
+  });
+
+  test("an id this sync's own restored row carries is not held, so the free half still joins it", async () => {
+    // Sub-Variants passes the set's whole used list, which includes its own
+    // parallels. Holding those would undo NEO-306: the restored "Blue" holds
+    // sl-blue, and the auto-matched BSC half must still join it.
+    const BLUE_ROW_ID = "selopt_blue" as Id<"selectorOptions">;
+    const { onConfirm } = renderPairs({
+      level: "parallel",
+      usedSlPlatformValues: ["sl-blue"],
+      existingRows: [
+        { existingId: BLUE_ROW_ID, value: "Blue", platformData: { sportlots: ["sl-blue"] } },
+      ],
+    });
+
+    expect(screen.getByText("2 ready")).toBeTruthy();
+    expect(
+      screen.getByLabelText(`Remove ${BSC_BLUE.value} from Blue`),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByText(/Save 2 sets/));
+    const items = await itemsFromConfirm(onConfirm);
+    const blue = items.find(
+      (i) => (i as { existingId?: unknown }).existingId === BLUE_ROW_ID,
+    )!;
+    expect(blue.platformData.bsc).toEqual(["bsc-blue"]);
+    expect(blue.platformData.sportlots).toEqual(["sl-blue"]);
+  });
+});

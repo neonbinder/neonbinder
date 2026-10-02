@@ -305,6 +305,13 @@ export default function VariantForm({
         // NEO-305: and a set another set in the brand already holds.
         const brandSkipped = heldRowsReturnedBy(brandHeldRows, result);
         const held = heldIdSets([...skipped, ...brandSkipped]);
+        // NEO-312: and a set another variant type in this set holds — where
+        // "Make insert of…" / "Make parallel of…" moved it. Not named in the
+        // note, same as the modal, which hides these from Pending without a
+        // word. The auto-sync waits for this list, so it is never undefined
+        // here on the first run.
+        for (const id of usedIdentifiers?.bscPlatformValues ?? []) held.bsc.add(id);
+        for (const id of usedIdentifiers?.slPlatformValues ?? []) held.sportlots.add(id);
         const items = [
           ...result.bscOptions
             .filter((o: PlatformItem) => !held.bsc.has(o.platformValue))
@@ -540,19 +547,23 @@ export default function VariantForm({
     // grouped parallel as an insert — the bug this gate exists to prevent.
     // NEO-305: and on the brand's other sets' SportLots ids, for the same
     // reason — a sync before they load would offer them as new.
+    // NEO-312: and on the ids the set's OTHER variant types hold. The
+    // single-platform branch stores with no dialog, so a sync before they
+    // load re-creates a row "Make insert of…" just moved away.
     if (
       sportValue &&
       yearValue &&
       baseVariant !== undefined &&
       insertTree !== undefined &&
       brandHolders !== undefined &&
+      usedIdentifiers !== undefined &&
       !triggered.current
     ) {
       triggered.current = true;
       doSync();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- doSync deliberately omitted — same one-shot auto-sync latch; including it would loop
-  }, [sportValue, yearValue, baseVariant, insertTree, brandHolders]);
+  }, [sportValue, yearValue, baseVariant, insertTree, brandHolders, usedIdentifiers]);
 
   // a11y: `loading` hides the ENTIRE button row below (Retry/Cancel), so a
   // click on Retry unmounts itself on the very next render — the browser

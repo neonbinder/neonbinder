@@ -229,6 +229,30 @@ export default function ParallelForm({
         // only; `returnedIds` stays the whole fetch.
         const skipped = heldRowsReturnedBy(heldOutside, result);
         const held = heldIdSets(skipped);
+        // NEO-312: and a set a row in another variant type of this set holds
+        // (where "Make insert of…" / "Make parallel of…" put it). Unnamed, as
+        // in the modal. This query is not scoped away from this insert, so
+        // its list also carries this insert's OWN parallels: those are this
+        // sync's rows, not held, and are taken back out — the same rule the
+        // modal applies to its restored rows.
+        const own = heldIdSets(
+          (insertTree ?? [])
+            .filter((e) => String(e.insert._id) === String(insertId))
+            .flatMap((e) =>
+              e.parallels.map((p) => ({
+                key: String(p._id),
+                name: p.value,
+                bsc: slotIds(p, "bsc"),
+                sportlots: slotIds(p, "sportlots"),
+              })),
+            ),
+        );
+        for (const id of usedIdentifiers?.bscPlatformValues ?? []) {
+          if (!own.bsc.has(id)) held.bsc.add(id);
+        }
+        for (const id of usedIdentifiers?.slPlatformValues ?? []) {
+          if (!own.sportlots.has(id)) held.sportlots.add(id);
+        }
         const items = [
           ...result.bscOptions
             .filter((o: PlatformItem) => !held.bsc.has(o.platformValue))
@@ -439,6 +463,8 @@ export default function ParallelForm({
 
   useEffect(() => {
     // NEO-300: gated on the insert tree too — see VariantForm's matching gate.
+    // NEO-312: and on the set's used ids, which the single-platform branch
+    // filters against as well.
     if (
       sportValue &&
       yearValue &&
@@ -446,13 +472,14 @@ export default function ParallelForm({
       variantTypeValue &&
       setNameValue &&
       insertTree !== undefined &&
+      usedIdentifiers !== undefined &&
       !triggered.current
     ) {
       triggered.current = true;
       doSync();
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- doSync deliberately omitted — same one-shot auto-sync latch as BaseMappingForm; including it would loop
-  }, [sportValue, yearValue, manufacturerValue, variantTypeValue, setNameValue, insertTree]);
+  }, [sportValue, yearValue, manufacturerValue, variantTypeValue, setNameValue, insertTree, usedIdentifiers]);
 
   useEffect(() => {
     const wasLoading = wasLoadingRef.current;
