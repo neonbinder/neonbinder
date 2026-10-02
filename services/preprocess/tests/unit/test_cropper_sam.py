@@ -14,7 +14,10 @@ This module exercises:
 
 from __future__ import annotations
 
+import contextlib
 import io
+import sys
+from types import SimpleNamespace
 
 import cv2
 import numpy as np
@@ -244,3 +247,137 @@ class TestSamCropErrorPaths:
         # Round-trip through PIL to confirm valid JPEG.
         out_img = Image.open(io.BytesIO(result))
         assert out_img.size[0] > 0 and out_img.size[1] > 0
+
+
+# ── NEO-315: batched probes, thread count, startup warm-up ───────────────────
+#
+# The real SAM path needs torch + transformers + the 375MB weights, which the
+# unit suite never loads. These fakes pin the CALL SHAPE the batching relies
+# on (one processor call, one embedding, one decoder pass, candidate order);
+# that the real decoder's batched output matches the old per-probe loop is a
+# numerical property covered by the deployed preview / crop matrix, not here.
+
+
+class _T:
+    """Just enough of a torch tensor for `_generate_masks`' post-processing."""
+
+    def __init__(self, arr) -> None:
+        self.arr = np.asarray(arr)
+
+    def cpu(self) -> _T:
+        return self
+
+    def numpy(self) -> np.ndarray:
+        return self.arr
+
+    def item(self) -> float:
+        return float(self.arr)
+
+    def __getitem__(self, idx) -> _T:
+        return _T(self.arr[idx])
+
+
+class _FakeTorch:
+    no_grad = staticmethod(contextlib.nullcontext)
+
+
+class _FakeProcessor:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.post_calls = 0
+
+    def __call__(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "pixel_values": "PIXELS",
+            "input_points": ("POINTS", kwargs.get("input_points")),
+            "input_labels": ("LABELS", kwargs.get("input_labels")),
+            "original_sizes": _T([[20, 30]]),
+            "reshaped_input_sizes": _T([[20, 30]]),
+        }
+
+    def post_process_masks(self, pred_masks, original_sizes, reshaped_sizes):
+        self.post_calls += 1
+        return [pred_masks]
+
+
+class _FakeModel:
+    def __init__(self, n_probes: int) -> None:
+        self.n = n_probes
+        self.embed_calls = 0
+        self.decode_calls: list[dict] = []
+
+    def get_image_embeddings(self, pixel_values):
+        assert pixel_values == "PIXELS"
+        self.embed_calls += 1
+        return "EMBEDDINGS"
+
+    def __call__(self, **kwargs):
+        self.decode_calls.append(kwargs)
+        masks = np.zeros((self.n, 3, 4, 4), dtype=np.float32)
+        scores = np.zeros((1, self.n, 3), dtype=np.float32)
+        for p in range(self.n):
+            for k in range(3):
+                masks[p, k, 0, 0] = 1.0 if (p + k) % 2 else 0.0
+                scores[0, p, k] = p + k / 10
+        return SimpleNamespace(pred_masks=_T(masks), iou_scores=_T(scores))
+
+
+class TestBatchedProbes:
+    def test_probe_prompts_are_one_batch_of_single_point_prompts(self):
+        points, labels = sam._probe_prompts(200, 100)
+        assert len(points) == 1 and len(labels) == 1  # one image
+        assert len(points[0]) == len(sam.PROBE_POINTS_FRACTIONS)
+        assert points[0][0] == [[100.0, 50.0]]  # centre probe, one point
+        assert all(len(prompt) == 1 for prompt in points[0])
+        assert labels[0] == [[1]] * len(sam.PROBE_POINTS_FRACTIONS)
+
+    def test_one_processor_call_one_embedding_one_decoder_pass(self, monkeypatch):
+        monkeypatch.setitem(sys.modules, "torch", _FakeTorch)
+        n = len(sam.PROBE_POINTS_FRACTIONS)
+        processor, model = _FakeProcessor(), _FakeModel(n)
+
+        results = sam._generate_masks(Image.new("RGB", (30, 20)), model, processor)
+
+        assert len(processor.calls) == 1
+        assert processor.calls[0]["input_points"] == sam._probe_prompts(30, 20)[0]
+        assert model.embed_calls == 1
+        assert len(model.decode_calls) == 1
+        assert model.decode_calls[0]["image_embeddings"] == "EMBEDDINGS"
+        assert processor.post_calls == 1
+        # Same candidate order as the old per-probe loop: probe-major, then
+        # SAM's three multimask outputs.
+        assert len(results) == 3 * n
+        assert [score for _m, score in results] == pytest.approx(
+            [p + k / 10 for p in range(n) for k in range(3)]
+        )
+        assert results[1][0].dtype == bool
+        assert results[1][0][0, 0] is np.True_
+
+
+class TestThreadsAndWarmUp:
+    def test_thread_count_is_capped_at_four(self, monkeypatch):
+        monkeypatch.setattr(sam.os, "cpu_count", lambda: 16)
+        assert sam._torch_thread_count() == 4
+        monkeypatch.setattr(sam.os, "cpu_count", lambda: 2)
+        assert sam._torch_thread_count() == 2
+        monkeypatch.setattr(sam.os, "cpu_count", lambda: None)
+        assert sam._torch_thread_count() == 1
+
+    def test_warm_up_loads_and_runs_one_small_pass(self, monkeypatch):
+        loaded = (object(), object())
+        seen: list[tuple] = []
+        monkeypatch.setattr(sam, "_load_model", lambda: loaded)
+        monkeypatch.setattr(
+            sam, "_generate_masks", lambda img, m, p: seen.append((img.size, m, p)) or []
+        )
+
+        sam.warm_up()
+
+        assert seen == [((64, 64), loaded[0], loaded[1])]
+
+    def test_is_model_loaded_tracks_the_cache(self, monkeypatch):
+        monkeypatch.setattr(sam, "_model", None)
+        assert sam.is_model_loaded() is False
+        monkeypatch.setattr(sam, "_model", object())
+        assert sam.is_model_loaded() is True

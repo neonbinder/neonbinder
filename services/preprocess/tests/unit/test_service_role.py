@@ -53,15 +53,20 @@ class TestStartupHookRoleGate:
         # No U2NET_HOME weights on disk — HEAVY would raise here; FAST must not
         # even look, and must never warm the model.
         monkeypatch.setenv("U2NET_HOME", "/nonexistent-u2net-home")
-        called = {"warm_up": 0}
+        called = {"warm_up": 0, "sam": 0}
         monkeypatch.setattr(
             "app.cropper.tiered.warm_up",
             lambda: called.__setitem__("warm_up", called["warm_up"] + 1),
         )
+        # NEO-315 added a SAM warm-up beside BiRefNet's; FAST skips it too.
+        monkeypatch.setattr(
+            "app.cropper.sam.warm_up",
+            lambda: called.__setitem__("sam", called["sam"] + 1),
+        )
 
         _verify_baked_weights()  # returns cleanly, no raise
 
-        assert called["warm_up"] == 0
+        assert called == {"warm_up": 0, "sam": 0}
 
     def test_heavy_role_without_require_baked_weights_is_a_noop(self, monkeypatch):
         # The unit-test default: REQUIRE_BAKED_WEIGHTS unset → the hook returns

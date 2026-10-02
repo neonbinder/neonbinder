@@ -27,7 +27,7 @@ from io import BytesIO
 import anthropic
 from PIL import Image
 
-from app.classify import _prepare_for_anthropic
+from app.classify import _prepare_for_anthropic, get_anthropic_client
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ def haiku_bbox_crop(
     if not image_bytes:
         return None
 
-    ai_client = client or anthropic.Anthropic()
+    ai_client = client or get_anthropic_client()
 
     try:
         payload, media_type = _prepare_for_anthropic(image_bytes)

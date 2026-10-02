@@ -218,6 +218,9 @@ class TestHappyPath:
             "cropped_source": "passthrough",
             "dhash": f"{compute_dhash(entry):016x}",
             "output_written": True,
+            # NEO-315: the whole-image baseline is only ever set on a FAST
+            # decline; a completed result carries null.
+            "baseline": None,
         }
         # Rotation 0 → the stored output is the winning bytes unchanged.
         assert fake_gcs.read(BUCKET, f"{OUTPUT_PREFIX}0000.jpg") == entry
@@ -452,12 +455,14 @@ class TestCropQuality:
         captured: list[str] = []
         real = cropper.crop
 
-        def _cap(*, image_bytes, precropped_bytes, crop_quality):
+        def _cap(*, image_bytes, precropped_bytes, crop_quality, **kwargs):
+            # kwargs: the route also threads its per-request `timings` (NEO-315).
             captured.append(crop_quality)
             return real(
                 image_bytes=image_bytes,
                 precropped_bytes=precropped_bytes,
                 crop_quality=crop_quality,
+                **kwargs,
             )
 
         monkeypatch.setattr(cropper, "crop", _cap)
@@ -567,9 +572,10 @@ class TestFastRole:
         monkeypatch.setenv("PREPROCESS_ROLE", "fast")
         monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
         spy = _spy_model_session(monkeypatch)
-        orient_calls = _tracking_orient(monkeypatch)
+        orient_calls = _tracking_orient(monkeypatch, rotation=90, confidence=0.75, text_count=33)
         classify_calls = _tracking_classify(monkeypatch)
-        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+        entry = _card_bytes()
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", entry, "image/jpeg")
 
         response = _post_entry(entry_index=0)
 
@@ -580,8 +586,12 @@ class TestFastRole:
         assert body["players"] == []
         assert body["player"] is None
         assert body["cropped_source"] is None
-        assert body["dhash"] is None
+        assert body["rotation_degrees"] is None
         assert body["output_written"] is False
+        # NEO-315: the two whole-image values FAST already paid for ride on
+        # the decline so Convex can hand them to HEAVY.
+        assert body["dhash"] == f"{compute_dhash(entry):016x}"
+        assert body["baseline"] == {"rotation_degrees": 90, "confidence": 0.75, "text_count": 33}
         # Nothing was written to the output key — the HEAVY service will.
         assert not any(name.startswith(OUTPUT_PREFIX) for name in fake_gcs.names(BUCKET))
         # The model was never touched, and classify never ran (no accepted crop).
@@ -640,3 +650,434 @@ class TestFastRole:
         assert body["needs_escalation"] is False
         assert body["cropped_source"] == "pil_trim_dark"
         assert body["output_written"] is True
+
+
+# ── NEO-315 ──────────────────────────────────────────────────────────────────
+
+
+class _TimingLines:
+    """Collect the `timing` logger's JSON lines (it does not propagate)."""
+
+    def __init__(self) -> None:
+        import logging
+
+        from app import timing
+
+        self.lines: list[str] = []
+        outer = self
+
+        class _H(logging.Handler):
+            def emit(self, record):
+                outer.lines.append(record.getMessage())
+
+        self._handler = _H()
+        self._logger = timing.timing_logger
+        self._logger.addHandler(self._handler)
+
+    def close(self) -> None:
+        self._logger.removeHandler(self._handler)
+
+    def bodies(self) -> list[dict]:
+        import json
+
+        return [json.loads(line) for line in self.lines]
+
+
+@pytest.fixture
+def timing_lines():
+    collector = _TimingLines()
+    yield collector
+    collector.close()
+
+
+def _post_body(**extra):
+    return client.post(
+        "/process-entry",
+        headers={"x-internal-key": "test-key"},
+        json={"job_id": JOB, "user_id": USER, "entry_index": 0, **extra},
+    )
+
+
+SUPPLIED_BASELINE = {"rotation_degrees": 270, "confidence": 0.5, "text_count": 40}
+SUPPLIED_DHASH = "0123456789abcdef"
+
+
+def _forbid_fast_path(monkeypatch) -> None:
+    """Fail the test if either fast-path identity stage runs."""
+
+    def _boom(_b):
+        raise AssertionError("fast-path stage ran although FAST already declined it")
+
+    monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", _boom)
+    monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", _boom)
+
+
+def _counting_fast_path(monkeypatch) -> dict[str, int]:
+    """Count fast-path stage calls; both decline (return None)."""
+    calls = {"scan_meta": 0, "fast_tiered": 0}
+
+    def _scan(_b):
+        calls["scan_meta"] += 1
+        return None
+
+    def _fast(_b):
+        calls["fast_tiered"] += 1
+        return None
+
+    monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", _scan)
+    monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", _fast)
+    return calls
+
+
+class TestHeavySkipsTheDeclinedFastPath:
+    """NEO-315 follow-up: a HEAVY request carrying `baseline` is an escalation
+    of a FAST decline over byte-identical bytes, so the deterministic fast-path
+    stages are not re-run; the strategy loop runs directly."""
+
+    def _seed_with_trim_win(self, fake_gcs, monkeypatch) -> bytes:
+        good_crop = _card_bytes((400, 560))
+        monkeypatch.setattr("app.cropper.pil_trim.trim_dark", lambda _b: good_crop)
+        _tracking_orient(monkeypatch, text_count=38)
+        _tracking_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+        return good_crop
+
+    def test_baseline_supplied_skips_fast_path_and_runs_the_cascade(
+        self, fake_gcs, monkeypatch, timing_lines
+    ):
+        monkeypatch.delenv("PREPROCESS_ROLE", raising=False)
+        calls = _counting_fast_path(monkeypatch)
+        self._seed_with_trim_win(fake_gcs, monkeypatch)
+
+        response = _post_body(baseline=SUPPLIED_BASELINE, dhash=SUPPLIED_DHASH)
+
+        assert response.status_code == 200, response.text
+        assert calls == {"scan_meta": 0, "fast_tiered": 0}
+        assert response.json()["cropped_source"] == "pil_trim_dark"
+        (line,) = timing_lines.bodies()
+        assert line["baseline_supplied"] is True
+        # Only the (stubbed, instant) pil_trim stage is classical work now.
+        assert line["classical_ms"] <= 5
+
+    def test_no_baseline_runs_the_fast_path_as_before(self, fake_gcs, monkeypatch):
+        monkeypatch.delenv("PREPROCESS_ROLE", raising=False)
+        calls = _counting_fast_path(monkeypatch)
+        self._seed_with_trim_win(fake_gcs, monkeypatch)
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 200, response.text
+        assert calls == {"scan_meta": 1, "fast_tiered": 1}
+        assert response.json()["cropped_source"] == "pil_trim_dark"
+
+    def test_fast_role_with_a_baseline_still_runs_its_fast_path(self, fake_gcs, monkeypatch):
+        # Only HEAVY skips: the hint means "FAST already declined", which is
+        # meaningless to FAST itself.
+        monkeypatch.setenv("PREPROCESS_ROLE", "fast")
+        _spy_model_session(monkeypatch)
+        calls = _counting_fast_path(monkeypatch)
+        _tracking_orient(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+
+        response = _post_body(baseline=SUPPLIED_BASELINE)
+
+        assert response.json()["needs_escalation"] is True
+        assert calls == {"scan_meta": 1, "fast_tiered": 1}
+
+
+class TestSuppliedBaselineAndDhash:
+    """NEO-315 D4: HEAVY reuses the FAST decline's baseline and dhash."""
+
+    def test_supplied_values_skip_vision_baseline_and_dhash(self, fake_gcs, monkeypatch):
+        # Identity win (HEAVY's tiered identity guard): with the baseline
+        # supplied there is nothing left for Vision to do at all. The fast
+        # path is skipped outright (FAST already declined it).
+        _forbid_fast_path(monkeypatch)
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda b: b)
+        orient_calls = _tracking_orient(monkeypatch)
+        _tracking_classify(monkeypatch, player="Jeter")
+
+        def _no_dhash(_b):
+            raise AssertionError("dhash recomputed although one was supplied")
+
+        monkeypatch.setattr("app.main.compute_dhash", _no_dhash)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+
+        response = _post_body(baseline=SUPPLIED_BASELINE, dhash=SUPPLIED_DHASH)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert orient_calls == []
+        assert body["dhash"] == SUPPLIED_DHASH
+        assert body["cropped_source"] == "tiered"
+        # The completed result reports the orientation it used — here the
+        # supplied whole-image baseline, since the winner IS the whole image.
+        assert body["rotation_degrees"] == 270
+        assert body["text_count"] == 40
+        assert body["baseline"] is None
+
+    def test_a_crop_winner_still_gets_its_own_orient_and_overrides(self, fake_gcs, monkeypatch):
+        # HEAVY's completed result always describes ITS winner; the supplied
+        # baseline only seeds the threshold and is never echoed as the result
+        # when a real crop wins.
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        good_crop = _card_bytes((400, 560))
+        monkeypatch.setattr("app.cropper.pil_trim.trim_dark", lambda _b: good_crop)
+        orient_calls = _tracking_orient(monkeypatch, rotation=0, confidence=0.9, text_count=38)
+        _tracking_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+
+        response = _post_body(baseline=SUPPLIED_BASELINE)
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert orient_calls == [good_crop]
+        assert body["cropped_source"] == "pil_trim_dark"
+        assert body["rotation_degrees"] == 0
+        assert body["text_count"] == 38
+
+    def test_absent_hints_compute_both(self, fake_gcs, monkeypatch):
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        orient_calls = _tracking_orient(monkeypatch)
+        _tracking_classify(monkeypatch)
+        entry = _card_bytes()
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", entry, "image/jpeg")
+
+        body = _post_body().json()
+
+        assert len(orient_calls) == 1  # baseline only; the identity reuses it
+        assert body["dhash"] == f"{compute_dhash(entry):016x}"
+
+    def test_unknown_fields_are_ignored(self, fake_gcs, monkeypatch):
+        # Old/new deploy orders: a newer Convex may send fields this build
+        # does not know, and must not get a 422 for it.
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        assert _post_body(some_future_hint={"x": 1}).status_code == 200
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            {"dhash": "ABCDEF0123456789"},
+            {"dhash": "0123456789abcde"},
+            {"dhash": "0123456789abcdef0"},
+            {"dhash": None},
+            {"baseline": None},
+            {"baseline": {"rotation_degrees": 45, "confidence": 0.5, "text_count": 1}},
+            {"baseline": {"rotation_degrees": 90, "confidence": 1.5, "text_count": 1}},
+            {"baseline": {"rotation_degrees": 90, "confidence": -0.1, "text_count": 1}},
+            {"baseline": {"rotation_degrees": 90, "confidence": 0.5, "text_count": -1}},
+            {"baseline": {"rotation_degrees": 90, "confidence": 0.5, "text_count": 100001}},
+            {"baseline": {"rotation_degrees": 90, "confidence": 0.5, "text_count": 1.5}},
+            {"baseline": {"rotation_degrees": 90, "confidence": 0.5}},
+        ],
+    )
+    def test_out_of_contract_hints_are_a_422(self, fake_gcs, extra):
+        response = _post_body(**extra)
+        if extra in ({"dhash": None}, {"baseline": None}):
+            # Explicit null is the same as absent — accepted, then computed.
+            assert response.status_code != 422
+        else:
+            assert response.status_code == 422, extra
+
+
+class TestBaselineWireForm:
+    def test_out_of_range_orient_is_omitted_not_raised(self):
+        from app.main import BaselineOrientation
+
+        assert BaselineOrientation.from_result(OrientationResult(45, 0.5, 3)) is None
+        assert BaselineOrientation.from_result(OrientationResult(90, 0.5, 100_001)) is None
+        assert BaselineOrientation.from_result(OrientationResult(90, float("nan"), 3)) is None
+        ok = BaselineOrientation.from_result(OrientationResult(180, 1.0, 0))
+        assert ok is not None
+        assert ok.model_dump() == {"rotation_degrees": 180, "confidence": 1.0, "text_count": 0}
+
+
+class TestOutputIsRotatedOnce:
+    """NEO-315 D3: the output is the cascade's already-rotated winner."""
+
+    def test_route_does_not_rotate_the_winner_again(self, fake_gcs, monkeypatch):
+        from app.cropper._utils import rotate_image_bytes
+
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        _tracking_orient(monkeypatch, rotation=90, text_count=12)
+        classify_calls = _tracking_classify(monkeypatch)
+
+        def _no_second_rotate(*_a, **_k):
+            raise AssertionError("route rotated the winner a second time")
+
+        monkeypatch.setattr("app.main.rotate_image_bytes", _no_second_rotate)
+        entry = _card_bytes()
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", entry, "image/jpeg")
+
+        response = _post_entry(entry_index=0)
+
+        assert response.status_code == 200, response.text
+        written = fake_gcs.read(BUCKET, f"{OUTPUT_PREFIX}0000.jpg")
+        assert written == classify_calls[0]
+        assert written == rotate_image_bytes(entry, 90)
+
+
+class TestSingleGcsRead:
+    """NEO-315 D5: one metadata request per probed extension, none extra."""
+
+    def test_download_reuses_the_stat_blob(self, fake_gcs, monkeypatch):
+        from tests.unit import _fake_gcs
+
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.png", _png(), "image/png")
+        lookups: list[str] = []
+        real_get_blob = _fake_gcs.FakeBucket.get_blob
+
+        def _counting(self, name):
+            lookups.append(name)
+            return real_get_blob(self, name)
+
+        monkeypatch.setattr(_fake_gcs.FakeBucket, "get_blob", _counting)
+
+        assert _post_entry(entry_index=0).status_code == 200
+        # jpg (miss) then png (hit); the download adds no third lookup.
+        assert [n.rsplit(".", 1)[1] for n in lookups] == ["jpg", "png"]
+
+    def test_object_store_download_without_a_stat_still_looks_up(self):
+        from app.jobs.gcs import ObjectNotFoundError, ObjectRef
+
+        fake = FakeStorageClient()
+        store = ObjectStore(client=fake)
+        fake.seed(BUCKET, "a.jpg", b"abc", "image/jpeg")
+
+        assert store.download(ObjectRef(BUCKET, "a.jpg"), max_bytes=10) == b"abc"
+        with pytest.raises(ObjectNotFoundError):
+            store.download(ObjectRef(BUCKET, "missing.jpg"), max_bytes=10)
+
+    def test_object_store_download_with_a_stat_honours_the_size_ceiling(self):
+        from app.jobs.gcs import ObjectRef, ObjectTooLargeError
+
+        fake = FakeStorageClient()
+        store = ObjectStore(client=fake)
+        fake.seed(BUCKET, "a.jpg", b"abcdef", "image/jpeg")
+        ref = ObjectRef(BUCKET, "a.jpg")
+        stat = store.stat(ref)
+
+        assert stat is not None
+        with pytest.raises(ObjectTooLargeError):
+            store.download(ref, max_bytes=3, stat=stat)
+        assert store.download(ref, max_bytes=10, stat=stat) == b"abcdef"
+
+    def test_stat_equality_ignores_the_blob_handle(self):
+        from app.jobs.gcs import ObjectStat
+
+        assert ObjectStat(size=1, content_type="x", blob=object()) == ObjectStat(1, "x")
+
+
+TIMING_KEYS = {
+    "msg",
+    "role",
+    "index",
+    "gcs_ms",
+    "exif_ms",
+    "dhash_ms",
+    "vision_calls",
+    "vision_ms",
+    "classical_ms",
+    "birefnet_ms",
+    "sam_ms",
+    "haiku_bbox_ms",
+    "classify_ms",
+    "classify_retried",
+    "rotate_ms",
+    "write_ms",
+    "total_ms",
+    "source",
+    "escalated",
+    "baseline_supplied",
+    "haiku_bbox_reached",
+    "haiku_bbox_won",
+}
+
+
+class TestTimingLine:
+    """NEO-315: exactly one `process_entry_timing` JSON line per request."""
+
+    def test_completed_request_emits_one_line(self, fake_gcs, monkeypatch, timing_lines):
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        _tracking_orient(monkeypatch)
+        _tracking_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0007.jpg", _card_bytes(), "image/jpeg")
+
+        assert _post_entry(entry_index=7).status_code == 200
+
+        bodies = timing_lines.bodies()
+        assert len(bodies) == 1
+        line = bodies[0]
+        assert set(line) == TIMING_KEYS
+        assert line["msg"] == "process_entry_timing"
+        assert line["role"] == "heavy"
+        assert line["index"] == 7
+        assert line["vision_calls"] == 1
+        assert line["source"] == "tiered"
+        assert line["escalated"] is False
+        assert line["baseline_supplied"] is False
+        assert line["classify_retried"] is False
+        assert line["total_ms"] >= line["gcs_ms"]
+
+    def test_fast_decline_line(self, fake_gcs, monkeypatch, timing_lines):
+        monkeypatch.setenv("PREPROCESS_ROLE", "fast")
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        _spy_model_session(monkeypatch)
+        _tracking_orient(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+
+        assert _post_entry(entry_index=0).json()["needs_escalation"] is True
+
+        (line,) = timing_lines.bodies()
+        assert line["role"] == "fast"
+        assert line["escalated"] is True
+        assert line["source"] is None
+        assert line["vision_calls"] == 1
+
+    def test_baseline_supplied_is_recorded(self, fake_gcs, monkeypatch, timing_lines):
+        _forbid_fast_path(monkeypatch)
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda b: b)
+        _tracking_orient(monkeypatch)
+        _tracking_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+
+        assert _post_body(baseline=SUPPLIED_BASELINE, dhash=SUPPLIED_DHASH).status_code == 200
+
+        (line,) = timing_lines.bodies()
+        assert line["baseline_supplied"] is True
+        assert line["vision_calls"] == 0
+        assert line["dhash_ms"] == 0
+
+    def test_failures_still_emit_exactly_one_line(self, fake_gcs, monkeypatch, timing_lines):
+        # 404: nothing extracted at this ordinal.
+        assert _post_entry(entry_index=3).status_code == 404
+
+        def _boom(_b):
+            raise RuntimeError("vision down")
+
+        monkeypatch.setattr(cropper, "detect_orientation", _boom)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+        assert _post_entry(entry_index=0).status_code == 502
+
+        assert len(timing_lines.bodies()) == 2
+
+    def test_unauthenticated_request_emits_nothing(self, fake_gcs, timing_lines):
+        assert _post_entry(entry_index=0, key="wrong").status_code == 401
+        assert timing_lines.lines == []
+
+    def test_line_never_carries_identifiers_or_paths(self, fake_gcs, monkeypatch, timing_lines):
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        _tracking_orient(monkeypatch)
+        _tracking_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+
+        _post_entry(entry_index=0)
+
+        (raw,) = timing_lines.lines
+        for forbidden in (USER, JOB, BUCKET, "placeholders/", "extracted", "test-key"):
+            assert forbidden not in raw

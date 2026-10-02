@@ -1,6 +1,40 @@
 {
   "components": {
     "schemas": {
+      "BaselineOrientation": {
+        "description": "A Vision orient of the whole extracted image (NEO-315).\n\nReturned by the FAST service when it declines, and handed back by Convex\nto the HEAVY service on the escalated request, so HEAVY does not pay a\nsecond Vision call on the same bytes. Same three numbers as the\ncompleted-result fields `rotation_degrees` / `orient_confidence` /\n`text_count`, but describing the uncropped original, not a crop.",
+        "properties": {
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "rotation_degrees": {
+            "enum": [
+              0,
+              90,
+              180,
+              270
+            ],
+            "title": "Rotation Degrees",
+            "type": "integer"
+          },
+          "text_count": {
+            "maximum": 100000.0,
+            "minimum": 0.0,
+            "title": "Text Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "rotation_degrees",
+          "confidence",
+          "text_count"
+        ],
+        "title": "BaselineOrientation",
+        "type": "object"
+      },
       "Body_crop_alternatives_crop_post": {
         "properties": {
           "image": {
@@ -243,8 +277,19 @@
         "type": "object"
       },
       "ProcessEntryRequest": {
-        "description": "Body for POST /process-entry. Same no-path rule as `ExtractRequest`.",
+        "description": "Body for POST /process-entry. Same no-path rule as `ExtractRequest`.\n\n`baseline` and `dhash` (NEO-315) are optional reuse hints. Convex copies\nthem from a FAST decline into the escalated HEAVY request; both roles\naccept them. They describe the same extracted object this request reads \u2014\nEXIF uprighting is deterministic, so the bytes are identical \u2014 and when\npresent the service skips the whole-image Vision call and/or the dHash\ninstead of recomputing them. Unknown fields are ignored (pydantic's\ndefault), so either deploy order of Convex and this service is safe.",
         "properties": {
+          "baseline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BaselineOrientation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Whole-image Vision orient from a FAST decline; skips the HEAVY baseline call."
+          },
           "crop_quality": {
             "default": "fast",
             "description": "Crop cascade quality: 'fast' (classical identity skip) or 'strong'.",
@@ -254,6 +299,19 @@
             ],
             "title": "Crop Quality",
             "type": "string"
+          },
+          "dhash": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{16}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "dHash from a FAST decline (16 lowercase hex); skips recomputing it.",
+            "title": "Dhash"
           },
           "entry_index": {
             "description": "The entry's zip ordinal, from /extract.",
@@ -282,8 +340,18 @@
         "type": "object"
       },
       "ProcessEntryResponse": {
-        "description": "Response body for POST /process-entry. Metadata only \u2014 never image bytes.\n\n\u2500\u2500 The `needs_escalation` contract (NEO-175) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTwo mutually exclusive outcomes share this one 200 response, distinguished\nby `needs_escalation`:\n\n  (a) `needs_escalation == false` \u2014 a COMPLETED crop result. Every\n      crop-result field below is populated (identity + dhash +\n      output_written, exactly as before this field existed) and the\n      processed image has been written to its derived output key. This is\n      the HEAVY role's only outcome, and the FAST role's outcome when the\n      classical fast path settled the card. The pre-existing fields keep\n      their pre-NEO-175 values byte-for-byte; the only additive change is\n      `needs_escalation: false`.\n\n  (b) `needs_escalation == true` \u2014 the FAST role (`PREPROCESS_ROLE=fast`)\n      DECLINED: the classical-only fast path did not settle this card and\n      the FAST service must never run the model-backed cascade. There is\n      NO crop result (every crop-result field is left at its default \u2014\n      empty `players`, null identity/dhash, `output_written=false`) and\n      nothing was written to the output key. Convex re-enqueues this entry\n      to the HEAVY service. The body carries no crop, no image bytes, and\n      no secrets \u2014 only this flag and the machine-default placeholders.\n\nA consumer decides purely on `needs_escalation`; it is always present. The\ncrop-result fields are documented per (a)/(b) above.\n\nThe processed image (case a) lives at its derived output key; Convex\nre-derives that key from `{user_id, job_id, entry_index}` when it needs the\nobject.\n\n`dhash` is the 64-bit perceptual hash of the extracted, EXIF-uprighted\nORIGINAL \u2014 computed before any cropping, matching cardlister's \"hash the\noriginal scan, never the crop\" rule \u2014 serialized as 16 lowercase hex\ncharacters because a 64-bit integer does not survive JSON's float64. Null\nonly in the escalation case (b).\n\n`output_written` is False when the output object already existed (a\nretried entry): the write is once-only (`if_generation_match=0`) and\nfirst-write-wins on retry is the documented, accepted behaviour. It is\nalso False in the escalation case (b), where nothing is written at all.",
+        "description": "Response body for POST /process-entry. Metadata only \u2014 never image bytes.\n\n\u2500\u2500 The `needs_escalation` contract (NEO-175) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTwo mutually exclusive outcomes share this one 200 response, distinguished\nby `needs_escalation`:\n\n  (a) `needs_escalation == false` \u2014 a COMPLETED crop result. Every\n      crop-result field below is populated (identity + dhash +\n      output_written, exactly as before this field existed) and the\n      processed image has been written to its derived output key. This is\n      the HEAVY role's only outcome, and the FAST role's outcome when the\n      classical fast path settled the card. The pre-existing fields keep\n      their pre-NEO-175 values byte-for-byte; the only additive change is\n      `needs_escalation: false`.\n\n  (b) `needs_escalation == true` \u2014 the FAST role (`PREPROCESS_ROLE=fast`)\n      DECLINED: the classical-only fast path did not settle this card and\n      the FAST service must never run the model-backed cascade. There is\n      NO crop result (every crop-result field is left at its default \u2014\n      empty `players`, null identity, `output_written=false`) and\n      nothing was written to the output key. Convex re-enqueues this entry\n      to the HEAVY service. The body carries no crop, no image bytes, and\n      no secrets. Since NEO-315 it does carry the two values the FAST\n      service already computed on the whole image \u2014 `baseline` (its\n      Vision orient) and `dhash` \u2014 so Convex can pass them on the HEAVY\n      request and HEAVY skips recomputing them.\n\nA consumer decides purely on `needs_escalation`; it is always present. The\ncrop-result fields are documented per (a)/(b) above.\n\nThe processed image (case a) lives at its derived output key; Convex\nre-derives that key from `{user_id, job_id, entry_index}` when it needs the\nobject.\n\n`dhash` is the 64-bit perceptual hash of the extracted, EXIF-uprighted\nORIGINAL \u2014 computed before any cropping, matching cardlister's \"hash the\noriginal scan, never the crop\" rule \u2014 serialized as 16 lowercase hex\ncharacters because a 64-bit integer does not survive JSON's float64.\nPopulated in both cases (a) and (b) (NEO-315; it used to be null in (b)).\n\n`baseline` is populated only in the escalation case (b): the whole-image\norient the FAST service paid for. It is NOT the crop's orientation \u2014 a\ncompleted result's `rotation_degrees` / `orient_confidence` / `text_count`\ndescribe the winning crop and always supersede it.\n\n`output_written` is False when the output object already existed (a\nretried entry): the write is once-only (`if_generation_match=0`) and\nfirst-write-wins on retry is the documented, accepted behaviour. It is\nalso False in the escalation case (b), where nothing is written at all.",
         "properties": {
+          "baseline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BaselineOrientation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "card_number": {
             "anyOf": [
               {
@@ -755,7 +823,7 @@
     },
     "/process-entry": {
       "post": {
-        "description": "Run the full crop cascade on one extracted entry and store the result.\n\nThe same orient \u2192 crop \u2192 rotate \u2192 classify pipeline as POST /process\n(image-only mode, no precropped), applied to the object /extract wrote for\nthis ordinal, plus a dHash of the uprighted original computed BEFORE any\ncropping. The rotated winning crop is written once to its derived output\nkey; on retry the first write wins and `output_written` comes back False.\n\nFailure codes: `INVALID_IDENTIFIER` (400), `ENTRY_NOT_FOUND` (404,\nterminal \u2014 /extract never wrote this ordinal), `EXTRACT_NOT_CONFIGURED`\n(503, retryable); Vision/Anthropic and unexpected storage failures surface\nas 502, exactly like /process.",
+        "description": "Run the full crop cascade on one extracted entry and store the result.\n\nThe same orient \u2192 crop \u2192 rotate \u2192 classify pipeline as POST /process\n(image-only mode, no precropped), applied to the object /extract wrote for\nthis ordinal, plus a dHash of the uprighted original computed BEFORE any\ncropping. The rotated winning crop is written once to its derived output\nkey; on retry the first write wins and `output_written` comes back False.\n\nFailure codes: `INVALID_IDENTIFIER` (400), `ENTRY_NOT_FOUND` (404,\nterminal \u2014 /extract never wrote this ordinal), `EXTRACT_NOT_CONFIGURED`\n(503, retryable); Vision/Anthropic and unexpected storage failures surface\nas 502, exactly like /process.\n\nEvery authenticated request emits exactly one `process_entry_timing` JSON\nline (NEO-315, `app.timing`), whatever its outcome.",
         "operationId": "process_entry_process_entry_post",
         "parameters": [
           {

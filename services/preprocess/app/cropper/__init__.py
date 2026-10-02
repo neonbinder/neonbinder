@@ -41,14 +41,17 @@ Source labels (order of preference):
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from app import timing
 from app.classify import ClassifyResult, classify_card
 from app.cropper import haiku_bbox, pil_trim, sam, scan_meta, tiered
 from app.cropper._utils import rotate_image_bytes
 from app.cropper.validator import is_plausible_crop
 from app.orient import OrientationResult, detect_orientation
+from app.timing import Timings
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +105,17 @@ _STRATEGIES: list[tuple[str, object, str]] = [
 # Public, ordered tuple of strategy names. Both the cascade and the
 # /crop endpoint walk this — single source of truth for ordering.
 STRATEGY_NAMES: tuple[str, ...] = tuple(name for name, _module, _attr in _STRATEGIES)
+
+# Which `Timings` field each strategy's wall time lands in (NEO-315). `tiered`
+# is special-cased in `_timed_strategy`: its BiRefNet share is recorded by
+# `tiered.birefnet_mask` itself, and only the remainder counts as classical.
+_STRATEGY_TIMING_FIELD: dict[str, str] = {
+    "tiered": "classical_ms",
+    "pil_trim_dark": "classical_ms",
+    "pil_trim_light": "classical_ms",
+    "sam": "sam_ms",
+    "haiku_bbox": "haiku_bbox_ms",
+}
 
 
 class UnknownStrategyError(ValueError):
@@ -205,6 +219,13 @@ class CropResult:
     `cropped_image_b64`. False for precropped (client uploaded those exact
     bytes), passthrough (client uploaded the raw image), and any strategy
     that returns the input untouched (tiered's identity guard).
+
+    `rotated_bytes` (NEO-315) is `image_bytes` already rotated by
+    `orientation.rotation_degrees` — the exact bytes classify saw. It is the
+    same object as `image_bytes` when the rotation is 0. `/process-entry`
+    writes it as the output so the winner is not rotated (decoded and
+    re-encoded) a second time. None only for a result built outside the
+    cascade (test doubles); consumers fall back to rotating `image_bytes`.
     """
 
     image_bytes: bytes
@@ -212,6 +233,7 @@ class CropResult:
     returned_bytes_differ: bool
     orientation: OrientationResult
     classification: ClassifyResult
+    rotated_bytes: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -242,9 +264,59 @@ class CropDeclined:
     `needs_escalation=true` and no crop result, telling Convex to re-enqueue
     the entry to the HEAVY service. `reason` is a stable machine string for
     logs/metrics — never a crop, never user data.
+
+    `baseline` (NEO-315) is the Vision orient of the whole image this request
+    already paid for. `/process-entry` returns it on the decline so Convex can
+    hand it to the HEAVY service, which then skips its own baseline call.
     """
 
     reason: str
+    baseline: OrientationResult | None = None
+
+
+def _orient(candidate_bytes: bytes, timings: Timings) -> OrientationResult:
+    """One counted, timed Vision call.
+
+    Looks `detect_orientation` up as a module global at call time, so the
+    tests' `monkeypatch.setattr(cropper, "detect_orientation", ...)` applies.
+    """
+    timings.vision_calls += 1
+    with timings.measure("vision_ms"):
+        return detect_orientation(candidate_bytes)
+
+
+def _rotate(candidate_bytes: bytes, degrees: int, timings: Timings) -> bytes:
+    with timings.measure("rotate_ms"):
+        return rotate_image_bytes(candidate_bytes, degrees)
+
+
+def _classify(rotated: bytes, timings: Timings) -> ClassifyResult:
+    with timings.measure("classify_ms"):
+        result = classify_card(rotated)
+    if getattr(result, "retried", False):
+        timings.classify_retried = True
+    return result
+
+
+def _timed_strategy(source: str, image_bytes: bytes, timings: Timings) -> bytes | None:
+    """`run_strategy` with its wall time booked to the strategy's field.
+
+    For `tiered`, BiRefNet's own share is booked to `birefnet_ms` by
+    `tiered.birefnet_mask` (through the bound ContextVar), so only the rest of
+    the strategy's time counts as classical.
+    """
+    if source == "haiku_bbox":
+        timings.haiku_bbox_reached = True
+    field_name = _STRATEGY_TIMING_FIELD.get(source, "classical_ms")
+    birefnet_before = timings.birefnet_ms
+    t0 = time.perf_counter()
+    try:
+        return run_strategy(source, image_bytes)
+    finally:
+        elapsed = (time.perf_counter() - t0) * 1000.0
+        if source == "tiered":
+            elapsed -= timings.birefnet_ms - birefnet_before
+        setattr(timings, field_name, getattr(timings, field_name) + max(0.0, elapsed))
 
 
 def _try_stage(
@@ -254,18 +326,33 @@ def _try_stage(
     source_area_bytes: bytes,
     text_threshold: int,
     returned_bytes_differ: bool,
+    baseline_orient: OrientationResult | None = None,
+    timings: Timings | None = None,
 ) -> CropResult | None:
     """Apply the uniform two-gate check to a candidate crop.
 
     Returns a winning CropResult if all gates pass, None otherwise.
     Caller can treat None as "advance to the next strategy."
+
+    `baseline_orient` (NEO-315) is the orient `crop()` already computed for the
+    whole image. When the candidate IS that image — the same object, which is
+    what every identity outcome returns (scan metadata, the classical fast
+    path, and `tiered`'s identity guard all hand back `image_bytes` itself) —
+    the baseline is reused instead of sending byte-identical bytes to Vision a
+    second time. `source_area_bytes` is always the original image here, so the
+    identity check is `candidate_bytes is source_area_bytes`.
     """
+    if timings is None:
+        timings = Timings()
     check = is_plausible_crop(candidate_bytes, source_area_bytes=source_area_bytes)
     if not check.ok:
         logger.info("cascade: %s rejected by validator (%s)", source, check.reason)
         return None
 
-    orient = detect_orientation(candidate_bytes)
+    if baseline_orient is not None and candidate_bytes is source_area_bytes:
+        orient = baseline_orient
+    else:
+        orient = _orient(candidate_bytes, timings)
     if orient.text_count < text_threshold:
         logger.info(
             "cascade: %s text_count=%d below threshold=%d, falling through",
@@ -275,8 +362,8 @@ def _try_stage(
         )
         return None
 
-    rotated = rotate_image_bytes(candidate_bytes, orient.rotation_degrees)
-    classification = classify_card(rotated)
+    rotated = _rotate(candidate_bytes, orient.rotation_degrees, timings)
+    classification = _classify(rotated, timings)
 
     return CropResult(
         image_bytes=candidate_bytes,
@@ -284,6 +371,7 @@ def _try_stage(
         returned_bytes_differ=returned_bytes_differ,
         orientation=orient,
         classification=classification,
+        rotated_bytes=rotated,
     )
 
 
@@ -325,6 +413,7 @@ def _try_precropped_only(precropped_bytes: bytes) -> CropResult | CropRejected:
         returned_bytes_differ=False,
         orientation=orient,
         classification=classification,
+        rotated_bytes=rotated,
     )
 
 
@@ -334,8 +423,31 @@ def crop(
     precropped_bytes: bytes | None,
     crop_quality: str = CROP_QUALITY_FAST,
     escalate_only: bool = False,
+    baseline: OrientationResult | None = None,
+    skip_fast_path: bool = False,
+    timings: Timings | None = None,
 ) -> CropResult | CropRejected | CropDeclined:
     """Run the crop cascade and return the winning result.
+
+    `baseline` (NEO-315) is a Vision orient of `image_bytes` the caller
+    already holds — the FAST service's, handed to the HEAVY service on
+    escalation, over byte-identical bytes. When supplied, the up-front
+    `detect_orientation(image_bytes)` is skipped and it is used everywhere the
+    computed baseline would have been: the text threshold, identity-stage
+    reuse, and the passthrough. Ignored in crop-only mode.
+
+    `skip_fast_path` (NEO-315) skips both fast-path identity stages (scan
+    metadata and `fast_tiered_crop`) and goes straight to the strategy loop.
+    The HEAVY route sets it when the request carries a FAST decline's
+    baseline: FAST already ran those exact stages on byte-identical bytes and
+    declined, and both are pure functions of the bytes (scan_meta reads
+    header metadata; the classical pass is deterministic OpenCV with no env,
+    role or model input), with their `_try_stage` gate evaluated against the
+    same supplied baseline. Re-running them can only reach the same "no".
+
+    `timings` (NEO-315) is the caller's per-request accumulator; stage times
+    and the Vision call count are added to it. Omitted, a throwaway one is
+    used, so `/process` and the unit tests are unaffected.
 
     `escalate_only` (NEO-175) is the FAST preprocess role's no-fallthrough
     switch. When set, `crop()` runs the classical fast path (`crop_quality`
@@ -383,6 +495,33 @@ def crop(
     """
     if crop_quality not in CROP_QUALITIES:
         raise ValueError(f"unknown crop_quality {crop_quality!r}; valid: {sorted(CROP_QUALITIES)}")
+    if timings is None:
+        timings = Timings()
+    # Bind for the leaves that cannot take a parameter (BiRefNet inside
+    # `tiered_crop`); see `app.timing`.
+    with timing.bound(timings):
+        return _crop(
+            image_bytes=image_bytes,
+            precropped_bytes=precropped_bytes,
+            crop_quality=crop_quality,
+            escalate_only=escalate_only,
+            baseline=baseline,
+            skip_fast_path=skip_fast_path,
+            timings=timings,
+        )
+
+
+def _crop(
+    *,
+    image_bytes: bytes | None,
+    precropped_bytes: bytes | None,
+    crop_quality: str,
+    escalate_only: bool,
+    baseline: OrientationResult | None,
+    skip_fast_path: bool,
+    timings: Timings,
+) -> CropResult | CropRejected | CropDeclined:
+    """The body of `crop()`, run with `timings` bound. See `crop()`."""
     # ── Crop-only mode ─────────────────────────────────────────────────
     # Caller opted into the "don't upload the original" fast path. No
     # fallback cascade is available; reject with a specific reason if
@@ -393,8 +532,10 @@ def crop(
         return _try_precropped_only(precropped_bytes)
 
     # ── Baseline — used for the text-count threshold AND as the passthrough
-    # fallback orient. Computed once, reused throughout.
-    baseline_orient = detect_orientation(image_bytes)
+    # fallback orient. Computed once (or supplied by the caller), reused
+    # throughout — including by any identity stage, whose candidate is these
+    # same bytes (see `_try_stage`).
+    baseline_orient = baseline if baseline is not None else _orient(image_bytes, timings)
     text_threshold = max(1, int(baseline_orient.text_count * MIN_CASCADE_TEXT_RATIO))
     logger.info(
         "cascade: baseline text_count=%d, threshold=%d",
@@ -435,6 +576,7 @@ def crop(
             source_area_bytes=image_bytes,
             text_threshold=text_threshold,
             returned_bytes_differ=False,
+            timings=timings,
         )
         if result is not None:
             return result
@@ -442,7 +584,10 @@ def crop(
     # ── Fast-path identity short-circuits ───────────────────────────────
     # Two cheap ways to answer "is this frame already the card?", tried in
     # order of evidence quality before the model-backed cascade below.
-    if crop_quality == CROP_QUALITY_FAST:
+    # Skipped when the caller already ran them and declined (`skip_fast_path`).
+    if skip_fast_path:
+        logger.info("cascade: fast path already declined upstream, skipping to strategies")
+    if crop_quality == CROP_QUALITY_FAST and not skip_fast_path:
         # ── Scanner-metadata identity (NEO-191) ─────────────────────────
         # Ahead of the classical pass because it settles the same question
         # with strictly better evidence and no pixel work at all. When a
@@ -465,13 +610,17 @@ def crop(
         # The result still flows through the same `_try_stage` gates as
         # every other candidate, so nothing is bypassed; on the vanishing
         # chance they reject it, the cascade continues below.
-        if scan_meta.is_card_sized_scan(image_bytes) is not None:
+        with timings.measure("classical_ms"):
+            card_sized_scan = scan_meta.is_card_sized_scan(image_bytes)
+        if card_sized_scan is not None:
             result = _try_stage(
                 source=SOURCE_SCAN_METADATA,
                 candidate_bytes=image_bytes,
                 source_area_bytes=image_bytes,
                 text_threshold=text_threshold,
                 returned_bytes_differ=False,
+                baseline_orient=baseline_orient,
+                timings=timings,
             )
             if result is not None:
                 return result
@@ -488,7 +637,8 @@ def crop(
         # cheaper. Anything it declines (every crop, every ambiguous or
         # deskew-needing frame) falls straight through to the full
         # tiered/BiRefNet cascade below.
-        fast_bytes = tiered.fast_tiered_crop(image_bytes)
+        with timings.measure("classical_ms"):
+            fast_bytes = tiered.fast_tiered_crop(image_bytes)
         if fast_bytes is not None:
             result = _try_stage(
                 source="tiered",
@@ -496,6 +646,8 @@ def crop(
                 source_area_bytes=image_bytes,
                 text_threshold=text_threshold,
                 returned_bytes_differ=fast_bytes != image_bytes,
+                baseline_orient=baseline_orient,
+                timings=timings,
             )
             if result is not None:
                 return result
@@ -511,11 +663,11 @@ def crop(
     # so a new strategy can't accidentally run in the FAST role.
     if escalate_only:
         logger.info("cascade: escalate_only — declining for the heavy service")
-        return CropDeclined(reason="fast_path_declined")
+        return CropDeclined(reason="fast_path_declined", baseline=baseline_orient)
 
     # ── Stages 2..N — server-side croppers through the same uniform gate.
     for source in STRATEGY_NAMES:
-        produced = run_strategy(source, image_bytes)
+        produced = _timed_strategy(source, image_bytes, timings)
         if produced is None:
             continue
 
@@ -528,8 +680,12 @@ def crop(
             # guard: the upload already IS the card) — the client has those
             # exact bytes, so don't echo them back.
             returned_bytes_differ=produced != image_bytes,
+            baseline_orient=baseline_orient,
+            timings=timings,
         )
         if result is not None:
+            if source == "haiku_bbox":
+                timings.haiku_bbox_won = True
             return result
 
     # ── Passthrough ─────────────────────────────────────────────────────
@@ -537,12 +693,13 @@ def crop(
     # the raw image. May itself be empty-players / null card_number — the
     # honest "preprocess couldn't identify this card" signal.
     logger.info("cascade: falling through to passthrough")
-    rotated = rotate_image_bytes(image_bytes, baseline_orient.rotation_degrees)
-    passthrough_classification = classify_card(rotated)
+    rotated = _rotate(image_bytes, baseline_orient.rotation_degrees, timings)
+    passthrough_classification = _classify(rotated, timings)
     return CropResult(
         image_bytes=image_bytes,
         source="passthrough",
         returned_bytes_differ=False,
         orientation=baseline_orient,
         classification=passthrough_classification,
+        rotated_bytes=rotated,
     )

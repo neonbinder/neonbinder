@@ -10,7 +10,8 @@ from __future__ import annotations
 import base64
 import json
 import logging
-from dataclasses import dataclass
+import threading
+from dataclasses import dataclass, replace
 from io import BytesIO
 
 import anthropic
@@ -56,6 +57,25 @@ RETRY_PROMPT_SUFFIX = (
     "no markdown, no code fences, no explanation."
 )
 
+# One Anthropic client per process (NEO-315), shared by classify and the
+# haiku_bbox crop strategy. `anthropic.Anthropic()` builds an httpx client and
+# its connection pool; constructing one per call threw both away every time.
+# The SDK client is thread-safe, so a single lazily built instance serves every
+# concurrent request; the lock only guards construction.
+_anthropic_client: anthropic.Anthropic | None = None
+_anthropic_client_lock = threading.Lock()
+
+
+def get_anthropic_client() -> anthropic.Anthropic:
+    """Return the process-wide Anthropic client, building it on first use."""
+    global _anthropic_client
+    if _anthropic_client is None:
+        with _anthropic_client_lock:
+            if _anthropic_client is None:
+                _anthropic_client = anthropic.Anthropic()
+    return _anthropic_client
+
+
 _MEDIA_TYPE_BY_PIL_FORMAT = {
     "JPEG": "image/jpeg",
     "PNG": "image/png",
@@ -69,7 +89,9 @@ class ClassifyResult:
     """Extracted card fields plus the model's raw response for debugging.
 
     `players` is the canonical list; `player` is a back-compat single-name
-    alias (first entry or None).
+    alias (first entry or None). `retried` is True when the first response
+    failed to parse and this result came from the retry call — a frequency
+    signal for the NEO-315 timing line, never part of any response body.
     """
 
     players: list[str]
@@ -77,6 +99,7 @@ class ClassifyResult:
     card_number: str | None
     side: str
     raw_text: str
+    retried: bool = False
 
     @property
     def player(self) -> str | None:
@@ -266,7 +289,7 @@ def classify_card(
     if not image_bytes:
         raise ValueError("image_bytes is empty")
 
-    ai_client = client or anthropic.Anthropic()
+    ai_client = client or get_anthropic_client()
     payload, media_type = _prepare_for_anthropic(image_bytes)
     image_b64 = base64.b64encode(payload).decode("ascii")
 
@@ -290,7 +313,7 @@ def classify_card(
         prompt=PROMPT + RETRY_PROMPT_SUFFIX,
     )
     try:
-        return _normalize(_parse_response(retry_text), retry_text)
+        return replace(_normalize(_parse_response(retry_text), retry_text), retried=True)
     except (json.JSONDecodeError, TypeError, AttributeError) as retry_err:
         raise ClassifyError(
             f"model response could not be parsed as JSON after retry: {retry_err}"

@@ -1021,3 +1021,329 @@ class TestEscalateOnly:
 
         assert isinstance(result, CropResult)
         assert result.source == "precropped"
+
+
+class TestVisionDedupe:
+    """NEO-315 D1: an identity candidate IS the image the baseline was taken
+    on, so its orient is reused instead of a second, byte-identical Vision call.
+
+    Every identity outcome hands back `image_bytes` itself (the same object):
+    scan metadata, the classical fast path, and `tiered`'s identity guard in
+    the strategy loop. Vision must run exactly once on each.
+    """
+
+    def test_scan_metadata_identity_calls_vision_once(
+        self, stub_orient, stub_classify, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "app.cropper.scan_meta.is_card_sized_scan",
+            lambda _b: scan_meta.ScanSize(width_in=2.48, height_in=3.46, dpi=400.0),
+        )
+        image = _card_jpeg()
+        calls = stub_orient(_orient(text_count=12, rotation=90, confidence=0.8))
+        stub_classify()
+
+        result = crop(image_bytes=image, precropped_bytes=None)
+
+        assert isinstance(result, CropResult)
+        assert result.source == "scan_metadata"
+        assert len(calls) == 1
+        # The reused baseline is the result's orientation.
+        assert result.orientation == _orient(text_count=12, rotation=90, confidence=0.8)
+
+    def test_fast_classical_identity_calls_vision_once(
+        self, stub_orient, stub_classify, monkeypatch
+    ):
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        image = _card_jpeg()
+        calls = stub_orient()
+        stub_classify()
+
+        result = crop(image_bytes=image, precropped_bytes=None)
+
+        assert isinstance(result, CropResult)
+        assert result.source == "tiered"
+        assert len(calls) == 1
+
+    def test_heavy_tiered_identity_calls_vision_once(
+        self, stub_orient, stub_classify, disable_server_strategies, monkeypatch
+    ):
+        disable_server_strategies()
+        # `tiered_crop` returns its input untouched when the identity guard fires.
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda b: b)
+        image = _card_jpeg()
+        calls = stub_orient()
+        stub_classify()
+
+        result = crop(image_bytes=image, precropped_bytes=None, crop_quality="strong")
+
+        assert isinstance(result, CropResult)
+        assert result.source == "tiered"
+        assert result.returned_bytes_differ is False
+        assert len(calls) == 1
+
+    def test_equal_but_distinct_bytes_still_call_vision(
+        self, stub_orient, stub_classify, disable_server_strategies, monkeypatch
+    ):
+        # Reuse is keyed on object identity, never on content equality: a
+        # strategy that re-encodes or copies has produced a different candidate
+        # as far as the gate is concerned, so it gets its own orient.
+        disable_server_strategies()
+        image = _card_jpeg()
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", lambda b: bytes(bytearray(b)))
+        calls = stub_orient()
+        stub_classify()
+
+        result = crop(image_bytes=image, precropped_bytes=None, crop_quality="strong")
+
+        assert isinstance(result, CropResult)
+        assert len(calls) == 2
+
+    def test_a_real_crop_gets_its_own_orient(
+        self, stub_orient_by_call, stub_classify, disable_server_strategies
+    ):
+        crop_bytes = _card_jpeg(size=(400, 560))
+        disable_server_strategies(trim_dark=crop_bytes)
+        calls = stub_orient_by_call(_orient(text_count=10), _orient(text_count=9, rotation=180))
+        stub_classify()
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, crop_quality="strong")
+
+        assert isinstance(result, CropResult)
+        assert result.source == "pil_trim_dark"
+        assert calls[1] is crop_bytes
+        assert result.orientation.rotation_degrees == 180
+
+
+class TestSuppliedBaseline:
+    """NEO-315 D4: a caller-supplied whole-image baseline replaces the
+    up-front Vision call everywhere the computed one was used."""
+
+    def test_supplied_baseline_skips_vision_on_an_identity_win(
+        self, stub_orient, stub_classify, monkeypatch
+    ):
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        calls = stub_orient()
+        stub_classify()
+        supplied = _orient(text_count=7, rotation=270, confidence=0.6)
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, baseline=supplied)
+
+        assert isinstance(result, CropResult)
+        assert calls == []
+        assert result.orientation == supplied
+
+    def test_supplied_baseline_sets_the_text_threshold(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        # Baseline 20 words → threshold 16. A crop whose own orient finds 10
+        # words is a regression and must be rejected, landing on passthrough.
+        disable_server_strategies(trim_dark=_card_jpeg(size=(400, 560)))
+        calls = stub_orient(_orient(text_count=10))
+        stub_classify()
+        supplied = _orient(text_count=20)
+
+        result = crop(
+            image_bytes=_card_jpeg(),
+            precropped_bytes=None,
+            crop_quality="strong",
+            baseline=supplied,
+        )
+
+        assert isinstance(result, CropResult)
+        assert result.source == "passthrough"
+        assert result.orientation == supplied
+        # Only the crop candidate was sent to Vision; never the original.
+        assert len(calls) == 1
+
+    def test_declined_carries_the_baseline(self, stub_orient, monkeypatch):
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda _b: None)
+        stub_orient(_orient(text_count=33, rotation=90, confidence=0.75))
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, escalate_only=True)
+
+        assert isinstance(result, CropDeclined)
+        assert result.baseline == _orient(text_count=33, rotation=90, confidence=0.75)
+
+
+class TestRotatedBytes:
+    """NEO-315 D3: the winner's rotated bytes (what classify saw) ride on the
+    result so /process-entry never rotates the winner a second time."""
+
+    def test_zero_rotation_is_the_same_object(self, stub_orient, stub_classify, monkeypatch):
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        stub_orient(_orient(rotation=0))
+        stub_classify()
+        image = _card_jpeg()
+
+        result = crop(image_bytes=image, precropped_bytes=None)
+
+        assert isinstance(result, CropResult)
+        assert result.rotated_bytes is image
+
+    def test_rotated_bytes_are_exactly_what_classify_saw(
+        self, stub_orient, stub_classify, monkeypatch
+    ):
+        from app.cropper._utils import rotate_image_bytes
+
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", lambda _b: None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        stub_orient(_orient(rotation=90))
+        classify_calls = stub_classify()
+        image = _card_jpeg()
+
+        result = crop(image_bytes=image, precropped_bytes=None)
+
+        assert isinstance(result, CropResult)
+        assert result.rotated_bytes == classify_calls[0]
+        assert result.rotated_bytes == rotate_image_bytes(image, 90)
+
+    def test_passthrough_carries_rotated_bytes(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        from app.cropper._utils import rotate_image_bytes
+
+        disable_server_strategies()
+        stub_orient(_orient(rotation=180))
+        stub_classify()
+        image = _card_jpeg()
+
+        result = crop(image_bytes=image, precropped_bytes=None, crop_quality="strong")
+
+        assert isinstance(result, CropResult)
+        assert result.source == "passthrough"
+        assert result.rotated_bytes == rotate_image_bytes(image, 180)
+
+
+class TestCascadeTimings:
+    """NEO-315: crop() accumulates into the caller's per-request Timings."""
+
+    def test_counts_vision_calls_and_records_the_haiku_signals(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        from app.timing import Timings
+
+        disable_server_strategies(haiku_bbox_crop=_card_jpeg(size=(400, 560)))
+        stub_orient()
+        stub_classify()
+        timings = Timings()
+
+        result = crop(
+            image_bytes=_card_jpeg(), precropped_bytes=None, crop_quality="strong", timings=timings
+        )
+
+        assert isinstance(result, CropResult)
+        assert result.source == "haiku_bbox"
+        # Baseline + the haiku crop's own orient.
+        assert timings.vision_calls == 2
+        assert timings.haiku_bbox_reached is True
+        assert timings.haiku_bbox_won is True
+
+    def test_haiku_not_reached_when_an_earlier_stage_wins(
+        self, stub_orient, stub_classify, disable_server_strategies
+    ):
+        from app.timing import Timings
+
+        disable_server_strategies(trim_dark=_card_jpeg(size=(400, 560)))
+        stub_orient()
+        stub_classify()
+        timings = Timings()
+
+        crop(
+            image_bytes=_card_jpeg(), precropped_bytes=None, crop_quality="strong", timings=timings
+        )
+
+        assert timings.haiku_bbox_reached is False
+        assert timings.haiku_bbox_won is False
+
+    def test_classify_retry_is_recorded(self, stub_orient, disable_server_strategies, monkeypatch):
+        import dataclasses
+
+        from app.timing import Timings
+
+        disable_server_strategies()
+        stub_orient()
+        monkeypatch.setattr(
+            cropper, "classify_card", lambda _b: dataclasses.replace(_classify(), retried=True)
+        )
+        timings = Timings()
+
+        crop(
+            image_bytes=_card_jpeg(), precropped_bytes=None, crop_quality="strong", timings=timings
+        )
+
+        assert timings.classify_retried is True
+
+    def test_birefnet_share_of_tiered_is_not_counted_as_classical(
+        self, stub_orient, stub_classify, disable_server_strategies, monkeypatch
+    ):
+        import time
+
+        from app.timing import Timings, measure_current
+
+        disable_server_strategies()
+
+        def _tiered(_b):
+            time.sleep(0.01)  # classical work
+            with measure_current("birefnet_ms"):
+                time.sleep(0.05)  # BiRefNet inference
+            return None
+
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", _tiered)
+        stub_orient()
+        stub_classify()
+        timings = Timings()
+
+        crop(
+            image_bytes=_card_jpeg(), precropped_bytes=None, crop_quality="strong", timings=timings
+        )
+
+        assert timings.birefnet_ms >= 50
+        assert 10 <= timings.classical_ms < 50
+
+
+class TestSkipFastPath:
+    """NEO-315: `skip_fast_path` bypasses both identity stages; default unchanged."""
+
+    def test_skip_bypasses_both_stages_and_runs_the_loop(
+        self, stub_orient, stub_classify, disable_server_strategies, monkeypatch
+    ):
+        def _boom(_b):
+            raise AssertionError("fast-path stage ran")
+
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", _boom)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", _boom)
+        disable_server_strategies(trim_dark=_card_jpeg(size=(400, 560)))
+        stub_orient()
+        stub_classify()
+
+        result = crop(
+            image_bytes=_card_jpeg(),
+            precropped_bytes=None,
+            baseline=_orient(),
+            skip_fast_path=True,
+        )
+
+        assert isinstance(result, CropResult)
+        assert result.source == "pil_trim_dark"
+
+    def test_default_still_runs_the_fast_path(self, stub_orient, stub_classify, monkeypatch):
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "app.cropper.scan_meta.is_card_sized_scan",
+            lambda _b: calls.append("scan") or None,
+        )
+        monkeypatch.setattr(
+            "app.cropper.tiered.fast_tiered_crop", lambda b: calls.append("fast") or b
+        )
+        stub_orient()
+        stub_classify()
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, baseline=_orient())
+
+        assert calls == ["scan", "fast"]
+        assert isinstance(result, CropResult) and result.source == "tiered"

@@ -71,6 +71,15 @@ raising. `INFO` is what makes the crop cascade's per-image routing decisions
 (`scan_meta:`, `fast:`, `tiered:`, `cascade:`) visible in Cloud Logging; drop
 to `WARNING` if that volume ever becomes a problem.
 
+Timing (NEO-315): every authenticated `/process-entry` writes one JSON line,
+`{"msg":"process_entry_timing", ...}`, through a dedicated non-propagating
+`timing` logger with a bare `%(message)s` format, so Cloud Logging stores it
+as `jsonPayload` and per-stage numbers (`gcs_ms`, `vision_calls`,
+`vision_ms`, `birefnet_ms`, `sam_ms`, `classify_ms`, `total_ms`, ...) can be
+queried directly. It stays at INFO whatever `LOG_LEVEL` says, and it carries
+only numbers, flags and stage labels: no identifiers, paths or image data.
+See `app/timing.py`.
+
 ### `POST /process` modes
 
 Accepts two optional multipart file fields: `image` (the original photo)

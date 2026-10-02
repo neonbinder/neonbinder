@@ -611,17 +611,35 @@ class TestStartupWeightsGate:
         monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
         (tmp_path / "model.onnx").write_bytes(b"stub")
         monkeypatch.setenv("U2NET_HOME", str(tmp_path))
-        called: list[bool] = []
-        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: called.append(True))
+        called: list[str] = []
+        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: called.append("birefnet"))
+        # NEO-315: SAM is warmed beside BiRefNet, after it.
+        monkeypatch.setattr("app.cropper.sam.warm_up", lambda: called.append("sam"))
 
         _verify_baked_weights()
 
-        assert called == [True]
+        assert called == ["birefnet", "sam"]
+
+    def test_a_sam_warm_up_failure_does_not_abort_startup(self, monkeypatch, tmp_path):
+        # SAM is a fallback whose sam_crop already degrades to None when the
+        # model cannot load; a broken SAM must not take HEAVY down at boot.
+        monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
+        (tmp_path / "model.onnx").write_bytes(b"stub")
+        monkeypatch.setenv("U2NET_HOME", str(tmp_path))
+        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: None)
+
+        def _boom():
+            raise RuntimeError("sam weights unreadable")
+
+        monkeypatch.setattr("app.cropper.sam.warm_up", _boom)
+
+        _verify_baked_weights()  # returns cleanly
 
     def test_startup_is_a_noop_without_the_flag(self, monkeypatch):
         monkeypatch.delenv("REQUIRE_BAKED_WEIGHTS", raising=False)
         called: list[bool] = []
         monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: called.append(True))
+        monkeypatch.setattr("app.cropper.sam.warm_up", lambda: called.append(True))
 
         _verify_baked_weights()
 

@@ -157,3 +157,51 @@ class TestDetectOrientation:
         assert result.rotation_degrees == 0
         assert result.confidence == 0.0
         assert result.text_count == 0
+
+
+class TestSharedVisionClient:
+    """NEO-315 D2: one lazily built Vision client per process."""
+
+    def test_default_client_is_built_once_and_reused(self, monkeypatch):
+        import threading
+
+        from app import orient
+
+        built: list[MagicMock] = []
+
+        def _factory():
+            client = _mock_client(_make_response([]))
+            built.append(client)
+            return client
+
+        monkeypatch.setattr(orient, "_client", None)
+        monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", _factory)
+
+        barrier = threading.Barrier(4)
+
+        def _cold_request():
+            barrier.wait()
+            detect_orientation(b"img")
+
+        threads = [threading.Thread(target=_cold_request) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(built) == 1
+        assert built[0].text_detection.call_count == 4
+
+    def test_explicit_client_bypasses_the_shared_one(self, monkeypatch):
+        from app import orient
+
+        def _refuse():
+            raise AssertionError("shared client must not be built when one is injected")
+
+        monkeypatch.setattr(orient, "_client", None)
+        monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", _refuse)
+        client = _mock_client(_make_response([]))
+
+        detect_orientation(b"img", client=client)
+
+        assert client.text_detection.call_count == 1

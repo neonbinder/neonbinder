@@ -16,10 +16,29 @@ Coordinate conventions used here:
 from __future__ import annotations
 
 import math
+import threading
 from collections import Counter
 from dataclasses import dataclass
 
 from google.cloud import vision
+
+# One Vision client per process (NEO-315). Building an ImageAnnotatorClient
+# per call re-resolved ADC and opened a fresh gRPC channel on every orient —
+# up to three times per image. The client is thread-safe, so a single lazily
+# built instance serves every concurrent request; the lock only guards its
+# construction so a burst of cold requests builds exactly one.
+_client: vision.ImageAnnotatorClient | None = None
+_client_lock = threading.Lock()
+
+
+def get_vision_client() -> vision.ImageAnnotatorClient:
+    """Return the process-wide Vision client, building it on first use."""
+    global _client
+    if _client is None:
+        with _client_lock:
+            if _client is None:
+                _client = vision.ImageAnnotatorClient()
+    return _client
 
 
 @dataclass(frozen=True)
@@ -56,11 +75,11 @@ def detect_orientation(
 ) -> OrientationResult:
     """Detect the rotation needed to make text in the image upright.
 
-    The `client` kwarg is injected in tests; in production it defaults to a
-    fresh ImageAnnotatorClient, which picks up ADC from the Cloud Run runtime
-    service account.
+    The `client` kwarg is injected in tests; in production it defaults to the
+    process-wide client from `get_vision_client`, which picks up ADC from the
+    Cloud Run runtime service account.
     """
-    annotator = client or vision.ImageAnnotatorClient()
+    annotator = client or get_vision_client()
     response = annotator.text_detection(image=vision.Image(content=image_bytes))
 
     if response.error.message:
