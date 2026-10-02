@@ -101,6 +101,8 @@ import {
   type LinkableNbCard,
 } from "./lib/parallelCardLink";
 import { teamFullName } from "../lib/teams/team-name";
+import { deleteCardPlayerLinks } from "./cardPlayerLinks";
+import { findSportForSelectorOption } from "./cardChecklist";
 import { safeMarketplaceText } from "../lib/marketplace/safe-text";
 
 // ---------------------------------------------------------------------------
@@ -113,15 +115,17 @@ export const MAX_INSERT_CARDS_FOR_BUILD = 5000;
 export const MAX_PARALLELS_PER_INSERT = 500;
 /**
  * Copies inserted per transaction. Per copy: one `db.get` of the source, one
- * insert, one SKU patch (none when the old SKU is kept), plus a
- * variation-parent `db.get` for a variation and the player/team name reads
- * (cached per page). ~150 × 3 + names ≈ 600–700 operations, inside the ~900
- * `CARDS_PER_COMMIT_CHUNK` is calibrated to.
+ * insert, one SKU patch (none when the old SKU is kept), one player-index
+ * insert per player (NEO-313, usually one), plus a variation-parent `db.get`
+ * for a variation and the player/team name reads (cached per page). ~150 × 4
+ * + names ≈ 750–850 operations, inside the ~900 `CARDS_PER_COMMIT_CHUNK` is
+ * calibrated to.
  */
 export const INSERT_COPIES_PER_PAGE = 150;
 /**
  * Old cards deleted per transaction. Per card: one cross-listing lookup, one
- * variation-children lookup (plus a patch per child), one delete ≈ 300–400.
+ * variation-children lookup (plus a patch per child), one player-index lookup
+ * plus a delete per index row (NEO-313, usually one), one delete ≈ 500–600.
  */
 export const DELETE_CARDS_PER_PAGE = 100;
 /**
@@ -957,6 +961,9 @@ export const deleteParallelCardsPage = internalMutation({
       if (bscRef) refs.bsc.push(bscRef);
       if (slRef) refs.sportlots.push(slRef);
       await orphanVariationsOf(ctx, card._id);
+      // NEO-313 — the derived player index goes with the card, in the same
+      // transaction, exactly as `deleteCard` does it.
+      await deleteCardPlayerLinks(ctx, card._id);
       await ctx.db.delete(card._id);
     }
     return {
@@ -1091,6 +1098,16 @@ export const insertParallelCardsPage = internalMutation({
 
     const set = await parallelSetContext(ctx, parallel);
     const toStored = await resolveCardSlots(ctx, args.parallelId);
+    // NEO-313 — the copies' player index is keyed by the PARALLEL's sport
+    // (the card's own chain), walked once per page and only if a copy carries
+    // players; `insertCardRow` writes the rows.
+    let pageSport: { id: Id<"selectorOptions"> | undefined } | undefined;
+    const parallelSport = async (): Promise<Id<"selectorOptions"> | undefined> => {
+      pageSport ??= {
+        id: await findSportForSelectorOption(ctx, args.parallelId),
+      };
+      return pageSport.id;
+    };
 
     const newIdOf = new Map<string, Id<"cardChecklist">>();
     for (const { from, to } of args.remap) newIdOf.set(from, to);
@@ -1209,6 +1226,7 @@ export const insertParallelCardsPage = internalMutation({
           },
         },
         set,
+        { sport: parallelSport },
       );
       newIdOf.set(source._id, newId);
       created.push({ from: source._id, to: newId });

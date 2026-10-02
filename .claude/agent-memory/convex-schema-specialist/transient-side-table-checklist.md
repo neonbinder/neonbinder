@@ -1,6 +1,6 @@
 ---
 name: transient-side-table-checklist
-description: Adding a table keyed on a selectorOptions id — the four places it must be wired (reset steps + toEqual test blocks, deleteSelectorOption sweep, holdings note, ops doc) or it dangles
+description: Adding a table keyed on a selectorOptions/cardChecklist id — the five places it must be wired (reset steps + toEqual test blocks, deleteSelectorOption sweep, holdings note, ops doc, subtree-wipe graph) or it dangles
 metadata:
   type: project
 ---
@@ -26,6 +26,12 @@ learn about it, and only one of them fails loudly:
    sweep.
 4. **`docs/operations/neo214-set-builder-admin-scripts.md`** prints the
    counts object as an example; `e2e-baseline.sh` parses only `complete`.
+5. **`SUBTREE_REFERENCE_GRAPH`** in `wipeVariantTypeSubtree.ts`: its test
+   parses schema.ts and fails for ANY table holding a `v.id("selectorOptions")`
+   or `v.id("cardChecklist")` field (sport-level ones included) that the graph
+   does not list. A sport-level table is a one-line "Untouched" entry; a table
+   pointing at cards needs real wipe handling (delete with the card) and a
+   `WIPED_TABLES` entry. This one DOES fail loudly — first red in NEO-313.
 
 **Why:** the reset and the delete sweep are the only two things that ever
 remove rows from these tables; a table left out of either accumulates rows
@@ -39,4 +45,4 @@ offered; the removal had to unwire the same four places, and the `toEqual`
 count blocks were again what failed first.
 
 **How to apply:** any plan that adds a side table keyed on `selectorOptions`
-lists all four in its migration steps. Related: [[staging-tables-scope-per-operator]].
+lists all five in its migration steps. Related: [[staging-tables-scope-per-operator]].

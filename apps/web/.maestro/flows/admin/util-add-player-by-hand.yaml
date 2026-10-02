@@ -1,0 +1,98 @@
+appId: com.neonbinder.web
+name: "Util — add a player by hand on /admin/players under a chosen sport"
+tags:
+  - util
+---
+# Makes ONE player through the Players admin screen, the way an operator does,
+# filed under SPORT. Fixtures come from the UI (README → Companion rules): this
+# is the product's own "Add player" form, never a seed.
+#
+# Callers (NEO-313): checklist-wizard-link-commits (a Football player the
+# wizard links cross-sport), card-player-picker-cross-sport (a Football player
+# the card picker links as a guest) and player-sports-multi-sport-membership
+# (a Football player who is given Baseball). The steps are the ones
+# player-management-add-and-career-history.yaml proves and documents at length;
+# that flow keeps its own copy because its creation IS its feature.
+#
+# INPUTS
+#   PLAYER_NAME  (required) — ONE search token, minted from the caller's
+#                ATTEMPT_TOKEN (README → "Minted names are single tokens").
+#   SPORT        (required) — a sport row that exists on the deployment, spelled
+#                exactly as the list's sport picker prints it ("Football").
+#
+# CALLER CONTRACT
+#   The caller is ON /admin/players with the list loaded — its gate is the
+#   counter (".*of .* players.*"), never the heading (the heading paints before
+#   the list, see the career-history flow). The list's sport picker reads
+#   "All sports" and no player is open.
+#
+# RETURN CONTRACT
+#   The player exists under SPORT and its detail panel is open ("Added <name>."
+#   and "Sport: <SPORT>" both asserted). The list filter holds a nonsense
+#   string and the sport picker reads SPORT, so a caller that wants the list
+#   back re-opens the page (openLink) rather than reasoning about that state.
+#
+# R2 — "Added <name>." is said only for an INSERTED row ("That player already
+# exists — opened it." otherwise) and "Sport: <SPORT>" is the row's own sport
+# read back, so a create that deduped or filed under the wrong sport fails here.
+
+# ── Empty the list so the sport's name belongs to the picker alone ─────────
+# Every list row prints its sport, so with rows on screen "Football" is on the
+# page many times and the picker's option could not be told apart from them.
+- tapOn: "Filter players"
+- inputText: "zzzznotaplayer"
+- assertVisible: "No players match that filter."
+- assertVisible: "0 matches"
+
+# ── Pick the sport on the LIST's picker, with the add form closed ──────────
+# Maestro resolves a native option tap against the FIRST <select> in the page
+# (memory: native-select-option-taps), so the form's own picker is unreachable
+# while the list's is mounted. The add form opens with this sport chosen.
+- tapOn: "All sports"
+- tapOn: ${SPORT}
+- assertVisible: ${SPORT}
+
+# The counter blanks while the sport-scoped search re-runs and the "Add player"
+# button slides ~110px (CI 34706332009); the count coming back is the layout
+# being still, so re-read the button after it (R8).
+- extendedWaitUntil:
+    visible: "0 matches"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: "Add player"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Add player"
+- extendedWaitUntil:
+    visible: "Add a player"
+    timeout: 7000
+
+- tapOn: "New player name"
+- inputText: ${PLAYER_NAME}
+
+# The button names the player it will create and exists only while no player
+# of that name does. R8 case 1: centres on the first swipe thanks to the
+# NEO-260 208px spacer (measured in the career-history flow) — 7000 DEPENDS on it.
+- scrollUntilVisible:
+    element:
+      id: "Create player ${PLAYER_NAME}"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Create player ${PLAYER_NAME}"
+
+# Positioning only: "Sport: <SPORT>" is in the panel's first field row, above
+# where the tap leaves the page, and assertVisible never scrolls. UP because
+# the anchor is above the current position (R5 — never rely on the document
+# bottoming out).
+- scrollUntilVisible:
+    element:
+      text: "Filter players"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- extendedWaitUntil:
+    visible: ".*Added ${PLAYER_NAME}.*"
+    timeout: 7000
+- assertVisible: ".*Sport: ${SPORT}.*"

@@ -234,3 +234,16 @@ this whenever the input has no aria-label to hang `below: {id: …}` off.
 > Jar re-checked 2026-09-01 against **CLI 2.8.0** (`~/.maestro/lib/maestro-cli-2.8.0.jar`);
 > the §1–§4 behaviour above still matches. The "2.6.0" in this file's header is the
 > version it was first written against.
+
+## 6. `inputText` = per-character `sendKeys` to the focused element, resolved ONCE
+`CdpWebDriver.inputText` → `withActiveElement` (XPath of `document.activeElement`,
+re-found once per command) → one Selenium `WebElement.sendKeys(char)` per
+character with a 20–100ms sleep (javap, cli 2.8.0). So keystrokes are REAL key
+events (a listbox `onKeyDown` typeahead sees them), but ChromeDriver re-focuses
+that same element before every character (blurring whatever is focused). In a
+roving-focus widget where the first key MOVES focus (listbox typeahead), the
+second character refocuses the original option, the blur (relatedTarget null)
+closes a list that closes on focus-out, and the command fails. Send one
+character per `inputText` command there — each command re-reads activeElement.
+The XPath falls back to `tag[@class]`, so the focused option must have a unique
+class among its siblings (an "active" highlight class does it).

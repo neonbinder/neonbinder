@@ -21,8 +21,8 @@
  * ## What it never does
  *
  * It writes no `imageUrls` (a scan belongs to the physical card an operator
- * photographed, not to a checklist entry), queues no enrichment, and reads
- * nothing from the database. `autographType` is folded into
+ * photographed, not to a checklist entry) and queues no enrichment. Its only
+ * read is the caller's lazy `sport()` for the NEO-313 player index. `autographType` is folded into
  * `features.autographed` and is not stored (NEO-217).
  */
 
@@ -36,6 +36,7 @@ import {
   type ListingCardInputs,
 } from "./features/generateListing";
 import { generateSku } from "./sku";
+import { syncCardPlayerLinks } from "./cardPlayerLinks";
 
 /** Set-level values resolved once per commit (or per build page). */
 export type CardRowSetContext = {
@@ -247,30 +248,54 @@ export function buildCardRowForInsert(
 }
 
 /**
- * Insert a new card row, then patch in its SKU.
+ * How a new card's player index is kept (NEO-313). `sport` is the CARD's
+ * sport, the root of its selector chain, and is asked for lazily: only a card
+ * that carries players needs it, and a caller can cache it across a whole
+ * page (the commit chunk's `cardSport`).
+ */
+export type CardRowIndexing = {
+  sport: () => Promise<Id<"selectorOptions"> | undefined>;
+};
+
+/**
+ * Insert a new card row, keep its derived player index (NEO-313), then patch
+ * in its SKU.
  *
  * NEO-91: insert-then-patch, as the commit has always done it. The random
  * suffix (not the id) is what makes the SKU unique; the order is kept so the
  * row a commit writes is exactly the row it wrote before this was shared.
+ *
+ * NEO-313: every card born through here gets its `cardPlayerLinks` rows in
+ * the same transaction, exactly as the commit chunk did inline before this
+ * was shared — `fresh: true` (the card was inserted a line ago, so there is
+ * nothing to diff against) and only when it carries players. Doing it HERE
+ * rather than at each call site is what keeps a second caller (the parallel
+ * build) from ever minting an unindexed card; `cardPlayerLinks.pin.test.ts`
+ * pins it.
  */
 export async function insertCardRow(
-  ctx: { db: Pick<MutationCtx["db"], "insert" | "patch"> },
+  ctx: MutationCtx,
   card: NewCardRow,
   set: CardRowSetContext,
+  indexing: CardRowIndexing,
 ): Promise<Id<"cardChecklist">> {
   const built = buildCardRowForInsert(card, set, Date.now());
-  if (card.keepSku) {
-    // NEO-312 (R2): a rebuilt card that is clearly the old one keeps its SKU,
-    // so a label or a listing that already names it still does.
-    return await ctx.db.insert("cardChecklist", {
-      ...built.row,
-      sku: card.keepSku,
+  // NEO-312 (R2): a rebuilt card that is clearly the old one keeps its SKU,
+  // so a label or a listing that already names it still does.
+  const id: Id<"cardChecklist"> = await ctx.db.insert(
+    "cardChecklist",
+    card.keepSku ? { ...built.row, sku: card.keepSku } : built.row,
+  );
+  if ((card.playerIds ?? []).length > 0) {
+    await syncCardPlayerLinks(ctx, id, card.playerIds, await indexing.sport(), {
+      fresh: true,
     });
   }
-  const id: Id<"cardChecklist"> = await ctx.db.insert("cardChecklist", built.row);
-  await ctx.db.patch(id, {
-    sku: generateSku({ ...built.sku, uniqueSuffix: crypto.randomUUID() }),
-  });
+  if (!card.keepSku) {
+    await ctx.db.patch(id, {
+      sku: generateSku({ ...built.sku, uniqueSuffix: crypto.randomUUID() }),
+    });
+  }
   return id;
 }
 

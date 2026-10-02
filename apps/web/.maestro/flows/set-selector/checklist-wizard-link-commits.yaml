@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
-url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Entity review — a Link to Existing decision is carried through Confirm & Save into the committed checklist"
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Entity review — Link to Existing decisions, including one to a player of another sport, are carried through Confirm & Save into the committed checklist"
 tags:
   - set-selector
 ---
@@ -24,6 +24,26 @@ tags:
 #         `commitCardChecklist` re-resolves each decision as it writes, so a
 #         link that had not survived `recordDecision` fails here rather than
 #         passing quietly.
+#
+# NEO-313 — THE SAME DECISION, ACROSS SPORTS (ticket decision 8: this fixture,
+# one row switched to Football, no new real set). A checklist name can belong
+# to a player of ANOTHER sport (a football player in a baseball autograph
+# book). The review stays scoped to the set's sport until the operator reaches
+# for the quiet per-name switch "(Player · Baseball ▾)", and only then does
+# "Link to Existing…" search that other sport. Added hard assertions:
+#     (e) the next player step opens on the SET's sport — the switch reads
+#         "Sport for this name: Baseball" — so nothing cross-sport is on by
+#         default;
+#     (f) after the switch the same row reads "…: Football", and a Link to
+#         Existing search finds `Gw<token>`, a FOOTBALL player this flow made
+#         by hand (a Baseball-scoped search cannot return him);
+#     (g) after the commit, `Gw<token>`'s own Players admin panel lists this
+#         set's card under "Cards for Gw<token>" with a "Baseball" tag — the
+#         card's sport, shown only because it differs from his. That list is
+#         read back from the saved cards (the derived `cardPlayerLinks`
+#         index), so it is the proof the cross-sport link was COMMITTED rather
+#         than dropped by the commit's re-resolution, which is exactly the
+#         failure ticket decision 6 names.
 #
 # ── WHY THERE IS NO RE-SYNC STEP ────────────────────────────────────────────
 #   An earlier version ended by re-syncing and asserting the wizard did not
@@ -60,8 +80,19 @@ tags:
 #   Chrome and is therefore in the roster `setup.yaml` commits. If he is ever
 #   absent this fails at STEP 3 with a readable message; the fix is to change
 #   the two literals to another player setup provisions. He is deliberately not
-#   a player this flow creates — minting a fixture player would put a global row
-#   in `players` for every worker.
+#   a player this flow creates — the Ohtani half proves a link onto the SEEDED
+#   roster, which a minted player cannot stand in for.
+#
+# THE CROSS-SPORT TARGET IS MINTED, and it has to be. No Football player exists
+#   on a seeded preview (every seeded name is baseball), so the NEO-313 half
+#   makes `Gw<token>` under Football on /admin/players first, through
+#   `../admin/util-add-player-by-hand.yaml`. One search token per attempt
+#   (README → "Minted names are single tokens"; registered in SET-REGISTRY.md),
+#   so no other worker or retry can answer the search. Players are global and
+#   nothing deletes one; a per-attempt name is what makes that safe.
+#   The checklist row it replaces is whichever player the wizard presents
+#   second — its name does not matter, because the claim is about the LINK,
+#   and the proof (g) is keyed on `Gw<token>`, not on the checklist's spelling.
 #
 # R3 — DEDUP: the link ACTION is checklist-wizard-link-to-existing-player
 #   (read-only, on the shared Big League fixture). This flow adds only the
@@ -72,9 +103,22 @@ tags:
 # ============================================================
 
 - launchApp
+# The entry is /admin/players now, for the NEO-313 fixture below; its gate is
+# the list COUNTER, which renders only once the list query answers (the
+# heading paints first — see player-management-add-and-career-history).
 - extendedWaitUntil:
-    visible: ".*Build set parameters using marketplace APIs.*"
+    visible: ".*of .* players.*"
     timeout: 45000
+
+# ============================================================
+# NEO-313 FIXTURE — a FOOTBALL player to link across sports
+# ============================================================
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+- runFlow:
+    file: ../admin/util-add-player-by-hand.yaml
+    env:
+      PLAYER_NAME: "Gw${output.ATTEMPT_TOKEN}"
+      SPORT: "Football"
 
 # ============================================================
 # SETUP — this flow's OWN real set, real fetch, wizard open
@@ -143,6 +187,132 @@ tags:
       text: "Linked to Shohei Ohtani"
 
 # ============================================================
+# STEP 3b — R2(e)+(f): the NEXT player, moved to Football and linked
+# to the player of that sport (NEO-313)
+# ============================================================
+
+# Settle on the next player the operator's way — the same util, for the same
+# reasons (teams first; a presented player can be traded for a team step that
+# settles meanwhile). Ohtani's link staged nothing, so this is normally the
+# walk's fast path.
+- runFlow: util-wizard-walk-to-player-row.yaml
+
+# R2(e): the default is the set's sport. This is the switch's accessible name
+# ("Sport for this name: <current>"); its visible form is the muted
+# "(Player · Baseball ▾)" tag beside the name.
+#
+# SWITCH FIRST, DECIDE NOTHING ON THIS ROW BEFORE IT. `switchRowSport` refuses
+# a row that carries a decision. The row's STAGED team steps may already be
+# answered by the walk above (the wizard presents settled team steps before
+# any player); the switch discards those, since they were answers about the
+# old sport, and keeps any step another player in the batch still needs.
+- assertVisible:
+    id: "Sport for this name: Baseball"
+- tapOn:
+    id: "Sport for this name: Baseball"
+- extendedWaitUntil:
+    visible:
+      id: "Choose a sport"
+    timeout: 7000
+
+# CAPPED LIST: SportSwitch holds every sport in a `max-h-48` box that scrolls
+# inside itself — the set's sport first, then alphabetical, and in CI each
+# runner's hand-made `E2E Test Sport <w>` sorts ahead of Football, so Football
+# starts BELOW the box's fold. Maestro does not see that clip (memory:
+# inner-scroller-clip-is-invisible-to-maestro), and a tap there would land on
+# whatever the box covers. So the row is reached the keyboard way the
+# component offers: on open, focus sits on the current sport's option, and a
+# typed letter jumps focus to the first sport starting with it and scrolls
+# that row into the fold. ONE key, because maestro-web's `inputText` resolves
+# the focused element once and sends every character to it with Selenium
+# `sendKeys`, which re-focuses that element first — a second character would
+# pull focus back off the row the first one reached, the blur would close the
+# list, and the command would fail.
+- inputText: "F"
+# GEOMETRY GUARD, NOT DECORATION. The box sits inside the wizard's scrolling
+# BODY, above the pinned footer whose controls decide rows on a REAL set
+# (R7a). A Football row that is not clear of the footer fails HERE, by name,
+# instead of a tap landing on a decision. No scroll: the dialog is `fixed`
+# and the window cannot move it (R8 case 2).
+#
+# NO `childOf` IN THIS GUARD. Orchestra runs the whole selector, relative
+# anchors included, inside the `childOf` parent's subtree, so an `above:`
+# anchor outside the list (the footer) resolves to nothing and the assert can
+# never pass (CI red, PR #292: Football on screen at y=313, footer at y=496).
+# The pair of anchors does the list-scoping instead: the only "Football"
+# between this row's switch and the footer's decision group is the option.
+# The tap below keeps `childOf`, which needs no outside anchor.
+- assertVisible:
+    text: "Football"
+    below:
+      id: "Sport for this name: Baseball"
+    above:
+      id: "Decision for .*"
+- tapOn:
+    text: "Football"
+    childOf:
+      id: "Choose a sport"
+# The switch is one mutation (`switchRowSport`) — our own server, 7000 (R5).
+# This label is also the check on the typeahead and the tap together: a jump
+# that stopped on another F-sport, or a tap under the box's clip, cannot
+# produce it.
+- extendedWaitUntil:
+    visible:
+      id: "Sport for this name: Football"
+    timeout: 7000
+
+# THE ROW IS LOOKED UP AGAIN, IN FOOTBALL. `switchRowSport` puts it back to
+# `pending` and re-queues its Wikidata lookup under the new sport, and a lookup
+# that finds career teams STAGES them as New Team steps the walk presents
+# first — which takes this row off screen even though it is pinned (only an
+# explicit pin outranks staged steps; `resolveNav`). So wait for the lookup
+# and answer anything it staged exactly as the first walk did, rather than
+# racing the lookup to the link. The walk's own waits carry the live-Wikidata
+# ceiling (R5 external round-trip, stated at its site).
+- runFlow: util-wizard-walk-to-player-row.yaml
+# ...and prove the walk came back to THIS row: it is the only player on the
+# batch whose switch reads Football.
+- assertVisible:
+    id: "Sport for this name: Football"
+
+# Same row-growth retry as STEP 3: a near-match panel can still land late.
+- retry:
+    maxRetries: 2
+    commands:
+      - tapOn:
+          id: "Link to existing instead"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible:
+            id: "Search existing players"
+          timeout: 7000
+- tapOn:
+    id: "Search existing players"
+- inputText: "Gw${output.ATTEMPT_TOKEN}"
+# `players.search` scoped to the ROW's sport — Football now. A search still
+# scoped to Baseball returns nothing for this name, so this is R2(f).
+- extendedWaitUntil:
+    visible:
+      id: "Link to Gw${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+- tapOn:
+    id: "Link to Gw${output.ATTEMPT_TOKEN}"
+
+# The decision landed: the Football row leaves and the walk presents the next
+# name, back on the set's sport. The negative wait alone would pass on a dead
+# page (memory: negative-asserts-pass-on-a-dead-page), so the positive one
+# after it is the assertion. A REFUSED link keeps this row on screen with its
+# error under it, reading Football, and fails here. Not "Linked to …": the
+# Decided list that line lives in collapses past five entries, and this batch
+# is past five by now.
+- extendedWaitUntil:
+    notVisible:
+      id: "Sport for this name: Football"
+    timeout: 7000
+- assertVisible:
+    id: "Sport for this name: Baseball"
+
+# ============================================================
 # STEP 4 — R2(d): resolve the rest as skips, then COMMIT
 # Skips create nothing, so the only entity this commit could mint is one the
 # link deliberately avoided. 120s for the bulk (live Wikidata queue), 60s for
@@ -161,3 +331,47 @@ tags:
     visible:
       text: ".*Saved [0-9]+ cards.*"
     timeout: 60000
+
+# ============================================================
+# STEP 5 — R2(g): the cross-sport link was COMMITTED onto a card of this set
+# ============================================================
+# A fresh load of /admin/players, not a re-read of anything the wizard held.
+# 20000 on the gate, like util-drill-to-custom's own openLink gate: a full SPA
+# load plus the Clerk session check, not a UI response. The counter, not the
+# heading, for the reason at the top of this file.
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/players
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 20000
+- tapOn: "Filter players"
+- inputText: "Gw${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible: ".*matches.*"
+    timeout: 7000
+# Below the counter: the filter box reports its VALUE as its text, and it holds
+# this same name (see player-management-add-and-career-history).
+- tapOn:
+    text: "Gw${output.ATTEMPT_TOKEN}"
+    below:
+      text: ".*matches.*"
+
+# The Cards list is the LAST section of the detail panel, under Save, so it is
+# below the fold. The scroll is its own assertion that the list rendered at
+# all (R6): a player no card links shows "No cards link to … yet." and no list.
+- scrollUntilVisible:
+    element:
+      id: "Cards for Gw${output.ATTEMPT_TOKEN}"
+    centerElement: true
+    timeout: 7000
+# The card is this set's — its breadcrumb names the set — and it carries the
+# "Baseball" tag, which the list prints only for a card whose set's sport is
+# not the player's own. Both inside the list, so neither the row's sport nor
+# the panel's "Sport: Football" can answer.
+- assertVisible:
+    text: ".*Brooklyn Collection.*"
+    childOf:
+      id: "Cards for Gw${output.ATTEMPT_TOKEN}"
+- assertVisible:
+    text: "Baseball"
+    childOf:
+      id: "Cards for Gw${output.ATTEMPT_TOKEN}"

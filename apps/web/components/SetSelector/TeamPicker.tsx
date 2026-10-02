@@ -12,6 +12,8 @@ import {
 import { normalizeEntityName } from "../../lib/entities/normalize-name";
 import NewTeamDialog from "./NewTeamDialog";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
+import { SportTagById } from "./PlayerPicker";
+import SportSwitch from "./SportSwitch";
 
 /**
  * NEO-277 — the four container-level accessible names, overridable per
@@ -152,6 +154,24 @@ export default function TeamPicker({
   const selectedRows = useQuery(api.teams.getManyByIds, { ids: value });
 
   /**
+   * NEO-313 — the sport this popover searches. The card's (set's) sport by
+   * default and on every open; the quiet switch at the foot of the popover is
+   * the only way to change it, for the rare card whose team is from another
+   * sport. Nothing remembers a previous switch. Reset during render when the
+   * prop moves (a different card), per React's "adjust state when a prop
+   * changes" pattern.
+   */
+  const [searchSportId, setSearchSportId] = useState(sportId);
+  const [anchorSportId, setAnchorSportId] = useState(sportId);
+  if (anchorSportId !== sportId) {
+    setAnchorSportId(sportId);
+    setSearchSportId(sportId);
+  }
+  const activeSportId = searchSportId ?? sportId;
+  const crossSport =
+    !!sportId && !!activeSportId && activeSportId !== sportId;
+
+  /**
    * The "nothing typed yet" pool. Filtered and ranked client-side below.
    *
    * Deliberately small and deliberately NOT the thing that finds a team: it is
@@ -159,7 +179,7 @@ export default function TeamPicker({
    */
   const browsePool = useQuery(
     api.teams.list,
-    sportId ? { sportId, limit: 500 } : { limit: 500 },
+    activeSportId ? { sportId: activeSportId, limit: 500 } : { limit: 500 },
   );
 
   /**
@@ -182,7 +202,11 @@ export default function TeamPicker({
   const searched = useQuery(
     api.teams.search,
     query.trim()
-      ? { query: query.trim(), limit: 25, ...(sportId ? { sportId } : {}) }
+      ? {
+          query: query.trim(),
+          limit: 25,
+          ...(activeSportId ? { sportId: activeSportId } : {}),
+        }
       : "skip",
   );
   /**
@@ -302,6 +326,18 @@ export default function TeamPicker({
     return map;
   }, [selectedRows]);
 
+  /** NEO-313 — selected teams from another sport, whose chip names it. */
+  const guestSportById = useMemo(() => {
+    const map = new Map<string, Id<"selectorOptions">>();
+    if (!sportId) return map;
+    for (const row of selectedRows ?? []) {
+      if (row.sportId && row.sportId !== sportId) {
+        map.set(row._id as unknown as string, row.sportId);
+      }
+    }
+    return map;
+  }, [selectedRows, sportId]);
+
   const matches = useMemo(() => {
     if (!candidates) return [];
     const selectedSet = new Set(value as unknown as string[]);
@@ -366,7 +402,9 @@ export default function TeamPicker({
 
   // NEO-96: no sport row → no create. A team must reference a real sport; the
   // old `sport ?? ""` fallback produced orphaned rows.
-  const showCreateOption = query.trim().length > 0 && !!sportId;
+  // NEO-313: a new team is filed under the sport being searched — after a
+  // switch, the operator's explicit choice; otherwise the set's, as before.
+  const showCreateOption = query.trim().length > 0 && !!activeSportId;
 
   /**
    * NEO-236 — open the New Team dialog on the typed name.
@@ -377,7 +415,7 @@ export default function TeamPicker({
    * because it owns the fields they are about.
    */
   const openNewTeam = () => {
-    if (disabled || !sportId || !query.trim()) return;
+    if (disabled || !activeSportId || !query.trim()) return;
     // The ref FIRST, so the blur this same click is about to produce sees the
     // dialog as open. See `newTeamOpenRef`.
     newTeamOpenRef.current = true;
@@ -467,6 +505,11 @@ export default function TeamPicker({
           <span className="truncate max-w-[140px]" aria-label={`Team: ${labelById.get(id as unknown as string) ?? "Loading…"}`}>
             {labelById.get(id as unknown as string) ?? "Loading…"}
           </span>
+          {guestSportById.has(id as unknown as string) && (
+            <SportTagById
+              sportId={guestSportById.get(id as unknown as string)!}
+            />
+          )}
           <button
             type="button"
             disabled={disabled}
@@ -494,7 +537,11 @@ export default function TeamPicker({
           // — a toggle — which silently closed the popover when the
           // test (or a real user) re-tapped "+ Add team" expecting
           // it to keep opening.
-          onClick={() => setPopoverOpen(true)}
+          onClick={() => {
+            // NEO-313: every open starts on the set's sport.
+            setSearchSportId(sportId);
+            setPopoverOpen(true);
+          }}
           // NEO-272: Tab from the trigger lands in the popover, which is what
           // DOM order did for free until the popover was portalled to the end
           // of `document.body`. The way back out is `PickerPopover`'s own Tab
@@ -663,6 +710,10 @@ export default function TeamPicker({
                         {m.league}
                       </span>
                     )}
+                    {/* NEO-313 — only after the operator switched sports. */}
+                    {crossSport && m.sportId && (
+                      <SportTagById sportId={m.sportId} className="ml-2" />
+                    )}
                   </button>
                 );
               })}
@@ -719,7 +770,32 @@ export default function TeamPicker({
                     </span>
                   </span>
                 )}
+                {crossSport && activeSportId && (
+                  <SportTagById sportId={activeSportId} className="ml-2" />
+                )}
               </button>
+            )}
+
+            {/* NEO-313 — the cross-sport override, at the foot of the popover:
+                rarely used, never the default focus (the search box keeps it),
+                and below the rows so every option lands where it always has.
+                Tab from the last row reaches it; Tab again leaves the picker. */}
+            {sportId && (
+              <div className="border-t border-gray-200 dark:border-gray-700 px-2 pt-1">
+                <SportSwitch
+                  // Only one picker's popover is ever open, but the review
+                  // wizard's own switch ("Sport for this name") can share the
+                  // screen, so this one is worded apart from it.
+                  label="Sport to search for teams"
+                  value={activeSportId ?? sportId}
+                  setSportId={sportId}
+                  disabled={disabled}
+                  onChange={(next) => {
+                    setSearchSportId(next);
+                    setHighlightIdx(0);
+                  }}
+                />
+              </div>
             )}
           </PickerPopover>
         )}
@@ -731,9 +807,11 @@ export default function TeamPicker({
         that opens it lives. Rendered only while open, so its league query and
         its focus trap exist only when they are being used.
       */}
-      {newTeamOpen && sportId && (
+      {newTeamOpen && activeSportId && (
         <NewTeamDialog
-          sportId={sportId}
+          // NEO-313: the sport being searched, so a team made after a switch
+          // is filed under the sport the operator chose.
+          sportId={activeSportId}
           initialName={query.trim()}
           onCreated={(id) => {
             addChip(id);

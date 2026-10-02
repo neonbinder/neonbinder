@@ -297,10 +297,12 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     expect(result).toEqual({
       slSetReviewsDeleted: 2,
       selectorOptionsDeleted: 3,
+      cardPlayerLinksDeleted: 0,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
+      playerSportsDeleted: 0,
       playersDeleted: 4,
       playerAliasesDeleted: 0,
       teamsDeleted: 2,
@@ -381,10 +383,12 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     expect(await runReset(t)).toEqual({
       slSetReviewsDeleted: 0,
       selectorOptionsDeleted: 0,
+      cardPlayerLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
       entityReviewQueueDeleted: 0,
       checklistCandidatesDeleted: 0,
+      playerSportsDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,
       teamsDeleted: 0,
@@ -442,10 +446,12 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     const totals = {
       slSetReviewsDeleted: 0,
       selectorOptionsDeleted: 0,
+      cardPlayerLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
       entityReviewQueueDeleted: 0,
       checklistCandidatesDeleted: 0,
+      playerSportsDeleted: 0,
       playersDeleted: 0,
       playerAliasesDeleted: 0,
       teamsDeleted: 0,
@@ -470,10 +476,12 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     expect(totals).toEqual({
       slSetReviewsDeleted: 2,
       selectorOptionsDeleted: 3,
+      cardPlayerLinksDeleted: 0,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
       checklistCandidatesDeleted: 8,
+      playerSportsDeleted: 0,
       playersDeleted: 4,
       playerAliasesDeleted: 0,
       teamsDeleted: 2,
@@ -769,5 +777,85 @@ describe("NEO-294: the entity-review tables are drained, across pages", () => {
     expect(sawPlayersDeleted).toBe(true);
     expect(queueWhenPlayersWent).toBe(0);
     expect(candidatesWhenPlayersWent).toBe(0);
+  });
+});
+
+/**
+ * NEO-313 — `cardPlayerLinks` and `playerSports` are the two tables this
+ * ticket added to the schema. `seedEveryDrainedTable` above predates both and
+ * seeds neither, which is why every existing assertion in this file reads
+ * `cardPlayerLinksDeleted: 0` / `playerSportsDeleted: 0` — a passing zero that
+ * would stay green even if the reset had never been wired to either batch at
+ * all. This is the nonzero half: both tables seeded, both asserted drained.
+ */
+describe("NEO-313: the reset also drains cardPlayerLinks and playerSports", () => {
+  test("both tables are seeded with rows and both come back empty", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedEveryDrainedTable(t);
+
+    await t.run(async (ctx) => {
+      const variantId = (await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_parent", (q) => q.eq("parentId", sportId))
+        .first())!._id;
+      const otherSport = await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Basketball",
+        platformData: {},
+        children: [],
+        lastUpdated: NOW,
+      });
+      const playerId = await ctx.db.insert("players", {
+        name: "Multi Sport Player",
+        nameNormalized: "multi player sport",
+        sportId,
+        lastUpdated: NOW,
+      });
+      // playerSports: 1 — a multi-sport membership.
+      await ctx.db.insert("playerSports", {
+        playerId,
+        sportId: otherSport,
+        nameNormalized: "multi player sport",
+      });
+      const cardId = await ctx.db.insert("cardChecklist", {
+        selectorOptionId: variantId,
+        cardNumber: "99",
+        cardName: "Multi Sport Card",
+        playerIds: [playerId],
+        platformData: {},
+        sortOrder: 99,
+        lastUpdated: NOW,
+      });
+      // cardPlayerLinks: 1 — the derived index row for that card.
+      await ctx.db.insert("cardPlayerLinks", {
+        cardChecklistId: cardId,
+        playerId,
+        sportId,
+      });
+    });
+
+    const before = await t.run(async (ctx) => ({
+      cardPlayerLinks: (await ctx.db.query("cardPlayerLinks").collect()).length,
+      playerSports: (await ctx.db.query("playerSports").collect()).length,
+    }));
+    expect(before).toEqual({ cardPlayerLinks: 1, playerSports: 1 });
+
+    let totalCardPlayerLinksDeleted = 0;
+    let totalPlayerSportsDeleted = 0;
+    for (let pass = 0; pass < 20; pass += 1) {
+      const result = await runReset(t);
+      totalCardPlayerLinksDeleted += result.cardPlayerLinksDeleted;
+      totalPlayerSportsDeleted += result.playerSportsDeleted;
+      if (result.complete) break;
+    }
+
+    expect(totalCardPlayerLinksDeleted).toBe(1);
+    expect(totalPlayerSportsDeleted).toBe(1);
+    const after = await t.run(async (ctx) => ({
+      cardPlayerLinks: (await ctx.db.query("cardPlayerLinks").collect()).length,
+      playerSports: (await ctx.db.query("playerSports").collect()).length,
+    }));
+    expect(after).toEqual({ cardPlayerLinks: 0, playerSports: 0 });
   });
 });

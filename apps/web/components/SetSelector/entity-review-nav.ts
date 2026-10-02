@@ -40,9 +40,18 @@
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
 
 export type NavDecision =
-  | { action: "create" }
+  | {
+      action: "create";
+      /**
+       * NEO-313, player rows moved off the set's sport: the operator also
+       * asked for the set's sport to be added to the new player's sports.
+       */
+      addSetSport?: boolean;
+    }
   | {
       action: "link";
+      /** NEO-313 — as on `create`, for the linked player. */
+      addSetSport?: boolean;
       linkedPlayerId?: string;
       linkedTeamId?: string;
       /**

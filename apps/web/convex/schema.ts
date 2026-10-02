@@ -901,8 +901,12 @@ export default defineSchema({
      *
      *     playerIds === playerLinks.map(l => l.playerId)   — same ids, SAME ORDER
      *
-     * `playerIds` stays as the fast index: it is what `by_player` reads, what
-     * the sync diff compares, and what listing titles iterate. `playerLinks` is
+     * `playerIds` stays as the fast list: it is what the sync diff compares,
+     * what listing titles iterate, and what the `cardPlayerLinks` index is
+     * derived from (NEO-313 — there is no index on this array itself; Convex
+     * cannot index array members, which is why that side table exists and
+     * why every `playerIds` writer must also run its single writer,
+     * `syncCardPlayerLinks`). `playerLinks` is
      * the same list with the printed name attached. Two copies of one list can
      * disagree, so every writer builds both together and
      * `cardChecklist.playerLinksPin.test.ts` greps for one written without the
@@ -1176,6 +1180,71 @@ export default defineSchema({
   })
     .index("by_selector_option", ["selectorOptionId"]) // guest-side lookup: "who's cross-listed into me"
     .index("by_card", ["cardChecklistId"]),            // home-side lookup: "where else does this card appear"
+
+  /**
+   * ── NEO-313: the player → cards index `cardChecklist.playerIds` cannot be ──
+   *
+   * A card lists its players in an ARRAY, and Convex indexes fields, not array
+   * members, so "which cards carry this player?" has no index on
+   * `cardChecklist`. The Players admin needs exactly that question twice: to
+   * list a player's cards, and to REFUSE removing one of a player's sports
+   * (`playerSports` below) while a card in that sport still links to them —
+   * removing it would leave the card pointing at a player the sport no longer
+   * claims.
+   *
+   * So the links are ALSO stored flat, one row per (card, player). This table
+   * is DERIVED, never authored: it holds nothing that is not already on the
+   * card, it is rebuilt from `playerIds` alone, and no reader treats it as the
+   * truth about a card. If the two ever disagree the card wins and the index is
+   * repaired from it.
+   *
+   * ## Why `sportId` and not the card's `selectorOptionId`
+   *
+   * `sportId` is the sport the CARD belongs to (the root of its
+   * `selectorOptionId` ancestor chain, `findSportForSelectorOption`), NOT the
+   * player's home sport — a football player guest-linked onto a baseball card
+   * gets a row with baseball here. That is the column the sport-removal guard
+   * asks about, as one point read on `by_player_and_sport`. It is also stable:
+   * a card can MOVE between set rows (`setShapeMove` re-points
+   * `selectorOptionId`), but only within its set, so never across sports, and
+   * denormalising `selectorOptionId` instead would have made every card move a
+   * second writer here. A reader that wants the card's set reads the card,
+   * which it has to do anyway for its number and name.
+   *
+   * ## The cost, and how it is contained
+   *
+   * Two copies of one fact can disagree. Every write goes through
+   * `syncCardPlayerLinks` in convex/cardPlayerLinks.ts — the single writer,
+   * called by every `cardChecklist.playerIds` writer AND every `cardChecklist`
+   * delete — and `cardPlayerLinks.pin.test.ts` greps every non-test module for
+   * anything else inserting into or deleting from this table, and for a
+   * `playerIds` write that does not reach the helper. The helper diffs against
+   * `by_card`, so a card saved with its players unchanged costs no writes.
+   *
+   * Rows written before this table existed are filled by the armed
+   * `backfillCardPlayerLinks` internalAction (dry-run by default; applies only
+   * with its confirm argument AND the deployment env flag), the
+   * `backfillCardFeatures` pattern. The E2E head-of-run reset drains this
+   * table alongside `cardChecklist`, and the subtree wipe deletes a wiped
+   * card's rows with the card.
+   *
+   * A card that lists the same player twice gets ONE row: the question is
+   * "does this card carry this player", not "how many times".
+   */
+  cardPlayerLinks: defineTable({
+    cardChecklistId: v.id("cardChecklist"),
+    playerId: v.id("players"),
+    // The CARD's sport, not the player's. See above.
+    sportId: v.id("selectorOptions"),
+  })
+    // "This player's cards" (prefix: playerId alone) and "does any card in
+    // THIS sport still carry this player?" (both fields, `.first()`) — the
+    // Players admin card list and the sport-removal guard. One index serves
+    // both; a bare ["playerId"] index would be a strict prefix of this one.
+    .index("by_player_and_sport", ["playerId", "sportId"])
+    // Every row for one card, for the diff `syncCardPlayerLinks` performs and
+    // for the delete that must follow a card's.
+    .index("by_card", ["cardChecklistId"]),
 
   // Players — first-class entity. Created from BSC `players[]` / SL desc
   // parse / user input. Enriched async from Wikidata SPARQL after user
@@ -1707,6 +1776,82 @@ export default defineSchema({
     // and for the cleanup a deleted player would need.
     .index("by_player_id", ["playerId"]),
 
+  /**
+   * ── NEO-313: the sports a player belongs to beyond their home sport ──────
+   *
+   * Bo Jackson played baseball and football; Deion Sanders too. `players.sportId`
+   * is the HOME sport and stays a single required reference — every existing
+   * reader keys on it and nothing about this table changes that. A row here
+   * says "this player ALSO belongs to that sport": a baseball set's checklist
+   * resolves "Bo Jackson" to the one row an operator made in football, instead
+   * of minting a baseball twin and splitting his inventory in half.
+   *
+   * Membership is an OPERATOR decision and only ever one. Jason, 2026-09-28:
+   * nothing automated ever looks across sports, and the default is always the
+   * set's sport. So no lookup, sync or enrichment adds a row here; the Players
+   * admin does, and so does the review wizard's `decision.addSetSport` at
+   * commit (the operator linked or created a player from another sport and
+   * said "he plays this one too"). A guest link WITHOUT that flag — a
+   * football player on one baseball card — writes nothing here: the card's
+   * `playerIds` carries the id and the player row is untouched.
+   *
+   * ## Why a side table and not `players.sportIds[]`
+   *
+   * Convex indexes fields, not array members, and the resolution this exists
+   * for is on the hot path: the commit prelude resolves one name per card, and
+   * the review gate one per unknown, both as an indexed read on
+   * `(nameNormalized, sportId)`. An array on the player row would turn that
+   * into a scan. So the lookup is one more indexed leg beside
+   * `players.by_name_normalized_and_sport_id` and `playerAliases`, unioned and
+   * deduped by id in `sameNamePlayers` — same footing, same exactly-one guard.
+   *
+   * ## The cost, and how it is contained
+   *
+   * `nameNormalized` is DENORMALISED from `players.nameNormalized` so the
+   * lookup is one compound read rather than a read plus a `db.get` per hit.
+   * Two copies of one fact can disagree, so every write — add, remove, and the
+   * rewrite a player RENAME must trigger — goes through `syncPlayerSports` in
+   * convex/players.ts, the single writer, and a pin test greps every non-test
+   * module for anything else inserting into, patching or deleting from this
+   * table (the `players.aliasIndexPin.test.ts` shape). The writer diffs
+   * against `by_player_id`, never stores the home sport here, and never stores
+   * a (player, sport) pair twice.
+   *
+   * ## Aliases follow the player into every sport
+   *
+   * `playerAliases` is keyed `(aliasNormalized, sportId)`, so an alias only
+   * answers in a sport that has a row for it. A player's aliases get ONE ROW
+   * PER SPORT THEY BELONG TO — home plus every row here — so "Vincent Jackson"
+   * finds Bo in baseball exactly as it does in football, and every lookup stays
+   * a single-sport indexed read (never a cross-sport one). `syncPlayerAliases`
+   * derives that sport set itself from `players.sportId` + this table's
+   * `by_player_id`, and `syncPlayerSports` calls it whenever the set changes.
+   *
+   * Removing a sport is refused while a card in that sport still carries the
+   * player (`cardPlayerLinks.by_player_and_sport`).
+   *
+   * The E2E head-of-run reset drains this table alongside `players`, as it
+   * does `playerAliases`.
+   */
+  playerSports: defineTable({
+    playerId: v.id("players"),
+    // An ADDITIONAL sport — never equal to the player's own `sportId`.
+    sportId: v.id("selectorOptions"),
+    /** `players.nameNormalized`, denormalised — rewritten on every rename. */
+    nameNormalized: v.string(),
+  })
+    // The lookup: "which players in this sport are called this?" — the third
+    // leg of `sameNamePlayers`, `.take(PLAYER_AMBIGUITY_SCAN_LIMIT)` like the
+    // other two.
+    .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
+    // Every row for one player: the diff `syncPlayerSports` performs, the
+    // rename rewrite, the alias writer's sport set, and the Players admin's
+    // "also plays" chips.
+    .index("by_player_id", ["playerId"])
+    // Every extra-sport member of one sport, for the Players admin's
+    // per-sport list, which must show Bo under baseball too.
+    .index("by_sport_id", ["sportId"]),
+
   entityReviewQueue: defineTable({
     selectorOptionId: v.id("selectorOptions"),
     batchId: v.string(),
@@ -2115,6 +2260,25 @@ export default defineSchema({
           aliases: v.optional(v.array(v.string())),
           wikidataId: v.optional(v.string()),
         })),
+        /**
+         * ── NEO-313, player-kind only: "he plays the set's sport too" ───────
+         *
+         * The review row's `sportId` is the sport the question is ANSWERED in:
+         * the set's sport by default, re-pointed by `switchRowSport` when the
+         * operator says this name belongs to a player from another sport. When
+         * that happens, a create makes the player in THAT sport (their home),
+         * and `true` here means: at COMMIT, also add the SET's sport to the
+         * new player's `playerSports` through `syncPlayerSports`, the one
+         * writer — Bo Jackson created in football off a baseball card, and
+         * baseball recorded as a sport he belongs to.
+         *
+         * Absent (or false) is a GUEST link: the card carries the player and
+         * nothing about the player row changes. A no-op when the row's sport
+         * already is the set's sport. Written at commit, never at decision
+         * time, like `saveAsAlias`: Cancel → Discard must leave no trace. No
+         * sync ever sets it.
+         */
+        addSetSport: v.optional(v.boolean()),
       }),
       v.object({
         action: v.literal("link"),
@@ -2164,6 +2328,14 @@ export default defineSchema({
          * what makes it NB vocabulary. No sync ever sets this flag.
          */
         saveAsAlias: v.optional(v.boolean()),
+        /**
+         * NEO-313, player-kind only — the link twin of the create variant's
+         * `addSetSport`: at COMMIT, add the SET's sport to `linkedPlayerId`'s
+         * `playerSports` (a no-op when it is their home sport or already
+         * listed). Absent is a guest link that leaves the player untouched.
+         * See the create variant for the full contract.
+         */
+        addSetSport: v.optional(v.boolean()),
       }),
       // NEO-212: "this name is not a person / not a team". Carries no payload —
       // nothing is created, nothing is linked, and the card keeps the raw name
