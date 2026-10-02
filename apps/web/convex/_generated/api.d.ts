@@ -111,6 +111,7 @@ import type * as shipmentTracking from "../shipmentTracking.js";
 import type * as shipping from "../shipping.js";
 import type * as sku from "../sku.js";
 import type * as slBrandAxis from "../slBrandAxis.js";
+import type * as slLinkDuplicatesReport from "../slLinkDuplicatesReport.js";
 import type * as slSetReview from "../slSetReview.js";
 import type * as splitTeamLocations from "../splitTeamLocations.js";
 import type * as sportConfig from "../sportConfig.js";
@@ -233,6 +234,7 @@ declare const fullApi: ApiFromModules<{
   shipping: typeof shipping;
   sku: typeof sku;
   slBrandAxis: typeof slBrandAxis;
+  slLinkDuplicatesReport: typeof slLinkDuplicatesReport;
   slSetReview: typeof slSetReview;
   splitTeamLocations: typeof splitTeamLocations;
   sportConfig: typeof sportConfig;

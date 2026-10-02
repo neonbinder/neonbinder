@@ -152,7 +152,10 @@ import {
   checkReturnedIds,
   heldElsewhereEntry,
   heldElsewhereEntryValidator,
-  loadVariantTypeSubtreeElsewhere,
+  linkBlocker,
+  linkWithheldEntry,
+  type LinkBlock,
+  loadSyncHoldersElsewhere,
   withheldElsewhereEntry,
   withheldElsewhereEntryValidator,
   partialSyncMessage,
@@ -2278,12 +2281,13 @@ export const storeSelectorOptions = mutation({
 
     // NEO-300 — the rest of the variant type's subtree, read only when some
     // option names an id no sibling holds. Same rule and same reason as
-    // `storeReconciledOptions`; see `loadVariantTypeSubtreeElsewhere`.
+    // `storeReconciledOptions`; see `loadSyncHoldersElsewhere`.
     const subtree = itemsReachPastSiblings(existingOptions, items)
-      ? await loadVariantTypeSubtreeElsewhere(ctx, {
+      ? await loadSyncHoldersElsewhere(ctx, {
           level,
           parent: parentRowForCopyDown,
           siblings: existingOptions,
+          items,
         })
       : null;
 
@@ -2292,7 +2296,14 @@ export const storeSelectorOptions = mutation({
       items,
       coveredSides: effectiveCovered,
       returnedIds: effectiveReturnedIds,
-      ...(subtree ? { elsewhereInSubtree: subtree.rows } : {}),
+      ...(subtree
+        ? {
+            elsewhereInSubtree: subtree.rows,
+            // NEO-312 — fail closed on a side a bound kept the walk from
+            // finishing: withheld and reported, never stored.
+            elsewhereUncheckedSides: subtree.uncheckedSides,
+          }
+        : {}),
       // NEO-237 — at manufacturer level, SportLots' all-brands option id is a
       // PLACEHOLDER link, not a live brand id: `addCustomSelectorOption`
       // writes it on every hand-typed brand, and the fetch that finally lists
@@ -2487,6 +2498,8 @@ export const storeSelectorOptions = mutation({
     );
     const heldElsewhereById = new Map<string, HeldElsewhereEntry>();
     const withheldElsewhereAll: WithheldElsewhereEntry[] = [];
+    // NEO-312 — asked before a matched row takes an id it does not hold yet.
+    const blockLink = linkBlocker(subtree);
 
     for (let i = 0; i < options.length; i++) {
       // The bound is checked BEFORE the item, so the last item admitted is the
@@ -2535,9 +2548,18 @@ export const storeSelectorOptions = mutation({
         // resolving when a marketplace re-slugs a set — the id changes, the
         // set does not. A side with no incoming id is not touched here; it is
         // handled by the unlink pass, which only fires on a covered side.
+        const linkBlocks: LinkBlock[] = [];
         for (const side of PLATFORM_SIDES) {
           const incoming = item.ids[side];
           if (!incoming) continue;
+          // NEO-312 — one link, one row: an id another row already holds is
+          // not attached to this (matched) row. Its own links stand; the
+          // holder is named to the operator. See `linkBlocker`.
+          const block = blockLink(w, side, incoming);
+          if (block) {
+            linkBlocks.push(block);
+            continue;
+          }
           // A name-tier match that lands on a DIFFERENT id than the row held
           // is the re-slug heal. The slot key is reused, so nothing orphans —
           // but every card under this row is now attributed to a different
@@ -2583,6 +2605,17 @@ export const storeSelectorOptions = mutation({
             label,
           );
           if (cleared.changed) w.declinedUpstreamLabels = cleared.next;
+        }
+
+        if (linkBlocks.length > 0) {
+          withheldElsewhereAll.push(
+            linkWithheldEntry(
+              option.value,
+              linkBlocks,
+              subtreeRowsById,
+              subtree?.parentsById ?? new Map(),
+            ),
+          );
         }
 
         warnIfIncomplete(
@@ -2886,6 +2919,8 @@ export const storeSelectorOptions = mutation({
           withheld: withheldElsewhereAll.length,
           subtreeReads: subtree?.reads ?? 0,
           subtreeWalkSkipped,
+          uncheckedSides: subtree?.uncheckedSides ?? [],
+          brandWalkTruncated: subtree?.brandWalkTruncated ?? false,
           rowIds: heldElsewhereAll.slice(0, 25).map((r) => r.id),
         }),
       );

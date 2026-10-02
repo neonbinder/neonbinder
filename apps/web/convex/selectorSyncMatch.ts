@@ -465,7 +465,12 @@ export type MatchOutcome<TId extends string = string> =
        * every sibling-level withhold, whose shape is unchanged.
        */
       elsewhere?: {
-        reason: "heldByMany" | "idsDisagree";
+        /**
+         * NEO-312 — "notChecked": the item carries an id no sibling holds on
+         * a side the holder walk could not finish (`elsewhereUncheckedSides`).
+         * Withheld rather than stored, with no holders to name.
+         */
+        reason: "heldByMany" | "idsDisagree" | "notChecked";
         holderIds: TId[];
       };
     }
@@ -659,8 +664,9 @@ function rowHoldsId(row: SlotBearingRow, side: PlatformSide, id: string): boolea
 }
 
 /**
- * NEO-300 — does this item name a row that lives elsewhere in the variant
- * type's subtree? `undefined` = no, carry on to the name tier.
+ * NEO-300 — does this item name a row that lives elsewhere (the variant
+ * type's subtree; since NEO-312 anywhere in the set, or a SportLots id under
+ * the brand's other sets)? `undefined` = no, carry on to the name tier.
  *
  * Tier 0 first (the modal's own NB row id), then every marketplace id the
  * item carries. One distinct holder is `heldElsewhere`. Several is a
@@ -693,7 +699,7 @@ function heldElsewhereOutcome<TId extends string>(
       return {
         kind: "withheld",
         reason:
-          `existingId names a row elsewhere in this variant type that does ` +
+          `existingId names a row elsewhere in this set that does ` +
           `not hold the item's ${contradicted.join(" and ")} id`,
         elsewhere: { reason: "idsDisagree", holderIds: [row._id] },
       };
@@ -709,7 +715,7 @@ function heldElsewhereOutcome<TId extends string>(
   if (holders.size > 1) {
     return {
       kind: "withheld",
-      reason: `marketplace ids are held by ${holders.size} rows elsewhere in this variant type`,
+      reason: `marketplace ids are held by ${holders.size} rows elsewhere in this set or brand`,
       elsewhere: {
         reason: "heldByMany",
         holderIds: [...holders].map((row) => row._id),
@@ -797,8 +803,9 @@ export function planSelectorSync<TId extends string>(args: {
    */
   isPlaceholderId?: PlaceholderIdPredicate;
   /**
-   * NEO-300 — rows in the same variant type's subtree that are NOT siblings
-   * of this sync (see `loadVariantTypeSubtreeElsewhere`). Consulted only
+   * NEO-300 — rows that are NOT siblings of this sync but hold ids it may
+   * carry: the variant type's subtree, and since NEO-312 the rest of the set
+   * and the brand's other sets (see `loadSyncHoldersElsewhere`). Consulted only
    * AFTER the sibling tiers 0 and 1 miss outright, and only by NB row id
    * (tier 0) or marketplace id held in a slot (tier 1) — never by name, and
    * never by card number. A hit is `heldElsewhere`. Absent or empty → today's
@@ -806,6 +813,15 @@ export function planSelectorSync<TId extends string>(args: {
    * always wins.
    */
   elsewhereInSubtree?: readonly MatchableRow<TId>[];
+  /**
+   * NEO-312 — sides on which `elsewhereInSubtree` is INCOMPLETE (a bound
+   * stopped the holder walk). Fail closed: an item that reaches the elsewhere
+   * check (no sibling holds any of its ids), names no known holder, and
+   * carries an id on one of these sides is WITHHELD (`notChecked`) — a row
+   * stored now could be a second holder of that id. Absent or empty → no
+   * effect.
+   */
+  elsewhereUncheckedSides?: readonly PlatformSide[];
 }): SelectorSyncPlan<TId> {
   const { existing, items, isPlaceholderId } = args;
 
@@ -951,6 +967,22 @@ export function planSelectorSync<TId extends string>(args: {
           ambiguities.push({ item: item.value, reason: elsewhere.reason });
         }
         outcomes[i] = elsewhere;
+      } else {
+        // NEO-312 — fail closed on a side the holder walk could not finish.
+        const unchecked = (args.elsewhereUncheckedSides ?? []).filter(
+          (side) => item.ids[side] !== undefined,
+        );
+        if (unchecked.length > 0) {
+          const reason =
+            `could not check whether another row already holds the item's ` +
+            `${unchecked.join(" and ")} id`;
+          ambiguities.push({ item: item.value, reason });
+          outcomes[i] = {
+            kind: "withheld",
+            reason,
+            elsewhere: { reason: "notChecked", holderIds: [] },
+          };
+        }
       }
     }
   }

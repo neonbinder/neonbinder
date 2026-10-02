@@ -34,6 +34,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { RECONCILE_STORE_WRITE_BUDGET } from "./setReconciliation";
+import { MAX_SUBTREE_WALK_INSERTS } from "./selectorSyncStore";
 
 const modules = (
   import.meta as unknown as {
@@ -288,12 +289,18 @@ describe("NEO-300 — the variant-type subtree walk is paid for out of the same 
     // The admitted inserts, plus the parent `children` patch.
     expect(first.writeOps).toBe(RECONCILE_STORE_WRITE_BUDGET - existing + 1);
 
+    // The replay walks 800 inserts — at `MAX_SUBTREE_WALK_INSERTS` (NEO-312
+    // raised it to 800), not past it — so the walk runs, its 800 reads are
+    // charged at the half-budget cap, and the tail is stored.
+    expect(RECONCILE_STORE_WRITE_BUDGET).toBeLessThanOrEqual(MAX_SUBTREE_WALK_INSERTS);
     const second = await asAdmin.mutation(
       api.setReconciliation.storeReconciledOptions,
       { level: "insert", parentId: vt, reconciledItems: items },
     );
     expect(second.hasMore).toBe(false);
     expect(second.itemsProcessed).toBe(RECONCILE_STORE_WRITE_BUDGET);
+    expect(second.subtreeWalkSkipped).toBe(false);
+    expect(second.withheldElsewhereTotal).toBe(0);
     const rows = await t.run(async (ctx) =>
       ctx.db
         .query("selectorOptions")

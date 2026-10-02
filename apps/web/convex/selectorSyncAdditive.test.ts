@@ -27,7 +27,7 @@ import { SL_ALL_BRANDS_BRAND_ID } from "./slBrandAxis";
 import {
   MAX_SUBTREE_WALK_DOCUMENTS,
   MAX_SUBTREE_WALK_INSERTS,
-  loadVariantTypeSubtreeElsewhere,
+  loadSyncHoldersElsewhere,
 } from "./selectorSyncStore";
 
 const modules = (
@@ -1739,6 +1739,9 @@ describe("a row grouped between insert and parallel is not re-created by the nex
         level: "parallel",
         parentId: String(chrome._id),
         parentValue: "Chrome",
+        // NEO-312 — the NB names down to the holder's parent. This fixture's
+        // variant type has no set above it, so the path starts there.
+        path: ["Inserts", "Chrome"],
       },
       {
         id: String(refractor._id),
@@ -1746,6 +1749,7 @@ describe("a row grouped between insert and parallel is not re-created by the nex
         level: "parallel",
         parentId: String(chrome._id),
         parentValue: "Chrome",
+        path: ["Inserts", "Chrome"],
       },
     ]);
     // Held rows are not "stored" rows: the count is Chrome alone.
@@ -1968,7 +1972,7 @@ describe("a row grouped between insert and parallel is not re-created by the nex
             q.eq("level", level).eq("parentId", parentId),
           )
           .collect();
-        const r = await loadVariantTypeSubtreeElsewhere(ctx, { level, parent, siblings });
+        const r = await loadSyncHoldersElsewhere(ctx, { level, parent, siblings, items: [] });
         return r
           ? { reads: r.reads, skipped: r.skipped, values: r.rows.map((x) => x.value).sort() }
           : null;
@@ -2005,13 +2009,14 @@ describe("a row grouped between insert and parallel is not re-created by the nex
       values: ["A1", "A2", "B1"],
     });
     // At `parallel` under A: the variant type get + the inserts read + B's
-    // parallels. A's own parallels are the siblings, and A itself is NOT
-    // elsewhere (the rule: elsewhere is where a grouping could have moved a
-    // row, and a grouping never turns a row into its own parent).
+    // parallels. A's own parallels are the siblings. NEO-312: A itself IS a
+    // holder now — one link lives on one row, so a NEW parallel cannot take
+    // its parent insert's id (a parallel already carrying it is a sibling and
+    // still matches).
     expect(await walk("parallel", a)).toEqual({
       reads: 3,
       skipped: false,
-      values: ["B", "B1"],
+      values: ["A", "B", "B1"],
     });
 
     // Past the inserts bound the walk does not run at all, and says so.
@@ -2075,10 +2080,11 @@ describe("a row grouped between insert and parallel is not re-created by the nex
           q.eq("level", "insert").eq("parentId", vt),
         )
         .collect();
-      const r = await loadVariantTypeSubtreeElsewhere(ctx, {
+      const r = await loadSyncHoldersElsewhere(ctx, {
         level: "insert",
         parent,
         siblings,
+        items: [],
       });
       return r ? { reads: r.reads, skipped: r.skipped, rows: r.rows.length } : null;
     });
@@ -2087,7 +2093,7 @@ describe("a row grouped between insert and parallel is not re-created by the nex
     expect(out).toEqual({ reads: 2, skipped: true, rows: 0 });
   });
 
-  test("a store whose walk is skipped says so (subtreeWalkSkipped) and falls back to the sibling-only rule", async () => {
+  test("a store whose walk is skipped FAILS CLOSED: items naming an id no sibling holds are withheld (notChecked), both stores (NEO-312)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = admin(t);
     const vt = await insertVariantType(t);
@@ -2126,16 +2132,26 @@ describe("a row grouped between insert and parallel is not re-created by the nex
         level: "insert",
         parentId: vt,
         reconciledItems: [
+          // The grouped row's id: NEO-300's fallback re-created it here.
           { value: "Refractor", platformData: { bsc: "refractor-v" }, metadata: undefined },
+          // A sibling's own id still matches — the sibling tiers never wait
+          // on the walk.
+          { value: "Chrome", platformData: { bsc: "chrome-v" }, metadata: undefined },
         ],
       },
     );
     expect(res.subtreeWalkSkipped).toBe(true);
     expect(res.heldElsewhereTotal).toBe(0);
-    // The documented fallback: today's sibling-only rule, so the row IS
-    // re-created — which is exactly why the flag is surfaced.
+    expect(res.withheldElsewhereTotal).toBe(1);
+    expect(res.withheldElsewhere[0]).toEqual({
+      label: "Refractor",
+      reason: "notChecked",
+      holders: [],
+    });
+    expect(res.optionsCount).toBe(1);
     const inserts = await rowsUnder(t, "insert", vt);
-    expect(inserts.filter((r) => r.value === "Refractor")).toHaveLength(1);
+    expect(inserts.filter((r) => r.value === "Refractor")).toHaveLength(0);
+    expect(inserts).toHaveLength(MAX_SUBTREE_WALK_INSERTS + 1);
 
     const res2 = await asAdmin.mutation(api.selectorOptions.storeSelectorOptions, {
       level: "insert",
@@ -2143,6 +2159,9 @@ describe("a row grouped between insert and parallel is not re-created by the nex
       options: [{ value: "Atomic", platformData: { bsc: "atomic-v" } }],
     });
     expect(res2.subtreeWalkSkipped).toBe(true);
+    expect(res2.withheldElsewhereTotal).toBe(1);
+    expect(res2.withheldElsewhere[0].reason).toBe("notChecked");
+    expect(await rowsUnder(t, "insert", vt)).toHaveLength(MAX_SUBTREE_WALK_INSERTS + 1);
   });
 
   test("an id held by two rows elsewhere is WITHHELD and reported to the operator, both stores", async () => {
