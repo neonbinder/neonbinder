@@ -55,7 +55,7 @@ radio under the pinned preview, CI 36172808297, until the set-shape dialogs
 started folding answered questions and the radio moved into the band — a
 layout fix beats a swipe), `parallel-grouping-reject-parallel.yaml` (pin to end, then
 ✕), `parallel-grouping-demoted-parallel-takes-parallels.yaml` (click-to-place
-instead of drag), `flagship-colour-is-a-parallel-both-ways.yaml` STEP 2 (merged from `parallel-grouping-promoted-insert-fetches-from-bsc`)
+instead of drag), `bowman-insert-grouping-builds-parallels.yaml` STEP 2 (once the 2026 Bowman flagship flow)
 (ReconciliationModal row button + Keep all), `inserts-1996-score-one-nb-set-two-bsc-sources.yaml`
 (one UP swipe pins a short body to its end before tapping a Pending row's NAME).
 

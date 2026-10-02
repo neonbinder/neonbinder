@@ -848,6 +848,32 @@ Two corollaries worth knowing before you write the selector:
   `label()`, not hedging a scope — those are the closed row controls, and they
   still need it.
 
+* **A parallel's checklist has no `Sync card checklist` (NEO-312).** On a row
+  picked from the column BELOW an insert, the Sync slot is `Build from
+  <insert>`, or `Rebuild from <insert>` once the parallel has cards (a
+  confirm, `Replace the cards`, guards the rebuild). A row in the column
+  directly under a variant type — `Blue` under Bowman › `Parallel`, `Prizm
+  Gold` in `cards-parallel-custom` — is the insert role and keeps the ordinary
+  Sync. Saving an INSERT's checklist starts `ParallelBuildPanel` under the
+  `Saved N cards.` notice: heading `Building parallels of <insert> — k of M`
+  while it runs, then `<insert> parallels — b built[, …]` or `<insert> parallels —
+  stopped after b of M`; one text node per line, `<parallel> — <status>`; `Stop after
+  this one`, which reads `Stopping after this one…` once pressed. Target all
+  of these by their visible `text:`. Both buttons carry a `useFieldTestClass` marker (NEO-260), never a DOM
+  id. **Assert the FINISHED heading, never the running one or Stop:** a
+  build without a team lookup or wizard takes about a second a parallel, so
+  CI 36516143308 saw four finish before the flow's `Saved N cards` assert
+  returned. The sr-only live line repeats the finished heading with a
+  trailing `.`, so write the heading pattern so it cannot end in one
+  (`bowman-insert-grouping-builds-parallels` STEP 8). Stop is unit-tested.
+  **A moved SportLots link is never re-created by a later sync (NEO-312).**
+  Make insert of… deletes its source row; before NEO-312 the next
+  `Sync <Type>s` on the column the row left brought it back (the reconcile
+  and the single-platform store held ids only within one variant type).
+  `bowman-sportlots-links-move-between-set-parallel-insert` STEPS 15–16 prove
+  the fix: re-sync, search the old name (`No matches found` is the positive,
+  the row's absence the claim), then read the moved row's SportLots chip.
+
 ## Launching a flow: always gate on the destination heading
 
 Almost every flow's `url:` is **not** the page under test — it's
@@ -988,6 +1014,22 @@ that asserts the paused behaviour (the exact copy in
 `lib/marketplace/pause-notice.ts`), and the live coverage comes back by
 itself when the variable is unset.
 
+**Today the switch is OFF** — SportLots was unpaused on 2026-09-21 (the
+automated-access handshake, NEO-288, replaced the reason for the pause; the
+repository variable was deleted), so every CI run passes `PAUSED_PLATFORMS`
+empty and every flow takes its LIVE branch. The paused branches stay: they
+are what the suite does the day an operator pauses a marketplace again, and
+both branches of a flow still end in hard asserts (R2). Never write a
+comment, a registry entry or a memory that says the suite "is" paused; check
+the run you are reading instead:
+
+```bash
+gh run view <run-id> --log | grep -m1 "PAUSED_PLATFORMS: "
+```
+
+An empty value after the colon means live. A failure diagnosed on the paused
+branch of a live run (or the reverse) is a misread, not a finding.
+
 **How a flow knows.** Both runner scripts pass
 `-e "PAUSED_PLATFORMS=${PAUSED_PLATFORMS:-}"` on every `maestro test` — always,
 empty when unset. CI (`e2e.yml`) exports the shell variable from the GitHub
@@ -1044,8 +1086,8 @@ Paused branches below the root therefore assert THAT state, never the paused
 sentence. Three structural consequences matter to drills: the **Manufacturers
 column holds only the pinned "All Brands" view entry** on a fresh deployment
 (SportLots' brand list is its only source of rows; the view is not a row and
-is rendered in every mode — NEO-237; see `SET-REGISTRY.md` → "While SportLots
-is on pause"), a **brand's Sets column ends "done" with "SportLots skipped:
+is rendered in every mode — NEO-237; see `SET-REGISTRY.md` → "When SportLots
+is paused"), a **brand's Sets column ends "done" with "SportLots skipped:
 no SportLots ids on this path."** now that Sync Sets asks SportLots per brand
 (a notice, not an error — the seed's strict asserts key on failure copy), and
 a **BSC-only Base still reads as unmapped**, so its picker re-opens on every
@@ -1099,8 +1141,11 @@ What that changes for flows:
 - **The live lane is proved by ONE flow:**
   `flows/admin/player-live-wikidata-enrichment.yaml`. It adds a real Hall
   of Famer by hand on `/admin/players` — a name deliberately absent from the
-  recording and from every checklist the suite commits — and waits for the
-  `Wikidata Q…` link in the detail header. It carries the suite's one
+  recording and from every checklist the suite commits — waits for the
+  detail panel's `Wikidata id` field to hold a `Q…` value, then scrolls UP
+  to the `Wikidata Q…` link in the detail header (never waits on the link
+  itself: after Create the page clamps, then scroll anchoring restores it
+  with the header above the viewport). It carries the suite's one
   in-flow R5 exception above 7 s, recorded at the site with its arithmetic,
   and it is **expected to go red during a genuine Wikidata outage**. Since
   NEO-301 a transport failure (timeout, network error, 5xx, 429) is

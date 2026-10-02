@@ -26,6 +26,12 @@ sentence's quoted label against the button's.
 - When a message must name a control, hoist the visible text to a `const`
   beside the other `*_LABEL` constants in the file and have both the button
   and the sentence read it — that is the only thing that keeps them in step.
+- When the sentence lives in a DIFFERENT component from the control, put the
+  label in a pure module (`components/SetSelector/control-labels.ts`) and
+  import it from both. Never import a named label from the component itself:
+  several tests `vi.mock` those components as `{ default: () => null }`, and a
+  named import through a default-only mock throws. Pin the rendered text with
+  a byte-literal assertion beside the constant so a rename is a red test.
 - Watch for the same trap in a *remedy* sentence naming a surface rather than
   a control: NEO-294's audit proposed "Rename this set in Set Details", and no
   screen called "Set Details" exists — the rename is a pencil in the

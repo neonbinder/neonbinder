@@ -75,6 +75,10 @@ import ParallelForm from "../SetSelector/ParallelForm";
 // (auto re-subscribe + Retry) so a column never hangs forever on "Loading…".
 import ResilientEntityColumn from "../SetSelector/ResilientEntityColumn";
 import CardChecklist from "../SetSelector/CardChecklist";
+import ParallelBuildPanel, {
+  useHostedParallelBuildRun,
+  type ParallelBuildRole,
+} from "../SetSelector/ParallelBuildPanel";
 import BaseMappingForm from "../SetSelector/BaseMappingForm";
 import ParallelGroupingModal from "../SetSelector/ParallelGroupingModal";
 import MultiSourcePanel from "../SetSelector/MultiSourcePanel";
@@ -609,6 +613,47 @@ export default function SetSelector() {
     return { bsc: build("bsc"), sportlots: build("sportlots") };
   }, [cardChecklistRow]);
 
+  /**
+   * NEO-312 — which half of an insert → parallel pair the open checklist is.
+   *
+   * Read off the cascade's own selections, never off a name or a marketplace
+   * value: a checklist on the Variants column's row is an insert, and one on
+   * the column below it is a parallel of that insert. The insert's name is
+   * the parallel button's label ("Build from Anime"), taken from the chain
+   * this component already reads for the checklist row — the insert is that
+   * row's parent, so it is in the chain by construction, and matched by id.
+   * Until the chain loads it is undefined and the button waits.
+   */
+  /**
+   * NEO-312 (hobby A10) — the runner that builds an insert's parallels after
+   * its checklist is saved, hosted HERE rather than in the checklist. The
+   * operator keeps working while a run goes — into a parallel it just built,
+   * up to another variant type, across to a sibling insert — and several of
+   * those moves unmount the checklist outright. The set builder outlives all
+   * of them, so the run does too; the checklist is handed the runner, and
+   * whenever no checklist is open this component shows the panel itself.
+   */
+  const parallelRun = useHostedParallelBuildRun();
+
+  const parallelBuild: ParallelBuildRole | undefined = useMemo(() => {
+    if (isBaseVariantTypeSelected || !selectedVariantId) return undefined;
+    if (selectedVariantOfVariantId) {
+      return {
+        role: "parallel",
+        insertId: selectedVariantId,
+        insertValue: cardChecklistChain?.find(
+          (c) => c._id === selectedVariantId,
+        )?.value,
+      };
+    }
+    return { role: "insert" };
+  }, [
+    isBaseVariantTypeSelected,
+    selectedVariantId,
+    selectedVariantOfVariantId,
+    cardChecklistChain,
+  ]);
+
   // NO SCROLL HEADROOM HERE, deliberately — the shell owns it now (NEO-260).
   //
   // This container used to be the one place in the app that had a bottom-pad
@@ -935,7 +980,19 @@ export default function SetSelector() {
           // and fills the whole SET, so it needs the set's id — which only
           // this cascade holds.
           setId={selectedSetId ?? undefined}
+          // NEO-312: an insert builds its parallels after a save; a parallel
+          // builds from its insert instead of syncing.
+          parallelBuild={parallelBuild}
+          parallelRun={parallelRun}
         />
+      )}
+
+      {/* NEO-312 — no checklist is open to show the run (the operator moved
+          above the insert level mid-run, or came back after leaving), so the
+          panel stands in the checklist's place: Stop stays in reach and the
+          result stays readable. */}
+      {!cardChecklistId && parallelRun.run && (
+        <ParallelBuildPanel run={parallelRun.run} onStop={parallelRun.stop} />
       )}
 
       {/* Parallel-grouping modal — mounted at the page root so it overlays

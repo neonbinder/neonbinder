@@ -97,12 +97,15 @@ describe("NEO-313: only cardPlayerLinks.ts writes the card → player index", ()
 describe("NEO-313: every playerIds writer and every card delete reaches the helper", () => {
   const SRC = read("selectorOptions.ts");
 
-  test("no module but selectorOptions.ts inserts a card", () => {
-    // The two insert sites below are the whole population; a third module
-    // inserting cards would be a writer this file does not see.
+  test("no module but selectorOptions.ts and cardRowCreate.ts inserts a card", () => {
+    // The insert sites below are the whole population; a third module
+    // inserting cards would be a writer this file does not see. NEO-312 moved
+    // the commit chunk's insert into `cardRowCreate.insertCardRow`, which the
+    // parallel build shares.
     const offenders = sourceFiles(CONVEX_DIR).filter(
       (file) =>
         !file.endsWith(join("convex", "selectorOptions.ts")) &&
+        !file.endsWith(join("convex", "cardRowCreate.ts")) &&
         /\.insert\(\s*"cardChecklist"/.test(readFileSync(file, "utf8")),
     );
     expect(offenders).toEqual([]);
@@ -113,12 +116,25 @@ describe("NEO-313: every playerIds writer and every card delete reaches the help
     const sites = lines
       .map((line, i) => ({ line, i }))
       .filter(({ line }) => /ctx\.db\.insert\("cardChecklist"/.test(line));
-    // addCustomCard and the commit chunk's insert branch.
-    expect(sites).toHaveLength(2);
+    // addCustomCard. The commit chunk's insert branch goes through
+    // `insertCardRow`, pinned below.
+    expect(sites).toHaveLength(1);
     for (const { i } of sites) {
       const window = lines.slice(i, i + 120).join("\n");
       expect(window, `insert at line ${i + 1}`).toContain("syncCardPlayerLinks(");
     }
+  });
+
+  test("insertCardRow (commit chunk + parallel build) syncs the index for every card it inserts", () => {
+    // NEO-312 — the one insert in cardRowCreate.ts sits inside insertCardRow,
+    // and the index call follows it in the same function, so no caller can
+    // mint an unindexed card.
+    const src = read("cardRowCreate.ts");
+    expect(src.match(/ctx\.db\.insert\(\s*"cardChecklist"/g) ?? []).toHaveLength(1);
+    const fn = src.slice(src.indexOf("export async function insertCardRow"));
+    const insertAt = fn.search(/ctx\.db\.insert\(\s*"cardChecklist"/);
+    expect(insertAt).toBeGreaterThan(0);
+    expect(fn.slice(insertAt)).toMatch(/syncCardPlayerLinks\(ctx, id, card\.playerIds,[\s\S]*fresh: true/);
   });
 
   test("updateCard syncs the index after its patch", () => {
@@ -141,6 +157,16 @@ describe("NEO-313: every playerIds writer and every card delete reaches the help
     // module (NEO-189), so it counts the delete sites.
     const deletes = (SRC.match(/await orphanVariationsOf\(ctx,/g) ?? []).length;
     const indexDeletes = (SRC.match(/await deleteCardPlayerLinks\(ctx,/g) ?? []).length;
+    expect(deletes).toBeGreaterThan(0);
+    expect(indexDeletes).toBe(deletes);
+  });
+
+  test("the parallel build's delete page removes each deleted card's index rows", () => {
+    // NEO-312 — the rebuild deletes the parallel's old cards; same pairing as
+    // selectorOptions.ts: one index delete per card delete.
+    const src = read("parallelChecklistBuild.ts");
+    const deletes = (src.match(/await orphanVariationsOf\(ctx,/g) ?? []).length;
+    const indexDeletes = (src.match(/await deleteCardPlayerLinks\(ctx,/g) ?? []).length;
     expect(deletes).toBeGreaterThan(0);
     expect(indexDeletes).toBe(deletes);
   });

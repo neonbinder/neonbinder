@@ -17,7 +17,7 @@ tags:
 #      it no longer writes what SportLots alone lists: every such name waits
 #      in that BRAND's review (the "N SportLots sets to sort" pill on a
 #      brand's own Sets column — never on this view, which spans every
-#      brand; `flagship-colour-is-a-parallel-both-ways` drives it). What
+#      brand; `setup.yaml` drives it for 2026 Bowman). What
 #      STEP 2 proves is that the phase RAN: the column's done state carries
 #      no "SportLots skipped" notice, the one thing the sync says about the
 #      SportLots side here. Nothing this flow reads depends on a SportLots-
@@ -231,7 +231,8 @@ tags:
 #
 # ── WHAT IT DOES NOT PROVE ────────────────────────────────────────────
 # What the phase classified. That belongs to the brand's review, which is
-# proved on 2026 Bowman (`flagship-colour-is-a-parallel-both-ways`, STEP 1);
+# proved on 2026 Bowman (`setup.yaml`, its 2026 Bowman step — the merged
+# flagship flow's STEP 1, NEO-312);
 # on THIS fixture none of `SPx`'s SportLots entries would even reach one —
 # `routeSlSets` hides every SportLots entry a set NB already has equals or
 # word-boundary-prefixes, and BSC's set named exactly `SPx` covers them all.

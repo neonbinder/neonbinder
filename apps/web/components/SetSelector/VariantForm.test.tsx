@@ -49,6 +49,11 @@ const mockStore = vi.fn();
 // NEO-300: what getInsertTreeByVariantType answers. Loaded-but-empty by
 // default — the auto-sync is gated on it, so `undefined` would never sync.
 let insertTree: unknown[] = [];
+// NEO-312: what getUsedInsertIdentifiersBySet answers — the ids rows elsewhere
+// in the set hold. Loaded-but-empty by default: the auto-sync waits on it.
+let usedIds:
+  | { values?: string[]; slPlatformValues: string[]; bscPlatformValues: string[] }
+  | undefined = { slPlatformValues: [], bscPlatformValues: [] };
 // NEO-305: what getBrandSlHolders answers. Loaded-but-empty by default.
 let brandHolders: { rows: unknown[]; truncated: boolean } = {
   rows: [],
@@ -67,8 +72,7 @@ vi.mock("convex/react", () => ({
     if (ref === "getBaseVariantBySet") return null;
     if (ref === "getSelectorOptions") return [];
     if (ref === "getInsertTreeByVariantType") return insertTree;
-    if (ref === "getUsedInsertIdentifiersBySet")
-      return { slPlatformValues: [], bscPlatformValues: [] };
+    if (ref === "getUsedInsertIdentifiersBySet") return usedIds;
     // NEO-305 — loaded-but-empty: the auto-sync is gated on it too.
     if (ref === "getBrandSlHolders") return brandHolders;
     return undefined;
@@ -122,6 +126,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStore.mockResolvedValue({ success: true, unlinked: [] });
   insertTree = [];
+  usedIds = { slPlatformValues: [], bscPlatformValues: [] };
   brandHolders = { rows: [], truncated: false };
 });
 
@@ -964,7 +969,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     const { onDone } = await renderForm();
 
     const summary = await screen.findByText(
-      "Hold up: 2 not added. They clash with rows already in Inserts.",
+      "Hold up: 2 not added. They clash with existing rows.",
     );
     const live = summary.closest('[role="status"]') as HTMLElement;
     // Actionable: what to do about it, in the operator's words — and that
@@ -1003,7 +1008,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
 
     expect(
       await screen.findByText(
-        "Heads up: Inserts is too big to check for grouped parallels, so this sync may have re-added some. Look for doubles.",
+        "Heads up: this set is too big to check new links automatically, so new ones weren't added.",
       ),
     ).toBeTruthy();
     expect(onDone).not.toHaveBeenCalled();
@@ -1064,7 +1069,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
 
     expect(
       await screen.findByText(
-        "Hold up: 1 not added. It clashes with rows already in Inserts.",
+        "Hold up: 1 not added. It clashes with existing rows.",
       ),
     ).toBeTruthy();
     expect(screen.getByText("Saved 0 sets.")).toBeTruthy();
@@ -1177,5 +1182,213 @@ describe("VariantForm — ids another set in the brand holds are left alone (NEO
     const toggle = screen.getByRole("button", { name: "Show linked sets" });
     expect(status.contains(toggle)).toBe(false);
     expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * NEO-312 — ids another variant type of THIS set holds.
+ *
+ * "Make insert of…" / "Make parallel of…" move a SportLots link to a row in
+ * another variant type. `getUsedInsertIdentifiersBySet` lists it, but the list
+ * used to gate only the modal's Pending column: the single-platform branch
+ * stored it again with no dialog at all, and the modal auto-matched it into
+ * Ready. Either way one SportLots link ended up on two NB rows.
+ */
+describe("VariantForm — ids another variant type holds are left alone (NEO-312)", () => {
+  const MOVED_SL = { value: "Topps Blue", platformValue: "sl-moved" };
+  const NEW_SL = { value: "Chrome Stars", platformValue: "sl-stars" };
+
+  it("does not sync until the set's used ids have loaded", async () => {
+    usedIds = undefined;
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    await renderForm();
+    expect(mockFetchRawOptions).not.toHaveBeenCalled();
+    expect(mockStore).not.toHaveBeenCalled();
+  });
+
+  it("single platform: stores only what no other variant type holds", async () => {
+    usedIds = {
+      slPlatformValues: ["sl-moved"],
+      bscPlatformValues: ["bsc-moved"],
+    };
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [],
+      slOptions: [MOVED_SL, NEW_SL],
+      message: "BSC: 0, SL: 2",
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+    });
+    await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    expect(
+      args.reconciledItems.map(
+        (i: { platformData: { sportlots?: string } }) => i.platformData.sportlots,
+      ),
+    ).toEqual(["sl-stars"]);
+    // Still LISTED upstream, so the store never reads it as delisted.
+    expect(args.returnedIds.sportlots).toContain("sl-moved");
+  });
+
+  it("single platform: the BSC side is filtered the same way", async () => {
+    usedIds = { slPlatformValues: [], bscPlatformValues: ["team-canada"] };
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [
+        { value: "Team Canada", platformValue: "team-canada" },
+        { value: "Team USA", platformValue: "team-usa" },
+      ],
+    });
+    await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    expect(
+      args.reconciledItems.map((i: { platformData: { bsc?: string } }) => i.platformData.bsc),
+    ).toEqual(["team-usa"]);
+  });
+
+  it("modal: a pair whose SportLots half another variant type holds is not Ready", async () => {
+    usedIds = { slPlatformValues: ["sl-moved"], bscPlatformValues: [] };
+    const MOVED_BSC = { value: "Blue", platformValue: "bsc-blue" };
+    const NEW_BSC = { value: "Chrome Stars", platformValue: "bsc-stars" };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [MOVED_BSC, NEW_BSC],
+      slOptions: [MOVED_SL, NEW_SL],
+      autoMatched: [
+        { displayName: "Blue", bsc: MOVED_BSC, sl: MOVED_SL, confidence: 0.95 },
+        { displayName: "Chrome Stars", bsc: NEW_BSC, sl: NEW_SL, confidence: 0.95 },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+    });
+    await renderForm();
+
+    expect(await screen.findByText(/Save 1 sets/)).toBeTruthy();
+    // Its BSC half is an ordinary loose set, not dropped with its partner.
+    expect(
+      screen.getByRole("button", { name: `Make its own set: ${MOVED_BSC.value}` }),
+    ).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Save 1 sets/));
+    });
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    const saved = args.reconciledItems.flatMap(
+      (i: { platformData: { sportlots?: string | string[] } }) =>
+        [i.platformData.sportlots ?? []].flat(),
+    );
+    expect(saved).toEqual(["sl-stars"]);
+    expect(args.returnedIds.sportlots).toContain("sl-moved");
+  });
+});
+
+/**
+ * NEO-312 — the store's own "left alone" list can now name a holder anywhere
+ * in the set or brand, with the NB path down to it. The note shows that path,
+ * and stops calling a holder outside this variant type "grouped as a parallel".
+ */
+describe("VariantForm — store-named holders carry their path (NEO-312)", () => {
+  function storeNames(entry: Record<string, unknown>) {
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [
+        { value: "Blue", platformValue: "bsc-blue" },
+        { value: "Team Canada", platformValue: "team-canada" },
+      ],
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+      heldElsewhere: [entry],
+      heldElsewhereTotal: 1,
+    });
+  }
+
+  it("a holder in another set is named by its path, and not called grouped", async () => {
+    storeNames({
+      id: "vt-blue-base",
+      value: "Base",
+      level: "variantType",
+      parentId: "set-bowman-blue",
+      parentValue: "Bowman Blue",
+      path: ["Bowman Blue"],
+    });
+    await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already linked to a row elsewhere. Leaving it be.",
+    );
+    expect(status.textContent).not.toContain("grouped");
+    fireEvent.click(screen.getByRole("button", { name: "Show grouped" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Bowman Blue › Base",
+    ]);
+  });
+
+  it("a parallel under ANOTHER variant type's insert is not called grouped here", async () => {
+    // "Make insert of…" put Red Ink under an insert in the Insert type; this is
+    // the Parallels type's sync. A parallel, but not one of ours.
+    insertTree = [
+      { insert: { _id: "ins-chrome", value: "Chrome", platformData: {} }, parallels: [] },
+    ];
+    storeNames({
+      id: "par-red-ink",
+      value: "Red Ink",
+      level: "parallel",
+      parentId: "ins-aag",
+      parentValue: "All-America Game Autos",
+      path: ["Bowman", "Insert", "All-America Game Autos"],
+    });
+    await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already linked to a row elsewhere. Leaving it be.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show grouped" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Bowman › Insert › All-America Game Autos › Red Ink",
+    ]);
+  });
+
+  it("a parallel under one of this variant type's inserts is still grouped, shown with its path", async () => {
+    insertTree = [
+      {
+        insert: { _id: "ins-chrome", value: "Chrome", platformData: {} },
+        parallels: [],
+      },
+    ];
+    storeNames({
+      id: "par-blue",
+      value: "Blue",
+      level: "parallel",
+      parentId: "ins-chrome",
+      parentValue: "Chrome",
+      path: ["Topps", "Insert", "Chrome"],
+    });
+    await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already grouped as a parallel. Leaving it be.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show grouped" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Topps › Insert › Chrome › Blue",
+    ]);
   });
 });

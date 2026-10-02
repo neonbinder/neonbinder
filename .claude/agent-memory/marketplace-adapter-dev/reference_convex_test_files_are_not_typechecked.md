@@ -26,3 +26,10 @@ run as `npx tsc -p <scratch>/tsconfig.tests.json` from `apps/web`. Fix errors
 in lines you wrote; report pre-existing ones rather than drive-by fixing.
 Typing a console-spy helper parameter as `{ mock: { calls: unknown[][] } }`
 avoids the implicit-any that `ReturnType<typeof vi.spyOn>` produces.
+
+Expect noise from the convex-test DataModel degradation the tsconfig comment
+describes: a helper that passes a `level` VARIABLE (`Row["level"]` union) to
+`withIndex("by_level_and_parent", …)` reports `keyof SystemIndexes` /
+`Property 'eq' does not exist on IndexRange`, and `ctx.db.get(id)` results
+widen to a union of every table. Every existing convex test file shows these;
+they are not errors in your lines. Judge only the other diagnostics.

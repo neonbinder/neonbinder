@@ -27,8 +27,11 @@ import {
 } from "./bscFacets";
 import {
   BSC_REQUIRED_LEVELS,
+  LEAF_NO_OWN_ID,
   NO_MARKETPLACE_IDS_MESSAGE,
   attachedSidesOf,
+  leafOwnsSource,
+  leafSourceSides,
   SL_ATTACH_REQUIRED_LEVELS,
   SL_REQUIRED_LEVELS,
   missingSummary,
@@ -1143,5 +1146,193 @@ describe("attachedSidesOf — NEO-255", () => {
         row("insert", { value: "Dugout", bsc: { b0: "dugout-collection" } }),
       ]),
     ).toEqual(["bsc"]);
+  });
+});
+
+describe("leafOwnsSource (NEO-312)", () => {
+  test("an untagged BSC slot on an INSERT row counts — the level rule buckets it to variantName", () => {
+    const insert = row("insert", { value: "Dugout", bsc: { b0: "dugout" } });
+    expect(leafOwnsSource(insert, "bsc")).toBe(true);
+  });
+
+  test("an untagged BSC slot on a PARALLEL row does NOT count — no legacy facet for parallel", () => {
+    const parallel = row("parallel", { value: "Gold", bsc: { b0: "dugout-gold" } });
+    expect(leafOwnsSource(parallel, "bsc")).toBe(false);
+  });
+
+  test("a parallel's setName-TAGGED slot counts (a NEO-189 split)", () => {
+    const parallel = row("parallel", {
+      value: "Gold",
+      bsc: { b0: "dugout-gold" },
+      facets: { b0: "setName" },
+    });
+    expect(leafOwnsSource(parallel, "bsc")).toBe(true);
+  });
+
+  test("a parallel's variantName-tagged slot (a promoted parallel) counts", () => {
+    const parallel = row("parallel", {
+      value: "Gold",
+      bsc: { b0: "dugout-gold" },
+      facets: { b0: "variantName" },
+    });
+    expect(leafOwnsSource(parallel, "bsc")).toBe(true);
+  });
+
+  test("any SportLots id on the row counts, regardless of level", () => {
+    const parallel = row("parallel", { value: "Gold", sportlots: { s0: "884499" } });
+    expect(leafOwnsSource(parallel, "sportlots")).toBe(true);
+  });
+
+  test("a row with no id of its own on a side answers false", () => {
+    const parallel = row("parallel", { value: "Gold" });
+    expect(leafOwnsSource(parallel, "bsc")).toBe(false);
+    expect(leafOwnsSource(parallel, "sportlots")).toBe(false);
+  });
+});
+
+describe("leafSourceSides (NEO-312)", () => {
+  test("undefined when the leaf is neither insert nor parallel", () => {
+    const chain = [linkedSport, linkedYear, linkedSetName];
+    expect(leafSourceSides(chain)).toBeUndefined();
+  });
+
+  test("an insert leaf with its own BSC id only", () => {
+    const chain = [
+      linkedSport,
+      linkedYear,
+      linkedSetName,
+      row("insert", { value: "Dugout", bsc: { b0: "dugout" } }),
+    ];
+    expect(leafSourceSides(chain)).toEqual(["bsc"]);
+  });
+
+  test("a parallel leaf with no ids of its own — an empty array, not undefined (invariant 6)", () => {
+    const chain = [
+      linkedSport,
+      linkedYear,
+      linkedSetName,
+      row("insert", { value: "Dugout", bsc: { b0: "dugout" } }),
+      row("parallel", { value: "Gold" }),
+    ];
+    expect(leafSourceSides(chain)).toEqual([]);
+  });
+
+  test("a parallel leaf with both its own ids", () => {
+    const chain = [
+      linkedSport,
+      linkedYear,
+      linkedSetName,
+      row("insert", { value: "Dugout", bsc: { b0: "dugout" } }),
+      row("parallel", {
+        value: "Gold",
+        bsc: { b0: "dugout-gold" },
+        sportlots: { s0: "884499" },
+        facets: { b0: "variantName" },
+      }),
+    ];
+    expect(leafSourceSides(chain)).toEqual(["bsc", "sportlots"]);
+  });
+});
+
+describe("resolvableSides — leafGate (NEO-312)", () => {
+  test("a parallel with no own ids is unresolvable on BOTH sides under the gate, even though its ancestors are fully linked", () => {
+    const chain = [
+      linkedSport,
+      linkedYear,
+      linkedSetName,
+      row("insert", { value: "Dugout", bsc: { b0: "dugout" }, sportlots: { s0: "1" } }),
+      row("parallel", { value: "Gold" }),
+    ];
+    const out = resolvableSides(chain, { bscScope: "checklist", leafGate: true });
+    expect(out.bsc.resolvable).toBe(false);
+    expect(out.bsc.missing).toContain(LEAF_NO_OWN_ID);
+    expect(out.sportlots.resolvable).toBe(false);
+    expect(out.sportlots.missing).toContain(LEAF_NO_OWN_ID);
+  });
+
+  test("a parallel with its own id on one side only resolves that side alone under the gate", () => {
+    // `variant` is one of BSC's own checklist-required facets (never an NB
+    // level), so the chain needs the ordinary `taggedBase` variantType row to
+    // supply it, exactly like every other checklist-scope test in this file.
+    const chain = [
+      linkedSport,
+      linkedYear,
+      linkedSetName,
+      taggedBase,
+      row("insert", { value: "Dugout", bsc: { b0: "dugout" } }),
+      row("parallel", { value: "Gold", bsc: { b0: "dugout-gold" }, facets: { b0: "variantName" } }),
+    ];
+    const out = resolvableSides(chain, { bscScope: "checklist", leafGate: true });
+    expect(out.bsc.resolvable).toBe(true);
+    expect(out.sportlots.resolvable).toBe(false);
+    expect(out.sportlots.missing).toContain(LEAF_NO_OWN_ID);
+  });
+
+  test("without leafGate, the same no-own-id parallel inherits its ancestor's ids (the pre-NEO-312 behaviour)", () => {
+    const chain = [
+      linkedSport,
+      linkedYear,
+      linkedSetName,
+      taggedBase,
+      row("insert", { value: "Dugout", bsc: { b0: "dugout" } }),
+      row("parallel", { value: "Gold" }),
+    ];
+    const out = resolvableSides(chain, { bscScope: "checklist" });
+    // No leafGate: the insert's own slot resolves BSC for the whole chain.
+    expect(out.bsc.resolvable).toBe(true);
+  });
+
+  test("leafGate does not touch a chain whose leaf is not an insert or parallel", () => {
+    const chain = [linkedSport, linkedYear, linkedSetName];
+    const gated = resolvableSides(chain, { bscScope: "checklist", leafGate: true });
+    const ungated = resolvableSides(chain, { bscScope: "checklist" });
+    expect(gated.bsc.resolvable).toBe(ungated.bsc.resolvable);
+    expect(gated.sportlots.resolvable).toBe(ungated.sportlots.resolvable);
+  });
+
+  test("a leaf-gate refusal is a plain skip, never reported as paused", () => {
+    const chain = [
+      linkedSport,
+      linkedYear,
+      linkedSetName,
+      row("insert", { value: "Dugout", bsc: { b0: "dugout" } }),
+      row("parallel", { value: "Gold" }),
+    ];
+    const out = resolvableSides(chain, {
+      bscScope: "checklist",
+      leafGate: true,
+      paused: new Set(["bsc", "sportlots"]),
+    });
+    expect(out.bsc.paused).toBe(false);
+    expect(out.sportlots.paused).toBe(false);
+  });
+});
+
+describe("attachedSidesOf — the insert/parallel leaf gate (NEO-312)", () => {
+  test("a parallel attached via its ANCESTOR's id alone is NOT counted attached", () => {
+    const chain = [
+      row("sport", { bsc: { b0: "baseball" } }),
+      row("year", { bsc: { b0: "2024" } }),
+      row("setName", { bsc: { b0: "2024-topps" } }),
+      row("insert", { value: "Dugout", bsc: { b0: "dugout" } }),
+      row("parallel", { value: "Gold" }),
+    ];
+    expect(attachedSidesOf(chain)).toEqual([]);
+  });
+
+  test("a parallel with its own id is counted attached on that side only", () => {
+    const chain = [
+      row("sport", { bsc: { b0: "baseball" } }),
+      row("year", { bsc: { b0: "2024" } }),
+      row("setName", { bsc: { b0: "2024-topps" } }),
+      row("insert", { value: "Dugout", bsc: { b0: "dugout" } }),
+      row("parallel", {
+        value: "Gold",
+        bsc: { b0: "dugout-gold" },
+        sportlots: { s0: "1" },
+        facets: { b0: "variantName" },
+      }),
+    ];
+    expect(attachedSidesOf(chain)).toEqual(["bsc", "sportlots"]);
   });
 });

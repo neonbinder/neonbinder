@@ -17,3 +17,4 @@
 - [Workpool retry semantics](reference_workpool_retry_semantics.md) — every throw retries unless NonRetryableError; onComplete only after the final attempt; error arrives as a string
 - [Convex test files are not typechecked](reference_convex_test_files_are_not_typechecked.md) — convex tsconfig excludes *.test.ts and eslint skips .ts; typecheck new tests with a scratch tsconfig
 - [Store loops fall through to insert](reference_store_loops_fall_through_to_insert.md) — a new MatchOutcome kind becomes a NEW ROW in both stores until each gets an explicit branch
+- [Check baseline reds in main/, not by stash](reference_check_baseline_reds_in_main_not_by_stash.md) — shared worktree: prove a stray red pre-existing by running that file in main/ at the same base

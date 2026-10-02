@@ -371,6 +371,12 @@ type ReconciliationModalProps = {
   // list (e.g., the Base variant's SL anchor name). Merged with the
   // set-name-derived defaults.
   extraSlPrefixes?: string[];
+  /**
+   * Marketplace ids NB rows elsewhere in the set already hold. Hidden from
+   * Pending and, since NEO-312, held out of the auto-match seeding exactly like
+   * `heldElsewhere` (less any id this sync's own `existingRows` carry), but
+   * not named in a note.
+   */
   usedSlPlatformValues?: string[];
   usedBscPlatformValues?: string[];
   /**
@@ -381,9 +387,9 @@ type ReconciliationModalProps = {
    * left alone, with a disclosure naming them. Only rows the fetch actually
    * returned belong here — the caller filters with `heldRowsReturnedBy`.
    *
-   * Unlike `used*PlatformValues`, which only trims the Pending lists, this
-   * also stops the auto-match seeding: that seeding is what re-created every
-   * grouped parallel as a top-level insert.
+   * Like `used*PlatformValues`, this also stops the auto-match seeding: that
+   * seeding is what re-created every grouped parallel as a top-level insert.
+   * Unlike them, the held rows are named in the header.
    */
   heldElsewhere?: {
     rows: HeldRow[];
@@ -882,6 +888,20 @@ export default function ReconciliationModal({
       ...(heldElsewhere?.rows ?? []),
       ...(heldInBrand?.rows ?? []),
     ]);
+    // NEO-312: ids the caller says rows ELSEWHERE in the set hold
+    // (`used*PlatformValues`) are held too. Before, they only trimmed Pending,
+    // so after "Make insert of…" moved a SportLots link to another variant
+    // type, the next sync auto-matched it straight back into Ready and Save
+    // put that one link on a second NB row. Less the ids this sync's own
+    // restored rows carry: a Sub-Variants caller's list includes its own
+    // parallels, and those must keep coming back as this sync's rows.
+    // `usedBsc`/`usedSl` hold exactly the restored ids at this point.
+    for (const id of usedBscPlatformValues) {
+      if (!usedBsc.has(id)) held.bsc.add(id);
+    }
+    for (const id of usedSlPlatformValues) {
+      if (!usedSl.has(id)) held.sportlots.add(id);
+    }
     for (const id of held.bsc) usedBsc.add(id);
     for (const id of held.sportlots) usedSl.add(id);
     // The unheld half of an auto-match whose other half is held: an ordinary
@@ -922,25 +942,21 @@ export default function ReconciliationModal({
         // half's id — matched by id, never by name — as an ordinary attached
         // chip the operator can ✕ back to Pending. The free half is held or
         // placed nowhere (`used*` holds every held and restored id and every
-        // id placed so far), so the attach duplicates nothing. It is also not
-        // attached when the caller says another level uses it
-        // (`used*PlatformValues`), because the modal would not offer it in
-        // Pending either. In every case with no single row to join — no
-        // restored row carries that id (an earlier auto-match placed it), two
-        // do (a shared marketplace id), or the caller's list names the free
-        // half — it goes to Pending, where it is handled like any loose item.
+        // id placed so far), so the attach duplicates nothing. A free half the
+        // caller's `used*PlatformValues` names never reaches here: it is held
+        // (NEO-312, above) and took the held branch. In every case with no
+        // single row to join — no restored row carries that id (an earlier
+        // auto-match placed it), or two do (a shared marketplace id) — it goes
+        // to Pending, where it is handled like any loose item.
         const side: Side = bscUsed ? "sl" : "bsc";
         const usedPv = bscUsed ? m.bsc.platformValue : m.sl.platformValue;
         const free = side === "bsc" ? m.bsc : m.sl;
-        const usedByCaller = (side === "bsc" ? usedBscSet : usedSlSet).has(
-          free.platformValue,
-        );
         const owners: number[] = [];
         for (let i = 0; i < restoredCount; i++) {
           const mapped = bscUsed ? ready[i].bsc : ready[i].sl;
           if (mapped.some((it) => it.platformValue === usedPv)) owners.push(i);
         }
-        if (owners.length === 1 && !usedByCaller) {
+        if (owners.length === 1) {
           const row = ready[owners[0]];
           ready[owners[0]] =
             side === "bsc"
