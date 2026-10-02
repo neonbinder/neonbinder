@@ -58,6 +58,6 @@
 - [Patterns neo306 sl review insert door](patterns_neo306_sl_review_insert_door.md) — staging doc = allowlist + mutex for client SL ids; assert-on-upstream-field aborts whole sync; sticky adds-only flags
 - [Patterns neo307 alias reverse order](patterns_neo307_alias_reverse_order.md) — both alias orders at every teams insert site; classify resolver callers by year kind; exact-object log pin
 - [Patterns neo308 client chunked cap](patterns_neo308_client_chunked_cap.md) — shared cap module bundled by Vite+Convex: server check stays the bound, type-only imports, literal cap pin, codegen drift
-- [Patterns neo312 parallel rebuild](patterns_neo312_parallel_rebuild.md) — delete-then-insert rebuild: classify old refs pre-delete (3 kinds), unfetched-side guard not pause-only, first-page-empty + sentinel concurrency guard
+- [Patterns neo312 parallel rebuild](patterns_neo312_parallel_rebuild.md) — rebuild classification + concurrency guard; set/brand holder walk: bytes not docs, blocked heal + unlink, report cap multiplication
 - [Patterns neo313 cross sport override](patterns_neo313_cross_sport_override.md) — card-only guard relax (set keeps it via noun); commit prelude sportId is client-supplied; derived cardPlayerLinks pin counts
 - [Patterns neo309/310 CI notify + JSON files](patterns_neo309_310_ci_notify_and_json_files.md) — secret input templated in composite guard; ref_name in run:; nested wf perms fail at startup; HEAD-copy tests red on commit

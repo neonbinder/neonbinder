@@ -7,12 +7,11 @@ metadata:
 
 # Branching a flow on an operator switch (verified on the pinned CLI 2.8.0, 2026-09-17)
 
-**State of the switch: OFF since 2026-09-21** (SportLots unpaused; the repo
-variable deleted), so CI runs every flow's LIVE branch. The paused branches
-and everything below stay true OF the paused mode — keep writing both
-branches — but never write that the suite "is" paused. Check the run you are
-reading: `gh run view <id> --log | grep -m1 "PAUSED_PLATFORMS: "` (empty =
-live). Reading a live failure through the paused section below is a misread.
+**The switch's state changes; never write that the suite "is" paused.** The
+paused branches and everything below describe the paused mode only — keep
+writing both branches. Check the run you are reading:
+`gh run view <id> --log | grep -m1 "PAUSED_PLATFORMS: "` (empty = live).
+Reading a live failure through the paused section below is a misread.
 
 **Never branch on the visible notice** (`when: visible:` polls the optional-lookup
 timeout on every run the notice is absent — R10). Branch on a script flag:
