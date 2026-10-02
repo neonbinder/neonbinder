@@ -1,5 +1,5 @@
 import React, { useId, useState } from "react";
-import type { HeldRow } from "./held-elsewhere";
+import { HOLDER_PATH_SEPARATOR, type HeldRow } from "./held-elsewhere";
 
 /**
  * NEO-300 — "these came back from the marketplace, and we left them alone".
@@ -102,8 +102,16 @@ export default function HeldElsewhereNote({
           <ul className="space-y-0.5 pl-3">
             {rows.map((r) => (
               <li key={r.key}>
+                {/* NEO-312: a holder the store found anywhere in the set or
+                    brand reads top-down, "Bowman › Insert › All-America Game
+                    Autos › Red Ink", house breadcrumb style. */}
+                {r.path !== undefined && r.path.length > 0 && (
+                  <span>
+                    {[...r.path, ""].join(HOLDER_PATH_SEPARATOR)}
+                  </span>
+                )}
                 <span className={name}>{r.name}</span>
-                {r.parentName !== undefined && (
+                {r.path === undefined && r.parentName !== undefined && (
                   <>
                     <span aria-hidden="true" className={`mx-1.5 ${arrow}`}>
                       →
@@ -141,6 +149,17 @@ export function linkedInBrandSummary(n: number): string {
   return n === 1
     ? "1 already linked to another set in this brand. Leaving it be."
     : `${n} already linked to other sets in this brand. Leaving those be.`;
+}
+
+/**
+ * NEO-312 — the note's summary when the store named a holder outside the
+ * column's own scope (another variant type, or another set). DRAFT copy,
+ * pending sign-off.
+ */
+export function linkedElsewhereSummary(n: number): string {
+  return n === 1
+    ? "1 already linked to a row elsewhere. Leaving it be."
+    : `${n} already linked to rows elsewhere. Leaving those be.`;
 }
 
 /** Sub-Variants: rows held by another insert, or by another insert's parallels. */

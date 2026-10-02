@@ -19,8 +19,10 @@ import {
 } from "./selector-sync-feedback";
 import { storeReconciledUntilDone } from "./store-reconciled-until-done";
 import StoreHoldNotices from "./StoreHoldNotices";
+import type { HeldElsewhereEntry } from "../../convex/selectorSyncStore";
 import HeldElsewhereNote, {
   groupedAsParallelsSummary,
+  linkedElsewhereSummary,
   linkedInBrandSummary,
   savedSetsMessage,
 } from "./HeldElsewhereNote";
@@ -169,6 +171,18 @@ export default function VariantForm({
   const groupedParallels: HeldRow[] = insertTree
     ? parallelsInTree(insertTree)
     : [];
+  // NEO-312: a holder the STORE names is "grouped" only when it is a parallel
+  // under one of this variant type's inserts — decided by NB parent id. The
+  // store now walks the whole set and the brand, so it can name a row in
+  // another variant type or set, and the note must not call that grouped.
+  const insertIds = new Set((insertTree ?? []).map((e) => String(e.insert._id)));
+  const isGroupedHere = (e: HeldElsewhereEntry) =>
+    e.level === "parallel" && insertIds.has(String(e.parentId));
+  // The note's summary: "grouped as parallels" unless the store named a row
+  // outside this variant type, which the generic line covers truthfully.
+  const heldSummary = heldSkipped.some((r) => r.elsewhere)
+    ? linkedElsewhereSummary(heldTotal)
+    : groupedAsParallelsSummary(heldTotal);
 
   // NEO-305: SportLots ids held by rows under the brand's OTHER sets.
   // SportLots answers this sync with the brand's whole list, and the used-id
@@ -387,7 +401,7 @@ export default function VariantForm({
         setUnlinked(unlinkedRows);
         // NEO-300: the store re-checks in its own transaction and may have
         // left alone rows this filter missed — they join the same note.
-        const heldAll = mergeServerHeld(skipped, stored);
+        const heldAll = mergeServerHeld(skipped, stored, isGroupedHere);
         setHeldSkipped(heldAll.rows);
         setHeldTotal(heldAll.total);
         setBrandHeldSkipped(brandSkipped);
@@ -522,7 +536,7 @@ export default function VariantForm({
     //
     // Likewise anything the store WITHHELD or could not check (StoreHoldNotices):
     // the operator has to act on it, so the panel stays up to carry it.
-    const heldAll = mergeServerHeld(modalHeldRows, stored);
+    const heldAll = mergeServerHeld(modalHeldRows, stored, isGroupedHere);
     const holds = storeHoldsOf(stored);
     if (heldAll.extra > 0 || holds !== null) {
       setHeldSkipped(heldAll.extra > 0 ? heldAll.rows : []);
@@ -651,7 +665,7 @@ export default function VariantForm({
                   {message}
                   {!isError && heldTotal > 0 && (
                     <p id={heldSummaryId} className="mt-1">
-                      {groupedAsParallelsSummary(heldTotal)}
+                      {heldSummary}
                     </p>
                   )}
                   {!isError && brandHeldSkipped.length > 0 && (
@@ -671,7 +685,7 @@ export default function VariantForm({
                     tone="panel"
                     rows={heldSkipped}
                     total={heldTotal}
-                    summary={groupedAsParallelsSummary(heldTotal)}
+                    summary={heldSummary}
                     summaryId={heldSummaryId}
                     toggleLabel={GROUPED_TOGGLE_LABEL}
                   />
@@ -693,10 +707,7 @@ export default function VariantForm({
                 )}
 
               {storeHolds && !showReconciliation && !isError && (
-                <StoreHoldNotices
-                  holds={storeHolds}
-                  variantsLabel={variantsLabel}
-                />
+                <StoreHoldNotices holds={storeHolds} />
               )}
 
               {!loading && !showReconciliation && (

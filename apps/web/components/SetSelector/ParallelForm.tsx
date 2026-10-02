@@ -19,8 +19,10 @@ import {
 } from "./selector-sync-feedback";
 import { storeReconciledUntilDone } from "./store-reconciled-until-done";
 import StoreHoldNotices from "./StoreHoldNotices";
+import type { HeldElsewhereEntry } from "../../convex/selectorSyncStore";
 import HeldElsewhereNote, {
   heldElsewhereSummary,
+  linkedElsewhereSummary,
   savedSetsMessage,
 } from "./HeldElsewhereNote";
 import {
@@ -146,6 +148,18 @@ export default function ParallelForm({
   const heldOutside: HeldRow[] = insertTree
     ? rowsOutsideInsert(insertTree, insertId)
     : [];
+  // NEO-312: a holder the STORE names lives "elsewhere in Inserts" only when
+  // it is an insert of this variant type or a parallel under one — decided by
+  // NB parent id. The store now walks the whole set and the brand, so it can
+  // name a row in another variant type or set, and the note must not place
+  // that in this one.
+  const insertIds = new Set((insertTree ?? []).map((e) => String(e.insert._id)));
+  const isInThisType = (e: HeldElsewhereEntry) =>
+    (e.level === "insert" && String(e.parentId) === String(variantTypeId)) ||
+    (e.level === "parallel" && insertIds.has(String(e.parentId)));
+  const heldSummary = heldSkipped.some((r) => r.elsewhere)
+    ? linkedElsewhereSummary(heldTotal)
+    : heldElsewhereSummary(heldTotal, variantsLabel);
 
   // The subset the open reconcile modal was told about, so its confirm can
   // tell the store's extras from what the header already named.
@@ -319,7 +333,7 @@ export default function ParallelForm({
         setUnlinked(unlinkedRows);
         // NEO-300: the store re-checks in its own transaction and may have
         // left alone rows this filter missed — they join the same note.
-        const heldAll = mergeServerHeld(skipped, stored);
+        const heldAll = mergeServerHeld(skipped, stored, isInThisType);
         setHeldSkipped(heldAll.rows);
         setHeldTotal(heldAll.total);
         const holds = storeHoldsOf(stored);
@@ -449,7 +463,7 @@ export default function ParallelForm({
     //
     // Likewise anything the store WITHHELD or could not check (StoreHoldNotices):
     // the operator has to act on it, so the panel stays up to carry it.
-    const heldAll = mergeServerHeld(modalHeldRows, stored);
+    const heldAll = mergeServerHeld(modalHeldRows, stored, isInThisType);
     const holds = storeHoldsOf(stored);
     if (heldAll.extra > 0 || holds !== null) {
       setHeldSkipped(heldAll.extra > 0 ? heldAll.rows : []);
@@ -553,7 +567,7 @@ export default function ParallelForm({
                   {message}
                   {!isError && heldTotal > 0 && (
                     <p id={heldSummaryId} className="mt-1">
-                      {heldElsewhereSummary(heldTotal, variantsLabel)}
+                      {heldSummary}
                     </p>
                   )}
                 </div>
@@ -568,7 +582,7 @@ export default function ParallelForm({
                     tone="panel"
                     rows={heldSkipped}
                     total={heldTotal}
-                    summary={heldElsewhereSummary(heldTotal, variantsLabel)}
+                    summary={heldSummary}
                     summaryId={heldSummaryId}
                     toggleLabel={HELD_TOGGLE_LABEL}
                   />
@@ -576,10 +590,7 @@ export default function ParallelForm({
               )}
 
               {storeHolds && !showReconciliation && !isError && (
-                <StoreHoldNotices
-                  holds={storeHolds}
-                  variantsLabel={variantsLabel}
-                />
+                <StoreHoldNotices holds={storeHolds} />
               )}
 
               {!loading && !showReconciliation && (

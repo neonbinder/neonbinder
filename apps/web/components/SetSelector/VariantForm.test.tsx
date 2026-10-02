@@ -969,7 +969,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     const { onDone } = await renderForm();
 
     const summary = await screen.findByText(
-      "Hold up: 2 not added. They clash with rows already in Inserts.",
+      "Hold up: 2 not added. They clash with existing rows.",
     );
     const live = summary.closest('[role="status"]') as HTMLElement;
     // Actionable: what to do about it, in the operator's words — and that
@@ -1008,7 +1008,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
 
     expect(
       await screen.findByText(
-        "Heads up: Inserts is too big to check for grouped parallels, so this sync may have re-added some. Look for doubles.",
+        "Heads up: this set is too big to check new links against, so new ones weren't added.",
       ),
     ).toBeTruthy();
     expect(onDone).not.toHaveBeenCalled();
@@ -1069,7 +1069,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
 
     expect(
       await screen.findByText(
-        "Hold up: 1 not added. It clashes with rows already in Inserts.",
+        "Hold up: 1 not added. It clashes with existing rows.",
       ),
     ).toBeTruthy();
     expect(screen.getByText("Saved 0 sets.")).toBeTruthy();
@@ -1290,5 +1290,105 @@ describe("VariantForm — ids another variant type holds are left alone (NEO-312
     );
     expect(saved).toEqual(["sl-stars"]);
     expect(args.returnedIds.sportlots).toContain("sl-moved");
+  });
+});
+
+/**
+ * NEO-312 — the store's own "left alone" list can now name a holder anywhere
+ * in the set or brand, with the NB path down to it. The note shows that path,
+ * and stops calling a holder outside this variant type "grouped as a parallel".
+ */
+describe("VariantForm — store-named holders carry their path (NEO-312)", () => {
+  function storeNames(entry: Record<string, unknown>) {
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [
+        { value: "Blue", platformValue: "bsc-blue" },
+        { value: "Team Canada", platformValue: "team-canada" },
+      ],
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+      heldElsewhere: [entry],
+      heldElsewhereTotal: 1,
+    });
+  }
+
+  it("a holder in another set is named by its path, and not called grouped", async () => {
+    storeNames({
+      id: "vt-blue-base",
+      value: "Base",
+      level: "variantType",
+      parentId: "set-bowman-blue",
+      parentValue: "Bowman Blue",
+      path: ["Bowman Blue"],
+    });
+    await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already linked to a row elsewhere. Leaving it be.",
+    );
+    expect(status.textContent).not.toContain("grouped");
+    fireEvent.click(screen.getByRole("button", { name: "Show grouped" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Bowman Blue › Base",
+    ]);
+  });
+
+  it("a parallel under ANOTHER variant type's insert is not called grouped here", async () => {
+    // "Make insert of…" put Red Ink under an insert in the Insert type; this is
+    // the Parallels type's sync. A parallel, but not one of ours.
+    insertTree = [
+      { insert: { _id: "ins-chrome", value: "Chrome", platformData: {} }, parallels: [] },
+    ];
+    storeNames({
+      id: "par-red-ink",
+      value: "Red Ink",
+      level: "parallel",
+      parentId: "ins-aag",
+      parentValue: "All-America Game Autos",
+      path: ["Bowman", "Insert", "All-America Game Autos"],
+    });
+    await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already linked to a row elsewhere. Leaving it be.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show grouped" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Bowman › Insert › All-America Game Autos › Red Ink",
+    ]);
+  });
+
+  it("a parallel under one of this variant type's inserts is still grouped, shown with its path", async () => {
+    insertTree = [
+      {
+        insert: { _id: "ins-chrome", value: "Chrome", platformData: {} },
+        parallels: [],
+      },
+    ];
+    storeNames({
+      id: "par-blue",
+      value: "Blue",
+      level: "parallel",
+      parentId: "ins-chrome",
+      parentValue: "Chrome",
+      path: ["Topps", "Insert", "Chrome"],
+    });
+    await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already grouped as a parallel. Leaving it be.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show grouped" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Topps › Insert › Chrome › Blue",
+    ]);
   });
 });

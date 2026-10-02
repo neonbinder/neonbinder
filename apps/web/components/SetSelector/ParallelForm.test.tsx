@@ -653,12 +653,12 @@ describe("ParallelForm — sets held elsewhere in the variant type (NEO-300)", (
     const { onDone } = await renderForm();
 
     expect(
-      await screen.findByText("Hold up: 1 not added. It clashes with rows already in Inserts."),
+      await screen.findByText("Hold up: 1 not added. It clashes with existing rows."),
     ).toBeTruthy();
     expect(screen.getByText("Points at a row linked to a different set:")).toBeTruthy();
     // An insert holder is named on its own.
     expect(screen.getByText("Chrome Stars", { selector: "li" })).toBeTruthy();
-    expect(screen.getByText(/Inserts is too big to check for grouped parallels/)).toBeTruthy();
+    expect(screen.getByText(/this set is too big to check new links against/)).toBeTruthy();
     expect(onDone).not.toHaveBeenCalled();
   });
 });
@@ -770,5 +770,68 @@ describe("ParallelForm — ids another variant type holds are left alone (NEO-31
         [i.platformData.sportlots ?? []].flat(),
     );
     expect(saved).toEqual(["sl-red"]);
+  });
+});
+
+describe("ParallelForm — store-named holders carry their path (NEO-312)", () => {
+  function storeNames(entry: Record<string, unknown>) {
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [
+        { value: "Red Ink", platformValue: "bsc-red-ink" },
+        { value: "Gold", platformValue: "gold" },
+      ],
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+      heldElsewhere: [entry],
+      heldElsewhereTotal: 1,
+    });
+  }
+
+  it("a holder in another variant type is named by its path, and not placed in this one", async () => {
+    storeNames({
+      id: "par-red-ink",
+      value: "Red Ink",
+      level: "parallel",
+      parentId: "ins-aag",
+      parentValue: "All-America Game Autos",
+      path: ["Bowman", "Insert", "All-America Game Autos"],
+    });
+    await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already linked to a row elsewhere. Leaving it be.",
+    );
+    expect(status.textContent).not.toContain("elsewhere in Insert");
+    fireEvent.click(screen.getByRole("button", { name: "Show where" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Bowman › Insert › All-America Game Autos › Red Ink",
+    ]);
+  });
+
+  it("an insert of this variant type is still 'elsewhere in' it", async () => {
+    storeNames({
+      id: "ins9",
+      value: "Chrome Stars",
+      level: "insert",
+      parentId: "vt1",
+      parentValue: "Insert",
+      path: ["Topps", "Insert"],
+    });
+    await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already lives elsewhere in Inserts. Leaving it be.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show where" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Topps › Insert › Chrome Stars",
+    ]);
   });
 });

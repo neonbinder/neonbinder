@@ -25,6 +25,18 @@ export type HeldRow = {
   name: string;
   /** The NB insert it is grouped under, when it is a parallel. */
   parentName?: string;
+  /**
+   * NEO-312 — NB names from the holder's set down to its parent, when the
+   * STORE named a holder anywhere in the set or brand. Drawn as a breadcrumb
+   * ending in `name`, and takes the place of `parentName`.
+   */
+  path?: string[];
+  /**
+   * NEO-312 — the store named this holder OUTSIDE the column's own scope (for
+   * Sync Inserts: anything but a parallel in this variant type), so the note's
+   * summary cannot say "grouped as a parallel" about it.
+   */
+  elsewhere?: true;
   bsc: string[];
   sportlots: string[];
 };
@@ -80,6 +92,18 @@ export function rowsOutsideInsert(
     for (const p of parallels) out.push(held(p, insert.value));
   }
   return out;
+}
+
+/** NEO-312 — what separates the steps of a holder's breadcrumb (house style). */
+export const HOLDER_PATH_SEPARATOR = " › ";
+
+/**
+ * NEO-312 — the store's NB path down to a holder (set › type › insert), or
+ * `null` when it sent none: an older result, or a holder that IS a set, whose
+ * path is empty because its own name is the whole answer.
+ */
+export function holderPathOf(e: { path?: string[] }): string[] | null {
+  return e.path && e.path.length > 0 ? e.path : null;
 }
 
 type Item = { platformValue: string };
@@ -156,6 +180,12 @@ export function mergeServerHeld(
       }
     | null
     | undefined,
+  /**
+   * NEO-312 — whether a store-named holder sits inside the caller's own scope,
+   * read off its NB parent id and level only. Absent, or an entry with no
+   * `path` (an older store), and the row is local.
+   */
+  isLocal?: (e: HeldElsewhereEntry) => boolean,
 ): { rows: HeldRow[]; total: number; extra: number } {
   const listed = server?.heldElsewhere ?? [];
   const serverTotal = Math.max(server?.heldElsewhereTotal ?? 0, listed.length);
@@ -169,12 +199,25 @@ export function mergeServerHeld(
       continue;
     }
     known.add(key);
+    const path = holderPathOf(e);
     rows.push({
       key,
       name: e.value,
-      // An insert is named on its own; its parent is the variant type, which
-      // is where the operator already is.
-      ...(e.level === "parallel" ? { parentName: e.parentValue } : {}),
+      // NEO-312: the store can name a holder in another variant type or set,
+      // so it sends the NB path down to it, and that is what is shown. An
+      // older store result has none: a parallel is then named with its
+      // insert, and an insert on its own (its parent is the variant type,
+      // which is where the operator already is).
+      ...(path
+        ? { path }
+        : e.level === "parallel"
+          ? { parentName: e.parentValue }
+          : {}),
+      // Only a result that carries `path` can name a row outside the scope:
+      // an older store walked the variant type alone, so its rows are local.
+      ...(e.path !== undefined && isLocal && !isLocal(e)
+        ? { elsewhere: true as const }
+        : {}),
       // The store names rows, not the ids that matched; nothing downstream of
       // the note needs them.
       bsc: [],
@@ -192,11 +235,15 @@ export function mergeServerHeld(
  * it directly.
  *
  *  - `withheld`: items the store did not add because their marketplace id is
- *    already on 2+ rows in the variant type, or because the row they point at
- *    carries different ids. Nothing was written for them; the operator fixes
- *    the duplicate holder and syncs again.
- *  - `subtreeWalkSkipped`: the variant type was too big for the store to look
- *    for grouped rows, so this sync may have re-added some.
+ *    already on 2+ rows, or because the row they point at carries different
+ *    ids — the operator fixes the duplicate holder and syncs again. NEO-312:
+ *    or that it could not check against the rest of the set (`notChecked`),
+ *    or that matched a row here while one of their links stays on the row
+ *    that already had it (`linkHeldElsewhere`).
+ *  - `subtreeWalkSkipped`: the set was too big for the store to check new
+ *    links against, so it WITHHELD them (NEO-312; it used to fall back to
+ *    siblings only and could re-add rows). Each one is also in `withheld`, as
+ *    `notChecked`.
  */
 export type StoreHolds = {
   withheld: WithheldElsewhereEntry[];

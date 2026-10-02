@@ -63,6 +63,41 @@ describe("mergeServerHeld", () => {
     ]);
   });
 
+  it("NEO-312: carries the store's path, and flags a holder outside the caller's scope", () => {
+    const out = mergeServerHeld(
+      [],
+      {
+        heldElsewhere: [
+          { ...entry("p2", "Red Ink", "parallel", "Chrome"), path: ["Bowman", "Insert", "Chrome"] },
+          {
+            id: "vt9" as never,
+            value: "Base",
+            level: "variantType" as const,
+            parentId: "set9" as never,
+            parentValue: "Bowman Blue",
+            path: ["Bowman Blue"],
+          },
+          // A set holder: empty path, named on its own.
+          {
+            id: "s9" as never,
+            value: "Bowman Blue",
+            level: "setName" as const,
+            parentId: "m1" as never,
+            parentValue: "Bowman",
+            path: [],
+          },
+        ],
+        heldElsewhereTotal: 3,
+      },
+      (e) => e.level === "parallel",
+    );
+    expect(out.rows.map((r) => [r.name, r.path, r.parentName, r.elsewhere])).toEqual([
+      ["Red Ink", ["Bowman", "Insert", "Chrome"], undefined, undefined],
+      ["Base", ["Bowman Blue"], undefined, true],
+      ["Bowman Blue", undefined, undefined, true],
+    ]);
+  });
+
   it("counts past the store's capped sample", () => {
     const out = mergeServerHeld([], {
       heldElsewhere: [entry("p2", "Refractor", "parallel", "Chrome")],

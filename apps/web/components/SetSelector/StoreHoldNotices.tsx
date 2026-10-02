@@ -1,6 +1,13 @@
 import React, { useId } from "react";
-import type { HeldElsewhereEntry } from "../../convex/selectorSyncStore";
-import type { StoreHolds } from "./held-elsewhere";
+import type {
+  HeldElsewhereEntry,
+  WithheldElsewhereEntry,
+} from "../../convex/selectorSyncStore";
+import {
+  HOLDER_PATH_SEPARATOR,
+  holderPathOf,
+  type StoreHolds,
+} from "./held-elsewhere";
 
 /**
  * NEO-300 — the two things a finished sync store can still need the operator
@@ -8,12 +15,19 @@ import type { StoreHolds } from "./held-elsewhere";
  * have filtered them; both hold the sync panel open until read.
  *
  *  - WITHHELD: items not added, because their marketplace id is already on
- *    two or more rows here, or because the row they point at is linked to a
+ *    two or more rows, or because the row they point at is linked to a
  *    different set. The store will not guess which row is right, so the fix is
  *    the operator's: delete or ungroup the extra row, then sync again. Each
- *    item is named with the rows it clashes with, by NB's names only.
- *  - SKIPPED WALK: the variant type was too big for the store to look for
- *    grouped parallels, so this sync may have re-added some.
+ *    item is named with the rows it clashes with, by NB's names only, each
+ *    with its NB path (set › type › insert) since NEO-312 — a holder can be
+ *    in another variant type or another set. Or (NEO-312, `notChecked`) the
+ *    store could not check the item against the rest of the set, and held it
+ *    back rather than risk a second row on one link: no holders, and the fix
+ *    is to try again. Or (NEO-312, `linkHeldElsewhere`) the item matched one
+ *    of this column's rows, but one of its links is already on another row,
+ *    so that link was left there: the row it names is where it lives.
+ *  - SKIPPED WALK: the set was too big for the store to check new links
+ *    against, so it held them back (NEO-312; it used to re-add rows instead).
  *
  * AMBER, like `SyncDoneNotice`: an unanswered question, nothing destroyed.
  * `role="status"` — announced when it appears, never interrupting — on the
@@ -21,16 +35,10 @@ import type { StoreHolds } from "./held-elsewhere";
  *
  * All copy here is DRAFT pending Jason's sign-off (NEO-300).
  */
-export default function StoreHoldNotices({
-  holds,
-  variantsLabel,
-}: {
-  holds: StoreHolds;
-  /** The column's plural noun, e.g. "Inserts". */
-  variantsLabel: string;
-}) {
+export default function StoreHoldNotices({ holds }: { holds: StoreHolds }) {
   const summaryId = useId();
   const { withheld, withheldTotal, subtreeWalkSkipped } = holds;
+  const kinds = withheldKinds(withheld);
   const box =
     "p-3 mb-4 bg-amber-400/10 border border-amber-700 dark:border-amber-400/70 rounded-md text-amber-800 dark:text-amber-300 text-sm";
 
@@ -43,9 +51,11 @@ export default function StoreHoldNotices({
         <div className={box}>
           <div role="status">
             <p id={summaryId} className="font-medium">
-              {withheldSummary(withheldTotal, variantsLabel)}
+              {withheldSummary(withheldTotal, kinds)}
             </p>
-            <p>Delete or ungroup the extra row, then sync again.</p>
+            {kinds.clash && <p>{CLASH_FIX}</p>}
+            {kinds.linked && <p>{LINKED_FIX}</p>}
+            {kinds.unchecked && <p>{UNCHECKED_FIX}</p>}
           </div>
           {withheld.length > 0 && (
             // Bounded for the same reason as HeldElsewhereNote's list: up to
@@ -62,15 +72,15 @@ export default function StoreHoldNotices({
                   <li key={`${i}-${w.label}`}>
                     <span className="font-medium">{w.label}</span>
                     <span className="block text-xs opacity-90">
-                      {w.reason === "heldByMany"
-                        ? "Already on more than one row:"
-                        : "Points at a row linked to a different set:"}
+                      {reasonLine(w.reason)}
                     </span>
-                    <ul className="pl-3 text-xs">
-                      {w.holders.map((h) => (
-                        <li key={String(h.id)}>{holderLine(h)}</li>
-                      ))}
-                    </ul>
+                    {w.holders.length > 0 && (
+                      <ul className="pl-3 text-xs">
+                        {w.holders.map((h) => (
+                          <li key={String(h.id)}>{holderLine(h)}</li>
+                        ))}
+                      </ul>
+                    )}
                   </li>
                 ))}
                 {withheldTotal > withheld.length && (
@@ -83,15 +93,22 @@ export default function StoreHoldNotices({
       )}
       {subtreeWalkSkipped && (
         <div role="status" className={box}>
-          {subtreeSkippedMessage(variantsLabel)}
+          {SUBTREE_SKIPPED_MESSAGE}
         </div>
       )}
     </>
   );
 }
 
-/** "Anime Kanji → Anime" for a parallel; an insert is named on its own. */
-function holderLine(h: HeldElsewhereEntry): React.ReactNode {
+/**
+ * NEO-312: "Bowman › Insert › All-America Game Autos › Red Ink" — the NB path
+ * the store sent, ending in the holder. With no path (an older result, or a
+ * holder that is itself a set): "Anime Kanji → Anime" for a parallel, and
+ * anything else on its own.
+ */
+export function holderLine(h: HeldElsewhereEntry): React.ReactNode {
+  const path = holderPathOf(h);
+  if (path) return [...path, h.value].join(HOLDER_PATH_SEPARATOR);
   if (h.level !== "parallel") return h.value;
   return (
     <>
@@ -105,14 +122,83 @@ function holderLine(h: HeldElsewhereEntry): React.ReactNode {
   );
 }
 
-/** DRAFT (NEO-300). */
-export function withheldSummary(n: number, variantsLabel: string): string {
-  return n === 1
-    ? `Hold up: 1 not added. It clashes with rows already in ${variantsLabel}.`
-    : `Hold up: ${n} not added. They clash with rows already in ${variantsLabel}.`;
+/**
+ * Which kinds of withhold the listed sample holds. Each kind has its own fix
+ * line, so the operator is told what to do about every kind present and
+ * nothing else:
+ *  - `clash`: `heldByMany` / `idsDisagree` — nothing was written.
+ *  - `linked` (NEO-312): `linkHeldElsewhere` — the row was refreshed, one link
+ *    stayed on the row that already had it.
+ *  - `unchecked` (NEO-312): `notChecked` — nothing was written.
+ * An empty sample (a store that sent only a count) reads as a clash, the only
+ * kind there was before NEO-312.
+ */
+export type WithheldKinds = { clash: boolean; linked: boolean; unchecked: boolean };
+
+export function withheldKinds(
+  withheld: ReadonlyArray<Pick<WithheldElsewhereEntry, "reason">>,
+): WithheldKinds {
+  const kinds = { clash: false, linked: false, unchecked: false };
+  for (const w of withheld) {
+    if (w.reason === "notChecked") kinds.unchecked = true;
+    else if (w.reason === "linkHeldElsewhere") kinds.linked = true;
+    else kinds.clash = true;
+  }
+  if (withheld.length === 0) kinds.clash = true;
+  return kinds;
 }
 
-/** DRAFT (NEO-300). */
-export function subtreeSkippedMessage(variantsLabel: string): string {
-  return `Heads up: ${variantsLabel} is too big to check for grouped parallels, so this sync may have re-added some. Look for doubles.`;
+/**
+ * DRAFT (NEO-300; NEO-312 dropped "in Inserts" — a holder can be anywhere —
+ * and added the unchecked and linked kinds). One kind: the count and why.
+ * Several: the count alone, and the fix lines say the rest.
+ */
+export function withheldSummary(n: number, kinds: WithheldKinds): string {
+  const one = n === 1;
+  const only = [kinds.clash, kinds.linked, kinds.unchecked].filter(Boolean).length === 1;
+  if (only && kinds.linked) {
+    return one
+      ? "Hold up: 1 link not added. It's already on another row."
+      : `Hold up: ${n} links not added. They're already on other rows.`;
+  }
+  const head = `Hold up: ${n} not added.`;
+  if (!only) return head;
+  if (kinds.unchecked) {
+    return one
+      ? `${head} It couldn't be checked against the rest of the set.`
+      : `${head} They couldn't be checked against the rest of the set.`;
+  }
+  return one
+    ? `${head} It clashes with existing rows.`
+    : `${head} They clash with existing rows.`;
 }
+
+/** DRAFT (NEO-300). What to do about a clash. */
+export const CLASH_FIX = "Delete or ungroup the extra row, then sync again.";
+/** DRAFT (NEO-312). What to do about a link left on the row that had it. */
+export const LINKED_FIX =
+  "If a link belongs here instead, take it off the other row, then sync again.";
+/** DRAFT (NEO-312). What to do about an item the store could not check. */
+export const UNCHECKED_FIX = "Try again, or ask for help if it keeps happening.";
+
+/** DRAFT. The line under each withheld item, before the rows it names. */
+export function reasonLine(reason: WithheldElsewhereEntry["reason"]): string {
+  if (reason === "heldByMany") return "Already on more than one row:";
+  // NEO-312 — the holder below is where the link lives now.
+  if (reason === "linkHeldElsewhere") return "Its link is already on this row, so it stayed there:";
+  if (reason === "notChecked") {
+    // NEO-312 — no rows follow: there is nothing it clashes with, only a
+    // check that could not run.
+    return "Couldn't check this link against the rest of the set, so it wasn't added.";
+  }
+  return "Points at a row linked to a different set:";
+}
+
+/**
+ * DRAFT (NEO-312). The set walk stopped on a bound, so the store held back
+ * every new link it could not clear. It used to fall back to siblings only and
+ * could re-add rows, which is what the old "may have re-added some. Look for
+ * doubles." said; that no longer happens.
+ */
+export const SUBTREE_SKIPPED_MESSAGE =
+  "Heads up: this set is too big to check new links against, so new ones weren't added.";
