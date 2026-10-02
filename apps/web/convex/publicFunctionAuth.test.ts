@@ -1726,4 +1726,26 @@ describe("NEO-315: the placeholder download mints refuse a signed-out caller", (
       }),
     ).rejects.toThrow(/not authenticated/i);
   });
+
+  // SIGNED_IN's subject ("user") is not a Clerk id, so it can never become a
+  // path segment: refused before a bucket or a storage client is consulted.
+  test("createPlaceholderPairDownloadUrls refuses a signed-in identity with a malformed subject", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t.withIdentity(SIGNED_IN).action(
+        api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls,
+        { jobId: "job-any", frontIndex: 0, backIndex: 1 },
+      ),
+    ).rejects.toThrow(/Unexpected user id shape/);
+  });
+
+  test("createPlaceholderImageDownloadUrl refuses a signed-in identity with a malformed subject", async () => {
+    const t = convexTest(schema, modules);
+    await expect(
+      t.withIdentity(SIGNED_IN).action(
+        api.adapters.placeholderUploads.createPlaceholderImageDownloadUrl,
+        { jobId: "job-any", entryIndex: 0 },
+      ),
+    ).rejects.toThrow(/Unexpected user id shape/);
+  });
 });

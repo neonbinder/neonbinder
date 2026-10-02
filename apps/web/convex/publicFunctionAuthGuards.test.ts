@@ -51,11 +51,47 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import { Id } from "./_generated/dataModel";
+
+// NEO-315: the placeholder download mints sign with a storage client. A fake one
+// records every probe and signature so "refused" can be asserted as "touched
+// nothing". Same shape as adapters.placeholderUploads.test.ts.
+const existingObjects = new Set<string>();
+const signedUrlCalls: string[] = [];
+const existsProbes: string[] = [];
+
+vi.mock("@google-cloud/storage", () => {
+  class FakeFile {
+    constructor(
+      private bucketName: string,
+      private fileName: string,
+    ) {}
+    async exists() {
+      existsProbes.push(this.fileName);
+      return [existingObjects.has(this.fileName)];
+    }
+    async getSignedUrl() {
+      signedUrlCalls.push(this.fileName);
+      return [`https://storage.googleapis.com/${this.bucketName}/${this.fileName}?x-goog-signature=fake`];
+    }
+  }
+  class FakeBucket {
+    constructor(private name: string) {}
+    file(fileName: string) {
+      return new FakeFile(this.name, fileName);
+    }
+  }
+  class FakeStorage {
+    bucket(name: string) {
+      return new FakeBucket(name);
+    }
+  }
+  return { Storage: FakeStorage };
+});
 
 // convex-test v0.0.53 with Vitest uses import.meta.glob to discover modules.
 const modules = (
@@ -693,5 +729,112 @@ describe("NEO-287 — marketplacePause.getPausedPlatforms requires a signed-in c
       .withIdentity(MEMBER)
       .query(api.marketplacePause.getPausedPlatforms, {});
     expect(Array.isArray(paused)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-315 — the placeholder download mints
+// ---------------------------------------------------------------------------
+
+describe("NEO-315: placeholder download mints", () => {
+  const JOB = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+  const USER_A = { subject: "user_guardsAAAA0001", issuer: "https://clerk.example.com" };
+  const USER_B = { subject: "user_guardsBBBB0002", issuer: "https://clerk.example.com" };
+  const PAIR = api.adapters.placeholderUploads.createPlaceholderPairDownloadUrls;
+  const SINGLE = api.adapters.placeholderUploads.createPlaceholderImageDownloadUrl;
+
+  beforeEach(() => {
+    existingObjects.clear();
+    signedUrlCalls.length = 0;
+    existsProbes.length = 0;
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_B64 = Buffer.from(
+      JSON.stringify({ client_email: "fake@example.com", private_key: "fake" }),
+    ).toString("base64");
+    process.env.GCS_PLACEHOLDER_BUCKET = "guards-test-bucket";
+  });
+
+  afterEach(() => {
+    delete process.env.GOOGLE_APPLICATION_CREDENTIALS_B64;
+    delete process.env.GCS_PLACEHOLDER_BUCKET;
+  });
+
+  async function seed(
+    t: ReturnType<typeof convexTest>,
+    images: Array<{ entryIndex: number; status: "done" | "processing" }>,
+  ) {
+    await t.run(async (ctx) => {
+      await ctx.db.insert("placeholderJobs", {
+        jobId: JOB,
+        userId: USER_A.subject,
+        objectPath: `placeholders/${USER_A.subject}/${JOB}/`,
+        createdAt: 1_700_000_000_000,
+        status: "succeeded",
+      });
+      for (const i of images) {
+        await ctx.db.insert("placeholderImages", {
+          jobId: JOB,
+          userId: USER_A.subject,
+          entryIndex: i.entryIndex,
+          originalName: `${i.entryIndex}.jpg`,
+          status: i.status,
+          outputExtension: "jpg",
+        });
+      }
+    });
+  }
+
+  const caught = (p: Promise<unknown>) =>
+    p.then(
+      (v) => ({ ok: true as const, v }),
+      (e: Error) => ({ ok: false as const, message: e.message }),
+    );
+
+  test("user B with user A's done pair gets exactly 'Image not found' and touches storage 0 times", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, [
+      { entryIndex: 0, status: "done" },
+      { entryIndex: 1, status: "done" },
+    ]);
+    const pair = await caught(
+      t.withIdentity(USER_B).action(PAIR, { jobId: JOB, frontIndex: 0, backIndex: 1 }),
+    );
+    const single = await caught(
+      t.withIdentity(USER_B).action(SINGLE, { jobId: JOB, entryIndex: 0 }),
+    );
+    expect(pair).toEqual({ ok: false, message: expect.stringMatching(/Image not found$/) });
+    expect(single).toEqual({ ok: false, message: expect.stringMatching(/Image not found$/) });
+    expect(pair.ok === false && single.ok === false && pair.message === single.message).toBe(true);
+    expect(signedUrlCalls).toHaveLength(0);
+    expect(existsProbes).toHaveLength(0);
+  });
+
+  test("a mixed pair (one owned done, one owned not done) rejects and returns no url", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, [
+      { entryIndex: 0, status: "done" },
+      { entryIndex: 1, status: "processing" },
+    ]);
+    const result = await caught(
+      t.withIdentity(USER_A).action(PAIR, { jobId: JOB, frontIndex: 0, backIndex: 1 }),
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toMatch(/Image not found$/);
+  });
+
+  test("returns-shape pin: an owned pair and a single mint carry only url, entryIndex, expiresAt", async () => {
+    const t = convexTest(schema, modules);
+    await seed(t, [
+      { entryIndex: 0, status: "done" },
+      { entryIndex: 1, status: "done" },
+    ]);
+    const res = await t
+      .withIdentity(USER_A)
+      .action(PAIR, { jobId: JOB, frontIndex: 0, backIndex: 1 });
+    expect(Object.keys(res).sort()).toEqual(["back", "front"]);
+    expect(Object.keys(res.front).sort()).toEqual(["entryIndex", "expiresAt", "url"]);
+    expect(Object.keys(res.back).sort()).toEqual(["entryIndex", "expiresAt", "url"]);
+
+    const one = await t.withIdentity(USER_A).action(SINGLE, { jobId: JOB, entryIndex: 0 });
+    expect(Object.keys(one).sort()).toEqual(["entryIndex", "expiresAt", "url"]);
   });
 });
