@@ -233,7 +233,7 @@ jobs:
           # Without this, a tagged no-traffic revision inherits whatever
           # --max-instances the PREVIOUS deploy of this service happened to
           # set (or the terraform default), never this workflow's own value.
-          flags: "--max-instances=${{ env.PREVIEW_HEAVY_MAX_INSTANCES }} --cpu-boost"
+          flags: "--max-instances=${{ env.PREVIEW_HEAVY_MAX_INSTANCES }} --no-cpu-boost"
 
       - id: capture
         name: Capture preview URL
