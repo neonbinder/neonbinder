@@ -14,6 +14,8 @@ for the duration of the call (`bound`), and the leaf adds to it through
 Starlette runs each sync handler inside its own copied context, so concurrent
 requests never see each other's object. With nothing bound, `measure_current`
 is a no-op, so `/process`, `/crop` and the unit tests pay nothing.
+`increment_current` is the counter twin, used by `app.orient` to record a
+Vision reconnect from inside `detect_orientation`.
 
 `emit` writes ONE JSON line per request through the dedicated `timing`
 logger: a plain `%(message)s` handler on stdout with `propagate=False`, so the
@@ -53,6 +55,10 @@ MS_FIELDS: tuple[str, ...] = (
     "write_ms",
 )
 
+# Fields that count events. `increment_current` accepts only these, for the
+# same reason `measure` checks MS_FIELDS.
+COUNT_FIELDS: tuple[str, ...] = ("vision_reconnects",)
+
 
 def _build_timing_logger() -> logging.Logger:
     """The dedicated, non-propagating JSON-line logger.
@@ -86,6 +92,9 @@ class Timings:
     dhash_ms: float = 0.0
     vision_calls: int = 0
     vision_ms: float = 0.0
+    # Vision RPCs this request retried on a rebuilt client after the shared
+    # one failed with ServiceUnavailable (see `app.orient`). Normally 0.
+    vision_reconnects: int = 0
     # Non-model pixel work: scan-metadata check, the classical fast path, the
     # classical share of `tiered` (its time minus BiRefNet), and pil_trim.
     classical_ms: float = 0.0
@@ -132,6 +141,7 @@ class Timings:
             body[name] = round(getattr(self, name))
         body["vision_calls"] = self.vision_calls
         body["vision_ms"] = round(self.vision_ms)
+        body["vision_reconnects"] = self.vision_reconnects
         for name in ("classical_ms", "birefnet_ms", "sam_ms", "haiku_bbox_ms", "classify_ms"):
             body[name] = round(getattr(self, name))
         body["classify_retried"] = self.classify_retried
@@ -160,6 +170,15 @@ def bound(timings: Timings) -> Iterator[Timings]:
         yield timings
     finally:
         _current.reset(token)
+
+
+def increment_current(name: str) -> None:
+    """Add one to the `name` counter on whatever request is bound; a no-op when none is."""
+    if name not in COUNT_FIELDS:
+        raise ValueError(f"unknown counter field {name!r}")
+    timings = _current.get()
+    if timings is not None:
+        setattr(timings, name, getattr(timings, name) + 1)
 
 
 @contextmanager

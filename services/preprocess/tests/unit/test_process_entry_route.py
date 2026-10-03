@@ -982,6 +982,7 @@ TIMING_KEYS = {
     "dhash_ms",
     "vision_calls",
     "vision_ms",
+    "vision_reconnects",
     "classical_ms",
     "birefnet_ms",
     "sam_ms",
@@ -1018,11 +1019,53 @@ class TestTimingLine:
         assert line["role"] == "heavy"
         assert line["index"] == 7
         assert line["vision_calls"] == 1
+        assert line["vision_reconnects"] == 0
         assert line["source"] == "tiered"
         assert line["escalated"] is False
         assert line["baseline_supplied"] is False
         assert line["classify_retried"] is False
         assert line["total_ms"] >= line["gcs_ms"]
+
+    def test_vision_reconnect_is_recorded_on_the_line(self, fake_gcs, monkeypatch, timing_lines):
+        # The real detect_orientation runs (not the cropper-level stub), on a
+        # shared client whose first RPC fails UNAVAILABLE; the rebuilt client
+        # answers. The request completes and its line says it reconnected once.
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from google.api_core.exceptions import ServiceUnavailable
+
+        from app import orient
+
+        word = SimpleNamespace(
+            bounding_poly=SimpleNamespace(
+                vertices=[SimpleNamespace(x=x, y=y) for x, y in ((10, 10), (50, 10), (50, 30))]
+            )
+        )
+        ok = SimpleNamespace(text_annotations=[word] * 6, error=SimpleNamespace(message=""))
+        built: list[MagicMock] = []
+
+        def _factory():
+            c = MagicMock()
+            if built:
+                c.text_detection.return_value = ok
+            else:
+                c.text_detection.side_effect = ServiceUnavailable("Stream removed")
+            built.append(c)
+            return c
+
+        monkeypatch.setattr(orient, "_client", None)
+        monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", _factory)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+        _tracking_classify(monkeypatch)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _card_bytes(), "image/jpeg")
+
+        assert _post_entry(entry_index=0).status_code == 200
+
+        (line,) = timing_lines.bodies()
+        assert line["vision_reconnects"] == 1
+        assert line["vision_calls"] == 1
+        assert len(built) == 2
 
     def test_fast_decline_line(self, fake_gcs, monkeypatch, timing_lines):
         monkeypatch.setenv("PREPROCESS_ROLE", "fast")
