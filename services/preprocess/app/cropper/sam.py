@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import warnings
 from typing import Any
 
@@ -71,34 +72,63 @@ warnings.filterwarnings("ignore")
 
 _model: Any = None
 _processor: Any = None
+# Guards construction only: concurrent requests can race to the first load,
+# and a ~375MB model must be built once.
+_load_lock = threading.Lock()
+
+
+def _torch_thread_count() -> int:
+    """Intra-op threads for SAM inference (NEO-315).
+
+    The HEAVY service runs container concurrency 1, so one SAM pass owns the
+    instance; a single thread left three of its four vCPU idle through the
+    ViT-B encoder. Capped at 4 to match the service's CPU allocation.
+    """
+    return min(4, os.cpu_count() or 1)
 
 
 def _load_model() -> tuple[Any, Any]:
     """Load the SAM model and processor. Cached globally.
 
     First call takes ~5-15s on a warm Cloud Run container (weights from
-    the image, no download). Subsequent calls return instantly.
+    the image, no download). Subsequent calls return instantly. Deliberately
+    NOT warmed at startup (NEO-315): measured at 46-94s on a HEAVY cold start
+    for a stage that wins under 1% of cards, so the first image that falls
+    through to SAM pays the load instead.
     """
     global _model, _processor
     if _model is not None:
         return _model, _processor
 
-    logger.info("loading SAM model %s", SAM_MODEL_ID)
-    import torch
+    with _load_lock:
+        if _model is not None:
+            return _model, _processor
 
-    torch.set_grad_enabled(False)
-    torch.set_num_threads(1)
+        logger.info("loading SAM model %s", SAM_MODEL_ID)
+        import torch
 
-    import transformers
+        torch.set_grad_enabled(False)
+        torch.set_num_threads(_torch_thread_count())
 
-    transformers.logging.set_verbosity_error()
-    from transformers import SamModel, SamProcessor
+        import transformers
 
-    _processor = SamProcessor.from_pretrained(SAM_MODEL_ID)
-    _model = SamModel.from_pretrained(SAM_MODEL_ID)
-    _model.eval()
-    logger.info("SAM model ready")
-    return _model, _processor
+        transformers.logging.set_verbosity_error()
+        from transformers import SamModel, SamProcessor
+
+        processor = SamProcessor.from_pretrained(SAM_MODEL_ID)
+        model = SamModel.from_pretrained(SAM_MODEL_ID)
+        model.eval()
+        # Publish the processor first: readers test `_model`, so it must be
+        # the last of the pair to become non-None.
+        _processor = processor
+        _model = model
+        logger.info("SAM model ready")
+        return _model, _processor
+
+
+def is_model_loaded() -> bool:
+    """True once the SAM model is resident in this process."""
+    return _model is not None
 
 
 # ── Geometry + opencv helpers (port of card_cropper_utils) ─────────────────
@@ -231,46 +261,63 @@ def _pick_card_mask(
     return box, best["score"]
 
 
+def _probe_prompts(img_w: int, img_h: int) -> tuple[list, list]:
+    """All probe points as ONE prompt batch for the SAM processor.
+
+    Shape `[image][point_batch][points_per_prompt][xy]`: one image, one
+    prompt per probe, each prompt a single foreground point. Labels mirror it
+    with `1` (foreground). The decoder treats each prompt in the point batch
+    independently, exactly as the old one-call-per-probe loop did.
+    """
+    points = [[[fx * img_w, fy * img_h]] for fx, fy in PROBE_POINTS_FRACTIONS]
+    labels = [[1] for _ in PROBE_POINTS_FRACTIONS]
+    return [points], [labels]
+
+
 def _generate_masks(pil_image: Image.Image, model: Any, processor: Any) -> list:
     """Run SAM probe-points and return (mask, score) candidates.
 
-    Computes the image embedding once (expensive) and reuses it across
-    all 13 probe points (cheap). Total ~2-3s on CPU per image.
+    One processor call (pixels + every probe point), one image embedding,
+    and ONE decoder pass over all probe prompts as a point batch (NEO-315).
+    The old loop re-ran the processor's full image preprocessing once per
+    probe — 14 resize/normalise passes for 13 probes — and the decoder 13
+    times. Candidates come back in the same order as before: probe-major,
+    then SAM's three multimask outputs per probe.
     """
     import torch
 
     img_w, img_h = pil_image.size
-    base_inputs = processor(images=pil_image, return_tensors="pt")
-    original_sizes = base_inputs["original_sizes"]
-    reshaped_sizes = base_inputs["reshaped_input_sizes"]
+    input_points, input_labels = _probe_prompts(img_w, img_h)
+    inputs = processor(
+        images=pil_image,
+        input_points=input_points,
+        input_labels=input_labels,
+        return_tensors="pt",
+    )
 
     with torch.no_grad():
-        image_embeddings = model.get_image_embeddings(base_inputs["pixel_values"])
+        image_embeddings = model.get_image_embeddings(inputs["pixel_values"])
+        outputs = model(
+            image_embeddings=image_embeddings,
+            input_points=inputs["input_points"],
+            input_labels=inputs["input_labels"],
+        )
+
+    # pred_masks: [1, n_probes, 3, h, w]; post_process_masks returns one
+    # [n_probes, 3, H, W] tensor per image.
+    masks_tensors = processor.post_process_masks(
+        outputs.pred_masks.cpu(),
+        inputs["original_sizes"].cpu(),
+        inputs["reshaped_input_sizes"].cpu(),
+    )
+    iou_scores = outputs.iou_scores.cpu()
+    masks = masks_tensors[0]
 
     results = []
-    for fx, fy in PROBE_POINTS_FRACTIONS:
-        pt = [fx * img_w, fy * img_h]
-        prompt_inputs = processor(
-            images=pil_image,
-            input_points=[[[pt]]],
-            input_labels=[[[1]]],
-            return_tensors="pt",
-        )
-        with torch.no_grad():
-            outputs = model(
-                image_embeddings=image_embeddings,
-                input_points=prompt_inputs.get("input_points"),
-                input_labels=prompt_inputs.get("input_labels"),
-            )
-        masks_tensors = processor.post_process_masks(
-            outputs.pred_masks.cpu(),
-            original_sizes.cpu(),
-            reshaped_sizes.cpu(),
-        )
-        iou_scores = outputs.iou_scores.cpu()
+    for p in range(len(PROBE_POINTS_FRACTIONS)):
         for k in range(3):
-            mask_np = masks_tensors[0][0, k].numpy().astype(bool)
-            score = float(iou_scores[0, 0, k].item())
+            mask_np = masks[p, k].numpy().astype(bool)
+            score = float(iou_scores[0, p, k].item())
             results.append((mask_np, score))
     return results
 

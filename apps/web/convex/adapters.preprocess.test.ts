@@ -18,7 +18,10 @@
  * These call the adapter functions directly with a stub `ActionCtx` rather
  * than through convex-test. The functions use `ctx` only for `recordAdapterCall`
  * telemetry (which swallows its own failures), so a stub is both sufficient and
- * clearer about what is under test. The module is `"use node"` but runs here
+ * clearer about what is under test. Since NEO-315 that telemetry is SCHEDULED
+ * (`ctx.scheduler.runAfter(0, internal.posthog.captureEvent, …)`), never run
+ * inline, so the stub records what was scheduled and counts any `runAction`
+ * call as a regression. The module is `"use node"` but runs here
  * under edge-runtime — the same arrangement the credentials tests use, and it
  * works because a loopback URL short-circuits the OIDC path before
  * google-auth-library is ever exercised.
@@ -29,6 +32,7 @@
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { isNonRetryableError } from "@convex-dev/workpool";
+import { getFunctionName } from "convex/server";
 import type { ActionCtx } from "./_generated/server";
 import {
   callExtract,
@@ -39,22 +43,44 @@ import {
   parsePreprocessErrorCode,
   preprocessFastUrl,
   preprocessHeavyUrl,
+  readEscalationHints,
 } from "./adapters/preprocess";
 
-type CapturedEvent = { event: string; properties: Record<string, unknown> };
+type CapturedEvent = {
+  distinctId: string;
+  event: string;
+  properties: Record<string, unknown>;
+};
 
+/** Every capture the adapter SCHEDULED, in order. */
 const captured: CapturedEvent[] = [];
+/** What each schedule was aimed at and when — `[delayMs, functionName]`. */
+const scheduled: Array<[number, string]> = [];
+/** `ctx.runAction` calls. Telemetry must never make one again (NEO-315 C1). */
+let runActionCalls = 0;
 
 /**
- * Minimal ActionCtx. `recordAdapterCall` reads `ctx.auth` (absent → the
- * "anonymous" branch) and calls `ctx.runAction(internal.posthog.captureEvent)`,
- * which is what we record.
+ * Minimal ActionCtx. `recordAdapterCall` reads `ctx.auth` for the distinctId
+ * (absent → "anonymous") and calls
+ * `ctx.scheduler.runAfter(0, internal.posthog.captureEvent, …)`, which is what
+ * we record. `runAction` is present only so a regression to the inline hop is
+ * counted rather than crashing.
  */
-function stubCtx(): ActionCtx {
+function stubCtx(opts: { subject?: string } = {}): ActionCtx {
   return {
-    runAction: async (_ref: unknown, args: CapturedEvent) => {
-      captured.push(args);
+    auth: {
+      getUserIdentity: async () => (opts.subject ? { subject: opts.subject } : null),
+    },
+    runAction: async () => {
+      runActionCalls++;
       return null;
+    },
+    scheduler: {
+      runAfter: async (delayMs: number, ref: unknown, args: CapturedEvent) => {
+        scheduled.push([delayMs, getFunctionName(ref as never)]);
+        captured.push(args);
+        return "scheduled-id";
+      },
     },
   } as unknown as ActionCtx;
 }
@@ -124,6 +150,11 @@ async function captureThrow(fn: () => Promise<unknown>): Promise<unknown> {
 
 beforeEach(() => {
   captured.length = 0;
+  scheduled.length = 0;
+  runActionCalls = 0;
+  // recordAdapterCall schedules nothing when PostHog is unconfigured (the
+  // capture would be a no-op), so the telemetry contract needs a key.
+  process.env.POSTHOG_API_KEY = "test-posthog-key";
   // Loopback → getIdTokenClient short-circuits, so no OIDC and no GCP creds. Only
   // the heavy var is set by default; fast falls back to it, so a test that does
   // not care about routing sees a single service, as production did pre-split.
@@ -135,6 +166,7 @@ afterEach(() => {
   delete process.env.NEONBINDER_PREPROCESS_URL;
   delete process.env.NEONBINDER_PREPROCESS_FAST_URL;
   delete process.env.NEONBINDER_PREPROCESS_INTERNAL_KEY;
+  delete process.env.POSTHOG_API_KEY;
 });
 
 describe("service URLs", () => {
@@ -348,6 +380,94 @@ describe("error taxonomy — transient statuses are retryable", () => {
 });
 
 describe("telemetry", () => {
+  test("the capture is SCHEDULED at delay 0, never run inline as an action (NEO-315)", async () => {
+    // The inline `runAction(captureEvent)` was a Node action hop plus an HTTPS
+    // flush held inside every fast/heavy pool slot. Scheduling it is the fix;
+    // a `runAction` here is the regression.
+    stubFetch(async () => new Response(JSON.stringify(PROCESS_OK), { status: 200 }));
+    await callProcessEntryFast(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 });
+    await callProcessEntryHeavy(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 });
+
+    expect(runActionCalls).toBe(0);
+    expect(scheduled).toEqual([
+      [0, "posthog:captureEvent"],
+      [0, "posthog:captureEvent"],
+    ]);
+  });
+
+  test("a PostHog hop that would hang cannot hold the pool slot", async () => {
+    // Under the old inline `runAction`, a capture whose flush never returned
+    // held the whole call. Model that hop as a promise that never settles: the
+    // call must still return, because the only thing it awaits is the enqueue.
+    stubFetch(async () => new Response(JSON.stringify(PROCESS_OK), { status: 200 }));
+    const ctx = {
+      auth: { getUserIdentity: async () => null },
+      runAction: () => {
+        runActionCalls++;
+        return new Promise(() => {});
+      },
+      scheduler: { runAfter: async () => "scheduled-id" },
+    } as unknown as ActionCtx;
+
+    const result = await callProcessEntryFast(ctx, { jobId: "j", userId: "u", entryIndex: 0 });
+    expect(result.needs_escalation).toBe(false);
+    expect(runActionCalls).toBe(0);
+  });
+
+  test("distinctId is resolved from the caller's identity BEFORE scheduling", async () => {
+    // A scheduled function runs with no auth context, so the id has to travel
+    // in the args or every event would read "anonymous".
+    stubFetch(async () => new Response(JSON.stringify(PROCESS_OK), { status: 200 }));
+    await callProcessEntryFast(stubCtx({ subject: "user_abc" }), {
+      jobId: "j",
+      userId: "u",
+      entryIndex: 0,
+    });
+    await callProcessEntryFast(stubCtx(), { jobId: "j", userId: "u", entryIndex: 0 });
+
+    expect(captured.map((c) => c.distinctId)).toEqual(["user_abc", "anonymous"]);
+  });
+
+  test("a scheduler failure is swallowed — telemetry cannot fail the call it observes", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    stubFetch(async () => new Response(JSON.stringify(PROCESS_OK), { status: 200 }));
+    const ctx = {
+      auth: { getUserIdentity: async () => null },
+      scheduler: {
+        runAfter: async () => {
+          throw new Error("scheduler down");
+        },
+      },
+    } as unknown as ActionCtx;
+
+    await expect(
+      callProcessEntryFast(ctx, { jobId: "j", userId: "u", entryIndex: 0 }),
+    ).resolves.toMatchObject({ needs_escalation: false });
+    expect(error).toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  test("with PostHog unconfigured nothing is scheduled, but the console line still lands", async () => {
+    delete process.env.POSTHOG_API_KEY;
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    stubFetch(async () => new Response(JSON.stringify(PROCESS_OK), { status: 200 }));
+
+    await callProcessEntryFast(stubCtx(), { jobId: "job-q", userId: "u", entryIndex: 2 });
+
+    expect(scheduled).toEqual([]);
+    const lines = log.mock.calls
+      .map((c) => String(c[0]))
+      .filter((l) => l.includes('"msg":"adapter_sync_call"'));
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toMatchObject({
+      operation: "preprocessProcessEntryFast",
+      jobId: "job-q",
+      entryIndex: 2,
+      success: true,
+    });
+    log.mockRestore();
+  });
+
   test("every request emits an adapter_sync_call, success or failure", async () => {
     stubFetch(async () => new Response(JSON.stringify(EXTRACT_OK), { status: 200 }));
     await callExtract(stubCtx(), { jobId: "j", userId: "u" });
@@ -583,14 +703,23 @@ describe("callWarmupFast / callWarmupHeavy — best-effort, never throw", () => 
   test("swallows a telemetry failure too — recordAdapterCall throwing cannot fail warmup", async () => {
     // The belt-and-suspenders `.catch(() => {})` on the record call: even if the
     // observability path throws, a warmup must not.
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
     stubFetch(async () => new Response("{}", { status: 200 }));
     const ctx = {
-      runAction: async () => {
-        throw new Error("posthog down");
+      auth: {
+        getUserIdentity: async () => {
+          throw new Error("auth down");
+        },
+      },
+      scheduler: {
+        runAfter: async () => {
+          throw new Error("posthog down");
+        },
       },
     } as unknown as ActionCtx;
 
     await expect(callWarmupFast(ctx)).resolves.toEqual({ warmed: true });
+    error.mockRestore();
   });
 });
 
@@ -643,5 +772,227 @@ describe("per-call fetch timeouts (NEO-299)", () => {
     expect(timeoutSpy).toHaveBeenCalledWith(60_000);
     expect(timeoutSpy).not.toHaveBeenCalledWith(400_000);
     timeoutSpy.mockRestore();
+  });
+});
+
+describe("escalation hints — FAST decline baseline + dhash (NEO-315 D4)", () => {
+  const WIRE_BASELINE = { rotation_degrees: 90, confidence: 0.75, text_count: 42 };
+  const DECLINE_WITH_HINTS = {
+    ...PROCESS_DECLINED,
+    baseline: WIRE_BASELINE,
+    dhash: "a1b2c3d4e5f60718",
+  };
+
+  test("a decline's baseline is parsed and camelCased; its dhash comes through", async () => {
+    stubFetch(async () => new Response(JSON.stringify(DECLINE_WITH_HINTS), { status: 200 }));
+    const result = await callProcessEntryFast(stubCtx(), {
+      jobId: "j",
+      userId: "u",
+      entryIndex: 0,
+    });
+
+    expect(result.needs_escalation).toBe(true);
+    expect(result.baseline).toEqual({
+      rotationDegrees: 90,
+      orientConfidence: 0.75,
+      textCount: 42,
+    });
+    expect(result.dhash).toBe("a1b2c3d4e5f60718");
+  });
+
+  test("an older revision that sends neither field reads as no hints, not an error", async () => {
+    // PROCESS_DECLINED is the pre-NEO-315 decline body: no `baseline` key at all.
+    stubFetch(async () => new Response(JSON.stringify(PROCESS_DECLINED), { status: 200 }));
+    const result = await callProcessEntryFast(stubCtx(), {
+      jobId: "j",
+      userId: "u",
+      entryIndex: 0,
+    });
+
+    expect(result.needs_escalation).toBe(true);
+    expect(result.baseline).toBeNull();
+    expect(result.dhash).toBeNull();
+    expect(readEscalationHints(result)).toEqual({});
+  });
+
+  test("an explicit null baseline is no hint", async () => {
+    stubFetch(
+      async () =>
+        new Response(JSON.stringify({ ...PROCESS_DECLINED, baseline: null, dhash: null }), {
+          status: 200,
+        }),
+    );
+    const result = await callProcessEntryFast(stubCtx(), {
+      jobId: "j",
+      userId: "u",
+      entryIndex: 0,
+    });
+    expect(result.baseline).toBeNull();
+    expect(readEscalationHints(result)).toEqual({});
+  });
+
+  test.each([
+    ["a non-quadrant rotation", { ...WIRE_BASELINE, rotation_degrees: 45 }],
+    ["a string rotation", { ...WIRE_BASELINE, rotation_degrees: "90" }],
+    ["a confidence above 1", { ...WIRE_BASELINE, confidence: 1.5 }],
+    ["a NaN-ish confidence", { ...WIRE_BASELINE, confidence: "high" }],
+    ["a fractional text count", { ...WIRE_BASELINE, text_count: 4.5 }],
+    ["a negative text count", { ...WIRE_BASELINE, text_count: -1 }],
+    ["a missing field", { rotation_degrees: 0, confidence: 0.5 }],
+    ["the camelCase shape on the wire", { rotationDegrees: 0, orientConfidence: 0.5, textCount: 3 }],
+    ["an array", [0, 0.5, 3]],
+  ])("a malformed baseline (%s) is dropped, not trusted", async (_label, baseline) => {
+    stubFetch(
+      async () =>
+        new Response(JSON.stringify({ ...PROCESS_DECLINED, baseline }), { status: 200 }),
+    );
+    const result = await callProcessEntryFast(stubCtx(), {
+      jobId: "j",
+      userId: "u",
+      entryIndex: 0,
+    });
+    // Still a decline — a bad hint costs only the hint.
+    expect(result.needs_escalation).toBe(true);
+    expect(result.baseline).toBeNull();
+  });
+
+  test.each(["A1B2C3D4E5F60718", "a1b2c3", "zzzzzzzzzzzzzzzz", 12345])(
+    "a malformed dhash (%s) becomes null",
+    async (dhash) => {
+      stubFetch(
+        async () =>
+          new Response(JSON.stringify({ ...PROCESS_DECLINED, dhash }), { status: 200 }),
+      );
+      const result = await callProcessEntryFast(stubCtx(), {
+        jobId: "j",
+        userId: "u",
+        entryIndex: 0,
+      });
+      expect(result.dhash).toBeNull();
+    },
+  );
+
+  test("a completed crop passes its fields through untouched apart from the hints", async () => {
+    stubFetch(async () => new Response(JSON.stringify(PROCESS_OK), { status: 200 }));
+    const result = await callProcessEntryFast(stubCtx(), {
+      jobId: "j",
+      userId: "u",
+      entryIndex: 0,
+    });
+    expect(result).toEqual({ ...PROCESS_OK, baseline: null });
+  });
+
+  test("readEscalationHints reads both off a settled fast result (the workpool's returnValue)", async () => {
+    stubFetch(async () => new Response(JSON.stringify(DECLINE_WITH_HINTS), { status: 200 }));
+    const result = await callProcessEntryFast(stubCtx(), {
+      jobId: "j",
+      userId: "u",
+      entryIndex: 0,
+    });
+    // The value crosses the workpool as JSON; read it the way the settle does.
+    const settled: unknown = JSON.parse(JSON.stringify(result));
+
+    expect(readEscalationHints(settled)).toEqual({
+      baseline: { rotationDegrees: 90, orientConfidence: 0.75, textCount: 42 },
+      dhash: "a1b2c3d4e5f60718",
+    });
+  });
+
+  test("readEscalationHints never throws and never invents a hint", () => {
+    expect(readEscalationHints(undefined)).toEqual({});
+    expect(readEscalationHints(null)).toEqual({});
+    expect(readEscalationHints("nope")).toEqual({});
+    expect(readEscalationHints({ baseline: WIRE_BASELINE })).toEqual({});
+    expect(
+      readEscalationHints({
+        baseline: { rotationDegrees: 180, orientConfidence: 0.5, textCount: 3, extra: "x" },
+      }),
+    ).toEqual({ baseline: { rotationDegrees: 180, orientConfidence: 0.5, textCount: 3 } });
+  });
+
+  test("the heavy request carries both hints, snake_case, when present", async () => {
+    const bodies: unknown[] = [];
+    stubFetch(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify(PROCESS_OK), { status: 200 });
+    });
+
+    await callProcessEntryHeavy(stubCtx(), {
+      jobId: "job-1",
+      userId: "user_x",
+      entryIndex: 4,
+      baseline: { rotationDegrees: 270, orientConfidence: 0.6, textCount: 12 },
+      dhash: "0f1e2d3c4b5a6978",
+    });
+
+    expect(bodies[0]).toEqual({
+      job_id: "job-1",
+      user_id: "user_x",
+      entry_index: 4,
+      baseline: { rotation_degrees: 270, confidence: 0.6, text_count: 12 },
+      dhash: "0f1e2d3c4b5a6978",
+    });
+  });
+
+  test("without hints the heavy request is byte-for-byte the pre-NEO-315 request", async () => {
+    // An older heavy revision must see exactly what it always saw — no
+    // `baseline: null`, no `dhash: null`.
+    const bodies: unknown[] = [];
+    stubFetch(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(JSON.stringify(PROCESS_OK), { status: 200 });
+    });
+
+    await callProcessEntryHeavy(stubCtx(), { jobId: "job-1", userId: "user_x", entryIndex: 4 });
+    await callProcessEntryHeavy(stubCtx(), {
+      jobId: "job-1",
+      userId: "user_x",
+      entryIndex: 4,
+      ...readEscalationHints(PROCESS_DECLINED),
+    });
+
+    for (const body of bodies) {
+      expect(body).toEqual({ job_id: "job-1", user_id: "user_x", entry_index: 4 });
+    }
+  });
+
+  test("each hint is sent independently, and a malformed one is left out", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    stubFetch(async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(JSON.stringify(PROCESS_OK), { status: 200 });
+    });
+
+    await callProcessEntryHeavy(stubCtx(), {
+      jobId: "j",
+      userId: "u",
+      entryIndex: 0,
+      dhash: "0f1e2d3c4b5a6978",
+    });
+    await callProcessEntryHeavy(stubCtx(), {
+      jobId: "j",
+      userId: "u",
+      entryIndex: 0,
+      baseline: { rotationDegrees: 0, orientConfidence: 0.9, textCount: 30 },
+    });
+    // Forwarding garbage could fail the heavy request's validation and the
+    // image with it, for the sake of a shortcut. Drop it instead.
+    await callProcessEntryHeavy(stubCtx(), {
+      jobId: "j",
+      userId: "u",
+      entryIndex: 0,
+      baseline: { rotationDegrees: 33, orientConfidence: 0.9, textCount: 30 },
+      dhash: "not-a-hash",
+    });
+
+    expect(bodies[0]).toHaveProperty("dhash", "0f1e2d3c4b5a6978");
+    expect(bodies[0]).not.toHaveProperty("baseline");
+    expect(bodies[1]).toHaveProperty("baseline", {
+      rotation_degrees: 0,
+      confidence: 0.9,
+      text_count: 30,
+    });
+    expect(bodies[1]).not.toHaveProperty("dhash");
+    expect(bodies[2]).toEqual({ job_id: "j", user_id: "u", entry_index: 0 });
   });
 });

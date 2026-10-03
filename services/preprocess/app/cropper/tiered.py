@@ -66,6 +66,8 @@ import cv2
 import numpy as np
 from PIL import Image, ImageOps
 
+from app.timing import measure_current
+
 logger = logging.getLogger(__name__)
 
 # ── Constants (benchmark-tuned; see module docstring) ───────────────────────
@@ -279,7 +281,10 @@ def birefnet_mask(work: np.ndarray) -> np.ndarray:
     )
     bg_bgr = tuple(int(v) for v in np.median(ring, axis=0))
     padded = cv2.copyMakeBorder(work, p, p, p, p, cv2.BORDER_CONSTANT, value=bg_bgr)
-    rgba = remove(cv2.cvtColor(padded, cv2.COLOR_BGR2RGB), session=_get_session())
+    # Booked to the request's `birefnet_ms` when a /process-entry is bound
+    # (NEO-315); a no-op otherwise. Includes a lazy session load, if any.
+    with measure_current("birefnet_ms"):
+        rgba = remove(cv2.cvtColor(padded, cv2.COLOR_BGR2RGB), session=_get_session())
     alpha = np.array(rgba)[..., 3][p : p + h, p : p + w]
     mask = (alpha > 25).astype(np.uint8) * 255
     k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))

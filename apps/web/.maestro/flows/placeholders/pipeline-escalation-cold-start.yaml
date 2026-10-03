@@ -70,6 +70,22 @@
 #     user-visible sits below it to scroll to. An `assertNotVisible` would
 #     therefore pass whether or not the line exists — a check that cannot fail
 #     is worse than none. The pair count carries the zero-failures proof instead.
+#   * The FAST→HEAVY hand-off (NEO-315). Every fast decline now returns the
+#     whole-image Vision orient (`baseline`) and the dhash; Convex stores both on
+#     the escalated row and sends them on the heavy request, and HEAVY then skips
+#     its own baseline Vision call, the dhash and the classical fast path. All
+#     six photos here travel that path. A heavy service that rejected the hints
+#     answers 422, which Convex treats as terminal, so the photo fails and Step 7
+#     cannot reach three pairs; a heavy enqueue that stopped being scheduled
+#     leaves the rows escalating, so Step 6 never resolves (the wedged-batch
+#     watchdog's 30 minutes is far past Step 6's ceiling). What this flow does
+#     NOT see is a hand-off that was silently DROPPED: by design the heavy
+#     service then recomputes both values and returns the same answer, only
+#     slower, and nothing on screen differs. That case is the unit suites' to
+#     prove (convex/placeholderEscalation.test.ts,
+#     services/preprocess/tests/unit/test_process_entry_route.py), and the
+#     service's `process_entry_timing` log line (`baseline_supplied`,
+#     `vision_calls`) is where a live run shows it.
 # There is no `when:` branch anywhere in it, and the precondition proves a real
 # job exists before any wait.
 #

@@ -242,3 +242,21 @@ class TestHaikuBboxWireRequest:
                 }
             ],
         }
+
+
+class TestSharedAnthropicClient:
+    """NEO-315 D2: haiku_bbox uses the same process-wide client as classify."""
+
+    def test_default_client_comes_from_the_shared_getter(self, monkeypatch):
+        from app.cropper import haiku_bbox
+
+        shared = MagicMock()
+        shared.messages.create.return_value = SimpleNamespace(
+            content=[SimpleNamespace(text='{"x": 0, "y": 0, "w": 0, "h": 0}')]
+        )
+        monkeypatch.setattr(haiku_bbox, "get_anthropic_client", lambda: shared)
+        buf = io.BytesIO()
+        Image.new("RGB", (40, 56), "white").save(buf, format="JPEG")
+
+        assert haiku_bbox_crop(buf.getvalue()) is None
+        assert shared.messages.create.call_count == 1

@@ -82,6 +82,11 @@ export const onImageComplete = fastPreprocessPool.defineOnComplete({
     // one function, so the per-job settle lock serializes fast and heavy
     // completions of the same job (and OCC serializes the two pools' separate
     // transactions).
-    await recordImageOutcomeImpl(ctx, context, result);
+    //
+    // "fast" because this hook belongs to the fast pool: it is how settle tells
+    // a duplicate fast delivery for an already-escalated row (dropped) from the
+    // heavy result (settled). The work item's context is unchanged, so items
+    // enqueued before the origin existed arrive here and are handled the same.
+    await recordImageOutcomeImpl(ctx, context, result, "fast");
   },
 });

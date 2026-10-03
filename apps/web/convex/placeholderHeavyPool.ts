@@ -31,6 +31,7 @@ import { internalMutation } from "./_generated/server";
 import { HEAVY_MAX_PARALLELISM } from "./preprocessCapacity";
 import { HEAVY_WARMUP_WINDOW_MS } from "./lib/preprocessWarmup";
 import { findJob, recordImageOutcomeImpl } from "./placeholderPipeline";
+import { preprocessBaselineValidator } from "./lib/preprocessBaseline";
 
 /** The fixed key of the heavy warm-up row in `preprocessWarmupState`. */
 export const HEAVY_WARMUP_STATE_KEY = "heavyWarmup";
@@ -107,6 +108,13 @@ export const heavyPreprocessPool = new Workpool(components.heavyPreprocessPool, 
  * the `!image.escalated` guard in settle makes that safe even against a buggy
  * heavy response. Sharing the one settle function is what puts fast and heavy
  * completions of the same job under the same per-job settle lock.
+ *
+ * Passes origin "heavy": settle drops any further FAST delivery for an escalated
+ * row as a duplicate, and the origin is what guarantees this one — the row's
+ * real answer, success or failure — is never mistaken for one. It also lets
+ * settle drop a heavy completion for a row that is NOT escalated, which only a
+ * restart produces (the reset clears `escalated` while the old run's heavy work
+ * drains); the new run's fast result settles that row instead.
  */
 export const onHeavyImageComplete = heavyPreprocessPool.defineOnComplete({
   context: v.object({
@@ -114,7 +122,7 @@ export const onHeavyImageComplete = heavyPreprocessPool.defineOnComplete({
     imageId: v.id("placeholderImages"),
   }),
   handler: async (ctx: MutationCtx, { context, result }) => {
-    await recordImageOutcomeImpl(ctx, context, result);
+    await recordImageOutcomeImpl(ctx, context, result, "heavy");
   },
 });
 
@@ -134,9 +142,21 @@ export const onHeavyImageComplete = heavyPreprocessPool.defineOnComplete({
  * The warm-gate is NOT fired here — `settleImageOutcome` already scheduled the
  * heavy warm-up fan-out on the first escalation of the batch, so this only
  * places work.
+ *
+ * `baseline` and `dhash` (NEO-315 D4) are what the fast pass measured before it
+ * declined, read off the decline body by settle and handed straight on to the
+ * heavy worker so the heavy service can skip re-measuring them. Both optional:
+ * a decline from a fast revision that predates the hand-off carries neither, and
+ * the heavy call then goes out exactly as it did before. They are passed through
+ * rather than re-read from the row because the row's copies are provisional
+ * display values; the args are the fast pass's own answer, unmodified.
  */
 export const enqueueHeavyImage = internalMutation({
-  args: { imageId: v.id("placeholderImages") },
+  args: {
+    imageId: v.id("placeholderImages"),
+    baseline: v.optional(preprocessBaselineValidator),
+    dhash: v.optional(v.string()),
+  },
   returns: v.object({ enqueued: v.boolean() }),
   handler: async (ctx, args) => {
     const image = await ctx.db.get(args.imageId);
@@ -157,7 +177,13 @@ export const enqueueHeavyImage = internalMutation({
     const workId = await heavyPreprocessPool.enqueueAction(
       ctx,
       internal.placeholderBatch.processHeavyEntryWorker,
-      { jobId: image.jobId, userId: image.userId, entryIndex: image.entryIndex },
+      {
+        jobId: image.jobId,
+        userId: image.userId,
+        entryIndex: image.entryIndex,
+        ...(args.baseline ? { baseline: args.baseline } : {}),
+        ...(args.dhash ? { dhash: args.dhash } : {}),
+      },
       {
         onComplete: internal.placeholderHeavyPool.onHeavyImageComplete,
         context: { jobId: image.jobId, imageId: image._id },

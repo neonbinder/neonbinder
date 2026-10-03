@@ -78,5 +78,6 @@
 - [Review row sport can differ from the set](reference_review_row_sport_can_differ_from_the_set.md) — NEO-313 switchRowSport: prelude decisions use the ROW's sport, staged maps key sport|name; automated paths stay on the set's
 - [Runtime colour needs a per-theme split](reference_runtime_colour_needs_a_per_theme_split.md) — livery on bg-white dark:bg-gray-800 never passes both themes; two CSS vars, per-theme surfaces incl. hover + /20 tint
 - [DOM id shadows aria-label in maestro](dom-id-shadows-aria-label-in-maestro.md) — resource-id is `id || ariaLabel`; ids go on non-interactive wrappers
+- [Placeholder module cycle TDZ](reference_placeholder_module_cycle_tdz.md) — pipeline ↔ pool/heavyPool import each other; a shared const is TDZ at load; shared validators go in pure lib/
 - [Sync Sets held notices not surfaced](project_sync_sets_held_notices_not_surfaced.md) — setName store's held/withheld are dropped at the action boundary on purpose (NEO-312); don't re-propose a channel
 - [Reuse the status-ledger spinner→check pattern](feedback_reuse_the_status_ledger_spinner_to_check_pattern.md) — owner-approved (NEO-312 ParallelBuildPanel): per-item ledger, clock→spin→check glyphs, sleeve strip; reuse for any multi-item run, extract on second use

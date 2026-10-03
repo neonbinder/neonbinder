@@ -71,6 +71,7 @@ import type * as lib_pairing_pool from "../lib/pairing/pool.js";
 import type * as lib_pairing_types from "../lib/pairing/types.js";
 import type * as lib_parallelCardLink from "../lib/parallelCardLink.js";
 import type * as lib_placeholderObjects from "../lib/placeholderObjects.js";
+import type * as lib_preprocessBaseline from "../lib/preprocessBaseline.js";
 import type * as lib_preprocessWarmup from "../lib/preprocessWarmup.js";
 import type * as lib_selectorAncestry from "../lib/selectorAncestry.js";
 import type * as lib_selectorTeams from "../lib/selectorTeams.js";
@@ -194,6 +195,7 @@ declare const fullApi: ApiFromModules<{
   "lib/pairing/types": typeof lib_pairing_types;
   "lib/parallelCardLink": typeof lib_parallelCardLink;
   "lib/placeholderObjects": typeof lib_placeholderObjects;
+  "lib/preprocessBaseline": typeof lib_preprocessBaseline;
   "lib/preprocessWarmup": typeof lib_preprocessWarmup;
   "lib/selectorAncestry": typeof lib_selectorAncestry;
   "lib/selectorTeams": typeof lib_selectorTeams;

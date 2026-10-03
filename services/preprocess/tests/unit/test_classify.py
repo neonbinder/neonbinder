@@ -126,6 +126,7 @@ class TestClassifyCard:
         assert result.card_number == "24"
         assert result.side == "front"
         assert result.raw_text == payload
+        assert result.retried is False
         assert client.messages.create.call_count == 1
 
     def test_markdown_wrapped_json_parses(self):
@@ -147,6 +148,8 @@ class TestClassifyCard:
         result = classify_card(_jpeg_bytes(), client=client)
 
         assert result.player == "Pujols"
+        # NEO-315: the retry is a frequency signal on the timing line.
+        assert result.retried is True
         assert client.messages.create.call_count == 2
         retry_call = client.messages.create.call_args_list[1]
         retry_prompt = retry_call.kwargs["messages"][0]["content"][1]["text"]
@@ -337,3 +340,65 @@ class TestClassifyWireRequest:
         assert transport.bodies[1]["messages"][0]["content"][1]["text"] == (
             PROMPT + RETRY_PROMPT_SUFFIX
         )
+
+
+class TestSharedAnthropicClient:
+    """NEO-315 D2: one lazily built Anthropic client per process."""
+
+    def test_default_client_is_built_once_and_reused(self, monkeypatch):
+        import threading
+
+        from app import classify
+
+        built: list[object] = []
+
+        def _factory():
+            client = _mock_client(
+                *[
+                    _response_with_text(
+                        '{"players":["A"],"team":null,"card_number":"1","side":"front"}'
+                    )
+                    for _ in range(8)
+                ]
+            )
+            built.append(client)
+            return client
+
+        monkeypatch.setattr(classify, "_anthropic_client", None)
+        monkeypatch.setattr(classify.anthropic, "Anthropic", _factory)
+
+        barrier = threading.Barrier(4)
+        clients: list[object] = []
+
+        def _cold_request():
+            barrier.wait()
+            clients.append(classify.get_anthropic_client())
+
+        threads = [threading.Thread(target=_cold_request) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert len(built) == 1
+        assert all(c is built[0] for c in clients)
+        classify_card(_jpeg_bytes())
+        classify_card(_jpeg_bytes())
+        assert len(built) == 1
+        assert built[0].messages.create.call_count == 2
+
+    def test_explicit_client_bypasses_the_shared_one(self, monkeypatch):
+        from app import classify
+
+        def _refuse():
+            raise AssertionError("shared client must not be built when one is injected")
+
+        monkeypatch.setattr(classify, "_anthropic_client", None)
+        monkeypatch.setattr(classify.anthropic, "Anthropic", _refuse)
+        client = _mock_client(
+            _response_with_text('{"players":[],"team":null,"card_number":null,"side":"back"}')
+        )
+
+        classify_card(_jpeg_bytes(), client=client)
+
+        assert client.messages.create.call_count == 1

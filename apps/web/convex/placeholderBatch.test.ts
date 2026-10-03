@@ -27,6 +27,8 @@ const mockState = vi.hoisted(() => ({
   /** What `callProcessEntryHeavy` should do on its next call. */
   heavyThrows: null as unknown,
   heavyResult: { needs_escalation: false } as unknown,
+  /** The args each `callProcessEntryHeavy` call received (NEO-315 D4). */
+  heavyCalls: [] as unknown[],
   /** What `callWarmupHeavy` should return. */
   warmupResult: { warmed: true } as { warmed: boolean },
   /** Calls the mocked `touchJobActivity` recorded, and whether it should throw. */
@@ -38,7 +40,8 @@ vi.mock("./adapters/preprocess", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adapters/preprocess")>();
   return {
     ...actual,
-    callProcessEntryHeavy: async () => {
+    callProcessEntryHeavy: async (_ctx: unknown, args: unknown) => {
+      mockState.heavyCalls.push(args);
       if (mockState.heavyThrows) throw mockState.heavyThrows;
       return mockState.heavyResult;
     },
@@ -74,6 +77,7 @@ const ARGS = { jobId: JOB_A, userId: "user_x", entryIndex: 0 };
 beforeEach(() => {
   mockState.heavyThrows = null;
   mockState.heavyResult = { needs_escalation: false };
+  mockState.heavyCalls = [];
   mockState.warmupResult = { warmed: true };
   mockState.touchCalls = [];
   mockState.touchThrows = false;
@@ -161,5 +165,72 @@ describe("processHeavyEntryWorker", () => {
 
     expect(result).toEqual({ needs_escalation: false, dhash: "abc123" });
     expect(mockState.touchCalls).toEqual([]);
+  });
+
+  test("NEO-315 D4: passes the fast baseline and dHash straight to the heavy call", async () => {
+    const t = convexTest(schema, modules);
+    const baseline = { rotationDegrees: 180, orientConfidence: 0.6, textCount: 9 };
+
+    await t.action(internal.placeholderBatch.processHeavyEntryWorker, {
+      ...ARGS,
+      baseline,
+      dhash: "a1b2c3d4e5f60718",
+    });
+
+    expect(mockState.heavyCalls).toEqual([
+      { ...ARGS, baseline, dhash: "a1b2c3d4e5f60718" },
+    ]);
+  });
+
+  test("NEO-315 D4: without a baseline the heavy call carries none", async () => {
+    const t = convexTest(schema, modules);
+
+    await t.action(internal.placeholderBatch.processHeavyEntryWorker, ARGS);
+
+    expect(mockState.heavyCalls).toHaveLength(1);
+    const call = mockState.heavyCalls[0] as Record<string, unknown>;
+    expect(call).toMatchObject(ARGS);
+    expect(call.baseline).toBeUndefined();
+    expect(call.dhash).toBeUndefined();
+  });
+
+  test("NEO-315: the worker writes no stage timestamp — settle owns all three", async () => {
+    // Actions have no ctx.db, so this pins the contract rather than a branch: a
+    // heavy run, success or failure, leaves the row's clock exactly as it was.
+    const t = convexTest(schema, modules);
+    const imageId = await t.run(async (ctx) => {
+      await ctx.db.insert("placeholderJobs", {
+        jobId: JOB_A,
+        userId: "user_x",
+        objectPath: "placeholders/user_x/job-heavy-aaaa/input.zip",
+        createdAt: 1_700_000_000_000,
+        status: "processing",
+        totalImages: 1,
+        processedImages: 0,
+        failedImages: 0,
+      });
+      return ctx.db.insert("placeholderImages", {
+        jobId: JOB_A,
+        userId: "user_x",
+        entryIndex: 0,
+        originalName: "scan-0.jpg",
+        status: "processing",
+        escalated: true,
+        queuedAt: 1_000,
+        escalatedAt: 2_000,
+      });
+    });
+
+    await t.action(internal.placeholderBatch.processHeavyEntryWorker, ARGS);
+    mockState.heavyThrows = new Error("preprocess HTTP 503");
+    await expect(
+      t.action(internal.placeholderBatch.processHeavyEntryWorker, ARGS),
+    ).rejects.toThrow();
+
+    const image = await t.run(async (ctx) => ctx.db.get(imageId));
+    expect(image?.queuedAt).toBe(1_000);
+    expect(image?.escalatedAt).toBe(2_000);
+    expect(image?.settledAt).toBeUndefined();
+    expect(image?.status).toBe("processing");
   });
 });

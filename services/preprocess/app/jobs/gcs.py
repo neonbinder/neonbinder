@@ -25,8 +25,8 @@ Construction is lazy because importing this module must not require credentials
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
-from typing import BinaryIO
+from dataclasses import dataclass, field
+from typing import Any, BinaryIO
 
 from google.api_core import exceptions as gcs_exceptions
 from google.cloud import storage
@@ -70,10 +70,18 @@ class ObjectRef:
 
 @dataclass(frozen=True)
 class ObjectStat:
-    """The metadata a guard needs before deciding to read an object at all."""
+    """The metadata a guard needs before deciding to read an object at all.
+
+    `blob` is the handle the stat's metadata request returned. Passing the
+    stat back to `download` reads through it instead of paying a second
+    metadata round trip (NEO-315: `/process-entry` used to stat then HEAD the
+    same object again). Excluded from equality and repr — it is a transport
+    handle, not metadata.
+    """
 
     size: int
     content_type: str | None
+    blob: Any = field(default=None, compare=False, repr=False)
 
 
 class ObjectStore:
@@ -101,7 +109,7 @@ class ObjectStore:
         blob = self.client.bucket(ref.bucket).get_blob(ref.name)
         if blob is None:
             return None
-        return ObjectStat(size=int(blob.size or 0), content_type=blob.content_type)
+        return ObjectStat(size=int(blob.size or 0), content_type=blob.content_type, blob=blob)
 
     def open_stream(self, ref: ObjectRef) -> BinaryIO:
         """A seekable read stream over the object.
@@ -115,17 +123,23 @@ class ObjectStore:
             raise ObjectNotFoundError(f"no such object: {ref.uri}")
         return blob.open("rb", chunk_size=STREAM_CHUNK_BYTES)
 
-    def download(self, ref: ObjectRef, *, max_bytes: int) -> bytes:
+    def download(self, ref: ObjectRef, *, max_bytes: int, stat: ObjectStat | None = None) -> bytes:
         """Read a whole object into memory, refusing anything over `max_bytes`.
 
         The size is checked from metadata *before* the read rather than by
         truncating afterwards, so an oversized object costs one HEAD rather
-        than its own bandwidth.
+        than its own bandwidth. A caller that already holds this object's
+        `stat()` passes it, and the read reuses that stat's blob handle and
+        size instead of a second HEAD.
         """
-        blob = self.client.bucket(ref.bucket).get_blob(ref.name)
-        if blob is None:
-            raise ObjectNotFoundError(f"no such object: {ref.uri}")
-        size = int(blob.size or 0)
+        if stat is not None and stat.blob is not None:
+            blob = stat.blob
+            size = stat.size
+        else:
+            blob = self.client.bucket(ref.bucket).get_blob(ref.name)
+            if blob is None:
+                raise ObjectNotFoundError(f"no such object: {ref.uri}")
+            size = int(blob.size or 0)
         if size > max_bytes:
             raise ObjectTooLargeError(
                 f"{ref.uri} is {size} bytes, over the {max_bytes} byte ceiling"

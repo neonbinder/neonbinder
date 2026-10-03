@@ -242,7 +242,7 @@ jobs:
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           # NEO-299: explicit per-deploy cap — see the env block comment above.
-          flags: "--max-instances=${{ env.DEV_HEAVY_MAX_INSTANCES }}"
+          flags: "--max-instances=${{ env.DEV_HEAVY_MAX_INSTANCES }} --no-cpu-boost"
 
       - id: capture-new
         name: Capture new dev revision + tagged URL
@@ -434,7 +434,7 @@ jobs:
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           # NEO-299: explicit per-deploy cap — see the env block comment above.
-          flags: "--max-instances=${{ env.PROD_HEAVY_MAX_INSTANCES }}"
+          flags: "--max-instances=${{ env.PROD_HEAVY_MAX_INSTANCES }} --no-cpu-boost"
 
       - id: capture-new
         name: Capture new prod revision + tagged URL

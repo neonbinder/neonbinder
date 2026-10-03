@@ -1,6 +1,8 @@
 "use node";
 
 import { action } from "../_generated/server";
+import type { ActionCtx } from "../_generated/server";
+import type { Bucket } from "@google-cloud/storage";
 import { v } from "convex/values";
 import { randomUUID } from "node:crypto";
 import { getCurrentUserId } from "../auth";
@@ -331,11 +333,151 @@ export const createPlaceholderImageUploadUrl = action({
   },
 });
 
+/** One side of a download mint — the single mint's whole answer. */
+type DownloadUrl = { url: string; entryIndex: number; expiresAt: number };
+
+const downloadUrlValidator = v.object({
+  url: v.string(),
+  entryIndex: v.number(),
+  expiresAt: v.number(),
+});
+
+/**
+ * The checks every download mint makes BEFORE it reads anything: a verified,
+ * shape-checked caller and a configured bucket. Returns the userId the object
+ * keys are built from — the only identity that ever reaches a key.
+ */
+async function requireDownloadCaller(ctx: ActionCtx): Promise<{
+  userId: string;
+  bucketName: string;
+}> {
+  const userId = await getCurrentUserId(ctx);
+  if (!userId) {
+    throw new Error("Not authenticated");
+  }
+  if (!CLERK_USER_ID_RE.test(userId)) {
+    throw new Error("Unexpected user id shape");
+  }
+  const bucketName = process.env.GCS_PLACEHOLDER_BUCKET;
+  if (!bucketName) {
+    throw new Error("GCS_PLACEHOLDER_BUCKET not set");
+  }
+  return { userId, bucketName };
+}
+
+/**
+ * Bounds before anything else: this value is interpolated into a GCS key, so it
+ * gets the same ge=0/le=MAX bound the service's own request model enforces — the
+ * row lookup should be the second thing standing between a caller and a key
+ * segment, not the only one. Same error shape as a missing row on purpose.
+ */
+function assertDownloadIndex(entryIndex: number): void {
+  if (
+    !Number.isInteger(entryIndex) ||
+    entryIndex < 0 ||
+    entryIndex > PLACEHOLDER_MAX_ENTRY_INDEX
+  ) {
+    throw new Error("Image not found");
+  }
+}
+
+/**
+ * Resolve one owned, done image to a signed read url, or throw "Image not
+ * found". The body of `createPlaceholderImageDownloadUrl`, shared with the pair
+ * mint so both sides of a pair pass exactly the checks a single mint does.
+ *
+ * **Finding the object.** The extension is not knowable from the row until a
+ * mint has found it: the service's `ProcessEntryResponse` does not report it,
+ * and the output's format is whatever the CROPPED image sniffed as rather than
+ * the input's. So the first mint locates the object the way the service locates
+ * an extracted one — try the known extensions in `_EXTRACTED_EXTENSIONS` order —
+ * and memoises the answer on the row. `exists()` (a HEAD) rather than a prefix
+ * listing on purpose: it needs only `storage.objects.get`, where listing would
+ * additionally exercise `storage.objects.list`, and the permission set on a
+ * bucket this sensitive should stay as narrow as the job allows.
+ *
+ * **A memoised extension skips the HEAD entirely (NEO-315).** It is only ever
+ * written from a successful probe of a `done` row's output, and outputs are
+ * write-once, so re-proving the object exists on every mint was a storage round
+ * trip per image per render that could only ever answer "yes". If the object
+ * has since been aged out by a lifecycle rule, the signed url 404s when it is
+ * fetched — the same "there is no image here" a probe would have reported, just
+ * one hop later. Signing is local (no network), so a cached mint touches storage
+ * not at all.
+ */
+async function mintOneDownloadUrl(
+  ctx: ActionCtx,
+  bucket: Bucket,
+  userId: string,
+  jobId: string,
+  entryIndex: number,
+): Promise<DownloadUrl> {
+  // One error for "no such job", "not your job", "no such entry" and "that
+  // entry has no output yet" — see `getImageForDownload`. Annotated because the
+  // shape mirrors that query's `returns` validator, so the two cannot drift
+  // apart unnoticed.
+  const image: { imageId: Id<"placeholderImages">; outputExtension?: string } | null =
+    await ctx.runQuery(internal.placeholderPipeline.getImageForDownload, {
+      jobId,
+      userId,
+      entryIndex,
+    });
+  if (!image) {
+    throw new Error("Image not found");
+  }
+
+  // The memoised extension is re-checked against the allowlist before it goes
+  // anywhere near a key. It can only ever have been written from that list, so
+  // this should not fire — but a stored string that becomes a path segment
+  // gets validated on the way out, not trusted because of where it came from.
+  const cached = isPlaceholderOutputExtension(image.outputExtension)
+    ? image.outputExtension
+    : undefined;
+
+  let objectPath: string | undefined;
+  if (cached) {
+    objectPath = placeholderOutputImageObject(userId, jobId, entryIndex, cached);
+  } else {
+    let resolvedExtension: string | undefined;
+    for (const extension of PLACEHOLDER_OUTPUT_EXTENSIONS) {
+      const candidate = placeholderOutputImageObject(userId, jobId, entryIndex, extension);
+      const [exists] = await bucket.file(candidate).exists();
+      if (!exists) continue;
+      objectPath = candidate;
+      resolvedExtension = extension;
+      break;
+    }
+
+    if (!objectPath || !resolvedExtension) {
+      // The row says "done" but the object is not there. That is a real
+      // inconsistency (a lifecycle rule that aged the object out, a bucket
+      // restored from a partial backup), not something the caller did — but it
+      // is still "there is no image here to hand you", so it gets the same
+      // answer rather than an error that invites a retry loop.
+      throw new Error("Image not found");
+    }
+
+    await ctx.runMutation(internal.placeholderPipeline.recordOutputExtension, {
+      imageId: image.imageId,
+      extension: resolvedExtension as "jpg" | "png" | "webp",
+    });
+  }
+
+  const expiresAt = Date.now() + DOWNLOAD_URL_TTL_MS;
+  const [url] = await bucket.file(objectPath).getSignedUrl({
+    version: "v4",
+    action: "read",
+    expires: expiresAt,
+  });
+
+  return { url, entryIndex, expiresAt };
+}
+
 /**
  * Mint a short-lived signed READ url for one image's PROCESSED crop.
  *
  * The first consumer is the streaming CLI, which has to show the operator what
- * it just produced; the NEO-152 review UI will use the same call. Neither can
+ * it just produced; the NEO-152 review UI uses the same call. Neither can
  * fetch the object directly — the bucket is private, and the only principals
  * with read access are the Convex service account and the preprocess runtime —
  * so a signed url is how a browser sees a crop at all.
@@ -354,120 +496,62 @@ export const createPlaceholderImageUploadUrl = action({
  * would start storing and passing around, and the first function to accept one
  * back is the one that breaks the rule.
  *
- * **Finding the object.** The extension is not knowable from the row: the
- * service's `ProcessEntryResponse` does not report it, and the output's format
- * is whatever the CROPPED image sniffed as rather than the input's. So the
- * object is located the way the service locates an extracted one — try the known
- * extensions in `_EXTRACTED_EXTENSIONS` order — and the answer is memoised on the
- * row, so a job's review page pays at most one probe per image ever rather than
- * up to three per render. `exists()` (a HEAD) rather than a prefix listing on
- * purpose: it needs only `storage.objects.get`, where listing would additionally
- * exercise `storage.objects.list`, and the permission set on a bucket this
- * sensitive should stay as narrow as the job allows.
+ * How the object is found, and why a memoised extension costs no storage round
+ * trip: see `mintOneDownloadUrl`.
  */
 export const createPlaceholderImageDownloadUrl = action({
   args: { jobId: v.string(), entryIndex: v.number() },
+  returns: downloadUrlValidator,
+  handler: async (ctx, args): Promise<DownloadUrl> => {
+    const { userId, bucketName } = await requireDownloadCaller(ctx);
+    assertDownloadIndex(args.entryIndex);
+    const bucket = getGCSClient().bucket(bucketName);
+    return mintOneDownloadUrl(ctx, bucket, userId, args.jobId, args.entryIndex);
+  },
+});
+
+/**
+ * Mint the signed READ urls for both sides of a front/back pair in one call
+ * (NEO-315).
+ *
+ * The review UI and the CLI show a pair as a unit, and minting it as two
+ * separate actions paid the per-action overhead twice and let the two halves
+ * land at different times. This is the single mint applied to two indexes —
+ * the same caller check, the same index bounds, the same per-side ownership
+ * lookup (`getImageForDownload`, which takes the verified userId, never a
+ * path), the same memoised-extension rule — so it grants nothing the single
+ * mint does not. Each side is answered in the single mint's exact shape, which
+ * includes the `entryIndex` it was minted for, so a caller never has to infer
+ * which url is which from argument order.
+ *
+ * All or nothing: if either side has no image to hand out (not owned, no such
+ * entry, not done, object gone) the whole call throws the single mint's one
+ * "Image not found", and no url is returned for the other side. A distinct
+ * per-side error would let a caller probe one index of someone else's job by
+ * pairing it with one of their own.
+ *
+ * `frontIndex === backIndex` is refused before any read: a card's two faces are
+ * two entries, and a "pair" of one entry is a caller bug, not a request to
+ * honour.
+ */
+export const createPlaceholderPairDownloadUrls = action({
+  args: { jobId: v.string(), frontIndex: v.number(), backIndex: v.number() },
   returns: v.object({
-    url: v.string(),
-    entryIndex: v.number(),
-    expiresAt: v.number(),
+    front: downloadUrlValidator,
+    back: downloadUrlValidator,
   }),
-  handler: async (ctx, args) => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
+  handler: async (ctx, args): Promise<{ front: DownloadUrl; back: DownloadUrl }> => {
+    const { userId, bucketName } = await requireDownloadCaller(ctx);
+    assertDownloadIndex(args.frontIndex);
+    assertDownloadIndex(args.backIndex);
+    if (args.frontIndex === args.backIndex) {
+      throw new Error("A pair needs two different entries");
     }
-    if (!CLERK_USER_ID_RE.test(userId)) {
-      throw new Error("Unexpected user id shape");
-    }
-    // Bounds before anything else: this value is interpolated into a GCS key
-    // below, so it gets the same ge=0/le=MAX bound the service's own request
-    // model enforces — the row lookup should be the second thing standing
-    // between a caller and a key segment, not the only one. Same error shape
-    // as a missing row on purpose.
-    if (
-      !Number.isInteger(args.entryIndex) ||
-      args.entryIndex < 0 ||
-      args.entryIndex > PLACEHOLDER_MAX_ENTRY_INDEX
-    ) {
-      throw new Error("Image not found");
-    }
-
-    const bucketName = process.env.GCS_PLACEHOLDER_BUCKET;
-    if (!bucketName) {
-      throw new Error("GCS_PLACEHOLDER_BUCKET not set");
-    }
-
-    // One error for "no such job", "not your job", "no such entry" and "that
-    // entry has no output yet" — see `getImageForDownload`. Annotated for the
-    // same reason as the mint above: the shape mirrors that query's `returns`
-    // validator, so the two cannot drift apart unnoticed.
-    const image: { imageId: Id<"placeholderImages">; outputExtension?: string } | null =
-      await ctx.runQuery(internal.placeholderPipeline.getImageForDownload, {
-        jobId: args.jobId,
-        userId,
-        entryIndex: args.entryIndex,
-      });
-    if (!image) {
-      throw new Error("Image not found");
-    }
-
-    const gcs = getGCSClient();
-    const bucket = gcs.bucket(bucketName);
-
-    // The memoised extension is re-checked against the allowlist before it goes
-    // anywhere near a key. It can only ever have been written from that list, so
-    // this should not fire — but a stored string that becomes a path segment
-    // gets validated on the way out, not trusted because of where it came from.
-    const cached = isPlaceholderOutputExtension(image.outputExtension)
-      ? image.outputExtension
-      : undefined;
-    const candidates = cached ? [cached] : PLACEHOLDER_OUTPUT_EXTENSIONS;
-
-    let objectPath: string | undefined;
-    let resolvedExtension: string | undefined;
-    for (const extension of candidates) {
-      const candidate = placeholderOutputImageObject(
-        userId,
-        args.jobId,
-        args.entryIndex,
-        extension,
-      );
-      const [exists] = await bucket.file(candidate).exists();
-      if (!exists) continue;
-      objectPath = candidate;
-      resolvedExtension = extension;
-      break;
-    }
-
-    if (!objectPath || !resolvedExtension) {
-      // The row says "done" but the object is not there. That is a real
-      // inconsistency (a lifecycle rule that aged the object out, a bucket
-      // restored from a partial backup), not something the caller did — but it
-      // is still "there is no image here to hand you", so it gets the same
-      // answer rather than an error that invites a retry loop.
-      //
-      // A cached extension that no longer resolves deliberately does NOT fall
-      // back to probing the other two: the cache is only ever written from a
-      // successful probe, so a miss means the object is gone, not that the cache
-      // is wrong.
-      throw new Error("Image not found");
-    }
-
-    if (resolvedExtension !== cached) {
-      await ctx.runMutation(internal.placeholderPipeline.recordOutputExtension, {
-        imageId: image.imageId,
-        extension: resolvedExtension as "jpg" | "png" | "webp",
-      });
-    }
-
-    const expiresAt = Date.now() + DOWNLOAD_URL_TTL_MS;
-    const [url] = await bucket.file(objectPath).getSignedUrl({
-      version: "v4",
-      action: "read",
-      expires: expiresAt,
-    });
-
-    return { url, entryIndex: args.entryIndex, expiresAt };
+    const bucket = getGCSClient().bucket(bucketName);
+    const [front, back] = await Promise.all([
+      mintOneDownloadUrl(ctx, bucket, userId, args.jobId, args.frontIndex),
+      mintOneDownloadUrl(ctx, bucket, userId, args.jobId, args.backIndex),
+    ]);
+    return { front, back };
   },
 });

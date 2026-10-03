@@ -618,6 +618,29 @@ class TestStartupWeightsGate:
 
         assert called == [True]
 
+    def test_startup_does_not_load_sam(self, monkeypatch, tmp_path):
+        # NEO-315: a startup SAM load measured 46-94s on every HEAVY cold
+        # start for a stage that wins <1% of cards. SAM lazy-loads on first
+        # use; the startup hook must never touch it.
+        from app.cropper import sam
+
+        monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
+        (tmp_path / "model.onnx").write_bytes(b"stub")
+        monkeypatch.setenv("U2NET_HOME", str(tmp_path))
+        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: None)
+        monkeypatch.setattr(sam, "_model", None)
+        monkeypatch.setattr(sam, "_processor", None)
+
+        def _no_sam_at_startup():
+            raise AssertionError("startup loaded SAM")
+
+        monkeypatch.setattr(sam, "_load_model", _no_sam_at_startup)
+        monkeypatch.setattr(sam, "_generate_masks", _no_sam_at_startup)
+
+        _verify_baked_weights()
+
+        assert sam.is_model_loaded() is False
+
     def test_startup_is_a_noop_without_the_flag(self, monkeypatch):
         monkeypatch.delenv("REQUIRE_BAKED_WEIGHTS", raising=False)
         called: list[bool] = []

@@ -282,3 +282,145 @@ describe("enqueueHeavyWarmups — deployment-wide window", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// enqueueHeavyImage — the NEO-315 D4 baseline hand-off reaches the worker args.
+//
+// Same seam as the warm-up tests above: `enqueueAction` on the real Workpool
+// instance is spied, so the enqueue is observable without mounting the
+// component.
+// ---------------------------------------------------------------------------
+
+describe("enqueueHeavyImage — baseline passthrough", () => {
+  const USER = "user_heavyD4AAAA1111";
+
+  async function seedEscalated(t: ReturnType<typeof convexTest>, jobId: string) {
+    return t.run(async (ctx) => {
+      await ctx.db.insert("placeholderJobs", {
+        jobId,
+        userId: USER,
+        objectPath: `placeholders/${USER}/${jobId}/input.zip`,
+        createdAt: 1_700_000_000_000,
+        status: "processing",
+        totalImages: 1,
+        processedImages: 0,
+        failedImages: 0,
+      });
+      return ctx.db.insert("placeholderImages", {
+        jobId,
+        userId: USER,
+        entryIndex: 3,
+        originalName: "scan-3.jpg",
+        status: "processing",
+        escalated: true,
+      });
+    });
+  }
+
+  function spyOnEnqueueAction() {
+    return vi
+      .spyOn(heavyPreprocessPool, "enqueueAction")
+      .mockImplementation(async () => "heavy-work-1" as never);
+  }
+
+  test("hands the baseline and dHash to processHeavyEntryWorker unchanged", async () => {
+    const t = convexTest(schema, modules);
+    const imageId = await seedEscalated(t, "job-d4-pass");
+    const spy = spyOnEnqueueAction();
+    const baseline = { rotationDegrees: 90, orientConfidence: 0.75, textCount: 12 };
+
+    const result = await t.mutation(internal.placeholderHeavyPool.enqueueHeavyImage, {
+      imageId,
+      baseline,
+      dhash: "a1b2c3d4e5f60718",
+    });
+
+    expect(result).toEqual({ enqueued: true });
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [, fnRef, workerArgs] = spy.mock.calls[0] as [unknown, unknown, unknown];
+    expect(getFunctionName(fnRef as never)).toBe("placeholderBatch:processHeavyEntryWorker");
+    expect(workerArgs).toEqual({
+      jobId: "job-d4-pass",
+      userId: USER,
+      entryIndex: 3,
+      baseline,
+      dhash: "a1b2c3d4e5f60718",
+    });
+    // The enqueue still records its heavy handle on the row.
+    expect((await t.run(async (ctx) => ctx.db.get(imageId)))?.workId).toBe("heavy-work-1");
+  });
+
+  test("without a baseline (old fast revision) the worker args are exactly as before", async () => {
+    const t = convexTest(schema, modules);
+    const imageId = await seedEscalated(t, "job-d4-legacy");
+    const spy = spyOnEnqueueAction();
+
+    await t.mutation(internal.placeholderHeavyPool.enqueueHeavyImage, { imageId });
+
+    const workerArgs = spy.mock.calls[0][2] as Record<string, unknown>;
+    expect(workerArgs).toEqual({ jobId: "job-d4-legacy", userId: USER, entryIndex: 3 });
+    expect(Object.keys(workerArgs).sort()).toEqual(["entryIndex", "jobId", "userId"]);
+  });
+
+  test("a second enqueue for an already-enqueued escalation is refused, baseline or not", async () => {
+    // Exactly one heavy enqueue per image: a duplicate schedule finds the heavy
+    // workId the first one wrote and stops.
+    const t = convexTest(schema, modules);
+    const imageId = await seedEscalated(t, "job-d4-dup");
+    const spy = spyOnEnqueueAction();
+    const baseline = { rotationDegrees: 0, orientConfidence: 0.9, textCount: 40 };
+
+    await t.mutation(internal.placeholderHeavyPool.enqueueHeavyImage, { imageId, baseline });
+    const second = await t.mutation(internal.placeholderHeavyPool.enqueueHeavyImage, {
+      imageId,
+      baseline,
+    });
+
+    expect(second).toEqual({ enqueued: false });
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
+  test("a partial baseline is refused by the validator and nothing is enqueued", async () => {
+    const t = convexTest(schema, modules);
+    const imageId = await seedEscalated(t, "job-d4-partial");
+    const spy = spyOnEnqueueAction();
+
+    await expect(
+      t.mutation(internal.placeholderHeavyPool.enqueueHeavyImage, {
+        imageId,
+        baseline: { rotationDegrees: 90, orientConfidence: 0.5 } as never,
+      }),
+    ).rejects.toThrow();
+
+    expect(spy).not.toHaveBeenCalled();
+    expect((await t.run(async (ctx) => ctx.db.get(imageId)))?.workId).toBeUndefined();
+  });
+
+  test("a row that never escalated is not enqueued, however well-formed the baseline", async () => {
+    const t = convexTest(schema, modules);
+    const imageId = await seedEscalated(t, "job-d4-fast");
+    await t.run(async (ctx) => ctx.db.patch(imageId, { escalated: undefined }));
+    const spy = spyOnEnqueueAction();
+
+    const result = await t.mutation(internal.placeholderHeavyPool.enqueueHeavyImage, {
+      imageId,
+      baseline: { rotationDegrees: 0, orientConfidence: 0.9, textCount: 40 },
+      dhash: "a1b2c3d4e5f60718",
+    });
+
+    expect(result).toEqual({ enqueued: false });
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("a row that already settled is not re-enqueued by a late schedule", async () => {
+    const t = convexTest(schema, modules);
+    const imageId = await seedEscalated(t, "job-d4-settled");
+    await t.run(async (ctx) => ctx.db.patch(imageId, { status: "done" }));
+    const spy = spyOnEnqueueAction();
+
+    const result = await t.mutation(internal.placeholderHeavyPool.enqueueHeavyImage, { imageId });
+
+    expect(result).toEqual({ enqueued: false });
+    expect(spy).not.toHaveBeenCalled();
+  });
+});

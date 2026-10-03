@@ -5,13 +5,34 @@ import { v } from "convex/values";
 import { getCurrentUserId } from "../auth";
 import { Storage } from "@google-cloud/storage";
 
+/**
+ * One `Storage` client per isolate, keyed by the credential string it was built
+ * from (NEO-315).
+ *
+ * Every signed-url mint used to decode the base64 key, `JSON.parse` it and
+ * construct a fresh client — and a fresh client also re-derives its signing
+ * state on first use. The review UI mints one url per image, so that cost was
+ * paid per image per render. The client is stateless with respect to callers
+ * (it holds credentials, not a user), so sharing it across invocations in a
+ * warm isolate is safe.
+ *
+ * Keyed on the raw env value rather than memoised unconditionally, so a rotated
+ * key (a new deployment env value) builds a new client instead of silently
+ * signing with the old one, and so tests that swap the variable get the client
+ * they asked for.
+ */
+let cachedClient: { b64: string; storage: Storage } | undefined;
+
 // Initialize GCS client with credentials from base64 environment variable
-export const getGCSClient = () => {
+export const getGCSClient = (): Storage => {
   const b64 = process.env.GOOGLE_APPLICATION_CREDENTIALS_B64;
   if (!b64) throw new Error("GOOGLE_APPLICATION_CREDENTIALS_B64 not set");
+  if (cachedClient?.b64 === b64) return cachedClient.storage;
   const credentialsJson = Buffer.from(b64, "base64").toString("utf8");
   const credentials = JSON.parse(credentialsJson);
-  return new Storage({ credentials });
+  const storage = new Storage({ credentials });
+  cachedClient = { b64, storage };
+  return storage;
 };
 
 /**

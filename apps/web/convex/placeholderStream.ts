@@ -351,7 +351,7 @@ export const confirmPlaceholderImageUpload = mutation({
 
     const totalImages = (job.totalImages ?? 0) + 1;
     const now = Date.now();
-    await ctx.db.patch(image._id, { status: "queued" });
+    await ctx.db.patch(image._id, { status: "queued", queuedAt: now });
     await ctx.db.patch(job._id, { totalImages, lastActivityAt: now });
 
     const workId = await fastPreprocessPool.enqueueAction(

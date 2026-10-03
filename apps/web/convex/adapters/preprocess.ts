@@ -39,6 +39,28 @@ import {
   newRequestId,
   recordAdapterCall,
 } from "../observability";
+import {
+  baselineToWire,
+  isPreprocessBaseline,
+  parseDhash,
+  parseWireBaseline,
+  type PreprocessBaseline,
+  type PreprocessBaselineWire,
+} from "../lib/preprocessBaseline";
+
+// The escalation-hint contract (NEO-315 D4) lives in a pure lib module so the
+// default-runtime settle in placeholderPipeline.ts can read it too (a default-
+// runtime module cannot import this "use node" one). Re-exported so Node callers
+// have one import site; default-runtime code and schema.ts import the lib
+// directly, and the Convex validator is deliberately NOT re-exported from a
+// Node action module.
+export {
+  isPreprocessBaseline,
+  parseDhash,
+  parseWireBaseline,
+  readEscalationHints,
+} from "../lib/preprocessBaseline";
+export type { PreprocessBaseline, PreprocessBaselineWire } from "../lib/preprocessBaseline";
 
 /**
  * Which preprocess service a call is aimed at: its base URL and the env-var name
@@ -221,9 +243,23 @@ export type ExtractResponse = {
 };
 
 /**
- * Per-entry result. Field names mirror `ProcessResponse` in
- * services/preprocess/app/main.py (snake_case on the wire); the Convex row
- * stores them camelCased — see placeholderImages in schema.ts.
+ * Per-entry result as the service sends it. Field names mirror
+ * `ProcessResponse` in services/preprocess/app/main.py (snake_case on the wire);
+ * the Convex row stores them camelCased — see placeholderImages in schema.ts.
+ */
+type ProcessEntryWire = Omit<ProcessEntryResponse, "baseline" | "dhash"> & {
+  dhash?: unknown;
+  /**
+   * NEO-315 D4. Present (possibly null) on a FAST decline from a revision that
+   * implements it; absent from older revisions and from crop results.
+   */
+  baseline?: PreprocessBaselineWire | null;
+};
+
+/**
+ * Per-entry result as `callProcessEntryFast` / `callProcessEntryHeavy` RETURN
+ * it: the wire body, untouched, except for the two escalation-hint fields,
+ * which are narrowed at this boundary.
  */
 export type ProcessEntryResponse = {
   players: string[];
@@ -235,7 +271,12 @@ export type ProcessEntryResponse = {
   orient_confidence: number;
   text_count: number;
   cropped_source: string;
-  /** 16-char lowercase hex. Perceptual hash used by the pairing pass. */
+  /**
+   * 16-char lowercase hex, or null. Perceptual hash used by the pairing pass.
+   * Narrowed here: anything that is not a well-formed hash becomes null. Since
+   * NEO-315 a FAST decline carries it too (computed before the decline), so the
+   * heavy request can hand it back instead of re-hashing.
+   */
   dhash: string | null;
   output_written: boolean;
   /**
@@ -244,7 +285,8 @@ export type ProcessEntryResponse = {
    *   false → a completed crop result (all the fields above carry their values).
    *   true  → the FAST role declined this card: the classical fast path could
    *           not settle it, so there is NO crop result and nothing was written,
-   *           and the response is a 200 whose only meaningful field is this one.
+   *           and the response is a 200 whose only meaningful fields are this
+   *           one and the escalation hints (`baseline`, `dhash`).
    *           Convex re-enqueues the entry to the HEAVY service, which runs the
    *           full cascade and returns a completed result. The heavy service
    *           always crops, so its responses always carry `false`.
@@ -252,7 +294,25 @@ export type ProcessEntryResponse = {
    * No crop, image bytes, or secrets ever ride an escalation response.
    */
   needs_escalation: boolean;
+  /**
+   * NEO-315 D4 — the FAST service's Vision orientation read, parsed from the
+   * wire `baseline` and camelCased (the ONE camelCase field in this bag, because
+   * it is the one the adapter rewrites). Null when the response had none — an
+   * older revision, a crop result, or a malformed value, which is dropped rather
+   * than trusted. Read it off a settled workpool result with
+   * `readEscalationHints` (convex/lib/preprocessBaseline.ts).
+   */
+  baseline: PreprocessBaseline | null;
 };
+
+/** Narrow the two escalation-hint fields; pass everything else through. */
+function normalizeProcessEntry(wire: ProcessEntryWire): ProcessEntryResponse {
+  return {
+    ...wire,
+    dhash: parseDhash(wire.dhash),
+    baseline: parseWireBaseline(wire.baseline),
+  };
+}
 
 /**
  * Headers for a preprocess call: OIDC bearer + the shared internal key.
@@ -439,7 +499,7 @@ export async function callProcessEntryFast(
   ctx: ActionCtx,
   args: { jobId: string; userId: string; entryIndex: number },
 ): Promise<ProcessEntryResponse> {
-  return preprocessPost<ProcessEntryResponse>(
+  const wire = await preprocessPost<ProcessEntryWire>(
     ctx,
     FAST_SERVICE(),
     "/process-entry",
@@ -451,6 +511,7 @@ export async function callProcessEntryFast(
     PREPROCESS_FAST_TIMEOUT_MS,
     { jobId: args.jobId, entryIndex: args.entryIndex },
   );
+  return normalizeProcessEntry(wire);
 }
 
 /**
@@ -458,20 +519,42 @@ export async function callProcessEntryFast(
  * escalated entry is routed to. Its response always carries `needs_escalation:
  * false`, and the heavy workpool bounds the fan-out to the heavy service's own,
  * smaller instance ceiling.
+ *
+ * `baseline` and `dhash` (NEO-315 D4) are the hints the FAST decline carried,
+ * as `readEscalationHints` returned them. Each is sent — snake_case — only
+ * when present AND well-formed; an absent or malformed hint is simply left out
+ * of the request, which is exactly the pre-NEO-315 request, so the heavy
+ * service recomputes. Never sends `null`: an older heavy revision that does
+ * not know the field must see the request it always saw.
  */
 export async function callProcessEntryHeavy(
   ctx: ActionCtx,
-  args: { jobId: string; userId: string; entryIndex: number },
+  args: {
+    jobId: string;
+    userId: string;
+    entryIndex: number;
+    baseline?: PreprocessBaseline;
+    dhash?: string;
+  },
 ): Promise<ProcessEntryResponse> {
-  return preprocessPost<ProcessEntryResponse>(
+  const body: Record<string, unknown> = {
+    job_id: args.jobId,
+    user_id: args.userId,
+    entry_index: args.entryIndex,
+  };
+  if (isPreprocessBaseline(args.baseline)) body.baseline = baselineToWire(args.baseline);
+  const dhash = parseDhash(args.dhash);
+  if (dhash !== null) body.dhash = dhash;
+  const wire = await preprocessPost<ProcessEntryWire>(
     ctx,
     HEAVY_SERVICE(),
     "/process-entry",
-    { job_id: args.jobId, user_id: args.userId, entry_index: args.entryIndex },
+    body,
     "preprocessProcessEntryHeavy",
     PREPROCESS_HEAVY_TIMEOUT_MS,
     { jobId: args.jobId, entryIndex: args.entryIndex },
   );
+  return normalizeProcessEntry(wire);
 }
 
 /**

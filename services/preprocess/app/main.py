@@ -27,7 +27,7 @@ from typing import Annotated, Literal
 
 from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app import cropper
 from app.classify import ClassifyError
@@ -46,6 +46,8 @@ from app.imaging import RasterTooLargeError, check_raster_size
 from app.jobs import layout, zipsafe
 from app.jobs.gcs import ObjectAlreadyExistsError, ObjectRef, ObjectStore
 from app.jobs.layout import InvalidJobIdentifierError
+from app.orient import OrientationResult
+from app.timing import Timings
 
 # ── Logging (NEO-191) ───────────────────────────────────────────────────────
 # Nothing in this service used to configure logging, and uvicorn only ever
@@ -210,6 +212,12 @@ def _verify_baked_weights() -> None:
     started = time.monotonic()
     tiered.warm_up()
     logger.info("BiRefNet session warmed in %.1fs", time.monotonic() - started)
+
+    # SAM is deliberately NOT warmed here (NEO-315). Measured on a HEAVY
+    # revision, loading it at startup took 46-94s (p50 56s) even at 8 vCPU and
+    # sat on every cold start's critical path, while SAM wins under 1% of
+    # cards. It lazy-loads on first use instead (`sam._load_model`, behind a
+    # lock), so only the rare image that falls through to it pays the load.
 
 
 class CropStrategyOutput(BaseModel):
@@ -651,8 +659,69 @@ class ExtractResponse(BaseModel):
     rejected_count: int
 
 
+# Upper bound on a baseline's `text_count` — shared with the Convex validator
+# (NEO-315). A trading card yields tens to a few hundred words.
+BASELINE_MAX_TEXT_COUNT = 100_000
+
+
+class BaselineOrientation(BaseModel):
+    """A Vision orient of the whole extracted image (NEO-315).
+
+    Returned by the FAST service when it declines, and handed back by Convex
+    to the HEAVY service on the escalated request, so HEAVY does not pay a
+    second Vision call on the same bytes. Same three numbers as the
+    completed-result fields `rotation_degrees` / `orient_confidence` /
+    `text_count`, but describing the uncropped original, not a crop.
+    """
+
+    rotation_degrees: Literal[0, 90, 180, 270]
+    # Finite only: NaN/inf are refused explicitly rather than relying on how
+    # a NaN compares against the bounds.
+    confidence: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    text_count: int = Field(ge=0, le=BASELINE_MAX_TEXT_COUNT, strict=True)
+
+    @classmethod
+    def from_result(cls, result: OrientationResult) -> BaselineOrientation | None:
+        """The wire form of an orient, or None when it falls outside the contract.
+
+        Convex drops a baseline with any out-of-range field, so one is never
+        emitted: an orient that cannot be represented (it cannot happen from
+        `detect_orientation`, but this is the boundary) is simply omitted and
+        HEAVY recomputes it.
+        """
+        try:
+            return cls(
+                rotation_degrees=result.rotation_degrees,  # type: ignore[arg-type]
+                confidence=result.confidence,
+                text_count=result.text_count,
+            )
+        except ValidationError:
+            logger.warning("process_entry: baseline orient outside the wire contract, omitting")
+            return None
+
+    def to_result(self) -> OrientationResult:
+        return OrientationResult(
+            rotation_degrees=self.rotation_degrees,
+            confidence=self.confidence,
+            text_count=self.text_count,
+        )
+
+
+# The serialised dHash: 16 lowercase hex characters (see ProcessEntryResponse).
+DHASH_PATTERN = r"^[0-9a-f]{16}$"
+
+
 class ProcessEntryRequest(BaseModel):
-    """Body for POST /process-entry. Same no-path rule as `ExtractRequest`."""
+    """Body for POST /process-entry. Same no-path rule as `ExtractRequest`.
+
+    `baseline` and `dhash` (NEO-315) are optional reuse hints. Convex copies
+    them from a FAST decline into the escalated HEAVY request; both roles
+    accept them. They describe the same extracted object this request reads —
+    EXIF uprighting is deterministic, so the bytes are identical — and when
+    present the service skips the whole-image Vision call and/or the dHash
+    instead of recomputing them. Unknown fields are ignored (pydantic's
+    default), so either deploy order of Convex and this service is safe.
+    """
 
     job_id: str = Field(description="The jobId minted by createPlaceholderUploadUrl (a UUID).")
     user_id: str = Field(description="The Clerk subject id that owns the job.")
@@ -672,6 +741,17 @@ class ProcessEntryRequest(BaseModel):
     crop_quality: Literal["fast", "strong"] = Field(
         default=CROP_QUALITY_FAST,
         description="Crop cascade quality: 'fast' (classical identity skip) or 'strong'.",
+    )
+    baseline: BaselineOrientation | None = Field(
+        default=None,
+        description=(
+            "Whole-image Vision orient from a FAST decline; skips the HEAVY baseline call."
+        ),
+    )
+    dhash: str | None = Field(
+        default=None,
+        pattern=DHASH_PATTERN,
+        description="dHash from a FAST decline (16 lowercase hex); skips recomputing it.",
     )
 
 
@@ -695,10 +775,13 @@ class ProcessEntryResponse(BaseModel):
           DECLINED: the classical-only fast path did not settle this card and
           the FAST service must never run the model-backed cascade. There is
           NO crop result (every crop-result field is left at its default —
-          empty `players`, null identity/dhash, `output_written=false`) and
+          empty `players`, null identity, `output_written=false`) and
           nothing was written to the output key. Convex re-enqueues this entry
           to the HEAVY service. The body carries no crop, no image bytes, and
-          no secrets — only this flag and the machine-default placeholders.
+          no secrets. Since NEO-315 it does carry the two values the FAST
+          service already computed on the whole image — `baseline` (its
+          Vision orient) and `dhash` — so Convex can pass them on the HEAVY
+          request and HEAVY skips recomputing them.
 
     A consumer decides purely on `needs_escalation`; it is always present. The
     crop-result fields are documented per (a)/(b) above.
@@ -710,8 +793,13 @@ class ProcessEntryResponse(BaseModel):
     `dhash` is the 64-bit perceptual hash of the extracted, EXIF-uprighted
     ORIGINAL — computed before any cropping, matching cardlister's "hash the
     original scan, never the crop" rule — serialized as 16 lowercase hex
-    characters because a 64-bit integer does not survive JSON's float64. Null
-    only in the escalation case (b).
+    characters because a 64-bit integer does not survive JSON's float64.
+    Populated in both cases (a) and (b) (NEO-315; it used to be null in (b)).
+
+    `baseline` is populated only in the escalation case (b): the whole-image
+    orient the FAST service paid for. It is NOT the crop's orientation — a
+    completed result's `rotation_degrees` / `orient_confidence` / `text_count`
+    describe the winning crop and always supersede it.
 
     `output_written` is False when the output object already existed (a
     retried entry): the write is once-only (`if_generation_match=0`) and
@@ -734,6 +822,8 @@ class ProcessEntryResponse(BaseModel):
     cropped_source: str | None = None
     dhash: str | None = None
     output_written: bool = False
+    # NEO-315 — whole-image Vision orient, only on a FAST decline (case b).
+    baseline: BaselineOrientation | None = None
 
 
 def _invalid_identifier_response(exc: InvalidJobIdentifierError) -> JSONResponse:
@@ -998,9 +1088,24 @@ def process_entry(
     terminal — /extract never wrote this ordinal), `EXTRACT_NOT_CONFIGURED`
     (503, retryable); Vision/Anthropic and unexpected storage failures surface
     as 502, exactly like /process.
+
+    Every authenticated request emits exactly one `process_entry_timing` JSON
+    line (NEO-315, `app.timing`), whatever its outcome.
     """
     _verify_internal_key(x_internal_key)
 
+    timings = Timings(role=_preprocess_role(), index=request.entry_index)
+    timings.baseline_supplied = request.baseline is not None
+    try:
+        return _process_entry(request, timings)
+    finally:
+        timings.emit()
+
+
+def _process_entry(
+    request: ProcessEntryRequest, timings: Timings
+) -> ProcessEntryResponse | JSONResponse:
+    """The body of `process_entry`, accumulating into `timings`."""
     try:
         layout.validate_identifiers(request.user_id, request.job_id)
     except InvalidJobIdentifierError as exc:
@@ -1011,28 +1116,32 @@ def process_entry(
         return _not_configured_response()
 
     try:
-        entry_ref: ObjectRef | None = None
-        for extension in _EXTRACTED_EXTENSIONS:
-            candidate = ObjectRef(
-                bucket=bucket,
-                name=layout.extracted_image_object(
-                    request.user_id, request.job_id, request.entry_index, extension
-                ),
+        with timings.measure("gcs_ms"):
+            entry_ref: ObjectRef | None = None
+            entry_stat = None
+            for extension in _EXTRACTED_EXTENSIONS:
+                candidate = ObjectRef(
+                    bucket=bucket,
+                    name=layout.extracted_image_object(
+                        request.user_id, request.job_id, request.entry_index, extension
+                    ),
+                )
+                entry_stat = _object_store.stat(candidate)
+                if entry_stat is not None:
+                    entry_ref = candidate
+                    break
+            if entry_ref is None:
+                return JSONResponse(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    content={
+                        "error_code": "ENTRY_NOT_FOUND",
+                        "detail": "no extracted image at this index",
+                    },
+                )
+            # Read through the stat's own blob handle: no second HEAD (NEO-315).
+            entry_bytes = _object_store.download(
+                entry_ref, max_bytes=zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES, stat=entry_stat
             )
-            if _object_store.stat(candidate) is not None:
-                entry_ref = candidate
-                break
-        if entry_ref is None:
-            return JSONResponse(
-                status_code=status.HTTP_404_NOT_FOUND,
-                content={
-                    "error_code": "ENTRY_NOT_FOUND",
-                    "detail": "no extracted image at this index",
-                },
-            )
-        entry_bytes = _object_store.download(
-            entry_ref, max_bytes=zipsafe.MAX_ENTRY_UNCOMPRESSED_BYTES
-        )
     except Exception:
         logger.exception("process_entry: extracted image read failed")
         raise HTTPException(
@@ -1064,7 +1173,8 @@ def process_entry(
     # carry the tag. Running this always, ahead of compute_dhash, is what
     # keeps the hash contract identical for both ingestion paths.
     try:
-        entry_bytes, _orientation = apply_exif_orientation(entry_bytes)
+        with timings.measure("exif_ms"):
+            entry_bytes, _orientation = apply_exif_orientation(entry_bytes)
     except Exception:
         logger.exception("process_entry: EXIF upright failed on the extracted image")
         raise HTTPException(
@@ -1074,15 +1184,21 @@ def process_entry(
 
     # dHash the EXIF-uprighted ORIGINAL before any cropping — the hash must
     # describe the scan, never the crop, so re-scans of the same card match
-    # regardless of how each pass got cropped.
-    try:
-        dhash_value = compute_dhash(entry_bytes)
-    except Exception:
-        logger.exception("process_entry: dhash failed on the extracted image")
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="extracted image undecodable",
-        ) from None
+    # regardless of how each pass got cropped. A supplied dhash (NEO-315: the
+    # FAST service's, over these same bytes) is used as-is.
+    if request.dhash is not None:
+        dhash_hex = request.dhash
+    else:
+        try:
+            with timings.measure("dhash_ms"):
+                # 16 lowercase hex chars: a 64-bit int does not survive JSON float64.
+                dhash_hex = f"{compute_dhash(entry_bytes):016x}"
+        except Exception:
+            logger.exception("process_entry: dhash failed on the extracted image")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="extracted image undecodable",
+            ) from None
 
     # Same cascade, same upstream-failure translation as POST /process. In the
     # FAST role, `escalate_only` makes crop() run ONLY the classical fast path
@@ -1091,11 +1207,19 @@ def process_entry(
     crop_kwargs: dict[str, object] = {}
     if _preprocess_role() == ROLE_FAST:
         crop_kwargs["escalate_only"] = True
+    if request.baseline is not None:
+        crop_kwargs["baseline"] = request.baseline.to_result()
+        if _preprocess_role() == ROLE_HEAVY:
+            # A supplied baseline means FAST already ran the fast-path
+            # identity stages on this exact object and declined; they are
+            # deterministic, so HEAVY goes straight to the strategy loop.
+            crop_kwargs["skip_fast_path"] = True
     try:
         result = cropper.crop(
             image_bytes=entry_bytes,
             precropped_bytes=None,
             crop_quality=request.crop_quality,
+            timings=timings,
             **crop_kwargs,
         )
     except ClassifyError:
@@ -1122,7 +1246,16 @@ def process_entry(
             request.entry_index,
             result.reason,
         )
-        return ProcessEntryResponse(needs_escalation=True)
+        timings.escalated = True
+        return ProcessEntryResponse(
+            needs_escalation=True,
+            dhash=dhash_hex,
+            baseline=(
+                BaselineOrientation.from_result(result.baseline)
+                if result.baseline is not None
+                else None
+            ),
+        )
 
     if isinstance(result, CropRejected):  # pragma: no cover - image_bytes was provided
         raise HTTPException(
@@ -1130,10 +1263,16 @@ def process_entry(
             detail="cascade returned no result",
         )
 
+    timings.source = result.source
     # Write the winning crop already rotated (the /process contract leaves
     # rotation to the client; here the stored object IS the client-facing
-    # artifact, so the rotation is baked in and reported as metadata).
-    rotated = rotate_image_bytes(result.image_bytes, result.orientation.rotation_degrees)
+    # artifact, so the rotation is baked in and reported as metadata). The
+    # cascade already rotated it to feed classify (NEO-315); reuse those bytes
+    # rather than decoding and re-encoding the winner a second time.
+    rotated = result.rotated_bytes
+    if rotated is None:
+        with timings.measure("rotate_ms"):
+            rotated = rotate_image_bytes(result.image_bytes, result.orientation.rotation_degrees)
     output_content_type = zipsafe.sniff_image_type(rotated)
     if output_content_type is None:  # pragma: no cover - rotation preserves format
         raise HTTPException(
@@ -1152,7 +1291,8 @@ def process_entry(
     )
     output_written = True
     try:
-        _object_store.create(output_ref, rotated, content_type=output_content_type)
+        with timings.measure("write_ms"):
+            _object_store.create(output_ref, rotated, content_type=output_content_type)
     except ObjectAlreadyExistsError:
         # A retried entry: the first attempt's object stands (write-once,
         # first-write-wins — documented as acceptable for identical inputs).
@@ -1185,7 +1325,6 @@ def process_entry(
         orient_confidence=result.orientation.confidence,
         text_count=result.orientation.text_count,
         cropped_source=result.source,
-        # 16 lowercase hex chars: a 64-bit int does not survive JSON float64.
-        dhash=f"{dhash_value:016x}",
+        dhash=dhash_hex,
         output_written=output_written,
     )
