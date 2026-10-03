@@ -378,13 +378,24 @@ jobs:
             --to-revisions="$NEW_REVISION=100" \
             --remove-tags="$TAG"
 
+  # NEO-315: NOTHING reaches prod until BOTH dev lanes are green. deploy-prod
+  # (and deploy-prod-fast below) wait on dev-promote AND dev-promote-fast, so
+  # a dev smoke failure on either service stops the whole prod side. The
+  # `!cancelled()` is required: dev-promote-fast is legitimately skipped when
+  # the fast service doesn't exist yet, and a skipped need would otherwise
+  # skip this job via the implicit success(). The explicit result checks stand
+  # in for it: the fast lane must have either not applied (guard said no
+  # service) or promoted.
   deploy-prod:
     name: Deploy prod (no-traffic, sha tag)
-    needs: [build-push, dev-promote]
+    needs: [build-push, dev-promote, deploy-dev-fast, dev-promote-fast]
     if: |
-      github.event_name == 'push'
+      !cancelled()
+      && github.event_name == 'push'
       && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
       && needs.dev-promote.result == 'success'
+      && (needs.deploy-dev-fast.result == 'success' || needs.deploy-dev-fast.result == 'skipped')
+      && (needs.deploy-dev-fast.outputs.exists != 'true' || needs.dev-promote-fast.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -581,16 +592,18 @@ jobs:
   #     exclusively.
   #
   #   * SMOKE — dev-smoke-fast/prod-smoke-fast ping /health instead of running
-  #     tests/smoke's full suite. That suite's happy-path test posts to
+  #     tests/smoke's full suite, THEN run only tests/smoke's fast_safe test
+  #     (NEO-315: one crop-only /process request — `precropped`, no `image` —
+  #     which reaches Vision + Anthropic but has no path into the model
+  #     cascade at all, so it is safe on the fast container). Both checks run
+  #     with continue-on-error and are combined by a verdict step that FAILS
+  #     the job when either failed, so a red fast smoke stops promotion, stops
+  #     every prod deploy (deploy-prod and deploy-prod-fast wait on both dev
+  #     lanes) and trips report-failure; a silent skip would leave the release
+  #     green. Why not the full suite: its happy-path test posts an image-only
   #     /process, which runs the full BiRefNet/SAM cascade regardless of
   #     PREPROCESS_ROLE — pointed at the fast service's smaller, classical-CV-
-  #     sized container that would be slow at best and OOM at worst. The ping
-  #     step uses continue-on-error so a flake can never fail the job (and
-  #     therefore never trips report-failure, which intentionally only watches
-  #     the heavy chain above); its real pass/fail is threaded through a job
-  #     output, and THAT is what gates promotion — so a broken revision still
-  #     can't reach 100% traffic even though the check that caught it is
-  #     non-blocking at the workflow-status level.
+  #     sized container that would be slow at best and OOM at worst.
   #
   # No env_vars input on any deploy step here: terraform owns every var on
   # this service (PREPROCESS_ROLE=fast, ENVIRONMENT, GOOGLE_CLOUD_PROJECT, the
@@ -699,13 +712,25 @@ jobs:
     defaults:
       run:
         working-directory: ${{ github.workspace }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
     outputs:
-      smoke_passed: ${{ steps.ping.outputs.passed }}
+      smoke_passed: ${{ steps.verdict.outputs.passed }}
     steps:
+      # NEO-315: the functional /process smoke below is pytest, so this job
+      # (formerly gcloud + curl only) now needs the repo and a Python toolchain.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/preprocess/requirements*.txt
+      - name: Install smoke dependencies
+        working-directory: services/preprocess
+        run: pip install -r requirements-dev.txt
+
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS_DEV }}
@@ -760,6 +785,53 @@ jobs:
             echo "passed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # NEO-315: a /health ping proves the container boots, nothing about the
+      # request path. This runs tests/smoke's fast_safe test against the
+      # dev fast tagged URL: one real crop-only /process request
+      # (Vision orient + Anthropic classify, never a local model) that must
+      # return 200 with the full envelope. The key fetch lives inside the step so a failure here is
+      # a `passed=false`, never a skipped test (the emptiness checks stop
+      # pytest.skip() reading green). The step timeout sits above the smoke's
+      # own SMOKE_REQUEST_TIMEOUT (600 s) so pytest reports a hang itself.
+      - id: functional
+        name: Functional /process smoke (crop-only) on the tagged URL
+        continue-on-error: true
+        timeout-minutes: 12
+        working-directory: services/preprocess
+        env:
+          SMOKE_TARGET_URL: ${{ needs.deploy-dev-fast.outputs.tagged_url }}
+          SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          set -uo pipefail
+          echo "passed=false" >> "$GITHUB_OUTPUT"
+          KEY=$(gcloud secrets versions access latest --secret=internal-api-key --project="$DEV_PROJECT") || KEY=""
+          [ -n "$KEY" ] || { echo "::error::internal-api-key came back empty"; exit 1; }
+          echo "::add-mask::$KEY"
+          [ -n "${SMOKE_TARGET_URL:-}" ] || { echo "::error::SMOKE_TARGET_URL is empty"; exit 1; }
+          export SMOKE_INTERNAL_KEY="$KEY"
+          pytest tests/smoke -m fast_safe -v
+          echo "passed=true" >> "$GITHUB_OUTPUT"
+
+      - id: verdict
+        name: Combine ping + functional smoke
+        if: always()
+        env:
+          PING: ${{ steps.ping.outputs.passed }}
+          FUNCTIONAL: ${{ steps.functional.outputs.passed }}
+        run: |
+          set -uo pipefail
+          if [ "$PING" = "true" ] && [ "$FUNCTIONAL" = "true" ]; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::dev fast smoke failed (ping=$PING functional=$FUNCTIONAL)"
+            # Blocking on purpose (NEO-315): no prod deploy or promotion starts
+            # until dev fast is proven, so this job must fail, not just gate its
+            # own promote via the output.
+            exit 1
+          fi
+
+
   dev-promote-fast:
     name: Promote dev fast service to 100%
     needs: [build-push, deploy-dev-fast, dev-smoke-fast]
@@ -797,10 +869,13 @@ jobs:
 
   deploy-prod-fast:
     name: Deploy prod fast service (no-traffic, sha tag) if it exists
-    needs: [build-push, dev-promote-fast]
+    # NEO-315: also waits on dev-promote (heavy dev smoke) — see deploy-prod.
+    needs: [build-push, dev-promote, dev-promote-fast]
     if: |
-      github.event_name == 'push'
+      !cancelled()
+      && github.event_name == 'push'
       && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
+      && needs.dev-promote.result == 'success'
       && needs.dev-promote-fast.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -895,13 +970,25 @@ jobs:
     defaults:
       run:
         working-directory: ${{ github.workspace }}
-    timeout-minutes: 10
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
     outputs:
-      smoke_passed: ${{ steps.ping.outputs.passed }}
+      smoke_passed: ${{ steps.verdict.outputs.passed }}
     steps:
+      # NEO-315: the functional /process smoke below is pytest, so this job
+      # (formerly gcloud + curl only) now needs the repo and a Python toolchain.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/preprocess/requirements*.txt
+      - name: Install smoke dependencies
+        working-directory: services/preprocess
+        run: pip install -r requirements-dev.txt
+
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_PREPROCESS }}
@@ -952,6 +1039,52 @@ jobs:
             echo "passed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # NEO-315: a /health ping proves the container boots, nothing about the
+      # request path. This runs tests/smoke's fast_safe test against the
+      # prod fast tagged URL: one real crop-only /process request
+      # (Vision orient + Anthropic classify, never a local model) that must
+      # return 200 with the full envelope. The key fetch lives inside the step so a failure here is
+      # a `passed=false`, never a skipped test (the emptiness checks stop
+      # pytest.skip() reading green). The step timeout sits above the smoke's
+      # own SMOKE_REQUEST_TIMEOUT (600 s) so pytest reports a hang itself.
+      - id: functional
+        name: Functional /process smoke (crop-only) on the tagged URL
+        continue-on-error: true
+        timeout-minutes: 12
+        working-directory: services/preprocess
+        env:
+          SMOKE_TARGET_URL: ${{ needs.deploy-prod-fast.outputs.tagged_url }}
+          SMOKE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: |
+          set -uo pipefail
+          echo "passed=false" >> "$GITHUB_OUTPUT"
+          KEY=$(gcloud secrets versions access latest --secret=internal-api-key --project="$PROD_PROJECT") || KEY=""
+          [ -n "$KEY" ] || { echo "::error::internal-api-key came back empty"; exit 1; }
+          echo "::add-mask::$KEY"
+          [ -n "${SMOKE_TARGET_URL:-}" ] || { echo "::error::SMOKE_TARGET_URL is empty"; exit 1; }
+          export SMOKE_INTERNAL_KEY="$KEY"
+          pytest tests/smoke -m fast_safe -v
+          echo "passed=true" >> "$GITHUB_OUTPUT"
+
+      - id: verdict
+        name: Combine ping + functional smoke
+        if: always()
+        env:
+          PING: ${{ steps.ping.outputs.passed }}
+          FUNCTIONAL: ${{ steps.functional.outputs.passed }}
+        run: |
+          set -uo pipefail
+          if [ "$PING" = "true" ] && [ "$FUNCTIONAL" = "true" ]; then
+            echo "passed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "passed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::prod fast smoke failed (ping=$PING functional=$FUNCTIONAL)"
+            # Blocking (NEO-315): a silently skipped prod-promote-fast would
+            # leave the release green with prod fast un-promoted.
+            exit 1
+          fi
+
+
   prod-promote-fast:
     name: Promote prod fast service to 100%
     needs: [build-push, deploy-prod-fast, prod-smoke-fast]
@@ -992,7 +1125,7 @@ jobs:
   # step.
   report-failure:
     name: Report deploy failure
-    needs: [test, build-push, deploy-dev, dev-smoke, dev-promote, deploy-prod, prod-smoke, prod-promote]
+    needs: [test, build-push, deploy-dev, dev-smoke, dev-promote, deploy-prod, prod-smoke, prod-promote, dev-smoke-fast, prod-smoke-fast]
     if: |
       always() && github.event_name == 'push'
       && vars.PREPROCESS_DEPLOY_ENABLED == 'true'
@@ -1004,7 +1137,9 @@ jobs:
         needs.dev-promote.result == 'failure' ||
         needs.deploy-prod.result == 'failure' ||
         needs.prod-smoke.result == 'failure' ||
-        needs.prod-promote.result == 'failure'
+        needs.prod-promote.result == 'failure' ||
+        needs.dev-smoke-fast.result == 'failure' ||
+        needs.prod-smoke-fast.result == 'failure'
       )
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1026,6 +1161,8 @@ jobs:
           R_PROD: ${{ needs.deploy-prod.result }}
           R_PROD_SMOKE: ${{ needs.prod-smoke.result }}
           R_PROMOTE: ${{ needs.prod-promote.result }}
+          R_DEV_SMOKE_FAST: ${{ needs.dev-smoke-fast.result }}
+          R_PROD_SMOKE_FAST: ${{ needs.prod-smoke-fast.result }}
           NEW_REV: ${{ needs.deploy-prod.outputs.new_revision }}
           DEV_NEW_REV: ${{ needs.deploy-dev.outputs.new_revision }}
           TAG: ${{ needs.build-push.outputs.deploy_tag }}
@@ -1048,6 +1185,8 @@ jobs:
           elif [ "$R_PROD" = "failure" ];        then STAGE="deploy-prod"
           elif [ "$R_PROD_SMOKE" = "failure" ];  then STAGE="prod-smoke"
           elif [ "$R_PROMOTE" = "failure" ];     then STAGE="prod-promote"
+          elif [ "$R_DEV_SMOKE_FAST" = "failure" ];  then STAGE="dev-smoke-fast"
+          elif [ "$R_PROD_SMOKE_FAST" = "failure" ]; then STAGE="prod-smoke-fast"
           else STAGE="unknown"
           fi
 
@@ -1060,6 +1199,10 @@ jobs:
               BLAST="Dev blue/green smoke passed but the traffic shift itself failed. Dev is still serving \`$DEV_PREV\`. Prod never touched." ;;
             deploy-prod|prod-smoke)
               BLAST="Dev is serving main's HEAD. Prod has a parked revision at 0% traffic (\`$NEW_REV\`, tag \`$TAG\`) and is still serving \`$PROD_PREV\`. Tagged URL for poking: $TAGGED_URL" ;;
+            dev-smoke-fast)
+              BLAST="Dev FAST service has a parked revision at 0% traffic and is still serving its previous revision. Dev heavy may already be promoted. NOTHING was deployed to prod (prod waits on both dev lanes). Fast smoke = /health ping + functional crop-only /process test." ;;
+            prod-smoke-fast)
+              BLAST="Dev is serving main's HEAD. Prod FAST has a parked revision at 0% traffic and is still serving its previous revision; prod heavy may already be promoted." ;;
             prod-promote)
               BLAST="Dev is serving main's HEAD. Prod blue/green smoke passed but the traffic shift itself failed. Prod is still serving \`$PROD_PREV\` — re-run the promote job or investigate update-traffic errors." ;;
             *)
@@ -1082,6 +1225,8 @@ jobs:
           | deploy-prod | \`$R_PROD\` |
           | prod-smoke | \`$R_PROD_SMOKE\` |
           | prod-promote | \`$R_PROMOTE\` |
+          | dev-smoke-fast | \`$R_DEV_SMOKE_FAST\` |
+          | prod-smoke-fast | \`$R_PROD_SMOKE_FAST\` |
 
           **Links**
           - Deploy run: $RUN_URL
@@ -1140,11 +1285,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # dev-smoke-fast / prod-smoke-fast are advisory (their /health ping step
-      # is continue-on-error, see the job above) — they will practically never
-      # surface as `failure`, but including them costs nothing and means a
-      # future change to that lane's strictness is covered here without
-      # touching this job. Skipped is neither a failure nor a cancellation, so
+      # dev-smoke-fast / prod-smoke-fast are blocking since NEO-315: their
+      # verdict step fails the job when the /health ping or the functional
+      # /process smoke failed, so they surface here as `failure`. Skipped is neither a failure nor a cancellation, so
       # a run where the fast service doesn't exist yet, or where
       # PREPROCESS_DEPLOY_ENABLED is off, is judged only on what actually ran.
       - name: Determine status + failed jobs

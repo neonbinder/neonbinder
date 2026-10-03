@@ -17,7 +17,7 @@ import time
 import pytest
 
 from app import timing
-from app.timing import Timings, bound, measure_current
+from app.timing import Timings, bound, increment_current, measure_current
 
 EXPECTED_KEYS = {
     "msg",
@@ -28,6 +28,7 @@ EXPECTED_KEYS = {
     "dhash_ms",
     "vision_calls",
     "vision_ms",
+    "vision_reconnects",
     "classical_ms",
     "birefnet_ms",
     "sam_ms",
@@ -107,6 +108,7 @@ class TestEmit:
         assert len(collected) == 1
         body = json.loads(collected[0])
         assert body["vision_calls"] == 1
+        assert body["vision_reconnects"] == 0
         assert body["escalated"] is True
 
     def test_logger_does_not_propagate_and_formats_the_bare_message(self):
@@ -164,3 +166,22 @@ class TestMeasureCurrent:
             th.join()
 
         assert seen == {0: True, 1: True, 2: True, 3: True}
+
+
+class TestIncrementCurrent:
+    """The counter twin of `measure_current` (NEO-315 vision_reconnects)."""
+
+    def test_is_a_noop_when_nothing_is_bound(self):
+        increment_current("vision_reconnects")  # must not raise
+
+    def test_counts_on_the_bound_request(self):
+        t = Timings()
+        with bound(t):
+            increment_current("vision_reconnects")
+            increment_current("vision_reconnects")
+        assert t.vision_reconnects == 2
+        assert t.payload()["vision_reconnects"] == 2
+
+    def test_rejects_an_unknown_counter(self):
+        with pytest.raises(ValueError, match="unknown counter"):
+            increment_current("vision_reconnect")
