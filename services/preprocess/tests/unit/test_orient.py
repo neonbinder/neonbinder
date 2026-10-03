@@ -159,12 +159,11 @@ class TestDetectOrientation:
         assert result.text_count == 0
 
 
-class TestSharedVisionClient:
-    """NEO-315 D2: one lazily built Vision client per process."""
+class TestVisionClientPerCall:
+    """A fresh Vision client per call: a shared one's idle gRPC channel was
+    reset mid-request on the heavy revision (503 Stream removed)."""
 
-    def test_default_client_is_built_once_and_reused(self, monkeypatch):
-        import threading
-
+    def test_default_client_is_built_fresh_for_every_call(self, monkeypatch):
         from app import orient
 
         built: list[MagicMock] = []
@@ -174,31 +173,21 @@ class TestSharedVisionClient:
             built.append(client)
             return client
 
-        monkeypatch.setattr(orient, "_client", None)
         monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", _factory)
 
-        barrier = threading.Barrier(4)
+        detect_orientation(b"img")
+        detect_orientation(b"img")
 
-        def _cold_request():
-            barrier.wait()
-            detect_orientation(b"img")
+        assert len(built) == 2
+        assert built[0] is not built[1]
+        assert all(c.text_detection.call_count == 1 for c in built)
 
-        threads = [threading.Thread(target=_cold_request) for _ in range(4)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert len(built) == 1
-        assert built[0].text_detection.call_count == 4
-
-    def test_explicit_client_bypasses_the_shared_one(self, monkeypatch):
+    def test_explicit_client_is_used_without_building_one(self, monkeypatch):
         from app import orient
 
         def _refuse():
-            raise AssertionError("shared client must not be built when one is injected")
+            raise AssertionError("no client must be built when one is injected")
 
-        monkeypatch.setattr(orient, "_client", None)
         monkeypatch.setattr(orient.vision, "ImageAnnotatorClient", _refuse)
         client = _mock_client(_make_response([]))
 
