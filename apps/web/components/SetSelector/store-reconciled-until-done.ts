@@ -102,16 +102,17 @@ export type ReconciledStoreResult = {
   heldElsewhereTotal?: number;
   /**
    * NEO-300 — items the store did NOT add: their marketplace id is already on
-   * 2+ rows in the variant type (`heldByMany`), or the row they point at
-   * carries different ids (`idsDisagree`). ≤50 entries, ≤10 holders each;
+   * 2+ rows elsewhere (`heldByMany`), the row they point at carries
+   * different ids (`idsDisagree`), or the store could not check them against
+   * the rest of the set (`notChecked`, NEO-312). ≤50 entries, ≤10 holders each;
    * `withheldElsewhereTotal` is the real count. Last page wins.
    */
   withheldElsewhere?: WithheldElsewhereEntry[];
   withheldElsewhereTotal?: number;
   /**
-   * NEO-300 — the variant type was too big for the store to look for grouped
-   * rows, so it fell back to siblings only and may have re-added some. Last
-   * page wins.
+   * NEO-300 / NEO-312 — the set was too big for the store to check new links
+   * against, so it withheld them (each is in `withheldElsewhere` as
+   * `notChecked`). Last page wins.
    */
   subtreeWalkSkipped?: boolean;
 };

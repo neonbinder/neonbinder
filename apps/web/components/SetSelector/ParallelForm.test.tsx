@@ -36,6 +36,11 @@ const mockStore = vi.fn();
 // NEO-300: what getInsertTreeByVariantType answers. Loaded-but-empty by
 // default — the auto-sync is gated on it, so `undefined` would never sync.
 let insertTree: unknown[] = [];
+// NEO-312: what getUsedInsertIdentifiersBySet answers — the ids rows elsewhere
+// in the set hold. Loaded-but-empty by default: the auto-sync waits on it.
+let usedIds:
+  | { values?: string[]; slPlatformValues: string[]; bscPlatformValues: string[] }
+  | undefined = { slPlatformValues: [], bscPlatformValues: [] };
 
 vi.mock("convex/react", () => ({
   useAction: (ref: string) =>
@@ -46,8 +51,7 @@ vi.mock("convex/react", () => ({
     if (ref === "getAncestorChain") return CHAIN;
     if (ref === "getSelectorOptions") return [];
     if (ref === "getInsertTreeByVariantType") return insertTree;
-    if (ref === "getUsedInsertIdentifiersBySet")
-      return { slPlatformValues: [], bscPlatformValues: [] };
+    if (ref === "getUsedInsertIdentifiersBySet") return usedIds;
     return undefined;
   },
 }));
@@ -91,6 +95,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockStore.mockResolvedValue({ success: true, unlinked: [] });
   insertTree = [];
+  usedIds = { slPlatformValues: [], bscPlatformValues: [] };
 });
 
 describe("ParallelForm — single-platform store (NEO-211 plan B)", () => {
@@ -648,12 +653,185 @@ describe("ParallelForm — sets held elsewhere in the variant type (NEO-300)", (
     const { onDone } = await renderForm();
 
     expect(
-      await screen.findByText("Hold up: 1 not added. It clashes with rows already in Inserts."),
+      await screen.findByText("Hold up: 1 not added. It clashes with existing rows."),
     ).toBeTruthy();
     expect(screen.getByText("Points at a row linked to a different set:")).toBeTruthy();
     // An insert holder is named on its own.
     expect(screen.getByText("Chrome Stars", { selector: "li" })).toBeTruthy();
-    expect(screen.getByText(/Inserts is too big to check for grouped parallels/)).toBeTruthy();
+    expect(screen.getByText(/this set is too big to check new links automatically/)).toBeTruthy();
     expect(onDone).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * NEO-312 — ids a row in another variant type of this set holds. See the
+ * matching block in VariantForm.test.tsx. The difference here: this column's
+ * used-id query is not scoped away from this insert, so its list also carries
+ * the insert's OWN parallels, which must keep coming back as this sync's rows.
+ */
+describe("ParallelForm — ids another variant type holds are left alone (NEO-312)", () => {
+  function ownParallelTree() {
+    return [
+      {
+        insert: { _id: "ins1", value: "Anime", platformData: {} },
+        parallels: [
+          { _id: "p-own", value: "Anime Gold", platformData: { bsc: { b0: "bsc-own" } } },
+        ],
+      },
+    ];
+  }
+
+  it("does not sync until the set's used ids have loaded", async () => {
+    usedIds = undefined;
+    mockFetchRawOptions.mockResolvedValue(bscOnly());
+    await renderForm();
+    expect(mockFetchRawOptions).not.toHaveBeenCalled();
+    expect(mockStore).not.toHaveBeenCalled();
+  });
+
+  it("single platform: drops what another variant type holds, keeps its own parallels", async () => {
+    insertTree = ownParallelTree();
+    // The set's whole list: this insert's own parallel AND a set "Make insert
+    // of…" moved into another variant type.
+    usedIds = { slPlatformValues: [], bscPlatformValues: ["bsc-own", "bsc-moved"] };
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [
+        { value: "Anime Gold", platformValue: "bsc-own" },
+        { value: "Blue", platformValue: "bsc-moved" },
+        { value: "Red", platformValue: "bsc-red" },
+      ],
+    });
+    await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    expect(
+      args.reconciledItems.map((i: { platformData: { bsc?: string } }) => i.platformData.bsc),
+    ).toEqual(["bsc-own", "bsc-red"]);
+    expect(args.returnedIds.bsc).toContain("bsc-moved");
+  });
+
+  it("single platform: the SportLots side is filtered the same way", async () => {
+    usedIds = { slPlatformValues: ["sl-moved"], bscPlatformValues: [] };
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [],
+      slOptions: [
+        { value: "Blue", platformValue: "sl-moved" },
+        { value: "Red", platformValue: "sl-red" },
+      ],
+      message: "BSC: 0, SL: 2",
+    });
+    await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    expect(
+      args.reconciledItems.map(
+        (i: { platformData: { sportlots?: string } }) => i.platformData.sportlots,
+      ),
+    ).toEqual(["sl-red"]);
+  });
+
+  it("modal: a pair whose SportLots half another variant type holds is not Ready", async () => {
+    usedIds = { slPlatformValues: ["sl-moved"], bscPlatformValues: [] };
+    const MOVED_BSC = { value: "Blue", platformValue: "bsc-moved" };
+    const MOVED_SL = { value: "Blue", platformValue: "sl-moved" };
+    const RED_BSC = { value: "Red", platformValue: "bsc-red" };
+    const RED_SL = { value: "Red", platformValue: "sl-red" };
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [MOVED_BSC, RED_BSC],
+      slOptions: [MOVED_SL, RED_SL],
+      autoMatched: [
+        { displayName: "Blue", bsc: MOVED_BSC, sl: MOVED_SL, confidence: 0.9 },
+        { displayName: "Red", bsc: RED_BSC, sl: RED_SL, confidence: 0.9 },
+      ],
+      unmatchedBsc: [],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+    });
+    await renderForm();
+
+    expect(await screen.findByText(/Save 1 sets/)).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: `Make its own set: ${MOVED_BSC.value}` }),
+    ).toBeTruthy();
+
+    await act(async () => {
+      fireEvent.click(screen.getByText(/Save 1 sets/));
+    });
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    const args = mockStore.mock.calls[0][0];
+    const saved = args.reconciledItems.flatMap(
+      (i: { platformData: { sportlots?: string | string[] } }) =>
+        [i.platformData.sportlots ?? []].flat(),
+    );
+    expect(saved).toEqual(["sl-red"]);
+  });
+});
+
+describe("ParallelForm — store-named holders carry their path (NEO-312)", () => {
+  function storeNames(entry: Record<string, unknown>) {
+    mockFetchRawOptions.mockResolvedValue({
+      ...bscOnly(),
+      bscOptions: [
+        { value: "Red Ink", platformValue: "bsc-red-ink" },
+        { value: "Gold", platformValue: "gold" },
+      ],
+    });
+    mockStore.mockResolvedValue({
+      success: true,
+      unlinked: [],
+      optionsCount: 1,
+      hasMore: false,
+      heldElsewhere: [entry],
+      heldElsewhereTotal: 1,
+    });
+  }
+
+  it("a holder in another variant type is named by its path, and not placed in this one", async () => {
+    storeNames({
+      id: "par-red-ink",
+      value: "Red Ink",
+      level: "parallel",
+      parentId: "ins-aag",
+      parentValue: "All-America Game Autos",
+      path: ["Bowman", "Insert", "All-America Game Autos"],
+    });
+    await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already linked to a row elsewhere. Leaving it be.",
+    );
+    expect(status.textContent).not.toContain("elsewhere in Insert");
+    fireEvent.click(screen.getByRole("button", { name: "Show where" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Bowman › Insert › All-America Game Autos › Red Ink",
+    ]);
+  });
+
+  it("an insert of this variant type is still 'elsewhere in' it", async () => {
+    storeNames({
+      id: "ins9",
+      value: "Chrome Stars",
+      level: "insert",
+      parentId: "vt1",
+      parentValue: "Insert",
+      path: ["Topps", "Insert"],
+    });
+    await renderForm();
+
+    const status = await screen.findByRole("status");
+    expect(status.textContent).toContain(
+      "1 already lives elsewhere in Inserts. Leaving it be.",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Show where" }));
+    expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "Topps › Insert › Chrome Stars",
+    ]);
   });
 });

@@ -46,6 +46,11 @@ import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
+import {
+  PARALLEL_BUILD_HEADING_ID,
+  parallelLineId,
+  type ParallelBuildRunner,
+} from "./ParallelBuildPanel";
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -113,6 +118,15 @@ vi.mock("../../convex/_generated/api", () => ({
     leagues: { list: "leagues.list" },
     // NEO-287: the pause switch the solo decision subtracts before the fetch.
     marketplacePause: { getPausedPlatforms: "getPausedPlatforms" },
+    // NEO-312: the parallel-build runner's own two calls. `getParallelsForBuild`
+    // is reached through `useConvex().query` (the runner's `start`, exactly
+    // like `diffChecklistAgainstExisting`); `buildParallelChecklist` is both
+    // `useConvex().action` (the runner) and `useAction` (the parallel row's own
+    // manual button) — the SAME mock backs both call shapes.
+    parallelChecklistBuild: {
+      getParallelsForBuild: "getParallelsForBuild",
+      buildParallelChecklist: "buildParallelChecklist",
+    },
   },
 }));
 
@@ -198,6 +212,12 @@ const mockResolveEntities = vi.fn();
 const mockCommitChecklist = vi.fn();
 const mockDiffChecklist = vi.fn();
 const mockDiscardCandidates = vi.fn();
+// NEO-312 — the parallel-build runner's two calls. Both default to a
+// no-parallels / never-called shape in every describe block that does not
+// reset them, so every pre-existing test in this file is unaffected: a plain
+// insert or Base checklist with no `parallelBuild` prop never reaches either.
+const mockGetParallelsForBuild = vi.fn();
+const mockBuildParallelChecklist = vi.fn();
 // NEO-208: the quick-add form's mutation. It was already listed in the `api`
 // mock above but never routed to a spy, because nothing exercised the form —
 // it had no component test at all before this ticket.
@@ -288,6 +308,9 @@ vi.mock("convex/react", () => ({
     // NEO-189: commitCardChecklist became an ACTION when the commit was
     // chunked server-side. Same call shape, different hook.
     if (ref === "commitCardChecklist") return mockCommitChecklist;
+    // NEO-312: `ParallelBuildButton`'s own `useAction` call — the manual,
+    // one-parallel build from its own row.
+    if (ref === "buildParallelChecklist") return mockBuildParallelChecklist;
     return vi.fn();
   },
   // NEO-203: the content-diff review is a ONE-SHOT query (see the note on
@@ -295,7 +318,23 @@ vi.mock("convex/react", () => ({
   // confirmed card array would re-diff under the operator mid-review). Every
   // flow in this file drives the zero-candidate path, which short-circuits
   // before the diff is ever requested, so this only has to exist.
-  useConvex: () => ({ query: mockDiffChecklist }),
+  //
+  // NEO-312: the SAME client also carries the parallel-build runner's two
+  // calls (`useParallelBuildRun`'s own internal `useConvex()`, and the
+  // explicit client `CardChecklist` passes to `parallelRun.start`). Routed by
+  // ref exactly like `useQuery`/`useAction` above; `mockDiffChecklist` still
+  // receives `(ref, args)` for every OTHER ref, so every existing assertion
+  // that reads `mockDiffChecklist.mock.calls[0]` is unaffected.
+  useConvex: () => ({
+    query: (ref: string, args?: unknown) =>
+      ref === "getParallelsForBuild"
+        ? mockGetParallelsForBuild(args)
+        : mockDiffChecklist(ref, args),
+    action: (ref: string, args?: unknown) =>
+      ref === "buildParallelChecklist"
+        ? mockBuildParallelChecklist(args)
+        : Promise.resolve(undefined),
+  }),
 }));
 
 // ---------------------------------------------------------------------------
@@ -3570,5 +3609,292 @@ describe("CardChecklist — NEO-251: conflicts reach the diff, not the commit", 
     // matters is that no disagreement was invented.
     expect(args.cards[0].playersConflict).toBeUndefined();
     expect(args.cards[0].nameConflict).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-312 — the parallel-build runner's effect on THIS checklist: the Sync
+// slot on a parallel row, the held-controls a11y contract while a build
+// touches this checklist (the insert's own run) or this row's own manual
+// build is in flight, and the auto-run that follows a landed commit on an
+// insert (never on a Base row, which passes no `parallelBuild` at all).
+// ---------------------------------------------------------------------------
+
+const INSERT_ROW_ID = "insert-row-1" as unknown as Id<"selectorOptions">;
+
+/** A `ParallelBuildResult` with every field `builtText`/`buildNotice` read. */
+function parallelBuiltResult(overrides: Record<string, unknown> = {}) {
+  return {
+    status: "built",
+    copied: 3,
+    notCopied: 0,
+    unlinked: { bsc: 0, sportlots: 0 },
+    ambiguous: { bsc: 0, sportlots: 0 },
+    sidesFetched: ["bsc"],
+    sidesSkipped: [],
+    earlierLinksMissing: { bsc: 0, sportlots: 0 },
+    stillListedNotRelinked: { bsc: 0, sportlots: 0 },
+    legacyLinksRemoved: { bsc: 0, sportlots: 0 },
+    skippedChangedSource: 0,
+    extraOnMarketplace: {
+      bsc: { count: 0, cards: [] },
+      sportlots: { count: 0, cards: [] },
+    },
+    cards: { leftOff: [], unlinked: { bsc: [], sportlots: [] }, ambiguous: { bsc: [], sportlots: [] } },
+    rebuilt: false,
+    ...overrides,
+  };
+}
+
+function renderParallelRow() {
+  return render(
+    <CardChecklist
+      variantId={VARIANT_ID}
+      sourceChips={{}}
+      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      parallelBuild={{ role: "parallel", insertId: INSERT_ROW_ID, insertValue: "Anime" }}
+    />,
+  );
+}
+
+function renderInsertRow() {
+  return render(
+    <CardChecklist
+      variantId={VARIANT_ID}
+      sourceChips={{}}
+      sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+      parallelBuild={{ role: "insert" }}
+    />,
+  );
+}
+
+describe("CardChecklist — NEO-312 a parallel row's Sync slot builds instead of fetching", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Anime Kanji" };
+    state.ancestorChain = [];
+    state.liveCandidates = null;
+    mockGetParallelsForBuild.mockResolvedValue({ parallels: [], truncated: false });
+  });
+
+  it("shows Build from {insert} in place of Sync, and calling it never reaches fetchCardChecklist or Match Cards", async () => {
+    renderParallelRow();
+
+    // No ordinary Sync control exists on a parallel row at all.
+    expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+    const button = screen.getByRole("button", { name: "Build from Anime" });
+
+    mockBuildParallelChecklist.mockResolvedValue(parallelBuiltResult());
+    fireEvent.click(button);
+
+    await waitFor(() =>
+      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID }),
+    );
+    expect(mockFetchChecklist).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+  });
+});
+
+describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [settledCard()];
+    state.variantRow = { value: "Anime" };
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = { ready: 0, total: 0, cards: [] };
+  });
+
+  it("Add Card and Add Cross-Release Cards are not held before any build starts", () => {
+    mockGetParallelsForBuild.mockResolvedValue({ parallels: [], truncated: false });
+    renderInsertRow();
+    expect(
+      screen.getByLabelText("Open add card form").getAttribute("aria-disabled"),
+    ).toBeNull();
+    expect(
+      screen
+        .getByLabelText("Open add cross-release cards form")
+        .getAttribute("aria-disabled"),
+    ).toBeNull();
+  });
+
+  it("holds Add Card, Add Cross-Release Cards and the card list — described by the insert's panel heading — while the insert's own run touches this checklist", async () => {
+    // A plan with one parallel so the run stays "running" (never resolves)
+    // and `runTouchesThis` is true for the INSERT row itself.
+    mockGetParallelsForBuild.mockResolvedValue({
+      truncated: false,
+      parallels: [
+        { _id: "parallel-a", value: "Anime Gold", sides: { bsc: true, sportlots: false }, hasCards: false },
+      ],
+    });
+    mockResolveEntities.mockResolvedValue({ unknownPlayers: [], unknownTeams: [], batchId: undefined });
+    mockCommitChecklist.mockResolvedValue({ count: 1, unreviewedNameCount: 0 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    mockBuildParallelChecklist.mockImplementation(() => new Promise(() => {})); // never resolves — stays "running"
+    let resolveFetch!: (value: unknown) => void;
+    mockFetchChecklist.mockImplementation(
+      () => new Promise((resolve) => (resolveFetch = resolve)),
+    );
+
+    renderInsertRow();
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: NOTHING_TO_FETCH_MESSAGE,
+        candidateCount: 0,
+        attachedSides: ["bsc", "sportlots"],
+      });
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+    // The run has started and is building "Anime Gold" — still "running"
+    // because the action never resolves.
+    await waitFor(() =>
+      expect(mockGetParallelsForBuild).toHaveBeenCalledWith({ insertId: VARIANT_ID }),
+    );
+
+    const addCard = await screen.findByLabelText("Open add card form");
+    await waitFor(() => expect(addCard.getAttribute("aria-disabled")).toBe("true"));
+    expect(addCard.getAttribute("aria-describedby")).toBe(PARALLEL_BUILD_HEADING_ID);
+
+    const addCrossRelease = screen.getByLabelText("Open add cross-release cards form");
+    expect(addCrossRelease.getAttribute("aria-disabled")).toBe("true");
+    expect(addCrossRelease.getAttribute("aria-describedby")).toBe(PARALLEL_BUILD_HEADING_ID);
+
+    const group = screen.getByRole("group", { hidden: true });
+    expect(group.getAttribute("aria-disabled")).toBe("true");
+    expect(group.getAttribute("aria-describedby")).toBe(PARALLEL_BUILD_HEADING_ID);
+  });
+
+  it("holds Add Card and Add Cross-Release Cards — described by this parallel's own note — while its OWN manual build is in flight, and not otherwise", async () => {
+    state.cards = [];
+    mockGetParallelsForBuild.mockResolvedValue({ parallels: [], truncated: false });
+    mockBuildParallelChecklist.mockImplementation(() => new Promise(() => {})); // never resolves
+
+    renderParallelRow();
+    const addCardBefore = screen.getByLabelText("Open add card form");
+    expect(addCardBefore.getAttribute("aria-disabled")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Build from Anime" }));
+
+    await waitFor(() =>
+      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID }),
+    );
+    const addCard = screen.getByLabelText("Open add card form");
+    await waitFor(() => expect(addCard.getAttribute("aria-disabled")).toBe("true"));
+    // Mirrors CardChecklist.tsx's own private `MANUAL_BUILD_NOTE_ID` constant
+    // (not exported — it names this component's own hidden note, never the
+    // panel's heading, which is the OTHER-row case above).
+    expect(addCard.getAttribute("aria-describedby")).toBe("parallel-build-own-note");
+    const addCrossRelease = screen.getByLabelText("Open add cross-release cards form");
+    expect(addCrossRelease.getAttribute("aria-disabled")).toBe("true");
+    expect(addCrossRelease.getAttribute("aria-describedby")).toBe("parallel-build-own-note");
+  });
+
+  /** A hosted runner whose `run` is a fixed, already-built state — no fetch/commit driving needed. */
+  function hostedRunner(run: ParallelBuildRunner["run"]): ParallelBuildRunner {
+    return {
+      run,
+      active: run?.phase === "running" || run?.phase === "stopping",
+      inFlight: new Set(),
+      start: vi.fn(),
+      stop: vi.fn(),
+      buildOne: vi.fn(),
+    };
+  }
+
+  it("a run active on a DIFFERENT insert entirely never holds this checklist", () => {
+    const foreign = hostedRunner({
+      insertId: "some-other-insert" as unknown as Id<"selectorOptions">,
+      insertValue: "Other Insert",
+      entries: [
+        { id: "other-parallel" as unknown as Id<"selectorOptions">, value: "X", line: { kind: "building" } },
+      ],
+      truncated: false,
+      phase: "running",
+      atIndex: 0,
+      announcement: "",
+    });
+    render(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelRun={foreign}
+      />,
+    );
+    expect(
+      screen.getByLabelText("Open add card form").getAttribute("aria-disabled"),
+    ).toBeNull();
+  });
+
+  it("holds a parallel still WAITING in the insert's run — described by its own ledger line, not the heading", () => {
+    const run = {
+      insertId: INSERT_ROW_ID,
+      insertValue: "Anime",
+      entries: [{ id: VARIANT_ID, value: "Anime Kanji", line: { kind: "waiting" as const } }],
+      truncated: false,
+      phase: "running" as const,
+      atIndex: 0,
+      announcement: "",
+    };
+    render(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelBuild={{ role: "parallel", insertId: INSERT_ROW_ID, insertValue: "Anime" }}
+        parallelRun={hostedRunner(run)}
+      />,
+    );
+    const addCard = screen.getByLabelText("Open add card form");
+    expect(addCard.getAttribute("aria-disabled")).toBe("true");
+    expect(addCard.getAttribute("aria-describedby")).toBe(parallelLineId(VARIANT_ID));
+  });
+});
+
+describe("CardChecklist — NEO-312 the auto-run after a commit (J1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Anime" };
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = null;
+  });
+
+  async function driveZeroCandidateCommit() {
+    state.liveCandidates = { ready: 0, total: 0, cards: [] };
+    mockResolveEntities.mockResolvedValue({ unknownPlayers: [], unknownTeams: [], batchId: undefined });
+    mockCommitChecklist.mockResolvedValue({ count: 2, unreviewedNameCount: 0 });
+    mockDiscardCandidates.mockResolvedValue(undefined);
+    let resolveFetch!: (value: unknown) => void;
+    mockFetchChecklist.mockImplementation(
+      () => new Promise((resolve) => (resolveFetch = resolve)),
+    );
+    fireEvent.click(screen.getByLabelText("Sync card checklist"));
+    await act(async () => {
+      resolveFetch({
+        success: true,
+        message: NOTHING_TO_FETCH_MESSAGE,
+        candidateCount: 0,
+        attachedSides: ["bsc", "sportlots"],
+      });
+    });
+    await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+  }
+
+  it("starts the run after a successful commit on an INSERT row", async () => {
+    mockGetParallelsForBuild.mockResolvedValue({ parallels: [], truncated: false });
+    renderInsertRow();
+    await driveZeroCandidateCommit();
+    await waitFor(() =>
+      expect(mockGetParallelsForBuild).toHaveBeenCalledWith({ insertId: VARIANT_ID }),
+    );
+  });
+
+  it("never starts a run after a successful commit on a Base row (no parallelBuild prop)", async () => {
+    renderChecklist();
+    await driveZeroCandidateCommit();
+    expect(mockGetParallelsForBuild).not.toHaveBeenCalled();
   });
 });

@@ -648,7 +648,7 @@ describe("planSelectorSync — a row held elsewhere in the variant type's subtre
     });
     expect(plan.outcomes[0]).toEqual({
       kind: "withheld",
-      reason: "marketplace ids are held by 2 rows elsewhere in this variant type",
+      reason: "marketplace ids are held by 2 rows elsewhere in this set or brand",
       // Named, so the store can tell the operator which rows (audit finding 6).
       elsewhere: { reason: "heldByMany", holderIds: ["refractor", "twin"] },
     });
@@ -666,7 +666,7 @@ describe("planSelectorSync — a row held elsewhere in the variant type's subtre
     expect(plan.outcomes[0]).toEqual({
       kind: "withheld",
       reason:
-        "existingId names a row elsewhere in this variant type that does not hold the item's bsc id",
+        "existingId names a row elsewhere in this set that does not hold the item's bsc id",
       elsewhere: { reason: "idsDisagree", holderIds: ["refractor"] },
     });
   });
@@ -722,6 +722,54 @@ describe("planSelectorSync — a row held elsewhere in the variant type's subtre
       elsewhereInSubtree: [refractorParallel()],
     });
     expect(plan.outcomes[0].kind).toBe("withheld");
+  });
+});
+
+describe("planSelectorSync — fail closed on a side the holder walk could not finish (NEO-312)", () => {
+  const blue = () =>
+    row("blue", "Blue", { platformData: { bsc: { b0: "blue-v" } } });
+
+  test("an item carrying an id on an unchecked side, held by no sibling, is WITHHELD as notChecked", () => {
+    const plan = planSelectorSync({
+      existing: [blue()],
+      items: [item("Gold", { sportlots: "sl-gold" })],
+      elsewhereInSubtree: [],
+      elsewhereUncheckedSides: ["sportlots"],
+    });
+    expect(plan.outcomes[0]).toEqual({
+      kind: "withheld",
+      reason: "could not check whether another row already holds the item's sportlots id",
+      elsewhere: { reason: "notChecked", holderIds: [] },
+    });
+  });
+
+  test("a sibling match never waits on the walk, and a side that WAS checked proceeds", () => {
+    const plan = planSelectorSync({
+      existing: [blue()],
+      items: [
+        // The sibling's own id: matched, even with both sides unchecked.
+        item("Blue", { bsc: "blue-v", sportlots: "sl-blue" }),
+        // BSC only, and only SportLots is unchecked: a new row as before.
+        item("Green", { bsc: "green-v" }),
+      ],
+      elsewhereUncheckedSides: ["sportlots"],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "blue", tier: 1 });
+    expect(plan.outcomes[1]).toEqual({ kind: "insert" });
+  });
+
+  test("a holder the walk DID find still wins over the unchecked side", () => {
+    const held = row("held", "Gold", {
+      level: "parallel",
+      platformData: { sportlots: { s0: "sl-gold" } },
+    });
+    const plan = planSelectorSync({
+      existing: [blue()],
+      items: [item("Gold", { sportlots: "sl-gold" })],
+      elsewhereInSubtree: [held],
+      elsewhereUncheckedSides: ["sportlots"],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "heldElsewhere", rowId: "held", tier: 1 });
   });
 });
 

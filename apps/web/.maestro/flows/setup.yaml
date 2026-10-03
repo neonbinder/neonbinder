@@ -1,6 +1,6 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials?redirect=/admin&worker=${WORKER_INDEX || "0"}
-name: "Setup — global reset + warm + sync 2024 Topps Chrome Baseball (Base + Insert + Parallel)"
+name: "Setup — global reset + warm + sync 2024 Topps Chrome Baseball (Base + Insert + Parallel) + 2026 Bowman's SportLots review"
 tags:
   - setup
 ---
@@ -61,6 +61,14 @@ tags:
 #   - Baseball → 2024 → Topps → Topps Big League: variant types synced and Base
 #     MAPPED, checklist deliberately EMPTY — the NEO-248 entity-review fixture.
 #     Its ~87 players must stay UNKNOWN, so nothing here fetches it.           [this flow]
+#   - Baseball → 2026 → Bowman: Sets synced (live: BSC + SportLots; paused:
+#     the hand-made `Bowman` manufacturer row), its SportLots review SAVED
+#     (`Bowman Sterling` its own set, `All-America Game Autos` under Bowman ›
+#     Insert, every other SportLots-only name under Bowman › Parallel) and
+#     Bowman's Variant Types synced. NOT read-only: the two Bowman flows
+#     write their halves of it, concurrently (SET-REGISTRY.md → "2026
+#     Bowman"). Provisioned here because the review is one brand-wide write
+#     neither flow may race the other for (NEO-312).                         [this flow]
 #
 # NOT provisioned here, deliberately: the three COMMITTING entity-review
 # fixtures (Topps Chicago Cubs / Baltimore Orioles / Brooklyn Collection).
@@ -1745,3 +1753,346 @@ tags:
       text: "No cards in this checklist yet."
     timeout: 15000
 
+# ════════════════════════════════════════════════════════════════════════════
+# STEP N+1 — PROVISION 2026 BOWMAN: SYNC SETS AND THE SPORTLOTS REVIEW
+# (NEO-312 split of `flagship-colour-is-a-parallel-both-ways`)
+#
+# The two Bowman flows — `bowman-insert-grouping-builds-parallels` (Bowman ›
+# Insert) and `bowman-sportlots-links-move-between-set-parallel-insert`
+# (Bowman › Parallel and the SportLots links) — run CONCURRENTLY and both
+# need what this step makes: Bowman's sets synced, its SportLots review
+# SAVED (one set, `All-America Game Autos` under Insert, every other
+# SportLots-only name under Parallel) and Bowman's Variant Types synced.
+# That is one brand-wide write each, which no two flows may race, so it is
+# made here, once, through the UI (fixtures come from the UI, never a
+# seed). This is the merged flow's STEP 1, verbatim but for paths, and it
+# keeps every claim-1 assertion it made there: setup is a flow too, and a
+# hard assert here fails the seed by name.
+#
+# COST: the merged flow measured 102 s for this step in green CI run
+# 36524859308 (cold drill 52.9 s, the review 48.1 s), so the seed grows by
+# ~100 s live. Paused it is the cold drill plus one warm drill to sync the
+# Variant Types (live, the review syncs them inside its dialog).
+#
+# NOTHING EARLIER IN THIS FLOW READS 2026: Topps Chrome and Topps Big League
+# are 2024, and this is the last step, so their fixtures are unaffected.
+# ════════════════════════════════════════════════════════════════════════════
+
+- evalScript: '${output.BRAND = "Bowman"}'
+- evalScript: '${output.SL_SET = "Bowman Blue"}'
+- evalScript: '${output.OWN_LABEL = "Bowman Sterling"}'
+- evalScript: '${output.OWN_SET = "Bowman Sterling"}'
+- evalScript: '${output.INSERT_ROW = "All-America Game Autos"}'
+- evalScript: '${output.SOURCE_ROW = "All-America Game Autos Red Ink"}'
+- evalScript: '${output.TYPE_PARALLEL = "Parallel"}'
+- evalScript: '${output.TYPE_INSERT = "Insert"}'
+
+# ── CLAIM 1: SYNC SETS MINTS NOTHING OF SPORTLOTS'; THE REVIEW FILES IT ───
+#
+# R9 — the cold util stops with Bowman's Sets column open and its sync
+# waited out (and under the pause adds the hand-made `Bowman` row — this
+# flow is that row's sole writer; the two Bowman flows select it without
+# `CREATE_MANUFACTURER`).
+
+- runFlow:
+    file: set-selector/util-drill-to-cold-real-set.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2026"
+      MANUFACTURER: ${output.BRAND}
+
+# THE SYNC IS OVER, on its one POSITIVE signal: the idle `Sync Sets` button,
+# which `EntityColumn` mounts only once the status row has left "syncing"
+# (the panel and the button share one slot). The review is written at the
+# END of the SportLots phase, so every assertion below is only meaningful
+# after this. DOWN — the button sits under the column's list. R5 marketplace
+# exception: the drill util's own 150s contract for this very sync,
+# relocated to where it can be observed (the same move, and the same reason,
+# as `brand-via-all-brands-narrows-sportlots` STEP 2). The seed runs before
+# every flow and the reset wiped the year, so the column is always cold here.
+- scrollUntilVisible:
+    element:
+      text: "Sync Sets"
+    timeout: 150000
+
+# BSC's sets as positives. The flagship row itself is not asserted: its text
+# `Bowman` is also the collapsed Manufacturers card's, so it could not fail.
+# Alphabetical order puts every SportLots name that used to be minted between
+# the flagship and `Bowman Sapphire Edition` ("Bowman Blue", "Bowman Gold",
+# …, "Bowman Neon Green"), and the `Sync Sets` scroll above stops with the
+# column's whole short list above it inside the viewport, so such a row
+# would be ON SCREEN beside these two — the negatives below are not the
+# vacuous off-screen kind (README → "Negative asserts pass on a dead page").
+# Full match: `Bowman Chrome` does not answer for `Bowman Chrome Refractor`.
+- assertVisible:
+    text: "Bowman Chrome"
+- assertVisible:
+    text: "Bowman Sapphire Edition"
+
+# PAUSED: nothing was asked of SportLots, so there is no review to offer —
+# the skip sentence by name, and no pill beside it (R2: the positive first).
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertVisible: "SportLots skipped: no SportLots ids on this path."
+      - assertNotVisible:
+          text: "[0-9]+ SportLots sets? to sort"
+
+# ── LIVE ─────────────────────────────────────────────────────────────────
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      # 1a — CLAIM 1: SportLots WAS asked (no skip sentence) and minted
+      # nothing. Before NEO-305 each of these was a row here; since NEO-306
+      # they wait in the review instead of being absorbed. The column holds
+      # ≤ 8 rows, so no search box (`EntitySelector` shows it above 8) — the
+      # bug made 15+ rows here, and a box is its shape.
+      - assertNotVisible: "SportLots skipped: no SportLots ids on this path."
+      - assertNotVisible:
+          text: "${output.SL_SET}"
+      - assertNotVisible:
+          text: "Bowman Gold"
+      - assertNotVisible:
+          text: "Bowman Neon Green"
+      - assertNotVisible:
+          id: "Search sets"
+
+      # 1b — THE PILL. `SlSetReviewPill` renders in the idle row beside
+      # `Sync Sets` once `getSlSetReviewSummary` resolves to a positive count
+      # — one query after the button, hence a wait, on the 7000 bar. Its
+      # visible text is its accessible name. The count is SportLots' business;
+      # matched by shape. Centred for the tap (R8): the row sits at the
+      # bottom edge where the `Sync Sets` scroll left it, and the NEO-260
+      # spacer gives it the headroom to centre in one swipe.
+      - scrollUntilVisible:
+          element:
+            text: "[0-9]+ SportLots sets? to sort"
+          centerElement: true
+          timeout: 7000
+      - tapOn:
+          text: "[0-9]+ SportLots sets? to sort"
+      # The dialog's pinned header names the brand — the review is per brand.
+      - extendedWaitUntil:
+          visible: "Sort SportLots sets for ${output.BRAND}"
+          timeout: 7000
+
+      # 1c — BULK: EVERY ROW → filed under Bowman › Parallel. `Select all
+      # shown` is the tick in the table's sticky header row, the first thing
+      # in the body. The Apply button's count is the proof the tick took
+      # every row (it read `Apply to 0 selected` before).
+      - tapOn:
+          id: "Select all shown"
+      - extendedWaitUntil:
+          visible: "Apply to [1-9][0-9]* selected"
+          timeout: 7000
+      # The bulk set picker, in the pinned header. Every picker's accessible
+      # name STARTS with its visible text — the current choice — then says
+      # what it chooses (SC 2.5.3), so before a pick it reads `Pick a set: set
+      # the selected rows belong to`; matched on the fixed tail.
+      #
+      # THE OPEN LIST IS NOT ADDRESSABLE BY ITS NAME. It carries a React
+      # `useId` DOM id (the trigger's `aria-controls` needs one), and
+      # maestro-web's resource-id is `node.id || ariaLabel`, so the id
+      # shadows the list's aria-label (local run against PR #288's preview,
+      # 2026-09-25: the list was on screen, its node read `_r_…_`, and `id:
+      # "Sets the selected rows can belong to"` never matched). So: gate on
+      # the list's own footer sentence, and take the option NEAREST BELOW the
+      # trigger — `below:` sorts by distance, and the list hangs directly
+      # under its trigger (screenshot: trigger bottom y=200, `Bowman` at
+      # y=216; the page's own `Bowman` rows sit ABOVE the trigger, behind the
+      # dialog). The options are the brand's sets that can sync variant
+      # types, so `Bowman` is there.
+      - tapOn:
+          id: ".*: set the selected rows belong to"
+      - extendedWaitUntil:
+          visible: "Missing a set\\? Only sets that can sync their variant types show here\\."
+          timeout: 7000
+      - tapOn:
+          text: "${output.BRAND}"
+          below:
+            id: ".*: set the selected rows belong to"
+      # PICKING THE SET RUNS ITS VARIANT TYPES SYNC, forced, once per dialog
+      # (`SlSetReviewModal` → `ensureSelectorOptions({level: "variantType",
+      # force: true})`), and the type picker is `inert` until it lands. R5
+      # marketplace exception: 60000 is `util-drill-to-2024-topps-chrome`'s
+      # own contract for the same cold BSC + SportLots variant-type fetch.
+      # The busy line is set in the same click handler as the pick, so it is
+      # on screen by the time this wait starts; the negative is paired with
+      # hard positives right after it — the set trigger now names Bowman, and
+      # the type list can only open once the sync has landed (an inert
+      # trigger ignores the tap) — so a dead page fails there by name.
+      - extendedWaitUntil:
+          notVisible: "Syncing ${output.BRAND}.s variant types…"
+          timeout: 60000
+      - assertVisible:
+          id: "${output.BRAND}: set the selected rows belong to"
+      # The type list has the same shadowed name (`Types under Bowman`):
+      # the option nearest below its trigger is taken, as above. Before the
+      # Apply no row reads a type, so nothing else on screen says `Parallel`.
+      - tapOn:
+          id: ".*: where the selected rows are filed"
+      - extendedWaitUntil:
+          visible:
+            text: "${output.TYPE_PARALLEL}"
+            below:
+              id: ".*: where the selected rows are filed"
+          timeout: 7000
+      - tapOn:
+          text: "${output.TYPE_PARALLEL}"
+          below:
+            id: ".*: where the selected rows are filed"
+      # The trigger's name now leads with the type it holds.
+      - extendedWaitUntil:
+          visible:
+            id: "${output.TYPE_PARALLEL}: where the selected rows are filed"
+          timeout: 7000
+      - tapOn:
+          text: "Apply to [1-9][0-9]* selected"
+      # Applying clears the selection: the count is back to zero.
+      - extendedWaitUntil:
+          visible: "Apply to 0 selected"
+          timeout: 7000
+
+      # 1d — ONE ROW → filed under Bowman › Insert, through its row tick and
+      # the bulk bar. INSERT_ROW is the review's FIRST row (folded order,
+      # measured), so with the filter still empty its tick is at the top of
+      # the body — no filter, nothing to erase. Only it goes there: its Red
+      # Ink row STAYS under Bowman › Parallel, where 1c put it — the shape (a
+      # Parallels-filed row that is really a parallel of an insert) the
+      # links flow's STEP 14 moves with Make insert of…. Keeping Red Ink out
+      # of the Insert type also keeps the inserts flow's Group Parallels
+      # (STEP 4) from nesting it under its insert by prefix, whichever runs
+      # first.
+      - tapOn:
+          id: "Select ${output.INSERT_ROW}"
+      - extendedWaitUntil:
+          visible: "Apply to 1 selected"
+          timeout: 7000
+      # The bulk set is still Bowman (already synced — no second sync), so
+      # only the type changes. Rows now read `Parallel` further down the
+      # body; the list's `Insert` option is the nearest below the trigger.
+      - tapOn:
+          id: "${output.TYPE_PARALLEL}: where the selected rows are filed"
+      - extendedWaitUntil:
+          visible:
+            text: "${output.TYPE_INSERT}"
+            below:
+              id: "${output.TYPE_PARALLEL}: where the selected rows are filed"
+          timeout: 7000
+      - tapOn:
+          text: "${output.TYPE_INSERT}"
+          below:
+            id: "${output.TYPE_PARALLEL}: where the selected rows are filed"
+      - extendedWaitUntil:
+          visible:
+            id: "${output.TYPE_INSERT}: where the selected rows are filed"
+          timeout: 7000
+      - tapOn:
+          text: "Apply to 1 selected"
+      - extendedWaitUntil:
+          visible: "Apply to 0 selected"
+          timeout: 7000
+      # Per row, the first two rows of the body: the insert is filed under
+      # Insert, its Red Ink row is still under Parallel (R2 — the
+      # preconditions of the links flow's STEP 14 source and destination).
+      - assertVisible:
+          id: "${output.TYPE_INSERT}: where ${output.INSERT_ROW} is filed"
+      - assertVisible:
+          id: "${output.TYPE_PARALLEL}: where ${output.SOURCE_ROW} is filed"
+
+      # 1e — PER ROW: BOWMAN STERLING BACK TO ITS OWN SET, through its own
+      # "Belongs to" picker. The filter is in the pinned header and still
+      # empty, so typing into it needs no erase. The review is sorted by
+      # folded label, so the bare label is the FIRST row the filter shows
+      # (ahead of its eleven longer siblings) and its list opens at the top
+      # of the body, well inside the body's fold (R8 case 2: nothing here
+      # can be scrolled).
+      - tapOn:
+          id: "Find a SportLots set"
+      - inputText: ${output.OWN_LABEL}
+      # The row's picker names its current choice first: 1c's bulk mark put
+      # it under Bowman (the precondition, R2). Full match — `…: set Bowman
+      # Sterling Autos belongs to` does not answer.
+      - tapOn:
+          id: "${output.BRAND}: set ${output.OWN_LABEL} belongs to"
+      # Its list's name is shadowed like the bulk one's: gate on the list's
+      # footer, take the option nearest below the trigger. Every other row
+      # under this filter reads `Bowman`, so `Its own set` is the list's.
+      - extendedWaitUntil:
+          visible: "Missing a set\\? Only sets that can sync their variant types show here\\."
+          timeout: 7000
+      - tapOn:
+          text: "Its own set"
+          below:
+            id: "${output.BRAND}: set ${output.OWN_LABEL} belongs to"
+      # The trigger's name leads with the new choice (its list has closed).
+      - extendedWaitUntil:
+          visible:
+            id: "Its own set: set ${output.OWN_LABEL} belongs to"
+          timeout: 7000
+
+      # 1f — SAVE. The footer's tally is what Save will do, over EVERY row
+      # (the filter narrows the view, not the save): exactly one set — the
+      # Bowman Sterling row — one insert, and every other row a parallel, joined
+      # by " · " with no closing period. Pinned footer, so it is on screen;
+      # the parallel count is SportLots' business and matched by shape.
+      - assertVisible: "Save will file: 1 set · [0-9]+ parallels? · 1 insert"
+      # Footer confirm, direct tap (R8 case 2).
+      - tapOn:
+          text: "Save [0-9]+ SportLots sets?"
+      # The review is done: the dialog closes and the column toasts the
+      # server's own counts (`slReviewSavedText`) — the same three numbers,
+      # and NO "skipped" tail: the seed runs alone, before any flow, so
+      # nothing can have linked a row between the sync and the save. R5 — an NB
+      # write, the 7000 bar like every other (Jason, 2026-09-25: no
+      # multi-transaction exception). A save that misses it is a product
+      # finding, never a bigger number.
+      - extendedWaitUntil:
+          visible: "Saved 1 set, [0-9]+ parallels?, 1 insert\\."
+          timeout: 7000
+      # The pill's slot is on screen (the page is where the pill was
+      # centred): `Sync Sets` there, the pill gone — the review doc is
+      # deleted once every row is filed. Positive first (R2).
+      - assertVisible: "Sync Sets"
+      - assertNotVisible:
+          text: "[0-9]+ SportLots sets? (to sort|left — save again)"
+      # The one set the review made, and still no colour set. The list sits
+      # ABOVE the idle row just centred: UP. No tap follows, so no centring.
+      # `Bowman Sapphire Edition` sorts after where `Bowman Gold` would, so
+      # with both ends of the short list on screen the negative is not the
+      # off-screen kind.
+      - scrollUntilVisible:
+          element:
+            text: "${output.OWN_SET}"
+          direction: UP
+          timeout: 7000
+      - assertVisible:
+          text: "Bowman Sapphire Edition"
+      - assertNotVisible:
+          text: "Bowman Gold"
+
+
+# PAUSED: no review ran, so nothing has synced Bowman's Variant Types yet.
+# Select the set once here, through the warm util (R9), so the two Bowman
+# flows find `Insert` and `Parallel` populated instead of both firing the
+# same cold variant-type sync at once. The util's 60000 on the reveal is its
+# own contract for exactly this cold BSC fetch (R5 marketplace exception).
+# The hard assert is the util's own: `Variant Types` and its rows. Live,
+# the review already did this inside its dialog.
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - runFlow:
+          file: set-selector/util-drill-to-2024-topps-chrome.yaml
+          env:
+            SPORT: "Baseball"
+            YEAR: "2026"
+            MANUFACTURER: ${output.BRAND}
+            SET: ${output.BRAND}
+      - extendedWaitUntil:
+          visible: "${output.TYPE_INSERT}"
+          timeout: 7000
+      - assertVisible: "${output.TYPE_PARALLEL}"

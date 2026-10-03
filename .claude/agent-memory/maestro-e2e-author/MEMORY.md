@@ -1,6 +1,6 @@
 # Maestro E2E Author — Agent Memory Index
 
-- [Operator switch branching (PAUSED_PLATFORMS)](patterns_operator_switch_branching.md) — `-e` flag → one evalScript util → `when: true:` pairs (verified 2.8.0);…
+- [Operator switch branching (PAUSED_PLATFORMS)](patterns_operator_switch_branching.md) — check a run's PAUSED_PLATFORMS line, never assume the mode; `-e` flag → one evalScript util → `when: true:` pairs
 - [Feedback never diagnose timing first](feedback_never_diagnose_timing_first.md) — HARD RULE: never diagnose a red step as timing/flake or raise a timeout…
 - [Feedback never push a branch convex to shared dev](feedback_never_push_a_branch_convex_to_shared_dev.md) — Never `convex dev`/`deploy` a branch's functions onto shared dev to unbl…
 - [Feedback never stage when told not to commit](feedback_never_stage_when_told_not_to_commit.md) — When asked to make changes but NOT commit, delete files with plain `rm`,…
@@ -112,5 +112,8 @@ Non-markdown helpers: `tools/`
 - [NEO-307 League combobox + Search all teams](reference_neo307_league_combobox.md) — `id: "League"`, Create only on no-match (end minted names in a letter); team steps link via "Search all teams"
 - [Wizard headings include staged career teams](patterns_wizard_headings_include_staged_career_teams.md) — a `New Team:` heading ≠ a checklist club; verify on a committed card/alias first
 - [Measure a fixture from CI artifacts](patterns_measure_a_fixture_from_ci_artifacts.md) — tap lines log the real text of a regex match; convex-logs carry adapter result_count; Group Parallels re-open gate
+- [Assert a sequential run's finished state](patterns_stop_a_sequential_run_at_a_named_item.md) — builds can end before the prior assert returns; never the running heading/Stop; `[^.]+` skips the sr-only line
+- [Splitting a flow over shared real data](patterns_splitting_a_flow_over_shared_real_data.md) — measure write sets AND snapshot saves; a reconcile seeded with every row re-creates a row another flow moved
 - [NEO-313 sport switch + Players Sports/Cards](reference_neo313_sport_switch_selectors.md) — capped list: one-key `inputText: "F"` typeahead then tap; switch refused after the walk skips staged steps
 - [Auto id shadows aria-label](patterns_auto_id_shadows_aria_label.md) — `useId()` on a labelled node → resource-id `_r_xx_`; `id: "<label>"` fails on a visible element; fix in product
+- [Clamp then anchor-restore after a panel swap](patterns_clamp_then_anchor_restore_after_a_panel_swap.md) — form→query-loaded panel = two scroll states; gate on a mount-only element before any scroll

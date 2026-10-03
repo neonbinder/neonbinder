@@ -15,6 +15,7 @@ import { v } from "convex/values";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_SLOT_LABEL_LENGTH, type PlatformSide } from "./platformSlots";
+import type { IncomingItem } from "./selectorSyncMatch";
 
 /**
  * Hard ceiling on the ARGUMENT a single sync batch may carry.
@@ -344,44 +345,72 @@ export function unionChildren(
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// NEO-300 — rows elsewhere in the same variant type's subtree
+// NEO-300 / NEO-312 — rows elsewhere that already hold an item's ids
 // ───────────────────────────────────────────────────────────────────────────
 
+/** The levels a holder elsewhere can sit at (see `loadSyncHoldersElsewhere`). */
+export type HolderLevel = "setName" | "variantType" | "insert" | "parallel";
+
 /**
- * One row the store left alone because it already lives elsewhere in the
- * variant type's subtree (see `heldElsewhere` in `planSelectorSync`).
+ * One row the store left alone because it already lives elsewhere and holds
+ * the item's marketplace id (see `heldElsewhere` in `planSelectorSync`).
  *
  * `value` and `parentValue` are NB's own names — the row's and the row it sits
  * under now — never the marketplace's label for the incoming item: the notice
  * reads "Refractor is already under Chrome", about NB's tree.
+ *
+ * NEO-312 — the holder may now be anywhere in the set (another variant type,
+ * the Base) or in another set of the brand, so `level` names all four set
+ * levels, and `path` carries the NB names from the holder's set down to its
+ * parent ("Bowman", "Insert", "All-America Game Autos") so the operator can
+ * find it. Optional, so an older client that never reads it is unaffected.
  */
 export const heldElsewhereEntryValidator = v.object({
   id: v.id("selectorOptions"),
   value: v.string(),
-  level: v.union(v.literal("insert"), v.literal("parallel")),
+  level: v.union(
+    v.literal("setName"),
+    v.literal("variantType"),
+    v.literal("insert"),
+    v.literal("parallel"),
+  ),
   parentId: v.id("selectorOptions"),
   parentValue: v.string(),
+  path: v.optional(v.array(v.string())),
 });
 
 export type HeldElsewhereEntry = {
   id: Id<"selectorOptions">;
   value: string;
-  level: "insert" | "parallel";
+  level: HolderLevel;
   parentId: Id<"selectorOptions">;
   parentValue: string;
+  path?: string[];
 };
 
 /**
- * NEO-300 — an item the store WITHHELD because of what it found elsewhere in
- * the variant type's subtree, reported to the operator rather than only
- * logged (security audit, NEO-300). Nothing was written for it.
+ * NEO-300 — an item the store WITHHELD because of what it found (or could not
+ * check) elsewhere, reported to the operator rather than only logged
+ * (security audit, NEO-300). Nothing was written for it.
  *
  *   reason "heldByMany"   — the item's marketplace ids are held by more than
- *                           one row elsewhere in the subtree; the store will
- *                           not pick one.
- *   reason "idsDisagree"  — the modal said the item IS a row elsewhere in the
- *                           subtree (`existingId`), but that row does not hold
- *                           the id the item carries.
+ *                           one row elsewhere; the store will not pick one.
+ *   reason "idsDisagree"  — the modal said the item IS a row elsewhere
+ *                           (`existingId`), but that row does not hold the id
+ *                           the item carries.
+ *   reason "notChecked"   — NEO-312: the item carries an id no sibling holds,
+ *                           and the set walk that would say whether another
+ *                           row already holds it stopped on a bound. Fail
+ *                           closed: a row created (or a link attached) now
+ *                           could be a second holder of one marketplace id.
+ *                           `holders` is empty.
+ *   reason "linkHeldElsewhere" — NEO-312: the item MATCHED one of the sync's
+ *                           own rows (by another id, or the modal's
+ *                           `existingId`), but one of its ids is already held
+ *                           by another row. That id was NOT attached to the
+ *                           matched row; the row's existing links and the
+ *                           rest of the refresh stand. `holders` names the
+ *                           row that holds it.
  *
  * `label` is the item's own `value` as the caller sent it (the line the
  * operator saw in the modal), trimmed to the selector value limit; `holders`
@@ -389,13 +418,24 @@ export type HeldElsewhereEntry = {
  */
 export const withheldElsewhereEntryValidator = v.object({
   label: v.string(),
-  reason: v.union(v.literal("heldByMany"), v.literal("idsDisagree")),
+  reason: v.union(
+    v.literal("heldByMany"),
+    v.literal("idsDisagree"),
+    v.literal("notChecked"),
+    v.literal("linkHeldElsewhere"),
+  ),
   holders: v.array(heldElsewhereEntryValidator),
 });
 
+export type WithheldElsewhereReason =
+  | "heldByMany"
+  | "idsDisagree"
+  | "notChecked"
+  | "linkHeldElsewhere";
+
 export type WithheldElsewhereEntry = {
   label: string;
-  reason: "heldByMany" | "idsDisagree";
+  reason: WithheldElsewhereReason;
   holders: HeldElsewhereEntry[];
 };
 
@@ -403,186 +443,580 @@ export type WithheldElsewhereEntry = {
 export const WITHHELD_HOLDERS_LIMIT = 10;
 
 /**
- * NEO-300 — the most inserts one variant type may carry for the subtree walk
- * to run. The walk is one indexed read per insert, and the stores charge those
- * reads against their 800-write budgets capped at half, so 400 keeps a sync's
- * whole transaction inside the ~900 operations the house treats as
- * comfortable. A variant type past it is not a real set (a set's inserts run
- * to dozens, low hundreds at the extreme).
+ * NEO-300 — the most insert-level rows the walk may read across the SET
+ * (NEO-312; it used to be one variant type) before it stops and the store
+ * fails closed. Every variant type's insert-level rows count: the Insert
+ * type's inserts AND the Parallel type's rows, which are insert-level too.
+ *
+ * Sized against real sets, with headroom (NEO-312 raised it from 400): 2026
+ * Bowman's Insert type alone carries ~140 inserts, its Parallel type another
+ * few dozen to ~100 rows, so a flagship set sits around 200–250; the biggest
+ * products (Prizm, Chrome, with 100+ parallels in the Parallel type) reach
+ * ~300–400. 400 left no headroom for the very sets this check protects, and
+ * the cost of tripping it is that set's new rows being withheld. 800 is 3–4x
+ * a flagship set and 2x the biggest.
+ *
+ * Cost: one indexed read per insert-level row (its parallels), charged to the
+ * 800-write budget capped at half — so at the bound a page spends ~800 reads
+ * plus ≥400 writes plus ~60 fixed, ~1,300 operations: past the ~900 the house
+ * calls comfortable, well short of the ~4,000 that fails, and only on the
+ * biggest sets. 4,096 index ranges is the hard read ceiling.
  */
-export const MAX_SUBTREE_WALK_INSERTS = 400;
+export const MAX_SUBTREE_WALK_INSERTS = 800;
 
 /**
- * NEO-300 — the most DOCUMENTS the walk may read (the inserts plus every
- * parallel it collects). Operations and documents are separate Convex budgets:
- * a `.collect()` of 900 parallels is one operation but 900 documents. Counted
- * as the walk goes — the cheapest honest measure, since a document's byte size
- * is not observable without serialising it — and stopped at 4,000, a small
- * fraction of the per-transaction document-read limit. At the ~1 KB a
- * selectorOptions row weighs that is a few MB, well inside the data-read limit
- * too, leaving the rest of the transaction (the sibling collect, the ancestor
- * walk, the writes) its headroom. 4,000 is ten parallels under each of 400
- * inserts; a real variant type is a small fraction of that.
+ * NEO-300 — the most DOCUMENTS the set walk may read (the variant types, the
+ * insert-level rows and every parallel under an insert). Operations and
+ * documents are separate Convex budgets: a `.collect()` of 900 parallels is
+ * one operation but 900 documents. Counted as the walk goes — the cheapest
+ * honest measure, since a document's byte size is not observable without
+ * serialising it.
+ *
+ * NEO-312 raised it from 4,000 with the set scope: BSC files an insert's
+ * colour parallels under it, so ~140 Bowman inserts at a handful of
+ * parallels each, plus the Parallel type, is ~1,000–1,500 documents, and a
+ * Chrome or Prizm set with 10–20 parallels per insert approaches 3,000. 6,000
+ * is 2x that, a fifth of the 32k documents a transaction may scan, and at
+ * ~1 KB a row a few MB of data read.
  */
-export const MAX_SUBTREE_WALK_DOCUMENTS = 4000;
+export const MAX_SUBTREE_WALK_DOCUMENTS = 6000;
 
-export type VariantTypeSubtreeElsewhere = {
-  /** Subtree rows that are not siblings of this sync. Empty when skipped. */
+/**
+ * NEO-312 — the brand walk's bounds: the indexed reads it may make (one per
+ * set, variant type and insert in the brand's OTHER sets) and the documents it
+ * may collect. The walk is BEST EFFORT (see `loadSyncHoldersElsewhere`), so
+ * these are a cost cap, not a correctness line: past them the walk keeps what
+ * it found and lets the rest through. 2,000 documents is the ceiling the
+ * client's own brand walk (`getBrandSlHolders`) uses; 600 reads keeps the
+ * worst case — a set at the set-walk bound plus a full brand walk plus the
+ * writes — near ~1,900 operations, short of the ~4,000 that fails.
+ */
+export const MAX_BRAND_WALK_READS = 600;
+export const MAX_BRAND_WALK_DOCUMENTS = 2000;
+
+/**
+ * NEO-312 (security audit S3) — the bytes a holder walk always leaves unread in
+ * the transaction's 16 MiB read budget. The walks count documents, not bytes,
+ * and a row's size is not known until it is read, so before every read they ask
+ * Convex how much budget is left (`ctx.meta.getTransactionMetrics()`) and stop
+ * below this reserve: the set walk fails closed, the brand walk truncates.
+ *
+ * What the reserve has to cover: the rest of the store's own transaction (the
+ * write pass, the unlink notices' card reads) and one more walk read that is
+ * already in flight when the check passes — at most `WALK_MAX_DOCS_PER_READ`
+ * rows, ~1–2 MB at selectorOptions sizes. 4 MiB is a quarter of the budget.
+ */
+export const WALK_BYTES_RESERVE = 4 * 1024 * 1024;
+
+/**
+ * NEO-312 (security audit S3) — the most rows one walk read may return. A
+ * parent with more children than this is past any real set (an insert's
+ * parallels run to dozens); the read stops there and the walk treats it as a
+ * documents bound, so no single read can carry the walk past the reserve.
+ */
+export const WALK_MAX_DOCS_PER_READ = 1000;
+
+export type SyncHoldersElsewhere = {
+  /**
+   * Rows that are not siblings of this sync and hold (or, inside the sync's
+   * own variant type, may be named by) an incoming item's ids. Each is a
+   * read-only VIEW: a row that counts on one side only carries that side's
+   * slots here, so the matcher cannot see an id it must not compare. Never
+   * written back.
+   */
   rows: Doc<"selectorOptions">[];
-  /** Every row the walk read, by id — to name a held row's parent. */
+  /** Every row the walk read, by id — to name a held row and its path. */
   parentsById: Map<string, Doc<"selectorOptions">>;
   /**
    * `db.get` + index reads this walk made, for the caller's op budget. Spent
-   * even when the walk is then skipped, so it is charged either way.
+   * even when a bound then stops the walk, so it is charged either way.
    */
   reads: number;
-  /**
-   * The walk was needed but a bound (`MAX_SUBTREE_WALK_INSERTS` or
-   * `MAX_SUBTREE_WALK_DOCUMENTS`) stopped it. All-or-nothing: a partial
-   * subtree would make "held elsewhere" depend on which inserts happened to
-   * be read first, so a skipped walk contributes NO rows and the store falls
-   * back to the sibling-only rule. The store reports it
-   * (`subtreeWalkSkipped`), because under that rule a grouped row can be
-   * re-created.
-   */
+  /** A bound stopped the SET walk (see `uncheckedSides`). */
   skipped: boolean;
+  /**
+   * NEO-312 — the sides on which the holder index is INCOMPLETE because a
+   * bound stopped the SET walk: both, then (it reads both). The matcher fails
+   * closed on them: an item carrying an id on one of these sides that no
+   * sibling and no known holder has is WITHHELD (`notChecked`), never stored.
+   * Empty on every real set. The brand walk never sets it (best effort).
+   */
+  uncheckedSides: PlatformSide[];
+  /**
+   * NEO-312 — the brand walk stopped on its bound. Best effort: holders it
+   * found are still held; ids it did not reach are let through. For the log.
+   */
+  brandWalkTruncated: boolean;
 };
 
+/** Which of a row's sides make it a holder. */
+type HolderSides = "both" | "sportlots";
+
 /**
- * NEO-300 — every row in the sync's variant-type subtree that is NOT one of
- * its siblings, or `null` when the sync is not inside such a subtree.
+ * A holder's read-only view. "both": the row as it is (inside the set, at
+ * insert and parallel level, both marketplaces' ids identify a set, and a row
+ * with no ids still counts so the modal's `existingId` can name it). "sportlots":
+ * only its SportLots slots, or `null` when it has none.
  *
- * A grouping (`applyParallelGroupings`) moves an insert down to be a parallel
- * of another insert, or a parallel up to be an insert, keeping its `_id`, its
- * slots and its cards. Both stores used to see only same-(level, parent)
- * siblings, so the next Sync Inserts no longer found the promoted row, matched
- * nothing, and re-created it at its old level. The subtree is what the match
- * has to see instead.
- *
- * ## The rule — "elsewhere" is where a grouping could have moved the row
- *
- *   level=insert,   parent = a variantType → siblings are the inserts;
- *                   elsewhere = every insert's parallels.
- *   level=parallel, parent = an insert P   → siblings are P's parallels;
- *                   elsewhere = every OTHER insert under the variant type,
- *                   and every other insert's parallels.
- *
- * **The parent insert P is NOT elsewhere.** A grouping never turns a row into
- * its own parent: a parallel demoted out of P becomes one of P's SIBLING
- * inserts (covered), and a parallel reparented away sits under another insert
- * (covered). P itself holding an id a parallel item carries is not a grouped
- * row — it is the marketplace saying a sub-variant is the insert's own set —
- * and today's rule for that stands; the grouping guard is where two
- * indistinguishable rows are refused.
- *
- * Any other level/parent → `null`, today's sibling-only rule.
- *
- * Reads, by index only: one `by_level_and_parent` per insert for its parallels
- * (P's own at `parallel` excluded — those are the siblings), plus at
- * `parallel` one for the inserts and one `db.get` for the variant type (to
- * name a demoted row's parent). They are returned as `reads` so the store
- * charges them against its write budget; see the two call sites. Bounded by
- * `MAX_SUBTREE_WALK_INSERTS` and `MAX_SUBTREE_WALK_DOCUMENTS`.
+ * Why SportLots alone above insert level and across the brand: SportLots is a
+ * FLAT list — a SportLots set id means the same set at any level and under any
+ * set of the brand, so a second NB row holding it is the duplicate. A BSC id
+ * is a facet value of a hierarchy (a set's `setName`, a variant type's
+ * `variant`, an insert's `variantName`): the set's own BSC id and a variant
+ * type's "parallel" are not the same BSC entity as anything an insert sync
+ * stores, and the same `variantName` under two of the brand's sets is two BSC
+ * sets. Comparing them would withhold real rows, not duplicates.
  */
-export async function loadVariantTypeSubtreeElsewhere(
+function holderView(
+  row: Doc<"selectorOptions">,
+  sides: HolderSides,
+): Doc<"selectorOptions"> | null {
+  if (sides === "both") return row;
+  const sl = row.platformData?.sportlots;
+  if (!sl || Object.keys(sl).length === 0) return null;
+  return { ...row, platformData: { sportlots: sl } };
+}
+
+/**
+ * NEO-300, widened by NEO-312 — every row that is NOT a sibling of this sync
+ * and already holds an id an incoming item carries, or `null` when the sync
+ * is not inside a set's variant-type subtree.
+ *
+ * ## Why it reaches past the variant type (NEO-312)
+ *
+ * NEO-300 made the stores look past their siblings into the same variant
+ * type, because Group Parallels moves rows between insert and parallel inside
+ * one. NEO-305's "Make parallel of…" and NEO-306's "Make insert of…" move a
+ * row's SportLots link ACROSS variant types and across sets — out of the
+ * Parallel type into a parallel under an insert in the Insert type, or onto a
+ * set's Base — and delete the source row. The next Sync Parallels then saw
+ * nothing holding that SportLots id and created the row again, so two NB rows
+ * held one SportLots link. The client only partly held these ids back, and a
+ * reconcile dialog opened BEFORE the move kept offering them, so the store is
+ * where it has to be decided.
+ *
+ * ## Scope
+ *
+ *   level=insert,   parent = a variantType V → siblings are V's inserts.
+ *   level=parallel, parent = an insert P     → siblings are P's parallels.
+ *
+ * The SET is V's (or P's variant type's) parent:
+ *
+ *   - V's subtree (NEO-300): at `insert`, every insert's parallels; at
+ *     `parallel`, every insert (P included, below) and every other insert's
+ *     parallels. Both marketplaces' ids, and id-less rows too (tier 0 can
+ *     name them).
+ *   - every OTHER variant type's inserts and parallels: both marketplaces.
+ *   - the set row and every variant type row (the Base holds its SportLots
+ *     links on itself): SportLots only.
+ *
+ * The sync's DIRECT parent IS a holder (NEO-312; NEO-300 left it out). One
+ * marketplace link lives on one NB row: a NEW parallel cannot take its parent
+ * insert's SportLots or BSC id, and a new insert cannot take a SportLots id
+ * its variant type row holds. A child row that ALREADY carries the id is a
+ * sibling and still matches — a sibling always wins — so nothing an existing
+ * row holds changes. The client's held-id rule is the same (NEO-312).
+ *
+ * Then, only when some item still carries a SportLots id that no sibling and
+ * no row of the set holds: every row under the brand's OTHER sets, at every
+ * level, SportLots only (the same walk `getBrandSlHolders` makes for the
+ * form).
+ *
+ * NEO-312 (audit N4) — level=setName, parent = a manufacturer (Sync Sets): the
+ * siblings are the brand's sets, so there is no set walk; the brand walk runs
+ * from each set downward (variant types, inserts, parallels), SportLots only,
+ * so a link "Make parallel of…" / "Make insert of…" moved DOWN from a set is
+ * not re-created as a set by a stale Sync Sets save. Best effort, like every
+ * brand walk; past its bound the client's `listBrandSubtreeSlIds` filter is
+ * the protection.
+ *
+ * Any other level/parent → `null`, today's sibling-only rule. A variant type
+ * with no set above it (a bare fixture) walks its own subtree only.
+ *
+ * Every read is bounded three ways: the transaction's remaining read BYTES
+ * (`WALK_BYTES_RESERVE`, asked of Convex before each read), the rows one read
+ * may return (`WALK_MAX_DOCS_PER_READ`), and the walk's documents and reads.
+ *
+ * ## The set walk fails closed; the brand walk is best effort
+ *
+ * A bound that stops the SET walk returns no rows and both sides unchecked —
+ * all or nothing, since a partial index would make "held" depend on which
+ * rows happened to be read first. The matcher withholds what it cannot clear
+ * (`uncheckedSides`), so a bound can cost a sync its new rows — reported —
+ * but never adds a second holder of one marketplace id inside a set, which is
+ * where the NEO-312 bug lives.
+ *
+ * A bound that stops the BRAND walk keeps every holder found so far (still
+ * held) and lets the rest through, logging `brandWalkTruncated`. A first-time
+ * SportLots set is held by no one, so it always sends the store to the brand;
+ * failing closed there would withhold every new set of a big brand-year. The
+ * form already holds the brand's other sets' ids (`getBrandSlHolders`); the
+ * server's brand scope only closes the stale-dialog race.
+ *
+ * Reads, by index only, counted as `reads` for the callers' op budgets.
+ */
+export async function loadSyncHoldersElsewhere(
   ctx: QueryCtx,
   args: {
     level: string;
     parent: Doc<"selectorOptions"> | null;
     siblings: readonly Doc<"selectorOptions">[];
+    items: readonly IncomingItem[];
   },
-): Promise<VariantTypeSubtreeElsewhere | null> {
-  const { level, parent, siblings } = args;
+): Promise<SyncHoldersElsewhere | null> {
+  const { level, parent, siblings, items } = args;
   if (!parent) return null;
 
-  let inserts: Doc<"selectorOptions">[];
   let reads = 0;
   let documents = 0;
+  let insertsSeen = 0;
   const parentsById = new Map<string, Doc<"selectorOptions">>();
-  const rows: Doc<"selectorOptions">[] = [];
+  const siblingIds = new Set<string>(siblings.map((s) => s._id));
+  const holders = new Map<string, Doc<"selectorOptions">>();
+  const addHolder = (
+    target: Map<string, Doc<"selectorOptions">>,
+    row: Doc<"selectorOptions">,
+    sides: HolderSides,
+  ) => {
+    if (siblingIds.has(row._id)) return;
+    if (holders.has(row._id) || target.has(row._id)) return;
+    const view = holderView(row, sides);
+    if (view) target.set(row._id, view);
+  };
+  /**
+   * NEO-312 (security audit S3) — is there room in this transaction's 16 MiB
+   * read budget for another walk read AND the store's own reads after it?
+   * Asked before every read; documents are counted too (a second guard),
+   * because a document's size is not known until it is read.
+   */
+  const roomToRead = async () =>
+    (await ctx.meta.getTransactionMetrics()).bytesRead.remaining >= WALK_BYTES_RESERVE;
 
+  let variantType: Doc<"selectorOptions"> | null = null;
   if (level === "insert" && parent.level === "variantType") {
-    inserts = [...siblings];
-    parentsById.set(parent._id, parent);
+    variantType = parent;
   } else if (
     level === "parallel" &&
     parent.level === "insert" &&
     parent.parentId !== undefined
   ) {
-    const variantTypeId = parent.parentId;
-    const variantType = await ctx.db.get(variantTypeId);
+    const vt = await ctx.db.get(parent.parentId);
     reads++;
-    if (!variantType || variantType.level !== "variantType") return null;
-    parentsById.set(variantType._id, variantType);
-    inserts = await ctx.db
-      .query("selectorOptions")
-      .withIndex("by_level_and_parent", (q) =>
-        q.eq("level", "insert").eq("parentId", variantTypeId),
-      )
-      .collect();
-    reads++;
-    documents += inserts.length;
-    // Every insert but the parent is elsewhere — see "The rule" above.
-    rows.push(...inserts.filter((insert) => insert._id !== parent._id));
+    if (!vt || vt.level !== "variantType") return null;
+    variantType = vt;
+  } else if (level === "setName" && parent.level === "manufacturer") {
+    // NEO-312 (audit N4) — a Sync Sets save: the siblings are the brand's
+    // sets; see the brand walk below.
+    variantType = null;
   } else {
     return null;
   }
+  parentsById.set(parent._id, parent);
 
-  const skip = (bound: "inserts" | "documents"): VariantTypeSubtreeElsewhere => {
+  const skipAll = (bound: string): SyncHoldersElsewhere => {
     console.warn(
       JSON.stringify({
         msg: "selector_sync_subtree_walk_skipped",
+        scope: "set",
         level,
         parentId: parent._id,
         bound,
-        inserts: inserts.length,
+        reads,
+        inserts: insertsSeen,
         documents,
-        limits: {
-          inserts: MAX_SUBTREE_WALK_INSERTS,
-          documents: MAX_SUBTREE_WALK_DOCUMENTS,
-        },
-        effect: "sibling-only matching; a grouped row may be re-created",
+        limitInserts: MAX_SUBTREE_WALK_INSERTS,
+        limitDocuments: MAX_SUBTREE_WALK_DOCUMENTS,
+        effect: "items naming an id no sibling holds are withheld, not stored",
       }),
     );
-    return { rows: [], parentsById: new Map(), reads, skipped: true };
+    return {
+      rows: [],
+      parentsById: new Map(),
+      reads,
+      skipped: true,
+      uncheckedSides: ["bsc", "sportlots"],
+      brandWalkTruncated: false,
+    };
+  };
+  /** One bounded read of a row's children for the set walk; `null` = stop. */
+  const setRead = async (
+    q: (cap: number) => Promise<Doc<"selectorOptions">[]>,
+  ): Promise<Doc<"selectorOptions">[] | "bytes" | "documents"> => {
+    if (!(await roomToRead())) return "bytes";
+    const rows = await q(WALK_MAX_DOCS_PER_READ + 1);
+    reads++;
+    documents += rows.length;
+    if (rows.length > WALK_MAX_DOCS_PER_READ) return "documents";
+    if (documents > MAX_SUBTREE_WALK_DOCUMENTS) return "documents";
+    return rows;
   };
 
-  if (inserts.length > MAX_SUBTREE_WALK_INSERTS) return skip("inserts");
+  // ── The set (fails closed) ──────────────────────────────────────────────
+  let setRow: Doc<"selectorOptions"> | null = null;
+  let brandRow: Doc<"selectorOptions"> | null = level === "setName" ? parent : null;
+  if (variantType) {
+    parentsById.set(variantType._id, variantType);
+    if (variantType.parentId !== undefined) {
+      const set = await ctx.db.get(variantType.parentId);
+      reads++;
+      if (set && set.level === "setName") setRow = set;
+    }
 
-  for (const insert of inserts) {
-    parentsById.set(insert._id, insert);
-    // At `parallel`, the parent's own parallels ARE the siblings.
-    if (insert._id === parent._id) continue;
-    const parallels = await ctx.db
-      .query("selectorOptions")
-      .withIndex("by_level_and_parent", (q) =>
-        q.eq("level", "parallel").eq("parentId", insert._id),
-      )
-      .collect();
-    reads++;
-    documents += parallels.length;
-    if (documents > MAX_SUBTREE_WALK_DOCUMENTS) return skip("documents");
-    rows.push(...parallels);
+    let types: Doc<"selectorOptions">[] = [variantType];
+    if (setRow) {
+      parentsById.set(setRow._id, setRow);
+      const setId = setRow._id;
+      const read = await setRead((cap) =>
+        ctx.db
+          .query("selectorOptions")
+          .withIndex("by_level_and_parent", (q) =>
+            q.eq("level", "variantType").eq("parentId", setId),
+          )
+          .take(cap),
+      );
+      if (!Array.isArray(read)) return skipAll(read);
+      types = read;
+      addHolder(holders, setRow, "sportlots");
+    }
+
+    for (const type of types) {
+      parentsById.set(type._id, type);
+      addHolder(holders, type, "sportlots");
+      let inserts: Doc<"selectorOptions">[];
+      if (level === "insert" && type._id === variantType._id) {
+        // At `insert` the parent variant type's inserts ARE the siblings.
+        inserts = [...siblings];
+      } else {
+        const typeId = type._id;
+        const read = await setRead((cap) =>
+          ctx.db
+            .query("selectorOptions")
+            .withIndex("by_level_and_parent", (q) =>
+              q.eq("level", "insert").eq("parentId", typeId),
+            )
+            .take(cap),
+        );
+        if (!Array.isArray(read)) return skipAll(read);
+        inserts = read;
+      }
+      insertsSeen += inserts.length;
+      if (insertsSeen > MAX_SUBTREE_WALK_INSERTS) return skipAll("inserts");
+
+      for (const insert of inserts) {
+        parentsById.set(insert._id, insert);
+        addHolder(holders, insert, "both");
+        // At `parallel`, the parent insert's own parallels are the siblings.
+        if (insert._id === parent._id) continue;
+        const insertId = insert._id;
+        const read = await setRead((cap) =>
+          ctx.db
+            .query("selectorOptions")
+            .withIndex("by_level_and_parent", (q) =>
+              q.eq("level", "parallel").eq("parentId", insertId),
+            )
+            .take(cap),
+        );
+        if (!Array.isArray(read)) return skipAll(read);
+        for (const parallel of read) addHolder(holders, parallel, "both");
+      }
+    }
   }
 
-  const siblingIds = new Set<string>(siblings.map((s) => s._id));
-  return {
-    rows: rows.filter((row) => !siblingIds.has(row._id)),
+  // Past this point the set walk finished: nothing is unchecked, and the
+  // brand walk below can only ADD holders (best effort).
+  const done = (
+    extra: Map<string, Doc<"selectorOptions">> = new Map(),
+    brandWalkTruncated = false,
+  ): SyncHoldersElsewhere => ({
+    rows: [...holders.values(), ...extra.values()],
     parentsById,
     reads,
     skipped: false,
+    uncheckedSides: [],
+    brandWalkTruncated,
+  });
+
+  // ── The brand (best effort), only for a SportLots id nobody nearer holds ─
+  const heldSl = new Set<string>();
+  for (const row of [...siblings, ...holders.values()]) {
+    for (const id of Object.values(row.platformData?.sportlots ?? {})) heldSl.add(id);
+  }
+  const needsBrand = items.some((item) => {
+    const id = item.ids.sportlots;
+    return id !== undefined && !heldSl.has(id);
+  });
+  if (!needsBrand) return done();
+  if (!brandRow) {
+    if (!setRow?.parentId) return done();
+    const brand = await ctx.db.get(setRow.parentId);
+    reads++;
+    if (!brand || brand.level !== "manufacturer") return done();
+    brandRow = brand;
+  }
+  parentsById.set(brandRow._id, brandRow);
+
+  const brandHolders = new Map<string, Doc<"selectorOptions">>();
+  const brandParents = new Map<string, Doc<"selectorOptions">>();
+  let brandReads = 0;
+  let brandDocuments = 0;
+  /**
+   * BEST EFFORT past a bound: keep every holder already found (a found holder
+   * is real, so the item it names is still held), log the truncation (counts
+   * only), and let the rest through. Failing closed here would withhold every
+   * first-time SportLots set of a big brand-year, since such an id is held by
+   * no one and so always sends the store to the brand. The cross-set case is
+   * held by the form (`getBrandSlHolders`; Sync Sets: `listBrandSubtreeSlIds`);
+   * this walk only closes the stale-dialog race.
+   */
+  const truncateBrand = (bound: string): SyncHoldersElsewhere => {
+    console.warn(
+      JSON.stringify({
+        msg: "selector_sync_brand_walk_truncated",
+        brandWalkTruncated: true,
+        level,
+        parentId: parent._id,
+        bound,
+        brandReads,
+        brandDocuments,
+        holdersFound: brandHolders.size,
+        limitReads: MAX_BRAND_WALK_READS,
+        limitDocuments: MAX_BRAND_WALK_DOCUMENTS,
+        effect: "holders found so far are held; other ids are let through",
+      }),
+    );
+    for (const [id, row] of brandParents) parentsById.set(id, row);
+    return done(brandHolders, true);
+  };
+  /** One bounded read of a row's children for the brand walk. */
+  const brandRead = async (
+    q: (cap: number) => Promise<Doc<"selectorOptions">[]>,
+  ): Promise<Doc<"selectorOptions">[] | "reads" | "bytes" | "documents"> => {
+    if (brandReads >= MAX_BRAND_WALK_READS) return "reads";
+    if (!(await roomToRead())) return "bytes";
+    const cap = Math.min(
+      WALK_MAX_DOCS_PER_READ + 1,
+      MAX_BRAND_WALK_DOCUMENTS - brandDocuments + 1,
+    );
+    const rows = await q(cap);
+    reads++;
+    brandReads++;
+    brandDocuments += rows.length;
+    if (rows.length > WALK_MAX_DOCS_PER_READ) return "documents";
+    if (brandDocuments > MAX_BRAND_WALK_DOCUMENTS) return "documents";
+    return rows;
+  };
+
+  let frontier: Doc<"selectorOptions">[];
+  if (level === "setName") {
+    // The siblings ARE the brand's sets; walk down from each.
+    frontier = [...siblings];
+  } else {
+    const brandId = brandRow._id;
+    const sets = await brandRead((cap) =>
+      ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "setName").eq("parentId", brandId),
+        )
+        .take(cap),
+    );
+    if (!Array.isArray(sets)) return truncateBrand(sets);
+    frontier = sets.filter((s) => s._id !== setRow?._id);
+  }
+  while (frontier.length > 0) {
+    const next: Doc<"selectorOptions">[] = [];
+    for (const row of frontier) {
+      brandParents.set(row._id, row);
+      addHolder(brandHolders, row, "sportlots");
+      if (row.level === "parallel") continue;
+      const rowId = row._id;
+      const children = await brandRead((cap) =>
+        ctx.db
+          .query("selectorOptions")
+          .withIndex("by_parent", (q) => q.eq("parentId", rowId))
+          .take(cap),
+      );
+      if (!Array.isArray(children)) return truncateBrand(children);
+      next.push(...children);
+    }
+    frontier = next;
+  }
+  for (const [id, row] of brandParents) parentsById.set(id, row);
+  return done(brandHolders);
+}
+
+/** Why one id was not attached to a matched sibling (NEO-312). */
+export type LinkBlock = {
+  reason: "linkHeldElsewhere" | "notChecked";
+  holderIds: string[];
+};
+
+/**
+ * NEO-312 — the matched-sibling half of "one link, one row".
+ *
+ * A sibling match wins (the item is that row), but an item that matched by
+ * its BSC id — or by the modal's `existingId` — may carry a SportLots id
+ * another row already holds. Refreshing would put that id on a second row.
+ * Returns a checker the store asks before it attaches each incoming id the
+ * matched row does not ALREADY hold: a holder elsewhere blocks it
+ * (`linkHeldElsewhere`, naming the holder); on a side the set walk could not
+ * finish it is blocked too (`notChecked`, fail closed). An id the row already
+ * holds is never blocked — nothing a row holds changes.
+ */
+export function linkBlocker(
+  holders: SyncHoldersElsewhere | null,
+): (row: { platformData: Doc<"selectorOptions">["platformData"] }, side: PlatformSide, id: string) => LinkBlock | null {
+  const bySide: Record<PlatformSide, Map<string, string[]>> = {
+    bsc: new Map(),
+    sportlots: new Map(),
+  };
+  for (const row of holders?.rows ?? []) {
+    for (const side of ["bsc", "sportlots"] as const) {
+      for (const id of Object.values(row.platformData?.[side] ?? {})) {
+        const list = bySide[side].get(id);
+        if (!list) bySide[side].set(id, [row._id]);
+        else if (!list.includes(row._id)) list.push(row._id);
+      }
+    }
+  }
+  const unchecked = new Set<PlatformSide>(holders?.uncheckedSides ?? []);
+  return (row, side, id) => {
+    if (Object.values(row.platformData?.[side] ?? {}).includes(id)) return null;
+    const found = bySide[side].get(id);
+    if (found && found.length > 0) return { reason: "linkHeldElsewhere", holderIds: found };
+    if (unchecked.has(side)) return { reason: "notChecked", holderIds: [] };
+    return null;
   };
 }
 
+/** One withheld entry for every id a matched item could not attach. */
+export function linkWithheldEntry(
+  label: string,
+  blocks: readonly LinkBlock[],
+  rowsById: ReadonlyMap<string, Doc<"selectorOptions">>,
+  parentsById: ReadonlyMap<string, Doc<"selectorOptions">>,
+): WithheldElsewhereEntry {
+  const held = blocks.filter((b) => b.reason === "linkHeldElsewhere");
+  return withheldElsewhereEntry(
+    label,
+    {
+      reason: held.length > 0 ? "linkHeldElsewhere" : "notChecked",
+      holderIds: [...new Set(held.flatMap((b) => b.holderIds))],
+    },
+    rowsById,
+    parentsById,
+  );
+}
+
 /**
- * NEO-300 — the operator-facing entry for a subtree withhold. `label` is the
- * caller's own item value, trimmed to the selector value limit (it is echoed
- * back to the client that sent it, never stored); holders are named by NB
- * values only and capped at `WITHHELD_HOLDERS_LIMIT`.
+ * NEO-300 — the operator-facing entry for a withhold decided elsewhere.
+ * `label` is the caller's own item value, trimmed to the selector value limit
+ * (it is echoed back to the client that sent it, never stored); holders are
+ * named by NB values only and capped at `WITHHELD_HOLDERS_LIMIT`.
  */
 export function withheldElsewhereEntry(
   label: string,
-  elsewhere: { reason: "heldByMany" | "idsDisagree"; holderIds: readonly string[] },
+  elsewhere: { reason: WithheldElsewhereReason; holderIds: readonly string[] },
   rowsById: ReadonlyMap<string, Doc<"selectorOptions">>,
   parentsById: ReadonlyMap<string, Doc<"selectorOptions">>,
 ): WithheldElsewhereEntry {
@@ -600,20 +1034,44 @@ export function withheldElsewhereEntry(
   };
 }
 
-/** The notice entry for a held row, named by NB values only. */
+/** How many ancestors `path` names at most (set › type › insert, and spare). */
+const MAX_HOLDER_PATH = 4;
+
+/**
+ * The notice entry for a held row, named by NB values only. `path` runs from
+ * the holder's set down to its parent; a set holder's path is empty (its
+ * parent is the brand, named in `parentValue`).
+ */
 export function heldElsewhereEntry(
   row: Doc<"selectorOptions">,
   parentsById: ReadonlyMap<string, Doc<"selectorOptions">>,
 ): HeldElsewhereEntry | null {
-  if (row.level !== "insert" && row.level !== "parallel") return null;
+  if (
+    row.level !== "setName" &&
+    row.level !== "variantType" &&
+    row.level !== "insert" &&
+    row.level !== "parallel"
+  ) {
+    return null;
+  }
   if (!row.parentId) return null;
   const parent = parentsById.get(row.parentId);
   if (!parent) return null;
+  const path: string[] = [];
+  if (row.level !== "setName") {
+    let cursor: Doc<"selectorOptions"> | undefined = parent;
+    while (cursor && path.length < MAX_HOLDER_PATH) {
+      path.unshift(cursor.value);
+      if (cursor.level === "setName" || !cursor.parentId) break;
+      cursor = parentsById.get(cursor.parentId);
+    }
+  }
   return {
     id: row._id,
     value: row.value,
     level: row.level,
     parentId: row.parentId,
     parentValue: parent.value,
+    path,
   };
 }

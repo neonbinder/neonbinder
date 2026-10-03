@@ -35,7 +35,10 @@ import {
   checkReturnedIds,
   heldElsewhereEntry,
   heldElsewhereEntryValidator,
-  loadVariantTypeSubtreeElsewhere,
+  linkBlocker,
+  linkWithheldEntry,
+  type LinkBlock,
+  loadSyncHoldersElsewhere,
   withheldElsewhereEntry,
   withheldElsewhereEntryValidator,
   pausedSyncMessage,
@@ -1450,9 +1453,11 @@ export const storeReconciledOptions = mutation({
     /**
      * NEO-300 — items that name a row already living ELSEWHERE in this
      * variant type's subtree (an insert the operator grouped under another
-     * insert as a parallel, or a parallel they moved up to an insert). The
-     * store left each one exactly where the operator put it: no new row, no
-     * move, no rename, no platform write. One entry per held ROW, NB names
+     * insert as a parallel, or a parallel they moved up to an insert) — and,
+     * since NEO-312, anywhere else in the set or (by SportLots id) under the
+     * brand's other sets, where "Make insert of…", "Make parallel of…" and
+     * "Promote to set" put a link. The store left each one exactly where the
+     * operator put it: no new row, no move, no rename, no platform write. One entry per held ROW, NB names
      * only, capped at `UNLINK_NOTICE_LIMIT`; `heldElsewhereTotal` is the true
      * count. Recomputed over the items this call reached, so a replay's LAST
      * page carries the whole answer (like `optionsCount`).
@@ -1463,17 +1468,22 @@ export const storeReconciledOptions = mutation({
      * NEO-300 (security audit) — items WITHHELD because of what the subtree
      * holds: their ids are on several rows elsewhere (`heldByMany`), or the
      * modal's `existingId` names a subtree row that does not hold the item's
-     * id (`idsDisagree`). Nothing was written for them; the operator is told
-     * rather than only the log. Capped at `UNLINK_NOTICE_LIMIT`; the true
-     * count is `withheldElsewhereTotal`. Recomputed per page — last page wins.
+     * id (`idsDisagree`), or (NEO-312) the set walk stopped on a bound
+     * before it could clear an id no sibling holds (`notChecked`, no
+     * holders). Nothing was written for them; the operator is told rather
+     * than only the log. NEO-312 `linkHeldElsewhere`: the item DID match one
+     * of these rows, but an id it carries is held by another row, so that id
+     * alone was not attached (the holder is named). Capped at `UNLINK_NOTICE_LIMIT`; the true count is
+     * `withheldElsewhereTotal`. Recomputed per page — last page wins.
      */
     withheldElsewhere: v.array(withheldElsewhereEntryValidator),
     withheldElsewhereTotal: v.number(),
     /**
-     * NEO-300 (security audit) — the subtree walk was needed but a bound
-     * (`MAX_SUBTREE_WALK_INSERTS` / `MAX_SUBTREE_WALK_DOCUMENTS`) stopped it,
-     * so this call matched against siblings only and a grouped row may have
-     * been re-created. False on every real set. Last page wins.
+     * NEO-300 (security audit) — the SET walk was needed but a bound
+     * (`MAX_SUBTREE_WALK_*`) stopped it. NEO-312: FAIL CLOSED — every item
+     * it could not clear is in `withheldElsewhere` as `notChecked`; nothing
+     * was re-created. False on every real set. (The brand walk is best
+     * effort and never sets it.) Last page wins.
      */
     subtreeWalkSkipped: v.boolean(),
   }),
@@ -1583,12 +1593,13 @@ export const storeReconciledOptions = mutation({
     // grouped (insert ↔ parallel) is recognised by its ids instead of being
     // re-created at its old level. Read only when some item names an id or
     // an `existingId` no sibling holds; a re-sync that stays inside the
-    // siblings pays nothing. See `loadVariantTypeSubtreeElsewhere`.
+    // siblings pays nothing. See `loadSyncHoldersElsewhere` (NEO-312: the whole set, then the brand).
     const subtree = itemsReachPastSiblings(existingOptions, items)
-      ? await loadVariantTypeSubtreeElsewhere(ctx, {
+      ? await loadSyncHoldersElsewhere(ctx, {
           level,
           parent: parentRowForCopyDown,
           siblings: existingOptions,
+          items,
         })
       : null;
 
@@ -1597,7 +1608,14 @@ export const storeReconciledOptions = mutation({
       items,
       coveredSides: effectiveCovered,
       returnedIds: effectiveReturnedIds,
-      ...(subtree ? { elsewhereInSubtree: subtree.rows } : {}),
+      ...(subtree
+        ? {
+            elsewhereInSubtree: subtree.rows,
+            // NEO-312 — fail closed on a side a bound kept the walk from
+            // finishing: withheld and reported, never stored.
+            elsewhereUncheckedSides: subtree.uncheckedSides,
+          }
+        : {}),
     });
     if (plan.ambiguities.length > 0) {
       console.warn(
@@ -1768,6 +1786,8 @@ export const storeReconciledOptions = mutation({
     );
     const heldElsewhereById = new Map<string, HeldElsewhereEntry>();
     const withheldElsewhereAll: WithheldElsewhereEntry[] = [];
+    // NEO-312 — asked before a matched row takes an id it does not hold yet.
+    const blockLink = linkBlocker(subtree);
 
     for (let i = 0; i < reconciledItems.length; i++) {
       // The bound is checked BEFORE the item, so the last item admitted is the
@@ -1873,9 +1893,19 @@ export const storeReconciledOptions = mutation({
         const nextPrimary: { bsc?: string; sportlots?: string } = {
           ...(w.primaryPlatformId ?? {}),
         };
+        const linkBlocks: LinkBlock[] = [];
         for (const side of PLATFORM_SIDES) {
           const refreshedId = parsed.ids[side];
           if (!refreshedId) continue;
+          // NEO-312 — one link, one row. The item IS this row (a sibling
+          // match wins), but an id it carries that another row already holds
+          // is not attached here; the row keeps every link it has, and the
+          // operator is told which row holds the id.
+          const block = blockLink(w, side, refreshedId);
+          if (block) {
+            linkBlocks.push(block);
+            continue;
+          }
           // Name-tier rebinding onto a different id is the re-slug heal: the
           // slot key is reused so nothing orphans, but every card under this
           // row now points at a different marketplace set. Reported, never
@@ -1920,6 +1950,16 @@ export const storeReconciledOptions = mutation({
         }
         w.primaryPlatformId =
           Object.keys(nextPrimary).length > 0 ? nextPrimary : undefined;
+        if (linkBlocks.length > 0) {
+          withheldElsewhereAll.push(
+            linkWithheldEntry(
+              item.value,
+              linkBlocks,
+              subtreeRowsById,
+              subtree?.parentsById ?? new Map(),
+            ),
+          );
+        }
 
         // NEO-291 — the modal may carry a prefix for a row it is re-linking.
         // Same rule as the panel (`normalizeCardNumberPrefix`: an invalid one
@@ -2178,6 +2218,8 @@ export const storeReconciledOptions = mutation({
           withheld: withheldElsewhereAll.length,
           subtreeReads: subtree?.reads ?? 0,
           subtreeWalkSkipped,
+          uncheckedSides: subtree?.uncheckedSides ?? [],
+          brandWalkTruncated: subtree?.brandWalkTruncated ?? false,
           rowIds: heldElsewhereAll.slice(0, 25).map((r) => r.id),
         }),
       );

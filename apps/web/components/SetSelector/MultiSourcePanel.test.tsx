@@ -217,6 +217,11 @@ describe("MultiSourcePanel — the facet a BSC slot filters on (NEO-189)", () =>
     // Not the empty state either: there IS something attached, it just does
     // not source anything yet.
     expect(bsc.queryByText("No sets attached.")).toBeNull();
+    // NEO-312: the hint quotes the button through the shared label constant;
+    // pinned byte-for-byte as it read before.
+    expect(bsc.getByText("Topps").closest("li")?.getAttribute("title")).toBe(
+      "Attached before sources were labelled — re-attach it from “Attach more…” to say which set it is.",
+    );
   });
 
   test("renders for a row with NO ids at all — that is the attach affordance", () => {
@@ -231,6 +236,11 @@ describe("MultiSourcePanel — the facet a BSC slot filters on (NEO-189)", () =>
 
     expect(screen.getByText("Multi-source sets")).toBeTruthy();
     expect(screen.getByLabelText("Attach more source sets")).toBeTruthy();
+    // NEO-312: the visible label (shared via control-labels with the copy that
+    // names it) is unchanged, byte for byte; E2E and operators both read it.
+    expect(screen.getByLabelText("Attach more source sets").textContent).toBe(
+      "Attach more…",
+    );
     // Both sides say so explicitly rather than rendering an empty column.
     expect(screen.getAllByText("No sets attached.")).toHaveLength(2);
   });

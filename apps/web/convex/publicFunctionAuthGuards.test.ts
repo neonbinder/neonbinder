@@ -838,3 +838,63 @@ describe("NEO-315: placeholder download mints", () => {
     expect(Object.keys(one).sort()).toEqual(["entryIndex", "expiresAt", "url"]);
   });
 });
+
+describe("NEO-312 — getParallelsForBuild and buildParallelChecklist require an admin identity", () => {
+  async function seedInsertAndParallel(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const insertId = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Anime",
+        platformData: { bsc: { b0: "anime" } },
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const parallelId = await ctx.db.insert("selectorOptions", {
+        level: "parallel",
+        value: "Anime Kanji",
+        parentId: insertId,
+        platformData: { bsc: { b0: "anime-kanji" } },
+        platformFacets: { bsc: { b0: "variantName" } },
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      return { insertId, parallelId };
+    });
+  }
+
+  test("getParallelsForBuild rejects an anonymous caller and a signed-in non-admin", async () => {
+    const t = convexTest(schema, modules);
+    const { insertId } = await seedInsertAndParallel(t);
+
+    await expect(
+      t.query(api.parallelChecklistBuild.getParallelsForBuild, { insertId }),
+    ).rejects.toThrow(/not authenticated/i);
+    await expect(
+      t
+        .withIdentity(MEMBER)
+        .query(api.parallelChecklistBuild.getParallelsForBuild, { insertId }),
+    ).rejects.toThrow(/admin access required/i);
+  });
+
+  test("buildParallelChecklist rejects an anonymous caller and a signed-in non-admin, writing nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { parallelId } = await seedInsertAndParallel(t);
+
+    await expect(
+      t.action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId }),
+    ).rejects.toThrow(/not authenticated/i);
+    await expect(
+      t
+        .withIdentity(MEMBER)
+        .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId }),
+    ).rejects.toThrow(/admin access required/i);
+
+    const cards = await t.run((ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", parallelId))
+        .collect(),
+    );
+    expect(cards).toHaveLength(0);
+  });
+});

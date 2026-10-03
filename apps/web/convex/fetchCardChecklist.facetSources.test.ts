@@ -461,7 +461,7 @@ describe("fetchCardChecklist — untagged slots are inert, and now gate the side
     expect(recorded[0].variantName).toBeUndefined();
   });
 
-  test("an UNTAGGED Parallel row is still inert", async () => {
+  test("an UNTAGGED Parallel row is still inert, and since NEO-312 BSC is not asked at all", async () => {
     const recorded: Recorded[] = [];
     vi.stubGlobal("fetch", stubBsc({ "2024-topps": ["1"] }, recorded));
     const t = convexTest(schema, modules);
@@ -487,9 +487,12 @@ describe("fetchCardChecklist — untagged slots are inert, and now gate the side
       selectorOptionId: parallelId,
     });
 
-    expect(recorded).toHaveLength(1);
-    expect(recorded[0].setName).toEqual(["2024-topps"]);
-    expect(recorded[0].variantName).toBeUndefined();
+    // NEO-312 — the untagged slot is still inert (the level rule was not
+    // widened), and a parallel with no source id of its OWN is no longer
+    // fetched from its ancestors' scope. Before, this sent setName + variant
+    // with no variantName, which is every parallel in the set filed as Gold
+    // Foil. Now the leaf gate skips BSC and nothing goes out.
+    expect(recorded).toHaveLength(0);
   });
 });
 

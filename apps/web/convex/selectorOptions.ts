@@ -40,6 +40,7 @@ import {
 } from "./features/generateListing";
 import { LISTING_TITLE_MAX } from "./features/listingLimits";
 import { generateSku } from "./sku";
+import { insertCardRow } from "./cardRowCreate";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import {
   cardNumberStem,
@@ -151,7 +152,10 @@ import {
   checkReturnedIds,
   heldElsewhereEntry,
   heldElsewhereEntryValidator,
-  loadVariantTypeSubtreeElsewhere,
+  linkBlocker,
+  linkWithheldEntry,
+  type LinkBlock,
+  loadSyncHoldersElsewhere,
   withheldElsewhereEntry,
   withheldElsewhereEntryValidator,
   partialSyncMessage,
@@ -336,7 +340,7 @@ type StoredPlatformData = {
  * allocated slots. The caller applies the patch — the counter and the map it
  * guards must move together.
  */
-async function resolveCardSlots(
+export async function resolveCardSlots(
   ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<Doc<"selectorOptions"> | null> } },
   selectorOptionId: Id<"selectorOptions">,
 ): Promise<
@@ -2277,12 +2281,13 @@ export const storeSelectorOptions = mutation({
 
     // NEO-300 — the rest of the variant type's subtree, read only when some
     // option names an id no sibling holds. Same rule and same reason as
-    // `storeReconciledOptions`; see `loadVariantTypeSubtreeElsewhere`.
+    // `storeReconciledOptions`; see `loadSyncHoldersElsewhere`.
     const subtree = itemsReachPastSiblings(existingOptions, items)
-      ? await loadVariantTypeSubtreeElsewhere(ctx, {
+      ? await loadSyncHoldersElsewhere(ctx, {
           level,
           parent: parentRowForCopyDown,
           siblings: existingOptions,
+          items,
         })
       : null;
 
@@ -2291,7 +2296,14 @@ export const storeSelectorOptions = mutation({
       items,
       coveredSides: effectiveCovered,
       returnedIds: effectiveReturnedIds,
-      ...(subtree ? { elsewhereInSubtree: subtree.rows } : {}),
+      ...(subtree
+        ? {
+            elsewhereInSubtree: subtree.rows,
+            // NEO-312 — fail closed on a side a bound kept the walk from
+            // finishing: withheld and reported, never stored.
+            elsewhereUncheckedSides: subtree.uncheckedSides,
+          }
+        : {}),
       // NEO-237 — at manufacturer level, SportLots' all-brands option id is a
       // PLACEHOLDER link, not a live brand id: `addCustomSelectorOption`
       // writes it on every hand-typed brand, and the fetch that finally lists
@@ -2486,6 +2498,8 @@ export const storeSelectorOptions = mutation({
     );
     const heldElsewhereById = new Map<string, HeldElsewhereEntry>();
     const withheldElsewhereAll: WithheldElsewhereEntry[] = [];
+    // NEO-312 — asked before a matched row takes an id it does not hold yet.
+    const blockLink = linkBlocker(subtree);
 
     for (let i = 0; i < options.length; i++) {
       // The bound is checked BEFORE the item, so the last item admitted is the
@@ -2534,9 +2548,18 @@ export const storeSelectorOptions = mutation({
         // resolving when a marketplace re-slugs a set — the id changes, the
         // set does not. A side with no incoming id is not touched here; it is
         // handled by the unlink pass, which only fires on a covered side.
+        const linkBlocks: LinkBlock[] = [];
         for (const side of PLATFORM_SIDES) {
           const incoming = item.ids[side];
           if (!incoming) continue;
+          // NEO-312 — one link, one row: an id another row already holds is
+          // not attached to this (matched) row. Its own links stand; the
+          // holder is named to the operator. See `linkBlocker`.
+          const block = blockLink(w, side, incoming);
+          if (block) {
+            linkBlocks.push(block);
+            continue;
+          }
           // A name-tier match that lands on a DIFFERENT id than the row held
           // is the re-slug heal. The slot key is reused, so nothing orphans —
           // but every card under this row is now attributed to a different
@@ -2582,6 +2605,17 @@ export const storeSelectorOptions = mutation({
             label,
           );
           if (cleared.changed) w.declinedUpstreamLabels = cleared.next;
+        }
+
+        if (linkBlocks.length > 0) {
+          withheldElsewhereAll.push(
+            linkWithheldEntry(
+              option.value,
+              linkBlocks,
+              subtreeRowsById,
+              subtree?.parentsById ?? new Map(),
+            ),
+          );
         }
 
         warnIfIncomplete(
@@ -2885,6 +2919,8 @@ export const storeSelectorOptions = mutation({
           withheld: withheldElsewhereAll.length,
           subtreeReads: subtree?.reads ?? 0,
           subtreeWalkSkipped,
+          uncheckedSides: subtree?.uncheckedSides ?? [],
+          brandWalkTruncated: subtree?.brandWalkTruncated ?? false,
           rowIds: heldElsewhereAll.slice(0, 25).map((r) => r.id),
         }),
       );
@@ -6105,7 +6141,7 @@ async function deleteCardCrossListingsFor(
  * can re-parent it. Deleting a parent's variations along with it would destroy
  * real catalog data as a side effect of one click.
  */
-async function orphanVariationsOf(
+export async function orphanVariationsOf(
   ctx: { db: { query: any; patch: (id: any, patch: any) => Promise<void> } },
   cardChecklistId: Id<"cardChecklist">,
 ): Promise<void> {
@@ -12676,9 +12712,16 @@ export const fetchCardChecklist = action({
       // NEO-287 — and the pause, which makes a side unresolvable for this run
       // whatever its ids say. A paused side is not fetched, so nothing on it
       // is compared, paired, or reported missing.
+      //
+      // NEO-312 — and `leafGate`: an insert or parallel is fetched only on the
+      // sides it holds an id of its own on. Without it a parallel with no BSC
+      // id queried its INSERT's variantName (deepest-contributor rule, one row
+      // up) and SportLots' `parallel || insert || …` precedence did the same,
+      // so the insert's cards arrived filed as the parallel's.
       const resolution = resolvableSides(chain, {
         bscScope: "checklist",
         paused: pausedSides(),
+        leafGate: true,
       });
       pausedList = pausedSideList(resolution);
       if (!resolution.bsc.resolvable && !resolution.sportlots.resolvable) {
@@ -16809,38 +16852,11 @@ export const commitCardChecklistChunk = internalMutation({
           bscTeamEnrichmentIds.push(existing._id);
         }
       } else {
-        // NEO-71-74: precedence = the leaf node's complete features snapshot
-        // (already resolved at that node's own creation time) < card-observed
-        // facts. A fact seen on THIS card (e.g. it's a rookie) beats the
-        // inherited values.
-        const mergedFeatures: Record<string, string> = {
-          ...(args.inheritedFeatures ?? {}),
-          ...deriveCardObservedFeatures(card),
-        };
-        // A card arriving already-autographed (marketplace data carried an
-        // autographType) gets the same "just became non-None -> default
-        // Signed By from the roster" treatment `setCardFeature` applies for
-        // a manual operator edit — the roster is already resolved as real
-        // IDs at this point (see the player/team findOrCreate pass in the
-        // prelude).
-        const wasBlank = (args.inheritedFeatures?.autographed ?? "None") === "None";
-        const isNowSet =
-          !!mergedFeatures.autographed && mergedFeatures.autographed !== "None";
-
-        // Resolved in the prelude, once per player rather than once per card:
-        // used for the signedBy default below (only when autographed just
-        // turned on) AND unconditionally for listing generation further down.
-        const playerNames = card.playerNames;
-        if (wasBlank && isNowSet && !mergedFeatures.signedBy && playerNames.length > 0) {
-          mergedFeatures.signedBy = playerNames.join(", ");
-        }
-        const featuresOrUndefined =
-          Object.keys(mergedFeatures).length > 0 ? mergedFeatures : undefined;
-
-        // NEO-246 — see the note beside where these are spread below. The
-        // payload's lists are already trimmed, deduped and (for every real
-        // caller) bounded by the action; this makes the mutation self-
-        // sufficient about the shape of a field `updateCard` now enforces.
+        // NEO-246 — see the note beside where these are spread in
+        // `buildCardRowForInsert`. The payload's lists are already trimmed,
+        // deduped and (for every real caller) bounded by the action; this
+        // makes the mutation self-sufficient about the shape of a field
+        // `updateCard` now enforces.
         const insertPendingPlayerNames = boundPendingNames(
           card.pendingPlayerNames ?? [],
           MAX_PENDING_PLAYER_NAMES,
@@ -16876,126 +16892,47 @@ export const commitCardChecklistChunk = internalMutation({
           ? leafTeamNames
           : card.teamNames;
 
-        // NEO-24/71-74: write-once listing title/description, generated
-        // once here at creation time, then freely editable afterward (same
-        // model as every other default this session).
-        const listingInputs: ListingCardInputs = {
-          cardNumber: card.cardNumber,
-          playerNames,
-          year: mergedFeatures.season,
-          manufacturer: mergedFeatures.manufacturer,
-          // NEO-272: dropped from the title and the description when NB has
-          // not identified the set's brand. `previewListingTitle` reads the
-          // same role off the same manufacturer row — the two MUST carry it or
-          // a regenerated title disagrees with the one written here, which is
-          // the standing "if you change one, change the other" rule between
-          // this branch and that query.
-          manufacturerBrandUnknown: args.manufacturerBrandUnknown,
-          setName: args.setNameValue,
-          parallelName: mergedFeatures.parallelName,
-          isRookie: card.isRookie,
-          isRelic: card.isRelic,
-          autographed: mergedFeatures.autographed,
-          // NEO-101: `printRun` was in the generator's token list from the
-          // start but was never actually passed from here, so no synced card
-          // has ever had `/99` in its title while `previewListingTitle`'s
-          // Regenerate would put one there. Passed now, so creation and
-          // regeneration agree.
-          printRun: card.printRun,
-          shortPrint: mergedFeatures.shortPrint,
-          // NEO-101/189: NB's own per-card variation name, used verbatim in
-          // both the title (as an optional token) and the description. Same
-          // value written to the row's `cardVariation` column below.
-          cardVariation: card.cardVariation,
-          // NEO-101: resolved once per commit in the prelude, not per card —
-          // roughly half of sold listings name the team, so this is a real
-          // search term rather than filler. NEO-277: the leaf's set-level
-          // team names when the card is born with that default.
-          teamNames: insertTeamNames,
-          // NEO-101: the sport ancestor's value, already resolved by the
-          // prelude for the SKU prefix. The weakest token in the title and the
-          // last one tried; frequently de-duplicated away by a team name that
-          // already contains the word.
-          sport: args.sportValue,
-        };
-        const listingTitle = assessListingTitle(listingInputs);
-
-        const newCardId: Id<"cardChecklist"> = await ctx.db.insert("cardChecklist", {
-          selectorOptionId: args.selectorOptionId,
-          cardNumber: card.cardNumber,
-          cardName: card.cardName,
-          // NEO-26: legacy `team` removed; only teamOnCardIds[] is written.
-          playerIds: card.playerIds,
-          // NEO-254 — the same list with the printed name attached; see
-          // schema.ts. Never written without the ids beside it.
-          playerLinks: card.playerLinks,
-          // NEO-277: the card's own team, else the leaf's set-level default.
-          teamOnCardIds: insertTeamOnCardIds,
-          attributes: card.attributes,
-          isRookie: card.isRookie,
-          isRelic: card.isRelic,
-          printRun: card.printRun,
-          // NEO-217: `autographType` is NOT written any more. It still
-          // arrives on the wire and `deriveCardObservedFeatures` above still
-          // folds it into `features.autographed`, which is now the one truth
-          // for "this card is an autograph" — storing the raw string as well
-          // only gave the row sub-line and the NEO-203 diff a second, worse
-          // answer (BSC never sends it; SportLots sends the literal
-          // "Unknown"). The column stays in the schema for rows written
-          // before this; there is no backfill.
-          cardVariation: card.cardVariation,
-          platformData: toStoredPlatformData(card.platformData),
-          // NEO-24: inherit ancestor + derive per-card on insert. Existing
-          // rows are owned by the propagation engine; never clobbered here.
-          ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
-          listingTitle: listingTitle.title,
-          listingDescription: generateListingDescription(listingInputs),
-          // NEO-101: only when the core was actually cut (see schema.ts).
-          ...(listingTitle.coreFits ? {} : { listingTitleTruncated: true }),
-          // NEO-221 — names this card carries that nobody ruled on. Omitted
-          // entirely when empty, so a fully-reviewed commit writes exactly the
-          // row it wrote before this feature existed.
-          //
-          // NEO-246 — bounded on the way in, the same way the update branch
-          // bounds its merge. The action already applied this bound when it
-          // built the payload (which is what keeps `unreviewedNameCount`
-          // honest), so this is idempotent for every real caller; it is here
-          // because an internal mutation must not depend on its caller having
-          // done it, and an over-cap row would be one `updateCard` could never
-          // accept a fix for.
-          ...(insertPendingPlayerNames.length
-            ? { pendingPlayerNames: insertPendingPlayerNames }
-            : {}),
-          ...(insertPendingTeamNames.length
-            ? { pendingTeamNames: insertPendingTeamNames }
-            : {}),
-          sortOrder: card.sortOrder,
-          lastUpdated: Date.now(),
-        });
-        // NEO-91: SKU can only be generated once the row exists (the random
-        // suffix — not the id — is what guarantees uniqueness, but the id
-        // has to exist before we can patch it in). Cheap, well-precedented
-        // insert-then-patch pattern already used elsewhere in this file.
-        storedIds.push(newCardId);
-        // NEO-313 — the derived player index for the new card. `fresh`: the
-        // card was inserted a line ago, so there is nothing to diff against
-        // and the read is skipped (this branch runs up to
-        // CARDS_PER_COMMIT_CHUNK times per transaction).
-        if ((card.playerIds ?? []).length > 0) {
-          await syncCardPlayerLinks(ctx, newCardId, card.playerIds, await cardSport(), {
-            fresh: true,
-          });
-        }
-        await ctx.db.patch(newCardId, {
-          sku: generateSku({
-            skuCode: args.sportSkuCode,
-            sportFallbackLabel: args.sportValue,
-            year: mergedFeatures.season ?? "",
-            setName: args.setNameValue ?? "",
+        // NEO-312 — the row itself (features, Signed By, the write-once
+        // listing title and description, the SKU) is built by the helper the
+        // parallel build shares, so a copied card and a synced card are born
+        // the same way. See `cardRowCreate.ts`.
+        const newCardId = await insertCardRow(
+          ctx,
+          {
+            selectorOptionId: args.selectorOptionId,
             cardNumber: card.cardNumber,
-            uniqueSuffix: crypto.randomUUID(),
-          }),
-        });
+            cardName: card.cardName,
+            playerIds: card.playerIds,
+            playerLinks: card.playerLinks,
+            // NEO-277: the card's own team, else the leaf's set-level default.
+            teamOnCardIds: insertTeamOnCardIds,
+            attributes: card.attributes,
+            isRookie: card.isRookie,
+            isRelic: card.isRelic,
+            printRun: card.printRun,
+            cardVariation: card.cardVariation,
+            autographType: card.autographType,
+            platformData: toStoredPlatformData(card.platformData),
+            pendingPlayerNames: insertPendingPlayerNames,
+            pendingTeamNames: insertPendingTeamNames,
+            sortOrder: card.sortOrder,
+            // Resolved in the prelude, once per player rather than once per
+            // card.
+            playerNames: card.playerNames,
+            teamNames: insertTeamNames,
+          },
+          {
+            sportSkuCode: args.sportSkuCode,
+            sportValue: args.sportValue,
+            setNameValue: args.setNameValue,
+            manufacturerBrandUnknown: args.manufacturerBrandUnknown,
+            inheritedFeatures: args.inheritedFeatures,
+          },
+          // NEO-313 — the new card's player index, kept inside
+          // `insertCardRow` with `fresh: true` and this chunk's `cardSport`.
+          { sport: cardSport },
+        );
+        storedIds.push(newCardId);
         if (
           card.platformData?.bsc &&
           (!insertTeamOnCardIds || insertTeamOnCardIds.length === 0)

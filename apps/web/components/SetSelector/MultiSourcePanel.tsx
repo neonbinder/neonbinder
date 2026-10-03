@@ -5,6 +5,7 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import AttachSetsDialog from "./AttachSetsDialog";
+import { ATTACH_MORE_LABEL, MULTI_SOURCE_HEADING } from "./control-labels";
 import { slotEntries, slotFacet, slotLabel } from "../../convex/platformSlots";
 import {
   bscScopeQualifier,
@@ -335,7 +336,8 @@ export default function MultiSourcePanel({
             tabIndex={-1}
             className="text-sm font-semibold text-gray-100 focus:outline-none"
           >
-            Multi-source sets
+            {/* NEO-312: shared with copy that points the operator here. */}
+            {MULTI_SOURCE_HEADING}
           </h3>
           <p className="text-xs text-gray-500 mt-0.5">
             Cards fetched for this variant come from every attached BSC and
@@ -348,7 +350,7 @@ export default function MultiSourcePanel({
           onClick={() => setDialogOpen(true)}
           aria-label="Attach more source sets"
         >
-          Attach more…
+          {ATTACH_MORE_LABEL}
         </NeonButton>
       </div>
 
@@ -546,7 +548,7 @@ function SideColumn({
               <li
                 key={u.slot}
                 className="text-xs text-gray-400 break-words"
-                title="Attached before sources were labelled — re-attach it from “Attach more…” to say which set it is."
+                title={`Attached before sources were labelled — re-attach it from “${ATTACH_MORE_LABEL}” to say which set it is.`}
               >
                 {u.label}{" "}
                 <span className="text-[10px] text-gray-500 break-all">
