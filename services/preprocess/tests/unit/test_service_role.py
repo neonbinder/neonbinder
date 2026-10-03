@@ -58,9 +58,9 @@ class TestStartupHookRoleGate:
             "app.cropper.tiered.warm_up",
             lambda: called.__setitem__("warm_up", called["warm_up"] + 1),
         )
-        # NEO-315 added a SAM warm-up beside BiRefNet's; FAST skips it too.
+        # No role loads SAM at startup (NEO-315: it lazy-loads on first use).
         monkeypatch.setattr(
-            "app.cropper.sam.warm_up",
+            "app.cropper.sam._load_model",
             lambda: called.__setitem__("sam", called["sam"] + 1),
         )
 

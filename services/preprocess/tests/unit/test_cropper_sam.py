@@ -249,7 +249,7 @@ class TestSamCropErrorPaths:
         assert out_img.size[0] > 0 and out_img.size[1] > 0
 
 
-# ── NEO-315: batched probes, thread count, startup warm-up ───────────────────
+# ── NEO-315: batched probes, thread count ────────────────────────────────────
 #
 # The real SAM path needs torch + transformers + the 375MB weights, which the
 # unit suite never loads. These fakes pin the CALL SHAPE the batching relies
@@ -355,7 +355,7 @@ class TestBatchedProbes:
         assert results[1][0][0, 0] is np.True_
 
 
-class TestThreadsAndWarmUp:
+class TestThreadsAndLazyLoad:
     def test_thread_count_is_capped_at_four(self, monkeypatch):
         monkeypatch.setattr(sam.os, "cpu_count", lambda: 16)
         assert sam._torch_thread_count() == 4
@@ -363,18 +363,6 @@ class TestThreadsAndWarmUp:
         assert sam._torch_thread_count() == 2
         monkeypatch.setattr(sam.os, "cpu_count", lambda: None)
         assert sam._torch_thread_count() == 1
-
-    def test_warm_up_loads_and_runs_one_small_pass(self, monkeypatch):
-        loaded = (object(), object())
-        seen: list[tuple] = []
-        monkeypatch.setattr(sam, "_load_model", lambda: loaded)
-        monkeypatch.setattr(
-            sam, "_generate_masks", lambda img, m, p: seen.append((img.size, m, p)) or []
-        )
-
-        sam.warm_up()
-
-        assert seen == [((64, 64), loaded[0], loaded[1])]
 
     def test_is_model_loaded_tracks_the_cache(self, monkeypatch):
         monkeypatch.setattr(sam, "_model", None)

@@ -72,8 +72,8 @@ warnings.filterwarnings("ignore")
 
 _model: Any = None
 _processor: Any = None
-# Guards construction only: the startup warm-up and a request can race to the
-# first load, and a ~375MB model must be built once.
+# Guards construction only: concurrent requests can race to the first load,
+# and a ~375MB model must be built once.
 _load_lock = threading.Lock()
 
 
@@ -91,9 +91,10 @@ def _load_model() -> tuple[Any, Any]:
     """Load the SAM model and processor. Cached globally.
 
     First call takes ~5-15s on a warm Cloud Run container (weights from
-    the image, no download). Subsequent calls return instantly. Since NEO-315
-    the HEAVY service pays this at startup (`warm_up`), not on the first
-    image that falls through to SAM.
+    the image, no download). Subsequent calls return instantly. Deliberately
+    NOT warmed at startup (NEO-315): measured at 46-94s on a HEAVY cold start
+    for a stage that wins under 1% of cards, so the first image that falls
+    through to SAM pays the load instead.
     """
     global _model, _processor
     if _model is not None:
@@ -128,18 +129,6 @@ def _load_model() -> tuple[Any, Any]:
 def is_model_loaded() -> bool:
     """True once the SAM model is resident in this process."""
     return _model is not None
-
-
-def warm_up() -> None:
-    """Load SAM and run one small inference at HEAVY startup (NEO-315).
-
-    The first image that fell through to SAM used to pay the model load plus
-    torch's first-run allocations inside its own request. The dummy pass runs
-    the same `_generate_masks` path a real crop does, on a small blank image,
-    so the processor, encoder and decoder have all run once before traffic.
-    """
-    model, processor = _load_model()
-    _generate_masks(Image.new("RGB", (64, 64), "white"), model, processor)
 
 
 # ── Geometry + opencv helpers (port of card_cropper_utils) ─────────────────

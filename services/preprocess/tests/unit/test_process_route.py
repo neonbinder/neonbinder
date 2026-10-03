@@ -611,35 +611,40 @@ class TestStartupWeightsGate:
         monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
         (tmp_path / "model.onnx").write_bytes(b"stub")
         monkeypatch.setenv("U2NET_HOME", str(tmp_path))
-        called: list[str] = []
-        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: called.append("birefnet"))
-        # NEO-315: SAM is warmed beside BiRefNet, after it.
-        monkeypatch.setattr("app.cropper.sam.warm_up", lambda: called.append("sam"))
+        called: list[bool] = []
+        monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: called.append(True))
 
         _verify_baked_weights()
 
-        assert called == ["birefnet", "sam"]
+        assert called == [True]
 
-    def test_a_sam_warm_up_failure_does_not_abort_startup(self, monkeypatch, tmp_path):
-        # SAM is a fallback whose sam_crop already degrades to None when the
-        # model cannot load; a broken SAM must not take HEAVY down at boot.
+    def test_startup_does_not_load_sam(self, monkeypatch, tmp_path):
+        # NEO-315: a startup SAM load measured 46-94s on every HEAVY cold
+        # start for a stage that wins <1% of cards. SAM lazy-loads on first
+        # use; the startup hook must never touch it.
+        from app.cropper import sam
+
         monkeypatch.setenv("REQUIRE_BAKED_WEIGHTS", "1")
         (tmp_path / "model.onnx").write_bytes(b"stub")
         monkeypatch.setenv("U2NET_HOME", str(tmp_path))
         monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: None)
+        monkeypatch.setattr(sam, "_model", None)
+        monkeypatch.setattr(sam, "_processor", None)
 
-        def _boom():
-            raise RuntimeError("sam weights unreadable")
+        def _no_sam_at_startup():
+            raise AssertionError("startup loaded SAM")
 
-        monkeypatch.setattr("app.cropper.sam.warm_up", _boom)
+        monkeypatch.setattr(sam, "_load_model", _no_sam_at_startup)
+        monkeypatch.setattr(sam, "_generate_masks", _no_sam_at_startup)
 
-        _verify_baked_weights()  # returns cleanly
+        _verify_baked_weights()
+
+        assert sam.is_model_loaded() is False
 
     def test_startup_is_a_noop_without_the_flag(self, monkeypatch):
         monkeypatch.delenv("REQUIRE_BAKED_WEIGHTS", raising=False)
         called: list[bool] = []
         monkeypatch.setattr("app.cropper.tiered.warm_up", lambda: called.append(True))
-        monkeypatch.setattr("app.cropper.sam.warm_up", lambda: called.append(True))
 
         _verify_baked_weights()
 

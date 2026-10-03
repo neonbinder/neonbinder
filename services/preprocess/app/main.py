@@ -207,26 +207,17 @@ def _verify_baked_weights() -> None:
     # Warm the BiRefNet session now, while Cloud Run still allocates full
     # startup CPU and no request is waiting on it. Cold, the load + first
     # inference exceeded the smoke test's timeout.
-    from app.cropper import sam, tiered
+    from app.cropper import tiered
 
     started = time.monotonic()
     tiered.warm_up()
     logger.info("BiRefNet session warmed in %.1fs", time.monotonic() - started)
 
-    # NEO-315: warm SAM too, so the first image that falls through to it does
-    # not pay the ~375MB load plus torch's first-run allocations inside its
-    # own request. Its weights are baked into the image the same way, and the
-    # load is seconds against the BiRefNet warm-up's minutes. A failure is
-    # logged, not raised: SAM is a fallback stage whose `sam_crop` already
-    # degrades to None when the model cannot load, so a broken SAM must not
-    # take the whole HEAVY service down at boot.
-    started = time.monotonic()
-    try:
-        sam.warm_up()
-    except Exception:
-        logger.exception("startup: SAM warm-up failed; sam_crop will retry lazily")
-    else:
-        logger.info("SAM model warmed in %.1fs", time.monotonic() - started)
+    # SAM is deliberately NOT warmed here (NEO-315). Measured on a HEAVY
+    # revision, loading it at startup took 46-94s (p50 56s) even at 8 vCPU and
+    # sat on every cold start's critical path, while SAM wins under 1% of
+    # cards. It lazy-loads on first use instead (`sam._load_model`, behind a
+    # lock), so only the rare image that falls through to it pays the load.
 
 
 class CropStrategyOutput(BaseModel):
