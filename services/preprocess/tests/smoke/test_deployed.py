@@ -97,10 +97,13 @@ class TestProcessHappyPath:
         assert isinstance(body["text_count"], int) and body["text_count"] >= 0
         # Synthetic test image is card-shaped (600x900) and noisy → passes the
         # precropped validator. cropped_image_b64 should be null in that case.
-        # Keep in sync with cropper.STRATEGY_NAMES (not imported here — the
-        # smoke job runs without the service's heavyweight deps installed).
+        # Keep in sync with cropper.STRATEGY_NAMES plus the fast-path labels
+        # (SOURCE_SCAN_METADATA, SOURCE_QUAD) — not imported here: the smoke
+        # job runs without the service's heavyweight deps installed.
         assert body["cropped_source"] in {
             "precropped",
+            "scan_metadata",
+            "quad",
             "tiered",
             "pil_trim_dark",
             "pil_trim_light",

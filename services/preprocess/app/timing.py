@@ -47,6 +47,7 @@ MS_FIELDS: tuple[str, ...] = (
     "dhash_ms",
     "vision_ms",
     "classical_ms",
+    "quad_ms",
     "birefnet_ms",
     "sam_ms",
     "haiku_bbox_ms",
@@ -98,6 +99,9 @@ class Timings:
     # Non-model pixel work: scan-metadata check, the classical fast path, the
     # classical share of `tiered` (its time minus BiRefNet), and pil_trim.
     classical_ms: float = 0.0
+    # The FAST role's quad detector + content checks (NEO-320), including its
+    # warp; kept apart from `classical_ms` so its cost is visible on its own.
+    quad_ms: float = 0.0
     birefnet_ms: float = 0.0
     sam_ms: float = 0.0
     haiku_bbox_ms: float = 0.0
@@ -142,7 +146,14 @@ class Timings:
         body["vision_calls"] = self.vision_calls
         body["vision_ms"] = round(self.vision_ms)
         body["vision_reconnects"] = self.vision_reconnects
-        for name in ("classical_ms", "birefnet_ms", "sam_ms", "haiku_bbox_ms", "classify_ms"):
+        for name in (
+            "classical_ms",
+            "quad_ms",
+            "birefnet_ms",
+            "sam_ms",
+            "haiku_bbox_ms",
+            "classify_ms",
+        ):
             body[name] = round(getattr(self, name))
         body["classify_retried"] = self.classify_retried
         body["rotate_ms"] = round(self.rotate_ms)

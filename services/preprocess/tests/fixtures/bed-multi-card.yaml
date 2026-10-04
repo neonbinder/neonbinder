@@ -1,12 +1,17 @@
 crop:
   category: bed-scan / several cards on the black bed
-  source: tiered
+  source: quad
   identity: false
   aspect: 0.714
   aspect_tolerance: 0.04
   min_area_fraction: 0.10
   max_area_fraction: 0.45
 
-# Several cards on one 3540x1916 bed pass. The cascade returns exactly one card
-# rather than the sheet, which is the contract downstream pairing depends on.
-# Measured: tiered -> 1000x1400, aspect 0.7143, 20.6% of source, ~41s.
+# A 3540x1916 bed pass. Despite the name, its pixels hold ONE card: the other
+# shapes on the bed are faint lid glare, not cards (checked NEO-320 with a
+# contrast stretch). The cascade must return exactly one card rather than the
+# sheet, which is the contract downstream pairing depends on. Since NEO-320
+# the FAST path's quad crop settles it. Measured: quad -> 990x1387, aspect
+# 0.714, 20.2% of source, ~0.5s (was tiered -> 1000x1400, 20.6%, ~41s).
+# A frame with two visible cards declines `multi_card` in the quad stage and
+# still reaches tiered; that case is covered by the unit suite.
