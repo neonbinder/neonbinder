@@ -21,7 +21,7 @@ tags:
 #      STEP 2 proves is that the phase RAN: the column's done state carries
 #      no "SportLots skipped" notice, the one thing the sync says about the
 #      SportLots side here. Nothing this flow reads depends on a SportLots-
-#      only set existing — the view's `Search sets` precondition is BSC's
+#      only set existing — the view's `Sets` listbox precondition is BSC's
 #      list (the paused branch, BSC alone, meets it too);
 #   3. the New Manufacturer confirm says that Unknown's matching sets will
 #      move (STEP 3) — and asks NOTHING about SportLots: creating a brand
@@ -197,11 +197,15 @@ tags:
       YEAR: ${output.YEAR}
       MANUFACTURER: "All Brands"
 
-# PRECONDITION (R2): the view lists the year — hundreds of sets, so the
-# search input is there. A year that synced to nothing fails here, by name,
-# before any SportLots claim is read into it.
+# PRECONDITION (R2): the view lists the year. NEO-224 made the search box
+# unconditional (it renders in every open column, loading or empty), so it
+# no longer says anything about rows; the column's listbox — accessible name
+# `Sets`, rendered only once the column holds at least one row — does. A
+# year that synced to nothing fails here, by name, before any SportLots
+# claim is read into it.
 - extendedWaitUntil:
-    visible: ".*Search sets.*"
+    visible:
+      id: "Sets"
     timeout: 15000
 
 - runFlow:
@@ -278,7 +282,7 @@ tags:
       # renders for it: the idle `Sync Sets` button, which `EntityColumn`
       # mounts only when the status row has left "syncing" (the panel and the
       # action row are the same slot). It cannot be the pre-sync idle window
-      # (~300ms after mount): the `.*Search sets.*` precondition above is BSC
+      # (~300ms after mount): the `Sets` listbox precondition above is BSC
       # content that only the sync stores, so the button seen AFTER it is the
       # sync finishing. DOWN — the row is under the 400px list. R5 marketplace
       # exception: this is the drill util's own 150s contract for this very
@@ -343,10 +347,14 @@ tags:
 # viewport-bounded, so the button itself cannot be waited on unscrolled
 # from here. Nothing in this flow reads that column by POSITION (every row
 # tap in the drill utils is an exact name under the header or the search
-# box), so the order is not what any step here depends on.
+# box), so the order is not what any step here depends on. NEO-224: matched
+# by its visible name under the column's search box — the option's DOM id
+# (the combobox's aria-activedescendant target) shadows its aria-label.
 - extendedWaitUntil:
     visible:
-      id: "All Brands — every set in ${output.YEAR}"
+      text: "All Brands"
+      below:
+        id: "Search manufacturers"
     timeout: 7000
 - scrollUntilVisible:
     element:
@@ -413,8 +421,11 @@ tags:
       SPORT: "Hockey"
       YEAR: ${output.YEAR}
       MANUFACTURER: "All Brands"
+# The view lists the year (its listbox renders only with rows — see STEP 1's
+# precondition), then the box to filter it.
 - extendedWaitUntil:
-    visible: ".*Search sets.*"
+    visible:
+      id: "Sets"
     timeout: 15000
 - scrollUntilVisible:
     element:

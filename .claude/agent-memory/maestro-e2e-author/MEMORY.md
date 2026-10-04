@@ -120,3 +120,5 @@ Non-markdown helpers: `tools/`
 - [Negative `index:` is bottom-most](patterns_negative_index_is_bottom_most.md) — index sorts by y then x; `-1` taps the last real row of a bottom-opening virtuoso list, never a phantom
 - [Tall client panel: re-enter the page](patterns_tall_client_panel_reenter_page.md) — a client-only run ledger adds ~1,000px; re-drill after it ends instead of travel; mid-queue builds never pin card counts
 - [Exact-match proof is the demoted create](patterns_exact_match_proof_is_the_demoted_create.md) — `Open <name>` also renders for CLOSE matches; assert `Create player X anyway`; verify seeded names from the recording, not dev
+- [Search box is not a content signal](patterns_search_box_is_not_a_content_signal.md) — NEO-224: every column renders `Search <x>` from frame 1; gate on listbox `id: "<Title>"` or type-then-filtered-row
+- [Cross-document back is bfcache](reference_cross_document_back_is_bfcache.md) — openLink+back = thawed old page; remount via NavLink tap + back; no reload/forward, URL unreadable

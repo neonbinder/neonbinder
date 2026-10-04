@@ -85,6 +85,18 @@ tags:
 #         (centerElement: true), tap it, inputText, Enter, wait notVisible modal.
 #   5. After select: wait for the next column header before proceeding.
 #
+# NEO-224 — EVERY OPEN COLUMN NOW RENDERS ITS SEARCH INPUT (it is the
+# column's combobox and the cascade's focus target), so the `when: visible
+# Search <column>` branches below are taken at EVERY level, custom or real,
+# short or long: a custom value missing from a short custom column is found
+# absent through the box and created through the same branch's "+ Custom"
+# path. The "no search input" fallbacks further down (gated on the NEXT
+# column's header being absent) can no longer run. They cost one ~7s
+# `notVisible` poll per level — the same poll the custom path used to pay on
+# the search-branch miss instead — so the util's wall-clock is unchanged; they
+# are left in place for a deliberate R10 clean-up rather than rewritten blind.
+# The paragraph below is the pre-NEO-224 description.
+#
 # SEARCH vs. DIRECT-TAP DECISION:
 #   Real-synced columns (Sports on the Baseball path, Years on Baseball/2024,
 #   Manufacturers after a real Year, Sets after a real Manufacturer) show a

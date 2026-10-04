@@ -215,12 +215,14 @@ tags:
       YEAR: ${output.YEAR}
       MANUFACTURER: "All Brands"
 
-# PRECONDITION (R2): the view lists the year. A 1990 baseball year is
-# hundreds of sets, so `EntitySelector`'s search input (rendered above 8
-# entries) is there. A year that synced to nothing fails HERE, by name,
-# before any known-brand claim is read into an empty column.
+# PRECONDITION (R2): the view lists the year — its LISTBOX (accessible name
+# `Sets`) renders only once the column holds a row. (NEO-224 made the search
+# box unconditional, so it no longer says anything about rows.) A year that
+# synced to nothing fails HERE, by name, before any known-brand claim is read
+# into an empty column.
 - extendedWaitUntil:
-    visible: ".*Search sets.*"
+    visible:
+      id: "Sets"
     timeout: 15000
 
 # ============================================================
@@ -405,7 +407,8 @@ tags:
       YEAR: ${output.YEAR}
       MANUFACTURER: "All Brands"
 - extendedWaitUntil:
-    visible: ".*Search sets.*"
+    visible:
+      id: "Sets"
     timeout: 15000
 
 # `Sync Sets` is the column's own action row, which `EntityColumn` renders

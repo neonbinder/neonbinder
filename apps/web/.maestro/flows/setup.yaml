@@ -357,8 +357,14 @@ tags:
 - extendedWaitUntil:
     visible: "Years"
     timeout: 20000
+# CONTENT GATE: the Years LISTBOX (accessible name = the column title), which
+# renders only once the column holds a row. NEO-224 made the search box
+# unconditional — every open column renders it, loading or empty — so the
+# `.*Search years.*` this gate used to wait on (rendered only above 8 rows)
+# would now pass in the first frame of the cold fetch.
 - extendedWaitUntil:
-    visible: ".*Search years.*"
+    visible:
+      id: "Years"
     timeout: 90000
 
 # STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
@@ -401,15 +407,13 @@ tags:
     when:
       true: "${!output.SL_PAUSED}"
     commands:
-      - extendedWaitUntil:
-          visible: ".*Search manufacturers.*"
-          timeout: 45000
-
-      # STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
-      # THAT HALF-WORKED IS A FAILED SEED" in the header.
-      - assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
-      - assertNotVisible: ".*Couldn.t sync options.*"
-
+      # NEO-224: the search box renders in every open column now (it used to
+      # appear only above 8 rows, which made it this level's content gate),
+      # and this column's listbox always holds the pinned All Brands view, so
+      # neither says the brand list has landed. The FILTERED ROW does: type
+      # first — the filter is kept while rows arrive — then wait for `Topps`
+      # under the box (seed budget, the cold SportLots brand-list fetch).
+      #
       # NEO-210: `centerElement` is load-bearing here, not cosmetic. The tap that
       # follows uses a `below:` RELATIVE selector (the filtered row and the search
       # input both read "Topps", so relationship is the only unambiguous handle — see
@@ -427,6 +431,18 @@ tags:
       - tapOn:
           text: ".*Search manufacturers.*"
       - inputText: "Topps"
+      - extendedWaitUntil:
+          visible:
+            text: "Topps"
+            below:
+              id: "Search manufacturers"
+          timeout: 45000
+
+      # STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
+      # THAT HALF-WORKED IS A FAILED SEED" in the header.
+      - assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
+      - assertNotVisible: ".*Couldn.t sync options.*"
+
       - tapOn:
           text: "Topps"
           below:
@@ -491,7 +507,8 @@ tags:
       - extendedWaitUntil:
           notVisible: "Add Custom Entry"
           timeout: 10000
-      # Short column, no search input: tap the row anchored on the column
+      # Short column, tapped untyped (its search box — rendered in every open
+      # column since NEO-224 — reads its placeholder): the row anchored on the column
       # HEADER (a bare "Topps" would also match nothing else yet, but the
       # anchor is what keeps this pinned to the right column). R8: centre.
       - scrollUntilVisible:
@@ -512,8 +529,11 @@ tags:
 - extendedWaitUntil:
     visible: "Sets"
     timeout: 20000
+# CONTENT GATE: the Sets LISTBOX, rendered only once the column holds a row
+# (NEO-224 — see the Years gate above for why not the search box).
 - extendedWaitUntil:
-    visible: ".*Search sets.*"
+    visible:
+      id: "Sets"
     timeout: 45000
 
 # STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
@@ -1128,9 +1148,32 @@ tags:
 
 # Auto-sync → cross-platform ReconciliationModal OR already-populated.
 # 240s = warm cost (first Insert BSC+SL fetch), sanctioned in setup-track only.
+#
+# NEO-224: the second half of this gate used to be `.*Search inserts.*`, which
+# meant "the column holds more than 8 rows". The search box now renders in
+# every open column from its first frame, so that half would pass before the
+# fetch even started. The content half is now the ROW this section picks: the
+# filter is typed FIRST (it is kept while the column is empty and applies when
+# rows land) and is deliberately a PREFIX, "Future Star", so the box's own
+# node text (its value) can never full-match `^Future Stars$` — only the row
+# can. Typing before the first sync does not freeze the column's auto-sync
+# (EntityColumn latches freeze-on-interaction only after a first sync). The
+# box sits at the top of the column, level with the `Insert` row just tapped;
+# centred so the row under it lands mid-screen (NEO-210).
+- scrollUntilVisible:
+    element:
+      text: ".*Search inserts.*"
+    centerElement: true
+    timeout: 10000
+# 250ms settle after tap so the search input is focused before inputText fires
+# (mirrors util-drill-to-2024-topps-chrome pattern; prevents keystroke drop).
+- tapOn:
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Future Star"
 - extendedWaitUntil:
     visible:
-      text: ".*Reconcile Inserts.*|.*Search inserts.*"
+      text: ".*Reconcile Inserts.*|^Future Stars$"
     timeout: 240000
 - runFlow:
     when:
@@ -1174,8 +1217,14 @@ tags:
           timeout: 30000
 
 # ── PICK "Future Stars" (below:{id} targets the result row, not the input) ───
+# The "Future Star" filter typed above is still in the box (the column was
+# never remounted — the reconcile dialog is a portal over it), so the row is
+# the filtered list's first entry, right under the box.
 - extendedWaitUntil:
-    visible: ".*Search inserts.*"
+    visible:
+      text: "^Future Stars$"
+      below:
+        id: "Search inserts"
     timeout: 15000
 
 # STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
@@ -1183,23 +1232,6 @@ tags:
 - assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
 - assertNotVisible: ".*Couldn.t sync options.*"
 
-- scrollUntilVisible:
-    element:
-      text: ".*Search inserts.*"
-    centerElement: true
-    timeout: 10000
-# 250ms settle after tap so the search input is focused before inputText fires
-# (mirrors util-drill-to-2024-topps-chrome pattern; prevents keystroke drop).
-- tapOn:
-    text: ".*Search inserts.*"
-    waitToSettleTimeoutMs: 250
-- inputText: "Future Stars"
-- extendedWaitUntil:
-    visible:
-      text: "^Future Stars$"
-      below:
-        id: "Search inserts"
-    timeout: 15000
 - tapOn:
     text: "^Future Stars$"
     below:
@@ -1380,9 +1412,23 @@ tags:
     visible: "Parallels"
     timeout: 20000
 
+# NEO-224 — the same gate shape as the Insert section's, for the same reason:
+# type a PREFIX of the row this section picks first, then wait for the dialog
+# or the row. "Gold Wave Refractor" can never full-match the row's own
+# `^Gold Wave Refractors$`, so only the row (or the dialog) satisfies it.
+- scrollUntilVisible:
+    element:
+      text: ".*Search parallels.*"
+    centerElement: true
+    timeout: 10000
+# 250ms settle so the search input is focused before inputText fires.
+- tapOn:
+    text: ".*Search parallels.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Gold Wave Refractor"
 - extendedWaitUntil:
     visible:
-      text: ".*Reconcile Parallels.*|.*Search parallels.*"
+      text: ".*Reconcile Parallels.*|^Gold Wave Refractors$"
     timeout: 240000
 - runFlow:
     when:
@@ -1426,8 +1472,12 @@ tags:
           timeout: 30000
 
 # ── PICK "Gold Wave Refractors" ──────────────────────────────────────────────
+# The "Gold Wave Refractor" filter typed above is still in the box.
 - extendedWaitUntil:
-    visible: ".*Search parallels.*"
+    visible:
+      text: "^Gold Wave Refractors$"
+      below:
+        id: "Search parallels"
     timeout: 15000
 
 # STRICT SEED — no marketplace was quietly skipped on this step. See "A SYNC
@@ -1435,22 +1485,6 @@ tags:
 - assertNotVisible: ".*could not be reached, so nothing from .* was changed.*"
 - assertNotVisible: ".*Couldn.t sync options.*"
 
-- scrollUntilVisible:
-    element:
-      text: ".*Search parallels.*"
-    centerElement: true
-    timeout: 10000
-# 250ms settle so the search input is focused before inputText fires.
-- tapOn:
-    text: ".*Search parallels.*"
-    waitToSettleTimeoutMs: 250
-- inputText: "Gold Wave Refractors"
-- extendedWaitUntil:
-    visible:
-      text: "^Gold Wave Refractors$"
-      below:
-        id: "Search parallels"
-    timeout: 15000
 - tapOn:
     text: "^Gold Wave Refractors$"
     below:
@@ -1839,9 +1873,11 @@ tags:
     commands:
       # 1a — CLAIM 1: SportLots WAS asked (no skip sentence) and minted
       # nothing. Before NEO-305 each of these was a row here; since NEO-306
-      # they wait in the review instead of being absorbed. The column holds
-      # ≤ 8 rows, so no search box (`EntitySelector` shows it above 8) — the
-      # bug made 15+ rows here, and a box is its shape.
+      # they wait in the review instead of being absorbed. (This used to end
+      # with `assertNotVisible: id "Search sets"` as a proxy for "≤ 8 rows" —
+      # the bug made 15+ — but since NEO-224 every open column renders its
+      # search box, so that proxy is gone; the three named rows below are the
+      # claim.)
       - assertNotVisible: "SportLots skipped: no SportLots ids on this path."
       - assertNotVisible:
           text: "${output.SL_SET}"
@@ -1849,8 +1885,6 @@ tags:
           text: "Bowman Gold"
       - assertNotVisible:
           text: "Bowman Neon Green"
-      - assertNotVisible:
-          id: "Search sets"
 
       # 1b — THE PILL. `SlSetReviewPill` renders in the idle row beside
       # `Sync Sets` once `getSlSetReviewSummary` resolves to a positive count

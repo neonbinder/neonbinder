@@ -301,14 +301,12 @@ tags:
 # or <ID> Stars Red — those were promoted to level=parallel.
 #
 # FINDING <ID> STARS IN A CROWDED LIST
-# After accumulated runs the column may have >8 insert entries. When >8 entries
-# are present the EntitySelector renders a search input (aria-label "Search inserts").
-# When ≤8 entries are present (fresh CI state) the search input is hidden and
-# standard scrollUntilVisible can reach the entry.
-#
-# We use a when: block to pick the right strategy:
-#   - Search path (>8 items): filter by ATTEMPT_ID, then tap the single result.
-#   - Scroll path (≤8 items): scrollUntilVisible + tapOn directly.
+# Filter by ATTEMPT_ID, then tap the single result under the search box. Since
+# NEO-224 every open column renders its search input (it used to appear only
+# above 8 entries, and this step carried a second, scroll-and-tap branch for
+# the short column, gated on `notVisible: "Parallels"`; with the box always
+# there that branch could never run and only paid R10's ~7s poll, so it is
+# gone).
 #
 # Gold and Red are no longer top-level inserts (they're now level=parallel and
 # excluded from the insert-level Convex query), so assertNotVisible passes
@@ -316,73 +314,29 @@ tags:
 - assertNotVisible: ".*${ATTEMPT_ID} Stars Gold.*"
 - assertNotVisible: ".*${ATTEMPT_ID} Stars Red.*"
 
-# Search path: Inserts column has >8 entries → search input visible.
-# Type the ATTEMPT_ID to filter down to a single matching row.
-# runFlow+when is the correct Maestro pattern for conditional execution
-# (standalone `when:` is not a valid top-level command).
-- runFlow:
-    when:
-      visible:
+- tapOn:
+    id: "Search inserts"
+- inputText: "${ATTEMPT_ID} Stars"
+# `below:` because the box's own node text is its VALUE once typed, which this
+# pattern would otherwise match (README → getNodeText).
+- extendedWaitUntil:
+    visible:
+      text: ".*${ATTEMPT_ID} Stars$"
+      below:
         id: "Search inserts"
-    commands:
-      - tapOn:
-          id: "Search inserts"
-      - inputText: "${ATTEMPT_ID} Stars"
-      - extendedWaitUntil:
-          visible:
-            text: ".*${ATTEMPT_ID} Stars$"
-          timeout: 7000
-      - tapOn:
-          text: ".*${ATTEMPT_ID} Stars$"
-          below:
-            id: "Search inserts"
-      # END THIS BRANCH ON THE STATE THE NEXT ONE GATES ON (NEO-260). The
-      # `notVisible: "Parallels"` guard below is only sound if this branch has
-      # actually REACHED that state before it is evaluated; a bare tap would
-      # leave a window in which the column has not mounted yet and the second
-      # branch fires anyway — the same race, one render later.
-      # util-drill-to-2024-topps-chrome.yaml closes it the same way (its
-      # `extendedWaitUntil: visible "Variant Types"` inside the retry).
-      - extendedWaitUntil:
-          visible: "Parallels"
-          timeout: 10000
-
-# Scroll path: Inserts column has ≤8 entries (clean CI state) → no search input.
-# scrollUntilVisible works because the column fits within the page-level scroll
-# axis (no overflow-y-auto needed when all items fit in the visible container).
-#
-# GATED ON "Parallels", *NOT* on `notVisible: id "Search inserts"` (NEO-260).
-# The two branches must be mutually exclusive, and gating this one on the
-# ABSENCE of the search input does not achieve that: `when:` conditions are
-# evaluated sequentially against live state, and selecting an insert COLLAPSES
-# the Inserts column, removing the very input the first branch tested. So on a
-# crowded column BOTH branches fired — the second tapping the already-selected
-# insert a second time, re-toggling the selection every assertion below depends
-# on. util-drill-to-2024-topps-chrome.yaml documents the identical failure at
-# its SET level and carries the same fix; this is R2 (no silent fall-through).
-#
-# "Parallels" is the state the FIRST branch is defined to reach, not the state
-# it leaves behind: SetSelector mounts the ParallelSelector column
-# (title="Parallels") only once an insert is selected, and the drill util's
-# return contract leaves nothing selected in the Inserts column. So the gate is
-# skipped when the first branch already advanced, and runs when the column had
-# no search input for it to use. A text selector is a whole-text match, so the
-# "Group Parallels" button beside the column does not satisfy it.
-- runFlow:
-    when:
-      notVisible: "Parallels"
-    commands:
-      - scrollUntilVisible:
-          element:
-            text: ".*${ATTEMPT_ID} Stars$"
-          centerElement: true
-          timeout: 7000
-      - tapOn:
-          text: ".*${ATTEMPT_ID} Stars$"
+    timeout: 7000
+- tapOn:
+    text: ".*${ATTEMPT_ID} Stars$"
+    below:
+      id: "Search inserts"
+- extendedWaitUntil:
+    visible: "Parallels"
+    timeout: 7000
 
 # The Parallels column (level=parallel, parentId=<ID> Stars) opens to the right.
 # The column is scoped to this insert's parentId — exactly 2 items (Gold + Red).
-# No search input (<8 items), no scrolling needed — both rows render in-viewport.
+# No scrolling needed — both rows render in-viewport under the column's search
+# box (rendered in every open column since NEO-224, ~48px above the rows).
 #
 # extendedWaitUntil first to let the Parallels column load, then assertVisible
 # to confirm both saved entries are present (proving the nesting was persisted).

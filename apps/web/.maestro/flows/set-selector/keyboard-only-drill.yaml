@@ -1,0 +1,193 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Set Builder drill is keyboard-only — type to filter, Enter picks the first match, focus follows into the next column (NEO-224)"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE (NEO-224): the whole Sport → Year → Manufacturer → Set →
+# Variant Type drill is done from the keyboard, with NO tap. Every column is a
+# combobox whose search box keeps focus; typing filters, Enter takes the
+# highlighted row (the first filter match); and after every pick the cascade
+# moves focus into the next open column's search box, so the operator just
+# types again. Ends at the terminal pick, `Variant Types: Base — change`.
+#
+# WHAT EACH LEVEL PROVES, IN ORDER (all on the registered, seeded hierarchy):
+#   1. `inputText` with no tap lands in THIS column's box — asserted by reading
+#      the box back (`id` = its accessible name `Search <column>`, `text` = its
+#      VALUE; README → getNodeText). That is "focus is here".
+#   2. The filtered row is listed under the box (the thing Enter will take).
+#   3. `pressKey: Enter` picks it — asserted by the collapsed card's
+#      accessible name `<Column>: <Name> — change`, a FULL match, so the card
+#      also says WHICH row Enter took.
+#   4. The next column's heading is up, which is where step 1 of the next level
+#      types.
+#
+# FIRST-MATCH ORDERING (plan Risk 2). Enter takes the FIRST row the filter
+# matches, in the column's sort (all-digit names newest first, then the rest
+# A→Z, NB lead rows ahead). "Topps" also matches every "Topps …" brand and
+# "Topps Chrome" every "Topps Chrome …" set; a full name sorts ahead of every
+# longer name it prefixes, so the target is first. If a row ever sorted ahead
+# of it, the full-match card assert below names the row Enter actually took.
+#
+# WHY NOT THE DRILL UTILS (R9). Those utils TAP each row; this flow's feature
+# is that no tap is needed, so it drills inline on purpose — the one sanctioned
+# divergence R9 describes ("a flow targeting … unique picker asserts may
+# diverge and must say why").
+#
+# WHY pressKey IS SAFE HERE (README → "pressKey needs a unique, user-visible
+# handle"). maestro-web re-finds `document.activeElement` by an XPath built
+# from class names. Each column's box carries the Input primitive's
+# document-unique marker class plus `mb-search-<column>`, so the XPath names
+# exactly one node; the box's own `onKeyDown` handles Enter (a synthetic key
+# event has no default action). Nothing here relies on a DOM id.
+#
+# NOT ASSERTED HERE: where focus goes AFTER the terminal pick (D3 — the
+# attributes panel's "Edit attributes" on a set with cards). A synthetic Enter
+# cannot activate that button (it has no Enter handler of its own), so the
+# landing cannot be observed from a flow; see the NEO-224 maestro report.
+#
+# R2 — every step ends in a hard positive. R4 — enters through the sign-in
+# redirect. R5 — every in-app wait is 7000 (the post-launch gate is the
+# sanctioned 45000); every row here is warm (setup.yaml provisions the whole
+# path), so no marketplace is waited on. R7/R7a — read-only on 2024 Topps
+# Chrome (SET-REGISTRY.md → "Read-only consumers"): picking rows writes
+# nothing, and the drill stops at Base. NEO-287: no paused branch — the path
+# exists in both modes (under the pause `Topps` is the seed's hand-made row)
+# and every step here reads it the same way; a paused Base auto-opens its
+# picker, which sits over the page without hiding the card the last step
+# reads.
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# The Sports column's box is on screen. It is the cascade's focus target from
+# the first render (every open column renders exactly one combobox, loading
+# included), so nothing is tapped to get focus into it.
+- extendedWaitUntil:
+    visible:
+      id: "Search sports"
+    timeout: 7000
+
+# ── SPORT ─────────────────────────────────────────────────────────────────────
+- inputText: "Baseball"
+- extendedWaitUntil:
+    visible:
+      id: "Search sports"
+      text: "Baseball"
+    timeout: 7000
+# `below:` because the box's own text is now "Baseball" too.
+- extendedWaitUntil:
+    visible:
+      text: "Baseball"
+      below:
+        id: "Search sports"
+    timeout: 7000
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Sports: Baseball — change"
+    timeout: 7000
+- extendedWaitUntil:
+    visible: "Years"
+    timeout: 7000
+
+# ── YEAR ──────────────────────────────────────────────────────────────────────
+# Focus moved into the Years box by itself: the keystrokes below land there or
+# the read-back fails, by name.
+- inputText: "2024"
+- extendedWaitUntil:
+    visible:
+      id: "Search years"
+      text: "2024"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "2024"
+      below:
+        id: "Search years"
+    timeout: 7000
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Years: 2024 — change"
+    timeout: 7000
+- extendedWaitUntil:
+    visible: "Manufacturers"
+    timeout: 7000
+
+# ── MANUFACTURER ──────────────────────────────────────────────────────────────
+# The pinned "All Brands" view is never filtered out, but "topps" does not
+# match it, so the highlight lands on the first matching DATA row.
+- inputText: "Topps"
+- extendedWaitUntil:
+    visible:
+      id: "Search manufacturers"
+      text: "Topps"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "Topps"
+      below:
+        id: "Search manufacturers"
+    timeout: 7000
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Manufacturers: Topps — change"
+    timeout: 7000
+- extendedWaitUntil:
+    visible: "Sets"
+    timeout: 7000
+
+# ── SET ───────────────────────────────────────────────────────────────────────
+- inputText: "Topps Chrome"
+- extendedWaitUntil:
+    visible:
+      id: "Search sets"
+      text: "Topps Chrome"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "Topps Chrome"
+      below:
+        id: "Search sets"
+    timeout: 7000
+- pressKey: Enter
+# The Variant Types heading renders the moment the set is picked; the Sets
+# card replaces the list once the Variant Types read lands (the cascade's
+# late collapse), so the card is waited on, not asserted bare.
+- extendedWaitUntil:
+    visible: "Variant Types"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      id: "Sets: Topps Chrome — change"
+    timeout: 7000
+
+# ── VARIANT TYPE (terminal) ───────────────────────────────────────────────────
+- inputText: "Base"
+- extendedWaitUntil:
+    visible:
+      id: "Search variant types"
+      text: "Base"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "Base"
+      below:
+        id: "Search variant types"
+    timeout: 7000
+- pressKey: Enter
+# THE END STATE. A terminal pick made BY KEYBOARD may scroll the page down to
+# the next focus target (the attributes toggle) when it is off screen, which
+# can carry the columns row above the top edge. The card is ABOVE wherever
+# that leaves the page, so the scroll that is the assertion goes UP (R5 — an
+# anchor above takes UP; never rely on the document bottoming out). It exits
+# at try 0 when nothing scrolled. No tap follows, so no centring (R8).
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: Base — change"
+    direction: UP
+    timeout: 7000

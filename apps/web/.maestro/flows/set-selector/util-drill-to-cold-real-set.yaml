@@ -40,8 +40,11 @@ tags:
 # step in both modes: tap the pinned entry, wait out the year-wide Sets sync.
 # There is nothing to create — the paused create branch below is for ROWS
 # only, and typing the view's name into the form would now fail on the
-# refusal. The pinned entry's accessible name is `All Brands — every set in
-# <year>`; its visible text is exactly `All Brands` (ManufacturerSelector.tsx).
+# refusal. The pinned entry's visible text is exactly `All Brands`, with
+# `Every set in <year>` as a second line (ManufacturerSelector.tsx). Its
+# accessible name `All Brands — every set in <year>` is not a Maestro handle
+# since NEO-224 (the option's DOM id shadows it); the tap below anchors the
+# visible name under the column's search box instead.
 #
 # What the Sets column holds afterwards differs from a brand's column: every
 # set under every manufacturer of the year (`brandView.getSetsUnderYear`),
@@ -61,27 +64,35 @@ tags:
 #    at exactly that moment. Every level therefore waits out the "Syncing <X>"
 #    panel FIRST, and only then gates on real content.
 #
-# 2. THE SEARCH INPUT APPEARS ONLY ABOVE 8 ENTRIES.
-#    `EntitySelector`'s `showSearch = sortedItems.length > 8` — not "more than
-#    one", which is what the older comments in this directory say. A vintage
-#    year with three manufacturers has no input at all, so every level here
-#    branches on the input's presence rather than assuming it.
+# 2. THE SEARCH INPUT IS NOT A CONTENT SIGNAL ANY MORE (NEO-224).
+#    `EntitySelector` used to render it only above 8 entries, so this file
+#    gated on it as "the column has data" and branched on its presence. Since
+#    NEO-224 every open column renders exactly one search box — the column's
+#    combobox and the cascade's focus target — while loading, while empty and
+#    while full. So a gate on `.*Search <x>.*` passes in the first frame of a
+#    60-second fetch. The content signals now are:
+#      - the column's LISTBOX, accessible name = the column title (`Years`),
+#        which renders only once the column holds at least one row;
+#      - a FILTERED ROW under the search box, for a level whose row name the
+#        caller gave us (type first, then wait — the filter is kept while
+#        rows arrive);
+#      - for the Manufacturers column only, whose listbox always holds the
+#        pinned All Brands entry: the idle empty text going away.
+#    And there is one shape per level: filter, then the row under the box.
 #
-# 3. THE TWO BRANCHES ARE GATED ON THE NEXT COLUMN'S HEADER, NEVER ON THE
-#    SEARCH INPUT. Selecting a row COLLAPSES the column and removes the input,
-#    so gating both on the input runs BOTH branches and the second re-toggles
-#    the selection. util-drill-to-2024-topps-chrome carries the full write-up of
-#    that failure; read it before touching this.
+# 3. THE TWO-BRANCH DANCE IS GONE WITH THE THRESHOLD. The old fallback branches
+#    ("8 or fewer entries: tap the row under the column header") were gated on
+#    the next column's header being absent; with the search box always there
+#    they could never run and only paid R10's ~7s `notVisible` poll per level.
+#    util-drill-to-2024-topps-chrome carries the history of why such a gate
+#    must be the next column and never the input; read it before re-adding
+#    one. The paused manufacturer ROW path keeps its header-anchored tap
+#    (below), because it creates the row first and centres it from there.
 #
-#    The `notVisible:` guard does cost one full poll on the path where the first
-#    branch already ran (R10's documented exception, ~7s per level). That is the
-#    price of not knowing a marketplace's entry count in advance, and it is the
-#    same price the warm util already pays at its Set level.
-#
-# CALLER CAVEAT: the content gate below is `".*Search <x>.*|<VALUE>"`, so the
-# VALUE you pass must not be a full-string match for an ancestor's collapsed
-# chip, or the gate is satisfied before the column has loaded. Hockey / 2024 /
-# Topps is safe (no level's value equals another's).
+# CALLER CAVEAT: a row tap is `text: <VALUE>` under `Search <x>`, so a VALUE
+# that also names a row's second line (the view's brand line) still lands in
+# the right row; a VALUE that matches no row fails at the filtered-row gate,
+# by name. Hockey / 2024 / Topps is safe.
 #
 # ── NEO-287: THE MANUFACTURER LEVEL WHILE SPORTLOTS IS ON PAUSE (ROWS) ──────
 # (Not the pinned view — see the NEO-237 block above: the view needs no row.)
@@ -150,70 +161,43 @@ tags:
       - extendedWaitUntil:
           notVisible: "Syncing Year Options"
           timeout: 150000
+# CONTENT GATE (header point 2): the Years LISTBOX, which renders only once the
+# column holds a row. It also covers the ~300ms before the "Syncing" panel
+# first appears, which the one-shot guard above can miss. 60000 is the cold
+# ceiling the old `.*Search years.*|<YEAR>` gate carried (R5 marketplace
+# exception), unchanged.
 - extendedWaitUntil:
-    visible: ".*Search years.*|${YEAR || '2024'}"
+    visible:
+      id: "Years"
     timeout: 60000
 
-- runFlow:
-    when:
-      visible: ".*Search years.*"
+# centerElement is load-bearing, not cosmetic (NEO-210): the tap below is a
+# `below:` RELATIVE selector, and Maestro throws "null cannot be cast to
+# non-null type kotlin.Int" when the candidate row is clipped by the viewport.
+# Centering the INPUT puts the row under it mid-screen instead of under the
+# fold. (Focus is already in this box — the cascade moves it into the deepest
+# open column since NEO-224 — so the tap is a no-op for focus; it stays as the
+# drill-util convention and costs one hierarchy read.)
+- scrollUntilVisible:
+    element:
+      text: ".*Search years.*"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search years.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${YEAR || "2024"}
+- retry:
+    maxRetries: 1
     commands:
-      # centerElement is load-bearing, not cosmetic (NEO-210): the tap below is
-      # a `below:` RELATIVE selector, and Maestro throws
-      # "null cannot be cast to non-null type kotlin.Int" when the candidate row
-      # is clipped by the viewport. Centering the INPUT puts the row under it
-      # mid-screen instead of under the fold.
-      - scrollUntilVisible:
-          element:
-            text: ".*Search years.*"
-          centerElement: true
-          timeout: 7000
       - tapOn:
-          text: ".*Search years.*"
-          waitToSettleTimeoutMs: 250
-      - inputText: ${YEAR || "2024"}
-      - retry:
-          maxRetries: 1
-          commands:
-            - tapOn:
-                text: ${YEAR || "2024"}
-                below:
-                  id: "Search years"
-                retryTapIfNoChange: true
-            - extendedWaitUntil:
-                visible: "Manufacturers"
-                timeout: 20000
-
-- runFlow:
-    when:
-      notVisible: "Manufacturers"
-    commands:
-      # 8-or-fewer entries: no search input to anchor on, so anchor on the
-      # column HEADER, which is always rendered. Never a bare `text: ${YEAR}` —
-      # a year string also appears in a breadcrumb and in an ancestor chip.
-      # R5 — 7000, the bar (was 15000). NO LOG EVIDENCE: this step did not
-      # execute in either green CI run (34349299679, 34361627641), so 7000 is
-      # the rule's default rather than a measurement. It is an ordinary in-app
-      # scroll — the `.*Search years.*|${YEAR}` gate above owns the cold-sync
-      # wait.
-      - scrollUntilVisible:
-          element:
-            text: ${YEAR || "2024"}
-            below:
-              text: "Years"
-          centerElement: true
-          timeout: 7000
-      - retry:
-          maxRetries: 1
-          commands:
-            - tapOn:
-                text: ${YEAR || "2024"}
-                below:
-                  text: "Years"
-                retryTapIfNoChange: true
-            - extendedWaitUntil:
-                visible: "Manufacturers"
-                timeout: 20000
+          text: ${YEAR || "2024"}
+          below:
+            id: "Search years"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Manufacturers"
+          timeout: 20000
 
 # ── MANUFACTURER (COLD) ───────────────────────────────────────────────────────
 - runFlow:
@@ -235,36 +219,50 @@ tags:
 - evalScript: '${output.PINNED_VIEW = (typeof MANUFACTURER === "string" ? MANUFACTURER : "Topps") === "All Brands"}'
 
 # ── THE PINNED VIEW — one tap, both modes, behind a CONTENT gate ─────────────
-# The entry is part of the column's listbox from the moment the column mounts
-# — INCLUDING the ~300ms before `ensureSelectorOptions` flips the status row
-# and the "Syncing" panel replaces the list (point 1 of the header: an idle
-# column is not proof it has data). Tapping it in that window would open the
-# view and fire the year-wide Sets sync against a year with NO brand rows yet:
+# The entry is part of the column's listbox from the moment the column's read
+# lands — INCLUDING the ~300ms before `ensureSelectorOptions` flips the status
+# row and the "Syncing" panel appears (point 1 of the header: an idle column
+# is not proof it has data). Tapping it in that window would open the view
+# and fire the year-wide Sets sync against a year with NO brand rows yet:
 # every BSC set would land under `Unknown` and the SportLots phase would find
 # no brand to scope. So the tap waits for the manufacturer sync's CONTENT
-# first, by mode — the row path below gets the same guarantee from its
-# `.*Search manufacturers.*|<row>` gate.
-#   LIVE:   the search input, which EntitySelector renders only above 8 data
-#           rows — SportLots' hockey brand list is 18. 60s is the R5
-#           marketplace exception (the cold brand-list fetch). CALLER CAVEAT:
-#           a live year with eight brands or fewer never renders the input and
-#           would fail here, by name; no caller drills one.
+# first, by mode.
+#   LIVE:   the column has loaded (the pinned entry is listed under the search
+#           box — 7000, a Convex read), and then its idle empty text is GONE:
+#           "No manufacturers available…" renders exactly while the column
+#           holds no data row, so its disappearance is the brand list landing.
+#           The positive just before it is what keeps this `notVisible` from
+#           passing on a dead or still-loading page (README R2 pairing). 60000
+#           is the R5 marketplace exception (the cold brand-list fetch) the old
+#           `.*Search manufacturers.*` gate carried. CALLER CAVEAT: a live year
+#           whose brand list is EMPTY fails here, by name; no caller drills one.
 #   PAUSED: nothing is fetched (SportLots is the column's only source), so
 #           there is nothing to wait for — gate on the idle empty text under
 #           the pinned entry (fresh year) or on the year's `Unknown` row (a
 #           re-drill after the Sets sync minted it). The 7000 bar.
 #
-# The accessible name, not the visible words: `text: "All Brands"` would
-# also be a full match for the collapsed card's text once the view is
-# selected, and the retry below re-reads the screen after a possibly-landed
-# tap. R8 — centred before the tap. Result-keyed retry: the same
-# coordinate-staleness class the row taps below handle.
+# The tap is the visible name UNDER THE SEARCH BOX. Not the accessible name:
+# since NEO-224 every option carries a DOM id (the combobox's
+# aria-activedescendant target), and maestro-web reports `id || ariaLabel` as
+# resource-id, so `All Brands — every set in <year>` no longer resolves. Not a
+# bare `text: "All Brands"` either: that is also a full match for the
+# collapsed card once the view is selected, and the retry below re-reads the
+# screen after a possibly-landed tap. The card has no search box above it, so
+# the anchor rules it out (README R9 sanctions this handle). R8 — centred
+# before the tap. Result-keyed retry: the same coordinate-staleness class the
+# row taps below handle.
 - runFlow:
     when:
       true: "${output.PINNED_VIEW && !output.SL_PAUSED}"
     commands:
       - extendedWaitUntil:
-          visible: ".*Search manufacturers.*"
+          visible:
+            text: "All Brands"
+            below:
+              id: "Search manufacturers"
+          timeout: 7000
+      - extendedWaitUntil:
+          notVisible: "No manufacturers available. Sync from marketplaces to populate."
           timeout: 60000
 - runFlow:
     when:
@@ -277,26 +275,63 @@ tags:
     when:
       true: "${output.PINNED_VIEW}"
     commands:
-      - extendedWaitUntil:
-          visible:
-            id: "All Brands — every set in ${YEAR || '2024'}"
-          timeout: 7000
       - scrollUntilVisible:
           element:
-            id: "All Brands — every set in ${YEAR || '2024'}"
+            text: "All Brands"
+            below:
+              id: "Search manufacturers"
           centerElement: true
           timeout: 7000
       - retry:
           maxRetries: 1
           commands:
             - tapOn:
-                id: "All Brands — every set in ${YEAR || '2024'}"
+                text: "All Brands"
+                below:
+                  id: "Search manufacturers"
                 retryTapIfNoChange: true
             - extendedWaitUntil:
                 visible: "Sets"
                 timeout: 20000
 
-# ── A MANUFACTURER ROW — the two shapes, as before ───────────────────────────
+# ── A MANUFACTURER ROW, LIVE — filter, then the row under the box ────────────
+# Type first, then wait (header point 2): the filter is kept while the cold
+# brand list lands, so the FILTERED ROW appearing under the box is the
+# content gate — 60000, the R5 marketplace exception the old
+# `.*Search manufacturers.*|<row>` gate carried. `below:` because the box's own
+# node text is its VALUE once typed.
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED && !output.PINNED_VIEW}"
+    commands:
+      - scrollUntilVisible:
+          element:
+            text: ".*Search manufacturers.*"
+          centerElement: true
+          timeout: 7000
+      - tapOn:
+          text: ".*Search manufacturers.*"
+          waitToSettleTimeoutMs: 250
+      - inputText: ${MANUFACTURER || "Topps"}
+      - extendedWaitUntil:
+          visible:
+            text: ${MANUFACTURER || "Topps"}
+            below:
+              id: "Search manufacturers"
+          timeout: 60000
+      - retry:
+          maxRetries: 1
+          commands:
+            - tapOn:
+                text: ${MANUFACTURER || "Topps"}
+                below:
+                  id: "Search manufacturers"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Sets"
+                timeout: 20000
+
+# ── A MANUFACTURER ROW, PAUSED — create it if absent, then tap it ───────────
 - runFlow:
     when:
       true: "${output.SL_PAUSED && !output.PINNED_VIEW}"
@@ -343,15 +378,15 @@ tags:
             - extendedWaitUntil:
                 notVisible: "Add Custom Entry"
                 timeout: 7000
-      # Written: the row is in the column (short column, no search input —
-      # the `notVisible: "Sets"` branch below taps it by header anchor). A
-      # SCROLL, and UP: centring "+ Custom" above ran the page to maximum
-      # scroll, which left the column HEADER above the top edge while the new
-      # row sat at y≈23 — and a `below:` selector cannot resolve without its
-      # anchor in the hierarchy (PR #265 push 2, runners 3: `Topps` and
-      # `All Brands` both on screen, "Manufacturers" not). Both the header
-      # and the row are ABOVE the current position, so UP is the direction
-      # that reaches them; centring puts the row in the band for the tap.
+      # Written: the row is in the column. A SCROLL, and UP: centring
+      # "+ Custom" above ran the page to maximum scroll, which left the column
+      # HEADER above the top edge while the new row sat at y≈23 — and a
+      # `below:` selector cannot resolve without its anchor in the hierarchy
+      # (PR #265 push 2, runners 3: `Topps` and `All Brands` both on screen,
+      # "Manufacturers" not). Both the header and the row are ABOVE the
+      # current position, so UP is the direction that reaches them; centring
+      # puts the row in the band for the tap. (On the no-create path the row
+      # is already in view and this exits at try 0.)
       - scrollUntilVisible:
           element:
             text: ${MANUFACTURER || "Topps"}
@@ -360,70 +395,21 @@ tags:
           direction: UP
           centerElement: true
           timeout: 7000
-
-# NEO-237 — a ROW only. The pinned view above already opened the Sets column,
-# and re-running these against it would type the view's name into a search
-# box that filters rows, never the pinned entry, and then tap nothing.
-- runFlow:
-    when:
-      true: "${!output.PINNED_VIEW}"
-    commands:
-      - extendedWaitUntil:
-          visible: ".*Search manufacturers.*|${MANUFACTURER || 'Topps'}"
-          timeout: 60000
-
-      - runFlow:
-          when:
-            visible: ".*Search manufacturers.*"
+      # Tapped under the column HEADER, not the search box: this branch never
+      # types, so the box reads its placeholder and no row name collides with
+      # it. The header is above the box, so the anchor still pins the tap to
+      # this column's rows.
+      - retry:
+          maxRetries: 1
           commands:
-            - scrollUntilVisible:
-                element:
-                  text: ".*Search manufacturers.*"
-                centerElement: true
-                timeout: 7000
             - tapOn:
-                text: ".*Search manufacturers.*"
-                waitToSettleTimeoutMs: 250
-            - inputText: ${MANUFACTURER || "Topps"}
-            - retry:
-                maxRetries: 1
-                commands:
-                  - tapOn:
-                      text: ${MANUFACTURER || "Topps"}
-                      below:
-                        id: "Search manufacturers"
-                      retryTapIfNoChange: true
-                  - extendedWaitUntil:
-                      visible: "Sets"
-                      timeout: 20000
-
-      - runFlow:
-          when:
-            notVisible: "Sets"
-          commands:
-            # R5 — 7000, the bar (was 15000). NO LOG EVIDENCE: this step did not
-            # execute in either green CI run (34349299679, 34361627641), so 7000 is
-            # the rule's default rather than a measurement. It is an ordinary in-app
-            # scroll — the `.*Search manufacturers.*|${MANUFACTURER}` gate above owns
-            # the cold-sync wait.
-            - scrollUntilVisible:
-                element:
-                  text: ${MANUFACTURER || "Topps"}
-                  below:
-                    text: "Manufacturers"
-                centerElement: true
-                timeout: 7000
-            - retry:
-                maxRetries: 1
-                commands:
-                  - tapOn:
-                      text: ${MANUFACTURER || "Topps"}
-                      below:
-                        text: "Manufacturers"
-                      retryTapIfNoChange: true
-                  - extendedWaitUntil:
-                      visible: "Sets"
-                      timeout: 20000
+                text: ${MANUFACTURER || "Topps"}
+                below:
+                  text: "Manufacturers"
+                retryTapIfNoChange: true
+            - extendedWaitUntil:
+                visible: "Sets"
+                timeout: 20000
 
 # ── RETURN CONTRACT — THE SETS COLUMN HAS FINISHED ITS COLD SYNC ─────────────
 # The set list comes from syncSetsAcrossManufacturers, which since NEO-237 is
