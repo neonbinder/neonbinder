@@ -1165,12 +1165,27 @@ tags:
       text: ".*Search inserts.*"
     centerElement: true
     timeout: 10000
-# 250ms settle after tap so the search input is focused before inputText fires
-# (mirrors util-drill-to-2024-topps-chrome pattern; prevents keystroke drop).
-- tapOn:
-    text: ".*Search inserts.*"
-    waitToSettleTimeoutMs: 250
-- inputText: "Future Star"
+# THE DIALOG CAN BEAT THE KEYSTROKES. The auto-sync opens the reconcile dialog
+# the moment both marketplace fetches return, and ReconciliationModal takes
+# focus when it mounts (it focuses its own root and restores the previous
+# focus on close). A fetch that returns between the tap below and the last
+# keystroke swallows the filter: the keys land on the dialog, and the box
+# comes back focused but EMPTY (seed run 37243875162, Parallels section: both
+# fetches returned before the tap, the gate matched the dialog 0.37s after
+# typing, and the post-save box read its placeholder). So: type only if the
+# dialog is not already up (the guard is the R10 exception — the dialog is
+# normally ABSENT here, so `notVisible` returns at once), and the dialog
+# branch below RE-TYPES the filter after the save, whatever the box holds.
+- runFlow:
+    when:
+      notVisible: "Reconcile Inserts"
+    commands:
+      # 250ms settle after tap so the search input is focused before inputText
+      # fires (mirrors util-drill-to-2024-topps-chrome; prevents keystroke drop).
+      - tapOn:
+          text: ".*Search inserts.*"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Future Star"
 - extendedWaitUntil:
     visible:
       text: ".*Reconcile Inserts.*|^Future Stars$"
@@ -1215,11 +1230,45 @@ tags:
       - extendedWaitUntil:
           notVisible: "Reconcile Inserts"
           timeout: 30000
+      # RE-TYPE THE FILTER (see "THE DIALOG CAN BEAT THE KEYSTROKES" above).
+      # The box is the column's first control, near the top of the document,
+      # so after the dialog it is on screen or ABOVE it, never below: UP
+      # (README R5, an anchor above takes UP). Centred so the row under it is
+      # unclipped for `below:` (R8, NEO-210). Layout only, so 7000.
+      - scrollUntilVisible:
+          element:
+            text: ".*Search inserts.*"
+          direction: UP
+          centerElement: true
+          timeout: 7000
+      # The box holds all, part or none of the filter, depending on when the
+      # dialog mounted. All of it, or enough of it: the row is already under
+      # the box — leave the box alone (a centre tap on a long value can drop
+      # the caret mid-text, and `eraseText` deletes only left of the caret).
+      # None, or too little: retype. The box is then empty or holds a short
+      # prefix, so the centre tap lands past its end and 30 backspaces clear
+      # it (surplus ones on an empty box are inert). Not an R10 dead wait: the
+      # guard picks between two real outcomes of the race above, and the hard
+      # gate under the dialog branch asserts the result (R2).
+      - runFlow:
+          when:
+            notVisible:
+              text: "^Future Stars$"
+              below:
+                id: "Search inserts"
+          commands:
+            - tapOn:
+                text: ".*Search inserts.*"
+                waitToSettleTimeoutMs: 250
+            - eraseText: 30
+            - inputText: "Future Star"
 
 # ── PICK "Future Stars" (below:{id} targets the result row, not the input) ───
-# The "Future Star" filter typed above is still in the box (the column was
-# never remounted — the reconcile dialog is a portal over it), so the row is
-# the filtered list's first entry, right under the box.
+# The "Future Star" filter is in the box — typed above when the rows landed
+# first, re-typed in the dialog branch otherwise (the column was never
+# remounted — the reconcile dialog is a portal over it, and EntitySelector
+# clears its filter only on a pick or Escape) — so the row is the filtered
+# list's first entry, right under the box.
 - extendedWaitUntil:
     visible:
       text: "^Future Stars$"
@@ -1421,11 +1470,20 @@ tags:
       text: ".*Search parallels.*"
     centerElement: true
     timeout: 10000
-# 250ms settle so the search input is focused before inputText fires.
-- tapOn:
-    text: ".*Search parallels.*"
-    waitToSettleTimeoutMs: 250
-- inputText: "Gold Wave Refractor"
+# Typed only if the reconcile dialog is not already up, and re-typed in the
+# dialog branch after the save — the Insert section's "THE DIALOG CAN BEAT THE
+# KEYSTROKES" note. This is the section that went red on it (seed run
+# 37243875162): this column's fetches return in ~2s, so the dialog routinely
+# mounts between the tap and the keystrokes.
+- runFlow:
+    when:
+      notVisible: "Reconcile Parallels"
+    commands:
+      # 250ms settle so the search input is focused before inputText fires.
+      - tapOn:
+          text: ".*Search parallels.*"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Gold Wave Refractor"
 - extendedWaitUntil:
     visible:
       text: ".*Reconcile Parallels.*|^Gold Wave Refractors$"
@@ -1470,9 +1528,33 @@ tags:
       - extendedWaitUntil:
           notVisible: "Reconcile Parallels"
           timeout: 30000
+      # RE-TYPE THE FILTER — same steps, same reasons as the Insert section's
+      # (UP: the box is on screen or above it after the dialog; R8 centre;
+      # layout only, so 7000; retype only when the row is not already under
+      # the box, so a full "Gold Wave Refractor" — long enough to pass the
+      # box's centre — is never tapped and erased from a mid-text caret).
+      - scrollUntilVisible:
+          element:
+            text: ".*Search parallels.*"
+          direction: UP
+          centerElement: true
+          timeout: 7000
+      - runFlow:
+          when:
+            notVisible:
+              text: "^Gold Wave Refractors$"
+              below:
+                id: "Search parallels"
+          commands:
+            - tapOn:
+                text: ".*Search parallels.*"
+                waitToSettleTimeoutMs: 250
+            - eraseText: 30
+            - inputText: "Gold Wave Refractor"
 
 # ── PICK "Gold Wave Refractors" ──────────────────────────────────────────────
-# The "Gold Wave Refractor" filter typed above is still in the box.
+# The "Gold Wave Refractor" filter is in the box: typed above when the rows
+# landed first, re-typed in the dialog branch otherwise.
 - extendedWaitUntil:
     visible:
       text: "^Gold Wave Refractors$"

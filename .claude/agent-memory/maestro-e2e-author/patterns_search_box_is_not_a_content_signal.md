@@ -1,6 +1,6 @@
 ---
 name: search-box-is-not-a-content-signal
-description: Since NEO-224 every open set-builder column renders its `Search <x>` box from its first frame (loading/empty/full), so `.*Search <x>.*` no longer means ">8 rows"/"sync done" — gate on the column LISTBOX `id: "<Title>"` or type-then-wait for the filtered row
+description: Since NEO-224 every open set-builder column renders its `Search <x>` box from its first frame (loading/empty/full), so `.*Search <x>.*` no longer means ">8 rows"/"sync done" — gate on the column LISTBOX `id: "<Title>"` or type-then-wait for the filtered row; type-first races the auto-opened reconcile dialog (it eats the keys)
 metadata:
   type: feedback
 ---
@@ -24,6 +24,15 @@ seed (setup.yaml) is the costliest place to have one.
   `{text: <row>, below: {id: "Search <x>"}}`; for an alternation with a dialog
   (`.*Reconcile Inserts.*|^Future Stars$`) type a PREFIX ("Future Star") so the
   box's own value can never full-match the row pattern;
+- **type-first races an auto-opened dialog.** At Insert/Parallel level the
+  auto-sync opens ReconciliationModal the moment both fetches return; it
+  focuses its own root on mount and restores focus on close, so keys typed
+  in that window vanish and the box comes back focused but EMPTY (NEO-224
+  seed: Parallels fetch ~2s, dialog beat `inputText`). Guard the type with
+  `when: notVisible: "Reconcile <X>"`, and after the save re-type only
+  `when: notVisible: {row, below: box}` (a full long value can sit past the
+  box centre, where a tap drops the caret mid-text and `eraseText` leaves the
+  tail — [[erase-text-needs-the-caret-at-the-end]]);
 - Manufacturers only (its listbox always holds the pinned All Brands entry):
   positive pinned-entry gate, then `notVisible` the idle empty text.
 - "no search box ⇒ short column" fallbacks gated on the next column's header
