@@ -1749,3 +1749,26 @@ describe("NEO-315: the placeholder download mints refuse a signed-out caller", (
     ).rejects.toThrow(/Unexpected user id shape/);
   });
 });
+
+describe("NEO-322: the entity-name re-key is internal and armed, never public", () => {
+  /**
+   * `run` is reached by `npx convex run` WITHOUT `--identity`, so it carries no
+   * `requireAdmin`: the declaration keyword plus the confirm phrase and the
+   * `ALLOW_REKEY_ENTITY_NAMES` flag are the whole boundary. `applyPage` is the
+   * write half and `scanPage` reads every player, team and league key; a public
+   * twin of either would be an unauthenticated rewrite or read of the entity
+   * tables. Same reading-the-source approach as the NEO-214 and NEO-289
+   * blocks, for the same reason (convex-test does not enforce the boundary).
+   */
+  test.each([
+    ["rekeyEntityNames.ts", "run", "internalAction"],
+    ["rekeyEntityNames.ts", "scanPage", "internalQuery"],
+    ["rekeyEntityNames.ts", "applyPage", "internalMutation"],
+  ])("%s :: %s is declared %s", (file, fn, keyword) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = ${keyword}({`);
+    expect(src).not.toContain(`export const ${fn} = action(`);
+    expect(src).not.toContain(`export const ${fn} = query(`);
+    expect(src).not.toContain(`export const ${fn} = mutation(`);
+  });
+});

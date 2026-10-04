@@ -714,6 +714,20 @@ describe("NewTeamForm — typing in the League field", () => {
     expect(optionLabels()).toEqual(["Ligue Panaméricaine", "No league"]);
   });
 
+  it("keeps a league listed on the keystroke after a run of initials (NEO-322)", () => {
+    // "N. C. S" joins to "ncs", the substring of nothing in "nc state …"; the
+    // typeahead reading "nc s" keeps the league on offer on the way to
+    // "N. C. State".
+    currentLeagues = [{ _id: lid("l1"), name: "NC State Athletic League" }];
+    renderForm();
+    typeLeague("N. C.");
+    expect(optionLabels()).toEqual(["NC State Athletic League", "No league"]);
+    typeLeague("N. C. S");
+    expect(optionLabels()).toEqual(["NC State Athletic League", "No league"]);
+    typeLeague("N. C. State");
+    expect(optionLabels()).toEqual(["NC State Athletic League", "No league"]);
+  });
+
   it("filters staged and suggested leagues on their names too", () => {
     currentLeagues = BASEBALL;
     renderForm({

@@ -117,3 +117,4 @@ Non-markdown helpers: `tools/`
 - [NEO-313 sport switch + Players Sports/Cards](reference_neo313_sport_switch_selectors.md) — capped list: one-key `inputText: "F"` typeahead then tap; switch refused after the walk skips staged steps
 - [Auto id shadows aria-label](patterns_auto_id_shadows_aria_label.md) — `useId()` on a labelled node → resource-id `_r_xx_`; `id: "<label>"` fails on a visible element; fix in product
 - [Clamp then anchor-restore after a panel swap](patterns_clamp_then_anchor_restore_after_a_panel_swap.md) — form→query-loaded panel = two scroll states; gate on a mount-only element before any scroll
+- [Exact-match proof is the demoted create](patterns_exact_match_proof_is_the_demoted_create.md) — `Open <name>` also renders for CLOSE matches; assert `Create player X anyway`; verify seeded names from the recording, not dev
