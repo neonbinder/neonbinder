@@ -45,6 +45,7 @@
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -100,11 +101,21 @@ vi.mock("../../convex/_generated/api", () => ({
     parallelChecklistBuild: {
       getParallelsForBuild: "getParallelsForBuild",
     },
+    // NEO-224: the drill's URL gate (skipped unless the URL names rows).
+    drillPath: {
+      resolveDrillPath: "resolveDrillPath",
+    },
   },
 }));
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
+    // NEO-224: the drill is read from the URL, and an id the page did not
+    // pick itself is checked by `resolveDrillPath` first. Every id is valid
+    // here, so the answer is the whole path.
+    if (ref === "resolveDrillPath" && args !== "skip") {
+      return (args as { ids: string[] }).ids.map((_id) => ({ _id }));
+    }
     if (args === "skip") return undefined;
     if (ref === "getSelectorOptionById") {
       const id = (args as { id: string } | undefined)?.id;
@@ -192,6 +203,17 @@ vi.mock("../SetSelector/SportForm", () => ({ SportForm: () => null }));
 
 import SetSelector from "./SetSelector";
 
+/**
+ * NEO-224: the drill lives in the URL and has no holes, so the page opens
+ * drilled to a set — the variant-type column below is then a real column
+ * under a real set, which is what these tests reach for.
+ */
+const DrilledToASet = ({ children }: { children: React.ReactNode }) => (
+  <MemoryRouter initialEntries={["/?sport=sp&year=yr&brand=br&set=set1"]}>
+    {children}
+  </MemoryRouter>
+);
+
 const selectVariantType = (id: string) =>
   fireEvent.click(screen.getByText(`select-${id}`));
 
@@ -204,7 +226,7 @@ describe("SetSelector — Base mapping panel gating (NEO-255)", () => {
   });
 
   it("auto-prompts an unmapped Base in initial mode", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectVariantType("vt-base");
 
     expect(panelMode()).toBe("base-mapping-panel mode=initial");
@@ -212,7 +234,7 @@ describe("SetSelector — Base mapping panel gating (NEO-255)", () => {
   });
 
   it("Close hides the panel and leaves the way back in", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectVariantType("vt-base");
     fireEvent.click(screen.getByText("panel-close"));
 
@@ -230,7 +252,7 @@ describe("SetSelector — Base mapping panel gating (NEO-255)", () => {
     // dismissed here raced that flip: the seed's "Re-map Base" anchor read
     // "Map Base Set" for a beat (PR #242 run 4). The form stays until the
     // slot itself ends the prompt.
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectVariantType("vt-base");
     fireEvent.click(screen.getByText("panel-mapped"));
 
@@ -239,7 +261,7 @@ describe("SetSelector — Base mapping panel gating (NEO-255)", () => {
   });
 
   it("parks focus on the button that replaced the panel", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectVariantType("vt-base");
     // fireEvent.click does not move focus, so this is the real starting point:
     // the browser has nowhere to put focus once the panel unmounts.
@@ -253,7 +275,7 @@ describe("SetSelector — Base mapping panel gating (NEO-255)", () => {
   });
 
   it("does not steal focus the operator is already holding", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectVariantType("vt-base");
     // A control OUTSIDE the swapped subtree, so it survives the unmount.
     const held = screen.getByText("select-vt-insert");
@@ -266,7 +288,7 @@ describe("SetSelector — Base mapping panel gating (NEO-255)", () => {
   });
 
   it("re-opening from that button is still a first-time mapping", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectVariantType("vt-base");
     fireEvent.click(screen.getByText("panel-close"));
     fireEvent.click(screen.getByText("Map Base Set"));
@@ -276,7 +298,7 @@ describe("SetSelector — Base mapping panel gating (NEO-255)", () => {
   });
 
   it("changing the variant-type selection re-arms the auto-open", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectVariantType("vt-base");
     fireEvent.click(screen.getByText("panel-close"));
     expect(panelMode()).toBeNull();
@@ -293,7 +315,7 @@ describe("SetSelector — Base mapping panel gating (NEO-255)", () => {
   });
 
   it("leaves a mapped Base on the Re-map path", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectVariantType("vt-base-mapped");
 
     expect(panelMode()).toBeNull();

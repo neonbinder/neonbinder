@@ -83,3 +83,4 @@
 - [Reuse the status-ledger spinner→check pattern](feedback_reuse_the_status_ledger_spinner_to_check_pattern.md) — owner-approved (NEO-312 ParallelBuildPanel): per-item ledger, clock→spin→check glyphs, sleeve strip; reuse for any multi-item run, extract on second use
 - [Result ledgers grow, the page scrolls](feedback-result-ledgers-grow-the-page-scrolls.md) — no max-h-48 inner scroller on a list the operator reads; 70vh cap only past a pathological count (Jason, NEO-321)
 - [Key join rules need a typeahead reading](reference_key_join_rules_need_a_typeahead_reading.md) — joined initials break prefix AND substring typeahead one keystroke; entityNameQueryReadings; player-in-sport = home + playerSports legs
+- [Router navigation is a transition](reference_router_navigation_is_a_transition.md) — setSearchParams commits in startTransition; a sibling setState renders the OLD URL first; wrap it in startTransition

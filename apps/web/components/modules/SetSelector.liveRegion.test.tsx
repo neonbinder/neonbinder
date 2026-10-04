@@ -21,6 +21,7 @@
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../convex/_generated/api", () => ({
@@ -33,6 +34,10 @@ vi.mock("../../convex/_generated/api", () => ({
     // selected variant type's role is `parallel` (skipped otherwise).
     parallelChecklistBuild: {
       getParallelsForBuild: "getParallelsForBuild",
+    },
+    // NEO-224: the drill's URL gate (skipped unless the URL names rows).
+    drillPath: {
+      resolveDrillPath: "resolveDrillPath",
     },
   },
 }));
@@ -153,7 +158,7 @@ describe("SetSelector — new-column announcement (NEO-260)", () => {
   });
 
   it("starts on the only column that is open", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: MemoryRouter });
 
     // Present from the first paint, which is precisely why it is not announced:
     // a live region reports CHANGES, and this text was there when it mounted.
@@ -161,7 +166,7 @@ describe("SetSelector — new-column announcement (NEO-260)", () => {
   });
 
   it("names the column a selection just revealed", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: MemoryRouter });
 
     pick("sport");
     expect(liveRegion().textContent).toBe("Years column opened");
@@ -177,7 +182,7 @@ describe("SetSelector — new-column announcement (NEO-260)", () => {
   });
 
   it("uses the variant column's own heading, which is the variant type's plural", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: MemoryRouter });
     pick("sport");
     pick("year");
     pick("manufacturer");
@@ -192,7 +197,7 @@ describe("SetSelector — new-column announcement (NEO-260)", () => {
   it("names only the DEEPEST column, never the whole open chain", () => {
     // Reading the cascade back from the top on every step is what makes a live
     // region unusable; one selection can only reveal one column.
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: MemoryRouter });
     pick("sport");
     pick("year");
 
@@ -203,7 +208,7 @@ describe("SetSelector — new-column announcement (NEO-260)", () => {
   });
 
   it("says nothing new when a re-render reveals nothing", () => {
-    const { rerender } = render(<SetSelector />);
+    const { rerender } = render(<SetSelector />, { wrapper: MemoryRouter });
     pick("sport");
     const before = liveRegion().textContent;
 
@@ -215,7 +220,7 @@ describe("SetSelector — new-column announcement (NEO-260)", () => {
   });
 
   it("is polite and costs the layout nothing", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: MemoryRouter });
     const region = liveRegion();
 
     // role="status" implies aria-live="polite": worth saying, never
@@ -230,7 +235,7 @@ describe("SetSelector — new-column announcement (NEO-260)", () => {
   it("cannot be confused with a bare column heading by a flow", () => {
     // Maestro matches `text:` as a FULL-STRING regex, and ~105 flows wait on
     // headings like "Years". A full sentence can never satisfy one of those.
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: MemoryRouter });
     pick("sport");
 
     expect(liveRegion().textContent).not.toBe("Years");
