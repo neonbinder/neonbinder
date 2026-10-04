@@ -56,7 +56,10 @@ import {
 } from "../lib/players/career-years";
 // NEO-253: the one normalisation of an entity name, shared with teams,
 // leagues, the commit prelude and the browser-side review wizard.
-import { normalizeEntityName } from "../lib/entities/normalize-name";
+import {
+  entityNameQueryReadings,
+  normalizeEntityName,
+} from "../lib/entities/normalize-name";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
 
@@ -573,6 +576,27 @@ export async function pagePlayerSportRows(
   numItems: number,
 ): Promise<PaginationResult<Doc<"playerSports">>> {
   return await ctx.db.query("playerSports").paginate({ cursor, numItems });
+}
+
+/**
+ * NEO-322 — the `playerSports` rows stored under `nameNormalized` in
+ * `sportId`, READ-ONLY, for the re-key's collision report: "which players
+ * ALSO belong to this sport under this key". One indexed read, capped at
+ * `limit`. Here rather than in `convex/rekeyEntityNames.ts` for the same
+ * reason as `pagePlayerSportRows`.
+ */
+export async function playerSportRowsByName(
+  ctx: QueryCtx | MutationCtx,
+  nameNormalized: string,
+  sportId: Id<"selectorOptions">,
+  limit: number,
+): Promise<Array<Doc<"playerSports">>> {
+  return await ctx.db
+    .query("playerSports")
+    .withIndex("by_name_normalized_and_sport_id", (q) =>
+      q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
+    )
+    .take(limit);
 }
 
 /**
@@ -1881,10 +1905,14 @@ export const search = query({
      * prefix of one of the name's tokens, the same prefix rule the search
      * index applies to the last term. Only rows for the requested sport are
      * read; nothing here looks at another sport.
+     *
+     * NEO-322 — under either reading of the typed text
+     * (`entityNameQueryReadings`), so "J. T. R", one keystroke short of
+     * "J. T. Re", still finds "jt realmuto" instead of looking for "jtr".
      */
     if (args.sportId && docs.length < limit) {
-      const tokens = normalizePlayerName(term).split(" ").filter(Boolean);
-      if (tokens.length > 0) {
+      const readings = entityNameQueryReadings(term);
+      if (readings[0].length > 0) {
         const members = await ctx.db
           .query("playerSports")
           .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
@@ -1894,7 +1922,9 @@ export const search = query({
           if (docs.length >= limit) break;
           if (seen.has(row.playerId as string)) continue;
           const nameTokens = row.nameNormalized.split(" ");
-          const matches = tokens.every((t) => nameTokens.some((n) => n.startsWith(t)));
+          const matches = readings.some((tokens) =>
+            tokens.every((t) => nameTokens.some((n) => n.startsWith(t))),
+          );
           if (!matches) continue;
           const player = await ctx.db.get(row.playerId);
           if (!player) continue;

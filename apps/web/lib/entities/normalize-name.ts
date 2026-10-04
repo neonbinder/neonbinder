@@ -157,14 +157,39 @@ export function joinInitialRuns(tokens: readonly string[]): string[] {
  * `normalizeEntityName`, which sorts these.
  */
 export function entityNameTokens(raw: string): string[] {
-  return joinInitialRuns(
-    foldDiacritics(raw)
-      .toLowerCase()
-      .replace(DROPPED_PUNCTUATION, "")
-      .replace(NON_KEY_CHARS, " ")
-      .split(/\s+/)
-      .filter(Boolean),
-  );
+  return joinInitialRuns(unjoinedTokens(raw));
+}
+
+/** Fold, lowercase, strip and split — every step of the chain before the join. */
+function unjoinedTokens(raw: string): string[] {
+  return foldDiacritics(raw)
+    .toLowerCase()
+    .replace(DROPPED_PUNCTUATION, "")
+    .replace(NON_KEY_CHARS, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+/**
+ * NEO-322 — the readings of a TYPEAHEAD query, for matching typed text as
+ * prefixes of a stored key's tokens. Never a key itself.
+ *
+ * `entityNameTokens` joins a run of initials, which is right for a finished
+ * name and wrong on the keystroke where the operator has typed the first
+ * letter of the NEXT word: "J. T. R", on the way to "J. T. Realmuto", joins to
+ * "jtr", the prefix of nothing in "jt realmuto". So when the text ends in two
+ * or more single letters, a second reading keeps the last one apart —
+ * `["jt", "r"]` — and the caller accepts a row either reading matches. Every
+ * other query has exactly one reading, `entityNameTokens(raw)`, first.
+ */
+export function entityNameQueryReadings(raw: string): string[][] {
+  const tokens = unjoinedTokens(raw);
+  const joined = joinInitialRuns(tokens);
+  const n = tokens.length;
+  if (n < 2 || !SINGLE_LETTER.test(tokens[n - 1]) || !SINGLE_LETTER.test(tokens[n - 2])) {
+    return [joined];
+  }
+  return [joined, [...joinInitialRuns(tokens.slice(0, -1)), tokens[n - 1]]];
 }
 
 /**

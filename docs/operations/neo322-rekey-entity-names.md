@@ -45,7 +45,7 @@ stored copy of the key:
 | Table | Field | Recomputed from | On a collision |
 |---|---|---|---|
 | `players` | `nameNormalized` | `name` | write, report |
-| `playerSports` | `nameNormalized` | the player's name (denormalised copy) | write |
+| `playerSports` | `nameNormalized` | the player's name (denormalised copy) | write, report (as `players`, in that sport) |
 | `playerAliases` | `aliasNormalized` | the player's `aliases` list | write, report |
 | `teams` | `nameNormalized` | Location + Name, via `teamRowFields` | write, report |
 | `teamAliases` | `aliasNormalized` | the team's `aliases` list | write, report |
@@ -123,7 +123,7 @@ Optional arguments, for a very large deployment or a slow run:
 
 | Arg | Default | Meaning |
 |---|---|---|
-| `pageSize` | 500 for the plan and for single-patch tables; 100 for players, teams and the side tables when applying | Overrides every page size, clamped to 1–500 |
+| `pageSize` | 500 for the plan (250 for `players` and `playerSports`) and for single-patch tables; 100 for players, teams and the side tables when applying | Overrides every page size, clamped to 1–500 |
 | `maxPages` | 1000 | Pages per table per pass |
 
 ---
@@ -178,7 +178,7 @@ the set, batch and kind), `key`, `policy` and `members`. Each member has `id`,
 
 | `policy` | Tables | What happened | What to do |
 |---|---|---|---|
-| `written` | players, teams | Every changed row got the new key. | Open each member on the Players or Teams admin screen. If they are the same person or team, that is a duplicate an operator now has to resolve. If they are different (two real "CJ Smith"s; two eras of one team name), nothing to do: lookups already ask a human when a name matches more than one row. |
+| `written` | players, teams | Every changed row got the new key. A `players` group counts everyone who answers to the key in that sport: home-sport players and players who also belong to it (a multi-sport athlete's extra sport), so a group's `scope` can be a player's extra sport. | Open each member on the Players or Teams admin screen. If they are the same person or team, that is a duplicate an operator now has to resolve. If they are different (two real "CJ Smith"s; two eras of one team name), nothing to do: lookups already ask a human when a name matches more than one row. |
 | `skipped` | leagues, franchises | The changed rows **kept their old key**. Their readers take the first match and their editors refuse a taken name, so a shared key would hide one row. | On the Leagues or Franchises screen, rename one so the two no longer share a name (or retire the duplicate by hand), then re-run the task. The changed row is reported as `skippedCollision` until you do. |
 | `informational` | skips, review queue, aliases | Written. | Usually nothing. On an alias table it means another player or team's main name is the same as this alias in the same sport, so lookups for that string will ask a human. |
 

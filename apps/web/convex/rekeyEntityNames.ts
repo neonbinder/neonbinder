@@ -97,11 +97,22 @@
  *                           shared key becomes an operator question, never a
  *                           silent wrong link. Two team eras under one name is
  *                           legitimate (NEO-254).
+ *   playerSports            the same policy, in the SAME group: a player's
+ *                           extra-sport row collides as that player, in that
+ *                           sport (`collisionTableOf`). A player's holders in a
+ *                           sport are both legs `sameNamePlayers` reads there —
+ *                           home rows and other players' `playerSports` rows —
+ *                           so a re-keyed home row meeting another player's
+ *                           membership, and a re-keyed membership meeting
+ *                           another player's home row, are both reported.
  *   leagues, franchises     SKIP the colliding changed rows (they keep the old
  *                           key) and report them. Their readers take `.first()`
  *                           and their saves refuse NAME_TAKEN, so a shared key
  *                           would silently hide one row.
  *   skips, queue, aliases   write, and report the duplicates informationally.
+ *                           (The alias tables stay informational: an alias
+ *                           shared with another player's name is the wizard's
+ *                           question at lookup time, not a key collision.)
  *
  * Nothing is ever merged or deleted. Resolving a reported group is an
  * operator decision on the admin screens.
@@ -109,7 +120,8 @@
  * ## Budget
  *
  * The plan pass is one `scanPage` query per page (one `.paginate` per
- * execution); the apply pass is one `applyPage` mutation per page, 100 rows for
+ * execution), 500 rows except `players` and `playerSports`, whose changed rows
+ * each read two holder legs and so plan 250 at a time; the apply pass is one `applyPage` mutation per page, 100 rows for
  * the tables whose writes fan out through the side-table writers and 500 for
  * the single-patch tables. Both walk in creation order with no index, so a
  * patch never moves a row under the cursor. `maxPages` (default 1000) bounds
@@ -139,6 +151,7 @@ import {
   additionalSportIds,
   pagePlayerAliasRows,
   pagePlayerSportRows,
+  playerSportRowsByName,
   syncPlayerAliases,
   syncPlayerSports,
 } from "./players";
@@ -206,6 +219,21 @@ export const MAX_PAGE_SIZE = 500;
 
 /** Plan pages: one indexed holder read per CHANGED row, nothing per unchanged one. */
 export const DEFAULT_PLAN_PAGE_SIZE = 500;
+
+/**
+ * Plan pages for `players` and `playerSports`, whose changed rows read TWO
+ * holder legs (`playerHoldersInSport`: the players identity index and the
+ * `playerSports` index), plus a player get per membership found — and, for a
+ * side row, its own player. A page of 250 changed rows is ~500-750 reads,
+ * inside the ~900-op comfortable band; 500 would not be.
+ */
+export const DEFAULT_PLAYER_PLAN_PAGE_SIZE = 250;
+
+function planPageSizeFor(table: RekeyTable): number {
+  return table === "players" || table === "playerSports"
+    ? DEFAULT_PLAYER_PLAN_PAGE_SIZE
+    : DEFAULT_PLAN_PAGE_SIZE;
+}
 
 /**
  * Apply pages for tables whose writes fan out: a player patch is followed by
@@ -282,7 +310,7 @@ const COLLISION_POLICY: Record<RekeyTable, CollisionPolicy> = {
   teams: "written",
   leagues: "skipped",
   franchises: "skipped",
-  playerSports: "informational",
+  playerSports: "written",
   playerAliases: "informational",
   teamAliases: "informational",
   entityReviewSkips: "informational",
@@ -601,6 +629,58 @@ async function decidePlayerSport(
   return { ...decide(row.nameNormalized, normalizeEntityName(player.name)), player };
 }
 
+/**
+ * Every OTHER player stored under `key` in `sportId`: home rows from the
+ * players identity index, and players who also belong to the sport through a
+ * `playerSports` row (NEO-313) — the two legs `sameNamePlayers` reads there,
+ * minus its alias leg (an alias holder is a lookup-time question, not a key
+ * collision). Deduped by player.
+ *
+ * `changed` says whether the holder is itself moving off `key`: a home row by
+ * `decidePlayer`, a membership row by whether its stored copy is stale (the
+ * apply pass rewrites it to the player's recomputed key).
+ */
+async function playerHoldersInSport(
+  ctx: QueryCtx,
+  key: string,
+  sportId: Id<"selectorOptions">,
+  self: Id<"players">,
+  getPlayer: (id: Id<"players">) => Promise<Doc<"players"> | null>,
+): Promise<Holder[]> {
+  const holders = new Map<string, Holder>();
+  const home = await ctx.db
+    .query("players")
+    .withIndex("by_name_normalized_and_sport_id", (q) =>
+      q.eq("nameNormalized", key).eq("sportId", sportId),
+    )
+    .take(HOLDER_SCAN_LIMIT);
+  for (const h of home) {
+    if (h._id === self) continue;
+    holders.set(h._id, {
+      id: h._id,
+      name: h.name,
+      oldKey: h.nameNormalized,
+      changed: decidePlayer(h).status !== "unchanged",
+    });
+  }
+  // Through the owner module: `players.sportsIndexPin` flags any other module
+  // that queries `playerSports`.
+  for (const member of await playerSportRowsByName(ctx, key, sportId, HOLDER_SCAN_LIMIT)) {
+    if (member.playerId === self || holders.has(member.playerId)) continue;
+    const player = await getPlayer(member.playerId);
+    // Orphan residue: readers already skip it.
+    if (!player) continue;
+    holders.set(member.playerId, {
+      id: member.playerId,
+      name: player.name,
+      oldKey: member.nameNormalized,
+      changed:
+        decide(member.nameNormalized, normalizeEntityName(player.name)).status !== "unchanged",
+    });
+  }
+  return [...holders.values()];
+}
+
 type AliasDecision =
   | { status: "unchanged" }
   | { status: "refused"; reason: RefusedRow["reason"]; entityName: string }
@@ -677,9 +757,9 @@ export const scanPage = internalQuery({
   },
   returns: scanPageReturnValidator,
   handler: async (ctx, args): Promise<ScanPageResult> => {
-    const numItems = clampPageSize(args.pageSize, DEFAULT_PLAN_PAGE_SIZE);
-    const cursor = args.cursor;
     const table = args.table;
+    const numItems = clampPageSize(args.pageSize, planPageSizeFor(table));
+    const cursor = args.cursor;
     const sportLabel = sportLabeller(ctx);
     const setLabel = setLabeller(ctx);
 
@@ -693,17 +773,12 @@ export const scanPage = internalQuery({
     switch (table) {
       case "players": {
         const page = await ctx.db.query("players").paginate({ cursor, numItems });
+        const getPlayer = memo((id: Id<"players">) => ctx.db.get(id));
         for (const row of page.page) {
           scanned += 1;
           const decision = decidePlayer(row);
           if (decision.status === "unchanged") { unchanged += 1; continue; }
           if (decision.status === "refused") { refuse(row._id, row._id, row.name, decision.reason); continue; }
-          const holders = await ctx.db
-            .query("players")
-            .withIndex("by_name_normalized_and_sport_id", (q) =>
-              q.eq("nameNormalized", decision.newKey).eq("sportId", row.sportId),
-            )
-            .take(HOLDER_SCAN_LIMIT);
           changed.push({
             rowId: row._id,
             entityId: row._id,
@@ -712,14 +787,8 @@ export const scanPage = internalQuery({
             newKey: decision.newKey,
             scopeKey: row.sportId,
             scopeLabel: await sportLabel(row.sportId),
-            holders: holders
-              .filter((h) => h._id !== row._id)
-              .map((h) => ({
-                id: h._id,
-                name: h.name,
-                oldKey: h.nameNormalized,
-                changed: decidePlayer(h).status !== "unchanged",
-              })),
+            // Home rows AND other players' memberships of the home sport.
+            holders: await playerHoldersInSport(ctx, decision.newKey, row.sportId, row._id, getPlayer),
           });
         }
         return { scanned, unchanged, changed, refused, isDone: page.isDone, continueCursor: page.continueCursor };
@@ -910,8 +979,9 @@ export const scanPage = internalQuery({
           if (decision.status === "unchanged") { unchanged += 1; continue; }
           const name = decision.player?.name ?? "";
           if (decision.status === "refused") { refuse(row._id, row.playerId, name, decision.reason); continue; }
-          // No holder lookup: a player's extra-sport rows mirror its own key,
-          // and a clash there is the player's group, reported under `players`.
+          // The re-keyed player, in this EXTRA sport: who else answers to the
+          // new key here. Grouped with the `players` rows of this sport
+          // (`collisionTableOf`), so it meets a re-keyed home row too.
           changed.push({
             rowId: row._id,
             entityId: row.playerId,
@@ -920,7 +990,7 @@ export const scanPage = internalQuery({
             newKey: decision.newKey,
             scopeKey: row.sportId,
             scopeLabel: await sportLabel(row.sportId),
-            holders: [],
+            holders: await playerHoldersInSport(ctx, decision.newKey, row.sportId, row.playerId, getPlayer),
           });
         }
         return { scanned, unchanged, changed, refused, isDone: page.isDone, continueCursor: page.continueCursor };
@@ -1265,7 +1335,17 @@ export const applyPage = internalMutation({
 type PlannedRow = ChangedRow & { table: RekeyTable };
 
 /**
- * Group every changed row by (table, scope, new key) and keep the groups with
+ * The table a planned row COLLIDES as. A `playerSports` row is its player's
+ * key in another sport, so it groups with that sport's `players` rows: a
+ * player re-keyed at home and another re-keyed through a membership, landing
+ * on one key in one sport, are one group, reported as `players`.
+ */
+export function collisionTableOf(table: RekeyTable): RekeyTable {
+  return table === "playerSports" ? "players" : table;
+}
+
+/**
+ * Group every changed row by (collision table, scope, new key) and keep the groups with
  * two or more DISTINCT entities: the changed rows that land there, plus the
  * unchanged rows that already hold the key. A holder that is itself moving
  * away is left out — it shows up in its own group, under its own new key.
@@ -1277,10 +1357,11 @@ export function buildCollisionGroups(rows: readonly PlannedRow[]): Collision[] {
   const groups = new Map<string, { table: RekeyTable; scope: string; key: string; members: Map<string, Holder> }>();
   for (const row of rows) {
     if (row.newKey === null) continue;
-    const groupKey = `${row.table}\u0000${row.scopeKey}\u0000${row.newKey}`;
+    const table = collisionTableOf(row.table);
+    const groupKey = `${table}\u0000${row.scopeKey}\u0000${row.newKey}`;
     let group = groups.get(groupKey);
     if (!group) {
-      group = { table: row.table, scope: row.scopeLabel, key: row.newKey, members: new Map() };
+      group = { table, scope: row.scopeLabel, key: row.newKey, members: new Map() };
       groups.set(groupKey, group);
     }
     group.members.set(row.entityId, {
@@ -1369,8 +1450,9 @@ export const run = internalAction({
     confirm: v.optional(v.string()),
     /**
      * Overrides EVERY page size, plan and apply (clamped to [1, 500]).
-     * Omitted: 500 for plan pages and single-patch tables, 100 for players,
-     * teams and the side tables on apply.
+     * Omitted: 500 for plan pages (250 for players and playerSports) and
+     * single-patch tables, 100 for players, teams and the side tables on
+     * apply.
      */
     pageSize: v.optional(v.number()),
     /** Pages per table per pass (default 1000). */
@@ -1406,7 +1488,7 @@ export const run = internalAction({
         const page: ScanPageResult = await ctx.runQuery(internal.rekeyEntityNames.scanPage, {
           table,
           cursor,
-          pageSize: clampPageSize(args.pageSize, DEFAULT_PLAN_PAGE_SIZE),
+          pageSize: clampPageSize(args.pageSize, planPageSizeFor(table)),
         });
         report.scanned += page.scanned;
         report.unchanged += page.unchanged;
