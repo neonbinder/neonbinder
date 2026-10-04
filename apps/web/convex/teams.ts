@@ -1,5 +1,6 @@
 import { query, mutation, internalMutation, internalQuery, action } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { PaginationResult } from "convex/server";
 import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -332,6 +333,23 @@ export async function syncTeamAliases(
       aliasNormalized,
     });
   }
+}
+
+/**
+ * NEO-322 — one page of `teamAliases` in creation order, READ-ONLY, for the
+ * re-key audit in `convex/rekeyEntityNames.ts`.
+ *
+ * Here because this module owns the table: `teams.aliasIndexPin` flags any
+ * other module that queries it. Every write the re-key makes still goes
+ * through `syncTeamAliases`. One `.paginate`, so a caller stays within
+ * Convex's one-paginate-per-function rule.
+ */
+export async function pageTeamAliasRows(
+  ctx: QueryCtx | MutationCtx,
+  cursor: string | null,
+  numItems: number,
+): Promise<PaginationResult<Doc<"teamAliases">>> {
+  return await ctx.db.query("teamAliases").paginate({ cursor, numItems });
 }
 
 /**

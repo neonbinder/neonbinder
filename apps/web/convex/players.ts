@@ -1,5 +1,6 @@
 import { query, mutation, internalMutation, internalQuery, action } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { PaginationResult } from "convex/server";
 import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
@@ -544,6 +545,34 @@ export async function additionalSportIds(
     .withIndex("by_player_id", (q) => q.eq("playerId", playerId))
     .take(MAX_PLAYER_EXTRA_SPORTS * 4);
   return rows.map((row) => row.sportId);
+}
+
+/**
+ * NEO-322 — one page of `playerAliases` / `playerSports` in creation order,
+ * READ-ONLY, for the re-key audit in `convex/rekeyEntityNames.ts`.
+ *
+ * They live here, not there, because this module owns both tables:
+ * `players.aliasIndexPin` and `players.sportsIndexPin` flag any other module
+ * that so much as queries them, and a reader outside the owner is how an
+ * ad-hoc writer starts. Every write the re-key makes still goes through
+ * `syncPlayerAliases` / `syncPlayerSports`. One `.paginate` each, so a caller
+ * stays within Convex's one-paginate-per-function rule.
+ */
+export async function pagePlayerAliasRows(
+  ctx: QueryCtx | MutationCtx,
+  cursor: string | null,
+  numItems: number,
+): Promise<PaginationResult<Doc<"playerAliases">>> {
+  return await ctx.db.query("playerAliases").paginate({ cursor, numItems });
+}
+
+/** NEO-322 — see `pagePlayerAliasRows`. */
+export async function pagePlayerSportRows(
+  ctx: QueryCtx | MutationCtx,
+  cursor: string | null,
+  numItems: number,
+): Promise<PaginationResult<Doc<"playerSports">>> {
+  return await ctx.db.query("playerSports").paginate({ cursor, numItems });
 }
 
 /**
