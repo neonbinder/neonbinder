@@ -42,6 +42,9 @@ tags:
 # 100% coverage, so the badge is present at the virtuoso's landing position,
 # AND >100 cards, so a regression to single-page fetching would strip SL from
 # the tail and fail there. Asserting it on Base would prove nothing extra.
+# (Since NEO-321 Gold Wave is BUILT from Base rather than fetched; each copy's
+# SportLots link still comes from the build's own paged SportLots fetch of
+# Gold Wave, so the guard reads the same thing. See setup.yaml.)
 #
 # Print-run ("/N") belongs to parallel variant types, not Base; not asserted.
 #

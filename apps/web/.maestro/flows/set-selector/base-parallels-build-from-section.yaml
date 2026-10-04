@@ -1,0 +1,274 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "2024 Topps Chrome Parallel — Build the base set's parallels from Base, stop after one, and the copy's title names its parallel (NEO-321)"
+tags:
+  - set-selector
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE FEATURE: THE BASE SET'S PARALLELS ARE BUILT FROM BASE, FROM THE
+# PARALLEL VARIANT TYPE, IN ONE GO (NEO-321). On live data, under Baseball →
+# 2024 → Topps → Topps Chrome › `Parallel`:
+#
+#   1. Selecting the variant type whose NB role is `parallel` shows the
+#      section `Parallels of Base` with `Build N parallels from Base` (D2:
+#      nothing runs until it is pressed).
+#   2. Pressing it asks first, because some parallels already hold cards
+#      (D4): `Replace the cards on K of N parallels with fresh copies of
+#      Base's?` → `Replace and build`.
+#   3. The run is the shared ledger: `Stop after this one` ends it after the
+#      parallel in flight (`Base parallels — stopped after b of N`), and that
+#      parallel's line reads `<parallel> — Built|Rebuilt N cards`, N > 0.
+#   4. A copy is a card OF the parallel: its listing title carries the
+#      parallel row's own NB name (`features.parallelName`, NEO-321, Jason
+#      2026-10-04). Read in the card drawer's `Card title`.
+#
+# Claim 4 is the regression proof for the server fix that sets
+# `parallelName` from the NB parallel row (`insertParallelCardsPage` →
+# `buildCardRowForInsert`). Without it a copy of a plain Base card carries no
+# `parallelName` at all — the parallel row's snapshot never sets one for an
+# insert-level row (`deriveSetLevelFeatures`), and Base's own "Base" is
+# inherited, so `copyFeaturesForParallel` drops it — and the generated title
+# has no parallel token (`generateListing.ts`, `isRealParallel`). The title
+# assert then fails by name.
+#
+# WHAT THIS FLOW DOES NOT RE-PROVE (R3): the per-row `Build from Base` button
+# (setup.yaml's Gold Wave step builds through it, and its SportLots
+# pagination guard reads the copies); an insert's automatic build after a
+# save (`bowman-insert-grouping-builds-parallels`). The section's disabled
+# states, the no-confirm path (K = 0) and Stop's own wording are unit-tested
+# (`BaseParallelsBuildSection.test.tsx`, `ParallelBuildPanel.test.tsx`).
+#
+# THE `name:` STAYS UNDER ~200 BYTES (Maestro names the debug directory after
+# it; Linux refuses a path component over 255 bytes).
+#
+# ── THE FIXTURE AND THE WRITE SET (R7a, SET-REGISTRY.md → this flow) ────────
+#   setup.yaml syncs Topps Chrome's Variant Types, saves the `Parallel`
+#   reconcile (every parallel of the base set as an insert-level row under
+#   it) and builds ONE of them, `Gold Wave Refractors`, from Base. So on
+#   every run K >= 1 and the confirm is the path, not a branch (R2): the flow
+#   asserts it hard.
+#
+#   The run builds the parallels in the type's own child order
+#   (`getParallelsForBuild` sorts by `parent.children`), skipping the
+#   unlinked and the blocked. Stop is pressed while the FIRST buildable one
+#   is in flight, so this flow writes that parallel's cards — and, only if
+#   Stop lands after it finished, the next one's. That set is order-defined,
+#   not chosen; which name it is has not been measured on a preview yet, so
+#   the flow reads it off the ledger at run time and never assumes it. Every
+#   row under Topps Chrome › Parallel is safe to write: no queue flow reads a
+#   base parallel's cards (Gold Wave's are read only by setup.yaml, which runs
+#   alone before the queue). The run touches no Base card (Base is the
+#   SOURCE: read, never written) and mints no player, team or row.
+#
+#   If Stop never lands, the run walks on through the parallels — Gold Wave
+#   included — until this flow's browser closes (the run is client-side and
+#   ends "stopped when you left"). Still no reader is harmed; the flow fails
+#   at the stopped-heading wait, by name.
+#
+#   A re-run on the same preview finds that parallel already holding cards:
+#   K grows by one and its line reads `Rebuilt`. Both are accepted.
+#
+# ── LIVE / PAUSED ───────────────────────────────────────────────────────────
+#   No branch. Under `PAUSED_PLATFORMS=sportlots` every parallel is BSC-only
+#   and the build fetches BSC alone; the section, the confirm, Stop, the
+#   ledger line and the title read the same. (README → "Operator switches".)
+#
+# ── TIMEOUTS (R5) ───────────────────────────────────────────────────────────
+#   7000 on every in-app step. ONE exception, recorded at its site: the wait
+#   for the in-flight build to finish after Stop, which is a live BSC +
+#   paged SportLots checklist fetch (R5's marketplace round-trip exception).
+# ════════════════════════════════════════════════════════════════════════════
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — SELECT TOPPS CHROME › PARALLEL; THE SECTION SHOWS (D2)
+# ============================================================
+
+# R9 — the warm drill. Returns with the Variant Types column on screen and
+# "Base" listed.
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+
+# "Parallel" sits under "Base" in the same column; DOWN (the default),
+# centred for the tap (R8). Exact text: the column's three rows are Base,
+# Insert, Parallel, and nothing else on the page full-matches "Parallel".
+- scrollUntilVisible:
+    element:
+      text: "Parallel"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Parallel"
+
+# THE BUTTON, with its count — `buildAllLabel` names a count only once the
+# server's list is in, so this scroll is also the wait for
+# `getParallelsForBuild` (our own query: the 7000 bar). The section renders
+# BELOW the columns row (SetSelector.tsx, the variant-type slot), so DOWN.
+# R8 case 1: below it are only the collapsed attributes bar and the NEO-260
+# 208px spacer, which is the headroom this centring depends on.
+# The pattern names Base, so it also proves the source is the set's Base row.
+- scrollUntilVisible:
+    element:
+      text: "Build [0-9]+ parallels from Base"
+    centerElement: true
+    timeout: 7000
+# The section's own heading (a different element, R6), named for its source.
+- assertVisible: "Parallels of Base"
+
+# ============================================================
+# STEP 2 — BUILD, AND CONFIRM THE REPLACE (D4)
+# ============================================================
+
+- tapOn:
+    text: "Build [0-9]+ parallels from Base"
+
+# HARD (R2), not a branch: K >= 1 on every run (Gold Wave holds cards from
+# the seed — see the header). The dialog's title is its header (README →
+# "Asserting inside a dialog"). `Base.s`: the possessive's apostrophe is one
+# character either way. One state change, no server call: 7000.
+- extendedWaitUntil:
+    visible: "Replace the cards on [1-9][0-9]* of [0-9]+ parallels with fresh copies of Base.s\\?"
+    timeout: 7000
+# The footer confirm. `ConfirmDialog` is a fixed full-viewport overlay with
+# no scroller around its footer, so a direct tap (R8 case 2, the documented
+# dialog-footer exception).
+- tapOn: "Replace and build"
+
+# ============================================================
+# STEP 3 — STOP AFTER THE ONE IN FLIGHT; IT BUILT WITH CARDS
+# ============================================================
+
+# Stop is live from the run's first step and sits in the ledger's heading
+# row inside the section, just under the button centred above, so this
+# exits at try 0 or 1 (R8). A Topps Chrome base parallel is a live BSC
+# fetch plus a paged SportLots fetch of up to ~300 cards and two insert
+# pages — seconds, not the ~0.75 s an Anime parallel takes — so Stop lands
+# while the FIRST buildable parallel is in flight. (README NEO-312 note:
+# never chase a transient state on a run that can finish first; this one
+# cannot finish N parallels in the time two taps take.)
+- scrollUntilVisible:
+    element:
+      text: "Stop after this one"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Stop after this one"
+
+# THE RUN STOPPED, AFTER BUILDING AT LEAST ONE. `panelHeading`'s stopped form
+# counts BUILT lines; `[1-9]` refuses a Stop that landed before anything was
+# built. Full match with no trailing `.`, so the sr-only live line (which
+# repeats a heading WITH one) cannot answer.
+#
+# R5 MARKETPLACE EXCEPTION — this waits on the build in flight when Stop was
+# pressed: `buildParallelChecklist`'s live `fetchBscChecklist` and paged
+# `fetchSportLotsChecklist` on data no flow pre-fetches (only Gold Wave is
+# built by the seed), then the link pass and the copy. 90000 is the ceiling
+# setup.yaml's fetch of the same set's parallel carries for the same two
+# round-trips; NOT YET MEASURED for a build — replace it with the first green
+# run's figure plus margin, and treat a build that needs more as a finding.
+# `extendedWaitUntil` never scrolls: the heading is where Stop was, already
+# centred.
+- extendedWaitUntil:
+    visible: "Base parallels — stopped after [1-9][0-9]* of [0-9]+"
+    timeout: 90000
+
+# THE LINE. `parallelLineText` = "<parallel> — <builtText>": "Built N cards"
+# on a first build, "Rebuilt N cards" on a re-run, then only the clauses
+# that are true. "Nothing copied — …", "Blocked — …", "Failed — …" and
+# "Stopped" do not match, so a parallel that built nothing fails here with
+# its reason on screen. The run is finished: a plain read (R6: a different
+# element from the wait's). `copyTextFrom` takes the first match, and only
+# the parallel(s) built before Stop can match.
+- copyTextFrom:
+    text: ".+ — (Built|Rebuilt) [1-9][0-9]* cards?(, .+)?"
+# The parallel's NB name is everything before the first " — " (a row name
+# carries no em dash). Escaped once for the full-match `text:` / `id:`
+# selectors below (runtime names need regex escaping); the raw form goes
+# into the search box.
+- evalScript: '${output.BUILT = maestro.copiedText.split(" — ")[0].trim()}'
+- evalScript: '${output.BUILT_RE = output.BUILT.replace(/[\^\[\]()*+?.|]/g, function (c) { return "\\" + c; })}'
+
+# ============================================================
+# STEP 4 — THE COPY'S LISTING TITLE NAMES ITS PARALLEL
+# ============================================================
+
+# Open the built parallel: its row is in the Parallels column ABOVE the
+# section, so UP (R5: an anchor above takes UP), centred for the tap (R8).
+# The column holds dozens of rows, so it has its search box (as setup.yaml's
+# Gold Wave pick).
+- scrollUntilVisible:
+    element:
+      text: ".*Search parallels.*"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search parallels.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${output.BUILT}
+- extendedWaitUntil:
+    visible:
+      text: "^${output.BUILT_RE}$"
+      below:
+        id: "Search parallels"
+    timeout: 7000
+- tapOn:
+    text: "^${output.BUILT_RE}$"
+    below:
+      id: "Search parallels"
+
+# The attributes panel follows the selection, below the columns and the
+# section: DOWN, centred, NEO-260 spacer headroom (R8 case 1) — the same
+# step every attributes-panel header takes.
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for ${output.BUILT_RE}.*"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
+# THE ROW TO OPEN: the LAST one. CardChecklist's virtuoso opens at its end
+# (`initialTopMostItemIndex`) and over-renders ~200px of CLIPPED rows above
+# its own viewport, which Maestro reports as 100% visible and which a tap
+# misses (virtualized-list phantom rows). `index: -1` is the BOTTOM-MOST
+# match — `Filters.index` sorts by bounds y, then x, and counts back from
+# the end (decompiled from the pinned maestro-client.jar) — so it is always a
+# row inside the list's viewport, never a phantom. Every copy carries the
+# same parallel name, so any real row proves the claim. DOWN, centred; the
+# checklist card and the spacer below it are the headroom (R8 case 1).
+# `(, .*)?`-style tails are not needed: `.+` takes the whole label.
+- scrollUntilVisible:
+    element:
+      id: "Edit card .+"
+      index: -1
+    centerElement: true
+    visibilityPercentage: 50
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+# Result-keyed and bounded, as in checklist-one-marketplace-skips-match-
+# dialog STEP 8: tap, wait for the drawer, tap once more if the first was
+# eaten by a Virtuoso re-measure. The gate is `Card title`, which only the
+# drawer carries.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          id: "Edit card .+"
+          index: -1
+          waitToSettleTimeoutMs: 1000
+      - extendedWaitUntil:
+          visible:
+            id: "Card title"
+          timeout: 7000
+
+# THE CLAIM. For an `<input>` Maestro reads its VALUE, so this is the stored
+# `listingTitle`. The parallel token is the third optional token after AUTO
+# and RELIC (`optionalTokens`), behind a core of year + "Topps Chrome" +
+# player + "#<n>", well inside the 80 cap for every Topps Chrome parallel
+# name.
+- assertVisible:
+    id: "Card title"
+    text: ".*${output.BUILT_RE}.*"
