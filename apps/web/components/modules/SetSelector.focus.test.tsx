@@ -45,11 +45,24 @@ const world: {
   resolver: (ids: string[]) => Array<{ _id: string }>;
   /** The id each `pick-<level>` button hands the real handler. */
   picks: Record<string, string>;
+  /**
+   * True while the checklist has not drawn its Fetch button yet, so the D3
+   * rule is left waiting on the DOM (its MutationObserver) rather than on a
+   * re-run of its effect.
+   */
+  fetchHidden: boolean;
+  /**
+   * A level whose collapsed column still holds a search box: stands in for
+   * focus sitting in a column's own combobox while D3 is pending.
+   */
+  lingering: string | null;
 } = {
   cards: [],
   chain: [],
   resolver: (ids) => ids.map((_id) => ({ _id })),
   picks: {},
+  fetchHidden: false,
+  lingering: null,
 };
 
 const ROWS: Record<string, unknown> = {
@@ -132,6 +145,11 @@ function Stub({ level, ...props }: { level: string } & Record<string, unknown>) 
         {`pick-${level}`}
       </button>
       <button onClick={() => setExpanded?.(false)}>{`collapse-${level}`}</button>
+      {/* The "+ Custom" entry's text field, which lives in the column row. */}
+      <input type="text" aria-label={`${level} custom value`} />
+      {!open && world.lingering === level ? (
+        <input role="combobox" aria-label={`${level} lingering search`} />
+      ) : null}
     </div>
   );
 }
@@ -182,7 +200,9 @@ vi.mock("../SetSelector/CardChecklist", () => ({
     parallelBuild?: { role?: string; sourceValue?: string };
   }) => (
     <div>
-      {world.cards?.length === 0 && parallelBuild?.role !== "parallel" ? (
+      {world.cards?.length === 0 &&
+      parallelBuild?.role !== "parallel" &&
+      !world.fetchHidden ? (
         <button aria-label="Sync card checklist">Fetch from Marketplaces</button>
       ) : null}
       {world.cards?.length === 0 && parallelBuild?.role === "parallel" ? (
@@ -272,6 +292,8 @@ beforeEach(() => {
   world.chain = [];
   world.resolver = (ids) => ids.map((_id) => ({ _id }));
   world.picks = {};
+  world.fetchHidden = false;
+  world.lingering = null;
   navigateRef = null;
 });
 
@@ -580,6 +602,88 @@ describe("SetSelector focus — a terminal selection (D3)", () => {
     await pick("type");
 
     expect(focused()).toBe(outside);
+  });
+});
+
+/**
+ * NEO-224 fix round 2 — the cascade never takes focus from a field the
+ * operator is typing into. The "+ Custom" entry lives in the column row, so
+ * "inside the row" alone is not enough: a D3 target landing mid-word used to
+ * pull focus to Fetch from Marketplaces, and the next Enter fetched.
+ */
+describe("SetSelector focus — never taken from a field being typed into", () => {
+  const customInput = (level: string) =>
+    screen.getByRole("textbox", { name: `${level} custom value` });
+  const typeInto = (el: HTMLElement, value: string) => {
+    el.focus();
+    fireEvent.change(el, { target: { value } });
+  };
+
+  it("D3 waiting on the cards: typing in + Custom keeps focus there when they arrive", async () => {
+    world.cards = undefined;
+    const view = mount();
+    await drillToBase();
+    const field = customInput("type");
+    typeInto(field, "Chrome Ref");
+
+    world.cards = [];
+    await act(async () => view.rerender(<SetSelector />));
+
+    expect(focused()).toBe(field);
+    expect(screen.getByRole("button", { name: "Sync card checklist" })).not.toBe(focused());
+  });
+
+  it("D3 waiting on the DOM: typing in + Custom keeps focus there when Fetch appears", async () => {
+    world.cards = [];
+    world.fetchHidden = true;
+    const view = mount();
+    await drillToBase();
+    // The rule found no target and is watching the page for one.
+    expect(screen.queryByRole("button", { name: "Sync card checklist" })).toBeNull();
+    const field = customInput("type");
+    typeInto(field, "Chrome Ref");
+
+    world.fetchHidden = false;
+    await act(async () => view.rerender(<SetSelector />));
+
+    expect(screen.getByRole("button", { name: "Sync card checklist" })).toBeTruthy();
+    expect(focused()).toBe(field);
+  });
+
+  it("D3 waiting on the DOM: focus in a column's own combobox still moves to Fetch", async () => {
+    world.cards = [];
+    world.fetchHidden = true;
+    world.lingering = "type";
+    const view = mount();
+    await drillToBase();
+    const box = screen.getByRole("combobox", { name: "type lingering search" });
+    typeInto(box, "Bas");
+
+    world.fetchHidden = false;
+    await act(async () => view.rerender(<SetSelector />));
+
+    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+  });
+
+  it("a new deepest column does not take focus from + Custom", async () => {
+    mount();
+    await pick("sport");
+    await pick("year");
+    await goBack(); // year is the open column again; its combobox has focus
+    const field = customInput("year");
+    typeInto(field, "1987");
+
+    await act(async () => navigateRef!(1)); // forward: manufacturer opens
+
+    expect(screen.getByRole("combobox", { name: "manufacturer search" })).toBeTruthy();
+    expect(focused()).toBe(field);
+  });
+
+  it("a new deepest column still takes focus from a column's combobox that holds text", async () => {
+    mount();
+    typeInto(combobox("sport"), "Base");
+    await pick("sport");
+    expect(focused()).toBe(combobox("year"));
   });
 });
 

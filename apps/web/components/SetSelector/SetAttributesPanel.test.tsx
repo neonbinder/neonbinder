@@ -2889,6 +2889,33 @@ describe("SetAttributesPanel — the Set actions row (NEO-306)", () => {
     expect(hide.classList.contains("focus-visible:ring-[#00B7FF]")).toBe(true);
   });
 
+  it("Enter on Edit attributes / Hide attributes toggles the panel, once (maestro's synthetic Enter)", () => {
+    currentRow = makeRow({ level: "setName" });
+    render(
+      <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={true} />,
+    );
+    const edit = screen.getByRole("button", { name: "Edit attributes" });
+    // `false` = default prevented: a real keypress's native click never runs
+    // as well, so Enter toggles once rather than open-then-shut.
+    expect(fireEvent.keyDown(edit, { key: "Enter" })).toBe(false);
+    const hide = screen.getByRole("button", { name: "Hide attributes" });
+    expect(screen.queryByRole("button", { name: "Edit attributes" })).toBeNull();
+
+    expect(fireEvent.keyDown(hide, { key: "Enter" })).toBe(false);
+    expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Hide attributes" })).toBeNull();
+  });
+
+  it("Space on the attributes toggle is left to the browser's own click", () => {
+    currentRow = makeRow({ level: "setName" });
+    render(
+      <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={true} />,
+    );
+    const edit = screen.getByRole("button", { name: "Edit attributes" });
+    expect(fireEvent.keyDown(edit, { key: " " })).toBe(true);
+    expect(screen.getByRole("button", { name: "Edit attributes" })).toBe(edit);
+  });
+
   it("the pencil and the delete stay small, low-key and ≥24px, with the one ring", () => {
     currentRow = makeRow({ level: "setName", value: "Bowman Blue" });
     renderPanel();

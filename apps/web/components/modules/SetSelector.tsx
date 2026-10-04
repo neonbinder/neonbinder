@@ -60,6 +60,7 @@ import type { SourceChips } from "../SetSelector/ChecklistSourceFilter";
 import { isBaseRole } from "../SetSelector/baseRole";
 import { variantTypeRole } from "../../convex/variantRole";
 import { bscSourceView } from "../../convex/bscFacets";
+import { isEditableTarget } from "../../lib/dom/is-editable-target";
 
 import SportSelector from "../SetSelector/SportSelector";
 import YearSelector from "../SetSelector/YearSelector";
@@ -125,8 +126,9 @@ const RESOLVING_LINK_LABEL = "Rewinding the tape to your set…";
 
 /**
  * True when the cascade may move focus: nothing else holds it (`<body>`), or
- * the operator is already inside the column row. Never while a dialog is up
- * — a modal owns focus even in the frame before it has taken it.
+ * the operator is already inside the column row and not typing into one of
+ * its fields. Never while a dialog is up — a modal owns focus even in the
+ * frame before it has taken it.
  */
 function cascadeOwnsFocus(row: HTMLElement): boolean {
   if (
@@ -137,7 +139,29 @@ function cascadeOwnsFocus(row: HTMLElement): boolean {
     return false;
   }
   const active = document.activeElement;
-  return !active || active === document.body || row.contains(active);
+  if (!active || active === document.body) return true;
+  return row.contains(active) && !isTypingInRowField(active);
+}
+
+/**
+ * NEO-224 — true when `el` is a field the operator types into that is NOT a
+ * column's own search box: the "+ Custom" entry input, or any other text
+ * input, textarea, select or contenteditable in the column row.
+ *
+ * Both cascade effects stand down there. The D3 rule waits on the DOM across
+ * renders, so its target can land while the operator is mid-word in the
+ * custom entry; moving focus then would drop the rest of the typing on
+ * "Fetch from Marketplaces", and the Enter that was meant to add the entry
+ * would start a marketplace fetch instead.
+ *
+ * A column's `role="combobox"` is the exception, and the cascade's own
+ * contract: every combobox in the row IS a column's search box (see
+ * `focusAdjacentColumn` in EntitySelector), and focus in one is exactly what
+ * hands on to the next column after a pick.
+ */
+function isTypingInRowField(el: Element): boolean {
+  if (el.getAttribute("role") === "combobox") return false;
+  return isEditableTarget(el) || el.tagName === "SELECT";
 }
 
 /**
