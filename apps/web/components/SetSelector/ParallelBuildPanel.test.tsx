@@ -746,3 +746,34 @@ describe("ParallelBuildPanel — the ledger grows with its lines (NEO-321)", () 
     expect(scroller.getAttribute("tabindex")).toBe("0");
   });
 });
+
+describe("ParallelBuildPanel — focus parks never scroll the page (NEO-321)", () => {
+  test("the mount park and the end-of-run park both focus the panel with preventScroll", () => {
+    (document.activeElement as HTMLElement | null)?.blur();
+    const focusSpy = vi.spyOn(HTMLElement.prototype, "focus");
+    try {
+      const { rerender } = render(
+        <ParallelBuildPanel run={baseRun({ phase: "running", atIndex: 0 })} onStop={() => {}} />,
+      );
+      const section = document.querySelector("section")!;
+      const parks = () => focusSpy.mock.contexts.filter((el) => el === section).length;
+
+      // Mounted live with focus dropped to <body>: parked, without a scroll.
+      expect(document.activeElement).toBe(section);
+      expect(parks()).toBe(1);
+      expect(focusSpy).toHaveBeenLastCalledWith({ preventScroll: true });
+
+      // Stop unmounts with the run's end and focus falls to <body> again.
+      section.blur();
+      rerender(<ParallelBuildPanel run={baseRun({ phase: "stopped" })} onStop={() => {}} />);
+      expect(document.activeElement).toBe(section);
+      expect(parks()).toBe(2);
+      expect(focusSpy).toHaveBeenLastCalledWith({ preventScroll: true });
+      for (const [i, el] of focusSpy.mock.contexts.entries()) {
+        if (el === section) expect(focusSpy.mock.calls[i]).toEqual([{ preventScroll: true }]);
+      }
+    } finally {
+      focusSpy.mockRestore();
+    }
+  });
+});

@@ -1075,7 +1075,11 @@ export default function ParallelBuildPanel({
     wasLiveRef.current = live;
     if (!ended) return;
     if (document.activeElement !== document.body) return;
-    panelRef.current?.focus();
+    // `preventScroll`: the panel is as tall as its ledger now, and a plain
+    // focus() would scroll the page to bring the whole section into view —
+    // jumping it under an operator reading the lines at the end of a run.
+    // The heading the park reads out sits where Stop was, already in view.
+    panelRef.current?.focus({ preventScroll: true });
   }, [live]);
 
   /**
@@ -1094,7 +1098,10 @@ export default function ParallelBuildPanel({
       active === document.body ||
       (active instanceof HTMLButtonElement && active.disabled);
     if (!dropped) return;
-    panelRef.current?.focus();
+    // `preventScroll`, as above: the panel mounts under the control that
+    // started the run (the "Saved N cards." notice, the Base section's
+    // button), where the operator is already looking.
+    panelRef.current?.focus({ preventScroll: true });
   }, []);
 
   /**
