@@ -45,6 +45,8 @@ type StubCard = {
   cardNumber: string;
   cardName: string;
   players?: string[];
+  isVariation?: boolean;
+  cardVariation?: string;
   platformRef: string;
 };
 
@@ -495,11 +497,103 @@ describe("insertParallelCardsPage — the source guard", () => {
           remap: [],
         }),
       );
-    await expect(page(parallelType)).rejects.toThrow(/changed partway through/);
+    // Audit S1 — the `changed` sentinel, never a throw: by now the action
+    // has deleted the old cards and must report that.
+    const refused = await page(parallelType);
+    expect(refused).toEqual({
+      created: [],
+      missing: 0,
+      skippedChangedSource: 0,
+      processed: 0,
+      changed: true,
+    });
     expect(await cardsOn(t, gold)).toHaveLength(0);
 
     const ok = await page(base!);
     expect(ok.changed).toBe(false);
     expect(ok.created).toHaveLength(1);
+  });
+});
+
+describe("copies carry the parallel row's NB name as parallelName and in the title (NEO-321)", () => {
+  test("base kind: a Base card copied onto Gold Wave is titled 'Gold Wave', never 'Base'", async () => {
+    const t = convexTest(schema, modules);
+    // The base parallel's snapshot inherited "Base" from the Parallel type.
+    const { base, gold } = await seedSet(t);
+    await addCard(t, base!, {
+      cardNumber: "1",
+      cardName: "Aaron Judge",
+      features: { cardType: "Base", parallelName: "Base" },
+    });
+    await addCard(t, base!, {
+      cardNumber: "1b",
+      cardName: "Aaron Judge",
+      cardVariation: "Image Variation",
+      sortOrder: 1,
+      features: { cardType: "Base", parallelName: "Image Variation" },
+    });
+    bscState.cards = [
+      { cardNumber: "1", cardName: "Aaron Judge", platformRef: "bsc-1" },
+      {
+        cardNumber: "1b",
+        cardName: "Aaron Judge",
+        isVariation: true,
+        cardVariation: "Gold Wave Image Var.",
+        platformRef: "bsc-1b",
+      },
+    ];
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: gold });
+    expect(result.copied).toBe(2);
+
+    const copies = await cardsOn(t, gold);
+    for (const copy of copies) {
+      expect(copy.features?.parallelName).toBe("Gold Wave");
+      expect(copy.listingTitle).toContain("Gold Wave");
+    }
+    const variation = copies.find((c) => c.cardVariation === "Image Variation");
+    expect(variation?.listingTitle).toContain("Image Variation");
+    // The marketplace's own label for the variation never reaches NB data.
+    expect(JSON.stringify(copies)).not.toContain("Image Var.");
+    // The Base's own cards are untouched.
+    for (const card of await cardsOn(t, base!)) {
+      expect(card.listingTitle ?? "").not.toContain("Gold Wave");
+    }
+  });
+
+  test("insert kind: an insert card copied onto Gold Wave Refractors is titled with that name", async () => {
+    const t = convexTest(schema, modules);
+    const { gold } = await seedSet(t);
+    const refractors = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("selectorOptions", {
+        level: "parallel",
+        value: "Gold Wave Refractors",
+        parentId: gold,
+        platformData: { bsc: { b0: "gold-wave-refractors" } },
+        platformFacets: { bsc: { b0: "variantName" } },
+        features: { cardType: "Parallel", parallelName: "Base" },
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+      await ctx.db.patch(gold, { children: [id] });
+      return id;
+    });
+    await addCard(t, gold, {
+      cardNumber: "7",
+      cardName: "Juan Soto",
+      features: { cardType: "Parallel", parallelName: "Base" },
+    });
+    bscState.cards = [{ cardNumber: "7", cardName: "Juan Soto", platformRef: "bsc-7" }];
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: refractors });
+    expect(result.copied).toBe(1);
+
+    const [copy] = await cardsOn(t, refractors);
+    expect(copy.features?.parallelName).toBe("Gold Wave Refractors");
+    expect(copy.listingTitle).toContain("Gold Wave Refractors");
   });
 });
