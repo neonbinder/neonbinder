@@ -3,13 +3,13 @@
  * Brands") pinned to the top of the column's listbox, selected by a client
  * sentinel id rather than a document id.
  *
- * Companion to `EntitySelector.listbox.test.tsx` (the general listbox/roving-
- * tabindex contract this file leans on rather than re-proves) and
+ * Companion to `EntitySelector.listbox.test.tsx` (the general listbox/combobox
+ * contract this file leans on rather than re-proves) and
  * `ManufacturerSelector.test.tsx` (the real caller's own pinned entry). Pins:
- * present even with zero data rows, excluded from the `showSearch` threshold
- * and the search filter, survives a search, carries its `aria-label`, is
- * reachable by roving index/typeahead, and `onSelect` is called with the
- * sentinel id on click.
+ * present even with zero data rows, never hides behind the search filter but
+ * IS matched by it (NEO-224: typing "all" highlights it), carries its
+ * `aria-label`, is reachable by the arrow highlight, and `onSelect` is called
+ * with the sentinel id on click.
  */
 
 import { fireEvent, render, screen, within } from "@testing-library/react";
@@ -69,6 +69,8 @@ function column(props: {
 const options = () => screen.getAllByRole("option");
 const optionNamed = (name: string) =>
   options().find((o) => o.textContent?.startsWith(name))!;
+const highlighted = (box: HTMLElement) =>
+  document.getElementById(box.getAttribute("aria-activedescendant") ?? "");
 
 describe("EntitySelector pinned entries (NEO-237 D17)", () => {
   beforeEach(() => {
@@ -99,14 +101,13 @@ describe("EntitySelector pinned entries (NEO-237 D17)", () => {
     ).not.toBeNull();
   });
 
-  it("does NOT count toward the showSearch threshold (> 8 data rows)", () => {
-    // Exactly 8 data rows plus the pinned entry must NOT trip the search box.
-    state.items = Array.from({ length: 8 }, (_, i) => ({
-      _id: `m${i}`,
-      value: `Brand ${i}`,
-    }));
+  it("shows the search box however few data rows there are, pinned entry included", () => {
+    // Was: "does NOT count toward the showSearch threshold (> 8 data rows)".
+    // The threshold is gone (NEO-224): every open column renders its combobox,
+    // so a column of one pinned entry plus two brands has one too.
     render(column({}));
-    expect(screen.queryByPlaceholderText(/search/i)).toBeNull();
+    expect(screen.getAllByRole("combobox")).toHaveLength(1);
+    expect(screen.getByPlaceholderText("Search manufacturers...")).not.toBeNull();
   });
 
   it("is never hidden by the search filter", () => {
@@ -124,25 +125,43 @@ describe("EntitySelector pinned entries (NEO-237 D17)", () => {
     expect(screen.queryByText(/^Brand \d$/)).toBeNull();
   });
 
-  it("participates in the roving tabindex — Down from it reaches the first data row", () => {
+  it("is the first highlight, and Down from it reaches the first data row", () => {
+    // Was: "participates in the roving tabindex — Down from it reaches the
+    // first data row".
     render(column({}));
-    const pinned = optionNamed("All Brands");
-    expect(pinned.tabIndex).toBe(0); // the pinned row is the initial roving stop
-    pinned.focus();
+    const box = screen.getByRole("combobox");
+    expect(highlighted(box)).toBe(optionNamed("All Brands"));
+    expect(optionNamed("All Brands").tabIndex).toBe(-1);
 
-    fireEvent.keyDown(pinned, { key: "ArrowDown" });
+    fireEvent.keyDown(box, { key: "ArrowDown" });
     // Data rows sort alphabetically: Panini, Topps.
-    expect(document.activeElement).toBe(optionNamed("Panini"));
+    expect(highlighted(box)).toBe(optionNamed("Panini"));
   });
 
-  it("typeahead can land on it by its first letters", () => {
-    render(column({}));
-    const panini = optionNamed("Panini");
-    panini.focus();
+  it("typing 'all' highlights it, and Enter selects it by its sentinel id", () => {
+    // Was: "typeahead can land on it by its first letters".
+    const onSelect = vi.fn();
+    render(column({ onSelect }));
+    const box = screen.getByRole("combobox");
 
-    fireEvent.keyDown(panini, { key: "A" });
-    fireEvent.keyDown(document.activeElement!, { key: "l" });
-    expect(document.activeElement).toBe(optionNamed("All Brands"));
+    fireEvent.change(box, { target: { value: "all" } });
+
+    expect(highlighted(box)).toBe(optionNamed("All Brands"));
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith(ALL_BRANDS_VIEW);
+  });
+
+  it("keeps the pinned entry listed but unhighlighted when nothing matches, and Enter does nothing", () => {
+    const onSelect = vi.fn();
+    render(column({ onSelect }));
+    const box = screen.getByRole("combobox");
+
+    fireEvent.change(box, { target: { value: "zzz" } });
+
+    expect(options()).toHaveLength(1);
+    expect(box.getAttribute("aria-activedescendant")).toBeNull();
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it("calling onSelect fires with the sentinel id, not a document id", () => {

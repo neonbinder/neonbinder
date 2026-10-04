@@ -127,13 +127,15 @@ describe("EntitySelector — keyboard operability (NEO-260)", () => {
     expect(setExpanded).toHaveBeenCalledWith(true);
   });
 
-  it("parks focus on the collapsed card, so Tab does not restart at the top of the page", () => {
-    // The row that was focused unmounts when the column collapses. Without the
-    // park, `document.activeElement` is <body> and the next Tab starts from the
-    // page header — several columns away from the cascade.
+  it("moves no focus itself when a pick collapses the column (the cascade decides where focus goes)", () => {
+    // Was: "parks focus on the collapsed card, so Tab does not restart at the
+    // top of the page". NEO-224 moved that decision to the cascade, which
+    // focuses the next open column's search box; the column must NOT grab the
+    // card, or it would fight the cascade's effect.
     const { rerender } = renderSelector({ selectedId: null, expanded: true });
-    const row = screen.getByText("Baseball").closest("button")!;
-    row.focus();
+    const box = screen.getByRole("combobox", { name: "Search sports" });
+    box.focus();
+    fireEvent.keyDown(box, { key: "Enter" });
 
     rerender(
       <EntitySelector
@@ -149,9 +151,11 @@ describe("EntitySelector — keyboard operability (NEO-260)", () => {
       />,
     );
 
-    expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "Sports: Baseball — change" }),
-    );
+    const card = screen.getByRole("button", {
+      name: "Sports: Baseball — change",
+    });
+    expect(document.activeElement).not.toBe(card);
+    expect(document.activeElement).toBe(document.body);
   });
 
   it("never steals focus the user has already moved elsewhere", () => {
