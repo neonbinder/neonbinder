@@ -17,6 +17,8 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
   BLOCKED_CHANGED_MID_BUILD,
+  BLOCKED_CHANGED_NOTHING_CLEARED,
+  blockedChangedMidBuild,
   BLOCKED_TOO_MANY_CARDS,
   BLOCKED_TOO_MANY_VARIANT_TYPES,
   MAX_CARD_BYTES_FOR_BUILD,
@@ -42,6 +44,8 @@ const SENTINEL = 1_700_000_000_000;
 const bscState = vi.hoisted(() => ({
   cards: [] as Array<{ cardNumber: string; cardName: string; platformRef: string }>,
   calls: 0,
+  /** One-shot, run while the action awaits the fetch (before any write). */
+  onFetch: null as null | (() => Promise<void>),
 }));
 vi.mock("./adapters/buysportscards", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./adapters/buysportscards")>();
@@ -59,6 +63,11 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
       returns: v.any(),
       handler: async () => {
         bscState.calls++;
+        const hook = bscState.onFetch;
+        if (hook) {
+          bscState.onFetch = null;
+          await hook();
+        }
         return { success: true, cards: bscState.cards };
       },
     }),
@@ -90,6 +99,7 @@ vi.mock("./cardPlayerLinks", async (importOriginal) => {
 beforeEach(() => {
   bscState.cards = [];
   bscState.calls = 0;
+  bscState.onFetch = null;
   deleteHook.once = null;
 });
 
@@ -246,6 +256,47 @@ describe("S1 — isBase moved between the delete and the insert", () => {
     expect(result.deletedCount).toBe(1);
     expect(result.stillListedNotRelinked.bsc).toBe(1);
     // Nothing was copied from the Base that is no longer the Base.
+    expect(await cardsOn(t, gold)).toHaveLength(0);
+  });
+});
+
+describe("the changed-mid-build sentence is true to what was removed", () => {
+  test("it claims cards were cleared only when some were", () => {
+    expect(blockedChangedMidBuild(3)).toBe(BLOCKED_CHANGED_MID_BUILD);
+    expect(blockedChangedMidBuild(0)).toBe(BLOCKED_CHANGED_NOTHING_CLEARED);
+    expect(BLOCKED_CHANGED_NOTHING_CLEARED).not.toMatch(/clear/i);
+  });
+
+  test("a first build whose Base moves during the fetch says nothing was cleared", async () => {
+    const t = convexTest(schema, modules);
+    const { setName, base, gold } = await seedSet(t);
+    await addCard(t, base, { cardNumber: "1", cardName: "Aaron Judge" });
+    bscState.cards = [{ cardNumber: "1", cardName: "Aaron Judge", platformRef: "bsc-1" }];
+    // The parallel holds no cards, so nothing is ever deleted; the move lands
+    // after the context read and before the first insert page.
+    bscState.onFetch = async () => {
+      await t.run(async (ctx) => {
+        await ctx.db.patch(base, { metadata: {} });
+        await ctx.db.insert("selectorOptions", {
+          level: "variantType",
+          value: "Base Too",
+          parentId: setName,
+          platformData: {},
+          metadata: { isBase: true },
+          children: [],
+          lastUpdated: SENTINEL,
+        });
+      });
+    };
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: gold });
+
+    expect(bscState.onFetch).toBeNull(); // the hook really ran
+    expect(result.status).toBe("blocked");
+    expect(result.blockedReason).toBe(BLOCKED_CHANGED_NOTHING_CLEARED);
+    expect(result.deletedCount).toBe(0);
     expect(await cardsOn(t, gold)).toHaveLength(0);
   });
 });

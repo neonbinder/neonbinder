@@ -258,8 +258,20 @@ export function blockedSourceHasNoCards(sourceName?: string): string {
     ? `${sourceName} has no cards yet — save its checklist first`
     : BLOCKED_SOURCE_NO_CARDS;
 }
+/** Only when old cards were actually removed before the build stopped. */
 export const BLOCKED_CHANGED_MID_BUILD =
   "its cards changed partway through the rebuild, and some were already cleared — build it again to put them back";
+/**
+ * NEO-321 — the same stop with NOTHING removed (a first build, or a source
+ * that moved before any old card went): no claim that anything was cleared.
+ */
+export const BLOCKED_CHANGED_NOTHING_CLEARED =
+  "something changed partway through the build — build it again";
+
+/** The changed-mid-build sentence that is true for `deleted` old cards removed. */
+export function blockedChangedMidBuild(deleted: number): string {
+  return deleted > 0 ? BLOCKED_CHANGED_MID_BUILD : BLOCKED_CHANGED_NOTHING_CLEARED;
+}
 export const BLOCKED_TOO_MANY_SL_SETS =
   "it has more than 10 SportLots sets linked, which is more than one build reads — unlink the extras first";
 export const BLOCKED_TOO_MANY_BSC_SETS =
@@ -2265,7 +2277,7 @@ export const buildParallelChecklist = action({
       if (page.changed) {
         // Security 4 — another build got here first.
         const lost = classify(dropped, { bsc: new Set(), sportlots: new Set() });
-        return blocked(BLOCKED_CHANGED_MID_BUILD, {
+        return blocked(blockedChangedMidBuild(deletedTotal), {
           sidesFetched: answered,
           deletedCount: deletedTotal,
           earlierLinksMissing: lost.gone,
