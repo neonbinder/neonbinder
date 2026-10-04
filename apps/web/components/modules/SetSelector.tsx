@@ -82,6 +82,7 @@ import ParallelBuildPanel, {
 } from "../SetSelector/ParallelBuildPanel";
 import BaseMappingForm from "../SetSelector/BaseMappingForm";
 import BaseParallelsBuildSection, {
+  BASE_PARALLELS_REASON_ID,
   useBaseParallelsPlan,
 } from "../SetSelector/BaseParallelsBuildSection";
 import ParallelGroupingModal from "../SetSelector/ParallelGroupingModal";
@@ -688,6 +689,11 @@ export default function SetSelector() {
         role: "parallel",
         sourceId: baseSource?.id,
         sourceValue: baseSource?.value,
+        // Loaded and still no Base: the section above says why, and the
+        // row's stand-in button points at that sentence.
+        ...(baseParallelsPlan && !baseSource
+          ? { unavailableReasonId: BASE_PARALLELS_REASON_ID }
+          : {}),
       };
     }
     return { role: "insert" };
@@ -697,8 +703,8 @@ export default function SetSelector() {
     selectedVariantId,
     selectedVariantOfVariantId,
     cardChecklistChain,
-    baseSource?.id,
-    baseSource?.value,
+    baseSource,
+    baseParallelsPlan,
   ]);
 
   /**

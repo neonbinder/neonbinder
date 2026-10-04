@@ -9,8 +9,10 @@ import { ConfirmDialog } from "../modules/confirm-dialog";
 import ParallelBuildPanel, {
   PARALLEL_BUILD_HEADING_ID,
   SLEEVE_TONE,
+  moreText,
   planFailedText,
   possessive,
+  truncatedText,
   type ParallelBuildPlan,
   type ParallelBuildRunner,
   type ParallelLine,
@@ -209,9 +211,25 @@ function previewKind(entry: ParallelPlanEntry): ParallelLine["kind"] {
   return entry.hasCards ? "built" : "waiting";
 }
 
-function previewTitle(entry: ParallelPlanEntry): string {
+/**
+ * a11y (NEO-321 audit) — a parallel the run will not build, named with why:
+ * "Gold — blocked: some of its cards have scans…" or "Gold — skipped: not
+ * linked to a marketplace yet". `null` for one the run will build. Shown as
+ * words under the summary, because the strip that also marks them is
+ * decorative.
+ */
+export function attentionText(entry: ParallelPlanEntry): string | null {
   if (entry.blocked) return `${entry.value} — blocked: ${entry.blocked}`;
-  if (!linked(entry)) return `${entry.value} — not linked to a marketplace yet`;
+  if (!linked(entry)) return `${entry.value} — skipped: not linked to a marketplace yet`;
+  return null;
+}
+
+/** Above this many, the list says "…and N more" rather than run on. */
+const ATTENTION_LIST_MAX = 10;
+
+function previewTitle(entry: ParallelPlanEntry): string {
+  const attention = attentionText(entry);
+  if (attention) return attention;
   return entry.hasCards ? `${entry.value} — has cards` : `${entry.value} — empty`;
 }
 
@@ -220,7 +238,12 @@ function previewTitle(entry: ParallelPlanEntry): string {
 // ---------------------------------------------------------------------------
 
 const HEADING_ID = "base-parallels-heading";
-const REASON_ID = "base-parallels-reason";
+/**
+ * The reason line's id. Exported so a base parallel's stand-in button (no
+ * single Base to build from) is described by the same sentence (NEO-321 a11y).
+ */
+export const BASE_PARALLELS_REASON_ID = "base-parallels-reason";
+const REASON_ID = BASE_PARALLELS_REASON_ID;
 
 export default function BaseParallelsBuildSection({
   variantTypeId,
@@ -262,6 +285,10 @@ export default function BaseParallelsBuildSection({
   const sourceValue = source?.value;
   const parallels = plan?.parallels;
   const tally = parallels ? tallyParallels(parallels) : undefined;
+  const attention = (parallels ?? []).flatMap((entry) => {
+    const text = attentionText(entry);
+    return text ? [{ id: entry._id, text }] : [];
+  });
   const ownRunLive = showsRun && runner.active;
 
   // Why the button cannot run, in the order the operator would fix it.
@@ -315,7 +342,24 @@ export default function BaseParallelsBuildSection({
             <p className="mt-0.5 text-xs text-gray-400">
               {summaryText(tally)}
               {sourceValue ? ` ${explainerText(sourceValue)}` : ""}
+              {plan?.truncated && parallels
+                ? ` ${truncatedText(parallels.length)}`
+                : ""}
             </p>
+          )}
+          {attention.length > 0 && (
+            <ul className="mt-1.5 space-y-0.5 text-xs text-amber-300">
+              {attention.slice(0, ATTENTION_LIST_MAX).map((item) => (
+                <li key={item.id} className="break-words">
+                  {item.text}
+                </li>
+              ))}
+              {attention.length > ATTENTION_LIST_MAX && (
+                <li className="italic">
+                  {moreText(attention.length - ATTENTION_LIST_MAX)}
+                </li>
+              )}
+            </ul>
           )}
         </div>
         <NeonButton
@@ -378,7 +422,11 @@ export default function BaseParallelsBuildSection({
 
       {showsRun && runner.run && (
         <div className="mt-3 [&>section]:mb-0">
-          <ParallelBuildPanel run={runner.run} onStop={runner.stop} />
+          <ParallelBuildPanel
+            run={runner.run}
+            onStop={runner.stop}
+            headingLevel={4}
+          />
         </div>
       )}
 

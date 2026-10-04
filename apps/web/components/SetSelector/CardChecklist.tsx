@@ -45,6 +45,7 @@ import {
 } from "./pairing-cards";
 import ParallelBuildPanel, {
   ParallelBuildButton,
+  ParallelBuildPlaceholder,
   ParallelBuildDetails,
   PARALLEL_BUILD_HEADING_ID,
   SEE_CARDS_LABEL,
@@ -2101,13 +2102,24 @@ export default function CardChecklist({
    * entity wizard. The source is the insert, or Base for a parallel of the
    * base set (NEO-321 D3, which retires the pairing dialog on those rows).
    * Rendered only once the source's name and this row are known, because the
-   * name IS the label; until then the slot stays empty rather than falling
-   * back to a Sync that would fetch.
+   * name IS the label; until then a stand-in holds the slot (NEO-321 a11y)
+   * rather than falling back to a Sync that would fetch.
    */
   const parallelButton = (primary: boolean) =>
     parallelBuild?.role === "parallel" &&
-    parallelBuild.sourceValue &&
-    variantRow ? (
+    variantRow &&
+    !parallelBuild.sourceValue ? (
+      // NEO-321 (a11y): the source has no name yet (loading), or there is no
+      // single Base to build from. A stand-in holds the slot and says which,
+      // never a Sync that would fetch and never an empty slot.
+      <ParallelBuildPlaceholder
+        key={variantId}
+        primary={primary}
+        reasonId={parallelBuild.unavailableReasonId}
+      />
+    ) : parallelBuild?.role === "parallel" &&
+      parallelBuild.sourceValue &&
+      variantRow ? (
       <ParallelBuildButton
         // A confirm half-open on one parallel says nothing about the next.
         key={variantId}

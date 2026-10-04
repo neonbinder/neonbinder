@@ -187,6 +187,13 @@ export type ParallelBuildRole =
       sourceId?: Id<"selectorOptions">;
       /** Undefined while the source loads; the button waits for it. */
       sourceValue?: string;
+      /**
+       * NEO-321 (a11y) — set when the source is KNOWN to be missing (a base
+       * parallel in a set with no single Base): the id of the element on the
+       * page that says why, which the stand-in button is described by.
+       * Unset while the source is merely loading.
+       */
+      unavailableReasonId?: string;
     };
 
 /** One parallel's line in the panel. */
@@ -1005,11 +1012,33 @@ const SCROLL_AFTER = 8;
 export default function ParallelBuildPanel({
   run,
   onStop,
+  headingLevel = 3,
 }: {
   run: ParallelRun;
   onStop: () => void;
+  /**
+   * NEO-321 (a11y) — 4 when the panel sits inside a section that has its own
+   * h3 (the Base-parallels section), so the outline nests. Text and id are
+   * the same either way.
+   */
+  headingLevel?: 3 | 4;
 }) {
+  const Heading = headingLevel === 4 ? "h4" : "h3";
   const panelRef = useRef<HTMLElement>(null);
+  /**
+   * a11y (NEO-321 audit) — the live line must be EMPTY when it enters the
+   * tree: a screen reader registers a live region on insertion and speaks
+   * only later CHANGES, so a region that mounts already holding "Building 5
+   * parallels of Anime" says nothing. React renders the node with no
+   * children and this effect writes the text after the commit — on mount
+   * that is the change that gets spoken, and every later announcement is a
+   * change too. The node's text is owned here, never by React, so the two
+   * cannot fight over it.
+   */
+  const liveRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (liveRef.current) liveRef.current.textContent = run.announcement;
+  }, [run.announcement]);
   const scrollerRef = useRef<HTMLDivElement>(null);
   // NEO-260: the E2E driver re-finds a focused control by an XPath built from
   // its class, so Stop carries the document-unique marker class — never a
@@ -1162,9 +1191,12 @@ export default function ParallelBuildPanel({
       className="p-3 mb-3 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
     >
       <div className="flex items-center justify-between gap-3">
-        <h3 id={PARALLEL_BUILD_HEADING_ID} className="font-semibold tabular-nums">
+        <Heading
+          id={PARALLEL_BUILD_HEADING_ID}
+          className="font-semibold tabular-nums"
+        >
           {panelHeading(run)}
-        </h3>
+        </Heading>
         {live && (
           // The in-banner button shape the solo fetch's Cancel and the
           // post-commit call-to-action already use, with the same 32px hit
@@ -1235,9 +1267,7 @@ export default function ParallelBuildPanel({
         in the final heading, said once at the end. Every line also stays in
         the ledger above to be read at leisure.
       */}
-      <p className="sr-only" role="status">
-        {run.announcement}
-      </p>
+      <p ref={liveRef} className="sr-only" role="status" />
     </section>
   );
 }
@@ -1403,5 +1433,42 @@ export function ParallelBuildButton({
         />
       )}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The parallel row's stand-in, before its source is known (NEO-321 a11y)
+// ---------------------------------------------------------------------------
+
+export const SOURCE_LOADING_LABEL = "Loading…";
+export const SOURCE_MISSING_LABEL = "Can't build yet";
+
+/**
+ * Holds the Sync slot on a parallel whose source has no name yet, so the slot
+ * is never empty and the real button does not shift the header when it
+ * lands. Same shape and weight as `ParallelBuildButton`, `aria-disabled`
+ * (focusable, so the reason is reachable), and does nothing when pressed.
+ * Loading says so; a source known to be missing says it can't build, and is
+ * described by the line on the page that says why.
+ */
+export function ParallelBuildPlaceholder({
+  primary = false,
+  reasonId,
+}: {
+  primary?: boolean;
+  reasonId?: string;
+}) {
+  const label = reasonId ? SOURCE_MISSING_LABEL : SOURCE_LOADING_LABEL;
+  return (
+    <NeonButton
+      className="max-w-[18rem]"
+      secondary={!primary}
+      aria-disabled
+      aria-busy={reasonId ? undefined : true}
+      aria-describedby={reasonId}
+      title={label}
+    >
+      <span className="min-w-0 truncate">{label}</span>
+    </NeonButton>
   );
 }
