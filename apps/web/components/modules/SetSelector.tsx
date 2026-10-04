@@ -49,6 +49,7 @@ import { slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { SourceChips } from "../SetSelector/ChecklistSourceFilter";
 import { isBaseRole } from "../SetSelector/baseRole";
+import { variantTypeRole } from "../../convex/variantRole";
 import { bscSourceView } from "../../convex/bscFacets";
 
 import SportSelector from "../SetSelector/SportSelector";
@@ -80,6 +81,9 @@ import ParallelBuildPanel, {
   type ParallelBuildRole,
 } from "../SetSelector/ParallelBuildPanel";
 import BaseMappingForm from "../SetSelector/BaseMappingForm";
+import BaseParallelsBuildSection, {
+  useBaseParallelsPlan,
+} from "../SetSelector/BaseParallelsBuildSection";
 import ParallelGroupingModal from "../SetSelector/ParallelGroupingModal";
 import MultiSourcePanel from "../SetSelector/MultiSourcePanel";
 import SetAttributesPanel from "../SetSelector/SetAttributesPanel";
@@ -206,13 +210,22 @@ export default function SetSelector() {
   const stableVariantTypeFlagsRef = useRef<{
     forId: GenericId<"selectorOptions"> | null;
     isBase: boolean;
+    /** NEO-321: the row's NB role is `parallel` — the base set's parallels live under it. */
+    isParallelType: boolean;
     hasMapping: boolean;
     value: string;
-  }>({ forId: null, isBase: false, hasMapping: false, value: "" });
+  }>({
+    forId: null,
+    isBase: false,
+    isParallelType: false,
+    hasMapping: false,
+    value: "",
+  });
   if (stableVariantTypeFlagsRef.current.forId !== selectedVariantTypeId) {
     stableVariantTypeFlagsRef.current = {
       forId: selectedVariantTypeId,
       isBase: false,
+      isParallelType: false,
       hasMapping: false,
       value: "",
     };
@@ -221,6 +234,11 @@ export default function SetSelector() {
     stableVariantTypeFlagsRef.current.isBase = isBaseRole(
       selectedVariantType?.metadata,
     );
+    // NEO-321: read through the one role rule (`metadata.variantRole`),
+    // never the row's name — a variant type an operator called "Parallel" is
+    // just a row called "Parallel".
+    stableVariantTypeFlagsRef.current.isParallelType =
+      variantTypeRole(selectedVariantType) === "parallel";
     // Auto-prompt is gated on the SportLots mapping specifically. The BSC
     // slug on the row is auto-populated by "Sync Variant Types" (BSC's
     // variant facet returns "Base" with a slug), so testing it would
@@ -244,6 +262,8 @@ export default function SetSelector() {
     stableVariantTypeFlagsRef.current.value = selectedVariantType?.value ?? "";
   }
   const isBaseVariantTypeSelected = stableVariantTypeFlagsRef.current.isBase;
+  const isParallelTypeSelected =
+    stableVariantTypeFlagsRef.current.isParallelType;
   const baseHasMapping = stableVariantTypeFlagsRef.current.hasMapping;
   // Pluralized variantType label ("Insert" → "Inserts") used as the column
   // header and Sync button text on the Variants column. Falls back to the
@@ -614,15 +634,22 @@ export default function SetSelector() {
   }, [cardChecklistRow]);
 
   /**
-   * NEO-312 — which half of an insert → parallel pair the open checklist is.
+   * NEO-312 — which half of a source → parallel pair the open checklist is.
    *
-   * Read off the cascade's own selections, never off a name or a marketplace
-   * value: a checklist on the Variants column's row is an insert, and one on
-   * the column below it is a parallel of that insert. The insert's name is
-   * the parallel button's label ("Build from Anime"), taken from the chain
-   * this component already reads for the checklist row — the insert is that
-   * row's parent, so it is in the chain by construction, and matched by id.
-   * Until the chain loads it is undefined and the button waits.
+   * Read off the cascade's own selections and NB roles, never off a name or a
+   * marketplace value: a checklist on the Variants column's row is an insert,
+   * and one on the column below it is a parallel of that insert. The insert's
+   * name is the parallel button's label ("Build from Anime"), taken from the
+   * chain this component already reads for the checklist row — the insert is
+   * that row's parent, so it is in the chain by construction, and matched by
+   * id. Until the chain loads it is undefined and the button waits.
+   *
+   * NEO-321 (D3) — a row on the Variants column under a variant type whose
+   * role is `parallel` is a parallel of the BASE set, not an insert: its Sync
+   * slot builds from Base ("Build from Base") instead of fetching, and its
+   * save builds nothing beneath it. Base's id and name are the server's
+   * answer (`source` on the same list the Base-parallels section shows), so
+   * the label and the build can never disagree about which row is Base.
    */
   /**
    * NEO-312 (hobby A10) — the runner that builds an insert's parallels after
@@ -635,24 +662,55 @@ export default function SetSelector() {
    */
   const parallelRun = useHostedParallelBuildRun();
 
+  /**
+   * NEO-321 — the base set's parallels and their source (Base), listed from
+   * the selected Parallel variant type. Live only while that type is
+   * selected; shared by the section and a base parallel's own button.
+   */
+  const baseParallelsPlan = useBaseParallelsPlan(
+    isParallelTypeSelected ? selectedVariantTypeId : null,
+  );
+  const baseSource = baseParallelsPlan?.source ?? undefined;
+
   const parallelBuild: ParallelBuildRole | undefined = useMemo(() => {
     if (isBaseVariantTypeSelected || !selectedVariantId) return undefined;
     if (selectedVariantOfVariantId) {
       return {
         role: "parallel",
-        insertId: selectedVariantId,
-        insertValue: cardChecklistChain?.find(
+        sourceId: selectedVariantId,
+        sourceValue: cardChecklistChain?.find(
           (c) => c._id === selectedVariantId,
         )?.value,
+      };
+    }
+    if (isParallelTypeSelected) {
+      return {
+        role: "parallel",
+        sourceId: baseSource?.id,
+        sourceValue: baseSource?.value,
       };
     }
     return { role: "insert" };
   }, [
     isBaseVariantTypeSelected,
+    isParallelTypeSelected,
     selectedVariantId,
     selectedVariantOfVariantId,
     cardChecklistChain,
+    baseSource?.id,
+    baseSource?.value,
   ]);
+
+  /**
+   * NEO-321 — the run on screen is the one the Base-parallels section
+   * started, and that section is showing: it draws the ledger, so neither the
+   * checklist nor the stand-in below draws a second (one panel per page keeps
+   * its heading and line ids unique).
+   */
+  const baseSectionShowsRun =
+    isParallelTypeSelected &&
+    !!selectedVariantTypeId &&
+    parallelRun.run?.startedFrom === selectedVariantTypeId;
 
   // NO SCROLL HEADROOM HERE, deliberately — the shell owns it now (NEO-260).
   //
@@ -937,6 +995,21 @@ export default function SetSelector() {
         </>
       )}
 
+      {/* NEO-321: the base set's parallels, built from Base in one go — only
+          when the operator presses the button (D2). Shown for the variant
+          type whose NB role is `parallel`, and kept while one of its rows is
+          open, in the same variant-type slot Base's mapping button uses. */}
+      {selectedVariantTypeId && isParallelTypeSelected && (
+        <BaseParallelsBuildSection
+          // A confirm or an error on one variant type says nothing about the next.
+          key={selectedVariantTypeId}
+          variantTypeId={selectedVariantTypeId}
+          plan={baseParallelsPlan}
+          runner={parallelRun}
+          showsRun={baseSectionShowsRun}
+        />
+      )}
+
       {/* NEO-6: multi-source attach panel for the active variant row.
           Renders for variantType (when Base/terminal), insert, and
           parallel rows once they have a reconciliation primary mapped. */}
@@ -984,6 +1057,7 @@ export default function SetSelector() {
           // builds from its insert instead of syncing.
           parallelBuild={parallelBuild}
           parallelRun={parallelRun}
+          parallelPanelElsewhere={baseSectionShowsRun}
         />
       )}
 
@@ -991,7 +1065,7 @@ export default function SetSelector() {
           above the insert level mid-run, or came back after leaving), so the
           panel stands in the checklist's place: Stop stays in reach and the
           result stays readable. */}
-      {!cardChecklistId && parallelRun.run && (
+      {!cardChecklistId && parallelRun.run && !baseSectionShowsRun && (
         <ParallelBuildPanel run={parallelRun.run} onStop={parallelRun.stop} />
       )}
 

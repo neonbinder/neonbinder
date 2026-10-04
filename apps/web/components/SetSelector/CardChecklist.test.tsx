@@ -3652,7 +3652,7 @@ function renderParallelRow() {
       variantId={VARIANT_ID}
       sourceChips={{}}
       sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      parallelBuild={{ role: "parallel", insertId: INSERT_ROW_ID, insertValue: "Anime" }}
+      parallelBuild={{ role: "parallel", sourceId: INSERT_ROW_ID, sourceValue: "Anime" }}
     />,
   );
 }
@@ -3750,7 +3750,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     // The run has started and is building "Anime Gold" — still "running"
     // because the action never resolves.
     await waitFor(() =>
-      expect(mockGetParallelsForBuild).toHaveBeenCalledWith({ insertId: VARIANT_ID }),
+      expect(mockGetParallelsForBuild).toHaveBeenCalledWith({ sourceId: VARIANT_ID }),
     );
 
     const addCard = await screen.findByLabelText("Open add card form");
@@ -3805,8 +3805,10 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
 
   it("a run active on a DIFFERENT insert entirely never holds this checklist", () => {
     const foreign = hostedRunner({
-      insertId: "some-other-insert" as unknown as Id<"selectorOptions">,
-      insertValue: "Other Insert",
+      startedFrom: "some-other-insert" as unknown as Id<"selectorOptions">,
+      sourceId: "some-other-insert" as unknown as Id<"selectorOptions">,
+      sourceValue: "Other Insert",
+      sourceKind: "insert",
       entries: [
         { id: "other-parallel" as unknown as Id<"selectorOptions">, value: "X", line: { kind: "building" } },
       ],
@@ -3830,8 +3832,10 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
 
   it("holds a parallel still WAITING in the insert's run — described by its own ledger line, not the heading", () => {
     const run = {
-      insertId: INSERT_ROW_ID,
-      insertValue: "Anime",
+      startedFrom: INSERT_ROW_ID,
+      sourceId: INSERT_ROW_ID,
+      sourceValue: "Anime",
+      sourceKind: "insert" as const,
       entries: [{ id: VARIANT_ID, value: "Anime Kanji", line: { kind: "waiting" as const } }],
       truncated: false,
       phase: "running" as const,
@@ -3843,7 +3847,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
         variantId={VARIANT_ID}
         sourceChips={{}}
         sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-        parallelBuild={{ role: "parallel", insertId: INSERT_ROW_ID, insertValue: "Anime" }}
+        parallelBuild={{ role: "parallel", sourceId: INSERT_ROW_ID, sourceValue: "Anime" }}
         parallelRun={hostedRunner(run)}
       />,
     );
@@ -3888,7 +3892,7 @@ describe("CardChecklist — NEO-312 the auto-run after a commit (J1)", () => {
     renderInsertRow();
     await driveZeroCandidateCommit();
     await waitFor(() =>
-      expect(mockGetParallelsForBuild).toHaveBeenCalledWith({ insertId: VARIANT_ID }),
+      expect(mockGetParallelsForBuild).toHaveBeenCalledWith({ sourceId: VARIANT_ID }),
     );
   });
 

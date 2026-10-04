@@ -80,11 +80,13 @@ type CardChecklistProps = {
    */
   setId?: Id<"selectorOptions">;
   /**
-   * NEO-312 — where this checklist sits in the insert → parallel pair, as the
+   * NEO-312 — where this checklist sits in the source → parallel pair, as the
    * cascade (which holds both selections) knows it. An insert builds its
    * parallels after its checklist is saved (J1); a parallel's Sync button
-   * becomes "Build from {insert}" (J4). Absent on Base and anywhere else, which
-   * keep the ordinary sync.
+   * becomes "Build from {source}" (J4) — the insert, or Base for a parallel of
+   * the base set (NEO-321 D3). Absent on Base and anywhere else, which keep
+   * the ordinary sync. (Base's parallels are built from the set builder's
+   * section, never after a Base save — NEO-321 D2.)
    */
   parallelBuild?: ParallelBuildRole;
   /**
@@ -94,6 +96,13 @@ type CardChecklistProps = {
    * its own.
    */
   parallelRun?: ParallelBuildRunner;
+  /**
+   * NEO-321 — the run's panel is on screen somewhere else (the set builder's
+   * Base-parallels section, which started it), so this checklist does not
+   * draw a second copy: one panel per page keeps its heading id, line ids
+   * and text unique. Held controls here still point at that panel's lines.
+   */
+  parallelPanelElsewhere?: boolean;
 };
 
 /**
@@ -304,6 +313,7 @@ export default function CardChecklist({
   setId,
   parallelBuild,
   parallelRun: hostedParallelRun,
+  parallelPanelElsewhere = false,
 }: CardChecklistProps) {
   const cards = useQuery(api.selectorOptions.getCardChecklist, {
     selectorOptionId: variantId,
@@ -388,24 +398,25 @@ export default function CardChecklist({
   const parallelRun = hostedParallelRun ?? localParallelRun;
   /**
    * NEO-312 (a11y 1) — a build is about to replace this checklist's cards (or,
-   * on the insert, copy them), so the operator's own edits are held until it
+   * on the source, copy them), so the operator's own edits are held until it
    * lands rather than colliding with it silently: the run touches this row
-   * (the insert, or one of its parallels still to be built), or a build of
-   * this parallel from its own row is in flight. Every held control is
-   * `aria-disabled` and described by the line that says why — the parallel's
-   * ledger line ("Waiting", "Building…"), the panel heading on the insert, or
-   * a hidden "Building from …" note for a parallel-row build.
+   * (the source — an insert, or Base for the base set's parallels (NEO-321) —
+   * or one of its parallels still to be built), or a build of this parallel
+   * from its own row is in flight. Every held control is `aria-disabled` and
+   * described by the line that says why — the parallel's ledger line
+   * ("Waiting", "Building…"), the panel heading on the source, or a hidden
+   * "Building from …" note for a parallel-row build.
    */
   const buildRun = parallelRun.run;
   const runTouchesThis =
     !!buildRun &&
-    (variantId === buildRun.insertId ||
+    (variantId === buildRun.sourceId ||
       buildRun.entries.some((e) => e.id === variantId));
   const heldByRun = parallelRun.active && runTouchesThis;
   const heldByOwnBuild = parallelRun.inFlight.has(variantId);
   const editsHeld = heldByRun || heldByOwnBuild;
   const heldDescribedBy = heldByRun
-    ? variantId === buildRun?.insertId
+    ? variantId === buildRun?.sourceId
       ? PARALLEL_BUILD_HEADING_ID
       : parallelLineId(variantId)
     : heldByOwnBuild
@@ -453,7 +464,7 @@ export default function CardChecklist({
      * same "which cards" lists the run's ledger does. Carried ON the notice,
      * so any later notice replaces it along with the text it belonged to.
      */
-    parallelResult?: { result: ParallelBuildResult; insertValue: string };
+    parallelResult?: { result: ParallelBuildResult; sourceValue: string };
   } | null>(null);
   const [noticeDetailOpen, setNoticeDetailOpen] = useState(false);
   const setSyncMessage = useCallback(
@@ -1480,7 +1491,7 @@ export default function CardChecklist({
       // parallel's line in the panel, never this notice.
       if (parallelBuild?.role === "insert") {
         void parallelRun
-          .start(variantId, variantRow?.value ?? "", convex)
+          .start({ id: variantId, value: variantRow?.value ?? "" }, convex)
           .then((failure) => {
             if (failure) {
               setCommittedMessage(
@@ -1751,7 +1762,7 @@ export default function CardChecklist({
   const handleParallelBuildResult = useCallback(
     ({
       parallelId,
-      insertValue,
+      sourceValue,
       text,
       tone,
       committed,
@@ -1764,7 +1775,7 @@ export default function CardChecklist({
       // screen — and the focus park.
       const here = currentVariantIdRef.current === parallelId;
       const parallelResult =
-        committed && result ? { result, insertValue } : undefined;
+        committed && result ? { result, sourceValue } : undefined;
       setSyncNotice(
         committed && here
           ? { text, tone: "status", kind: "committed", parallelResult }
@@ -2077,28 +2088,32 @@ export default function CardChecklist({
    * run is not carried onto an unrelated checklist.
    */
   const run = buildRun;
-  const showParallelPanel = !!run && (parallelRun.active || runTouchesThis);
-  // While the insert's parallels are building, neither the insert's Sync (a
-  // new save would start a second run over a checklist being copied) nor a
-  // parallel's own build button (a second build of the same parallel) runs.
+  const showParallelPanel =
+    !!run && !parallelPanelElsewhere && (parallelRun.active || runTouchesThis);
+  // While the source's parallels are building, neither the source's Sync (a
+  // new save would start a second run over a checklist being copied, or
+  // change the Base mid-copy) nor a parallel's own build button (a second
+  // build of the same parallel) runs.
   const busy = syncing || committing || heldByRun;
   /**
-   * NEO-312 (J4) — on a parallel, the Sync slot builds from the insert
+   * NEO-312 (J4) — on a parallel, the Sync slot builds from its source
    * instead: no marketplace fetch, no Match Cards, no content review and no
-   * entity wizard. Rendered only once the insert's name and this row are
-   * known, because the name IS the label; until then the slot stays empty
-   * rather than falling back to a Sync that would fetch.
+   * entity wizard. The source is the insert, or Base for a parallel of the
+   * base set (NEO-321 D3, which retires the pairing dialog on those rows).
+   * Rendered only once the source's name and this row are known, because the
+   * name IS the label; until then the slot stays empty rather than falling
+   * back to a Sync that would fetch.
    */
   const parallelButton = (primary: boolean) =>
     parallelBuild?.role === "parallel" &&
-    parallelBuild.insertValue &&
+    parallelBuild.sourceValue &&
     variantRow ? (
       <ParallelBuildButton
         // A confirm half-open on one parallel says nothing about the next.
         key={variantId}
         parallelId={variantId}
         parallelValue={variantRow.value}
-        insertValue={parallelBuild.insertValue}
+        sourceValue={parallelBuild.sourceValue}
         cardCount={cards.length}
         primary={primary}
         held={heldByRun}
@@ -2443,7 +2458,7 @@ export default function CardChecklist({
             {syncNotice.parallelResult &&
               detailBuckets(
                 syncNotice.parallelResult.result,
-                syncNotice.parallelResult.insertValue,
+                syncNotice.parallelResult.sourceValue,
               ).length > 0 && (
                 <>
                   {" "}
@@ -2461,7 +2476,7 @@ export default function CardChecklist({
                       <ParallelBuildDetails
                         id={NOTICE_DETAIL_ID}
                         result={syncNotice.parallelResult.result}
-                        insertValue={syncNotice.parallelResult.insertValue}
+                        sourceValue={syncNotice.parallelResult.sourceValue}
                       />
                     </div>
                   )}
@@ -2526,9 +2541,9 @@ export default function CardChecklist({
         )}
         {heldByOwnBuild &&
           parallelBuild?.role === "parallel" &&
-          parallelBuild.insertValue && (
+          parallelBuild.sourceValue && (
             <span id={MANUAL_BUILD_NOTE_ID} className="sr-only">
-              {manualBuildNote(parallelBuild.insertValue)}
+              {manualBuildNote(parallelBuild.sourceValue)}
             </span>
           )}
 

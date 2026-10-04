@@ -120,7 +120,7 @@ describe("useParallelBuildRun — the runner's order", () => {
 
     const { result } = renderHook(() => useParallelBuildRun());
     await act(async () => {
-      await result.current.start(INSERT_ID, "Anime");
+      await result.current.start({ id: INSERT_ID, value: "Anime" });
     });
 
     expect(calls).toEqual([A, D]);
@@ -147,7 +147,7 @@ describe("useParallelBuildRun — Stop takes effect between calls, never mid-cal
     const { result } = renderHook(() => useParallelBuildRun());
     let done!: Promise<string | null>;
     act(() => {
-      done = result.current.start(INSERT_ID, "Anime");
+      done = result.current.start({ id: INSERT_ID, value: "Anime" });
     });
 
     // Wait for the loop to have reached A's in-flight call.
@@ -187,7 +187,7 @@ describe("useParallelBuildRun — a failure moves on to the next parallel", () =
 
     const { result } = renderHook(() => useParallelBuildRun());
     await act(async () => {
-      await result.current.start(INSERT_ID, "Anime");
+      await result.current.start({ id: INSERT_ID, value: "Anime" });
     });
 
     expect(result.current.run?.phase).toBe("finished");
@@ -205,7 +205,7 @@ describe("useParallelBuildRun — an empty parallel list mounts no panel", () =>
     const { result } = renderHook(() => useParallelBuildRun());
 
     await act(async () => {
-      await result.current.start(INSERT_ID, "Anime");
+      await result.current.start({ id: INSERT_ID, value: "Anime" });
     });
 
     expect(result.current.run).toBeNull();
@@ -221,7 +221,7 @@ describe("ParallelBuildPanel — heading and Stop button", () => {
     );
     const { result } = renderHook(() => useParallelBuildRun());
     act(() => {
-      void result.current.start(INSERT_ID, "Anime");
+      void result.current.start({ id: INSERT_ID, value: "Anime" });
     });
     await waitFor(() => expect(result.current.run).not.toBeNull());
 
@@ -244,7 +244,7 @@ describe("ParallelBuildButton — Build/Rebuild labels and the rebuild confirm",
       <ParallelBuildButton
         parallelId={A}
         parallelValue="Anime Gold"
-        insertValue="Anime"
+        sourceValue="Anime"
         cardCount={0}
         onResult={onResult}
       />,
@@ -265,7 +265,7 @@ describe("ParallelBuildButton — Build/Rebuild labels and the rebuild confirm",
       <ParallelBuildButton
         parallelId={A}
         parallelValue="Anime Gold"
-        insertValue="Anime"
+        sourceValue="Anime"
         cardCount={12}
         onResult={onResult}
       />,
@@ -290,7 +290,7 @@ describe("ParallelBuildButton — Build/Rebuild labels and the rebuild confirm",
       <ParallelBuildButton
         parallelId={A}
         parallelValue="Anime Gold"
-        insertValue="Anime"
+        sourceValue="Anime"
         cardCount={12}
         onResult={onResult}
       />,
@@ -323,8 +323,10 @@ describe("builtText — the per-side, never-summed phrasing", () => {
 
 function baseRun(overrides: Partial<ParallelRun> = {}): ParallelRun {
   return {
-    insertId: INSERT_ID,
-    insertValue: "Anime",
+    startedFrom: INSERT_ID,
+    sourceId: INSERT_ID,
+    sourceValue: "Anime",
+    sourceKind: "insert",
     entries: [
       { id: A, value: "Anime Gold", line: { kind: "built", result: builtResult() } },
       { id: B_BLOCKED, value: "Anime Silver", line: { kind: "blocked", reason: "some reason" } },
@@ -428,7 +430,7 @@ describe("ParallelBuildPanel — the live region announcement", () => {
     });
     const { result } = renderHook(() => useParallelBuildRun());
     await act(async () => {
-      await result.current.start(INSERT_ID, "Anime");
+      await result.current.start({ id: INSERT_ID, value: "Anime" });
     });
     // The final announcement is the ended heading as a sentence; the run is
     // small (4 parallels), so a plain "built" line is announced on its own
@@ -457,7 +459,7 @@ describe("ParallelBuildPanel — the live region announcement", () => {
     // individual "Built N cards" line was the last thing said for a plain
     // success on a run this size).
     await act(async () => {
-      await result.current.start(INSERT_ID, "Anime");
+      await result.current.start({ id: INSERT_ID, value: "Anime" });
     });
     rerender();
     expect(result.current.run?.announcement).toBe(`${panelHeading(result.current.run!)}.`);
@@ -507,7 +509,7 @@ describe("useParallelBuildRun — the in-flight registry", () => {
       <ParallelBuildButton
         parallelId={A}
         parallelValue="Anime Gold"
-        insertValue="Anime"
+        sourceValue="Anime"
         cardCount={0}
         runner={runner}
         onResult={() => {}}
@@ -540,7 +542,7 @@ describe("useHostedParallelBuildRun — surviving the checklist unmounting", () 
 
     const { result, unmount } = renderHook(() => useHostedParallelBuildRun());
     act(() => {
-      void result.current.start(INSERT_ID, "Anime", { query: mockQuery, action: mockActionFn });
+      void result.current.start({ id: INSERT_ID, value: "Anime" }, { query: mockQuery, action: mockActionFn });
     });
     await waitFor(() => expect(result.current.run?.phase).toBe("running"));
 
@@ -563,7 +565,7 @@ describe("useHostedParallelBuildRun — surviving the checklist unmounting", () 
 
     const { result, unmount } = renderHook(() => useHostedParallelBuildRun());
     act(() => {
-      void result.current.start(INSERT_ID, "Anime", { query: mockQuery, action: mockActionFn });
+      void result.current.start({ id: INSERT_ID, value: "Anime" }, { query: mockQuery, action: mockActionFn });
     });
     await waitFor(() => expect(result.current.run?.phase).toBe("running"));
     unmount(); // leaves this run behind
