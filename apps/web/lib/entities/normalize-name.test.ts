@@ -209,3 +209,17 @@ describe("initials — NEO-322", () => {
     expect(ordered("Liga MX")).toBe("liga mx");
   });
 });
+
+describe("normalizeEntityName — a stored key is not a name", () => {
+  test("the sorted key is NOT idempotent under re-normalising", () => {
+    // Joining initials runs BEFORE the token sort, so the sort can leave two
+    // single-letter tokens side by side, and a second pass then joins them.
+    // NOTHING may re-normalise a stored key (or a value read back from one):
+    // always normalise the original NAME. `rekeyEntityNames` recomputes from
+    // the row's name for exactly this reason.
+    const once = normalizeEntityName("J. Doe K.");
+    expect(once).toBe("doe j k");
+    expect(normalizeEntityName(once)).toBe("doe jk");
+    expect(normalizeEntityName(once)).not.toBe(once);
+  });
+});

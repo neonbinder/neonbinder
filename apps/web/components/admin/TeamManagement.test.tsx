@@ -656,6 +656,31 @@ describe("TeamManagement — the Franchise field", () => {
     );
   });
 
+  it("keeps a franchise listed on the keystroke after a run of initials (NEO-322)", () => {
+    // "N. C. S" joins to "ncs", the substring of nothing in "nc state"; without
+    // the typeahead reading "nc s" the list empties and offers to start a
+    // duplicate thread.
+    franchiseRows = [
+      ...FRANCHISES,
+      {
+        _id: "f-nc-state",
+        _creationTime: 0,
+        name: "NC State",
+        nameNormalized: "nc state",
+        sportId: "sport-baseball",
+        lastUpdated: 0,
+        teamCount: 0,
+      },
+    ];
+    renderAt("/admin/teams?team=t-sf-giants");
+    type("N. C.");
+    expect(optionLabels()).toEqual(["NC State", "No franchise"]);
+    type("N. C. S");
+    expect(optionLabels()).toEqual(["NC State", "No franchise"]);
+    type("N. C. State");
+    expect(optionLabels()).toEqual(["NC State", "No franchise"]);
+  });
+
   it("puts the answer back on Escape", () => {
     renderAt("/admin/teams?team=t-sf-giants");
     pick("Giants");

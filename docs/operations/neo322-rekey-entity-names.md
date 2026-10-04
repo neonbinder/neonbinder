@@ -83,6 +83,9 @@ before diacritic folding (NEO-253), or a key someone wrote by hand.
 - **Only the exact string `true` arms the deployment.** `1` and `TRUE` do not.
 - The flag is checked by the entry point and again by **every** write
   mutation, so no other internal caller can get to the writes without it.
+- The write mutation (`applyPage`) also requires the exact `confirm` phrase
+  in its arguments. Always go through `run`; calling `applyPage` directly
+  without the phrase is rejected before anything is read or written.
 - **Correct phrase, deployment not armed:** the call is refused with a
   `ConvexError`. The error data is
   `{ code: "REKEY_NOT_ARMED", message, report }`, where `message` names the

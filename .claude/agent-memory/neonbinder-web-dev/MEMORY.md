@@ -81,4 +81,4 @@
 - [Placeholder module cycle TDZ](reference_placeholder_module_cycle_tdz.md) — pipeline ↔ pool/heavyPool import each other; a shared const is TDZ at load; shared validators go in pure lib/
 - [Sync Sets held notices not surfaced](project_sync_sets_held_notices_not_surfaced.md) — setName store's held/withheld are dropped at the action boundary on purpose (NEO-312); don't re-propose a channel
 - [Reuse the status-ledger spinner→check pattern](feedback_reuse_the_status_ledger_spinner_to_check_pattern.md) — owner-approved (NEO-312 ParallelBuildPanel): per-item ledger, clock→spin→check glyphs, sleeve strip; reuse for any multi-item run, extract on second use
-- [Key join rules need a typeahead reading](reference_key_join_rules_need_a_typeahead_reading.md) — joined initials break prefix typeahead one keystroke; entityNameQueryReadings; player-in-sport = home + playerSports legs
+- [Key join rules need a typeahead reading](reference_key_join_rules_need_a_typeahead_reading.md) — joined initials break prefix AND substring typeahead one keystroke; entityNameQueryReadings; player-in-sport = home + playerSports legs

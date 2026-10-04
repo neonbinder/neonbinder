@@ -50,6 +50,11 @@
  *   EVERY write mutation (`applyPage`), not only in the entry point, so no
  *   future internal caller can reach the writes around it.
  *
+ *   `applyPage` also REQUIRES `confirm` as the literal phrase in its own
+ *   validator, so a direct `npx convex run rekeyEntityNames:applyPage` cannot
+ *   skip the per-invocation statement of intent either; `run` passes it
+ *   through only on an apply pass it has already decided to make.
+ *
  * An armed call on an UNARMED deployment is refused with a `ConvexError`
  * whose data names the flag AND carries the dry-run report, so the operator
  * sees what the run would have done and what to do about it in one step.
@@ -1115,14 +1120,17 @@ async function stableFranchiseHolderExists(
 
 /**
  * One page of one table, re-decided live and written. Asserts the arm as its
- * first statement. `skipIds` carries the plan's colliding league/franchise
- * rows; it is ignored for every other table (their policy is to write).
+ * first statement; `confirm` must be exactly `CONFIRM_PHRASE` or the validator
+ * rejects the call before the handler runs. `skipIds` carries the plan's
+ * colliding league/franchise rows; it is ignored for every other table (their
+ * policy is to write).
  *
  * Only derived keys are written. A name, an alias list, a marketplace field or
  * `lastUpdated` is never touched: a re-key is not an edit.
  */
 export const applyPage = internalMutation({
   args: {
+    confirm: v.literal(CONFIRM_PHRASE),
     table: rekeyTableValidator,
     cursor: v.union(v.string(), v.null()),
     pageSize: v.optional(v.number()),
@@ -1585,6 +1593,7 @@ export const run = internalAction({
       let done = false;
       for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
         const page: ApplyPageResult = await ctx.runMutation(internal.rekeyEntityNames.applyPage, {
+          confirm: CONFIRM_PHRASE,
           table,
           cursor,
           ...(args.pageSize !== undefined ? { pageSize: args.pageSize } : {}),
