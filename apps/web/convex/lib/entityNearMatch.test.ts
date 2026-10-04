@@ -140,6 +140,10 @@ describe("longestToken", () => {
   test("returns null when nothing survives normalisation", () => {
     expect(longestToken("...")).toBeNull();
   });
+
+  test("spaced initials do not hide the surname (NEO-322)", () => {
+    expect(longestToken("C. J. Kayfus")).toBe("kayfus");
+  });
 });
 
 describe("rankTeamCandidates", () => {
@@ -266,5 +270,11 @@ describe("rankPlayerCandidates", () => {
 
   test("an empty query matches nothing", () => {
     expect(rankedPlayerNames("", [{ name: "Mike Trout" }])).toEqual([]);
+  });
+
+  test("initials written with and without spaces are exact (NEO-322)", () => {
+    expect(
+      rankedPlayerNames("C.J. Kayfus", [{ name: "C. J. Kayfus" }]),
+    ).toEqual([["C. J. Kayfus", "exact"]]);
   });
 });

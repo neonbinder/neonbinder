@@ -119,3 +119,4 @@ Non-markdown helpers: `tools/`
 - [Clamp then anchor-restore after a panel swap](patterns_clamp_then_anchor_restore_after_a_panel_swap.md) — form→query-loaded panel = two scroll states; gate on a mount-only element before any scroll
 - [Negative `index:` is bottom-most](patterns_negative_index_is_bottom_most.md) — index sorts by y then x; `-1` taps the last real row of a bottom-opening virtuoso list, never a phantom
 - [Tall client panel: re-enter the page](patterns_tall_client_panel_reenter_page.md) — a client-only run ledger adds ~1,000px; re-drill after it ends instead of travel; mid-queue builds never pin card counts
+- [Exact-match proof is the demoted create](patterns_exact_match_proof_is_the_demoted_create.md) — `Open <name>` also renders for CLOSE matches; assert `Create player X anyway`; verify seeded names from the recording, not dev

@@ -1254,10 +1254,12 @@ export default defineSchema({
     // Diacritics-folded + lowercase + token-sort dedup key. Built by
     // normalizePlayerName(), which since NEO-253 is an alias for the one
     // shared implementation in lib/entities/normalize-name.ts — the same key
-    // teams and leagues use. A value written BEFORE NEO-253 for a name that
-    // carried a diacritic is stale and unreachable by the current key; no
-    // backfill shipped, because the only rows that old are dev/preview rows
-    // that are reseeded per run. See that module's note.
+    // teams and leagues use. NEO-322 added the join of initial runs ("C. J."
+    // and "C.J." both key as "cj"). A value written by an older version of
+    // that chain is stale and unreachable through the index, so after ANY
+    // change to it the re-key action in convex/rekeyEntityNames.ts must run
+    // on every deployment — production holds data that stays. See that
+    // module's note.
     nameNormalized: v.string(),
     // NEO-96: a REFERENCE to the sport-level selectorOptions row, not a copy of
     // its display label. Previously `primarySport: v.string()`, which three

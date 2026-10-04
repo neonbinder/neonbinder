@@ -99,6 +99,7 @@ import type * as posthog from "../posthog.js";
 import type * as preprocessAudience from "../preprocessAudience.js";
 import type * as preprocessCapacity from "../preprocessCapacity.js";
 import type * as publicProfile from "../publicProfile.js";
+import type * as rekeyEntityNames from "../rekeyEntityNames.js";
 import type * as repairSportHallOfFameQids from "../repairSportHallOfFameQids.js";
 import type * as selectorOptions from "../selectorOptions.js";
 import type * as selectorSyncMatch from "../selectorSyncMatch.js";
@@ -223,6 +224,7 @@ declare const fullApi: ApiFromModules<{
   preprocessAudience: typeof preprocessAudience;
   preprocessCapacity: typeof preprocessCapacity;
   publicProfile: typeof publicProfile;
+  rekeyEntityNames: typeof rekeyEntityNames;
   repairSportHallOfFameQids: typeof repairSportHallOfFameQids;
   selectorOptions: typeof selectorOptions;
   selectorSyncMatch: typeof selectorSyncMatch;

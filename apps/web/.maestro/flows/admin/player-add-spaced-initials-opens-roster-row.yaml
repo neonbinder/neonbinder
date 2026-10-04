@@ -1,0 +1,197 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Player Management — typing spaced initials finds the roster player written without the spaces"
+tags:
+  - admin
+---
+# R1 — ONE FEATURE (NEO-322): the shared entity-name key
+# (`lib/entities/normalize-name.ts`) joins a run of adjacent single-letter
+# tokens, so "J. T. Realmuto" keys the same as "J.T. Realmuto" / "JT
+# Realmuto". On /admin/players that is visible as the add form recognising the
+# roster player: typing the spaced spelling promotes the primary button to
+# "Open <roster name>" and demotes creation to "Create anyway", and Open lands
+# on the existing row. Before NEO-322 the two spellings keyed as
+# "j realmuto t" and "jt realmuto" (the token sort scattered the initials), the
+# match came back only as `close`, and the form offered to create a duplicate
+# person — the production bug ("C.J. Kayfus" vs "C. J. Kayfus").
+#
+# ⚠️ DATA DEPENDENCY — THE ROSTER ROW. J.T. Realmuto is #261 of 2024 Topps
+#   Chrome Base, and is therefore in the roster `setup.yaml` commits every run
+#   (SET-REGISTRY.md → 2024 Topps Chrome; ~494 Base / Future Stars / Gold Wave
+#   players). Same dependency, same shape, as checklist-wizard-link-commits'
+#   "Shohei Ohtani". The committed spelling is the one the marketplace sent at
+#   creation; the enrichment recording (convex/adapters/__fixtures__/
+#   enrichment-lookups.json) records it as "J.T. Realmuto". STEP 1 asserts the
+#   row exists AND that its initials carry no space between them — the only
+#   spelling for which this flow exercises the join at all (a roster row
+#   already spelled "J. T. Realmuto" would match on the OLD key too and the
+#   flow would prove nothing). If he is ever absent, or respelled, STEP 1 fails
+#   by name; the fix is to swap the literals for another seeded player whose
+#   name has unspaced initials (the recording also holds "CJ Abrams",
+#   "JJ Bleday", "MJ Melendez", "J.P. Crawford" — check the one you pick is in
+#   2024 Topps Chrome first).
+#
+# R2 — the flow cannot go green without the feature:
+#   (a) `Create player J. T. Realmuto anyway` is the demoted control's own
+#       accessible name and it renders ONLY when `players.nearMatches` returned
+#       a `confidence: "exact"` row — i.e. when the normalised keys are equal.
+#       Without the join the roster row is at best `close` (origin/main keys
+#       the two spellings "j realmuto t" and "jt realmuto"): it can show up as
+#       an "Open J.T. Realmuto" button in the near-match PANEL, the primary
+#       stays "Create player", and this flow fails at STEP 3 by that control's
+#       name.
+#       (That panel button is why "Open …" alone is NOT the feature assert —
+#       it exists in both worlds. The demoted control does not.)
+#   (b) the primary's create label `Create player J. T. Realmuto` is gone
+#       (`id:` is a FULL match, so the `… anyway` label cannot satisfy it);
+#       asserted only after (a) proved the page is live (memory:
+#       negative-asserts-pass-on-a-dead-page).
+#   (c) Open lands on the ROSTER row: its detail panel reads back the unspaced
+#       spelling and Sport: Baseball — never the typed "J. T." spelling, which
+#       no row carries.
+#   No `when:` branches and no conditional runFlow anywhere.
+#
+# R3 — no other flow proves this. admin-players-same-name-birth-year proves the
+#   Open / Create anyway swap for a name typed IDENTICALLY to the row; this one
+#   proves a DIFFERENT spelling reaching the same key. The key itself is unit-
+#   tested beside normalize-name.ts; this is the user-visible proof on a real
+#   synced roster row.
+#
+# R4 — the sign-in entry URL is the whole setup; no in-body login.
+#
+# R5 — every in-app wait is 7000 and stated; the only longer one is the
+#   post-launch counter gate (README → "Launching a flow", 45 s). Every
+#   scrollUntilVisible states `timeout: 7000`.
+#
+# R7 / R7a — READ-ONLY. Nothing is created, edited or deleted: the filter and
+#   the sport picker are view state, "Create anyway" is never tapped, and
+#   opening a player writes nothing. No set is touched, so this flow owns no
+#   SET-REGISTRY.md entry and is safe alongside every other flow. No minted
+#   name, so no ATTEMPT_TOKEN. No cleanup needed.
+#
+# `id:` in this file always matches an ARIA-LABEL (maestro-web's resource-id is
+# `node.id || node.ariaLabel || …`), never a DOM id — README → "pressKey needs a
+# unique, user-visible handle". Every `text:`/`id:` is a full-match regex, so
+# the literal periods are escaped.
+
+- launchApp
+
+# The COUNTER, not the heading: the heading paints before the list query
+# answers (player-management-add-and-career-history explains why the heading
+# actively misleads here).
+- extendedWaitUntil:
+    visible: ".*of .* players.*"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — PRECONDITION (R2): the roster row exists, spelled without spaces
+# between its initials.
+# ============================================================
+# Past two characters the filter switches to the server search, which spans
+# every sport while the picker reads "All sports". The matcher is a full match
+# on the row's name span, so it cannot be satisfied by the filter box's own
+# value ("Realmuto" — no initials) and it REFUSES a "J. T." spelling.
+- tapOn: "Filter players"
+- inputText: "Realmuto"
+- extendedWaitUntil:
+    visible: "J\\.?T\\.? Realmuto"
+    timeout: 7000
+
+# ============================================================
+# STEP 2 — empty the list, pick Baseball, open the add form
+# ============================================================
+# Every row prints its sport, so with rows on screen "Baseball" is on the page
+# many times and the picker could not be told apart from them. Appending a
+# nonsense run to the filter empties it; where the caret lands does not matter
+# ("Realmutozzzz" and "zzzzRealmuto" both match nothing), so no eraseText.
+- tapOn: "Filter players"
+- inputText: "zzzz"
+- extendedWaitUntil:
+    visible: "No players match that filter."
+    timeout: 7000
+- extendedWaitUntil:
+    visible: "0 matches"
+    timeout: 7000
+
+# The add form requires a sport and opens with the LIST's choice; pick it on
+# the list's picker while the form is closed — maestro resolves a native option
+# tap against the FIRST <select> in the page (memory: native-select-option-taps).
+- tapOn: "All sports"
+- tapOn: "Baseball"
+- assertVisible: "Baseball"
+# Picking a sport re-keys the search and the counter blanks until it answers;
+# the count back on screen is the sport filter applied (memory:
+# player-management-counter-reflow — the select and counter are fixed-width
+# now, so the button no longer moves, but the answer is still what we wait on).
+- extendedWaitUntil:
+    visible: "0 matches"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: "Add player"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Add player"
+# Result gate for that one click (R2).
+- extendedWaitUntil:
+    visible: "Add a player"
+    timeout: 7000
+
+# The SPACED spelling — the one no row carries.
+- tapOn: "New player name"
+- inputText: "J. T. Realmuto"
+
+# ============================================================
+# STEP 3 — THE FEATURE (R2 a/b): the form recognises the roster player
+# ============================================================
+# `nearMatches` answers ~300ms after typing stops. The demoted control sits in
+# the button row at the bottom of the form, below the fold where the page is
+# now — so this is a SCROLL (which polls for it and brings it on screen), not
+# an extendedWaitUntil (which never scrolls; memory: below-the-fold-asserts).
+# R8 case 1 → 7000: the button row is where the career-history flow measured
+# "Create player …" centring on the first swipe thanks to NEO-260's 208px
+# spacer (src/layouts/binder-layout.tsx); 7000 DEPENDS on that spacer. The
+# near-match panel above the row is empty here (the exact row is promoted out
+# of it and no other Realmuto exists), so the form is the same height.
+# Fails HERE, by this name, when the keys do not match.
+- scrollUntilVisible:
+    element:
+      id: "Create player J\\. T\\. Realmuto anyway"
+    centerElement: true
+    timeout: 7000
+# The primary is the roster row: its visible text IS its accessible name (no
+# aria-label override in the exact state).
+- extendedWaitUntil:
+    visible: "Open J\\.?T\\.? Realmuto"
+    timeout: 7000
+# …and creation is no longer the primary action.
+- assertNotVisible:
+    id: "Create player J\\. T\\. Realmuto"
+
+# ============================================================
+# STEP 4 — R2(c): Open lands on the existing roster row
+# ============================================================
+- tapOn: "Open J\\.?T\\.? Realmuto"
+
+# NOTHING MAY SCROLL UNTIL THE DETAIL PANEL HAS MOUNTED. The form unmounts,
+# the page clamps while `getByIdParam` loads, then Chrome's scroll anchoring
+# restores the pre-tap position when the panel mounts (measured on this screen,
+# player-live-wikidata-enrichment; memory: clamp-then-anchor-restore). The
+# `Wikidata id` field label exists only in the detail panel, unconditionally,
+# and sits on screen in the restored state — so it is the mount gate.
+- extendedWaitUntil:
+    visible: "Wikidata id"
+    timeout: 7000
+# `Sport: <label>` is the row's own sport read back, in the panel's first field
+# row — ABOVE the restored position, so UP (R5: never rely on the document
+# bottoming out). The scroll is the assertion (R6).
+- scrollUntilVisible:
+    element:
+      text: ".*Sport: Baseball.*"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+# The roster spelling, in the panel heading and the Player name box beside the
+# Sport line — the unspaced initials prove this is the synced row, not one the
+# typed "J. T." spelling could have produced.
+- assertVisible: "J\\.?T\\.? Realmuto"

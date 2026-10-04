@@ -46,7 +46,9 @@ Things that look like failures during the apps/web fast gates but are not.
    says "No such file". Nothing can be sharing a dangling install, so after
    `pgrep -f "npm ci"` shows no sibling install, the builder may do the
    `rm apps/web/node_modules` + `npm ci` itself (~10s) and say so in the
-   report (NEO-300).
+   report (NEO-300). Same when `apps/web/node_modules` is simply ABSENT in a
+   fresh shared worktree and no install is running: `npm ci` there (~1 min)
+   is the right first move (NEO-322).
 
 6. A whole-project `npx vitest run --project convex-lib` in a worktree where
    sibling builders are mid-edit reds on THEIR in-flight files, and the set
