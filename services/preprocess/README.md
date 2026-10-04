@@ -38,6 +38,11 @@ The resulting design:
   at 2.450–2.500 × 3.450–3.495in against 27 multi-card bed scans at 8.85 ×
   4.80in, with nothing in between, and 0 false accepts over 338 phone photos
   (all 72dpi, rejected on provenance). See `app/cropper/scan_meta.py`.
+- **Quad crop in the FAST role** (NEO-320) — a frame neither identity check
+  accepts is offered to a four-corner detector with a perspective warp, which
+  settles a card on a mat or scanner bed in well under a second instead of
+  escalating to the HEAVY role's ~40 s BiRefNet pass. It decides on the pixels
+  alone and declines on any doubt; see [FAST role: the quad crop](#fast-role-the-quad-crop-neo-320).
 - **Orient** — Cloud Vision `DOCUMENT_TEXT_DETECTION` rather than a bundled
   EasyOCR model, keeping ~300MB out of the container.
 - **Classify** — Anthropic Claude Haiku, key from Secret Manager, never baked
@@ -69,14 +74,20 @@ non-propagating loggers — before NEO-191 nothing configured root, so every
 the access log. An unrecognised value falls back to `INFO` rather than
 raising. `INFO` is what makes the crop cascade's per-image routing decisions
 (`scan_meta:`, `fast:`, `tiered:`, `cascade:`) visible in Cloud Logging; drop
-to `WARNING` if that volume ever becomes a problem.
+to `WARNING` if that volume ever becomes a problem. The quad stage logs one
+line per image it sees: `fast: quad accepted`, or `fast: quad declined
+reason=<check>` naming the content check that refused it (or `reason=gates`
+when its crop failed the validator / Vision text gate), so prod shows which
+check declines what.
 
 Timing (NEO-315): every authenticated `/process-entry` writes one JSON line,
 `{"msg":"process_entry_timing", ...}`, through a dedicated non-propagating
 `timing` logger with a bare `%(message)s` format, so Cloud Logging stores it
 as `jsonPayload` and per-stage numbers (`gcs_ms`, `vision_calls`,
-`vision_ms`, `birefnet_ms`, `sam_ms`, `classify_ms`, `total_ms`, ...) can be
-queried directly. It stays at INFO whatever `LOG_LEVEL` says, and it carries
+`vision_ms`, `classical_ms`, `quad_ms`, `birefnet_ms`, `sam_ms`,
+`classify_ms`, `total_ms`, ...) can be queried directly. `quad_ms` is the
+FAST role's quad crop on its own (detection, checks and warp), kept out of
+`classical_ms` so its cost is visible. It stays at INFO whatever `LOG_LEVEL` says, and it carries
 only numbers, flags and stage labels: no identifiers, paths or image data.
 See `app/timing.py`.
 
@@ -89,7 +100,7 @@ modes — the mode only affects which work the server performs.
 
 | Mode | `image` | `precropped` | What runs | When to use |
 |---|:-:|:-:|---|---|
-| **image-only** | yes | — | Full crop cascade (scan metadata → tiered → PIL trim → SAM → Haiku bbox → passthrough) on the original. | Callers with no client-side crop capability. |
+| **image-only** | yes | — | Full crop cascade (scan metadata → classical identity → quad → tiered → PIL trim → SAM → Haiku bbox → passthrough) on the original. | Callers with no client-side crop capability. |
 | **image + precropped** | yes | yes | Tries the crop first; if rejected, falls back to the full cascade on the original. | Callers that can guess a crop but want a server-side safety net. |
 | **crop-only** | — | yes | Validates the crop; on pass, runs orient + classify on it. On reject, returns 422 so the caller retries with the original. | Bandwidth-constrained callers whose client-side crops are usually good. Skips the 22 MB-per-image upload entirely when the crop passes. |
 
@@ -164,6 +175,10 @@ when `strategy` was supplied, 4 when it was omitted):
   ]
 }
 ```
+
+The fast-path stages that run ahead of these in `/process` and
+`/process-entry` (scan metadata, classical identity, and the quad crop) are
+not `/crop` strategies; see [FAST role: the quad crop](#fast-role-the-quad-crop-neo-320).
 
 `image_b64` and `error` together describe three outcomes per strategy:
 
@@ -263,6 +278,52 @@ chattier than calling `/crop` once with `strategy` omitted and walking the
 returned list locally. Use index iteration when each step's decision
 depends on inspecting the previous crop; use the all-at-once form when you
 just want every alternative.
+
+### FAST role: the quad crop (NEO-320)
+
+With `crop_quality="fast"` (the default) the cascade tries three cheap stages
+before anything that loads a model. The FAST service (`PREPROCESS_ROLE=fast`)
+runs only these and declines the rest to HEAVY with its baseline attached.
+
+| Order | Stage | `cropped_source` | Returns | Settles |
+|:-:|---|---|---|---|
+| 1 | `scan_meta.is_card_sized_scan` | `scan_metadata` | the input, untouched | a frame whose stated resolution measures one card |
+| 2 | `tiered.fast_tiered_crop` | `tiered` | the input, untouched | a card-aspect frame the card fills |
+| 3 | `quad.quad_crop` | `quad` | a new, perspective-corrected crop | one card on a mat or bed, tilted or keystoned |
+
+The quad stage is an OpenCV take on a Core Image rectangle detector plus
+perspective correction: Canny and background-distance edge maps, convex
+four-sided outlines kept only when card-shaped (corners within 25 degrees of
+square, sides near 2.5:3.5), each side then fitted to its edge points and
+slid onto the strongest colour-gradient line before one warp. It runs on
+every frame the identity stages did not accept, **and nothing about it asks
+where the image came from**: no EXIF make or model, no resolution, no
+device-shaped dimensions. A frame from any camera or scanner gets the same
+treatment, so its safety has to come from the pixels.
+
+A quad detector alone is unsafe in several known ways, and each has a check
+that declines with a named reason:
+
+| Reason | What it refuses | How it is seen |
+|---|---|---|
+| `multi_card` | one card of several | a second edge-supported card-shaped quad that does not overlap the first |
+| `tight_frame` | the printed border of a card that already fills the frame | the quad's margin to the frame edge is thin on all four sides |
+| `shaved` | a quad on the card's printed inner panel | the band just outside the quad is not background (it matches neither the frame border nor the surface further out), or a fainter line runs parallel just outside a side and stops where the side stops (a card edge, unlike a scanner streak or table edge, which carries on), or a larger supported card-shaped outline encloses it |
+| `loose` | background inside the crop | the crop's border ring, or one side's inner band, is background-coloured |
+| `weak_edges` | an outline hallucinated from texture | a side lacks gradient support along most of its length |
+| `off_aspect` | a side fitted to something other than the card edge | the refined quad is more than 0.025 off 2.5:3.5 |
+
+The largest edge-supported quad is the candidate; a smaller quad nested
+inside it is a printed panel and is never preferred. A crop that passes every
+check still has to clear the same validator and Vision text gate as every
+other stage. A decline is not an error: the frame goes to HEAVY exactly as it
+did before the stage existed.
+
+Timing is `quad_ms` in the timing line (~0.25 s median, ~0.6 s p95 on a
+laptop over the evaluation set, most of it decoding the full-resolution
+frame). The constants in `app/cropper/quad.py` were tuned as a set against a
+private labelled set of real phone photos and scanner beds; re-run that
+evaluation rather than adjusting one alone.
 
 ### Client telemetry (for adopters of crop-only mode)
 

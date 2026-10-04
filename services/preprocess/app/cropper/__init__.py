@@ -30,6 +30,9 @@ Source labels (order of preference):
     precropped      : client-supplied crop (only when the client sent one)
     scan_metadata   : the scanner's own resolution proves the frame IS one
                       card, so there is no background to crop (NEO-191)
+    quad            : the FAST role's four-corner detector + perspective warp,
+                      accepted only when its pixel content checks agree
+                      (NEO-320)
     tiered          : classical OpenCV + BiRefNet tiered pipeline (NEO-161)
     pil_trim_dark   : PIL blur + threshold + trim (card lighter than bg)
     pil_trim_light  : PIL blur + threshold + trim (card darker than bg)
@@ -47,7 +50,7 @@ from dataclasses import dataclass
 
 from app import timing
 from app.classify import ClassifyResult, classify_card
-from app.cropper import haiku_bbox, pil_trim, sam, scan_meta, tiered
+from app.cropper import haiku_bbox, pil_trim, quad, sam, scan_meta, tiered
 from app.cropper._utils import rotate_image_bytes
 from app.cropper.validator import is_plausible_crop
 from app.orient import OrientationResult, detect_orientation
@@ -82,6 +85,11 @@ CROP_QUALITIES: frozenset[str] = frozenset({CROP_QUALITY_FAST, CROP_QUALITY_STRO
 # this file says the frame measures one card" — and only a distinct label lets
 # `croppedSource` show which one carried an image.
 SOURCE_SCAN_METADATA = "scan_metadata"
+
+# Source label for the NEO-320 quad crop: a NEW crop (warped from four
+# detected corners), unlike the two identity labels above, so a winning quad
+# always returns its bytes to the client.
+SOURCE_QUAD = "quad"
 
 # Type for a crop strategy: takes raw image bytes, returns cropped bytes or None.
 CropStrategy = Callable[[bytes], bytes | None]
@@ -436,14 +444,15 @@ def crop(
     computed baseline would have been: the text threshold, identity-stage
     reuse, and the passthrough. Ignored in crop-only mode.
 
-    `skip_fast_path` (NEO-315) skips both fast-path identity stages (scan
-    metadata and `fast_tiered_crop`) and goes straight to the strategy loop.
-    The HEAVY route sets it when the request carries a FAST decline's
-    baseline: FAST already ran those exact stages on byte-identical bytes and
-    declined, and both are pure functions of the bytes (scan_meta reads
-    header metadata; the classical pass is deterministic OpenCV with no env,
-    role or model input), with their `_try_stage` gate evaluated against the
-    same supplied baseline. Re-running them can only reach the same "no".
+    `skip_fast_path` (NEO-315) skips every fast-path stage (scan metadata,
+    `fast_tiered_crop` and the NEO-320 quad crop) and goes straight to the
+    strategy loop. The HEAVY route sets it when the request carries a FAST
+    decline's baseline: FAST already ran those exact stages on byte-identical
+    bytes and declined, and all three are pure functions of the bytes
+    (scan_meta reads header metadata; the classical pass and the quad
+    detector are deterministic OpenCV with no env, role or model input), with
+    their `_try_stage` gate evaluated against the same supplied baseline.
+    Re-running them can only reach the same "no".
 
     `timings` (NEO-315) is the caller's per-request accumulator; stage times
     and the Vision call count are added to it. Omitted, a throwaway one is
@@ -482,10 +491,12 @@ def crop(
         `tiered.fast_tiered_crop` runs a classical-only pass for sources whose
         metadata says nothing, returning the input untouched for an unambiguous
         pre-cropped card-aspect frame WITHOUT a BiRefNet inference. On any other
-        verdict both decline and the cascade escalates to the full
-        tiered/BiRefNet path below, so a `"fast"` crop is never worse than a
-        `"strong"` one — the winning identity bytes are byte-identical to what
-        `"strong"` produces.
+        verdict both decline. Then `quad.quad_crop` (NEO-320) looks for one
+        card's four corners and warps it flat; its crop is offered to the
+        gates only when every pixel content check agrees (single card, outside
+        is background, inside is card, edges supported), and any doubt
+        declines. Whatever none of the three settles escalates to the full
+        tiered/BiRefNet path below.
       - ``"strong"``: the classical fast-path is skipped and the cascade runs
         tiered-first (BiRefNet) exactly as before.
 
@@ -581,10 +592,11 @@ def _crop(
         if result is not None:
             return result
 
-    # ── Fast-path identity short-circuits ───────────────────────────────
+    # ── Fast path ───────────────────────────────────────────────────────
     # Two cheap ways to answer "is this frame already the card?", tried in
-    # order of evidence quality before the model-backed cascade below.
-    # Skipped when the caller already ran them and declined (`skip_fast_path`).
+    # order of evidence quality, then the quad crop for everything else —
+    # all before the model-backed cascade below. Skipped when the caller
+    # already ran them and declined (`skip_fast_path`).
     if skip_fast_path:
         logger.info("cascade: fast path already declined upstream, skipping to strategies")
     if crop_quality == CROP_QUALITY_FAST and not skip_fast_path:
@@ -652,9 +664,41 @@ def _crop(
             if result is not None:
                 return result
 
+        # ── Quad crop (NEO-320) ─────────────────────────────────────────
+        # Every frame the identity checks above did not accept: find one
+        # card's four corners and warp it flat, in well under a second where
+        # the HEAVY role's BiRefNet pass costs ~40 s. Placed AFTER both
+        # identity checks because a frame that already IS the card has no
+        # background to find — a quad there is the card's printed border.
+        #
+        # Nothing here asks where the image came from (no device, resolution
+        # or metadata test): `quad_crop` decides on the pixels alone and
+        # declines, with a named reason, whenever its content checks are not
+        # all satisfied. A crop it does return still has to clear the same
+        # `_try_stage` validator and Vision text gate as every other stage.
+        with timings.measure("quad_ms"):
+            quad_result = quad.quad_crop(image_bytes)
+        if quad_result.crop_bytes is None:
+            logger.info("fast: quad declined reason=%s", quad_result.reason)
+        else:
+            result = _try_stage(
+                source=SOURCE_QUAD,
+                candidate_bytes=quad_result.crop_bytes,
+                source_area_bytes=image_bytes,
+                text_threshold=text_threshold,
+                returned_bytes_differ=True,
+                baseline_orient=baseline_orient,
+                timings=timings,
+            )
+            if result is not None:
+                logger.info("fast: quad accepted")
+                return result
+            logger.info("fast: quad declined reason=gates")
+
     # ── FAST-role escalation seam (NEO-175) ─────────────────────────────
     # The FAST preprocess service (`PREPROCESS_ROLE=fast`) sets escalate_only
-    # so it runs ONLY the classical fast path above. Everything below — the
+    # so it runs ONLY the classical fast path above (scan metadata, classical
+    # identity, quad crop — none of them loads a model). Everything below — the
     # strategy loop's first stage is `tiered` (BiRefNet), followed by `sam` —
     # loads or calls a local model, which the FAST role must never do. When
     # the classical fast path did not settle the image, decline HERE so Convex

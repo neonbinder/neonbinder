@@ -738,17 +738,25 @@ def fast_tiered_crop(image_bytes: bytes) -> bytes | None:
     do not bother a second tier". Validated 284/284 correct against the
     BiRefNet ground truth on the corpus's identity set.
 
-    Why NOT a classical crop fast-accept. A classical crop cannot be trusted
-    without the pipeline's BiRefNet *verification* stage: a border-shave
+    Why this function never crops. A crop from THIS pipeline cannot be
+    trusted without its BiRefNet *verification* stage: a border-shave
     (dark-on-dark charcoal borders, white-on-white) warps to a clean card
-    aspect and passes every classical gate — QC score, rectangularity,
+    aspect and passes every gate here — QC score, rectangularity,
     axis-alignment, uniform-margin — while quietly clipping the card. The
     corpus's `2026-08-11-0083` (charcoal border on a dark belt) and the
     `tc52r` white-border set both do exactly this; only BiRefNet seeing a
-    materially larger card recovers the border. So EVERY crop escalates
-    (see NEO-173 validation notes), which also means any image needing
-    deskew/rotation reaches the full deskew path untouched — the fast path
-    never emits a crop at all, let alone an un-deskewed one.
+    materially larger card recovers the border. So every crop this pipeline
+    would make escalates (see NEO-173 validation notes).
+
+    The FAST role does now crop (NEO-320), but not here: when this function
+    returns None, the cascade offers the frame to `quad.quad_crop`, a
+    separate detector built around exactly the failure above. It crops only
+    when content checks on the pixels rule the shave out — the ring outside
+    the quad must be background, no fainter card edge may run parallel just
+    outside it, no larger card-shaped outline may enclose it, and the crop's
+    own border must not be background — and it declines on any doubt; what
+    it declines still escalates to this pipeline's BiRefNet pass. This
+    function stays identity-only.
     """
     try:
         full, work, scale = _load(image_bytes)

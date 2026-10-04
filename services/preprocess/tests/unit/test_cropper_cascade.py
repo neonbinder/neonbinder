@@ -20,6 +20,7 @@ from PIL import Image
 from app import cropper
 from app.classify import ClassifyResult
 from app.cropper import CropDeclined, CropRejected, CropResult, crop, scan_meta
+from app.cropper.quad import QuadResult
 from app.orient import OrientationResult
 
 
@@ -1307,7 +1308,8 @@ class TestCascadeTimings:
 
 
 class TestSkipFastPath:
-    """NEO-315: `skip_fast_path` bypasses both identity stages; default unchanged."""
+    """NEO-315: `skip_fast_path` bypasses every fast-path stage (both identity
+    checks and the NEO-320 quad crop); default unchanged."""
 
     def test_skip_bypasses_both_stages_and_runs_the_loop(
         self, stub_orient, stub_classify, disable_server_strategies, monkeypatch
@@ -1317,6 +1319,7 @@ class TestSkipFastPath:
 
         monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", _boom)
         monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", _boom)
+        monkeypatch.setattr("app.cropper.quad.quad_crop", _boom)
         disable_server_strategies(trim_dark=_card_jpeg(size=(400, 560)))
         stub_orient()
         stub_classify()
@@ -1347,3 +1350,185 @@ class TestSkipFastPath:
 
         assert calls == ["scan", "fast"]
         assert isinstance(result, CropResult) and result.source == "tiered"
+
+
+class TestQuadStage:
+    """NEO-320: the FAST role's quad crop.
+
+    It runs after BOTH identity checks (a frame that already is the card must
+    never be offered to a corner detector), on every frame they did not
+    accept, and before the escalate_only decline. Its crop is a new image and
+    still clears the uniform `_try_stage` gates; when it declines, or its crop
+    fails a gate, the FAST role declines exactly as before, carrying the
+    baseline for HEAVY.
+    """
+
+    CROP = _card_jpeg(size=(500, 700))
+
+    @staticmethod
+    def _forbid_models(monkeypatch) -> None:
+        def _boom(_b):
+            raise AssertionError("model-backed strategy ran under escalate_only")
+
+        monkeypatch.setattr("app.cropper.tiered.tiered_crop", _boom)
+        monkeypatch.setattr("app.cropper.sam.sam_crop", _boom)
+        monkeypatch.setattr("app.cropper.haiku_bbox.haiku_bbox_crop", _boom)
+        monkeypatch.setattr("app.cropper.pil_trim.trim_dark", _boom)
+        monkeypatch.setattr("app.cropper.pil_trim.trim_light", _boom)
+
+    def _install(self, monkeypatch, quad_result: QuadResult | None) -> list[str]:
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "app.cropper.scan_meta.is_card_sized_scan", lambda _b: calls.append("scan") or None
+        )
+        monkeypatch.setattr(
+            "app.cropper.tiered.fast_tiered_crop", lambda _b: calls.append("fast") or None
+        )
+
+        def _quad(_b):
+            calls.append("quad")
+            if quad_result is None:
+                raise AssertionError("quad_crop ran")
+            return quad_result
+
+        monkeypatch.setattr("app.cropper.quad.quad_crop", _quad)
+        return calls
+
+    def test_runs_after_both_identity_checks_and_wins_as_quad(
+        self, monkeypatch, stub_orient, stub_classify
+    ):
+        stub_orient()
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        calls = self._install(monkeypatch, QuadResult(self.CROP, "ok"))
+
+        result = crop(
+            image_bytes=_card_jpeg(size=(1200, 1600)),
+            precropped_bytes=None,
+            escalate_only=True,
+        )
+
+        assert calls == ["scan", "fast", "quad"]
+        assert isinstance(result, CropResult)
+        assert result.source == "quad"
+        assert result.image_bytes == self.CROP
+        assert result.returned_bytes_differ is True
+
+    def test_an_identity_win_never_reaches_the_quad(self, monkeypatch, stub_orient, stub_classify):
+        stub_orient()
+        stub_classify()
+        self._install(monkeypatch, None)
+        monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", lambda b: b)
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, escalate_only=True)
+
+        assert isinstance(result, CropResult)
+        assert result.source == "tiered"
+
+    def test_a_scan_metadata_win_never_reaches_the_quad(
+        self, monkeypatch, stub_orient, stub_classify
+    ):
+        stub_orient()
+        stub_classify()
+        self._install(monkeypatch, None)
+        monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", lambda _b: object())
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, escalate_only=True)
+
+        assert isinstance(result, CropResult)
+        assert result.source == "scan_metadata"
+
+    @pytest.mark.parametrize("reason", ["shaved", "loose", "multi_card", "no_quad"])
+    def test_a_quad_decline_still_declines_with_the_baseline(
+        self, monkeypatch, stub_orient, stub_classify, reason
+    ):
+        baseline = _orient(text_count=21, rotation=180, confidence=0.6)
+        stub_orient(baseline)
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        calls = self._install(monkeypatch, QuadResult(None, reason))
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, escalate_only=True)
+
+        assert calls == ["scan", "fast", "quad"]
+        assert isinstance(result, CropDeclined)
+        assert result.reason == "fast_path_declined"
+        assert result.baseline == baseline
+
+    def test_a_quad_crop_below_the_text_gate_declines_with_the_baseline(
+        self, monkeypatch, stub_orient_by_call, stub_classify
+    ):
+        # Baseline sees 20 tokens; the quad crop only 3 — a wrong-region crop.
+        calls = stub_orient_by_call(_orient(text_count=20), _orient(text_count=3))
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        self._install(monkeypatch, QuadResult(self.CROP, "ok"))
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, escalate_only=True)
+
+        assert isinstance(result, CropDeclined)
+        assert result.baseline == _orient(text_count=20)
+        assert calls[1] == self.CROP, "the quad crop gets its own orient"
+
+    def test_a_quad_crop_failing_the_validator_declines(
+        self, monkeypatch, stub_orient, stub_classify
+    ):
+        stub_orient()
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        self._install(monkeypatch, QuadResult(_tiny_jpeg(), "ok"))
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, escalate_only=True)
+
+        assert isinstance(result, CropDeclined)
+
+    def test_without_escalate_only_a_decline_falls_through_to_the_strategies(
+        self, monkeypatch, stub_orient, stub_classify, disable_server_strategies
+    ):
+        stub_orient()
+        stub_classify()
+        disable_server_strategies(trim_dark=_card_jpeg(size=(400, 560)))
+        calls = self._install(monkeypatch, QuadResult(None, "shaved"))
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None)
+
+        assert calls == ["scan", "fast", "quad"]
+        assert isinstance(result, CropResult)
+        assert result.source == "pil_trim_dark"
+
+    def test_strong_mode_never_runs_the_quad(self, monkeypatch, stub_orient, stub_classify):
+        stub_orient()
+        stub_classify()
+        self._install(monkeypatch, None)
+
+        result = crop(
+            image_bytes=_card_jpeg(),
+            precropped_bytes=None,
+            crop_quality="strong",
+            escalate_only=True,
+        )
+
+        assert isinstance(result, CropDeclined)
+
+    def test_quad_time_is_booked_to_quad_ms(self, monkeypatch, stub_orient, stub_classify):
+        import time
+
+        from app.timing import Timings
+
+        stub_orient()
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        self._install(monkeypatch, QuadResult(None, "no_quad"))
+        real = cropper.quad.quad_crop
+
+        def _slow(b):
+            time.sleep(0.03)
+            return real(b)
+
+        monkeypatch.setattr("app.cropper.quad.quad_crop", _slow)
+        timings = Timings()
+
+        crop(image_bytes=_card_jpeg(), precropped_bytes=None, escalate_only=True, timings=timings)
+
+        assert timings.quad_ms >= 30
+        assert timings.classical_ms < 30
