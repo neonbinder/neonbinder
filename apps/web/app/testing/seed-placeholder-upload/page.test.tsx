@@ -156,7 +156,7 @@ describe("TestingSeedPlaceholderUploadPage", () => {
     renderPage();
 
     await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
-    // The default set (inset cards → heavy escalation) is fetched from
+    // The default set (inset cards → the fast quad crop) is fetched from
     // /placeholder-fixtures/, so an entry with no ?fixtures= is unchanged.
     const urls = fetchMock.mock.calls.map((c) => c[0] as string);
     expect(urls).toContain("/placeholder-fixtures/manifest.json");
@@ -174,6 +174,19 @@ describe("TestingSeedPlaceholderUploadPage", () => {
     // The frame-filling set (fast path) is served from its own directory.
     expect(urls).toContain("/placeholder-fixtures-fullbleed/manifest.json");
     expect(urls).toContain("/placeholder-fixtures-fullbleed/fb.jpg");
+  });
+
+  it("uploads the cornered set when ?fixtures= selects it", async () => {
+    const fetchMock = stubFixtures(["c.jpg"], ["c.jpg"]);
+    renderPage(
+      "/testing/seed-placeholder-upload?fixtures=placeholder-fixtures-corner",
+    );
+
+    await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+    const urls = fetchMock.mock.calls.map((c) => c[0] as string);
+    // The escalation set (cards in the bed's corner → heavy) has its own directory.
+    expect(urls).toContain("/placeholder-fixtures-corner/manifest.json");
+    expect(urls).toContain("/placeholder-fixtures-corner/c.jpg");
   });
 
   it("falls back to the default set for an unknown ?fixtures= value", async () => {
