@@ -1525,23 +1525,37 @@ tags:
 # it has none. So no confirm here; one appearing means the reset did not run,
 # and the notice wait below fails by name.
 #
-# THE RESULT. The row build's notice is `buildNotice`: "<parallel> — Built N
-# cards[, clauses]." (`builtText`). R5 EXCEPTION — the setup track's cold
-# sync: this waits on a live BSC checklist fetch AND a paged SportLots
-# checklist fetch of ~300 cards, the link pass and two insert pages, on the
-# cold path. 120000 is the budget the replaced fetch's "Saved 300 cards" gate
-# carried for the same marketplace data (NEO-163); the build has no pairing
-# dialog to stream, so it is the upper bound, not the expectation.
+# THE RESULT, PINNED. The row build's notice is `buildNotice`: "<parallel>
+# — Built N cards[, clauses]." (`builtText`), then " <side> only." when one
+# side was fetched, and the node's text ends with the " " before its `See
+# which cards` button (Maestro reads only the node's own text nodes). MEASURED
+# (CI 37179999943; Convex `parallel_checklist_built`: copied 300, notCopied
+# 35, unlinked SportLots 1, ambiguous 0, one extra SportLots card), so the
+# notice reads, live:
+#   "Gold Wave Refractors — Built 300 cards, 1 without a SportLots card, 35
+#    left off — not on either marketplace's list, 1 on SportLots that Base
+#    doesn't have. "
+# The pattern pins the count and anchors it: `300 cards` must be followed by
+# a clause (`, …`) or the sentence's own `.`, so neither `3000` nor any other
+# count can answer, and only the clause wording (live SportLots tallies that
+# say nothing about the build's size) is left open. 300 is Base's 335 minus
+# the 35 that Gold Wave lists on neither marketplace — the same 300 the
+# retired fetch's "Saved 300 cards" kept. Every copy carried a BSC link
+# (`unlinked.bsc` 0), so the BSC-only build under the pause copies the same
+# 300 (derived, not yet measured there). Checklists are immutable once
+# produced, so a different number is a build regression, not drift.
 #
-# THE COUNT IS NOT PINNED YET. "Saved 300 cards" was the FETCH's count (every
-# card both marketplaces listed, kept). The build's count is a different
-# number by construction — Base cards (335) that link on at least one side
-# to Gold Wave's own cards (J2), the rest "left off" — and has not been
-# measured on a preview. Pin it to the first green run's figure (the notice
-# says it) so a narrowed build fails here, as the old count did.
+# R5 EXCEPTION — the setup track's cold sync (the seed is exempt as a
+# class): this waits on a live BSC checklist fetch AND a paged SportLots
+# checklist fetch, the link pass and the copy. MEASURED 4.5 s for the step
+# (tap 05:45:20.42 → notice 05:45:24.92) and 4.81 s server-side. 120000 is
+# kept as the seed's cold-path ceiling for the same marketplace data (the
+# retired fetch's action took ~80 s to return before NEO-195); a seed that
+# needs more than seconds here is a finding to read in the Convex logs, not
+# a reason to raise it.
 - extendedWaitUntil:
     visible:
-      text: "Gold Wave Refractors — Built [1-9][0-9]* cards.*"
+      text: "Gold Wave Refractors — Built 300 cards(, [^.]+)?\\..*"
     timeout: 120000
 # D3 — the pairing dialog is retired on a base-parallel row. Paired with the
 # positive above, so it cannot pass on a dead page.

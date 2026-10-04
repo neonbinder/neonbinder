@@ -118,3 +118,4 @@ Non-markdown helpers: `tools/`
 - [Auto id shadows aria-label](patterns_auto_id_shadows_aria_label.md) — `useId()` on a labelled node → resource-id `_r_xx_`; `id: "<label>"` fails on a visible element; fix in product
 - [Clamp then anchor-restore after a panel swap](patterns_clamp_then_anchor_restore_after_a_panel_swap.md) — form→query-loaded panel = two scroll states; gate on a mount-only element before any scroll
 - [Negative `index:` is bottom-most](patterns_negative_index_is_bottom_most.md) — index sorts by y then x; `-1` taps the last real row of a bottom-opening virtuoso list, never a phantom
+- [Tall client panel: re-enter the page](patterns_tall_client_panel_reenter_page.md) — a client-only run ledger adds ~1,000px; re-drill after it ends instead of travel; mid-queue builds never pin card counts

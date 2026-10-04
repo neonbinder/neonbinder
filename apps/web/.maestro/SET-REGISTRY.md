@@ -84,7 +84,7 @@ BuySportsCards alone for the whole run:
 
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|
-| Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (~300 cards, BUILT FROM BASE since NEO-321 — copies of Base's cards linked to Gold Wave's own BSC + SportLots cards) | `flows/setup.yaml`; **sole writer** of the cards of the base parallel(s) its run builds before Stop (the first buildable row(s) under `Parallel`, in the type's child order): `flows/set-selector/base-parallels-build-from-section.yaml` (NEO-321) — see "2024 Topps Chrome › Parallel — the base-parallel build" ⚠️ PENDING OWNER SIGN-OFF |
+| Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (300 cards, BUILT FROM BASE since NEO-321 — copies of Base's cards linked to Gold Wave's own BSC + SportLots cards) | `flows/setup.yaml`; **sole writer** of the cards of the base parallel its run builds before Stop (the first buildable row under `Parallel`, in the type's child order — measured: `Sepia Refractors`): `flows/set-selector/base-parallels-build-from-section.yaml` (NEO-321) — see "2024 Topps Chrome › Parallel — the base-parallel build". Approved: Jason, 2026-10-04 |
 | Baseball → 2024 → Topps → Topps Big League | `Base` — variant types synced and Base MAPPED, checklist deliberately EMPTY (NEO-248 wizard fixture) | `flows/setup.yaml` |
 | Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `flows/set-selector/base-mapping-cancel-recovers.yaml` — **sole writer**, and it writes nothing |
 | Baseball → 2024 → Topps → Topps Chicago Cubs | `Base` — variant types synced, Base MAPPED on BOTH sides, checklist deliberately EMPTY | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-skip-commits-and-unskip.yaml` |
@@ -1932,7 +1932,7 @@ approved by Jason, 2026-09-09 — and neither touches the checklist itself:
 |---|---|---|
 | `signed-by-autofills-from-players.yaml` | `autographed` / `signedBy` on card **#300** | sole writer of those two fields; no other flow reads or writes them |
 | `topps-chrome-add-feature.yaml` | toggles one feature on the anchor, twice per run | sole writer of that feature; returns it to its starting state |
-| `base-parallels-build-from-section.yaml` (NEO-321) | the CARDS of the first buildable base parallel(s) under `Parallel`, rebuilt from Base by the section's run and stopped after the one in flight | sole writer of those rows' cards; no queue flow reads any base parallel's cards; never writes Base, a player, a team or a row. ⚠️ PENDING OWNER SIGN-OFF — see the section below |
+| `base-parallels-build-from-section.yaml` (NEO-321) | the CARDS of the first buildable base parallel under `Parallel` (measured: `Sepia Refractors`), rebuilt from Base by the section's run and stopped after the one in flight | sole writer of those rows' cards; no queue flow reads any base parallel's cards; never writes Base, a player, a team or a row. Approved: Jason, 2026-10-04 — see the section below |
 
 **`signed-by-autofills-from-players.yaml` no longer self-heals an empty Base
 checklist (NEO-260).** It used to carry a `when:`-guarded fallback that fetched
@@ -1945,7 +1945,7 @@ run fails loudly instead of rebuilding a fixture the rest of the queue is
 reading. **Do not re-add a self-heal branch to any consumer of this set: the fix
 for an empty shared set is to fix the seed.**
 
-### 2024 Topps Chrome › Parallel — the base-parallel build (NEO-321) ⚠️ PENDING OWNER SIGN-OFF
+### 2024 Topps Chrome › Parallel — the base-parallel build (NEO-321) — approved: Jason, 2026-10-04
 
 `base-parallels-build-from-section.yaml` proves the `Parallels of Base`
 section live, so it presses `Build N parallels from Base` on the shared
@@ -1957,17 +1957,22 @@ reachable on real data. No new real set: the rows are the seed's.
 
 | What it writes | Who else reads it | Why that is safe |
 |---|---|---|
-| the cards of the FIRST buildable parallel in `Parallel`'s own child order (`getParallelsForBuild` sorts by `parent.children`); the next one too only if Stop lands after the first finished | nobody in the queue: no flow opens a Topps Chrome base parallel's checklist except `setup.yaml` (Gold Wave, before the queue starts) | the build reads Base (the source) and never writes it; copies take Base's existing players and teams, so `players` / `teams` gain no row |
+| the cards of the FIRST buildable parallel in `Parallel`'s own child order (`getParallelsForBuild` sorts by `parent.children`) — measured: `Sepia Refractors`. The flow asserts `stopped after 1`, so a Stop that lands after that build finished (writing the next one too) fails the run by name | nobody in the queue: no flow opens a Topps Chrome base parallel's checklist except `setup.yaml` (Gold Wave, before the queue starts) | the build reads Base (the source) and never writes it; copies take Base's existing players and teams, so `players` / `teams` gain no row |
 | if Stop never lands: every buildable parallel in order, Gold Wave included, until the flow's browser closes (a client-side run, "stopped when you left") | the same nobody | the flow fails by name at `Base parallels — stopped after …` |
 
-**Which row it is has not been measured.** The order is the `Parallel`
-reconcile's save order, so it is fixed per seed but unknown until a preview
-shows it; the flow reads the name off the ledger (`copyTextFrom`) and never
-assumes it. Record the measured name here after the first green run. If it
-is `Gold Wave Refractors`, nothing breaks (see the table), but the seed's
-pagination guard then reads a set this flow rebuilt mid-queue — harmless,
-since the seed has already passed, but worth knowing when reading a Gold
-Wave screenshot.
+**The row is `Sepia Refractors`** — measured in CI run 37179999943 (PR
+#305), the first green run: the flow typed `Sepia Refractors` into the
+Parallels search from the ledger line it read, and Convex logged exactly one
+`parallel_checklist_built` for the run (copied 300, left off 35, BSC +
+SportLots). The order is the `Parallel` reconcile's save order, so it is
+fixed per seed and moves only if the reconcile saves in a different order;
+the flow still reads the name off the ledger at run time and never assumes
+it, so a reorder changes the write set without failing the flow. To
+re-check it, read the `Inputting text:` line after `Input text
+${output.BUILT}` in the flow's `maestro.log`. If it is ever `Gold Wave
+Refractors`, nothing breaks (see the table), but the seed's pagination guard
+then reads a set this flow rebuilt mid-queue — harmless, since the seed has
+already passed, but worth knowing when reading a Gold Wave screenshot.
 
 Concurrent Base writers: `signed-by-autofills-from-players` edits card #300's
 `autographed` / `signedBy`. A copy taken while that edit lands is either

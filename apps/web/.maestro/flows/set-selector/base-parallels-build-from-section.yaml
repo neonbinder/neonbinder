@@ -51,10 +51,12 @@ tags:
 #   The run builds the parallels in the type's own child order
 #   (`getParallelsForBuild` sorts by `parent.children`), skipping the
 #   unlinked and the blocked. Stop is pressed while the FIRST buildable one
-#   is in flight, so this flow writes that parallel's cards — and, only if
-#   Stop lands after it finished, the next one's. That set is order-defined,
-#   not chosen; which name it is has not been measured on a preview yet, so
-#   the flow reads it off the ledger at run time and never assumes it. Every
+#   is in flight, so this flow writes that parallel's cards and no other
+#   (STEP 3 asserts `stopped after 1`). That set is order-defined, not
+#   chosen: MEASURED as `Sepia Refractors` (CI 37179999943, runner 2,
+#   recorded in SET-REGISTRY.md), but the flow still reads the name off the
+#   ledger at run time and never assumes it — the claim is about whichever
+#   parallel the run built, and a reordered reconcile must not fail it. Every
 #   row under Topps Chrome › Parallel is safe to write: no queue flow reads a
 #   base parallel's cards (Gold Wave's are read only by setup.yaml, which runs
 #   alone before the queue). The run touches no Base card (Base is the
@@ -69,14 +71,26 @@ tags:
 #   K grows by one and its line reads `Rebuilt`. Both are accepted.
 #
 # ── LIVE / PAUSED ───────────────────────────────────────────────────────────
-#   No branch. Under `PAUSED_PLATFORMS=sportlots` every parallel is BSC-only
-#   and the build fetches BSC alone; the section, the confirm, Stop, the
-#   ledger line and the title read the same. (README → "Operator switches".)
+#   No `when:` branch. Under `PAUSED_PLATFORMS=sportlots` every parallel is
+#   BSC-only and the build fetches BSC alone; the section, the confirm, Stop,
+#   the ledger line and the title read the same. ONE value differs: the
+#   parallel count N is pinned to the measured 42 live and left open paused,
+#   where the BSC-only reconcile's count is unmeasured (STEP 1,
+#   `output.PARALLELS_N`). (README → "Operator switches".)
 #
 # ── TIMEOUTS (R5) ───────────────────────────────────────────────────────────
-#   7000 on every in-app step. ONE exception, recorded at its site: the wait
-#   for the in-flight build to finish after Stop, which is a live BSC +
-#   paged SportLots checklist fetch (R5's marketplace round-trip exception).
+#   7000 on every step this flow owns after the launch gate, with NO
+#   exception (the drill util carries its own sanctioned waits). The wait for
+#   the in-flight build after Stop used to carry R5's marketplace round-trip
+#   exception at 90000; the first green run measured the whole 300-card live
+#   build (BSC + paged SportLots) at ~5 s, so it fits the bar — see STEP 3.
+#
+# ── THE LEDGER GROWS WITH ITS LINES (NEO-321, commit 7543bc7) ──────────────
+#   The run's ledger lists all N parallels as plain page content (no inner
+#   scroller below 100 lines): ~42 x 22px ≈ 950px between the columns row and
+#   everything under the section. So STEP 3 scrolls DOWN to the built line
+#   before reading it, and STEP 4 reloads the set builder instead of
+#   travelling past the ledger — see each step.
 # ════════════════════════════════════════════════════════════════════════════
 
 - launchApp
@@ -93,6 +107,18 @@ tags:
 - runFlow:
     file: util-drill-to-2024-topps-chrome.yaml
 
+# N, THE PARALLEL COUNT. MEASURED 42 on the live seed (CI 37179999943: the
+# tap logged `Build 42 parallels from Base`): every row the seed's `Parallel`
+# reconcile saved, the union of BSC's and SportLots' parallel lists. Pinned,
+# so a plan that drops rows (`getParallelsForBuild`'s byte-bounded read, a
+# truncation) fails by count rather than building fewer parallels quietly.
+# Under `PAUSED_PLATFORMS=sportlots` the reconcile is BSC's list alone and
+# that count has not been measured, so the paused branch keeps any count
+# (the drill util has just run `util-paused-platforms`, which sets
+# `output.SL_PAUSED`). Used in the button, the confirm and the stopped
+# heading below.
+- evalScript: '${output.PARALLELS_N = output.SL_PAUSED ? "[0-9]+" : "42"}'
+
 # "Parallel" sits under "Base" in the same column; DOWN (the default),
 # centred for the tap (R8). Exact text: the column's three rows are Base,
 # Insert, Parallel, and nothing else on the page full-matches "Parallel".
@@ -107,12 +133,13 @@ tags:
 # server's list is in, so this scroll is also the wait for
 # `getParallelsForBuild` (our own query: the 7000 bar). The section renders
 # BELOW the columns row (SetSelector.tsx, the variant-type slot), so DOWN.
-# R8 case 1: below it are only the collapsed attributes bar and the NEO-260
-# 208px spacer, which is the headroom this centring depends on.
+# R8 case 1: below it are only the section's sleeve strip (no ledger before a
+# run), the collapsed attributes bar and the NEO-260 208px spacer, which is
+# the headroom this centring depends on (MEASURED: centred at y=256 on try 1).
 # The pattern names Base, so it also proves the source is the set's Base row.
 - scrollUntilVisible:
     element:
-      text: "Build [0-9]+ parallels from Base"
+      text: "Build ${output.PARALLELS_N} parallels from Base"
     centerElement: true
     timeout: 7000
 # The section's own heading (a different element, R6), named for its source.
@@ -123,14 +150,16 @@ tags:
 # ============================================================
 
 - tapOn:
-    text: "Build [0-9]+ parallels from Base"
+    text: "Build ${output.PARALLELS_N} parallels from Base"
 
 # HARD (R2), not a branch: K >= 1 on every run (Gold Wave holds cards from
-# the seed — see the header). The dialog's title is its header (README →
-# "Asserting inside a dialog"). `Base.s`: the possessive's apostrophe is one
-# character either way. One state change, no server call: 7000.
+# the seed — see the header). K stays open: it is 1 on a fresh seed and
+# grows on a re-run against the same preview (this flow's own parallel then
+# holds cards too). The dialog's title is its header (README → "Asserting
+# inside a dialog"). `Base.s`: the possessive's apostrophe is one character
+# either way. One state change, no server call: 7000.
 - extendedWaitUntil:
-    visible: "Replace the cards on [1-9][0-9]* of [0-9]+ parallels with fresh copies of Base.s\\?"
+    visible: "Replace the cards on [1-9][0-9]* of ${output.PARALLELS_N} parallels with fresh copies of Base.s\\?"
     timeout: 7000
 # The footer confirm. `ConfirmDialog` is a fixed full-viewport overlay with
 # no scroller around its footer, so a direct tap (R8 case 2, the documented
@@ -143,12 +172,14 @@ tags:
 
 # Stop is live from the run's first step and sits in the ledger's heading
 # row inside the section, just under the button centred above, so this
-# exits at try 0 or 1 (R8). A Topps Chrome base parallel is a live BSC
-# fetch plus a paged SportLots fetch of up to ~300 cards and two insert
-# pages — seconds, not the ~0.75 s an Anime parallel takes — so Stop lands
-# while the FIRST buildable parallel is in flight. (README NEO-312 note:
-# never chase a transient state on a run that can finish first; this one
-# cannot finish N parallels in the time two taps take.)
+# exits at try 0 (R8; MEASURED at y=301, try 0). The ledger's lines grow
+# DOWNWARD from that row, so its height does not move Stop. A Topps Chrome
+# base parallel is a live BSC fetch plus a paged SportLots fetch of ~300
+# cards and two insert pages — MEASURED 5.07 s server-side — so Stop lands
+# while the FIRST buildable parallel is in flight: its click landed 1.9 s
+# into that build. (README NEO-312 note: never chase a transient state on a
+# run that can finish first; this one cannot finish one parallel in the time
+# two taps take, let alone N.)
 - scrollUntilVisible:
     element:
       text: "Stop after this one"
@@ -156,31 +187,67 @@ tags:
     timeout: 7000
 - tapOn: "Stop after this one"
 
-# THE RUN STOPPED, AFTER BUILDING AT LEAST ONE. `panelHeading`'s stopped form
-# counts BUILT lines; `[1-9]` refuses a Stop that landed before anything was
-# built. Full match with no trailing `.`, so the sr-only live line (which
-# repeats a heading WITH one) cannot answer.
+# THE RUN STOPPED AFTER EXACTLY THE ONE IN FLIGHT — `Stop after this one`'s
+# own claim. `panelHeading`'s stopped form counts BUILT lines, so `1` refuses
+# both a Stop that landed before anything built (0) and a Stop that let the
+# run carry on into the next parallel (2+). MEASURED `stopped after 1`
+# (CI 37179999943: Convex logged exactly one `parallel_checklist_built` for
+# the run). If a build ever finishes inside the two taps this reads
+# `stopped after 2` and fails by name: that is a finding about the build's
+# speed against Stop, not a reason to widen the count. Full match with no
+# trailing `.`, so the sr-only live line (which repeats a heading WITH one)
+# cannot answer.
 #
-# R5 MARKETPLACE EXCEPTION — this waits on the build in flight when Stop was
-# pressed: `buildParallelChecklist`'s live `fetchBscChecklist` and paged
-# `fetchSportLotsChecklist` on data no flow pre-fetches (only Gold Wave is
-# built by the seed), then the link pass and the copy. 90000 is the ceiling
-# setup.yaml's fetch of the same set's parallel carries for the same two
-# round-trips; NOT YET MEASURED for a build — replace it with the first green
-# run's figure plus margin, and treat a build that needs more as a finding.
-# `extendedWaitUntil` never scrolls: the heading is where Stop was, already
-# centred.
+# 7000 — R5's bar, with NO exception (was 90000, an unmeasured ceiling
+# borrowed from setup.yaml's fetch). This waits on the rest of the build in
+# flight: the live `fetchBscChecklist` + paged `fetchSportLotsChecklist`, the
+# link pass and the 300-card copy. MEASURED (CI 37179999943) 5.07 s for the
+# whole build, of which 2.07 s was left when this step began (Stop tapped
+# 05:59:13.19, heading seen 05:59:15.26); setup.yaml's Gold Wave build of the
+# same set took 4.81 s. The step starts ~3 s into the build (two taps), so
+# 7000 here admits a whole build of ~10 s, twice the measurement, without
+# leaving the bar — no marketplace exception, so no sign-off. A build that
+# needs more is a product finding: the operator pressed Stop and is waiting
+# on it. Never raise this number.
+#
+# `extendedWaitUntil` never scrolls, and need not: the heading is the
+# panel's first row, where Stop was. When the run ends Stop unmounts under
+# focus and the panel takes the focus (`ParallelBuildPanel`'s focus park);
+# a 42-line panel is taller than the viewport, so that focus may scroll the
+# page until the panel's top meets html's `scroll-padding-top` (80px). The
+# heading is on screen either way.
 - extendedWaitUntil:
-    visible: "Base parallels — stopped after [1-9][0-9]* of [0-9]+"
-    timeout: 90000
+    visible: "Base parallels — stopped after 1 of ${output.PARALLELS_N}"
+    timeout: 7000
 
 # THE LINE. `parallelLineText` = "<parallel> — <builtText>": "Built N cards"
 # on a first build, "Rebuilt N cards" on a re-run, then only the clauses
 # that are true. "Nothing copied — …", "Blocked — …", "Failed — …" and
 # "Stopped" do not match, so a parallel that built nothing fails here with
-# its reason on screen. The run is finished: a plain read (R6: a different
-# element from the wait's). `copyTextFrom` takes the first match, and only
-# the parallel(s) built before Stop can match.
+# its reason on screen. Exactly one line can match (`stopped after 1`).
+#
+# THE COUNT STAYS OPEN, ON PURPOSE, though it is measured (300 copied, 35
+# left off, the same split as setup.yaml's Gold Wave build, which pins its
+# 300). Unlike the seed, this build runs mid-queue: `signed-by-autofills-
+# from-players` edits Base card #300 concurrently, and a copy taken while
+# that edit lands is skipped ("1 skipped — Base changed them mid-build"),
+# so a pinned 300 would go red on a correct build (SET-REGISTRY.md, the
+# section on this flow). `[1-9]` still refuses an empty build.
+#
+# SCROLLED TO FIRST. The ledger is page content (header note): the line sits
+# at its own index in the type's child order, ~22px per line below the
+# heading, and is not guaranteed on screen. It is BELOW the heading in DOM
+# order and the heading is on screen, so DOWN (R5 direction). Nothing is
+# tapped, so no centring (R8): when the line is already in view this exits
+# at try 0, and each ~14 skipped (unlinked or blocked) lines ahead of it in
+# the type's order cost one swipe. Its index was not measurable from the
+# green run (no hierarchy dump; the old ledger scrolled itself to the line in
+# flight). Then a plain read (R6: `copyTextFrom` is not an assert).
+- scrollUntilVisible:
+    element:
+      text: ".+ — (Built|Rebuilt) [1-9][0-9]* cards?(, .+)?"
+    direction: DOWN
+    timeout: 7000
 - copyTextFrom:
     text: ".+ — (Built|Rebuilt) [1-9][0-9]* cards?(, .+)?"
 # The parallel's NB name is everything before the first " — " (a row name
@@ -194,10 +261,42 @@ tags:
 # STEP 4 — THE COPY'S LISTING TITLE NAMES ITS PARALLEL
 # ============================================================
 
-# Open the built parallel: its row is in the Parallels column ABOVE the
-# section, so UP (R5: an anchor above takes UP), centred for the tap (R8).
-# The column holds dozens of rows, so it has its search box (as setup.yaml's
-# Gold Wave pick).
+# A FRESH SET BUILDER, ON PURPOSE. The built parallel's cards are in its
+# row's checklist, which renders BELOW the section — and while the run is on
+# screen the section holds the whole ledger, one line per parallel (~950px
+# for 42; NEO-321 7543bc7 removed the 192px inner scroller). From the
+# columns row, where the row is picked, to its `Attributes for …` header is
+# then ~1,750px of DOWN travel: ~5 driver swipes at ~2 s each, past R5's
+# 7000, and splitting it across two steps would only hide the same travel.
+# The run is client-side and ends with the page (`useHostedParallelBuildRun`;
+# it has stopped, so nothing is left behind and no `beforeunload` prompt is
+# armed), so re-entering the set builder draws the section with its sleeve
+# strip only — the layout setup.yaml's Gold Wave pick crosses to the same
+# header in one swipe plus one centring swipe (3.9 s). R9: the same warm
+# drill as STEP 1 (~32 s measured). It also replaces the UP scroll back to
+# the columns row, whose distance the ledger's focus park (STEP 3) made
+# variable.
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+# As STEP 1.
+- scrollUntilVisible:
+    element:
+      text: "Parallel"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Parallel"
+
+# Open the built parallel through the Parallels column's search box (the
+# column holds dozens of rows; setup.yaml's Gold Wave pick does the same).
+# The column mounts on its own Convex read: the 7000 bar, as a gate, because
+# a centred scroll that swipes before the column exists would move the page
+# under it. Then centred for the tap (R8): the box sits at the TOP of the
+# columns row, level with the `Parallel` row just tapped (MEASURED y=176 at
+# try 0 after the identical steps in setup.yaml), so if it is ever off
+# screen it is ABOVE — UP (R5 direction).
+- extendedWaitUntil:
+    visible: ".*Search parallels.*"
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: ".*Search parallels.*"
@@ -219,9 +318,10 @@ tags:
     below:
       id: "Search parallels"
 
-# The attributes panel follows the selection, below the columns and the
-# section: DOWN, centred, NEO-260 spacer headroom (R8 case 1) — the same
-# step every attributes-panel header takes.
+# The attributes panel follows the selection, below the columns, the
+# section (no ledger on a fresh page) and the Multi-source panel: DOWN,
+# centred, NEO-260 spacer headroom (R8 case 1) — the same step every
+# attributes-panel header takes.
 - scrollUntilVisible:
     element:
       text: ".*Attributes for ${output.BUILT_RE}.*"
