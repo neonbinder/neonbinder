@@ -21,9 +21,13 @@ change to that chain or its callers:
    Product precision call, not a code bug; surface it, do not block on it.
 
 Re-key action shape (sibling of splitTeamLocations / NEO-214): internal*
-only, env flag asserted first in the one write mutation, confirm phrase only
-in the action (applyPage directly via `convex run` skips the phrase and the
-plan-complete gate; the live stable-holder check still guards leagues).
+only, env flag asserted first in the one write mutation, confirm phrase
+checked in the action AND as a `v.literal` on applyPage (a direct `convex run`
+of applyPage still skips the plan-complete gate and the plan's skipIds; the
+live stable-holder check guards leagues). `playerSports` collisions report
+under `players` via `collisionTableOf`; a skipped-policy table must never be
+merged into another table's group, or `collisionSkipIds` will key skips under
+the wrong table.
 Collision policy "written" for players/teams is sound ONLY while every
 identity reader takes a list; leagues/franchises readers use `.first()` so
 they must stay "skipped". Re-check reader shapes (`.first()`/`.unique()`) on

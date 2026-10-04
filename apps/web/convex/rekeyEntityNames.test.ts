@@ -307,6 +307,29 @@ describe("rekeyEntityNames: a call without both arms writes nothing", () => {
     expect(err.data.code).toBe("REKEY_NOT_ARMED");
     expect(await snapshot(t)).toEqual(before);
   });
+
+  test("applyPage on an armed deployment rejects a wrong or missing confirm phrase and writes nothing", async () => {
+    arm();
+    const t = convexTest(schema, modules);
+    await seedStale(t);
+    const before = await snapshot(t);
+
+    await expect(
+      t.mutation(internal.rekeyEntityNames.applyPage, {
+        table: "players",
+        cursor: null,
+        confirm: "wrong",
+      } as any),
+    ).rejects.toThrow();
+    await expect(
+      t.mutation(internal.rekeyEntityNames.applyPage, {
+        table: "players",
+        cursor: null,
+      } as any),
+    ).rejects.toThrow();
+
+    expect(await snapshot(t)).toEqual(before);
+  });
 });
 
 describe("rekeyEntityNames: an armed run", () => {
