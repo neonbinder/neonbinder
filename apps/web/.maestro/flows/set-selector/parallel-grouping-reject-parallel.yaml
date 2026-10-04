@@ -45,9 +45,11 @@ tags:
 #
 # Non-scroll settle guard: the Inserts column can be mid-re-render immediately
 # after util-drill returns. Let it settle before the first swipe fires.
+# R5 — 7000 stated (bare, it was 17000): an in-app column, no marketplace.
 - extendedWaitUntil:
     visible:
       id: "Add custom Inserts"
+    timeout: 7000
 
 # --- <ID> Stars ---
 - scrollUntilVisible:

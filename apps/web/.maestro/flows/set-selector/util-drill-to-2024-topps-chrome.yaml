@@ -74,8 +74,13 @@ tags:
 # center before tapping (centering rule).
 # waitToSettleTimeoutMs: 0 — the subsequent extendedWaitUntil re-syncs; the
 # settle dead-wait is redundant here.
+# R5 — every gate in this util states 7000 (a bare wait is 17000 by omission).
+# Each waits on a column mounting or a read of rows setup.yaml has already
+# synced; none waits on a marketplace round-trip. In the retries a miss now
+# re-fires the tap after 7s rather than 17s.
 - extendedWaitUntil:
     visible: ${SPORT || "Baseball"}
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: ${SPORT || "Baseball"}
@@ -96,12 +101,14 @@ tags:
           retryTapIfNoChange: true
       - extendedWaitUntil:
           visible: "Years"
+          timeout: 7000
 
 # ── YEAR ──────────────────────────────────────────────────────────────────────
 # The app auto-scrolls the newly-revealed Year column fully into view
 # (EntityColumn reveal-scroll, de5423a) — no test-side right-scroll needed.
 - extendedWaitUntil:
     visible: ".*Search years.*"
+    timeout: 7000
 # 250ms settle on the search-box tap — input needs to be focused before inputText
 # fires, and a 0ms settle can drop the first character on a reactive page.
 - tapOn:
@@ -120,6 +127,7 @@ tags:
           retryTapIfNoChange: true
       - extendedWaitUntil:
           visible: "Manufacturers"
+          timeout: 7000
 
 # ── MANUFACTURER ──────────────────────────────────────────────────────────────
 # App auto-scrolls the newly-revealed Manufacturer column fully into view — no
@@ -135,6 +143,7 @@ tags:
     commands:
       - extendedWaitUntil:
           visible: ".*Search manufacturers.*"
+          timeout: 7000
       - tapOn:
           text: ".*Search manufacturers.*"
           waitToSettleTimeoutMs: 250
@@ -153,6 +162,7 @@ tags:
                 retryTapIfNoChange: true
             - extendedWaitUntil:
                 visible: "Sets"
+                timeout: 7000
 - runFlow:
     when:
       true: "${output.SL_PAUSED}"

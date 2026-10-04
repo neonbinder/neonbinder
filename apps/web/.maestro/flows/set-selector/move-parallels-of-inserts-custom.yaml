@@ -70,10 +70,12 @@ tags:
 # scrollUntilVisible's CDP centering swipe crashes during re-render
 # (MismatchedInputException) and Maestro reports "Element not found" even when
 # the button was found at try-0. Let the render settle before the swipe fires.
+# R5 — 7000 (was 30000): the drill util returns with this button already
+# centred on screen, so the gate answers at once; no marketplace is involved.
 - extendedWaitUntil:
     visible:
       id: "Add custom Inserts"
-    timeout: 30000
+    timeout: 7000
 # --- <ID> Stars ---
 - scrollUntilVisible:
     element:
@@ -238,10 +240,12 @@ tags:
 - tapOn: ".*Save [0-9]+ change.*"
 
 # applyParallelGroupings mutation runs; modal closes on success.
-# Use extendedWaitUntil to give the mutation + modal-close animation time to complete.
+# R5 — 7000 (was 15000): one NB mutation answering the operator, which gets the
+# same bar as any in-app response (README R5: our own writes are not an
+# exception). A save that misses it is a product finding, not a bigger number.
 - extendedWaitUntil:
     notVisible: ".*Drag inserts under a parent.*"
-    timeout: 15000
+    timeout: 7000
 
 # ── VERIFY POST-SAVE STATE IN THE REAL COLUMNS ──────────────────────────────
 # After Save, the EntitySelector Inserts column has a stale internal scroll
@@ -340,10 +344,11 @@ tags:
 #
 # extendedWaitUntil first to let the Parallels column load, then assertVisible
 # to confirm both saved entries are present (proving the nesting was persisted).
+# R5 — 7000 (was 10000): a two-row read of the column the gate above opened.
 - extendedWaitUntil:
     visible:
       text: ".*${ATTEMPT_ID} Stars Gold.*"
-    timeout: 10000
+    timeout: 7000
 # Both Gold and Red appear as parallels of <ID> Stars — the saved nesting is live.
 - assertVisible:
     text: ".*${ATTEMPT_ID} Stars Red.*"

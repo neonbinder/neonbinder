@@ -135,7 +135,16 @@ tags:
 - tapOn:
     id: "Search sports"
 - inputText: "TestCustomSport-${ATTEMPT_ID}"
-- assertVisible: "TestCustomSport-${ATTEMPT_ID}"
+# `below:` the box: once typed, the box's own node text is its VALUE (README →
+# getNodeText), so a bare `assertVisible` of the typed name matched the box and
+# proved nothing about the row. The ROW under the box is the proof. Same
+# exact-name selector STEP 4 taps. R5 — 7000: a filter over a loaded column.
+- extendedWaitUntil:
+    visible:
+      text: "TestCustomSport-${ATTEMPT_ID}"
+      below:
+        id: "Search sports"
+    timeout: 7000
 
 # ============================================================
 # STEP 2 — Re-sync sports from marketplaces
@@ -297,7 +306,15 @@ tags:
 - tapOn:
     id: "Search sports"
 - inputText: "TestCustomSport-${ATTEMPT_ID}"
-- assertVisible: "TestCustomSport-${ATTEMPT_ID}"
+# THE FEATURE ASSERTION — anchored BELOW the box for the reason given in STEP 1:
+# a bare match of the typed name is satisfied by the box's own value, so it
+# would pass even if the re-sync had removed the row.
+- extendedWaitUntil:
+    visible:
+      text: "TestCustomSport-${ATTEMPT_ID}"
+      below:
+        id: "Search sports"
+    timeout: 7000
 
 # Reload the page again to reset the search filter, then verify marketplace
 # badge icons (BSC / SL) appear on synced sport entries in the full list.

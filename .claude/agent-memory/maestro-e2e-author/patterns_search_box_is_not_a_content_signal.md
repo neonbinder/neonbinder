@@ -27,5 +27,7 @@ seed (setup.yaml) is the costliest place to have one.
 - Manufacturers only (its listbox always holds the pinned All Brands entry):
   positive pinned-entry gate, then `notVisible` the idle empty text.
 - "no search box ⇒ short column" fallbacks gated on the next column's header
-  are dead code now and cost R10's ~7s `notVisible` poll — remove them.
+  are dead code now and cost R10's ~7s `notVisible` poll — remove them, but
+  first check what other outcome their guard caught
+  ([[dead-branch-guards-can-cover-a-second-outcome]]).
 Related: [[neo237-all-brands-view-and-unknown]], [[auto-id-shadows-aria-label]].

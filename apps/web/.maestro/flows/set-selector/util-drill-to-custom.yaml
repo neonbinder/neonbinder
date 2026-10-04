@@ -76,37 +76,26 @@ tags:
 #
 # PER-LEVEL ALGORITHM (uniform, idempotent):
 #   1. Wait for column header to confirm it rendered.
-#   2. Wait for idle-mode signal (search input present OR Add-custom button visible).
-#   3. If target value is already visible: select it directly.
-#   4. If not visible:
-#      a. If a search input exists (real-synced large list): tap search, type value,
-#         select via `below: id:"Search <column>"` relationship — never by index.
-#      b. If no search input (custom/short list): scrollUntilVisible Add-custom button
-#         (centerElement: true), tap it, inputText, Enter, wait notVisible modal.
+#   2. Hard-wait for the column's search box (R2 precondition, 7000).
+#   3. Tap the box, type the value, and if a matching row appears BELOW the
+#      box, tap it via `below: id:"Search <column>"` — never by index.
+#   4. If no row matches, the value does not exist yet: open "+ Custom"
+#      (centred), type it, Enter, press the confirm's Create button, wait for
+#      the form to close, then tap the new row through the same search box.
 #   5. After select: wait for the next column header before proceeding.
+#   Levels 4-6 (Set, Variant Type, Variant) create first ("+ Custom" when the
+#   value is not visible) and then select; Sets selects through its search box.
 #
-# NEO-224 — EVERY OPEN COLUMN NOW RENDERS ITS SEARCH INPUT (it is the
-# column's combobox and the cascade's focus target), so the `when: visible
-# Search <column>` branches below are taken at EVERY level, custom or real,
-# short or long: a custom value missing from a short custom column is found
-# absent through the box and created through the same branch's "+ Custom"
-# path. The "no search input" fallbacks further down (gated on the NEXT
-# column's header being absent) can no longer run. They cost one ~7s
-# `notVisible` poll per level — the same poll the custom path used to pay on
-# the search-branch miss instead — so the util's wall-clock is unchanged; they
-# are left in place for a deliberate R10 clean-up rather than rewritten blind.
-# The paragraph below is the pre-NEO-224 description.
-#
-# SEARCH vs. DIRECT-TAP DECISION:
-#   Real-synced columns (Sports on the Baseball path, Years on Baseball/2024,
-#   Manufacturers after a real Year, Sets after a real Manufacturer) show a
-#   "Search <column>" input when the list has >8 items. The util always checks
-#   for the search input and uses it when present — this avoids the
-#   max-h-[400px] overflow-y-auto clip issue where rows past the fold have
-#   layout bounds reported by CDP even though they are visually clipped.
-#   Custom subtree columns (all columns under a custom Sport OR under a custom
-#   Year) never show the search input (short list), so the Add-custom path
-#   is used unconditionally on those levels.
+# ONE PATH, NOT TWO (NEO-224): every open, unselected column renders its search
+#   box — it is the column's combobox and the cascade's focus target, loading
+#   included — so the search path is taken at every level, real or hand-made,
+#   long list or short. Before NEO-224 the box appeared only past eight rows,
+#   and each level carried a second "no search input" branch for short lists,
+#   gated on the next column's header being absent. Those branches could no
+#   longer run, and each cost a ~7s `notVisible` poll on every successful pick,
+#   so they were removed (R10). A missing box now fails at the step that waits
+#   for it. Going through the box also avoids the max-h-[400px] column clip,
+#   where rows past the fold report CDP bounds while visually clipped.
 #
 # CDP SCROLL AVOIDANCE (Variant Types column):
 #   After a fresh Set is created and selected, the page re-renders briefly.
@@ -165,145 +154,54 @@ tags:
     when:
       true: "${SPORT}"
     commands:
-      # For real-synced Sports the search input is always present.
-      # Use it to find the target — avoids the overflow-y-auto clip on long lists.
+      # NEO-224: every open column renders its search box (EntitySelector's
+      # combobox), so the search path is the ONLY path — unconditional, and the
+      # centred scroll below is its hard precondition (R2): a missing box fails
+      # here, at the step that names it, not 60s later on the Years gate.
+      - scrollUntilVisible:
+          element:
+            id: "Search sports"
+          centerElement: true
+          timeout: 7000
+      - tapOn:
+          id: "Search sports"
+      - inputText: ${SPORT}
+      # If the value appears in search results, tap it via relationship.
       - runFlow:
           when:
             visible:
-              id: "Search sports"
-          commands:
-            - scrollUntilVisible:
-                element:
-                  id: "Search sports"
-                centerElement: true
-                timeout: 7000
-            - tapOn:
+              text: ".*${SPORT}.*"
+              below:
                 id: "Search sports"
-            - inputText: ${SPORT}
-            # If the value appears in search results, tap it via relationship.
-            - runFlow:
-                when:
-                  visible:
-                    text: ".*${SPORT}.*"
-                    below:
-                      id: "Search sports"
-                commands:
-                  # Non-scrolling wait: in a filtered list the single result is
-                  # always at the top, already in viewport. scrollUntilVisible
-                  # fires page-level CDP swipes that can accidentally clear the
-                  # search input filter (column is overflow-y-auto; page scroll
-                  # does not center the item but CAN hit/blur the input).
-                  - extendedWaitUntil:
-                      visible:
-                        text: ".*${SPORT}.*"
-                        below:
-                          id: "Search sports"
-                      timeout: 7000
-                  # Guard on notVisible "Years": if Years is already open (re-drill
-                  # case where SPORT was already selected), skip the tap — re-tapping
-                  # a SELECTED row can DESELECT it and close the next column.
-                  - runFlow:
-                      when:
-                        notVisible: "Years"
-                      commands:
-                        - tapOn:
-                            text: ".*${SPORT}.*"
-                            below:
-                              id: "Search sports"
-            # If NOT found via search (custom sport not yet in list):
-            # clear search, add custom, then tap.
-            # Guard on notVisible "Years": if Years is already visible, the Sport
-            # was just selected above — skip this branch (the "not visible" condition
-            # would otherwise be TRUE because the search+result both disappear after
-            # a successful selection).
+          commands:
+            # Non-scrolling wait: in a filtered list the single result is
+            # always at the top, already in viewport. scrollUntilVisible
+            # fires page-level CDP swipes that can accidentally clear the
+            # search input filter (column is overflow-y-auto; page scroll
+            # does not center the item but CAN hit/blur the input).
+            - extendedWaitUntil:
+                visible:
+                  text: ".*${SPORT}.*"
+                  below:
+                    id: "Search sports"
+                timeout: 7000
+            # Guard on notVisible "Years": if Years is already open (re-drill
+            # case where SPORT was already selected), skip the tap — re-tapping
+            # a SELECTED row can DESELECT it and close the next column.
             - runFlow:
                 when:
                   notVisible: "Years"
                 commands:
-                  - runFlow:
-                      when:
-                        notVisible:
-                          text: ".*${SPORT}.*"
-                          below:
-                            id: "Search sports"
-                      commands:
-                        # The sport was not found in the search results. At this point
-                        # the search shows "No matches found" and the "+ Custom" button
-                        # (aria-label "Add custom Sports") is rendered BELOW the search
-                        # box at y≈520 — below the fold.
-                        # Do NOT erase the search text first: eraseText leaves a trailing
-                        # char (the Maestro cursor-trap bug). The page is STABLE in
-                        # "No matches found" state (no re-render in progress), so CDP
-                        # scroll works safely. scrollUntilVisible + centerElement: true
-                        # brings the button to y≈315, fully in view.
-                        # R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
-                        # 34361627641): at maximum scroll this parked at y=514, 139px below the
-                        # end of the driver's centre band (~375), so centring ran its full
-                        # six-iteration give-up path — 10.19s here — on every run. A give-up on every
-                        # run is centring that never centres, so the remedy is the product's: the
-                        # 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
-                        # target at y=306, mid-band, and it now centres in one or two swipes.
-                        # THIS STEP DEPENDS ON THAT SPACER — see R8.
-                        - scrollUntilVisible:
-                            element:
-                              id: "Add custom Sports"
-                            centerElement: true
-                            timeout: 7000
-                        - tapOn:
-                            id: "Add custom Sports"
-                        - extendedWaitUntil:
-                            visible: "Add Custom Entry"
-                            timeout: 5000
-                        - inputText: ${SPORT}
-                        - pressKey: Enter
-                        # NEO-272: press the confirm's Create button by name. The second blind
-                        # `pressKey: Enter` that used to stand here was the defect: maestro-web
-                        # re-finds the focused element by an XPath built from its CLASS LIST, so it
-                        # raced the confirm unmounting the input (CI 34592010317 attempt 2 died here
-                        # with "no such element" on the input's own class string). The button's
-                        # accessible name is EntityColumn.tsx's `confirmCreateLabel` —
-                        # "Create " + LEVEL_SINGULAR[level] lower-cased.
-                        #
-                        # CONDITIONAL because a confirm is only ONE of two outcomes. If the typed
-                        # value already exists in THIS column, `handleCustomSubmit` short-circuits
-                        # (`items.find(...)` -> `onSelectExisting`), closing the form and advancing
-                        # the cascade with no confirm ever rendered. A `notVisible: <value>` guard
-                        # cannot rule that out — the column's max-h-[400px] scroller clips rows
-                        # that really are there (team-picker, local run 2026-09-11). MEASURED locally 2026-09-11: the confirm is up in 0.34-0.38s, so
-                        # a `when:` that finds it costs nothing; a miss pays the ~7s condition poll
-                        # and only on the already-existed path. The hard result gate is the
-                        # "Add Custom Entry" check below — the form is gone either way, so this
-                        # branch cannot fall through silently (R2).
-                        - runFlow:
-                            when:
-                              visible:
-                                id: "Create sport"
-                            commands:
-                              - tapOn:
-                                  id: "Create sport"
-                        - extendedWaitUntil:
-                            notVisible: "Add Custom Entry"
-                            timeout: 10000
-                        # After the modal closes, the search input still has the
-                        # sport name typed in it — the newly created sport now
-                        # matches the search filter and appears below the input.
-                        # Wait for it and tap it directly (no need to re-type).
-                        - extendedWaitUntil:
-                            visible:
-                              text: ".*${SPORT}.*"
-                              below:
-                                id: "Search sports"
-                            timeout: 10000
-                        - tapOn:
-                            text: ".*${SPORT}.*"
-                            below:
-                              id: "Search sports"
-
-      # Fallback: no search input (very small / custom-only Sports column).
-      # Add if absent, then tap directly.
-      # Guarded by notVisible "Years" — if the first (search) branch already
-      # selected a Sport, Years will be visible and we must skip this fallback
-      # to avoid a second erroneous tap that would collapse the selection.
+                  - tapOn:
+                      text: ".*${SPORT}.*"
+                      below:
+                        id: "Search sports"
+      # If NOT found via search (custom sport not yet in list):
+      # clear search, add custom, then tap.
+      # Guard on notVisible "Years": if Years is already visible, the Sport
+      # was just selected above — skip this branch (the "not visible" condition
+      # would otherwise be TRUE because the search+result both disappear after
+      # a successful selection).
       - runFlow:
           when:
             notVisible: "Years"
@@ -311,58 +209,81 @@ tags:
             - runFlow:
                 when:
                   notVisible:
-                    id: "Search sports"
+                    text: ".*${SPORT}.*"
+                    below:
+                      id: "Search sports"
                 commands:
-                  - runFlow:
-                      when:
-                        notVisible: ${SPORT}
-                      commands:
-                        # R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
-                        # 34361627641): at maximum scroll this parked at y=514, 139px below the
-                        # end of the driver's centre band (~375), so centring ran its full
-                        # six-iteration give-up path — 10.19s here — on every run. A give-up on every
-                        # run is centring that never centres, so the remedy is the product's: the
-                        # 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
-                        # target at y=306, mid-band, and it now centres in one or two swipes.
-                        # THIS STEP DEPENDS ON THAT SPACER — see R8.
-                        - scrollUntilVisible:
-                            element:
-                              id: "Add custom Sports"
-                            centerElement: true
-                            timeout: 7000
-                        - tapOn:
-                            id: "Add custom Sports"
-                        - extendedWaitUntil:
-                            visible: "Add Custom Entry"
-                            timeout: 5000
-                        - inputText: ${SPORT}
-                        - pressKey: Enter
-                        # NEO-272: press the confirm's Create button by name, never a second blind
-                        # `pressKey: Enter`; conditional because an already-existing value closes the
-                        # form with no confirm — see the first occurrence in this file for both.
-                        - runFlow:
-                            when:
-                              visible:
-                                id: "Create sport"
-                            commands:
-                              - tapOn:
-                                  id: "Create sport"
-                        - extendedWaitUntil:
-                            notVisible: "Add Custom Entry"
-                            timeout: 10000
-                  - extendedWaitUntil:
-                      visible: ${SPORT}
-                      timeout: 10000
-                  # R5 — 7000, the bar (was 10000). NO LOG EVIDENCE: this step did not
-                  # execute in either green CI run (34349299679, 34361627641), so 7000 is
-                  # the rule's default rather than a measurement. It is an ordinary in-app
-                  # scroll — the `visible: ${SPORT}` gate above owns the wait.
+                  # The sport was not found in the search results. At this point
+                  # the search shows "No matches found" and the "+ Custom" button
+                  # (aria-label "Add custom Sports") is rendered BELOW the search
+                  # box at y≈520 — below the fold.
+                  # Do NOT erase the search text first: eraseText leaves a trailing
+                  # char (the Maestro cursor-trap bug). The page is STABLE in
+                  # "No matches found" state (no re-render in progress), so CDP
+                  # scroll works safely. scrollUntilVisible + centerElement: true
+                  # brings the button to y≈315, fully in view.
+                  # R5 — 7000, the bar; R8 keeps the centring. MEASURED (CI 34349299679 +
+                  # 34361627641): at maximum scroll this parked at y=514, 139px below the
+                  # end of the driver's centre band (~375), so centring ran its full
+                  # six-iteration give-up path — 10.19s here — on every run. A give-up on every
+                  # run is centring that never centres, so the remedy is the product's: the
+                  # 208px scroll spacer in src/layouts/binder-layout.tsx (NEO-260) puts this
+                  # target at y=306, mid-band, and it now centres in one or two swipes.
+                  # THIS STEP DEPENDS ON THAT SPACER — see R8.
                   - scrollUntilVisible:
                       element:
-                        text: ${SPORT}
+                        id: "Add custom Sports"
                       centerElement: true
                       timeout: 7000
-                  - tapOn: ${SPORT}
+                  - tapOn:
+                      id: "Add custom Sports"
+                  - extendedWaitUntil:
+                      visible: "Add Custom Entry"
+                      timeout: 5000
+                  - inputText: ${SPORT}
+                  - pressKey: Enter
+                  # NEO-272: press the confirm's Create button by name. The second blind
+                  # `pressKey: Enter` that used to stand here was the defect: maestro-web
+                  # re-finds the focused element by an XPath built from its CLASS LIST, so it
+                  # raced the confirm unmounting the input (CI 34592010317 attempt 2 died here
+                  # with "no such element" on the input's own class string). The button's
+                  # accessible name is EntityColumn.tsx's `confirmCreateLabel` —
+                  # "Create " + LEVEL_SINGULAR[level] lower-cased.
+                  #
+                  # CONDITIONAL because a confirm is only ONE of two outcomes. If the typed
+                  # value already exists in THIS column, `handleCustomSubmit` short-circuits
+                  # (`items.find(...)` -> `onSelectExisting`), closing the form and advancing
+                  # the cascade with no confirm ever rendered. A `notVisible: <value>` guard
+                  # cannot rule that out — the column's max-h-[400px] scroller clips rows
+                  # that really are there (team-picker, local run 2026-09-11). MEASURED locally 2026-09-11: the confirm is up in 0.34-0.38s, so
+                  # a `when:` that finds it costs nothing; a miss pays the ~7s condition poll
+                  # and only on the already-existed path. The hard result gate is the
+                  # "Add Custom Entry" check below — the form is gone either way, so this
+                  # branch cannot fall through silently (R2).
+                  - runFlow:
+                      when:
+                        visible:
+                          id: "Create sport"
+                      commands:
+                        - tapOn:
+                            id: "Create sport"
+                  - extendedWaitUntil:
+                      notVisible: "Add Custom Entry"
+                      timeout: 10000
+                  # After the modal closes, the search input still has the
+                  # sport name typed in it — the newly created sport now
+                  # matches the search filter and appears below the input.
+                  # Wait for it and tap it directly (no need to re-type).
+                  - extendedWaitUntil:
+                      visible:
+                        text: ".*${SPORT}.*"
+                        below:
+                          id: "Search sports"
+                      timeout: 10000
+                  - tapOn:
+                      text: ".*${SPORT}.*"
+                      below:
+                        id: "Search sports"
 
       # Wait for Years column to appear after Sport selection.
       # 60s ceiling: in RETRY runs, a pre-existing selection from attempt-1
@@ -381,109 +302,53 @@ tags:
 # ${SPORT && YEAR}: if either is undefined/empty → falsy → skip.
 # If both set → "2024" (last value in &&-chain) → truthy → run.
 #
-# Real-synced path (Baseball): "Search years" input appears after sync.
-# Custom path (E2E Test Sport): no search input; short list; Add-custom only.
-# 60s ceiling for "Search years" idle signal covers cold BSC+SL sync.
+# "Search years" is rendered in the open column whether the years are synced
+# (Baseball) or hand-made (E2E Test Sport) — NEO-224; one path for both.
 # ============================================================
 
 - runFlow:
     when:
       true: "${SPORT && YEAR}"
     commands:
-      # Real-synced Years: search input present — use it.
+      # NEO-224: the search box is rendered in every open column, so the search
+      # path is the only path. The wait below is its hard precondition (R2, R5).
+      - extendedWaitUntil:
+          visible:
+            text: ".*Search years.*"
+          timeout: 7000
+      # App auto-scrolls the newly-revealed Years column fully into view
+      # (EntityColumn reveal-scroll, de5423a) — no test-side right-scroll needed.
+      - tapOn:
+          text: ".*Search years.*"
+      - inputText: ${YEAR}
       - runFlow:
           when:
             visible:
-              text: ".*Search years.*"
+              text: "${YEAR}"
+              below:
+                id: "Search years"
           commands:
-            # App auto-scrolls the newly-revealed Years column fully into view
-            # (EntityColumn reveal-scroll, de5423a) — no test-side right-scroll needed.
-            - tapOn:
-                text: ".*Search years.*"
-            - inputText: ${YEAR}
-            - runFlow:
-                when:
-                  visible:
-                    text: "${YEAR}"
-                    below:
-                      id: "Search years"
-                commands:
-                  # Non-scrolling wait: filtered list result is already at top,
-                  # in viewport. scrollUntilVisible fires page-level CDP swipes
-                  # that can clear the search filter (overflow-y-auto column).
-                  - extendedWaitUntil:
-                      visible:
-                        text: "${YEAR}"
-                        below:
-                          id: "Search years"
-                      timeout: 7000
-                  # Guard: skip tap if Manufacturers already open (re-drill toggle risk).
-                  - runFlow:
-                      when:
-                        notVisible: "Manufacturers"
-                      commands:
-                        - tapOn:
-                            text: "${YEAR}"
-                            below:
-                              id: "Search years"
-            # If the year is not in search results (custom year not yet added).
-            # Guard on notVisible "Manufacturers": if Manufacturers is already visible,
-            # the Year was just selected — skip (same reason as Sports guard above).
+            # Non-scrolling wait: filtered list result is already at top,
+            # in viewport. scrollUntilVisible fires page-level CDP swipes
+            # that can clear the search filter (overflow-y-auto column).
+            - extendedWaitUntil:
+                visible:
+                  text: "${YEAR}"
+                  below:
+                    id: "Search years"
+                timeout: 7000
+            # Guard: skip tap if Manufacturers already open (re-drill toggle risk).
             - runFlow:
                 when:
                   notVisible: "Manufacturers"
                 commands:
-                  - runFlow:
-                      when:
-                        notVisible:
-                          text: "${YEAR}"
-                          below:
-                            id: "Search years"
-                      commands:
-                        - eraseText: 50
-                        - scrollUntilVisible:
-                            element:
-                              id: "Add custom Years"
-                            centerElement: true
-                            timeout: 7000
-                        - tapOn:
-                            id: "Add custom Years"
-                        - extendedWaitUntil:
-                            visible: "Add Custom Entry"
-                            timeout: 5000
-                        - inputText: ${YEAR}
-                        - pressKey: Enter
-                        # NEO-272: press the confirm's Create button by name, never a second blind
-                        # `pressKey: Enter`; conditional because an already-existing value closes the
-                        # form with no confirm — see the first occurrence in this file for both.
-                        - runFlow:
-                            when:
-                              visible:
-                                id: "Create year"
-                            commands:
-                              - tapOn:
-                                  id: "Create year"
-                        - extendedWaitUntil:
-                            notVisible: "Add Custom Entry"
-                            timeout: 10000
-                        - tapOn:
-                            text: ".*Search years.*"
-                        - inputText: ${YEAR}
-                        - extendedWaitUntil:
-                            visible:
-                              text: "${YEAR}"
-                              below:
-                                id: "Search years"
-                            timeout: 10000
-                        - tapOn:
-                            text: "${YEAR}"
-                            below:
-                              id: "Search years"
-
-      # Custom-only Years (no search input): wait for Add-custom idle signal.
-      # scrollUntilVisible tolerates brief in-flight sync (custom-subtree gate).
-      # Guarded by notVisible "Manufacturers" — if the search branch already
-      # selected a Year, Manufacturers will be visible; skip this fallback.
+                  - tapOn:
+                      text: "${YEAR}"
+                      below:
+                        id: "Search years"
+      # If the year is not in search results (custom year not yet added).
+      # Guard on notVisible "Manufacturers": if Manufacturers is already visible,
+      # the Year was just selected — skip (same reason as Sports guard above).
       - runFlow:
           when:
             notVisible: "Manufacturers"
@@ -491,66 +356,49 @@ tags:
             - runFlow:
                 when:
                   notVisible:
-                    text: ".*Search years.*"
+                    text: "${YEAR}"
+                    below:
+                      id: "Search years"
                 commands:
-                  # Non-scroll wait before the centering swipe: the Years column
-                  # can be mid-re-render (Convex subscription initial load on a
-                  # retry after a prior run saved data). CDP swipe crashes during
-                  # re-render. extendedWaitUntil re-queries without scrolling and
-                  # lets the render settle before the scroll fires.
-                  - extendedWaitUntil:
-                      visible:
-                        id: "Add custom Years"
-                      timeout: 60000
-                  # R5 — 7000, the bar. MEASURED (CI 34349299679 + 34361627641): this
-                  # step settles in 2.27s (1 centring swipe). The 60000 it carried was
-                  # not a marketplace allowance — the round-trip is gated by the wait above;
-                  # this scroll is pure UI. An earlier NEO-260 note said not to lower it;
-                  # that was wrong, see R8.
+                  - eraseText: 50
                   - scrollUntilVisible:
                       element:
                         id: "Add custom Years"
                       centerElement: true
-                      visibilityPercentage: 50
                       timeout: 7000
+                  - tapOn:
+                      id: "Add custom Years"
+                  - extendedWaitUntil:
+                      visible: "Add Custom Entry"
+                      timeout: 5000
+                  - inputText: ${YEAR}
+                  - pressKey: Enter
+                  # NEO-272: press the confirm's Create button by name, never a second blind
+                  # `pressKey: Enter`; conditional because an already-existing value closes the
+                  # form with no confirm — see the first occurrence in this file for both.
                   - runFlow:
                       when:
-                        notVisible: ${YEAR}
+                        visible:
+                          id: "Create year"
                       commands:
                         - tapOn:
-                            id: "Add custom Years"
-                        - extendedWaitUntil:
-                            visible: "Add Custom Entry"
-                            timeout: 5000
-                        - inputText: ${YEAR}
-                        - pressKey: Enter
-                        # NEO-272: press the confirm's Create button by name, never a second blind
-                        # `pressKey: Enter`; conditional because an already-existing value closes the
-                        # form with no confirm — see the first occurrence in this file for both.
-                        - runFlow:
-                            when:
-                              visible:
-                                id: "Create year"
-                            commands:
-                              - tapOn:
-                                  id: "Create year"
-                        - extendedWaitUntil:
-                            notVisible: "Add Custom Entry"
-                            timeout: 10000
+                            id: "Create year"
                   - extendedWaitUntil:
-                      visible: ${YEAR}
+                      notVisible: "Add Custom Entry"
                       timeout: 10000
-                  # R8 — centre before the tap; R5 — 7000, the bar. An earlier NEO-260 revision
-                  # raised this step to 20000 because the centring give-up path costs 8-13s. That
-                  # was the wrong remedy and the rule now says so: a step that reaches the give-up
-                  # path on every run is centring that never centres, and funding it hides the
-                  # fault instead of fixing it. This target DOES centre, so 7000 measures the UI.
-                  - scrollUntilVisible:
-                      element:
-                        text: ${YEAR}
-                      centerElement: true
-                      timeout: 7000
-                  - tapOn: ${YEAR}
+                  - tapOn:
+                      text: ".*Search years.*"
+                  - inputText: ${YEAR}
+                  - extendedWaitUntil:
+                      visible:
+                        text: "${YEAR}"
+                        below:
+                          id: "Search years"
+                      timeout: 10000
+                  - tapOn:
+                      text: "${YEAR}"
+                      below:
+                        id: "Search years"
 
       # Wait for Manufacturers column to appear after Year selection.
       - extendedWaitUntil:
@@ -561,8 +409,8 @@ tags:
 # LEVEL 3 — Manufacturer
 # Gate: SPORT AND YEAR AND MANUFACTURER must all be non-empty.
 #
-# Real-synced path: "Search manufacturers" input present.
-# Custom path (under custom Sport or Year): no search input; Add-custom only.
+# "Search manufacturers" is rendered in the open column whatever its rows are
+# (NEO-224); one path for synced and hand-made parents alike.
 # centerElement: true on Add-custom tap — edge-clipping risk (see header comment).
 # ============================================================
 
@@ -570,100 +418,44 @@ tags:
     when:
       true: "${SPORT && YEAR && MANUFACTURER}"
     commands:
-      # Real-synced Manufacturers: search input present.
+      # NEO-224: the search box is rendered in every open column, so the search
+      # path is the only path. The wait below is its hard precondition (R2, R5).
+      - extendedWaitUntil:
+          visible:
+            text: ".*Search manufacturers.*"
+          timeout: 7000
+      # App auto-scrolls the newly-revealed Manufacturers column fully into
+      # view (EntityColumn reveal-scroll, de5423a) — no test-side right-scroll needed.
+      - tapOn:
+          text: ".*Search manufacturers.*"
+      - inputText: ${MANUFACTURER}
       - runFlow:
           when:
             visible:
-              text: ".*Search manufacturers.*"
+              text: "${MANUFACTURER}"
+              below:
+                id: "Search manufacturers"
           commands:
-            # App auto-scrolls the newly-revealed Manufacturers column fully into
-            # view (EntityColumn reveal-scroll, de5423a) — no test-side right-scroll needed.
-            - tapOn:
-                text: ".*Search manufacturers.*"
-            - inputText: ${MANUFACTURER}
-            - runFlow:
-                when:
-                  visible:
-                    text: "${MANUFACTURER}"
-                    below:
-                      id: "Search manufacturers"
-                commands:
-                  # Non-scrolling wait: filtered list result is already at top,
-                  # in viewport. scrollUntilVisible fires page-level CDP swipes
-                  # that can clear the search filter (overflow-y-auto column).
-                  - extendedWaitUntil:
-                      visible:
-                        text: "${MANUFACTURER}"
-                        below:
-                          id: "Search manufacturers"
-                      timeout: 7000
-                  # Guard: skip tap if Sets already open (re-drill toggle risk).
-                  - runFlow:
-                      when:
-                        notVisible: "Sets"
-                      commands:
-                        - tapOn:
-                            text: "${MANUFACTURER}"
-                            below:
-                              id: "Search manufacturers"
-            # Guard on notVisible "Sets": if Sets is already visible, the
-            # Manufacturer was just selected — skip (same reason as Sports guard above).
+            # Non-scrolling wait: filtered list result is already at top,
+            # in viewport. scrollUntilVisible fires page-level CDP swipes
+            # that can clear the search filter (overflow-y-auto column).
+            - extendedWaitUntil:
+                visible:
+                  text: "${MANUFACTURER}"
+                  below:
+                    id: "Search manufacturers"
+                timeout: 7000
+            # Guard: skip tap if Sets already open (re-drill toggle risk).
             - runFlow:
                 when:
                   notVisible: "Sets"
                 commands:
-                  - runFlow:
-                      when:
-                        notVisible:
-                          text: "${MANUFACTURER}"
-                          below:
-                            id: "Search manufacturers"
-                      commands:
-                        - eraseText: 50
-                        - scrollUntilVisible:
-                            element:
-                              id: "Add custom Manufacturers"
-                            centerElement: true
-                            timeout: 7000
-                        - tapOn:
-                            id: "Add custom Manufacturers"
-                        - extendedWaitUntil:
-                            visible: "Add Custom Entry"
-                            timeout: 5000
-                        - inputText: ${MANUFACTURER}
-                        - pressKey: Enter
-                        # NEO-272: press the confirm's Create button by name, never a second blind
-                        # `pressKey: Enter`; conditional because an already-existing value closes the
-                        # form with no confirm — see the first occurrence in this file for both.
-                        - runFlow:
-                            when:
-                              visible:
-                                id: "Create manufacturer"
-                            commands:
-                              - tapOn:
-                                  id: "Create manufacturer"
-                        - extendedWaitUntil:
-                            notVisible: "Add Custom Entry"
-                            timeout: 10000
-                        - tapOn:
-                            text: ".*Search manufacturers.*"
-                        - inputText: ${MANUFACTURER}
-                        - extendedWaitUntil:
-                            visible:
-                              text: "${MANUFACTURER}"
-                              below:
-                                id: "Search manufacturers"
-                            timeout: 10000
-                        - tapOn:
-                            text: "${MANUFACTURER}"
-                            below:
-                              id: "Search manufacturers"
-
-      # Custom-only Manufacturers (no search input).
-      # centerElement: true — edge-clipping risk at 1024×629 (see util-drill-to-custom-set
-      # Level 3 comment; once-custom-always-custom gate removes the search input).
-      # Guarded by notVisible "Sets" — if the search branch already selected a
-      # Manufacturer, Sets will be visible; skip this fallback.
+                  - tapOn:
+                      text: "${MANUFACTURER}"
+                      below:
+                        id: "Search manufacturers"
+      # Guard on notVisible "Sets": if Sets is already visible, the
+      # Manufacturer was just selected — skip (same reason as Sports guard above).
       - runFlow:
           when:
             notVisible: "Sets"
@@ -671,59 +463,49 @@ tags:
             - runFlow:
                 when:
                   notVisible:
-                    text: ".*Search manufacturers.*"
+                    text: "${MANUFACTURER}"
+                    below:
+                      id: "Search manufacturers"
                 commands:
-                  # Non-scroll wait before the centering swipe — same CDP re-render
-                  # crash guard as Level 2 and Level 4 (see those comments).
-                  - extendedWaitUntil:
-                      visible:
-                        id: "Add custom Manufacturers"
-                      timeout: 60000
-                  # R5 — 7000, the bar (was 60000). MEASURED (CI 34349299679 + 34361627641):
-                  # settles in 2.01s, 1 centring swipe; nothing here waits on a marketplace.
+                  - eraseText: 50
                   - scrollUntilVisible:
                       element:
                         id: "Add custom Manufacturers"
                       centerElement: true
                       timeout: 7000
+                  - tapOn:
+                      id: "Add custom Manufacturers"
+                  - extendedWaitUntil:
+                      visible: "Add Custom Entry"
+                      timeout: 5000
+                  - inputText: ${MANUFACTURER}
+                  - pressKey: Enter
+                  # NEO-272: press the confirm's Create button by name, never a second blind
+                  # `pressKey: Enter`; conditional because an already-existing value closes the
+                  # form with no confirm — see the first occurrence in this file for both.
                   - runFlow:
                       when:
-                        notVisible: ${MANUFACTURER}
+                        visible:
+                          id: "Create manufacturer"
                       commands:
                         - tapOn:
-                            id: "Add custom Manufacturers"
-                        - extendedWaitUntil:
-                            visible: "Add Custom Entry"
-                            timeout: 5000
-                        - inputText: ${MANUFACTURER}
-                        - pressKey: Enter
-                        # NEO-272: press the confirm's Create button by name, never a second blind
-                        # `pressKey: Enter`; conditional because an already-existing value closes the
-                        # form with no confirm — see the first occurrence in this file for both.
-                        - runFlow:
-                            when:
-                              visible:
-                                id: "Create manufacturer"
-                            commands:
-                              - tapOn:
-                                  id: "Create manufacturer"
-                        - extendedWaitUntil:
-                            notVisible: "Add Custom Entry"
-                            timeout: 10000
+                            id: "Create manufacturer"
                   - extendedWaitUntil:
-                      visible: ${MANUFACTURER}
+                      notVisible: "Add Custom Entry"
                       timeout: 10000
-                  # R8 — centre before the tap; R5 — 7000, the bar. An earlier NEO-260 revision
-                  # raised this step to 20000 because the centring give-up path costs 8-13s. That
-                  # was the wrong remedy and the rule now says so: a step that reaches the give-up
-                  # path on every run is centring that never centres, and funding it hides the
-                  # fault instead of fixing it. This target DOES centre, so 7000 measures the UI.
-                  - scrollUntilVisible:
-                      element:
-                        text: ${MANUFACTURER}
-                      centerElement: true
-                      timeout: 7000
-                  - tapOn: ${MANUFACTURER}
+                  - tapOn:
+                      text: ".*Search manufacturers.*"
+                  - inputText: ${MANUFACTURER}
+                  - extendedWaitUntil:
+                      visible:
+                        text: "${MANUFACTURER}"
+                        below:
+                          id: "Search manufacturers"
+                      timeout: 10000
+                  - tapOn:
+                      text: "${MANUFACTURER}"
+                      below:
+                        id: "Search manufacturers"
 
       # Wait for Sets column to appear after Manufacturer selection.
       - extendedWaitUntil:
@@ -738,10 +520,10 @@ tags:
 # centerElement: true on Add-custom Sets tap — edge-clipping (see util-drill-to-custom-set
 # Level 4 comment for full CI failure history at y≈583+).
 #
-# After the custom-add idempotency runFlow, the search-vs-direct tap logic
-# mirrors util-drill-to-custom-set exactly (search branch + fallback branch),
-# including the UP-scroll trick to rescue the search input from beneath the
-# nav header after centerElement scrolled it off the top.
+# After the custom-add idempotency runFlow, the row is picked through the
+# column's search box (always rendered since NEO-224), after an UP scroll that
+# rescues the box from beneath the nav header when centring "+ Custom" carried
+# it off the top.
 # ============================================================
 
 - runFlow:
@@ -786,36 +568,40 @@ tags:
                 notVisible: "Add Custom Entry"
                 timeout: 10000
 
-      # RE-REVEAL the Sets header/search input BEFORE the search-path guard.
-      # The centerElement scroll to "Add custom Sets" above can push the Sets
-      # column header + "Search sets" input up under the sticky nav (y<66) — and
-      # it is WORSE now that a collapsed SetAttributesPanel renders below the
-      # column at a shallow (sport/year/manufacturer) selected level (NEO-38
-      # deepestSelectedId extension): the extra height below "+ Custom" lets
-      # centerElement drag "+ Custom" higher, carrying the search input off the
-      # top. If "Search sets" is off-screen the guard below wrongly reads false
-      # and falls through to the fragile direct-scroll fallback, which clips a
-      # target inside the column's overflow-y-auto container — the tap lands at
-      # y<0 and CDP throws "Failed to execute JS" (null→kotlin.Int). Centering
-      # the "Sets" header first pulls the search input back to ~y=360, clear of
-      # the nav, so a large real-manufacturer Sets list reliably takes the search
-      # path. optional:true makes this a no-op for short custom-sport Sets columns
-      # (nothing scrolled off / no search input), so short-list callers are
-      # unaffected and still fall through to the direct-scroll path below.
-      - scrollUntilVisible:
-          element:
-            text: "^Sets$"
-          direction: UP
-          centerElement: true
-          timeout: 7000
-          optional: true
-
-      # Tap the SET_NAME row — search path if the list grew large (>8 items),
-      # direct-scroll path for short lists. Pattern mirrors util-drill-to-custom-set.
+      # Pick SET_NAME through the column's search box. NEO-224: every open
+      # column renders its box, so this is the only path; the pre-NEO-224
+      # short-list direct-scroll branch that used to follow it is gone (R10).
+      #
+      # GUARDED on "Variant Types" being absent, not on the box being present.
+      # The create block above has a second outcome: when SET_NAME already
+      # exists in this column but sat clipped out of view (long real Sets list,
+      # max-h-[400px]), `handleCustomSubmit` selects the existing row instead of
+      # confirming a create, and the cascade advances on its own. Re-picking a
+      # selected row is not a no-op (it re-runs the selection handler and
+      # collapses the column), so this pick must not run then. On the
+      # normal path Variant Types is absent and the guard answers at once; on
+      # the already-existed path it pays one ~7s poll, as the old branch did.
+      # Inside, the UP scroll is the hard precondition (R2) and the Variant
+      # Types gate after the block is the hard result for both outcomes.
+      #
+      # The centred scroll to "Add custom Sets" above can push the column's
+      # header and search box up under the sticky nav (y<66), most of all on a
+      # long real Sets list with the collapsed SetAttributesPanel under the
+      # columns row. direction: UP because the box sits ABOVE "+ Custom" in DOM
+      # order and the step above left the page centred on "+ Custom" (README,
+      # R5: a scroll never depends on the document bottoming out). When the box
+      # is already in the band it exits at try 0. R8: centred because the tap
+      # below aims at it.
       - runFlow:
           when:
-            visible: ".*Search sets.*"
+            notVisible: "Variant Types"
           commands:
+            - scrollUntilVisible:
+                element:
+                  id: "Search sets"
+                direction: UP
+                centerElement: true
+                timeout: 7000
             - tapOn:
                 text: ".*Search sets.*"
             - inputText: ${SET_NAME}
@@ -833,58 +619,10 @@ tags:
                 below:
                   id: "Search sets"
                 waitToSettleTimeoutMs: 2000
-            # Wait for Variant Types before leaving this branch — prevents the
-            # fallback below from firing a second tap that collapses the column.
-            - extendedWaitUntil:
-                visible: "Variant Types"
-                timeout: 30000
-
-      # Fallback: short list (no search input). Guarded by notVisible "Variant Types"
-      # to prevent double-tap after the search-input branch succeeded.
-      - runFlow:
-          when:
-            notVisible: "Variant Types"
-          commands:
-            # Wait for the SET_NAME row to be stable before scrolling.
-            # The Sets column can be mid-re-render (Convex subscription initial
-            # load) on a retry after a previous run saved data — the CDP swipe
-            # inside scrollUntilVisible throws MismatchedInputException during
-            # the render. A non-scroll wait gives the re-render time to settle
-            # before the centering swipe runs.
-            #
-            # optional: true (fix 2026-07-16, neo-71-74) — the Sets column is an
-            # overflow-y-auto list that renders ALL custom sets (not virtualized).
-            # As the per-worker E2E Test Sport N/2026/Topps Sets list accumulates
-            # sets across flows (write-once selectorOptions; /testing/reset never
-            # wipes the catalog), a newly-added set whose name sorts LATE
-            # alphabetically (e.g. "pp-0" after the many "c*-0" sets) lands BELOW
-            # the 629px fold while the list is still short enough that NO
-            # "Search sets" input renders (the search box only appears past ~8
-            # items). A non-optional wait here hard-FAILS on that below-fold set
-            # before the scrollUntilVisible below can reach it (RCA: player-picker
-            # flow, set "pp-0", Sets column showing cag-0/cap-0/clt-0… with pp-0
-            # scrolled out). Making it optional lets a below-fold set fall through
-            # to the scrollUntilVisible (which DOES scroll the column to it and
-            # centers it) — while staying an instant no-op for the common case
-            # where the set is already visible near the top. A genuinely missing
-            # set still fails loudly at the scrollUntilVisible (ElementNotFound).
-            - extendedWaitUntil:
-                visible:
-                  text: ".*${SET_NAME}.*"
-                timeout: 5000
-                optional: true
-            - scrollUntilVisible:
-                element:
-                  text: ".*${SET_NAME}.*"
-                centerElement: true
-                waitToSettleTimeoutMs: 1000
-                timeout: 7000
-            - tapOn:
-                text: ".*${SET_NAME}.*"
-                waitToSettleTimeoutMs: 2000
-            - extendedWaitUntil:
-                visible: "Variant Types"
-                timeout: 30000
+      # The set row's tap is confirmed by the Variant Types column mounting.
+      - extendedWaitUntil:
+          visible: "Variant Types"
+          timeout: 30000
 
 # ============================================================
 # LEVEL 5 — Variant Types (VARIANT_TYPE)
