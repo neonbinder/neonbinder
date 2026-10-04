@@ -128,3 +128,84 @@ describe("normalizeOrderedEntityName — the leagues key", () => {
     );
   });
 });
+
+describe("initials — NEO-322", () => {
+  const key = normalizeEntityName;
+  const ordered = normalizeOrderedEntityName;
+
+  test("every spelling of C. J. Kayfus is one key", () => {
+    for (const spelling of [
+      "C.J. Kayfus",
+      "C. J. Kayfus",
+      "CJ Kayfus",
+      "C J Kayfus",
+    ]) {
+      expect(key(spelling)).toBe("cj kayfus");
+    }
+  });
+
+  test("entityNameTokens joins the run and keeps source order", () => {
+    expect(entityNameTokens("C. J. Kayfus")).toEqual(["cj", "kayfus"]);
+  });
+
+  test.each([
+    ["J.J. Watt", "J. J. Watt"],
+    ["A.J. Brown", "A. J. Brown"],
+  ])("%s and %s are one key", (a, b) => {
+    expect(key(a)).toBe(key(b));
+  });
+
+  test("two initials before a surname sort as one token", () => {
+    expect(key("R. A. Dickey")).toBe("dickey ra");
+    expect(key("J. D. Martinez")).toBe("jd martinez");
+  });
+
+  test("three initials join into one token", () => {
+    expect(key("J. R. R. Tolkien")).toBe("jrr tolkien");
+  });
+
+  test("A. J. Smith and J. A. Smith are different keys", () => {
+    // Regression: the sort used to scatter initials, so both keyed "a j smith".
+    expect(key("A. J. Smith")).not.toBe(key("J. A. Smith"));
+    expect(key("A. J. Smith")).toBe("aj smith");
+    expect(key("J. A. Smith")).toBe("ja smith");
+  });
+
+  test("a lone initial is left as its own token", () => {
+    expect(entityNameTokens("P. Mahomes")).toEqual(["p", "mahomes"]);
+    expect(key("Michael A. Taylor")).toBe("a michael taylor");
+  });
+
+  test("digits are never joined", () => {
+    expect(key("Big 12")).toBe("12 big");
+    expect(key("Formula 1")).toBe("1 formula");
+    expect(ordered("Big 1 2")).toBe("big 1 2");
+  });
+
+  test("a letter between digits does not pull the digits in", () => {
+    expect(entityNameTokens("Big 1 A 2")).toEqual(["big", "1", "a", "2"]);
+  });
+
+  test("team names with initials agree across spellings", () => {
+    for (const spelling of ["Texas A&M", "Texas AM", "Texas A & M"]) {
+      expect(key(spelling)).toBe("am texas");
+    }
+    expect(key("Oakland A's")).toBe("as oakland");
+    expect(key("D.C. United")).toBe(key("D C United"));
+    expect(key("D.C. United")).toBe("dc united");
+    expect(key("U.S.A. Hockey")).toBe(key("U S A Hockey"));
+    expect(key("U.S.A. Hockey")).toBe("hockey usa");
+  });
+
+  test("a name with no initials is unchanged", () => {
+    expect(key("St. Louis Cardinals")).toBe("cardinals louis st");
+  });
+
+  test("the ordered league key joins initials and keeps order", () => {
+    expect(ordered("N. H. L.")).toBe("nhl");
+    expect(ordered("N. H. L.")).toBe(ordered("NHL"));
+    expect(ordered("Class A")).toBe("class a");
+    expect(ordered("Division I-A")).toBe("division i-a");
+    expect(ordered("Liga MX")).toBe("liga mx");
+  });
+});

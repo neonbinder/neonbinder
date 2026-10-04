@@ -121,6 +121,20 @@ describe("players.nearMatches", () => {
     expect(rows[0].confidence).toBe("close");
   });
 
+  test("initials written without spaces find the spaced row as exact (NEO-322)", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    const kayfusId = await seedPlayer(t, "C. J. Kayfus", baseball);
+
+    const rows = await t
+      .withIdentity(ADMIN)
+      .query(api.players.nearMatches, { name: "C.J. Kayfus", sportId: baseball });
+
+    expect(rows).toEqual([
+      { _id: kayfusId, name: "C. J. Kayfus", confidence: "exact" },
+    ]);
+  });
+
   test("returns nothing for an unrelated name", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t, "Baseball", "BB");
