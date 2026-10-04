@@ -40,6 +40,9 @@ vi.mock("convex/react", () => ({
 
 import ParallelBuildPanel, {
   ParallelBuildButton,
+  ParallelBuildPlaceholder,
+  SOURCE_LOADING_LABEL,
+  SOURCE_MISSING_LABEL,
   builtText,
   buildButtonLabel,
   rebuildConfirmCopy,
@@ -578,5 +581,94 @@ describe("useHostedParallelBuildRun — surviving the checklist unmounting", () 
 
     const { result: thirdMount } = renderHook(() => useHostedParallelBuildRun());
     expect(thirdMount.current.run).toBeNull();
+  });
+});
+
+describe("ParallelBuildPanel — a11y (NEO-321 audit)", () => {
+  const statusLine = () => screen.getByRole("status");
+
+  test("the live line enters the tree EMPTY and receives the announcement afterwards", () => {
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((r) => records.push(...r));
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    render(
+      <ParallelBuildPanel
+        run={baseRun({ phase: "running", atIndex: 0, announcement: "Building 4 parallels of Anime" })}
+        onStop={() => {}}
+      />,
+    );
+    records.push(...observer.takeRecords());
+    observer.disconnect();
+
+    const line = statusLine();
+    expect(line.textContent).toBe("Building 4 parallels of Anime");
+    // React created the node with no children; the text arrived as its own
+    // later mutation on the already-mounted node (a node React had created
+    // with the text in it would never produce this record).
+    const textWrite = records.find(
+      (r) => r.target === line && [...r.addedNodes].some((n) => n.textContent === "Building 4 parallels of Anime"),
+    );
+    expect(textWrite).toBeTruthy();
+    const sectionInserted = records.findIndex((r) => [...r.addedNodes].some((n) => n.contains(line) && n !== line));
+    expect(sectionInserted).toBeGreaterThanOrEqual(0);
+    expect(sectionInserted).toBeLessThan(records.indexOf(textWrite!));
+  });
+
+  test("a later announcement replaces the text on the same node", () => {
+    const { rerender } = render(
+      <ParallelBuildPanel run={baseRun({ phase: "running", atIndex: 0, announcement: "first" })} onStop={() => {}} />,
+    );
+    const line = statusLine();
+    rerender(
+      <ParallelBuildPanel run={baseRun({ phase: "running", atIndex: 1, announcement: "second" })} onStop={() => {}} />,
+    );
+    expect(statusLine()).toBe(line);
+    expect(line.textContent).toBe("second");
+  });
+
+  test("the heading is an h3 by default and an h4 when nested, with the same id and text", () => {
+    const run = baseRun({ phase: "running", atIndex: 0 });
+    const { unmount } = render(<ParallelBuildPanel run={run} onStop={() => {}} />);
+    const h3 = document.getElementById("parallel-build-heading")!;
+    expect(h3.tagName).toBe("H3");
+    const text = h3.textContent;
+    unmount();
+
+    render(<ParallelBuildPanel run={run} onStop={() => {}} headingLevel={4} />);
+    const h4 = document.getElementById("parallel-build-heading")!;
+    expect(h4.tagName).toBe("H4");
+    expect(h4.textContent).toBe(text);
+  });
+});
+
+describe("ParallelBuildPlaceholder — the slot before the source is known", () => {
+  test("with no reason it says Loading… and is busy", () => {
+    render(<ParallelBuildPlaceholder />);
+    const b = screen.getByRole("button", { name: SOURCE_LOADING_LABEL });
+    expect(b.getAttribute("aria-disabled")).toBe("true");
+    expect(b.getAttribute("aria-busy")).toBe("true");
+    expect(b.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  test("with a reason id it says Can't build yet, is described by it, and is not busy", () => {
+    render(<ParallelBuildPlaceholder reasonId="why" />);
+    const b = screen.getByRole("button", { name: SOURCE_MISSING_LABEL });
+    expect(b.getAttribute("aria-disabled")).toBe("true");
+    expect(b.getAttribute("aria-describedby")).toBe("why");
+    expect(b.getAttribute("aria-busy")).toBeNull();
+  });
+
+  test("pressing either one never calls the build action", () => {
+    mockActionFn.mockClear();
+    const { unmount } = render(<ParallelBuildPlaceholder />);
+    fireEvent.click(screen.getByRole("button"));
+    fireEvent.keyDown(screen.getByRole("button"), { key: "Enter" });
+    unmount();
+    render(<ParallelBuildPlaceholder reasonId="why" primary />);
+    fireEvent.click(screen.getByRole("button"));
+    fireEvent.keyDown(screen.getByRole("button"), { key: "Enter" });
+    expect(mockActionFn).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });

@@ -182,6 +182,7 @@ vi.mock("../SetSelector/SportForm", () => ({ SportForm: () => null }));
 
 import SetSelector from "./SetSelector";
 import { PARALLEL_BUILD_HEADING_ID, UNFINISHED_TEXT } from "../SetSelector/ParallelBuildPanel";
+import { BASE_PARALLELS_REASON_ID } from "../SetSelector/BaseParallelsBuildSection";
 
 const selectType = (id: string) => fireEvent.click(screen.getByText(`select-${id}`));
 
@@ -362,6 +363,21 @@ describe("SetSelector — a base-parallel row builds from Base (NEO-321 D3)", ()
     const { parallelBuild } = checklistProps();
     expect(parallelBuild.role).toBe("parallel");
     expect(parallelBuild.sourceValue).toBeUndefined();
+    // Loading is not "no Base": the stand-in must say Loading…, not Can't build.
+    expect(parallelBuild.unavailableReasonId).toBeUndefined();
+  });
+
+  it("points the row at the section's reason line once the plan is in and there is no single Base", () => {
+    state.plan = { parallels: [PARALLEL_A], truncated: false, source: null, sourceBlocked: "no base" };
+    render(<SetSelector />);
+    selectType("vt-parallel");
+    fireEvent.click(screen.getByText("select-row"));
+
+    const { parallelBuild } = checklistProps();
+    expect(parallelBuild.sourceValue).toBeUndefined();
+    expect(parallelBuild.unavailableReasonId).toBe(BASE_PARALLELS_REASON_ID);
+    // ...and that id is on the page, on the sentence that says why.
+    expect(document.getElementById(BASE_PARALLELS_REASON_ID)).toBeTruthy();
   });
 
   it("a row under a role-insert type stays an insert", () => {

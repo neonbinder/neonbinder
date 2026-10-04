@@ -35,8 +35,10 @@ import BaseParallelsBuildSection, {
   CONFIRM_LABEL,
   LOADING_TEXT,
   NO_PARALLELS_TEXT,
+  BASE_PARALLELS_REASON_ID,
   NO_SOURCE_TEXT,
   OTHER_RUN_TEXT,
+  attentionText,
   buildAllLabel,
   noSourceText,
   replaceConfirmCopy,
@@ -47,7 +49,9 @@ import BaseParallelsBuildSection, {
 } from "./BaseParallelsBuildSection";
 import {
   PARALLEL_BUILD_HEADING_ID,
+  moreText,
   planFailedText,
+  truncatedText,
   type ParallelBuildPlan,
   type ParallelBuildRunner,
   type ParallelPlanEntry,
@@ -488,6 +492,105 @@ describe("BaseParallelsBuildSection — D4 confirm", () => {
     expect(runner.start).toHaveBeenCalledWith(
       { id: TYPE_ID, value: "Base" },
       mockConvex,
+    );
+  });
+});
+
+const UNLINKED = { bsc: false, sportlots: false };
+
+describe("BaseParallelsBuildSection — the attention list", () => {
+  const items = () => screen.queryAllByRole("listitem").map((li) => li.textContent);
+
+  it("attentionText names a blocked parallel with the server's reason", () => {
+    expect(attentionText(entry(1, { blocked: "some cards have scans" }))).toBe(
+      "Parallel 1 — blocked: some cards have scans",
+    );
+  });
+
+  it("attentionText names an unlinked parallel as skipped", () => {
+    expect(attentionText(entry(2, { sides: UNLINKED }))).toBe(
+      "Parallel 2 — skipped: not linked to a marketplace yet",
+    );
+  });
+
+  it("attentionText is null for a parallel the run will build, and blocked wins over unlinked", () => {
+    expect(attentionText(entry(3))).toBeNull();
+    expect(attentionText(entry(4, { sides: UNLINKED, blocked: "scans" }))).toBe(
+      "Parallel 4 — blocked: scans",
+    );
+  });
+
+  it("lists one line per blocked or unlinked parallel, with the reason, and none for the rest", () => {
+    renderSection(
+      planOf([
+        entry(1),
+        entry(2, { blocked: "scans" }),
+        entry(3, { sides: UNLINKED }),
+        entry(4, { hasCards: true }),
+      ]),
+    );
+    expect(items()).toEqual([
+      "Parallel 2 — blocked: scans",
+      "Parallel 3 — skipped: not linked to a marketplace yet",
+    ]);
+  });
+
+  it("is absent when nothing is blocked or unlinked", () => {
+    renderSection(planOf([entry(1), entry(2, { hasCards: true })]));
+    expect(screen.queryByRole("list")).toBeNull();
+  });
+
+  it("shows all of them at exactly 10, with no overflow line", () => {
+    renderSection(planOf(Array.from({ length: 10 }, (_, i) => entry(i + 1, { sides: UNLINKED }))));
+    expect(items()).toHaveLength(10);
+    expect(screen.queryByText(/…and \d+ more/)).toBeNull();
+  });
+
+  it("caps at 10 lines and says how many more", () => {
+    renderSection(planOf(Array.from({ length: 13 }, (_, i) => entry(i + 1, { sides: UNLINKED }))));
+    const lines = items();
+    expect(lines).toHaveLength(11);
+    expect(lines[0]).toBe("Parallel 1 — skipped: not linked to a marketplace yet");
+    expect(lines[9]).toBe("Parallel 10 — skipped: not linked to a marketplace yet");
+    expect(lines[10]).toBe(moreText(3));
+  });
+});
+
+describe("BaseParallelsBuildSection — truncated list", () => {
+  it("appends the truncated sentence to the summary when the plan is truncated", () => {
+    renderSection(planOf([entry(1), entry(2)], { truncated: true }));
+    expect(screen.getByText(new RegExp(truncatedText(2).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")))).toBeTruthy();
+  });
+
+  it("says nothing about truncation otherwise", () => {
+    renderSection(planOf([entry(1), entry(2)]));
+    expect(screen.queryByText(/Only the first/)).toBeNull();
+  });
+});
+
+describe("BaseParallelsBuildSection — outline and reason id", () => {
+  it("nests the run's heading one level under the section's own h3", () => {
+    const run: ParallelRun = {
+      startedFrom: TYPE_ID,
+      sourceId: SOURCE_ID,
+      sourceValue: "Base",
+      sourceKind: "base",
+      entries: [{ id: entry(1)._id, value: "Parallel 1", line: { kind: "building" } }],
+      truncated: false,
+      phase: "running",
+      atIndex: 0,
+      announcement: "",
+    };
+    renderSection(planOf([entry(1)]), runnerStub({ run, active: true }), true);
+    expect(screen.getByRole("heading", { level: 3, name: "Parallels of Base" })).toBeTruthy();
+    const nested = document.getElementById(PARALLEL_BUILD_HEADING_ID)!;
+    expect(nested.tagName).toBe("H4");
+  });
+
+  it("the reason line carries the exported id the base-parallel rows point at", () => {
+    renderSection(planOf([], { source: null, sourceBlocked: "no base" }));
+    expect(document.getElementById(BASE_PARALLELS_REASON_ID)?.textContent).toBe(
+      noSourceText("no base"),
     );
   });
 });

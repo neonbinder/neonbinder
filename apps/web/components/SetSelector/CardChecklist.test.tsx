@@ -3968,11 +3968,34 @@ describe("CardChecklist — NEO-321 a base-parallel row builds from Base (D3)", 
     expect(mockCommitChecklist).not.toHaveBeenCalled();
   });
 
-  it("until Base's name is known the slot is empty: no build button, and no fetch to fall back on", () => {
+  it("until Base's name is known a Loading… stand-in holds the slot: busy, inert, and no fetch to fall back on", async () => {
     renderBaseParallel(undefined);
-    expect(screen.queryByRole("button", { name: /from /i })).toBeNull();
+    const standIn = screen.getByRole("button", { name: "Loading…" });
+    expect(standIn.getAttribute("aria-disabled")).toBe("true");
+    expect(standIn.getAttribute("aria-busy")).toBe("true");
+    fireEvent.click(standIn);
+    expect(mockBuildParallelChecklist).not.toHaveBeenCalled();
+    expect(mockFetchChecklist).not.toHaveBeenCalled();
     expect(screen.queryByText("Fetch from Marketplaces")).toBeNull();
     expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+  });
+
+  it("with no single Base the stand-in says Can't build yet, is described by the reason, and is never actionable", () => {
+    render(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelBuild={{ role: "parallel", unavailableReasonId: "why-not" }}
+      />,
+    );
+    const standIn = screen.getByRole("button", { name: "Can't build yet" });
+    expect(standIn.getAttribute("aria-disabled")).toBe("true");
+    expect(standIn.getAttribute("aria-describedby")).toBe("why-not");
+    expect(standIn.getAttribute("aria-busy")).toBeNull();
+    fireEvent.click(standIn);
+    expect(mockBuildParallelChecklist).not.toHaveBeenCalled();
+    expect(mockFetchChecklist).not.toHaveBeenCalled();
   });
 });
 
