@@ -713,8 +713,10 @@ def _forbid_fast_path(monkeypatch) -> None:
 
 
 def _counting_fast_path(monkeypatch) -> dict[str, int]:
-    """Count fast-path stage calls; both decline (return None)."""
-    calls = {"scan_meta": 0, "fast_tiered": 0}
+    """Count fast-path stage calls; all three decline."""
+    from app.cropper.quad import QuadResult
+
+    calls = {"scan_meta": 0, "fast_tiered": 0, "quad": 0}
 
     def _scan(_b):
         calls["scan_meta"] += 1
@@ -724,8 +726,13 @@ def _counting_fast_path(monkeypatch) -> dict[str, int]:
         calls["fast_tiered"] += 1
         return None
 
+    def _quad(_b):
+        calls["quad"] += 1
+        return QuadResult(None, "no_quad")
+
     monkeypatch.setattr("app.cropper.scan_meta.is_card_sized_scan", _scan)
     monkeypatch.setattr("app.cropper.tiered.fast_tiered_crop", _fast)
+    monkeypatch.setattr("app.cropper.quad.quad_crop", _quad)
     return calls
 
 
@@ -752,7 +759,7 @@ class TestHeavySkipsTheDeclinedFastPath:
         response = _post_body(baseline=SUPPLIED_BASELINE, dhash=SUPPLIED_DHASH)
 
         assert response.status_code == 200, response.text
-        assert calls == {"scan_meta": 0, "fast_tiered": 0}
+        assert calls == {"scan_meta": 0, "fast_tiered": 0, "quad": 0}
         assert response.json()["cropped_source"] == "pil_trim_dark"
         (line,) = timing_lines.bodies()
         assert line["baseline_supplied"] is True
@@ -767,7 +774,7 @@ class TestHeavySkipsTheDeclinedFastPath:
         response = _post_entry(entry_index=0)
 
         assert response.status_code == 200, response.text
-        assert calls == {"scan_meta": 1, "fast_tiered": 1}
+        assert calls == {"scan_meta": 1, "fast_tiered": 1, "quad": 1}
         assert response.json()["cropped_source"] == "pil_trim_dark"
 
     def test_fast_role_with_a_baseline_still_runs_its_fast_path(self, fake_gcs, monkeypatch):
@@ -782,7 +789,7 @@ class TestHeavySkipsTheDeclinedFastPath:
         response = _post_body(baseline=SUPPLIED_BASELINE)
 
         assert response.json()["needs_escalation"] is True
-        assert calls == {"scan_meta": 1, "fast_tiered": 1}
+        assert calls == {"scan_meta": 1, "fast_tiered": 1, "quad": 1}
 
 
 class TestSuppliedBaselineAndDhash:
@@ -984,6 +991,7 @@ TIMING_KEYS = {
     "vision_ms",
     "vision_reconnects",
     "classical_ms",
+    "quad_ms",
     "birefnet_ms",
     "sam_ms",
     "haiku_bbox_ms",
