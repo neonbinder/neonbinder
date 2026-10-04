@@ -1,6 +1,6 @@
 ---
 name: neo175-fast-heavy-split-flows
-description: Placeholder pipeline fast/heavy split (NEO-175, NEO-152 copy, NEO-299 six-image heavy flow) — the two pipeline flows, the EXACT cold-start notice and status copy, heavyWarming/escalating-badge timing, why the heavy flow runs six photos past the cap, and how to validate fixture routing locally with fast_tiered_crop
+description: Placeholder pipeline fast/heavy split (NEO-175, NEO-152 copy, NEO-299 six-image heavy flow, NEO-320 quad crop) — the three pipeline flows and their fixture sets, the EXACT cold-start notice and status copy, heavyWarming/escalating-badge timing, why the heavy flow runs six photos past the cap, and how to validate fixture routing locally with fast_tiered_crop + quad_crop
 metadata:
   type: reference
 ---
@@ -69,10 +69,21 @@ cv2/numpy/PIL: a scratch venv with the service's PINNED
 `opencv-python-headless`, `numpy`, `Pillow` from `requirements.txt` is enough. Load
 the module by FILE PATH (`importlib.util.spec_from_file_location`) — importing
 `app.cropper` runs its `__init__`, which pulls the full classify/SAM stack.
-`fast_tiered_crop(bytes)` → bytes = FAST ACCEPT; None = ESCALATE.
-Confirmed (re-checked 2026-09-24): inset `public/placeholder-fixtures/` → all 6
-None; full-bleed `public/placeholder-fixtures-fullbleed/` → all 6 accepted. The
-OCR/side stage needs Vision (network) — NOT locally checkable.
+`fast_tiered_crop(bytes)` → bytes = FAST ACCEPT; None = not an identity frame.
+**Since NEO-320 that is no longer the whole FAST decision:** a frame identity
+declines goes to `app/cropper/quad.py` `quad_crop(bytes)`, which crops a single
+card off a background on the fast service (`.reason == "ok"`) or names its
+decline. ESCALATE = tiered None AND quad not "ok". quad.py imports `tiered` and
+cv2/numpy only. Any venv with opencv/numpy/Pillow (+ rembg/onnxruntime to also
+run HEAVY `tiered_crop`; weights download to `U2NET_HOME`, ~1GB) works.
+Re-checked 2026-10-04: inset `placeholder-fixtures/` → tiered None, quad "ok"
+(FAST crop, so it no longer escalates); `placeholder-fixtures-corner/` (card 14px
+from the top/left frame edges) → tiered None, quad "frame_edge" → escalates, and
+HEAVY crops it cleanly; full-bleed → tiered accept. The OCR/side stage needs
+Vision (network) — NOT locally checkable.
+- Lesson: ANY new FAST stage can silently stop the escalation flow escalating
+  (its Step 3 notice wait times out with "All 6 photos read." on screen). Re-run
+  both checks over every fixture set whenever the fast cascade changes.
 - Fast accept requires card aspect (1000×1400 ✓) AND `should_identity` → "frame"
   (top component fills ≥92% of the frame). Generator `--full-bleed` mode.
 
@@ -82,8 +93,13 @@ OCR/side stage needs Vision (network) — NOT locally checkable.
   ready to print." + "Not paired (2)". **Two pairs, not three, by design:** on the
   FAST crop the synthetic full-bleed VORKLE front side-classifies as "back".
   `flip-edge-mirrors-the-backs.yaml` also uses the full-bleed set.
-- `pipeline-escalation-cold-start.yaml` (HEAVY, default inset set, SIX photos
-  since NEO-299): notice → Escalating badge → "All 6 photos read." → finish →
+- `pipeline-fast-crops-inset-scans.yaml` (FAST quad crop, default inset set,
+  NEO-320): "All 6 photos read." under a ceiling HEAVY cannot meet (the
+  discriminator) → finish → "3 pairs ready to print.". No notice-absence check:
+  `deriveHeavyWarming` is false once nothing escalated is still processing, so an
+  absence check after 6/6 cannot fail (pipeline-pairs' Step 3b has that flaw).
+- `pipeline-escalation-cold-start.yaml` (HEAVY, `placeholder-fixtures-corner`
+  set since NEO-320, SIX photos since NEO-299): notice → Escalating badge → "All 6 photos read." → finish →
   "3 pairs ready to print.". Six escalations against the preview heavy cap force
   two inference rounds through a cold load — the smallest batch that exceeds the
   cap, which is what the NEO-299 proof needed; the old one-pair version never
@@ -92,8 +108,8 @@ OCR/side stage needs Vision (network) — NOT locally checkable.
   margin); a different cap or fixture count voids it — recompute and re-approve,
   never just raise it.
 - The one-pair `placeholder-fixtures-escalation-pair` set was retired in NEO-299.
-  The seed page allowlist is now `placeholder-fixtures` (default) and
-  `placeholder-fixtures-fullbleed`.
+  The seed page allowlist is now `placeholder-fixtures` (default),
+  `placeholder-fixtures-corner` and `placeholder-fixtures-fullbleed`.
 
 ## Seed page takes `?fixtures=` (allowlisted)
 `app/testing/seed-placeholder-upload/page.tsx`: `?fixtures=` selects the set dir;

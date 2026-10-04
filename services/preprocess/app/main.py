@@ -1211,8 +1211,9 @@ def _process_entry(
         crop_kwargs["baseline"] = request.baseline.to_result()
         if _preprocess_role() == ROLE_HEAVY:
             # A supplied baseline means FAST already ran the fast-path
-            # identity stages on this exact object and declined; they are
-            # deterministic, so HEAVY goes straight to the strategy loop.
+            # stages (identity checks and quad crop) on this exact object and
+            # declined; they are deterministic, so HEAVY goes straight to the
+            # strategy loop.
             crop_kwargs["skip_fast_path"] = True
     try:
         result = cropper.crop(

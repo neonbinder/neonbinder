@@ -30,6 +30,7 @@ EXPECTED_KEYS = {
     "vision_ms",
     "vision_reconnects",
     "classical_ms",
+    "quad_ms",
     "birefnet_ms",
     "sam_ms",
     "haiku_bbox_ms",

@@ -49,10 +49,13 @@ import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
  * bare `["a.jpg", "b.jpg"]` array, or `{ "files": [...] }`.
  *
  * `<set>` is `?fixtures=` (default `placeholder-fixtures`) — the NEO-175
- * fast/heavy split needs two fixture sets through this one entry point: the
- * default INSET cards, which escalate to the heavy service (the cold-start
- * flow), and `placeholder-fixtures-fullbleed`, frame-filling cards the fast
- * path accepts (the fast-path flow). Allowlisted so a URL param can never point
+ * fast/heavy split needs one fixture set per route a scan can take, all through
+ * this one entry point: the default INSET cards, which the fast service's quad
+ * stage crops (NEO-320, the fast-crop flow); `placeholder-fixtures-corner`,
+ * cards laid in the scanner bed's corner, which the fast service declines so
+ * they escalate to the heavy service (the cold-start flow); and
+ * `placeholder-fixtures-fullbleed`, frame-filling cards the fast path accepts
+ * as they are (the fast-path flow). Allowlisted so a URL param can never point
  * the fetch at an arbitrary path.
  *
  * ## Gating
@@ -64,12 +67,13 @@ import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
  */
 
 // The fixture sets this page will serve. An allowlist, not a free path: the set
-// name is interpolated into a fetch URL, so only these two known-good public
+// name is interpolated into a fetch URL, so only these known-good public
 // directories may be selected — never an arbitrary caller-supplied path.
 const DEFAULT_FIXTURE_SET = "placeholder-fixtures";
 const ALLOWED_FIXTURE_SETS = new Set([
-  DEFAULT_FIXTURE_SET, // 3 inset pairs → all 6 escalate (heavy) — the escalation cold-start flow (NEO-175, six images since NEO-299)
-  "placeholder-fixtures-fullbleed", // frame-filling cards → fast path (no escalation) — the fast-path and flip-edge flows
+  DEFAULT_FIXTURE_SET, // 3 inset pairs → the fast quad stage crops all 6 (no escalation) — the fast-crop flow (NEO-320)
+  "placeholder-fixtures-corner", // 3 cornered pairs → all 6 escalate (heavy) — the escalation cold-start flow (NEO-175; six images since NEO-299)
+  "placeholder-fixtures-fullbleed", // frame-filling cards → fast identity (no escalation) — the fast-path and flip-edge flows
 ]);
 
 async function loadFixtureFiles(fixtureSet: string): Promise<File[]> {
