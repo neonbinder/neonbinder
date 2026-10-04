@@ -664,3 +664,99 @@ describe("useDrillUrlState — Back and Forward", () => {
     expect(h.search()).toBe("?sport=sp");
   });
 });
+
+describe("useDrillUrlState — a correction drops the trust it invalidates", () => {
+  /**
+   * Trust outlives the URL that earned it. A delete (clearFrom), a move
+   * (moveSet) and a reshape (drillTo replace) each say a row is no longer
+   * where the old chain put it, so that chain must go back to the resolver
+   * if Back or a retyped URL brings it up again. Each case: the correction
+   * itself asks nothing (the new path is trusted), and the OLD chain is
+   * asked about afterwards.
+   */
+  async function drilled(): Promise<Harness> {
+    const h = mount("/");
+    await act(async () => h.state().select("sport", "sp"));
+    await act(async () => h.state().select("year", "yr"));
+    await act(async () => h.state().select("manufacturer", "br"));
+    await act(async () => h.state().select("setName", "s1"));
+    await act(async () => h.state().select("variantType", "vt"));
+    expect(resolverCalls).toHaveLength(0);
+    return h;
+  }
+
+  it("clearFrom (a delete): Back to the deleted row's entry asks the server again", async () => {
+    const h = await drilled();
+    await act(async () => h.state().clearFrom("setName"));
+    expect(resolverCalls).toHaveLength(0);
+    expect(h.state().resolving).toBe(false);
+
+    // History: … ?…brand=br&set=s1 | ?…brand=br (replaced the type entry).
+    mockResolver = (ids) => allValid(ids.slice(0, 3)); // s1 is gone
+    await act(async () => h.navigate(-1));
+
+    expect(resolverCalls.at(-1)).toEqual({ ids: ["sp", "yr", "br", "s1"] });
+    expect(h.state().selection.setId).toBeNull();
+    expect(h.search()).toBe("?sport=sp&year=yr&brand=br");
+  });
+
+  it("clearFrom keeps the trust ABOVE the cleared level: the kept chain is never asked", async () => {
+    const h = await drilled();
+    await act(async () => h.state().clearFrom("setName"));
+    await act(async () => h.state().select("setName", "s9"));
+    expect(resolverCalls).toHaveLength(0);
+  });
+
+  it("moveSet: the set under its OLD brand is asked about again; under the new one it is not", async () => {
+    const h = await drilled();
+    await act(async () => h.state().moveSet("br2"));
+    expect(resolverCalls).toHaveLength(0);
+    expect(h.state().resolving).toBe(false);
+    expect(h.state().selection).toMatchObject({ manufacturer: "br2", setId: "s1", variantTypeId: "vt" });
+
+    await act(async () => h.navigate("/?sport=sp&year=yr&brand=br&set=s1"));
+    expect(resolverCalls.at(-1)).toEqual({ ids: ["sp", "yr", "br", "s1"] });
+  });
+
+  it("drillTo replace (a reshape): the chain it re-pointed is asked about again", async () => {
+    const h = await drilled();
+    await act(async () =>
+      h.state().drillTo(
+        [
+          { _id: "s2", level: "setName" },
+          { _id: "vt2", level: "variantType" },
+        ],
+        "replace",
+      ),
+    );
+    expect(resolverCalls).toHaveLength(0);
+
+    await act(async () => h.navigate("/?sport=sp&year=yr&brand=br&set=s1&type=vt"));
+    expect(resolverCalls.at(-1)).toEqual({ ids: ["sp", "yr", "br", "s1", "vt"] });
+  });
+
+  it("drillTo push (an operator's navigation) keeps the old chain trusted for Back", async () => {
+    const h = await drilled();
+    await act(async () =>
+      h.state().drillTo(
+        [
+          { _id: "s2", level: "setName" },
+          { _id: "vt2", level: "variantType" },
+        ],
+        "push",
+      ),
+    );
+    await act(async () => h.navigate(-1));
+
+    expect(resolverCalls).toHaveLength(0);
+    expect(h.state().selection).toMatchObject({ setId: "s1", variantTypeId: "vt" });
+  });
+
+  it("an ordinary pick prunes nothing: Back across picks never asks", async () => {
+    const h = await drilled();
+    await act(async () => h.state().select("year", "yr2"));
+    await act(async () => h.navigate(-1));
+    expect(resolverCalls).toHaveLength(0);
+    expect(h.state().selection).toMatchObject({ yearId: "yr", variantTypeId: "vt" });
+  });
+});

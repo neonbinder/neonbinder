@@ -143,11 +143,24 @@ import SetSelector from "./SetSelector";
 const pick = (label: string) =>
   fireEvent.click(screen.getByText(`pick-${label}`));
 
-/** The polite region itself, found the way an assistive technology finds it. */
+/**
+ * The polite region itself, found the way an assistive technology finds it.
+ *
+ * "Exactly one" is a claim about the PAGE: one region that names columns.
+ * Since NEO-224 each real column also carries its own sr-only region beside
+ * its search box, counting its filter's matches — a different region with a
+ * different job, inside the column row. The columns are stubbed here, so
+ * none render, but the scope is stated rather than left to the stubs: a
+ * region outside the column row is the page's, and there is one.
+ */
 function liveRegion(): HTMLElement {
   const regions = screen
     .getAllByRole("status")
-    .filter((el) => el.className.includes("sr-only"));
+    .filter(
+      (el) =>
+        el.className.includes("sr-only") &&
+        !el.closest("[data-set-selector-scroll]"),
+    );
   expect(regions).toHaveLength(1);
   return regions[0];
 }

@@ -276,6 +276,15 @@ describe("EntitySelector — combobox highlight (NEO-224)", () => {
     expect(document.activeElement).toBe(chip());
   });
 
+  it("the Collapse button's hit area is padded to 2.5.8's minimum without moving it (p-2 -m-2)", () => {
+    render(<Harness initialSelected="y2000" initialExpanded={true} />);
+    const collapse = screen.getByRole("button", { name: "Collapse years" });
+
+    expect(collapse.classList.contains("p-2")).toBe(true);
+    expect(collapse.classList.contains("-m-2")).toBe(true);
+    expect(collapse.getAttribute("aria-label")).toBe("Collapse years");
+  });
+
   it("collapsing from the keyboard (Enter on the Collapse button) focuses the chip too", () => {
     render(<Harness initialSelected="y2000" initialExpanded={true} />);
 
@@ -310,6 +319,45 @@ describe("EntitySelector — combobox highlight (NEO-224)", () => {
     fireEvent.keyDown(combo(), { key: "Enter" });
 
     expect(document.activeElement).toBe(combo());
+  });
+
+  it("re-picking the selected row by Enter after a chip re-expand lands focus on the chip", () => {
+    // The row the operator re-picked opens no new column, so the cascade has
+    // nowhere to send focus; without this it fell to <body> as the list
+    // unmounted.
+    const spy = { onSelect: vi.fn() };
+    render(<Harness initialSelected="y2000" initialExpanded={false} spy={spy} />);
+    fireEvent.click(chip());
+    expect(document.activeElement).toBe(combo());
+    expect(highlightedText()).toBe("2000");
+
+    fireEvent.keyDown(combo(), { key: "Enter" });
+
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(document.activeElement).toBe(chip());
+    // Still reported: re-picking Base re-arms its mapping prompt upstream.
+    expect(spy.onSelect).toHaveBeenCalledWith("y2000");
+  });
+
+  it("re-picking the selected row by click lands focus on the chip too", () => {
+    render(<Harness initialSelected="y2000" initialExpanded={true} />);
+
+    fireEvent.click(screen.getByRole("option", { name: "2000" }));
+
+    expect(document.activeElement).toBe(chip());
+  });
+
+  it("picking a DIFFERENT row moves no focus to the chip (the cascade owns that)", () => {
+    render(<Harness initialSelected="y2000" initialExpanded={true} />);
+    combo().focus();
+
+    fireEvent.keyDown(combo(), { key: "ArrowDown" });
+    expect(highlightedText()).toBe("1999");
+    fireEvent.keyDown(combo(), { key: "Enter" });
+
+    expect(document.activeElement).not.toBe(
+      screen.getByRole("button", { name: "Years: 1999 — change" }),
+    );
   });
 
   it("selecting a row by click moves no focus", () => {

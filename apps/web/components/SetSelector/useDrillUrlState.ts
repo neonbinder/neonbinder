@@ -202,6 +202,29 @@ export type DrillSelection = {
 const asId = (value: string | undefined) =>
   (value ?? null) as GenericId<"selectorOptions"> | null;
 
+/**
+ * `prev` without any link at position `fromIndex` or deeper; `prev` itself
+ * when there is none.
+ *
+ * Trust outlives the URL that earned it, so a change that says a row is no
+ * longer where it was (a delete, a move, a reshape) drops every link from
+ * that depth down. Otherwise Back, or a retyped URL, could put the old chain
+ * back in front of the column queries as if it had just been vouched for;
+ * pruned, it goes to the resolver like any other link.
+ */
+function withoutTrustFrom(
+  prev: ReadonlySet<string>,
+  fromIndex: number,
+): ReadonlySet<string> {
+  let next: Set<string> | null = null;
+  for (const key of prev) {
+    if (Number(key.slice(0, key.indexOf(":"))) < fromIndex) continue;
+    next ??= new Set(prev);
+    next.delete(key);
+  }
+  return next ?? prev;
+}
+
 /** The selection a (trusted) path stands for. */
 export function selectionFromPath(path: readonly string[]): DrillSelection {
   const brand = path[BRAND_INDEX];
@@ -349,9 +372,17 @@ export function useDrillUrlState(): DrillUrlState {
     };
   });
 
-  /** The one write every handler goes through. */
+  /**
+   * The one write every handler goes through. `pruneFrom` is the 0-based
+   * depth a correction changed; trust at it and below is dropped before the
+   * new path is trusted (see `withoutTrustFrom`).
+   */
   const write = useCallback(
-    (nextRaw: ReadonlyArray<string | null>, mode: "push" | "replace") => {
+    (
+      nextRaw: ReadonlyArray<string | null>,
+      mode: "push" | "replace",
+      pruneFrom?: number,
+    ) => {
       const { path: next } = canonicalPrefix(nextRaw);
       const { searchParams: params, setSearchParams: setParams } =
         latest.current;
@@ -362,7 +393,12 @@ export function useDrillUrlState(): DrillUrlState {
       // URL, one extra pass of every query under the previous selection.
       // Inside the same transition they land in the navigation's commit.
       startTransition(() => {
-        setTrusted((prev) => withTrust(prev, next));
+        setTrusted((prev) =>
+          withTrust(
+            pruneFrom === undefined ? prev : withoutTrustFrom(prev, pruneFrom),
+            next,
+          ),
+        );
         setTruncatedOnLoad(false);
         if (serialized.toString() === params.toString()) return;
         setParams(serialized, { replace: mode === "replace" });
@@ -406,14 +442,25 @@ export function useDrillUrlState(): DrillUrlState {
         if (next.length !== depth - 1) break;
         next.push(tokenOf(step._id));
       }
-      write(next, mode);
+      // A replace is a correction (a reshape): the rows it re-points from
+      // the first step's depth down are no longer where they were. A push is
+      // an operator's navigation and leaves the old chain trusted for Back.
+      const shallowest = Math.min(
+        ...steps.map((step) => levelDepth(step.level) - 1),
+      );
+      write(
+        next,
+        mode,
+        mode === "replace" && steps.length > 0 ? shallowest : undefined,
+      );
     },
     [write],
   );
 
   const clearFrom = useCallback(
     (level: SelectorLevel) => {
-      write(latest.current.path.slice(0, levelDepth(level) - 1), "replace");
+      const from = levelDepth(level) - 1;
+      write(latest.current.path.slice(0, from), "replace", from);
     },
     [write],
   );
@@ -424,7 +471,7 @@ export function useDrillUrlState(): DrillUrlState {
       if (current.length <= BRAND_INDEX) return;
       const next = [...current];
       next[BRAND_INDEX] = brandId;
-      write(next, "replace");
+      write(next, "replace", BRAND_INDEX);
     },
     [write],
   );

@@ -40,11 +40,14 @@ vi.mock("../../convex/_generated/api", () => ({
 /** What the page's queries answer; tests reassign `cards`. */
 const world: {
   cards: unknown[] | undefined;
+  /** What `getAncestorChain` answers: where a parallel's source name comes from. */
+  chain: Array<{ _id: string; value: string }> | undefined;
   resolver: (ids: string[]) => Array<{ _id: string }>;
   /** The id each `pick-<level>` button hands the real handler. */
   picks: Record<string, string>;
 } = {
   cards: [],
+  chain: [],
   resolver: (ids) => ids.map((_id) => ({ _id })),
   picks: {},
 };
@@ -69,7 +72,7 @@ vi.mock("convex/react", () => ({
     if (ref === "getSelectorOptionById") {
       return ROWS[(args as { id: string }).id];
     }
-    if (ref === "getAncestorChain") return [];
+    if (ref === "getAncestorChain") return world.chain;
     if (ref === "getCardChecklist") return world.cards;
     return undefined;
   },
@@ -105,7 +108,16 @@ function Stub({ level, ...props }: { level: string } & Record<string, unknown>) 
   return (
     <div>
       {open ? (
-        <input role="combobox" aria-label={`${level} search`} />
+        <input
+          role="combobox"
+          aria-label={`${level} search`}
+          // Enter commits, as the real combobox does with a highlighted row.
+          onKeyDown={(event) => {
+            if (event.key !== "Enter") return;
+            onSelect?.(world.picks[level] ?? `${level}-1`);
+            setExpanded?.(false);
+          }}
+        />
       ) : (
         <button aria-expanded="false" onClick={() => setExpanded?.(true)}>
           {`${level} chip`}
@@ -157,15 +169,30 @@ vi.mock("../SetSelector/ParallelGroupingModal", () => ({ default: () => null }))
 vi.mock("../SetSelector/MultiSourcePanel", () => ({ default: () => null }));
 vi.mock("../SetSelector/SportForm", () => ({ SportForm: () => null }));
 
-// The two D3 landing spots, with the accessible names their owners give them.
+// The D3 landing spots, with the accessible names their owners give them.
 // With cards the real checklist's header carries a SECOND "Sync card
 // checklist" button, so the stub does too: landing on the attributes panel
-// must beat it.
+// must beat it. A parallel's empty checklist holds ParallelBuildButton, whose
+// visible text is its name, or its "Loading…" stand-in until the source's
+// name is known.
 vi.mock("../SetSelector/CardChecklist", () => ({
-  default: ({ parallelBuild }: { parallelBuild?: { role?: string } }) => (
+  default: ({
+    parallelBuild,
+  }: {
+    parallelBuild?: { role?: string; sourceValue?: string };
+  }) => (
     <div>
       {world.cards?.length === 0 && parallelBuild?.role !== "parallel" ? (
         <button aria-label="Sync card checklist">Fetch from Marketplaces</button>
+      ) : null}
+      {world.cards?.length === 0 && parallelBuild?.role === "parallel" ? (
+        parallelBuild.sourceValue ? (
+          <button>
+            <span>{`Build from ${parallelBuild.sourceValue}`}</span>
+          </button>
+        ) : (
+          <button aria-disabled="true">Loading…</button>
+        )
       ) : null}
       {world.cards && world.cards.length > 0 ? (
         <button aria-label="Sync card checklist">Fetch again</button>
@@ -212,11 +239,20 @@ const pick = async (level: string) => {
 const focused = () => document.activeElement as HTMLElement;
 const goBack = () => act(async () => navigateRef!(-1));
 
-/** The page's one polite region, found the way a screen reader finds it. */
+/**
+ * The page's one polite region, found the way a screen reader finds it.
+ * Scoped to OUTSIDE the column row: each real column carries its own sr-only
+ * filter-count region beside its search box (NEO-224), which is a different
+ * region with a different job.
+ */
 function liveRegion(): HTMLElement {
   const regions = screen
     .getAllByRole("status")
-    .filter((el) => el.className.includes("sr-only"));
+    .filter(
+      (el) =>
+        el.className.includes("sr-only") &&
+        !el.closest("[data-set-selector-scroll]"),
+    );
   expect(regions).toHaveLength(1);
   return regions[0];
 }
@@ -233,6 +269,7 @@ async function drillToBase(typeId = "vt-base") {
 
 beforeEach(() => {
   world.cards = [];
+  world.chain = [];
   world.resolver = (ids) => ids.map((_id) => ({ _id }));
   world.picks = {};
   navigateRef = null;
@@ -400,10 +437,9 @@ describe("SetSelector focus — a terminal selection (D3)", () => {
     expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
   });
 
-  it("a leaf parallel with no cards focuses the attributes panel (its checklist has no fetch)", async () => {
-    world.cards = [];
+  /** Pick down to a leaf parallel under the insert `insert-1`. */
+  async function drillToLeafParallel() {
     world.picks.type = "vt-insert";
-    mount();
     await pick("sport");
     await pick("year");
     await pick("manufacturer");
@@ -411,6 +447,44 @@ describe("SetSelector focus — a terminal selection (D3)", () => {
     await pick("type");
     await pick("insert");
     await pick("parallel");
+  }
+
+  it("a leaf parallel with no cards focuses its Build from <insert> button (Jason, 2026-10-04)", async () => {
+    world.cards = [];
+    world.chain = [{ _id: "insert-1", value: "Anime" }];
+    mount();
+    await drillToLeafParallel();
+
+    expect(focused()).toBe(screen.getByRole("button", { name: "Build from Anime" }));
+  });
+
+  it("waits for the insert's name: the Loading… stand-in is never the target", async () => {
+    world.cards = [];
+    world.chain = undefined; // the ancestor chain has not answered
+    const view = mount();
+    await drillToLeafParallel();
+    expect(focused()).not.toBe(screen.getByRole("button", { name: "Loading…" }));
+    expect(focused().getAttribute("aria-label")).not.toBe("Edit attributes");
+
+    world.chain = [{ _id: "insert-1", value: "Anime" }];
+    await act(async () => view.rerender(<SetSelector />));
+    expect(focused()).toBe(screen.getByRole("button", { name: "Build from Anime" }));
+  });
+
+  it("a leaf parallel with no source name to build from falls back to the attributes panel", async () => {
+    world.cards = [];
+    world.chain = []; // answered, and the insert is not in it
+    mount();
+    await drillToLeafParallel();
+
+    expect(focused()).toBe(screen.getByRole("button", { name: "Edit attributes" }));
+  });
+
+  it("a leaf parallel WITH cards focuses the attributes panel, not Build", async () => {
+    world.cards = [{ _id: "c1" }];
+    world.chain = [{ _id: "insert-1", value: "Anime" }];
+    mount();
+    await drillToLeafParallel();
 
     expect(focused()).toBe(screen.getByRole("button", { name: "Edit attributes" }));
   });
@@ -510,15 +584,20 @@ describe("SetSelector focus — a terminal selection (D3)", () => {
 });
 
 describe("SetSelector — the restore notice (NEO-224)", () => {
+  /** Jason's signed-off copy (2026-10-04). */
+  const NOTICE =
+    "That link's trail went cold partway, so we opened it as far as it goes.";
+
   /**
-   * The copy is a placeholder awaiting sign-off, so the tests read it off the
-   * page instead of spelling it: the status region says `<notice> <column>
-   * column opened`, and the visible line must be that same notice.
+   * The status region says `<notice> <column> column opened`, and the
+   * visible line must be that same notice.
    */
   function noticeFromRegion(suffix: string): string {
     const spoken = liveRegion().textContent ?? "";
     expect(spoken.endsWith(suffix)).toBe(true);
-    return spoken.slice(0, spoken.length - suffix.length).trim();
+    const notice = spoken.slice(0, spoken.length - suffix.length).trim();
+    expect(notice).toBe(NOTICE);
+    return notice;
   }
 
   it("shows the visible notice and speaks it through the single status region when a link is cut short", async () => {
@@ -554,10 +633,179 @@ describe("SetSelector — the restore notice (NEO-224)", () => {
     expect(liveRegion().textContent).toBe("Years column opened");
   });
 
-  it("says nothing at all while a link is still being checked", () => {
+  it("says it is rewinding while a link is still being checked, and the card carries the same name", () => {
     world.resolver = (() => undefined) as never;
     mount("/?sport=sp");
-    expect(liveRegion().textContent).toBe("");
+    expect(liveRegion().textContent).toBe("Rewinding the tape to your set…");
+
+    // The placeholder card: a named, busy group. The page region above is the
+    // ONE thing that speaks; the bar inside the card is decorative.
+    const card = screen.getByRole("group", { name: "Rewinding the tape to your set…" });
+    expect(card.getAttribute("aria-busy")).toBe("true");
+    expect(card.querySelector('[role="status"]')).toBeNull();
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+  });
+
+  it("the deepest combobox, where focus lands, is described by the visible notice", async () => {
+    world.resolver = (ids) => ids.slice(0, 2).map((_id) => ({ _id }));
+    mount("/?sport=sp&year=yr&brand=gone");
+    await act(async () => {});
+
+    const box = combobox("manufacturer");
+    expect(focused()).toBe(box);
+    const describedBy = box.getAttribute("aria-describedby");
+    expect(describedBy).toBeTruthy();
+    const description = document.getElementById(describedBy!);
+    expect(description?.textContent).toBe(NOTICE);
+    // Only the deepest box carries it.
+    for (const other of screen.getAllByRole("combobox")) {
+      if (other !== box) expect(other.getAttribute("aria-describedby")).toBeNull();
+    }
+  });
+
+  it("drops the description with the notice on the next pick", async () => {
+    world.resolver = (ids) => ids.slice(0, 2).map((_id) => ({ _id }));
+    mount("/?sport=sp&year=yr&brand=gone");
+    await act(async () => {});
+    const box = combobox("manufacturer");
+    expect(box.getAttribute("aria-describedby")).toBeTruthy();
+
+    await pick("manufacturer");
+
+    expect(screen.queryByText(NOTICE)).toBeNull();
+    expect(combobox("set").getAttribute("aria-describedby")).toBeNull();
+    for (const el of screen.queryAllByRole("combobox")) {
+      expect(el.getAttribute("aria-describedby")).toBeNull();
+    }
+  });
+
+  it("a link that restored whole describes nothing", async () => {
+    mount("/?sport=sp&year=yr");
+    await act(async () => {});
+    expect(combobox("manufacturer").getAttribute("aria-describedby")).toBeNull();
+  });
+});
+
+describe("SetSelector focus — D3 scrolls the target into view only after a keyboard pick", () => {
+  const scrolled: HTMLElement[] = [];
+  /** Where the fetch button "is", relative to a 768px-tall viewport. */
+  let fetchRect: { top: number; bottom: number } = { top: 900, bottom: 940 };
+  const originalScroll = HTMLElement.prototype.scrollIntoView;
+  const originalRect = HTMLElement.prototype.getBoundingClientRect;
+
+  beforeEach(() => {
+    scrolled.length = 0;
+    fetchRect = { top: 900, bottom: 940 };
+    HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
+      scrolled.push(this);
+    };
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      if (this.getAttribute("aria-label") === "Sync card checklist") {
+        return {
+          ...fetchRect,
+          left: 10,
+          right: 200,
+          width: 190,
+          height: fetchRect.bottom - fetchRect.top,
+          x: 10,
+          y: fetchRect.top,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      return originalRect.call(this);
+    };
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 768 });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1024 });
+  });
+
+  afterEach(() => {
+    HTMLElement.prototype.scrollIntoView = originalScroll;
+    HTMLElement.prototype.getBoundingClientRect = originalRect;
+  });
+
+  /** Drill to the set by pointer, then commit Base with Enter in its combobox. */
+  async function enterOnBase() {
+    world.picks.type = "vt-base";
+    await pick("sport");
+    await pick("year");
+    await pick("manufacturer");
+    await pick("set");
+    const box = combobox("type");
+    expect(focused()).toBe(box);
+    await act(async () => {
+      fireEvent.keyDown(box, { key: "Enter" });
+    });
+  }
+
+  it("Enter on Base with the fetch button below the fold focuses AND scrolls it, nearest", async () => {
+    world.cards = [];
+    mount();
+    await enterOnBase();
+
+    const fetch = screen.getByRole("button", { name: "Sync card checklist" });
+    expect(focused()).toBe(fetch);
+    expect(scrolled).toEqual([fetch]);
+  });
+
+  it("calls scrollIntoView with block: nearest", async () => {
+    world.cards = [];
+    const calls: unknown[] = [];
+    HTMLElement.prototype.scrollIntoView = function (arg?: unknown) {
+      calls.push(arg);
+    };
+    mount();
+    await enterOnBase();
+    expect(calls).toEqual([{ block: "nearest" }]);
+  });
+
+  it("Enter on Base with the target already on screen focuses without scrolling", async () => {
+    world.cards = [];
+    fetchRect = { top: 500, bottom: 540 };
+    mount();
+    await enterOnBase();
+
+    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(scrolled).toEqual([]);
+  });
+
+  it("a target only PARTLY off screen is not scrolled (it is not wholly outside)", async () => {
+    world.cards = [];
+    fetchRect = { top: 750, bottom: 790 };
+    mount();
+    await enterOnBase();
+
+    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(scrolled).toEqual([]);
+  });
+
+  it("a pointer pick of Base focuses with preventScroll and never scrolls, however far off screen", async () => {
+    world.cards = [];
+    mount();
+    await drillToBase();
+
+    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(scrolled).toEqual([]);
+  });
+
+  it("a pointer press after a keyboard Enter clears it: the next pick is a pointer pick", async () => {
+    world.cards = [];
+    mount();
+    world.picks.type = "vt-base";
+    await pick("sport");
+    // Enter in a column (keyboard), then the operator reaches for the mouse.
+    await act(async () => {
+      fireEvent.keyDown(combobox("year"), { key: "Enter" });
+    });
+    await pick("manufacturer");
+    await pick("set");
+    const typeButton = screen.getByText("pick-type");
+    await act(async () => {
+      fireEvent.pointerDown(typeButton);
+      fireEvent.click(typeButton);
+    });
+
+    expect(focused()).toBe(screen.getByRole("button", { name: "Sync card checklist" }));
+    expect(scrolled).toEqual([]);
   });
 });
 

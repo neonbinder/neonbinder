@@ -46,10 +46,12 @@ import {
   startTransition,
   useCallback,
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
 } from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
@@ -85,6 +87,7 @@ import ParallelForm from "../SetSelector/ParallelForm";
 import ResilientEntityColumn from "../SetSelector/ResilientEntityColumn";
 import CardChecklist from "../SetSelector/CardChecklist";
 import ParallelBuildPanel, {
+  buildButtonLabel,
   useHostedParallelBuildRun,
   type ParallelBuildRole,
 } from "../SetSelector/ParallelBuildPanel";
@@ -110,15 +113,15 @@ const NO_BASE_MAPPING_DISMISSALS: ReadonlySet<GenericId<"selectorOptions">> =
   new Set();
 
 /**
- * NEO-224 copy. PLACEHOLDER — brand-voice drafts awaiting Jason's sign-off.
+ * NEO-224 copy, signed off by Jason.
  *
  * `TRUNCATED_LINK_NOTICE` is the visible one-liner after a link named rows
- * that are not there; `RESOLVING_LINK_LABEL` names the placeholder while a
- * link is checked (heard, not seen).
+ * that are not there. `RESOLVING_LINK_LABEL` is heard, not seen: the page's
+ * status line and the placeholder card's name while a link is checked.
  */
 const TRUNCATED_LINK_NOTICE =
   "That link's trail went cold partway, so we opened it as far as it goes.";
-const RESOLVING_LINK_LABEL = "Opening your spot in the set builder";
+const RESOLVING_LINK_LABEL = "Rewinding the tape to your set…";
 
 /**
  * True when the cascade may move focus: nothing else holds it (`<body>`), or
@@ -152,26 +155,62 @@ function isCollapsedCard(row: HTMLElement, el: Element | null): boolean {
   );
 }
 
-type TerminalFocusTarget = "fetch" | "attributes";
+/**
+ * True when no part of `el` is inside the viewport. A zero-size box (never
+ * laid out) is not "outside": there is nothing to scroll to.
+ */
+function isWhollyOutsideViewport(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return false;
+  return (
+    rect.bottom <= 0 ||
+    rect.right <= 0 ||
+    rect.top >= window.innerHeight ||
+    rect.left >= window.innerWidth
+  );
+}
+
+type TerminalFocusTarget =
+  | { kind: "fetch" }
+  | { kind: "attributes" }
+  /** A leaf parallel's empty checklist: "Build from <insert>". */
+  | { kind: "build"; label: string };
 
 /**
  * The D3 landing spots, found by the accessible names their owners give
  * them. Keep in step with CardChecklist's empty-state fetch button
- * (`aria-label="Sync card checklist"`, visible "Fetch from Marketplaces")
+ * (`aria-label="Sync card checklist"`, visible "Fetch from Marketplaces"),
+ * ParallelBuildButton (no aria-label, so its visible text IS its name:
+ * `buildButtonLabel`, imported rather than spelled, so the two cannot drift)
  * and SetAttributesPanel's toggle ("Edit attributes" / "Hide attributes"
  * inside the "Set attributes panel" region). With no cards there is exactly
- * one "Sync card checklist" button on the page: the header's copy renders
- * only once the checklist has cards.
+ * one "Sync card checklist" button on the page, and exactly one "Build from
+ * …": the header's copies render only once the checklist has cards.
  */
 function findTerminalFocusTarget(
   page: HTMLElement,
+  row: HTMLElement,
   target: TerminalFocusTarget,
 ): HTMLElement | null {
-  if (target === "fetch") {
+  if (target.kind === "fetch") {
     const button = page.querySelector<HTMLButtonElement>(
       'button[aria-label="Sync card checklist"]',
     );
     return button && !button.disabled ? button : null;
+  }
+  if (target.kind === "build") {
+    // Matched on the accessible name, and never inside the column row: a row
+    // is an option, not this button, whatever it happens to be called.
+    const button = Array.from(
+      page.querySelectorAll<HTMLButtonElement>("button"),
+    ).find(
+      (el) =>
+        !row.contains(el) &&
+        !el.disabled &&
+        (el.getAttribute("aria-label") ?? el.textContent ?? "").trim() ===
+          target.label,
+    );
+    return button ?? null;
   }
   return page.querySelector<HTMLElement>(
     '[role="region"][aria-label="Set attributes panel"] button[aria-label="Edit attributes"], ' +
@@ -886,6 +925,36 @@ export default function SetSelector() {
    * `preventScroll` because EntityColumn owns the row's horizontal scroll and
    * reveals each new column itself.
    */
+  /**
+   * NEO-224 — the truncation notice, attached to where focus lands. The page
+   * status line says it too, but that announcement lands in the same moment
+   * focus moves into the deepest combobox, and a screen reader is free to let
+   * the focus announcement swallow it. As the box's description it is read
+   * with the box itself.
+   *
+   * Written on the DOM rather than passed down: the combobox is three
+   * components below this one, and only the cascade knows which column is the
+   * deepest (the same reason the focus effect below lives here). EntitySelector
+   * never passes `aria-describedby` to its box, so React never touches the
+   * attribute and cannot overwrite it. Declared BEFORE the focus effect so the
+   * description is in place when focus arrives. Removed with the notice.
+   */
+  const truncatedNoticeId = useId();
+  const truncatedOnLoad = drill.truncatedOnLoad;
+  useEffect(() => {
+    if (!truncatedOnLoad || openColumnKey === null) return;
+    const boxes =
+      columnRowRef.current?.querySelectorAll<HTMLElement>('[role="combobox"]');
+    const box = boxes?.[boxes.length - 1];
+    if (!box) return;
+    box.setAttribute("aria-describedby", truncatedNoticeId);
+    return () => {
+      if (box.getAttribute("aria-describedby") === truncatedNoticeId) {
+        box.removeAttribute("aria-describedby");
+      }
+    };
+  }, [truncatedOnLoad, openColumnKey, truncatedNoticeId]);
+
   useEffect(() => {
     if (openColumnKey === null) return;
     const row = columnRowRef.current;
@@ -903,8 +972,16 @@ export default function SetSelector() {
    *
    * The card count comes from the same subscription CardChecklist holds
    * (identical reference and args, deduped by the Convex client), so it costs
-   * no second read. A parallel's empty checklist carries "Build from …" in
-   * that slot instead of a fetch, so it lands on the attributes panel.
+   * no second read. A leaf parallel's empty checklist carries "Build from
+   * <insert>" in that slot instead of a fetch, and that button is what comes
+   * next there (Jason, 2026-10-04). While the insert's name is still loading
+   * the button is a "Loading…" stand-in, so the rule waits for the name; a
+   * parallel with no source to build from falls back to the attributes panel.
+   *
+   * When the selection was made from the keyboard (Enter in a column; see
+   * `keyboardCommitRef`) and the target sits wholly outside the viewport, it
+   * is scrolled into view as well: a keyboard operator has no other way to
+   * see where they landed. A pointer pick keeps `preventScroll`.
    *
    * Fires once per selection: a collapse that happens to leave nothing open
    * is not a selection, and cards arriving after a fetch are not a new
@@ -920,12 +997,43 @@ export default function SetSelector() {
     api.selectorOptions.getCardChecklist,
     terminalChecklistId ? { selectorOptionId: terminalChecklistId } : "skip",
   );
-  const terminalTarget: TerminalFocusTarget | null =
+  const buildSourceValue =
+    parallelBuild?.role === "parallel" ? parallelBuild.sourceValue : undefined;
+  // The source's name comes from the ancestor chain (an insert's parallel)
+  // or the Base-parallels plan; until the chain has answered, the slot holds
+  // the "Loading…" stand-in and there is no button to land on yet.
+  const buildSourcePending =
+    parallelBuild?.role === "parallel" &&
+    !buildSourceValue &&
+    !parallelBuild.unavailableReasonId &&
+    cardChecklistChain === undefined;
+  const terminalTargetKey: string | null =
     terminalChecklistId === null || terminalCards === undefined
       ? null
-      : terminalCards.length === 0 && parallelBuild?.role !== "parallel"
-        ? "fetch"
-        : "attributes";
+      : terminalCards.length > 0
+        ? "attributes"
+        : parallelBuild?.role !== "parallel"
+          ? "fetch"
+          : buildSourceValue
+            ? `build:${buildButtonLabel(buildSourceValue, false)}`
+            : buildSourcePending
+              ? null
+              : "attributes";
+  // Rebuilt from the string so the effect below keys on a value, not on an
+  // object that is new every render.
+  const terminalTarget = useMemo<TerminalFocusTarget | null>(() => {
+    if (terminalTargetKey === null) return null;
+    if (terminalTargetKey.startsWith("build:")) {
+      return { kind: "build", label: terminalTargetKey.slice("build:".length) };
+    }
+    return { kind: terminalTargetKey as "fetch" | "attributes" };
+  }, [terminalTargetKey]);
+  /**
+   * True when the operator's last commit in the column row was Enter, false
+   * once they press a pointer anywhere on the page. Read once per terminal
+   * selection by the D3 rule above.
+   */
+  const keyboardCommitRef = useRef(false);
   const pageRef = useRef<HTMLDivElement | null>(null);
   const terminalHandledForRef = useRef<string | null>(null);
   useEffect(() => {
@@ -944,14 +1052,19 @@ export default function SetSelector() {
     const row = columnRowRef.current;
     if (!page || !row) return;
     const handledFor = selectionKey;
+    const fromKeyboard = keyboardCommitRef.current;
     // True once there is nothing left to do: focused, or stood down.
     const attempt = (): boolean => {
       if (!cascadeOwnsFocus(row)) return true;
       if (isCollapsedCard(row, document.activeElement)) return true;
-      const target = findTerminalFocusTarget(page, terminalTarget);
+      const target = findTerminalFocusTarget(page, row, terminalTarget);
       if (!target) return false;
       target.focus({ preventScroll: true });
-      return document.activeElement === target;
+      if (document.activeElement !== target) return false;
+      if (fromKeyboard && isWhollyOutsideViewport(target)) {
+        target.scrollIntoView({ block: "nearest" });
+      }
+      return true;
     };
     if (attempt()) {
       terminalHandledForRef.current = handledFor;
@@ -971,6 +1084,19 @@ export default function SetSelector() {
     return () => observer.disconnect();
   }, [terminalChecklistId, terminalTarget, selectionKey]);
 
+  // Feeds `keyboardCommitRef`: Enter in a column's search box (or on one of
+  // its options) is a keyboard commit; any pointer press on the page is not.
+  const noteKeyboardCommit = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter") return;
+    const role = (event.target as HTMLElement).getAttribute?.("role");
+    if (role === "combobox" || role === "option") {
+      keyboardCommitRef.current = true;
+    }
+  };
+  const notePointer = () => {
+    keyboardCommitRef.current = false;
+  };
+
   // NO SCROLL HEADROOM HERE, deliberately — the shell owns it now (NEO-260).
   //
   // This container used to be the one place in the app that had a bottom-pad
@@ -987,14 +1113,19 @@ export default function SetSelector() {
   // being below it. (NEO-255's pb-[50vh] — 313px, exactly one driver swipe —
   // is the other way to get this wrong; read the note in binder-layout.tsx.)
   return (
-    <div ref={pageRef} className="max-w-full mx-auto p-6 flex flex-col gap-6">
+    <div
+      ref={pageRef}
+      onPointerDownCapture={notePointer}
+      className="max-w-full mx-auto p-6 flex flex-col gap-6"
+    >
       {/* `sr-only` is position:absolute, so this is NOT a flex item and costs
           the layout nothing — which matters here: every pixel above the
           cascade pushes fold-sensitive controls down on the 1024x629 headless
           viewport (NEO-47, NEO-155). The text is a full sentence Maestro's
           FULL-STRING text matching can never confuse with a bare column
-          heading. Silent while a deep link is still being checked: nothing
-          has opened yet.
+          heading. While a deep link is still being checked it says so
+          (`RESOLVING_LINK_LABEL`): nothing has opened yet, and the cascade is
+          a single placeholder card.
 
           NEO-224: when the link this page was opened with had to be cut back,
           the same region says so first. It is the page's ONE always-mounted
@@ -1002,16 +1133,21 @@ export default function SetSelector() {
           lands rather than depending on a region that mounts with it. */}
       <p className="sr-only" role="status">
         {drill.resolving
-          ? ""
+          ? RESOLVING_LINK_LABEL
           : `${drill.truncatedOnLoad ? `${TRUNCATED_LINK_NOTICE} ` : ""}${deepestColumn} column opened`}
       </p>
       {/* NEO-224 — the visible half of that notice: the link named rows that
           are not there (deleted, or not under the parent it said), so the
           drill was cut back to the part that is. One line, only when it
           happened, until the next pick. Not a live region itself — the
-          status line above already speaks it. */}
+          status line above already speaks it — but the deepest combobox is
+          described by it (`truncatedNoticeId`), so it is read with the box
+          focus lands on. */}
       {drill.truncatedOnLoad && (
-        <p className="text-sm text-amber-800 dark:text-amber-300">
+        <p
+          id={truncatedNoticeId}
+          className="text-sm text-amber-800 dark:text-amber-300"
+        >
           {TRUNCATED_LINK_NOTICE}
         </p>
       )}
@@ -1034,6 +1170,7 @@ export default function SetSelector() {
         // programmatic focus target for `handleRowDeleted`'s focus park.
         tabIndex={-1}
         data-set-selector-scroll
+        onKeyDownCapture={noteKeyboardCommit}
         className="flex flex-row gap-4 overflow-x-auto pb-4 pl-4 focus:outline-none"
       >
         {drill.resolving ? (
@@ -1043,13 +1180,18 @@ export default function SetSelector() {
           // restore goes placeholder → restored columns with no flash of
           // Sports in between. No heading: flows read a column heading as
           // "that column is open", and none is yet.
+          //
+          // A named, busy group. The page status line above is what SPEAKS
+          // the wait; a nested live region here would be a second one saying
+          // the same thing, so the bar is decorative.
           <div
-            className="min-w-[260px] max-w-[340px] flex-shrink-0 bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
+            role="group"
+            aria-label={RESOLVING_LINK_LABEL}
             aria-busy="true"
+            className="min-w-[260px] max-w-[340px] flex-shrink-0 bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
           >
             <div
-              role="status"
-              aria-label={RESOLVING_LINK_LABEL}
+              aria-hidden="true"
               className="h-[50px] rounded-md border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700"
             />
           </div>

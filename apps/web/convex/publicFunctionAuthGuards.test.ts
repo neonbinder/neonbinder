@@ -708,6 +708,32 @@ describe("NEO-240 — a refused write to a league persists nothing", () => {
   });
 });
 
+describe("NEO-224 — drillPath.resolveDrillPath is guarded, and stays a throw", () => {
+  test("refuses an anonymous caller rather than answering []", async () => {
+    // Same property `leagues.getByIdParam` is pinned for above. `[]` is this
+    // query's answer for "nothing in that link is real", and the set builder
+    // reads it as "open an empty cascade and say the link went cold". A
+    // signed-out caller must get the throw instead: if the guard ever moved
+    // below the `normalizeId` walk (or into a catch), a refusal and a dead
+    // link would be the same response, and the address bar would become a
+    // way to ask which selectorOptions ids exist.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await expect(
+      t.query(api.drillPath.resolveDrillPath, { ids: [sportId] }),
+    ).rejects.toThrow(/not authenticated/i);
+    await expect(
+      t.withIdentity(MEMBER).query(api.drillPath.resolveDrillPath, { ids: [sportId] }),
+    ).rejects.toThrow(/admin access required/i);
+
+    const path = await t
+      .withIdentity(ADMIN)
+      .query(api.drillPath.resolveDrillPath, { ids: [sportId] });
+    expect(path).toEqual([{ _id: sportId, level: "sport" }]);
+  });
+});
+
 describe("NEO-287 — marketplacePause.getPausedPlatforms requires a signed-in caller", () => {
   test("rejects an anonymous caller", async () => {
     const t = convexTest(schema, modules);
