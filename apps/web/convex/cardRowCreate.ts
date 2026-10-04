@@ -106,6 +106,14 @@ export type NewCardRow = {
    * it is clearly the same card. Written as-is instead of generating one.
    */
   keepSku?: string;
+  /**
+   * NEO-321 (Jason, 2026-10-04) — a parallel copy's `features.parallelName`:
+   * the NB name of the parallel row the copy lands on, never a marketplace
+   * value. Applied LAST, over the snapshot and over the card's observed
+   * `cardVariation` (which keeps its own listing token), so every copy's
+   * title names its parallel. The commit never passes it.
+   */
+  parallelName?: string;
 };
 
 export type BuiltCardRow = {
@@ -143,6 +151,8 @@ export function buildCardRowForInsert(
       attributes: card.attributes,
     }),
   };
+  const ownParallelName = card.parallelName?.trim();
+  if (ownParallelName) mergedFeatures.parallelName = ownParallelName;
   // A card arriving already-autographed gets the same "just became non-None
   // -> default Signed By from the roster" treatment `setCardFeature` applies
   // for a manual operator edit.

@@ -897,4 +897,112 @@ describe("NEO-312 — getParallelsForBuild and buildParallelChecklist require an
     );
     expect(cards).toHaveLength(0);
   });
+
+  // NEO-321 (security audit S3) — the base-parallel shape: the Parallel
+  // variant type as `sourceId`, and an insert-level base parallel as the
+  // build target.
+  async function seedBaseAndParallelType(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const setName = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Topps Chrome",
+        platformData: { bsc: { b0: "topps-chrome" } },
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const baseId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: setName,
+        platformData: { bsc: { b0: "base" } },
+        metadata: { isBase: true },
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const parallelTypeId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Parallel",
+        parentId: setName,
+        platformData: { bsc: { b0: "parallel" } },
+        platformFacets: { bsc: { b0: "variant" } },
+        metadata: { variantRole: "parallel" },
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const baseParallelId = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Gold Wave",
+        parentId: parallelTypeId,
+        platformData: { bsc: { b0: "gold-wave" } },
+        platformFacets: { bsc: { b0: "variantName" } },
+        metadata: { isParallel: true },
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const baseCardId = await ctx.db.insert("cardChecklist", {
+        selectorOptionId: baseId,
+        cardNumber: "1",
+        cardName: "Aaron Judge",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      });
+      // Stale review state the build would clear for an admin.
+      const candidateId = await ctx.db.insert("checklistCandidates", {
+        selectorOptionId: baseParallelId,
+        batchId: "batch-1",
+        createdByUserId: "user-1",
+        cardNumber: "1",
+        cardName: "Whoever",
+        platformData: {},
+        bucket: "matched",
+        stem: "1",
+        status: "ready",
+        lastUpdated: Date.now(),
+      });
+      return { baseId, parallelTypeId, baseParallelId, baseCardId, candidateId };
+    });
+  }
+
+  test("getParallelsForBuild({ sourceId: the Parallel variant type }) rejects an anonymous caller and a signed-in non-admin", async () => {
+    const t = convexTest(schema, modules);
+    const { parallelTypeId } = await seedBaseAndParallelType(t);
+
+    await expect(
+      t.query(api.parallelChecklistBuild.getParallelsForBuild, { sourceId: parallelTypeId }),
+    ).rejects.toThrow(/not authenticated/i);
+    await expect(
+      t
+        .withIdentity(MEMBER)
+        .query(api.parallelChecklistBuild.getParallelsForBuild, { sourceId: parallelTypeId }),
+    ).rejects.toThrow(/admin access required/i);
+  });
+
+  test("buildParallelChecklist on an insert-level base parallel rejects an anonymous caller and a signed-in non-admin, writing nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { baseId, baseParallelId, baseCardId, candidateId } =
+      await seedBaseAndParallelType(t);
+    const before = await t.run((ctx) => ctx.db.get(baseCardId));
+
+    await expect(
+      t.action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: baseParallelId }),
+    ).rejects.toThrow(/not authenticated/i);
+    await expect(
+      t
+        .withIdentity(MEMBER)
+        .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: baseParallelId }),
+    ).rejects.toThrow(/admin access required/i);
+
+    const cardsOn = (id: Id<"selectorOptions">) =>
+      t.run((ctx) =>
+        ctx.db
+          .query("cardChecklist")
+          .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", id))
+          .collect(),
+      );
+    expect(await cardsOn(baseParallelId)).toHaveLength(0);
+    expect(await cardsOn(baseId)).toEqual([before]);
+    // Not even the stale review clear ran.
+    expect(await t.run((ctx) => ctx.db.get(candidateId))).not.toBeNull();
+  });
 });

@@ -852,9 +852,20 @@ Two corollaries worth knowing before you write the selector:
   picked from the column BELOW an insert, the Sync slot is `Build from
   <insert>`, or `Rebuild from <insert>` once the parallel has cards (a
   confirm, `Replace the cards`, guards the rebuild). A row in the column
-  directly under a variant type — `Blue` under Bowman › `Parallel`, `Prizm
-  Gold` in `cards-parallel-custom` — is the insert role and keeps the ordinary
-  Sync. Saving an INSERT's checklist starts `ParallelBuildPanel` under the
+  directly under a variant type is the insert role and keeps the ordinary
+  Sync (`Prizm Gold` in `cards-parallel-custom`: a hand-made `Parallel` type
+  carries no NB role) — EXCEPT under a variant type whose NB role is
+  `parallel` (NEO-321): those rows are parallels of the BASE set, and their
+  Sync slot is `Build from Base` / `Rebuild from Base` (Gold Wave in
+  `setup.yaml`; `Blue` under Bowman › `Parallel`). Selecting such a type also
+  mounts the `Parallels of Base` section between the columns row and the
+  attributes panel — heading `Parallels of <Base>`, button `Build N parallels
+  from <Base>`, a confirm `Replace the cards on K of N parallels with fresh
+  copies of <Base>'s?` → `Replace and build` only when K > 0 already hold
+  cards, and the same ledger drawn inside it (heading `Building parallels of
+  <Base> — k of N` / `<Base> parallels — …`). Proved live by
+  `base-parallels-build-from-section`. A flow targeting the row's button
+  anchors it (`^Build from Base$`) so the section's button cannot answer. Saving an INSERT's checklist starts `ParallelBuildPanel` under the
   `Saved N cards.` notice: heading `Building parallels of <insert> — k of M`
   while it runs, then `<insert> parallels — b built[, …]` or `<insert> parallels —
   stopped after b of M`; one text node per line, `<parallel> — <status>`; `Stop after

@@ -29,6 +29,11 @@ vi.mock("../../convex/_generated/api", () => ({
       getSelectorOptionById: "getSelectorOptionById",
       getAncestorChain: "getAncestorChain",
     },
+    // NEO-321: the set builder lists the base set's parallels when the
+    // selected variant type's role is `parallel` (skipped otherwise).
+    parallelChecklistBuild: {
+      getParallelsForBuild: "getParallelsForBuild",
+    },
   },
 }));
 

@@ -3652,7 +3652,7 @@ function renderParallelRow() {
       variantId={VARIANT_ID}
       sourceChips={{}}
       sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-      parallelBuild={{ role: "parallel", insertId: INSERT_ROW_ID, insertValue: "Anime" }}
+      parallelBuild={{ role: "parallel", sourceId: INSERT_ROW_ID, sourceValue: "Anime" }}
     />,
   );
 }
@@ -3750,7 +3750,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
     // The run has started and is building "Anime Gold" — still "running"
     // because the action never resolves.
     await waitFor(() =>
-      expect(mockGetParallelsForBuild).toHaveBeenCalledWith({ insertId: VARIANT_ID }),
+      expect(mockGetParallelsForBuild).toHaveBeenCalledWith({ sourceId: VARIANT_ID }),
     );
 
     const addCard = await screen.findByLabelText("Open add card form");
@@ -3805,8 +3805,10 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
 
   it("a run active on a DIFFERENT insert entirely never holds this checklist", () => {
     const foreign = hostedRunner({
-      insertId: "some-other-insert" as unknown as Id<"selectorOptions">,
-      insertValue: "Other Insert",
+      startedFrom: "some-other-insert" as unknown as Id<"selectorOptions">,
+      sourceId: "some-other-insert" as unknown as Id<"selectorOptions">,
+      sourceValue: "Other Insert",
+      sourceKind: "insert",
       entries: [
         { id: "other-parallel" as unknown as Id<"selectorOptions">, value: "X", line: { kind: "building" } },
       ],
@@ -3830,8 +3832,10 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
 
   it("holds a parallel still WAITING in the insert's run — described by its own ledger line, not the heading", () => {
     const run = {
-      insertId: INSERT_ROW_ID,
-      insertValue: "Anime",
+      startedFrom: INSERT_ROW_ID,
+      sourceId: INSERT_ROW_ID,
+      sourceValue: "Anime",
+      sourceKind: "insert" as const,
       entries: [{ id: VARIANT_ID, value: "Anime Kanji", line: { kind: "waiting" as const } }],
       truncated: false,
       phase: "running" as const,
@@ -3843,7 +3847,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
         variantId={VARIANT_ID}
         sourceChips={{}}
         sourceLabelMaps={{ bsc: {}, sportlots: {} }}
-        parallelBuild={{ role: "parallel", insertId: INSERT_ROW_ID, insertValue: "Anime" }}
+        parallelBuild={{ role: "parallel", sourceId: INSERT_ROW_ID, sourceValue: "Anime" }}
         parallelRun={hostedRunner(run)}
       />,
     );
@@ -3888,7 +3892,7 @@ describe("CardChecklist — NEO-312 the auto-run after a commit (J1)", () => {
     renderInsertRow();
     await driveZeroCandidateCommit();
     await waitFor(() =>
-      expect(mockGetParallelsForBuild).toHaveBeenCalledWith({ insertId: VARIANT_ID }),
+      expect(mockGetParallelsForBuild).toHaveBeenCalledWith({ sourceId: VARIANT_ID }),
     );
   });
 
@@ -3896,5 +3900,201 @@ describe("CardChecklist — NEO-312 the auto-run after a commit (J1)", () => {
     renderChecklist();
     await driveZeroCandidateCommit();
     expect(mockGetParallelsForBuild).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-321 — Base's parallels. D3: a base-parallel row (an insert-level row
+// under the Parallel variant type) builds from Base instead of fetching; and
+// while the section's run is live the BASE checklist is held, because the
+// run is copying it.
+// ---------------------------------------------------------------------------
+
+describe("CardChecklist — NEO-321 a base-parallel row builds from Base (D3)", () => {
+  const BASE_ID = "base-row-1" as unknown as Id<"selectorOptions">;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Gold Wave" };
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = null;
+    mockGetParallelsForBuild.mockResolvedValue({ parallels: [], truncated: false });
+  });
+
+  function renderBaseParallel(...args: [] | [string | undefined]) {
+    // An explicit `undefined` means "Base's name has not loaded", not "default".
+    const sourceValue = args.length ? args[0] : "Base";
+    return render(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelBuild={{ role: "parallel", sourceId: BASE_ID, sourceValue }}
+      />,
+    );
+  }
+
+  it("an empty base-parallel shows Build from Base, and no Fetch from Marketplaces or Match Cards", () => {
+    renderBaseParallel();
+    expect(screen.getByRole("button", { name: "Build from Base" })).toBeTruthy();
+    expect(screen.queryByText("Fetch from Marketplaces")).toBeNull();
+    expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+    expect(screen.queryByText(/Match Cards/)).toBeNull();
+  });
+
+  it("a base-parallel that already has cards shows Rebuild from Base, and no Refresh", () => {
+    state.cards = [settledCard()];
+    renderBaseParallel();
+    expect(screen.getByRole("button", { name: "Rebuild from Base" })).toBeTruthy();
+    expect(screen.queryByText("Refresh")).toBeNull();
+    expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+  });
+
+  it("the button's label follows the source's name, never a literal", () => {
+    renderBaseParallel("Flagship");
+    expect(screen.getByRole("button", { name: "Build from Flagship" })).toBeTruthy();
+  });
+
+  it("pressing it builds this row by id and never reaches the marketplace fetch", async () => {
+    mockBuildParallelChecklist.mockResolvedValue(parallelBuiltResult());
+    renderBaseParallel();
+    fireEvent.click(screen.getByRole("button", { name: "Build from Base" }));
+
+    await waitFor(() =>
+      expect(mockBuildParallelChecklist).toHaveBeenCalledWith({ parallelId: VARIANT_ID }),
+    );
+    expect(mockFetchChecklist).not.toHaveBeenCalled();
+    expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+
+  it("until Base's name is known a Loading… stand-in holds the slot: busy, inert, and no fetch to fall back on", async () => {
+    renderBaseParallel(undefined);
+    const standIn = screen.getByRole("button", { name: "Loading…" });
+    expect(standIn.getAttribute("aria-disabled")).toBe("true");
+    expect(standIn.getAttribute("aria-busy")).toBe("true");
+    fireEvent.click(standIn);
+    expect(mockBuildParallelChecklist).not.toHaveBeenCalled();
+    expect(mockFetchChecklist).not.toHaveBeenCalled();
+    expect(screen.queryByText("Fetch from Marketplaces")).toBeNull();
+    expect(screen.queryByLabelText("Sync card checklist")).toBeNull();
+  });
+
+  it("with no single Base the stand-in says Can't build yet, is described by the reason, and is never actionable", () => {
+    render(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelBuild={{ role: "parallel", unavailableReasonId: "why-not" }}
+      />,
+    );
+    const standIn = screen.getByRole("button", { name: "Can't build yet" });
+    expect(standIn.getAttribute("aria-disabled")).toBe("true");
+    expect(standIn.getAttribute("aria-describedby")).toBe("why-not");
+    expect(standIn.getAttribute("aria-busy")).toBeNull();
+    fireEvent.click(standIn);
+    expect(mockBuildParallelChecklist).not.toHaveBeenCalled();
+    expect(mockFetchChecklist).not.toHaveBeenCalled();
+  });
+});
+
+describe("CardChecklist — NEO-321 the Base checklist is held while a base run is live", () => {
+  const PARALLEL_TYPE_ID = "vt-parallel" as unknown as Id<"selectorOptions">;
+  const OTHER_PARALLEL = "gold-wave" as unknown as Id<"selectorOptions">;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [settledCard()];
+    state.variantRow = { value: "Base" };
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = { ready: 0, total: 0, cards: [] };
+  });
+
+  function baseRun(
+    phase: "running" | "stopping" | "finished",
+    entries: Array<{ id: Id<"selectorOptions">; line: { kind: "waiting" } | { kind: "building" } }> = [],
+  ): ParallelBuildRunner {
+    const run = {
+      // Started from the Parallel variant type; the source is THIS row.
+      startedFrom: PARALLEL_TYPE_ID,
+      sourceId: VARIANT_ID,
+      sourceValue: "Base",
+      sourceKind: "base" as const,
+      entries: entries.map((e) => ({ ...e, value: "Gold Wave" })),
+      truncated: false,
+      phase,
+      atIndex: 0,
+      announcement: "",
+    };
+    return {
+      run,
+      active: phase === "running" || phase === "stopping",
+      inFlight: new Set(),
+      start: vi.fn(),
+      stop: vi.fn(),
+      buildOne: vi.fn(),
+    };
+  }
+
+  function renderBase(runner: ParallelBuildRunner, panelElsewhere = false) {
+    return render(
+      <CardChecklist
+        variantId={VARIANT_ID}
+        sourceChips={{}}
+        sourceLabelMaps={{ bsc: {}, sportlots: {} }}
+        parallelRun={runner}
+        parallelPanelElsewhere={panelElsewhere}
+      />,
+    );
+  }
+
+  it("holds Add Card, Add Cross-Release Cards and the card list, described by the panel heading", () => {
+    renderBase(baseRun("running", [{ id: OTHER_PARALLEL, line: { kind: "building" } }]));
+
+    const addCard = screen.getByLabelText("Open add card form");
+    expect(addCard.getAttribute("aria-disabled")).toBe("true");
+    expect(addCard.getAttribute("aria-describedby")).toBe(PARALLEL_BUILD_HEADING_ID);
+    const addCross = screen.getByLabelText("Open add cross-release cards form");
+    expect(addCross.getAttribute("aria-disabled")).toBe("true");
+    expect(addCross.getAttribute("aria-describedby")).toBe(PARALLEL_BUILD_HEADING_ID);
+    const group = screen.getByRole("group", { hidden: true });
+    expect(group.getAttribute("aria-disabled")).toBe("true");
+    expect(group.getAttribute("aria-describedby")).toBe(PARALLEL_BUILD_HEADING_ID);
+  });
+
+  it("holds Sync too: a new Base save mid-copy would change what the run is copying", () => {
+    renderBase(baseRun("running", [{ id: OTHER_PARALLEL, line: { kind: "building" } }]));
+    const sync = screen.getByLabelText("Sync card checklist") as HTMLButtonElement;
+    expect(sync.disabled).toBe(true);
+  });
+
+  it("holds while Stop is pending too", () => {
+    renderBase(baseRun("stopping", [{ id: OTHER_PARALLEL, line: { kind: "building" } }]));
+    expect(
+      screen.getByLabelText("Open add card form").getAttribute("aria-disabled"),
+    ).toBe("true");
+  });
+
+  it("does not hold once the run has finished", () => {
+    renderBase(baseRun("finished", [{ id: OTHER_PARALLEL, line: { kind: "building" } }]));
+    expect(
+      screen.getByLabelText("Open add card form").getAttribute("aria-disabled"),
+    ).toBeNull();
+  });
+
+  it("draws the ledger itself unless the section already shows it", () => {
+    const runner = baseRun("running", [{ id: OTHER_PARALLEL, line: { kind: "building" } }]);
+    const { unmount } = renderBase(runner, false);
+    expect(document.getElementById(PARALLEL_BUILD_HEADING_ID)).toBeTruthy();
+    unmount();
+
+    renderBase(runner, true);
+    // One panel per page: the section owns it, but the held controls still
+    // point at its heading by id.
+    expect(document.getElementById(PARALLEL_BUILD_HEADING_ID)).toBeNull();
+    expect(
+      screen.getByLabelText("Open add card form").getAttribute("aria-describedby"),
+    ).toBe(PARALLEL_BUILD_HEADING_ID);
   });
 });
