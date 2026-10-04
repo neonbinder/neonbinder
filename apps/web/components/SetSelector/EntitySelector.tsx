@@ -1,6 +1,6 @@
 import {
   memo,
-  useEffect,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -12,6 +12,8 @@ import { Input } from "../primitives/Input";
 import { ChevronDownIcon, ChevronUpIcon } from "@heroicons/react/24/solid";
 import { FunctionReference } from "convex/server";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
+import { useComboboxHighlight } from "@/src/hooks/useComboboxHighlight";
+import { scrollRowIntoList } from "./list-scroll";
 
 export type SelectorItem = { _id: string; [key: string]: unknown };
 
@@ -29,11 +31,11 @@ export const displayByValue = (item: SelectorItem) => item.value as string;
  * a row: it is selected by a client sentinel `id` the caller owns, never a
  * document id, and it is there whether the column has zero rows or a hundred.
  *
- * Pinned entries are outside the data list on purpose: they do not count
- * toward the search-box threshold, the search filter never hides them, and
- * the sort never moves them — they sit first, always. They ARE options in the
- * listbox (roving tabindex, arrow keys, typeahead, `aria-selected`), because
- * to the operator they are one of the column's choices.
+ * Pinned entries are outside the data list on purpose: the search filter never
+ * hides them and the sort never moves them — they sit first, always. They ARE
+ * options in the listbox (the keyboard highlight reaches them, a filter that
+ * matches their name lands on them, `aria-selected`), because to the operator
+ * they are one of the column's choices.
  *
  * `description` is a second, muted line under the name, rendered exactly like
  * a row's `getDescription`. The name stays alone in its own text node so a
@@ -79,10 +81,10 @@ type EntitySelectorProps = {
    * NEO-237 — data rows this returns true for sort ahead of the rest, in
    * their usual order among themselves; the rest keep theirs (the sort is
    * stable). Unlike a pinned entry a lead row IS a data row: selectable by
-   * its document id, filtered by the search box like any other, and counted
-   * toward the search-box threshold. The caller decides from the row's own
-   * fields (a flag NB wrote), never from its name. Pass ONE stable reference
-   * — an inline arrow defeats the `sortedItems` memo, as for `getDisplayName`.
+   * its document id and filtered by the search box like any other. The caller
+   * decides from the row's own fields (a flag NB wrote), never from its name.
+   * Pass ONE stable reference — an inline arrow defeats the `sortedItems`
+   * memo, as for `getDisplayName`.
    */
   leadRow?: (item: SelectorItem) => boolean;
 };
@@ -99,60 +101,102 @@ function getPlatformData(item: SelectorItem): {
 }
 
 /**
- * NEO-260 — the option rows of one column, in DOM order.
+ * NEO-224 — the order every column's rows are listed in, by display name.
  *
- * Read out of the DOM rather than kept in a ref array because the rows are
- * rebuilt on every filter keystroke and the array order is the only thing the
- * arrow keys care about. `querySelectorAll` on THIS column's own listbox node
- * can never reach a sibling column's rows, which a document-wide query could.
+ * Names that are ALL digits come first, newest year at the top (2026 above
+ * 1995): that is how a collector scans a Years column. Everything else follows
+ * in plain alphabetical order. The two groups never interleave, which the old
+ * comparator let them do: it compared two numeric names as numbers and any
+ * other pair as strings, so the order of a mixed column ("1995-96", "1996",
+ * "Unknown") depended on which pairs the sort happened to compare — not a
+ * total order at all.
+ *
+ * `/^\d+$/` rather than `Number(name)`: `Number` accepts "", " ", "1e3" and
+ * "0x10", none of which is a year a collector would recognise. A season label
+ * such as "1995-96" is text here, so it sorts with the other text, ascending.
+ * (Jason, 2026-10-04, D5.)
+ *
+ * Lead rows (`leadRow`) still go ahead of both groups; that tie-break lives in
+ * the memo below because it is per-column, not per-name.
  */
-const OPTION_SELECTOR = '[role="option"]';
+const ALL_DIGITS = /^\d+$/;
 
-function optionsIn(list: HTMLElement | null): HTMLElement[] {
-  if (!list) return [];
-  return Array.from(list.querySelectorAll<HTMLElement>(OPTION_SELECTOR));
+export function compareOptionNames(nameA: string, nameB: string): number {
+  const numericA = ALL_DIGITS.test(nameA);
+  const numericB = ALL_DIGITS.test(nameB);
+  if (numericA !== numericB) return numericA ? -1 : 1;
+  if (numericA) {
+    const byValue = Number(nameB) - Number(nameA);
+    // "0995" and "995" are equal as numbers; fall through to the text order
+    // so the result is still a total order.
+    if (byValue !== 0) return byValue;
+  }
+  return nameA.localeCompare(nameB);
 }
 
 /**
- * Left/Right across the cascade.
+ * NEO-224 — Left/Right across the cascade, from an EMPTY search box only
+ * (Jason, D6: with text in the box the arrows move the caret, as in any
+ * input).
  *
  * The columns are siblings inside the `[data-set-selector-scroll]` row that
- * `components/modules/SetSelector.tsx` owns, and each open one contributes
- * exactly one `role="listbox"`. So "the next column" is "the next listbox in
- * that row" — no prop plumbing, and a collapsed column (which renders no
- * listbox) is simply skipped, which is the right behaviour: there is nothing to
- * move onto in a column that is showing a single collapsed card.
+ * `components/modules/SetSelector.tsx` owns, and each OPEN column renders
+ * exactly one `role="combobox"` — the contract between that file and this one,
+ * held even while a column is loading. So "the next column" is "the next
+ * combobox in that row": no prop plumbing, and a collapsed column (which
+ * renders its selection card instead) is skipped, which is right — there is
+ * nothing to type into there.
  *
- * Focus lands on that column's roving stop (`tabIndex === 0`) so arrowing away
- * and back returns to where you were. Deliberately NOT `preventScroll`: unlike
- * the focus PARKS — which fire on unmount and must not fight EntityColumn's own
- * reveal scrolling — this is an explicit navigation the operator asked for, and
- * a column they have just moved into needs to be on screen.
+ * Deliberately NOT `preventScroll`: unlike a focus park, this is a navigation
+ * the operator asked for, and the column they move into needs to be on screen.
  */
-function focusAdjacentColumn(list: HTMLElement | null, delta: 1 | -1): boolean {
-  if (!list) return false;
-  const row = list.closest<HTMLElement>("[data-set-selector-scroll]");
+function focusAdjacentColumn(
+  input: HTMLInputElement | null,
+  delta: 1 | -1,
+): boolean {
+  if (!input) return false;
+  const row = input.closest<HTMLElement>("[data-set-selector-scroll]");
   if (!row) return false;
-  const lists = Array.from(
-    row.querySelectorAll<HTMLElement>('[role="listbox"]'),
+  const boxes = Array.from(
+    row.querySelectorAll<HTMLElement>('[role="combobox"]'),
   );
-  const here = lists.indexOf(list);
+  const here = boxes.indexOf(input);
   if (here < 0) return false;
-  const target = lists[here + delta];
+  const target = boxes[here + delta];
   if (!target) return false;
-  const options = optionsIn(target);
-  const stop = options.find((o) => o.tabIndex === 0) ?? options[0];
-  if (!stop) return false;
-  stop.focus();
+  target.focus();
   return true;
 }
 
 /**
- * How long a typeahead buffer survives between keystrokes. 500ms is the
- * WAI-ARIA APG's own listbox figure; longer and a second, unrelated jump feels
- * like the first one mis-fired.
+ * NEO-224 — the keyboard highlight ("where Enter lands"), drawn so it reads
+ * apart from the committed selection, and on top of it.
+ *
+ * The selection is a FILL: each column passes its own `selectedColor`
+ * (pink sports, blue years, green brands, …). The highlight is therefore never
+ * a fill on the selected row — a second background class would fight the
+ * column's by stylesheet order, not by intent — but an inset neon stroke that
+ * composes with whatever fill is under it. On a row that is not selected it
+ * also takes the type-ahead pickers' `#00D558` tint (TeamPicker,
+ * PlayerPicker), so the same signal means the same thing across the app.
+ *
+ * - `ring-inset`, not an outer ring: the listbox is `overflow-y-auto`, which
+ *   clips an outer ring on every row's left and right edge (rows are w-full).
+ * - Light: emerald-700, because `#00D558` is under 2:1 on white and on the
+ *   -100 selection fills; emerald-700 clears 3:1 (WCAG 1.4.11) on all of them.
+ *   Dark: the brand neon, which clears 3:1 on every -900 fill and gray-700.
+ * - Dark only, a faint inner glow, so the row reads as a lit tube rather than
+ *   a boxed one. Static, never animated (NEO-85: nothing moves under a
+ *   coordinate-tap driver).
+ * - A transparent outline, which Windows High Contrast paints in a system
+ *   colour where it drops box-shadows (and so the ring) entirely.
  */
-const TYPEAHEAD_RESET_MS = 500;
+const HIGHLIGHT_STROKE =
+  "ring-2 ring-inset ring-emerald-700 dark:ring-[#00D558] dark:shadow-[inset_0_0_14px_rgba(0,213,88,0.28)] outline-2 -outline-offset-2 outline-transparent";
+const HIGHLIGHT_TINT =
+  "bg-[#00D558]/20 border-emerald-700 dark:border-[#00D558]";
+const ROW_IDLE =
+  "bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600";
 
 function EntitySelector({
   title,
@@ -172,46 +216,38 @@ function EntitySelector({
   const items = useQuery(query, queryArgs);
   const [searchFilter, setSearchFilter] = useState("");
 
-  // NEO-260 — the column is ONE tab stop, and the arrows move inside it.
+  // NEO-224 — the column is a COMBOBOX: one search box that keeps DOM focus,
+  // and a listbox whose highlighted option is named by
+  // `aria-activedescendant`. This replaces NEO-260's roving tabindex.
   //
-  // ## The defect
+  // NEO-260 chose roving tabindex because DOM focus on the ROW was the only
+  // focus maestro-web's `pressKey` could re-find: it rebuilds an XPath for
+  // `document.activeElement` from ancestor class names, and every column's
+  // listbox container carries the same class string. That argument does not
+  // apply to the search box: the Input primitive stamps a document-unique
+  // marker class on it, and this component adds a per-column
+  // `mb-search-<slug>` class as well, so an XPath to it resolves to exactly
+  // one element. Focus in the box means the operator types to filter and
+  // presses Enter to pick without ever leaving it — the keyboard-only drill
+  // the cascade was missing (type "base", Enter; type "19", Enter).
   //
-  // Every option row was its own tab stop. Past a synced Sports list that is
-  // ~25 Tab presses to reach the Years column, and six columns deep the cascade
-  // is not operable by keyboard at all even though every control in it is
-  // technically reachable. A list of mutually-exclusive choices is a LISTBOX,
-  // and a listbox is one stop with arrow keys inside it.
-  //
-  // ## Roving tabindex, not aria-activedescendant
-  //
-  // Both satisfy the ARIA pattern; the roving tabindex is the one that survives
-  // this app's E2E driver and this component's existing behaviour:
-  //
-  //  * **DOM focus stays on the row.** maestro-web's `pressKey` re-finds
-  //    `document.activeElement` by an XPath built from ancestor CLASS names
-  //    (`.maestro/README.md`), then dispatches there. With
-  //    `aria-activedescendant` the real focus would sit on the listbox
-  //    container — and every column's container carries the SAME Tailwind class
-  //    string, so two open columns would collapse into one XPath and Selenium
-  //    would return the first. Enter aimed at a Years row would fire in Sports.
-  //  * **`activateOnEnter` keeps working unchanged.** It lives on the row and
-  //    needs the keydown to originate there; with activedescendant the key
-  //    never reaches the row at all.
-  //  * **`:focus-visible` lands on the thing that looks focused.** With
-  //    activedescendant the ring has to be faked from an attribute, and a
-  //    faked ring is exactly the class of bug this ticket exists to close.
-  //
-  // The roving stop is tracked by ITEM ID rather than index so it survives the
-  // search filter re-ordering the list under it.
-  const [activeOptionId, setActiveOptionId] = useState<string | null>(null);
+  // The highlight is owned by `useComboboxHighlight` (see its header for the
+  // rules). Hover deliberately does NOT move it: a pointer resting over the
+  // list would otherwise retarget Enter under the operator's typing.
+  const baseId = useId();
+  // The DOM id `aria-controls` points at. It sits on a wrapper around the
+  // listbox, NOT the listbox itself: maestro-web reports an element's
+  // resource-id as `node.id || node.ariaLabel`, so an id on the listbox would
+  // hide its `aria-label` (the column title) from every `id: "<Title>"`
+  // selector — the NEO-313 failure, where a `useId` on a listbox for exactly
+  // this attribute turned two flows red.
+  const popupId = `${baseId}-popup`;
+  const optionDomId = (key: string) => `${popupId}-${key}`;
   const listRef = useRef<HTMLDivElement | null>(null);
-  const typeaheadRef = useRef<{ buffer: string; at: number }>({
-    buffer: "",
-    at: 0,
-  });
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const collapsedCardRef = useRef<HTMLButtonElement | null>(null);
 
-  // NEO-237: pinned entries as rows, built once per `pinnedEntries` identity
-  // so the roving-index and typeahead arrays below are stable across renders.
+  // NEO-237: pinned entries as rows, built once per `pinnedEntries` identity.
   const pinnedItems = useMemo<PinnedItem[]>(
     () =>
       (pinnedEntries ?? []).map((entry) => ({
@@ -231,13 +267,12 @@ function EntitySelector({
     pinnedItems.find((item) => item._id === selectedId) ??
     items?.find((item: SelectorItem) => item._id === selectedId);
 
-  // Sort items by their display names. Memoized on `items` (and the
-  // `getDisplayName` reader the comparator uses) so an unrelated re-render —
-  // e.g. a Convex query invalidation from a sibling column — reuses the same
-  // sorted array reference instead of rebuilding it. Rebuilding a fresh array
-  // on every render churns the list and reflows the column under Maestro's
-  // coordinate taps (NEO-85). Declared before the early return so hook order
-  // stays stable when `items` is still loading.
+  // Sort items by their display names (see `compareOptionNames`). Memoized on
+  // `items` (and the `getDisplayName` reader the comparator uses) so an
+  // unrelated re-render — e.g. a Convex query invalidation from a sibling
+  // column — reuses the same sorted array reference instead of rebuilding it.
+  // Rebuilding a fresh array on every render churns the list and reflows the
+  // column under Maestro's coordinate taps (NEO-85).
   const sortedItems = useMemo(() => {
     if (!items) return [];
     return [...items].sort((a, b) => {
@@ -248,289 +283,231 @@ function EntitySelector({
         const leadB = leadRow(b) ? 0 : 1;
         if (leadA !== leadB) return leadA - leadB;
       }
-      const nameA = getDisplayName(a);
-      const nameB = getDisplayName(b);
-
-      const numA = Number(nameA);
-      const numB = Number(nameB);
-
-      if (!isNaN(numA) && !isNaN(numB)) {
-        return numB - numA;
-      } else {
-        return nameA.localeCompare(nameB);
-      }
+      return compareOptionNames(getDisplayName(a), getDisplayName(b));
     });
   }, [items, getDisplayName, leadRow]);
 
-  // NEO-260 (a11y) — hand focus to the collapsed card when a selection closes
-  // the list.
-  //
-  // Choosing a row unmounts that row: the column shrinks to its single
-  // collapsed card, focus falls to <body>, and the next Tab restarts from the
-  // top of the DOCUMENT rather than continuing into the column this selection
-  // just opened. Six columns deep that makes the cascade unusable by keyboard
-  // even though every control in it is now reachable.
-  //
-  // Guarded on `document.activeElement === document.body`, the same rule
-  // EntityColumn's parks use, so focus a user or a flow has already placed is
-  // never stolen. `preventScroll` because EntityColumn owns the horizontal
-  // scroll position of the column row (it scrolls each newly-revealed column
-  // into view) and a browser scroll-into-view here would pull it straight back.
-  const collapsedCardRef = useRef<HTMLButtonElement | null>(null);
-  const showedListRef = useRef(false);
+  const loading = items === undefined;
   const showsCollapsedCard = !!(selectedId && selected && !expanded);
-  useEffect(() => {
-    const showedList = showedListRef.current;
-    showedListRef.current = !showsCollapsedCard;
-    if (
-      showedList &&
-      showsCollapsedCard &&
-      document.activeElement === document.body
-    ) {
-      collapsedCardRef.current?.focus({ preventScroll: true });
-    }
-  }, [showsCollapsedCard]);
 
-  // NEO-276 — open the list AT the selection, not at the top of it.
+  // Apply the search filter. Pinned entries are never filtered out (they are
+  // views, always offered) but they ARE matched, so typing "all" in the
+  // Manufacturers column lands the highlight on All Brands.
+  const needle = searchFilter.toLowerCase();
+  const matches = (item: SelectorItem) =>
+    nameOf(item).toLowerCase().includes(needle);
+  const filteredItems = searchFilter ? sortedItems.filter(matches) : sortedItems;
+
+  // Every option in DOM order: pinned entries first (never filtered, never
+  // sorted), then the data rows.
+  const rows: SelectorItem[] =
+    pinnedItems.length > 0 ? [...pinnedItems, ...filteredItems] : filteredItems;
+  const rowKeys = rows.map((row) => row._id);
+
+  // Re-seed the highlight every time the list is SHOWN (a chip re-expand, a
+  // column re-opening), so an arrow move made the last time it was open does
+  // not linger. Counted with the "adjust state while rendering" pattern rather
+  // than an effect: the new seed then applies in the same render that shows
+  // the list, with no frame of the stale highlight.
+  const listVisible = !showsCollapsedCard;
+  const [shownCount, setShownCount] = useState(0);
+  const [wasListVisible, setWasListVisible] = useState(listVisible);
+  if (wasListVisible !== listVisible) {
+    setWasListVisible(listVisible);
+    if (listVisible) setShownCount((n) => n + 1);
+  }
+
+  // Where the highlight rests before any arrow press:
+  //  - an empty box: the committed selection if it is listed, else the first
+  //    row — opening a column puts Enter on what is already chosen;
+  //  - typed text: the first row that matches, pinned entries included;
+  //  - nothing matches: null, and Enter does nothing (D2: "+ Custom" is one
+  //    Tab away and is never opened for the operator).
+  const seed: string | null = searchFilter
+    ? (rows.find(matches)?._id ?? null)
+    : rowKeys.includes(selectedId ?? "")
+      ? selectedId
+      : (rowKeys[0] ?? null);
+  const { highlighted, move } = useComboboxHighlight({
+    keys: rowKeys,
+    seed,
+    seedOn: `${shownCount}\u0000${searchFilter}`,
+  });
+
+  // NEO-276 + NEO-224 — the listbox's scroll position, written as `scrollTop`
+  // only (see `list-scroll.ts` for why never `scrollIntoView`).
   //
-  // ## The defect
+  // ## Open the list AT the selection (NEO-276, `centre`)
   //
-  // Re-opening a collapsed column mounts its listbox scrolled to the top. On
-  // any column longer than the 400px fold (a synced Sets column runs to ~40
-  // rows) the selected row is below it, so an operator who opened the list to
-  // change their set had to hunt for the row they had already chosen before
-  // they could see what sits next to it. The listbox's `scrollTop` is set so
-  // the selected row is centred in the fold; centred rather than pinned to the
-  // top edge because the neighbours on BOTH sides are what a "change" decision
-  // is made against.
+  // Re-opening a collapsed column used to mount its listbox scrolled to the
+  // top. On any column longer than the 400px fold (a synced Sets column runs to
+  // ~40 rows) the selected row was below it, so an operator who opened the
+  // list to change their set had to hunt for the row they had already chosen.
+  // The selected row is centred, because the neighbours on BOTH sides are what
+  // a "change" decision is made against.
   //
-  // ## Only the listbox's own scrollTop moves
+  // Exactly once per "list shown": armed when the list goes from not rendered
+  // (the collapsed card, or the loading placeholder) to rendered, and consumed
+  // the first time the selected row is in the DOM — normally that same commit,
+  // else the one where a still-loading `items` lands. A later `items` re-emit
+  // or a keystroke never re-arms it, so a list the operator has scrolled stays
+  // where they left it. A filter hiding the selected row consumes the latch
+  // WITHOUT scrolling: typing the row back into view must not yank the list.
   //
-  // NOT `scrollIntoView`. That walks every scrollable ancestor: it would drag
-  // the `[data-set-selector-scroll]` row horizontally, whose position
-  // EntityColumn owns (it scrolls each newly-revealed column into view, and a
-  // browser scroll-into-view here would pull it straight back), and it would
-  // move the page vertically under maestro-web, whose only scroll primitive is
-  // `window.scroll` — a flow that has just scrolled a control to a known y
-  // would find it somewhere else. Writing the listbox's `scrollTop` touches
-  // nothing outside the listbox. Clamped at 0 so a selection already in the
-  // first fold does not move (a browser clamps anyway; happy-dom does not).
+  // ## Keep the highlight in the fold (NEO-224, `nearest`)
   //
-  // Nor does it freeze the column: EntityColumn's freeze-on-interaction
-  // listener deliberately ignores the generic `scroll` event (it listens for
-  // wheel and touchstart), for exactly this class of programmatic scroll.
+  // When the highlight MOVES (an arrow key, or a filter landing it on a new
+  // first match) the smallest scroll that shows the whole row, and none when
+  // it is already visible. Keyed on the highlighted key changing, so a reactive
+  // re-emit or the operator's own wheel scroll is never undone. The centring
+  // above counts as having shown the highlight (it IS the selected row then).
   //
-  // ## Exactly once per "list shown"
-  //
-  // Armed when the list goes from not rendered (the collapsed card, or the
-  // loading placeholder) to rendered, and consumed the first time the selected
-  // row is in the DOM — normally that same commit, else the one where a
-  // still-loading `items` lands. A later `items` re-emit (Convex queries are
-  // reactive), a keystroke in the search box or an arrow-key move never
-  // re-arms it, so a list the operator has scrolled stays where they left it.
-  // A search filter that is hiding the selected row consumes the latch WITHOUT
-  // scrolling: typing the row back into view must not yank the list.
-  //
-  // A layout effect, so the list is already at the selection on its first
-  // paint rather than flashing its top and jumping.
-  const listShown = items !== undefined && !showsCollapsedCard;
+  // A layout effect, so the list is already in place on its first paint rather
+  // than flashing its top and jumping.
+  const listShown = !loading && !showsCollapsedCard;
   const wasListShownRef = useRef(false);
   const centreSelectedRef = useRef(false);
+  const scrolledToKeyRef = useRef<string | null>(null);
   useLayoutEffect(() => {
     if (listShown && !wasListShownRef.current) {
       centreSelectedRef.current = true;
+      scrolledToKeyRef.current = null;
     }
     wasListShownRef.current = listShown;
     if (!listShown) {
       centreSelectedRef.current = false;
       return;
     }
-    if (!centreSelectedRef.current) return;
-    if (!selectedId) {
-      centreSelectedRef.current = false;
-      return;
-    }
     const list = listRef.current;
-    const row = list?.querySelector<HTMLElement>(
-      '[role="option"][aria-selected="true"]',
-    );
-    if (!list || !row) {
-      // The row is not rendered. If the selection IS in `items` the search
-      // box is hiding it — consume, typing must not scroll. Otherwise the id
-      // has not arrived in `items` yet; stay armed for the commit it does.
-      if (selected) centreSelectedRef.current = false;
-      return;
+
+    if (centreSelectedRef.current) {
+      if (!selectedId) {
+        centreSelectedRef.current = false;
+      } else {
+        const row = list?.querySelector<HTMLElement>(
+          '[role="option"][aria-selected="true"]',
+        );
+        if (list && row) {
+          centreSelectedRef.current = false;
+          scrollRowIntoList(list, row, "centre");
+          scrolledToKeyRef.current = selectedId;
+        } else if (selected) {
+          // The selection IS in `items` but the search box is hiding it —
+          // consume, typing must not scroll. Otherwise the id has not arrived
+          // in `items` yet; stay armed for the commit it does.
+          centreSelectedRef.current = false;
+        }
+      }
     }
-    centreSelectedRef.current = false;
-    const rowTopInList =
-      row.getBoundingClientRect().top -
-      list.getBoundingClientRect().top +
-      list.scrollTop;
-    list.scrollTop = Math.max(
-      0,
-      rowTopInList - (list.clientHeight - row.offsetHeight) / 2,
+
+    if (highlighted === scrolledToKeyRef.current) return;
+    scrolledToKeyRef.current = highlighted;
+    if (!list || highlighted === null) return;
+    const domId = optionDomId(highlighted);
+    const row = Array.from(list.children).find(
+      (child): child is HTMLElement => child.id === domId,
     );
+    if (row) scrollRowIntoList(list, row, "nearest");
   });
 
-  // NEO-167 — keep the heading on screen while the read is in flight.
+  // Focus moves this column makes for itself — two, both answering a key the
+  // operator pressed IN this column. Where focus goes after a SELECTION is not
+  // decided here: the cascade (`components/modules/SetSelector.tsx`) moves it
+  // to the next open column's search box, which is why NEO-260's park onto the
+  // collapsed card is gone.
   //
-  // This used to be `return <div>Loading {title}...</div>`, which removed the
-  // column's identity text from the DOM for as long as `getSelectorOptions`
-  // took. Maestro matches a selector as a FULL-STRING regex, so
-  // `visible: "Variant Types"` cannot match "Loading variant types…" — every
-  // flow asserting on a column heading failed outright on a slow read while
-  // the app was behaving correctly (CI run 31839119469). Dropping the card
-  // also collapsed the column's height and reflowed its siblings, the same
-  // movement NEO-85 worked to remove.
+  //  1. The selection card was pressed (`expanded` false → true): the list
+  //     re-opens, so focus goes into its search box with the selected row
+  //     highlighted, ready to arrow or type. Without this it would fall to
+  //     <body> when the card unmounted.
+  //  2. Escape (or the Collapse control) closed the list: focus goes to the
+  //     selection card that replaced it (Jason, D1), so the operator is left
+  //     standing where they were rather than at the top of the document.
   //
-  // SCOPE IS LOAD-BEARING. The heading is absent in TWO situations and only
-  // the second is the defect:
-  //   1. Column not open — `EntityColumn.tsx:376` returns null on `!isVisible`,
-  //      so this component never renders. Flows rely on that: they use heading
-  //      visibility to detect that a selection opened the NEXT column
-  //      (`when: notVisible: "Manufacturers"` guards against a second tap,
-  //      which would re-toggle and deselect the row). That still works,
-  //      because this branch is only reachable once the column is mounted.
-  //   2. Column open, read in flight — here.
-  // Do not "simplify" this by lifting the heading above the `isVisible` gate;
-  // that would make every guard in (1) permanently false and silently stop the
-  // drill utils from progressing.
-  if (!items) {
-    return (
-      <div
-        className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
-        aria-busy="true"
-      >
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-semibold">{title}</h2>
-        </div>
-        {/* EXACTLY ONE placeholder row. Keep it that way.
-            The first version of this reserved FIVE rows (~282px) to "match"
-            the loaded column so nothing reflowed when data landed. That
-            reasoning was wrong and it broke the seed flow deterministically.
+  // `preventScroll` because EntityColumn owns the horizontal scroll position
+  // of the column row and a browser scroll-into-view would pull it back. Both
+  // targets sit where the control the operator just pressed was, so neither
+  // needs scrolling to.
+  const wasExpandedRef = useRef(expanded);
+  const focusChipNextRef = useRef(false);
+  useLayoutEffect(() => {
+    const wasExpanded = wasExpandedRef.current;
+    wasExpandedRef.current = expanded;
+    if (!wasExpanded && expanded && selectedId && !showsCollapsedCard) {
+      inputRef.current?.focus({ preventScroll: true });
+    }
+    if (focusChipNextRef.current && showsCollapsedCard) {
+      focusChipNextRef.current = false;
+      collapsedCardRef.current?.focus({ preventScroll: true });
+    }
+  });
 
-            The columns sit ABOVE the card checklist, so every pixel added here
-            pushes the checklist down — and the headless viewport is only 625px
-            tall. Measured on the failing run: "Fetch from Marketplaces" landed
-            at y=620..652, i.e. 5px of a 32px control on screen (15.6% visible
-            against a required 50%). scrollUntilVisible gave up, the tap ran on
-            a clipped element, and CdpWebDriver.scrollToPoint failed with
-            "null cannot be cast to non-null type kotlin.Int" — a CDP error
-            that reads like a driver bug and is really a layout bug.
+  const select = (id: string) => {
+    onSelect(id);
+    setExpanded(false);
+    setSearchFilter("");
+  };
 
-            This is the same trap as NEO-47 (raised empty-state height pushed
-            "Add custom" to y≈605) and NEO-155 (five header lines pushed the
-            cascade below the fold). Height above a fold-sensitive control is
-            never free here.
+  const collapseToCard = () => {
+    focusChipNextRef.current = true;
+    setExpanded(false);
+  };
 
-            Reflow-on-load was hypothetical; fold-clipping is measured. One row
-            keeps the column from collapsing to nothing without spending the
-            budget the checklist needs.
-
-            Also deliberately NOT animated: `animate-pulse` would run an
-            infinite CSS animation on a screen a coordinate-tap driver works
-            on, which is the movement NEO-85 was spent eliminating. The bar
-            plus the aria-label carry the meaning, and static is the better
-            prefers-reduced-motion default. */}
-        <div
-          className="space-y-2"
-          role="status"
-          aria-label={`Loading ${title.toLowerCase()}`}
-        >
-          <div className="h-[50px] rounded-md border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700" />
-        </div>
-      </div>
-    );
-  }
-
-  // Apply search filter
-  const filteredItems = searchFilter
-    ? sortedItems.filter((item) =>
-        getDisplayName(item)
-          .toLowerCase()
-          .includes(searchFilter.toLowerCase()),
-      )
-    : sortedItems;
-
-  // Every option in DOM order: pinned entries first (never filtered, never
-  // sorted), then the data rows. This is the array the roving index and the
-  // typeahead are computed over, so both agree with what `optionsIn` reads
-  // back out of the listbox.
-  const rows: SelectorItem[] =
-    pinnedItems.length > 0 ? [...pinnedItems, ...filteredItems] : filteredItems;
-
-  // Which row is the column's single tab stop. The row the operator last stood
-  // on if it is still in the filtered list, else the selected row, else the
-  // first — so tabbing into a column with a selection lands on that selection,
-  // which is what a listbox is supposed to do.
-  const rovingIndex = (() => {
-    const byActive = rows.findIndex((i) => i._id === activeOptionId);
-    if (byActive >= 0) return byActive;
-    const bySelected = rows.findIndex((i) => i._id === selectedId);
-    return bySelected >= 0 ? bySelected : 0;
-  })();
-
-  // One delegated handler on the listbox rather than one per row: the rows are
-  // rebuilt on every keystroke in the search box, and the key handling is about
-  // the LIST, not about any row.
-  //
-  // Enter never arrives here — the row's own `activateOnEnter` consumes it and
-  // stops propagation — and Space is left alone on purpose, because the browser
-  // clicks a <button> on key*up* and intercepting keydown would either
-  // double-fire or break the second half of that native contract.
-  const onListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+  const onSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>) => {
     if (event.altKey || event.ctrlKey || event.metaKey) return;
-    const options = optionsIn(listRef.current);
-    if (options.length === 0) return;
-    const focused = options.findIndex((o) => o === document.activeElement);
-    const from = focused >= 0 ? focused : rovingIndex;
-    const moveTo = (to: number) => {
+    const consume = () => {
       event.preventDefault();
       event.stopPropagation();
-      options[Math.max(0, Math.min(options.length - 1, to))]?.focus();
     };
-
     switch (event.key) {
-      // No wrap-around, per the APG's default for a listbox: running off the
-      // end silently reappearing at the top reads as a dropped keypress.
+      // No wrap-around (see `useComboboxHighlight`). Cancelled so the caret
+      // does not also jump to the start/end of the text.
       case "ArrowDown":
-        return moveTo(from + 1);
+        consume();
+        move(1);
+        return;
       case "ArrowUp":
-        return moveTo(from - 1);
-      case "Home":
-        return moveTo(0);
-      case "End":
-        return moveTo(options.length - 1);
-      case "ArrowRight":
+        consume();
+        move(-1);
+        return;
+      case "Enter":
+        // D2: with nothing highlighted (no match) Enter is a no-op, and it is
+        // left uncancelled so it means exactly what it would anywhere else.
+        if (highlighted === null) return;
+        consume();
+        select(highlighted);
+        return;
+      case "Escape":
+        // D1, in order: clear the typed filter (the highlight re-seeds with
+        // it); else close a column that has a selection back to its card;
+        // else nothing, and the key is left for whoever else wants it.
+        if (searchFilter) {
+          consume();
+          setSearchFilter("");
+          return;
+        }
+        if (selectedId && selected && expanded) {
+          consume();
+          collapseToCard();
+        }
+        return;
       case "ArrowLeft":
+      case "ArrowRight":
+        // D6: only from an EMPTY box; with text in it the arrows move the
+        // caret, as in any input.
+        if (searchFilter) return;
         if (
-          focusAdjacentColumn(listRef.current, event.key === "ArrowRight" ? 1 : -1)
+          focusAdjacentColumn(
+            inputRef.current,
+            event.key === "ArrowRight" ? 1 : -1,
+          )
         ) {
-          event.preventDefault();
-          event.stopPropagation();
+          consume();
         }
         return;
       default:
-        break;
+        return;
     }
-
-    // Typeahead. Free here because the rows are already sorted by the same
-    // display name the search box filters on, so "first row whose name starts
-    // with the buffer" is one findIndex. It matters most on the columns with
-    // eight or fewer rows, which render no search box at all. A lead row
-    // sitting out of name order is still found by the same scan.
-    if (event.key.length !== 1 || event.key === " ") return;
-    const now = Date.now();
-    const carried =
-      now - typeaheadRef.current.at > TYPEAHEAD_RESET_MS
-        ? ""
-        : typeaheadRef.current.buffer;
-    const buffer = (carried + event.key).toLowerCase();
-    typeaheadRef.current = { buffer, at: now };
-    const hit = rows.findIndex((item) =>
-      nameOf(item).toLowerCase().startsWith(buffer),
-    );
-    if (hit >= 0) moveTo(hit);
   };
 
   if (showsCollapsedCard && selected) {
@@ -562,8 +539,6 @@ function EntitySelector({
     );
   }
 
-  const showSearch = sortedItems.length > 8;
-
   // The empty-state line. With pinned entries the listbox still renders (the
   // view is always a choice), and this line sits UNDER it — outside the
   // listbox, so the listbox's children stay options and nothing else — where
@@ -573,15 +548,22 @@ function EntitySelector({
     ? "No matches found"
     : `No ${title.toLowerCase()} available. Sync from marketplaces to populate.`;
 
+  // ONE return for the loading and the loaded column, so the search box is the
+  // SAME element across the moment `items` lands. Focus the cascade put in it
+  // while the read was in flight — and whatever the operator had typed — stays
+  // put, and the filter simply applies once there are rows to filter.
   return (
-    <div className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow">
+    <div
+      className="bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
+      aria-busy={loading ? "true" : undefined}
+    >
       <div className="flex items-center justify-between mb-4">
         <h2 className="text-xl font-semibold">{title}</h2>
         {selectedId && expanded && (
           <button
             type="button"
-            onClick={() => setExpanded(false)}
-            onKeyDown={(e) => activateOnEnter(e, () => setExpanded(false))}
+            onClick={collapseToCard}
+            onKeyDown={(e) => activateOnEnter(e, collapseToCard)}
             // Named per column. Every open column with a selection renders one
             // of these, so a bare "Collapse" is neither distinguishable to a
             // screen-reader user moving across the cascade nor unambiguous as a
@@ -595,132 +577,188 @@ function EntitySelector({
           </button>
         )}
       </div>
-      {showSearch && (
-        <Input
-          bare
-          type="text"
-          value={searchFilter}
-          onChange={(e) => setSearchFilter(e.target.value)}
-          // Unique per-column class (mb-search-<slug>) so Maestro web's
-          // inputText targets THIS column's box. When two columns are open
-          // and both have >8 items (e.g. Sports + Sets), every search box
-          // otherwise shares one className; Maestro's createXPathFromElement
-          // builds a non-unique class XPath and types into the FIRST box on
-          // the page instead of the tapped one (NEO-46: pg-suggestions-0 was
-          // typed into Sports → "No matches found"; Sets never filtered).
-          // Same fix class as the mb-field-<slug> inputs. aria-label alone
-          // doesn't help — inputText keys off className, not aria-label.
-          className={`mb-search-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")} w-full p-2 mb-3 text-sm`}
-          placeholder={`Search ${title.toLowerCase()}...`}
-          aria-label={`Search ${title.toLowerCase()}`}
-        />
-      )}
-      {rows.length === 0 ? (
-        <div className="space-y-2 max-h-[400px] overflow-y-auto">
-          <div className="text-sm text-gray-500 dark:text-gray-400 py-2">
-            {emptyText}
-          </div>
+      {/* NEO-224 — rendered in EVERY open column, loading included, and no
+          longer only past eight rows: it is the column's single Tab stop and
+          the thing the cascade focuses, and on a short column it is still how
+          a keyboard operator picks ("bas", Enter). Exactly one combobox per
+          open column is the contract `SetSelector.tsx` relies on.
+
+          The aria-label and placeholder strings are byte-identical to the
+          pre-NEO-224 box: ~40 flows target `id: "Search years"` and
+          `text: ".*Search sets.*"`. The Input primitive never emits a DOM id,
+          which keeps that aria-label the box's resource-id. */}
+      <Input
+        bare
+        ref={inputRef}
+        type="text"
+        role="combobox"
+        aria-autocomplete="list"
+        aria-expanded={!loading && rows.length > 0}
+        aria-controls={loading ? undefined : popupId}
+        aria-activedescendant={
+          highlighted !== null && !loading ? optionDomId(highlighted) : undefined
+        }
+        autoComplete="off"
+        spellCheck={false}
+        value={searchFilter}
+        onChange={(e) => setSearchFilter(e.target.value)}
+        onKeyDown={onSearchKeyDown}
+        // Unique per-column class (mb-search-<slug>) so Maestro web's
+        // inputText targets THIS column's box. When two columns are open,
+        // every search box otherwise shares one className; Maestro's
+        // createXPathFromElement builds a non-unique class XPath and types into
+        // the FIRST box on the page instead of the tapped one (NEO-46:
+        // pg-suggestions-0 was typed into Sports → "No matches found"; Sets
+        // never filtered). Same fix class as the mb-field-<slug> inputs.
+        // aria-label alone doesn't help — inputText keys off className.
+        className={`mb-search-${title.toLowerCase().replace(/[^a-z0-9]+/g, "-")} w-full p-2 mb-3 text-sm`}
+        placeholder={`Search ${title.toLowerCase()}...`}
+        aria-label={`Search ${title.toLowerCase()}`}
+      />
+      {loading ? (
+        // NEO-167 — keep the heading on screen while the read is in flight.
+        //
+        // This used to be `return <div>Loading {title}...</div>`, which removed
+        // the column's identity text from the DOM for as long as
+        // `getSelectorOptions` took. Maestro matches a selector as a
+        // FULL-STRING regex, so `visible: "Variant Types"` cannot match
+        // "Loading variant types…" — every flow asserting on a column heading
+        // failed outright on a slow read (CI run 31839119469).
+        //
+        // SCOPE IS LOAD-BEARING. The heading is absent in TWO situations and
+        // only the second is the defect:
+        //   1. Column not open — EntityColumn returns null on `!isVisible`, so
+        //      this component never renders. Flows rely on that: they use
+        //      heading visibility to detect that a selection opened the NEXT
+        //      column (`when: notVisible: "Manufacturers"`). That still works,
+        //      because this branch is only reachable once the column is mounted.
+        //   2. Column open, read in flight — here.
+        // Do not "simplify" this by lifting the heading above the `isVisible`
+        // gate; that would make every guard in (1) permanently false.
+        //
+        // EXACTLY ONE placeholder row. Keep it that way. The columns sit ABOVE
+        // the card checklist, so every pixel added here pushes the checklist
+        // down in a 625px headless viewport: a five-row skeleton put "Fetch
+        // from Marketplaces" at y=620..652 (15.6% visible against a required
+        // 50%), and the seed flow failed with a CDP error that reads like a
+        // driver bug and is really a layout bug (NEO-47, NEO-155: height above
+        // a fold-sensitive control is never free). Deliberately NOT animated:
+        // an infinite animation on a screen a coordinate-tap driver works on is
+        // the movement NEO-85 removed, and static is the better reduced-motion
+        // default.
+        <div
+          className="space-y-2"
+          role="status"
+          aria-label={`Loading ${title.toLowerCase()}`}
+        >
+          <div className="h-[50px] rounded-md border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700" />
         </div>
       ) : (
-        <div
-          ref={listRef}
-          // The list of choices IS a listbox. The role goes on the container
-          // that ALREADY existed (same node, same class string) rather than a
-          // new wrapper: Maestro reads a view hierarchy off this DOM and ~105
-          // flows target these rows, so the shape stays byte-identical and only
-          // attributes are added.
-          //
-          // Named with the column title, which is the same string the <h2>
-          // above already shows — the listbox is present exactly when that
-          // heading is, so this adds no name to the screen that was not already
-          // on it.
-          role="listbox"
-          aria-label={title}
-          onKeyDown={onListKeyDown}
-          className="space-y-2 max-h-[400px] overflow-y-auto"
-        >
-          {rows.map((item: SelectorItem, index: number) => {
-            const pinned = isPinnedItem(item) ? item.__pinned : null;
-            const pd = pinned ? null : getPlatformData(item);
-            const showPills = pinned ? false : (isItemTerminal?.(item) ?? false);
-            const select = () => {
-              onSelect(item._id);
-              setExpanded(false);
-              setSearchFilter("");
-            };
-            return (
-              <button
-                key={item._id}
-                type="button"
-                // NEO-237: a pinned VIEW carries its full accessible name — it
-                // says what the view shows, not just what it is called — and
-                // the name is still its visible text. Data rows carry none:
-                // their visible text is the whole name.
-                aria-label={pinned?.ariaLabel}
-                // `option`, not the implicit `button`: these are the mutually
-                // exclusive choices of one column, and `aria-selected` is what
-                // says which one is chosen. `aria-pressed` (a toggle-button
-                // property) was the previous approximation and is NOT supported
-                // on `option`, so the two must never both be present — this is
-                // the reconciliation.
-                role="option"
-                aria-selected={selectedId === item._id}
-                // Roving tabindex: exactly one row in the column is tabbable.
-                tabIndex={index === rovingIndex ? 0 : -1}
-                // Pointer, arrow key and Tab all end up here, so the roving
-                // stop follows focus from every input method without each of
-                // them having to remember to move it.
-                onFocus={() => setActiveOptionId(item._id)}
-                onClick={select}
-                // A synthetic KeyboardEvent has no default action, so a focused
-                // row is NOT clicked by `pressKey: Enter` — the row has to
-                // activate itself. Harmless for a real keypress, which this
-                // handler consumes instead of letting it click twice.
-                onKeyDown={(e) => activateOnEnter(e, select)}
-                className={`w-full text-left p-3 rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] ${
-                  selectedId === item._id
-                    ? `${selectedColor}`
-                    : "bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600"
-                }${
-                  // A pinned view is a lens on the column, not one of its
-                  // rows: the same row geometry (so the listbox reads as one
-                  // list and the driver's row taps land the same way) with a
-                  // rail in the accent blue down its left edge — the one
-                  // colour the cascade does not already spend on a state.
-                  pinned ? " border-l-4 border-l-[#00C2FF]" : ""
-                }`}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="font-semibold">
-                    {nameOf(item)}
-                  </span>
-                  {showPills && pd?.sportlots && (
-                    <span className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">
-                      SL
-                    </span>
-                  )}
-                  {showPills && pd?.bsc && (
-                    <span className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">
-                      BSC
-                    </span>
-                  )}
-                </div>
-                {pinned?.description && (
-                  <div className="text-sm text-gray-600 dark:text-gray-400">
-                    {pinned.description}
-                  </div>
-                )}
-                {!pinned && getDescription && getDescription(item) && (
-                  <div className="text-sm text-gray-600 dark:text-gray-400">
-                    {getDescription(item)}
-                  </div>
-                )}
-              </button>
-            );
-          })}
+        // The `aria-controls` target (see `popupId`): a plain wrapper with no
+        // class and no name, always rendered once the column has loaded so the
+        // reference never dangles.
+        <div id={popupId}>
+          {rows.length === 0 ? (
+            <div className="space-y-2 max-h-[400px] overflow-y-auto">
+              <div className="text-sm text-gray-500 dark:text-gray-400 py-2">
+                {emptyText}
+              </div>
+            </div>
+          ) : (
+            <div
+              ref={listRef}
+              // The list of choices IS a listbox, named with the column title
+              // (the same string the <h2> above already shows). Same class
+              // string as before NEO-224: Maestro reads a view hierarchy off
+              // this DOM and ~105 flows target these rows.
+              role="listbox"
+              aria-label={title}
+              className="space-y-2 max-h-[400px] overflow-y-auto"
+            >
+              {rows.map((item: SelectorItem) => {
+                const pinned = isPinnedItem(item) ? item.__pinned : null;
+                const pd = pinned ? null : getPlatformData(item);
+                const showPills = pinned
+                  ? false
+                  : (isItemTerminal?.(item) ?? false);
+                const isSelected = selectedId === item._id;
+                const isHighlighted = highlighted === item._id;
+                const pick = () => select(item._id);
+                return (
+                  <button
+                    key={item._id}
+                    // The `aria-activedescendant` target. NOTE for flows: a DOM
+                    // id becomes maestro-web's resource-id ahead of the
+                    // aria-label, so the pinned entry is no longer reachable
+                    // as `id: "All Brands — every set in …"`.
+                    id={optionDomId(item._id)}
+                    type="button"
+                    // NEO-237: a pinned VIEW carries its full accessible name —
+                    // it says what the view shows, not just what it is called —
+                    // and the name is still its visible text. Data rows carry
+                    // none: their visible text is the whole name.
+                    aria-label={pinned?.ariaLabel}
+                    // `option`, not the implicit `button`: these are the
+                    // mutually exclusive choices of one column.
+                    // `aria-selected` is the COMMITTED row; the keyboard
+                    // highlight is carried by the search box's
+                    // `aria-activedescendant` alone.
+                    role="option"
+                    aria-selected={isSelected}
+                    // Never a Tab stop: the search box is the column's one stop
+                    // and the arrows move the highlight from there.
+                    tabIndex={-1}
+                    onClick={pick}
+                    // A synthetic KeyboardEvent has no default action, so a
+                    // focused row is NOT clicked by `pressKey: Enter`. Rows are
+                    // not focusable by key any more, but a pointer press can
+                    // still focus one; Enter there picks it, once.
+                    onKeyDown={(e) => activateOnEnter(e, pick)}
+                    className={`w-full text-left p-3 rounded-md border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] ${
+                      isSelected
+                        ? selectedColor
+                        : isHighlighted
+                          ? HIGHLIGHT_TINT
+                          : ROW_IDLE
+                    }${isHighlighted ? ` ${HIGHLIGHT_STROKE}` : ""}${
+                      // A pinned view is a lens on the column, not one of its
+                      // rows: the same row geometry with a rail in the accent
+                      // blue down its left edge — the one colour the cascade
+                      // does not already spend on a state.
+                      pinned ? " border-l-4 border-l-[#00C2FF]" : ""
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="font-semibold">{nameOf(item)}</span>
+                      {showPills && pd?.sportlots && (
+                        <span className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">
+                          SL
+                        </span>
+                      )}
+                      {showPills && pd?.bsc && (
+                        <span className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">
+                          BSC
+                        </span>
+                      )}
+                    </div>
+                    {pinned?.description && (
+                      <div className="text-sm text-gray-600 dark:text-gray-400">
+                        {pinned.description}
+                      </div>
+                    )}
+                    {!pinned && getDescription && getDescription(item) && (
+                      <div className="text-sm text-gray-600 dark:text-gray-400">
+                        {getDescription(item)}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
-      {rows.length > 0 && filteredItems.length === 0 && (
+      {!loading && rows.length > 0 && filteredItems.length === 0 && (
         // Pinned entries only: the view is listed, the data rows are not.
         <div className="text-sm text-gray-500 dark:text-gray-400 py-2">
           {emptyText}
