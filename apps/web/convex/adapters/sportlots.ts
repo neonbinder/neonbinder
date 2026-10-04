@@ -47,6 +47,14 @@ import { SL_SELECTOR_BUDGET } from "./selectorBudgets";
 // backstop for any caller that reaches it directly.
 import { isPlatformPaused } from "../marketplacePause";
 import { pausedSyncMessage } from "../selectorSyncStore";
+// NEO-321 follow-up — a structured reason beside `success: false`, and the
+// self-imposed-limiter log line.
+import {
+  fetchFailureValidator,
+  isAbortTimeout,
+  logMarketplaceLimiter,
+  type FetchFailure,
+} from "../lib/marketplaceFetchFailure";
 
 type Level = "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert" | "parallel";
 
@@ -76,21 +84,49 @@ const SL_SELECTOR_FETCH_MAX_ATTEMPTS = SL_SELECTOR_BUDGET.maxAttempts;
 const SL_SELECTOR_EMPTY_RETRY_BACKOFF_MS =
   SL_SELECTOR_BUDGET.emptyRetryBackoffMs;
 
+/**
+ * NEO-321 follow-up — our own abort timer fired on a SportLots request. A
+ * distinct class so a caller can tell it from a network throw without reading
+ * the message; the message is unchanged.
+ */
+export class SlFetchTimeoutError extends Error {
+  constructor(
+    readonly timeoutMs: number,
+    url: string,
+  ) {
+    super(`SportLots request timed out after ${timeoutMs / 1000}s: ${url}`);
+  }
+}
+
+/** The page a SportLots URL names (`listcards`), never its host or query. */
+function slPageName(url: string): string {
+  const path = url.split(/[?#]/)[0];
+  return (path.split("/").pop() ?? "").replace(/\.tpl$/, "") || "unknown";
+}
+
 async function slFetch(
   url: string,
   init: RequestInit,
   timeoutMs: number = SL_FETCH_TIMEOUT_MS,
 ): Promise<Response> {
+  const startedAt = Date.now();
   try {
     return await fetch(url, {
       ...init,
       signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
-    if (err instanceof Error && err.name === "TimeoutError") {
-      throw new Error(
-        `SportLots request timed out after ${timeoutMs / 1000}s: ${url}`,
-      );
+    if (isAbortTimeout(err)) {
+      // NEO-321 follow-up — our timer, not SportLots: log it as a limiter.
+      logMarketplaceLimiter({
+        limiter: "sl_fetch_timeout",
+        platform: "sportlots",
+        operation: slPageName(url),
+        waitedMs: Date.now() - startedAt,
+        timeoutMs,
+        outcome: "aborted",
+      });
+      throw new SlFetchTimeoutError(timeoutMs, url);
     }
     throw err;
   }
@@ -1517,6 +1553,14 @@ export const fetchSportLotsChecklist = action({
       }),
     ),
     message: v.optional(v.string()),
+    // NEO-321 follow-up — why the fetch failed, beside `success: false`
+    // (which page, how many before it succeeded). Diagnostic only: no URL,
+    // cookie or marketplace string.
+    failure: v.optional(fetchFailureValidator),
+    // Page requests sent (the empty end-of-set page included) and the slowest
+    // one's time — on success, for the caller's timing log.
+    pages: v.optional(v.number()),
+    slowestPageMs: v.optional(v.number()),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -1544,6 +1588,7 @@ export const fetchSportLotsChecklist = action({
         success: false,
         cards: [],
         message: pausedSyncMessage(["sportlots"]),
+        failure: { kind: "refused" as const, timedOut: false },
       };
     }
 
@@ -1554,6 +1599,7 @@ export const fetchSportLotsChecklist = action({
           success: false,
           cards: [],
           message: "No SportLots session cookie. Re-authenticate from Profile.",
+          failure: { kind: "no_sign_in" as const, timedOut: false },
         };
       }
 
@@ -1593,6 +1639,7 @@ export const fetchSportLotsChecklist = action({
           success: false,
           cards: [],
           message: SL_UNSCOPED_MESSAGE,
+          failure: { kind: "refused" as const, timedOut: false },
         };
       }
 
@@ -1674,6 +1721,12 @@ export const fetchSportLotsChecklist = action({
       const SL_MAX_PAGES = 200;
       let start = 1;
       let lastPageFingerprint = "";
+      // NEO-321 follow-up — where a failure landed, and how the pages timed.
+      let pagesOk = 0;
+      let slowestPageMs = 0;
+      const pageFailure = (
+        failure: Omit<FetchFailure, "pageStart" | "pagesOk">,
+      ): FetchFailure => ({ ...failure, pageStart: start, pagesOk });
 
       for (let page = 0; page < SL_MAX_PAGES; page++) {
         const formData = new URLSearchParams({
@@ -1686,35 +1739,70 @@ export const fetchSportLotsChecklist = action({
           start: String(start),
         });
 
-        const response = await slFetch(LISTCARDS_URL, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/x-www-form-urlencoded",
-            Cookie: sessionCookie,
-          },
-          body: formData.toString(),
-        });
+        // NEO-321 follow-up — a throw on THIS page (our 30s timer, or the
+        // network) is answered here, with the page it hit, instead of falling
+        // to the outer catch with no position. The message is unchanged.
+        const pageStartedAt = Date.now();
+        let response: Response;
+        let html: string;
+        try {
+          response = await slFetch(LISTCARDS_URL, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/x-www-form-urlencoded",
+              Cookie: sessionCookie,
+            },
+            body: formData.toString(),
+          });
 
-        if (!response.ok) {
-          // Fail the whole fetch rather than silently returning a partial
-          // checklist — a truncated set is exactly the bug this loop fixes,
-          // and committing one would persist missing cards.
+          if (!response.ok) {
+            await response.text().catch(() => "");
+            // Fail the whole fetch rather than silently returning a partial
+            // checklist — a truncated set is exactly the bug this loop fixes,
+            // and committing one would persist missing cards.
+            return {
+              success: false,
+              cards: [],
+              message: `SportLots HTTP error: ${response.status}`,
+              failure: pageFailure({
+                kind: "http_error",
+                httpStatus: response.status,
+                timedOut: false,
+              }),
+            };
+          }
+
+          // The body read is under the same abort timer as the request.
+          html = await response.text();
+        } catch (err) {
+          const timedOut =
+            err instanceof SlFetchTimeoutError || isAbortTimeout(err);
           return {
             success: false,
             cards: [],
-            message: `SportLots HTTP error: ${response.status}`,
+            message: `SportLots error: ${err instanceof Error ? err.message : "Unknown error"}`,
+            failure: pageFailure(
+              timedOut
+                ? { kind: "timeout", timedOut: true, timeoutMs: SL_FETCH_TIMEOUT_MS }
+                : { kind: "network", timedOut: false },
+            ),
           };
         }
-
-        const html = await response.text();
+        slowestPageMs = Math.max(slowestPageMs, Date.now() - pageStartedAt);
 
         if (isSessionExpired(html)) {
           return {
             success: false,
             cards: [],
             message: "SportLots session expired. Re-authenticate from Profile.",
+            failure: pageFailure({
+              kind: "signed_out",
+              httpStatus: response.status,
+              timedOut: false,
+            }),
           };
         }
+        pagesOk++;
 
         // Collect this page separately so an unchanged page can be detected
         // and discarded BEFORE it contributes duplicates.
@@ -1823,6 +1911,8 @@ export const fetchSportLotsChecklist = action({
         success: true,
         cards,
         message: `Found ${cards.length} cards from SportLots`,
+        pages: pagesOk,
+        slowestPageMs,
       };
     } catch (error) {
       console.error("[fetchSportLotsChecklist] Error:", error);
@@ -1830,6 +1920,10 @@ export const fetchSportLotsChecklist = action({
         success: false,
         cards: [],
         message: `SportLots error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        failure:
+          error instanceof SlFetchTimeoutError || isAbortTimeout(error)
+            ? { kind: "timeout" as const, timedOut: true, timeoutMs: SL_FETCH_TIMEOUT_MS }
+            : { kind: "unknown" as const, timedOut: false },
       };
     }
   },

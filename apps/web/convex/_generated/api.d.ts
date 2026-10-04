@@ -63,6 +63,7 @@ import type * as lib_batchIdReads from "../lib/batchIdReads.js";
 import type * as lib_cloudRunAuth from "../lib/cloudRunAuth.js";
 import type * as lib_easypostWebhookSignature from "../lib/easypostWebhookSignature.js";
 import type * as lib_entityNearMatch from "../lib/entityNearMatch.js";
+import type * as lib_marketplaceFetchFailure from "../lib/marketplaceFetchFailure.js";
 import type * as lib_marketplacePause from "../lib/marketplacePause.js";
 import type * as lib_pairing_dhash from "../lib/pairing/dhash.js";
 import type * as lib_pairing_names from "../lib/pairing/names.js";
@@ -188,6 +189,7 @@ declare const fullApi: ApiFromModules<{
   "lib/cloudRunAuth": typeof lib_cloudRunAuth;
   "lib/easypostWebhookSignature": typeof lib_easypostWebhookSignature;
   "lib/entityNearMatch": typeof lib_entityNearMatch;
+  "lib/marketplaceFetchFailure": typeof lib_marketplaceFetchFailure;
   "lib/marketplacePause": typeof lib_marketplacePause;
   "lib/pairing/dhash": typeof lib_pairing_dhash;
   "lib/pairing/names": typeof lib_pairing_names;
