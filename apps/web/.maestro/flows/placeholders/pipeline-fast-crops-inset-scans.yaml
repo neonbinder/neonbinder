@@ -106,7 +106,7 @@ tags:
     timeout: 7000
 
 # ── Step 3: all six are read on the FAST service ──────────────────────────────
-# BUDGET: 60000 ms, PENDING Jason's sign-off (NEO-320) — this is a live compute
+# BUDGET: 60000 ms, approved by Jason 2026-10-04 (NEO-320) — this is a live compute
 # round-trip (each photo goes GCS → the fast Cloud Run service → Google Vision,
 # twice for a quad crop: the baseline orient and the crop's text gate), not an
 # in-app response, so it is above R5's 7s bar and needs the sign-off recorded
