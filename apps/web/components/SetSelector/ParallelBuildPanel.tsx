@@ -237,6 +237,15 @@ const plural = (count: number, one: string, many: string) =>
 
 const SIDES = ["bsc", "sportlots"] as const;
 
+/**
+ * "Base's", "Anime's" — and "Gold Wave Refractors'": a name ending in "s"
+ * takes a bare apostrophe. The one place the build copy forms a possessive
+ * from a row's name (here and in `BaseParallelsBuildSection`).
+ */
+export function possessive(name: string): string {
+  return /s$/i.test(name) ? `${name}'` : `${name}'s`;
+}
+
 export const WAITING_TEXT = "Waiting";
 export const BUILDING_TEXT = "Building…";
 export const SKIPPED_TEXT = "Skipped — not linked to a marketplace yet";
@@ -286,7 +295,7 @@ export function builtText(
   if (!result.rebuilt && result.copied === 0) {
     const total = result.copied + result.notCopied;
     return [
-      `Nothing copied — none of ${source}'s ${plural(total, "card", "cards")} turned up on this parallel's marketplace checklists`,
+      `Nothing copied — none of ${possessive(source)} ${plural(total, "card", "cards")} turned up on this parallel's marketplace checklists`,
       ...extraClauses,
     ].join(", ");
   }
@@ -338,7 +347,7 @@ export function builtText(
     (result.legacyLinksRemoved?.sportlots ?? 0);
   if (legacy > 0) {
     parts.push(
-      `${plural(legacy, "old link", "old links")} to ${source}'s cards removed`,
+      `${plural(legacy, "old link", "old links")} to ${possessive(source)} cards removed`,
     );
   }
   parts.push(...extraClauses);
@@ -483,8 +492,8 @@ export function rebuildConfirmCopy(
   cardCount: number,
 ): { title: string; description: string } {
   return {
-    title: `Replace ${parallelValue}'s ${plural(cardCount, "card", "cards")} with a fresh copy of ${sourceValue}'s?`,
-    description: `Every card is made fresh from ${sourceValue}: hand edits on ${parallelValue}'s cards are replaced. Cards keep their SKU when they're the same card. Cards ${parallelValue}'s marketplaces don't list are left off.`,
+    title: `Replace ${possessive(parallelValue)} ${plural(cardCount, "card", "cards")} with a fresh copy of ${possessive(sourceValue)}?`,
+    description: `Every card is made fresh from ${sourceValue}: hand edits on ${possessive(parallelValue)} cards are replaced. Cards keep their SKU when they're the same card. Cards ${possessive(parallelValue)} marketplaces don't list are left off.`,
   };
 }
 

@@ -10,6 +10,7 @@ import ParallelBuildPanel, {
   PARALLEL_BUILD_HEADING_ID,
   SLEEVE_TONE,
   planFailedText,
+  possessive,
   type ParallelBuildPlan,
   type ParallelBuildRunner,
   type ParallelLine,
@@ -157,7 +158,7 @@ export function summaryText(tally: ParallelTally): string {
 
 /** What a run does, said once under the counts. */
 export function explainerText(sourceValue: string): string {
-  return `Each one gets a fresh copy of ${sourceValue}'s cards, linked to its own marketplace cards.`;
+  return `Each one gets a fresh copy of ${possessive(sourceValue)} cards, linked to its own marketplace cards.`;
 }
 
 /**
@@ -168,7 +169,7 @@ export function replaceConfirmCopy(
   sourceValue: string,
   tally: ParallelTally,
 ): { title: string; description: string } {
-  const title = `Replace the cards on ${tally.replaced} of ${plural(tally.total, "parallel", "parallels")} with fresh copies of ${sourceValue}'s?`;
+  const title = `Replace the cards on ${tally.replaced} of ${plural(tally.total, "parallel", "parallels")} with fresh copies of ${possessive(sourceValue)}?`;
   const description = [
     `Every card on ${tally.replaced === 1 ? "that parallel" : "those parallels"} is made fresh from ${sourceValue}: hand edits are replaced, and a card keeps its SKU when it's the same card.`,
     tally.filled > 0
