@@ -31,22 +31,45 @@
  * but the player in the database is José we should just link that player, not
  * consider them new."
  *
- * ## Why there is NO backfill, and what that means for existing rows
+ * ## What changed in NEO-322: initials
  *
- * Jason, 2026-09-04: "There are no players in production that are staying —
- * when we start building data there I intend to wipe and reload." Dev and
- * preview data is reseeded from the UI on every E2E run, so the only rows
- * carrying a pre-NEO-253 `nameNormalized` are rows that are about to be thrown
- * away.
+ * Periods are deleted, not turned into separators (see `DROPPED_PUNCTUATION`),
+ * so "C.J. Kayfus" keyed as "cj kayfus" while "C. J. Kayfus" keyed as
+ * "c j kayfus". Marketplaces and operators write initials both ways, so a
+ * player NB already held was offered on production as a new person.
  *
- * The consequence, stated plainly so nobody has to rediscover it: **a
- * `nameNormalized` written before this change is STALE for any name that
- * carried a diacritic.** Such a row is unreachable through
- * `by_name_normalized_and_sport_id` with the new key, and a fresh lookup will
- * create a sibling rather than find it. That is acceptable ONLY because the
- * data is disposable. If that ever stops being true, the fix is a re-key pass
- * over `players`, `teams`, `leagues` and `entityReviewSkips` — not a softening
- * of this function.
+ * The rule: after tokenising, every maximal run of TWO OR MORE adjacent tokens
+ * that are each a single letter `a`–`z` is joined into one token, order kept
+ * (`joinInitialRuns`). "C. J. Kayfus", "C J Kayfus", "C.J. Kayfus" and
+ * "CJ Kayfus" all become "cj kayfus"; "N. H. L." becomes "nhl" in the ordered
+ * league key; "Texas A&M" becomes "texas am" before the sort.
+ *
+ * The join runs BEFORE the token sort, and that matters in its own right: the
+ * sort used to scatter initials, so "A. J. Smith" and "J. A. Smith" both keyed
+ * as "a j smith" — two different people on one row. Joined first, they key as
+ * "aj smith" and "ja smith".
+ *
+ * Two things are deliberately left alone:
+ *
+ * - **Digits.** "Big 12" is unchanged, and single digits standing side by
+ *   side are numbers, not initials; joining them would fuse values that the
+ *   name deliberately keeps apart.
+ * - **A lone initial.** A run of one ("P. Mahomes", "Michael A. Taylor") has
+ *   nothing to join with. Absorbing it into a neighbour would change the
+ *   key of every name with a middle initial, for no match gained.
+ *
+ * ## A key change means a re-key on every deployment
+ *
+ * Until NEO-322 this section explained why NEO-253 shipped without a backfill:
+ * no production player was staying. That is no longer true — production now
+ * holds data that stays — so `convex/rekeyEntityNames.ts` exists, and it MUST
+ * be run on every deployment after any change to the chain in this module.
+ *
+ * A stored key built by an older version of this chain is not merely
+ * cosmetic: lookups go through `by_name_normalized_and_sport_id` with the
+ * CURRENT key, so a row carrying a stale key is unreachable, and a fresh lookup
+ * creates a sibling rather than finding it. The fix for a stale key is always
+ * the re-key pass — never a softening of this function to accept both shapes.
  *
  * ## What is deliberately NOT normalised here
  *
@@ -91,8 +114,41 @@ export function foldDiacritics(raw: string): string {
   return raw.normalize("NFD").replace(COMBINING_MARKS, "");
 }
 
+/** One token that is a single letter — an initial once periods are gone. */
+const SINGLE_LETTER = /^[a-z]$/;
+
 /**
- * The normalised tokens of a name, **in source order**.
+ * NEO-322 — join each maximal run of two or more adjacent single-letter tokens
+ * into one token, in order: `["c", "j", "kayfus"]` → `["cj", "kayfus"]`.
+ *
+ * A run of one is left as it is ("p mahomes" stays two tokens), and digits are
+ * never joined ("big 12" is unchanged). Expects tokens already folded,
+ * lowercased and stripped, which is what `entityNameTokens` hands it. See the
+ * module note for why each exclusion exists.
+ */
+export function joinInitialRuns(tokens: readonly string[]): string[] {
+  const out: string[] = [];
+  let run: string[] = [];
+  const flush = () => {
+    if (run.length >= 2) out.push(run.join(""));
+    else out.push(...run);
+    run = [];
+  };
+  for (const token of tokens) {
+    if (SINGLE_LETTER.test(token)) {
+      run.push(token);
+    } else {
+      flush();
+      out.push(token);
+    }
+  }
+  flush();
+  return out;
+}
+
+/**
+ * The normalised tokens of a name, **in source order**, with runs of initials
+ * joined (`joinInitialRuns`).
  *
  * Source order, not the sorted order the dedup keys use, because position
  * carries meaning that sorting destroys: the last token of a player name is the
@@ -101,12 +157,14 @@ export function foldDiacritics(raw: string): string {
  * `normalizeEntityName`, which sorts these.
  */
 export function entityNameTokens(raw: string): string[] {
-  return foldDiacritics(raw)
-    .toLowerCase()
-    .replace(DROPPED_PUNCTUATION, "")
-    .replace(NON_KEY_CHARS, " ")
-    .split(/\s+/)
-    .filter(Boolean);
+  return joinInitialRuns(
+    foldDiacritics(raw)
+      .toLowerCase()
+      .replace(DROPPED_PUNCTUATION, "")
+      .replace(NON_KEY_CHARS, " ")
+      .split(/\s+/)
+      .filter(Boolean),
+  );
 }
 
 /**
