@@ -258,9 +258,15 @@ export function blockedSourceHasNoCards(sourceName?: string): string {
     ? `${sourceName} has no cards yet — save its checklist first`
     : BLOCKED_SOURCE_NO_CARDS;
 }
-/** Only when old cards were actually removed before the build stopped. */
+/**
+ * Only when old cards were actually removed before the build stopped, and
+ * always sent with that `deletedCount`. Deliberately no instruction and no
+ * "cleared": the client's `blockedText` appends ", after N old cards were
+ * removed — build it again", so the operator reads the count and the one
+ * "build it again" once, on every surface (ledger line and row notice).
+ */
 export const BLOCKED_CHANGED_MID_BUILD =
-  "its cards changed partway through the rebuild, and some were already cleared — build it again to put them back";
+  "its cards changed partway through the rebuild";
 /**
  * NEO-321 — the same stop with NOTHING removed (a first build, or a source
  * that moved before any old card went): no claim that anything was cleared.

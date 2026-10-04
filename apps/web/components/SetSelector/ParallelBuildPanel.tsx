@@ -371,6 +371,10 @@ export function sideOnlyText(result: ParallelBuildResult): string | null {
  * "Blocked — {reason}". A block that fired partway through removing the old
  * cards says so, because the parallel is now short of cards:
  * "Blocked — {reason}, after 40 old cards were removed — build it again".
+ * This clause is the ONLY "build it again" on that line: the server's
+ * partial-wipe reason (`BLOCKED_CHANGED_MID_BUILD`) carries neither the
+ * instruction nor its own "cleared", and it is only ever sent with a
+ * `deletedCount` above zero.
  */
 export function blockedText(reason?: string, deleted?: number): string {
   const base = reason ? `Blocked — ${reason}` : "Blocked";
@@ -1006,8 +1010,17 @@ export const SLEEVE_TONE: Record<ParallelLine["kind"], string> = {
   unfinished: "border-amber-700 dark:border-amber-400 bg-transparent",
 };
 
-/** Above this many lines the ledger scrolls inside the panel. */
-const SCROLL_AFTER = 8;
+/**
+ * NEO-321 (Jason, on the preview) — the ledger grows with its lines and the
+ * PAGE scrolls; a short box that showed 5 of 42 lines above an empty screen
+ * was the complaint. Only a run past this many lines (the server caps the
+ * list at 500; real parallel rainbows stop well short of 100) is held to a
+ * viewport-relative height and scrolls inside the panel, so a pathological
+ * run cannot push the checklist under it thousands of pixels down. 100 lines
+ * is ~2,200px, taller than `70vh` on any screen, so a capped ledger is never
+ * shorter than its content while there is room for it.
+ */
+const SCROLL_AFTER = 100;
 
 export default function ParallelBuildPanel({
   run,
@@ -1085,9 +1098,10 @@ export default function ParallelBuildPanel({
   }, []);
 
   /**
-   * Keep the line being built in view INSIDE the ledger. `scrollTop` rather
-   * than `scrollIntoView`, which would also scroll the page under an operator
-   * who is reading something else.
+   * Keep the line being built in view INSIDE a capped ledger (past
+   * SCROLL_AFTER; an uncapped one has nothing of its own to scroll).
+   * `scrollTop` rather than `scrollIntoView`, which would also scroll the
+   * page under an operator who is reading something else.
    */
   useEffect(() => {
     if (!scrolls || run.atIndex === null) return;
@@ -1232,15 +1246,17 @@ export default function ParallelBuildPanel({
 
       <div className="mt-2 text-xs">
         {scrolls ? (
-          // A scroller a keyboard cannot focus cannot be scrolled from the
-          // keyboard; a named, focusable group is the pairing the lint rule
-          // and `ConfirmDialog` already use.
+          // Past SCROLL_AFTER only. A scroller a keyboard cannot focus cannot
+          // be scrolled from the keyboard; a named, focusable group is the
+          // pairing the lint rule and `ConfirmDialog` already use. Below the
+          // threshold the list is plain flow content: no scroller, so no tab
+          // stop and no ring.
           <div
             ref={scrollerRef}
             role="group"
             aria-label={RESULTS_GROUP_LABEL}
             tabIndex={0}
-            className="relative max-h-48 overflow-y-auto pr-1 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
+            className="relative max-h-[70vh] overflow-y-auto pr-1 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
           >
             {list}
           </div>

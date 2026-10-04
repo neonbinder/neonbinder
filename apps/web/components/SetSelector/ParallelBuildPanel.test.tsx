@@ -44,6 +44,9 @@ import ParallelBuildPanel, {
   SOURCE_LOADING_LABEL,
   SOURCE_MISSING_LABEL,
   builtText,
+  blockedText,
+  buildNotice,
+  RESULTS_GROUP_LABEL,
   buildButtonLabel,
   rebuildConfirmCopy,
   useParallelBuildRun,
@@ -670,5 +673,76 @@ describe("ParallelBuildPlaceholder — the slot before the source is known", () 
     fireEvent.keyDown(screen.getByRole("button"), { key: "Enter" });
     expect(mockActionFn).not.toHaveBeenCalled();
     expect(mockQuery).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * NEO-321 (approved copy) — the server's partial-wipe reason is
+ * `BLOCKED_CHANGED_MID_BUILD` in convex/parallelChecklistBuild.ts, mirrored
+ * here because a component test does not import the server module; the
+ * audit test there pins the same literal.
+ */
+const CHANGED_MID_BUILD = "its cards changed partway through the rebuild";
+
+describe("blockedText / buildNotice — a partial wipe says build it again once", () => {
+  test("the ledger line names the count and the instruction exactly once", () => {
+    const text = blockedText(CHANGED_MID_BUILD, 3);
+    expect(text).toBe(
+      "Blocked — its cards changed partway through the rebuild, after 3 old cards were removed — build it again",
+    );
+    expect(text.match(/build it again/g)).toHaveLength(1);
+    expect(text).not.toMatch(/clear/i);
+    expect(blockedText(CHANGED_MID_BUILD, 1)).toBe(
+      "Blocked — its cards changed partway through the rebuild, after 1 old card was removed — build it again",
+    );
+  });
+
+  test("the row notice reads the same sentence, named for its parallel", () => {
+    const result = {
+      ...builtResult(),
+      status: "blocked",
+      blockedReason: CHANGED_MID_BUILD,
+      deletedCount: 40,
+    } as ParallelBuildResult;
+    const notice = buildNotice(result, "Gold Wave Refractors", "Base");
+    expect(notice.tone).toBe("error");
+    expect(notice.text).toBe(
+      "Gold Wave Refractors — Blocked — its cards changed partway through the rebuild, after 40 old cards were removed — build it again",
+    );
+    expect(notice.text.match(/build it again/g)).toHaveLength(1);
+  });
+
+  test("a block that removed nothing adds no clause", () => {
+    expect(blockedText("something changed partway through the build — build it again", 0)).toBe(
+      "Blocked — something changed partway through the build — build it again",
+    );
+  });
+});
+
+describe("ParallelBuildPanel — the ledger grows with its lines (NEO-321)", () => {
+  const entries = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `parallel-${i}` as unknown as Id<"selectorOptions">,
+      value: `Anime Parallel ${i + 1}`,
+      line: { kind: "built" as const, result: builtResult() },
+    }));
+
+  test("a 42-line run is plain flow content: every line rendered, no inner scroller, no extra tab stop", () => {
+    render(<ParallelBuildPanel run={baseRun({ entries: entries(42) })} onStop={() => {}} />);
+    expect(screen.getAllByRole("listitem")).toHaveLength(42);
+    expect(screen.queryByRole("group", { name: RESULTS_GROUP_LABEL })).toBeNull();
+    const list = screen.getByRole("list");
+    for (let el = list.parentElement; el && el.tagName !== "SECTION"; el = el.parentElement) {
+      expect(el.className).not.toMatch(/max-h-|overflow-y-/);
+      expect(el.hasAttribute("tabindex")).toBe(false);
+    }
+  });
+
+  test("only a pathological run is held to a viewport-relative height, and stays keyboard-scrollable", () => {
+    render(<ParallelBuildPanel run={baseRun({ entries: entries(101) })} onStop={() => {}} />);
+    const scroller = screen.getByRole("group", { name: RESULTS_GROUP_LABEL });
+    expect(scroller.className).toMatch(/max-h-\[70vh\]/);
+    expect(scroller.className).toMatch(/overflow-y-auto/);
+    expect(scroller.getAttribute("tabindex")).toBe("0");
   });
 });

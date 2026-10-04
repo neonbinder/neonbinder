@@ -267,6 +267,16 @@ describe("the changed-mid-build sentence is true to what was removed", () => {
     expect(BLOCKED_CHANGED_NOTHING_CLEARED).not.toMatch(/clear/i);
   });
 
+  test("the partial-wipe sentence leaves the count and the instruction to the client", () => {
+    // ParallelBuildPanel's `blockedText` appends ", after N old cards were
+    // removed — build it again"; a second instruction or a second word for
+    // the removal here would read twice on the same line.
+    expect(BLOCKED_CHANGED_MID_BUILD).toBe("its cards changed partway through the rebuild");
+    expect(BLOCKED_CHANGED_MID_BUILD).not.toMatch(/build it again|clear|remov/i);
+    // With nothing removed there is no client clause, so this one says it.
+    expect(BLOCKED_CHANGED_NOTHING_CLEARED.match(/build it again/g)).toHaveLength(1);
+  });
+
   test("a first build whose Base moves during the fetch says nothing was cleared", async () => {
     const t = convexTest(schema, modules);
     const { setName, base, gold } = await seedSet(t);
