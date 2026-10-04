@@ -47,6 +47,21 @@
  * transaction; every later page requires the run's first created card to still
  * exist. Whichever run loses that race stops with `BLOCKED_CHANGED_MID_BUILD`.
  *
+ * ## What a parallel is built FROM (NEO-321)
+ *
+ * The same build serves two shapes, told apart by level and NB flags only —
+ * never by a row's name (`resolveBuildSource`):
+ *
+ *   - a `parallel`-level row is built from its parent INSERT (NEO-312);
+ *   - an `insert`-level row under a variantType whose `variantRole` is
+ *     `"parallel"` (a parallel of the base set) is built from the set's BASE:
+ *     the exactly-one sibling variantType carrying `metadata.isBase`
+ *     (Jason D1, 2026-10-03).
+ *
+ * Everything else about the build — the side gate, the link key, the blocks,
+ * the copy — is the same for both; "the insert" in older comments below reads
+ * as "the source row" for a base parallel.
+ *
  * ## Operator-facing words
  *
  * `blockedReason` and every ConvexError here are read by an operator. They are
@@ -104,6 +119,8 @@ import { teamFullName } from "../lib/teams/team-name";
 import { deleteCardPlayerLinks } from "./cardPlayerLinks";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { safeMarketplaceText } from "../lib/marketplace/safe-text";
+import { derivedVariantFlags, variantTypeRole } from "./variantRole";
+import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 
 // ---------------------------------------------------------------------------
 // Bounds
@@ -147,6 +164,35 @@ const LIST_BLOCK_CARD_BUDGET = 4000;
 const LIST_BLOCK_LOOKUP_BUDGET = 1000;
 const LIST_BLOCK_CARDS_PER_PARALLEL = 200;
 /**
+ * NEO-321 (security audit N1) — the read BYTES every bounded read here leaves
+ * unread in its transaction's 16 MiB budget, asked of Convex before the read
+ * (`ctx.meta.getTransactionMetrics()`), as the NEO-312 holder walks do
+ * (`WALK_BYTES_RESERVE`). Past it the list query stops its block scan (the
+ * parallels still list; `blocked` is left unset, as past the card budget).
+ */
+export const READ_BYTES_RESERVE = 4 * 1024 * 1024;
+/**
+ * NEO-321 (audit N1) — the card loaders page across transactions. Each page is
+ * bounded by rows AND bytes (`paginate`'s `maximumBytesRead`), so no single
+ * read of a big Base with fat documents can reach the 16 MiB limit.
+ */
+export const CARD_LOAD_PAGE = 1000;
+export const CARD_LOAD_PAGE_BYTES = 4 * 1024 * 1024;
+/**
+ * NEO-321 (audit N1) — the most card bytes one build reads off its source, or
+ * off the parallel it replaces, summed over pages. Past it the build is
+ * refused with the too-many-cards sentence, exactly like the 5,000-card cap.
+ */
+export const MAX_CARD_BYTES_FOR_BUILD = 48 * 1024 * 1024;
+/** Bytes per block-check page (`checkParallelBuildBlocksPage`). */
+const BLOCK_CHECK_PAGE_BYTES = 4 * 1024 * 1024;
+/** Room left in this transaction's read budget for one more read? (audit N1) */
+async function roomToRead(ctx: { meta: QueryCtx["meta"] }): Promise<boolean> {
+  return (await ctx.meta.getTransactionMetrics()).bytesRead.remaining >= READ_BYTES_RESERVE;
+}
+/** Bytes per delete page (`deleteParallelCardsPage`). */
+const DELETE_PAGE_BYTES = 4 * 1024 * 1024;
+/**
  * Review state touched within this window is someone's live session and is
  * left alone (the build blocks instead); anything older is abandoned wizard
  * state and the build clears it.
@@ -178,14 +224,60 @@ export const BLOCKED_NO_IDS = "it isn't linked to a marketplace yet";
 /** The no-name fallback of `blockedIdsUnreachable`. */
 export const BLOCKED_IDS_UNREACHABLE =
   "its marketplace links need the set above it linked too — link that first";
+// NEO-321 — "the insert" became a neutral phrase: a base parallel is built
+// from the Base, not an insert.
+// NEO-321 (audit N1) — the two size sentences now cover the byte cap too.
 export const BLOCKED_TOO_MANY_CARDS =
-  "the insert has more than 5,000 cards, which is more than one build can copy";
+  "the checklist it's built from is bigger than one build can copy (more than 5,000 cards, or too much card data)";
 export const BLOCKED_PARALLEL_TOO_MANY_CARDS =
-  "it has more than 5,000 cards, which is more than one rebuild can replace";
+  "it holds more than one rebuild can replace (more than 5,000 cards, or too much card data)";
 export const BLOCKED_NOTHING_MATCHED =
-  "none of the insert's cards turned up on its marketplace checklists, so its cards were left as they were";
+  "none of the cards it's built from turned up on its marketplace checklists, so its cards were left as they were";
+/** NEO-321 — a base parallel whose set has no variantType flagged `isBase`. */
+export const BLOCKED_NO_BASE = "this set has no Base yet";
+/** NEO-321 — more than one variantType of the set is flagged `isBase`. */
+export const BLOCKED_MANY_BASES =
+  "this set has more than one Base, so there's no single checklist to copy";
+/**
+ * NEO-321 (security audit S2) — the set has more variant types than the Base
+ * lookup reads, so "exactly one Base" cannot be known: refused, never guessed.
+ */
+export const BLOCKED_TOO_MANY_VARIANT_TYPES =
+  "this set has more than 200 variant types, so its Base can't be picked out — tidy them up first";
+/** The no-name fallback of `blockedSourceHasNoCards`. */
+export const BLOCKED_SOURCE_NO_CARDS =
+  "the checklist it's built from has no cards yet — save that checklist first";
+
+/**
+ * NEO-321 — the row a parallel is built from holds no cards, so there is
+ * nothing to copy. Runs before anything is fetched and writes nothing (an
+ * insert included). `sourceName` is that NB row's own name.
+ */
+export function blockedSourceHasNoCards(sourceName?: string): string {
+  return sourceName
+    ? `${sourceName} has no cards yet — save its checklist first`
+    : BLOCKED_SOURCE_NO_CARDS;
+}
+/**
+ * Only when old cards were actually removed before the build stopped, and
+ * always sent with that `deletedCount`. Deliberately no instruction and no
+ * "cleared": the client's `blockedText` appends ", after N old cards were
+ * removed — build it again", so the operator reads the count and the one
+ * "build it again" once, on every surface (ledger line and row notice).
+ */
 export const BLOCKED_CHANGED_MID_BUILD =
-  "its cards changed partway through the rebuild, and some were already cleared — build it again to put them back";
+  "its cards changed partway through the rebuild";
+/**
+ * NEO-321 — the same stop with NOTHING removed (a first build, or a source
+ * that moved before any old card went): no claim that anything was cleared.
+ */
+export const BLOCKED_CHANGED_NOTHING_CLEARED =
+  "something changed partway through the build — build it again";
+
+/** The changed-mid-build sentence that is true for `deleted` old cards removed. */
+export function blockedChangedMidBuild(deleted: number): string {
+  return deleted > 0 ? BLOCKED_CHANGED_MID_BUILD : BLOCKED_CHANGED_NOTHING_CLEARED;
+}
 export const BLOCKED_TOO_MANY_SL_SETS =
   "it has more than 10 SportLots sets linked, which is more than one build reads — unlink the extras first";
 export const BLOCKED_TOO_MANY_BSC_SETS =
@@ -277,6 +369,141 @@ function prefixOf(chain: readonly ChainRow[]): string | undefined {
   let prefix: string | undefined;
   for (const row of chain) if (row.cardNumberPrefix) prefix = row.cardNumberPrefix;
   return prefix;
+}
+
+// ---------------------------------------------------------------------------
+// The source a parallel is built from (NEO-321)
+// ---------------------------------------------------------------------------
+
+/** What kind of row a parallel is copied from. */
+export type BuildSourceKind = "insert" | "base";
+
+/**
+ * Variant-type rows read under one set when looking for its Base. A set has a
+ * handful. Past this many the lookup FAILS CLOSED
+ * (`BLOCKED_TOO_MANY_VARIANT_TYPES`): an unread row could be a second Base, so
+ * "exactly one" is unknowable (security audit S2).
+ */
+export const MAX_VARIANT_TYPES_PER_SET = 200;
+
+export type BuildSourceResolution =
+  | {
+      status: "ok";
+      kind: BuildSourceKind;
+      source: Doc<"selectorOptions">;
+      /** The target's own parent: its insert, or its Parallel variant type. */
+      parent: Doc<"selectorOptions">;
+    }
+  /** Not something this build makes; the caller throws `message`. */
+  | { status: "notBuildable"; message: string }
+  /** A base parallel whose set has no single Base; nothing is touched. */
+  | { status: "blocked"; kind: BuildSourceKind; blockedReason: string };
+
+/**
+ * Pure: the Base among a set's variant-type rows, by the NB flag only. The
+ * caller passes every variantType under the setName (its own Parallel type
+ * included — a row carrying `isBase` has role "base", never "parallel").
+ */
+export function pickBaseVariantType<R extends { metadata?: { isBase?: boolean } }>(
+  variantTypes: readonly R[],
+): { base: R } | { blockedReason: string } {
+  const bases = variantTypes.filter((row) => row.metadata?.isBase === true);
+  if (bases.length === 0) return { blockedReason: BLOCKED_NO_BASE };
+  if (bases.length > 1) return { blockedReason: BLOCKED_MANY_BASES };
+  return { base: bases[0] };
+}
+
+/** The Base of the set a Parallel variant type sits in. */
+async function baseOfParallelType(
+  ctx: { db: QueryCtx["db"] },
+  parallelType: Doc<"selectorOptions">,
+): Promise<{ base: Doc<"selectorOptions"> } | { blockedReason: string }> {
+  const setNameId = parallelType.parentId;
+  if (!setNameId) return { blockedReason: BLOCKED_NO_BASE };
+  const siblings = await ctx.db
+    .query("selectorOptions")
+    .withIndex("by_level_and_parent", (q) =>
+      q.eq("level", "variantType").eq("parentId", setNameId),
+    )
+    .take(MAX_VARIANT_TYPES_PER_SET + 1);
+  if (siblings.length > MAX_VARIANT_TYPES_PER_SET) {
+    return { blockedReason: BLOCKED_TOO_MANY_VARIANT_TYPES };
+  }
+  return pickBaseVariantType(siblings);
+}
+
+/**
+ * NEO-321 — the row `target`'s cards are copied from, decided by shape and NB
+ * flags only, never by `value`:
+ *
+ *   - a `parallel`-level row → its parent insert (NEO-312);
+ *   - an `insert`-level row whose parent variant type has role `"parallel"` →
+ *     the exactly-one sibling variant type flagged `isBase`; none, or more
+ *     than one, is `blocked`;
+ *   - anything else → `notBuildable` (`NOT_A_PARALLEL`).
+ *
+ * The list query, the build's context read and every insert page call this
+ * one function, so they cannot disagree about where a parallel comes from.
+ */
+export async function resolveBuildSource(
+  ctx: { db: QueryCtx["db"] },
+  target: Doc<"selectorOptions">,
+): Promise<BuildSourceResolution> {
+  if (target.level === "parallel") {
+    const parent = target.parentId ? await ctx.db.get(target.parentId) : null;
+    if (!parent || parent.level !== "insert") {
+      return { status: "notBuildable", message: NO_INSERT_ABOVE };
+    }
+    return { status: "ok", kind: "insert", source: parent, parent };
+  }
+  if (target.level === "insert") {
+    const parent = target.parentId ? await ctx.db.get(target.parentId) : null;
+    if (
+      parent &&
+      parent.level === "variantType" &&
+      variantTypeRole(parent) === "parallel"
+    ) {
+      const found = await baseOfParallelType(ctx, parent);
+      if ("blockedReason" in found) {
+        return { status: "blocked", kind: "base", blockedReason: found.blockedReason };
+      }
+      return { status: "ok", kind: "base", source: found.base, parent };
+    }
+  }
+  return { status: "notBuildable", message: NOT_A_PARALLEL };
+}
+
+/**
+ * Risk 2 (NEO-321) — the features snapshot a copy starts from, with a WRONG
+ * `cardType` replaced by the one the target's NB flags give.
+ *
+ * A base parallel written before NEO-291 derived its flags was born with
+ * `cardType: "Insert"` (the level-only reading of an `insert`-level row), and
+ * `copyFeaturesForParallel` lets the target's snapshot win on `cardType`, so
+ * every copy would be listed as an insert. The value is recomputed from the
+ * row's level and its parent's role (`derivedVariantFlags`), never its name.
+ *
+ * Only a value that IS the flagless level reading and differs from the flag
+ * reading is replaced: an absent `cardType` stays absent, and a parallel-level
+ * row (always "Parallel" by level) is never changed.
+ */
+export function snapshotForCopies(
+  target: Pick<Doc<"selectorOptions">, "level" | "value" | "features" | "metadata">,
+  parent: Pick<Doc<"selectorOptions">, "metadata"> | null,
+): Record<string, string> | undefined {
+  const snapshot = target.features;
+  const stored = snapshot?.cardType;
+  if (!snapshot || stored === undefined) return snapshot;
+  const flags = {
+    ...(derivedVariantFlags(target.level, parent) ?? {}),
+    ...(target.metadata?.isParallel ? { isParallel: true as const } : {}),
+  };
+  const byFlags = deriveOwnLevelFeatures(target.level, target.value, flags).cardType;
+  const byLevelOnly = deriveOwnLevelFeatures(target.level, target.value).cardType;
+  if (byFlags === undefined || stored === byFlags || stored !== byLevelOnly) {
+    return snapshot;
+  }
+  return { ...snapshot, cardType: byFlags };
 }
 
 export type ParallelSidePlan = {
@@ -497,17 +724,47 @@ function cardLabel(card: { cardNumber: string; cardName: string }): string {
 // ---------------------------------------------------------------------------
 
 /**
- * The parallels of an insert, with what the build needs to show before it
- * runs. A live subscription: a missing or non-insert row answers an empty list
+ * The parallels built from one source, with what the build needs to show
+ * before it runs. A live subscription: a missing row, or one that is neither
+ * an insert nor a Parallel variant type, answers an empty list (no `source`)
  * rather than throwing, so a row deleted under an open panel does not turn it
  * into an error boundary.
  *
+ * `sourceId` is the row the client stands on — the parent of the parallels:
+ *
+ *   - an `insert` row → its `parallel`-level children, built from the insert;
+ *   - a variantType whose NB role is `"parallel"` → its `insert`-level
+ *     children (the base parallels), built from the set's Base. No single
+ *     Base → `source` is absent and `sourceBlocked` says why; the parallels
+ *     are still listed.
+ *
+ * Every listed row resolves (`resolveBuildSource`) to the returned `source`.
+ * `source.hasCards` reads one card (`.first()`).
+ *
  * `sides` is judged on ids alone (no pause), from `planParallelSides`.
  * `blocked` is a budgeted early warning; the build re-checks every card.
+ *
+ * `insertId` is the pre-NEO-321 name of `sourceId`, kept so a client built
+ * before it keeps working through the Convex-before-SPA deploy window. Remove
+ * once that release is out.
  */
 export const getParallelsForBuild = query({
-  args: { insertId: v.id("selectorOptions") },
+  args: {
+    sourceId: v.optional(v.id("selectorOptions")),
+    /** @deprecated NEO-321 — use `sourceId`. */
+    insertId: v.optional(v.id("selectorOptions")),
+  },
   returns: v.object({
+    source: v.optional(
+      v.object({
+        id: v.id("selectorOptions"),
+        value: v.string(),
+        kind: v.union(v.literal("insert"), v.literal("base")),
+        hasCards: v.boolean(),
+      }),
+    ),
+    /** Why there is no `source` for a Parallel variant type (no single Base). */
+    sourceBlocked: v.optional(v.string()),
     parallels: v.array(
       v.object({
         _id: v.id("selectorOptions"),
@@ -521,22 +778,53 @@ export const getParallelsForBuild = query({
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    const insert = await ctx.db.get(args.insertId);
-    if (!insert || insert.level !== "insert") {
+    const parentId = args.sourceId ?? args.insertId;
+    const parent = parentId ? await ctx.db.get(parentId) : null;
+    if (!parentId || !parent) return { parallels: [], truncated: false };
+
+    // Which children are the parallels, and which row they are built from —
+    // by level and NB role only (the same rules as `resolveBuildSource`).
+    let childLevel: "parallel" | "insert";
+    let source: Doc<"selectorOptions"> | undefined;
+    let sourceKind: BuildSourceKind;
+    let sourceBlocked: string | undefined;
+    if (parent.level === "insert") {
+      childLevel = "parallel";
+      source = parent;
+      sourceKind = "insert";
+    } else if (
+      parent.level === "variantType" &&
+      variantTypeRole(parent) === "parallel"
+    ) {
+      childLevel = "insert";
+      sourceKind = "base";
+      const found = await baseOfParallelType(ctx, parent);
+      if ("blockedReason" in found) sourceBlocked = found.blockedReason;
+      else source = found.base;
+    } else {
       return { parallels: [], truncated: false };
     }
-    const { chain: insertChain } = await loadChain(ctx, args.insertId);
+    const sourceRowId = source?._id;
+    const sourceHasCards = sourceRowId
+      ? (await ctx.db
+          .query("cardChecklist")
+          .withIndex("by_selector_option", (q) =>
+            q.eq("selectorOptionId", sourceRowId),
+          )
+          .first()) !== null
+      : false;
+    const { chain: parentChain } = await loadChain(ctx, parentId);
 
     const found = await ctx.db
       .query("selectorOptions")
       .withIndex("by_level_and_parent", (q) =>
-        q.eq("level", "parallel").eq("parentId", args.insertId),
+        q.eq("level", childLevel).eq("parentId", parentId),
       )
       .take(MAX_PARALLELS_PER_INSERT + 1);
     const truncated = found.length > MAX_PARALLELS_PER_INSERT;
-    // The insert's own child order, which is the order its column shows.
+    // The parent's own child order, which is the order its column shows.
     const position = new Map<string, number>(
-      (insert.children ?? []).map((id, i) => [id, i]),
+      (parent.children ?? []).map((id, i) => [id, i]),
     );
     const parallels = found
       .slice(0, MAX_PARALLELS_PER_INSERT)
@@ -550,11 +838,14 @@ export const getParallelsForBuild = query({
     let lookupBudget = LIST_BLOCK_LOOKUP_BUDGET;
     const out = [];
     for (const parallel of parallels) {
-      const plan = planParallelSides([...insertChain, chainRowOf(parallel)]);
-      const take = Math.max(
-        1,
-        Math.min(LIST_BLOCK_CARDS_PER_PARALLEL, cardBudget),
-      );
+      const plan = planParallelSides([...parentChain, chainRowOf(parallel)]);
+      // NEO-321 (audit N1) — past the read-byte reserve the scan stops: one
+      // card is still read per parallel, for `hasCards`, and `blocked` is
+      // judged on it alone (the build re-checks every card).
+      const room = await roomToRead(ctx);
+      const take = room
+        ? Math.max(1, Math.min(LIST_BLOCK_CARDS_PER_PARALLEL, cardBudget))
+        : 1;
       const cards = await ctx.db
         .query("cardChecklist")
         .withIndex("by_selector_option", (q) =>
@@ -570,7 +861,7 @@ export const getParallelsForBuild = query({
         blocked = BLOCKED_SCANS;
       } else {
         for (const card of cards) {
-          if (lookupBudget <= 0) break;
+          if (lookupBudget <= 0 || !room) break;
           lookupBudget--;
           if (await isCrossListingHome(ctx, card._id)) {
             blocked = BLOCKED_CROSS_LISTED;
@@ -587,7 +878,21 @@ export const getParallelsForBuild = query({
         ...(blocked ? { blocked } : {}),
       });
     }
-    return { parallels: out, truncated };
+    return {
+      ...(source
+        ? {
+            source: {
+              id: source._id,
+              value: source.value,
+              kind: sourceKind,
+              hasCards: sourceHasCards,
+            },
+          }
+        : {}),
+      ...(sourceBlocked ? { sourceBlocked } : {}),
+      parallels: out,
+      truncated,
+    };
   },
 });
 
@@ -610,41 +915,74 @@ const sideCardListsValidator = v.object({
   sportlots: v.array(v.string()),
 });
 
+const sourceKindValidator = v.union(v.literal("insert"), v.literal("base"));
+
+/**
+ * What one build needs to know before it asks anything: where the target is
+ * built from (`resolveBuildSource`), the side plan, both prefixes and whether
+ * the source holds any card. A base parallel whose set has no single Base
+ * answers `{ blockedReason, sourceKind }` and nothing else.
+ */
 export const loadParallelBuildContext = internalQuery({
   args: { parallelId: v.id("selectorOptions") },
-  returns: v.object({
-    insertId: v.id("selectorOptions"),
-    owned: sideFlagsValidator,
-    fetch: sideFlagsValidator,
-    paused: sideFlagsValidator,
-    missing: v.object({ bsc: v.string(), sportlots: v.string() }),
-    unreachableRow: v.object({
-      bsc: v.optional(v.string()),
-      sportlots: v.optional(v.string()),
+  returns: v.union(
+    v.object({ blockedReason: v.string(), sourceKind: sourceKindValidator }),
+    v.object({
+      sourceId: v.id("selectorOptions"),
+      sourceKind: sourceKindValidator,
+      sourceValue: v.string(),
+      /** One `.first()` read: does the source hold any card at all. */
+      sourceHasCards: v.boolean(),
+      owned: sideFlagsValidator,
+      fetch: sideFlagsValidator,
+      paused: sideFlagsValidator,
+      missing: v.object({ bsc: v.string(), sportlots: v.string() }),
+      unreachableRow: v.object({
+        bsc: v.optional(v.string()),
+        sportlots: v.optional(v.string()),
+      }),
+      bscFilters: v.record(v.string(), v.array(v.string())),
+      bscSourceFacet: v.optional(bscFacetValidator),
+      bscOverCap: v.boolean(),
+      slIds: v.array(v.string()),
+      slOverCap: v.boolean(),
+      /** The deepest prefix on the SOURCE row's own chain. */
+      sourcePrefix: v.optional(v.string()),
+      parallelPrefix: v.optional(v.string()),
     }),
-    bscFilters: v.record(v.string(), v.array(v.string())),
-    bscSourceFacet: v.optional(bscFacetValidator),
-    bscOverCap: v.boolean(),
-    slIds: v.array(v.string()),
-    slOverCap: v.boolean(),
-    insertPrefix: v.optional(v.string()),
-    parallelPrefix: v.optional(v.string()),
-  }),
+  ),
   handler: async (ctx, args) => {
     const parallel = await ctx.db.get(args.parallelId);
     if (!parallel) throw new ConvexError(PARALLEL_GONE);
-    if (parallel.level !== "parallel") throw new ConvexError(NOT_A_PARALLEL);
-    const insertId = parallel.parentId;
-    const insert = insertId ? await ctx.db.get(insertId) : null;
-    if (!insertId || !insert || insert.level !== "insert") {
-      throw new ConvexError(NO_INSERT_ABOVE);
+    const resolved = await resolveBuildSource(ctx, parallel);
+    if (resolved.status === "notBuildable") {
+      throw new ConvexError(resolved.message);
     }
+    if (resolved.status === "blocked") {
+      return { blockedReason: resolved.blockedReason, sourceKind: resolved.kind };
+    }
+    const { source, kind } = resolved;
     const { chain } = await loadChain(ctx, args.parallelId);
     const plan = planParallelSides(chain, pausedSides());
-    const insertPrefix = prefixOf(chain.slice(0, -1));
+    // The prefix comes from the source's OWN chain: for an insert that is the
+    // parallel's chain less its last row; the Base sits on another branch.
+    const sourceChain =
+      kind === "insert"
+        ? chain.slice(0, -1)
+        : (await loadChain(ctx, source._id)).chain;
+    const sourcePrefix = prefixOf(sourceChain);
     const parallelPrefix = prefixOf(chain);
+    const anySourceCard = await ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) =>
+        q.eq("selectorOptionId", source._id),
+      )
+      .first();
     return {
-      insertId,
+      sourceId: source._id,
+      sourceKind: kind,
+      sourceValue: source.value,
+      sourceHasCards: anySourceCard !== null,
       owned: plan.owned,
       fetch: plan.fetch,
       paused: plan.paused,
@@ -655,7 +993,7 @@ export const loadParallelBuildContext = internalQuery({
       bscOverCap: plan.bscOverCap,
       slIds: plan.slIds,
       slOverCap: plan.slOverCap,
-      ...(insertPrefix ? { insertPrefix } : {}),
+      ...(sourcePrefix ? { sourcePrefix } : {}),
       ...(parallelPrefix ? { parallelPrefix } : {}),
     };
   },
@@ -693,7 +1031,12 @@ export const checkParallelBuildBlocksPage = internalQuery({
       .withIndex("by_selector_option", (q) =>
         q.eq("selectorOptionId", args.parallelId),
       )
-      .paginate({ numItems: BLOCK_CHECK_CARDS_PER_PAGE, cursor: args.cursor });
+      .paginate({
+        numItems: BLOCK_CHECK_CARDS_PER_PAGE,
+        cursor: args.cursor,
+        // NEO-321 (audit N1) — bounded by bytes as well as rows.
+        maximumBytesRead: BLOCK_CHECK_PAGE_BYTES,
+      });
     const linked = { bsc: 0, sportlots: 0 };
     let blockedReason: string | undefined;
     for (const card of page.page) {
@@ -731,44 +1074,76 @@ const linkableCardValidator = v.object({
   sortOrder: v.number(),
 });
 
-/** The insert's cards, reduced to what the link key reads. */
+const cardPageFields = {
+  isDone: v.boolean(),
+  continueCursor: v.string(),
+  /** Bytes this page's transaction read, for the build's byte cap. */
+  bytesRead: v.number(),
+};
+
+/** One row- and byte-bounded page of a row's cards (audit N1). */
+async function cardPage(
+  ctx: QueryCtx,
+  selectorOptionId: Id<"selectorOptions">,
+  cursor: string | null,
+) {
+  const page = await ctx.db
+    .query("cardChecklist")
+    .withIndex("by_selector_option", (q) =>
+      q.eq("selectorOptionId", selectorOptionId),
+    )
+    .paginate({
+      numItems: CARD_LOAD_PAGE,
+      cursor,
+      maximumBytesRead: CARD_LOAD_PAGE_BYTES,
+    });
+  const bytesRead = (await ctx.meta.getTransactionMetrics()).bytesRead.used;
+  return { page, bytesRead };
+}
+
+/**
+ * One page of the source row's cards (an insert's, or the Base's), reduced to
+ * what the link key reads. Paged across transactions and bounded by rows and
+ * bytes (NEO-321 audit N1); the action sums the pages against
+ * `MAX_INSERT_CARDS_FOR_BUILD` and `MAX_CARD_BYTES_FOR_BUILD`.
+ */
 export const loadInsertCardsForLink = internalQuery({
-  args: { insertId: v.id("selectorOptions") },
+  args: {
+    sourceId: v.id("selectorOptions"),
+    cursor: v.union(v.string(), v.null()),
+  },
   returns: v.object({
     cards: v.array(linkableCardValidator),
-    overLimit: v.boolean(),
+    ...cardPageFields,
   }),
   handler: async (ctx, args) => {
-    const rows = await ctx.db
-      .query("cardChecklist")
-      .withIndex("by_selector_option", (q) =>
-        q.eq("selectorOptionId", args.insertId),
-      )
-      .take(MAX_INSERT_CARDS_FOR_BUILD + 1);
-    if (rows.length > MAX_INSERT_CARDS_FOR_BUILD) {
-      return { cards: [], overLimit: true };
-    }
+    const { page, bytesRead } = await cardPage(ctx, args.sourceId, args.cursor);
     return {
-      overLimit: false,
-      cards: rows.map((row) => ({
+      cards: page.page.map((row) => ({
         ...linkableOf(row),
         ...(row.variationOfCardId
           ? { variationOfCardId: row.variationOfCardId }
           : {}),
         sortOrder: row.sortOrder,
       })),
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+      bytesRead,
     };
   },
 });
 
 /**
- * The parallel's CURRENT (old) cards: the link key, the refs each holds and
- * its SKU. Read once, before anything is fetched or deleted — it is what the
- * earlier-link tiebreak, the SKU carry (R2) and the classification of every
- * old link are computed from.
+ * One page of the parallel's CURRENT (old) cards: the link key, the refs each
+ * holds and its SKU. Read in full before anything is fetched or deleted — it
+ * is what the earlier-link tiebreak, the SKU carry (R2) and the classification
+ * of every old link are computed from. Paged and bounded like the source's.
  */
 export const loadParallelCardsForLink = internalQuery({
-  args: { parallelId: v.id("selectorOptions") },
+  args: {
+    parallelId: v.id("selectorOptions"),
+    cursor: v.union(v.string(), v.null()),
+  },
   returns: v.object({
     cards: v.array(
       v.object({
@@ -778,21 +1153,12 @@ export const loadParallelCardsForLink = internalQuery({
         sku: v.optional(v.string()),
       }),
     ),
-    overLimit: v.boolean(),
+    ...cardPageFields,
   }),
   handler: async (ctx, args) => {
-    const rows = await ctx.db
-      .query("cardChecklist")
-      .withIndex("by_selector_option", (q) =>
-        q.eq("selectorOptionId", args.parallelId),
-      )
-      .take(MAX_INSERT_CARDS_FOR_BUILD + 1);
-    if (rows.length > MAX_INSERT_CARDS_FOR_BUILD) {
-      return { cards: [], overLimit: true };
-    }
+    const { page, bytesRead } = await cardPage(ctx, args.parallelId, args.cursor);
     return {
-      overLimit: false,
-      cards: rows.map((row) => {
+      cards: page.page.map((row) => {
         const bscRef = row.platformData?.bsc?.ref;
         const slRef = row.platformData?.sportlots?.ref;
         return {
@@ -802,6 +1168,9 @@ export const loadParallelCardsForLink = internalQuery({
           ...(row.sku ? { sku: row.sku } : {}),
         };
       }),
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+      bytesRead,
     };
   },
 });
@@ -935,12 +1304,20 @@ export const deleteParallelCardsPage = internalMutation({
     if (await reviewStagedOn(ctx, args.parallelId)) {
       return { deleted: 0, done: true, blockedReason: BLOCKED_REVIEW_OPEN, refs: empty };
     }
-    const page = await ctx.db
+    // NEO-321 (audit N1) — bounded by bytes as well as rows: a byte-split
+    // page deletes what it read, and `done` is false until the read reaches
+    // the end.
+    const read = await ctx.db
       .query("cardChecklist")
       .withIndex("by_selector_option", (q) =>
         q.eq("selectorOptionId", args.parallelId),
       )
-      .take(DELETE_CARDS_PER_PAGE);
+      .paginate({
+        numItems: DELETE_CARDS_PER_PAGE,
+        cursor: null,
+        maximumBytesRead: DELETE_PAGE_BYTES,
+      });
+    const page = read.page;
     for (const card of page) {
       if (hasScans(card)) {
         return { deleted: 0, done: true, blockedReason: BLOCKED_SCANS, refs: empty };
@@ -968,7 +1345,7 @@ export const deleteParallelCardsPage = internalMutation({
     }
     return {
       deleted: page.length,
-      done: page.length < DELETE_CARDS_PER_PAGE,
+      done: read.isDone,
       refs,
     };
   },
@@ -1032,11 +1409,18 @@ function sameStrings(a: readonly string[], b: readonly string[]): boolean {
  * run has created nothing yet) the parallel must hold no cards; with one, that
  * card must still exist on the parallel. Otherwise `changed` and nothing is
  * written.
+ *
+ * NEO-321 — before that, the target's source is resolved again here
+ * (`resolveBuildSource`) and must still be `sourceId`: the row the action
+ * linked against. Anything else is `changed` too (audit S1), never a throw. `insertId` is the NEO-312 name of `sourceId`, accepted so an
+ * action already running across a deploy still lands; exactly one is sent.
  */
 export const insertParallelCardsPage = internalMutation({
   args: {
     parallelId: v.id("selectorOptions"),
-    insertId: v.id("selectorOptions"),
+    sourceId: v.optional(v.id("selectorOptions")),
+    /** @deprecated NEO-321 — the NEO-312 name of `sourceId`. */
+    insertId: v.optional(v.id("selectorOptions")),
     firstCreatedId: v.optional(v.id("cardChecklist")),
     copies: v.array(
       v.object({
@@ -1065,18 +1449,45 @@ export const insertParallelCardsPage = internalMutation({
     missing: v.number(),
     /** Sources whose number, name or printed names changed since. */
     skippedChangedSource: v.number(),
-    /** Another build got here first; nothing was written. */
+    /**
+     * NEO-321 (audit N1) — how many of `copies`, from the front, this page
+     * consumed (copied, missing or skipped). Fewer than sent when the read
+     * budget ran low; the action sends the rest again.
+     */
+    processed: v.number(),
+    /**
+     * Nothing was written: another build got here first, or the parallel or
+     * its source no longer resolves as the action linked it (audit S1).
+     */
     changed: v.boolean(),
   }),
   handler: async (ctx, args) => {
+    // NEO-321 (security audit S1) — by the time a page runs, the parallel's
+    // old cards are already deleted. So a target or source that no longer
+    // resolves to what the action linked against (the parallel deleted or
+    // moved, `isBase` moved by `setBaseVariantType` mid-run, a second Base
+    // marked) answers the `changed` sentinel and writes nothing, rather than
+    // throwing: the action then reports BLOCKED_CHANGED_MID_BUILD with the
+    // deleted count and the links that went with them.
+    const refuse = (why: "gone" | "notBuildable" | "blocked" | "sourceMoved") => {
+      // Ids and a fixed word only.
+      console.warn(
+        JSON.stringify({ msg: "parallel_insert_page_refused", parallelId: args.parallelId, why }),
+      );
+      return { created: [], missing: 0, skippedChangedSource: 0, processed: 0, changed: true };
+    };
     const parallel = await ctx.db.get(args.parallelId);
-    if (!parallel || parallel.level !== "parallel") {
-      throw new ConvexError(PARALLEL_GONE);
+    if (!parallel) return refuse("gone");
+    const resolved = await resolveBuildSource(ctx, parallel);
+    if (resolved.status === "notBuildable") return refuse("notBuildable");
+    if (resolved.status === "blocked") return refuse("blocked");
+    const sourceId = args.sourceId ?? args.insertId;
+    if (sourceId === undefined || resolved.source._id !== sourceId) {
+      return refuse("sourceMoved");
     }
-    const insert = await ctx.db.get(args.insertId);
-    if (parallel.parentId !== args.insertId || !insert) {
-      throw new ConvexError(NO_INSERT_ABOVE);
-    }
+    const sourceRow = resolved.source;
+    // Risk 2 — a legacy snapshot's wrong `cardType` is not copied.
+    const parallelSnapshot = snapshotForCopies(parallel, resolved.parent);
 
     // ── the concurrency guard, before any write ─────────────────────────────
     if (args.firstCreatedId === undefined) {
@@ -1087,12 +1498,12 @@ export const insertParallelCardsPage = internalMutation({
         )
         .first();
       if (any) {
-        return { created: [], missing: 0, skippedChangedSource: 0, changed: true };
+        return { created: [], missing: 0, skippedChangedSource: 0, processed: 0, changed: true };
       }
     } else {
       const first = await ctx.db.get(args.firstCreatedId);
       if (!first || first.selectorOptionId !== args.parallelId) {
-        return { created: [], missing: 0, skippedChangedSource: 0, changed: true };
+        return { created: [], missing: 0, skippedChangedSource: 0, processed: 0, changed: true };
       }
     }
 
@@ -1131,9 +1542,14 @@ export const insertParallelCardsPage = internalMutation({
     const created: Array<{ from: Id<"cardChecklist">; to: Id<"cardChecklist"> }> = [];
     let missing = 0;
     let skippedChangedSource = 0;
+    let processed = 0;
     for (const copy of args.copies) {
+      // NEO-321 (audit N1) — a source card's size is unknown until it is
+      // read, so ask for room first; the rest of the page goes next call.
+      if (processed > 0 && !(await roomToRead(ctx))) break;
+      processed++;
       const source = await ctx.db.get(copy.sourceCardId);
-      if (!source || source.selectorOptionId !== args.insertId) {
+      if (!source || source.selectorOptionId !== sourceId) {
         missing++;
         continue;
       }
@@ -1212,10 +1628,13 @@ export const insertParallelCardsPage = internalMutation({
           // a short print) survive; the parallel's snapshot wins on what the
           // parallel IS.
           baseFeatures: copyFeaturesForParallel({
-            insertSnapshot: insert.features,
-            parallelSnapshot: parallel.features,
+            insertSnapshot: sourceRow.features,
+            parallelSnapshot,
             insertCardFeatures: source.features,
           }),
+          // NEO-321 — the copy is a card OF this parallel: its parallelName
+          // (and so its listing title) is the parallel row's own NB name.
+          parallelName: parallel.value,
           ...(copy.keepSku ? { keepSku: copy.keepSku } : {}),
           carried: {
             teamCheckDoneAt: source.teamCheckDoneAt,
@@ -1231,7 +1650,7 @@ export const insertParallelCardsPage = internalMutation({
       newIdOf.set(source._id, newId);
       created.push({ from: source._id, to: newId });
     }
-    return { created, missing, skippedChangedSource, changed: false };
+    return { created, missing, skippedChangedSource, processed, changed: false };
   },
 });
 
@@ -1373,12 +1792,13 @@ export const buildParallelChecklist = action({
     const zero = (): SideCounts => ({ bsc: 0, sportlots: 0 });
     const emptyLists = (): SideLists => ({ bsc: [], sportlots: [] });
 
-    const plan = await ctx.runQuery(
+    const context = await ctx.runQuery(
       internal.parallelChecklistBuild.loadParallelBuildContext,
       { parallelId: args.parallelId },
     );
-    const toFetch = SIDES.filter((side) => plan.fetch[side]);
-    const skipped = SIDES.filter((side) => !plan.fetch[side]);
+    const sourceKind = context.sourceKind;
+    // Judged once the plan is known; a block before that skipped nothing.
+    let skipped: PlatformSide[] = [];
 
     const blocked = (
       blockedReason: string,
@@ -1413,9 +1833,15 @@ export const buildParallelChecklist = action({
         rebuilt: false,
         blockedReason,
       };
-      logBuild(args.parallelId, result, startedAt);
+      logBuild(args.parallelId, sourceKind, result, startedAt);
       return result;
     };
+
+    // NEO-321 — a base parallel in a set with no single Base: nothing to copy.
+    if (!("sourceId" in context)) return blocked(context.blockedReason);
+    const plan = context;
+    const toFetch = SIDES.filter((side) => plan.fetch[side]);
+    skipped = SIDES.filter((side) => !plan.fetch[side]);
 
     for (const side of skipped) {
       console.log(
@@ -1448,6 +1874,11 @@ export const buildParallelChecklist = action({
     if (plan.fetch.bsc && plan.bscOverCap) {
       return blocked(BLOCKED_TOO_MANY_BSC_SETS);
     }
+    // NEO-321 — nothing to copy: refused before the review-state clear (a
+    // write) and before any marketplace is asked. Inserts included.
+    if (!plan.sourceHasCards) {
+      return blocked(blockedSourceHasNoCards(plan.sourceValue));
+    }
 
     // ── 2. blocks, before any marketplace is asked ──────────────────────────
     // A parallel no longer uses candidates or the entity review, so review
@@ -1458,9 +1889,11 @@ export const buildParallelChecklist = action({
     const existing = await checkBlocks(ctx, args.parallelId);
     if (existing.blockedReason) return blocked(existing.blockedReason);
 
-    const old = await ctx.runQuery(
-      internal.parallelChecklistBuild.loadParallelCardsForLink,
-      { parallelId: args.parallelId },
+    const old = await loadCardsPaged((cursor) =>
+      ctx.runQuery(internal.parallelChecklistBuild.loadParallelCardsForLink, {
+        parallelId: args.parallelId,
+        cursor,
+      }),
     );
     if (old.overLimit) return blocked(BLOCKED_PARALLEL_TOO_MANY_CARDS);
     const oldRefOf = (
@@ -1480,9 +1913,11 @@ export const buildParallelChecklist = action({
       );
     }
 
-    const insertCards = await ctx.runQuery(
-      internal.parallelChecklistBuild.loadInsertCardsForLink,
-      { insertId: plan.insertId },
+    const insertCards = await loadCardsPaged((cursor) =>
+      ctx.runQuery(internal.parallelChecklistBuild.loadInsertCardsForLink, {
+        sourceId: plan.sourceId,
+        cursor,
+      }),
     );
     if (insertCards.overLimit) return blocked(BLOCKED_TOO_MANY_CARDS);
 
@@ -1623,7 +2058,7 @@ export const buildParallelChecklist = action({
       const result = linkCardsToSide(
         linkable,
         fetchedCards(side),
-        { nb: plan.insertPrefix, fetched: plan.parallelPrefix },
+        { nb: plan.sourcePrefix, fetched: plan.parallelPrefix },
         { earlierRefsByKey },
       );
       outcomes[side] = result.outcomes;
@@ -1818,7 +2253,9 @@ export const buildParallelChecklist = action({
     let firstCreatedId: Id<"cardChecklist"> | undefined;
     let missing = 0;
     let changedSources = 0;
-    for (let i = 0; i < copies.length; i += INSERT_COPIES_PER_PAGE) {
+    // NEO-321 (audit N1) — a page may stop early on its read budget; the
+    // next page starts where it stopped (`processed`), never skipping a copy.
+    for (let i = 0; i < copies.length; ) {
       const pageCopies = copies.slice(i, i + INSERT_COPIES_PER_PAGE);
       const remap: Array<{ from: Id<"cardChecklist">; to: Id<"cardChecklist"> }> = [];
       for (const copy of pageCopies) {
@@ -1830,7 +2267,7 @@ export const buildParallelChecklist = action({
         internal.parallelChecklistBuild.insertParallelCardsPage,
         {
           parallelId: args.parallelId,
-          insertId: plan.insertId,
+          sourceId: plan.sourceId,
           ...(firstCreatedId ? { firstCreatedId } : {}),
           copies: pageCopies.map((c) => ({
             sourceCardId: c.sourceCardId,
@@ -1846,7 +2283,7 @@ export const buildParallelChecklist = action({
       if (page.changed) {
         // Security 4 — another build got here first.
         const lost = classify(dropped, { bsc: new Set(), sportlots: new Set() });
-        return blocked(BLOCKED_CHANGED_MID_BUILD, {
+        return blocked(blockedChangedMidBuild(deletedTotal), {
           sidesFetched: answered,
           deletedCount: deletedTotal,
           earlierLinksMissing: lost.gone,
@@ -1860,6 +2297,9 @@ export const buildParallelChecklist = action({
       }
       missing += page.missing;
       changedSources += page.skippedChangedSource;
+      // Every page that was not `changed` consumes at least its first copy;
+      // the floor keeps a misbehaving page from spinning this loop.
+      i += Math.max(1, page.processed);
     }
 
     // A copy skipped for a changed source re-links nothing: re-classify with
@@ -1892,7 +2332,7 @@ export const buildParallelChecklist = action({
       cards: lists,
       rebuilt: deletedTotal > 0,
     };
-    logBuild(args.parallelId, result, startedAt);
+    logBuild(args.parallelId, sourceKind, result, startedAt);
     return result;
   },
 });
@@ -1955,6 +2395,41 @@ async function clearStaleReviewState(
   }
 }
 
+/**
+ * NEO-321 (audit N1) — read every page of a card loader, summing documents
+ * and bytes. Past `MAX_INSERT_CARDS_FOR_BUILD` cards or
+ * `MAX_CARD_BYTES_FOR_BUILD` bytes the answer is `overLimit` and no cards, so
+ * the caller refuses with its too-many-cards sentence instead of a raw read
+ * error. Every page makes progress (a byte-split page still returns the row
+ * that crossed the bound); the page count is bounded besides.
+ */
+async function loadCardsPaged<C>(
+  readPage: (cursor: string | null) => Promise<{
+    cards: C[];
+    isDone: boolean;
+    continueCursor: string;
+    bytesRead: number;
+  }>,
+): Promise<{ cards: C[]; overLimit: boolean }> {
+  const cards: C[] = [];
+  let bytes = 0;
+  let cursor: string | null = null;
+  for (let pages = 1; ; pages++) {
+    const page = await readPage(cursor);
+    cards.push(...page.cards);
+    bytes += page.bytesRead;
+    if (
+      cards.length > MAX_INSERT_CARDS_FOR_BUILD ||
+      bytes > MAX_CARD_BYTES_FOR_BUILD ||
+      (!page.isDone && pages > MAX_INSERT_CARDS_FOR_BUILD)
+    ) {
+      return { cards: [], overLimit: true };
+    }
+    if (page.isDone) return { cards, overLimit: false };
+    cursor = page.continueCursor;
+  }
+}
+
 /** Walk every page of the block check; the first block found wins. */
 async function checkBlocks(
   ctx: Pick<ActionCtx, "runQuery">,
@@ -1988,6 +2463,7 @@ async function checkBlocks(
 /** The audit line. Counts, sides and timing only — no names, no refs. */
 function logBuild(
   parallelId: Id<"selectorOptions">,
+  sourceKind: BuildSourceKind,
   result: BuildParallelResult,
   startedAt: number,
 ): void {
@@ -1995,6 +2471,8 @@ function logBuild(
     JSON.stringify({
       msg: "parallel_checklist_built",
       parallelId,
+      // NEO-321 — built from an insert or from the set's Base.
+      sourceKind,
       status: result.status,
       copied: result.copied,
       notCopied: result.notCopied,

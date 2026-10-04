@@ -799,7 +799,9 @@ describe("buildParallelChecklist — card-level facts carry, the parallel wins o
     expect(copy.features?.signedBy).toBe("Ken Griffey Jr.");
     // The parallel's own snapshot wins on what the parallel IS.
     expect(copy.features?.cardType).toBe("Parallel");
-    expect(copy.features?.parallelName).toBe("Kanji");
+    // NEO-321 (Jason, 2026-10-04) — parallelName is the parallel ROW's own NB
+    // name, over any snapshot value.
+    expect(copy.features?.parallelName).toBe("Anime Kanji");
   });
 });
 

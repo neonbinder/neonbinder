@@ -1,5 +1,6 @@
 import { query, mutation, internalMutation, internalQuery, action } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { PaginationResult } from "convex/server";
 import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -18,7 +19,10 @@ import { longestToken, nameTokens, rankTeamCandidates } from "./lib/entityNearMa
 // id first appeared; the shape is the same for every Wikidata entity.
 import { isWikidataQid } from "../lib/players/wikidata-id";
 // NEO-253: shared with players, leagues and the browser-side review wizard.
-import { normalizeEntityName } from "../lib/entities/normalize-name";
+import {
+  entityNameQueryReadings,
+  normalizeEntityName,
+} from "../lib/entities/normalize-name";
 // NEO-236: the split. `teamRowFields` is the ONE derivation of a row's
 // identity fields and `findTeamByFullName` the ONE lookup — see
 // convex/lib/teamRow.ts for why every writer in this file goes through them.
@@ -332,6 +336,23 @@ export async function syncTeamAliases(
       aliasNormalized,
     });
   }
+}
+
+/**
+ * NEO-322 — one page of `teamAliases` in creation order, READ-ONLY, for the
+ * re-key audit in `convex/rekeyEntityNames.ts`.
+ *
+ * Here because this module owns the table: `teams.aliasIndexPin` flags any
+ * other module that queries it. Every write the re-key makes still goes
+ * through `syncTeamAliases`. One `.paginate`, so a caller stays within
+ * Convex's one-paginate-per-function rule.
+ */
+export async function pageTeamAliasRows(
+  ctx: QueryCtx | MutationCtx,
+  cursor: string | null,
+  numItems: number,
+): Promise<PaginationResult<Doc<"teamAliases">>> {
+  return await ctx.db.query("teamAliases").paginate({ cursor, numItems });
 }
 
 /**
@@ -1883,7 +1904,11 @@ export const search = query({
     // sorting "yankees ne" to "ne yankees" would prefix-match "ne" and drop
     // the row the operator is halfway through typing. Sorting the DOCUMENT is
     // fine, because an index scores tokens and not their order.
-    const term = nameTokens(args.query).join(" ");
+    //
+    // NEO-322 — `entityNameQueryReadings(...)[0]` IS `nameTokens`; the second
+    // reading exists only for text ending in a run of initials (below).
+    const [reading, ...alternates] = entityNameQueryReadings(args.query);
+    const term = reading.join(" ");
     if (!term) return [];
 
     // NEO-212 security review: FLOORED as well as capped. `Math.min` alone let
@@ -1896,13 +1921,25 @@ export const search = query({
       Math.min(args.limit ?? TEAM_SEARCH_DEFAULT_LIMIT, TEAM_SEARCH_MAX_LIMIT),
     );
 
-    const hits = await ctx.db
-      .query("teams")
-      .withSearchIndex("search_name", (q) => {
-        const search = q.search("nameNormalized", term);
-        return args.sportId ? search.eq("sportId", args.sportId) : search;
-      })
-      .take(limit);
+    const searchTeams = (text: string) =>
+      ctx.db
+        .query("teams")
+        .withSearchIndex("search_name", (q) => {
+          const search = q.search("nameNormalized", text);
+          return args.sportId ? search.eq("sportId", args.sportId) : search;
+        })
+        .take(limit);
+    let hits = await searchTeams(term);
+    /*
+     * NEO-322 — the keystroke after a run of initials. "N. C. S", on the way to
+     * "N. C. State", joins to the one term "ncs", which prefixes nothing in
+     * "nc state", so the list would blank for a keystroke. Re-asked as
+     * "nc s" — only when the joined reading found NOTHING, so a search is
+     * spent on it only in that one case.
+     */
+    if (hits.length === 0 && alternates.length > 0) {
+      hits = await searchTeams(alternates[0].join(" "));
+    }
 
     /*
      * NEO-284 — the exact-alias leg. Typing "LSU" into "Link to Existing…"

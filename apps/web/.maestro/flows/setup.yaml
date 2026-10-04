@@ -57,7 +57,9 @@ tags:
 #   - Variant Types synced: Base, Insert, Parallel
 #   - Base   → card checklist fetched + saved                                    [this flow]
 #   - Insert → matched variants saved; "Future Stars" checklist (~20 cards)      [this flow]
-#   - Parallel → matched variants saved; "Gold Wave Refractors" checklist (~300) [this flow]
+#   - Parallel → matched variants saved; "Gold Wave Refractors" checklist BUILT
+#     FROM BASE (NEO-321: a copy of Base's cards, re-linked to Gold Wave's own
+#     BSC + SportLots cards; ~300)                                          [this flow]
 #   - Baseball → 2024 → Topps → Topps Big League: variant types synced and Base
 #     MAPPED, checklist deliberately EMPTY — the NEO-248 entity-review fixture.
 #     Its ~87 players must stay UNKNOWN, so nothing here fetches it.           [this flow]
@@ -1364,6 +1366,9 @@ tags:
 - runFlow: set-selector/util-drill-to-2024-topps-chrome.yaml
 
 # Scroll down past "Base" (centered by the util) to reach "Parallel".
+# NEO-321: selecting it also mounts the `Parallels of Base` section BELOW the
+# columns row. Nothing here taps it — every anchor until the Gold Wave build
+# is in the columns row above it, and every later one is below it.
 - scrollUntilVisible:
     element:
       text: "Parallel"
@@ -1451,10 +1456,23 @@ tags:
     below:
       id: "Search parallels"
 
-# ── FETCH THE PARALLEL CHECKLIST ─────────────────────────────────────────────
+# ── BUILD THE PARALLEL CHECKLIST FROM BASE (NEO-321 D3) ──────────────────────
+# Gold Wave Refractors is an insert-level row under Topps Chrome's `Parallel`
+# variant type (NB role `parallel`), i.e. a parallel of the BASE set. Since
+# NEO-321 its Sync slot is `Build from Base`, not `Fetch from Marketplaces`:
+# no pairing dialog, no content review, no entity wizard. The build still
+# FETCHES this parallel's own marketplace checklists — BSC, and SportLots
+# paged, each through Gold Wave's OWN ids — and maps Base's NB cards onto the
+# fetched cards per side; every copy is a Base card re-linked to Gold Wave's
+# own BSC / SportLots card (Jason, 2026-10-04). That is why the SportLots
+# pagination guard below still means what it always did.
+#
 # Same fold-clipping trap and the same fix as the Insert section above — see the
 # comment there. The settle anchor is the set attributes summary bar for the
 # parallel we just picked; it renders immediately above the Cards card.
+# NEO-321 layout: the `Parallels of Base` section now renders between the
+# columns row and this panel (SetSelector.tsx, the variant-type slot). It is
+# ABOVE the anchor, so DOWN is still the right direction.
 # R5 EXCEPTION — the setup track's cold sync, which R5 sanctions by name.
 # RESTORED to 30000 in NEO-260 after the 7000 sweep broke the seed (CI run
 # 34394655674): the tap on `Confirm Base Set` completed at 19:37:50 and the
@@ -1482,108 +1500,69 @@ tags:
     centerElement: true
     visibilityPercentage: 50
     timeout: 30000
-- assertVisible:
-    text: ".*Fetch from Marketplaces.*|Refresh"
+# THE BUTTON. The checklist is empty (the scripted reset wiped it), so the
+# primary call-to-action under "No cards in this checklist yet." is the
+# build — `buildButtonLabel(source, false)` = "Build from Base". It renders
+# only once the server has named the source (`getParallelsForBuild`'s
+# `source`, the Base row), so this scroll is also the wait for that query.
+# Anchored full match: the `Parallels of Base` section above carries
+# "Build N parallels from Base", which must never answer here (that button
+# would build EVERY parallel). Centred for the tap (R8); seed-exempt ceiling
+# as the two scrolls above.
+- scrollUntilVisible:
+    element:
+      text: "^Build from Base$"
+    centerElement: true
+    timeout: 30000
+# R2 — the slot really is the build, not a fetch: no "Fetch from
+# Marketplaces" / "Sync card checklist" on a base-parallel row (D3).
+- assertNotVisible:
+    id: "Sync card checklist"
 - tapOn:
-    text: ".*Fetch from Marketplaces.*|^Refresh$"
-# NEO-137 — pairing runs BEFORE any card is generated. "Keep all" on both
-# columns reproduces exactly what a pre-NEO-137 sync produced, which is what
-# keeps the strict card counts below honest: this seed must provision the SAME
-# baseline as before, not a silently narrowed one.
+    text: "^Build from Base$"
+# An EMPTY parallel builds at once — `ParallelBuildButton` asks "Replace the
+# cards" only when the parallel already has cards, and the reset guarantees
+# it has none. So no confirm here; one appearing means the reset did not run,
+# and the notice wait below fails by name.
+#
+# THE RESULT, PINNED. The row build's notice is `buildNotice`: "<parallel>
+# — Built N cards[, clauses]." (`builtText`), then " <side> only." when one
+# side was fetched, and the node's text ends with the " " before its `See
+# which cards` button (Maestro reads only the node's own text nodes). MEASURED
+# (CI 37179999943; Convex `parallel_checklist_built`: copied 300, notCopied
+# 35, unlinked SportLots 1, ambiguous 0, one extra SportLots card), so the
+# notice reads, live:
+#   "Gold Wave Refractors — Built 300 cards, 1 without a SportLots card, 35
+#    left off — not on either marketplace's list, 1 on SportLots that Base
+#    doesn't have. "
+# The pattern pins the count and anchors it: `300 cards` must be followed by
+# a clause (`, …`) or the sentence's own `.`, so neither `3000` nor any other
+# count can answer, and only the clause wording (live SportLots tallies that
+# say nothing about the build's size) is left open. 300 is Base's 335 minus
+# the 35 that Gold Wave lists on neither marketplace — the same 300 the
+# retired fetch's "Saved 300 cards" kept. Every copy carried a BSC link
+# (`unlinked.bsc` 0), so the BSC-only build under the pause copies the same
+# 300 (derived, not yet measured there). Checklists are immutable once
+# produced, so a different number is a build regression, not drift.
+#
+# R5 EXCEPTION — the setup track's cold sync (the seed is exempt as a
+# class): this waits on a live BSC checklist fetch AND a paged SportLots
+# checklist fetch, the link pass and the copy. MEASURED 4.5 s for the step
+# (tap 05:45:20.42 → notice 05:45:24.92) and 4.81 s server-side. 120000 is
+# kept as the seed's cold-path ceiling for the same marketplace data (the
+# retired fetch's action took ~80 s to return before NEO-195); a seed that
+# needs more than seconds here is a finding to read in the Convex logs, not
+# a reason to raise it.
 - extendedWaitUntil:
     visible:
-      text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
-    timeout: 90000
-# NEO-287 — LIVE: the two-marketplace pairing dialog, verbatim. PAUSED: the
-# one-marketplace path (SportLots was never asked; nothing to match).
-- runFlow:
-    when:
-      true: "${!output.SL_PAUSED}"
-    commands:
-      - runFlow:
-          when:
-            visible: "Match Cards.*"
-          commands:
-            # NEO-195 — WAIT FOR THE FETCH TO FINISH BEFORE TOUCHING CONFIRM.
-            # The dialog now opens on the FIRST streamed candidates (~6s), not on the
-            # action's return (~80s), so "Match Cards" being visible no longer means
-            # the fetch is done. Confirm is gated on `isStreaming` and `handleConfirm`
-            # returns early while it is true, so tapping it without this wait is a
-            # SILENT no-op: the modal stays open and the `notVisible` below times out
-            # blaming the wrong thing. The button's own text is the signal — "Loading…"
-            # while streaming, "Confirm" once the action resolves. Same sync point
-            # checklist-pairing-dialog-cancel.yaml uses.
-            - extendedWaitUntil:
-                visible:
-                  text: "^Confirm$"
-                timeout: 120000
-            - runFlow:
-                when:
-                  visible:
-                    text: ".*BSC only \\([1-9][0-9]*\\).*"
-                commands:
-                  - tapOn:
-                      id: "Keep all BSC-only cards"
-            - runFlow:
-                when:
-                  visible:
-                    text: ".*SportLots only \\([1-9][0-9]*\\).*"
-                commands:
-                  - tapOn:
-                      id: "Keep all SportLots-only cards"
-            - tapOn:
-                id: "Confirm card matches"
-            - extendedWaitUntil:
-                notVisible: "Match Cards.*"
-                timeout: 90000
-- runFlow:
-    when:
-      true: "${output.SL_PAUSED}"
-    commands:
-      # NEO-255 solo path: one marketplace attached, so no dialog — every BSC
-      # card is kept and committed straight away. The "Kept all N cards from
-      # BSC" line is NOT asserted here: with every name already known (the
-      # Base commit above created the roster) no wizard opens, the commit
-      # runs at once and "Saved N cards" replaces it before this step reads
-      # the screen. The dialog must NOT have opened; the strict "Saved N
-      # cards" gate below is this negative's positive pair.
-      - assertNotVisible: "Match Cards.*"
-- extendedWaitUntil:
-    visible:
-      text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
-    timeout: 90000
-# ── NO WIZARD ON THIS FETCH, AND THAT IS THE CONTRACT (NEO-260) ─────────────
-#
-# This is where a `when: visible "Confirm New Players & Teams"` branch used to
-# sit, tapping `.*Add All Remaining as New.*`. Two things were wrong with it.
-#
-# 1. THE LABEL IS GONE. EntityReviewWizard.tsx renders the bulk button as
-#    `Add remaining players as new (N)` (NEO-236 narrowed it to players); the
-#    old string survives only in that file's comments. The Base block above was
-#    updated, these two were not.
-# 2. IT WOULD HANG IF THE MATCHER WERE FIXED. The branch also never grew the
-#    NEO-236 New Team `repeat` loop the Base block carries, and teams are no
-#    longer bulk-decided — so a corrected matcher would tap the bulk link and
-#    then wait out 240s at `Confirm & Save`, which never arrives.
-#
-# It was dead either way: the Base fetch above commits this set's roster first,
-# so this later fetch finds every name already known and raises no wizard.
-#
-# R2 — a branch that can never fire is silent fall-through; state the contract
-# instead. The gate above still accepts either terminal state, so a wizard that
-# ever DOES appear is caught right here under its own name rather than 120s
-# later, blamed on the "Saved N cards" count.
-- assertNotVisible: "Confirm New Players & Teams"
-# Strict count — checklists are immutable once produced, so "Saved 300 cards" is
-# a fixed fact. A wrong number is a real fetch/save regression, not drift.
-- extendedWaitUntil:
-    visible:
-      text: ".*Saved 300 cards.*"
-    # NEO-163: absorbs the removed notVisible gate's budget. See the note on the
-    # 335-card wait above. This is the second-largest write in the seed.
+      text: "Gold Wave Refractors — Built 300 cards(, [^.]+)?\\..*"
     timeout: 120000
+# D3 — the pairing dialog is retired on a base-parallel row. Paired with the
+# positive above, so it cannot pass on a dead page.
+- assertNotVisible: "Match Cards.*"
+- assertNotVisible: "Confirm New Players & Teams"
 
-# ── SPORTLOTS PAGINATION GUARD (NEO-137) ────────────────────────────────────
+# ── SPORTLOTS PAGINATION GUARD (NEO-137, kept through NEO-321) ──────────────
 # Both marketplace badges must appear on this checklist's rows.
 #
 # This is THE regression guard for the SportLots multi-page fetch, and it lives
@@ -1606,6 +1585,19 @@ tags:
 # behaviour strips SL refs from everything past the first page — including the
 # tail this assertion reads — and fails right here.
 #
+# NEO-321 — WHY IT STILL HOLDS WITH COPIES. The rows are now copies of Base's
+# cards, but each copy's SportLots link is Gold Wave's OWN SportLots card,
+# found in the build's own paged `fetchSportLotsChecklist` over Gold Wave's
+# SportLots id (never Base's: `chainWithoutInsertAncestors`, and a copy never
+# inherits a link). A copy whose Gold Wave SportLots card was on a page the
+# fetch did not read gets no SportLots link and no badge. The list is sorted
+# by card number (`compareCardNumbers`) and opens on its LAST rows, the
+# highest-numbered copies — the far end of SportLots' pages (~#290-#300; the
+# first SportLots page is ~88 cards, NEO-91). So a single-page regression
+# strips the badge from exactly the rows read here, as before. Base's own
+# 35-card SL-less tail (#301+) does not leak in: those cards have no Gold
+# Wave counterpart on either marketplace, so they are left off, not copied.
+#
 # THE BADGE IS A BARE "SL" — and that is unambiguous here, for a reason worth
 # keeping. Maestro matches a selector against the WHOLE text of a node, so "SL"
 # matches only a node whose text is exactly "SL". The badge used to compose the
@@ -1619,10 +1611,11 @@ tags:
 # Per-card BSC coverage is asserted separately in checklist-renders-rich-fields.
 # NEO-287 — LIVE: the guard, verbatim. PAUSED: the opposite fact — no card
 # carries a SportLots ref because SportLots was never asked, and every row is
-# a solo-kept BSC card ("BSC only"). The sync MESSAGE evidence for the pause
-# is asserted at the Sports column above (the checklist's own line on the
-# solo path is the client's "Kept all N cards from BSC", asserted at each
-# fetch); this is the per-card half.
+# a solo-kept BSC card ("BSC only"). Under NEO-321 the "BSC only" tag is the
+# Base card's own `unmatched-sl` attribute, which the copy carries
+# (`attributes: source.attributes`): Base was fetched BSC-only under the
+# pause, so every copy says so. The sync MESSAGE evidence for the pause is
+# asserted at the Sports column above; this is the per-card half.
 - runFlow:
     when:
       true: "${!output.SL_PAUSED}"

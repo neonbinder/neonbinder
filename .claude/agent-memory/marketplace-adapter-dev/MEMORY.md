@@ -20,3 +20,5 @@
 - [Scheduled telemetry unmasks cross-test leaks](reference_scheduled_telemetry_unmasks_cross_test_leaks.md) — recordAdapterCall schedules since NEO-315; drain before asserting captures, scope by requestId, set POSTHOG_API_KEY in stubs
 - [use-node contract narrowers live in lib](reference_use_node_contract_narrowers_live_in_lib.md) — default-runtime settle can't import a "use node" adapter; types/validators/narrowers go in convex/lib, re-exported
 - [Check baseline reds in main/, not by stash](reference_check_baseline_reds_in_main_not_by_stash.md) — shared worktree: prove a stray red pre-existing by running that file in main/ at the same base
+- [Hook between action steps in convex-test](reference_convex_test_hook_between_action_steps.md) — vi.mock a helper the earlier mutation calls; one-shot hook with its ctx lands a change between runMutation steps
+- [paginate maximumBytesRead](reference_paginate_maximum_bytes_read.md) — a .take(N) can't be byte-bounded; page across queries with maximumBytesRead; size byte fixtures with literals, never from the cap

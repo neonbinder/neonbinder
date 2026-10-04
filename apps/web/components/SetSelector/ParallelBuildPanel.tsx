@@ -76,6 +76,17 @@ import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
  * the same parallel to land before rebuilding it. The server has its own
  * guard for everything a tab cannot see.
  *
+ * ## Any SOURCE, not only an insert (NEO-321)
+ *
+ * The copy is the same whatever the parallels are copied FROM, so the runner
+ * and the panel speak of a SOURCE: an insert's own checklist (above), or the
+ * Base checklist for the base set's parallels — the rows under the variant
+ * type whose NB role is `parallel`. The server resolves which (`source` on
+ * `getParallelsForBuild`); the client only says where it stands. The Base run
+ * is started from `BaseParallelsBuildSection` and only when the operator
+ * presses its button (Jason, D2), and a base parallel's own row gets the same
+ * "Build from Base" button an insert's parallel has (D3).
+ *
  * Every Convex reference is read at CALL time (`convex.query`/`convex.action`
  * inside the run, `useAction` only inside the parallel-row button, which mounts
  * only on a parallel row), so a component test that hand-builds the `api`
@@ -91,7 +102,7 @@ import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
 // returns a different shape fails the typecheck at the assignment.
 // ---------------------------------------------------------------------------
 
-/** One parallel of the insert, as `getParallelsForBuild` lists it. */
+/** One parallel of the source, as `getParallelsForBuild` lists it. */
 export type ParallelPlanEntry = {
   _id: Id<"selectorOptions">;
   value: string;
@@ -102,9 +113,26 @@ export type ParallelPlanEntry = {
   blocked?: string;
 };
 
+/** What the parallels are copied from, as the server resolved it (NEO-321). */
+export type ParallelBuildSource = {
+  id: Id<"selectorOptions">;
+  value: string;
+  /** An insert's own checklist, or the Base checklist for the base set's parallels. */
+  kind: "insert" | "base";
+  hasCards: boolean;
+};
+
 export type ParallelBuildPlan = {
   parallels: ParallelPlanEntry[];
   truncated: boolean;
+  /**
+   * Optional in this type so the view reads it defensively: a row the server
+   * could not resolve a source for answers without one, and the run falls
+   * back to what the caller said it stands on.
+   */
+  source?: ParallelBuildSource | null;
+  /** Why there is no `source` (a Parallel variant type with no single Base). */
+  sourceBlocked?: string;
 };
 
 type SideCounts = { bsc: number; sportlots: number };
@@ -124,7 +152,7 @@ export type ParallelBuildResult = {
   blockedReason?: string;
   /** Per side: old links that were NOT carried over although the marketplace still lists the card. */
   stillListedNotRelinked: SideCounts;
-  /** Per side: old links that pointed at the insert's own cards, removed. */
+  /** Per side: old links that pointed at the source's own cards, removed. */
   legacyLinksRemoved: SideCounts;
   skippedChangedSource: number;
   /**
@@ -132,7 +160,7 @@ export type ParallelBuildResult = {
    * short that many cards until it is built again.
    */
   deletedCount?: number;
-  /** Per side: cards the parallel's marketplace lists that the insert does not have. */
+  /** Per side: cards the parallel's marketplace lists that the source does not have. */
   extraOnMarketplace: {
     bsc: { count: number; cards: string[] };
     sportlots: { count: number; cards: string[] };
@@ -145,14 +173,27 @@ export type ParallelBuildResult = {
   };
 };
 
-/** Where the open checklist sits in the insert → parallel pair. */
+/**
+ * Where the open checklist sits in the source → parallel pair. `insert`: an
+ * insert, whose save builds its parallels (J1). `parallel`: a parallel — of an
+ * insert, or of the base set (NEO-321 D3) — whose Sync slot builds from its
+ * source instead.
+ */
 export type ParallelBuildRole =
   | { role: "insert" }
   | {
       role: "parallel";
-      insertId: Id<"selectorOptions">;
-      /** Undefined while the chain loads; the button waits for it. */
-      insertValue?: string;
+      /** Undefined while the source is still being read. */
+      sourceId?: Id<"selectorOptions">;
+      /** Undefined while the source loads; the button waits for it. */
+      sourceValue?: string;
+      /**
+       * NEO-321 (a11y) — set when the source is KNOWN to be missing (a base
+       * parallel in a set with no single Base): the id of the element on the
+       * page that says why, which the stand-in button is described by.
+       * Unset while the source is merely loading.
+       */
+      unavailableReasonId?: string;
     };
 
 /** One parallel's line in the panel. */
@@ -174,8 +215,12 @@ export type ParallelRunEntry = {
 };
 
 export type ParallelRun = {
-  insertId: Id<"selectorOptions">;
-  insertValue: string;
+  /** The row the run was started from: an insert, or the Parallel variant type. */
+  startedFrom: Id<"selectorOptions">;
+  /** The checklist the parallels are copied from — the insert, or the Base row. */
+  sourceId: Id<"selectorOptions">;
+  sourceValue: string;
+  sourceKind: ParallelBuildSource["kind"];
   entries: ParallelRunEntry[];
   truncated: boolean;
   /**
@@ -199,6 +244,15 @@ const plural = (count: number, one: string, many: string) =>
 
 const SIDES = ["bsc", "sportlots"] as const;
 
+/**
+ * "Base's", "Anime's" — and "Gold Wave Refractors'": a name ending in "s"
+ * takes a bare apostrophe. The one place the build copy forms a possessive
+ * from a row's name (here and in `BaseParallelsBuildSection`).
+ */
+export function possessive(name: string): string {
+  return /s$/i.test(name) ? `${name}'` : `${name}'s`;
+}
+
 export const WAITING_TEXT = "Waiting";
 export const BUILDING_TEXT = "Building…";
 export const SKIPPED_TEXT = "Skipped — not linked to a marketplace yet";
@@ -213,7 +267,7 @@ export const REBUILD_CONFIRM_LABEL = "Replace the cards";
 export const REBUILD_BUSY_LABEL = "Rebuilding…";
 export const SEE_CARDS_LABEL = "See which cards";
 
-/** The heading's id, for a held control's `aria-describedby` on the insert. */
+/** The heading's id, for a held control's `aria-describedby` on the source. */
 export const PARALLEL_BUILD_HEADING_ID = "parallel-build-heading";
 /** A ledger line's id, for a held control's `aria-describedby` on that parallel. */
 export const parallelLineId = (parallelId: string) =>
@@ -230,25 +284,25 @@ export const parallelLineId = (parallelId: string) =>
  *    doesn't have"
  *
  * A first build that copied nothing gets one sentence saying why instead of
- * "Built 0 cards, 48 left off". `insertValue` names the insert in the clauses
- * that need it; without one they say "the insert".
+ * "Built 0 cards, 48 left off". `sourceValue` names the source (the insert,
+ * or Base) in the clauses that need it; without one they say "the source".
  */
 export function builtText(
   result: ParallelBuildResult,
-  insertValue?: string,
+  sourceValue?: string,
 ): string {
-  const insert = insertValue ?? "the insert";
+  const source = sourceValue ?? "the source";
   const extras = SIDES.map(
     (side) => [side, result.extraOnMarketplace?.[side]?.count ?? 0] as const,
   ).filter(([, count]) => count > 0);
   const extraClauses = extras.map(
-    ([side, count]) => `${count} on ${SIDE_LABEL[side]} that ${insert} doesn't have`,
+    ([side, count]) => `${count} on ${SIDE_LABEL[side]} that ${source} doesn't have`,
   );
 
   if (!result.rebuilt && result.copied === 0) {
     const total = result.copied + result.notCopied;
     return [
-      `Nothing copied — none of ${insert}'s ${plural(total, "card", "cards")} turned up on this parallel's marketplace checklists`,
+      `Nothing copied — none of ${possessive(source)} ${plural(total, "card", "cards")} turned up on this parallel's marketplace checklists`,
       ...extraClauses,
     ].join(", ");
   }
@@ -272,7 +326,7 @@ export function builtText(
   }
   if ((result.skippedChangedSource ?? 0) > 0) {
     parts.push(
-      `${result.skippedChangedSource} skipped — ${insert} changed them mid-build`,
+      `${result.skippedChangedSource} skipped — ${source} changed them mid-build`,
     );
   }
   for (const side of SIDES) {
@@ -300,7 +354,7 @@ export function builtText(
     (result.legacyLinksRemoved?.sportlots ?? 0);
   if (legacy > 0) {
     parts.push(
-      `${plural(legacy, "old link", "old links")} to ${insert}'s cards removed`,
+      `${plural(legacy, "old link", "old links")} to ${possessive(source)} cards removed`,
     );
   }
   parts.push(...extraClauses);
@@ -317,6 +371,10 @@ export function sideOnlyText(result: ParallelBuildResult): string | null {
  * "Blocked — {reason}". A block that fired partway through removing the old
  * cards says so, because the parallel is now short of cards:
  * "Blocked — {reason}, after 40 old cards were removed — build it again".
+ * This clause is the ONLY "build it again" on that line: the server's
+ * partial-wipe reason (`BLOCKED_CHANGED_MID_BUILD`) carries neither the
+ * instruction nor its own "cleared", and it is only ever sent with a
+ * `deletedCount` above zero.
  */
 export function blockedText(reason?: string, deleted?: number): string {
   const base = reason ? `Blocked — ${reason}` : "Blocked";
@@ -329,14 +387,14 @@ export function failedText(message: string): string {
 }
 
 /** A line's status, without the parallel's name. */
-export function lineStatusText(line: ParallelLine, insertValue?: string): string {
+export function lineStatusText(line: ParallelLine, sourceValue?: string): string {
   switch (line.kind) {
     case "waiting":
       return WAITING_TEXT;
     case "building":
       return BUILDING_TEXT;
     case "built":
-      return builtText(line.result, insertValue);
+      return builtText(line.result, sourceValue);
     case "skipped":
       return SKIPPED_TEXT;
     case "blocked":
@@ -358,9 +416,9 @@ export function lineStatusText(line: ParallelLine, insertValue?: string): string
 export function parallelLineText(
   value: string,
   line: ParallelLine,
-  insertValue?: string,
+  sourceValue?: string,
 ): string {
-  return `${value} — ${lineStatusText(line, insertValue)}`;
+  return `${value} — ${lineStatusText(line, sourceValue)}`;
 }
 
 /** Built lines in a run, rebuilds included. */
@@ -377,7 +435,7 @@ const countKind = (run: ParallelRun, kind: ParallelLine["kind"]) =>
  */
 export function panelHeading(run: ParallelRun): string {
   const total = run.entries.length;
-  const insert = run.insertValue;
+  const source = run.sourceValue;
   if (run.phase === "running" || run.phase === "stopping") {
     const at =
       run.atIndex ??
@@ -385,14 +443,14 @@ export function panelHeading(run: ParallelRun): string {
         0,
         run.entries.findIndex((e) => e.line.kind === "waiting"),
       );
-    return `Building parallels of ${insert} — ${Math.min(at + 1, total)} of ${total}`;
+    return `Building parallels of ${source} — ${Math.min(at + 1, total)} of ${total}`;
   }
   const built = countKind(run, "built");
   if (run.phase === "stopped") {
-    return `${insert} parallels — stopped after ${built} of ${total}`;
+    return `${source} parallels — stopped after ${built} of ${total}`;
   }
   if (run.phase === "left") {
-    return `${insert} parallels — stopped when you left, ${built} of ${total} built`;
+    return `${source} parallels — stopped when you left, ${built} of ${total} built`;
   }
   const parts = [
     [built, "built"],
@@ -402,12 +460,12 @@ export function panelHeading(run: ParallelRun): string {
   ]
     .filter(([n]) => (n as number) > 0)
     .map(([n, word]) => `${n} ${word}`);
-  return `${insert} parallels — ${parts.join(", ")}`;
+  return `${source} parallels — ${parts.join(", ")}`;
 }
 
 /** Said once as a run starts: "Building 5 parallels of Anime". */
-export function startText(insertValue: string, total: number): string {
-  return `Building ${plural(total, "parallel", "parallels")} of ${insertValue}`;
+export function startText(sourceValue: string, total: number): string {
+  return `Building ${plural(total, "parallel", "parallels")} of ${sourceValue}`;
 }
 
 /** The live region's periodic pulse on a large run: "12 of 40 done". */
@@ -426,13 +484,13 @@ export function planFailedText(message: string): string {
 }
 
 /** The parallel row's button. */
-export function buildButtonLabel(insertValue: string, hasCards: boolean) {
-  return hasCards ? `Rebuild from ${insertValue}` : `Build from ${insertValue}`;
+export function buildButtonLabel(sourceValue: string, hasCards: boolean) {
+  return hasCards ? `Rebuild from ${sourceValue}` : `Build from ${sourceValue}`;
 }
 
 /** Said to a screen reader for a held control during a parallel-row build. */
-export function manualBuildNote(insertValue: string): string {
-  return `Building from ${insertValue}…`;
+export function manualBuildNote(sourceValue: string): string {
+  return `Building from ${sourceValue}…`;
 }
 
 /**
@@ -441,12 +499,12 @@ export function manualBuildNote(insertValue: string): string {
  */
 export function rebuildConfirmCopy(
   parallelValue: string,
-  insertValue: string,
+  sourceValue: string,
   cardCount: number,
 ): { title: string; description: string } {
   return {
-    title: `Replace ${parallelValue}'s ${plural(cardCount, "card", "cards")} with a fresh copy of ${insertValue}'s?`,
-    description: `Every card is made fresh from ${insertValue}: hand edits on ${parallelValue}'s cards are replaced. Cards keep their SKU when they're the same card. Cards ${parallelValue}'s marketplaces don't list are left off.`,
+    title: `Replace ${possessive(parallelValue)} ${plural(cardCount, "card", "cards")} with a fresh copy of ${possessive(sourceValue)}?`,
+    description: `Every card is made fresh from ${sourceValue}: hand edits on ${possessive(parallelValue)} cards are replaced. Cards keep their SKU when they're the same card. Cards ${possessive(parallelValue)} marketplaces don't list are left off.`,
   };
 }
 
@@ -459,7 +517,7 @@ export function rebuildConfirmCopy(
 export function buildNotice(
   result: ParallelBuildResult,
   parallelValue: string,
-  insertValue: string,
+  sourceValue: string,
 ): { text: string; tone: "status" | "error" } {
   if (result.status === "blocked") {
     return {
@@ -469,7 +527,7 @@ export function buildNotice(
   }
   const only = sideOnlyText(result);
   return {
-    text: `${parallelValue} — ${builtText(result, insertValue)}.${only ? ` ${only}.` : ""}`,
+    text: `${parallelValue} — ${builtText(result, sourceValue)}.${only ? ` ${only}.` : ""}`,
     tone: "status",
   };
 }
@@ -483,12 +541,12 @@ type DetailBucket = { label: string; count: number; cards: string[] };
 /**
  * The per-bucket card lists behind a built line — which cards were left off,
  * which have no card on a side, which matched more than one, and what the
- * parallel's marketplace lists that the insert does not. Only non-empty
+ * parallel's marketplace lists that the source does not. Only non-empty
  * buckets; the count is the server's (lists are capped at 50, counts are not).
  */
 export function detailBuckets(
   result: ParallelBuildResult,
-  insertValue: string,
+  sourceValue: string,
 ): DetailBucket[] {
   const lists = result.cards;
   const buckets: DetailBucket[] = [
@@ -508,7 +566,7 @@ export function detailBuckets(
       cards: lists?.ambiguous?.[side] ?? [],
     })),
     ...SIDES.map((side) => ({
-      label: `On ${SIDE_LABEL[side]}, not in ${insertValue}`,
+      label: `On ${SIDE_LABEL[side]}, not in ${sourceValue}`,
       count: result.extraOnMarketplace?.[side]?.count ?? 0,
       cards: result.extraOnMarketplace?.[side]?.cards ?? [],
     })),
@@ -529,13 +587,13 @@ export function moreText(count: number): string {
 export function ParallelBuildDetails({
   id,
   result,
-  insertValue,
+  sourceValue,
 }: {
   id: string;
   result: ParallelBuildResult;
-  insertValue: string;
+  sourceValue: string;
 }) {
-  const buckets = detailBuckets(result, insertValue);
+  const buckets = detailBuckets(result, sourceValue);
   return (
     <div
       id={id}
@@ -573,7 +631,7 @@ function errorMessage(error: unknown): string {
 
 /**
  * Lines the server has already answered: a parallel holding no marketplace id
- * of its own has nothing to copy links from (and the insert's ids are never
+ * of its own has nothing to copy links from (and the source's ids are never
  * borrowed — M4), and one the plan marks `blocked` would be refused. Neither is
  * sent to the action.
  */
@@ -618,13 +676,14 @@ export type ParallelBuildRunner = {
   /** Parallels with a build in flight from this tab, automatic or by hand. */
   inFlight: ReadonlySet<string>;
   /**
-   * List the insert's parallels and build each in turn. Resolves when the
-   * loop has ended; resolves to a message only when the LIST could not be
-   * read (nothing was built), so the caller can say so beside "Saved N".
+   * List the source's parallels and build each in turn. `from` is the row the
+   * caller stands on — an insert, or the Parallel variant type (NEO-321) — and
+   * its name; the server resolves the source from it. Resolves when the loop
+   * has ended; resolves to a message only when the LIST could not be read
+   * (nothing was built), so the caller can say so beside "Saved N".
    */
   start: (
-    insertId: Id<"selectorOptions">,
-    insertValue: string,
+    from: { id: Id<"selectorOptions">; value: string },
     /** The Convex client to build through; see `useHostedParallelBuildRun`. */
     client?: BuildClient,
   ) => Promise<string | null>;
@@ -745,8 +804,7 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
 
   const start = useCallback(
     async (
-      insertId: Id<"selectorOptions">,
-      insertValue: string,
+      from: { id: Id<"selectorOptions">; value: string },
       client?: BuildClient,
     ): Promise<string | null> => {
       const convex = client ?? defaultClient;
@@ -761,7 +819,7 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
       try {
         plan = await convex.query(
           api.parallelChecklistBuild.getParallelsForBuild,
-          { insertId },
+          { sourceId: from.id },
         );
       } catch (error) {
         return current() ? errorMessage(error) : null;
@@ -796,9 +854,17 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
           prev ? { ...prev, ...patch, entries: snapshot() } : prev,
         );
 
+      // The source as the server resolved it: for an insert, the insert
+      // itself; for the Parallel variant type, the Base row — which is what
+      // the checklist compares against to hold the Base's edits mid-run. The
+      // caller's own name wins when it has one, so an insert's run reads
+      // exactly as it always has.
+      const sourceValue = from.value || plan.source?.value || "";
       const opening: ParallelRun = {
-        insertId,
-        insertValue,
+        startedFrom: from.id,
+        sourceId: plan.source?.id ?? from.id,
+        sourceValue,
+        sourceKind: plan.source?.kind ?? "insert",
         entries: [...entries],
         truncated: plan.truncated,
         phase: "running",
@@ -807,7 +873,7 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
       };
       // Worded apart from the heading on purpose, so the page never carries
       // the heading's text twice (a text find would match both).
-      opening.announcement = startText(insertValue, total);
+      opening.announcement = startText(sourceValue, total);
       setRun(opening);
 
       for (let i = 0; i < entries.length; i++) {
@@ -849,7 +915,7 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
         const done = i + 1;
         const announce =
           line.kind !== "built" || !pulses
-            ? parallelLineText(entries[i].value, line, insertValue)
+            ? parallelLineText(entries[i].value, line, sourceValue)
             : done % PULSE_EVERY === 0
               ? pulseText(done, total)
               : undefined;
@@ -930,9 +996,10 @@ const LINE_GLYPH: Record<ParallelLine["kind"], { icon: HeroIcon; tone: string }>
  * The sleeve strip — one card-shaped slot per parallel, filling like a binder
  * page as each one lands. Decorative (the ledger below says everything in
  * words), so the whole strip is `aria-hidden`; a slot's `title` repeats its
- * line for a pointer.
+ * line for a pointer. Exported so the Base-parallels section's pre-run strip
+ * (NEO-321) draws the same sleeves the run then fills.
  */
-const SLEEVE_TONE: Record<ParallelLine["kind"], string> = {
+export const SLEEVE_TONE: Record<ParallelLine["kind"], string> = {
   waiting: "border-blue-400 dark:border-blue-500 bg-transparent",
   building: "border-[#00C2FF] bg-[#00C2FF]/40 motion-safe:animate-pulse",
   built: "border-green-700 dark:border-[#00D558] bg-[#00D558]",
@@ -943,17 +1010,48 @@ const SLEEVE_TONE: Record<ParallelLine["kind"], string> = {
   unfinished: "border-amber-700 dark:border-amber-400 bg-transparent",
 };
 
-/** Above this many lines the ledger scrolls inside the panel. */
-const SCROLL_AFTER = 8;
+/**
+ * NEO-321 (Jason, on the preview) — the ledger grows with its lines and the
+ * PAGE scrolls; a short box that showed 5 of 42 lines above an empty screen
+ * was the complaint. Only a run past this many lines (the server caps the
+ * list at 500; real parallel rainbows stop well short of 100) is held to a
+ * viewport-relative height and scrolls inside the panel, so a pathological
+ * run cannot push the checklist under it thousands of pixels down. 100 lines
+ * is ~2,200px, taller than `70vh` on any screen, so a capped ledger is never
+ * shorter than its content while there is room for it.
+ */
+const SCROLL_AFTER = 100;
 
 export default function ParallelBuildPanel({
   run,
   onStop,
+  headingLevel = 3,
 }: {
   run: ParallelRun;
   onStop: () => void;
+  /**
+   * NEO-321 (a11y) — 4 when the panel sits inside a section that has its own
+   * h3 (the Base-parallels section), so the outline nests. Text and id are
+   * the same either way.
+   */
+  headingLevel?: 3 | 4;
 }) {
+  const Heading = headingLevel === 4 ? "h4" : "h3";
   const panelRef = useRef<HTMLElement>(null);
+  /**
+   * a11y (NEO-321 audit) — the live line must be EMPTY when it enters the
+   * tree: a screen reader registers a live region on insertion and speaks
+   * only later CHANGES, so a region that mounts already holding "Building 5
+   * parallels of Anime" says nothing. React renders the node with no
+   * children and this effect writes the text after the commit — on mount
+   * that is the change that gets spoken, and every later announcement is a
+   * change too. The node's text is owned here, never by React, so the two
+   * cannot fight over it.
+   */
+  const liveRef = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (liveRef.current) liveRef.current.textContent = run.announcement;
+  }, [run.announcement]);
   const scrollerRef = useRef<HTMLDivElement>(null);
   // NEO-260: the E2E driver re-finds a focused control by an XPath built from
   // its class, so Stop carries the document-unique marker class — never a
@@ -977,12 +1075,16 @@ export default function ParallelBuildPanel({
     wasLiveRef.current = live;
     if (!ended) return;
     if (document.activeElement !== document.body) return;
-    panelRef.current?.focus();
+    // `preventScroll`: the panel is as tall as its ledger now, and a plain
+    // focus() would scroll the page to bring the whole section into view —
+    // jumping it under an operator reading the lines at the end of a run.
+    // The heading the park reads out sits where Stop was, already in view.
+    panelRef.current?.focus({ preventScroll: true });
   }, [live]);
 
   /**
    * a11y (WCAG 2.4.3) — the other end of the same gap. A run starts right
-   * after a save, and holding the insert's controls for the run can blur the
+   * after a save, and holding the source's controls for the run can blur the
    * one that had focus; the solo-fetch park's answer applies — land on the
    * thing that now says what is happening, whose Stop is one Tab away. Once,
    * on mount, and only if focus was dropped.
@@ -996,13 +1098,17 @@ export default function ParallelBuildPanel({
       active === document.body ||
       (active instanceof HTMLButtonElement && active.disabled);
     if (!dropped) return;
-    panelRef.current?.focus();
+    // `preventScroll`, as above: the panel mounts under the control that
+    // started the run (the "Saved N cards." notice, the Base section's
+    // button), where the operator is already looking.
+    panelRef.current?.focus({ preventScroll: true });
   }, []);
 
   /**
-   * Keep the line being built in view INSIDE the ledger. `scrollTop` rather
-   * than `scrollIntoView`, which would also scroll the page under an operator
-   * who is reading something else.
+   * Keep the line being built in view INSIDE a capped ledger (past
+   * SCROLL_AFTER; an uncapped one has nothing of its own to scroll).
+   * `scrollTop` rather than `scrollIntoView`, which would also scroll the
+   * page under an operator who is reading something else.
    */
   useEffect(() => {
     if (!scrolls || run.atIndex === null) return;
@@ -1032,9 +1138,9 @@ export default function ParallelBuildPanel({
         const Icon = glyph.icon;
         const result = entry.line.kind === "built" ? entry.line.result : null;
         const only = result ? sideOnlyText(result) : null;
-        const text = parallelLineText(entry.value, entry.line, run.insertValue);
+        const text = parallelLineText(entry.value, entry.line, run.sourceValue);
         const hasDetail =
-          result !== null && detailBuckets(result, run.insertValue).length > 0;
+          result !== null && detailBuckets(result, run.sourceValue).length > 0;
         const expanded = open.has(entry.id);
         const detailId = `parallel-build-detail-${entry.id}`;
         return (
@@ -1083,7 +1189,7 @@ export default function ParallelBuildPanel({
               <ParallelBuildDetails
                 id={detailId}
                 result={result}
-                insertValue={run.insertValue}
+                sourceValue={run.sourceValue}
               />
             )}
           </li>
@@ -1106,9 +1212,12 @@ export default function ParallelBuildPanel({
       className="p-3 mb-3 bg-blue-100 dark:bg-blue-900/30 border border-blue-300 dark:border-blue-700 rounded-md text-blue-800 dark:text-blue-200 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
     >
       <div className="flex items-center justify-between gap-3">
-        <h3 id={PARALLEL_BUILD_HEADING_ID} className="font-semibold tabular-nums">
+        <Heading
+          id={PARALLEL_BUILD_HEADING_ID}
+          className="font-semibold tabular-nums"
+        >
           {panelHeading(run)}
-        </h3>
+        </Heading>
         {live && (
           // The in-banner button shape the solo fetch's Cancel and the
           // post-commit call-to-action already use, with the same 32px hit
@@ -1136,7 +1245,7 @@ export default function ParallelBuildPanel({
         {run.entries.map((entry) => (
           <span
             key={entry.id}
-            title={parallelLineText(entry.value, entry.line, run.insertValue)}
+            title={parallelLineText(entry.value, entry.line, run.sourceValue)}
             className={`h-3.5 w-2.5 rounded-[2px] border ${SLEEVE_TONE[entry.line.kind]}`}
           />
         ))}
@@ -1144,15 +1253,17 @@ export default function ParallelBuildPanel({
 
       <div className="mt-2 text-xs">
         {scrolls ? (
-          // A scroller a keyboard cannot focus cannot be scrolled from the
-          // keyboard; a named, focusable group is the pairing the lint rule
-          // and `ConfirmDialog` already use.
+          // Past SCROLL_AFTER only. A scroller a keyboard cannot focus cannot
+          // be scrolled from the keyboard; a named, focusable group is the
+          // pairing the lint rule and `ConfirmDialog` already use. Below the
+          // threshold the list is plain flow content: no scroller, so no tab
+          // stop and no ring.
           <div
             ref={scrollerRef}
             role="group"
             aria-label={RESULTS_GROUP_LABEL}
             tabIndex={0}
-            className="relative max-h-48 overflow-y-auto pr-1 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
+            className="relative max-h-[70vh] overflow-y-auto pr-1 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-600 dark:focus-visible:ring-blue-300"
           >
             {list}
           </div>
@@ -1179,9 +1290,7 @@ export default function ParallelBuildPanel({
         in the final heading, said once at the end. Every line also stays in
         the ledger above to be read at leisure.
       */}
-      <p className="sr-only" role="status">
-        {run.announcement}
-      </p>
+      <p ref={liveRef} className="sr-only" role="status" />
     </section>
   );
 }
@@ -1194,7 +1303,7 @@ export default function ParallelBuildPanel({
 export type ParallelBuildReport = {
   /** Which parallel — the operator may have moved on by the time it lands. */
   parallelId: Id<"selectorOptions">;
-  insertValue: string;
+  sourceValue: string;
   text: string;
   tone: "status" | "error";
   /** Cards landed. */
@@ -1214,7 +1323,7 @@ export type ParallelBuildReport = {
  * attributes panel, and this sits on the checklist card, which is white in
  * a light OS theme — where `gray-200` text would all but vanish. Same slot,
  * same weight as its neighbours (Add Card, Add Cross-Release Cards). A long
- * insert name truncates, with the whole label in `title`.
+ * source name truncates, with the whole label in `title`.
  *
  * With a `runner`, the build goes through its in-flight registry, so a
  * button remounted mid-build (the operator moved away and back) still shows
@@ -1223,7 +1332,7 @@ export type ParallelBuildReport = {
 export function ParallelBuildButton({
   parallelId,
   parallelValue,
-  insertValue,
+  sourceValue,
   cardCount,
   primary = false,
   held = false,
@@ -1233,12 +1342,12 @@ export function ParallelBuildButton({
 }: {
   parallelId: Id<"selectorOptions">;
   parallelValue: string;
-  insertValue: string;
+  sourceValue: string;
   /** The parallel's cards right now: 0 builds, anything else confirms a rebuild. */
   cardCount: number;
   /** The empty-state call-to-action is the primary green; the header one is secondary. */
   primary?: boolean;
-  /** Held while the insert's own run is building parallels. */
+  /** Held while the source's own run is building parallels. */
   held?: boolean;
   runner?: Pick<ParallelBuildRunner, "inFlight" | "buildOne">;
   buttonRef?: RefObject<HTMLButtonElement | null>;
@@ -1280,10 +1389,10 @@ export function ParallelBuildButton({
       // Undefined: another build of this parallel was already in flight, and
       // its own caller reports it.
       if (result) {
-        const notice = buildNotice(result, parallelValue, insertValue);
+        const notice = buildNotice(result, parallelValue, sourceValue);
         onResult({
           parallelId,
-          insertValue,
+          sourceValue,
           ...notice,
           committed: result.status === "built",
           result,
@@ -1292,7 +1401,7 @@ export function ParallelBuildButton({
     } catch (error) {
       onResult({
         parallelId,
-        insertValue,
+        sourceValue,
         text: `${parallelValue} — ${failedText(errorMessage(error))}`,
         tone: "error",
         committed: false,
@@ -1310,10 +1419,10 @@ export function ParallelBuildButton({
     else void build();
   };
 
-  const copy = rebuildConfirmCopy(parallelValue, insertValue, cardCount);
+  const copy = rebuildConfirmCopy(parallelValue, sourceValue, cardCount);
   const label = busy && !confirming
     ? BUILD_BUSY_LABEL
-    : buildButtonLabel(insertValue, hasCards);
+    : buildButtonLabel(sourceValue, hasCards);
 
   return (
     <>
@@ -1347,5 +1456,42 @@ export function ParallelBuildButton({
         />
       )}
     </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The parallel row's stand-in, before its source is known (NEO-321 a11y)
+// ---------------------------------------------------------------------------
+
+export const SOURCE_LOADING_LABEL = "Loading…";
+export const SOURCE_MISSING_LABEL = "Can't build yet";
+
+/**
+ * Holds the Sync slot on a parallel whose source has no name yet, so the slot
+ * is never empty and the real button does not shift the header when it
+ * lands. Same shape and weight as `ParallelBuildButton`, `aria-disabled`
+ * (focusable, so the reason is reachable), and does nothing when pressed.
+ * Loading says so; a source known to be missing says it can't build, and is
+ * described by the line on the page that says why.
+ */
+export function ParallelBuildPlaceholder({
+  primary = false,
+  reasonId,
+}: {
+  primary?: boolean;
+  reasonId?: string;
+}) {
+  const label = reasonId ? SOURCE_MISSING_LABEL : SOURCE_LOADING_LABEL;
+  return (
+    <NeonButton
+      className="max-w-[18rem]"
+      secondary={!primary}
+      aria-disabled
+      aria-busy={reasonId ? undefined : true}
+      aria-describedby={reasonId}
+      title={label}
+    >
+      <span className="min-w-0 truncate">{label}</span>
+    </NeonButton>
   );
 }

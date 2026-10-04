@@ -1,6 +1,6 @@
 ---
 name: alias-index-pin-exempts-reset-drain-by-name-and-position
-description: players/teams aliasIndexPin tests allow ONE query of the alias table in selectorOptions.ts, and only AFTER `export const reset<Table>Batch` — any other read (an admin listing, a lookup in the commit prelude) trips the pin
+description: players/teams aliasIndexPin (and players.sportsIndexPin) flag READS too — ONE query allowed in selectorOptions.ts after `export const reset<Table>Batch`; any other module needing to scan the table calls a paging helper exported from the owner module
 metadata:
   type: reference
 ---
@@ -22,3 +22,11 @@ any other purpose (the commit prelude reads `linked.aliases` off the team
 doc and lets `syncTeamAliases` diff the index). A second lookup belongs in
 `convex/lib/teamRow.ts` / `players.ts`, which are the modules the pin
 exempts wholesale.
+
+`players.sportsIndexPin.test.ts` applies the same rule to `playerSports`
+(`resetPlayerSportsBatch`). A module outside the owners that must SCAN one
+of these tables (NEO-322's `rekeyEntityNames.ts`) gets a one-line
+read-only `.paginate` helper exported from the owner (`pagePlayerAliasRows`,
+`pagePlayerSportRows` in players.ts, `pageTeamAliasRows` in teams.ts) and
+still writes only through `sync*`. Never dodge the grep with a variable
+table name.

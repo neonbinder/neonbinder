@@ -4,7 +4,10 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { splitTeamName, teamFullName } from "../../lib/teams/team-name";
 import { eraLabel } from "../../lib/teams/team-era";
-import { normalizeOrderedEntityName } from "../../lib/entities/normalize-name";
+import {
+  entityNameQueryReadings,
+  normalizeOrderedEntityName,
+} from "../../lib/entities/normalize-name";
 import { Input } from "../primitives/Input";
 import { Autocomplete, focusWithoutOpening } from "../primitives/Autocomplete";
 import NeonButton from "../modules/NeonButton";
@@ -659,15 +662,23 @@ export default function NewTeamForm({
   const typed = leagueQuery?.trim() ?? "";
   const typedKey = typed ? normalizeLeagueName(typed) : "";
   const typedLower = typed.toLowerCase();
+  /** Every typeahead reading of the typed key (NEO-322): "N. C. S" joins to
+   *  "ncs", the substring of nothing in "nc state", so it also reads as
+   *  "nc s". The first reading is `typedKey` itself. */
+  const typedReadings = typed
+    ? entityNameQueryReadings(typed)
+        .map((tokens) => tokens.join(" "))
+        .filter((reading) => reading !== "")
+    : [];
   /** Case-insensitive substring, on the raw text AND on the normalized key —
    *  so "st louis" finds "St. Louis Amateur League" and "panamer" finds
    *  "Ligue Panaméricaine". */
   const matchesTyped = (option: LeagueOption) =>
-    option.haystack.some(
-      (text) =>
-        text.toLowerCase().includes(typedLower) ||
-        (typedKey !== "" && normalizeLeagueName(text).includes(typedKey)),
-    );
+    option.haystack.some((text) => {
+      if (text.toLowerCase().includes(typedLower)) return true;
+      const key = normalizeLeagueName(text);
+      return typedReadings.some((reading) => key.includes(reading));
+    });
 
   const leagueOptions: LeagueOption[] = typed
     ? baseOptions.filter(matchesTyped)

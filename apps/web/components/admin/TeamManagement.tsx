@@ -5,7 +5,10 @@ import { api } from "@/convex/_generated/api";
 import type { Doc, Id } from "@/convex/_generated/dataModel";
 import { Input, Textarea } from "@/components/primitives";
 import { Autocomplete } from "@/components/primitives/Autocomplete";
-import { normalizeOrderedEntityName } from "@/lib/entities/normalize-name";
+import {
+  entityNameQueryReadings,
+  normalizeOrderedEntityName,
+} from "@/lib/entities/normalize-name";
 import NeonButton from "@/components/modules/NeonButton";
 import { parseAliases } from "@/components/SetSelector/NewLeagueForm";
 import { AddLeagueDialog } from "./AddLeagueDialog";
@@ -479,13 +482,19 @@ function TeamDetail({
   const franchiseTypedKey = franchiseTyped
     ? normalizeOrderedEntityName(franchiseTyped)
     : "";
+  // Every typeahead reading of the typed key (NEO-322), so "N. C. S" — on
+  // the way to "N. C. State" — still finds "NC State" as "nc s".
+  const franchiseTypedReadings = franchiseTyped
+    ? entityNameQueryReadings(franchiseTyped)
+        .map((tokens) => tokens.join(" "))
+        .filter((reading) => reading !== "")
+    : [];
   const franchiseMatches = franchiseTyped
-    ? franchiseOptions.filter(
-        (f) =>
-          f.label.toLowerCase().includes(franchiseTypedLower) ||
-          (franchiseTypedKey !== "" &&
-            normalizeOrderedEntityName(f.label).includes(franchiseTypedKey)),
-      )
+    ? franchiseOptions.filter((f) => {
+        if (f.label.toLowerCase().includes(franchiseTypedLower)) return true;
+        const key = normalizeOrderedEntityName(f.label);
+        return franchiseTypedReadings.some((reading) => key.includes(reading));
+      })
     : franchiseOptions;
   const franchiseListOptions: FranchiseOption[] = franchiseMatches.map((f) => ({
     key: f.id,
