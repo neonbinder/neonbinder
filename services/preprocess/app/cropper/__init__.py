@@ -448,11 +448,13 @@ def crop(
     `fast_tiered_crop` and the NEO-320 quad crop) and goes straight to the
     strategy loop. The HEAVY route sets it when the request carries a FAST
     decline's baseline: FAST already ran those exact stages on byte-identical
-    bytes and declined, and all three are pure functions of the bytes
-    (scan_meta reads header metadata; the classical pass and the quad
-    detector are deterministic OpenCV with no env, role or model input), with
-    their `_try_stage` gate evaluated against the same supplied baseline.
-    Re-running them can only reach the same "no".
+    bytes and declined. The three detectors are pure functions of the bytes
+    (scan_meta reads header metadata; the classical pass and `quad_crop` are
+    deterministic OpenCV with no env, role or model input). Their gates are
+    not all deterministic: the identity stages reuse the supplied baseline,
+    but a quad crop is new bytes and its gate makes its own Vision call,
+    which can vary or fail. Skipping is still right — HEAVY's strategy loop
+    is the slower, stronger answer to the same frame, not a retry of FAST.
 
     `timings` (NEO-315) is the caller's per-request accumulator; stage times
     and the Vision call count are added to it. Omitted, a throwaway one is
@@ -681,19 +683,30 @@ def _crop(
         if quad_result.crop_bytes is None:
             logger.info("fast: quad declined reason=%s", quad_result.reason)
         else:
-            result = _try_stage(
-                source=SOURCE_QUAD,
-                candidate_bytes=quad_result.crop_bytes,
-                source_area_bytes=image_bytes,
-                text_threshold=text_threshold,
-                returned_bytes_differ=True,
-                baseline_orient=baseline_orient,
-                timings=timings,
-            )
+            # The crop is a NEW image, so its gate makes a Vision call of its
+            # own (unlike the identity stages, which reuse the baseline). A
+            # failure there must not turn into a retryable 502 for an entry
+            # HEAVY can still settle: decline the quad, keep the baseline, and
+            # fall through exactly as if the quad had never offered a crop.
+            try:
+                result = _try_stage(
+                    source=SOURCE_QUAD,
+                    candidate_bytes=quad_result.crop_bytes,
+                    source_area_bytes=image_bytes,
+                    text_threshold=text_threshold,
+                    returned_bytes_differ=True,
+                    baseline_orient=baseline_orient,
+                    timings=timings,
+                )
+            except Exception:
+                logger.exception("fast: quad declined reason=gates_error")
+                result = None
+            else:
+                if result is None:
+                    logger.info("fast: quad declined reason=gates")
             if result is not None:
                 logger.info("fast: quad accepted")
                 return result
-            logger.info("fast: quad declined reason=gates")
 
     # ── FAST-role escalation seam (NEO-175) ─────────────────────────────
     # The FAST preprocess service (`PREPROCESS_ROLE=fast`) sets escalate_only

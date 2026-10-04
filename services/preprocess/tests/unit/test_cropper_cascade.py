@@ -1414,6 +1414,51 @@ class TestQuadStage:
         assert result.image_bytes == self.CROP
         assert result.returned_bytes_differ is True
 
+    def test_a_quad_win_costs_exactly_two_vision_calls(
+        self, monkeypatch, stub_orient, stub_classify
+    ):
+        """The baseline, then the quad crop's own gate — nothing else."""
+        from app.timing import Timings
+
+        calls = stub_orient()
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        self._install(monkeypatch, QuadResult(self.CROP, "ok"))
+        image = _card_jpeg(size=(1200, 1600))
+        timings = Timings()
+
+        result = crop(image_bytes=image, precropped_bytes=None, escalate_only=True, timings=timings)
+
+        assert result.source == "quad"
+        assert timings.vision_calls == 2
+        assert calls == [image, self.CROP]
+
+    def test_a_vision_failure_on_the_quad_crop_declines_with_the_baseline(
+        self, monkeypatch, stub_classify
+    ):
+        """The quad crop's gate is the one Vision call a FAST entry adds; if it
+        raises, the entry escalates with its baseline instead of 502ing."""
+        baseline = _orient(text_count=17, rotation=90, confidence=0.8)
+        seen: list[bytes] = []
+
+        def _orient_then_fail(b: bytes) -> OrientationResult:
+            seen.append(b)
+            if len(seen) == 1:
+                return baseline
+            raise RuntimeError("vision unavailable")
+
+        monkeypatch.setattr(cropper, "detect_orientation", _orient_then_fail)
+        stub_classify()
+        self._forbid_models(monkeypatch)
+        self._install(monkeypatch, QuadResult(self.CROP, "ok"))
+
+        result = crop(image_bytes=_card_jpeg(), precropped_bytes=None, escalate_only=True)
+
+        assert len(seen) == 2, "the quad crop's gate did call Vision"
+        assert isinstance(result, CropDeclined)
+        assert result.reason == "fast_path_declined"
+        assert result.baseline == baseline
+
     def test_an_identity_win_never_reaches_the_quad(self, monkeypatch, stub_orient, stub_classify):
         stub_orient()
         stub_classify()

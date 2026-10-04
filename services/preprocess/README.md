@@ -311,7 +311,8 @@ that declines with a named reason:
 | `shaved` | a quad on the card's printed inner panel | the band just outside the quad is not background (it matches neither the frame border nor the surface further out), or a fainter line runs parallel just outside a side and stops where the side stops (a card edge, unlike a scanner streak or table edge, which carries on), or a larger supported card-shaped outline encloses it |
 | `loose` | background inside the crop | the crop's border ring, or one side's inner band, is background-coloured |
 | `weak_edges` | an outline hallucinated from texture | a side lacks gradient support along most of its length |
-| `off_aspect` | a side fitted to something other than the card edge | the refined quad is more than 0.025 off 2.5:3.5 |
+| `off_aspect` | a side fitted to something other than the card edge, or the panel inside a wider border | the refined quad is more than 0.018 off 2.5:3.5 |
+| `frame_edge` | a thin background-coloured border cut off by the frame | a side lies within 0.048 of the card's width of the frame edge, too close to look for the real edge beyond it |
 
 The largest edge-supported quad is the candidate; a smaller quad nested
 inside it is a printed panel and is never preferred. A crop that passes every

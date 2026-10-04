@@ -162,6 +162,45 @@ class TestAccepts:
         )
         assert np.median(ring, axis=0).min() > 200, "outer band should be the white border"
 
+    def test_scanner_streaks_beside_the_card_do_not_read_as_a_card_edge(self):
+        """Lid streaks run the full height of a bed scan, parallel to the
+        card's sides and inside the outer-line search band. They carry on past
+        the card's corners, so they are not a card edge and must not decline."""
+        scene = _place(_canvas((1600, 1200)), _card_face(), _rect_corners(800, 600, 500, 700, 0))
+        for x in (800 - 250 - 30, 800 + 250 + 30):
+            cv2.line(scene, (x, 0), (x, 1199), (140, 140, 140), 2)
+
+        result = quad_crop(_jpeg(scene))
+
+        assert result.accepted, result.diagnostics
+
+    def test_the_candidate_is_the_largest_quad_after_refinement(self, monkeypatch):
+        """Raw candidates arrive ordered by their raw area; refinement moves
+        sides, so the crop must come from the largest REFINED quad."""
+        # 900x1200 keeps the work image at full scale, so quads are shared.
+        truth = _rect_corners(450, 600, 500, 700, angle_deg=0)
+        scene = _place(_canvas((900, 1200)), _card_face(), truth)
+        found = quad._candidates  # the real detector, for the real card quad
+        real = found(cv2.imdecode(np.frombuffer(_jpeg(scene), np.uint8), cv2.IMREAD_COLOR))
+        card_raw, card_pts = real[0]
+        shrunk = _rect_corners(450, 600, 400, 560, 0)
+        big_raw = _rect_corners(450, 600, 520, 728, 0)
+        refine = quad._refine
+
+        def _refine(raw, pts, grad):
+            if raw is big_raw:  # biggest raw candidate refines to a small quad
+                return shrunk, [1.0] * 4
+            return refine(raw, pts, grad)
+
+        monkeypatch.setattr(
+            quad, "_candidates", lambda _w: [(big_raw, card_pts), (card_raw, card_pts)]
+        )
+        monkeypatch.setattr(quad, "_refine", _refine)
+
+        result = quad_crop(_jpeg(scene))
+
+        assert _corner_error(result.quad, truth) < 6.0, "crop came from the shrunken quad"
+
     def test_landscape_card_comes_back_portrait(self):
         truth = _rect_corners(800, 600, 700, 500, angle_deg=3)
         face = cv2.rotate(_card_face(), cv2.ROTATE_90_CLOCKWISE)
@@ -234,6 +273,90 @@ class TestDeclines:
 
         assert not result.accepted
 
+    @pytest.mark.parametrize("border_frac", [0.03, 0.045])
+    @pytest.mark.parametrize("touching", ["corner", "left_edge"])
+    def test_white_border_cut_by_the_frame_edge_is_not_shaved(self, border_frac, touching):
+        """A white-bordered card on a white bed, pushed against the frame
+        edge. The border matches the bed, so the panel is the only quad; on
+        the touching sides there is no room to look for the card's real edge,
+        so the crop would silently lose the border there."""
+        corners = {
+            "corner": np.array([[0, 0], [499, 0], [499, 699], [0, 699]], np.float64),
+            "left_edge": np.array([[0, 450], [499, 450], [499, 1149], [0, 1149]], np.float64),
+        }[touching]
+        bed = _canvas((1200, 1600), WHITE_MAT, noise=1.0)
+        scene = _place(bed, _card_face(border_frac=border_frac), corners)
+
+        result = quad_crop(_jpeg(scene))
+
+        assert not result.accepted
+        assert result.reason in {"frame_edge", "off_aspect"}
+
+    def test_thin_border_cut_by_the_frame_edge_declines_as_frame_edge(self):
+        corners = np.array([[0, 0], [499, 0], [499, 699], [0, 699]], np.float64)
+        bed = _canvas((1200, 1600), WHITE_MAT, noise=1.0)
+        scene = _place(bed, _card_face(border_frac=0.03), corners)
+
+        assert quad_crop(_jpeg(scene)).reason == "frame_edge"
+
+    def test_border_that_is_not_background_outside_the_panel_is_shaved(self):
+        """The card's red border fades into the mat with no edge to make a
+        quad of, so the crisp printed panel is the only candidate. The band
+        just outside it is red: neither the frame's background nor the
+        surface further out, so the panel is not the card."""
+        red = np.array([40, 40, 200], np.float32)
+        truth = _rect_corners(600, 800, 500, 700, angle_deg=0)
+        face = _card_face(border=tuple(int(v) for v in red), border_frac=0.03)
+        scene = _place(_canvas((1200, 1600)), face, truth)
+        inside = np.zeros(scene.shape[:2], np.uint8)
+        cv2.fillConvexPoly(inside, np.int32(truth), 255)
+        dist = cv2.distanceTransform(255 - inside, cv2.DIST_L2, 5)
+        t = np.clip(dist / 60.0, 0, 1)[..., None]
+        ramp = red * (1 - t) + scene.astype(np.float32) * t
+        fade = (inside == 0) & (dist < 60)
+        scene[fade] = ramp[fade].astype(np.uint8)
+
+        result = quad_crop(_jpeg(scene))
+
+        assert not result.accepted
+        assert result.reason == "shaved"
+        assert all(r["outside_bg"] < 0.6 for r in result.diagnostics["rings"])
+
+    def test_edge_bands_that_look_like_the_outside_are_shaved(self):
+        """A dark card on a dark mat whose only crisp feature is a thin white
+        keyline at the cut: just inside it the card is mat-coloured again, so
+        on every side the crop's edge band reads like the surface outside and
+        the quad cannot be told from a line drawn on the mat."""
+        face = np.full((700, 500, 3), (235, 235, 235), np.uint8)
+        face[12:-12, 12:-12] = MAT
+        face[26:-26, 26:-26] = PANEL
+        cv2.circle(face, (250, 350), 120, (40, 160, 220), -1)
+        scene = _place(_canvas((900, 1200)), face, _rect_corners(450, 600, 500, 700, 0))
+
+        result = quad_crop(_jpeg(scene))
+
+        assert not result.accepted
+        assert result.reason == "shaved"
+
+    def test_panel_inside_a_partly_visible_sleeve_outline_is_shaved(self):
+        """A white card on a white bed inside a sleeve whose outline glints
+        along only half of each side: too weak to be the candidate, but a
+        larger card-shaped outline around the panel all the same."""
+        bed = _canvas((1200, 1600), WHITE_MAT, noise=1.0)
+        scene = _place(bed, _card_face(border_frac=0.03), _rect_corners(600, 800, 500, 700, 0))
+        sleeve = _rect_corners(600, 800, 640, 896, 0)
+        for i in range(4):
+            a, b = sleeve[i], sleeve[(i + 1) % 4]
+            mid = (a + b) / 2
+            cv2.line(scene, tuple(int(v) for v in a), tuple(int(v) for v in mid), (120,) * 3, 3)
+            cv2.line(scene, tuple(int(v) for v in mid), tuple(int(v) for v in b), (222,) * 3, 3)
+
+        result = quad_crop(_jpeg(scene))
+
+        assert not result.accepted
+        assert result.reason == "shaved"
+        assert result.diagnostics["enclosing"], "the sleeve outline was seen"
+
     def test_quad_around_mat_and_card_is_declined_as_loose(self):
         """A card-shaped guide line on the mat surrounds the card: the
         largest quad then carries a band of mat inside it."""
@@ -294,6 +417,7 @@ class TestDeclines:
             "no_quad",
             "multi_card",
             "tight_frame",
+            "frame_edge",
             "shaved",
             "loose",
             "weak_edges",

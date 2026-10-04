@@ -39,11 +39,12 @@ Content checks on the candidate, in order (each a decline reason):
   multi_card   another supported card-shaped quad that does not overlap it
   tight_frame  the quad's margin to the frame edge is thin on every side: the
                frame already is the card and the quad is its printed border
-  shaved       the band just outside a side is mostly out of frame, or is not
-               background: it matches neither the frame-border background
-               estimate nor the surface further out on the same side (phone
-               photos need the second: the mat behind one side is often not
-               the frame border's colour)
+  frame_edge   one side is too close to the frame edge to rule out a thin
+               background-coloured border running on beyond it
+  shaved       the band just outside a side is not background: it matches
+               neither the frame-border background estimate nor the surface
+               further out on the same side (phone photos need the second:
+               the mat behind one side is often not the frame border's colour)
   loose        the crop's border ring is still background-coloured
                (`tiered.bg_residual`), or one side's inner band is
   shaved       more than one side's edge band is indistinguishable from what
@@ -82,7 +83,11 @@ MIN_AREA_FRAC = 0.10  # candidate quad must cover this much of the frame
 MAX_FRAME_FRAC = 0.90  # bigger than this is the frame itself handed back
 MAX_CORNER_DEV = 25.0  # degrees from 90 a corner may lean (perspective)
 ASPECT_WINDOW = 0.05  # |short/long - 2.5/3.5| allowed for a candidate
-FINAL_ASPECT_WINDOW = 0.025  # ...and for the refined quad that becomes the crop
+# ...and for the refined quad that becomes the crop. Kept tight on purpose:
+# the printed panel inside a border wider than ~0.04 of the card's width
+# warps to an aspect outside it, so only thin borders can be shaved to a
+# panel at all, and FRAME_EDGE_MIN covers those near the frame edge.
+FINAL_ASPECT_WINDOW = 0.018
 APPROX_EPS = (0.02, 0.035)  # approxPolyDP epsilon as a fraction of perimeter
 CANNY_LEVELS = ((15, 45), (40, 120))
 BLUR_KERNELS = (3, 7)
@@ -101,6 +106,7 @@ MULTI_MIN_AREA = 0.35  # another quad this big relative to the candidate counts
 MULTI_MAX_OVERLAP = 0.10  # ...when it overlaps the candidate less than this
 
 TIGHT_FRAME_MARGIN = 0.08  # every margin below this (x quad side) => tight
+FRAME_EDGE_MIN = 0.048  # gap (x short side) to the frame edge that can hold a thin border
 ENCLOSING_MIN = 1.08  # a card-shaped quad this much bigger, containing ours...
 ENCLOSING_SUPPORT = 0.35  # ...with at least this edge support on every side
 
@@ -109,7 +115,6 @@ RING_FAR = 0.045  # ...and end this far
 FAR_BAND = (0.05, 0.12)  # the same side's background further out (x short side)
 BG_DIST = 16.0  # LAB distance (L weighted 0.5) under which a pixel is background
 OUTSIDE_BG_MIN = 0.60  # fraction of a side's outside band that must be background
-OUTSIDE_IN_FRAME_MIN = 0.30  # fraction of the outside band that must be in frame
 SIDE_CONTRAST_MIN = 12.0  # LAB distance between a side's outside and inside medians
 
 PARALLEL_SEARCH = (0.02, 0.16)  # outer-line search band beyond each side (x short side)
@@ -134,6 +139,7 @@ DECLINE_REASONS: tuple[str, ...] = (
     "no_quad",
     "multi_card",
     "tight_frame",
+    "frame_edge",
     "shaved",
     "loose",
     "weak_edges",
@@ -504,6 +510,9 @@ def _run(full: np.ndarray, work: np.ndarray, scale: float) -> QuadResult:
         if _card_shaped(quad):
             refined.append((quad, support))
     supported = [(q, s) for q, s in refined if min(s) >= EDGE_SUPPORT_MIN]
+    # Candidates were ordered by their raw area; refinement moves sides, so
+    # re-rank by the refined quad the crop will actually be cut from.
+    supported.sort(key=lambda c: _area(c[0]), reverse=True)
     diag["n_supported"] = len(supported)
     if not supported:
         return QuadResult(None, "weak_edges", diagnostics=diag)
@@ -557,14 +566,23 @@ def _run(full: np.ndarray, work: np.ndarray, scale: float) -> QuadResult:
     if max(margins) < TIGHT_FRAME_MARGIN:
         return decline("tight_frame")
 
+    # A side this close to the frame edge leaves no room to look for the
+    # card's real edge beyond it: a thin border the colour of the background,
+    # cut off by the frame, would read as background. The outer-line check
+    # cannot help there (its search band is mostly out of frame), so decline.
+    gaps = [m * qw / short for m in margins[:2]] + [m * qh / short for m in margins[2:]]
+    diag["frame_gap"] = round(min(gaps), 3)
+    if min(gaps) < FRAME_EDGE_MIN:
+        return decline("frame_edge")
+
     # outside is background
     rings = _ring_stats(quad, lab, bg, short)
     diag["rings"] = rings
     outer = _outer_lines(quad, grad, short)
     diag["outer_lines"] = outer
+    # (Every near band is wholly in frame here: `frame_edge` above already
+    # declined any side closer to the frame edge than the band reaches.)
     for r in rings:
-        if r["in_frame"] < OUTSIDE_IN_FRAME_MIN:
-            return decline("shaved")
         if max(r["outside_bg"], r["outside_far"]) < OUTSIDE_BG_MIN:
             return decline("shaved")
 
