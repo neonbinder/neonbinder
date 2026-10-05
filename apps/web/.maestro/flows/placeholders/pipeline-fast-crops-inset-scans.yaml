@@ -1,0 +1,150 @@
+# R1 — Single feature: the placeholder pipeline's FAST QUAD CROP (NEO-320).
+# Six scans of a card lying on a scanner bed (three front/back pairs, each card
+# centred with a wide margin of bed round it) go in as one upload. The fast
+# service's quad stage finds each card's four corners and warps it flat in well
+# under a second, so all six are cropped and read on the FAST service: none
+# escalates to the heavy BiRefNet model, whose cold start costs minutes. This is
+# what a collector sees when they scan cards on a flatbed and upload the scans
+# uncropped: the cards come in within seconds and pair up.
+#
+# The sibling flows cover the other routes a scan can take: frame-filling scans
+# accepted as they are (pipeline-pairs-uploaded-scans.yaml) and scans the fast
+# service declines, which escalate to the heavy service under the cold-start
+# notice (pipeline-escalation-cold-start.yaml).
+#
+# R2 — It cannot go green without the feature.
+#   * Step 3's ceiling is what proves the crop happened on the FAST service. The
+#     only other way these scans can be read is the HEAVY service, and HEAVY
+#     cannot settle six of them inside it: a PR preview's heavy cap is 3
+#     (convex/preprocessCapacity.json), so six escalations take at least two
+#     rounds of CPU BiRefNet inference (~124s each, the arithmetic in
+#     pipeline-escalation-cold-start.yaml Step 6), ~248s before any cold load. A
+#     quad stage that declined these cards (a regression, or a gate that
+#     rejected its crops) escalates them and Step 3 FAILS on the ceiling.
+#   * "3 pairs ready to print." (Step 4) is the zero-failures proof: pairing
+#     reads only rows whose status is "done", so three pairs out of six photos
+#     means all six were read and side-classified. "All 6 photos read." alone is
+#     not that proof — a failed row counts as settled. A quad crop that Vision
+#     could not read would escalate rather than fail, and so fails Step 3.
+#   * There is deliberately NO absence check on the "A few of these need a
+#     closer look…" notice. `deriveHeavyWarming` (convex/placeholderPipeline.ts)
+#     is true only while an escalated row is still processing, so by the time
+#     "All 6 photos read." is on screen it is false whatever happened; an
+#     `assertNotVisible` there would pass on a fully escalated batch. Before
+#     Step 3 resolves the notice MAY be on screen under a regression, depending
+#     on how far the fast declines have got, so an absence check there is not
+#     deterministic either. The ceiling carries the proof.
+#   * What this flow does NOT see is crop GEOMETRY: a quad crop that shaved a
+#     card's border but still read cleanly passes here. Geometry is the
+#     preprocess-crop-matrix CI job's (real cards, asserted crop bounds) and the
+#     quad stage's unit tests (services/preprocess/tests/unit/).
+# There is no `when:` branch anywhere in it, and the precondition proves a real
+# job exists before any wait.
+#
+# R3 — Nothing else covers the quad crop end to end. The full-bleed set never
+# reaches the quad stage (the identity check settles it first), and the cornered
+# set is declined by it.
+#
+# R4 — Standard /testing/sign-in entry, no in-body login. The only addition to the
+# entry URL is `fixtures=placeholder-fixtures`, which tells the seed page to push
+# the six-image inset set through the real upload path. It is the seed page's
+# default set; it is named explicitly so the flow does not depend on the default.
+#
+# R7 — Non-destructive: a per-user placeholder job under the signed-in worker's
+# own account; no shared/marketplace data. Finishing the batch (Step 4) is its
+# normal terminal transition; the flow never taps "Discard this batch".
+#
+# ── WHY A TESTING PAGE UPLOADS THE FILES ──────────────────────────────────
+# maestro-web cannot drive a file input, so /testing/seed-placeholder-upload
+# fetches the committed fixtures and pushes them through the SAME client upload
+# path the real page uses (same signed POST policy, same GCS objects, same
+# pipeline kickoff); only the OS picker is bypassed. Gated on
+# VITE_CLERK_TESTING_ENABLED plus a server-side secret unset in production.
+#
+# ── WHY THE INSET FIXTURES ARE QUAD-CROPPED — all six, checked ────────────
+# apps/web/public/placeholder-fixtures/ (generate-placeholder-fixtures.py, the
+# default mode) — three pairs, in upload order: Grebble VORKLE (01 front, 02 back
+# #17), Marcus QUILLDEN (03, 04 #42) and Teodor MOSSBAUM (05, 06 #83); manifest
+# pairCount 3. Each card is centred on a grainy scanner bed with ~0.2 of its
+# short side of bed on every side, so it is not "already the card" (the identity
+# check declines it) and the quad stage finds one card-shaped outline with
+# background all round it. Checked 2026-10-04 by running the service's own code
+# over the committed bytes: `tiered.fast_tiered_crop` None and
+# `quad.quad_crop` "ok" for all six, ~0.1-0.3s each. CI run 37177994832 is the
+# live record: these six bytes settled on the fast service with no heavy
+# /process-entry at all and paired three ways. Until NEO-320 this set escalated
+# and drove the escalation flow; do not regenerate it, this flow depends on
+# these bytes.
+appId: com.neonbinder.web
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures&worker=${WORKER_INDEX || "0"}
+name: Placeholder pipeline (fast quad crop) — six cards on a scanner bed are cropped fast, no escalation, three pairs
+tags:
+  - placeholders
+---
+# Step 1: sign in, then the seed page uploads the six inset fixtures and forwards
+# to the run view. This is the post-launchApp heading gate (R5's sanctioned
+# exception): it covers cold Clerk sign-in, fetching the fixtures, and six real
+# signed-POST uploads to GCS — an external round-trip.
+- launchApp
+- extendedWaitUntil:
+    visible: "Upload your cards"
+    timeout: 90000
+
+# Step 2: PRECONDITION — a real session exists behind this view; the panel
+# renders as soon as a job id is in the URL. It sits BELOW THE FOLD on the CI
+# viewport (1024x625), and `extendedWaitUntil` never scrolls, so
+# `scrollUntilVisible` both reaches the heading and IS the assertion. Centring it
+# puts the status line (directly under the heading) in view for Step 3; everything
+# that changes while the batch runs (rows leaving "Still reading", pairs
+# arriving) renders BELOW that line, so it stays put. The failure capture of
+# pipeline-escalation-cold-start in CI run 37177994832 shows that position after
+# the same scroll: heading at y=263, "All 6 photos read." at y=324.
+- scrollUntilVisible:
+    element:
+      text: "Your cards"
+    centerElement: true
+    timeout: 7000
+
+# ── Step 3: all six are read on the FAST service ──────────────────────────────
+# BUDGET: 60000 ms, approved by Jason 2026-10-04 (NEO-320) — this is a live compute
+# round-trip (each photo goes GCS → the fast Cloud Run service → Google Vision,
+# twice for a quad crop: the baseline orient and the crop's text gate), not an
+# in-app response, so it is above R5's 7s bar and needs the sign-off recorded
+# here before merge.
+# The arithmetic: CI run 37177994832 settled these six on the fast service in
+#   ~11s from the first /process-entry to the last (1.8-4.3s per photo, three
+#   placeholder batches running at once on the same fast service);
+# + ~22s for the fast service's first instance if it is cold (the figure in
+#   pipeline-pairs-uploaded-scans.yaml);
+# = ~33s worst case observed-plus-cold, so 60s is ~1.8x margin.
+# The ceiling must also stay UNDER what HEAVY needs for these six, or it stops
+# proving anything (R2): two rounds of ~124s CPU inference, ~248s. 60s sits well
+# clear of both. What voids it: GPU heavy inference (NEO-173) brings HEAVY under
+# 60s and takes the proof with it (a different discriminator is needed then);
+# a different preview heavy cap or fixture count changes the HEAVY floor. A fast
+# path that genuinely needs longer is a PRODUCT finding to raise, never a number
+# to inflate. It resolves the instant the last photo settles.
+- extendedWaitUntil:
+    visible: "All 6 photos read."
+    timeout: 60000
+
+# ── Step 4: close the batch, and assert the pairing arithmetic ────────────────
+# The final pair count is written by the FINAL pairing run, which fires when the
+# stream is CLOSED, inline in the close mutation for a batch this size
+# (convex/placeholderStream.ts INLINE_FINALIZE_MAX_IMAGES) — an in-app response,
+# held to R5's 7s bar. "Finish the batch" sits in the status box right under the
+# status line Step 2 centred, so the scroll centres it in one move (R8).
+- scrollUntilVisible:
+    element:
+      text: "Finish the batch"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Finish the batch"
+# The confirm dialog's header (dialogs are asserted by header and footer only).
+- extendedWaitUntil:
+    visible: "Finish this batch?"
+    timeout: 7000
+- tapOn: "Finish it"
+- extendedWaitUntil:
+    visible: "3 pairs ready to print."
+    timeout: 7000

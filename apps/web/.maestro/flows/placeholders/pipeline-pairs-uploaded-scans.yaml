@@ -5,10 +5,12 @@
 # zero failures. This is the common real-user case — a folder of already-cropped
 # scans — and the path the product must keep fast.
 #
-# The HEAVY escalation path (inset-on-noise scans → the ~191s BiRefNet cold start
-# → the "A few of these need a closer look…" notice) is a DIFFERENT user case,
-# proved by its own flow, pipeline-escalation-cold-start.yaml. This flow proves
-# the opposite: fast in, no model, no cold-start notice.
+# The HEAVY escalation path (cards in the scanner bed's corner → the ~191s
+# BiRefNet cold start → the "A few of these need a closer look…" notice) is a
+# DIFFERENT user case, proved by its own flow, pipeline-escalation-cold-start.yaml,
+# and so is the fast QUAD crop of cards centred on a scanner bed
+# (pipeline-fast-crops-inset-scans.yaml). This flow proves the identity case:
+# fast in, nothing to crop, no model.
 #
 # This is the release gate for the fast pipeline: signed-URL upload to GCS, the
 # Convex workpool fanning images at the FAST Cloud Run service's capacity, the
@@ -19,9 +21,16 @@
 #   * Step 3 waits for "All 6 photos read." — every row has SETTLED. That alone
 #     is not the zero-failures proof (a failed row counts as settled); the
 #     arithmetic in Step 5 is.
-#   * Step 3b asserts the cold-start notice is ABSENT — so a regression that pushed
-#     these frame-filling cards onto the heavy service (the fast path silently
-#     declining them) surfaces here instead of passing unnoticed.
+#   * Step 3's 180s ceiling is what proves these cards stayed on the FAST path.
+#     The only other way they can be read is the HEAVY service, and HEAVY cannot
+#     settle six inside it: a PR preview's heavy cap is 3
+#     (convex/preprocessCapacity.json), so six escalations take at least two
+#     rounds of CPU BiRefNet inference (~124s each, the arithmetic in
+#     pipeline-escalation-cold-start.yaml Step 6), ~248s before any cold load. A
+#     regression that pushed these frame-filling cards onto the heavy service
+#     (the fast path silently declining them) fails Step 3 on the ceiling.
+#     There is deliberately NO absence check on the cold-start notice: see the
+#     note under Step 3.
 #   * "2 pairs ready to print." together with "Not paired (2)" (Step 5)
 #     accounts for every image: 2 pairs x 2 + 2 loose = 6. Both buckets hold only
 #     rows whose status is "done" (review-grid.tsx filters the loose pile on it),
@@ -58,8 +67,9 @@
 # is asserted is the arithmetic, which is deterministic.
 #
 # R3 — Nothing else covers this. pipeline-escalation-cold-start.yaml exercises
-# the ESCALATION path; flip-edge-mirrors-the-backs tests print-sheet layout, not
-# intake. Both fixture sets and this flow's entry are described in
+# the ESCALATION path and pipeline-fast-crops-inset-scans.yaml the fast quad crop;
+# flip-edge-mirrors-the-backs tests print-sheet layout, not intake. Every fixture
+# set and this flow's entry are described in
 # apps/web/scripts/generate-placeholder-fixtures.py.
 #
 # R4 — Standard /testing/sign-in entry, no in-body login. The only addition to
@@ -166,23 +176,18 @@ tags:
     visible: "All 6 photos read."
     timeout: 180000
 
-# Step 3b: the cold-start notice is ABSENT. The fast path escalates nothing, so
-# `heavyWarming` is false and the "A few of these need a closer look…" notice
-# never renders. This is what distinguishes the fast path from the heavy one:
-# without it, a run that quietly escalated every card could still reach 6/6 and
-# pass Step 3. The assertion is meaningful here (not a look-somewhere-else
-# no-op): we are still at the top of the run view with the status line on screen,
-# and the notice, if it existed, would sit in the same session panel right below
-# that line — in view. (The regex tolerates the exact copy "…the full card
-# processor…" via `.*` between "the" and "card".)
-#
-# The string here is NEO-152's copy. It previously named the old "Warming up the
-# full card processor…" notice, which NEO-152 deleted — so the assertion was
-# passing because nothing in the app could ever render that text, not because
-# the fast path declined to escalate. An assertNotVisible on a string that
-# cannot exist is not a test, and this one sat in the flow's R2 list as one of
-# the three things that make it fail without the feature.
-- assertNotVisible: ".*A few of these need a closer look.*"
+# WHY NO ABSENCE CHECK ON THE COLD-START NOTICE HERE. This flow used to assert
+# `assertNotVisible: ".*A few of these need a closer look.*"` at this point, as
+# the guard against a batch that quietly escalated. It could never fail. The
+# notice renders only while `heavyWarming` is true, and `deriveHeavyWarming`
+# (convex/placeholderPipeline.ts) is true only while an escalated row is still
+# processing — so once "All 6 photos read." is on screen it is false whatever
+# happened, escalated or not. Before Step 3 resolves the notice MAY be on screen
+# under that regression, depending on how far the fast declines have got, so an
+# absence check there would not be deterministic either. The 180s ceiling above
+# is the discriminator: a fully escalated batch cannot reach 6/6 inside it (R2
+# note in the header). If GPU heavy inference (NEO-173) ever brings six heavy
+# crops under 180s, this flow loses that proof and needs another one.
 
 # ── Step 4: CLOSE the session so the FINAL pairing run records the count ───────
 # The 6/6 completion above happened while the stream was still "Collecting": the

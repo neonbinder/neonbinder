@@ -14,7 +14,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.cropper import SOURCE_SCAN_METADATA, STRATEGY_NAMES
+from app.cropper import SOURCE_QUAD, SOURCE_SCAN_METADATA, STRATEGY_NAMES
 from app.main import MAX_IMAGE_BYTES, app
 
 from ._loader import FixtureCase, load_fixtures
@@ -34,7 +34,9 @@ INTERNAL_KEY = "integration-test-key"
 # Every label `cropped_source` can legitimately carry, assembled from the
 # cascade itself so a new stage cannot desynchronise it. "precropped" and
 # "passthrough" are the two bookends that are not strategies.
-KNOWN_CROP_SOURCES = frozenset({"precropped", SOURCE_SCAN_METADATA, *STRATEGY_NAMES, "passthrough"})
+KNOWN_CROP_SOURCES = frozenset(
+    {"precropped", SOURCE_SCAN_METADATA, SOURCE_QUAD, *STRATEGY_NAMES, "passthrough"}
+)
 
 
 @pytest.fixture(autouse=True)

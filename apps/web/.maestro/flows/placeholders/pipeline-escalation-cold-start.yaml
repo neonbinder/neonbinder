@@ -1,9 +1,9 @@
 # R1 — Single feature: the placeholder pipeline's HEAVY escalation path under
 # more load than the heavy service has instances, from a cold start (NEO-175,
-# NEO-299). SIX INSET-on-noise scans (three front/back pairs) go in; the fast
-# classical service DECLINES all six (each has a card to crop out of a
-# background), so Convex re-enqueues every one to the HEAVY BiRefNet service,
-# which cold-loads the ~191s model. The flow proves two things a collector sees:
+# NEO-299). SIX CORNERED scans (three front/back pairs, each card laid in the
+# scanner bed's top-left corner) go in; the fast service DECLINES all six (see
+# "WHY THE CORNERED FIXTURES ESCALATE" below), so Convex re-enqueues every one to
+# the HEAVY BiRefNet service, which cold-loads the ~191s model. The flow proves two things a collector sees:
 #   1. WHILE that cold start runs they are TOLD — the "A few of these need a
 #      closer look…" notice is on screen and each escalating photo shows
 #      "Escalating — deeper processing…" — rather than a frozen screen.
@@ -11,9 +11,10 @@
 #      every photo is read and all three pairs form, with no photo lost to
 #      "couldn't be read".
 #
-# The FAST path (frame-filling scans → accepted in seconds → no cold start) is
-# the opposite user case, proved by pipeline-pairs-uploaded-scans.yaml. This flow
-# is the escalation half.
+# The FAST paths are the opposite user case: frame-filling scans accepted as they
+# are (pipeline-pairs-uploaded-scans.yaml) and cards centred on a scanner bed
+# cropped by the NEO-320 quad stage (pipeline-fast-crops-inset-scans.yaml), both
+# settled in seconds with no cold start. This flow is the escalation half.
 #
 # ── WHY SIX IMAGES (it used to be one pair, deliberately) ─────────────────
 # This flow ran ONE inset pair until NEO-299, on the reasoning that an all-heavy
@@ -46,9 +47,14 @@
 # hard requirement for this path.
 #
 # R2 — It cannot go green without the feature.
-#   * If nothing escalated (a regression where the fast path accepted these inset
-#     cards), `heavyWarming` never turns true, the notice never renders, and
-#     Step 3 FAILS.
+#   * If nothing escalated, `heavyWarming` never turns true, the notice never
+#     renders, and Step 3 FAILS. That is ALSO how this flow fails when a FAST
+#     stage starts settling its fixtures: it is not then a product regression
+#     but a fixture that no longer escalates, and the fix is a fixture the fast
+#     service declines, never a weaker assertion. NEO-320's quad stage did exactly
+#     that to the old inset fixtures (CI run 37177994832: all six settled on the
+#     fast service, no heavy /process-entry at all, "All 6 photos read." on screen
+#     while Step 3 timed out) — they are now the quad flow's fixtures.
 #   * If photos escalated but the notice was never shown — the "frozen screen"
 #     bug this flow first existed to guard — Step 3 FAILS.
 #   * If the heavy service dropped or failed ANY of the six — the NEO-299 shape,
@@ -90,13 +96,13 @@
 # job exists before any wait.
 #
 # R3 — Nothing else covers the escalation path. The fast-path and flip-edge
-# placeholder flows both use the full-bleed set, which never escalates. The
-# fixture sets are described in apps/web/scripts/generate-placeholder-fixtures.py.
+# placeholder flows use the full-bleed set and the fast-crop flow the inset set,
+# none of which escalates. The fixture sets are described in
+# apps/web/scripts/generate-placeholder-fixtures.py.
 #
 # R4 — Standard /testing/sign-in entry, no in-body login. The only addition to the
-# entry URL is `fixtures=placeholder-fixtures`, which tells the seed page to push
-# the six-image inset set through the real upload path. It is the seed page's
-# default set; it is named explicitly so the flow does not depend on the default.
+# entry URL is `fixtures=placeholder-fixtures-corner`, which tells the seed page
+# to push the six-image cornered set through the real upload path.
 #
 # R7 — Non-destructive: a per-user placeholder job under the signed-in worker's
 # own account; no shared/marketplace data. It never taps "Discard this batch".
@@ -108,24 +114,39 @@
 # pipeline kickoff); only the OS picker is bypassed. Gated on
 # VITE_CLERK_TESTING_ENABLED plus a server-side secret unset in production.
 #
-# ── WHY THE INSET FIXTURES ESCALATE — all six, checked ────────────────────
-# apps/web/public/placeholder-fixtures/ — three inset pairs, in upload order:
-# Grebble VORKLE (01 front, 02 back #17), Marcus QUILLDEN (03, 04 #42) and Teodor
-# MOSSBAUM (05, 06 #83); manifest.json pairCount 3. Each card is a rectangle INSET
-# on a grainy scanner bed. The fast classical pass sees a card to crop OUT of a
-# background, which is NOT the "already a frame-filling card" identity case, so it
-# declines. Checked 2026-09-24 by running the service's own
-# app.cropper.tiered.fast_tiered_crop over the committed bytes: all six return
-# None (escalate), while the six full-bleed fixtures all return the input (fast
-# accept). Front and back print the same full name, so the identity pool pairs
-# each into one card. Do not regenerate this set: the flow depends on these bytes.
+# ── WHY THE CORNERED FIXTURES ESCALATE — all six, checked ─────────────────
+# apps/web/public/placeholder-fixtures-corner/ (generate-placeholder-fixtures.py
+# --corner) — three pairs, in upload order: Grebble VORKLE (01 front, 02 back
+# #17), Marcus QUILLDEN (03, 04 #42) and Teodor MOSSBAUM (05, 06 #83); manifest
+# pairCount 3. They are the SAME card artwork as the inset set (same seeds); each is
+# laid in the top-left REGISTRATION CORNER of a grainy scanner bed, 14px from the
+# top and left frame edges, which is how a flatbed scan comes out when the card
+# goes against the glass's corner guide. The fast service has three ways to
+# settle a scan without a model and each one declines it:
+#   * scanner metadata: the JPEGs record no resolution;
+#   * classical identity (`tiered.fast_tiered_crop`): the card does not fill the
+#     frame, so it is not "already the card";
+#   * the NEO-320 quad crop (`quad.quad_crop`): declines `frame_edge` by design —
+#     a side that close to the frame edge (~0.02 of the card's short side; the
+#     stage's floor is 0.048) leaves no room to rule out a thin background-
+#     coloured border cut off by the frame.
+# So every one escalates, and HEAVY's BiRefNet pass crops each whole: the bed
+# strip keeps the card off the frame edge, so it is an ordinary card on a bed.
+# Checked 2026-10-04 by running the service's own code over the committed bytes:
+# `fast_tiered_crop` None and `quad_crop` "frame_edge" for all six, and the HEAVY
+# `tiered_crop` (BiRefNet loaded) a 2.5:3.5 crop of the card for all six — the
+# same crop it makes of the inset set. Front and back print the same full name,
+# so the identity pool pairs each into one card. Do not regenerate this set: the
+# flow depends on these bytes. A change to the fast service's stages must re-run
+# that check (the generator's header has the commands), because a fast stage
+# that starts settling these silently turns this flow red at Step 3.
 appId: com.neonbinder.web
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures&worker=${WORKER_INDEX || "0"}
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures-corner&worker=${WORKER_INDEX || "0"}
 name: Placeholder pipeline (heavy escalation) — six photos past the heavy cap, cold-start notice, three pairs, none failed
 tags:
   - placeholders
 ---
-# Step 1: sign in, then the seed page uploads the six inset fixtures and forwards
+# Step 1: sign in, then the seed page uploads the six cornered fixtures and forwards
 # to the run view. This is the post-launchApp heading gate (R5's sanctioned
 # exception): it covers cold Clerk sign-in, fetching the fixtures, and six real
 # signed-POST uploads to GCS — an external round-trip.

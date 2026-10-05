@@ -2,9 +2,11 @@
 """
 Generate the synthetic card scans the placeholder-pipeline E2E gates upload.
 
-    # INSET cards (the HEAVY-escalation flow) — the default:
+    # CORNERED cards (the HEAVY-escalation flow):
+    services/preprocess/.venv/bin/python3 apps/web/scripts/generate-placeholder-fixtures.py --corner
+    # INSET cards (the FAST quad-crop flow) — the default:
     services/preprocess/.venv/bin/python3 apps/web/scripts/generate-placeholder-fixtures.py
-    # FULL-BLEED cards (the FAST-path flow):
+    # FULL-BLEED cards (the FAST identity flows):
     services/preprocess/.venv/bin/python3 apps/web/scripts/generate-placeholder-fixtures.py --full-bleed
 
 Run from the repo root. Pillow lives in the preprocess service's venv on
@@ -13,34 +15,55 @@ concern, so this script is NOT wired into any npm script. Its OUTPUT is
 committed; you only re-run this to regenerate.
 
 --------------------------------------------------------------------------
-TWO FIXTURE MODES — the NEO-175 fast/heavy split (Phase 4 E2E)
+THREE FIXTURE MODES — one per way the FAST service can route a scan
 --------------------------------------------------------------------------
-The preprocess service now runs as two Cloud Run roles. Images hit a FAST
-classical service first; one that FILLS the frame is accepted as an already-
-cropped "frame" identity and stays on the fast path (~1-2s, no model). One that
-is INSET on a scanner bed is DECLINED and re-enqueued to the HEAVY BiRefNet
-service, which cold-loads the model (~191s the first time).
+The preprocess service runs as two Cloud Run roles (NEO-175). Images hit a FAST
+service first, which settles a scan without loading a model in one of two ways:
+a frame that already IS the card is accepted as a "frame" identity, and since
+NEO-320 a single card on a background is perspective-cropped by the quad stage
+(`services/preprocess/app/cropper/quad.py`). Anything neither settles is
+DECLINED and re-enqueued to the HEAVY BiRefNet service, which cold-loads the
+model (~191s the first time).
 
-Two E2E flows need one fixture set each, so this script emits one of two,
-selected by `--full-bleed`:
+Each mode below exercises exactly one of those routes. Every mode draws the
+SAME three cards (same players, numbers, text and per-file seeds); only where
+the card sits in the frame differs:
 
-  * DEFAULT (inset)  -> public/placeholder-fixtures/           -> every card
-    ESCALATES. Drives placeholders/pipeline-escalation-cold-start.yaml, which
-    uploads all six (more escalations than a PR preview's heavy cap, NEO-299)
-    and asserts the "A few of these need a closer look…" cold-start notice,
-    "All 6 photos read." and "3 pairs ready to print.".
+  * DEFAULT (inset)  -> public/placeholder-fixtures/           -> every card is
+    CENTRED on a scanner bed with a wide margin all round, which the quad stage
+    crops on the FAST service (no escalation). Drives
+    placeholders/pipeline-fast-crops-inset-scans.yaml. Before NEO-320 these
+    escalated, and the escalation flow used them; the quad stage made them a
+    fast crop, which is why the cornered set exists.
+  * --corner         -> public/placeholder-fixtures-corner/    -> every card is
+    pushed into the top-left REGISTRATION CORNER of the scanner bed, a thin
+    strip of bed (CORNER_GAP) from two frame edges — how a flatbed scan
+    actually comes out when the card is laid against the glass's corner guide.
+    The quad stage declines it by design (`frame_edge`: a side that close to
+    the frame edge leaves no room to rule out a thin background-coloured
+    border cut off by the frame), and the identity check declines it (the card
+    does not fill the frame), so every card ESCALATES to BiRefNet, which
+    segments it like any card on a bed. Drives
+    placeholders/pipeline-escalation-cold-start.yaml, which uploads all six
+    (more escalations than a PR preview's heavy cap, NEO-299) and asserts the
+    "A few of these need a closer look…" cold-start notice, "All 6 photos
+    read." and "3 pairs ready to print.".
   * --full-bleed     -> public/placeholder-fixtures-fullbleed/ -> every card
-    STAYS on the fast path (no escalation). Drives
-    placeholders/pipeline-pairs-uploaded-scans.yaml, which asserts a tight
-    fast-path completion and the ABSENCE of the cold-start notice, and
+    FILLS the frame and STAYS on the fast path as a "frame" identity. Drives
+    placeholders/pipeline-pairs-uploaded-scans.yaml and
     placeholders/flip-edge-mirrors-the-backs.yaml.
 
-Both modes are VALIDATED against the real classical decision without a network:
-`app.cropper.tiered.fast_tiered_crop(bytes)` returns the input untouched for a
-fast accept and `None` for an escalation. Re-run that over both output
-directories after any change here (inset -> all None, full-bleed -> all
-not-None). Do NOT regenerate the inset set to "improve" it — the escalation flow
-depends on those exact bytes; only re-run `--full-bleed`.
+All three modes are VALIDATED against the real FAST decision without a network,
+from services/preprocess with its venv:
+`app.cropper.tiered.fast_tiered_crop(bytes)` returns the input untouched for an
+identity accept and `None` otherwise; `app.cropper.quad.quad_crop(bytes).reason`
+is "ok" for a quad crop and names the check that declined otherwise. Expected:
+inset -> tiered None, quad "ok"; corner -> tiered None, quad "frame_edge";
+full-bleed -> tiered accept (quad never runs). Re-run both over every output
+directory after any change here, AND after any change to quad.py or tiered.py's
+fast path: a FAST stage that starts settling the cornered set silently stops
+the escalation flow from escalating (NEO-320 did exactly that to the inset set).
+Do not regenerate a set to "improve" it — each flow depends on those bytes.
 
 --------------------------------------------------------------------------
 WHY SYNTHETIC
@@ -88,7 +111,7 @@ apart on screen.
 --------------------------------------------------------------------------
 WHY THE CARD IS INSET ON A NOISY BACKGROUND
 --------------------------------------------------------------------------
-The crop stage is BiRefNet (via rembg) — *salient-object segmentation*, not
+The HEAVY crop stage is BiRefNet (via rembg) — *salient-object segmentation*, not
 contour or quad detection. A full-bleed card image gives it no background to
 separate and produces a degenerate mask. So each fixture is a card-shaped
 rectangle inset on a contrasting, grainy "scanner bed", and the card itself is
@@ -111,18 +134,22 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-# --full-bleed selects the FAST-path fixture set (see the header). Read once at
-# module load; it steers the output directory and how each card is composed.
+# --full-bleed / --corner select the fixture set (see the header). Read once at
+# module load; they steer the output directory and how each card is composed.
 FULL_BLEED = "--full-bleed" in sys.argv
+CORNER = "--corner" in sys.argv
+if FULL_BLEED and CORNER:
+    sys.exit("--full-bleed and --corner are separate sets; pass one")
 
 # Scan canvas. ~1000x1400 matches a real flatbed scan of a standard 2.5x3.5in
 # card at moderate DPI — and its 1000:1400 aspect IS the 2.5:3.5 card aspect, so
 # the whole frame reads as card-aspect (what the fast path's "frame" check needs).
 SCAN_W, SCAN_H = 1000, 1400
 
-# INSET (default): a 720x1010 card centred on the bed — a smaller card on a
-# uniform margin, which the fast path DECLINES (there is a card to crop out of a
-# background) so it escalates to BiRefNet.
+# INSET (default) and CORNER: a 720x1010 card on the bed — centred with a wide
+# uniform margin (inset: the quad stage crops it on the fast path), or pushed
+# into the top-left corner (corner: the quad stage declines, so it escalates to
+# BiRefNet).
 # FULL-BLEED: the card FILLS the frame, so the fast path's classical pass sees an
 # object covering the whole frame and returns the "frame" identity verdict — the
 # image stays on the fast path and never loads the model.
@@ -136,13 +163,27 @@ CARD_W, CARD_H = (SCAN_W, SCAN_H) if FULL_BLEED else (720, 1010)
 # background sampling band, so interior pixels do not dilute the estimate.
 BLEED_BORDER = 18
 
+# CORNER: the strip of scanner bed left between the card and the TOP and LEFT
+# frame edges. 14px of a 1000x1400 scan is 12px at the detector's 1200px work
+# resolution, ~0.02 of the card's short side — under half the quad stage's
+# FRAME_EDGE_MIN (0.048), so it declines `frame_edge` with room to spare, while
+# the card is still wholly on the bed (never cut off by the frame), which is what
+# lets BiRefNet segment it whole and the heavy crop keep every edge.
+CORNER_GAP = 14
+
 SCAN_BASE = (52, 58, 66)  # dark scanner bed (inset) / border ring (full-bleed)
 JPEG_QUALITY = 88
 
 OUT_DIR = (
     Path(__file__).resolve().parent.parent
     / "public"
-    / ("placeholder-fixtures-fullbleed" if FULL_BLEED else "placeholder-fixtures")
+    / (
+        "placeholder-fixtures-fullbleed"
+        if FULL_BLEED
+        else "placeholder-fixtures-corner"
+        if CORNER
+        else "placeholder-fixtures"
+    )
 )
 
 # Invented players, invented teams, invented statistics.
@@ -237,7 +278,8 @@ def new_card(fill: tuple[int, int, int], seed: int) -> Image.Image:
 
 
 def compose(card: Image.Image, seed: int) -> Image.Image:
-    """Inset the card on a grainy scanner bed — or, full-bleed, return it as-is.
+    """Lay the card on a grainy scanner bed — centred (inset) or in the top-left
+    registration corner (corner) — or, full-bleed, return it as-is.
 
     Full-bleed cards already fill the frame (that is the whole point: no
     background for the fast path to crop out), so there is no bed to inset on.
@@ -245,7 +287,10 @@ def compose(card: Image.Image, seed: int) -> Image.Image:
     if FULL_BLEED:
         return card
     scan = seeded_noise(SCAN_W, SCAN_H, SCAN_BASE, spread=14, seed=seed)
-    scan.paste(card, ((SCAN_W - CARD_W) // 2, (SCAN_H - CARD_H) // 2))
+    if CORNER:
+        scan.paste(card, (CORNER_GAP, CORNER_GAP))
+    else:
+        scan.paste(card, ((SCAN_W - CARD_W) // 2, (SCAN_H - CARD_H) // 2))
     return scan
 
 
@@ -358,8 +403,12 @@ def main() -> None:
         "FULL-BLEED cards that FILL the frame, so the NEO-175 fast path accepts "
         "them as 'frame' identity and they never escalate to the heavy service."
         if FULL_BLEED
-        else "INSET cards on a scanner bed, which the NEO-175 fast path DECLINES "
+        else "CORNERED cards laid in the scanner bed's top-left corner, which the "
+        "NEO-320 quad stage declines (frame_edge) and the identity check declines, "
         "so every one escalates to the heavy BiRefNet service."
+        if CORNER
+        else "INSET cards centred on a scanner bed, which the NEO-320 quad stage "
+        "crops on the fast path, so none escalates to the heavy service."
     )
     (OUT_DIR / "manifest.json").write_text(
         json.dumps(
@@ -367,7 +416,7 @@ def main() -> None:
                 "description": (
                     "Synthetic card scans for the placeholder-pipeline E2E gate. "
                     "Generated by apps/web/scripts/generate-placeholder-fixtures.py"
-                    + (" --full-bleed" if FULL_BLEED else "")
+                    + (" --full-bleed" if FULL_BLEED else " --corner" if CORNER else "")
                     + ". "
                     + routing
                     + " Both lists are in UPLOAD ORDER — front/back alternation. "
