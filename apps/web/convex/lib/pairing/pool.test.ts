@@ -760,3 +760,632 @@ describe("PoolCard log helpers (TS additions)", () => {
     expect(identitySummary(c)).toBe("player=Walker Buehler team=null cardNumber=null");
   });
 });
+
+// ── NEO-327 adversarial coverage ─────────────────────────────────────────────
+
+describe("orientPair: text thresholds at their boundaries", () => {
+  /** Orient two label-free cards with the given text counts. */
+  const byText = (x: number, y: number) =>
+    orientPair(card("x", null, { textCount: x }), card("y", null, { textCount: y }));
+
+  test("the production thresholds are what these boundary tests assume", () => {
+    expect(TEXT_ORIENT_MIN_RATIO).toBe(3);
+    expect(TEXT_ORIENT_MIN_GAP).toBe(10);
+  });
+
+  test("ratio exactly 3 with a gap under 10 does not fire", () => {
+    expect(byText(3, 9)).toBeNull();
+  });
+
+  test("a zero-word image against fewer than 10 words does not fire", () => {
+    // Ratio is trivially met against zero; the gap is what holds it back.
+    expect(byText(0, 9)).toBeNull();
+    expect(byText(0, 0)).toBeNull();
+  });
+
+  test("gap exactly 10 with a ratio under 3 does not fire", () => {
+    expect(byText(10, 29)).toBeNull();
+    expect(byText(100, 110)).toBeNull();
+  });
+
+  test("ratio exactly 3 and gap exactly 10 both fire, by text", () => {
+    // 5 vs 15 is ratio exactly 3 and gap exactly 10: both at their edge.
+    const o = byText(5, 15)!;
+    expect(o.rule).toBe("text");
+    expect(o.back.key).toBe("y");
+    expect(o.front.key).toBe("x");
+  });
+
+  test("one word under either edge stops firing", () => {
+    expect(byText(5, 14)).toBeNull(); // gap 9
+    expect(byText(10, 29)).toBeNull(); // ratio just under 3
+    expect(byText(10, 30)!.rule).toBe("text");
+  });
+
+  test("zero words against 10 fires", () => {
+    expect(byText(0, 10)!.back.key).toBe("y");
+  });
+
+  test("the heavier image is the back in either argument order", () => {
+    expect(byText(120, 6)!.back.key).toBe("x");
+    expect(byText(6, 120)!.back.key).toBe("y");
+  });
+});
+
+describe("orientPair: labels and user rules around the text rule", () => {
+  const FEW = 6;
+  const MANY = 120;
+
+  test("text beats labels that point the other way", () => {
+    // The labels say the heavy image is the front; the text says back.
+    const o = orientPair(
+      card("heavy", "front", { textCount: MANY }),
+      card("light", "back", { textCount: FEW }),
+    )!;
+    expect(o.rule).toBe("text");
+    expect(o.back.key).toBe("heavy");
+  });
+
+  test("labels break the tie only inside the text band", () => {
+    const inBand = orientPair(
+      card("f", "front", { textCount: 50 }),
+      card("b", "back", { textCount: 60 }),
+    )!;
+    expect(inBand.rule).toBe("label");
+    expect(inBand.front.key).toBe("f");
+    // The label can disagree with which image has more words; inside the band
+    // it still decides.
+    const inverted = orientPair(
+      card("f", "front", { textCount: 60 }),
+      card("b", "back", { textCount: 50 }),
+    )!;
+    expect(inverted.rule).toBe("label");
+    expect(inverted.front.key).toBe("f");
+  });
+
+  test("labels are symmetric in argument order", () => {
+    const a = card("a", "back", { textCount: 50 });
+    const b = card("b", "front", { textCount: 55 });
+    const ab = orientPair(a, b)!;
+    const ba = orientPair(b, a)!;
+    expect([ab.front.key, ab.back.key, ab.rule]).toEqual([ba.front.key, ba.back.key, ba.rule]);
+  });
+
+  test("same labels inside the band are not a pair", () => {
+    expect(orientPair(card("a", "back", { textCount: 50 }), card("b", "back", { textCount: 60 }))).toBeNull();
+    expect(orientPair(card("a", "front", { textCount: 50 }), card("b", "front", { textCount: 60 }))).toBeNull();
+  });
+
+  test("null labels inside the band are not a pair", () => {
+    expect(orientPair(card("a", null, { textCount: 50 }), card("b", null, { textCount: 60 }))).toBeNull();
+    expect(orientPair(card("a", "front", { textCount: 50 }), card("b", null, { textCount: 60 }))).toBeNull();
+  });
+
+  test("a label that is not front or back is no label", () => {
+    const bogus = createPoolCard({ key: "a", label: "sideways" as unknown as CardSide });
+    expect(orientPair(bogus, card("b", "front"))).toBeNull();
+  });
+
+  test("a lone user label decides which is the front, whichever side it names", () => {
+    const userFront = orientPair(
+      card("u", "front", { textCount: 120, labelByUser: true }),
+      card("o", "back", { textCount: 6 }),
+    )!;
+    expect([userFront.front.key, userFront.rule]).toEqual(["u", "user"]);
+    const userBack = orientPair(
+      card("u", "back", { textCount: 6, labelByUser: true }),
+      card("o", "front", { textCount: 120 }),
+    )!;
+    expect([userBack.back.key, userBack.rule]).toEqual(["u", "user"]);
+  });
+
+  test("a lone user label is argument-order symmetric", () => {
+    const u = card("u", "back", { labelByUser: true });
+    const o = card("o", null);
+    expect(orientPair(u, o)!.back.key).toBe("u");
+    expect(orientPair(o, u)!.back.key).toBe("u");
+    expect(orientPair(o, u)!.front.key).toBe("o");
+  });
+
+  test("a lone user label ignores the other image's classifier label", () => {
+    // The other image's label agrees with the user's side: still the user wins.
+    const o = orientPair(
+      card("u", "front", { labelByUser: true }),
+      card("o", "front"),
+    )!;
+    expect([o.front.key, o.back.key, o.rule]).toEqual(["u", "o", "user"]);
+  });
+
+  test("two disagreeing user labels are symmetric", () => {
+    const a = card("a", "front", { labelByUser: true });
+    const b = card("b", "back", { labelByUser: true });
+    expect(orientPair(a, b)!.front.key).toBe("a");
+    expect(orientPair(b, a)!.front.key).toBe("a");
+  });
+
+  test("two same-side user labels are null for both sides and argument orders", () => {
+    for (const side of ["front", "back"] as const) {
+      const a = card("a", side, { textCount: 6, labelByUser: true });
+      const b = card("b", side, { textCount: 120, labelByUser: true });
+      expect(orientPair(a, b)).toBeNull();
+      expect(orientPair(b, a)).toBeNull();
+    }
+  });
+
+  test("labelByUser on a card with no label is not a user label", () => {
+    // The flag without a valid side must not fire rule 0.
+    const flagOnly = createPoolCard({ key: "a", label: null, labelByUser: true, textCount: 6 });
+    const o = orientPair(flagOnly, card("b", null, { textCount: 120 }))!;
+    expect(o.rule).toBe("text");
+  });
+});
+
+describe("orientPair: the duplicate-copy guard", () => {
+  test("two low-text cards with the same label never pair (5 vs 11)", () => {
+    expect(
+      orientPair(card("a", "front", { textCount: 5 }), card("b", "front", { textCount: 11 })),
+    ).toBeNull();
+    expect(
+      orientPair(card("a", "back", { textCount: 5 }), card("b", "back", { textCount: 11 })),
+    ).toBeNull();
+  });
+
+  test("two high-text cards never pair on text (110 vs 142)", () => {
+    expect(
+      orientPair(card("a", "back", { textCount: 110 }), card("b", "back", { textCount: 142 })),
+    ).toBeNull();
+  });
+
+  test("two high-text cards with disagreeing labels pair by label", () => {
+    const o = orientPair(
+      card("a", "front", { textCount: 110 }),
+      card("b", "back", { textCount: 142 }),
+    )!;
+    expect(o.rule).toBe("label");
+    expect(o.front.key).toBe("a");
+  });
+
+  test("two same-label copies of one card never pair in the pool", () => {
+    for (const [lo, hi] of [
+      [5, 11],
+      [110, 142],
+    ]) {
+      const pool = new CardPool();
+      pool.addCard(card("a", "front", { player: "Walker Buehler", textCount: lo }));
+      expect(
+        pool.addCard(card("b", "front", { player: "Walker Buehler", textCount: hi })),
+      ).toBeNull();
+      expect(pool.size).toBe(2);
+    }
+  });
+});
+
+describe("findMatch: orientation instead of a label gate", () => {
+  test("same-label cards pair when the text separates them", () => {
+    const pool = new CardPool();
+    pool.addCard(card("a", "back", { player: "Walker Buehler", textCount: 6 }));
+    const match = pool.addCard(card("b", "back", { player: "Walker Buehler", textCount: 120 }));
+    expect(match).not.toBeNull();
+    expect(match!.front.key).toBe("a");
+    expect(match!.back.key).toBe("b");
+  });
+
+  test("front and back follow the text whatever the labels or the arrival order", () => {
+    const labelPairs: [CardSide | null, CardSide | null][] = [
+      ["front", "front"],
+      ["back", "back"],
+      ["back", "front"], // both wrong
+      [null, null],
+      ["front", null],
+    ];
+    for (const [frontLabel, backLabel] of labelPairs) {
+      for (const backFirst of [false, true]) {
+        const front = card("the-front", frontLabel, { player: "Ben Tate", textCount: 8 });
+        const back = card("the-back", backLabel, { player: "Ben Tate", textCount: 130 });
+        const pool = new CardPool();
+        const [first, second] = backFirst ? [back, front] : [front, back];
+        pool.addCard(first);
+        const match = pool.addCard(second);
+        expect(match, `${frontLabel}/${backLabel} backFirst=${backFirst}`).not.toBeNull();
+        expect(match!.front.key).toBe("the-front");
+        expect(match!.back.key).toBe("the-back");
+      }
+    }
+  });
+
+  test("a user-set side beats the text when the pool pairs", () => {
+    const pool = new CardPool();
+    pool.addCard(card("heavy", "front", { player: "Ben Tate", textCount: 130, labelByUser: true }));
+    const match = pool.addCard(card("light", "front", { player: "Ben Tate", textCount: 8 }));
+    expect(match!.front.key).toBe("heavy");
+    expect(match!.orientedBy).toBe("user");
+  });
+
+  test("a held duplicate does not block the true partner (copy held first)", () => {
+    const pool = new CardPool();
+    pool.addCard(card("front-1", "front", { player: "Ben Tate", textCount: 8 }));
+    pool.addCard(card("other", "front", { player: "Walker Buehler", textCount: 9 }));
+    expect(
+      pool.addCard(card("front-2", "front", { player: "Ben Tate", textCount: 6 })),
+    ).toBeNull();
+    const match = pool.addCard(card("back", "back", { player: "Ben Tate", textCount: 130 }));
+    expect(match).not.toBeNull();
+    expect(match!.back.key).toBe("back");
+    expect(match!.front.key).toBe("front-1");
+  });
+
+  test("unpairedFrom on the incoming card still rejects", () => {
+    const pool = new CardPool();
+    pool.addCard(card("b", "back", { player: "Ben Tate", textCount: 130 }));
+    const incoming = createPoolCard({
+      key: "f",
+      label: "front",
+      player: "Ben Tate",
+      textCount: 8,
+      unpairedFrom: ["b"],
+    });
+    expect(pool.addCard(incoming)).toBeNull();
+    expect(pool.size).toBe(2);
+  });
+
+  test("unpairedFrom on the held card still rejects", () => {
+    const pool = new CardPool();
+    pool.addCard(
+      createPoolCard({
+        key: "b",
+        label: "back",
+        player: "Ben Tate",
+        textCount: 130,
+        unpairedFrom: ["f"],
+      }),
+    );
+    expect(pool.addCard(card("f", "front", { player: "Ben Tate", textCount: 8 }))).toBeNull();
+    expect(pool.size).toBe(2);
+  });
+
+  test("a split from one candidate leaves the other candidate available", () => {
+    const pool = new CardPool();
+    pool.addCard(card("split", "back", { player: "Ben Tate", textCount: 130 }));
+    pool.addCard(card("ok", "back", { player: "Ben Tate", textCount: 125 }));
+    // `ok` was a duplicate of `split`'s side: held. Now the front arrives.
+    const front = createPoolCard({
+      key: "f",
+      label: "front",
+      player: "Ben Tate",
+      textCount: 8,
+      unpairedFrom: ["split"],
+    });
+    const match = pool.addCard(front);
+    expect(match!.back.key).toBe("ok");
+  });
+
+  test("a player disagreement still rejects when the text would orient them", () => {
+    const pool = new CardPool();
+    pool.addCard(card("b", "back", { player: "Clayton Kershaw", textCount: 130 }));
+    expect(
+      pool.addCard(card("f", "front", { player: "Ben Tate", textCount: 8, cardNumber: "20" })),
+    ).toBeNull();
+  });
+
+  test("an unorientable candidate is skipped even with a perfect identity", () => {
+    const pool = new CardPool();
+    pool.addCard(
+      card("copy", "front", { player: "Ben Tate", team: "Browns", cardNumber: "20", textCount: 7 }),
+    );
+    expect(
+      pool.addCard(
+        card("copy-2", "front", { player: "Ben Tate", team: "Browns", cardNumber: "20", textCount: 9 }),
+      ),
+    ).toBeNull();
+  });
+
+  test("the orientation rule is reported on the match", () => {
+    const pool = new CardPool();
+    pool.addCard(card("b", "back", { player: "Ben Tate", textCount: 50 }));
+    const m = pool.addCard(card("f", "front", { player: "Ben Tate", textCount: 55 }));
+    expect(m!.orientedBy).toBe("label");
+  });
+});
+
+describe("card numbers: every card keeps its own", () => {
+  test("both carrying one and agreeing adds the card-number score", () => {
+    const pool = new CardPool();
+    pool.addCard(card("b", "back", { cardNumber: "20", textCount: 130 }));
+    const match = pool.addCard(card("f", "front", { cardNumber: "20", textCount: 8 }));
+    expect(match!.score).toBe(CARD_NUMBER_EXACT_SCORE);
+    expect(match!.confidence).toBe("exact");
+  });
+
+  test("a front's jersey number that disagrees is no penalty and is kept", () => {
+    // Ben Tate: the back prints card number 20, the front photo reads 44.
+    const pool = new CardPool();
+    const back = card("back", "front", { player: "Ben Tate", cardNumber: "20", textCount: 130 });
+    const front = card("front", "front", { player: "Ben Tate", cardNumber: "44", textCount: 8 });
+    pool.addCard(back);
+    const match = pool.addCard(front);
+    expect(match!.score).toBe(PLAYER_EXACT_SCORE);
+    expect(match!.cardNumber).toBe("20");
+    expect(match!.front.cardNumber).toBe("44");
+    expect(match!.back.cardNumber).toBe("20");
+  });
+
+  test("the pair's number is the oriented back's whichever image arrived first", () => {
+    for (const backFirst of [true, false]) {
+      const pool = new CardPool();
+      const back = card("back", "front", { player: "Ben Tate", cardNumber: "20", textCount: 130 });
+      const front = card("front", "front", { player: "Ben Tate", cardNumber: "44", textCount: 8 });
+      if (backFirst) pool.addCard(back);
+      else pool.addCard(front);
+      const match = pool.addCard(backFirst ? front : back);
+      expect(match!.cardNumber).toBe("20");
+    }
+  });
+
+  test("the pool never rewrites a held card's number or label", () => {
+    const pool = new CardPool();
+    const held = card("held", "front", { player: "Ben Tate", cardNumber: "44", textCount: 8 });
+    pool.addCard(held);
+    pool.addCard(card("other", "front", { player: "Walker Buehler", textCount: 9 }));
+    expect(held.cardNumber).toBe("44");
+    expect(held.label).toBe("front");
+  });
+});
+
+describe("side-only fallback: orientation and splits", () => {
+  const bare = (key: string, label: CardSide | null, extra: Partial<PoolCard> = {}) =>
+    createPoolCard({ key, label, ...extra });
+
+  test("pairs a lone orientable identity-free card by text, no labels", () => {
+    const pool = new CardPool();
+    pool.addCard(bare("b", null, { textCount: 130 }));
+    const m = pool.addCard(bare("f", null, { textCount: 8 }));
+    expect(m!.confidence).toBe("side-only");
+    expect(m!.orientedBy).toBe("text");
+    expect(m!.front.key).toBe("f");
+  });
+
+  test("respects unpairedFrom in either direction", () => {
+    const incomingSplit = new CardPool();
+    incomingSplit.addCard(bare("b", "back"));
+    expect(incomingSplit.addCard(bare("f", "front", { unpairedFrom: ["b"] }))).toBeNull();
+
+    const heldSplit = new CardPool();
+    heldSplit.addCard(bare("b", "back", { unpairedFrom: ["f"] }));
+    expect(heldSplit.addCard(bare("f", "front"))).toBeNull();
+    expect(heldSplit.size).toBe(2);
+  });
+
+  test("a split candidate does not count toward the one-candidate rule", () => {
+    // Two backs held, but the user split one: exactly one orientable remains.
+    const pool = new CardPool();
+    pool.addCard(bare("b1", "back"));
+    pool.addCard(bare("b2", "back"));
+    const m = pool.addCard(bare("f", "front", { unpairedFrom: ["b1"] }));
+    expect(m!.back.key).toBe("b2");
+  });
+
+  test("a held card that cannot orient does not count either", () => {
+    // `b` and `f0` were split by the user so both stay held. Incoming `f1`
+    // orients against `b` only; `f0` is the same side with no text gap.
+    const pool = new CardPool();
+    pool.addCard(bare("b", "back"));
+    pool.addCard(bare("f0", "front", { unpairedFrom: ["b"] }));
+    expect(pool.size).toBe(2);
+    const m = pool.addCard(bare("f1", "front"));
+    expect(m!.back.key).toBe("b");
+    expect(m!.front.key).toBe("f1");
+  });
+
+  test("an identity-free orientable card is not paired with an identity-carrying one", () => {
+    const pool = new CardPool();
+    pool.addCard(bare("b", "back"));
+    expect(pool.addCard(card("f", "front", { cardNumber: "9" }))).toBeNull();
+  });
+
+  test("two orientable candidates do not pair", () => {
+    const pool = new CardPool();
+    pool.addCard(bare("b1", "back"));
+    pool.addCard(bare("b2", "back"));
+    expect(pool.addCard(bare("f", "front"))).toBeNull();
+    expect(pool.size).toBe(3);
+  });
+
+  test("a user-set label orients identity-free cards too", () => {
+    const pool = new CardPool();
+    pool.addCard(bare("a", "front", { labelByUser: true }));
+    const m = pool.addCard(bare("b", null));
+    expect(m!.orientedBy).toBe("user");
+    expect(m!.front.key).toBe("a");
+  });
+
+  test("two identity-free same-label copies never pair", () => {
+    const pool = new CardPool();
+    pool.addCard(bare("a", "front", { textCount: 5 }));
+    expect(pool.addCard(bare("b", "front", { textCount: 11 }))).toBeNull();
+  });
+});
+
+describe("evictRescan: identity plus picture, never label", () => {
+  test("a re-scan is evicted at exactly the same-image threshold, not beyond", () => {
+    const atEdge = new CardPool({
+      hashImage: hasherFrom({ old: HASH_A, new: lowBitsHex(SAME_IMAGE_THRESHOLD) }),
+    });
+    atEdge.addCard(card("old", "front", { player: "Walker Buehler" }));
+    atEdge.addCard(card("new", "front", { player: "Walker Buehler" }));
+    expect(atEdge.entries().map((c) => c.key)).toEqual(["new"]);
+
+    const past = new CardPool({
+      hashImage: hasherFrom({ old: HASH_A, new: lowBitsHex(SAME_IMAGE_THRESHOLD + 1) }),
+    });
+    past.addCard(card("old", "front", { player: "Walker Buehler" }));
+    past.addCard(card("new", "front", { player: "Walker Buehler" }));
+    expect(past.entries().map((c) => c.key)).toEqual(["old", "new"]);
+  });
+
+  test("identical hash evicts for every label combination", () => {
+    const labels: (CardSide | null)[] = ["front", "back", null];
+    for (const heldLabel of labels) {
+      for (const newLabel of labels) {
+        const pool = new CardPool({ hashImage: hasherFrom({ old: HASH_A, new: HASH_A }) });
+        pool.addCard(card("old", heldLabel, { player: "Walker Buehler" }));
+        pool.addCard(card("new", newLabel, { player: "Walker Buehler" }));
+        expect(pool.entries().map((c) => c.key), `${heldLabel}/${newLabel}`).toEqual(["new"]);
+      }
+    }
+  });
+
+  test("identity by team alone is enough to evict", () => {
+    const pool = new CardPool({ hashImage: hasherFrom({ old: HASH_A, new: HASH_A }) });
+    pool.addCard(card("old", "front", { team: "Dodgers" }));
+    pool.addCard(card("new", "front", { team: "Los Angeles Dodgers" }));
+    expect(pool.entries().map((c) => c.key)).toEqual(["new"]);
+  });
+
+  test("the same picture under a different identity is left alone", () => {
+    const pool = new CardPool({ hashImage: hasherFrom({ old: HASH_A, new: HASH_A }) });
+    pool.addCard(card("old", "front", { player: "Walker Buehler" }));
+    pool.addCard(card("new", "front", { player: "Clayton Kershaw" }));
+    expect(pool.entries().map((c) => c.key)).toEqual(["old", "new"]);
+  });
+
+  test("a different picture of the same card is held, then pairs with its other side", () => {
+    const pool = new CardPool({
+      hashImage: hasherFrom({ front: HASH_A, back: HASH_FAR }),
+    });
+    pool.addCard(card("front", "front", { player: "Ben Tate", textCount: 8 }));
+    const m = pool.addCard(card("back", "front", { player: "Ben Tate", textCount: 130 }));
+    expect(m!.front.key).toBe("front");
+    expect(pool.size).toBe(0);
+  });
+
+  test("an evicted stale copy cannot be the partner", () => {
+    // The re-scan arrives, evicts the stale copy, and is held; the back then
+    // pairs with the fresh copy.
+    const pool = new CardPool({
+      hashImage: hasherFrom({ old: HASH_A, new: HASH_NEAR, back: "ffffffffffff0000" }),
+    });
+    pool.addCard(card("old", "front", { player: "Ben Tate", textCount: 8 }));
+    pool.addCard(card("new", "front", { player: "Ben Tate", textCount: 8 }));
+    const m = pool.addCard(card("back", "front", { player: "Ben Tate", textCount: 130 }));
+    expect(m!.front.key).toBe("new");
+    expect(pool.size).toBe(0);
+  });
+
+  test("a hasher that fails for the incoming image hashes nothing else", () => {
+    const calls: string[] = [];
+    const hasher: ImageHasher = (key) => {
+      calls.push(key);
+      return null;
+    };
+    const pool = new CardPool({ hashImage: hasher });
+    pool.addCard(card("old", "front", { player: "Walker Buehler" }));
+    pool.addCard(card("new", "front", { player: "Walker Buehler" }));
+    expect(calls).toEqual(["new"]);
+  });
+
+  test("a held card with a malformed hash is not evicted", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const pool = new CardPool({ hashImage: hasherFrom({ old: "XYZ", new: HASH_A }) });
+      pool.addCard(card("old", "front", { player: "Walker Buehler" }));
+      pool.addCard(card("new", "front", { player: "Walker Buehler" }));
+      expect(pool.entries().map((c) => c.key)).toEqual(["old", "new"]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+// ── Offer-order independence ────────────────────────────────────────────────
+
+/** Deterministic PRNG (mulberry32) so a failing permutation is reproducible. */
+function mulberry32(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffled<T>(items: readonly T[], rand: () => number): T[] {
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+describe("offer order never changes the pairings or the sides", () => {
+  // Five physical cards, ten images, distinct players, realistic Vision word
+  // counts (fronts ~5-11, backs ~110-142), and labels that are wrong or
+  // missing on purpose. One card (Salvador Perez) sits inside the text band
+  // and is oriented only by a user-set label on its back.
+  const specs: Array<{
+    key: string;
+    label: CardSide | null;
+    labelByUser?: boolean;
+    player: string;
+    team: string | null;
+    cardNumber: string | null;
+    textCount: number;
+  }> = [
+    { key: "tate-f", label: "back", player: "Ben Tate", team: "Browns", cardNumber: "44", textCount: 8 },
+    { key: "tate-b", label: "front", player: "Ben Tate", team: null, cardNumber: "20", textCount: 130 },
+    { key: "bue-f", label: null, player: "BUEHLER", team: "Dodgers", cardNumber: null, textCount: 6 },
+    { key: "bue-b", label: "front", player: "Walker Buehler", team: null, cardNumber: "25", textCount: 120 },
+    { key: "ker-f", label: "front", player: "Clayton Kershaw", team: "Dodgers", cardNumber: null, textCount: 11 },
+    { key: "ker-b", label: null, player: "Clayton Kershaw", team: null, cardNumber: "22", textCount: 142 },
+    { key: "per-f", label: null, player: "Salvador Perez", team: null, cardNumber: null, textCount: 30 },
+    { key: "per-b", label: "back", labelByUser: true, player: "Salvador Perez", team: null, cardNumber: "13", textCount: 40 },
+    { key: "mah-f", label: "front", player: "Patrick Mahomes", team: "Chiefs", cardNumber: null, textCount: 5 },
+    { key: "mah-b", label: "front", player: "Patrick Mahomes", team: null, cardNumber: "15", textCount: 110 },
+  ];
+  const expected = [
+    { front: "bue-f", back: "bue-b", by: "text" },
+    { front: "ker-f", back: "ker-b", by: "text" },
+    { front: "mah-f", back: "mah-b", by: "text" },
+    { front: "per-f", back: "per-b", by: "user" },
+    { front: "tate-f", back: "tate-b", by: "text" },
+  ];
+
+  test("50 seeded permutations all pair identically", () => {
+    const rand = mulberry32(327);
+    for (let run = 0; run < 50; run++) {
+      const order = shuffled(specs, rand);
+      const pool = new CardPool();
+      const matches = [];
+      // `order` here is the entry index of this permutation. It feeds the
+      // ADJACENCY_SCORE bonus, so scores and confidence legitimately vary
+      // between permutations; this test asserts pairings and orientation ONLY.
+      for (const [index, spec] of order.entries()) {
+        const m = pool.addCard(
+          createPoolCard({ ...spec, order: index, identityResolved: true }),
+        );
+        if (m !== null) matches.push(m);
+      }
+      const got = matches
+        .map((m) => ({ front: m.front.key, back: m.back.key, by: m.orientedBy }))
+        .sort((a, b) => a.front.localeCompare(b.front));
+      expect(got, `run ${run}: ${order.map((s) => s.key).join(",")}`).toEqual(expected);
+      expect(pool.size).toBe(0);
+    }
+  });
+
+  test("the pair's card number is the back's in every permutation", () => {
+    const rand = mulberry32(44);
+    for (let run = 0; run < 20; run++) {
+      const pool = new CardPool();
+      const numbers: Record<string, string | null> = {};
+      for (const [index, spec] of shuffled(specs, rand).entries()) {
+        const m = pool.addCard(createPoolCard({ ...spec, order: index, identityResolved: true }));
+        if (m !== null) numbers[m.front.key] = m.cardNumber;
+      }
+      expect(numbers["tate-f"]).toBe("20");
+      expect(numbers["per-f"]).toBe("13");
+    }
+  });
+});

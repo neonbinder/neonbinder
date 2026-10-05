@@ -324,3 +324,204 @@ describe("upload order never decides a side (NEO-327)", () => {
     expect(match.cardNumber).toBe("20");
   });
 });
+
+describe("label ladder: every rung", () => {
+  const img = (extra: Partial<BatchImage> = {}): BatchImage => ({
+    key: "x",
+    textCount: FRONT_WORDS,
+    ...extra,
+  });
+
+  test("user label with a valid stored label is that label, set by the user", () => {
+    for (const side of ["front", "back"] as const) {
+      const r = poolCardFromIdentity(
+        img({ label: side, labelByUser: true }),
+        identity(side === "front" ? "back" : "front"),
+      );
+      expect(r.label).toBe(side);
+      expect(r.labelByUser).toBe(true);
+    }
+  });
+
+  test("a user label survives a null identity", () => {
+    const r = poolCardFromIdentity(img({ label: "back", labelByUser: true }), null);
+    expect([r.label, r.labelByUser]).toEqual(["back", true]);
+  });
+
+  test("labelByUser with an invalid stored label falls to the resolver's side, not user", () => {
+    const r = poolCardFromIdentity(
+      img({ label: "sideways" as unknown as CardSide, labelByUser: true }),
+      identity("back"),
+    );
+    expect([r.label, r.labelByUser]).toEqual(["back", false]);
+  });
+
+  test("labelByUser false with a stored label: the resolver's side still wins, not user", () => {
+    const r = poolCardFromIdentity(img({ label: "front", labelByUser: false }), identity("back"));
+    expect([r.label, r.labelByUser]).toEqual(["back", false]);
+  });
+
+  test("a null resolver side falls to the stored label", () => {
+    const r = poolCardFromIdentity(img({ label: "back" }), identity(null));
+    expect([r.label, r.labelByUser]).toEqual(["back", false]);
+  });
+
+  test("an invalid resolver side falls to the stored label", () => {
+    const r = poolCardFromIdentity(img({ label: "back" }), identity("sideways"));
+    expect([r.label, r.labelByUser]).toEqual(["back", false]);
+  });
+
+  test("no side and no stored label is null", () => {
+    const r = poolCardFromIdentity(img(), identity(null));
+    expect([r.label, r.labelByUser]).toEqual([null, false]);
+  });
+
+  test("the text count and order reach the pool card", () => {
+    const r = poolCardFromIdentity(img({ textCount: 77, order: 4 }), null);
+    expect(r.textCount).toBe(77);
+    expect(r.order).toBe(4);
+  });
+});
+
+describe("pairBatch: orientation end to end", () => {
+  const run = (images: BatchImage[], ids: Record<string, CardIdentity>) =>
+    pairBatch(images, { resolveIdentity: countingResolver(ids).resolve });
+
+  test("a user label orients a pair against the text", () => {
+    const result = run(
+      [
+        { key: "heavy", textCount: BACK_WORDS, label: "front", labelByUser: true },
+        { key: "light", textCount: FRONT_WORDS },
+      ],
+      {
+        heavy: identity("back", { player: "Ben Tate" }),
+        light: identity("front", { player: "Ben Tate" }),
+      },
+    );
+    expect(result.matches[0].front.key).toBe("heavy");
+    expect(result.matches[0].orientedBy).toBe("user");
+  });
+
+  test("two user labels for the same side never pair", () => {
+    const result = run(
+      [
+        { key: "a", textCount: FRONT_WORDS, label: "front", labelByUser: true },
+        { key: "b", textCount: BACK_WORDS, label: "front", labelByUser: true },
+      ],
+      {
+        a: identity("front", { player: "Ben Tate" }),
+        b: identity("front", { player: "Ben Tate" }),
+      },
+    );
+    expect(result.matches).toEqual([]);
+    expect(result.unmatched).toHaveLength(2);
+  });
+
+  test("unpairedFrom is honoured", () => {
+    const result = run(
+      [
+        { key: "f", textCount: FRONT_WORDS, unpairedFrom: ["b"] },
+        { key: "b", textCount: BACK_WORDS },
+      ],
+      {
+        f: identity("front", { player: "Ben Tate" }),
+        b: identity("back", { player: "Ben Tate" }),
+      },
+    );
+    expect(result.matches).toEqual([]);
+  });
+
+  test("a duplicate copy is held and the true partner pairs", () => {
+    const result = run(
+      [frontImage("f1"), frontImage("f2"), backImage("b")],
+      {
+        f1: identity("front", { player: "Ben Tate" }),
+        f2: identity("front", { player: "Ben Tate" }),
+        b: identity("front", { player: "Ben Tate", cardNumber: "20" }),
+      },
+    );
+    expect(result.matches).toHaveLength(1);
+    expect(result.matches[0].back.key).toBe("b");
+    expect(result.unmatched).toHaveLength(1);
+  });
+
+  test("a front's jersey number never names the pair (Ben Tate)", () => {
+    const result = run([frontImage("f"), backImage("b")], {
+      f: identity("front", { player: "Ben Tate", cardNumber: "44" }),
+      b: identity("front", { player: "Ben Tate", cardNumber: "20" }),
+    });
+    expect(result.matches[0].cardNumber).toBe("20");
+    expect(result.matches[0].front.cardNumber).toBe("44");
+  });
+});
+
+// ── Offer-order independence ────────────────────────────────────────────────
+
+/** Deterministic PRNG (mulberry32) so a failing permutation reproduces. */
+function mulberry32(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+describe("pairBatch: upload order never changes pairings or sides", () => {
+  // Five cards, ten images, distinct players, realistic word counts, with
+  // wrong and null classifier labels. Salvador Perez's images sit inside the
+  // text band; only the user-set label on his back orients him.
+  const rows: Array<{
+    image: BatchImage;
+    identity: CardIdentity;
+  }> = [
+    { image: { key: "tate-f", textCount: 8 }, identity: identity("back", { player: "Ben Tate", team: "Browns", cardNumber: "44" }) },
+    { image: { key: "tate-b", textCount: 130 }, identity: identity("front", { player: "Ben Tate", cardNumber: "20" }) },
+    { image: { key: "bue-f", textCount: 6 }, identity: identity(null, { player: "BUEHLER", team: "Dodgers" }) },
+    { image: { key: "bue-b", textCount: 120 }, identity: identity("front", { player: "Walker Buehler", cardNumber: "25" }) },
+    { image: { key: "ker-f", textCount: 11 }, identity: identity("front", { player: "Clayton Kershaw", team: "Dodgers" }) },
+    { image: { key: "ker-b", textCount: 142 }, identity: identity(null, { player: "Clayton Kershaw", cardNumber: "22" }) },
+    { image: { key: "per-f", textCount: 30 }, identity: identity(null, { player: "Salvador Perez" }) },
+    { image: { key: "per-b", textCount: 40, label: "back", labelByUser: true }, identity: identity("front", { player: "Salvador Perez", cardNumber: "13" }) },
+    { image: { key: "mah-f", textCount: 5 }, identity: identity("front", { player: "Patrick Mahomes", team: "Chiefs" }) },
+    { image: { key: "mah-b", textCount: 110 }, identity: identity("front", { player: "Patrick Mahomes", cardNumber: "15" }) },
+  ];
+  const expected = [
+    { front: "bue-f", back: "bue-b", by: "text", number: "25" },
+    { front: "ker-f", back: "ker-b", by: "text", number: "22" },
+    { front: "mah-f", back: "mah-b", by: "text", number: "15" },
+    { front: "per-f", back: "per-b", by: "user", number: "13" },
+    { front: "tate-f", back: "tate-b", by: "text", number: "20" },
+  ];
+
+  test("50 seeded permutations of offer order give identical pairings", () => {
+    const rand = mulberry32(327);
+    const ids: Record<string, CardIdentity> = Object.fromEntries(
+      rows.map((r) => [r.image.key, r.identity]),
+    );
+    for (let run = 0; run < 50; run++) {
+      const order = [...rows];
+      for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(rand() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+      }
+      // `order` is the position in this permutation. It feeds ADJACENCY_SCORE,
+      // so score and confidence may differ between runs; only pairings and
+      // orientation are asserted.
+      const images = order.map((r, i) => ({ ...r.image, order: i }));
+      const result = pairBatch(images, { resolveIdentity: countingResolver(ids).resolve });
+      const got = result.matches
+        .map((m) => ({
+          front: m.front.key,
+          back: m.back.key,
+          by: m.orientedBy,
+          number: m.cardNumber,
+        }))
+        .sort((a, b) => a.front.localeCompare(b.front));
+      expect(got, `run ${run}: ${order.map((r) => r.image.key).join(",")}`).toEqual(expected);
+      expect(result.unmatched).toEqual([]);
+    }
+  });
+});
