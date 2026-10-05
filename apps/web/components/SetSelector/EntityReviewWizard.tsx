@@ -2527,20 +2527,6 @@ export default function EntityReviewWizard({
     const owned = new Set(sameNameCandidates.map((c) => c.playerId as string));
     return base.filter((m) => !owned.has(m._id));
   })();
-  /**
-   * NEO-284 — is there a `Link to …` control on screen for this row? The
-   * footer primary on a lone exact match, a near-match row in the panel, or
-   * the open link search. Decides whether the "remember this name" checkbox
-   * is SHOWN (never whether it is mounted — see the JSX).
-   *
-   * NEO-307 — always, on a team step: its "Search all teams" type-ahead is on
-   * every one of them, so the box is too. Intended (Jason, 2026-09-25).
-   */
-  const linkControlOnScreen =
-    current?.kind === "team" ||
-    linkingOpen ||
-    (showExactHierarchy && exactMatch !== null) ||
-    (panelMatches?.length ?? 0) > 0;
   const remaining = total - decided;
   /**
    * NEO-236 — the two bulk buttons act on DIFFERENT sets, so they count
@@ -2932,8 +2918,8 @@ export default function EntityReviewWizard({
                     <h3 className="text-sm font-semibold text-gray-200">
                       {/* NEO-236, Jason's own words for this step: "1. New
                           Team: Sydney Blue Sox". The raw name, because that is
-                          the thing being answered — the composed result is on
-                          the "Shows as" line below, where it belongs. Only
+                          the thing being answered — the composed result is
+                          what the Location and Name fields below say. Only
                           while the step is live: a decided row is being read
                           back, not created. */}
                       {/* NEO-254: and the same for a league, one level up. */}
@@ -3435,97 +3421,23 @@ export default function EntityReviewWizard({
                       a screen reader and for Maestro alike.
                     */}
                     {/*
-                      ── NEO-284: remember this name ──────────────────────────
-
-                      Team rows only, and SHOWN only while a `Link to …`
-                      control is on screen — the footer primary on an exact
-                      match, a near-match row, or the open link search. It is
-                      a fact about LINKING ("keep the checklist's spelling as
-                      one of that team's names"), so it appears with the link
-                      controls and not above a New Team form, where "this
-                      team" would have meant the one being typed.
-
-                      NEO-307: every team step now carries a link control (the
-                      "Search all teams" type-ahead), so on a team step this
-                      is always shown — Jason's call, 2026-09-25. It sits
-                      directly above that type-ahead, which is what "this
-                      team" now refers to.
-
-                      MOUNTED for every team row and collapsed with `hidden`,
-                      never `&&`-gated: the conditions that show it are all
-                      derived from the async `nearMatches` query, and the
-                      footer's own comment on the primary button explains why
-                      a query result must not decide WHICH elements exist —
-                      a swap under a keyboard user drops focus to <body>
-                      (SC 2.4.3 / 3.2.2). One element, one slot, both states;
-                      `hidden` takes it out of the tab order and the
-                      accessibility tree while collapsed, and `tabIndex={-1}`
-                      says so a second way for the driver that reads tab
-                      order off the attribute.
-
-                      In the BODY, above the panel, never in the footer: row 1
-                      of the footer is reserved (NEO-110) and a control that
-                      comes and goes with the near-match query would reflow
-                      it. The body absorbs height changes by design.
-
-                      Ticked by default — see `saveAsAliasByRow`.
-                    */}
-                    {current.kind === "team" && (
-                      <div className="space-y-1" hidden={!linkControlOnScreen}>
-                        <label
-                          htmlFor={TEAM_SAVE_AS_ALIAS_FIELD_ID}
-                          className="flex items-center gap-2 text-sm text-gray-200"
-                        >
-                          <input
-                            id={TEAM_SAVE_AS_ALIAS_FIELD_ID}
-                            type="checkbox"
-                            checked={saveAsAlias}
-                            disabled={busy}
-                            tabIndex={linkControlOnScreen ? undefined : -1}
-                            aria-describedby={saveAsAliasHelpId}
-                            onChange={(e) =>
-                              setSaveAsAliasByRow((prev) => ({
-                                ...prev,
-                                [current._id]: e.target.checked,
-                              }))
-                            }
-                            // The wizard's checkbox grammar (career teams
-                            // below use the same accent), plus a visible
-                            // ring: `accent-*` alone leaves focus to the
-                            // browser default, which on this ground is
-                            // easy to lose (SC 2.4.7).
-                            className="h-4 w-4 rounded accent-[#00D558] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800"
-                          />
-                          {/* The row's RAW name, quoted: it is the string
-                              that will become the alias, spelling, caps and
-                              all — so the operator sees exactly what they
-                              are keeping. */}
-                          <span>
-                            Remember “{current.name}” as a name for this team
-                          </span>
-                        </label>
-                        <p
-                          id={saveAsAliasHelpId}
-                          className="pl-6 text-xs text-gray-400"
-                        >
-                          Kicks in when you link. Next time this name shows
-                          up, it goes straight to that team.
-                        </p>
-                      </div>
-                    )}
-
-                    {/*
                       NEO-307 — a TEAM step's link control is one type-ahead,
                       on every team step, where the Possible matches list used
                       to be. Jason, 2026-09-25: the fixed list could not reach
                       a team the ranking did not surface, and "Link to
                       Existing…" (removed for teams) hid the whole step to
-                      offer a second search. It opens on the near matches —
-                      `panelMatches`, so the lone exact match stays the
-                      footer's primary and is not offered twice — and a pick
-                      goes down the SAME `handleLink` path, "Remember …"
-                      answer included. Keyed by row so each step opens on its
-                      own name.
+                      offer a second search. A pick goes down the SAME
+                      `handleLink` path, "Remember …" answer included.
+
+                      NEO-326 (Jason, 2026-10-04): the section is headed "Link
+                      to existing team" (players and leagues keep their
+                      "Possible matches" panel) and the field starts EMPTY —
+                      pre-filled with the row's name it looked as if a team by
+                      exactly that name already existed. Empty and focused, it
+                      offers `panelMatches`, so a real close match still shows
+                      without a keystroke and the lone exact match stays the
+                      footer's primary rather than being offered twice. Keyed
+                      by row, so each step starts empty and fresh.
 
                       Players (and leagues) keep the panel and the link search.
                     */}
@@ -3533,13 +3445,84 @@ export default function EntityReviewWizard({
                       <TeamMatchSearch
                         key={current._id}
                         sportId={current.sportId}
-                        initialQuery={current.name}
                         defaultMatches={panelMatches}
                         onPick={(id) => {
                           if (busy) return;
                           void handleLink(current._id, "team", id, linkOptions);
                         }}
-                      />
+                      >
+                        {/*
+                          ── NEO-284: remember this name ──────────────────────
+
+                          NEO-326: inside the "Link to existing team" section,
+                          directly under "Search all teams". It is a fact about
+                          LINKING ("keep the checklist's spelling as one of
+                          that team's names"), so it sits with the link control
+                          and never above the New Team form, where "this team"
+                          would have meant the one being typed.
+
+                          It covers EVERY team link path, not only the search
+                          above it: a pick here, the footer's primary "Link to
+                          …" on a lone exact match, and an alias holder's link
+                          below. The section is on every team step (NEO-307
+                          made the search unconditional), so the box is always
+                          next to a link control and is never hidden.
+
+                          One element, rendered unconditionally for the team
+                          step and never gated on the async `nearMatches`
+                          answer: a query result must not decide WHICH
+                          elements exist, or a re-resolve under a keyboard user
+                          drops focus to <body> (SC 2.4.3 / 3.2.2). The
+                          surrounding box and heading do not change with it
+                          either, so nothing reflows under the cursor.
+
+                          In the body, never in the footer: row 1 of the
+                          footer is reserved (NEO-110).
+
+                          Ticked by default — see `saveAsAliasByRow`. Per row,
+                          so an answer survives Back.
+                        */}
+                        <div className="space-y-0.5">
+                          <label
+                            htmlFor={TEAM_SAVE_AS_ALIAS_FIELD_ID}
+                            className="flex items-center gap-2 text-xs text-gray-200"
+                          >
+                            <input
+                              id={TEAM_SAVE_AS_ALIAS_FIELD_ID}
+                              type="checkbox"
+                              checked={saveAsAlias}
+                              disabled={busy}
+                              aria-describedby={saveAsAliasHelpId}
+                              onChange={(e) =>
+                                setSaveAsAliasByRow((prev) => ({
+                                  ...prev,
+                                  [current._id]: e.target.checked,
+                                }))
+                              }
+                              // The wizard's checkbox grammar (career teams
+                              // below use the same accent), plus a visible
+                              // ring: `accent-*` alone leaves focus to the
+                              // browser default, which on this ground is
+                              // easy to lose (SC 2.4.7).
+                              className="h-3.5 w-3.5 rounded accent-[#00D558] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-800"
+                            />
+                            {/* The row's RAW name, quoted: it is the string
+                                that will become the alias, spelling, caps and
+                                all — so the operator sees exactly what they
+                                are keeping. */}
+                            <span>
+                              Remember “{current.name}” as a name for this team
+                            </span>
+                          </label>
+                          <p
+                            id={saveAsAliasHelpId}
+                            className="pl-5.5 text-xs text-gray-400"
+                          >
+                            Kicks in when you link. Next time this name shows
+                            up, it goes straight to that team.
+                          </p>
+                        </div>
+                      </TeamMatchSearch>
                     ) : (
                       !linkingOpen && (
                         <NearMatchPanel

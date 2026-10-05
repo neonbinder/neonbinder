@@ -493,6 +493,9 @@ tags:
 # 1. THE HEADING SAYS THE FULL NAME. Anchored ABOVE the Location label, because
 #    the live "Shows as: <full name>" preview under the two boxes says the same
 #    string — and it sits BELOW the label, so this can only be the heading.
+#    (That preview is Team Management's own. NEO-326 removed the New Team
+#    form's preview and both screens' Location help line, not this one; if it
+#    ever goes too, the anchor still pins the heading.)
 - assertVisible:
     text: 'Loc${WORKER_INDEX || "0"} TMT${output.ATTEMPT_TOKEN}'
     above:

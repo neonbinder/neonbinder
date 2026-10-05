@@ -315,10 +315,6 @@ function TeamDetail({
    */
   const previewId = useId();
   const errorId = useId();
-  // NEO-236: the Location/Name rule, described by BOTH fields rather than sat
-  // silently beside them — the split is only obvious once you have been told
-  // what counts as a location.
-  const helpId = useId();
   // NEO-284: the alias caption. On the paragraph, pointed at by the box.
   const aliasCaptionId = useId();
 
@@ -359,7 +355,7 @@ function TeamDetail({
   const fullName = teamFullName(team);
   const draftFullName = teamFullName({ name, location });
   const describedBy =
-    [helpId, name.trim() ? previewId : null, saveError ? errorId : null]
+    [name.trim() ? previewId : null, saveError ? errorId : null]
       .filter(Boolean)
       .join(" ") || undefined;
 
@@ -772,8 +768,9 @@ function TeamDetail({
           blank for those teams. Location is wherever the team is FROM, which
           includes a school: "Wisconsin" / "Badgers", "San Diego State" /
           "Aztecs". It is empty only when the name carries no place at all
-          ("Athletics", "Liverpool", "Orix Buffaloes"), which is why the rule
-          is printed under the two boxes rather than left to be guessed.
+          ("Athletics", "Liverpool", "Orix Buffaloes"). NEO-326 took the
+          printed rule off the screen (Jason, 2026-10-04); the label and the
+          "Shows as" preview are what the operator reads now.
         */}
         <Input
           label="Location"
@@ -805,17 +802,6 @@ function TeamDetail({
             setNameTakenId(null);
           }}
         />
-
-        {/* Examples deliberately avoid a plain city pair: a city is the case
-            operators already get right. A state and a bay teach the two they
-            do not, and the last clause names the only reason to leave Location
-            empty. Kept clear of the literal "San Diego" — that string is how
-            the E2E flow finds this screen's empty Location box. */}
-        <p id={helpId} className="sm:col-span-2 -mt-1 text-xs text-slate-400">
-          Location is where they&rsquo;re from &mdash; city, state, region or
-          school. Wisconsin / Badgers, Tampa Bay / Buccaneers. Leave it blank
-          only if the name has no place in it, like Athletics.
-        </p>
 
         {name.trim() && (
           <p

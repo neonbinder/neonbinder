@@ -1380,6 +1380,23 @@ describe("TeamManagement — the detail panel's composed name", () => {
     ).toContain(previewId);
   });
 
+  it("NEO-326: carries no Location help line, and neither field points at one", () => {
+    renderAt("/admin/teams?team=t-mariners");
+
+    expect(screen.queryByText(/where they.re from/)).toBeNull();
+    expect(screen.queryByText(/city, state, region or\s+school/)).toBeNull();
+    // The preview is the only description left while there is no refusal, so
+    // each field's list is exactly that one id — nothing stale, nothing
+    // dangling.
+    const previewId = screen.getByText(/^Shows as:/).id;
+    for (const label of ["Location", "Name"]) {
+      const ids = (
+        screen.getByLabelText(label).getAttribute("aria-describedby") ?? ""
+      ).split(" ");
+      expect(ids).toEqual([previewId]);
+    }
+  });
+
   it("sends both halves, and clears the location with null", async () => {
     renderAt("/admin/teams?team=t-mariners");
 

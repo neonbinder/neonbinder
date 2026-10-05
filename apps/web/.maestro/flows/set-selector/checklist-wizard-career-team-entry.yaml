@@ -273,6 +273,14 @@ tags:
 # the scrolling body. The list itself is a position:fixed layer in the
 # wizard's dialog that flips above the field or floats over the footer, so
 # no option needs the body scrolled.
+# NEO-326 moved things on both sides of League, and the pin is why that
+# needs no flow change. ABOVE it the team step gained an always-on "Link to
+# existing team" box (~60px) and lost the Location help line (~40px); BELOW
+# it the "Shows as:" line went (~28px). A pin to the END places League by
+# what is below it only, so expect League ~28px lower than measured above
+# (~y=355-389), still inside the slice. The step's overflow stays under the
+# one drag's ~313px (it was ~297px; net change about -8px), so the drag still
+# reaches the end. MEASURE on the next local run against a NEO-326 preview.
 - swipe:
     start: "18%, 70%"
     end: "18%, 20%"

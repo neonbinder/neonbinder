@@ -1291,7 +1291,9 @@ approval. Measured live on PR #262's Convex preview on 2026-09-16.
 **What the flow proves** (NEO-284): a LINK decision on a TEAM row in the
 entity-review wizard (since NEO-307 taken from the step's one `Search all
 teams` combobox — teams have no "Link to Existing…" or near-match Link buttons
-any more; players and leagues keep theirs) keeps the checklist's raw spelling as an alias
+any more; players and leagues keep theirs; since NEO-326 the combobox starts
+empty inside a "Link to existing team" section, with the "Remember …" box
+directly under it) keeps the checklist's raw spelling as an alias
 of the linked team, by default, and the alias is written at COMMIT — so it
 needs a real set whose wizard opens on a TEAM row, and it needs to commit.
 
@@ -1765,8 +1767,10 @@ Two consequences worth knowing before writing a picker step:
   matches nothing (no league name, alias or abbreviation, staged league or
   suggestion contains it) — in the dialog it opens the league form
   pre-filled, and `Add league` writes the row; in the wizard it stages a
-  `New League:` step — and `No league`, always, unfiltered), with a
-  `Shows as:` preview. Drive it as: tap
+  `New League:` step — and `No league`, always, unfiltered). NEO-326 removed
+  the form's `Shows as:` preview and its Location help line, so the composed
+  name is asserted through the Create button's accessible name (below) and,
+  after the write, the chip or row that reads it. Drive the League as: tap
   `id: "League"`, type a STRICT substring of the option, tap the option by its
   exact text, then read the input back as `{id: "League", text: <label>}` —
   never type the whole label, or the input's own text answers to the tap. Its

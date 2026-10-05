@@ -392,14 +392,6 @@ function pickTeamLeague(label: string): void {
   fireEvent.mouseDown(within(teamLeagueList()).getByRole("option", { name: label }));
 }
 
-/**
- * The composed-name preview, read as one string.
- *
- * Testing Library's text matcher sees only an element's DIRECT text nodes, and
- * this line is "Shows as: " plus a `<span>` holding the composed name — so
- * `getByText("Shows as: San Diego Padres")` matches nothing.
- */
-const showsAsText = () => screen.getByText("Shows as:").textContent;
 
 /**
  * NEO-220 replaced the bare `cardCount` prop with the whole of what Confirm &
@@ -2719,7 +2711,7 @@ describe("EntityReviewWizard — save-as-alias checkbox", () => {
     expect(screen.queryByLabelText("Link to LSU")).toBeNull();
   });
 
-  it("is checked by default beside the primary Link control on a team row", () => {
+  it("is checked by default on a team row whose primary is a lone exact match", () => {
     currentNearMatches = [
       { _id: "team_lsu", name: "LSU Tigers", confidence: "exact" },
     ];
@@ -2787,15 +2779,15 @@ describe("EntityReviewWizard — save-as-alias checkbox", () => {
   });
 
   /**
-   * The checkbox is MOUNTED for every team row and only SHOWN while a
-   * `Link to …` control exists (a11y audit: an `&&` gate on the async
-   * near-match result would swap elements under a keyboard user). So "absent"
-   * on a team row means collapsed with `hidden` and out of the tab order —
-   * Testing Library's label query does not filter hidden nodes, hence the
-   * explicit checks.
+   * The checkbox is ONE element on every team step, never gated on the async
+   * near-match result (a11y audit: an `&&` gate would swap elements under a
+   * keyboard user). NEO-326 put it inside the "Link to existing team" section,
+   * which is on every team step, so it is never collapsed either. Testing
+   * Library's label query does not filter hidden nodes, hence the explicit
+   * checks.
    */
   const collapsed = (box: HTMLElement) =>
-    box.closest("[hidden]") !== null && box.tabIndex === -1;
+    box.closest("[hidden]") !== null || box.tabIndex === -1;
 
   it("NEO-307: is SHOWN on a team step with no near matches — the 'Search all teams' type-ahead is its Link control", () => {
     currentNearMatches = [];
@@ -2803,7 +2795,13 @@ describe("EntityReviewWizard — save-as-alias checkbox", () => {
     renderWizard();
 
     expect(screen.queryByText("Possible matches")).toBeNull();
-    expect(screen.getByRole("combobox", { name: "Search all teams" })).toBeTruthy();
+    const section = screen.getByRole("group", { name: "Link to existing team" });
+    expect(section.contains(screen.getByRole("combobox", { name: "Search all teams" }))).toBe(
+      true,
+    );
+    expect(section.contains(screen.getByLabelText(rememberLabel("Brand New Squad")))).toBe(
+      true,
+    );
     const box = screen.getByLabelText(rememberLabel("Brand New Squad"));
     expect(collapsed(box)).toBe(false);
     expect(box.closest("[hidden]")).toBeNull();
@@ -2823,6 +2821,7 @@ describe("EntityReviewWizard — save-as-alias checkbox", () => {
     const { rerender } = render(wizardEl());
 
     const box = screen.getByLabelText(rememberLabel("LSU"));
+    const section = screen.getByRole("group", { name: "Link to existing team" });
     expect(collapsed(box)).toBe(false);
     act(() => box.focus());
     expect(document.activeElement).toBe(box);
@@ -2833,9 +2832,11 @@ describe("EntityReviewWizard — save-as-alias checkbox", () => {
     ];
     rerender(wizardEl());
 
-    // NEO-307 — the close match lands in the team type-ahead, whose panel
-    // heading appears with it.
-    expect(screen.getByText("Possible matches")).toBeTruthy();
+    // NEO-307 — the close match lands in the team type-ahead. NEO-326: the
+    // "Link to existing team" section the box lives in is the same element
+    // before and after, so nothing around the focused box was swapped either.
+    expect(screen.getByRole("group", { name: "Link to existing team" })).toBe(section);
+    expect(section.contains(box)).toBe(true);
     expect(screen.getByLabelText(rememberLabel("LSU"))).toBe(box);
     expect(document.activeElement).toBe(box);
   });
@@ -4971,7 +4972,25 @@ describe("EntityReviewWizard — the New Team step", () => {
 
     expect(teamLocationField().value).toBe("San Diego");
     expect(teamNameField().value).toBe("Padres");
-    expect(showsAsText()).toBe("Shows as: San Diego Padres");
+  });
+
+  it("NEO-326: carries no Location help line and no 'Shows as' preview", () => {
+    currentRows = [
+      makeRow({
+        kind: "team",
+        name: "San Diego Padres",
+        status: "ready",
+        enrichment: { location: "San Diego" },
+      }),
+    ];
+    renderWizard();
+
+    expect(teamLocationField()).toBeTruthy();
+    expect(screen.queryByText(/Location is where they are from/)).toBeNull();
+    expect(screen.queryByText(/Shows as:/)).toBeNull();
+    // Nothing for either field to point at, so neither carries the attribute.
+    expect(teamLocationField().hasAttribute("aria-describedby")).toBe(false);
+    expect(teamNameField().hasAttribute("aria-describedby")).toBe(false);
   });
 
   it("leaves Location blank when the ESPN location is NOT a prefix of the name", () => {
@@ -5000,9 +5019,6 @@ describe("EntityReviewWizard — the New Team step", () => {
 
     expect(teamLocationField().value).toBe("");
     expect(teamNameField().value).toBe("Orix Buffaloes");
-    // No location, so the composed name IS the name — the preview says so
-    // rather than going quiet.
-    expect(showsAsText()).toBe("Shows as: Orix Buffaloes");
   });
 
   it("sends the operator's two fields as `create`, not the reviewed name", async () => {
@@ -5016,7 +5032,6 @@ describe("EntityReviewWizard — the New Team step", () => {
 
     fireEvent.change(teamLocationField(), { target: { value: "San Diego" } });
     fireEvent.change(teamNameField(), { target: { value: "Padres" } });
-    expect(showsAsText()).toBe("Shows as: San Diego Padres");
 
     fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
 
@@ -5085,7 +5100,7 @@ describe("EntityReviewWizard — the New Team step", () => {
     renderWizard();
 
     // The RAW checklist string, because that is the thing being answered — the
-    // composed result is on the "Shows as" line, where it belongs.
+    // composed result is what the Location and Name fields say.
     expect(
       screen.getByRole("heading", { name: "New Team: SD PADRES" }),
     ).toBeTruthy();
@@ -5964,15 +5979,12 @@ describe("EntityReviewWizard — the create refusal is described where it is cau
     const reason = screen.getByText("Enter a team name before adding it.");
     // A screen-reader user who tabs into a field and clears it hears why
     // immediately, rather than only on reaching the button several stops later.
-    // `aria-describedby` is a LIST here — the shared form also points each
-    // field at its own help line and at the "Shows as" preview — so this is a
-    // containment check, not an equality one.
-    expect(teamNameField().getAttribute("aria-describedby")).toContain(reason.id);
+    // NEO-326 took the help line and the "Shows as" preview off the form, so
+    // the reason is the only thing either field is described by now.
+    expect(teamNameField().getAttribute("aria-describedby")).toBe(reason.id);
     // Location too: the other refusal this form raises is the length of the
     // COMPOSED name, which is what the two boxes make together.
-    expect(teamLocationField().getAttribute("aria-describedby")).toContain(
-      reason.id,
-    );
+    expect(teamLocationField().getAttribute("aria-describedby")).toBe(reason.id);
   });
 
   it("describes a blocked PLAYER create on the primary, since the fix is elsewhere", () => {
@@ -6011,9 +6023,12 @@ describe("EntityReviewWizard — the create refusal is described where it is cau
 
     fireEvent.change(teamNameField(), { target: { value: "Padres" } });
 
-    // The help/preview ids stay — only the refusal goes.
+    // The refusal goes, and with it the only description the field had — no
+    // empty or dangling `aria-describedby` is left behind.
     expect(screen.queryByText("Enter a team name before adding it.")).toBeNull();
-    expect(teamNameField().getAttribute("aria-describedby")).not.toContain(reasonId);
+    expect(document.getElementById(reasonId)).toBeNull();
+    expect(teamNameField().hasAttribute("aria-describedby")).toBe(false);
+    expect(teamLocationField().hasAttribute("aria-describedby")).toBe(false);
     expect(
       screen
         .getByRole("button", { name: "Add as New Team" })
