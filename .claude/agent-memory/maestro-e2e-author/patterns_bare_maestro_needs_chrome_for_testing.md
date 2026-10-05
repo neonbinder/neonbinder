@@ -37,3 +37,9 @@ and a 2-3 attempt retry loop is the reliable way through; they get much more
 frequent with several Vite dev servers up (memory pressure).
 
 Still take the run lock — see [[speaking-conch-run-serialization]].
+
+**`takeScreenshot` refuses an absolute path** (cli 2.6.x): `Invalid path … it
+resolves outside this run's takeScreenshot output folder` — and only AFTER
+every step before it has run (a whole checklist fetch wasted, NEO-326). Give a
+bare name (`takeScreenshot: raw-01`); the PNG lands in
+`<--debug-output>/<flow name>/takeScreenshot/raw-01.png`. Copy it from there.
