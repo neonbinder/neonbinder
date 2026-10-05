@@ -275,12 +275,14 @@ const ADJ_BACK = (entryIndex: number): ImageSpec => ({
   cardNumber: "24",
 });
 
-// Ambiguous text counts (3-6) — deliberately in the band where the side is
-// decided by the classifier/identity rather than a confident count. Identity is
-// what pairs these; 4 reads as a front, 6 as a back.
+// Ambiguous text counts (4 vs 6) — deliberately too close for text count to
+// orient the pair (NEO-327), so the classifier's disagreeing side labels break
+// the tie. Identity is what pairs these; the labels only decide which is the
+// front. Without the labels they would read as two copies of one side.
 const POOL_FRONT = (entryIndex: number, player: string, team: string): ImageSpec => ({
   entryIndex,
   textCount: 4,
+  side: "front",
   players: [player],
   team,
 });
@@ -292,6 +294,7 @@ const POOL_BACK = (
 ): ImageSpec => ({
   entryIndex,
   textCount: 6,
+  side: "back",
   players: [player],
   team,
   cardNumber,
@@ -680,7 +683,7 @@ describe("pairs stream in as images complete", () => {
 
 describe("resolverCalls", () => {
   test("equals the done-image count for a well-ordered batch — every card is resolved by identity", async () => {
-    // Identity-first means the pool sees EVERY card (see `useAdjacency: false`),
+    // Identity-first means the pool sees EVERY card (there is no pre-pass),
     // so the final run resolves one identity per done image. That is exactly the
     // number the release E2E now asserts — it flipped from 0 (adjacency-first
     // never asked) to the image count (identity-first asks about all of them),
@@ -1350,7 +1353,7 @@ describe("a provisional run never decides the batch's fate", () => {
 // clearest — and cheapest to pin against a regression — in isolation.
 
 const card = (key: string, side: "front" | "back", id: Partial<{ player: string; team: string }> = {}) =>
-  createPoolCard({ key, side, player: id.player ?? null, team: id.team ?? null });
+  createPoolCard({ key, label: side, player: id.player ?? null, team: id.team ?? null });
 
 describe("identitiesContradict", () => {
   test("two known, disagreeing players contradict", () => {
@@ -1391,7 +1394,7 @@ describe("guardedAdjacencyFallback", () => {
   test("advances by one past a stray so the alternation behind it still pairs", () => {
     // [front, front, back]: the first front is a stray (same side as its
     // neighbour); the walk steps past it and pairs the second front with the
-    // back, exactly like the ported planAdjacency's recovery.
+    // back, exactly like the old adjacency pre-pass's recovery.
     const pairs = guardedAdjacencyFallback([card("0", "front"), card("1", "front"), card("2", "back")]);
     expect(pairs.map(([a, b]) => [a.key, b.key])).toEqual([["1", "2"]]);
   });
@@ -1565,10 +1568,16 @@ describe("computePairingDiff (pure)", () => {
     // The other half of the rule. Anything below exact is what the UI shows as
     // a POTENTIAL match, and those are precisely the ones a later image should
     // be allowed to improve, so they must remain deletable and re-pairable.
+    //
+    // The stored pair is (1,3), one the matcher does not choose: it pairs the
+    // scan neighbours (1,2) and then (0,3). (It used to be (0,3), which the old
+    // arrival-order side flip happened not to reproduce; with sides decided
+    // inside the pair (NEO-327) the matcher legitimately agrees with (0,3), so
+    // that fixture no longer exercised the rule.)
     const stored: StoredPairRow[] = [
       {
         _id: "pair-fuzzy" as unknown as Id<"placeholderPairs">,
-        frontIndex: 0,
+        frontIndex: 1,
         backIndex: 3,
         player: "Ken Griffey Jr.",
         confidence: "fuzzy",

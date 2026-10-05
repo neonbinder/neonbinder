@@ -12,8 +12,7 @@
  * avoid paying it. Here the identity was already produced by `/process-entry`
  * and is sitting on the placeholderImages row, so `resolveIdentity` is a
  * dictionary lookup. `resolverCalls` therefore stops being a spend metric and
- * becomes pure diagnostics: it tells us how often adjacency failed to settle a
- * pair, which is the signal for whether scan order is being preserved.
+ * becomes pure diagnostics: every image the pass considered is resolved once.
  *
  * ## Why this runs many times per batch
  *
@@ -71,7 +70,14 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { pairBatch } from "./lib/pairing/pairBatch";
 import { playerNamesMatch, teamNamesMatch } from "./lib/pairing/names";
-import type { CardSide, Confidence, Mechanism, PoolCard } from "./lib/pairing/types";
+import { orientPair } from "./lib/pairing/pool";
+import type {
+  CardSide,
+  Confidence,
+  Mechanism,
+  OrientRule,
+  PoolCard,
+} from "./lib/pairing/types";
 import {
   INCREMENTAL_PAIRING_STATUSES,
   MAX_FIELD_CHARS,
@@ -106,6 +112,17 @@ const PAIR_CHUNK_SIZE = 50;
 
 const CONFIDENCES: readonly string[] = ["exact", "fuzzy", "side-only"];
 const MECHANISMS: readonly string[] = ["adjacency", "pool"];
+const ORIENT_RULES: readonly string[] = ["text", "label", "user"];
+
+/**
+ * The `placeholderPairs.orientedBy` validator, in one place so the table's
+ * column, `listPairsForDiff` and `applyPairDiff` cannot drift apart.
+ */
+const orientedByValidator = v.union(
+  v.literal("text"),
+  v.literal("label"),
+  v.literal("user"),
+);
 
 /**
  * Coerce pairBatch's `confidence` / `mechanism` into the schema's unions.
@@ -129,6 +146,19 @@ function asMechanism(value: unknown): Mechanism {
     : "pool";
 }
 
+/**
+ * Coerce the library's orientation rule into the schema's union, for the same
+ * belt-and-braces reason as `asConfidence`. There is no honest "weakest" rule
+ * to degrade to, so an unrecognised value becomes ABSENT — the same state as a
+ * pair stored before NEO-327 — rather than an invented claim about how the
+ * front was chosen.
+ */
+function asOrientRule(value: unknown): OrientRule | undefined {
+  return typeof value === "string" && ORIENT_RULES.includes(value)
+    ? (value as OrientRule)
+    : undefined;
+}
+
 /** null → undefined, and anything non-string → undefined. */
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
@@ -139,10 +169,11 @@ function optionalString(value: unknown): string | undefined {
  *
  * The column is a plain string because the vocabulary belongs to the
  * preprocess service's classifier, not to us. Anything outside {front, back}
- * becomes null, which pairing reads as "no side evidence" and answers with the
- * text-count heuristic — the same degradation it applies when the classifier
- * was never run. Coercing an unknown value to "front" instead would be an
- * invented fact.
+ * — including the classifier's own `side: null` "unsure" answer, which is
+ * stored as absent — becomes null, which pairing reads as "no label". A label
+ * is only ever a tiebreak inside an already-formed pair (text count decides
+ * first), so a missing one costs nothing when the text counts are clear.
+ * Coercing an unknown value to "front" instead would be an invented fact.
  */
 function asCardSide(value: unknown): CardSide | null {
   return value === "front" || value === "back" ? value : null;
@@ -167,6 +198,8 @@ type DesiredPair = {
   confidence: Confidence;
   mechanism: Mechanism;
   score: number;
+  /** Which rule chose the front (NEO-327) — see `placeholderPairs.orientedBy`. */
+  orientedBy?: OrientRule;
 };
 
 /** A revision to an existing pair row — everything except its identity. */
@@ -178,6 +211,7 @@ type PairPatch = {
   confidence: Confidence;
   mechanism: Mechanism;
   score: number;
+  orientedBy?: OrientRule;
 };
 
 /**
@@ -207,25 +241,20 @@ type PairingRowIdentity = {
  * The pair's descriptive identity: the algorithm's answer, falling back to the
  * two rows' own identity where the algorithm left a gap.
  *
- * **This is a deliberate, wrapper-level deviation from the ported algorithm, and
- * it lives here rather than in convex/lib/pairing on purpose.** The port stays
- * verbatim — it is an audited translation of code that has been right in
- * production for years, and the value of that is precisely that it has not been
- * "improved" in translation.
+ * **A wrapper-level backfill, and it lives here rather than in
+ * convex/lib/pairing on purpose:** the library reports what its matcher used,
+ * and this fills the label from what the rows already carry.
  *
- * What it deviates from: an adjacency-matched pair comes back with
- * `player/team/cardNumber` all null. That is not a bug in the port, it is the
- * whole point of the pre-pass — `adjacencyCard` builds its cards with
- * `identityResolved: false` and never calls the resolver, because in the
- * original the resolver was a Haiku call and avoiding it was the entire saving.
- * Null there honestly means "never asked", not "asked and found nothing".
+ * Where the gap comes from: a scan-order fallback pair (`guardedAdjacencyFallback`)
+ * and the manual mutations are formed without consulting the matcher's merged
+ * identity at all, so they have no algorithm answer — `player/team/cardNumber`
+ * arrive null, meaning "never asked", not "asked and found nothing".
  *
- * Why we can do better HERE: in this pipeline the identity is not behind a model
- * call at all. `/process-entry` already extracted it and it is sitting on the
- * placeholderImages row we just read. So the pre-pass's reason for not knowing
- * does not apply to us — we are not paying to look, we are declining to read a
- * field we already have. A live run showed the cost of that: pairs whose two
- * rows carried a full, matching identity were stored with `player: null`,
+ * Why we can fill it: in this pipeline the identity is not behind a model call
+ * at all. `/process-entry` already extracted it and it is sitting on the
+ * placeholderImages row we just read, so leaving it out would be declining to
+ * read a field we already have. A live run showed the cost of that: pairs whose
+ * two rows carried a full, matching identity were stored with `player: null`,
  * leaving the review UI unable to label a card it could perfectly well name.
  *
  * The merge follows the same asymmetry as `makeMatchResult` (and the cardlister
@@ -234,10 +263,13 @@ type PairingRowIdentity = {
  *     display face, against a clean background — the most reliable read.
  *   - **cardNumber comes from the BACK only, with no fall back to the front.**
  *     Card numbers are printed on backs; what a model reads as one on a front is
- *     a jersey number, a copyright year or a subset code. Two other places
- *     deliberately discard a front's card number (`poolCardFromIdentity` drops
- *     it, `makeMatchResult` reads only the back's), so falling back to it here
- *     would re-import exactly the value the rest of the design throws away.
+ *     a jersey number, a copyright year or a subset code. "The back" here is
+ *     the image the PAIR decided is the back (NEO-327: sides are settled inside
+ *     the pair, text count first), not whichever image the classifier labelled
+ *     "back" — so the rows passed in as `back` are already the oriented back,
+ *     and `makeMatchResult` likewise reads only the oriented back's number.
+ *     Falling back to the front's here would re-import exactly the jersey
+ *     number the orientation step exists to set aside.
  *
  * Only the DESCRIPTIVE fields are touched. `confidence`, `mechanism` and `score`
  * are left exactly as the algorithm reported them — see the call site.
@@ -268,9 +300,11 @@ export function mergedRowIdentity(
  *
  * Player and team, because the user's directive names exactly those: "name and
  * team should have precedency over adjacency". Card number is deliberately not
- * consulted here — a front's number is discarded upstream
- * (`poolCardFromIdentity` keeps it only for backs), so on a front↔back pair only
- * one side ever has one, and "one side missing" is not a contradiction anyway.
+ * consulted here. These two cards have not been oriented yet, so either one may
+ * be a front whose "card number" is really a jersey number (NEO-327 found the
+ * classifier reading 24, 26 and 268 off fronts); a disagreement between a real
+ * number and a jersey number is not evidence of two different cards. And card
+ * numbers are never unique anyway, so even an agreement would prove nothing.
  *
  * This is the "NEVER override or contradict an identity signal" half of the
  * fallback: adjacency may pair two cards whose identities are silent, but it may
@@ -287,26 +321,35 @@ export function identitiesContradict(a: PoolCard, b: PoolCard): boolean {
  * only where nothing contradicts.
  *
  * This is the demoted role adjacency now plays. The identity pool has already
- * run over every card (see the call site — `useAdjacency: false`), so everything
+ * run over every card (pairing is identity-first, always), so everything
  * here is a card the identity evidence could not place: an unreadable scan, a
  * card whose partner failed to process, a stray. For those — and ONLY for
  * those — file order is a weak tiebreaker, exactly as the user framed it: "We
  * could use file numbers to strengthen our decision about matching if we haven't
  * found matches but we cannot assume it to be true."
  *
- * The walk is the ported `planAdjacency`'s shape — advance by two on a pair, by
- * one on a miss so a single stray at the head does not desynchronise the rest —
- * over the leftovers in scan (entry-index) order, with two conditions per
- * neighbour pair:
+ * The walk is the old adjacency pre-pass's shape — advance by two on a pair,
+ * by one on a miss so a single stray at the head does not desynchronise the
+ * rest — over the leftovers in scan (entry-index) order, with two conditions
+ * per neighbour pair:
  *
- *   - **opposite sides.** Both PoolCards always carry a side (the pool resolves
- *     one from the classifier or the text-count heuristic), so this is the same
- *     front/back-disagreement signal the original pre-pass used.
- *   - **no contradiction** (`identitiesContradict`). This is the whole
- *     correction: the old pre-pass paired on side disagreement ALONE, which is
- *     how a Gray front next to a Hosmer back got matched before identity could
- *     place them. Here two neighbours whose identities disagree are left for the
- *     "unmatched" bucket rather than forced together.
+ *   - **they can be oriented** (`orientPair` returns non-null). The library's
+ *     single orientation rule — a user-set side, else clearly more Vision text
+ *     is the back, else disagreeing classifier labels — is what says these two
+ *     look like one front and one back at all. Two images it cannot tell apart
+ *     (both low text, both high text, labels not disagreeing) are two copies of
+ *     the same side, not a pair, so the walk steps past them (NEO-327). Scan
+ *     order picks WHICH neighbours may pair; it never decides which of the two
+ *     is the front.
+ *   - **no contradiction** (`identitiesContradict`). The old pre-pass paired on
+ *     side disagreement ALONE, which is how a Gray front next to a Hosmer back
+ *     got matched before identity could place them. Here two neighbours whose
+ *     identities disagree are left for the "unmatched" bucket rather than forced
+ *     together.
+ *
+ * Each pair comes back ORIENTED — `[front, back, rule]` — so the caller never
+ * re-derives a side from a label, and records `rule` as the pair's
+ * `orientedBy`.
  *
  * "Neighbours" means consecutive among the leftovers in scan order, not
  * consecutive by raw entry index — a card the identity pass already claimed is
@@ -315,14 +358,15 @@ export function identitiesContradict(a: PoolCard, b: PoolCard): boolean {
  * (`side-only`, mechanism `adjacency`, score 0) at the call site, because file
  * proximity is exactly that weak.
  *
- * Note that the pool's OWN side-only fallback already pairs an unambiguous lone
- * identity-less opposite pair (see `CardPool.findMatch`), so those never reach
- * here; this handles the case the pool defers on — two or more same-side
- * leftovers where a single opposite card cannot be assigned without a tiebreak.
+ * The pool may already pair an unambiguous identity-less couple on its own (see
+ * `CardPool.findMatch`); this handles what it defers on — several leftovers
+ * where no single partner can be assigned without a tiebreak.
  */
-export function guardedAdjacencyFallback(leftovers: PoolCard[]): Array<[PoolCard, PoolCard]> {
+export function guardedAdjacencyFallback(
+  leftovers: PoolCard[],
+): Array<[front: PoolCard, back: PoolCard, rule: OrientRule]> {
   const sorted = [...leftovers].sort((a, b) => Number(a.key) - Number(b.key));
-  const pairs: Array<[PoolCard, PoolCard]> = [];
+  const pairs: Array<[front: PoolCard, back: PoolCard, rule: OrientRule]> = [];
 
   let index = 0;
   while (index < sorted.length - 1) {
@@ -336,12 +380,12 @@ export function guardedAdjacencyFallback(leftovers: PoolCard[]): Array<[PoolCard
       first.unpairedFrom.includes(second.key) ||
       second.unpairedFrom.includes(first.key);
 
-    if (
-      first.side !== second.side &&
-      !userSplitThem &&
-      !identitiesContradict(first, second)
-    ) {
-      pairs.push([first, second]);
+    const oriented =
+      !userSplitThem && !identitiesContradict(first, second)
+        ? orientPair(first, second)
+        : null;
+    if (oriented !== null) {
+      pairs.push([oriented.front, oriented.back, oriented.rule]);
       index += 2;
       continue;
     }
@@ -365,6 +409,8 @@ export type PairingImageRow = {
   team?: string;
   cardNumber?: string;
   side?: string;
+  /** True when a user set `side` — it then outranks text count (NEO-327). */
+  sideByUser?: boolean;
   textCount?: number;
   dhash?: string;
   pairStatus?: "paired" | "unmatched";
@@ -384,6 +430,8 @@ export type StoredPairRow = {
   // from automatic ones.
   mechanism: "adjacency" | "pool" | "manual";
   score: number;
+  /** Absent on pairs stored before NEO-327. */
+  orientedBy?: OrientRule;
 };
 
 /** One new pair in the shape `applyPairDiff` inserts — carries NO image ids. */
@@ -396,13 +444,53 @@ export type PairInsertRow = {
   confidence: Confidence;
   mechanism: Mechanism;
   score: number;
+  orientedBy?: OrientRule;
+};
+
+/**
+ * Why one pair formed and how it was oriented — the pairing decision record
+ * (NEO-327). One per pair this run INSERTS or PATCHES; a pair the run left
+ * untouched was already explained by the run that wrote it.
+ *
+ * Everything an operator needs to answer "why are these two a pair, and why is
+ * THIS one the front?" from a log line alone: both images' inputs as the run
+ * saw them (filename, classifier label, Vision text count, card number, first
+ * player), the rule that chose the front, and the matcher's own account of the
+ * pair (mechanism, confidence, score). Inputs come off the image ROWS rather
+ * than the pool's cards so the record shows what was stored, not a value the
+ * matcher derived from it. Absent values are `null`, not omitted, so a log
+ * reader can tell "the classifier gave nothing" from "the field was not
+ * logged".
+ *
+ * Logged server side (`placeholder_pair_decided`) by both callers that apply a
+ * diff, because web and the scanner CLI share this pipeline — the record must
+ * not depend on which client uploaded the scans.
+ */
+export type PairDecision = {
+  frontIndex: number;
+  backIndex: number;
+  frontName: string;
+  backName: string;
+  frontLabel: CardSide | null;
+  backLabel: CardSide | null;
+  frontTextCount: number | null;
+  backTextCount: number | null;
+  frontCardNumber: string | null;
+  backCardNumber: string | null;
+  frontPlayer: string | null;
+  backPlayer: string | null;
+  orientedBy: OrientRule | null;
+  mechanism: Mechanism;
+  confidence: Confidence;
+  score: number;
 };
 
 /**
  * The complete result of one pairing recomputation, as data: the pair-row diff
  * (delete / patch / insert), the image `pairStatus` diff (becomingPaired /
- * becomingUnmatched), and the resolver-call count. The scheduled action and the
- * inline finalize apply this identically.
+ * becomingUnmatched), the resolver-call count, and the decision record for
+ * every pair written. The scheduled action and the inline finalize apply (and
+ * log) this identically.
  */
 export type PairingDiff = {
   resolverCalls: number;
@@ -411,6 +499,8 @@ export type PairingDiff = {
   insertRows: PairInsertRow[];
   becomingPaired: Id<"placeholderImages">[];
   becomingUnmatched: Id<"placeholderImages">[];
+  /** One per insert or patch, in that order — see `PairDecision`. */
+  decisions: PairDecision[];
 };
 
 /**
@@ -559,7 +649,11 @@ export function computePairingDiff(
         order: r.entryIndex,
         textCount: r.textCount ?? 0,
         originalFilename: r.originalName,
-        side: asCardSide(r.side),
+        // The classifier's side is a LABEL, consulted only to orient a pair
+        // whose text counts are too close to call — unless a user set it, in
+        // which case it outranks every automatic rule (NEO-327).
+        label: asCardSide(r.side),
+        labelByUser: r.sideByUser === true,
       })),
       {
         // Already-resolved identity, straight off the row — see the module
@@ -587,30 +681,20 @@ export function computePairingDiff(
         // see `asDhash` in placeholderPipeline.ts); pairing treats that as
         // "cannot compare these two images" rather than "they differ".
         hashImage: (key: string) => byKey.get(key)?.dhash ?? null,
-        // IDENTITY FIRST. `false` turns off the ported adjacency PRE-pass, so
-        // every card goes through the identity pool and front↔back are
-        // matched by who is on the card, not by who was scanned next to whom.
-        //
-        // This inverts the cardlister precedence on purpose, and the reason
-        // is that the cardlister precedence was an answer to a cost that no
-        // longer exists. There, `resolveIdentity` was a Haiku call, so the
-        // pre-pass paired confident neighbours FIRST precisely to avoid
-        // paying for it. Here identity is already on the row (it is a
-        // dictionary lookup — see the module comment), so there is no cost to
-        // avoid and a real correctness price to pay: the pre-pass matched on
-        // side-disagreement ALONE, which paired a Sonny Gray front next to an
-        // Eric Hosmer back — opposite sides, so it grabbed them — before the
-        // pool could pair each with its own partner. Any dropped or reordered
-        // side cascaded into mispairs.
-        //
-        // Scan order is not discarded, only demoted: `guardedAdjacencyFallback`
-        // below applies it to whatever identity could not place, and only
-        // between neighbours nothing contradicts.
-        useAdjacency: false,
+        // IDENTITY FIRST, always: every card goes through the identity pool
+        // and front↔back are matched by who is on the card, not by who was
+        // scanned next to whom. (The ported adjacency PRE-pass that once ran
+        // ahead of the pool paired on side disagreement alone — a Sonny Gray
+        // front next to an Eric Hosmer back — and is gone.) Scan order is only
+        // a fallback: `guardedAdjacencyFallback` below applies it to whatever
+        // identity could not place, between neighbours nothing contradicts.
       },
     );
 
     resolverCalls = result.resolverCalls;
+    // The library has ALREADY oriented every match (`match.front` is the image
+    // it decided is the front, and `orientedBy` says which rule decided it), so
+    // nothing here re-reads a side label.
     for (const match of result.matches) {
       const front =
         typeof match.front?.key === "string" ? byKey.get(match.front.key) : undefined;
@@ -640,6 +724,7 @@ export function computePairingDiff(
         confidence: asConfidence(match.confidence),
         mechanism: asMechanism(match.mechanism),
         score: typeof match.score === "number" ? match.score : 0,
+        orientedBy: asOrientRule(match.orientedBy),
       });
     }
 
@@ -651,9 +736,14 @@ export function computePairingDiff(
     // mechanism "adjacency", confidence "side-only", score 0, exactly the
     // shape the /placeholders review page renders as "front/back only · by
     // scan order". Identity pairs above keep their real pool confidence.
-    for (const [a, b] of guardedAdjacencyFallback(result.unmatched)) {
-      const front = byKey.get(a.side === "front" ? a.key : b.key);
-      const back = byKey.get(a.side === "front" ? b.key : a.key);
+    //
+    // The fallback hands each pair back ORIENTED — front first, and the rule
+    // that chose it — so no label is re-read here (NEO-327).
+    for (const [frontCard, backCard, rule] of guardedAdjacencyFallback(
+      result.unmatched,
+    )) {
+      const front = byKey.get(frontCard.key);
+      const back = byKey.get(backCard.key);
       // A leftover key that no longer resolves to a row is dropped, same as
       // an identity match above — leaving both images unmatched is accurate.
       if (!front || !back) continue;
@@ -672,6 +762,7 @@ export function computePairingDiff(
         confidence: "side-only",
         mechanism: "adjacency",
         score: 0,
+        orientedBy: asOrientRule(rule),
       });
     }
   }
@@ -693,6 +784,8 @@ export function computePairingDiff(
 
   const inserts: DesiredPair[] = [];
   const patches: PairPatch[] = [];
+  // The desired pairs behind `patches`, index-aligned, for the decision record.
+  const patched: DesiredPair[] = [];
   const desiredKeys = new Set<string>();
   for (const pair of desired) {
     const key = pairKey(pair.frontIndex, pair.backIndex);
@@ -711,7 +804,13 @@ export function computePairingDiff(
       current.cardNumber !== pair.cardNumber ||
       current.confidence !== pair.confidence ||
       current.mechanism !== pair.mechanism ||
-      current.score !== pair.score
+      current.score !== pair.score ||
+      // Same two images, same front, but a different rule chose it (say a
+      // user then set a side on a pair text count had oriented). A changed
+      // FRONT is a different (frontIndex, backIndex) key — a delete plus an
+      // insert above — never a patch. A row stored before NEO-327 has no
+      // `orientedBy` and takes one patch the first time a run revisits it.
+      current.orientedBy !== pair.orientedBy
     ) {
       patches.push({
         pairId: current._id,
@@ -721,7 +820,9 @@ export function computePairingDiff(
         confidence: pair.confidence,
         mechanism: pair.mechanism,
         score: pair.score,
+        orientedBy: pair.orientedBy,
       });
+      patched.push(pair);
     }
   }
   // From `autoStored`, so a manual pair is NEVER a delete candidate — the
@@ -743,7 +844,22 @@ export function computePairingDiff(
     confidence: pair.confidence,
     mechanism: pair.mechanism,
     score: pair.score,
+    orientedBy: pair.orientedBy,
   }));
+
+  // The decision record: one entry per pair this run WRITES (inserts, then
+  // patches), built from the rows the run actually read. A pair left untouched
+  // was explained by the run that wrote it, so re-logging it every pass would
+  // only bury the decisions that changed.
+  const rowByIndex = new Map(rows.map((r) => [r.entryIndex, r] as const));
+  const decisions: PairDecision[] = [];
+  for (const pair of [...inserts, ...patched]) {
+    const front = rowByIndex.get(pair.frontIndex);
+    const back = rowByIndex.get(pair.backIndex);
+    // Both resolved when the pair was built; the guard is for the type only.
+    if (!front || !back) continue;
+    decisions.push(pairDecision(pair, front, back));
+  }
 
   // The same diff, applied to `placeholderImages.pairStatus`. Derived from
   // what was actually PAIRED above rather than from `result.unmatched`: a
@@ -769,7 +885,64 @@ export function computePairingDiff(
     insertRows,
     becomingPaired,
     becomingUnmatched,
+    decisions,
   };
+}
+
+/** One image row's side of a `PairDecision`, absent values as null. */
+function decisionInputs(row: PairingImageRow) {
+  return {
+    name: row.originalName,
+    label: asCardSide(row.side),
+    textCount: typeof row.textCount === "number" ? row.textCount : null,
+    cardNumber: optionalString(row.cardNumber) ?? null,
+    player: optionalString(row.players?.[0]) ?? null,
+  };
+}
+
+/** Build the decision record for one written pair — see `PairDecision`. */
+function pairDecision(
+  pair: DesiredPair,
+  frontRow: PairingImageRow,
+  backRow: PairingImageRow,
+): PairDecision {
+  const front = decisionInputs(frontRow);
+  const back = decisionInputs(backRow);
+  return {
+    frontIndex: pair.frontIndex,
+    backIndex: pair.backIndex,
+    frontName: front.name,
+    backName: back.name,
+    frontLabel: front.label,
+    backLabel: back.label,
+    frontTextCount: front.textCount,
+    backTextCount: back.textCount,
+    frontCardNumber: front.cardNumber,
+    backCardNumber: back.cardNumber,
+    frontPlayer: front.player,
+    backPlayer: back.player,
+    orientedBy: pair.orientedBy ?? null,
+    mechanism: pair.mechanism,
+    confidence: pair.confidence,
+    score: pair.score,
+  };
+}
+
+/**
+ * Emit the decision record (`placeholder_pair_decided`), one structured line
+ * per written pair. Shared by `runPairing` and `finalizePairingInline` so the
+ * two appliers log the same shape.
+ */
+function logPairDecisions(
+  jobId: string,
+  final: boolean,
+  decisions: readonly PairDecision[],
+): void {
+  for (const decision of decisions) {
+    console.log(
+      JSON.stringify({ msg: "placeholder_pair_decided", jobId, final, ...decision }),
+    );
+  }
 }
 
 /**
@@ -942,6 +1115,10 @@ export const runPairing = internalAction({
           imageIds: diff.becomingUnmatched.slice(i, i + PAIR_CHUNK_SIZE),
         });
       }
+
+      // After the writes landed, so a decision is never logged for a pair a
+      // failed chunk did not store (NEO-327).
+      logPairDecisions(args.jobId, final, diff.decisions);
 
       if (rows.length > 0) {
         // The log's shape counters are reconstructed from the same two inputs the
@@ -1124,6 +1301,9 @@ export const listPairsForDiff = internalQuery({
         v.literal("manual"),
       ),
       score: v.number(),
+      // The diff compares it, so a pair whose front was chosen by a different
+      // rule is revised (NEO-327).
+      orientedBy: v.optional(orientedByValidator),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1141,6 +1321,7 @@ export const listPairsForDiff = internalQuery({
       confidence: p.confidence,
       mechanism: p.mechanism,
       score: p.score,
+      orientedBy: p.orientedBy,
     }));
   },
 });
@@ -1238,6 +1419,7 @@ export const applyPairDiff = internalMutation({
         ),
         mechanism: v.union(v.literal("adjacency"), v.literal("pool")),
         score: v.number(),
+        orientedBy: v.optional(orientedByValidator),
       }),
     ),
     inserts: v.array(
@@ -1254,6 +1436,7 @@ export const applyPairDiff = internalMutation({
         ),
         mechanism: v.union(v.literal("adjacency"), v.literal("pool")),
         score: v.number(),
+        orientedBy: v.optional(orientedByValidator),
       }),
     ),
   },
@@ -1307,6 +1490,7 @@ export async function applyPairDiffImpl(
       confidence: patch.confidence,
       mechanism: patch.mechanism,
       score: patch.score,
+      orientedBy: patch.orientedBy,
     });
     revised += 1;
   }
@@ -1323,6 +1507,7 @@ export async function applyPairDiffImpl(
       confidence: insert.confidence,
       mechanism: insert.mechanism,
       score: insert.score,
+      orientedBy: insert.orientedBy,
     });
   }
 
@@ -1435,9 +1620,15 @@ export async function finalizePairingInline(
       team: r.team,
       cardNumber: r.cardNumber,
       side: r.side,
+      sideByUser: r.sideByUser,
       textCount: r.textCount,
       dhash: r.dhash,
       pairStatus: r.pairStatus,
+      // NEO-317: this mapping once omitted `unpairedFrom`, so a split the user
+      // made was honoured by every scheduled run and then silently undone by
+      // the inline finalize on close — the one run whose answer is final. The
+      // shape must stay field-for-field identical to `listDoneImagesForPairing`.
+      unpairedFrom: r.unpairedFrom,
     }));
 
   // Stored pairs, read directly, mapped to the `listPairsForDiff` shape.
@@ -1455,6 +1646,7 @@ export async function finalizePairingInline(
     confidence: p.confidence,
     mechanism: p.mechanism,
     score: p.score,
+    orientedBy: p.orientedBy,
   }));
 
   const diff = computePairingDiff(rows, stored);
@@ -1468,6 +1660,9 @@ export async function finalizePairingInline(
   });
   await syncImagePairStatusImpl(ctx, job.jobId, "paired", diff.becomingPaired);
   await syncImagePairStatusImpl(ctx, job.jobId, "unmatched", diff.becomingUnmatched);
+
+  // The same decision record the scheduled action logs; this IS a final run.
+  logPairDecisions(job.jobId, true, diff.decisions);
 
   await recordResolverCallsImpl(ctx, job, diff.resolverCalls);
 
@@ -1563,7 +1758,9 @@ async function scheduleRepair(
  * column alone); a provided empty string / empty array CLEARS the column, which
  * is how a spuriously-read team or player is removed. Same caps as ingestion:
  * players capped to MAX_PLAYERS entries, every string sliced to MAX_FIELD_CHARS.
- * `side` is constrained to front/back by the arg validator.
+ * `side` is constrained to front/back by the arg validator, and a provided side
+ * also sets `sideByUser`: the user's word on a side outranks text count when
+ * the re-pair orients the pair (NEO-327).
  *
  * Requires the image be `done` — identity only exists on a processed row, and
  * editing a still-processing row would be clobbered when `/process-entry`
@@ -1623,6 +1820,9 @@ export const updatePlaceholderImageIdentity = mutation({
     }
     if (args.side !== undefined) {
       patch.side = args.side;
+      // A side a person set outranks every automatic orientation rule, text
+      // count included (NEO-327) — so the re-pair below orients by it.
+      patch.sideByUser = true;
     }
     await ctx.db.patch(image._id, patch);
 
@@ -1703,6 +1903,8 @@ export const manuallyPairPlaceholderImages = mutation({
       confidence: "side-only",
       mechanism: "manual",
       score: 0,
+      // The caller designated which image is the front.
+      orientedBy: "user",
     });
     // Clear any earlier split between these two: the user has changed their
     // mind, and leaving the rejection behind would be a stale contradiction of
@@ -1805,6 +2007,7 @@ export const swapPairSides = mutation({
       confidence: "side-only",
       mechanism: "manual",
       score: 0,
+      orientedBy: "user",
     });
 
     // The images stay paired throughout — neither ever becomes a candidate — so

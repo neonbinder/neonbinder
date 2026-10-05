@@ -106,11 +106,14 @@ const FRONT = (players: string[], team: string): ImageSpec => ({
   team,
   textCount: 4,
 });
+// A back carries clearly more Vision text than a front (NEO-327 orients a pair
+// on that, text count first): 4 against 40 is a real-world margin, where 4
+// against 6 would read as two copies of the same side and never pair.
 const BACK = (players: string[], team: string, cardNumber: string): ImageSpec => ({
   players,
   team,
   cardNumber,
-  textCount: 6,
+  textCount: 40,
 });
 
 async function seedJob(

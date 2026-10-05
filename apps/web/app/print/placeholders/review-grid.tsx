@@ -70,6 +70,19 @@ function cardName(pair: ReviewPair): string {
   return pair.player ? `${pair.player}${number}` : "Not identified";
 }
 
+/**
+ * The caption under one side of a pair: which side, and which scan it is.
+ *
+ * The filename is what lets a person check a pair against the files they
+ * scanned (NEO-327) — "is this really the back I scanned after that front?" —
+ * which the picture alone cannot answer when two backs look alike. ONE string,
+ * so it renders as one text node: the Maestro web driver matches only a
+ * node's direct text, and a split caption would match neither half.
+ */
+function sideCaption(side: "Front" | "Back", originalName: string | undefined): string {
+  return originalName ? `${side} · ${originalName}` : side;
+}
+
 /** What the matcher had to go on, in the user's terms rather than the schema's. */
 function evidence(pair: ReviewPair): string {
   if (pair.mechanism === "manual") return "You paired these";
@@ -137,6 +150,14 @@ export function ReviewGrid({
   useEffect(() => {
     if (busy !== null) sectionRef.current?.focus();
   }, [busy]);
+
+  // Scan filename by entry index, for the side captions. `images` is every row
+  // of the job (`listPlaceholderImages` is unfiltered), so both halves of any
+  // pair are in it; a miss just drops the filename from the caption.
+  const nameByIndex = useMemo(
+    () => new Map(images.map((i) => [i.entryIndex, i.originalName] as const)),
+    [images],
+  );
 
   // Loose = processed, but nothing claimed it. Never hidden behind a count:
   // an unmatched front is the single thing on this page a user must act on.
@@ -318,26 +339,36 @@ export function ReviewGrid({
                     which is right for previewing paper and useless for deciding
                     whether a pair is the RIGHT pair. */}
                 <div className="flex gap-2">
-                  <figure className="m-0">
+                  {/* The SCAN sets each figure's width, never the caption:
+                      `w-0 min-w-full` gives the caption no say in the width and
+                      then fills whatever the image chose, so a long filename
+                      wraps under its scan instead of pushing the pair wider (a
+                      phone fits two scans side by side and no more).
+                      `min-w-20` keeps the caption readable while the image is
+                      still loading. `wrap-anywhere` breaks an unspaced name
+                      like IMG_20241005_0001.jpg rather than truncating it —
+                      the end of a scan name is usually the part that tells two
+                      scans apart. */}
+                  <figure className="m-0 flex min-w-20 flex-col items-center">
                     <ScanImage
                       jobId={jobId}
                       entryIndex={pair.frontIndex}
                       alt={`Front of ${cardName(pair)}`}
                       className="h-28 w-auto rounded border border-slate-700 object-contain"
                     />
-                    <figcaption className="text-[10px] text-slate-400 text-center mt-1">
-                      Front
+                    <figcaption className="mt-1 w-0 min-w-full text-center text-[10px] leading-snug text-balance text-slate-400 wrap-anywhere">
+                      {sideCaption("Front", nameByIndex.get(pair.frontIndex))}
                     </figcaption>
                   </figure>
-                  <figure className="m-0">
+                  <figure className="m-0 flex min-w-20 flex-col items-center">
                     <ScanImage
                       jobId={jobId}
                       entryIndex={pair.backIndex}
                       alt={`Back of ${cardName(pair)}`}
                       className="h-28 w-auto rounded border border-slate-700 object-contain"
                     />
-                    <figcaption className="text-[10px] text-slate-400 text-center mt-1">
-                      Back
+                    <figcaption className="mt-1 w-0 min-w-full text-center text-[10px] leading-snug text-balance text-slate-400 wrap-anywhere">
+                      {sideCaption("Back", nameByIndex.get(pair.backIndex))}
                     </figcaption>
                   </figure>
                 </div>
