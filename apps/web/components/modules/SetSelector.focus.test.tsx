@@ -56,6 +56,17 @@ const world: {
    * focus sitting in a column's own combobox while D3 is pending.
    */
   lingering: string | null;
+  /**
+   * Per-id answers for `getSelectorOptionById` that win over `ROWS`: an id
+   * mapped to `undefined` is a row still loading, so a test decides whether
+   * the Base row or the card list answers first.
+   */
+  rowOverride: Record<string, unknown>;
+  /**
+   * True to render the Base mapping form as what it is on an unmapped Base:
+   * the "Select Base Set" picker, a dialog that takes focus, with a Close.
+   */
+  mappingUi: boolean;
 } = {
   cards: [],
   chain: [],
@@ -63,11 +74,20 @@ const world: {
   picks: {},
   fetchHidden: false,
   lingering: null,
+  rowOverride: {},
+  mappingUi: false,
 };
 
 const ROWS: Record<string, unknown> = {
   "vt-base": { _id: "vt-base", value: "Base", metadata: { isBase: true }, platformData: {} },
   "vt-base-2": { _id: "vt-base-2", value: "Base", metadata: { isBase: true }, platformData: {} },
+  // Mapped on SportLots: no picker, a "Re-map Base" button in its place.
+  "vt-base-mapped": {
+    _id: "vt-base-mapped",
+    value: "Base",
+    metadata: { isBase: true },
+    platformData: { sportlots: { s0: "884412" } },
+  },
   "vt-insert": {
     _id: "vt-insert",
     value: "Insert",
@@ -83,7 +103,8 @@ vi.mock("convex/react", () => ({
       return world.resolver((args as { ids: string[] }).ids);
     }
     if (ref === "getSelectorOptionById") {
-      return ROWS[(args as { id: string }).id];
+      const id = (args as { id: string }).id;
+      return id in world.rowOverride ? world.rowOverride[id] : ROWS[id];
     }
     if (ref === "getAncestorChain") return world.chain;
     if (ref === "getCardChecklist") return world.cards;
@@ -154,6 +175,29 @@ function Stub({ level, ...props }: { level: string } & Record<string, unknown>) 
   );
 }
 
+/**
+ * The Base mapping picker as the operator meets it: a dialog that takes focus
+ * when it opens, whose Close and confirm call the REAL `onClose`.
+ */
+function MappingStub({
+  onClose,
+}: {
+  onClose: (reason: "mapped" | "dismissed") => void;
+}) {
+  const first = React.useRef<HTMLButtonElement | null>(null);
+  React.useEffect(() => {
+    first.current?.focus();
+  }, []);
+  return (
+    <div role="dialog" aria-label="Select Base Set">
+      <button ref={first} onClick={() => onClose("dismissed")}>
+        mapping-close
+      </button>
+      <button onClick={() => onClose("mapped")}>mapping-confirm</button>
+    </div>
+  );
+}
+
 vi.mock("../SetSelector/SportSelector", () => ({
   default: (p: Record<string, unknown>) => <Stub level="sport" {...p} />,
 }));
@@ -182,7 +226,10 @@ vi.mock("../SetSelector/SetForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/SetVariantForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/VariantForm", () => ({ default: () => null }));
 vi.mock("../SetSelector/ParallelForm", () => ({ default: () => null }));
-vi.mock("../SetSelector/BaseMappingForm", () => ({ default: () => null }));
+vi.mock("../SetSelector/BaseMappingForm", () => ({
+  default: (p: { onClose: (reason: "mapped" | "dismissed") => void }) =>
+    world.mappingUi ? <MappingStub onClose={p.onClose} /> : null,
+}));
 vi.mock("../SetSelector/ParallelGroupingModal", () => ({ default: () => null }));
 vi.mock("../SetSelector/MultiSourcePanel", () => ({ default: () => null }));
 vi.mock("../SetSelector/SportForm", () => ({ SportForm: () => null }));
@@ -294,6 +341,8 @@ beforeEach(() => {
   world.picks = {};
   world.fetchHidden = false;
   world.lingering = null;
+  world.rowOverride = {};
+  world.mappingUi = false;
   navigateRef = null;
 });
 
@@ -602,6 +651,141 @@ describe("SetSelector focus — a terminal selection (D3)", () => {
     await pick("type");
 
     expect(focused()).toBe(outside);
+  });
+});
+
+/**
+ * NEO-224 — the Base mapping form's focus park fires on a REAL close only.
+ *
+ * `baseMappingFormOpen` is derived, and it reads true while a newly picked
+ * Base row is still loading (the row's flags reset on the id change). When a
+ * MAPPED row answered it dropped to false with nothing closed, focus was on
+ * <body> (until the row says Base the cascade is not terminal, so the next
+ * column's box is open and holds focus, and it unmounts in that same render),
+ * and the park moved it to
+ * "Re-map Base". D3 then saw focus outside the row and stood down, so the
+ * operator's next Enter opened the re-map picker (CI screenshot: "Select Base
+ * Set" open). In a browser the single-row query answers before the card list,
+ * so it hit every mapped Base; the synchronous stubs above never showed it.
+ */
+describe("SetSelector focus — the Base mapping park and D3 (NEO-224)", () => {
+  const editAttributes = () =>
+    screen.getByRole("button", { name: "Edit attributes" });
+  const remapBase = () => screen.getByRole("button", { name: "Re-map Base" });
+  const settle = (view: ReturnType<typeof mount>) =>
+    act(async () => view.rerender(<SetSelector />));
+
+  it("a mapped Base whose row answers BEFORE the card list still lands on Edit attributes", async () => {
+    world.mappingUi = true;
+    world.cards = undefined;
+    world.rowOverride = { "vt-base-mapped": undefined };
+    const view = mount();
+    await drillToBase("vt-base-mapped");
+    // Until the row says Base, the next column is open and holds focus.
+    expect(focused()).toBe(combobox("insert"));
+
+    delete world.rowOverride["vt-base-mapped"];
+    await settle(view);
+    // The row answered: that box is gone and the button is there, but nothing
+    // closed, so focus is not parked on it.
+    expect(focused()).toBe(document.body);
+    expect(remapBase()).toBeTruthy();
+
+    world.cards = [{ _id: "c1" }];
+    await settle(view);
+    expect(focused()).toBe(editAttributes());
+  });
+
+  it("a mapped Base whose card list answers first lands on Edit attributes too", async () => {
+    world.mappingUi = true;
+    world.cards = undefined;
+    world.rowOverride = { "vt-base-mapped": undefined };
+    const view = mount();
+    await drillToBase("vt-base-mapped");
+
+    world.cards = [{ _id: "c1" }];
+    await settle(view);
+    // Not terminal yet: nothing moves while the row is still loading.
+    expect(focused()).toBe(combobox("insert"));
+
+    // The row lands, the box unmounts, the derived flag flips and D3 has its
+    // target, all in one commit.
+    delete world.rowOverride["vt-base-mapped"];
+    await settle(view);
+    expect(remapBase()).toBeTruthy();
+    expect(focused()).toBe(editAttributes());
+  });
+
+  it("closing the mapping form returns focus to Re-map Base", async () => {
+    world.mappingUi = true;
+    world.cards = [{ _id: "c1" }];
+    mount();
+    await drillToBase("vt-base-mapped");
+    expect(focused()).toBe(editAttributes());
+
+    await act(async () => {
+      fireEvent.click(remapBase());
+    });
+    // The picker opened and took focus.
+    expect(screen.getByRole("dialog", { name: "Select Base Set" })).toBeTruthy();
+    expect(focused()).toBe(screen.getByText("mapping-close"));
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("mapping-close"));
+    });
+    expect(screen.queryByRole("dialog", { name: "Select Base Set" })).toBeNull();
+    expect(focused()).toBe(remapBase());
+  });
+
+  it("a confirmed first-time mapping returns focus to Re-map Base once the slot lands", async () => {
+    world.mappingUi = true;
+    world.cards = [{ _id: "c1" }];
+    const view = mount();
+    await drillToBase("vt-base");
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("mapping-confirm"));
+    });
+    // The form stays up until the row's own slot ends the prompt.
+    expect(screen.getByRole("dialog", { name: "Select Base Set" })).toBeTruthy();
+
+    world.rowOverride = {
+      "vt-base": {
+        ...(ROWS["vt-base"] as object),
+        platformData: { sportlots: { s0: "884412" } },
+      },
+    };
+    await settle(view);
+    expect(screen.queryByRole("dialog", { name: "Select Base Set" })).toBeNull();
+    expect(focused()).toBe(remapBase());
+  });
+
+  it("an unmapped Base still auto-opens the picker, and D3 stands down", async () => {
+    world.mappingUi = true;
+    world.cards = undefined;
+    world.rowOverride = { "vt-base": undefined };
+    const view = mount();
+    await drillToBase("vt-base");
+
+    delete world.rowOverride["vt-base"];
+    await settle(view);
+    expect(screen.getByRole("dialog", { name: "Select Base Set" })).toBeTruthy();
+    expect(focused()).toBe(screen.getByText("mapping-close"));
+
+    world.cards = [{ _id: "c1" }];
+    await settle(view);
+    expect(focused()).toBe(screen.getByText("mapping-close"));
+    expect(screen.queryByRole("button", { name: "Re-map Base" })).toBeNull();
+  });
+
+  it("an unmapped Base whose row and cards are already there opens the picker, and D3 stands down", async () => {
+    world.mappingUi = true;
+    world.cards = [{ _id: "c1" }];
+    mount();
+    await drillToBase("vt-base");
+
+    expect(screen.getByRole("dialog", { name: "Select Base Set" })).toBeTruthy();
+    expect(focused()).toBe(screen.getByText("mapping-close"));
   });
 });
 

@@ -563,6 +563,7 @@ export default function SetSelector() {
   // Base" anchor read "Map Base Set" for a beat and scrolled past it (PR #242
   // run 4).
   const handleBaseMappingClose = (reason: "mapped" | "dismissed") => {
+    baseMappingClosedForRef.current = selectedVariantTypeId;
     setBaseMappingOpen(false);
     if (reason === "dismissed" && selectedVariantTypeId && !baseHasMapping) {
       setDismissedVariantTypeIds((prev) => {
@@ -585,15 +586,36 @@ export default function SetSelector() {
   // `activeElement === body` guard means a park never yanks focus away from an
   // operator who is already holding it somewhere else (a confirm that resolves
   // while they have moved on, or a dialog that restored focus itself).
+  //
+  // NEO-224: `baseMappingFormOpen` is DERIVED, so it also flips true→false with
+  // nothing closed at all: while a newly picked Base row is still loading it
+  // reads as unmapped (the flags ref resets on the id change), and the moment
+  // a MAPPED row answers the value drops to false. Focus is on <body> then too
+  // (the Variant Types search box just unmounted), so reacting to the flip
+  // alone parked focus on "Re-map Base" on every mapped Base, the D3 terminal
+  // rule saw focus outside the row and stood down, and the operator's next
+  // Enter opened the re-map picker. So the park fires only after a real close:
+  // every close path (Close, Cancel's recovery panel, a confirmed pick) goes
+  // through `handleBaseMappingClose`, which records the row it closed. A
+  // confirmed first-time mapping keeps the form up until the row's slot lands,
+  // so the record waits for that flip; it is spent on the first flip either
+  // way, and a record for a different row (the operator moved on) parks
+  // nothing.
   const baseMappingButtonRef = useRef<HTMLButtonElement | null>(null);
+  const baseMappingClosedForRef = useRef<GenericId<"selectorOptions"> | null>(
+    null,
+  );
   const wasBaseMappingFormOpen = useRef(baseMappingFormOpen);
   useEffect(() => {
     const wasOpen = wasBaseMappingFormOpen.current;
     wasBaseMappingFormOpen.current = baseMappingFormOpen;
     if (!wasOpen || baseMappingFormOpen) return;
+    const closedFor = baseMappingClosedForRef.current;
+    baseMappingClosedForRef.current = null;
+    if (closedFor === null || closedFor !== selectedVariantTypeId) return;
     if (document.activeElement !== document.body) return;
     baseMappingButtonRef.current?.focus();
-  }, [baseMappingFormOpen]);
+  }, [baseMappingFormOpen, selectedVariantTypeId]);
   // Parallel-grouping modal trigger for the Variants column.
   const [groupingOpen, setGroupingOpen] = useState(false);
 

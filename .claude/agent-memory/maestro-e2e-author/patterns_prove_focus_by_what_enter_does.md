@@ -29,3 +29,14 @@ owns the Enter itself.
    the pause changes which dialog is up, and send NO Enter in that branch.
 4. The target must handle Enter in its own `onKeyDown` (`activateOnEnter`) and
    be XPath-unique by class (see [[maestro-web-presskey-and-popovers]]).
+
+**Reading a wrong landing.** The failure screenshot names the control that
+took the Enter (it opened whatever that control opens). Then grep every
+`.focus()` on that control's ref: a second focuser racing the one under test
+is the usual cause. NEO-224 keyboard-only-drill: Enter opened the Re-map Base
+picker because SetSelector's older WCAG focus park (focus "Re-map Base" when
+the mapping form closes and focus is on body) also fires on the DERIVED
+open→closed flip when a mapped Base's row loads, which happens right after a
+keyboard pick drops focus to body — and D3 then stands down because focus is
+outside the column row. The "Re-map Base is visible" precondition cannot
+exclude that; only the Enter's effect can, which is why the proof must stay.
