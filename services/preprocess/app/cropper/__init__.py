@@ -46,7 +46,7 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from app import timing
 from app.classify import ClassifyResult, classify_card
@@ -306,40 +306,6 @@ def _classify(rotated: bytes, timings: Timings) -> ClassifyResult:
     return result
 
 
-def resolve_card_number(
-    orientation: OrientationResult, classification: ClassifyResult
-) -> tuple[ClassifyResult, str | None]:
-    """Pick the card number (NEO-327): Vision's when definitive, else Haiku's.
-
-    Vision's read (`OrientationResult.vision_card_number`) is used only when
-    it is definitive and the classifier did not call this image a front: a
-    front's printed numbers are jerseys and logos, never the card number.
-    Returns the classification to report and the winning source, "vision",
-    "haiku", or None when neither has a number.
-    """
-    vision_number = getattr(orientation, "vision_card_number", None)
-    if vision_number is not None and classification.side != "front":
-        if vision_number != classification.card_number:
-            logger.info(
-                "classify: card number from vision=%s over haiku=%s",
-                vision_number,
-                classification.card_number,
-            )
-        return replace(classification, card_number=vision_number), "vision"
-    if classification.card_number is not None:
-        return classification, "haiku"
-    return classification, None
-
-
-def _classify_oriented(
-    rotated: bytes, orientation: OrientationResult, timings: Timings
-) -> ClassifyResult:
-    """Classify, then settle the card number against the orient's Vision read."""
-    classification, source = resolve_card_number(orientation, _classify(rotated, timings))
-    timings.card_number_source = source
-    return classification
-
-
 def _timed_strategy(source: str, image_bytes: bytes, timings: Timings) -> bytes | None:
     """`run_strategy` with its wall time booked to the strategy's field.
 
@@ -405,7 +371,7 @@ def _try_stage(
         return None
 
     rotated = _rotate(candidate_bytes, orient.rotation_degrees, timings)
-    classification = _classify_oriented(rotated, orient, timings)
+    classification = _classify(rotated, timings)
 
     return CropResult(
         image_bytes=candidate_bytes,
@@ -447,7 +413,7 @@ def _try_precropped_only(precropped_bytes: bytes) -> CropResult | CropRejected:
         return CropRejected(reason="insufficient_text")
 
     rotated = rotate_image_bytes(precropped_bytes, orient.rotation_degrees)
-    classification, _source = resolve_card_number(orient, classify_card(rotated))
+    classification = classify_card(rotated)
 
     return CropResult(
         image_bytes=precropped_bytes,
@@ -785,7 +751,7 @@ def _crop(
     # honest "preprocess couldn't identify this card" signal.
     logger.info("cascade: falling through to passthrough")
     rotated = _rotate(image_bytes, baseline_orient.rotation_degrees, timings)
-    passthrough_classification = _classify_oriented(rotated, baseline_orient, timings)
+    passthrough_classification = _classify(rotated, timings)
     return CropResult(
         image_bytes=image_bytes,
         source="passthrough",

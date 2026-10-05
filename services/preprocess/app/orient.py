@@ -25,7 +25,6 @@ from google.api_core.exceptions import ServiceUnavailable
 from google.cloud import vision
 
 from app.timing import increment_current
-from app.vision_card_number import vision_card_number
 
 logger = logging.getLogger(__name__)
 
@@ -97,17 +96,11 @@ class OrientationResult:
     confidence: Fraction (0..1) of detected words whose bounding-box angle
         agrees with the winning rotation bucket.
     text_count: Total number of words considered for the vote.
-    vision_card_number: The card number read from this same response, only
-        when it is definitive (`app.vision_card_number`, NEO-327); else None.
-        In-process only: it is never serialised, so a baseline orient that
-        crossed the wire from the FAST role carries None and Haiku's number
-        stands.
     """
 
     rotation_degrees: int
     confidence: float
     text_count: int
-    vision_card_number: str | None = None
 
 
 def _edge_angle_degrees(v0, v1) -> float:
@@ -184,14 +177,4 @@ def detect_orientation(
         rotation_degrees=winning_angle,
         confidence=winning_count / total,
         text_count=total,
-        vision_card_number=_definitive_card_number(response),
     )
-
-
-def _definitive_card_number(response) -> str | None:
-    """Never lets the card-number read fail the orient it rides on."""
-    try:
-        return vision_card_number(response)
-    except Exception:  # noqa: BLE001 — an unexpected response shape means "not definitive"
-        logger.warning("orient: vision card number read failed; using the classifier's")
-        return None

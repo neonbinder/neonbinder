@@ -12,10 +12,6 @@ prompt as it stood before NEO-327, frozen below as `LEGACY_PROMPT`; `new` is
 `app.classify.PROMPT`. The output is a markdown table per image, side and
 card-number accuracy per prompt, and Vision's text_count split by true side
 (the input the pairing pool uses to decide which image of a pair is the back).
-With Vision on, it also scores the orient response's definitive card-number
-read (`app.vision_card_number`): how many backs and fronts it answered, how
-many of those answers are WRONG (the bar is zero), and the final number
-production reports (Vision's when definitive and not a front, else Haiku's).
 
 Labels:
     Default: the `tests/fixtures/*.yaml` sidecars (classify.side,
@@ -57,7 +53,6 @@ load_dotenv(REPO_ROOT / ".env.local", override=False)
 from label_fixtures import _rotate  # noqa: E402
 
 from app.classify import PROMPT, classify_card  # noqa: E402
-from app.cropper import resolve_card_number  # noqa: E402
 from app.orient import detect_orientation  # noqa: E402
 
 FIXTURES_DIR = REPO_ROOT / "tests" / "fixtures"
@@ -98,13 +93,8 @@ class Row:
     name: str
     label: Label
     text_count: int | None = None
-    # Vision's definitive read off the orient response (NEO-327), or None.
-    vision_number: str | None = None
     sides: dict[str, list[str | None]] = field(default_factory=dict)
     numbers: dict[str, list[str | None]] = field(default_factory=dict)
-    # The number production reports: Vision's when definitive and the
-    # classifier did not say front, else Haiku's (`resolve_card_number`).
-    combined: dict[str, list[str | None]] = field(default_factory=dict)
 
 
 def _norm_number(value: str | None) -> str | None:
@@ -165,11 +155,9 @@ def _labels_from_sidecars(directory: Path) -> dict[str, Label]:
 def _evaluate(path: Path, label: Label, prompts: list[str], runs: int, use_vision: bool) -> Row:
     image = path.read_bytes()
     row = Row(name=path.name, label=label)
-    orient = None
     if use_vision:
         orient = detect_orientation(image)
         row.text_count = orient.text_count
-        row.vision_number = orient.vision_card_number
         rotation = orient.rotation_degrees
     else:
         rotation = label.rotation_degrees or 0
@@ -177,20 +165,14 @@ def _evaluate(path: Path, label: Label, prompts: list[str], runs: int, use_visio
     for key in prompts:
         row.sides[key] = []
         row.numbers[key] = []
-        row.combined[key] = []
         for _ in range(runs):
             try:
                 result = classify_card(upright, prompt=PROMPTS[key])
                 row.sides[key].append(result.side)
                 row.numbers[key].append(result.card_number)
-                final = result
-                if orient is not None:
-                    final, _source = resolve_card_number(orient, result)
-                row.combined[key].append(final.card_number)
             except Exception as exc:  # noqa: BLE001
                 row.sides[key].append(f"ERR:{type(exc).__name__}")
                 row.numbers[key].append(None)
-                row.combined[key].append(None)
     return row
 
 
@@ -205,42 +187,11 @@ def _percentiles(values: list[int]) -> str:
     ordered = sorted(values)
     if len(ordered) == 1:
         return f"n=1 value={ordered[0]}"
-    q = statistics.quantiles(ordered, n=10, method="inclusive")
+    q = statistics.quantiles(ordered, n=20, method="inclusive")
     return (
-        f"n={len(ordered)} min={ordered[0]} p10={q[0]:.0f} "
-        f"median={statistics.median(ordered):.0f} p90={q[-1]:.0f} max={ordered[-1]}"
+        f"n={len(ordered)} min={ordered[0]} p5={q[0]:.0f} "
+        f"median={statistics.median(ordered):.0f} p95={q[-1]:.0f} max={ordered[-1]}"
     )
-
-
-def _print_vision_summary(rows: list[Row], prompts: list[str]) -> None:
-    """Vision-definitive coverage and accuracy, then the combined accuracy.
-
-    The bar for shipping the Vision read is ZERO wrong answers: a definitive
-    read that disagrees with the label on any image fails it.
-    """
-    for side in ("back", "front"):
-        labelled = [r for r in rows if r.label.side == side]
-        answered = [r for r in labelled if r.vision_number is not None]
-        wrong = [r for r in answered if not _number_ok(r.label, r.vision_number)]
-        print(
-            f"**vision definitive on {side}s**: answered {len(answered)}/{len(labelled)},"
-            f" WRONG {len(wrong)}"
-            + (f" ({', '.join(f'{r.name}={r.vision_number}' for r in wrong)})" if wrong else "")
-        )
-    for key in prompts:
-        hits = total = back_hits = back_total = 0
-        for row in rows:
-            for number in row.combined[key]:
-                ok = _number_ok(row.label, number)
-                total += 1
-                hits += ok
-                if row.label.side == "back":
-                    back_total += 1
-                    back_hits += ok
-        print(
-            f"**{key} + vision (final)**: card number {hits}/{total}"
-            f" ({100 * hits / max(total, 1):.0f}%) [backs {back_hits}/{back_total}]"
-        )
 
 
 def main() -> int:
@@ -276,8 +227,6 @@ def main() -> int:
     header += [f"{k} side" for k in prompts]
     header += ["truth number"]
     header += [f"{k} number" for k in prompts]
-    if not args.no_vision:
-        header += ["vision number"] + [f"{k} final" for k in prompts]
     print("| " + " | ".join(header) + " |")
     print("|" + "---|" * len(header))
     for row in rows:
@@ -287,9 +236,6 @@ def main() -> int:
         cells += [_fmt(row.sides[k]) for k in prompts]
         cells.append(truth_number)
         cells += [_fmt(row.numbers[k]) for k in prompts]
-        if not args.no_vision:
-            cells.append("null" if row.vision_number is None else row.vision_number)
-            cells += [_fmt(row.combined[k]) for k in prompts]
         print("| " + " | ".join(cells) + " |")
 
     print()
@@ -318,8 +264,6 @@ def main() -> int:
         )
 
     if not args.no_vision:
-        print()
-        _print_vision_summary(rows, prompts)
         print()
         for side in ("front", "back"):
             counts = [
