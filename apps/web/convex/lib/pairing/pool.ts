@@ -131,19 +131,33 @@ export const EXACT_CONFIDENCE_THRESHOLD = 1000;
  * Text-count orientation thresholds. Within a pair, the image with CLEARLY
  * more Vision text is the back: the back carries the card number, bio or
  * stats, copyright and fine print, while a front is mostly photo. "Clearly"
- * is both a ratio and an absolute gap, so neither two text-light images
- * (5 vs 2 words: ratio passes, gap fails) nor two text-heavy ones (130 vs 100:
- * gap passes, ratio fails) are oriented by text — those are what a duplicate
- * copy looks like.
+ * is both a ratio and an absolute gap, and BOTH must hold, so neither two
+ * text-light images (13 vs 4: ratio 3.25, gap 9) nor two text-heavy ones
+ * (142 vs 110: ratio 1.29, gap 32) are oriented by text — that is what a
+ * duplicate copy looks like.
  *
- * PROVISIONAL. The 2026-10-05 2014 Panini Rookies & Stars run measured backs
- * at 110–142 words against fronts at 5–11, so these sit far inside that
- * separation. They are recalibrated from the classifier eval script's
- * text_count table (photo-back AND stat-back fixtures) before this ships.
- * Measured ranges: TODO(NEO-327) fill from the eval run.
+ * Calibrated from Vision text counts on real scans, by true side
+ * (min / p5 / median / p95 / max):
+ *
+ *   2014 Panini Rookies & Stars (photo backs)
+ *     fronts   5 /   5 /   7 /  12 /  13
+ *     backs  110 / 112 / 129 / 138 / 142
+ *   1991 Throwback (stat backs)
+ *     fronts   6–15
+ *     backs  138–155
+ *
+ * Real front/back pairs: the smallest back÷front ratio was 9.7 and the
+ * smallest gap 103. Two images of the SAME side: two fronts reached ratio 2.6
+ * / gap 9, two backs ratio 1.29 / gap 32.
+ *
+ * So ratio 4 and gap 40 leave at least 2.4× headroom under every real pair
+ * (9.7 / 4, 103 / 40) while blocking every observed same-side combination
+ * (fronts fail the gap, backs fail both). A pair that lands below the band —
+ * a text-light back, a text-heavy front — is not guessed at: it falls to the
+ * label tie-break, and without disagreeing labels it is not a pair.
  */
-export const TEXT_ORIENT_MIN_RATIO = 3;
-export const TEXT_ORIENT_MIN_GAP = 10;
+export const TEXT_ORIENT_MIN_RATIO = 4;
+export const TEXT_ORIENT_MIN_GAP = 40;
 
 /** A card's label when a person set it, else null. */
 function userLabel(card: PoolCard): CardSide | null {

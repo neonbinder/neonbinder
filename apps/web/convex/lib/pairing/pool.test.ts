@@ -769,41 +769,62 @@ describe("orientPair: text thresholds at their boundaries", () => {
     orientPair(card("x", null, { textCount: x }), card("y", null, { textCount: y }));
 
   test("the production thresholds are what these boundary tests assume", () => {
-    expect(TEXT_ORIENT_MIN_RATIO).toBe(3);
-    expect(TEXT_ORIENT_MIN_GAP).toBe(10);
+    expect(TEXT_ORIENT_MIN_RATIO).toBe(4);
+    expect(TEXT_ORIENT_MIN_GAP).toBe(40);
   });
 
-  test("ratio exactly 3 with a gap under 10 does not fire", () => {
-    expect(byText(3, 9)).toBeNull();
+  test("ratio exactly 4 with a gap under 40 does not fire", () => {
+    expect(byText(13, 52)).toBeNull(); // ratio 4, gap 39
   });
 
-  test("a zero-word image against fewer than 10 words does not fire", () => {
+  test("a zero-word image against fewer than 40 words does not fire", () => {
     // Ratio is trivially met against zero; the gap is what holds it back.
-    expect(byText(0, 9)).toBeNull();
+    expect(byText(0, 39)).toBeNull();
     expect(byText(0, 0)).toBeNull();
   });
 
-  test("gap exactly 10 with a ratio under 3 does not fire", () => {
-    expect(byText(10, 29)).toBeNull();
-    expect(byText(100, 110)).toBeNull();
+  test("gap exactly 40 with a ratio under 4 does not fire", () => {
+    expect(byText(14, 54)).toBeNull(); // gap 40, ratio 3.86
+    expect(byText(100, 140)).toBeNull();
   });
 
-  test("ratio exactly 3 and gap exactly 10 both fire, by text", () => {
-    // 5 vs 15 is ratio exactly 3 and gap exactly 10: both at their edge.
-    const o = byText(5, 15)!;
-    expect(o.rule).toBe("text");
-    expect(o.back.key).toBe("y");
-    expect(o.front.key).toBe("x");
+  test("each edge is inclusive", () => {
+    // Integers cannot sit on both edges at once (lo*4 - lo = 40 has no
+    // integer lo), so each edge is pinned with the other comfortably met.
+    const atRatio = byText(14, 56)!; // ratio exactly 4, gap 42
+    expect(atRatio.rule).toBe("text");
+    expect(atRatio.back.key).toBe("y");
+    expect(atRatio.front.key).toBe("x");
+    expect(byText(13, 53)!.rule).toBe("text"); // gap exactly 40, ratio 4.08
   });
 
   test("one word under either edge stops firing", () => {
-    expect(byText(5, 14)).toBeNull(); // gap 9
-    expect(byText(10, 29)).toBeNull(); // ratio just under 3
-    expect(byText(10, 30)!.rule).toBe("text");
+    expect(byText(13, 52)).toBeNull(); // gap 39
+    expect(byText(14, 55)).toBeNull(); // ratio just under 4
+    expect(byText(14, 56)!.rule).toBe("text");
   });
 
-  test("zero words against 10 fires", () => {
-    expect(byText(0, 10)!.back.key).toBe("y");
+  test("zero words against 40 fires", () => {
+    expect(byText(0, 40)!.back.key).toBe("y");
+  });
+
+  test("two text-light fronts (13 vs 4) do not orient", () => {
+    // Ratio 3.25, gap 9: a duplicate front, not a pair.
+    expect(byText(13, 4)).toBeNull();
+    expect(byText(4, 13)).toBeNull();
+  });
+
+  test("every observed same-side combination is blocked", () => {
+    expect(byText(5, 13)).toBeNull(); // two fronts, ratio 2.6 / gap 9
+    expect(byText(110, 142)).toBeNull(); // two backs, ratio 1.29 / gap 32
+    expect(byText(138, 155)).toBeNull(); // two stat backs
+  });
+
+  test("the most text-heavy front against the most text-light back still orients", () => {
+    // Worst case across the measured ranges: max front 15, min back 110.
+    const o = byText(15, 110)!;
+    expect(o.rule).toBe("text");
+    expect(o.back.key).toBe("y");
   });
 
   test("the heavier image is the back in either argument order", () => {
