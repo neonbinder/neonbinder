@@ -33,6 +33,11 @@ seed (setup.yaml) is the costliest place to have one.
   `when: notVisible: {row, below: box}` (a full long value can sit past the
   box centre, where a tap drops the caret mid-text and `eraseText` leaves the
   tail — [[erase-text-needs-the-caret-at-the-end]]);
+- **once typed into, the box has no `Search <x>` text.** Its text is
+  `value || placeholder`, so `text: ".*Search inserts.*"` matches only an
+  EMPTY box (a scroll to it logs `Element not found` from try 0). Any step
+  after an `inputText` targets it by `id: "Search <x>"` (explicit
+  aria-label = resource-id; [[input-primitive-has-no-resource-id]]);
 - Manufacturers only (its listbox always holds the pinned All Brands entry):
   positive pinned-entry gate, then `notVisible` the idle empty text.
 - "no search box ⇒ short column" fallbacks gated on the next column's header
