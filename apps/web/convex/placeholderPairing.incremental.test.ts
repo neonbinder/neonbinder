@@ -269,7 +269,7 @@ const ADJ_FRONT = (entryIndex: number): ImageSpec => ({
 });
 const ADJ_BACK = (entryIndex: number): ImageSpec => ({
   entryIndex,
-  textCount: 40,
+  textCount: 120,
   players: ["Ken Griffey Jr."],
   team: "Seattle Mariners",
   cardNumber: "24",
@@ -305,7 +305,7 @@ const POOL_BACK = (
 // identity pool to match on, so they pair ONLY through the demoted scan-order
 // adjacency fallback — which is the whole point of having fixtures for it.
 const BLANK_FRONT = (entryIndex: number): ImageSpec => ({ entryIndex, textCount: 1 });
-const BLANK_BACK = (entryIndex: number): ImageSpec => ({ entryIndex, textCount: 40 });
+const BLANK_BACK = (entryIndex: number): ImageSpec => ({ entryIndex, textCount: 120 });
 
 // ---------------------------------------------------------------------------
 // Pairs stream in
@@ -455,7 +455,7 @@ describe("pairs stream in as images complete", () => {
     });
     await complete(t, JOB, hosmerBack, {
       entryIndex: 1,
-      textCount: 40,
+      textCount: 120,
       players: ["Eric Hosmer"],
       team: "San Diego Padres",
       cardNumber: "24",
@@ -481,7 +481,7 @@ describe("pairs stream in as images complete", () => {
     const back = await seedImage(t, JOB, 1, "processing");
 
     await complete(t, JOB, front, { entryIndex: 0, textCount: 1, team: "Minnesota Twins" });
-    await complete(t, JOB, back, { entryIndex: 1, textCount: 40, team: "San Diego Padres" });
+    await complete(t, JOB, back, { entryIndex: 1, textCount: 120, team: "San Diego Padres" });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     expect(await getPairs(t, JOB)).toHaveLength(0);
@@ -593,7 +593,7 @@ describe("pairs stream in as images complete", () => {
     });
     await complete(t, JOB, back, {
       entryIndex: 1,
-      textCount: 40,
+      textCount: 120,
       players: ["Ken Griffey Jr."],
       team: "Seattle Mariners",
       // no cardNumber
@@ -891,7 +891,7 @@ describe("a later arrival revises an earlier verdict", () => {
     expect(firstPass[0].mechanism).toBe("adjacency");
 
     // Gray's real back lands. Identity pairs 0-2, and the adjacency 0-1 must go.
-    await complete(t, JOB, realBack, { entryIndex: 2, textCount: 40, players: ["Sonny Gray"], team: "Minnesota Twins", cardNumber: "54" });
+    await complete(t, JOB, realBack, { entryIndex: 2, textCount: 120, players: ["Sonny Gray"], team: "Minnesota Twins", cardNumber: "54" });
     await t.finishAllScheduledFunctions(vi.runAllTimers);
 
     const secondPass = await getPairs(t, JOB);
@@ -1437,7 +1437,7 @@ describe("computePairingDiff (pure)", () => {
   const griffeyBack = (i: number) =>
     imageRow(i, {
       side: "back",
-      textCount: 40,
+      textCount: 120,
       players: ["Ken Griffey Jr."],
       team: "Seattle Mariners",
       cardNumber: "24",
@@ -1622,5 +1622,516 @@ describe("computePairingDiff (pure)", () => {
     const touched = [...diff.becomingPaired, ...diff.becomingUnmatched];
     expect(touched).not.toContain("img-0");
     expect(touched).not.toContain("img-3");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-327 — orientation is decided inside the pair, and the decision is logged
+// ---------------------------------------------------------------------------
+//
+// Pairing used to take each image's `side` label as the verdict, so a back
+// scanned before its front, or a classifier that answered "front" for both, put
+// the wrong image first. The pair is now formed on identity and ORIENTED by
+// `orientPair` (user side, then text count, then disagreeing labels), and the
+// rule that chose is stored as `orientedBy` and logged once per written pair.
+
+/** Every `placeholder_pair_decided` line for one job, parsed. */
+function watchDecisions(jobId: string) {
+  const lines: Array<Record<string, unknown>> = [];
+  const spy = vi.spyOn(console, "log").mockImplementation((...logArgs: unknown[]) => {
+    if (typeof logArgs[0] !== "string") return;
+    try {
+      const parsed = JSON.parse(logArgs[0]) as Record<string, unknown>;
+      if (parsed.msg === "placeholder_pair_decided" && parsed.jobId === jobId) {
+        lines.push(parsed);
+      }
+    } catch {
+      // Not a JSON log line; another file's output.
+    }
+  });
+  return { lines, restore: () => spy.mockRestore() };
+}
+
+/** One FINAL run of the scheduled action, over the rows as seeded. */
+async function runFinal(t: ReturnType<typeof convexTest>, jobId: string) {
+  await t.action(internal.placeholderPairing.runPairing, {
+    jobId,
+    userId: USER_A.subject,
+  });
+}
+
+/** A forced re-pair that does not decide the batch — what a correction schedules. */
+async function runForced(t: ReturnType<typeof convexTest>, jobId: string) {
+  await t.action(internal.placeholderPairing.runPairing, {
+    jobId,
+    userId: USER_A.subject,
+    final: false,
+    force: true,
+  });
+}
+
+const GRIFFEY = { players: ["Ken Griffey Jr."], team: "Seattle Mariners" };
+
+describe("a pair is oriented by what the images show, never by arrival order", () => {
+  test("back uploaded first, both classified front: the low-text image is the front, oriented by text", async () => {
+    const JOB = "job-orient-back-first";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pairing", totalImages: 2, processedImages: 2 });
+    // Entry 0 is the BACK (120 words) and entry 1 the FRONT (8), and the
+    // classifier called both "front".
+    await seedImage(t, JOB, 0, "done", { ...GRIFFEY, side: "front", textCount: 120, cardNumber: "24" });
+    await seedImage(t, JOB, 1, "done", { ...GRIFFEY, side: "front", textCount: 8 });
+
+    await runFinal(t, JOB);
+
+    const pairs = await getPairs(t, JOB);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).toMatchObject({ frontIndex: 1, backIndex: 0, orientedBy: "text" });
+    // The identity follows the orientation: back-only card number.
+    expect(pairs[0].cardNumber).toBe("24");
+  });
+
+  test("the classifier answering no side at all still orients by text", async () => {
+    const JOB = "job-orient-null-side";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pairing", totalImages: 2, processedImages: 2 });
+    // `side` left unset on both: what preprocess now stores when unsure.
+    await seedImage(t, JOB, 0, "done", { ...GRIFFEY, textCount: 120 });
+    await seedImage(t, JOB, 1, "done", { ...GRIFFEY, textCount: 8 });
+
+    await runFinal(t, JOB);
+
+    const pairs = await getPairs(t, JOB);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).toMatchObject({ frontIndex: 1, backIndex: 0, orientedBy: "text" });
+  });
+
+  test("two physical copies of one card pair front-with-back, never front-with-front", async () => {
+    const JOB = "job-orient-four-copies";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pairing", totalImages: 4, processedImages: 4 });
+    // Identical identity on all four, scan order front, front, back, back: the
+    // arrangement where adjacency alone would pair the two fronts.
+    await seedImage(t, JOB, 0, "done", { ...GRIFFEY, side: "front", textCount: 8 });
+    await seedImage(t, JOB, 1, "done", { ...GRIFFEY, side: "front", textCount: 9 });
+    await seedImage(t, JOB, 2, "done", { ...GRIFFEY, side: "back", textCount: 120, cardNumber: "24" });
+    await seedImage(t, JOB, 3, "done", { ...GRIFFEY, side: "back", textCount: 118, cardNumber: "24" });
+
+    await runFinal(t, JOB);
+
+    const pairs = await getPairs(t, JOB);
+    expect(pairs).toHaveLength(2);
+    const text = new Map([[0, 8], [1, 9], [2, 120], [3, 118]]);
+    for (const p of pairs) {
+      // Every pair is one low-text image over one high-text image.
+      expect(text.get(p.frontIndex)).toBeLessThan(20);
+      expect(text.get(p.backIndex)).toBeGreaterThan(100);
+    }
+    // And each image is used exactly once.
+    expect(new Set(pairs.flatMap((p) => [p.frontIndex, p.backIndex])).size).toBe(4);
+  });
+
+  test("four fronts-then-backs in a hostile scan order (back, back, front, front) still pair front-with-back", async () => {
+    const JOB = "job-orient-four-reversed";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pairing", totalImages: 4, processedImages: 4 });
+    await seedImage(t, JOB, 0, "done", { ...GRIFFEY, side: "front", textCount: 120 });
+    await seedImage(t, JOB, 1, "done", { ...GRIFFEY, side: "front", textCount: 118 });
+    await seedImage(t, JOB, 2, "done", { ...GRIFFEY, side: "front", textCount: 8 });
+    await seedImage(t, JOB, 3, "done", { ...GRIFFEY, side: "front", textCount: 9 });
+
+    await runFinal(t, JOB);
+
+    const pairs = await getPairs(t, JOB);
+    expect(pairs).toHaveLength(2);
+    for (const p of pairs) {
+      expect([2, 3]).toContain(p.frontIndex);
+      expect([0, 1]).toContain(p.backIndex);
+    }
+  });
+
+  test("Ben Tate: a back reading #20 and a front reading #44 produce a pair whose identity carries the back's #20", async () => {
+    const JOB = "job-orient-ben-tate";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pairing", totalImages: 2, processedImages: 2 });
+    await seedImage(t, JOB, 0, "done", {
+      players: ["Ben Tate"],
+      team: "Houston Texans",
+      textCount: 120,
+      cardNumber: "20",
+    });
+    await seedImage(t, JOB, 1, "done", {
+      players: ["Ben Tate"],
+      team: "Houston Texans",
+      textCount: 8,
+      cardNumber: "44", // a jersey number printed on the front, not the card number
+    });
+
+    await runFinal(t, JOB);
+
+    const pairs = await getPairs(t, JOB);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).toMatchObject({ frontIndex: 1, backIndex: 0, player: "Ben Tate" });
+    // Card number is read from the BACK only (invariant: never trust a front's).
+    expect(pairs[0].cardNumber).toBe("20");
+  });
+});
+
+describe("placeholder_pair_decided", () => {
+  test("is logged once per inserted pair, carrying every input that decided it", async () => {
+    const JOB = "job-decided-fields";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pairing", totalImages: 2, processedImages: 2 });
+    await seedImage(t, JOB, 0, "done", {
+      ...GRIFFEY,
+      side: "front",
+      textCount: 120,
+      cardNumber: "24",
+      originalName: "IMG_0001.jpg",
+    });
+    await seedImage(t, JOB, 1, "done", {
+      ...GRIFFEY,
+      side: "front",
+      textCount: 8,
+      originalName: "IMG_0002.jpg",
+    });
+    const watch = watchDecisions(JOB);
+
+    try {
+      await runFinal(t, JOB);
+    } finally {
+      watch.restore();
+    }
+
+    const [pair] = await getPairs(t, JOB);
+    expect(watch.lines).toHaveLength(1);
+    expect(watch.lines[0]).toEqual({
+      msg: "placeholder_pair_decided",
+      jobId: JOB,
+      final: true,
+      frontIndex: 1,
+      backIndex: 0,
+      frontName: "IMG_0002.jpg",
+      backName: "IMG_0001.jpg",
+      frontLabel: "front",
+      backLabel: "front",
+      frontTextCount: 8,
+      backTextCount: 120,
+      frontCardNumber: null,
+      backCardNumber: "24",
+      frontPlayer: "Ken Griffey Jr.",
+      backPlayer: "Ken Griffey Jr.",
+      orientedBy: "text",
+      // The matcher's own account, equal to what was stored.
+      mechanism: pair.mechanism,
+      confidence: pair.confidence,
+      score: pair.score,
+    });
+  });
+
+  test("absent inputs are logged as null, not omitted", async () => {
+    const JOB = "job-decided-nulls";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pairing", totalImages: 2, processedImages: 2 });
+    await seedImage(t, JOB, 0, "done", { textCount: 8 });
+    await seedImage(t, JOB, 1, "done", { textCount: 120 });
+    const watch = watchDecisions(JOB);
+
+    try {
+      await runFinal(t, JOB);
+    } finally {
+      watch.restore();
+    }
+
+    expect(watch.lines).toHaveLength(1);
+    expect(watch.lines[0]).toMatchObject({
+      frontLabel: null,
+      backLabel: null,
+      frontCardNumber: null,
+      backCardNumber: null,
+      frontPlayer: null,
+      backPlayer: null,
+      orientedBy: "text",
+    });
+  });
+
+  test("logs a scan's basename only, capped, never the folder path a zip member carried", async () => {
+    const JOB = "job-decided-basename";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pairing", totalImages: 2, processedImages: 2 });
+    await seedImage(t, JOB, 0, "done", { textCount: 8, originalName: "Jane Doe/private folder/front.jpg" });
+    await seedImage(t, JOB, 1, "done", { textCount: 120, originalName: `C:\\scans\\${"x".repeat(500)}.jpg` });
+    const watch = watchDecisions(JOB);
+
+    try {
+      await runFinal(t, JOB);
+    } finally {
+      watch.restore();
+    }
+
+    expect(watch.lines).toHaveLength(1);
+    expect(watch.lines[0].frontName).toBe("front.jpg");
+    const backName = watch.lines[0].backName as string;
+    expect(backName).not.toContain("scans");
+    expect(backName.length).toBeLessThanOrEqual(200);
+    expect(backName.startsWith("xxx")).toBe(true);
+  });
+
+  test("is NOT logged again when a re-run changes nothing", async () => {
+    const JOB = "job-decided-quiet";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pairing", totalImages: 2, processedImages: 2 });
+    // Identity-less: side-only, so every re-run really does recompute and diff
+    // this pair (an exact pair is locked and never reaches the diff at all,
+    // which would make this test vacuous).
+    await seedImage(t, JOB, 0, "done", { textCount: 8 });
+    await seedImage(t, JOB, 1, "done", { textCount: 120 });
+    await runFinal(t, JOB);
+    expect((await getPairs(t, JOB))[0].confidence).not.toBe("exact");
+    const watch = watchDecisions(JOB);
+
+    try {
+      await runForced(t, JOB);
+      await runForced(t, JOB);
+    } finally {
+      watch.restore();
+    }
+
+    expect(watch.lines).toEqual([]);
+  });
+
+  test("is logged again, with the new rule, when a re-run patches the pair", async () => {
+    const JOB = "job-decided-patched";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "pairing", totalImages: 2, processedImages: 2 });
+    // Identity-less, so the pair is side-only and stays fluid (an exact pair is
+    // locked and would never be revisited).
+    await seedImage(t, JOB, 0, "done", { textCount: 8 });
+    const backId = await seedImage(t, JOB, 1, "done", { textCount: 120 });
+    await runFinal(t, JOB);
+    expect((await getPairs(t, JOB))[0]).toMatchObject({ frontIndex: 0, orientedBy: "text" });
+
+    // The user then vouches for the SAME orientation: same front, different rule.
+    await t.run(async (ctx) => ctx.db.patch(backId, { side: "back", sideByUser: true }));
+    const watch = watchDecisions(JOB);
+    try {
+      await runForced(t, JOB);
+    } finally {
+      watch.restore();
+    }
+
+    expect(watch.lines).toHaveLength(1);
+    expect(watch.lines[0]).toMatchObject({
+      final: false,
+      frontIndex: 0,
+      backIndex: 1,
+      orientedBy: "user",
+    });
+  });
+
+  test("is logged by the inline close-path finalize too, with final true", async () => {
+    // Web and the scanner CLI both end through finalizePairingInline when the
+    // batch is small; the record must not depend on which one closed it.
+    const JOB = "job-decided-inline";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "collecting", totalImages: 2, processedImages: 2 });
+    await t.run(async (ctx) => {
+      await ctx.db.patch(
+        (await ctx.db.query("placeholderJobs").collect()).find((j) => j.jobId === JOB)!._id,
+        { mode: "stream" },
+      );
+    });
+    await seedImage(t, JOB, 0, "done", { ...GRIFFEY, textCount: 8 });
+    await seedImage(t, JOB, 1, "done", { ...GRIFFEY, textCount: 120, cardNumber: "24" });
+    const watch = watchDecisions(JOB);
+
+    try {
+      await t
+        .withIdentity(USER_A)
+        .mutation(api.placeholderStream.closePlaceholderStream, { jobId: JOB });
+    } finally {
+      watch.restore();
+    }
+
+    expect(watch.lines).toHaveLength(1);
+    expect(watch.lines[0]).toMatchObject({ final: true, frontIndex: 0, backIndex: 1, orientedBy: "text" });
+  });
+});
+
+describe("orientedBy is revised in place; a changed front is a different pair", () => {
+  const imageRow = (
+    entryIndex: number,
+    fields: Omit<Partial<PairingImageRow>, "_id" | "entryIndex" | "originalName">,
+  ): PairingImageRow => ({
+    _id: `img-${entryIndex}` as unknown as Id<"placeholderImages">,
+    entryIndex,
+    originalName: `scan-${entryIndex}.jpg`,
+    ...fields,
+  });
+
+  /** Compute once, then hand the inserted rows back as what is stored. */
+  function storedFrom(rows: PairingImageRow[]): StoredPairRow[] {
+    return computePairingDiff(rows, []).insertRows.map((r, i) => ({
+      _id: `pair-${i}` as unknown as Id<"placeholderPairs">,
+      ...r,
+    }));
+  }
+
+  // Identity-less: side-only, therefore unlocked and revisable.
+  const low = () => imageRow(0, { textCount: 8 });
+  const high = () => imageRow(1, { textCount: 120 });
+
+  test("a first run stores the rule that chose the front", () => {
+    const diff = computePairingDiff([low(), high()], []);
+    expect(diff.insertRows).toHaveLength(1);
+    expect(diff.insertRows[0]).toMatchObject({ frontIndex: 0, backIndex: 1, orientedBy: "text" });
+    expect(diff.decisions).toHaveLength(1);
+  });
+
+  test("only the rule changing (same front) is ONE patch, no delete, no insert", () => {
+    const stored = storedFrom([low(), high()]);
+    expect(stored[0].orientedBy).toBe("text");
+
+    // The user vouches for what text already said.
+    const diff = computePairingDiff(
+      [imageRow(0, { textCount: 8 }), imageRow(1, { textCount: 120, side: "back", sideByUser: true })],
+      stored,
+    );
+
+    expect(diff.deleteIds).toEqual([]);
+    expect(diff.insertRows).toEqual([]);
+    expect(diff.patches).toHaveLength(1);
+    expect(diff.patches[0]).toMatchObject({ pairId: stored[0]._id, orientedBy: "user" });
+    expect(diff.decisions).toHaveLength(1);
+    expect(diff.decisions[0].orientedBy).toBe("user");
+  });
+
+  test("a pair stored before NEO-327 (no orientedBy) takes one patch, then none", () => {
+    const [legacy] = storedFrom([low(), high()]);
+    const stored: StoredPairRow[] = [{ ...legacy, orientedBy: undefined }];
+    const rows = [low(), high()];
+
+    const first = computePairingDiff(rows, stored);
+    expect(first.patches).toHaveLength(1);
+    expect(first.patches[0].orientedBy).toBe("text");
+
+    const second = computePairingDiff(rows, [{ ...legacy, orientedBy: "text" }]);
+    expect(second.patches).toEqual([]);
+    expect(second.decisions).toEqual([]);
+  });
+
+  test("the front changing is a delete plus an insert, never a patch", () => {
+    const stored = storedFrom([low(), high()]);
+
+    // The user says the LOW-text image is the back.
+    const diff = computePairingDiff(
+      [imageRow(0, { textCount: 8, side: "back", sideByUser: true }), high()],
+      stored,
+    );
+
+    expect(diff.patches).toEqual([]);
+    expect(diff.deleteIds).toEqual([stored[0]._id]);
+    expect(diff.insertRows).toHaveLength(1);
+    expect(diff.insertRows[0]).toMatchObject({ frontIndex: 1, backIndex: 0, orientedBy: "user" });
+  });
+
+  test("both images user-set to the same side are not paired, and an existing pair is deleted", () => {
+    const stored = storedFrom([low(), high()]);
+
+    const diff = computePairingDiff(
+      [
+        imageRow(0, { textCount: 8, side: "front", sideByUser: true }),
+        imageRow(1, { textCount: 120, side: "front", sideByUser: true }),
+      ],
+      stored,
+    );
+
+    expect(diff.insertRows).toEqual([]);
+    expect(diff.patches).toEqual([]);
+    expect(diff.deleteIds).toEqual([stored[0]._id]);
+    expect(diff.becomingUnmatched).toHaveLength(2);
+  });
+});
+
+describe("guardedAdjacencyFallback orients, and refuses what it cannot orient", () => {
+  const withText = (key: string, textCount: number, rest: Partial<Parameters<typeof createPoolCard>[0]> = {}) =>
+    createPoolCard({ key, textCount, ...rest });
+
+  test("never pairs neighbours with close text and no disagreeing labels", () => {
+    expect(guardedAdjacencyFallback([withText("0", 8), withText("1", 9)])).toEqual([]);
+    expect(guardedAdjacencyFallback([withText("0", 120), withText("1", 118)])).toEqual([]);
+    // Labels that AGREE are two copies of one side, not a pair.
+    expect(
+      guardedAdjacencyFallback([
+        withText("0", 8, { label: "front" }),
+        withText("1", 9, { label: "front" }),
+      ]),
+    ).toEqual([]);
+  });
+
+  test("pairs by text and returns the low-text card as the front whatever the scan order", () => {
+    const pairs = guardedAdjacencyFallback([withText("0", 120), withText("1", 8)]);
+    expect(pairs).toHaveLength(1);
+    const [front, back, rule] = pairs[0];
+    expect([front.key, back.key, rule]).toEqual(["1", "0", "text"]);
+  });
+
+  test("falls back to disagreeing labels when text cannot tell, and says so", () => {
+    const pairs = guardedAdjacencyFallback([
+      withText("0", 8, { label: "back" }),
+      withText("1", 9, { label: "front" }),
+    ]);
+    expect(pairs.map(([f, b, r]) => [f.key, b.key, r])).toEqual([["1", "0", "label"]]);
+  });
+
+  test("a user-set side outranks text", () => {
+    const pairs = guardedAdjacencyFallback([
+      withText("0", 8, { label: "back", labelByUser: true }),
+      withText("1", 120),
+    ]);
+    expect(pairs.map(([f, b, r]) => [f.key, b.key, r])).toEqual([["1", "0", "user"]]);
+  });
+
+  test("steps past an unorientable neighbour so the next orientable pair still forms", () => {
+    // [8, 9, 120]: 0 and 1 cannot be oriented against each other; 1 and 2 can.
+    const pairs = guardedAdjacencyFallback([withText("0", 8), withText("1", 9), withText("2", 120)]);
+    expect(pairs.map(([f, b]) => [f.key, b.key])).toEqual([["1", "2"]]);
+  });
+
+  test("a split the user made is honoured even for an orientable couple", () => {
+    expect(
+      guardedAdjacencyFallback([withText("0", 8, { unpairedFrom: ["1"] }), withText("1", 120)]),
+    ).toEqual([]);
+  });
+});
+
+describe("listPlaceholderPairs keeps its public shape", () => {
+  test("does not leak orientedBy (the scanner CLI reads this shape)", async () => {
+    const JOB = "job-list-shape";
+    const t = convexTest(schema, modules);
+    await seedJob(t, JOB, { status: "succeeded", totalImages: 2, processedImages: 2 });
+    await seedImage(t, JOB, 0, "done", { ...GRIFFEY, textCount: 8 });
+    await seedImage(t, JOB, 1, "done", { ...GRIFFEY, textCount: 120, cardNumber: "24" });
+    await runFinal(t, JOB);
+    expect((await getPairs(t, JOB))[0].orientedBy).toBe("text");
+
+    const listed = await t
+      .withIdentity(USER_A)
+      .query(api.placeholderPipeline.listPlaceholderPairs, { jobId: JOB });
+
+    expect(listed).toHaveLength(1);
+    expect(Object.keys(listed[0]).sort()).toEqual(
+      [
+        "backIndex",
+        "cardNumber",
+        "confidence",
+        "createdAt",
+        "frontIndex",
+        "mechanism",
+        "player",
+        "score",
+        "team",
+      ].sort(),
+    );
   });
 });
