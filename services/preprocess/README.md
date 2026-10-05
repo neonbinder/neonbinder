@@ -85,7 +85,12 @@ Timing (NEO-315): every authenticated `/process-entry` writes one JSON line,
 `timing` logger with a bare `%(message)s` format, so Cloud Logging stores it
 as `jsonPayload` and per-stage numbers (`gcs_ms`, `vision_calls`,
 `vision_ms`, `classical_ms`, `quad_ms`, `birefnet_ms`, `sam_ms`,
-`classify_ms`, `total_ms`, ...) can be queried directly. `quad_ms` is the
+`classify_ms`, `total_ms`, ...) can be queried directly. `card_number_source`
+(NEO-327) says where the result's card number came from: `vision` when the
+orient step's own Vision response held a definitive read (one `No.`/`#`
+prefix, its adjacent number, by an edge of the card, high symbol confidence;
+see `app/vision_card_number.py`) and the classifier did not call the image a
+front, `haiku` otherwise, or null when neither found one. `quad_ms` is the
 FAST role's quad crop on its own (detection, checks and warp), kept out of
 `classical_ms` so its cost is visible. It stays at INFO whatever `LOG_LEVEL` says, and it carries
 only numbers, flags and stage labels: no identifiers, paths or image data.

@@ -44,6 +44,7 @@ EXPECTED_KEYS = {
     "baseline_supplied",
     "haiku_bbox_reached",
     "haiku_bbox_won",
+    "card_number_source",
 }
 
 

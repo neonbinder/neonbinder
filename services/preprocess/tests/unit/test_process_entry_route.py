@@ -225,6 +225,19 @@ class TestHappyPath:
         # Rotation 0 → the stored output is the winning bytes unchanged.
         assert fake_gcs.read(BUCKET, f"{OUTPUT_PREFIX}0000.jpg") == entry
 
+    def test_unknown_side_serialises_as_null(self, fake_gcs, monkeypatch):
+        # NEO-327: the pairing pool reads this null as "no label" and decides
+        # the side from text_count; a guessed "front" would outvote it.
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch, side=None)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        body = _post_entry(entry_index=0).json()
+
+        assert body["needs_escalation"] is False
+        assert "side" in body
+        assert body["side"] is None
+
     def test_response_never_carries_object_paths(self, fake_gcs, monkeypatch):
         _stub_orient(monkeypatch)
         _stub_classify(monkeypatch)
@@ -1005,6 +1018,7 @@ TIMING_KEYS = {
     "baseline_supplied",
     "haiku_bbox_reached",
     "haiku_bbox_won",
+    "card_number_source",
 }
 
 
@@ -1033,6 +1047,43 @@ class TestTimingLine:
         assert line["baseline_supplied"] is False
         assert line["classify_retried"] is False
         assert line["total_ms"] >= line["gcs_ms"]
+
+    @pytest.mark.parametrize(
+        ("side", "vision_number", "expected_number", "expected_source"),
+        [
+            ("back", "20", "20", "vision"),
+            ("back", None, "90", "haiku"),
+            ("front", "24", "90", "haiku"),
+        ],
+    )
+    def test_card_number_source_is_recorded(
+        self,
+        fake_gcs,
+        monkeypatch,
+        timing_lines,
+        side,
+        vision_number,
+        expected_number,
+        expected_source,
+    ):
+        # NEO-327: a definitive Vision read beats Haiku's, never on a front;
+        # the line names the winner and the response contract is unchanged.
+        orient_result = OrientationResult(
+            rotation_degrees=0,
+            confidence=1.0,
+            text_count=5,
+            vision_card_number=vision_number,
+        )
+        monkeypatch.setattr(cropper, "detect_orientation", lambda _bytes: orient_result)
+        _stub_classify(monkeypatch, card_number="90", side=side)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        body = _post_entry(entry_index=0).json()
+
+        assert body["card_number"] == expected_number
+        assert body["side"] == side
+        assert "vision_card_number" not in body
+        assert timing_lines.bodies()[0]["card_number_source"] == expected_source
 
     def test_vision_reconnect_is_recorded_on_the_line(self, fake_gcs, monkeypatch, timing_lines):
         # The real detect_orientation runs (not the cropper-level stub), on a

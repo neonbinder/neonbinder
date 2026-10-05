@@ -117,6 +117,9 @@ class Timings:
     # did the cascade reach that strategy at all, and did it win.
     haiku_bbox_reached: bool = False
     haiku_bbox_won: bool = False
+    # NEO-327: which read supplied the result's card number: "vision" (a
+    # definitive OCR read), "haiku", or None when neither found one.
+    card_number_source: str | None = None
     started: float = field(default_factory=time.perf_counter)
 
     @contextmanager
@@ -164,6 +167,7 @@ class Timings:
         body["baseline_supplied"] = self.baseline_supplied
         body["haiku_bbox_reached"] = self.haiku_bbox_reached
         body["haiku_bbox_won"] = self.haiku_bbox_won
+        body["card_number_source"] = self.card_number_source
         return body
 
     def emit(self) -> None:
