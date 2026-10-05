@@ -2135,3 +2135,111 @@ describe("listPlaceholderPairs keeps its public shape", () => {
     );
   });
 });
+
+describe("a sparse front and its own back are never read as a re-scan", () => {
+  // The six done rows of the placeholder-fixtures-fullbleed batch exactly as a
+  // PR preview stored them (identity, side, textCount, dhash), in the two
+  // upload orders the flows use. Each mossbaum front/back pair hashes 9 bits
+  // apart — inside SAME_IMAGE_THRESHOLD — so before the guard the second
+  // mossbaum image evicted the first as a "stale re-scan" and the batch
+  // printed 2 pairs instead of 3. vorkle's front came back with no identity,
+  // which is why vorkle pairs by scan order rather than by name.
+  type Fixture = Omit<PairingImageRow, "_id" | "entryIndex">;
+  const fixtures: Record<string, Fixture> = {
+    "01-vorkle-front": {
+      originalName: "01-vorkle-front.jpg",
+      textCount: 2,
+      players: [],
+      dhash: "8aa2aa9696a2a28a",
+    },
+    "02-vorkle-back": {
+      originalName: "02-vorkle-back.jpg",
+      side: "back",
+      textCount: 69,
+      players: ["Grebble VORKLE"],
+      team: "Portstone Ironbacks",
+      cardNumber: "17",
+      dhash: "a2a2a2aaa0a6a2a4",
+    },
+    "03-quillden-front": {
+      originalName: "03-quillden-front.jpg",
+      side: "front",
+      textCount: 2,
+      players: ["Marcus QUILLDEN"],
+      dhash: "82a2a29292a2a282",
+    },
+    "04-quillden-back": {
+      originalName: "04-quillden-back.jpg",
+      side: "back",
+      textCount: 70,
+      players: ["Marcus QUILLDEN"],
+      team: "Askew Valley Tanagers",
+      cardNumber: "42",
+      dhash: "82a2a2aaa0a482a4",
+    },
+    "05-mossbaum-front": {
+      originalName: "05-mossbaum-front.jpg",
+      side: "front",
+      textCount: 2,
+      players: ["Teodor MOSSBAUM"],
+      dhash: "82a2a29e9aa2a282",
+    },
+    "06-mossbaum-back": {
+      originalName: "06-mossbaum-back.jpg",
+      side: "back",
+      textCount: 70,
+      players: ["Teodor MOSSBAUM"],
+      team: "Riven Harbor Cormorants",
+      cardNumber: "83",
+      dhash: "82a2a2aaa0a6a286",
+    },
+  };
+
+  function rowsInUploadOrder(names: string[]): PairingImageRow[] {
+    return names.map((name, entryIndex) => ({
+      _id: `img-${entryIndex}` as unknown as Id<"placeholderImages">,
+      entryIndex,
+      ...fixtures[name],
+    }));
+  }
+
+  /** Each desired pair as "front-name/back-name", sorted. */
+  function pairNames(rows: PairingImageRow[]): string[] {
+    const byIndex = new Map(rows.map((r) => [r.entryIndex, r.originalName] as const));
+    return computePairingDiff(rows, [])
+      .insertRows.map((p) => `${byIndex.get(p.frontIndex)}/${byIndex.get(p.backIndex)}`)
+      .sort();
+  }
+
+  const expected = [
+    "01-vorkle-front.jpg/02-vorkle-back.jpg",
+    "03-quillden-front.jpg/04-quillden-back.jpg",
+    "05-mossbaum-front.jpg/06-mossbaum-back.jpg",
+  ];
+
+  test("manifest order pairs all three cards", () => {
+    const rows = rowsInUploadOrder([
+      "01-vorkle-front",
+      "02-vorkle-back",
+      "03-quillden-front",
+      "04-quillden-back",
+      "05-mossbaum-front",
+      "06-mossbaum-back",
+    ]);
+    expect(pairNames(rows)).toEqual(expected);
+    expect(computePairingDiff(rows, []).becomingUnmatched).toEqual([]);
+  });
+
+  test("back-first order pairs all three cards", () => {
+    const rows = rowsInUploadOrder([
+      "02-vorkle-back",
+      "01-vorkle-front",
+      "04-quillden-back",
+      "03-quillden-front",
+      "06-mossbaum-back",
+      "05-mossbaum-front",
+    ]);
+    expect(pairNames(rows)).toEqual(expected);
+    expect(computePairingDiff(rows, []).becomingUnmatched).toEqual([]);
+  });
+});

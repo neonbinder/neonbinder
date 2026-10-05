@@ -159,6 +159,18 @@ export const EXACT_CONFIDENCE_THRESHOLD = 1000;
 export const TEXT_ORIENT_MIN_RATIO = 4;
 export const TEXT_ORIENT_MIN_GAP = 40;
 
+/**
+ * Do the Vision text counts clearly tell these two images apart? The text rule
+ * of `orientPair`, and the content evidence `evictRescan` reads: two pictures
+ * whose text counts differ this much are not the same picture, however their
+ * perceptual hashes compare.
+ */
+function textCountsTellApart(a: PoolCard, b: PoolCard): boolean {
+  const hi = Math.max(a.textCount, b.textCount);
+  const lo = Math.min(a.textCount, b.textCount);
+  return hi >= lo * TEXT_ORIENT_MIN_RATIO && hi - lo >= TEXT_ORIENT_MIN_GAP;
+}
+
 /** A card's label when a person set it, else null. */
 function userLabel(card: PoolCard): CardSide | null {
   return card.labelByUser ? validLabel(card.label) : null;
@@ -219,9 +231,7 @@ export function orientPair(
   }
 
   // (1) text count
-  const hi = Math.max(a.textCount, b.textCount);
-  const lo = Math.min(a.textCount, b.textCount);
-  if (hi >= lo * TEXT_ORIENT_MIN_RATIO && hi - lo >= TEXT_ORIENT_MIN_GAP) {
+  if (textCountsTellApart(a, b)) {
     return a.textCount > b.textCount
       ? { front: b, back: a, rule: "text" }
       : { front: a, back: b, rule: "text" };
@@ -238,6 +248,21 @@ export function orientPair(
 
   // (3) not a front/back pair
   return null;
+}
+
+/**
+ * Is there evidence, other than the perceptual hash, that these are two
+ * different pictures? Clearly different text counts, or two user-set labels
+ * that disagree. Used by `CardPool.evictRescan` so a card's own other side
+ * can never be mistaken for a re-scan of it.
+ */
+function provablyDifferentPictures(a: PoolCard, b: PoolCard): boolean {
+  if (textCountsTellApart(a, b)) {
+    return true;
+  }
+  const userA = userLabel(a);
+  const userB = userLabel(b);
+  return userA !== null && userB !== null && userA !== userB;
 }
 
 /**
@@ -510,11 +535,23 @@ export class CardPool {
    *
    * Anything short of that is left alone: the same card with a different
    * picture is its other side, or a second copy, and `findMatch` /
-   * `orientPair` decide which. Labels are not consulted — they are not
-   * trusted to say which side an image shows. Without a hasher, or when
-   * either image cannot be hashed, nothing is evicted: a re-scan cannot be
-   * told from a different image, and dropping an image on no evidence would
-   * lose it.
+   * `orientPair` decide which. Classifier labels are not consulted — they are
+   * not trusted to say which side an image shows.
+   *
+   * **Its own other side is never a re-scan.** dHash sees only coarse
+   * luminance gradients, so a low-detail front and its back can hash within
+   * the threshold. Reading the same player, they then looked like a re-scan,
+   * the second image evicted the first, and neither half was ever paired
+   * (NEO-327: a measured front/back 9 bits apart). Evidence that proves two
+   * different pictures rules a re-scan out before the hash is consulted:
+   * text counts that clearly differ (`textCountsTellApart`, the same rule
+   * that orients a pair), or a person who labelled the two as different
+   * sides. The pre-NEO-327 pool got this protection from its same-label gate
+   * as a side effect; this states it on content instead.
+   *
+   * Without a hasher, or when either image cannot be hashed, nothing is
+   * evicted: a re-scan cannot be told from a different image, and dropping
+   * an image on no evidence would lose it.
    */
   private evictRescan(card: PoolCard): void {
     if (this.hashImage === null || !hasIdentity(card)) {
@@ -526,6 +563,9 @@ export class CardPool {
         continue;
       }
       if (!sameCardIdentity(card, existing)) {
+        continue;
+      }
+      if (provablyDifferentPictures(card, existing)) {
         continue;
       }
       const incomingHash = this.ensureHash(card);

@@ -1317,6 +1317,70 @@ describe("evictRescan: identity plus picture, never label", () => {
   });
 });
 
+describe("evictRescan never takes a card's own other side", () => {
+  // Measured on a PR preview: a sparse front and its back, both reading the
+  // same player, whose dHashes were 9 bits apart, inside SAME_IMAGE_THRESHOLD.
+  // dHash only sees coarse luminance gradients, so a low-detail front and back
+  // can hash as near-identical. Before this guard the back "evicted" its own
+  // front as a stale re-scan and neither half was ever paired.
+  const FRONT_HASH = "82a2a29e9aa2a282";
+  const BACK_HASH = "82a2a2aaa0a6a286";
+
+  test("the measured hashes really are inside the same-image threshold", () => {
+    const pool = new CardPool({
+      hashImage: hasherFrom({ old: FRONT_HASH, new: BACK_HASH }),
+    });
+    // Same text count: nothing tells these two apart, so this IS a re-scan.
+    pool.addCard(card("old", "front", { player: "Teodor MOSSBAUM", textCount: 2 }));
+    pool.addCard(card("new", "front", { player: "Teodor MOSSBAUM", textCount: 2 }));
+    expect(pool.entries().map((c) => c.key)).toEqual(["new"]);
+  });
+
+  test.each([
+    ["front first", ["front", "back"]],
+    ["back first", ["back", "front"]],
+  ] as const)("a text-clear front/back pairs, %s", (_name, order) => {
+    const cards = {
+      front: card("front", "front", { player: "Teodor MOSSBAUM", textCount: 2 }),
+      back: card("back", "back", {
+        player: "Teodor MOSSBAUM",
+        team: "Riven Harbor Cormorants",
+        cardNumber: "83",
+        textCount: 70,
+      }),
+    };
+    const pool = new CardPool({
+      hashImage: hasherFrom({ front: FRONT_HASH, back: BACK_HASH }),
+    });
+    expect(pool.addCard(cards[order[0]])).toBeNull();
+    const match = pool.addCard(cards[order[1]]);
+    expect(match).not.toBeNull();
+    expect(match!.front.key).toBe("front");
+    expect(match!.back.key).toBe("back");
+    expect(match!.orientedBy).toBe("text");
+    expect(pool.size).toBe(0);
+  });
+
+  test("a front/back a person labelled apart is never a re-scan", () => {
+    const pool = new CardPool({ hashImage: hasherFrom({ a: HASH_A, b: HASH_A }) });
+    pool.addCard(card("a", "front", { player: "Ben Tate", labelByUser: true }));
+    const match = pool.addCard(card("b", "back", { player: "Ben Tate", labelByUser: true }));
+    expect(match).not.toBeNull();
+    expect(match!.front.key).toBe("a");
+    expect(match!.orientedBy).toBe("user");
+  });
+
+  test("classifier labels alone still do not protect a re-scan", () => {
+    // Only evidence that proves two different pictures blocks eviction —
+    // text count or two user labels. Disagreeing classifier labels on the
+    // same picture are the classifier's coin flip, not a second side.
+    const pool = new CardPool({ hashImage: hasherFrom({ old: HASH_A, new: HASH_A }) });
+    pool.addCard(card("old", "front", { player: "Ben Tate", textCount: 120 }));
+    pool.addCard(card("new", "back", { player: "Ben Tate", textCount: 118 }));
+    expect(pool.entries().map((c) => c.key)).toEqual(["new"]);
+  });
+});
+
 // ── Offer-order independence ────────────────────────────────────────────────
 
 /** Deterministic PRNG (mulberry32) so a failing permutation is reproducible. */
