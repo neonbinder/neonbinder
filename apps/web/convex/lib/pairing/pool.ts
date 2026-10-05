@@ -3,15 +3,26 @@
  * preprocess service's audited Python port (`app/pairing/pool.py`).
  *
  * `CardPool` is **internal to this package on purpose.** Its semantics are
- * incremental: cards are offered one at a time, a card that finds no partner
- * is held, and both the same-side collision resolution and the tie-breaking
- * depend on the order cards were offered in. That statefulness is
- * load-bearing, so it survives the port intact — but it is not the surface
- * the NEO-170 pipeline consumes. `pairBatch` (in `pairBatch.ts`) owns the
- * lifecycle: it constructs a pool, feeds it in upload order, and returns.
- * Callers outside this package should use that.
+ * incremental: cards are offered one at a time and a card that finds no
+ * partner is held. `pairBatch` (in `pairBatch.ts`) owns the lifecycle: it
+ * constructs a pool, feeds it, and returns. Callers outside this package
+ * should use that.
  *
- * Two behaviours in here are the result of production bugs and must not be
+ * ## Pair first, then decide the sides (NEO-327)
+ *
+ * Two images pair because they are the same card — the identity scorer below
+ * — and only then is the pair oriented by `orientPair`. The classifier's
+ * front/back label is NOT a gate: it calls photo-heavy backs "front" (sets
+ * whose backs carry a big player photo and the name), so a pool that only
+ * paired opposite labels, and flipped a same-label arrival, made the side a
+ * coin flip on upload order. Now:
+ *
+ * - any held card is a candidate, whatever its label;
+ * - a candidate that `orientPair` cannot orient is a hard reject, which is
+ *   the duplicate-copy guard (two fronts, or two backs, of the same card);
+ * - arrival or entry order never decides which image is the front.
+ *
+ * Three behaviours in here are the result of production bugs and must not be
  * "simplified" back:
  *
  * 1. **Player disagreement is a hard reject, not a penalty.** It was a -1000
@@ -21,8 +32,14 @@
  *    when both sides carry one and they disagree, no other signal may
  *    overrule it.
  *
- * 2. **A same-side collision never blindly overwrites the pooled image.**
- *    See `CardPool.resolveSameSideCollision`.
+ * 2. **Orientation is a hard reject, not a penalty.** Two images that cannot
+ *    be told apart as a front and a back are not a pair, however well their
+ *    identities agree — a duplicate copy agrees perfectly. Skipping it per
+ *    candidate is what lets the true partner still win.
+ *
+ * 3. **A new image never silently overwrites a held one.** Only a deliberate
+ *    re-scan (same identity AND the same picture) evicts. See
+ *    `CardPool.evictRescan`.
  */
 
 import { imagesLookIdentical, isDhashHex } from "./dhash";
@@ -32,6 +49,7 @@ import {
   Confidence,
   ImageHasher,
   MatchResult,
+  OrientRule,
   PoolCard,
   cardLabel,
   hasIdentity,
@@ -107,11 +125,112 @@ export const MATCH_ACCEPT_THRESHOLD = 200;
  */
 export const EXACT_CONFIDENCE_THRESHOLD = 1000;
 
+// ── Orientation ──────────────────────────────────────────────────────────────
+
+/**
+ * Text-count orientation thresholds. Within a pair, the image with CLEARLY
+ * more Vision text is the back: the back carries the card number, bio or
+ * stats, copyright and fine print, while a front is mostly photo. "Clearly"
+ * is both a ratio and an absolute gap, so neither two text-light images
+ * (5 vs 2 words: ratio passes, gap fails) nor two text-heavy ones (130 vs 100:
+ * gap passes, ratio fails) are oriented by text — those are what a duplicate
+ * copy looks like.
+ *
+ * PROVISIONAL. The 2026-10-05 2014 Panini Rookies & Stars run measured backs
+ * at 110–142 words against fronts at 5–11, so these sit far inside that
+ * separation. They are recalibrated from the classifier eval script's
+ * text_count table (photo-back AND stat-back fixtures) before this ships.
+ * Measured ranges: TODO(NEO-327) fill from the eval run.
+ */
+export const TEXT_ORIENT_MIN_RATIO = 3;
+export const TEXT_ORIENT_MIN_GAP = 10;
+
+/** A card's label when a person set it, else null. */
+function userLabel(card: PoolCard): CardSide | null {
+  return card.labelByUser ? validLabel(card.label) : null;
+}
+
+/**
+ * Narrow a label to a valid `CardSide`, or null. The type says it already is
+ * one, but labels come from model responses and stored rows, so the runtime
+ * check stays.
+ */
+function validLabel(label: unknown): CardSide | null {
+  return label === "front" || label === "back" ? label : null;
+}
+
+/**
+ * Decide which of two images is the front and which the back — or that they
+ * are not a front/back pair at all. Symmetric: swapping `a` and `b` never
+ * changes the answer, and nothing here reads arrival or entry order.
+ *
+ * In order:
+ *
+ * 0. **A person decided — the side they set wins.** Exactly one image carries
+ *    a user-set label → that image is that side and the other is the
+ *    opposite. Both user-set and disagreeing → the user labels. Both user-set
+ *    and the SAME → null: the person said both show the same side, so no
+ *    automatic evidence may turn them into a front/back pair.
+ * 1. **Text.** The image with clearly more Vision text is the back — see
+ *    `TEXT_ORIENT_MIN_RATIO` / `TEXT_ORIENT_MIN_GAP`.
+ * 2. **Labels.** Text counts are close, but both images carry a label and
+ *    the labels disagree → the labels.
+ * 3. **Otherwise null.** Close text counts and no disagreeing labels is what
+ *    two copies of the same side look like; pairing them would be a guess.
+ */
+export function orientPair(
+  a: PoolCard,
+  b: PoolCard,
+): { front: PoolCard; back: PoolCard; rule: OrientRule } | null {
+  // (0) user labels
+  const userA = userLabel(a);
+  const userB = userLabel(b);
+  if (userA !== null && userB === null) {
+    return userA === "front"
+      ? { front: a, back: b, rule: "user" }
+      : { front: b, back: a, rule: "user" };
+  }
+  if (userB !== null && userA === null) {
+    return userB === "front"
+      ? { front: b, back: a, rule: "user" }
+      : { front: a, back: b, rule: "user" };
+  }
+  if (userA !== null && userB !== null) {
+    if (userA === userB) {
+      return null;
+    }
+    return userA === "front"
+      ? { front: a, back: b, rule: "user" }
+      : { front: b, back: a, rule: "user" };
+  }
+
+  // (1) text count
+  const hi = Math.max(a.textCount, b.textCount);
+  const lo = Math.min(a.textCount, b.textCount);
+  if (hi >= lo * TEXT_ORIENT_MIN_RATIO && hi - lo >= TEXT_ORIENT_MIN_GAP) {
+    return a.textCount > b.textCount
+      ? { front: b, back: a, rule: "text" }
+      : { front: a, back: b, rule: "text" };
+  }
+
+  // (2) classifier labels, only when they disagree
+  const labelA = validLabel(a.label);
+  const labelB = validLabel(b.label);
+  if (labelA !== null && labelB !== null && labelA !== labelB) {
+    return labelA === "front"
+      ? { front: a, back: b, rule: "label" }
+      : { front: b, back: a, rule: "label" };
+  }
+
+  // (3) not a front/back pair
+  return null;
+}
+
 /**
  * Do these two cards describe the same physical card?
  *
- * Used only for same-side collision detection, which is why it is looser than
- * the scorer: it wants "plausibly the same card", not "confidently pairable".
+ * Used only for re-scan detection, which is why it is looser than the
+ * scorer: it wants "plausibly the same card", not "confidently pairable".
  *
  * Player name is authoritative when both sides have one — an explicit
  * disagreement there is decisive and card number is not consulted, for the
@@ -136,29 +255,15 @@ export function sameCardIdentity(a: PoolCard, b: PoolCard): boolean {
   return false;
 }
 
-/** The other side of a card. */
-export function oppositeSide(side: CardSide): CardSide {
-  return side === "front" ? "back" : "front";
-}
-
-/** Return [front, back] for a matched pair, driven by `card.side`. */
-function orient(card: PoolCard, partner: PoolCard): [PoolCard, PoolCard] {
-  if (card.side === "front") {
-    return [card, partner];
-  }
-  return [partner, card];
-}
-
 /**
  * Holds unpaired cards and matches each new arrival against them.
  *
- * Insertion order is significant. The pool is backed by a `Map`, whose
- * iteration order is insertion order, and `findMatch` improves its best
- * candidate on a strict `>` starting from 0 — so when two candidates score
- * identically the **first one offered to the pool wins**. The original
- * TypeScript relied on `Map` iteration order for exactly this; the Python
- * port relied on dict insertion order for the same guarantee, and a test pins
- * it.
+ * Insertion order breaks exact score ties between candidates. The pool is
+ * backed by a `Map`, whose iteration order is insertion order, and
+ * `findMatch` improves its best candidate on a strict `>` starting from 0 —
+ * so when two candidates score identically the **first one offered to the
+ * pool wins**. A test pins it. Order never decides which image of a pair is
+ * the front; `orientPair` does.
  */
 export class CardPool {
   private readonly cards: Map<string, PoolCard> = new Map();
@@ -166,8 +271,8 @@ export class CardPool {
 
   /**
    * @param opts.hashImage optional perceptual-hash callback used only to
-   *   disambiguate same-side collisions. Without it the pool falls back to
-   *   the legacy newer-wins behaviour.
+   *   recognise a deliberate re-scan (`evictRescan`). Without it no held card
+   *   is ever evicted.
    */
   constructor(opts: { hashImage?: ImageHasher | null } = {}) {
     this.hashImage = opts.hashImage ?? null;
@@ -195,10 +300,9 @@ export class CardPool {
    * when the card is held awaiting a partner.
    */
   addCard(card: PoolCard): MatchResult | null {
-    // Collision resolution runs first: a re-scan should evict the stale
-    // entry, and a mis-classified image should be flipped, before either
-    // one is offered to the matcher.
-    this.resolveSameSideCollision(card);
+    // Runs first: a re-scan should evict the stale copy before the matcher
+    // can pair the new image with it or with the stale copy's partner-to-be.
+    this.evictRescan(card);
 
     const match = this.findMatch(card);
     if (match !== null) {
@@ -212,29 +316,57 @@ export class CardPool {
   }
 
   /**
-   * Find the best-scoring opposite-side partner for `card`.
+   * Find the best-scoring partner for `card` among every held card.
    *
-   * Scores every opposite-side card held, rejecting outright any candidate
-   * whose player name explicitly disagrees, and accepts the best if it clears
-   * `MATCH_ACCEPT_THRESHOLD`. Falls back to a side-only pairing when exactly
-   * one opposite-side card is held and neither card carries any identity at
-   * all.
+   * Each held card is a candidate whatever its label. Hard rejects, in order:
+   * a user split (`unpairedFrom`), an explicit player disagreement, and a
+   * pair `orientPair` cannot orient. The survivors are scored and the best is
+   * accepted if it clears `MATCH_ACCEPT_THRESHOLD`; its sides come from
+   * `orientPair`, never from which card arrived first.
+   *
+   * Falls back to a side-only pairing when exactly one held card survives
+   * the user-split and orientation rejects and neither card carries any
+   * identity at all.
    */
   findMatch(card: PoolCard): MatchResult | null {
-    const wanted = oppositeSide(card.side);
     let bestCandidate: PoolCard | null = null;
+    let bestOrientation: ReturnType<typeof orientPair> = null;
     let bestScore = 0;
 
-    // Tracked for the side-only fallback below.
-    let oppositeCount = 0;
-    let lastOpposite: PoolCard | null = null;
+    // Tracked for the side-only fallback below: held cards this one could
+    // form an oriented pair with, the user not having split them.
+    let orientableCount = 0;
+    let lastOrientable: PoolCard | null = null;
+    let lastOrientation: ReturnType<typeof orientPair> = null;
 
     for (const existing of this.cards.values()) {
-      if (existing.side !== wanted) {
+      // A re-offered key (a retried image) is not its own partner.
+      if (existing.key === card.key) {
         continue;
       }
-      oppositeCount += 1;
-      lastOpposite = existing;
+
+      // The user already separated these two. A hard reject, and for a
+      // stronger reason than the player check below: no amount of identity
+      // agreement should let the matcher overrule a person who looked at
+      // both images and said no. Checked in both directions so the outcome
+      // cannot depend on which card the pool happens to be holding.
+      if (
+        card.unpairedFrom.includes(existing.key) ||
+        existing.unpairedFrom.includes(card.key)
+      ) {
+        continue;
+      }
+
+      // Not a front/back pair (two copies of the same side, as far as the
+      // evidence can tell) — a hard reject per candidate, so a duplicate copy
+      // is skipped and the true partner can still win. See `orientPair`.
+      const orientation = orientPair(card, existing);
+      if (orientation === null) {
+        continue;
+      }
+      orientableCount += 1;
+      lastOrientable = existing;
+      lastOrientation = orientation;
 
       // Hard reject — see the module docstring. This is deliberately NOT a
       // score penalty; a coincidentally-equal card number must never be able
@@ -247,30 +379,17 @@ export class CardPool {
         continue;
       }
 
-      // The user already separated these two. Also a hard reject, and for a
-      // stronger reason than the one above: no amount of identity agreement
-      // should let the matcher overrule a person who looked at both images and
-      // said no. Checked in both directions so the outcome cannot depend on
-      // which card the pool happens to be holding.
-      if (
-        card.unpairedFrom.includes(existing.key) ||
-        existing.unpairedFrom.includes(card.key)
-      ) {
-        continue;
-      }
-
       let score = 0;
-      let cardNumberMatched = false;
-      let playerMatched = false;
-      let teamMatched = false;
 
+      // Each image keeps the number it read, front or back, so a front that
+      // really prints the number agrees here. A disagreement is NOT a penalty:
+      // a front's read is often a jersey number.
       if (card.cardNumber && existing.cardNumber) {
         if (
           card.cardNumber.toLowerCase().trim() ===
           existing.cardNumber.toLowerCase().trim()
         ) {
           score += CARD_NUMBER_EXACT_SCORE;
-          cardNumberMatched = true;
         }
       }
 
@@ -282,7 +401,6 @@ export class CardPool {
         // independently readable.
         if (pm.match) {
           score += pm.exact ? PLAYER_EXACT_SCORE : PLAYER_FUZZY_SCORE;
-          playerMatched = true;
         }
       }
 
@@ -290,20 +408,16 @@ export class CardPool {
         const tm = teamNamesMatch(card.team, existing.team);
         if (tm.match) {
           score += tm.exact ? TEAM_EXACT_SCORE : TEAM_FUZZY_SCORE;
-          teamMatched = true;
         }
       }
 
-      // Scan order — CORROBORATION ONLY, never grounds for a pairing.
+      // Scan order — CORROBORATION ONLY, never grounds for a pairing, and
+      // never a say in which image is the front.
       //
       // Gated on the identity signals having already scored something. On its
       // own the bonus equals MATCH_ACCEPT_THRESHOLD exactly, so an ungated
-      // version would pair any two adjacent opposite-side images with no
-      // identity at all — quietly taking over from the guarded adjacency
-      // fallback below, which handles that case deliberately and labels it
-      // `mechanism: "adjacency"`, `confidence: "side-only"` so the UI can say
-      // "this is only scan order". Boosting a real match is the job; inventing
-      // one is not.
+      // version would pair any two adjacent images with no identity at all.
+      // Boosting a real match is the job; inventing one is not.
       //
       // Both positions must be known: an absent order means "we do not know",
       // not "not adjacent", and must not be scored either way.
@@ -320,13 +434,12 @@ export class CardPool {
       if (score > bestScore) {
         bestScore = score;
         bestCandidate = existing;
+        bestOrientation = orientation;
       }
     }
 
-    // Confidence is a band of the winning SCORE. The old checklist —
-    // `cardNumberMatched && (playerMatched || teamMatched)` — could never be
-    // true, because it wanted a card number on both halves and no set prints
-    // one on the front. See the `Confidence` doc comment.
+    // Confidence is a band of the winning SCORE — see the `Confidence` doc
+    // comment.
     const bestConfidence: Confidence =
       bestScore > EXACT_CONFIDENCE_THRESHOLD
         ? "exact"
@@ -334,105 +447,100 @@ export class CardPool {
           ? "fuzzy"
           : "side-only";
 
-    if (bestCandidate !== null && bestScore >= MATCH_ACCEPT_THRESHOLD) {
-      const [front, back] = orient(card, bestCandidate);
-      return makeMatchResult(front, back, bestConfidence, "pool", bestScore);
+    if (
+      bestCandidate !== null &&
+      bestOrientation !== null &&
+      bestScore >= MATCH_ACCEPT_THRESHOLD
+    ) {
+      return makeMatchResult(
+        bestOrientation.front,
+        bestOrientation.back,
+        bestConfidence,
+        "pool",
+        bestScore,
+        bestOrientation.rule,
+      );
     }
 
-    // Side-only fallback. Only safe when there is exactly one opposite-side
-    // card to choose from AND neither card has any identity to contradict the
-    // pairing — with two candidates and no identity we would be guessing, and
-    // a card that *does* have identity failed to match for a reason worth
-    // respecting.
-    if (oppositeCount === 1 && lastOpposite !== null) {
-      if (!hasIdentity(card) && !hasIdentity(lastOpposite)) {
-        const [front, back] = orient(card, lastOpposite);
-        return makeMatchResult(front, back, "side-only", "pool", 0);
-      }
+    // Side-only fallback. Only safe when there is exactly one held card this
+    // one could be oriented against AND neither card has any identity to
+    // contradict the pairing — with two candidates and no identity we would
+    // be guessing, and a card that *does* have identity failed to match for
+    // a reason worth respecting.
+    if (
+      orientableCount === 1 &&
+      lastOrientable !== null &&
+      lastOrientation !== null &&
+      !hasIdentity(card) &&
+      !hasIdentity(lastOrientable)
+    ) {
+      return makeMatchResult(
+        lastOrientation.front,
+        lastOrientation.back,
+        "side-only",
+        "pool",
+        0,
+        lastOrientation.rule,
+      );
     }
 
     return null;
   }
 
   /**
-   * Handle a new card colliding with a held card of the same side.
+   * Evict any held card the incoming one is a deliberate re-scan of.
    *
-   * Front/back classification is sometimes wrong, so two *different* images
-   * of the same card can both arrive labelled the same side. Overwriting the
-   * pooled image would silently lose one of them, so instead:
+   * A re-scan is the same card (`sameCardIdentity`) AND the same picture (the
+   * perceptual hashes are within `SAME_IMAGE_THRESHOLD`). The held copy is
+   * stale, so it goes and the new one carries on to the matcher.
    *
-   * - **Same physical scan** (dHash within threshold) — a deliberate re-scan.
-   *   Evict the stale entry and let the newer one through.
-   * - **Different image** — the incoming card was mis-classified. Flip its
-   *   side so it *pairs* with the held card instead of clobbering it. This is
-   *   the mutation that forces `PoolCard` to be mutable.
-   *
-   * Without a working hasher the two cases are indistinguishable, so we fall
-   * back to the pre-safety-net newer-wins behaviour.
-   *
-   * Only the first colliding card is considered, matching the source.
+   * Anything short of that is left alone: the same card with a different
+   * picture is its other side, or a second copy, and `findMatch` /
+   * `orientPair` decide which. Labels are not consulted — they are not
+   * trusted to say which side an image shows. Without a hasher, or when
+   * either image cannot be hashed, nothing is evicted: a re-scan cannot be
+   * told from a different image, and dropping an image on no evidence would
+   * lose it.
    */
-  private resolveSameSideCollision(card: PoolCard): void {
-    if (!hasIdentity(card)) {
+  private evictRescan(card: PoolCard): void {
+    if (this.hashImage === null || !hasIdentity(card)) {
       return;
     }
 
-    for (const existing of this.cards.values()) {
-      if (existing.side !== card.side) {
-        continue;
-      }
+    for (const existing of [...this.cards.values()]) {
       if (existing.key === card.key) {
         continue;
       }
       if (!sameCardIdentity(card, existing)) {
         continue;
       }
-
-      if (this.imagesAreSame(card, existing)) {
-        this.cards.delete(existing.key);
-      } else {
-        card.side = oppositeSide(card.side);
+      const incomingHash = this.ensureHash(card);
+      if (incomingHash === null) {
+        return;
       }
-      return;
+      const heldHash = this.ensureHash(existing);
+      if (heldHash !== null && imagesLookIdentical(incomingHash, heldHash)) {
+        this.cards.delete(existing.key);
+      }
     }
-  }
-
-  /**
-   * Compare two cards' images perceptually.
-   *
-   * Returns true when they look like the same physical scan. With no hasher,
-   * or when hashing either side fails, conservatively returns true so
-   * behaviour matches the legacy newer-wins logic rather than flipping a side
-   * on no evidence.
-   */
-  private imagesAreSame(a: PoolCard, b: PoolCard): boolean {
-    if (this.hashImage === null) {
-      return true;
-    }
-    const ha = this.ensureHash(a);
-    const hb = this.ensureHash(b);
-    if (ha === null || hb === null) {
-      return true;
-    }
-    return imagesLookIdentical(ha, hb);
   }
 
   /**
    * Lazily fetch and memoise a card's perceptual hash.
    *
-   * Hashing is only ever reached on a same-side collision, so most cards in a
-   * batch are never hashed at all. A throwing hasher, or one that hands back
-   * a malformed hex string, degrades to null (newer-wins) — a hash failure
-   * must never fail a batch.
+   * Hashing is only ever reached when a new image shares an identity with a
+   * held one, so most cards in a batch are never hashed at all. A throwing
+   * hasher, or one that hands back a malformed hex string, degrades to null
+   * (no eviction) — a hash failure must never fail a batch.
    */
   private ensureHash(card: PoolCard): string | null {
     if (card.imageHash !== null) {
       return card.imageHash;
     }
     if (this.hashImage === null) {
-      // Unreachable in practice — `imagesAreSame` short-circuits on a missing
-      // hasher before ever getting here. Retained from the source as a guard
-      // for any future caller of this helper.
+      // Unreachable in practice — `evictRescan` returns early on a missing
+      // hasher before ever getting here. Retained as a guard for any future
+      // caller of this helper.
       return null;
     }
     let value: string | null;

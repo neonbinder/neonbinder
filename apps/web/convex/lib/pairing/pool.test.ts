@@ -7,8 +7,9 @@
  * levels, the player-disagreement hard reject beating a coincidentally-equal
  * card number, surname-only fronts, the side-only fallback and its two
  * guards, insertion-order tie-breaking, the asymmetric post-pair merge, and
- * same-side collision resolution in all four hasher states (same image /
- * different image / no hasher / hasher failure).
+ * re-scan eviction in all four hasher states (same image / different image /
+ * no hasher / hasher failure). NEO-327: pairs are oriented by `orientPair`
+ * (user label, then text count, then disagreeing labels), never by arrival.
  *
  * The perceptual hasher is faked as a record lookup — distance semantics are
  * exercised in dhash.test.ts, and the pool only cares about the verdict.
@@ -25,7 +26,9 @@ import {
   PLAYER_FUZZY_SCORE,
   TEAM_EXACT_SCORE,
   TEAM_FUZZY_SCORE,
-  oppositeSide,
+  TEXT_ORIENT_MIN_GAP,
+  TEXT_ORIENT_MIN_RATIO,
+  orientPair,
   sameCardIdentity,
 } from "./pool";
 import {
@@ -48,16 +51,22 @@ const HASH_FAR = lowBitsHex(SAME_IMAGE_THRESHOLD + 5);
 // ...and one close enough to read as the same physical scan.
 const HASH_NEAR = lowBitsHex(SAME_IMAGE_THRESHOLD - 1);
 
+/**
+ * A resolved card carrying a classifier `label`. Text counts default to 0 on
+ * both sides, so unless a test sets them, pairs are oriented by the labels.
+ */
 function card(
   key: string,
-  side: CardSide = "front",
+  label: CardSide | null = "front",
   fields: {
     player?: string | null;
     team?: string | null;
     cardNumber?: string | null;
+    textCount?: number;
+    labelByUser?: boolean;
   } = {},
 ): PoolCard {
-  return createPoolCard({ key, side, identityResolved: true, ...fields });
+  return createPoolCard({ key, label, identityResolved: true, ...fields });
 }
 
 /** Fake ImageHasher backed by a record. */
@@ -84,7 +93,7 @@ describe("pool basics", () => {
     expect(pool.remove("a")).toBe(false);
   });
 
-  test("same-side cards never match", () => {
+  test("two same-label images with no text gap never match", () => {
     const pool = new CardPool();
     pool.addCard(card("a", "front", { player: "Walker Buehler" }));
     expect(pool.addCard(card("b", "front", { player: "Clayton Kershaw" }))).toBeNull();
@@ -98,9 +107,107 @@ describe("pool basics", () => {
     expect(pool.size).toBe(0);
   });
 
-  test("oppositeSide is an involution", () => {
-    expect(oppositeSide("front")).toBe("back");
-    expect(oppositeSide(oppositeSide("front"))).toBe("front");
+});
+
+describe("orientPair", () => {
+  const FRONT_WORDS = 6;
+  const BACK_WORDS = 120;
+
+  test("clearly more text is the back, whatever the labels say", () => {
+    // The photo-back case: the classifier calls both images "front".
+    const photo = card("photo", "front", { textCount: FRONT_WORDS });
+    const back = card("back", "front", { textCount: BACK_WORDS });
+    const o = orientPair(back, photo);
+    expect(o).not.toBeNull();
+    expect(o!.front.key).toBe("photo");
+    expect(o!.back.key).toBe("back");
+    expect(o!.rule).toBe("text");
+  });
+
+  test("is symmetric in its arguments", () => {
+    const a = card("a", null, { textCount: FRONT_WORDS });
+    const b = card("b", null, { textCount: BACK_WORDS });
+    const ab = orientPair(a, b)!;
+    const ba = orientPair(b, a)!;
+    expect([ab.front.key, ab.back.key, ab.rule]).toEqual([
+      ba.front.key,
+      ba.back.key,
+      ba.rule,
+    ]);
+  });
+
+  test("both thresholds must hold for a text orientation", () => {
+    // Ratio passes, gap fails: two text-light images.
+    expect(
+      orientPair(card("a", null, { textCount: 1 }), card("b", null, { textCount: 1 + TEXT_ORIENT_MIN_GAP - 1 })),
+    ).toBeNull();
+    // Gap passes, ratio fails: two text-heavy images.
+    expect(
+      orientPair(card("a", null, { textCount: 100 }), card("b", null, { textCount: 100 * TEXT_ORIENT_MIN_RATIO - 1 })),
+    ).toBeNull();
+  });
+
+  test("close text counts fall back to disagreeing labels", () => {
+    const o = orientPair(card("b", "back"), card("f", "front"));
+    expect(o).not.toBeNull();
+    expect(o!.front.key).toBe("f");
+    expect(o!.rule).toBe("label");
+  });
+
+  test("close text counts and agreeing labels are not a pair", () => {
+    expect(orientPair(card("a", "front"), card("b", "front"))).toBeNull();
+    expect(orientPair(card("a", null), card("b", "front"))).toBeNull();
+  });
+
+  test("a user-set label decides over text", () => {
+    // The person says the text-heavy image is the front.
+    const o = orientPair(
+      card("heavy", "front", { textCount: BACK_WORDS, labelByUser: true }),
+      card("light", "front", { textCount: FRONT_WORDS }),
+    );
+    expect(o).not.toBeNull();
+    expect(o!.front.key).toBe("heavy");
+    expect(o!.back.key).toBe("light");
+    expect(o!.rule).toBe("user");
+  });
+
+  test("two disagreeing user labels decide", () => {
+    const o = orientPair(
+      card("a", "back", { textCount: FRONT_WORDS, labelByUser: true }),
+      card("b", "front", { textCount: BACK_WORDS, labelByUser: true }),
+    );
+    expect(o!.front.key).toBe("b");
+    expect(o!.rule).toBe("user");
+  });
+
+  test("two agreeing user labels are not a pair, whatever the text says", () => {
+    // The side the person set wins: they said both show the front, so a
+    // strong text gap must not turn them into a front/back pair.
+    expect(
+      orientPair(
+        card("a", "front", { textCount: FRONT_WORDS, labelByUser: true }),
+        card("b", "front", { textCount: BACK_WORDS, labelByUser: true }),
+      ),
+    ).toBeNull();
+    expect(
+      orientPair(
+        card("a", "back", { textCount: BACK_WORDS, labelByUser: true }),
+        card("b", "front", { textCount: FRONT_WORDS, labelByUser: false }),
+      )!.rule,
+    ).toBe("user");
+  });
+
+  test("two agreeing user labels never pair in the pool", () => {
+    const pool = new CardPool();
+    pool.addCard(
+      card("a", "front", { player: "Walker Buehler", textCount: FRONT_WORDS, labelByUser: true }),
+    );
+    expect(
+      pool.addCard(
+        card("b", "front", { player: "Walker Buehler", textCount: BACK_WORDS, labelByUser: true }),
+      ),
+    ).toBeNull();
+    expect(pool.size).toBe(2);
   });
 });
 
@@ -279,8 +386,8 @@ describe("surname-only front", () => {
 describe("side-only fallback", () => {
   test("pairs two identity-free cards when only one candidate exists", () => {
     const pool = new CardPool();
-    pool.addCard(createPoolCard({ key: "b", side: "back" }));
-    const match = pool.addCard(createPoolCard({ key: "f", side: "front" }));
+    pool.addCard(createPoolCard({ key: "b", label: "back" }));
+    const match = pool.addCard(createPoolCard({ key: "f", label: "front" }));
     expect(match).not.toBeNull();
     expect(match!.confidence).toBe("side-only");
     expect(match!.score).toBe(0);
@@ -288,23 +395,23 @@ describe("side-only fallback", () => {
     expect(match!.back.key).toBe("b");
   });
 
-  test("blocked when more than one candidate exists", () => {
+  test("blocked when more than one orientable candidate exists", () => {
     const pool = new CardPool();
-    pool.addCard(createPoolCard({ key: "b1", side: "back" }));
-    pool.addCard(createPoolCard({ key: "b2", side: "back" }));
-    expect(pool.addCard(createPoolCard({ key: "f", side: "front" }))).toBeNull();
+    pool.addCard(createPoolCard({ key: "b1", label: "back" }));
+    pool.addCard(createPoolCard({ key: "b2", label: "back" }));
+    expect(pool.addCard(createPoolCard({ key: "f", label: "front" }))).toBeNull();
   });
 
   test("blocked when the new card has identity", () => {
     const pool = new CardPool();
-    pool.addCard(createPoolCard({ key: "b", side: "back" }));
+    pool.addCard(createPoolCard({ key: "b", label: "back" }));
     expect(pool.addCard(card("f", "front", { player: "Walker Buehler" }))).toBeNull();
   });
 
   test("blocked when the pooled card has identity", () => {
     const pool = new CardPool();
     pool.addCard(card("b", "back", { team: "Dodgers" }));
-    expect(pool.addCard(createPoolCard({ key: "f", side: "front" }))).toBeNull();
+    expect(pool.addCard(createPoolCard({ key: "f", label: "front" }))).toBeNull();
   });
 });
 
@@ -378,8 +485,8 @@ describe("post-pair merge", () => {
   });
 
   test("card number comes from the back only", () => {
-    // A card number on a front is a misread, so it never wins the merge —
-    // even when the back has none at all.
+    // The front image keeps the number it read (often a jersey number), but
+    // it never names the pair — even when the back has none at all.
     const pool = new CardPool();
     pool.addCard(card("b", "back", { player: "Walker Buehler" }));
     const match = pool.addCard(
@@ -399,13 +506,40 @@ describe("post-pair merge", () => {
     expect(match!.cardNumber).toBe("25");
   });
 
-  test("front and back are assigned by side, not arrival", () => {
+  test("front and back are assigned by orientation, not arrival", () => {
+    for (const order of [
+      ["the-back", "the-front"],
+      ["the-front", "the-back"],
+    ]) {
+      const pool = new CardPool();
+      const cards: Record<string, PoolCard> = {
+        // Both labelled "front" — the photo-back failure the labels make.
+        "the-front": card("the-front", "front", { player: "Walker Buehler", textCount: 6 }),
+        "the-back": card("the-back", "front", { player: "Walker Buehler", textCount: 120 }),
+      };
+      pool.addCard(cards[order[0]]);
+      const match = pool.addCard(cards[order[1]]);
+      expect(match).not.toBeNull();
+      expect(match!.front.key).toBe("the-front");
+      expect(match!.back.key).toBe("the-back");
+      expect(match!.orientedBy).toBe("text");
+    }
+  });
+
+  test("a duplicate copy is skipped and the true partner still wins", () => {
     const pool = new CardPool();
-    pool.addCard(card("arrived-first", "front", { player: "Walker Buehler" }));
-    const match = pool.addCard(card("arrived-second", "back", { player: "Walker Buehler" }));
+    // Two fronts of the same card, then its back.
+    pool.addCard(card("front-1", "front", { player: "Walker Buehler", textCount: 6 }));
+    expect(
+      pool.addCard(card("front-2", "front", { player: "Walker Buehler", textCount: 7 })),
+    ).toBeNull();
+    const match = pool.addCard(
+      card("the-back", "front", { player: "Walker Buehler", textCount: 120 }),
+    );
     expect(match).not.toBeNull();
-    expect(match!.front.key).toBe("arrived-first");
-    expect(match!.back.key).toBe("arrived-second");
+    expect(match!.back.key).toBe("the-back");
+    expect(match!.front.key).toBe("front-1");
+    expect(pool.entries().map((c) => c.key)).toEqual(["front-2"]);
   });
 });
 
@@ -468,46 +602,67 @@ describe("sameCardIdentity", () => {
   });
 });
 
-describe("same-side collision", () => {
-  test("same image evicts the stale entry", () => {
+describe("re-scan eviction", () => {
+  test("same identity and same image evicts the stale entry", () => {
     const pool = new CardPool({ hashImage: hasherFrom({ old: HASH_A, new: HASH_NEAR }) });
     pool.addCard(card("old", "back", { player: "Walker Buehler" }));
     expect(pool.addCard(card("new", "back", { player: "Walker Buehler" }))).toBeNull();
     expect(pool.entries().map((c) => c.key)).toEqual(["new"]);
-    expect(pool.entries()[0].side).toBe("back");
+    expect(pool.entries()[0].label).toBe("back");
   });
 
-  test("different image flips the incoming side and pairs", () => {
-    // The mis-classification case: two different images both labelled
-    // "back". The incoming one is flipped rather than clobbering the pooled
-    // image, and the flip immediately lets the two pair.
+  test("a re-scan is evicted whatever its label", () => {
+    // Labels are not trusted to say which side an image shows, so a re-scan
+    // the classifier labelled differently is still the same picture.
+    const pool = new CardPool({ hashImage: hasherFrom({ old: HASH_A, new: HASH_NEAR }) });
+    pool.addCard(card("old", "back", { player: "Walker Buehler" }));
+    expect(pool.addCard(card("new", "front", { player: "Walker Buehler" }))).toBeNull();
+    expect(pool.entries().map((c) => c.key)).toEqual(["new"]);
+  });
+
+  test("a different image with the same label is never flipped into a pair", () => {
+    // The old pool flipped the incoming label here, so upload order picked
+    // the front. Now two same-label images with no text gap are what a
+    // duplicate copy looks like, and both are held.
     const pool = new CardPool({
       hashImage: hasherFrom({ pooled: HASH_A, incoming: HASH_FAR }),
     });
     pool.addCard(card("pooled", "back", { player: "Walker Buehler" }));
-    const match = pool.addCard(card("incoming", "back", { player: "Walker Buehler" }));
+    expect(pool.addCard(card("incoming", "back", { player: "Walker Buehler" }))).toBeNull();
+    expect(pool.entries().map((c) => c.key)).toEqual(["pooled", "incoming"]);
+    expect(pool.entries().map((c) => c.label)).toEqual(["back", "back"]);
+  });
+
+  test("a different image with the same label pairs on a text gap", () => {
+    const pool = new CardPool({
+      hashImage: hasherFrom({ pooled: HASH_A, incoming: HASH_FAR }),
+    });
+    pool.addCard(card("pooled", "front", { player: "Walker Buehler", textCount: 120 }));
+    const match = pool.addCard(
+      card("incoming", "front", { player: "Walker Buehler", textCount: 6 }),
+    );
     expect(match).not.toBeNull();
     expect(match!.front.key).toBe("incoming");
-    expect(match!.front.side).toBe("front");
     expect(match!.back.key).toBe("pooled");
+    expect(match!.orientedBy).toBe("text");
     expect(pool.size).toBe(0);
   });
 
-  test("without a hasher the newest card wins", () => {
+  test("without a hasher nothing is evicted", () => {
     const pool = new CardPool();
     pool.addCard(card("old", "back", { player: "Walker Buehler" }));
     expect(pool.addCard(card("new", "back", { player: "Walker Buehler" }))).toBeNull();
-    expect(pool.entries().map((c) => c.key)).toEqual(["new"]);
+    expect(pool.entries().map((c) => c.key)).toEqual(["old", "new"]);
   });
 
-  test("an unhashable image degrades to newer-wins", () => {
+  test("an unhashable image evicts nothing", () => {
     const pool = new CardPool({ hashImage: hasherFrom({ old: HASH_A, new: null }) });
     pool.addCard(card("old", "back", { player: "Walker Buehler" }));
     expect(pool.addCard(card("new", "back", { player: "Walker Buehler" }))).toBeNull();
-    expect(pool.entries().map((c) => c.key)).toEqual(["new"]);
+    expect(pool.entries().map((c) => c.key)).toEqual(["old", "new"]);
   });
 
-  test("a raising hasher degrades to newer-wins", () => {
+  test("a raising hasher evicts nothing", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const boom: ImageHasher = () => {
@@ -516,14 +671,14 @@ describe("same-side collision", () => {
       const pool = new CardPool({ hashImage: boom });
       pool.addCard(card("old", "back", { player: "Walker Buehler" }));
       expect(pool.addCard(card("new", "back", { player: "Walker Buehler" }))).toBeNull();
-      expect(pool.entries().map((c) => c.key)).toEqual(["new"]);
+      expect(pool.entries().map((c) => c.key)).toEqual(["old", "new"]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("hashing failed"));
     } finally {
       warn.mockRestore();
     }
   });
 
-  test("a hasher returning malformed hex degrades to newer-wins", () => {
+  test("a hasher returning malformed hex evicts nothing", () => {
     // TS-contract addition: hashes are hex strings here, so a hasher can hand
     // back garbage the Python int-based port could not. It must degrade the
     // same way a hashing failure does.
@@ -534,7 +689,7 @@ describe("same-side collision", () => {
       });
       pool.addCard(card("old", "back", { player: "Walker Buehler" }));
       expect(pool.addCard(card("new", "back", { player: "Walker Buehler" }))).toBeNull();
-      expect(pool.entries().map((c) => c.key)).toEqual(["new"]);
+      expect(pool.entries().map((c) => c.key)).toEqual(["old", "new"]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining("malformed hash"));
     } finally {
       warn.mockRestore();
@@ -552,39 +707,31 @@ describe("same-side collision", () => {
     pool.addCard(card("old", "back", { player: "Walker Buehler" }));
     pool.addCard(card("new", "back", { player: "Walker Buehler" }));
     expect(pool.entries()[0].imageHash).toBe(HASH_A);
-    // Second collision on the surviving card must not re-hash it.
+    // Second re-scan against the surviving card must not re-hash it.
     const before = calls.length;
     pool.addCard(card("newer", "back", { player: "Walker Buehler" }));
     expect(calls.slice(before)).toEqual(["newer"]);
   });
 
-  test("identity-free cards skip collision resolution", () => {
-    const pool = new CardPool({ hashImage: hasherFrom({ a: HASH_A, b: HASH_FAR }) });
-    pool.addCard(createPoolCard({ key: "a", side: "back" }));
-    pool.addCard(createPoolCard({ key: "b", side: "back" }));
+  test("identity-free cards skip re-scan detection", () => {
+    const pool = new CardPool({ hashImage: hasherFrom({ a: HASH_A, b: HASH_A }) });
+    pool.addCard(createPoolCard({ key: "a", label: "back" }));
+    pool.addCard(createPoolCard({ key: "b", label: "back" }));
     expect(pool.size).toBe(2);
   });
 
-  test("cards of different sides do not collide", () => {
-    const pool = new CardPool({ hashImage: hasherFrom({ f: HASH_A, b: HASH_FAR }) });
-    pool.addCard(card("b", "back", { player: "Walker Buehler" }));
-    const match = pool.addCard(card("f", "front", { player: "Walker Buehler" }));
-    expect(match).not.toBeNull();
-    expect(match!.front.key).toBe("f");
-  });
-
-  test("a card never collides with its own key", () => {
-    // Re-offering the same key (a retried image, say) must not read the
-    // pooled copy of itself as a collision and flip its own side.
+  test("a card never evicts its own key", () => {
+    // Re-offering the same key (a retried image, say) replaces the held copy
+    // without reading it as a re-scan or a partner.
     const pool = new CardPool({ hashImage: hasherFrom({ a: HASH_A }) });
     pool.addCard(card("a", "back", { player: "Walker Buehler" }));
     expect(pool.addCard(card("a", "back", { player: "Walker Buehler" }))).toBeNull();
     expect(pool.size).toBe(1);
-    expect(pool.entries()[0].side).toBe("back");
+    expect(pool.entries()[0].label).toBe("back");
   });
 
-  test("a non-colliding same-side card is left alone", () => {
-    const pool = new CardPool({ hashImage: hasherFrom({ a: HASH_A, b: HASH_FAR }) });
+  test("a different card is left alone", () => {
+    const pool = new CardPool({ hashImage: hasherFrom({ a: HASH_A, b: HASH_A }) });
     pool.addCard(card("a", "back", { player: "Walker Buehler" }));
     pool.addCard(card("b", "back", { player: "Clayton Kershaw" }));
     expect(pool.entries().map((c) => c.key)).toEqual(["a", "b"]);
@@ -598,18 +745,18 @@ describe("PoolCard log helpers (TS additions)", () => {
   test("cardLabel prefers originalFilename and falls back to key/unknown", () => {
     const named = createPoolCard({
       key: "member-3",
-      side: "front",
+      label: "front",
       player: "Walker Buehler",
       originalFilename: "IMG_0042.HEIC",
     });
     expect(cardLabel(named)).toBe("Walker Buehler (IMG_0042.HEIC)");
-    expect(cardLabel(createPoolCard({ key: "member-3", side: "front" }))).toBe(
+    expect(cardLabel(createPoolCard({ key: "member-3", label: "front" }))).toBe(
       "unknown (member-3)",
     );
   });
 
   test("identitySummary renders null fields literally", () => {
-    const c = createPoolCard({ key: "k", side: "back", player: "Walker Buehler" });
+    const c = createPoolCard({ key: "k", label: "back", player: "Walker Buehler" });
     expect(identitySummary(c)).toBe("player=Walker Buehler team=null cardNumber=null");
   });
 });
