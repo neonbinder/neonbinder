@@ -121,6 +121,13 @@ import { findSportForSelectorOption } from "./cardChecklist";
 import { safeMarketplaceText } from "../lib/marketplace/safe-text";
 import { derivedVariantFlags, variantTypeRole } from "./variantRole";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
+import { classifyAdapterError } from "./observability";
+import {
+  failureFromMessage,
+  scrubLogText,
+  type FetchFailure,
+  type FetchFailureKind,
+} from "./lib/marketplaceFetchFailure";
 
 // ---------------------------------------------------------------------------
 // Bounds
@@ -293,8 +300,36 @@ const SIDE_LABEL: Record<PlatformSide, string> = {
   sportlots: "SportLots",
 };
 
-export function blockedSideFailed(side: PlatformSide): string {
-  return `${SIDE_LABEL[side]} didn't answer, so nothing changed — try again in a bit`;
+/**
+ * NEO-321 follow-up (DRAFT copy — Jason signs off) — what went wrong on a
+ * side, in the operator's words. Chosen from the failure's KIND only: never a
+ * status code, a URL or a marketplace message. A kind with nothing more
+ * useful to say keeps the original "didn't answer".
+ */
+function sideFailedWhat(side: PlatformSide, kind?: FetchFailureKind): string {
+  const name = SIDE_LABEL[side];
+  switch (kind) {
+    case "timeout":
+      return `${name} took too long to answer`;
+    case "network":
+      return `${name} couldn't be reached`;
+    case "http_error":
+    case "bad_response":
+      return `${name} answered with an error`;
+    case "signed_out":
+      return `${name} signed us out`;
+    case "no_sign_in":
+      return `we couldn't sign in to ${name}`;
+    default:
+      return `${name} didn't answer`;
+  }
+}
+
+export function blockedSideFailed(
+  side: PlatformSide,
+  kind?: FetchFailureKind,
+): string {
+  return `${sideFailedWhat(side, kind)}, so nothing changed — try again in a bit`;
 }
 
 /** A rebuild with a paused side the parallel's old cards hold links on. */
@@ -1713,7 +1748,30 @@ type SlChecklistCard = {
 
 type SideFetch =
   | { ok: true; cards: FetchedParallelCard[] }
-  | { ok: false };
+  | { ok: false; failure: FetchFailure };
+
+/**
+ * NEO-321 follow-up — what one side's fetch reported, for its timing/failure
+ * log line. `pages`/`slowestPageMs` come from the adapter when it sends them.
+ */
+type SideFetchTrace = {
+  side: PlatformSide;
+  startedAt: number;
+  pages: number;
+  slowestPageMs: number;
+  /** SportLots: marketplace sets this build reads, and how many answered. */
+  sets?: number;
+  setsOk?: number;
+};
+
+/** Adapter result fields this module reads beyond the cards. */
+type AdapterOutcome = {
+  success: boolean;
+  message?: string;
+  failure?: FetchFailure;
+  pages?: number;
+  slowestPageMs?: number;
+};
 
 const extraValidator = v.object({
   count: v.number(),
@@ -1922,7 +1980,40 @@ export const buildParallelChecklist = action({
     if (insertCards.overLimit) return blocked(BLOCKED_TOO_MANY_CARDS);
 
     // ── 3. fetch every side before anything is touched ──────────────────────
+    // NEO-321 follow-up — every side ends in exactly one log line,
+    // `parallel_fetch_ok` or `parallel_fetch_failed`, with its timing.
+    const sideFailed = (
+      trace: SideFetchTrace,
+      failure: FetchFailure,
+      message: string | undefined,
+      threw: boolean,
+    ): SideFetch => {
+      logSideFetchFailed(args.parallelId, sourceKind, trace, failure, message, threw);
+      return { ok: false, failure };
+    };
+    /** Adds one adapter call's pages to the side's trace. */
+    const tally = (trace: SideFetchTrace, result: AdapterOutcome): void => {
+      if (result.pages !== undefined) trace.pages += result.pages;
+      if (result.slowestPageMs !== undefined) {
+        trace.slowestPageMs = Math.max(trace.slowestPageMs, result.slowestPageMs);
+      }
+    };
+    /** The adapter's structured reason, else one read off its message. */
+    const failureOf = (result: AdapterOutcome): FetchFailure =>
+      result.failure ?? failureFromMessage(result.message);
+    const fromThrow = (err: unknown): { failure: FetchFailure; message: string } => {
+      const message =
+        err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      return { failure: failureFromMessage(message), message };
+    };
+
     const fetchBsc = async (): Promise<SideFetch> => {
+      const trace: SideFetchTrace = {
+        side: "bsc",
+        startedAt: Date.now(),
+        pages: 0,
+        slowestPageMs: 0,
+      };
       try {
         const result = await ctx.runAction(
           api.adapters.buysportscards.fetchBscChecklist,
@@ -1933,11 +2024,12 @@ export const buildParallelChecklist = action({
             ...(plan.bscSourceFacet ? { sourceFacet: plan.bscSourceFacet } : {}),
           },
         );
-        if (!result.success) return { ok: false };
+        tally(trace, result);
+        if (!result.success) {
+          return sideFailed(trace, failureOf(result), result.message, false);
+        }
         const cards: BscChecklistCard[] = result.cards;
-        return {
-          ok: true,
-          cards: cards.flatMap((c) =>
+        const bscCards = cards.flatMap((c) =>
             c.platformRef
               ? [
                   {
@@ -1953,17 +2045,27 @@ export const buildParallelChecklist = action({
                   },
                 ]
               : [],
-          ),
-        };
+        );
+        logSideFetchOk(args.parallelId, sourceKind, trace, bscCards.length);
+        return { ok: true, cards: bscCards };
       } catch (err) {
         console.error(
           `[buildParallelChecklist] bsc fetch threw: ${err instanceof Error ? err.name : "unknown"}`,
         );
-        return { ok: false };
+        const thrown = fromThrow(err);
+        return sideFailed(trace, thrown.failure, thrown.message, true);
       }
     };
     const fetchSl = async (): Promise<SideFetch> => {
       const cards: FetchedParallelCard[] = [];
+      const trace: SideFetchTrace = {
+        side: "sportlots",
+        startedAt: Date.now(),
+        pages: 0,
+        slowestPageMs: 0,
+        sets: plan.slIds.length,
+        setsOk: 0,
+      };
       for (const slId of plan.slIds) {
         try {
           const result = await ctx.runAction(
@@ -1972,7 +2074,11 @@ export const buildParallelChecklist = action({
             // else: no ancestor id and no NB name can reach `selset`.
             { parentFilters: {}, platformFilters: { parallel: slId } },
           );
-          if (!result.success) return { ok: false };
+          tally(trace, result);
+          if (!result.success) {
+            return sideFailed(trace, failureOf(result), result.message, false);
+          }
+          trace.setsOk = (trace.setsOk ?? 0) + 1;
           const slCards: SlChecklistCard[] = result.cards;
           for (const c of slCards) {
             if (!c.platformRef) continue;
@@ -1991,9 +2097,11 @@ export const buildParallelChecklist = action({
           console.error(
             `[buildParallelChecklist] sportlots fetch threw: ${err instanceof Error ? err.name : "unknown"}`,
           );
-          return { ok: false };
+          const thrown = fromThrow(err);
+          return sideFailed(trace, thrown.failure, thrown.message, true);
         }
       }
+      logSideFetchOk(args.parallelId, sourceKind, trace, cards.length);
       return { ok: true, cards };
     };
 
@@ -2006,8 +2114,11 @@ export const buildParallelChecklist = action({
     if (slFetch) fetched.sportlots = slFetch;
     const answered = SIDES.filter((side) => fetched[side]?.ok);
     for (const side of toFetch) {
-      if (!fetched[side]?.ok) {
-        return blocked(blockedSideFailed(side), { sidesFetched: answered });
+      const got = fetched[side];
+      if (!got?.ok) {
+        return blocked(blockedSideFailed(side, got?.failure.kind), {
+          sidesFetched: answered,
+        });
       }
     }
     const fetchedCards = (side: PlatformSide): FetchedParallelCard[] => {
@@ -2458,6 +2569,73 @@ async function checkBlocks(
     if (page.isDone) return { cards, linked };
     cursor = page.continueCursor;
   }
+}
+
+/**
+ * NEO-321 follow-up — one line per side that answered: how long it took, how
+ * many pages and cards. A re-run reads these to see whether fetches were
+ * slowing down before they failed. No names, no refs, no URL.
+ */
+function logSideFetchOk(
+  parallelId: Id<"selectorOptions">,
+  sourceKind: BuildSourceKind,
+  trace: SideFetchTrace,
+  cards: number,
+): void {
+  console.log(
+    JSON.stringify({
+      msg: "parallel_fetch_ok",
+      parallelId,
+      sourceKind,
+      side: trace.side,
+      elapsedMs: Date.now() - trace.startedAt,
+      pages: trace.pages,
+      slowestPageMs: trace.slowestPageMs,
+      cards,
+      ...(trace.sets !== undefined ? { sets: trace.sets } : {}),
+    }),
+  );
+}
+
+/**
+ * NEO-321 follow-up — one line per side that failed, carrying why. The
+ * adapter's message is scrubbed (no URL, token, cookie or credential key) and
+ * truncated before it is logged; every other field is a number, a boolean or
+ * a fixed tag.
+ */
+function logSideFetchFailed(
+  parallelId: Id<"selectorOptions">,
+  sourceKind: BuildSourceKind,
+  trace: SideFetchTrace,
+  failure: FetchFailure,
+  message: string | undefined,
+  threw: boolean,
+): void {
+  console.warn(
+    JSON.stringify({
+      msg: "parallel_fetch_failed",
+      parallelId,
+      sourceKind,
+      side: trace.side,
+      reason: failure.kind,
+      errorClass: classifyAdapterError(message) ?? failure.kind,
+      ...(failure.httpStatus !== undefined ? { httpStatus: failure.httpStatus } : {}),
+      timedOut: failure.timedOut,
+      ...(failure.timeoutMs !== undefined ? { timeoutMs: failure.timeoutMs } : {}),
+      ...(failure.reauthAttempted ? { reauthAttempted: true } : {}),
+      elapsedMs: Date.now() - trace.startedAt,
+      threw,
+      ...(failure.requests !== undefined
+        ? { requests: failure.requests, requestsOk: failure.requestsOk }
+        : {}),
+      ...(trace.sets !== undefined ? { sets: trace.sets, setsOk: trace.setsOk } : {}),
+      ...(failure.pageStart !== undefined
+        ? { failedPageStart: failure.pageStart, pagesOk: failure.pagesOk }
+        : {}),
+      pagesBefore: trace.pages,
+      ...(message !== undefined ? { message: scrubLogText(message) } : {}),
+    }),
+  );
 }
 
 /** The audit line. Counts, sides and timing only — no names, no refs. */

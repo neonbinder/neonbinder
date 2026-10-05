@@ -15,6 +15,11 @@ import {
 } from "./observability";
 import type { CredentialTestProperties } from "./observability";
 import { isPlatformPaused } from "./marketplacePause";
+import {
+  isAbortTimeout,
+  logMarketplaceLimiter,
+  scrubLogText,
+} from "./lib/marketplaceFetchFailure";
 
 const MAX_INPUT_LENGTH = 256;
 const SUPPORTED_SITES = ["buysportscards", "sportlots"];
@@ -95,6 +100,50 @@ function browserUrl() {
 }
 
 const BROWSER_FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * NEO-321 follow-up — a browser-service path as a log-safe route name: the
+ * credential key (which embeds a user id) and any query are dropped.
+ * `/credentials/<key>/token` → `/credentials/:key/token`.
+ */
+function browserRouteOf(path: string): string {
+  return path
+    .split(/[?#]/)[0]
+    .replace(/^\/credentials\/(?!check(?:\/|$))[^/]+/, "/credentials/:key");
+}
+
+/**
+ * NEO-321 follow-up — the browser service limits every route to 60 requests a
+ * minute per credential key (and `/health` per caller IP — one bucket for all
+ * of Convex), and answers 429 past it (`express-rate-limit`,
+ * services/browser/src/index.ts). That is OUR limit, not a marketplace's, and
+ * nothing logged it: a 429 on the token read reads as "no token" and the
+ * fetch fails as "didn't answer". Log it, with the limiter's own headers.
+ */
+function logBrowserRateLimit(
+  response: Response,
+  route: string,
+  waitedMs: number,
+  who: { site?: string; operation?: string } = {},
+): void {
+  const num = (name: string): number | undefined => {
+    const raw = response.headers.get(name);
+    const n = raw === null ? NaN : Number(raw);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  logMarketplaceLimiter({
+    limiter: "browser_service_rate_limit",
+    ...(who.site ? { platform: who.site } : {}),
+    ...(who.operation ? { operation: who.operation } : {}),
+    route,
+    waitedMs,
+    outcome: "rejected_429",
+    limit: num("ratelimit-limit"),
+    remaining: num("ratelimit-remaining"),
+    resetSec: num("ratelimit-reset"),
+    retryAfterSec: num("retry-after"),
+  });
+}
 
 // NEO-20: the browser service Cloud Run instance requires IAM-authenticated
 // requests. The OIDC handshake itself (service-account credentials → ID token →
@@ -199,11 +248,31 @@ async function assertBrowserContract(headers: Record<string, string>): Promise<v
     return;
   }
 
-  const response = await fetch(`${url}/health`, {
-    method: "GET",
-    headers,
-    signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
-  });
+  const healthStartedAt = Date.now();
+  let response: Response;
+  try {
+    response = await fetch(`${url}/health`, {
+      method: "GET",
+      headers,
+      signal: AbortSignal.timeout(HEALTH_TIMEOUT_MS),
+    });
+  } catch (err) {
+    // NEO-321 follow-up — our own 10s timer on the contract probe; a fire
+    // here fails the token read it guards.
+    if (isAbortTimeout(err)) {
+      logMarketplaceLimiter({
+        limiter: "browser_health_timeout",
+        route: "/health",
+        waitedMs: Date.now() - healthStartedAt,
+        timeoutMs: HEALTH_TIMEOUT_MS,
+        outcome: "aborted",
+      });
+    }
+    throw err;
+  }
+  if (response.status === 429) {
+    logBrowserRateLimit(response, "/health", Date.now() - healthStartedAt);
+  }
   if (!response.ok) {
     throw new Error(
       `Browser service health check failed (${response.status}) — refusing to send a request whose shape it may not support.`,
@@ -248,6 +317,7 @@ export async function browserFetch(
   path: string,
   init: RequestInit,
 ): Promise<Response> {
+  const startedAt = Date.now();
   try {
     return await fetch(`${browserUrl()}${path}`, {
       ...init,
@@ -255,6 +325,14 @@ export async function browserFetch(
     });
   } catch (err) {
     if (err instanceof Error && err.name === "TimeoutError") {
+      // NEO-321 follow-up — our own 15s timer on a browser-service call.
+      logMarketplaceLimiter({
+        limiter: "browser_fetch_timeout",
+        route: browserRouteOf(path),
+        waitedMs: Date.now() - startedAt,
+        timeoutMs: BROWSER_FETCH_TIMEOUT_MS,
+        outcome: "aborted",
+      });
       throw new Error(
         `Browser service request timed out after ${BROWSER_FETCH_TIMEOUT_MS / 1000}s: ${path}`,
       );
@@ -290,11 +368,26 @@ async function withCredentialLock<T>(
   busyResult: T,
 ): Promise<T> {
   const token = randomUUID();
+  const askedAt = Date.now();
   const lock = (await ctx.runMutation(
     internal.userProfile.acquireCredentialLock,
     { userId, site, op, token },
-  )) as { acquired: boolean };
-  if (!lock.acquired) return busyResult;
+  )) as { acquired: boolean; heldBy?: string };
+  if (!lock.acquired) {
+    // NEO-321 follow-up — the lock turned this op away. For a fetch-driven
+    // refresh that means "use the cached token or none", which a checklist
+    // fetch then fails on. No user id in the line.
+    logMarketplaceLimiter({
+      limiter: "credential_lock",
+      platform: site,
+      operation: op,
+      waitedMs: Date.now() - askedAt,
+      outcome: "busy",
+      heldBy: lock.heldBy,
+    });
+    return busyResult;
+  }
+  const heldFrom = Date.now();
   try {
     return await body();
   } finally {
@@ -302,6 +395,17 @@ async function withCredentialLock<T>(
       userId,
       site,
       token,
+    });
+    // NEO-321 follow-up — how long this op held the lock, so a "busy" above
+    // can be matched to the hold that caused it (or to none: a lock left by a
+    // crashed op holds until its lease runs out).
+    logMarketplaceLimiter({
+      limiter: "credential_lock",
+      platform: site,
+      operation: op,
+      waitedMs: 0,
+      outcome: "released",
+      heldMs: Date.now() - heldFrom,
     });
   }
 }
@@ -595,10 +699,32 @@ async function readCachedToken(
   userId: string,
 ): Promise<{ token: string; expiresAt?: number } | null | "not_found"> {
   const key = credKey(site, userId);
+  const readStartedAt = Date.now();
   const response = await browserFetch(`/credentials/${key}/token`, {
     method: "GET",
     headers: await browserAuthHeaders(),
   });
+
+  // NEO-321 follow-up — a 429 here is the browser service's own limiter, and
+  // every other non-OK status (404 aside, handled below) is silently "no
+  // token" to the caller. Say which it was.
+  if (response.status === 429) {
+    logBrowserRateLimit(
+      response,
+      "/credentials/:key/token",
+      Date.now() - readStartedAt,
+      { site, operation: "readCachedToken" },
+    );
+  } else if (!response.ok && response.status !== 404) {
+    console.warn(
+      JSON.stringify({
+        msg: "site_token_read_failed",
+        site,
+        status: response.status,
+        elapsedMs: Date.now() - readStartedAt,
+      }),
+    );
+  }
 
   // Current contract: secret exists, nothing cached. Recoverable — mint one.
   if (response.status === 204) return null;
@@ -815,6 +941,19 @@ export const getSiteToken = internalAction({
       return fresh === "not_found" ? null : (fresh ?? cached);
     } catch (error) {
       console.error(`Failed to retrieve token for ${args.site}`);
+      // NEO-321 follow-up — why, scrubbed (the error can name a browser
+      // route with the credential key in it). The caller sees only "no
+      // token", so this line is the only place the reason survives.
+      const detail =
+        error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      console.error(
+        JSON.stringify({
+          msg: "site_token_failed",
+          site: args.site,
+          errorClass: classifyAdapterError(detail),
+          error: scrubLogText(detail),
+        }),
+      );
       return null;
     }
   },
@@ -865,6 +1004,17 @@ async function inReauthBackoff(
   console.log(
     `[getSiteToken] platform=${site} op=refresh skipped: re-auth pending, observed ${Math.round(sinceMs / 1000)}s ago (retry after ${REAUTH_RETRY_INTERVAL_MS / 60_000}m)`,
   );
+  // NEO-321 follow-up — the same fact as a limiter line: a stale token is
+  // handed back unrefreshed (or none), and the fetch fails on it.
+  logMarketplaceLimiter({
+    limiter: "reauth_backoff",
+    platform: site,
+    operation: "refreshSiteToken",
+    waitedMs: 0,
+    outcome: "refresh_skipped",
+    sinceMs,
+    retryAfterMs: REAUTH_RETRY_INTERVAL_MS - sinceMs,
+  });
   return true;
 }
 
@@ -1078,6 +1228,7 @@ async function loginWithRetry(
   let detail = "no attempt made";
   let diagnostic: LoginDiagnostic | undefined;
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const attemptStartedAt = Date.now();
     try {
       const response = await fetch(loginUrl, {
         method: "POST",
@@ -1085,6 +1236,12 @@ async function loginWithRetry(
         body: JSON.stringify(transient ? { key, ...transient } : { key }),
         signal: AbortSignal.timeout(60_000),
       });
+      if (response.status === 429) {
+        // NEO-321 follow-up — the browser service's limiter, not a login.
+        logBrowserRateLimit(response, "/login", Date.now() - attemptStartedAt, {
+          operation: label,
+        });
+      }
       if (response.ok) {
         const data = (await response.json().catch(() => ({ success: false }))) as {
           success: boolean;
@@ -1108,6 +1265,15 @@ async function loginWithRetry(
       if (response.status === 503) {
         detail = "browser service busy (503)";
         console.log(`[${label}] 503 (attempt ${attempt}/${maxAttempts}) — backing off`);
+        // NEO-321 follow-up — a wait WE add (5s, 10s, 15s), then give up.
+        logMarketplaceLimiter({
+          limiter: "browser_login_503_backoff",
+          operation: label,
+          waitedMs: attempt < maxAttempts ? 5_000 * attempt : 0,
+          outcome: attempt < maxAttempts ? "retrying" : "gave_up",
+          attempt,
+          maxAttempts,
+        });
         if (attempt < maxAttempts) {
           await new Promise((r) => setTimeout(r, 5_000 * attempt));
           continue;
@@ -1143,6 +1309,16 @@ async function loginWithRetry(
       // message.
       if (e instanceof BrowserServiceOutdatedError) throw e;
       // Network/timeout to the browser service — do not retry (avoid hammering).
+      if (isAbortTimeout(e)) {
+        // NEO-321 follow-up — our own 60s timer on the login call.
+        logMarketplaceLimiter({
+          limiter: "browser_login_timeout",
+          operation: label,
+          waitedMs: Date.now() - attemptStartedAt,
+          timeoutMs: 60_000,
+          outcome: "aborted",
+        });
+      }
       detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
       console.log(`[${label}] login request threw: ${detail}`);
       return { success: false, data: null, detail, diagnostic };
