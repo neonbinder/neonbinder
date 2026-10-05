@@ -84,4 +84,4 @@
 - [Result ledgers grow, the page scrolls](feedback-result-ledgers-grow-the-page-scrolls.md) — no max-h-48 inner scroller on a list the operator reads; 70vh cap only past a pathological count (Jason, NEO-321)
 - [Key join rules need a typeahead reading](reference_key_join_rules_need_a_typeahead_reading.md) — joined initials break prefix AND substring typeahead one keystroke; entityNameQueryReadings; player-in-sport = home + playerSports legs
 - [Caption under an image never widens it](reference_caption_under_an_image_never_widens_it.md) — figure flex-col + caption `w-0 min-w-full wrap-anywhere text-balance`; `w-min` zeroes preflight images
-- [Static markup visual check](reference_static_markup_visual_check.md) — built CSS + scratch HTML + headless Chrome at 375/1024; no Vite/Convex for a layout-only change
+- [Static markup visual check](reference_static_markup_visual_check.md) — built CSS + scratch HTML + headless Chrome; phone widths via iframe (window-size clamps ~500px)

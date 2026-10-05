@@ -83,6 +83,12 @@ function sideCaption(side: "Front" | "Back", originalName: string | undefined): 
   return originalName ? `${side} · ${originalName}` : side;
 }
 
+/** One side's figure: shrinkable to an 80px floor, pictures dimmed when excluded. */
+function figureClass(isExcluded: boolean): string {
+  const base = "m-0 flex min-w-20 shrink flex-col items-center";
+  return isExcluded ? `${base} [&_img]:opacity-60` : base;
+}
+
 /** What the matcher had to go on, in the user's terms rather than the schema's. */
 function evidence(pair: ReviewPair): string {
   if (pair.mechanism === "manual") return "You paired these";
@@ -327,8 +333,11 @@ export function ReviewGrid({
               key={key}
               className={[
                 "rounded-lg border p-3",
+                // No opacity on the row: it dimmed the caption and evidence text
+                // below WCAG 1.4.3 contrast. Only the pictures dim (see the
+                // figures); the border and background carry the excluded state.
                 isExcluded
-                  ? "border-slate-800 bg-slate-900/20 opacity-60"
+                  ? "border-slate-800 bg-slate-900/20"
                   : settled
                     ? "border-neon-green/40 bg-slate-900/40"
                     : "border-neon-yellow/40 bg-slate-900/40",
@@ -338,34 +347,42 @@ export function ReviewGrid({
                 {/* Both sides, together. The pocket grid shows only the front,
                     which is right for previewing paper and useless for deciding
                     whether a pair is the RIGHT pair. */}
-                <div className="flex gap-2">
+                {/* `min-w-0 max-w-full` lets the pair of scans take its own
+                    line and then shrink to it: two landscape scans are ~322px
+                    side by side, wider than a 320/375 phone row. */}
+                <div className="flex min-w-0 max-w-full gap-2">
                   {/* The SCAN sets each figure's width, never the caption:
                       `w-0 min-w-full` gives the caption no say in the width and
                       then fills whatever the image chose, so a long filename
                       wraps under its scan instead of pushing the pair wider (a
                       phone fits two scans side by side and no more).
                       `min-w-20` keeps the caption readable while the image is
-                      still loading. `wrap-anywhere` breaks an unspaced name
+                      still loading, and is also the floor a figure shrinks
+                      to on a narrow phone (two scans at 80px each still fit
+                      320px); `max-w-full` on the scan lets object-contain
+                      letterbox it as the figure narrows. An EXCLUDED pair dims
+                      only its pictures (`[&_img]`, so the loading placeholder's
+                      text is never dimmed) — never the caption. `wrap-anywhere` breaks an unspaced name
                       like IMG_20241005_0001.jpg rather than truncating it —
                       the end of a scan name is usually the part that tells two
                       scans apart. */}
-                  <figure className="m-0 flex min-w-20 flex-col items-center">
+                  <figure className={figureClass(isExcluded)}>
                     <ScanImage
                       jobId={jobId}
                       entryIndex={pair.frontIndex}
                       alt={`Front of ${cardName(pair)}`}
-                      className="h-28 w-auto rounded border border-slate-700 object-contain"
+                      className="h-28 w-auto max-w-full rounded border border-slate-700 object-contain"
                     />
                     <figcaption className="mt-1 w-0 min-w-full text-center text-[10px] leading-snug text-balance text-slate-400 wrap-anywhere">
                       {sideCaption("Front", nameByIndex.get(pair.frontIndex))}
                     </figcaption>
                   </figure>
-                  <figure className="m-0 flex min-w-20 flex-col items-center">
+                  <figure className={figureClass(isExcluded)}>
                     <ScanImage
                       jobId={jobId}
                       entryIndex={pair.backIndex}
                       alt={`Back of ${cardName(pair)}`}
-                      className="h-28 w-auto rounded border border-slate-700 object-contain"
+                      className="h-28 w-auto max-w-full rounded border border-slate-700 object-contain"
                     />
                     <figcaption className="mt-1 w-0 min-w-full text-center text-[10px] leading-snug text-balance text-slate-400 wrap-anywhere">
                       {sideCaption("Back", nameByIndex.get(pair.backIndex))}
@@ -384,7 +401,7 @@ export function ReviewGrid({
                   </p>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-2">
+                <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
                   <label className="flex items-center gap-2 text-sm text-slate-300">
                     <input
                       type="checkbox"

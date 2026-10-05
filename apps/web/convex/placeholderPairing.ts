@@ -469,6 +469,7 @@ export type PairInsertRow = {
 export type PairDecision = {
   frontIndex: number;
   backIndex: number;
+  /** Basename only, capped to MAX_FIELD_CHARS — see `loggableName`. */
   frontName: string;
   backName: string;
   frontLabel: CardSide | null;
@@ -889,10 +890,21 @@ export function computePairingDiff(
   };
 }
 
+/**
+ * A scan's filename as it may appear in a log line: the basename only, capped
+ * to MAX_FIELD_CHARS. The zip path stores the member name uncapped and possibly
+ * with directories (a user's own folder names), none of which a pairing
+ * decision needs.
+ */
+function loggableName(originalName: string): string {
+  const base = originalName.split(/[\\/]/).pop() ?? "";
+  return base.slice(0, MAX_FIELD_CHARS);
+}
+
 /** One image row's side of a `PairDecision`, absent values as null. */
 function decisionInputs(row: PairingImageRow) {
   return {
-    name: row.originalName,
+    name: loggableName(row.originalName),
     label: asCardSide(row.side),
     textCount: typeof row.textCount === "number" ? row.textCount : null,
     cardNumber: optionalString(row.cardNumber) ?? null,
@@ -1661,9 +1673,6 @@ export async function finalizePairingInline(
   await syncImagePairStatusImpl(ctx, job.jobId, "paired", diff.becomingPaired);
   await syncImagePairStatusImpl(ctx, job.jobId, "unmatched", diff.becomingUnmatched);
 
-  // The same decision record the scheduled action logs; this IS a final run.
-  logPairDecisions(job.jobId, true, diff.decisions);
-
   await recordResolverCallsImpl(ctx, job, diff.resolverCalls);
 
   // Terminal decision — identical to the action's final block (see the
@@ -1673,6 +1682,7 @@ export async function finalizePairingInline(
   const total = job.totalImages ?? 0;
   const failed = job.failedImages ?? 0;
   const noUsableImages = total === 0;
+  let outcome: "succeeded" | "failed";
   if (noUsableImages || failed * 2 > total) {
     await markJobFailedImpl(
       ctx,
@@ -1687,11 +1697,18 @@ export async function finalizePairingInline(
           : "no images were accepted from the upload"
         : `${failed} of ${total} images failed to process`,
     );
-    return "failed";
+    outcome = "failed";
+  } else {
+    await markJobSucceededImpl(ctx, job);
+    outcome = "succeeded";
   }
 
-  await markJobSucceededImpl(ctx, job);
-  return "succeeded";
+  // The same decision record the scheduled action logs; this IS a final run.
+  // LAST, after every write this function makes: a throw anywhere above rolls
+  // the whole mutation back, and a log line already emitted would describe
+  // pairs that were never stored.
+  logPairDecisions(job.jobId, true, diff.decisions);
+  return outcome;
 }
 
 // ---------------------------------------------------------------------------
