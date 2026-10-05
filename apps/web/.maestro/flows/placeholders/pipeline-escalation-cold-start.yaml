@@ -270,8 +270,9 @@ tags:
 #
 # "3 pairs ready to print." is the load-bearing assertion of the flow's second
 # half: six photos, three pairs, so all six were read through the heavy service
-# and side-classified correctly. The NEO-299 failure shape — a photo lost to a
-# 429 — leaves fewer pairs and fails here.
+# and paired front to back (NEO-327: pairs form on identity and orient on
+# text, not on the classifier's label). The NEO-299 failure shape — a photo
+# lost to a 429 — leaves fewer pairs and fails here.
 - scrollUntilVisible:
     element:
       text: "Finish the batch"
