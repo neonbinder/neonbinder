@@ -239,13 +239,11 @@ tags:
 # The util stops one level short on purpose (its header says why: the caller
 # owns the set pick).
 #
-# Only the SEARCH shape is handled, unlike the drill utils' two-branch dance.
-# `EntitySelector` renders its search input above 8 entries and the view is
-# by construction the whole year — 134 sets under the brand-unknown row
-# alone, measured for 1995 — so the input is always there. Dropping the
-# `notVisible: "Variant Types"` fallback removes the ~7s dead poll R10 warns
-# about; if a future year somehow held eight sets or fewer this fails on the
-# `.*Search sets.*` wait, which names the problem.
+# Only the SEARCH shape is handled. Since NEO-224 every open column renders
+# its search input, so there is no other shape. The gate is the view's
+# LISTBOX (accessible name `Sets`), which renders only once the column holds
+# a row — a year that synced to nothing fails here, by name (the search box
+# itself renders from the column's first frame and proves nothing).
 #
 # The rows here carry the set NAME as their own text node and the brand as a
 # muted second line in a sibling node, so `text: "<set>"` still finds exactly
@@ -256,7 +254,8 @@ tags:
 # ============================================================
 
 - extendedWaitUntil:
-    visible: ".*Search sets.*"
+    visible:
+      id: "Sets"
     timeout: 15000
 - scrollUntilVisible:
     element:

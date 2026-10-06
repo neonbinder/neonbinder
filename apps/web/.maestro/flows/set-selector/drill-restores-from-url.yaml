@@ -1,0 +1,216 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Set Builder drill lives in the URL — Back undoes the last pick, and coming back to the page restores the drill from the address with focus in the deepest open column (NEO-224)"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE (NEO-224): the drill is the address. Each pick is a history
+# PUSH of NB ids (`?sport=&year=&brand=&set=…`), so (a) the browser's Back
+# undoes exactly the last pick, and (b) a FRESH set builder handed that address
+# rebuilds the whole drill from it — through `resolveDrillPath`, because a
+# freshly mounted page trusts no id it did not see rendered — and puts focus in
+# the deepest open column's search box, so the operator types straight on.
+#
+# ── HOW A FLOW REACHES "THE ADDRESS" WITHOUT A VISIBLE LINK (Jason, D-link) ──
+# There is no copy-link UI (no new UI, by decision), and maestro-web cannot read
+# the address bar: the current URL lives only in the hierarchy ROOT's `url`
+# attribute, which no selector field matches (decompiled CdpWebDriver,
+# cli 2.8.0). The flow knows no NB id either, so it cannot build the URL for
+# `openLink`. What it CAN do is let the browser keep the address and hand it
+# back: maestro-web's `back` is Selenium `navigate().back()` (decompiled
+# `CdpWebDriver.backPress`). There is no `reload` and no `forward` command.
+#
+# Measured before choosing the route back in (2026-10-04, pinned Chrome for
+# Testing 151, raw CDP): a CROSS-DOCUMENT Back — `openLink` elsewhere, then
+# `back` — is restored from the back/forward cache, even with an open
+# WebSocket, and so is this app's own shell on a local Vite. A bfcache restore
+# is the old page, frozen and thawed with its React state: it would show the
+# drill without the URL doing anything, and prove nothing. ChromeDriver does
+# not disable the bfcache and maestro-web passes no flag that would.
+#
+# So STEP 3 leaves through an IN-APP route change (the admin section's Teams
+# sub-tab — a pushState, same document) and comes back with `back`. That
+# UNMOUNTS the set builder and mounts a new one on the restored address: fresh
+# component state, an empty trusted-id set, the resolver, the loading card,
+# the restored columns — the same code a reload or a pasted link runs, minus
+# the document fetch, which is the browser's job and not NB's.
+#
+# Proving it was a fresh mount, not preserved state: before leaving, the flow
+# types "Ins" into the Variant Types box — page state the URL does not carry.
+# After coming back the box must be EMPTY. A preserved page would still hold
+# "Ins" (and the untyped `inputText: "Base"` after it would read "InsBase" and
+# match nothing), so a bfcache-style restore fails here, loudly, by name.
+#
+# Focus after the restore is only the cascade's to move when nothing else
+# holds it (`<body>`, or inside the column row) — it never takes focus from a
+# control the operator is standing on. The admin nav strip persists across
+# admin routes, so a Teams sub-tab that still held focus would (correctly)
+# keep it through Back. The flow therefore ends its visit inside the Teams
+# PAGE (its filter box), which unmounts on Back and leaves focus on `<body>`,
+# exactly as a reload or a pasted link does.
+#
+# R2 — every step ends in a hard positive; each negative is paired with one.
+# R3 — `keyboard-only-drill` proves type/Enter/focus on a fresh drill; this
+# flow proves the URL half (push, popstate, restore). R4 — sign-in redirect,
+# no in-body login. R5 — 7000 everywhere in-app (the post-launch gate is the
+# sanctioned 45000); no marketplace is waited on: the path is warm. R7/R7a —
+# read-only on 2024 Topps Chrome (SET-REGISTRY.md → "Read-only consumers"):
+# picks write nothing; the Teams filter is local. R9 — the initial drill goes
+# through util-drill-to-2024-topps-chrome; the keyboard re-picks below ARE the
+# feature (focus after popstate / restore), so they are inline.
+#
+# NEEDS THIS PR'S BACKEND: STEP 4's restore calls `resolveDrillPath`, which
+# exists only on this branch's Convex — run it against the PR preview.
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — DRILL TO THE SET (every pick is a push)
+# ============================================================
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+# The util returns with the Variant Types column open and `Base` listed; the
+# Sets card replaces the list once that column's read lands.
+- extendedWaitUntil:
+    visible:
+      id: "Sets: Topps Chrome — change"
+    timeout: 7000
+
+# ============================================================
+# STEP 2 — BACK UNDOES EXACTLY THE LAST PICK
+#
+# Same document: React Router hears popstate, the address loses `set`, and the
+# Sets column is open again with nothing picked while the brand pick stands.
+# The positives (the box, the brand card) come before the negative (no Variant
+# Types column), so the negative cannot pass on a dead page.
+# ============================================================
+- back
+- extendedWaitUntil:
+    visible:
+      id: "Search sets"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      id: "Manufacturers: Topps — change"
+    timeout: 7000
+- assertNotVisible: "Variant Types"
+
+# Focus followed the popstate into the re-opened Sets box (the Variant Types
+# box that held it unmounted): an untapped re-pick proves it, and pushes the
+# set again.
+- inputText: "Topps Chrome"
+- extendedWaitUntil:
+    visible:
+      id: "Search sets"
+      text: "Topps Chrome"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "Topps Chrome"
+      below:
+        id: "Search sets"
+    timeout: 7000
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "Variant Types"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      id: "Sets: Topps Chrome — change"
+    timeout: 7000
+
+# Page state the address does NOT carry: a half-typed filter in the Variant
+# Types box (focus moved there after the pick). See the header.
+- inputText: "Ins"
+- extendedWaitUntil:
+    visible:
+      id: "Search variant types"
+      text: "Ins"
+    timeout: 7000
+
+# ============================================================
+# STEP 3 — LEAVE FOR ANOTHER ADMIN PAGE, IN-APP
+#
+# The Teams sub-tab, matched inside the section nav by its accessible name so
+# no other "Teams" text on the page can answer. A tap, not `openLink`: the
+# point is a same-document route change (header), which only the app's own
+# link makes; `admin/admin-section-navigation.yaml` taps the same sub-tab from
+# the same page, centred the same way (R8). "Team Management" is the page's own
+# heading — a route mount and a Convex read, the 7000 bar.
+# ============================================================
+- scrollUntilVisible:
+    element:
+      text: "Teams"
+      childOf:
+        id: "Admin sections"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: "Teams"
+    childOf:
+      id: "Admin sections"
+- extendedWaitUntil:
+    visible: "Team Management"
+    timeout: 7000
+# End the visit inside the page, not on the persistent nav link (header):
+# focus the page's filter box and prove it holds the keystrokes. Local only —
+# nothing is written.
+- tapOn: "Filter teams"
+- inputText: "zz"
+- extendedWaitUntil:
+    visible: "zz"
+    timeout: 7000
+
+# ============================================================
+# STEP 4 — BACK TO THE SET BUILDER: THE ADDRESS RESTORES THE DRILL
+#
+# A new set builder mounts on `?sport=…&set=<Topps Chrome>`, trusts none of it,
+# asks `resolveDrillPath`, and rebuilds the columns: the Sets card and the open
+# Variant Types column.
+# ============================================================
+- back
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      id: "Sets: Topps Chrome — change"
+    timeout: 7000
+- extendedWaitUntil:
+    visible: "Variant Types"
+    timeout: 7000
+
+# A FRESH mount: the "Ins" typed before leaving is gone. An empty box reads its
+# placeholder (README → getNodeText).
+- extendedWaitUntil:
+    visible:
+      id: "Search variant types"
+      text: "Search variant types\\.\\.\\."
+    timeout: 7000
+
+# Focus landed in the deepest open column's box on its own: type untapped,
+# read it back, Enter.
+- inputText: "Base"
+- extendedWaitUntil:
+    visible:
+      id: "Search variant types"
+      text: "Base"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "Base"
+      below:
+        id: "Search variant types"
+    timeout: 7000
+- pressKey: Enter
+# A keyboard terminal pick may scroll the page down to its next focus target;
+# the card is above wherever that leaves the page, so UP (R5 direction). No tap
+# follows, so no centring.
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: Base — change"
+    direction: UP
+    timeout: 7000

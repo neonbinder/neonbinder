@@ -163,10 +163,13 @@ is budgeted against the 600s per-flow kill in `run-e2e-queue.sh`.
 **Two taxonomy facts this fixture pinned down**, both worth knowing before
 choosing any future real set:
 
-* `EntitySelector` renders a column's search input only **above 8 entries**
-  (`showSearch = sortedItems.length > 8`), not "more than one" as older comments
-  in `flows/set-selector/` claim. A three-set column has no input at all, so any
-  drill that assumes one will hang on a `.*Search sets.*` wait.
+* ~~`EntitySelector` renders a column's search input only above 8 entries.~~
+  **Superseded by NEO-224:** every open column renders exactly one search box
+  (the column's combobox and the cascade's focus target) — loading, empty or
+  full. So the box is no longer a "this column has rows" signal: gate on the
+  column's LISTBOX (`id: "<Column title>"`, rendered only once the column holds
+  a row), or type the row's name first and wait for the filtered row under the
+  box. (`BaseSetPicker`'s own search boxes keep their above-8 rule.)
 * An **empty** column renders its `Sync <X>` / `+ Custom` buttons immediately and
   only switches to the `Syncing <X>` panel once `ensureSelectorOptions` has
   round-tripped. So "the idle button is visible" is NOT proof the column has
@@ -1919,6 +1922,8 @@ teams or variants**. They are the reason the set must stay pristine.
 - `base-mapping-cancel-recovers.yaml`
 - `checklist-bsc-team-enrichment.yaml`
 - `checklist-renders-rich-fields.yaml`
+- `drill-restores-from-url.yaml` (NEO-224 — picks rows and goes Back; writes nothing)
+- `keyboard-only-drill.yaml` (NEO-224 — picks rows by keyboard; writes nothing)
 - `multi-source-panel-opens-dialog.yaml`
 - `sets-base.yaml`
 - `sets-resync-already-loaded.yaml`

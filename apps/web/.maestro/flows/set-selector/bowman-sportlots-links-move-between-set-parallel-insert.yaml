@@ -255,8 +255,12 @@ tags:
     when:
       true: "${output.SL_PAUSED}"
     commands:
+      # The column's LISTBOX (accessible name = the column title) renders only
+      # once it holds a row. NEO-224: not the search box, which every open
+      # column now renders from its first frame.
       - extendedWaitUntil:
-          visible: ".*Search parallels.*"
+          visible:
+            id: "${output.TYPE_PARALLEL}s"
           timeout: 240000
       - assertNotVisible: "Reconcile ${output.TYPE_PARALLEL}s"
 # Select the colour's row: search, then the exact row under the box. Both
@@ -770,6 +774,10 @@ tags:
 # the result both branches gate on. Retried once, result-keyed, for the
 # sibling's save landing between the shape check and the tap (it reshapes
 # the list under the tap — the moving-target class).
+# NEO-224: every open column now renders its search box, so the flag below is
+# always true and the search branch is the one that runs, whichever shape the
+# sibling left; the header branch is unreachable but costs nothing (a `true:`
+# script condition, no UI poll).
 # ============================================================
 
 - runFlow:

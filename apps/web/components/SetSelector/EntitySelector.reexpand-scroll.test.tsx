@@ -204,20 +204,32 @@ describe("EntitySelector — re-expanding opens at the selection (NEO-276)", () 
   // The Maestro tripwire
   // -------------------------------------------------------------------------
 
-  it("changes no node and no class string on the list it scrolls", () => {
+  it("changes no class string on the list it scrolls, and adds only a classless id wrapper", () => {
     // ~105 flows read this DOM. The scroll is a `scrollTop` write on the node
-    // that already existed; nothing wraps it and its class string is the one
-    // the flows were written against.
+    // that already existed and its class string is the one the flows were
+    // written against. Was: "changes no node and no class string" — NEO-224
+    // adds ONE node, a classless wrapper div carrying the `aria-controls` id,
+    // between the card and the list (an id on the listbox itself would shadow
+    // its aria-label as maestro-web's resource-id).
     const { rerender } = render(column({ selectedId: "set30", expanded: false }));
     rerender(column({ selectedId: "set30", expanded: true }));
 
     expect(list().className).toBe("space-y-2 max-h-[400px] overflow-y-auto");
-    expect(list().parentElement?.className).toBe(
+    expect(list().getAttribute("id")).toBeNull();
+
+    const wrapper = list().parentElement!;
+    expect(wrapper.tagName).toBe("DIV");
+    expect(wrapper.getAttribute("class")).toBeNull();
+    expect(wrapper.getAttribute("id")).toBeTruthy();
+    expect(wrapper.getAttribute("id")).toBe(
+      screen.getByRole("combobox").getAttribute("aria-controls"),
+    );
+    expect(wrapper.parentElement?.className).toBe(
       "bg-white dark:bg-gray-800 p-6 rounded-lg shadow",
     );
     for (const option of screen.getAllByRole("option")) {
       expect(option.parentElement).toBe(list());
-      expect(option.getAttribute("id")).toBeNull();
+      expect(option.getAttribute("id")).toBeTruthy();
     }
   });
 });

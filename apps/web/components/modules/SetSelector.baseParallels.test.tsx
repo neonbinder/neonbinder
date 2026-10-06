@@ -17,6 +17,7 @@
 
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const BASE_ROW = {
@@ -94,11 +95,21 @@ vi.mock("../../convex/_generated/api", () => ({
       getParallelsForBuild: "getParallelsForBuild",
       buildParallelChecklist: "buildParallelChecklist",
     },
+    // NEO-224: the drill's URL gate (skipped unless the URL names rows).
+    drillPath: {
+      resolveDrillPath: "resolveDrillPath",
+    },
   },
 }));
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
+    // NEO-224: the drill is read from the URL, and an id the page did not
+    // pick itself is checked by `resolveDrillPath` first. Every id is valid
+    // here, so the answer is the whole path.
+    if (ref === "resolveDrillPath" && args !== "skip") {
+      return (args as { ids: string[] }).ids.map((_id) => ({ _id }));
+    }
     if (ref === "getParallelsForBuild") {
       planCalls.push(args);
       return args === "skip" ? undefined : state.plan;
@@ -181,6 +192,17 @@ vi.mock("../SetSelector/SetAttributesPanel", () => ({ default: () => null }));
 vi.mock("../SetSelector/SportForm", () => ({ SportForm: () => null }));
 
 import SetSelector from "./SetSelector";
+
+/**
+ * NEO-224: the drill lives in the URL and has no holes, so the page opens
+ * drilled to a set — the variant-type column below is then a real column
+ * under a real set, which is what these tests reach for.
+ */
+const DrilledToASet = ({ children }: { children: React.ReactNode }) => (
+  <MemoryRouter initialEntries={["/?sport=sp&year=yr&brand=br&set=set1"]}>
+    {children}
+  </MemoryRouter>
+);
 import { PARALLEL_BUILD_HEADING_ID, UNFINISHED_TEXT } from "../SetSelector/ParallelBuildPanel";
 import { BASE_PARALLELS_REASON_ID } from "../SetSelector/BaseParallelsBuildSection";
 
@@ -216,7 +238,7 @@ beforeEach(() => {
   // The runner remembers a run that was live when its host unmounted, at
   // module scope, so the next mount starts on it. A previous test's live run
   // must not leak into this one: mount and unmount once (the mount clears it).
-  render(<SetSelector />).unmount();
+  render(<SetSelector />, { wrapper: DrilledToASet }).unmount();
   vi.clearAllMocks();
   planCalls.length = 0;
   state.plan = planWith([PARALLEL_A]);
@@ -225,37 +247,37 @@ beforeEach(() => {
 
 describe("SetSelector — Parallels of Base section visibility (NEO-321)", () => {
   it("shows for a variant type whose role is parallel", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
     expect(sectionHeading()?.textContent).toBe("Parallels of Base");
   });
 
   it("shows for a role-parallel type with ANY name: renaming the row does not change the result", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel-renamed");
     expect(sectionHeading()).toBeTruthy();
   });
 
   it("does not show for a row merely named Parallel when its role is insert", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-lookalike");
     expect(sectionHeading()).toBeNull();
   });
 
   it("does not show for a row merely named Parallel with no role at all", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-no-role");
     expect(sectionHeading()).toBeNull();
   });
 
   it("does not show on Base", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-base");
     expect(sectionHeading()).toBeNull();
   });
 
   it("goes away when the selection moves to a non-parallel type, and does not list parallels for it", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
     expect(sectionHeading()).toBeTruthy();
 
@@ -267,7 +289,7 @@ describe("SetSelector — Parallels of Base section visibility (NEO-321)", () =>
   });
 
   it("lists the parallels by the variant type's id", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
     expect(planCalls).toContainEqual({ sourceId: "vt-parallel" });
   });
@@ -275,7 +297,7 @@ describe("SetSelector — Parallels of Base section visibility (NEO-321)", () =>
 
 describe("SetSelector — starting from the section (NEO-321)", () => {
   it("starts the hosted run with the Parallel variant type as the start row", async () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
 
     await act(async () => {
@@ -295,7 +317,7 @@ describe("SetSelector — starting from the section (NEO-321)", () => {
   });
 
   it("draws the ledger once, in the section, and tells the checklist not to draw a second", async () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
     fireEvent.click(screen.getByText("select-row"));
     expect(checklistProps().panelElsewhere).toBe("false");
@@ -313,7 +335,7 @@ describe("SetSelector — starting from the section (NEO-321)", () => {
 
 describe("SetSelector — leaving and coming back mid-run (NEO-321)", () => {
   it("a returning set builder shows what the left run left, in the section", async () => {
-    const first = render(<SetSelector />);
+    const first = render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: /^Build 1 parallel from Base/ }));
@@ -321,7 +343,7 @@ describe("SetSelector — leaving and coming back mid-run (NEO-321)", () => {
     await waitFor(() => expect(mockConvex.action).toHaveBeenCalled());
     first.unmount();
 
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
     expect(document.querySelectorAll(`#${PARALLEL_BUILD_HEADING_ID}`)).toHaveLength(1);
     expect(screen.getByText(new RegExp(UNFINISHED_TEXT))).toBeTruthy();
@@ -330,7 +352,7 @@ describe("SetSelector — leaving and coming back mid-run (NEO-321)", () => {
 
 describe("SetSelector — a base-parallel row builds from Base (NEO-321 D3)", () => {
   it("hands the checklist the source the server resolved, by id and name", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
     fireEvent.click(screen.getByText("select-row"));
 
@@ -348,7 +370,7 @@ describe("SetSelector — a base-parallel row builds from Base (NEO-321 D3)", ()
       ...planWith([PARALLEL_A]),
       source: { ...BASE_SOURCE, value: "Flagship" },
     };
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
     fireEvent.click(screen.getByText("select-row"));
     expect(checklistProps().parallelBuild.sourceValue).toBe("Flagship");
@@ -356,7 +378,7 @@ describe("SetSelector — a base-parallel row builds from Base (NEO-321 D3)", ()
 
   it("carries no source while the plan loads, so the checklist's button waits instead of fetching", () => {
     state.plan = undefined;
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
     fireEvent.click(screen.getByText("select-row"));
 
@@ -369,7 +391,7 @@ describe("SetSelector — a base-parallel row builds from Base (NEO-321 D3)", ()
 
   it("points the row at the section's reason line once the plan is in and there is no single Base", () => {
     state.plan = { parallels: [PARALLEL_A], truncated: false, source: null, sourceBlocked: "no base" };
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
     fireEvent.click(screen.getByText("select-row"));
 
@@ -381,14 +403,14 @@ describe("SetSelector — a base-parallel row builds from Base (NEO-321 D3)", ()
   });
 
   it("a row under a role-insert type stays an insert", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-lookalike");
     fireEvent.click(screen.getByText("select-row"));
     expect(checklistProps().parallelBuild).toEqual({ role: "insert" });
   });
 
   it("Base's own checklist gets no parallelBuild: its save builds nothing (D2)", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-base");
     expect(checklistProps().parallelBuild).toBeNull();
   });

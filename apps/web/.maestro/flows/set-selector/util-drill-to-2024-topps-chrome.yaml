@@ -44,9 +44,10 @@ tags:
 # Two consequences for this level, both handled in the PAUSED branch below:
 #   1. The column is SHORT (the hand-made rows under the pinned "All Brands"
 #      VIEW entry — NEO-237: a view, not a row, present in every Manufacturers
-#      column and not counted toward the search threshold), so there is no
-#      search input (EntitySelector renders it only above 8 data rows) and
-#      the row is tapped directly, anchored on the column HEADER. The pinned
+#      column), and the row is tapped directly, anchored on the column
+#      HEADER. (Since NEO-224 the column also renders its search box — every
+#      open column does — but this branch never types into it, so the box
+#      reads its placeholder and the header anchor stays sufficient.) The pinned
 #      entry's visible text is exactly "All Brands", which no row name this
 #      util is ever asked for full-matches; a caller that wants the VIEW uses
 #      util-drill-to-cold-real-set, which knows how to select it.
@@ -67,12 +68,19 @@ tags:
     timeout: 20000
 
 # ── SPORT ─────────────────────────────────────────────────────────────────────
-# Baseball is seeded by setup.yaml and appears immediately — no search input at
-# this level. Scroll + center before tapping (centering rule).
+# Baseball is seeded by setup.yaml and appears immediately, first in the list —
+# so this level taps the row without filtering (the column's search box, where
+# the cascade parks focus since NEO-224, is simply not used here). Scroll +
+# center before tapping (centering rule).
 # waitToSettleTimeoutMs: 0 — the subsequent extendedWaitUntil re-syncs; the
 # settle dead-wait is redundant here.
+# R5 — every gate in this util states 7000 (a bare wait is 17000 by omission).
+# Each waits on a column mounting or a read of rows setup.yaml has already
+# synced; none waits on a marketplace round-trip. In the retries a miss now
+# re-fires the tap after 7s rather than 17s.
 - extendedWaitUntil:
     visible: ${SPORT || "Baseball"}
+    timeout: 7000
 - scrollUntilVisible:
     element:
       text: ${SPORT || "Baseball"}
@@ -93,12 +101,14 @@ tags:
           retryTapIfNoChange: true
       - extendedWaitUntil:
           visible: "Years"
+          timeout: 7000
 
 # ── YEAR ──────────────────────────────────────────────────────────────────────
 # The app auto-scrolls the newly-revealed Year column fully into view
 # (EntityColumn reveal-scroll, de5423a) — no test-side right-scroll needed.
 - extendedWaitUntil:
     visible: ".*Search years.*"
+    timeout: 7000
 # 250ms settle on the search-box tap — input needs to be focused before inputText
 # fires, and a 0ms settle can drop the first character on a reactive page.
 - tapOn:
@@ -117,6 +127,7 @@ tags:
           retryTapIfNoChange: true
       - extendedWaitUntil:
           visible: "Manufacturers"
+          timeout: 7000
 
 # ── MANUFACTURER ──────────────────────────────────────────────────────────────
 # App auto-scrolls the newly-revealed Manufacturer column fully into view — no
@@ -132,6 +143,7 @@ tags:
     commands:
       - extendedWaitUntil:
           visible: ".*Search manufacturers.*"
+          timeout: 7000
       - tapOn:
           text: ".*Search manufacturers.*"
           waitToSettleTimeoutMs: 250
@@ -150,6 +162,7 @@ tags:
                 retryTapIfNoChange: true
             - extendedWaitUntil:
                 visible: "Sets"
+                timeout: 7000
 - runFlow:
     when:
       true: "${output.SL_PAUSED}"
@@ -226,8 +239,10 @@ tags:
                       direction: UP
                       centerElement: true
                       timeout: 7000
-      # Short column, no search input: tap the row, anchored on the column
-      # header (a bare `text:` could match an ancestor's chip). R8: centre.
+      # Short column, tapped untyped: the row, anchored on the column header
+      # (a bare `text:` could match an ancestor's chip). R8: centre. NEO-224
+      # added the search box (~48px) above the rows, so the y figures below
+      # are pre-NEO-224 measurements; the row is still below the header.
       # DOWN, measured on the no-create path (PR #265 push 2, sets-base):
       # the row sits at y=514 with the header in view, one swipe centres it
       # at y=201. (The create path above has already centred it from the
@@ -257,95 +272,46 @@ tags:
 # App auto-scrolls the newly-revealed Sets column fully into view — no test-side
 # right-scroll needed.
 #
-# NEO-137: a column renders its search input only when it has MORE THAN ONE
-# entry. Baseball/1996/Score has exactly one set ("Score"), so waiting on
-# ".*Search sets.*" fails outright there — this util previously assumed the
-# multi-entry shape because 2024 Topps was the only hierarchy it ever drilled.
-# Branch on the input's presence instead of assuming it.
+# ONE SHAPE SINCE NEO-224. This level used to branch on the search input's
+# presence: `EntitySelector` rendered it only above 8 rows, so a single-set
+# column (Baseball/1996/Score has exactly one set, "Score") had no box and took
+# a second branch that tapped the row under the column HEADER, gated on
+# `notVisible: "Variant Types"`. Every open column now renders its search box
+# (it is the column's combobox and the cascade's focus target), so the search
+# path below runs on every hierarchy and the fallback could never run — it only
+# cost R10's ~7s `notVisible` poll on every call of this util. It is gone.
 #
-# Only the SET level needs this today: sport is seeded, and the year and
-# manufacturer columns have many entries for every hierarchy in the suite. If a
-# future set lands under a single-entry manufacturer, that level needs the same
-# treatment.
-# No extra wait needed: the MANUFACTURER retry above already gates on the
-# "Sets" column being visible, so the column is rendered by the time we get
-# here — only its SHAPE is in question.
-
-# Multi-entry column: filter, then pick the row BELOW the input.
-- runFlow:
-    when:
-      visible: ".*Search sets.*"
+# If a fallback is ever re-added, gate it on the NEXT column's header, never on
+# the search input: `when:` conditions are evaluated sequentially against live
+# state, and selecting a set COLLAPSES the Sets column, removing the very input
+# the first branch tested — so both branches ran, the second re-tapped the
+# selected set, and every downstream step failed far from the cause (e.g.
+# util-drill-to-base-variant timing out on ".*Select Base Set.*|.*Re-map
+# Base.*" because no variantType was selected any more).
+#
+# `below: {id: "Search sets"}` is also what keeps the tap off an ancestor that
+# shares the set's name — Baseball/1996/Score/Score has the manufacturer card
+# "Score" on screen, and that card sits at the top of ITS column, above the
+# Sets column's box. No extra wait: the MANUFACTURER retry above already gates
+# on the "Sets" column being visible, and the row tap's lookup covers the
+# column's read (and, on the cold 1996 path, its BSC set list).
+- tapOn:
+    text: ".*Search sets.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${SET || "Topps Chrome"}
+# NEO-85 residual coordinate-staleness: result-keyed retry — re-fire the
+# Set row-select ONCE iff the next column ("Variant Types") doesn't appear.
+- retry:
+    maxRetries: 1
     commands:
       - tapOn:
-          text: ".*Search sets.*"
-          waitToSettleTimeoutMs: 250
-      - inputText: ${SET || "Topps Chrome"}
-      # NEO-85 residual coordinate-staleness: result-keyed retry — re-fire the
-      # Set row-select ONCE iff the next column ("Variant Types") doesn't appear.
-      - retry:
-          maxRetries: 1
-          commands:
-            - tapOn:
-                text: ${SET || "Topps Chrome"}
-                below:
-                  id: "Search sets"
-                retryTapIfNoChange: true
-            - extendedWaitUntil:
-                visible: "Variant Types"
-
-# Single-entry column: no search input exists, so tap the row directly. The
-# `below:` anchor cannot be used here — there is nothing to anchor to.
-#
-# GATED ON "Variant Types", *NOT* on `notVisible: ".*Search sets.*"`.
-# The two branches must be mutually exclusive, and gating both on the search
-# input does NOT achieve that: `when:` conditions are evaluated sequentially
-# against live state, and selecting a set COLLAPSES the Sets column, removing
-# the very input the first branch tested. So on a multi-entry hierarchy BOTH
-# branches used to run — the second one tapping the already-selected set a
-# second time, which re-toggled the selection and reset the cascade. The
-# columns then re-rendered unfiltered and every downstream step failed far
-# away from the cause (e.g. util-drill-to-base-variant timing out on
-# ".*Select Base Set.*|.*Re-map Base.*", because no variantType was selected
-# any more).
-#
-# "Variant Types" is the state the first branch is defined to reach, and it is
-# not visible until a set is selected — so it is a correct exclusivity gate for
-# both shapes: skipped when the first branch already advanced, run when the
-# column had a single entry and the first branch never fired.
-- runFlow:
-    when:
-      notVisible: "Variant Types"
-    commands:
-      # ANCHOR ON THE COLUMN HEADER. A bare `text: ${SET}` is ambiguous whenever
-      # the set shares a name with an ancestor — Baseball/1996/Score/Score is
-      # exactly that: manufacturer "Score" AND set "Score" are both on screen,
-      # so an unanchored tap can land on the Manufacturers row instead of the
-      # Sets row. That re-taps the already-selected manufacturer, the Variant
-      # Types column never appears, and the retry then cannot find the row at
-      # all. It is order-dependent, so it passes some runs and fails others.
-      #
-      # There IS an anchor here despite what the single-entry case suggests: the
-      # column HEADER "Sets" is always rendered, unlike the search input. Using
-      # it keeps this to visible text (no id/data-testid) and pins the tap to
-      # the right column for both shapes.
-      - scrollUntilVisible:
-          element:
-            text: ${SET || "Topps Chrome"}
-            below:
-              text: "Sets"
-          centerElement: true
+          text: ${SET || "Topps Chrome"}
+          below:
+            id: "Search sets"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Variant Types"
           timeout: 7000
-      - retry:
-          maxRetries: 1
-          commands:
-            - tapOn:
-                text: ${SET || "Topps Chrome"}
-                below:
-                  text: "Sets"
-                retryTapIfNoChange: true
-            - extendedWaitUntil:
-                visible: "Variant Types"
-                timeout: 60000
 
 # ── RETURN CONTRACT ───────────────────────────────────────────────────────────
 # The Variant Types column is confirmed by the Set retry above. "Base" appears

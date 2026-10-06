@@ -42,7 +42,16 @@
  * straight to /set-selector only ever lands on the credential gate.
  */
 import type { GenericId } from "convex/values";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  startTransition,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
@@ -51,6 +60,7 @@ import type { SourceChips } from "../SetSelector/ChecklistSourceFilter";
 import { isBaseRole } from "../SetSelector/baseRole";
 import { variantTypeRole } from "../../convex/variantRole";
 import { bscSourceView } from "../../convex/bscFacets";
+import { isEditableTarget } from "../../lib/dom/is-editable-target";
 
 import SportSelector from "../SetSelector/SportSelector";
 import YearSelector from "../SetSelector/YearSelector";
@@ -59,6 +69,7 @@ import {
   isAllBrandsView,
   type ManufacturerSelection,
 } from "../SetSelector/all-brands-view";
+import { useDrillUrlState } from "../SetSelector/useDrillUrlState";
 import SetSelectorComponent from "../SetSelector/SetSelector";
 import SetVariantSelector from "../SetSelector/SetVariantSelector";
 import VariantSelector from "../SetSelector/VariantSelector";
@@ -77,6 +88,7 @@ import ParallelForm from "../SetSelector/ParallelForm";
 import ResilientEntityColumn from "../SetSelector/ResilientEntityColumn";
 import CardChecklist from "../SetSelector/CardChecklist";
 import ParallelBuildPanel, {
+  buildButtonLabel,
   useHostedParallelBuildRun,
   type ParallelBuildRole,
 } from "../SetSelector/ParallelBuildPanel";
@@ -92,23 +104,6 @@ import type { SelectorLevel } from "../SetSelector/selector-sync-feedback";
 import NeonButton from "./NeonButton";
 
 /**
- * Which numeric cascade level each named level occupies.
- *
- * `clearFrom(n)` clears level n and everything deeper, so a deleted row's own
- * level is the argument: deleting a set clears the set AND the variant type,
- * variant and sub-variant hanging off it.
- */
-const LEVEL_DEPTH: Record<SelectorLevel, number> = {
-  sport: 1,
-  year: 2,
-  manufacturer: 3,
-  setName: 4,
-  variantType: 5,
-  insert: 6,
-  parallel: 7,
-};
-
-/**
  * The empty dismissal set (see `dismissedVariantTypeIds`).
  *
  * Shared rather than freshly allocated so clearing an already-empty set is
@@ -118,34 +113,172 @@ const LEVEL_DEPTH: Record<SelectorLevel, number> = {
 const NO_BASE_MAPPING_DISMISSALS: ReadonlySet<GenericId<"selectorOptions">> =
   new Set();
 
+/**
+ * NEO-224 copy, signed off by Jason.
+ *
+ * `TRUNCATED_LINK_NOTICE` is the visible one-liner after a link named rows
+ * that are not there. `RESOLVING_LINK_LABEL` is heard, not seen: the page's
+ * status line and the placeholder card's name while a link is checked.
+ */
+const TRUNCATED_LINK_NOTICE =
+  "That link's trail went cold partway, so we opened it as far as it goes.";
+const RESOLVING_LINK_LABEL = "Rewinding the tape to your set…";
+
+/**
+ * True when the cascade may move focus: nothing else holds it (`<body>`), or
+ * the operator is already inside the column row and not typing into one of
+ * its fields. Never while a dialog is up — a modal owns focus even in the
+ * frame before it has taken it.
+ */
+function cascadeOwnsFocus(row: HTMLElement): boolean {
+  if (
+    document.querySelector(
+      '[role="dialog"], [role="alertdialog"], dialog[open]',
+    )
+  ) {
+    return false;
+  }
+  const active = document.activeElement;
+  if (!active || active === document.body) return true;
+  return row.contains(active) && !isTypingInRowField(active);
+}
+
+/**
+ * NEO-224 — true when `el` is a field the operator types into that is NOT a
+ * column's own search box: the "+ Custom" entry input, or any other text
+ * input, textarea, select or contenteditable in the column row.
+ *
+ * Both cascade effects stand down there. The D3 rule waits on the DOM across
+ * renders, so its target can land while the operator is mid-word in the
+ * custom entry; moving focus then would drop the rest of the typing on
+ * "Fetch from Marketplaces", and the Enter that was meant to add the entry
+ * would start a marketplace fetch instead.
+ *
+ * A column's `role="combobox"` is the exception, and the cascade's own
+ * contract: every combobox in the row IS a column's search box (see
+ * `focusAdjacentColumn` in EntitySelector), and focus in one is exactly what
+ * hands on to the next column after a pick.
+ */
+function isTypingInRowField(el: Element): boolean {
+  if (el.getAttribute("role") === "combobox") return false;
+  return isEditableTarget(el) || el.tagName === "SELECT";
+}
+
+/**
+ * A column's collapsed card: the `aria-expanded="false"` button that stands
+ * in for a column's list once it has a selection ("Sports: Baseball —
+ * change"). Escape and Collapse put focus there on purpose, so the cascade
+ * focus effect leaves it alone.
+ */
+function isCollapsedCard(row: HTMLElement, el: Element | null): boolean {
+  return (
+    el instanceof HTMLElement &&
+    row.contains(el) &&
+    el.tagName === "BUTTON" &&
+    el.getAttribute("aria-expanded") === "false"
+  );
+}
+
+/**
+ * True when no part of `el` is inside the viewport. A zero-size box (never
+ * laid out) is not "outside": there is nothing to scroll to.
+ */
+function isWhollyOutsideViewport(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return false;
+  return (
+    rect.bottom <= 0 ||
+    rect.right <= 0 ||
+    rect.top >= window.innerHeight ||
+    rect.left >= window.innerWidth
+  );
+}
+
+type TerminalFocusTarget =
+  | { kind: "fetch" }
+  | { kind: "attributes" }
+  /** A leaf parallel's empty checklist: "Build from <insert>". */
+  | { kind: "build"; label: string };
+
+/**
+ * The D3 landing spots, found by the accessible names their owners give
+ * them. Keep in step with CardChecklist's empty-state fetch button
+ * (`aria-label="Sync card checklist"`, visible "Fetch from Marketplaces"),
+ * ParallelBuildButton (no aria-label, so its visible text IS its name:
+ * `buildButtonLabel`, imported rather than spelled, so the two cannot drift)
+ * and SetAttributesPanel's toggle ("Edit attributes" / "Hide attributes"
+ * inside the "Set attributes panel" region). With no cards there is exactly
+ * one "Sync card checklist" button on the page, and exactly one "Build from
+ * …": the header's copies render only once the checklist has cards.
+ */
+function findTerminalFocusTarget(
+  page: HTMLElement,
+  row: HTMLElement,
+  target: TerminalFocusTarget,
+): HTMLElement | null {
+  if (target.kind === "fetch") {
+    const button = page.querySelector<HTMLButtonElement>(
+      'button[aria-label="Sync card checklist"]',
+    );
+    return button && !button.disabled ? button : null;
+  }
+  if (target.kind === "build") {
+    // Matched on the accessible name, and never inside the column row: a row
+    // is an option, not this button, whatever it happens to be called.
+    const button = Array.from(
+      page.querySelectorAll<HTMLButtonElement>("button"),
+    ).find(
+      (el) =>
+        !row.contains(el) &&
+        !el.disabled &&
+        (el.getAttribute("aria-label") ?? el.textContent ?? "").trim() ===
+          target.label,
+    );
+    return button ?? null;
+  }
+  return page.querySelector<HTMLElement>(
+    '[role="region"][aria-label="Set attributes panel"] button[aria-label="Edit attributes"], ' +
+      '[role="region"][aria-label="Set attributes panel"] button[aria-label="Hide attributes"]',
+  );
+}
+
 export default function SetSelector() {
-  // Level 1: Sport
-  const [selectedSportId, setSelectedSportId] =
-    useState<GenericId<"selectorOptions"> | null>(null);
-  // Level 2: Year
-  const [selectedYearId, setSelectedYearId] =
-    useState<GenericId<"selectorOptions"> | null>(null);
-  // Level 3: Manufacturer (SL only) — a row, or the All Brands VIEW
-  // (NEO-237, D17): the pinned entry at the top of the column that lists
-  // every set in the year. The view is a client sentinel, never a row id, so
-  // anything below that needs a ROW reads `selectedManufacturerRowId`.
-  const [selectedManufacturerId, setSelectedManufacturerId] =
-    useState<ManufacturerSelection | null>(null);
+  // NEO-224: the drill lives in the URL (`?sport=…&year=…&brand=…&set=…
+  // &type=…&insert=…&parallel=…`), so a reload, a shared link and Back all
+  // land on the same spot. The hook owns the trusted-id gate in front of the
+  // column queries and every write; this component reads the selection and
+  // calls the hook's handlers. Expanded/collapsed state, the base-mapping
+  // dismissal and the dialogs stay local below.
+  const drill = useDrillUrlState();
+  const {
+    select: drillSelect,
+    selectSetUnder: drillSelectSetUnder,
+    drillTo,
+    clearFrom: drillClearFrom,
+    moveSet: drillMoveSet,
+  } = drill;
+  const {
+    // Level 1: Sport
+    sportId: selectedSportId,
+    // Level 2: Year
+    yearId: selectedYearId,
+    // Level 3: Manufacturer (SL only) — a row, or the All Brands VIEW
+    // (NEO-237, D17): the pinned entry at the top of the column that lists
+    // every set in the year. The view is a client sentinel, never a row id,
+    // so anything below that needs a ROW reads `selectedManufacturerRowId`.
+    manufacturer: selectedManufacturerId,
+    // Level 4: Set (BSC only)
+    setId: selectedSetId,
+    // Level 5: Variant Type (BSC only)
+    variantTypeId: selectedVariantTypeId,
+    // Level 6: Variant (reconciled BSC + SL)
+    insertId: selectedVariantId,
+    // Level 7: Variant of Variant (NB only)
+    parallelId: selectedVariantOfVariantId,
+  } = drill.selection;
   const inAllBrandsView = isAllBrandsView(selectedManufacturerId);
   const selectedManufacturerRowId: GenericId<"selectorOptions"> | null =
     inAllBrandsView ? null : selectedManufacturerId;
-  // Level 4: Set (BSC only)
-  const [selectedSetId, setSelectedSetId] =
-    useState<GenericId<"selectorOptions"> | null>(null);
-  // Level 5: Variant Type (BSC only)
-  const [selectedVariantTypeId, setSelectedVariantTypeId] =
-    useState<GenericId<"selectorOptions"> | null>(null);
-  // Level 6: Variant (reconciled BSC + SL)
-  const [selectedVariantId, setSelectedVariantId] =
-    useState<GenericId<"selectorOptions"> | null>(null);
-  // Level 7: Variant of Variant (NB only)
-  const [selectedVariantOfVariantId, setSelectedVariantOfVariantId] =
-    useState<GenericId<"selectorOptions"> | null>(null);
 
   const [sportExpanded, setSportExpanded] = useState(false);
   const [yearExpanded, setYearExpanded] = useState(false);
@@ -171,22 +304,20 @@ export default function SetSelector() {
     ReadonlySet<GenericId<"selectorOptions">>
   >(NO_BASE_MAPPING_DISMISSALS);
 
-  // useCallback([]) is safe: the body only calls state setters, whose
-  // identities React guarantees stable. A stable clearFrom lets the level-select
-  // handlers below (e.g. handleVariantTypeSelect) themselves be stable, which
-  // keeps the onSelect prop feeding the memoized Variant Types column referen-
-  // tially stable across parent re-renders (NEO-85).
-  const clearFrom = useCallback((level: number) => {
-    if (level <= 2) setSelectedYearId(null);
-    if (level <= 3) setSelectedManufacturerId(null);
-    if (level <= 4) setSelectedSetId(null);
-    if (level <= 5) {
-      setSelectedVariantTypeId(null);
-      setDismissedVariantTypeIds(NO_BASE_MAPPING_DISMISSALS);
-    }
-    if (level <= 6) setSelectedVariantId(null);
-    if (level <= 7) setSelectedVariantOfVariantId(null);
-  }, []);
+  // A change at the variant-type level or above re-arms the Base auto-prompt
+  // (the dismissal is about the row the operator was looking at). Local state,
+  // so it rides alongside a handler's one URL write rather than inside it —
+  // in a transition, because the router commits that write in one: React
+  // gives every transition started in the same event the same lane, so the
+  // reset lands in the navigation's commit instead of rendering a frame of
+  // the OLD selection ahead of it (NEO-224).
+  const resetBaseMappingDismissals = useCallback(
+    () =>
+      startTransition(() =>
+        setDismissedVariantTypeIds(NO_BASE_MAPPING_DISMISSALS),
+      ),
+    [],
+  );
 
   // Base is a terminal variantType: when selected, the cascade stops
   // there and the CardChecklist attaches to the variantType row itself
@@ -281,9 +412,9 @@ export default function SetSelector() {
    *
    * Choosing a sport reveals the Years column and scrolls it into view, and
    * that is the whole feedback: a sighted operator sees a card slide in, a
-   * screen-reader user gets nothing at all. Their focus has just been parked on
-   * the column they were in (EntitySelector's collapsed-card park), so there is
-   * not even a focus change to infer it from.
+   * screen-reader user gets nothing at all. (Since NEO-224 focus also moves
+   * into the new column's search box — see the cascade focus effect below —
+   * but a focus change says where you are, not that a column appeared.)
    *
    * The announcement is DERIVED, never stored. `role="status"` announces on a
    * content CHANGE, and this string changes only when the deepest revealed
@@ -311,6 +442,96 @@ export default function SetSelector() {
   if (!isBaseVariantTypeSelected && selectedVariantId)
     revealedColumns.push("Parallels");
   const deepestColumn = revealedColumns[revealedColumns.length - 1];
+
+  /**
+   * NEO-224 — the deepest column that is OPEN: on screen and showing its list
+   * (no selection yet, or re-expanded by the operator) rather than its
+   * collapsed card. Keyed by level and parent, so a new parent is a new
+   * column even at the same level. `null` when every column on screen has
+   * collapsed onto its selection — the terminal case (Base, or a parallel).
+   *
+   * Mirrors the `isVisible` gates the columns below are rendered with.
+   */
+  const cascadeColumns: ReadonlyArray<{
+    level: SelectorLevel;
+    parentId: string | null;
+    visible: boolean;
+    selected: boolean;
+    expanded: boolean;
+  }> = [
+    {
+      level: "sport",
+      parentId: null,
+      visible: true,
+      selected: !!selectedSportId,
+      expanded: sportExpanded,
+    },
+    {
+      level: "year",
+      parentId: selectedSportId,
+      visible: !!selectedSportId,
+      selected: !!selectedYearId,
+      expanded: yearExpanded,
+    },
+    {
+      level: "manufacturer",
+      parentId: selectedYearId,
+      visible: !!selectedYearId,
+      selected: !!selectedManufacturerId,
+      expanded: manufacturerExpanded,
+    },
+    {
+      level: "setName",
+      parentId: inAllBrandsView ? selectedYearId : selectedManufacturerRowId,
+      visible: !!selectedManufacturerId,
+      selected: !!selectedSetId,
+      expanded: setExpanded,
+    },
+    {
+      level: "variantType",
+      parentId: selectedSetId,
+      visible: !!selectedSetId,
+      selected: !!selectedVariantTypeId,
+      expanded: variantTypeExpanded,
+    },
+    {
+      level: "insert",
+      parentId: selectedVariantTypeId,
+      visible: !isBaseVariantTypeSelected && !!selectedVariantTypeId,
+      selected: !!selectedVariantId,
+      expanded: variantExpanded,
+    },
+    {
+      level: "parallel",
+      parentId: selectedVariantId,
+      visible: !isBaseVariantTypeSelected && !!selectedVariantId,
+      selected: !!selectedVariantOfVariantId,
+      expanded: variantOfVariantExpanded,
+    },
+  ];
+  const deepestOpenColumn = [...cascadeColumns]
+    .reverse()
+    .find((column) => column.visible && (!column.selected || column.expanded));
+  const openColumnKey = drill.resolving
+    ? null
+    : deepestOpenColumn
+      ? `${deepestOpenColumn.level}:${deepestOpenColumn.parentId ?? ""}`
+      : null;
+  /**
+   * The selection itself, as one string. The terminal focus rule below fires
+   * on a SELECTION that leaves no column open, and this is what tells a
+   * selection apart from a collapse: collapsing a chip changes which columns
+   * are open but never the selection.
+   */
+  const selectionKey = [
+    selectedSportId,
+    selectedYearId,
+    selectedManufacturerId,
+    selectedSetId,
+    selectedVariantTypeId,
+    selectedVariantId,
+    selectedVariantOfVariantId,
+  ].join("/");
 
   // Manual trigger; the form also auto-opens on first selection when no
   // platformData exists yet.
@@ -342,6 +563,7 @@ export default function SetSelector() {
   // Base" anchor read "Map Base Set" for a beat and scrolled past it (PR #242
   // run 4).
   const handleBaseMappingClose = (reason: "mapped" | "dismissed") => {
+    baseMappingClosedForRef.current = selectedVariantTypeId;
     setBaseMappingOpen(false);
     if (reason === "dismissed" && selectedVariantTypeId && !baseHasMapping) {
       setDismissedVariantTypeIds((prev) => {
@@ -364,29 +586,54 @@ export default function SetSelector() {
   // `activeElement === body` guard means a park never yanks focus away from an
   // operator who is already holding it somewhere else (a confirm that resolves
   // while they have moved on, or a dialog that restored focus itself).
+  //
+  // NEO-224: `baseMappingFormOpen` is DERIVED, so it also flips true→false with
+  // nothing closed at all: while a newly picked Base row is still loading it
+  // reads as unmapped (the flags ref resets on the id change), and the moment
+  // a MAPPED row answers the value drops to false. Focus is on <body> then too
+  // (the Variant Types search box just unmounted), so reacting to the flip
+  // alone parked focus on "Re-map Base" on every mapped Base, the D3 terminal
+  // rule saw focus outside the row and stood down, and the operator's next
+  // Enter opened the re-map picker. So the park fires only after a real close:
+  // every close path (Close, Cancel's recovery panel, a confirmed pick) goes
+  // through `handleBaseMappingClose`, which records the row it closed. A
+  // confirmed first-time mapping keeps the form up until the row's slot lands,
+  // so the record waits for that flip; it is spent on the first flip either
+  // way, and a record for a different row (the operator moved on) parks
+  // nothing.
   const baseMappingButtonRef = useRef<HTMLButtonElement | null>(null);
+  const baseMappingClosedForRef = useRef<GenericId<"selectorOptions"> | null>(
+    null,
+  );
   const wasBaseMappingFormOpen = useRef(baseMappingFormOpen);
   useEffect(() => {
     const wasOpen = wasBaseMappingFormOpen.current;
     wasBaseMappingFormOpen.current = baseMappingFormOpen;
     if (!wasOpen || baseMappingFormOpen) return;
+    const closedFor = baseMappingClosedForRef.current;
+    baseMappingClosedForRef.current = null;
+    if (closedFor === null || closedFor !== selectedVariantTypeId) return;
     if (document.activeElement !== document.body) return;
     baseMappingButtonRef.current?.focus();
-  }, [baseMappingFormOpen]);
+  }, [baseMappingFormOpen, selectedVariantTypeId]);
   // Parallel-grouping modal trigger for the Variants column.
   const [groupingOpen, setGroupingOpen] = useState(false);
 
+  // NEO-224: each pick is ONE push to the URL — the level and everything it
+  // clears below it in a single write, so Back undoes exactly that pick.
+  // Re-picking the row that is already selected is a no-op in the hook: it
+  // closes the list and leaves the drill below it alone.
   const handleSportSelect = (id: GenericId<"selectorOptions">) => {
-    setSelectedSportId(id);
-    clearFrom(2);
+    drillSelect("sport", id);
+    if (id !== selectedSportId) resetBaseMappingDismissals();
   };
   const handleYearSelect = (id: GenericId<"selectorOptions">) => {
-    setSelectedYearId(id);
-    clearFrom(3);
+    drillSelect("year", id);
+    if (id !== selectedYearId) resetBaseMappingDismissals();
   };
   const handleManufacturerSelect = (id: ManufacturerSelection) => {
-    setSelectedManufacturerId(id);
-    clearFrom(4);
+    drillSelect("manufacturer", id);
+    if (id !== selectedManufacturerId) resetBaseMappingDismissals();
   };
   /**
    * NEO-237 (D17): a set picked in the All Brands view BACK-FILLS the
@@ -397,37 +644,38 @@ export default function SetSelector() {
    * selection. Both writes land in one render, so the operator sees the
    * collapsed Manufacturers card change to the brand at the moment the set
    * is chosen.
+   *
+   * NEO-224: brand and set are one URL write, so the address bar never holds
+   * `brand=all` with a set under it.
    */
   const handleSetSelect = (
     id: GenericId<"selectorOptions">,
     parentId?: GenericId<"selectorOptions">,
   ) => {
-    if (inAllBrandsView && parentId) setSelectedManufacturerId(parentId);
-    setSelectedSetId(id);
-    clearFrom(5);
+    if (inAllBrandsView && parentId) drillSelectSetUnder(parentId, id);
+    else drillSelect("setName", id);
+    if (id !== selectedSetId) resetBaseMappingDismissals();
   };
   // Stable across re-renders (NEO-85): fed as onSelect into the memoized Variant
   // Types column via SetVariantSelector, so a bare parent re-render doesn't churn
   // the list under Maestro's coordinate taps.
   const handleVariantTypeSelect = useCallback(
     (id: GenericId<"selectorOptions">) => {
-      setSelectedVariantTypeId(id);
-      // Selecting a variant type re-arms the auto-open prompt (NEO-255).
-      // `clearFrom(6)` starts BELOW this level, so the dismissal is cleared
-      // here rather than there: closing the panel is a decision about the row
-      // the operator was looking at, and tapping a row — including tapping
-      // Base again — asks the question afresh.
-      setDismissedVariantTypeIds(NO_BASE_MAPPING_DISMISSALS);
-      clearFrom(6);
+      drillSelect("variantType", id);
+      // Selecting a variant type re-arms the auto-open prompt (NEO-255):
+      // closing the panel is a decision about the row the operator was
+      // looking at, and tapping a row — including tapping Base again — asks
+      // the question afresh. Local state only: re-picking the selected row
+      // makes no URL write and clears nothing below it (NEO-224).
+      resetBaseMappingDismissals();
     },
-    [clearFrom],
+    [drillSelect, resetBaseMappingDismissals],
   );
   const handleVariantSelect = (id: GenericId<"selectorOptions">) => {
-    setSelectedVariantId(id);
-    clearFrom(7);
+    drillSelect("insert", id);
   };
   const handleVariantOfVariantSelect = (id: GenericId<"selectorOptions">) => {
-    setSelectedVariantOfVariantId(id);
+    drillSelect("parallel", id);
   };
 
   // NEO-219: the column row is the focus parking spot after a row the operator
@@ -439,10 +687,12 @@ export default function SetSelector() {
   // NEO-219: the row the attributes panel was editing has been deleted
   // server-side. Drop the selection from that level down so nothing downstream
   // is still querying a row that no longer exists.
+  //
+  // NEO-224: a `replace`, not a push — the row is gone, so Back must not walk
+  // the operator onto it again.
   const handleRowDeleted = (level: SelectorLevel) => {
-    const depth = LEVEL_DEPTH[level];
-    if (depth <= 1) setSelectedSportId(null);
-    clearFrom(depth === 1 ? 2 : depth);
+    drillClearFrom(level);
+    resetBaseMappingDismissals();
     columnRowRef.current?.focus();
   };
 
@@ -468,48 +718,28 @@ export default function SetSelector() {
    * set and everything below it. Nothing was deleted here; there is nothing
    * to clear. Focus is left alone for the same reason — the control that did
    * this survives the move and has already parked focus on itself.
+   *
+   * NEO-224: a `replace` — the operator did not navigate, the set moved.
    */
   const handleSetMoved = (brandId: GenericId<"selectorOptions">) => {
-    setSelectedManufacturerId(brandId);
+    drillMoveSet(brandId);
   };
 
   /**
    * NEO-219: drill the whole cascade onto a row that lives under a DIFFERENT
    * parent, offered when the custom-entry form finds the typed value elsewhere.
    *
-   * The level handlers are called in order and each clears everything below
-   * itself, so the shallowest write happens first and the deepest write wins —
-   * React batches all of them into one render, so the operator sees the final
-   * selection rather than a cascade animating through intermediate states.
+   * The steps are replayed in order the way the level handlers would be —
+   * each sets its level and clears everything below it — but folded into ONE
+   * URL push (NEO-224), so the operator sees the final selection rather than
+   * a cascade animating through intermediate states, and Back undoes the
+   * whole jump.
    */
   const handleDrillToExisting = (
     path: Array<{ _id: GenericId<"selectorOptions">; level: SelectorLevel }>,
   ) => {
-    for (const step of path) {
-      switch (step.level) {
-        case "sport":
-          handleSportSelect(step._id);
-          break;
-        case "year":
-          handleYearSelect(step._id);
-          break;
-        case "manufacturer":
-          handleManufacturerSelect(step._id);
-          break;
-        case "setName":
-          handleSetSelect(step._id);
-          break;
-        case "variantType":
-          handleVariantTypeSelect(step._id);
-          break;
-        case "insert":
-          handleVariantSelect(step._id);
-          break;
-        case "parallel":
-          handleVariantOfVariantSelect(step._id);
-          break;
-      }
-    }
+    drillTo(path, "push");
+    resetBaseMappingDismissals();
   };
 
   /**
@@ -522,11 +752,14 @@ export default function SetSelector() {
    * move as the custom form's "go to existing". The control that did it
    * unmounts with the old selection, so focus parks on the column row, as it
    * does after a delete.
+   *
+   * NEO-224: a `replace` — the row the URL named changed shape under it.
    */
   const handleRowReshaped = (
     path: Array<{ _id: GenericId<"selectorOptions">; level: SelectorLevel }>,
   ) => {
-    handleDrillToExisting(path);
+    drillTo(path, "replace");
+    resetBaseMappingDismissals();
     columnRowRef.current?.focus();
   };
 
@@ -718,6 +951,198 @@ export default function SetSelector() {
     !!selectedVariantTypeId &&
     parallelRun.run?.startedFrom === selectedVariantTypeId;
 
+  /**
+   * NEO-224 — where focus goes after the cascade moves, decided HERE rather
+   * than in each column: a column cannot see that a pick in it opened the
+   * next one.
+   *
+   * After every selection change, restore (deep link, reload) and popstate,
+   * the deepest open column's search box takes focus, so a keyboard operator
+   * types the next pick straight away: type, Enter, type, Enter, down to the
+   * set. Keyed on that column, so a re-render that opens nothing new moves
+   * nothing.
+   *
+   * Only ever moves focus the cascade already owns — `<body>` (the row the
+   * operator picked just unmounted) or somewhere inside the column row — and
+   * never off a column's collapsed card, which is where Escape and Collapse
+   * deliberately put it. Never out of a dialog or the checklist. Every column
+   * renders exactly one `role="combobox"` (EntitySelector's contract), even
+   * while loading, so the last one in the row is the deepest open column's.
+   * `preventScroll` because EntityColumn owns the row's horizontal scroll and
+   * reveals each new column itself.
+   */
+  /**
+   * NEO-224 — the truncation notice, attached to where focus lands. The page
+   * status line says it too, but that announcement lands in the same moment
+   * focus moves into the deepest combobox, and a screen reader is free to let
+   * the focus announcement swallow it. As the box's description it is read
+   * with the box itself.
+   *
+   * Written on the DOM rather than passed down: the combobox is three
+   * components below this one, and only the cascade knows which column is the
+   * deepest (the same reason the focus effect below lives here). EntitySelector
+   * never passes `aria-describedby` to its box, so React never touches the
+   * attribute and cannot overwrite it. Declared BEFORE the focus effect so the
+   * description is in place when focus arrives. Removed with the notice.
+   */
+  const truncatedNoticeId = useId();
+  const truncatedOnLoad = drill.truncatedOnLoad;
+  useEffect(() => {
+    if (!truncatedOnLoad || openColumnKey === null) return;
+    const boxes =
+      columnRowRef.current?.querySelectorAll<HTMLElement>('[role="combobox"]');
+    const box = boxes?.[boxes.length - 1];
+    if (!box) return;
+    box.setAttribute("aria-describedby", truncatedNoticeId);
+    return () => {
+      if (box.getAttribute("aria-describedby") === truncatedNoticeId) {
+        box.removeAttribute("aria-describedby");
+      }
+    };
+  }, [truncatedOnLoad, openColumnKey, truncatedNoticeId]);
+
+  useEffect(() => {
+    if (openColumnKey === null) return;
+    const row = columnRowRef.current;
+    if (!row || !cascadeOwnsFocus(row)) return;
+    if (isCollapsedCard(row, document.activeElement)) return;
+    const boxes = row.querySelectorAll<HTMLElement>('[role="combobox"]');
+    boxes[boxes.length - 1]?.focus({ preventScroll: true });
+  }, [openColumnKey]);
+
+  /**
+   * NEO-224 (Jason, D3) — a selection that leaves NO column open (Base, or a
+   * parallel) has nothing left to type into, so focus goes to what comes
+   * next: the checklist's "Fetch from Marketplaces" button while the
+   * checklist has no cards yet, otherwise the attributes panel's toggle.
+   *
+   * The card count comes from the same subscription CardChecklist holds
+   * (identical reference and args, deduped by the Convex client), so it costs
+   * no second read. A leaf parallel's empty checklist carries "Build from
+   * <insert>" in that slot instead of a fetch, and that button is what comes
+   * next there (Jason, 2026-10-04). While the insert's name is still loading
+   * the button is a "Loading…" stand-in, so the rule waits for the name; a
+   * parallel with no source to build from falls back to the attributes panel.
+   *
+   * When the selection was made from the keyboard (Enter in a column; see
+   * `keyboardCommitRef`) and the target sits wholly outside the viewport, it
+   * is scrolled into view as well: a keyboard operator has no other way to
+   * see where they landed. A pointer pick keeps `preventScroll`.
+   *
+   * Fires once per selection: a collapse that happens to leave nothing open
+   * is not a selection, and cards arriving after a fetch are not a new
+   * arrival. The target can land a few commits after the selection (the
+   * checklist and the panel load their own rows), so it waits on the DOM for
+   * it — and stands down the moment focus is somewhere the cascade does not
+   * own, or a dialog (the Base mapping picker auto-opens on an unmapped Base)
+   * is up.
+   */
+  const terminalChecklistId =
+    !drill.resolving && openColumnKey === null ? cardChecklistId : null;
+  const terminalCards = useQuery(
+    api.selectorOptions.getCardChecklist,
+    terminalChecklistId ? { selectorOptionId: terminalChecklistId } : "skip",
+  );
+  const buildSourceValue =
+    parallelBuild?.role === "parallel" ? parallelBuild.sourceValue : undefined;
+  // The source's name comes from the ancestor chain (an insert's parallel)
+  // or the Base-parallels plan; until the chain has answered, the slot holds
+  // the "Loading…" stand-in and there is no button to land on yet.
+  const buildSourcePending =
+    parallelBuild?.role === "parallel" &&
+    !buildSourceValue &&
+    !parallelBuild.unavailableReasonId &&
+    cardChecklistChain === undefined;
+  const terminalTargetKey: string | null =
+    terminalChecklistId === null || terminalCards === undefined
+      ? null
+      : terminalCards.length > 0
+        ? "attributes"
+        : parallelBuild?.role !== "parallel"
+          ? "fetch"
+          : buildSourceValue
+            ? `build:${buildButtonLabel(buildSourceValue, false)}`
+            : buildSourcePending
+              ? null
+              : "attributes";
+  // Rebuilt from the string so the effect below keys on a value, not on an
+  // object that is new every render.
+  const terminalTarget = useMemo<TerminalFocusTarget | null>(() => {
+    if (terminalTargetKey === null) return null;
+    if (terminalTargetKey.startsWith("build:")) {
+      return { kind: "build", label: terminalTargetKey.slice("build:".length) };
+    }
+    return { kind: terminalTargetKey as "fetch" | "attributes" };
+  }, [terminalTargetKey]);
+  /**
+   * True when the operator's last commit in the column row was Enter, false
+   * once they press a pointer anywhere on the page. Read once per terminal
+   * selection by the D3 rule above.
+   */
+  const keyboardCommitRef = useRef(false);
+  const pageRef = useRef<HTMLDivElement | null>(null);
+  const terminalHandledForRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (terminalChecklistId === null) {
+      // Leaving terminal by a new selection re-arms the rule; leaving it by
+      // re-expanding a chip (same selection) does not, so collapsing that
+      // chip again never fires it.
+      if (terminalHandledForRef.current !== selectionKey) {
+        terminalHandledForRef.current = null;
+      }
+      return;
+    }
+    if (terminalTarget === null) return;
+    if (terminalHandledForRef.current === selectionKey) return;
+    const page = pageRef.current;
+    const row = columnRowRef.current;
+    if (!page || !row) return;
+    const handledFor = selectionKey;
+    const fromKeyboard = keyboardCommitRef.current;
+    // True once there is nothing left to do: focused, or stood down.
+    const attempt = (): boolean => {
+      if (!cascadeOwnsFocus(row)) return true;
+      if (isCollapsedCard(row, document.activeElement)) return true;
+      const target = findTerminalFocusTarget(page, row, terminalTarget);
+      if (!target) return false;
+      target.focus({ preventScroll: true });
+      if (document.activeElement !== target) return false;
+      if (fromKeyboard && isWhollyOutsideViewport(target)) {
+        target.scrollIntoView({ block: "nearest" });
+      }
+      return true;
+    };
+    if (attempt()) {
+      terminalHandledForRef.current = handledFor;
+      return;
+    }
+    const observer = new MutationObserver(() => {
+      if (!attempt()) return;
+      terminalHandledForRef.current = handledFor;
+      observer.disconnect();
+    });
+    observer.observe(page, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["disabled"],
+    });
+    return () => observer.disconnect();
+  }, [terminalChecklistId, terminalTarget, selectionKey]);
+
+  // Feeds `keyboardCommitRef`: Enter in a column's search box (or on one of
+  // its options) is a keyboard commit; any pointer press on the page is not.
+  const noteKeyboardCommit = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Enter") return;
+    const role = (event.target as HTMLElement).getAttribute?.("role");
+    if (role === "combobox" || role === "option") {
+      keyboardCommitRef.current = true;
+    }
+  };
+  const notePointer = () => {
+    keyboardCommitRef.current = false;
+  };
+
   // NO SCROLL HEADROOM HERE, deliberately — the shell owns it now (NEO-260).
   //
   // This container used to be the one place in the app that had a bottom-pad
@@ -734,16 +1159,44 @@ export default function SetSelector() {
   // being below it. (NEO-255's pb-[50vh] — 313px, exactly one driver swipe —
   // is the other way to get this wrong; read the note in binder-layout.tsx.)
   return (
-    <div className="max-w-full mx-auto p-6 flex flex-col gap-6">
+    <div
+      ref={pageRef}
+      onPointerDownCapture={notePointer}
+      className="max-w-full mx-auto p-6 flex flex-col gap-6"
+    >
       {/* `sr-only` is position:absolute, so this is NOT a flex item and costs
           the layout nothing — which matters here: every pixel above the
           cascade pushes fold-sensitive controls down on the 1024x629 headless
           viewport (NEO-47, NEO-155). The text is a full sentence Maestro's
           FULL-STRING text matching can never confuse with a bare column
-          heading. */}
+          heading. While a deep link is still being checked it says so
+          (`RESOLVING_LINK_LABEL`): nothing has opened yet, and the cascade is
+          a single placeholder card.
+
+          NEO-224: when the link this page was opened with had to be cut back,
+          the same region says so first. It is the page's ONE always-mounted
+          polite region, so the sentence is announced the moment the restore
+          lands rather than depending on a region that mounts with it. */}
       <p className="sr-only" role="status">
-        {`${deepestColumn} column opened`}
+        {drill.resolving
+          ? RESOLVING_LINK_LABEL
+          : `${drill.truncatedOnLoad ? `${TRUNCATED_LINK_NOTICE} ` : ""}${deepestColumn} column opened`}
       </p>
+      {/* NEO-224 — the visible half of that notice: the link named rows that
+          are not there (deleted, or not under the parent it said), so the
+          drill was cut back to the part that is. One line, only when it
+          happened, until the next pick. Not a live region itself — the
+          status line above already speaks it — but the deepest combobox is
+          described by it (`truncatedNoticeId`), so it is read with the box
+          focus lands on. */}
+      {drill.truncatedOnLoad && (
+        <p
+          id={truncatedNoticeId}
+          className="text-sm text-amber-800 dark:text-amber-300"
+        >
+          {TRUNCATED_LINK_NOTICE}
+        </p>
+      )}
       {/* pb-4 prevents the horizontal scrollbar from overlapping each
           EntityColumn's action-button row (Sync X / + Custom). Without it,
           Maestro web taps at the action-button y-coordinate hit the
@@ -763,205 +1216,232 @@ export default function SetSelector() {
         // programmatic focus target for `handleRowDeleted`'s focus park.
         tabIndex={-1}
         data-set-selector-scroll
+        onKeyDownCapture={noteKeyboardCommit}
         className="flex flex-row gap-4 overflow-x-auto pb-4 pl-4 focus:outline-none"
       >
-        {/* 1. Sport (SL & BSC) */}
-        <ResilientEntityColumn
-          selector={
-            <SportSelector
-              selectedSportId={selectedSportId}
-              onSportSelect={handleSportSelect}
-              expanded={sportExpanded}
-              setExpanded={setSportExpanded}
+        {drill.resolving ? (
+          // NEO-224 — a deep link is being checked. One column-shaped card,
+          // the same treatment EntitySelector gives a column whose rows are
+          // loading (one static bar, no pulse — NEO-85/NEO-167), so the
+          // restore goes placeholder → restored columns with no flash of
+          // Sports in between. No heading: flows read a column heading as
+          // "that column is open", and none is yet.
+          //
+          // A named, busy group. The page status line above is what SPEAKS
+          // the wait; a nested live region here would be a second one saying
+          // the same thing, so the bar is decorative.
+          <div
+            role="group"
+            aria-label={RESOLVING_LINK_LABEL}
+            aria-busy="true"
+            className="min-w-[260px] max-w-[340px] flex-shrink-0 bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
+          >
+            <div
+              aria-hidden="true"
+              className="h-[50px] rounded-md border border-gray-200 dark:border-gray-600 bg-gray-100 dark:bg-gray-700"
             />
-          }
-          renderForm={(onDone) => <SportForm onDone={onDone} />}
-          addButtonText="Sync Sports"
-          isVisible={true}
-          level="sport"
-          onSelectExisting={handleSportSelect}
-          onDrillToExisting={handleDrillToExisting}
-          useEnsureSync
-          syncingLabel="Syncing Sport Options"
-        />
+          </div>
+        ) : (
+          <>
+            {/* 1. Sport (SL & BSC) */}
+            <ResilientEntityColumn
+              selector={
+                <SportSelector
+                  selectedSportId={selectedSportId}
+                  onSportSelect={handleSportSelect}
+                  expanded={sportExpanded}
+                  setExpanded={setSportExpanded}
+                />
+              }
+              renderForm={(onDone) => <SportForm onDone={onDone} />}
+              addButtonText="Sync Sports"
+              isVisible={true}
+              level="sport"
+              onSelectExisting={handleSportSelect}
+              onDrillToExisting={handleDrillToExisting}
+              useEnsureSync
+              syncingLabel="Syncing Sport Options"
+            />
 
-        {/* 2. Year (SL & BSC) */}
-        <ResilientEntityColumn
-          selector={
-            <YearSelector
-              sportId={selectedSportId!}
-              selectedYearId={selectedYearId}
-              onYearSelect={handleYearSelect}
-              expanded={yearExpanded}
-              setExpanded={setYearExpanded}
+            {/* 2. Year (SL & BSC) */}
+            <ResilientEntityColumn
+              selector={
+                <YearSelector
+                  sportId={selectedSportId!}
+                  selectedYearId={selectedYearId}
+                  onYearSelect={handleYearSelect}
+                  expanded={yearExpanded}
+                  setExpanded={setYearExpanded}
+                />
+              }
+              renderForm={(onDone) => (
+                <YearForm sportId={selectedSportId!} onDone={onDone} />
+              )}
+              addButtonText="Sync Years"
+              isVisible={!!selectedSportId}
+              level="year"
+              parentId={selectedSportId || undefined}
+              onSelectExisting={handleYearSelect}
+              onDrillToExisting={handleDrillToExisting}
+              useEnsureSync
+              syncingLabel="Syncing Year Options"
             />
-          }
-          renderForm={(onDone) => (
-            <YearForm sportId={selectedSportId!} onDone={onDone} />
-          )}
-          addButtonText="Sync Years"
-          isVisible={!!selectedSportId}
-          level="year"
-          parentId={selectedSportId || undefined}
-          onSelectExisting={handleYearSelect}
-          onDrillToExisting={handleDrillToExisting}
-          useEnsureSync
-          syncingLabel="Syncing Year Options"
-        />
 
-        {/* 3. Manufacturer (SL only) */}
-        <ResilientEntityColumn
-          selector={
-            <ManufacturerSelector
-              yearId={selectedYearId!}
-              selectedManufacturerId={selectedManufacturerId}
-              onManufacturerSelect={handleManufacturerSelect}
-              expanded={manufacturerExpanded}
-              setExpanded={setManufacturerExpanded}
+            {/* 3. Manufacturer (SL only) */}
+            <ResilientEntityColumn
+              selector={
+                <ManufacturerSelector
+                  yearId={selectedYearId!}
+                  selectedManufacturerId={selectedManufacturerId}
+                  onManufacturerSelect={handleManufacturerSelect}
+                  expanded={manufacturerExpanded}
+                  setExpanded={setManufacturerExpanded}
+                />
+              }
+              renderForm={(onDone) => (
+                <ManufacturerForm yearId={selectedYearId!} onDone={onDone} />
+              )}
+              addButtonText="Sync Manufacturers"
+              isVisible={!!selectedYearId}
+              level="manufacturer"
+              parentId={selectedYearId || undefined}
+              onSelectExisting={handleManufacturerSelect}
+              onDrillToExisting={handleDrillToExisting}
+              useEnsureSync
+              syncingLabel="Syncing Manufacturer Options"
             />
-          }
-          renderForm={(onDone) => (
-            <ManufacturerForm yearId={selectedYearId!} onDone={onDone} />
-          )}
-          addButtonText="Sync Manufacturers"
-          isVisible={!!selectedYearId}
-          level="manufacturer"
-          parentId={selectedYearId || undefined}
-          onSelectExisting={handleManufacturerSelect}
-          onDrillToExisting={handleDrillToExisting}
-          useEnsureSync
-          syncingLabel="Syncing Manufacturer Options"
-        />
 
-        {/* 4. Set (BSC only) — or, under the All Brands VIEW, every set in
-            the year with its brand alongside (NEO-237, D14c/D17). In the view
-            the column's parent is the YEAR: `ensureSelectorOptions` and the
-            sync status row key on it, "+ Custom" is replaced by a line
-            saying to pick a brand first (a view has no one parent to create
-            under), and picking a set back-fills the Manufacturers column
-            from the set's own parent. */}
-        <ResilientEntityColumn
-          selector={
-            <SetSelectorComponent
-              manufacturerId={selectedManufacturerRowId}
-              yearId={selectedYearId!}
-              selectedSetId={selectedSetId}
-              onSetSelect={handleSetSelect}
-              expanded={setExpanded}
-              setExpanded={setSetExpanded}
+            {/* 4. Set (BSC only) — or, under the All Brands VIEW, every set in
+                the year with its brand alongside (NEO-237, D14c/D17). In the view
+                the column's parent is the YEAR: `ensureSelectorOptions` and the
+                sync status row key on it, "+ Custom" is replaced by a line
+                saying to pick a brand first (a view has no one parent to create
+                under), and picking a set back-fills the Manufacturers column
+                from the set's own parent. */}
+            <ResilientEntityColumn
+              selector={
+                <SetSelectorComponent
+                  manufacturerId={selectedManufacturerRowId}
+                  yearId={selectedYearId!}
+                  selectedSetId={selectedSetId}
+                  onSetSelect={handleSetSelect}
+                  expanded={setExpanded}
+                  setExpanded={setSetExpanded}
+                />
+              }
+              // Legacy path only; this column is on `useEnsureSync`, so the form
+              // is never rendered and the view never reaches it.
+              renderForm={(onDone) => (
+                <SetForm
+                  manufacturerId={selectedManufacturerRowId!}
+                  onDone={onDone}
+                />
+              )}
+              addButtonText="Sync Sets"
+              isVisible={!!selectedManufacturerId}
+              level="setName"
+              parentId={
+                inAllBrandsView
+                  ? selectedYearId || undefined
+                  : selectedManufacturerRowId || undefined
+              }
+              onSelectExisting={handleSetSelect}
+              onDrillToExisting={handleDrillToExisting}
+              useEnsureSync
+              syncingLabel="Syncing Sets"
+              hideCustom={
+                inAllBrandsView ? { reason: "Pick a brand to add a set" } : undefined
+              }
             />
-          }
-          // Legacy path only; this column is on `useEnsureSync`, so the form
-          // is never rendered and the view never reaches it.
-          renderForm={(onDone) => (
-            <SetForm
-              manufacturerId={selectedManufacturerRowId!}
-              onDone={onDone}
-            />
-          )}
-          addButtonText="Sync Sets"
-          isVisible={!!selectedManufacturerId}
-          level="setName"
-          parentId={
-            inAllBrandsView
-              ? selectedYearId || undefined
-              : selectedManufacturerRowId || undefined
-          }
-          onSelectExisting={handleSetSelect}
-          onDrillToExisting={handleDrillToExisting}
-          useEnsureSync
-          syncingLabel="Syncing Sets"
-          hideCustom={
-            inAllBrandsView ? { reason: "Pick a brand to add a set" } : undefined
-          }
-        />
 
-        {/* 5. Variant Type (BSC only: Base, Insert, Parallel, Promo) */}
-        <ResilientEntityColumn
-          selector={
-            <SetVariantSelector
-              setId={selectedSetId!}
-              selectedVariantTypeId={selectedVariantTypeId}
-              onVariantTypeSelect={handleVariantTypeSelect}
-              expanded={variantTypeExpanded}
-              setExpanded={setVariantTypeExpanded}
+            {/* 5. Variant Type (BSC only: Base, Insert, Parallel, Promo) */}
+            <ResilientEntityColumn
+              selector={
+                <SetVariantSelector
+                  setId={selectedSetId!}
+                  selectedVariantTypeId={selectedVariantTypeId}
+                  onVariantTypeSelect={handleVariantTypeSelect}
+                  expanded={variantTypeExpanded}
+                  setExpanded={setVariantTypeExpanded}
+                />
+              }
+              renderForm={(onDone) => (
+                <SetVariantForm setId={selectedSetId!} onDone={onDone} />
+              )}
+              addButtonText="Sync Variant Types"
+              isVisible={!!selectedSetId}
+              level="variantType"
+              parentId={selectedSetId || undefined}
+              onSelectExisting={handleVariantTypeSelect}
+              onDrillToExisting={handleDrillToExisting}
+              useEnsureSync
+              syncingLabel="Syncing Variant Types"
             />
-          }
-          renderForm={(onDone) => (
-            <SetVariantForm setId={selectedSetId!} onDone={onDone} />
-          )}
-          addButtonText="Sync Variant Types"
-          isVisible={!!selectedSetId}
-          level="variantType"
-          parentId={selectedSetId || undefined}
-          onSelectExisting={handleVariantTypeSelect}
-          onDrillToExisting={handleDrillToExisting}
-          useEnsureSync
-          syncingLabel="Syncing Variant Types"
-        />
 
-        {/* 6. Variant (reconciled BSC variantName + SL set list) — hidden
-            when Base is selected (Base is terminal). */}
-        {!isBaseVariantTypeSelected && (
-          <ResilientEntityColumn
-            selector={
-              // NEO-291: the "Metadata" box that used to sit under this
-              // column is gone. Insert/Parallel were hierarchy facts shown
-              // as disabled checkboxes, and the card prefix now lives in the
-              // Attributes panel beside every other per-row fact.
-              <VariantSelector
-                variantTypeId={selectedVariantTypeId!}
-                selectedVariantId={selectedVariantId}
-                onVariantSelect={handleVariantSelect}
-                expanded={variantExpanded}
-                setExpanded={setVariantExpanded}
-                title={variantsColumnLabel}
-              />
-            }
-            renderForm={(onDone) => (
-              <VariantForm
-                variantTypeId={selectedVariantTypeId!}
-                onDone={onDone}
+            {/* 6. Variant (reconciled BSC variantName + SL set list) — hidden
+                when Base is selected (Base is terminal). */}
+            {!isBaseVariantTypeSelected && (
+              <ResilientEntityColumn
+                selector={
+                  // NEO-291: the "Metadata" box that used to sit under this
+                  // column is gone. Insert/Parallel were hierarchy facts shown
+                  // as disabled checkboxes, and the card prefix now lives in the
+                  // Attributes panel beside every other per-row fact.
+                  <VariantSelector
+                    variantTypeId={selectedVariantTypeId!}
+                    selectedVariantId={selectedVariantId}
+                    onVariantSelect={handleVariantSelect}
+                    expanded={variantExpanded}
+                    setExpanded={setVariantExpanded}
+                    title={variantsColumnLabel}
+                  />
+                }
+                renderForm={(onDone) => (
+                  <VariantForm
+                    variantTypeId={selectedVariantTypeId!}
+                    onDone={onDone}
+                  />
+                )}
+                addButtonText={`Sync ${variantsColumnLabel}`}
+                isVisible={!!selectedVariantTypeId}
+                level="insert"
+                parentId={selectedVariantTypeId || undefined}
+                onSelectExisting={handleVariantSelect}
+                onDrillToExisting={handleDrillToExisting}
+                extraActions={
+                  selectedVariantTypeId ? (
+                    <NeonButton secondary onClick={() => setGroupingOpen(true)}>
+                      Group Parallels
+                    </NeonButton>
+                  ) : undefined
+                }
               />
             )}
-            addButtonText={`Sync ${variantsColumnLabel}`}
-            isVisible={!!selectedVariantTypeId}
-            level="insert"
-            parentId={selectedVariantTypeId || undefined}
-            onSelectExisting={handleVariantSelect}
-            onDrillToExisting={handleDrillToExisting}
-            extraActions={
-              selectedVariantTypeId ? (
-                <NeonButton secondary onClick={() => setGroupingOpen(true)}>
-                  Group Parallels
-                </NeonButton>
-              ) : undefined
-            }
-          />
-        )}
 
-        {/* 7. Variant of Variant (NB only — translates to variant on BSC/SL) */}
-        {!isBaseVariantTypeSelected && selectedVariantId && (
-          <ResilientEntityColumn
-            selector={
-              <ParallelSelector
-                insertId={selectedVariantId!}
-                selectedParallelId={selectedVariantOfVariantId}
-                onParallelSelect={handleVariantOfVariantSelect}
-                expanded={variantOfVariantExpanded}
-                setExpanded={setVariantOfVariantExpanded}
+            {/* 7. Variant of Variant (NB only — translates to variant on BSC/SL) */}
+            {!isBaseVariantTypeSelected && selectedVariantId && (
+              <ResilientEntityColumn
+                selector={
+                  <ParallelSelector
+                    insertId={selectedVariantId!}
+                    selectedParallelId={selectedVariantOfVariantId}
+                    onParallelSelect={handleVariantOfVariantSelect}
+                    expanded={variantOfVariantExpanded}
+                    setExpanded={setVariantOfVariantExpanded}
+                  />
+                }
+                renderForm={(onDone) => (
+                  <ParallelForm insertId={selectedVariantId!} onDone={onDone} />
+                )}
+                addButtonText="Sync Sub-Variants"
+                isVisible={true}
+                level="parallel"
+                parentId={selectedVariantId || undefined}
+                onSelectExisting={handleVariantOfVariantSelect}
+                onDrillToExisting={handleDrillToExisting}
               />
-            }
-            renderForm={(onDone) => (
-              <ParallelForm insertId={selectedVariantId!} onDone={onDone} />
             )}
-            addButtonText="Sync Sub-Variants"
-            isVisible={true}
-            level="parallel"
-            parentId={selectedVariantId || undefined}
-            onSelectExisting={handleVariantOfVariantSelect}
-            onDrillToExisting={handleDrillToExisting}
-          />
+          </>
         )}
       </div>
 
