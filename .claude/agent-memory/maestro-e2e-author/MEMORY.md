@@ -125,3 +125,4 @@ Non-markdown helpers: `tools/`
 - [Cross-document back is bfcache](reference_cross_document_back_is_bfcache.md) — openLink+back = thawed old page; remount via NavLink tap + back; no reload/forward, URL unreadable
 - [Dead-branch guards can cover a second outcome](patterns_dead_branch_guards_can_cover_a_second_outcome.md) — enumerate every outcome a guard admits before deleting a dead-premise branch
 - [Prove focus by what Enter does](patterns_prove_focus_by_what_enter_does.md) — maestro-web has no focus attribute; prove safe preconditions by sight, then Enter + assert effect
+- [Present in the failure dump = arrived late](patterns_present_in_failure_dump_means_late_arrival.md) — target fully on-screen in the failure PNG/hierarchy means it landed after the last poll; heading gates are Clerk-only
