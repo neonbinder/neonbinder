@@ -4883,12 +4883,34 @@ describe("EntityReviewWizard — footer layout", () => {
   });
 
   it("keeps Skip remaining names live while armed — row 2 offers it by name", async () => {
+    // The create call is held open, for the same reason as the dim test above:
+    // `waitFor` on the mock only proves the call HAPPENED. Skip is
+    // `aria-disabled` for as long as `bulkPending` is set, so a read taken
+    // before the call settles is a race against the runner's speed. Hold the
+    // promise, assert the in-flight state, then release and assert the settled
+    // one — no poll decides which side we see.
+    let releaseCreate: (v: unknown) => void = () => {};
+    mockRecordAllRemainingAsCreate.mockImplementationOnce(
+      () => new Promise((res) => (releaseCreate = res)),
+    );
     currentRows = [makeRow({ status: "ready" }), makeRow({ status: "pending" })];
     renderWizard();
 
     fireEvent.click(screen.getByRole("button", { name: "Add remaining players as new (2)" }));
-    await waitFor(() => expect(mockRecordAllRemainingAsCreate).toHaveBeenCalledTimes(1));
 
+    // In flight: the create is running, so Skip is inert.
+    await screen.findByRole("button", { name: "Adding players…" });
+    expect(
+      screen.getByRole("button", { name: "Skip remaining names (2)" }).getAttribute("aria-disabled"),
+    ).toBe("true");
+
+    await act(async () => {
+      releaseCreate(LAST_PAGE);
+    });
+
+    // Settled: still armed for the pending row, and Skip is live again.
+    expect(footerStatusText()).toContain("Adding 2 more as their lookups finish…");
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
     const skip = screen.getByRole("button", {
       name: "Skip remaining names (2)",
     }) as HTMLButtonElement;
