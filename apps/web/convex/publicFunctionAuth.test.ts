@@ -1772,3 +1772,38 @@ describe("NEO-322: the entity-name re-key is internal and armed, never public", 
     expect(src).not.toContain(`export const ${fn} = mutation(`);
   });
 });
+
+describe("NEO-224: the set builder's deep-link resolver is admin-gated", () => {
+  /**
+   * `drillPath.resolveDrillPath` is public (the SPA calls it on a pasted link)
+   * and reads up to seven selectorOptions rows by caller-supplied id, so it is
+   * `requireAdmin` like every other set-builder read. A refusal must be the
+   * gate, not argument validation: the ids are valid and the path is real.
+   */
+  test("refuses a signed-in non-admin and a signed-out caller, and answers an admin", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.drillPath.resolveDrillPath, { ids: [sportId] }),
+    ).rejects.toThrow();
+    await expect(
+      t.query(api.drillPath.resolveDrillPath, { ids: [sportId] }),
+    ).rejects.toThrow();
+    // The same call as an admin is the control: it proves the refusals above
+    // were the gate and not a bad argument.
+    const path = await t
+      .withIdentity(ADMIN)
+      .query(api.drillPath.resolveDrillPath, { ids: [sportId] });
+    expect(path).toEqual([{ _id: sportId, level: "sport" }]);
+  });
+
+  test("resolveDrillPath calls requireAdmin before its first read", () => {
+    const src = readFileSync(join(__dirname, "drillPath.ts"), "utf8");
+    const handler = src.slice(src.indexOf("handler:"));
+    expect(handler.indexOf("await requireAdmin(ctx)")).toBeGreaterThan(-1);
+    expect(handler.indexOf("await requireAdmin(ctx)")).toBeLessThan(
+      handler.indexOf("ctx.db"),
+    );
+  });
+});

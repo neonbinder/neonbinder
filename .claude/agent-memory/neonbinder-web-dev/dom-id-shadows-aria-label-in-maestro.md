@@ -18,3 +18,10 @@ labelled control, put the id on a non-interactive wrapper (move absolute
 positioning to the wrapper so visuals stay identical). A quick audit: scan JSX
 opening tags for both `id=` and `aria-label=`. Elements named by
 `aria-labelledby` or a `<label htmlFor>` are not affected by this rule.
+
+**aria-activedescendant is the exception you cannot route around** (NEO-224):
+every option it points at MUST carry a DOM id, so a labelled option (the
+pinned "All Brands — every set in <year>") stops answering `id:` selectors.
+Keep the listbox/popup label safe with the wrapper trick, and tell the
+coordinator which flows targeted an option's aria-label so maestro-e2e-author
+moves them to visible text.

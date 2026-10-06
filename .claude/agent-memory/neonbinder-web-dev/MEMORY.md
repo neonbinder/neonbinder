@@ -83,5 +83,7 @@
 - [Reuse the status-ledger spinner→check pattern](feedback_reuse_the_status_ledger_spinner_to_check_pattern.md) — owner-approved (NEO-312 ParallelBuildPanel): per-item ledger, clock→spin→check glyphs, sleeve strip; reuse for any multi-item run, extract on second use
 - [Result ledgers grow, the page scrolls](feedback-result-ledgers-grow-the-page-scrolls.md) — no max-h-48 inner scroller on a list the operator reads; 70vh cap only past a pathological count (Jason, NEO-321)
 - [Key join rules need a typeahead reading](reference_key_join_rules_need_a_typeahead_reading.md) — joined initials break prefix AND substring typeahead one keystroke; entityNameQueryReadings; player-in-sport = home + playerSports legs
+- [Router navigation is a transition](reference_router_navigation_is_a_transition.md) — setSearchParams commits in startTransition; a sibling setState renders the OLD URL first; wrap it in startTransition
+- [New string Maestro collision sweep](reference_new_string_maestro_collision_sweep.md) — compile every flow selector as an anchored regex vs new copy, then check the page each hit runs on
 - [Caption under an image never widens it](reference_caption_under_an_image_never_widens_it.md) — figure flex-col + caption `w-0 min-w-full wrap-anywhere text-balance`; `w-min` zeroes preflight images
 - [Static markup visual check](reference_static_markup_visual_check.md) — built CSS + scratch HTML + headless Chrome; phone widths via iframe (window-size clamps ~500px)

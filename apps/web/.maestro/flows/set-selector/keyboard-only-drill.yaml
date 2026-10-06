@@ -1,0 +1,270 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Set Builder drill is keyboard-only — type to filter, Enter picks the first match, focus follows into the next column and lands on the attributes toggle after Base (NEO-224)"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE (NEO-224): the whole Sport → Year → Manufacturer → Set →
+# Variant Type drill is done from the keyboard, with NO tap. Every column is a
+# combobox whose search box keeps focus; typing filters, Enter takes the
+# highlighted row (the first filter match); and after every pick the cascade
+# moves focus into the next open column's search box, so the operator just
+# types again. After the terminal pick (`Variant Types: Base — change`) focus
+# goes to what comes next (D3), proved by one more Enter.
+#
+# WHAT EACH LEVEL PROVES, IN ORDER (all on the registered, seeded hierarchy):
+#   1. `inputText` with no tap lands in THIS column's box — asserted by reading
+#      the box back (`id` = its accessible name `Search <column>`, `text` = its
+#      VALUE; README → getNodeText). That is "focus is here".
+#   2. The filtered row is listed under the box (the thing Enter will take).
+#   3. `pressKey: Enter` picks it — asserted by the collapsed card's
+#      accessible name `<Column>: <Name> — change`, a FULL match, so the card
+#      also says WHICH row Enter took.
+#   4. The next column's heading is up, which is where step 1 of the next level
+#      types.
+#
+# FIRST-MATCH ORDERING (plan Risk 2). Enter takes the FIRST row the filter
+# matches, in the column's sort (all-digit names newest first, then the rest
+# A→Z, NB lead rows ahead). "Topps" also matches every "Topps …" brand and
+# "Topps Chrome" every "Topps Chrome …" set; a full name sorts ahead of every
+# longer name it prefixes, so the target is first. If a row ever sorted ahead
+# of it, the full-match card assert below names the row Enter actually took.
+#
+# WHY NOT THE DRILL UTILS (R9). Those utils TAP each row; this flow's feature
+# is that no tap is needed, so it drills inline on purpose — the one sanctioned
+# divergence R9 describes ("a flow targeting … unique picker asserts may
+# diverge and must say why").
+#
+# WHY pressKey IS SAFE HERE (README → "pressKey needs a unique, user-visible
+# handle"). maestro-web re-finds `document.activeElement` by an XPath built
+# from class names. Each column's box carries the Input primitive's
+# document-unique marker class plus `mb-search-<column>`, so the XPath names
+# exactly one node; the box's own `onKeyDown` handles Enter (a synthetic key
+# event has no default action). Nothing here relies on a DOM id.
+#
+# D3 — WHERE FOCUS LANDS AFTER THE TERMINAL PICK. With no column left open,
+# SetSelector focuses the checklist's "Fetch from Marketplaces" while the
+# checklist is EMPTY, otherwise the attributes panel's "Edit attributes"
+# toggle. maestro-web reports no focus state, so the landing is proved by what
+# Enter does there: the toggle expands the panel ("Hide attributes"). That is
+# only safe because the target is the toggle — on an empty checklist the same
+# Enter would START A FETCH, a write this read-only flow must never make. So
+# before the Enter the flow proves, by sight, every condition that makes the
+# toggle the target and nothing else hold focus:
+#   * "Re-map Base" is on the page: the Base is mapped, so no base-set picker
+#     auto-opened (an open dialog makes D3 stand down and would own the Enter);
+#   * the checklist's sync button reads "Refresh", not "Fetch from
+#     Marketplaces": the checklist has cards (setup.yaml commits all 335 of
+#     2024 Topps Chrome Base, and no other flow writes them — SET-REGISTRY.md),
+#     and it is the same subscription D3 reads, so its target is decided;
+#   * "Edit attributes" is showing: the panel is collapsed, so "Hide
+#     attributes" afterwards is a change the Enter made, not a state it found.
+# Expanding the panel is local UI state; it writes nothing (R7a holds).
+# The toggle handles Enter itself (`activateOnEnter`) — a synthetic key event
+# has no default action, so a button without that handler could not be proved.
+#
+# PAUSED (NEO-287, `output.SL_PAUSED`): the BSC-only Base reads as unmapped and
+# its picker auto-opens, so D3 stands down by design and NO Enter is sent —
+# that branch proves the picker is up instead (R2) and ends there.
+#
+# R2 — every step ends in a hard positive. R4 — enters through the sign-in
+# redirect. R5 — every in-app wait is 7000 (the post-launch gate is the
+# sanctioned 45000); every row here is warm (setup.yaml provisions the whole
+# path), so no marketplace is waited on. R7/R7a — read-only on 2024 Topps
+# Chrome (SET-REGISTRY.md → "Read-only consumers"): picking rows writes
+# nothing, the drill stops at Base, and the D3 Enter only expands a panel.
+# NEO-287: the drill itself needs no paused branch — the path exists in both
+# modes (under the pause `Topps` is the seed's hand-made row) and every drill
+# step reads it the same way; a paused Base auto-opens its picker, which sits
+# over the page without hiding the card the terminal step reads. Only the D3
+# proof branches (above).
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# The Sports column's box is on screen. It is the cascade's focus target from
+# the first render (every open column renders exactly one combobox, loading
+# included), so nothing is tapped to get focus into it.
+- extendedWaitUntil:
+    visible:
+      id: "Search sports"
+    timeout: 7000
+
+# ── SPORT ─────────────────────────────────────────────────────────────────────
+- inputText: "Baseball"
+- extendedWaitUntil:
+    visible:
+      id: "Search sports"
+      text: "Baseball"
+    timeout: 7000
+# `below:` because the box's own text is now "Baseball" too.
+- extendedWaitUntil:
+    visible:
+      text: "Baseball"
+      below:
+        id: "Search sports"
+    timeout: 7000
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Sports: Baseball — change"
+    timeout: 7000
+- extendedWaitUntil:
+    visible: "Years"
+    timeout: 7000
+
+# ── YEAR ──────────────────────────────────────────────────────────────────────
+# Focus moved into the Years box by itself: the keystrokes below land there or
+# the read-back fails, by name.
+- inputText: "2024"
+- extendedWaitUntil:
+    visible:
+      id: "Search years"
+      text: "2024"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "2024"
+      below:
+        id: "Search years"
+    timeout: 7000
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Years: 2024 — change"
+    timeout: 7000
+- extendedWaitUntil:
+    visible: "Manufacturers"
+    timeout: 7000
+
+# ── MANUFACTURER ──────────────────────────────────────────────────────────────
+# The pinned "All Brands" view is never filtered out, but "topps" does not
+# match it, so the highlight lands on the first matching DATA row.
+- inputText: "Topps"
+- extendedWaitUntil:
+    visible:
+      id: "Search manufacturers"
+      text: "Topps"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "Topps"
+      below:
+        id: "Search manufacturers"
+    timeout: 7000
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Manufacturers: Topps — change"
+    timeout: 7000
+- extendedWaitUntil:
+    visible: "Sets"
+    timeout: 7000
+
+# ── SET ───────────────────────────────────────────────────────────────────────
+- inputText: "Topps Chrome"
+- extendedWaitUntil:
+    visible:
+      id: "Search sets"
+      text: "Topps Chrome"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "Topps Chrome"
+      below:
+        id: "Search sets"
+    timeout: 7000
+- pressKey: Enter
+# The Variant Types heading renders the moment the set is picked; the Sets
+# card replaces the list once the Variant Types read lands (the cascade's
+# late collapse), so the card is waited on, not asserted bare.
+- extendedWaitUntil:
+    visible: "Variant Types"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      id: "Sets: Topps Chrome — change"
+    timeout: 7000
+
+# ── VARIANT TYPE (terminal) ───────────────────────────────────────────────────
+- inputText: "Base"
+- extendedWaitUntil:
+    visible:
+      id: "Search variant types"
+      text: "Base"
+    timeout: 7000
+- extendedWaitUntil:
+    visible:
+      text: "Base"
+      below:
+        id: "Search variant types"
+    timeout: 7000
+- pressKey: Enter
+# THE END STATE. A terminal pick made BY KEYBOARD may scroll the page down to
+# the next focus target (the attributes toggle) when it is off screen, which
+# can carry the columns row above the top edge. The card is ABOVE wherever
+# that leaves the page, so the scroll that is the assertion goes UP (R5 — an
+# anchor above takes UP; never rely on the document bottoming out). It exits
+# at try 0 when nothing scrolled. No tap follows, so no centring (R8).
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: Base — change"
+    direction: UP
+    timeout: 7000
+
+# ── D3: FOCUS LANDED ON THE ATTRIBUTES TOGGLE ─────────────────────────────────
+# See the header for why each precondition is there. Each precondition target
+# sits further DOWN the page than the last in DOM order (SetSelector.tsx: columns →
+# base-mapping button → MultiSourcePanel → SetAttributesPanel → CardChecklist),
+# and the step above left the page on the columns row, so each scroll goes
+# DOWN (R5 — never rely on the document bottoming out) and exits at try 0 when
+# its target is already on screen. No tap follows any of them, so no centring
+# (R8); R5 — 7000 each, nothing here waits on a marketplace.
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      # The Base is mapped: no picker dialog took focus away from the cascade.
+      - scrollUntilVisible:
+          element:
+            text: "Re-map Base"
+          direction: DOWN
+          timeout: 7000
+      # The panel is collapsed: its toggle reads "Edit attributes".
+      - scrollUntilVisible:
+          element:
+            id: "Edit attributes"
+          direction: DOWN
+          timeout: 7000
+      # The checklist has cards, so D3 chose the toggle, not the fetch button.
+      # Both buttons share the accessible name "Sync card checklist"; the
+      # visible word is what tells them apart.
+      - scrollUntilVisible:
+          element:
+            id: "Sync card checklist"
+            text: "Refresh"
+          direction: DOWN
+          timeout: 7000
+      # Nothing has been tapped since the terminal Enter, so focus is wherever
+      # the app put it. Enter there expands the panel only if it is the toggle.
+      - pressKey: Enter
+      # The toggle sits ABOVE the checklist header the last scroll stopped on,
+      # so UP; the scroll is the assertion (R6).
+      - scrollUntilVisible:
+          element:
+            id: "Hide attributes"
+          direction: UP
+          timeout: 7000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # The picker is up (a fixed dialog, always in the viewport), which is
+      # exactly the case D3 stands down for. No Enter is sent.
+      - extendedWaitUntil:
+          visible: "Select Base Set"
+          timeout: 7000

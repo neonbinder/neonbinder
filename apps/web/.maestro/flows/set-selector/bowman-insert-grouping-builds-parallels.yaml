@@ -453,8 +453,12 @@ tags:
     when:
       true: "${output.SL_PAUSED}"
     commands:
+      # The column's LISTBOX (accessible name `Inserts`) renders only once it
+      # holds a row. NEO-224: not the search box, which every open column now
+      # renders from its first frame and so says nothing about the fetch.
       - extendedWaitUntil:
-          visible: ".*Search inserts.*"
+          visible:
+            id: "Inserts"
           timeout: 240000
       - assertNotVisible: "Reconcile Inserts"
 

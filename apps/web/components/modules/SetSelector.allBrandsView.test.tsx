@@ -23,6 +23,7 @@
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
+import { MemoryRouter } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../convex/_generated/api", () => ({
@@ -35,6 +36,10 @@ vi.mock("../../convex/_generated/api", () => ({
     // selected variant type's role is `parallel` (skipped otherwise).
     parallelChecklistBuild: {
       getParallelsForBuild: "getParallelsForBuild",
+    },
+    // NEO-224: the drill's URL gate (skipped unless the URL names rows).
+    drillPath: {
+      resolveDrillPath: "resolveDrillPath",
     },
   },
 }));
@@ -197,7 +202,7 @@ describe("SetSelector — the All Brands VIEW (NEO-237)", () => {
   });
 
   function openThroughToManufacturer() {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: MemoryRouter });
     pick("sport");
     pick("year");
   }
@@ -299,7 +304,7 @@ describe("SetSelector — a moved set keeps its place (NEO-294)", () => {
   });
 
   function selectASetUnderABrand() {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: MemoryRouter });
     pick("sport");
     pick("year");
     pick("manufacturer");
@@ -344,7 +349,7 @@ describe("SetSelector — a reshaped row is followed (NEO-305)", () => {
   });
 
   it("drills to the new parallel under the set it now belongs to, and parks focus", () => {
-    render(<SetSelector />);
+    render(<SetSelector />, { wrapper: MemoryRouter });
     pick("sport");
     pick("year");
     pick("manufacturer");

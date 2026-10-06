@@ -582,6 +582,7 @@ export default function SetAttributesPanel({
           <button
             type="button"
             onClick={() => setExpanded(false)}
+            onKeyDown={(e) => activateOnEnter(e, () => setExpanded(false))}
             aria-label="Hide attributes"
             className={`shrink-0 ${ATTRIBUTES_TOGGLE_CLASS}`}
           >
@@ -592,6 +593,7 @@ export default function SetAttributesPanel({
             <button
               type="button"
               onClick={() => setExpanded(true)}
+              onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
               aria-label="Edit attributes"
               className={ATTRIBUTES_TOGGLE_CLASS}
             >

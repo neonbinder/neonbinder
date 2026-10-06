@@ -110,72 +110,36 @@ tags:
 # names exactly and never the sibling "Topps Now …" sets or the manufacturer's
 # collapsed "Topps" chip.
 #
-# BOTH COLUMN SHAPES ARE HANDLED. `EntitySelector` renders its search input only
-# above 8 entries; this column has three today, so the second branch is the live
-# one — but BSC can add products to a year, and a flow that breaks the first time
-# a ninth set ships is not worth the seven seconds saved.
+# ONE COLUMN SHAPE SINCE NEO-224. This step used to handle two: `EntitySelector`
+# rendered its search input only above 8 entries, and this column (three sets)
+# took a second, header-anchored branch gated on `notVisible: "Variant Types"`.
+# Every open column renders its search box now, so the search path below is
+# the only one, and the fallback — which could no longer run and only paid
+# R10's ~7s `notVisible` poll — is gone.
 # ============================================================
 
-- runFlow:
-    when:
-      visible: ".*Search sets.*"
+- scrollUntilVisible:
+    element:
+      text: ".*Search sets.*"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search sets.*"
+    waitToSettleTimeoutMs: 250
+# A fragment both candidate names contain, so the filter cannot hide the
+# row whichever name a previous run left on it.
+- inputText: "C"
+- retry:
+    maxRetries: 1
     commands:
-      - scrollUntilVisible:
-          element:
-            text: ".*Search sets.*"
-          centerElement: true
-          timeout: 7000
       - tapOn:
-          text: ".*Search sets.*"
-          waitToSettleTimeoutMs: 250
-      # A fragment both candidate names contain, so the filter cannot hide the
-      # row whichever name a previous run left on it.
-      - inputText: "C"
-      - retry:
-          maxRetries: 1
-          commands:
-            - tapOn:
-                text: "Topps NHL Sticker Collection|TCG"
-                below:
-                  id: "Search sets"
-                retryTapIfNoChange: true
-            - extendedWaitUntil:
-                visible: "Variant Types"
-                timeout: 20000
-
-# Exclusivity gate is the NEXT column, never the search input: selecting a set
-# collapses the Sets column and removes the input, so gating on the input would
-# run BOTH branches and the second would re-toggle the selection. See
-# util-drill-to-2024-topps-chrome's long comment on exactly this.
-#
-# There is no marketplace wait left to absorb here. util-drill-to-cold-real-set's
-# return contract already waits "Syncing Sets" out (150000) before it returns, so
-# by the time this branch runs the Sets column is populated and idle.
-- runFlow:
-    when:
-      notVisible: "Variant Types"
-    commands:
-      # R5 — 7000, the bar (was 60000). MEASURED (CI 34349299679 +
-      # 34361627641): worst 0.55s, 0 centring swipes. Nothing here waits on a
-      # marketplace, for the reason above; this is an ordinary in-app scroll.
-      - scrollUntilVisible:
-          element:
-            text: "Topps NHL Sticker Collection|TCG"
-            below:
-              text: "Sets"
-          centerElement: true
-          timeout: 7000
-      - retry:
-          maxRetries: 1
-          commands:
-            - tapOn:
-                text: "Topps NHL Sticker Collection|TCG"
-                below:
-                  text: "Sets"
-                retryTapIfNoChange: true
-            - extendedWaitUntil:
-                visible: "Variant Types"
-                timeout: 20000
+          text: "Topps NHL Sticker Collection|TCG"
+          below:
+            id: "Search sets"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Variant Types"
+          timeout: 20000
 
 # ── THE BASELINE SUBTREE ─────────────────────────────────────────────────────
 # Selecting the set fires its variant-type sync (BSC-only). These rows ARE the

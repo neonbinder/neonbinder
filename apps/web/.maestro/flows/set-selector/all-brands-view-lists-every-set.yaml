@@ -56,8 +56,12 @@ tags:
 #
 # HANDLES (accessible names and visible text only — README "unique,
 # user-visible handle"; never a DOM id):
-#   the pinned entry        text `All Brands`, aria-label
-#                           `All Brands — every set in 2026`
+#   the pinned entry        text `All Brands` under `Search manufacturers`,
+#                           its second line `Every set in 2026`. Its
+#                           aria-label (`All Brands — every set in 2026`)
+#                           is NOT a handle since NEO-224: every option
+#                           carries a DOM id for aria-activedescendant, and
+#                           maestro-web's resource-id is `id || ariaLabel`.
 #   the collapsed cards     `Manufacturers: Panini — change`,
 #                           `Sets: xb-b-<worker> — change` (EntitySelector)
 #   the hidden-Custom line  `Pick a brand to add a set` (EntityColumn)
@@ -103,14 +107,22 @@ tags:
       YEAR: "2026"
 
 # CLAIM 1. The view is listed with zero data rows (fresh deployment) or with
-# the two this flow's earlier run left (local re-run) — either way, first,
-# by its full accessible name. The manufacturer level under a hand-made sport
-# never syncs (no ids on either side → the two-sided skip goes idle silently),
-# so this is an ordinary in-app wait.
+# the two this flow's earlier run left (local re-run), by both of its visible
+# lines: the name, anchored under the column's search box (rendered in every
+# open column since NEO-224, so it is the anchor no collapsed card has), and
+# the description that binds the view to THIS year. The manufacturer level
+# under a hand-made sport never syncs (no ids on either side → the two-sided
+# skip goes idle silently), so this is an ordinary in-app wait.
 - extendedWaitUntil:
     visible:
-      id: "All Brands — every set in 2026"
+      text: "All Brands"
+      below:
+        id: "Search manufacturers"
     timeout: 7000
+- assertVisible:
+    text: "Every set in 2026"
+    below:
+      text: "All Brands"
 
 # CLAIM 5. Open the column's own "+ Custom" form and type the view's name.
 # R8 — centred before the tap. The button sits below every row in the
@@ -199,21 +211,28 @@ tags:
       SPORT: "xb-sport-${WORKER_INDEX || 0}"
       YEAR: "2026"
 
-# The column holds the pinned entry plus two rows — under the search
-# threshold, so there is no input to filter; the entry is tapped by its
-# accessible name, which no row and no card shares. R8 — centred before the
-# tap. Result-keyed retry: the same coordinate-staleness class the drill
-# utils handle on every row tap (NEO-85); the Sets header is the result.
+# The column holds the pinned entry plus two rows. The entry is tapped by its
+# visible name anchored under the column's search box (NEO-224: its
+# accessible name is shadowed by the option's DOM id — see HANDLES). The
+# anchor matters: once the view is picked the collapsed card's text is also
+# `All Brands`, but the card has no search box above it, so a retry after a
+# landed tap cannot hit the card. R8 — centred before the tap. Result-keyed
+# retry: the same coordinate-staleness class the drill utils handle on every
+# row tap (NEO-85); the Sets header is the result.
 - scrollUntilVisible:
     element:
-      id: "All Brands — every set in 2026"
+      text: "All Brands"
+      below:
+        id: "Search manufacturers"
     centerElement: true
     timeout: 7000
 - retry:
     maxRetries: 1
     commands:
       - tapOn:
-          id: "All Brands — every set in 2026"
+          text: "All Brands"
+          below:
+            id: "Search manufacturers"
           retryTapIfNoChange: true
       - extendedWaitUntil:
           visible: "Sets"

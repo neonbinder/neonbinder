@@ -1,6 +1,6 @@
 ---
 name: neo237-all-brands-view-and-unknown
-description: NEO-237 — "All Brands" is a PINNED VIEW entry (aria `All Brands — every set in <year>`), the brand-unknown row is minted as `Unknown`, SportLots-only sets are auto-saved by Sync Sets (no pill/modal); the selectors, the back-fill card assertion, the content-gate race on the pinned tap, why the sync summary is NOT a UI surface, and why the collapsed cards make a re-drill safer than a card tap
+description: NEO-237 — "All Brands" is a PINNED VIEW entry (tap `text: All Brands` below `Search manufacturers`; its aria-label is shadowed since NEO-224), the brand-unknown row is minted as `Unknown`, SportLots-only sets are auto-saved by Sync Sets (no pill/modal); the selectors, the back-fill card assertion, the content-gate race on the pinned tap, why the sync summary is NOT a UI surface, and why the collapsed cards make a re-drill safer than a card tap
 metadata:
   type: reference
 ---
@@ -9,9 +9,12 @@ metadata:
 
 - **Pinned entry**: first option of every Manufacturers column, both modes,
   zero rows or eighteen. Visible text `All Brands` (its own span), aria-label
-  `All Brands — every set in <year>` → target `id:` (the visible words also
-  full-match the collapsed card's text once selected). Not counted toward the
-  8-row search threshold, never filtered. `util-drill-to-cold-real-set` takes
+  `All Brands — every set in <year>` — but since NEO-224 that aria-label is
+  NOT a handle: every option carries a DOM id (aria-activedescendant target)
+  and resource-id is `id || ariaLabel`. Target `text: "All Brands"` with
+  `below: {id: "Search manufacturers"}` (the collapsed card also reads
+  `All Brands` but has no box above it); its second line `Every set in <year>`
+  carries the year. Never filtered out by the search box. `util-drill-to-cold-real-set` takes
   `MANUFACTURER: "All Brands"` and taps it in both modes.
 - **View mode Sets column**: every set of the year, brand as a muted second
   line (sibling node, so `text: "<set>"` still matches the name alone); no
@@ -74,10 +77,11 @@ metadata:
    before the manufacturer sync flips the status row to "syncing"; a tap
    there opens the view and fires the year-wide Sets sync against a year
    with no brand rows — everything lands under Unknown and the SportLots
-   phase has no brand to scope. Gate on the sync's CONTENT first (live:
-   `.*Search manufacturers.*`, which needs >8 rows; paused: the idle empty
-   text or the `Unknown` row), exactly as the row path's
-   `.*Search manufacturers.*|<row>` gate does.
+   phase has no brand to scope. Gate on the sync's CONTENT first (live, since
+   NEO-224: the pinned entry listed, THEN `notVisible` the idle empty text
+   "No manufacturers available…" — the search box is no longer a >8-rows
+   signal; paused: the idle empty text or the `Unknown` row). See
+   [[search-box-is-not-a-content-signal]].
 2. **Collapsed cards share text with rows.** With a set selected, the Sets
    card's text is the set name and the Manufacturers card's text is the brand
    name; a brand created with the same name as its flagship set ("SPx") makes

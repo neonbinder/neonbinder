@@ -102,12 +102,24 @@ describe("EntitySelector — heading survives an in-flight read (NEO-167)", () =
   it("marks the loading column busy and shows a skeleton, not a bare string", () => {
     mockQuery.mockReturnValue(undefined);
 
-    const { container, getByRole } = renderSelector();
+    const { container, getAllByRole } = renderSelector();
 
-    expect(container.querySelector('[aria-busy="true"]')).toBeTruthy();
-    // Announced to assistive tech, since the visible text no longer says so.
-    const skeleton = getByRole("status", { name: /loading variant types/i });
+    const card = container.querySelector('[aria-busy="true"]');
+    expect(card).toBeTruthy();
+    // NEO-224: the skeleton is decorative. The busy card says "loading" to
+    // assistive tech; a nested `role="status"` on the bar was a second polite
+    // region per loading column that said nothing the card did not. With the
+    // role gone an aria-label would be prohibited on the plain div, so it is
+    // gone too. The column's ONE status region is its filter count, beside
+    // the search box, and it is silent while nothing has been typed.
+    const skeleton = card!.querySelector<HTMLElement>('[aria-hidden="true"]')!;
     expect(skeleton).toBeTruthy();
+    expect(skeleton.getAttribute("role")).toBeNull();
+    expect(skeleton.getAttribute("aria-label")).toBeNull();
+    const regions = getAllByRole("status");
+    expect(regions).toHaveLength(1);
+    expect(regions[0].className).toContain("sr-only");
+    expect(regions[0].textContent).toBe("");
 
     // EXACTLY ONE placeholder row, and this count is load-bearing rather than
     // cosmetic. The first version reserved five (~282px) to "match" the loaded
@@ -120,7 +132,7 @@ describe("EntitySelector — heading survives an in-flight read (NEO-167)", () =
 
     // Must not animate: an infinite CSS animation on a screen a coordinate-tap
     // driver works on is the movement NEO-85 was spent eliminating, and it buys
-    // nothing the aria-label does not already convey.
+    // nothing the busy card does not already convey.
     expect(container.querySelectorAll(".animate-pulse").length).toBe(0);
   });
 

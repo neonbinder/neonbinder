@@ -78,6 +78,17 @@ function LegacyPlaceholders() {
   return <Navigate to={`/print/placeholders${search}`} replace />;
 }
 
+/**
+ * The old /set-selector URL, forwarded to the set builder WITH its query
+ * string. NEO-224 put the builder's drill in the URL (`?sport=…&year=…`), so
+ * an old bookmark or a flow that still navigates to /set-selector would lose
+ * the spot it names to a bare `<Navigate>`. Same shape as LegacyPlaceholders.
+ */
+function LegacySetSelector() {
+  const { search } = useLocation();
+  return <Navigate to={`/admin/set-builder${search}`} replace />;
+}
+
 function ScrollToTop() {
   const { pathname } = useLocation();
   useEffect(() => {
@@ -211,10 +222,7 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
                     instead of tapping the nav tab — this redirect is what
                     keeps them green across the rename. /pipeline-runs gets the
                     same treatment for the NEO-170 era. */}
-                <Route
-                  path="/set-selector"
-                  element={<Navigate to="/admin/set-builder" replace />}
-                />
+                <Route path="/set-selector" element={<LegacySetSelector />} />
                 <Route
                   path="/pipeline-runs"
                   element={<Navigate to="/admin/pipeline-runs" replace />}
