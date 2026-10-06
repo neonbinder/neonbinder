@@ -34,8 +34,8 @@ ANTHROPIC_MAX_RAW_BYTES = 3_500_000
 DOWNSCALE_MAX_EDGE_PX = 1600
 DOWNSCALE_JPEG_QUALITY = 85
 
-PROMPT = """You are analyzing a trading card photo. Return a SINGLE JSON OBJECT
-(not an array) with these keys:
+PROMPT = """You are analyzing one side of a trading card. Return a SINGLE JSON
+OBJECT (not an array) with these keys:
 - "players": a JSON ARRAY of every player/subject name visible on the card.
     Single-player cards: ["Ken Griffey Jr."]
     Multi-player cards (leaders, combo, dual-rookie, team sets):
@@ -43,10 +43,18 @@ PROMPT = """You are analyzing a trading card photo. Return a SINGLE JSON OBJECT
     No identifiable players: []
 - "team": the team name if visible on the card, else null. For multi-player
     cards where players are on different teams, return null.
-- "card_number": the card number as printed (e.g. "25", "RC-12"), string
-    or null if not visible.
-- "side": either "front" or "back". Front has the player photo and name;
-    back has stats, copyright, career info, or team logos as tables.
+- "card_number": the number printed as the card's number, usually on the
+    back, often with a "No." or "#" prefix near a corner or beside the
+    copyright line (e.g. "25", "RC-12"). Copy it exactly as printed. A number
+    on a jersey, helmet or uniform is NEVER the card number, and neither is a
+    statistic, height, weight, date, or a year inside a set or anniversary
+    logo. On a front return null unless a card number is clearly printed as
+    one.
+- "side": "back" if the image shows the card number, a biography, a
+    statistics table, a copyright line or other fine print; a back may ALSO
+    show a photo and the player's name. "front" if it is mostly the photo
+    with little text beyond a name, team or position. null if you cannot
+    tell.
 
 Respond with ONLY the JSON object. No array wrapper, no preamble, no code
 fences, no trailing text."""
@@ -92,12 +100,14 @@ class ClassifyResult:
     alias (first entry or None). `retried` is True when the first response
     failed to parse and this result came from the retry call — a frequency
     signal for the NEO-315 timing line, never part of any response body.
+    `side` is None when the model could not tell or answered outside
+    {"front", "back"} (NEO-327); it is never guessed.
     """
 
     players: list[str]
     team: str | None
     card_number: str | None
-    side: str
+    side: str | None
     raw_text: str
     retried: bool = False
 
@@ -189,9 +199,7 @@ def _merge_list_response(entries: list) -> dict:
         if card_number is None:
             card_number = _nullable_str(entry.get("card_number"))
         if side is None:
-            s = str(entry.get("side", "")).lower()
-            if s in {"front", "back"}:
-                side = s
+            side = _side_or_none(entry.get("side"))
 
     return {
         "players": players,
@@ -216,9 +224,7 @@ def _normalize(raw: object, raw_text: str) -> ClassifyResult:
         single = _nullable_str(players_raw)
         players = [single] if single else []
 
-    side = str(raw.get("side", "")).lower()
-    if side not in {"front", "back"}:
-        side = "front"
+    side = _side_or_none(raw.get("side"))
 
     return ClassifyResult(
         players=players,
@@ -227,6 +233,20 @@ def _normalize(raw: object, raw_text: str) -> ClassifyResult:
         side=side,
         raw_text=raw_text,
     )
+
+
+def _side_or_none(value: object) -> str | None:
+    """`"front"` or `"back"`, else None (NEO-327).
+
+    An unreadable side used to default to "front", which presented a guess
+    as a classification. The pairing pool decides sides from Vision's text
+    count first, so an honest None costs nothing and a fake "front" can
+    outvote the evidence.
+    """
+    if not isinstance(value, str):
+        return None
+    side = value.strip().lower()
+    return side if side in {"front", "back"} else None
 
 
 def _nullable_str(value: object) -> str | None:
@@ -279,13 +299,17 @@ def classify_card(
     *,
     client: anthropic.Anthropic | None = None,
     model: str = DEFAULT_MODEL,
+    prompt: str | None = None,
 ) -> ClassifyResult:
     """Classify a card image.
 
     Makes up to two Anthropic calls: an initial attempt, and one retry if the
     first response fails to parse as JSON. Raises `ClassifyError` if both
-    attempts fail.
+    attempts fail. `prompt` overrides `PROMPT` and exists for
+    `scripts/eval_classify.py`, which scores prompt wordings side by side;
+    production always uses the default.
     """
+    base_prompt = PROMPT if prompt is None else prompt
     if not image_bytes:
         raise ValueError("image_bytes is empty")
 
@@ -298,7 +322,7 @@ def classify_card(
         model=model,
         image_b64=image_b64,
         media_type=media_type,
-        prompt=PROMPT,
+        prompt=base_prompt,
     )
     try:
         return _normalize(_parse_response(first_text), first_text)
@@ -310,7 +334,7 @@ def classify_card(
         model=model,
         image_b64=image_b64,
         media_type=media_type,
-        prompt=PROMPT + RETRY_PROMPT_SUFFIX,
+        prompt=base_prompt + RETRY_PROMPT_SUFFIX,
     )
     try:
         return replace(_normalize(_parse_response(retry_text), retry_text), retried=True)

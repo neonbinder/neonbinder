@@ -528,8 +528,15 @@
             "type": "integer"
           },
           "side": {
-            "title": "Side",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Side"
           },
           "team": {
             "anyOf": [

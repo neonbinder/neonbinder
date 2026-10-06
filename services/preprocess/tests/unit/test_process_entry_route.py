@@ -225,6 +225,19 @@ class TestHappyPath:
         # Rotation 0 → the stored output is the winning bytes unchanged.
         assert fake_gcs.read(BUCKET, f"{OUTPUT_PREFIX}0000.jpg") == entry
 
+    def test_unknown_side_serialises_as_null(self, fake_gcs, monkeypatch):
+        # NEO-327: the pairing pool reads this null as "no label" and decides
+        # the side from text_count; a guessed "front" would outvote it.
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch, side=None)
+        fake_gcs.seed(BUCKET, f"{EXTRACTED_PREFIX}0000.jpg", _jpeg(), "image/jpeg")
+
+        body = _post_entry(entry_index=0).json()
+
+        assert body["needs_escalation"] is False
+        assert "side" in body
+        assert body["side"] is None
+
     def test_response_never_carries_object_paths(self, fake_gcs, monkeypatch):
         _stub_orient(monkeypatch)
         _stub_classify(monkeypatch)

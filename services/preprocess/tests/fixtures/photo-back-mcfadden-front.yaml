@@ -1,0 +1,14 @@
+# 2014 Panini Rookies & Stars football (NEO-327): a photo-back set. Its backs
+# carry a large player photo and the name beside the stats, which the old
+# classify prompt read as a front.
+# Upside-down scan.
+orient:
+  rotation_degrees: 180
+classify:
+  side: front
+  player:
+    contains: McFadden
+  team:
+    contains: Raiders
+  card_number:
+    is_null: true

@@ -74,7 +74,8 @@ def test_fixture_end_to_end(case: FixtureCase):
         "cropped_source",
         "cropped_image_b64",
     }, f"{case.name}: unexpected response keys {sorted(body.keys())}"
-    assert body["side"] in {"front", "back"}, f"{case.name}: bad side {body['side']!r}"
+    # NEO-327: null is a valid side ("could not tell"), never a guessed front.
+    assert body["side"] in {"front", "back", None}, f"{case.name}: bad side {body['side']!r}"
     assert body["rotation_degrees"] in {
         0,
         90,

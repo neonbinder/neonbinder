@@ -1,0 +1,14 @@
+# 2014 Panini Rookies & Stars football (NEO-327): a photo-back set. Its backs
+# carry a large player photo and the name beside the stats, which the old
+# classify prompt read as a front.
+# The front's "14 R-S" set logo once came back as card number 14.
+orient:
+  rotation_degrees: 0
+classify:
+  side: front
+  player:
+    contains: Bell
+  team:
+    contains: Steelers
+  card_number:
+    is_null: true

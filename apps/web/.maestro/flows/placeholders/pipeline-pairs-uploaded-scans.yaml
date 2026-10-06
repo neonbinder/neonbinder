@@ -16,11 +16,11 @@
 # Convex workpool fanning images at the FAST Cloud Run service's capacity, the
 # classical crop, Google Vision OCR, and the pairing port.
 #
-# R2 — It cannot go green without the feature. Four proofs, none of which a
+# R2 — It cannot go green without the feature. Five proofs, none of which a
 # broken fast pipeline can satisfy:
 #   * Step 3 waits for "All 6 photos read." — every row has SETTLED. That alone
 #     is not the zero-failures proof (a failed row counts as settled); the
-#     arithmetic in Step 5 is.
+#     arithmetic in Step 4 is.
 #   * Step 3's 180s ceiling is what proves these cards stayed on the FAST path.
 #     The only other way they can be read is the HEAVY service, and HEAVY cannot
 #     settle six inside it: a PR preview's heavy cap is 3
@@ -31,40 +31,50 @@
 #     (the fast path silently declining them) fails Step 3 on the ceiling.
 #     There is deliberately NO absence check on the cold-start notice: see the
 #     note under Step 3.
-#   * "2 pairs ready to print." together with "Not paired (2)" (Step 5)
-#     accounts for every image: 2 pairs x 2 + 2 loose = 6. Both buckets hold only
-#     rows whose status is "done" (review-grid.tsx filters the loose pile on it),
-#     so this is also the proof that none failed. A pipeline that lost an image,
-#     or a matcher that paired greedily across sides, lands on different numbers
-#     and fails here.
+#   * "3 pairs ready to print." (Step 4) accounts for every image: 3 pairs x 2 =
+#     6. Pairing reads only rows whose status is "done", so this is also the
+#     proof that none failed. A pipeline that lost an image, or a matcher that
+#     trusted a misread side label and left two "backs" unpaired (exactly what
+#     this flow asserted as "2 pairs" before NEO-327), lands on a different
+#     number and fails here.
+#   * Steps 5 and 7 read WHICH scan is the front of each pair, off the review
+#     grid's side captions ("Front · <file>"). Every card's back is uploaded
+#     BEFORE its front (see "WHY BACK-FIRST" below), so a pairing that let
+#     arrival order pick the side would caption 02-vorkle-back.jpg as the front
+#     and fail.
 #   * Step 6 asserts the crops the pipeline wrote can be SHOWN back to the
 #     collector: the signed-read mint answers and the review renders an image,
 #     not "Image unavailable" (NEO-315).
 # There is no `when:` branch anywhere in it, and the precondition below proves a
 # real six-image job exists BEFORE the wait.
 #
-# WHY TWO PAIRS AND NOT THREE. The fixture set was designed as three pairs, and
-# the number asserted here is deliberately 2. On the FAST classical crop the
-# synthetic full-bleed FRONT of one pair (Marcus VORKLE) deterministically
-# classifies as side "back" (reproduced with a direct /process-entry probe:
-# needs_escalation false, side "back"). The pool therefore holds two fronts and
-# four backs: two pairs form, and the two left over are BOTH backs, which can
-# never pair with each other. That is also why NEO-152's adjacency bonus does not
-# rescue them — adjacency only corroborates a match, it cannot create one across
-# two same-side images.
+# ── NEO-327: WHY THIS FLOW USED TO ASSERT TWO PAIRS ──────────────────────────
+# The fixture set was always three pairs, but this flow asserted "2 pairs ready
+# to print." plus "Not paired (2)", and called that a synthetic-fixture
+# artifact: the classifier labelled the full-bleed Grebble VORKLE front "back",
+# the matcher only ever paired a "front" with a "back", so the pool held two
+# fronts and four backs and two backs were left over. It was not an artifact.
+# It was the product bug NEO-327 fixed, and a real collector hits it whenever a
+# front carries little text. Pairing now forms a pair on identity (the same
+# player on both scans), and only then orients it: a side the person set wins;
+# otherwise the scan with clearly more Vision text is the back; the classifier's
+# label only breaks a text-count tie and is never a gate; upload order never
+# decides. (The classifier prompt was fixed in the same ticket, but this flow
+# does not depend on that — orientation by text holds on its own.)
 #
-# This is a synthetic-fixture artifact, not a product bug: a real card front
-# carries a player PHOTO and side-classifies reliably, while a flat full-bleed
-# synthetic front does not. Verified against the dev deployment on 2026-08-26 by
-# pushing this exact fixture set through the same seed page this flow uses —
-# "All 6 photos read.", no cold-start notice, then "2 pairs ready to print."
-# and "Not paired (2)" once the batch was finished.
+# ── WHY BACK-FIRST ──────────────────────────────────────────────────────────
+# The entry URL adds `order=back-first`, which makes the seed page upload each
+# adjacent manifest pair swapped: 02, 01, 04, 03, 06, 05. So every BACK gets the
+# lower entry index and reaches the pipeline first. Under the old matcher, and
+# under any regression that orients by arrival, 02-vorkle-back.jpg would be the
+# front of its pair. Steps 5 and 7 assert the opposite, by filename.
 #
-# WHICH pairs formed, and at what confidence, is still NOT asserted — that is a
-# model-dependent per-pair verdict owned by convex/lib/pairing/*.test.ts, and
-# NEO-152 made confidence legitimately fixture-dependent, so pinning the
-# mechanism here would fail on a card change rather than on a regression. What
-# is asserted is the arithmetic, which is deterministic.
+# WHICH pairs formed, and at what confidence or mechanism, is still NOT
+# asserted beyond the side captions — that is a model-dependent per-pair verdict
+# owned by convex/lib/pairing/*.test.ts, and NEO-152 made confidence
+# legitimately fixture-dependent. The side captions are asserted because they
+# are the feature: three scans named *-front.jpg captioned "Front", with three
+# pairs from six scans, leaves only the three *-back.jpg scans to be the backs.
 #
 # R3 — Nothing else covers this. pipeline-escalation-cold-start.yaml exercises
 # the ESCALATION path and pipeline-fast-crops-inset-scans.yaml the fast quad crop;
@@ -72,9 +82,13 @@
 # set and this flow's entry are described in
 # apps/web/scripts/generate-placeholder-fixtures.py.
 #
-# R4 — Standard /testing/sign-in entry, no in-body login. The only addition to
-# the entry URL is `fixtures=placeholder-fixtures-fullbleed`, which tells the
-# seed page WHICH committed fixture set to push through the real upload path.
+# R4 — Standard /testing/sign-in entry, no in-body login. The only additions to
+# the entry URL are `fixtures=placeholder-fixtures-fullbleed`, which tells the
+# seed page WHICH committed fixture set to push through the real upload path,
+# and `order=back-first` (NEO-327, "WHY BACK-FIRST" above). Both ride inside the
+# sign-in `redirect`, so the seed page's `?` `=` and `&` are percent-encoded
+# (%3F %3D %26); a bare `&` would end the redirect and hand `order` to the
+# sign-in page instead.
 #
 # R7 — Non-destructive: the flow creates its own upload session under the
 # signed-in worker's own account and touches nothing shared (no marketplace set —
@@ -100,13 +114,16 @@
 # pass reads it as an object covering >=92% of a card-aspect frame — the "frame"
 # identity verdict that keeps it on the fast path (validated against the real
 # fast_tiered_crop: all six return the input untouched, none escalates). Each
-# front and back print the SAME full player name so the identity pool pairs them.
-# (The set was DESIGNED as three pairs, but on the fast crop one synthetic front
-# side-classifies as "back", so the fast path forms 2 and leaves two backs loose
-# — see the "WHY TWO PAIRS AND NOT THREE" note above.)
+# front and back print the SAME full player name so the identity pool pairs them,
+# and each back carries a card number, a ~40-word blurb and a copyright line
+# where its front carries only the name, so the back always has clearly more text — the signal NEO-327 orients
+# on. Manifest (public/placeholder-fixtures-fullbleed/manifest.json, written
+# front-first): 01-vorkle-front.jpg, 02-vorkle-back.jpg, 03-quillden-front.jpg,
+# 04-quillden-back.jpg, 05-mossbaum-front.jpg, 06-mossbaum-back.jpg — three
+# pairs; back-first upload order is 02, 01, 04, 03, 06, 05.
 appId: com.neonbinder.web
-url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures-fullbleed&worker=${WORKER_INDEX || "0"}
-name: Placeholder pipeline (fast path) — six frame-filling scans process fast, no cold start
+url: ${APP_URL || "https://localhost:3000"}/testing/sign-in?redirect=/testing/seed-placeholder-upload%3Ffixtures%3Dplaceholder-fixtures-fullbleed%26order%3Dback-first&worker=${WORKER_INDEX || "0"}
+name: Placeholder pipeline (fast path) — six frame-filling scans process fast and pair front-side-up whatever order they arrive in
 tags:
   - placeholders
 ---
@@ -214,70 +231,74 @@ tags:
 # so there is no crop/OCR round-trip. The status line goes "Collecting" →
 # the finished state directly (no visible "Pairing" step for a small batch), and
 # the pair count in that copy is written by the same transaction — so once
-# "2 pairs ready to print." is on screen the final run has demonstrably
-# completed. (WHICH pairs, and at what confidence, stays unasserted — see the
-# two-pairs note in the header.)
+# "3 pairs ready to print." is on screen the final run has demonstrably
+# completed.
 #
-# The terminal transition is finalized INLINE in the close mutation for small
-# batches (NEO-175, commit 557f1d4): match fronts↔backs, write the pairs, and
-# flip the job to succeeded all commit atomically when the "Finish it"
-# tap's mutation returns — sub-second even under the preview's 8-runner
-# contention, with no scheduler hop and no action-queue wait. (Previously this
-# FINAL run was a Convex *action* scheduled at runAfter(0); as an action it backed
-# up behind the E2E runners' preprocess actions, so close→"Succeeded" took 16–33s
-# — which is why this budget had been interim-bumped to 20s. The code fix removed
-# the hop, so no inflated ceiling is needed.) The "Succeeded" text and the 6/0
-# arithmetic below are UNCHANGED, so a broken finalize still fails here and R2
-# holds. 15s is the tight restored budget (the pre-regression value): the
-# transition is now <1s, so extendedWaitUntil resolves instantly on a healthy run
-# and still fails a genuinely broken finalize.
+# Three pairs from six photos is the arithmetic proof (R2 note in the header):
+# every image was read, none failed, and none was left over. Before NEO-327 this
+# read "2 pairs" because the matcher refused to pair two images the classifier
+# had both labelled "back"; that refusal is gone, and a regression back to it
+# fails here.
+#
+# R5: 7000, the in-app bar. The finalize is our own server answering the
+# "Finish it" tap — an inline mutation, sub-second even under the preview's
+# runner contention — and the identical wait in pipeline-fast-crops-inset-scans
+# and pipeline-escalation-cold-start already holds to 7000. (This flow carried
+# 15000 from the days the FINAL run was a scheduled action; NEO-175 made it
+# inline.) A finalize that misses 7s is a product finding, not a bigger number.
 - extendedWaitUntil:
-    visible: "2 pairs ready to print."
-    timeout: 15000
+    visible: "3 pairs ready to print."
+    timeout: 7000
 
-# Step 5: pairing ran over the whole batch, and every image is accounted for.
-# Two pairs plus two loose images is exactly six, and only the FINAL run writes
-# those counts — which is why Step 4 had to finish the session to fire it. The
-# orphan count is asserted alongside the pair count on purpose: the pair count
-# alone would still pass if the pipeline quietly lost the two leftovers, and
-# surfacing orphans rather than hiding them is a NEO-152 requirement in its own
-# right.
+# ── Step 5: every pair is FRONT-SIDE-UP, whatever order the scans arrived in ──
+# The NEO-327 proof. Each pair in "Check the pairs" captions its two scans
+# "Front · <file>" and "Back · <file>" — ONE text node per caption
+# (review-grid.tsx `sideCaption`), so a plain full-match selector reads it.
 #
-# WHICH pairs the pool placed vs. the guarded adjacency fallback, and at what
-# confidence, is a per-pair model-dependent verdict owned by the deterministic
-# unit suite (convex/lib/pairing/pool.test.ts) and NOT asserted here. That
-# restraint matters more since NEO-152: confidence now varies legitimately with
-# the fixture — a set whose backs omit the player name pairs correctly on weaker
-# evidence — so an E2E that pinned the mechanism would fail on a card change
-# rather than on a regression.
-# And the review step exists for the pairs just formed — the correction surface
-# NEO-152 §3 requires, which is what makes the pairing trustworthy rather than
-# merely present.
+# 01-vorkle-front.jpg is the load-bearing one: it was uploaded AFTER its back
+# (`order=back-first`), so a pairing that let arrival or entry order pick the
+# side captions it "Back" and 02-vorkle-back.jpg "Front", and this fails. It was
+# also the scan the old classifier misread as a back — the one this flow used to
+# leave in "Not paired". 03 and 05 are the other two fronts, each likewise
+# uploaded after its back. Three fronts named *-front.jpg plus "3 pairs" leaves
+# the three *-back.jpg scans as the backs; 02-vorkle-back.jpg, the very first
+# file uploaded, is asserted as a back explicitly because "first in" is exactly
+# what the old matcher would have made a front.
+#
+# WHY RE-ANCHOR ON "Check the pairs" BEFORE EVERY CAPTION. Pairs render in
+# insertion order (listPlaceholderPairs reads the by_job index raw), which
+# depends on which images finished first, so the row a caption sits in is not
+# deterministic. scrollUntilVisible only scrolls one way: a DOWN scroll cannot
+# find a caption in a row above the one just centred. Centring the heading
+# first puts every pair row at or below the viewport middle, so each DOWN
+# scroll finds its caption wherever the matcher put it. The heading is above
+# the list, so the re-anchor is UP. (R6: these scrolls ARE the assertions; no
+# assertVisible follows them. R5: every one states the 7000 in-app bar.)
+#
+# The review step existing at all is the correction surface NEO-152 §3
+# requires, which is what makes the pairing trustworthy rather than merely
+# present.
 - scrollUntilVisible:
     element:
       text: "Check the pairs"
     centerElement: true
     timeout: 7000
-# The two unpaired backs are surfaced as their own bucket, not swallowed. Also
-# below the fold, and further down than the review heading, so it scrolls too.
 - scrollUntilVisible:
     element:
-      text: "Not paired (2)"
+      text: "Front · 01-vorkle-front.jpg"
     centerElement: true
     timeout: 7000
 
 # ── Step 6: the processed crops can be SHOWN back to the collector (NEO-315) ────
-# Each loose card in the pile renders its crop through the signed-read mint
+# Each scan in a pair row renders its crop through the signed-read mint
 # (createPlaceholderImageDownloadUrl, via ScanImage). NEO-315 rewrote that mint
 # (the memoised extension skips the storage HEAD, the storage client is cached
 # per isolate) and changed how the pipeline writes the crop it serves (the
 # cascade's already-rotated bytes are stored as-is). If the mint throws — no
-# object at the key the row describes, a signing failure — the card shows
-# "Image unavailable" instead of the scan. Nothing else in the suite looks:
-# PrintRun falls back to numbered pockets in silence, and flip-edge asserts
-# only the pocket numbers. A loose card is minted once, so this is the
-# first-mint path (probe, memoise, sign); the memoised no-HEAD branch runs only
-# on a re-mint and stays with the unit tests.
+# object at the key the row describes, a signing failure — the scan shows
+# "Image unavailable" instead. Nothing else in the suite looks: PrintRun falls
+# back to numbered pockets in silence, and flip-edge asserts only the pocket
+# numbers.
 #
 # WHY A NEGATIVE CHECK. maestro-web drops <img> from the view hierarchy
 # entirely (`INVALID_TAGS` in the driver's maestro-web.js), so a loaded scan
@@ -287,21 +308,55 @@ tags:
 # "Image unavailable" once it has failed (after one re-mint on a load error).
 #
 # WHY THE CHECK CAN FAIL HERE (not a look-somewhere-else no-op). Step 5 leaves
-# "Not paired (2)" centred; CI run 36954152663 accepted it at y=396 (h=28) in
-# the 625px viewport. The loose pile's two image boxes (h-32, 128px) sit
-# directly under that heading and its one-line hint, at roughly y=470-600
-# (computed from review-grid.tsx's spacing, not measured), so each box, and
-# either placeholder text drawn in it, is on screen.
+# the "Front · 01-vorkle-front.jpg" caption centred. Each scan's box (h-28,
+# 112px) sits directly ABOVE its own caption in the same figure, so the Vorkle
+# pair's two image boxes — and either placeholder text drawn in them — are on
+# screen, and so are the neighbouring rows' within half a viewport. This
+# check used to run on the "Not paired" pile, which no longer exists for this
+# fixture: three pairs leave nothing loose.
 #
-# Usually these cards have sat in the pile since an earlier provisional pairing
-# run, so their mints answered long ago. The gate below is R5's 7s budget for
-# our own server answering, for the run in which a loose card landed last; it
-# resolves at once otherwise. The order matters for a URL that mints but then
-# fails to load: that slot goes Loading → image → re-mint → "Image
-# unavailable" over a second or two, so the absence check is deterministic for
-# a mint that throws and catches a dead URL only once the slot has had that
-# long, which Steps 4-5 normally give it.
+# The gate below is R5's 7s budget for our own server answering, for a scan
+# whose row only just rendered; it resolves at once otherwise. The order
+# matters for a URL that mints but then fails to load: that slot goes Loading →
+# image → re-mint → "Image unavailable" over a second or two. Both checks are
+# negatives, so a POSITIVE assertion follows them (the Step 7 scrolls) — a
+# negative can pass on a page that has fallen to its error boundary.
 - extendedWaitUntil:
     notVisible: ".*Loading image.*"
     timeout: 7000
 - assertNotVisible: "Image unavailable"
+
+# ── Step 7: the other three captions, each re-anchored (see Step 5) ──────────
+- scrollUntilVisible:
+    direction: UP
+    element:
+      text: "Check the pairs"
+    centerElement: true
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: "Back · 02-vorkle-back.jpg"
+    centerElement: true
+    timeout: 7000
+- scrollUntilVisible:
+    direction: UP
+    element:
+      text: "Check the pairs"
+    centerElement: true
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: "Front · 03-quillden-front.jpg"
+    centerElement: true
+    timeout: 7000
+- scrollUntilVisible:
+    direction: UP
+    element:
+      text: "Check the pairs"
+    centerElement: true
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: "Front · 05-mossbaum-front.jpg"
+    centerElement: true
+    timeout: 7000

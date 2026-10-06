@@ -22,3 +22,4 @@
 - [Check baseline reds in main/, not by stash](reference_check_baseline_reds_in_main_not_by_stash.md) — shared worktree: prove a stray red pre-existing by running that file in main/ at the same base
 - [Hook between action steps in convex-test](reference_convex_test_hook_between_action_steps.md) — vi.mock a helper the earlier mutation calls; one-shot hook with its ctx lands a change between runMutation steps
 - [paginate maximumBytesRead](reference_paginate_maximum_bytes_read.md) — a .take(N) can't be byte-bounded; page across queries with maximumBytesRead; size byte fixtures with literals, never from the cap
+- ["No token" can be our own limiter](reference_no_token_can_be_our_own_limiter.md) — browser-service 60/min rate limit (/health per IP), credential lock, NEO-278 backoff all read as no token
