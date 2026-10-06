@@ -1270,6 +1270,9 @@ export const registerExtractedImages = internalMutation({
           team: undefined,
           cardNumber: undefined,
           side: undefined,
+          // The user vouched for a side the restart is about to throw away;
+          // the flag must not outlive the label it described (NEO-327).
+          sideByUser: undefined,
           rotationDegrees: undefined,
           orientConfidence: undefined,
           textCount: undefined,
@@ -2109,10 +2112,11 @@ export const getJobInternal = internalQuery({
 /**
  * The successfully-processed images of a job, in zip order.
  *
- * Order is not cosmetic: pairing's adjacency pre-pass is built on the
- * assumption that a scanned sheet's front and back land next to each other in
- * the zip, so reading through `by_job_and_index` is part of the algorithm's
- * input, not a display preference.
+ * Order is not cosmetic: the scan-order fallback (`guardedAdjacencyFallback`)
+ * pairs identity leftovers that sit next to each other in entry order, so
+ * reading through `by_job_and_index` is part of the algorithm's input, not a
+ * display preference. Order decides WHICH leftovers may pair, never which of
+ * the two is the front (NEO-327).
  *
  * `_id` is returned alongside `entryIndex` so the pairing pass can write its
  * results back BY ID. Pairing runs in an action, so an unbounded stretch of
@@ -2138,6 +2142,8 @@ export const listDoneImagesForPairing = internalQuery({
       team: v.optional(v.string()),
       cardNumber: v.optional(v.string()),
       side: v.optional(v.string()),
+      // A user-set side outranks every automatic orientation rule (NEO-327).
+      sideByUser: v.optional(v.boolean()),
       textCount: v.optional(v.number()),
       dhash: v.optional(v.string()),
       pairStatus: v.optional(v.union(v.literal("paired"), v.literal("unmatched"))),
@@ -2159,6 +2165,7 @@ export const listDoneImagesForPairing = internalQuery({
         team: r.team,
         cardNumber: r.cardNumber,
         side: r.side,
+        sideByUser: r.sideByUser,
         textCount: r.textCount,
         dhash: r.dhash,
         pairStatus: r.pairStatus,

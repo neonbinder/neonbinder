@@ -1,0 +1,15 @@
+# 2014 Panini Rookies & Stars football (NEO-327): a photo-back set. Its backs
+# carry a large player photo and the name beside the stats, which the old
+# classify prompt read as a front.
+# The NEO-327 card: before the prompt fix this back classified as "front" with card
+# number 90. Printed No. 20; Haiku still reads 90 (outlined digits) and a Vision
+# read of the same corner gives 21, so card_number is not asserted. The side
+# assertion is the regression guard.
+orient:
+  rotation_degrees: 0
+classify:
+  side: back
+  player:
+    contains: Tate
+  team:
+    contains: Browns

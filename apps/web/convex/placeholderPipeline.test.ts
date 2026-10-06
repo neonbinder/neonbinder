@@ -635,6 +635,29 @@ describe("registerExtractedImages", () => {
     expect(job?.failedImages).toBe(0);
   });
 
+  test("a restart keeps a done row's user-set side: the label it vouches for is kept too", async () => {
+    // The mirror of the reset case below. `sideByUser` travels with `side`, so
+    // a done row that keeps its side keeps the flag — otherwise a person's
+    // correction would silently decay to an automatic label on every restart.
+    const t = harness();
+    await seedJob(t, { status: "extracting" });
+    const doneId = await seedImage(t, JOB_A, 0, USER_A.subject, "done", {
+      side: "back",
+      sideByUser: true,
+      textCount: 3,
+    });
+
+    await registerAll(t, {
+      entries: [
+        { index: 0, name: "front.jpg", accepted: true },
+        { index: 1, name: "back.jpg", accepted: true },
+      ],
+    });
+
+    const kept = await t.run(async (ctx) => ctx.db.get(doneId));
+    expect(kept).toMatchObject({ status: "done", side: "back", sideByUser: true });
+  });
+
   test("a restart RESETS every non-done row, dropping the last attempt's state", async () => {
     const t = harness();
     await seedJob(t, { status: "extracting" });
@@ -652,6 +675,9 @@ describe("registerExtractedImages", () => {
       errorCode: "PROCESS_ENTRY_FAILED",
       errorDetail: "boom",
       pairStatus: "unmatched",
+      // A user vouched for this side; the restart throws the label away, so the
+      // flag describing it must go with it (NEO-327).
+      sideByUser: true,
     });
     const stuckId = await seedImage(t, JOB_A, 1, USER_A.subject, "processing", {
       workId: "work-old-1",
@@ -679,6 +705,7 @@ describe("registerExtractedImages", () => {
     expect(reset?.errorCode).toBeUndefined();
     expect(reset?.errorDetail).toBeUndefined();
     expect(reset?.pairStatus).toBeUndefined();
+    expect(reset?.sideByUser).toBeUndefined();
 
     // A row stranded mid-flight by a cancel is reset the same way — otherwise
     // it would be skipped by enqueueImageChunk (not "queued") and never run.

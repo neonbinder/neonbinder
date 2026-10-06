@@ -56,3 +56,15 @@ slowly but correctly.
 
 Related: [[maestro-web-driver-primitives]] §3a/§3b,
 [[maestro-web-getnodetext-form-values]].
+
+**5. CORRECTION (NEO-327): an `above: BACK` anchor does NOT scope to the back
+sheet when the sheets sit side by side.** print-run.tsx draws each sheet 300px
+wide in a wrapping flex row, so at 1024px front and back share a row. Relations
+are one-edge and any-anchor, so the front's numbers are "above" the back's BACK
+labels too, and `"1" above BACK rightOf ("2" above BACK)` passed on an unmirrored
+back (the back's 1 is right of the FRONT's 2). It could never fail. Self-scoping
+anchors that work: **"the X that is rightOf another X"** (the right-hand copy of
+a same-row number is always the back sheet's), and **`below: {text: "3"}`** to
+admit only numbers on a lower row than the front's single row. Before trusting
+any relational assertion, enumerate the WRONG layouts and check each fails.
+

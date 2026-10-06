@@ -23,8 +23,10 @@
 #     rejected its crops) escalates them and Step 3 FAILS on the ceiling.
 #   * "3 pairs ready to print." (Step 4) is the zero-failures proof: pairing
 #     reads only rows whose status is "done", so three pairs out of six photos
-#     means all six were read and side-classified. "All 6 photos read." alone is
-#     not that proof — a failed row counts as settled. A quad crop that Vision
+#     means all six were read and paired (NEO-327: a pair forms on identity
+#     and orients on its own text, never on the classifier's side label
+#     alone). "All 6 photos read." alone is not that proof — a failed row
+#     counts as settled. A quad crop that Vision
 #     could not read would escalate rather than fail, and so fails Step 3.
 #   * There is deliberately NO absence check on the "A few of these need a
 #     closer look…" notice. `deriveHeavyWarming` (convex/placeholderPipeline.ts)

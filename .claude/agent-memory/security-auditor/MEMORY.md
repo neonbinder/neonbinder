@@ -63,3 +63,4 @@
 - [Patterns neo309/310 CI notify + JSON files](patterns_neo309_310_ci_notify_and_json_files.md) — secret input templated in composite guard; ref_name in run:; nested wf perms fail at startup; HEAD-copy tests red on commit
 - [Patterns neo321 build source resolver](patterns_neo321_build_source_resolver.md) — resolver throw after delete pages hides partial wipe; capped "exactly one" read fails open; guard pins stuck on deprecated alias
 - [Patterns neo322 initials key rekey](patterns_neo322_initials_key_rekey.md) — sorted key not idempotent after initials join; initials = short word ("Al"); written-collision safe only while readers take lists
+- [Patterns neo327 pair decision log + OCR parse](patterns_neo327_pair_decision_log_and_ocr_parse.md) — decision-log content rules (cap filename, no userId, mutation logs survive rollback); per-prefix full-word scan is quadratic

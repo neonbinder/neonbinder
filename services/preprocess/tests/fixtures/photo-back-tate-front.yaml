@@ -1,0 +1,14 @@
+# 2014 Panini Rookies & Stars football (NEO-327): a photo-back set. Its backs
+# carry a large player photo and the name beside the stats, which the old
+# classify prompt read as a front.
+# The front shows jersey 44; it is never the card number.
+orient:
+  rotation_degrees: 0
+classify:
+  side: front
+  player:
+    contains: Tate
+  team:
+    contains: Browns
+  card_number:
+    is_null: true

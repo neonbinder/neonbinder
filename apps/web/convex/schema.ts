@@ -2794,9 +2794,9 @@ export default defineSchema({
     // and `resolveIdentity` was a Haiku call. NEO-170 ended both halves of it:
     // identity is now produced by /process-entry and sits on this row, so
     // `resolveIdentity` is an in-memory Map lookup costing nothing, and pairing
-    // deliberately runs `useAdjacency: false` — identity-first for EVERY card —
-    // because the pre-pass matched on side-disagreement alone and produced real
-    // mispairs (see the useAdjacency comment in placeholderPairing.ts).
+    // is identity-first for EVERY card — the adjacency pre-pass matched on
+    // side-disagreement alone, produced real mispairs, and was removed in
+    // NEO-327 (see `computePairingDiff` in placeholderPairing.ts).
     //
     // So one call per done image is the healthy reading, not a regression: the
     // release E2E asserts `resolver calls: 6` for a six-image batch, precisely
@@ -2868,7 +2868,7 @@ export default defineSchema({
     jobId: v.string(),
     userId: v.string(), // denormalized from placeholderJobs so ownership needs no join
     entryIndex: v.number(), // entry index within the zip (assigned by extract) or the stream (allocated by placeholderJobs.nextEntryIndex)
-    originalName: v.string(), // the zip member's filename — used by adjacency pairing
+    originalName: v.string(), // the zip member's / uploaded file's name — shown under each side in review and logged with every pairing decision
     // "awaiting_upload" is the stream-mode entry state: the row and its object
     // key exist and a signed POST policy has been handed out, but the browser
     // has not yet told us the bytes landed. Such a row is NOT counted in
@@ -2893,10 +2893,23 @@ export default defineSchema({
     players: v.optional(v.array(v.string())),
     team: v.optional(v.string()),
     cardNumber: v.optional(v.string()),
-    side: v.optional(v.string()), // "front" | "back" as classified; string, not a union, because the service owns the vocabulary
+    // "front" | "back" as classified; string, not a union, because the service
+    // owns the vocabulary. Absent when the classifier was unsure (it answers
+    // `side: null` rather than guess, NEO-327). A LABEL, not a verdict: pairing
+    // decides which image of a pair is the front only once the pair is formed,
+    // text count first, so a wrong label here does not by itself mis-orient a
+    // pair. See `sideByUser` for the one case a label does win outright.
+    side: v.optional(v.string()),
+    // True when a USER set `side` (`updatePlaceholderImageIdentity`), as
+    // opposed to the classifier (NEO-327). A user-set side outranks every
+    // automatic orientation rule — text count included — because it is the one
+    // label a person checked against the card. Absent means the classifier's
+    // label (or none). Cleared with the rest of the per-image state when a
+    // restart re-queues a non-done row, since the label it vouched for goes too.
+    sideByUser: v.optional(v.boolean()),
     rotationDegrees: v.optional(v.number()), // CCW rotation applied before classification
     orientConfidence: v.optional(v.number()),
-    textCount: v.optional(v.number()), // Vision word count — the free signal the adjacency pre-pass runs on
+    textCount: v.optional(v.number()), // Vision word count — the free signal pairing orients a pair on (the clearly wordier image is the back, NEO-327)
     croppedSource: v.optional(v.string()), // which stage of the crop cascade won
     dhash: v.optional(v.string()), // 16-char lowercase hex perceptual hash, consumed by pairing
     // Set true when the FAST preprocess service declined this image
@@ -3013,6 +3026,21 @@ export default defineSchema({
     // `manuallyPairPlaceholderImages`.
     mechanism: v.union(v.literal("adjacency"), v.literal("pool"), v.literal("manual")),
     score: v.number(),
+    // Which rule decided that `frontIndex` is the front (NEO-327). Pairing forms
+    // a pair on identity first and only then orients it, so this records the
+    // second decision the way `mechanism` / `confidence` record the first:
+    //   - "user"  a person set it — a manual pair or swap, or a side the user
+    //             set on one of the images (`placeholderImages.sideByUser`);
+    //   - "text"  the image with clearly more Vision text is the back;
+    //   - "label" the text counts were too close to call and the classifier's
+    //             side labels broke the tie.
+    // Entry order never decides a side, so there is no value for it. Absent on
+    // rows from before NEO-327. Diagnostics and the pairing decision log read
+    // it; the public `listPlaceholderPairs` shape deliberately does not carry it
+    // (the scanner CLI reads that shape). No index: nothing queries by it.
+    orientedBy: v.optional(
+      v.union(v.literal("text"), v.literal("label"), v.literal("user")),
+    ),
     // No `createdAt` column: `_creationTime` already records when the pair was
     // first found, and a hand-maintained copy could only ever drift from it.
     //

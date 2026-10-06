@@ -133,6 +133,68 @@ describe("TestingSeedPlaceholderUploadPage", () => {
     ]);
   });
 
+  describe("?order=back-first (NEO-327)", () => {
+    const SIX = ["01.jpg", "02.jpg", "03.jpg", "04.jpg", "05.jpg", "06.jpg"];
+    const uploadedNames = () =>
+      (mocks.upload.mock.calls[0][0] as File[]).map((file) => file.name);
+
+    it("uploads each back before its front: 02, 01, 04, 03, 06, 05", async () => {
+      stubFixtures({ files: SIX }, SIX);
+      renderPage("/testing/seed-placeholder-upload?order=back-first");
+
+      await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+      expect(uploadedNames()).toEqual([
+        "02.jpg",
+        "01.jpg",
+        "04.jpg",
+        "03.jpg",
+        "06.jpg",
+        "05.jpg",
+      ]);
+    });
+
+    it("leaves a trailing unpaired file in its place", async () => {
+      const five = SIX.slice(0, 5);
+      stubFixtures({ files: five }, five);
+      renderPage("/testing/seed-placeholder-upload?order=back-first");
+
+      await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+      expect(uploadedNames()).toEqual([
+        "02.jpg",
+        "01.jpg",
+        "04.jpg",
+        "03.jpg",
+        "05.jpg",
+      ]);
+    });
+
+    it.each(["Back-First", "backfirst", "front-first", "", "true"])(
+      "ignores any other value (%j) and keeps the manifest order",
+      async (value) => {
+        stubFixtures({ files: SIX }, SIX);
+        renderPage(
+          `/testing/seed-placeholder-upload?order=${encodeURIComponent(value)}`,
+        );
+
+        await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+        expect(uploadedNames()).toEqual(SIX);
+      },
+    );
+
+    it("is independent of ?fixtures=: the swap applies to the chosen set", async () => {
+      const fetchMock = stubFixtures({ files: SIX.slice(0, 2) }, SIX.slice(0, 2));
+      renderPage(
+        "/testing/seed-placeholder-upload?fixtures=placeholder-fixtures-fullbleed&order=back-first",
+      );
+
+      await waitFor(() => expect(mocks.upload).toHaveBeenCalledTimes(1));
+      expect(uploadedNames()).toEqual(["02.jpg", "01.jpg"]);
+      expect(
+        fetchMock.mock.calls.map((c) => c[0] as string),
+      ).toContain("/placeholder-fixtures-fullbleed/manifest.json");
+    });
+  });
+
   it("accepts a bare array manifest too", async () => {
     stubFixtures(["a.jpg", "b.jpg"], ["a.jpg", "b.jpg"]);
     renderPage();

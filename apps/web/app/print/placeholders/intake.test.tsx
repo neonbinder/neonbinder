@@ -331,6 +331,82 @@ describe("CardIntake", () => {
     expect(await screen.findByAltText("stray.jpg")).not.toBeNull();
   });
 
+  describe("side captions name the scan (NEO-327)", () => {
+    const job = {
+      jobId: "job-1234abcd",
+      status: "succeeded",
+      mode: "stream",
+      createdAt: Date.now(),
+      totalImages: 2,
+      processedImages: 2,
+      failedImages: 0,
+      rejectedEntries: 0,
+      pairCount: 1,
+    };
+    const pair = {
+      frontIndex: 0,
+      backIndex: 1,
+      player: "Ken Griffey Jr.",
+      cardNumber: "24",
+      confidence: "exact",
+      mechanism: "pool",
+      score: 1,
+      createdAt: Date.now(),
+    };
+
+    async function openRun(images: Array<Record<string, unknown>>) {
+      mocks.queries = {
+        [REFS.job]: job,
+        [REFS.images]: images,
+        [REFS.pairs]: [pair],
+      };
+      renderPage();
+      selectFiles(["front.jpg"]);
+      await waitFor(() =>
+        expect(screen.getByRole("heading", { name: /Your cards/ })).not.toBeNull(),
+      );
+    }
+
+    it("renders each caption as ONE text node: side, a middle dot, then the file name", async () => {
+      await openRun([
+        { entryIndex: 0, originalName: "IMG_0001.jpg", status: "done", side: "front", pairStatus: "paired" },
+        { entryIndex: 1, originalName: "IMG_0002.jpg", status: "done", side: "back", pairStatus: "paired" },
+      ]);
+
+      // getByText matches a node's own text, so a caption split across child
+      // elements would match neither of these (the Maestro driver has the same
+      // limit — that is why it is one string).
+      const front = screen.getByText("Front · IMG_0001.jpg");
+      const back = screen.getByText("Back · IMG_0002.jpg");
+      expect(front.tagName).toBe("FIGCAPTION");
+      expect(back.tagName).toBe("FIGCAPTION");
+      expect(front.childNodes).toHaveLength(1);
+      expect(back.childNodes).toHaveLength(1);
+    });
+
+    it("falls back to the bare side when the scan has no name", async () => {
+      await openRun([
+        { entryIndex: 0, originalName: "", status: "done", side: "front", pairStatus: "paired" },
+        { entryIndex: 1, originalName: "", status: "done", side: "back", pairStatus: "paired" },
+      ]);
+
+      expect(screen.getByText("Front").tagName).toBe("FIGCAPTION");
+      expect(screen.getByText("Back").tagName).toBe("FIGCAPTION");
+      expect(screen.queryByText(/ · /)).toBeNull();
+    });
+
+    it("falls back to the bare side for a half whose image row is not in the list", async () => {
+      // Only the front's row is known; the back's caption must not print
+      // "undefined" or "Back · ".
+      await openRun([
+        { entryIndex: 0, originalName: "IMG_0001.jpg", status: "done", side: "front", pairStatus: "paired" },
+      ]);
+
+      expect(screen.getByText("Front · IMG_0001.jpg")).not.toBeNull();
+      expect(screen.getByText("Back").tagName).toBe("FIGCAPTION");
+    });
+  });
+
   describe("cold-start (heavy warm-up) indicator", () => {
     // NEO-175: the notice is now driven by the backend-derived `heavyWarming`
     // flag on the job, NOT by client-side image-state guessing. It is scoped to
