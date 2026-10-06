@@ -30,6 +30,14 @@ import {
 // respelled so this parser cannot emit a card that boundary refuses.
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
+// NEO-321 follow-up — a structured reason beside `success: false`, and the
+// self-imposed-limiter log line.
+import {
+  fetchFailureValidator,
+  isAbortTimeout,
+  logMarketplaceLimiter,
+  type FetchFailure,
+} from "../lib/marketplaceFetchFailure";
 
 // Real BSC filter endpoint (ported from cardlister-server/script-frontend/src/listing-sites/bsc.ts).
 // The earlier www.buysportscards.com URL was a webpage path, not an API — CloudFront returned 403.
@@ -1013,6 +1021,14 @@ export const fetchBscChecklist = action({
     success: v.boolean(),
     cards: v.array(checklistCardValidator),
     message: v.optional(v.string()),
+    // NEO-321 follow-up — why the fetch failed, beside `success: false`, so a
+    // caller can log and word it without parsing `message`. Diagnostic only:
+    // no URL, token or marketplace string.
+    failure: v.optional(fetchFailureValidator),
+    // Requests sent (one per fan-out source set; each returns the whole set),
+    // and the slowest one's time — on success, for the caller's timing log.
+    pages: v.optional(v.number()),
+    slowestPageMs: v.optional(v.number()),
     // NEO-189 — card numbers that arrived from more than one source set.
     // Omitted when there are none. Reported rather than merely logged: two
     // attached sets genuinely overlapping is a real, operator-relevant fact
@@ -1038,7 +1054,7 @@ export const fetchBscChecklist = action({
       ),
     ),
   }),
-  handler: async (ctx, args): Promise<{ success: boolean; cards: Array<{ cardNumber: string; cardName: string; team?: string; teams?: string[]; players?: string[]; attributes?: string[]; printRun?: number; autographType?: string; cardVariation?: string; isVariation?: boolean; platformRef?: string; sportlotsRef?: string; sourceBscSetSlug?: string }>; message?: string; collisions?: Array<{ cardNumber: string; keptSource: string; skippedSource: string }> }> => {
+  handler: async (ctx, args): Promise<{ success: boolean; cards: Array<{ cardNumber: string; cardName: string; team?: string; teams?: string[]; players?: string[]; attributes?: string[]; printRun?: number; autographType?: string; cardVariation?: string; isVariation?: boolean; platformRef?: string; sportlotsRef?: string; sourceBscSetSlug?: string }>; message?: string; failure?: FetchFailure; pages?: number; slowestPageMs?: number; collisions?: Array<{ cardNumber: string; keptSource: string; skippedSource: string }> }> => {
     await requireAdmin(ctx);
     try {
       const tokenResult: { success: boolean; token?: string; error?: string } = await ctx.runAction(
@@ -1051,6 +1067,7 @@ export const fetchBscChecklist = action({
           success: false,
           cards: [],
           message: tokenResult.error || "No BSC token available",
+          failure: { kind: "no_sign_in", timedOut: false },
         };
       }
 
@@ -1105,7 +1122,12 @@ export const fetchBscChecklist = action({
           `[fetchBscChecklist] refusing an under-scoped checklist request — ` +
             `no BSC id for facet(s): ${missingFacets.join(", ")}`,
         );
-        return { success: false, cards: [], message: BSC_UNSCOPED_MESSAGE };
+        return {
+          success: false,
+          cards: [],
+          message: BSC_UNSCOPED_MESSAGE,
+          failure: { kind: "refused", timedOut: false },
+        };
       }
 
       // FAN OUT — one request per SOURCE SET. Do NOT batch them.
@@ -1154,8 +1176,8 @@ export const fetchBscChecklist = action({
       let activeToken = tokenResult.token;
 
       type OneResult =
-        | { ok: true; raw: Record<string, unknown>[] }
-        | { ok: false; message: string };
+        | { ok: true; raw: Record<string, unknown>[]; elapsedMs: number }
+        | { ok: false; message: string; failure: FetchFailure };
 
       /** The facet value this request should attribute its cards to. */
       const sourceOf = (combo: Record<string, string>): string | undefined => {
@@ -1198,17 +1220,58 @@ export const fetchBscChecklist = action({
             signal: AbortSignal.timeout(BSC_CHECKLIST_FETCH_TIMEOUT_MS),
           });
 
+        // NEO-321 follow-up — a thrown fetch, classified. Our own 30s abort
+        // timer is a self-imposed limiter, so its firing is logged as one.
+        const threw = (
+          err: unknown,
+          startedAt: number,
+          retry: boolean,
+        ): OneResult => {
+          const waitedMs = Date.now() - startedAt;
+          if (isAbortTimeout(err)) {
+            logMarketplaceLimiter({
+              limiter: "bsc_checklist_timeout",
+              platform: "bsc",
+              operation: "fetchBscChecklist",
+              waitedMs,
+              timeoutMs: BSC_CHECKLIST_FETCH_TIMEOUT_MS,
+              outcome: "aborted",
+              retry,
+            });
+            return {
+              ok: false,
+              message: retry
+                ? `BSC API retry timed out after ${BSC_CHECKLIST_FETCH_TIMEOUT_MS / 1000}s`
+                : `BSC API request timed out after ${BSC_CHECKLIST_FETCH_TIMEOUT_MS / 1000}s`,
+              failure: {
+                kind: "timeout",
+                timedOut: true,
+                timeoutMs: BSC_CHECKLIST_FETCH_TIMEOUT_MS,
+                ...(retry ? { reauthAttempted: true } : {}),
+              },
+            };
+          }
+          const detail = err instanceof Error ? err.message : String(err);
+          return {
+            ok: false,
+            message: retry
+              ? `BSC API retry failed: ${detail}`
+              : `BSC API request failed: ${detail}`,
+            failure: {
+              kind: "network",
+              timedOut: false,
+              ...(retry ? { reauthAttempted: true } : {}),
+            },
+          };
+        };
+
         let response: Response;
+        let reauthAttempted = false;
+        let sentAt = Date.now();
         try {
           response = await doFetch(activeToken);
         } catch (err) {
-          const isTimeout = err instanceof Error && err.name === "TimeoutError";
-          return {
-            ok: false,
-            message: isTimeout
-              ? `BSC API request timed out after ${BSC_CHECKLIST_FETCH_TIMEOUT_MS / 1000}s`
-              : `BSC API request failed: ${err instanceof Error ? err.message : String(err)}`,
-          };
+          return threw(err, sentAt, false);
         }
 
         // BSC intermittently 401s with a token our cache still thinks is fresh
@@ -1219,6 +1282,10 @@ export const fetchBscChecklist = action({
             `[fetchBscChecklist] BSC API 401 with cached token — forcing re-auth and retrying once`,
           );
           await response.text().catch(() => "");
+          reauthAttempted = true;
+          // NEO-321 follow-up — the re-auth is a wait WE add before the
+          // retry; log how long it took and how it ended.
+          const reauthStartedAt = Date.now();
           const reAuth = (await ctx.runAction(
             internal.credentials.authenticateBsc,
             {},
@@ -1227,35 +1294,87 @@ export const fetchBscChecklist = action({
             console.error(
               `[fetchBscChecklist] re-auth failed after 401: ${reAuth.message ?? "(no message)"}`,
             );
-            return { ok: false, message: `BSC API 401 and re-auth failed` };
+            logMarketplaceLimiter({
+              limiter: "bsc_token_reauth",
+              platform: "bsc",
+              operation: "fetchBscChecklist",
+              waitedMs: Date.now() - reauthStartedAt,
+              outcome: "reauth_failed",
+            });
+            return {
+              ok: false,
+              message: `BSC API 401 and re-auth failed`,
+              failure: {
+                kind: "signed_out",
+                httpStatus: 401,
+                timedOut: false,
+                reauthAttempted: true,
+              },
+            };
           }
           const refreshed: { success: boolean; token?: string; error?: string } =
             await ctx.runAction(internal.adapters.buysportscards.getBscToken, {});
+          logMarketplaceLimiter({
+            limiter: "bsc_token_reauth",
+            platform: "bsc",
+            operation: "fetchBscChecklist",
+            waitedMs: Date.now() - reauthStartedAt,
+            outcome: refreshed.success && refreshed.token ? "ok" : "no_token",
+          });
           if (!refreshed.success || !refreshed.token) {
             return {
               ok: false,
               message: refreshed.error || "No BSC token available after re-auth",
+              failure: {
+                kind: "no_sign_in",
+                timedOut: false,
+                reauthAttempted: true,
+              },
             };
           }
           activeToken = refreshed.token;
+          sentAt = Date.now();
           try {
             response = await doFetch(activeToken);
           } catch (err) {
-            const isTimeout = err instanceof Error && err.name === "TimeoutError";
-            return {
-              ok: false,
-              message: isTimeout
-                ? `BSC API retry timed out after ${BSC_CHECKLIST_FETCH_TIMEOUT_MS / 1000}s`
-                : `BSC API retry failed: ${err instanceof Error ? err.message : String(err)}`,
-            };
+            return threw(err, sentAt, true);
           }
         }
 
         if (!response.ok) {
-          return { ok: false, message: `BSC API error: ${response.status}` };
+          await response.text().catch(() => "");
+          return {
+            ok: false,
+            message: `BSC API error: ${response.status}`,
+            failure: {
+              // A second 401, after a re-auth that said it worked, is still
+              // BSC refusing our session.
+              kind: response.status === 401 ? "signed_out" : "http_error",
+              httpStatus: response.status,
+              timedOut: false,
+              ...(reauthAttempted ? { reauthAttempted: true } : {}),
+            },
+          };
         }
 
-        const data = await response.json();
+        // The body read is under the same abort timer as the request.
+        let data: unknown;
+        try {
+          data = await response.json();
+        } catch (err) {
+          if (isAbortTimeout(err)) return threw(err, sentAt, reauthAttempted);
+          return {
+            ok: false,
+            message: `BSC API answered ${response.status} with a body that could not be read`,
+            failure: {
+              kind: "bad_response",
+              httpStatus: response.status,
+              timedOut: false,
+              ...(reauthAttempted ? { reauthAttempted: true } : {}),
+            },
+          };
+        }
+        const elapsedMs = Date.now() - sentAt;
         const results = Array.isArray(data) ? data : [];
         const raw: Record<string, unknown>[] = [];
         for (const r of results) {
@@ -1270,7 +1389,7 @@ export const fetchBscChecklist = action({
             `[fetchBscChecklist] hit MAX_CARDS=${MAX_CARDS} ceiling — set may be larger than expected.`,
           );
         }
-        return { ok: true, raw };
+        return { ok: true, raw, elapsedMs };
       };
 
       const tagged: Array<{
@@ -1278,12 +1397,18 @@ export const fetchBscChecklist = action({
         queriedSlug?: string;
       }> = [];
       const failures: string[] = [];
+      // NEO-321 follow-up — the FIRST failure's structured reason stands for
+      // the fetch (the message still lists every one).
+      let firstFailure: FetchFailure | undefined;
+      let slowestPageMs = 0;
       for (const combo of fanOut) {
         const res = await runOne(combo);
         if (!res.ok) {
           failures.push(`${describe(combo)}: ${res.message}`);
+          firstFailure ??= res.failure;
           continue;
         }
+        slowestPageMs = Math.max(slowestPageMs, res.elapsedMs);
         const queriedSlug = sourceOf(combo);
         for (const raw of res.raw) tagged.push({ raw, queriedSlug });
       }
@@ -1300,6 +1425,11 @@ export const fetchBscChecklist = action({
             failures.length === fanOut.length
               ? `BSC error: ${failures.join("; ")}`
               : `BSC returned only ${fanOut.length - failures.length} of ${fanOut.length} source sets — refusing a partial checklist: ${failures.join("; ")}`,
+          failure: {
+            ...(firstFailure ?? { kind: "unknown", timedOut: false }),
+            requests: fanOut.length,
+            requestsOk: fanOut.length - failures.length,
+          },
         };
       }
 
@@ -1507,6 +1637,8 @@ export const fetchBscChecklist = action({
           unrepresentableCount > 0
             ? `Found ${cards.length} cards from BSC catalog — ${unrepresentableCount} had a player/team field NeonBinder could not represent, so those names were not imported`
             : `Found ${cards.length} cards from BSC catalog`,
+        pages: fanOut.length,
+        slowestPageMs,
         ...(collisions.length > 0 ? { collisions } : {}),
       };
     } catch (error) {
@@ -1515,6 +1647,9 @@ export const fetchBscChecklist = action({
         success: false,
         cards: [],
         message: `BSC error: ${error instanceof Error ? error.message : "Unknown error"}`,
+        failure: isAbortTimeout(error)
+          ? { kind: "timeout", timedOut: true, timeoutMs: BSC_CHECKLIST_FETCH_TIMEOUT_MS }
+          : { kind: "unknown", timedOut: false },
       };
     }
   },

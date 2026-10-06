@@ -88,11 +88,14 @@ Vision (network) — NOT locally checkable.
   (top component fills ≥92% of the frame). Generator `--full-bleed` mode.
 
 ## The flows (apps/web/.maestro/flows/placeholders/)
-- `pipeline-pairs-uploaded-scans.yaml` (FAST, full-bleed set): "All 6 photos
-  read." → `assertNotVisible` the notice (fast-path guard) → finish → "2 pairs
-  ready to print." + "Not paired (2)". **Two pairs, not three, by design:** on the
-  FAST crop the synthetic full-bleed VORKLE front side-classifies as "back".
-  `flip-edge-mirrors-the-backs.yaml` also uses the full-bleed set.
+- `pipeline-pairs-uploaded-scans.yaml` (FAST, full-bleed set, `order=back-first`
+  since NEO-327): "All 6 photos read." → finish → "3 pairs ready to print." →
+  review captions `Front · 01-vorkle-front.jpg` etc. The old "2 pairs" + "Not
+  paired (2)" was NOT a fixture artifact — it was the NEO-327 bug (matcher
+  trusted the classifier's side label). Pairs now form on identity and orient by
+  Vision text count; the seed page's `?order=back-first` swaps each adjacent
+  manifest pair so arrival order cannot pass for orientation.
+  `flip-edge-mirrors-the-backs.yaml` also uses the full-bleed set (3 cards).
 - `pipeline-fast-crops-inset-scans.yaml` (FAST quad crop, default inset set,
   NEO-320): "All 6 photos read." under a ceiling HEAVY cannot meet (the
   discriminator) → finish → "3 pairs ready to print.". No notice-absence check:

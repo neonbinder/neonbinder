@@ -46,13 +46,13 @@ tags:
 ---
 # ============================================================
 # Step 1: land on the run view with a real batch behind it.
-# Six full-bleed fixtures upload on the fast path and pair into TWO cards — the
-# set is designed as three pairs, but on the fast classical crop one synthetic
-# front side-classifies as "back", leaving two backs that can never pair. That
-# is a fixture artifact, explained in full in pipeline-pairs-uploaded-scans.yaml
-# ("WHY TWO PAIRS AND NOT THREE"), and verified on dev 2026-08-26. Two cards is
-# still all this flow needs: mirroring is about WHERE a pocket lands, and two
-# occupied pockets in one row prove a column reversal exactly as three would.
+# Six full-bleed fixtures upload on the fast path and pair into THREE cards.
+# (Until NEO-327 they paired into two: the classifier misread one synthetic
+# front as a back and the matcher refused to pair two "backs". Pairing now
+# orients each pair on its own text, so all three pair — see
+# pipeline-pairs-uploaded-scans.yaml, which owns that proof.) Three cards fill
+# the first row of a 3x3 sheet exactly, which is what lets Steps 5 and 6 tell a
+# column reversal from a row reversal from no mirror at all.
 # ============================================================
 - launchApp
 - extendedWaitUntil:
@@ -92,17 +92,22 @@ tags:
 - tapOn: "Finish the batch"
 - assertVisible: "Finish this batch?"
 - tapOn: "Finish it"
+# R5: 7000, the in-app bar. Every image is already read (the wait above), so
+# this is only the close mutation's INLINE final pairing answering the tap —
+# the identical wait in pipeline-pairs-uploaded-scans,
+# pipeline-fast-crops-inset-scans and pipeline-escalation-cold-start holds to
+# 7000. (This flow carried 120000, a ceiling no in-app response is allowed.)
 - extendedWaitUntil:
-    visible: "2 pairs ready to print."
-    timeout: 120000
+    visible: "3 pairs ready to print."
+    timeout: 7000
 
 # ============================================================
 # Step 3 — ASSERTION 1: the line the user budgets paper from.
 #
-# One composed sentence, recomputed from the form on every click. Two cards fit
-# one 9-pocket sheet and backs are on by default, so it reads:
+# One composed sentence, recomputed from the form on every click. Three cards
+# fit one 9-pocket sheet and backs are on by default, so it reads:
 #
-#     2 cards on 1 sheet of Letter, printed both sides. 9 fit on a sheet.
+#     3 cards on 1 sheet of Letter, printed both sides. 9 fit on a sheet.
 #
 # No input on the page holds that sentence, so matching it can only mean the
 # live summary. The scroll IS the assertion (R6).
@@ -111,12 +116,12 @@ tags:
     element:
       # Wrapped in `.*` because Maestro's text selector FULL-matches the
       # element's text, and this <p> runs on past the phrase: the whole
-      # sentence is "2 cards on 1 sheet of Letter, printed both sides. 9 fit
+      # sentence is "3 cards on 1 sheet of Letter, printed both sides. 9 fit
       # on a sheet." An unwrapped prefix scrolls to the end of the page and
       # fails, which is exactly what it did. (The status line asserted earlier,
-      # "2 pairs ready to print.", needs no wrapper because that IS the
+      # "3 pairs ready to print.", needs no wrapper because that IS the
       # element's entire text.)
-      text: ".*2 cards on 1 sheet of Letter, printed both sides.*"
+      text: ".*3 cards on 1 sheet of Letter, printed both sides.*"
     centerElement: true
     timeout: 7000
 
@@ -143,71 +148,82 @@ tags:
 # Step 5 — ASSERTION 2: by default the back is mirrored for a LONG-edge flip,
 # which is what most printers do.
 #
-# Three cards occupy the first row, so the front reads
+# Three cards fill the first row, so the front reads
 #
 #     1 2 3
 #
-# and a long-edge back reverses the COLUMNS:
+# and a long-edge back reverses the COLUMNS (lib/print/sheet-layout.ts
+# `mirrorPosition`):
 #
 #     3 2 1
 #
 # so that after printing two-sided and cutting, the card whose front says 1 also
 # says 1 on its back. Asserted structurally: on the BACK sheet, pocket 1 sits to
-# the RIGHT of pocket 3. On the front it is the other way round, which is why
-# the `containsDescendants: BACK` qualifier is load-bearing — without it the
-# selector would happily match the front sheet and pass on a broken mirror.
+# the RIGHT of pocket 3.
 # ============================================================
-# WHY THIS SELECTOR IS SHAPED LIKE THIS. Two things about the rendered sheet
-# force it, both measured on the real page:
+# WHY THE SELECTOR IS SHAPED LIKE THIS — the two sheets are side by side.
+# print-run.tsx draws each sheet 300px wide in a wrapping flex row (gap 24px),
+# so on the 1024px CI viewport the back sheet sits immediately RIGHT of the
+# front, on the same row. Maestro's `rightOf`/`leftOf` compare left edges only
+# and `above`/`below` top edges only (Filters.rightOf: it.x > other.x; no
+# overlap test), and an element passes if the relation holds against ANY
+# anchor. So any back-sheet number is "right of" every front-sheet number.
 #
-# 1. `containsDescendants` cannot work here any more. NEO-152's sheet renders a
-#    pocket as three SIBLING leaves — the number, the side label, the caption —
-#    so the element whose text is "1" is a leaf with no descendants at all, and
-#    the cell that does contain "BACK" has no text of its own to match on.
-#    Maestro's hierarchy is built from leaf text (plus accessibility labels), so
-#    the old selector could not match anything and the flow scrolled to the end.
+# This flow's earlier selector — `"1" above "BACK", rightOf "2" above "BACK"` —
+# fell into exactly that: the front sheet's numbers sit on the same row as the
+# back sheet's BACK labels, so they qualified as anchors too, and the back's 1
+# was right of the FRONT's 2 whether or not the back was mirrored. It could not
+# fail.
 #
-# 2. The anchor has to be pinned to the BACK sheet, or the assertion is unsound
-#    rather than merely broken. Front and back render side by side on the SAME
-#    row (measured: front pockets at x=1378/1466, back at x=1790/1879, all at
-#    y=914). A bare `rightOf: "2"` would be satisfied by the FRONT sheet's
-#    pocket 2 sitting far to the left — so if the mirroring regressed and the
-#    back came out in front order, the back's "1" would still be "right of a 2"
-#    and this step would pass while the bug shipped.
-#
-# Anchoring BOTH sides on "above a BACK label" scopes the comparison to the back
-# sheet: each pocket's number sits directly above its own side label (number at
-# y=914, label at y=946), and the front sheet's numbers sit above FRONT instead.
-# Checked against a regression: with the back rendered in front order, the back
-# "1" lands left of the back "2" and no front "2" qualifies as the anchor, so
-# this correctly finds nothing.
+# The fix is to anchor on a number that can only be the BACK sheet's: "the 3
+# that is right of another 3". Both sheets carry exactly one 3 in this row, and
+# the back sheet's is the right-hand one, mirrored or not. Then:
+#   correct (back 3 2 1):  the anchor is the back's 3 (col 0); the back's 1
+#     (col 2) is right of it → PASS.
+#   unmirrored (back 1 2 3): the anchor is the back's 3 (col 2); no 1 anywhere
+#     is right of it → FAIL.
+#   rows reversed instead (back on row 3, 1 2 3): same columns as unmirrored →
+#     FAIL.
+# Positions (CSS px, sheet-relative): margin 17.6, pocket 88.2 wide, so pocket
+# centres at ~62/150/238 — a number's left edge moves ~88px per column, far
+# outside any rounding.
 - scrollUntilVisible:
     element:
       text: "1"
-      above:
-        text: "BACK"
       rightOf:
-        text: "2"
-        above:
-          text: "BACK"
+        text: "3"
+        rightOf:
+          text: "3"
     centerElement: true
     timeout: 7000
 
 # ============================================================
 # Step 6: switch to a SHORT-edge flip and re-assert.
 #
-# Short edge reverses ROWS rather than columns. With every card in row one there
-# is only one row, so the columns are NOT reversed and the back reads
+# Short edge reverses ROWS rather than columns. The three cards are row 1 of
+# the front, so on the back they move to row 3, in front order:
 #
-#     1 2
+#     front           back
+#     1 2 3           . . .
+#     . . .           . . .
+#     . . .           1 2 3
 #
-# — pocket 1 now sits to the LEFT of pocket 2, the exact inverse of Step 5. That
-# inversion is the proof the radio is wired: nothing else on the page changes.
+# — pocket 1 is now on the bottom row and to the LEFT of pocket 2, which is
+# what proves the radio is wired: nothing else on the page changes.
 #
-# Only OCCUPIED pockets carry a number, so with two cards the numbers on screen
-# are 1 and 2 and there is no pocket 3 to reference — measured on dev
-# 2026-08-26: long edge puts 1 at x=1879 and 2 at x=1790 (1 right of 2); short
-# edge puts 1 at x=1702 and 2 at x=1790 on a lower row (1 left of 2).
+# Selector, by the same reasoning as Step 5: `below: "3"` admits only numbers
+# on a LOWER row than some 3. On the front every number shares row 1, so only
+# the back sheet's bottom-row numbers qualify — that scopes both the candidate
+# and its `leftOf` anchor to the back sheet.
+#   correct (back row 3: 1 2 3): the back's 1 is below the front's 3 and left
+#     of the back's 2 → PASS.
+#   radio not wired (back still long-edge, row 1: 3 2 1): no number is below
+#     any 3 → FAIL.
+#   both axes reversed (back row 3: 3 2 1): the back's 1 is right of the
+#     back's 2 → FAIL.
+# Rows are 3.5in apart (~124px at the 300/816 preview scale), so the front's
+# row-1 3 is ~247px above the candidate — on screen together once the
+# candidate is centred.
 # ============================================================
 # UP. The form controls sit ABOVE the sheet previews they drive (measured:
 # flip-edge radios at y=1933/2003, guides toggle just under them, first sheet
@@ -226,12 +242,12 @@ tags:
 - scrollUntilVisible:
     element:
       text: "1"
-      above:
-        text: "BACK"
+      below:
+        text: "3"
       leftOf:
         text: "2"
-        above:
-          text: "BACK"
+        below:
+          text: "3"
     centerElement: true
     timeout: 7000
 
@@ -254,7 +270,7 @@ tags:
 - scrollUntilVisible:
     direction: UP
     element:
-      text: ".*2 cards on 1 sheet of Letter, front only.*"
+      text: ".*3 cards on 1 sheet of Letter, front only.*"
     centerElement: true
     timeout: 7000
 # The front sheet still renders. This SCROLLS rather than asserting in place:

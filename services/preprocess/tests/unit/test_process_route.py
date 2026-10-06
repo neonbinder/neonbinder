@@ -283,6 +283,23 @@ class TestHappyPath:
             "cropped_image_b64": None,
         }
 
+    def test_unknown_side_serialises_as_null(self, monkeypatch):
+        # NEO-327: classify reports side None when it cannot tell; the
+        # response carries null rather than a guessed "front".
+        _stub_orient(monkeypatch)
+        _stub_classify(monkeypatch, side=None)
+
+        response = client.post(
+            "/process",
+            headers={"x-internal-key": "test-key"},
+            files={"image": ("card.jpg", _jpeg(), "image/jpeg")},
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert "side" in body
+        assert body["side"] is None
+
     def test_accepts_png_content_type(self, monkeypatch):
         _stub_orient(monkeypatch)
         _stub_classify(monkeypatch)

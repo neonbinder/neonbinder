@@ -43,10 +43,20 @@ import { useWarmPreprocess } from "@/src/hooks/useWarmPreprocess";
  * is exactly what a person on /placeholders must never trigger.
  *
  * ## The fixture manifest
- * `/<set>/manifest.json`, listing filenames **in upload order** — order is the
- * pairing signal (front, back, front, back), so the manifest is the fixture's
- * most important content, not just an index of it. Both shapes are accepted: a
- * bare `["a.jpg", "b.jpg"]` array, or `{ "files": [...] }`.
+ * `/<set>/manifest.json`, listing filenames **in upload order**, written as
+ * front, back, front, back. Order is the scan order pairing sees (the entry
+ * index is allocated per upload, in the order files are sent), so the manifest
+ * is the fixture's most important content, not just an index of it. Both
+ * shapes are accepted: a bare `["a.jpg", "b.jpg"]` array, or
+ * `{ "files": [...] }`.
+ *
+ * `?order=back-first` swaps each adjacent pair of the manifest after it loads
+ * — 02, 01, 04, 03, 06, 05 — so every card's BACK is uploaded before its
+ * front. Since NEO-327 pairing decides which image of a pair is the front from
+ * the images themselves (text count first, then labels), never from which one
+ * arrived first; this is the lever a flow uses to prove that live. Any other
+ * value (or none) uploads in manifest order. Allowlisted like `?fixtures=`, and
+ * a trailing unpaired file (an odd-length manifest) keeps its place.
  *
  * `<set>` is `?fixtures=` (default `placeholder-fixtures`) — the NEO-175
  * fast/heavy split needs one fixture set per route a scan can take, all through
@@ -75,6 +85,24 @@ const ALLOWED_FIXTURE_SETS = new Set([
   "placeholder-fixtures-corner", // 3 cornered pairs → all 6 escalate (heavy) — the escalation cold-start flow (NEO-175; six images since NEO-299)
   "placeholder-fixtures-fullbleed", // frame-filling cards → fast identity (no escalation) — the fast-path and flip-edge flows
 ]);
+
+// `?order=` values this page understands. Only one non-default ordering
+// exists; anything else is the manifest's own order.
+const BACK_FIRST_ORDER = "back-first";
+
+/**
+ * Swap each adjacent pair — [f1, b1, f2, b2] becomes [b1, f1, b2, f2] — so a
+ * manifest written front-first uploads back-first. A trailing odd file stays
+ * last. Returns a new array; the manifest order is not mutated.
+ */
+function backFirst<T>(files: readonly T[]): T[] {
+  const swapped: T[] = [];
+  for (let i = 0; i < files.length; i += 2) {
+    if (i + 1 < files.length) swapped.push(files[i + 1]);
+    swapped.push(files[i]);
+  }
+  return swapped;
+}
 
 async function loadFixtureFiles(fixtureSet: string): Promise<File[]> {
   const manifestUrl = `/${fixtureSet}/manifest.json`;
@@ -132,6 +160,9 @@ function TestingSeedPlaceholderUploadContent() {
     requestedSet && ALLOWED_FIXTURE_SETS.has(requestedSet)
       ? requestedSet
       : DEFAULT_FIXTURE_SET;
+  // Upload each card's back before its front (NEO-327) — see the manifest
+  // note above. Allowlisted: only the exact value switches it on.
+  const uploadBackFirst = searchParams.get("order") === BACK_FIRST_ORDER;
   const [status, setStatus] = useState("Initializing...");
   const ranRef = useRef(false);
 
@@ -167,9 +198,12 @@ function TestingSeedPlaceholderUploadContent() {
         // below, so folding away a separate "Loading fixtures..." note costs no
         // diagnosability.
         setStatus(`Reset ${reset.canceled} previous sessions.`);
-        const files = await loadFixtureFiles(fixtureSet);
+        const manifestFiles = await loadFixtureFiles(fixtureSet);
+        const files = uploadBackFirst ? backFirst(manifestFiles) : manifestFiles;
 
-        setStatus(`Uploading ${files.length} fixtures...`);
+        setStatus(
+          `Uploading ${files.length} fixtures${uploadBackFirst ? " back-first" : ""}...`,
+        );
         // Web-originated, same as the product page — this IS the web upload path
         // with the picker bypassed, so it must label runs the same way.
         const outcome = await upload(files, { source: "web" });
@@ -188,7 +222,16 @@ function TestingSeedPlaceholderUploadContent() {
         setStatus(`Error: ${message}`);
       }
     })();
-  }, [isAuthenticated, isLoading, navigate, redirect, resetSessions, upload, fixtureSet]);
+  }, [
+    isAuthenticated,
+    isLoading,
+    navigate,
+    redirect,
+    resetSessions,
+    upload,
+    fixtureSet,
+    uploadBackFirst,
+  ]);
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-2 bg-background p-6">

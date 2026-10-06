@@ -9,13 +9,12 @@
  *
  * Two deliberate shape decisions, both load-bearing:
  *
- * **`PoolCard` is NOT immutable.** Reusing the resolver's `CardIdentity` as
- * the pool entry would be convenient but wrong: `CardPool` *mutates*
- * `card.side` when it detects that a mis-classified image is about to clobber
- * a pooled card of the same side (see `pool.ts`,
- * `CardPool.resolveSameSideCollision`). The pool entry therefore has to be a
- * separate, mutable object. `imageHash` is likewise a mutable memoisation
- * slot.
+ * **`PoolCard` is a separate object from the resolver's `CardIdentity`.** It
+ * carries pairing-only state the resolver knows nothing about (the side
+ * `label` and whether a person set it, the user's splits, the text count),
+ * and `imageHash` is a mutable memoisation slot the pool fills lazily. The
+ * pool never rewrites a card's `label`: which image of a pair is the front is
+ * decided per pair by `orientPair` (`pool.ts`), not stored on the card.
  *
  * **Result objects ARE frozen** (`Object.freeze` in `makeMatchResult`),
  * matching the Python port's frozen dataclasses for `MatchResult`,
@@ -30,10 +29,29 @@
 export type CardSide = "front" | "back";
 
 /**
- * How a pair was arrived at, surfaced so callers can tell a cheap
- * zip-order/text-count pairing from one the scoring pool actually earned.
+ * How a pair was arrived at, surfaced so callers can tell a scan-order
+ * pairing from one the scoring pool actually earned.
+ *
+ * This package only ever produces "pool". "adjacency" is kept in the union
+ * because the pipeline's guarded scan-order fallback over the pool's
+ * leftovers (in `placeholderPairing.ts`) labels its pairs with it, and stored
+ * pair rows carry it.
  */
 export type Mechanism = "adjacency" | "pool";
+
+/**
+ * Which rule decided the front and back of a pair — see `orientPair` in
+ * `pool.ts`.
+ *
+ * - "user"  : a person set at least one image's side, and that decided it
+ * - "text"  : one image carries clearly more Vision text, so it is the back
+ * - "label" : text counts were close; the classifier's labels disagreed and
+ *             broke the tie
+ *
+ * There is deliberately no "order" rule: arrival or entry order never decides
+ * a side.
+ */
+export type OrientRule = "user" | "text" | "label";
 
 /**
  * How much evidence backed a pool pairing — a band of the match SCORE, not a
@@ -42,15 +60,15 @@ export type Mechanism = "adjacency" | "pool";
  * - "exact"     : score above EXACT_CONFIDENCE_THRESHOLD
  * - "fuzzy"     : accepted, but below it
  * - "side-only" : paired with no identity evidence at all (the lone
- *                 opposite-side fallback in `CardPool.findMatch`, or the
- *                 adjacency pass in `pairBatch`)
+ *                 orientable-candidate fallback in `CardPool.findMatch`, or
+ *                 the pipeline's scan-order fallback)
  *
  * It used to be the checklist `cardNumberMatched && (player || team)`, ported
- * faithfully from the Python original. That rule was UNREACHABLE: it needs a
- * card number on both halves, and no set prints the number on the front, so
- * `exact` never occurred for a real pair. The score already weighed every
- * signal properly and was only ever used to decide whether to pair at all;
- * banding it is what makes the distinction mean something.
+ * faithfully from the Python original. That rule was effectively unreachable:
+ * it needs a card number on both halves, and a card number is printed on the
+ * back. The score already weighed every signal properly and was only ever
+ * used to decide whether to pair at all; banding it is what makes the
+ * distinction mean something.
  */
 export type Confidence = "exact" | "fuzzy" | "side-only";
 
@@ -65,9 +83,11 @@ export type Confidence = "exact" | "fuzzy" | "side-only";
  * interfaces cannot derive fields, so callers supply both and
  * `poolCardFromIdentity` falls back to `players[0]` when `player` is null.
  *
- * `side` is typed to the two valid values, but the value ultimately comes
- * from a model response, so consumers still runtime-check it and fall back to
- * the text-count heuristic on anything unexpected.
+ * `side` is the classifier's label, typed to the two valid values or null
+ * (the classifier returns null when it is unsure). The value ultimately comes
+ * from a model response, so consumers still runtime-check it and treat
+ * anything unexpected as no label. It is only ever a tie-breaker — see
+ * `orientPair`.
  */
 export interface CardIdentity {
   players: string[];
@@ -80,12 +100,11 @@ export interface CardIdentity {
 /**
  * Lazily resolves an image's identity fields (player/team/card number/side).
  *
- * In production this is a Haiku classify call — the expensive part of the
- * pipeline, hence the callback shape. Pairing calls it only for images the
- * cheap adjacency pre-pass could not resolve, so the number of invocations is
- * the cost metric this module exists to minimise. Returning null means
- * "identity unavailable"; pairing degrades to the text-count side heuristic
- * rather than failing the batch.
+ * Called once per image. In the pipeline it is a lookup of the identity the
+ * preprocess classify already stored on the image row; the callback shape is
+ * kept so an image's identity is only read when the pool needs it. Returning
+ * null means "identity unavailable"; that card then pairs on side evidence
+ * alone (see the side-only fallback) rather than failing the batch.
  */
 export type IdentityResolver = (key: string) => CardIdentity | null;
 
@@ -98,7 +117,8 @@ export type IdentityResolver = (key: string) => CardIdentity | null;
  * Convex runtime has no image decoding, and doesn't need any; see
  * `dhash.ts`). Kept as a callback rather than taking the hash eagerly so the
  * pool never has to pay for a hash lookup for cards it may never need to
- * compare — hashing only matters on a same-side collision, which is rare.
+ * compare — hashing only matters when a new image carries the same identity
+ * as a held one (a possible re-scan; see `CardPool.evictRescan`).
  */
 export type ImageHasher = (key: string) => string | null;
 
@@ -110,14 +130,22 @@ export type ImageHasher = (key: string) => string | null;
  * port, a storage id under NEO-170). It is the pool's Map key, so it must be
  * unique within a batch.
  *
- * `identityResolved` distinguishes "the resolver ran and found nothing" from
- * "the resolver was never asked" — an adjacency-paired card has null identity
- * fields but was never sent to the resolver, and downstream code needs to be
- * able to tell those apart.
+ * `identityResolved` distinguishes "the resolver ran and returned identity"
+ * from "no identity was available for this image" (the resolver returned null
+ * or threw).
  */
 export interface PoolCard {
   key: string;
-  side: CardSide;
+  /**
+   * The side this image is LABELLED, or null when nothing labelled it. A
+   * classifier label is a weak, tie-break-only signal (it calls photo-heavy
+   * backs "front"); a user-set label (`labelByUser`) is authoritative. Either
+   * way the pool never rewrites it — `orientPair` decides each pair's front
+   * and back from both images' evidence.
+   */
+  label: CardSide | null;
+  /** True when a person set `label`, which makes it decide the pair's sides. */
+  labelByUser: boolean;
   /**
    * Keys this card must never be auto-paired with, because the user split them
    * apart. A HARD reject in `CardPool.findMatch`, never a score penalty — a
@@ -130,7 +158,8 @@ export interface PoolCard {
    * Position in the scan, when the caller knows it. Two cards one apart were
    * photographed back to back, which is weak but real evidence they are the
    * two sides of one card — see ADJACENCY_SCORE. Null when unknown; the pool
-   * simply scores no adjacency bonus then.
+   * simply scores no adjacency bonus then. Never consulted for which side is
+   * which.
    */
   order: number | null;
   player: string | null;
@@ -139,14 +168,15 @@ export interface PoolCard {
   textCount: number;
   identityResolved: boolean;
   originalFilename: string | null;
-  /** Cached perceptual dHash (lowercase hex), lazily memoised on a same-side collision. */
+  /** Cached perceptual dHash (lowercase hex), lazily memoised on a possible re-scan. */
   imageHash: string | null;
 }
 
-/** Everything `createPoolCard` accepts; only `key` and `side` are required. */
+/** Everything `createPoolCard` accepts; only `key` is required. */
 export interface PoolCardInit {
   key: string;
-  side: CardSide;
+  label?: CardSide | null;
+  labelByUser?: boolean;
   order?: number | null;
   unpairedFrom?: readonly string[];
   player?: string | null;
@@ -160,12 +190,14 @@ export interface PoolCardInit {
 
 /**
  * Build a `PoolCard` with the same defaults as the Python dataclass:
- * null identity fields, `textCount` 0, `identityResolved` false.
+ * null identity fields, `textCount` 0, `identityResolved` false — plus no
+ * label and `labelByUser` false.
  */
 export function createPoolCard(init: PoolCardInit): PoolCard {
   return {
     key: init.key,
-    side: init.side,
+    label: init.label ?? null,
+    labelByUser: init.labelByUser ?? false,
     order: init.order ?? null,
     unpairedFrom: init.unpairedFrom ?? [],
     player: init.player ?? null,
@@ -181,8 +213,8 @@ export function createPoolCard(init: PoolCardInit): PoolCard {
 /**
  * True when any identity field is populated.
  *
- * Gates the side-only fallback and the same-side collision check, both of
- * which are only safe on cards carrying no identity signal at all.
+ * Gates the side-only fallback (only safe when neither card carries any
+ * identity signal) and the re-scan check (which needs one to compare).
  */
 export function hasIdentity(card: PoolCard): boolean {
   return Boolean(card.player || card.team || card.cardNumber);
@@ -218,10 +250,11 @@ export function identitySummary(card: PoolCard): string {
  * - *player* and *team* prefer the **front**. Fronts print them large, in a
  *   display face, usually against a clean background — the most reliable
  *   read on the card.
- * - *card number* comes from the **back**. Card numbers are only printed on
- *   backs; anything that looks like one on a front is a misread (a jersey
- *   number, a copyright year, a subset code). See `pool.ts` for the
- *   matching-side half of this rule.
+ * - *card number* comes from the **back** — the image `orientPair` decided is
+ *   the back. The card number is printed on the back; a number read off a
+ *   front image is usually a jersey number, a copyright year or a subset
+ *   code. Each image still keeps the number it read (both feed the scorer,
+ *   where agreement is evidence), but only the back's names the pair.
  *
  * The merged fields are getters over `front`/`back` (mirroring the Python
  * properties), and the result object is frozen.
@@ -232,11 +265,13 @@ export interface MatchResult {
   readonly confidence: Confidence;
   readonly mechanism: Mechanism;
   readonly score: number;
+  /** Which rule decided `front` and `back` — see `orientPair`. */
+  readonly orientedBy: OrientRule;
   /** Merged player: the front's read when it has one, else the back's. */
   readonly player: string | null;
   /** Merged team: the front's read when it has one, else the back's. */
   readonly team: string | null;
-  /** Back only — a front's card number is never trustworthy. */
+  /** The oriented back's read only — never the front's. */
   readonly cardNumber: string | null;
 }
 
@@ -247,6 +282,7 @@ export function makeMatchResult(
   confidence: Confidence,
   mechanism: Mechanism,
   score: number,
+  orientedBy: OrientRule,
 ): MatchResult {
   const result: MatchResult = {
     front,
@@ -254,6 +290,7 @@ export function makeMatchResult(
     confidence,
     mechanism,
     score,
+    orientedBy,
     get player(): string | null {
       return front.player || back.player;
     },
@@ -261,7 +298,7 @@ export function makeMatchResult(
       return front.team || back.team;
     },
     get cardNumber(): string | null {
-      // Back only — a front's card number is never trustworthy.
+      // The oriented back's read only — see the MatchResult doc comment.
       return back.cardNumber;
     },
   };
@@ -269,18 +306,18 @@ export function makeMatchResult(
 }
 
 /**
- * One input image, in upload order, as `pairBatch` receives it.
+ * One input image as `pairBatch` receives it.
  *
  * `textCount` is the OCR/Vision word-annotation count already produced for
- * this image during preprocessing. It is a **sunk cost** — no extra API call
- * — which is exactly why the adjacency pre-pass is built on it rather than on
- * a paid classify.
+ * this image during preprocessing. It is the primary side signal: a back
+ * carries the card number, bio or stats and fine print, so within a pair the
+ * image with clearly more text is the back (see `orientPair`).
  *
- * `side`, when present, is a side classification already computed server-side
- * (this is a NEO-170 contract addition over the Python `BatchImage`, which
- * carried only key/textCount/originalFilename). A provided side is treated as
- * authoritative over the text-count heuristic, and the adjacency pre-pass
- * accepts it as confident evidence — see `pairBatch.ts`.
+ * `label`, when present, is a side label already stored for the image — the
+ * classifier's, or a person's when `labelByUser` is true. A user-set label
+ * always wins and decides the pair's sides; a classifier label here is used
+ * only when the resolver reports no side of its own, and only ever breaks a
+ * tie between close text counts. See `poolCardFromIdentity`.
  */
 export interface BatchImage {
   key: string;
@@ -290,15 +327,16 @@ export interface BatchImage {
   /** Position in the scan. See `PoolCard.order`. */
   order?: number | null;
   originalFilename?: string | null;
-  side?: CardSide | null;
+  label?: CardSide | null;
+  /** True when a person set `label`. See `PoolCard.labelByUser`. */
+  labelByUser?: boolean;
 }
 
 /**
  * Outcome of `pairBatch` over a whole upload.
  *
- * `resolverCalls` is real telemetry, not just a test hook: it is the count of
- * `IdentityResolver` invocations the batch needed, i.e. the classify spend.
- * Comparing it against `images.length` gives the adjacency pre-pass's saving.
+ * `resolverCalls` is the count of `IdentityResolver` invocations the batch
+ * made — one per image.
  */
 export interface BatchResult {
   matches: MatchResult[];

@@ -635,6 +635,63 @@ describe("closePlaceholderStream", () => {
     expect(images.map((i) => i.pairStatus)).toEqual(["paired", "paired"]);
   });
 
+  test("NEO-317: a split the user made survives the inline finalize on close", async () => {
+    // The scheduled runs honoured `unpairedFrom`; the inline finalize's row
+    // mapping once dropped it, so the one run whose answer is final silently
+    // re-paired two images the user had split. The control job proves the same
+    // two images DO pair when nothing was split.
+    const t = convexTest(schema, modules);
+    const rows = (jobId: string, split: boolean) =>
+      Promise.all([
+        seedImage(t, jobId, 0, "done", {
+          side: "front",
+          textCount: 1,
+          players: ["Ken Griffey Jr."],
+          team: "Seattle Mariners",
+          ...(split ? { unpairedFrom: [1], pairStatus: "unmatched" as const } : {}),
+        }),
+        seedImage(t, jobId, 1, "done", {
+          side: "back",
+          textCount: 40,
+          players: ["Ken Griffey Jr."],
+          team: "Seattle Mariners",
+          cardNumber: "24",
+          ...(split ? { unpairedFrom: [0], pairStatus: "unmatched" as const } : {}),
+        }),
+      ]);
+
+    await seedJob(t, "job-control", { mode: "stream", status: "collecting", totalImages: 2, processedImages: 2 });
+    await rows("job-control", false);
+    await seedJob(t, "job-split", { mode: "stream", status: "collecting", totalImages: 2, processedImages: 2 });
+    await rows("job-split", true);
+
+    expect(await close(t, "job-control")).toEqual({ closed: true, status: "succeeded" });
+    expect(await close(t, "job-split")).toEqual({ closed: true, status: "succeeded" });
+
+    const pairsOf = async (jobId: string) =>
+      t.run(async (ctx) =>
+        (await ctx.db.query("placeholderPairs").collect()).filter((p) => p.jobId === jobId),
+      );
+    expect(await pairsOf("job-control")).toHaveLength(1);
+    expect(await pairsOf("job-split")).toHaveLength(0);
+    expect((await getImages(t, "job-split")).map((i) => i.pairStatus)).toEqual(["unmatched", "unmatched"]);
+  });
+
+  test("a user-set side outranks text count in the inline finalize too", async () => {
+    // Same row-mapping seam as the split above, for `sideByUser`.
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-user-side", { mode: "stream", status: "collecting", totalImages: 2, processedImages: 2 });
+    // The 1-word image is the user's BACK; text alone would call it the front.
+    await seedImage(t, "job-user-side", 0, "done", { side: "back", sideByUser: true, textCount: 1 });
+    await seedImage(t, "job-user-side", 1, "done", { textCount: 40 });
+
+    expect(await close(t, "job-user-side")).toEqual({ closed: true, status: "succeeded" });
+
+    const pairs = await t.run(async (ctx) => ctx.db.query("placeholderPairs").collect());
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).toMatchObject({ frontIndex: 1, backIndex: 0, orientedBy: "user" });
+  });
+
   test("a small all-failed batch fails INLINE through the too-many-failures rule", async () => {
     // `failedImages * 2 > totalImages` (2 of 3) is a failed batch. Small, so it
     // is decided in the close mutation with no scheduler tick.

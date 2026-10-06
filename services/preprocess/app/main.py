@@ -275,7 +275,7 @@ class ProcessResponse(BaseModel):
     player: str | None
     team: str | None
     card_number: str | None
-    side: str
+    side: str | None
     rotation_degrees: int
     orient_confidence: float
     text_count: int

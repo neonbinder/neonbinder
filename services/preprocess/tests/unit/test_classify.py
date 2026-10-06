@@ -177,16 +177,27 @@ class TestClassifyCard:
         assert result.player == "Ohtani"
         assert client.messages.create.call_count == 2
 
-    def test_unknown_side_normalizes_to_front(self):
-        payload = '{"player":"Trout","team":null,"card_number":null,"side":"left"}'
+    # NEO-327: an unreadable side is None, never a guessed "front". The old
+    # default made a photo-back card's back look like a confident front.
+    @pytest.mark.parametrize("side_json", ['"left"', '""', "null", "3", '["back"]'])
+    def test_unknown_side_is_none(self, side_json):
+        payload = f'{{"player":"Trout","team":null,"card_number":null,"side":{side_json}}}'
         client = _mock_client(_response_with_text(payload))
 
         result = classify_card(_jpeg_bytes(), client=client)
 
-        assert result.side == "front"
+        assert result.side is None
+
+    def test_side_is_case_and_whitespace_insensitive(self):
+        payload = '{"player":"Trout","team":null,"card_number":null,"side":" Back "}'
+        client = _mock_client(_response_with_text(payload))
+
+        result = classify_card(_jpeg_bytes(), client=client)
+
+        assert result.side == "back"
 
     def test_missing_keys_return_nulls(self):
-        # Model skips optional keys; `side` missing → defaults to "front".
+        # Model skips optional keys; a missing `side` is None, like the rest.
         payload = '{"player":"Rookie","card_number":""}'
         client = _mock_client(_response_with_text(payload))
 
@@ -195,7 +206,45 @@ class TestClassifyCard:
         assert result.player == "Rookie"
         assert result.team is None
         assert result.card_number is None  # empty string normalizes to None
-        assert result.side == "front"
+        assert result.side is None
+
+    def test_list_response_without_a_valid_side_is_none(self):
+        payload = '[{"player":"A","side":"unknown"},{"player":"B"}]'
+        client = _mock_client(_response_with_text(payload))
+
+        result = classify_card(_jpeg_bytes(), client=client)
+
+        assert result.players == ["A", "B"]
+        assert result.side is None
+
+    def test_list_response_takes_first_valid_side(self):
+        payload = '[{"player":"A","side":"sideways"},{"player":"B","side":"back"}]'
+        client = _mock_client(_response_with_text(payload))
+
+        result = classify_card(_jpeg_bytes(), client=client)
+
+        assert result.side == "back"
+
+    def test_prompt_override_is_sent_and_reused_on_retry(self):
+        good = '{"player":null,"team":null,"card_number":null,"side":"front"}'
+        client = _mock_client(_response_with_text("nope"), _response_with_text(good))
+
+        classify_card(_jpeg_bytes(), client=client, prompt="CUSTOM")
+
+        texts = [
+            call.kwargs["messages"][0]["content"][1]["text"]
+            for call in client.messages.create.call_args_list
+        ]
+        assert texts == ["CUSTOM", "CUSTOM" + RETRY_PROMPT_SUFFIX]
+
+    def test_default_prompt_is_prompt(self):
+        good = '{"player":null,"team":null,"card_number":null,"side":"front"}'
+        client = _mock_client(_response_with_text(good))
+
+        classify_card(_jpeg_bytes(), client=client)
+
+        call = client.messages.create.call_args
+        assert call.kwargs["messages"][0]["content"][1]["text"] == PROMPT
 
     def test_empty_image_bytes_raises_value_error(self):
         client = _mock_client()

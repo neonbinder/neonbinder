@@ -106,11 +106,14 @@ const FRONT = (players: string[], team: string): ImageSpec => ({
   team,
   textCount: 4,
 });
+// A back carries clearly more Vision text than a front (NEO-327 orients a pair
+// on that, text count first): 4 against 120 is a real-world margin, where 4
+// against 6 would read as two copies of the same side and never pair.
 const BACK = (players: string[], team: string, cardNumber: string): ImageSpec => ({
   players,
   team,
   cardNumber,
-  textCount: 6,
+  textCount: 120,
 });
 
 async function seedJob(
@@ -456,6 +459,26 @@ describe("manuallyPairPlaceholderImages", () => {
     expect(pairs[0].player).toBe("No Readable Name");
     expect(pairs[0].cardNumber).toBe("77");
     expect((await getImages(t, JOB)).map((i) => i.pairStatus)).toEqual(["paired", "paired"]);
+  });
+
+  test("records the user as the rule that chose the front, even against the text counts", async () => {
+    // The caller designates the front. Here they name the HIGH-text image as
+    // the front; text would have said the opposite, and the stored rule must be
+    // "user", not whatever the matcher would have guessed.
+    const JOB = "job-manual-oriented-by";
+    const t = harness();
+    await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
+    await seedDone(t, JOB, 0, BACK(["Name One"], "Team A", "5"));
+    await seedDone(t, JOB, 1, FRONT(["Name Two"], "Team B"));
+
+    await t.withIdentity(USER_A).mutation(P.manuallyPairPlaceholderImages, {
+      jobId: JOB,
+      frontIndex: 0,
+      backIndex: 1,
+    });
+
+    const [pair] = await getPairs(t, JOB);
+    expect(pair).toMatchObject({ frontIndex: 0, backIndex: 1, mechanism: "manual", orientedBy: "user" });
   });
 
   test("a manual pair SURVIVES a subsequent automatic run, and its images are not re-paired", async () => {
@@ -808,6 +831,23 @@ describe("swapPairSides", () => {
     expect(after.mechanism).toBe("manual");
   });
 
+  test("rewrites orientedBy from the matcher's rule to user", async () => {
+    const JOB = "job-swap-oriented-by";
+    const t = harness();
+    await seedSwappable(t, JOB);
+    const before = (await getPairs(t, JOB))[0];
+    // Text count oriented it (4 against 120) until the person overruled that.
+    expect(before.orientedBy).toBe("text");
+
+    await t.withIdentity(USER_A).mutation(P.swapPairSides, {
+      jobId: JOB,
+      frontIndex: before.frontIndex,
+      backIndex: before.backIndex,
+    });
+
+    expect((await getPairs(t, JOB))[0].orientedBy).toBe("user");
+  });
+
   test("never records a split — the user reoriented, they did not reject", async () => {
     // The old unpair-then-pair composition wrote `unpairedFrom` and then
     // cleared it, briefly asserting a rejection that never happened.
@@ -842,5 +882,87 @@ describe("swapPairSides", () => {
         backIndex: before.backIndex,
       }),
     ).rejects.toThrow(/Job not found/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A side the user sets outranks text count (NEO-327)
+// ---------------------------------------------------------------------------
+
+describe("updatePlaceholderImageIdentity({ side })", () => {
+  // Identity-less on purpose: a side-only pair is never locked, so the forced
+  // re-pair is free to revisit it. (An exact pair is sticky by design.)
+  const BARE_FRONT: ImageSpec = { textCount: 8 };
+  const BARE_BACK: ImageSpec = { textCount: 120 };
+
+  test("marks the side as the user's; an edit that leaves side alone does not", async () => {
+    const JOB = "job-side-flag";
+    const t = harness();
+    await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
+    await seedDone(t, JOB, 0, BARE_FRONT);
+    await seedDone(t, JOB, 1, BARE_BACK);
+
+    await t.withIdentity(USER_A).mutation(P.updatePlaceholderImageIdentity, {
+      jobId: JOB,
+      entryIndex: 0,
+      team: "Cubs",
+    });
+    expect((await getImages(t, JOB))[0].sideByUser).toBeUndefined();
+
+    const result = await t.withIdentity(USER_A).mutation(P.updatePlaceholderImageIdentity, {
+      jobId: JOB,
+      entryIndex: 0,
+      side: "back",
+    });
+    expect(result.side).toBe("back");
+    const rows = await getImages(t, JOB);
+    expect(rows[0]).toMatchObject({ side: "back", sideByUser: true });
+    // Only the edited row.
+    expect(rows[1].sideByUser).toBeUndefined();
+  });
+
+  test("the forced re-pair honours the user's side over the text counts", async () => {
+    const JOB = "job-side-outranks-text";
+    const t = harness();
+    await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
+    await seedDone(t, JOB, 0, BARE_FRONT);
+    await seedDone(t, JOB, 1, BARE_BACK);
+    await runAuto(t, JOB);
+    expect((await getPairs(t, JOB))[0]).toMatchObject({ frontIndex: 0, backIndex: 1, orientedBy: "text" });
+
+    // The 8-word image is really the back (a sparse back).
+    await t.withIdentity(USER_A).mutation(P.updatePlaceholderImageIdentity, {
+      jobId: JOB,
+      entryIndex: 0,
+      side: "back",
+    });
+    await drain(t);
+
+    const pairs = await getPairs(t, JOB);
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0]).toMatchObject({ frontIndex: 1, backIndex: 0, orientedBy: "user" });
+  });
+
+  test("both images user-set to the same side are not paired", async () => {
+    const JOB = "job-side-same";
+    const t = harness();
+    await seedJob(t, JOB, { totalImages: 2, processedImages: 2 });
+    await seedDone(t, JOB, 0, BARE_FRONT);
+    await seedDone(t, JOB, 1, BARE_BACK);
+    await runAuto(t, JOB);
+    expect(await getPairs(t, JOB)).toHaveLength(1);
+
+    for (const entryIndex of [0, 1]) {
+      await t.withIdentity(USER_A).mutation(P.updatePlaceholderImageIdentity, {
+        jobId: JOB,
+        entryIndex,
+        side: "front",
+      });
+    }
+    await drain(t);
+
+    // The person said both show a front; no automatic evidence may overrule it.
+    expect(await getPairs(t, JOB)).toHaveLength(0);
+    expect((await getImages(t, JOB)).map((i) => i.pairStatus)).toEqual(["unmatched", "unmatched"]);
   });
 });
