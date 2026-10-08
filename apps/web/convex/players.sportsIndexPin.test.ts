@@ -85,4 +85,44 @@ describe("NEO-313: only players.ts writes playerSports", () => {
     );
     expect(writer).toContain("if (setChanged) await syncPlayerAliases(ctx, { playerId });");
   });
+
+  test("NEO-318: the writer patches the derived alsoSportIds copy through ctx.db.patch(playerId", () => {
+    const src = readFileSync(join(CONVEX_DIR, "players.ts"), "utf8");
+    const writer = src.slice(
+      src.indexOf("export async function syncPlayerSports"),
+      src.indexOf("export async function addPlayerSport"),
+    );
+    expect(writer).toContain("alsoSportIds");
+    expect(writer).toContain("ctx.db.patch(playerId");
+  });
 });
+
+describe("NEO-318: players.alsoSportIds has one writer", () => {
+  test("no non-test convex module other than players.ts and schema.ts mentions alsoSportIds", () => {
+    const offenders: string[] = [];
+    for (const file of sourceFiles(CONVEX_DIR)) {
+      if (file.endsWith(join("convex", "players.ts"))) continue;
+      if (file.endsWith(join("convex", "schema.ts"))) continue;
+      if (readFileSync(file, "utf8").includes("alsoSportIds")) offenders.push(file);
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test("none of the players insert blocks seed the copy", () => {
+    const blocks: string[] = [];
+    for (const file of sourceFiles(CONVEX_DIR)) {
+      const src = readFileSync(file, "utf8");
+      let from = 0;
+      for (;;) {
+        const at = src.indexOf('insert("players"', from);
+        if (at === -1) break;
+        blocks.push(src.slice(at, src.indexOf("});", at) + 3));
+        from = at + 1;
+      }
+    }
+    // Guard against the scan silently matching nothing.
+    expect(blocks.length).toBeGreaterThan(0);
+    expect(blocks.filter((b) => b.includes("alsoSportIds"))).toEqual([]);
+  });
+});
+

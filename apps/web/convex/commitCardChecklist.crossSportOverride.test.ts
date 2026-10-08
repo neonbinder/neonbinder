@@ -178,6 +178,31 @@ describe("NEO-313: commit's cross-sport override, and its security fix", () => {
     expect(memberships.map((m) => m.sportId)).not.toContain(basketball);
   });
 
+  test("NEO-318: addSetSport at commit writes players.alsoSportIds alongside the membership row", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId: baseball, variantTypeId } = await seedBaseballSet(t);
+    const football = await seedSport(t, "Football");
+    const fields = await insertPlayer(t, { name: "Justin Fields", sportId: football });
+    await insertLinkRow(t, {
+      selectorOptionId: variantTypeId,
+      batchId: "b1",
+      sportId: football,
+      name: "Justin Fields",
+      linkedPlayerId: fields,
+      addSetSport: true,
+    });
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId: baseball,
+      batchId: "b1",
+      cards: [makeCard({ players: ["Justin Fields"] })],
+    });
+
+    const row = await t.run((ctx) => ctx.db.get(fields));
+    expect(row?.alsoSportIds).toEqual([baseball]);
+  });
+
   test("a player-review row switched to another sport creates its NEW player under that sport", async () => {
     const t = convexTest(schema, modules);
     const { variantTypeId } = await seedBaseballSet(t);
