@@ -29,4 +29,17 @@ copies and list them file:line in the report as same-PR edits:
   (decision/enrichment unions).
 Prove the change by running the convex-test files that load the schema, but
 say in the report that green typecheck + green tests do NOT cover the copies.
+
+What DOES cover them: convex-test runs `validateReturnValue` on every
+query/mutation/action it executes, so a test that writes the new field onto a
+row and then calls each public/internal reader of that table goes red on a
+missed copy. Put that test in the plan (one call per reader, incl. internal
+`getInternal`-style raw-doc returns, which have their own copy).
+
+Alternative to widening every copy: a field that is a DERIVED copy for one
+reader (NEO-318 `players.alsoSportIds`) is better stripped in the shared
+doc-to-public helper (`toPublicPlayer`) and re-added only where a validator
+names it — public shapes stay byte-identical and the copy cannot leak into
+readers that should consult the authoritative table. Raw-doc internal
+validators still need the optional field.
 See [[reference-typecheck-convex-changes]].

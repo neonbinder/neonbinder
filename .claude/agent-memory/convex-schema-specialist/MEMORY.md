@@ -8,10 +8,11 @@
 - [Project neo21 cross release home set](project_neo21_cross_release_home_set.md) — NEO-21 cross-release cards — cardChecklist.selectorOptionId is the immutable "home"/printed-in pointer; guest appearances go in the cardCrossListings junction table
 - [Reference typecheck convex changes](reference_typecheck_convex_changes.md) — How to typecheck apps/web/convex changes — which tsconfig matters, the known-failing baseline, and getting deps into a fresh worktree
 - [Staging tables scope per operator](staging-tables-scope-per-operator.md) — Per-selectorOption staging tables must be scoped by operator (createdByUserId), because multiple admins sync the same shared set concurrently
-- [Strict returns drift is invisible to typecheck](strict-returns-drift-is-invisible-to-typecheck.md) — whole-doc `returns` copies (teams.ts, entityReviewQueue.ts) refuse at runtime, not compile; grep `_id: v.id("<table>")` before handing back
+- [Strict returns drift is invisible to typecheck](strict-returns-drift-is-invisible-to-typecheck.md) — whole-doc `returns` copies refuse at runtime, not compile; convex-test validates returns, so test every reader; or strip a derived copy in the public helper
 - [Transient side-table checklist](transient-side-table-checklist.md) — a table keyed on a selectorOptions/cardChecklist id must join the reset steps (4 toEqual blocks), the delete sweep, holdings note, ops doc and the subtree-wipe graph
 - [Convex has two transaction budgets](convex-two-transaction-limits.md) — a .collect() is 1 system op, not N; get this right before sizing any chunk or page
 - [Per-row cost hides in entity helpers](convex-per-row-cost-hides-in-entity-helpers.md) — findTeamsByFullName is 2-18 ops, so one player create is ~28; the call site lies
 - [OCC read set is the third budget](convex-occ-read-set-is-the-third-budget.md) — collect/take cost their read set; a short take is an open interval; status-flips are phantoms; fix = query selects, mutation point-reads
 - [Sync Sets artefacts key per scope](sync-sets-artefacts-key-per-scope.md) — sync runs per manufacturer too; per-year array docs overflow 1 MiB; measure with getConvexSize
 - [Armed backfill models have no cursor](armed-backfill-models-have-no-cursor.md) — facet/brand-unknown backfills are one take(SCAN_LIMIT+1); 16 MiB read is the real bound; page + action loop
+- [Re-key action is not a backfill](rekey-action-is-not-a-backfill.md) — rekeyEntityNames resyncs only key-changed rows; steady state writes nothing; fill a new derived field with a small armed backfill

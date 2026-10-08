@@ -186,6 +186,9 @@ const playerDocValidator = v.object({
   isHallOfFame: v.optional(v.boolean()),
   aliases: v.optional(v.array(v.string())),
   birthYear: v.optional(v.number()),
+  // NEO-318: the raw doc reaches `getInternal`'s caller (wikidata enrichment)
+  // unstripped, so the internal validator must admit the derived copy.
+  alsoSportIds: v.optional(v.array(v.id("selectorOptions"))),
   externalIds: v.optional(v.object({
     wikidataId: v.optional(v.string()),
   })),
@@ -194,15 +197,26 @@ const playerDocValidator = v.object({
 });
 
 /**
- * Strip the audit-only `createdByUserId` field from a player document
- * before returning it to a public query handler. See the comment on
- * `playerDocPublicValidator` for rationale.
+ * Strip the fields no public query returns raw from a player document before
+ * it leaves a public handler:
+ *
+ * - `createdByUserId`, audit-only — see the comment on
+ *   `playerDocPublicValidator` for rationale.
+ * - `alsoSportIds` (NEO-318), the derived display copy of `playerSports`. A
+ *   caller that shows a player's sports sets `alsoSportIds` itself — from the
+ *   side table (the authority) or, on the admin list only, from this copy —
+ *   so the public validators never have to admit a stale derived value.
  */
-function toPublicPlayer<T extends { createdByUserId?: string }>(doc: T): Omit<T, "createdByUserId"> {
-  // Destructure to peel off createdByUserId — `_` is the discarded slot,
-  // explicitly marked unused for the linter.
+function toPublicPlayer<
+  T extends {
+    createdByUserId?: string;
+    alsoSportIds?: ReadonlyArray<Id<"selectorOptions">>;
+  },
+>(doc: T): Omit<T, "createdByUserId" | "alsoSportIds"> {
+  // Destructure to peel both off — `_` slots are discarded, explicitly marked
+  // unused for the linter.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { createdByUserId: _omit, ...rest } = doc;
+  const { createdByUserId: _omit, alsoSportIds: _omitSports, ...rest } = doc;
   return rest;
 }
 
@@ -626,6 +640,12 @@ export async function playerBelongsToSport(
  * it re-derive the alias index (`syncPlayerAliases` writes one row per alias
  * per sport).
  *
+ * NEO-318 — it is also the only writer of `players.alsoSportIds`, the row's
+ * derived copy of these sport ids in `by_player_id` order (kept rows as they
+ * stood, then new ones in the order asked). Patched only when it differs,
+ * cleared to absent rather than `[]`, and never bumps `lastUpdated`. The
+ * Players admin list reads it; everything else reads this table.
+ *
  * Membership is an operator decision and only ever one (schema.ts): the
  * Players admin, and the review wizard's `addSetSport` at commit. No lookup,
  * sync or enrichment calls this. `players.sportsIndexPin.test.ts` greps for
@@ -659,10 +679,14 @@ export async function syncPlayerSports(
 
   let setChanged = false;
   const held = new Set<string>();
+  // What `by_player_id` holds once this call is done, in that index's order:
+  // the kept rows as they already sit, then the new ones in `wanted` order.
+  const stored: Array<Id<"selectorOptions">> = [];
   for (const row of existing) {
     const key = row.sportId as string;
     if (wanted.includes(row.sportId) && !held.has(key)) {
       held.add(key);
+      stored.push(row.sportId);
       if (row.nameNormalized !== player.nameNormalized) {
         await ctx.db.patch(row._id, { nameNormalized: player.nameNormalized });
       }
@@ -678,7 +702,16 @@ export async function syncPlayerSports(
       sportId,
       nameNormalized: player.nameNormalized,
     });
+    stored.push(sportId);
     setChanged = true;
+  }
+  // NEO-318 — keep the row's derived copy in step. Compared against what the
+  // row holds rather than `setChanged`, so a copy that drifted (or predates
+  // the column) is repaired by any call, including a rename's. `lastUpdated`
+  // is deliberately untouched: this is bookkeeping, not an edit.
+  const copy = player.alsoSportIds ?? [];
+  if (copy.length !== stored.length || copy.some((id, i) => id !== stored[i])) {
+    await ctx.db.patch(playerId, { alsoSportIds: stored.length > 0 ? stored : undefined });
   }
   if (setChanged) await syncPlayerAliases(ctx, { playerId });
 }
@@ -1788,11 +1821,17 @@ async function playersInSport(
     .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
     .take(Math.min(take, PLAYERS_IN_SPORT_MEMBER_CAP));
   const seen = new Set<string>();
-  const out: Array<Doc<"players">> = [];
+  const memberIds: Array<Id<"players">> = [];
   for (const row of members) {
     if (seen.has(row.playerId as string)) continue;
     seen.add(row.playerId as string);
-    const player = await ctx.db.get(row.playerId);
+    memberIds.push(row.playerId);
+  }
+  // NEO-318 — the gets are independent, so issue them together rather than one
+  // await per member; the order of `memberIds` (index order) is kept.
+  const fetched = await Promise.all(memberIds.map((id) => ctx.db.get(id)));
+  const out: Array<Doc<"players">> = [];
+  for (const player of fetched) {
     if (player) out.push(player);
   }
   if (out.length >= take) return out;
@@ -1811,21 +1850,18 @@ async function playersInSport(
 }
 
 /**
- * NEO-313 — attach `alsoSportIds` to a page of players. One indexed read per
- * row, bounded by the caller's page.
+ * NEO-313 — attach `alsoSportIds` to a page of players for the admin list.
+ *
+ * NEO-318: read off the row's derived copy (`players.alsoSportIds`, kept by
+ * `syncPlayerSports`), not one `playerSports` read per row — a 500-row page
+ * was 500 index reads for a chip. Absent means none. Only the list uses this;
+ * the detail panel and every membership check still read the side table.
  */
-async function withAlsoSports(
-  ctx: QueryCtx,
-  players: ReadonlyArray<Doc<"players">>,
-) {
-  const out = [];
-  for (const player of players) {
-    out.push({
-      ...toPublicPlayer(player),
-      alsoSportIds: await additionalSportIds(ctx, player._id),
-    });
-  }
-  return out;
+function withAlsoSports(players: ReadonlyArray<Doc<"players">>) {
+  return players.map((player) => ({
+    ...toPublicPlayer(player),
+    alsoSportIds: player.alsoSportIds ?? [],
+  }));
 }
 
 /**
@@ -2485,30 +2521,42 @@ export const listForManagement = query({
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-
-    // The cap is a ceiling, not a suggestion: a caller passing 10_000 gets 500.
-    const limit = Math.max(
-      1,
-      Math.min(args.limit ?? PLAYER_MANAGEMENT_CAP, PLAYER_MANAGEMENT_CAP),
-    );
-
-    // limit + 1 is the truncation probe — one row past the cap is how we learn
-    // there is more without paying for a count of the whole table.
-    //
-    // NEO-313: a sport's list is its home players PLUS the multi-sport members
-    // an operator added (`playerSports`) — Bo Jackson is listed under baseball
-    // as well as football. A guest appearance is not a member and stays out.
-    const rows = args.sportId
-      ? await playersInSport(ctx, args.sportId, limit + 1)
-      : await ctx.db.query("players").take(limit + 1);
-
-    const truncated = rows.length > limit;
-    const players = await withAlsoSports(ctx, rows.slice(0, limit));
-    players.sort((a, b) => a.name.localeCompare(b.name));
-
-    return { players, totalCount: players.length, truncated };
+    return listForManagementImpl(ctx, args);
   },
 });
+
+/**
+ * NEO-318 — the body of `listForManagement`, behind the admin gate. Exported
+ * so a test can drive it with a `ctx` it controls (e.g. one that counts reads)
+ * without an admin identity; never call it from a public handler without
+ * `requireAdmin` first.
+ */
+export async function listForManagementImpl(
+  ctx: QueryCtx,
+  args: { sportId?: Id<"selectorOptions">; limit?: number },
+) {
+  // The cap is a ceiling, not a suggestion: a caller passing 10_000 gets 500.
+  const limit = Math.max(
+    1,
+    Math.min(args.limit ?? PLAYER_MANAGEMENT_CAP, PLAYER_MANAGEMENT_CAP),
+  );
+
+  // limit + 1 is the truncation probe — one row past the cap is how we learn
+  // there is more without paying for a count of the whole table.
+  //
+  // NEO-313: a sport's list is its home players PLUS the multi-sport members
+  // an operator added (`playerSports`) — Bo Jackson is listed under baseball
+  // as well as football. A guest appearance is not a member and stays out.
+  const rows = args.sportId
+    ? await playersInSport(ctx, args.sportId, limit + 1)
+    : await ctx.db.query("players").take(limit + 1);
+
+  const truncated = rows.length > limit;
+  const players = withAlsoSports(rows.slice(0, limit));
+  players.sort((a, b) => a.name.localeCompare(b.name));
+
+  return { players, totalCount: players.length, truncated };
+}
 
 /**
  * NEO-212: admin quick-add for a player, the counterpart of `teams.findOrCreate`.

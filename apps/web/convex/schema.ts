@@ -1313,6 +1313,23 @@ export default defineSchema({
     // are real). Written by the bulk preload from the source dataset; optional
     // because every hand-created and Wikidata-enriched row predates it.
     birthYear: v.optional(v.number()),
+    /**
+     * NEO-318: a DERIVED copy of this player's `playerSports` sport ids, in
+     * that table's `by_player_id` order, so the Players admin list renders its
+     * "Also: Football" chip from the row it already holds instead of one
+     * indexed read per row.
+     *
+     * Written ONLY by `syncPlayerSports` (convex/players.ts), the same single
+     * writer that keeps `playerSports` itself, and only when the copy differs.
+     * Absent means none — it is never stored as `[]`. Read only by
+     * `listForManagement`.
+     *
+     * `playerSports` stays the authority: `playerBelongsToSport`,
+     * `sameNamePlayers`, `getByIdParam`, `search` and the pickers all read the
+     * side table, never this. `toPublicPlayer` strips it, so no public
+     * validator carries it raw. No index — a copy for display is not a lookup.
+     */
+    alsoSportIds: v.optional(v.array(v.id("selectorOptions"))),
     externalIds: v.optional(v.object({
       wikidataId: v.optional(v.string()), // e.g. "Q123456"
     })),
@@ -1819,6 +1836,11 @@ export default defineSchema({
    * against `by_player_id`, never stores the home sport here, and never stores
    * a (player, sport) pair twice.
    *
+   * NEO-318: the same writer also keeps a third copy, `players.alsoSportIds`
+   * (the sport ids in `by_player_id` order), patched only when it differs, so
+   * the Players admin list reads its chips off the player row. This table stays
+   * the authority; that column is display-only.
+   *
    * ## Aliases follow the player into every sport
    *
    * `playerAliases` is keyed `(aliasNormalized, sportId)`, so an alias only
@@ -1848,7 +1870,8 @@ export default defineSchema({
     .index("by_name_normalized_and_sport_id", ["nameNormalized", "sportId"])
     // Every row for one player: the diff `syncPlayerSports` performs, the
     // rename rewrite, the alias writer's sport set, and the Players admin's
-    // "also plays" chips.
+    // detail panel. (NEO-318: the list's "also plays" chips no longer read
+    // it; they read the `players.alsoSportIds` copy.)
     .index("by_player_id", ["playerId"])
     // Every extra-sport member of one sport, for the Players admin's
     // per-sport list, which must show Bo under baseball too.
