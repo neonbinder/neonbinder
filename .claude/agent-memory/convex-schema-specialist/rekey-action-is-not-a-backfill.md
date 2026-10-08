@@ -8,8 +8,8 @@ metadata:
 `convex/rekeyEntityNames.ts` calls `syncPlayerSports` / `syncPlayerAliases` /
 `syncTeamAliases`, which makes it look like a ready-made way to run a
 writer over every entity. It is not: `applyPage` reaches a writer only for a
-row whose decision is `changed` (stored key != recomputed key), and after the
-NEO-322 run every deployment reports `toRekey: 0`. It also has no table
+row whose decision is `changed` (stored key != recomputed key), and on a
+steady-state deployment `toRekey` is 0. It also has no table
 filter — `run` walks all nine key-bearing tables, plans collisions across
 them, and would rewrite any stray stale key it finds, which is outside the
 scope of an unrelated field fill.
