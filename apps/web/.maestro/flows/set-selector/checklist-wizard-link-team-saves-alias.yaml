@@ -8,8 +8,10 @@ tags:
 # raw marketplace string into the linked team's aliases, and it does so by
 # default. Since NEO-307 a team is linked from the step's one "Search all
 # teams" combobox (the near-match buttons and "Link to Existing…" are gone for
-# teams). The wizard shows the operator a ticked "Remember “<string>” as a
-# name for this team" box beside it; the decision reads "· remembered as …"; the COMMIT writes the
+# teams). Since NEO-326 that combobox sits in a "Link to existing team"
+# section on every team step, it starts EMPTY, and the ticked "Remember
+# “<string>” as a name for this team" box sits inside the same section,
+# directly under it; the decision reads "· remembered as …"; the COMMIT writes the
 # alias; and Team Management then lists it under "Current aliases", where the
 # operator can take it back out again.
 #
@@ -18,10 +20,12 @@ tags:
 #         editor proves `teams.findOrCreate` returned;
 #     (b) the wizard opens with nothing decided ("0 of N reviewed") and the row
 #         under test is a TEAM row: its skip control says "not a team";
-#     (c) the remember-box is on screen, quoting THIS row's raw name, beside
-#         the "Search all teams" combobox, which opens seeded with that name;
-#     (d) the combobox finds the fixture BY ITS NAME (typing replaces the
-#         seeded text) and picking it records a
+#     (c) the "Search all teams" combobox is on this team step under its
+#         "Link to existing team" heading and opens EMPTY (it reads back its
+#         placeholder, NEO-326 — the pre-fill with the row's name is gone),
+#         and the remember-box is directly under it, quoting THIS row's raw
+#         name;
+#     (d) the combobox finds the fixture BY ITS NAME and picking it records a
 #         LINK WITH THE ALIAS — the read-back line is
 #         "Linked to <team> · remembered as “<row>”", a string `describeDecision`
 #         composes ONLY when `decision.saveAsAlias` is true on a team link.
@@ -150,7 +154,10 @@ tags:
 # R8 — centred scrolls on the Team Management panel depend on NEO-260's 208px
 #   spacer (`src/layouts/binder-layout.tsx`); uncentred where the target sits
 #   in a `fixed` dialog or the set-builder's own no-headroom checklist block,
-#   with the measurement cited at the step.
+#   with the measurement cited at the step. Inside the wizard, whose body is
+#   an inner scroller no `scrollUntilVisible` can move, PART 4 positions the
+#   body with two touch-drag `swipe`s (pin down to the Team name box, then
+#   back to the top), reasoned at the step.
 #
 # R10 — one guarded loop, keyed on the league step's own skip control, that
 #   costs nothing when the step is absent (the `while` is false at once) and
@@ -460,24 +467,42 @@ tags:
 # PART 4 — LINK, WITH THE REMEMBER-BOX ON (R2c, R2d)
 # ============================================================
 # NEO-307 — a team step no longer has "Link to Existing…" or near-match Link
-# buttons. Every team step carries ONE combobox, "Search all teams", pre-filled
-# with the row's own name and opening on the near matches; a pick links through
-# the same `handleLink` path, "Remember …" answer included.
+# buttons. Every team step carries ONE combobox, "Search all teams"; a pick
+# links through the same `handleLink` path, "Remember …" answer included.
+# NEO-326 — that combobox now lives in a bordered "Link to existing team"
+# section that is on EVERY team step (it used to appear only when there were
+# near matches, headed "Possible matches"), it starts EMPTY (it used to be
+# pre-filled with the row's name), and the "Remember …" box moved inside the
+# section, directly under it.
 #
-# R2 precondition: the combobox is on THIS team step. It sits in the step body
-# above the New Team form, inside the body's visible slice (README "Asserting
-# inside a dialog"); its value is the row's raw name, which is also the proof
-# that it was seeded from this row and not left over from another.
+# R2 precondition, and NEO-326's empty start: the combobox is on THIS team
+# step and holds nothing. maestro-web reads an empty input as its PLACEHOLDER
+# (`value || placeholder || ariaLabel`), so `text: "Type a team name"` is the
+# box being empty; a build that still pre-filled the row's name reads
+# `${output.ROW_NAME}` here and fails. No club name on this set and no
+# `Ali<token>` can full-match "Type a team name", so no value in the box can
+# be mistaken for an empty one. That it is THIS row's step is proven by the heading the
+# flow just copied and by the box quoting this row below.
 - extendedWaitUntil:
     visible:
       id: "Search all teams"
-      text: "${output.ROW_NAME}"
+      text: "Type a team name"
     timeout: 7000
+# The section's heading, above the combobox it names. Exactly "Link to
+# existing team" (full-match), so the player/league panel's "Possible matches"
+# cannot answer for it.
+- assertVisible:
+    text: "Link to existing team"
+    above:
+      id: "Search all teams"
 
-# R2(c) — the box is offered beside the combobox, quoting THIS row's raw name
-# (curly quotes are the product's). Its checked state is proven by (d) below.
+# R2(c) — the box is offered directly UNDER the combobox (NEO-326), quoting
+# THIS row's raw name (curly quotes are the product's). Its checked state is
+# proven by (d) below.
 - assertVisible:
     text: "Remember “${output.ROW_NAME}” as a name for this team"
+    below:
+      id: "Search all teams"
 
 # ── R2(i) NEO-307: a New Team name that is another team's ALIAS is refused ──
 # Edit this step's Team name to `Pca<token>`, the alias PART 1 gave Pittsburgh
@@ -488,20 +513,45 @@ tags:
 #
 # Why no restore (CI run 36139385192, runner 6, step 125): the warning block
 # is inserted ABOVE the Location/Name fields, so it pushes the Team name box
-# ~114px down, from y=432-466 to y=546-580. That is below the wizard body's
-# visible bottom (~475), under the pinned footer, so the restore tap landed
-# on the footer and the name was never put back. The body is an inner
-# scroller maestro cannot see the clip of (README "Asserting inside a dialog").
+# ~114px down. Before NEO-326 that was y=432-466 to y=546-580, below the
+# wizard body's visible bottom (~475), under the pinned footer, so the restore
+# tap landed on the footer and the name was never put back. The body is an
+# inner scroller maestro cannot see the clip of (README "Asserting inside a
+# dialog").
+#
+# PIN THE BODY BEFORE THE TAP (NEO-326). The always-on "Link to existing team"
+# box adds its border, padding and heading above the form, ~60px by the
+# component's classes (p-3 + heading + gap), so on a body scrolled to its top
+# the Team name box moves from y=432-466 to ~y=492-526: past the body's
+# visible bottom, where maestro still reports it (it sees only the VIEWPORT,
+# never the body's clip) and a tap lands on the footer instead. Nothing has
+# scrolled this body yet, so it is at its top. One UP touch drag of ~313px
+# (50% of the viewport; a `swipe` with start/end is a touch drag and scrolls
+# the scroller under the finger, which `scrollUntilVisible` cannot) moves
+# the box to ~y=179-213, or less far if the body has less overflow than that,
+# in which case the drag pins it to its end and the box rests lower — either
+# way inside the slice (y=96-475). Same gesture, start point and reasoning as
+# `checklist-wizard-career-team-entry`'s pin (x=18% is the body's left
+# padding, never a control; y=70% is inside the body). It cannot be gated:
+# every check passes on a clipped box. The warning sentence below is the hard
+# assert that the tap focused the Team name box and the typing landed.
+# MEASURE on the first local run against a preview with NEO-326: the Team
+# name box's bounds after this drag (the step's hierarchy dump).
+- swipe:
+    start: "18%, 70%"
+    end: "18%, 20%"
+    duration: 600
 #
 # The field is found by its VALUE under its caption. In the wizard the input
 # carries a stable DOM id, which becomes its resource-id and shadows the
 # aria-label, and flows never target a DOM id. `below:` the "Team name"
-# caption picks the nearest match, which is the input and not the "Shows as:"
-# preview further down. The "Search all teams" box, which also holds the row's
-# name, sits above the form. MEASURED in that run: the prefill's Location is
-# empty (the row was "Montreal Royals", and the whole name was in Team name),
-# the box sat at y=432-466 inside the body's visible slice, and a centre tap
-# put the caret at the end (the erase cleared it).
+# caption picks the nearest match, which is the input. Since NEO-326 it is the
+# ONLY node under the caption that reads the row's name in full: the "Shows
+# as:" preview that used to repeat it under the form is gone, and the
+# "Search all teams" box starts empty. MEASURED in CI run 36139385192: the
+# prefill's Location is empty (the row was "Montreal Royals", and the whole
+# name was in Team name), and a centre tap put the caret at the end (the
+# erase cleared it).
 - tapOn:
     text: "${output.ROW_NAME}"
     below:
@@ -517,23 +567,39 @@ tags:
 # Loc<token> Ali<token>, below.
 - assertVisible: "Link to Pittsburgh Crawfords . 1926.1940"
 # The refused create. The header's counter counts every decision, so it is
-# read before the tap and must still read the same after it. A recorded
-# create would also move the walk off this row, and the next steps read the
-# "Search all teams" box seeded with THIS row's name, which a moved walk
-# would fail.
+# read before the tap and must still read the same after it.
 - copyTextFrom:
     text: "[0-9]+ of [0-9]+ reviewed.*"
 - evalScript: '${output.COUNT_BEFORE = maestro.copiedText}'
 - tapOn:
     id: "Add as New Team"
 
-# The field selects its pre-filled text on focus, so typing REPLACES the row's
-# name. That is read back before the option is looked for: if the typing had
-# landed inside the pre-fill instead (a caret dropped mid-string), the search
-# would be for a string no team carries and the failure would read as "no such
-# team" rather than what it is. `Ali<token>` is a strict substring of the
-# option's "Loc<token> Ali<token>", so the input's own text cannot answer to
-# the tap.
+# PIN THE BODY BACK TO ITS TOP. The combobox is the first control in the body,
+# and the drag above scrolled it out past the body's top edge (still inside
+# the viewport, so maestro would "see" it and tap the wizard header instead).
+# ONE long DOWN drag (~470px, more than the UP drag moved it) pins the body
+# to its top. ONE, never two: a second drag that starts on a body already at
+# its top chains to the WINDOW (career-team-entry's measurement). The body
+# also keeps this scroll position from row to row, and PART 5 reads each
+# later step's heading at the top of the body, so this pin is what leaves
+# that walk the geometry it was written against.
+- swipe:
+    start: "18%, 20%"
+    end: "18%, 95%"
+    duration: 800
+# Still THIS row. A recorded create would have moved the walk to the next row;
+# the heading is the step's own top line, back in view after the pin. (Before
+# NEO-326 the box seeded with this row's name carried this proof; it now
+# starts empty on every row, so the heading carries it.)
+- assertVisible: "New Team: ${output.ROW_NAME}"
+
+# The field is empty, so the typed text is the whole query. It is read back
+# before the option is looked for: if the typing had gone anywhere else (a
+# tap that missed the field), the failure reads as itself and not as "no such
+# team". `Ali<token>` is a strict substring of the option's
+# "Loc<token> Ali<token>", so the input's own text cannot answer to the tap.
+# Focusing the empty box opens it on the near matches when there are any
+# (NEO-326); typing replaces that list with `teams.search`'s answer.
 - tapOn:
     id: "Search all teams"
 - inputText: "Ali${output.TOKEN}"

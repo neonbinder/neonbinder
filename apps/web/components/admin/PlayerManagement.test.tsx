@@ -1058,6 +1058,126 @@ describe("PlayerManagement — the detail panel", () => {
     });
   });
 
+  /**
+   * NEO-326 — Enter in a stint year field is "Add stint" for a valid entry and
+   * nothing at all for an invalid one, with the default prevented either way.
+   * `fireEvent.keyDown` returns `false` exactly when a handler called
+   * `preventDefault`, which is what the `toBe(false)` reads.
+   */
+  describe("NEO-326: Enter in a stint year field", () => {
+    const careerRows = () =>
+      Array.from(
+        screen
+          .getByRole("list", { name: "Career history" })
+          .querySelectorAll("li"),
+      ).map((li) => li.querySelector("a")?.textContent);
+    const fromField = () => screen.getByLabelText("Stint from year");
+    const toField = () => screen.getByLabelText("Stint to year (optional)");
+    const pressEnter = (el: HTMLElement) =>
+      fireEvent.keyDown(el, { key: "Enter", code: "Enter" });
+
+    it("adds the stint from the start-year field", () => {
+      render(<PlayerManagement />);
+      selectGriffey();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Pick Cincinnati Reds" }),
+      );
+      fireEvent.change(fromField(), { target: { value: "2000" } });
+
+      expect(pressEnter(fromField())).toBe(false);
+
+      expect(careerRows()).toEqual([
+        "Seattle Mariners · 1989–1999",
+        "Cincinnati Reds · 2000–present",
+        "Seattle Mariners · 2009–present",
+      ]);
+      // Reset exactly as the button resets, ready for the next stint.
+      expect(fromField()).toHaveProperty("value", "");
+      expect(toField()).toHaveProperty("value", "");
+      expect(screen.queryByRole("alert")).toBeNull();
+      // Staged, not saved: Enter is "Add stint", never "Save".
+      expect(mockSavePlayerFields).not.toHaveBeenCalled();
+    });
+
+    it("adds the stint from the end-year field, end year included", () => {
+      render(<PlayerManagement />);
+      selectGriffey();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Pick Cincinnati Reds" }),
+      );
+      fireEvent.change(fromField(), { target: { value: "2000" } });
+      fireEvent.change(toField(), { target: { value: "2008" } });
+
+      expect(pressEnter(toField())).toBe(false);
+
+      expect(careerRows()).toEqual([
+        "Seattle Mariners · 1989–1999",
+        "Cincinnati Reds · 2000–2008",
+        "Seattle Mariners · 2009–present",
+      ]);
+      expect(fromField()).toHaveProperty("value", "");
+      expect(toField()).toHaveProperty("value", "");
+      expect(mockSavePlayerFields).not.toHaveBeenCalled();
+    });
+
+    it("does nothing on an invalid entry — no stint, no refusal — but still prevents the default", () => {
+      render(<PlayerManagement />);
+      selectGriffey();
+      const before = careerRows();
+
+      // No team picked yet: a start year alone is not a stint.
+      fireEvent.change(fromField(), { target: { value: "2000" } });
+      expect(pressEnter(fromField())).toBe(false);
+      expect(pressEnter(toField())).toBe(false);
+
+      // A team, but an end before the start.
+      fireEvent.click(
+        screen.getByRole("button", { name: "Pick Cincinnati Reds" }),
+      );
+      fireEvent.change(toField(), { target: { value: "1999" } });
+      expect(pressEnter(fromField())).toBe(false);
+      expect(pressEnter(toField())).toBe(false);
+
+      // A literal repeat of an existing (team, start year).
+      fireEvent.click(
+        screen.getByRole("button", { name: "Pick Seattle Mariners" }),
+      );
+      fireEvent.change(fromField(), { target: { value: "1989" } });
+      fireEvent.change(toField(), { target: { value: "" } });
+      expect(pressEnter(fromField())).toBe(false);
+
+      // A team and no start year.
+      fireEvent.change(fromField(), { target: { value: "" } });
+      expect(pressEnter(toField())).toBe(false);
+
+      expect(careerRows()).toEqual(before);
+      // Silent: the refusal line is the BUTTON's answer, not Enter's.
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(mockSavePlayerFields).not.toHaveBeenCalled();
+      // And what was typed is left in place to be corrected.
+      fireEvent.change(fromField(), { target: { value: "1989" } });
+      pressEnter(fromField());
+      expect(fromField()).toHaveProperty("value", "1989");
+    });
+
+    it("leaves every other key alone", () => {
+      render(<PlayerManagement />);
+      selectGriffey();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Pick Cincinnati Reds" }),
+      );
+      fireEvent.change(fromField(), { target: { value: "2000" } });
+
+      for (const key of ["Tab", "Escape", " ", "1"]) {
+        expect(fireEvent.keyDown(fromField(), { key })).toBe(true);
+      }
+      expect(careerRows()).toHaveLength(2);
+    });
+  });
+
   it("sends only the fields that changed", async () => {
     render(<PlayerManagement />);
     selectGriffey();

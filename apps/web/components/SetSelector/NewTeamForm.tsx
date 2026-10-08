@@ -76,8 +76,9 @@ export type StageLeagueOutcome =
  * City, state, region or school — "Wisconsin / Badgers", "San Diego State /
  * Aztecs", "Tampa Bay / Buccaneers". Blank only when the name carries no place
  * at all ("Athletics", "Liverpool", "Orix Buffaloes") or when splitting would
- * reorder the words ("FC Dallas"). The help line says exactly that, because the
- * split is only obvious once you have been told what counts as a location.
+ * reorder the words ("FC Dallas"). NEO-326 took the help line that spelled
+ * this out off the form (Jason, 2026-10-04): the "(optional)" label and the
+ * placeholders carry it now.
  *
  * Nothing here guesses. Location is pre-filled ONLY from a location the
  * enrichment lookup actually returned, and only when `splitTeamName` finds it
@@ -160,8 +161,8 @@ export function newTeamPrefill(input: {
   };
 }
 
-/** `teamFullName` over a draft — the composed row, for the preview and for
- *  every comparison. Never compose these two by hand. */
+/** `teamFullName` over a draft — the composed row, for every comparison.
+ *  Never compose these two by hand. */
 export function draftFullName(draft: { location: string; name: string }): string {
   return teamFullName({ name: draft.name, location: draft.location });
 }
@@ -326,31 +327,16 @@ export default function NewTeamForm({
    */
   const unanswered = draft.leagueId === undefined && draft.leagueName === undefined;
 
-  const preview = draftFullName(draft);
-
   /**
-   * a11y (SC 3.3.2 Labels or Instructions) — the help line and the "Shows as"
-   * preview are the two things on this form that a sighted operator reads and
-   * a screen-reader operator was never given: both were plain text no control
-   * pointed at, so tabbing into Location announced "New team location
-   * (optional), edit text" and nothing about what a location IS.
+   * NEO-284 — the alias caption, pointed at by the Aliases box (SC 3.3.2).
    *
-   * `useId` is safe HERE and nowhere else in this file: maestro-web derives
-   * `resource-id = node.id || node.ariaLabel`, so a generated id on an INPUT
-   * replaces the label a flow targets — but a `<p>` is not a tap target, and
-   * its text stays matchable either way. Two `NewTeamForm`s can be mounted at
-   * once (a picker's dialog over the wizard's own step), which is exactly the
-   * case `useId` exists for.
+   * `useId` is safe HERE: maestro-web derives `resource-id = node.id ||
+   * node.ariaLabel`, so a generated id on an INPUT replaces the label a flow
+   * targets — but a `<p>` is not a tap target, and its text stays matchable
+   * either way. Two `NewTeamForm`s can be mounted at once (a picker's dialog
+   * over the wizard's own step), which is exactly the case `useId` exists for.
    */
-  const helpId = useId();
-  const previewId = useId();
-  // NEO-284 — the alias caption, on the same footing as `helpId`.
   const aliasHelpId = useId();
-
-  /** `aria-describedby` takes a space-separated id list; drop the absent ones
-   *  rather than emitting an empty or dangling reference. */
-  const describedByFor = (...ids: Array<string | undefined>) =>
-    ids.filter(Boolean).join(" ") || undefined;
 
   const pick = (patch: Partial<NewTeamDraft>) => {
     if (disabled) return;
@@ -748,9 +734,8 @@ export default function NewTeamForm({
             // SC 2.5.3, label in name: the visible label is "Location
             // (optional)", so the accessible name has to contain all of it.
             aria-label="New team location (optional)"
-            // SC 3.3.2: the help line below explains what counts as a
-            // Location; without this it was visible-only.
-            aria-describedby={describedByFor(helpId, previewId, describedBy)}
+            // The host's reason, when it has one; never an empty attribute.
+            aria-describedby={describedBy || undefined}
             disabled={disabled}
             onChange={(e) => onChange({ location: e.target.value })}
             onKeyDown={onFieldKeyDown}
@@ -766,7 +751,7 @@ export default function NewTeamForm({
             value={draft.name}
             placeholder="Padres"
             aria-label="New team name"
-            aria-describedby={describedByFor(previewId, describedBy)}
+            aria-describedby={describedBy || undefined}
             disabled={disabled}
             onChange={(e) => onChange({ name: e.target.value })}
             onKeyDown={onFieldKeyDown}
@@ -774,15 +759,6 @@ export default function NewTeamForm({
           />
         </FieldLabel>
       </div>
-
-      {/* The rule, in one line, saying the part operators get wrong: a location
-          is not only a city. When to leave it blank is carried by the
-          "(optional)" in the label above. */}
-      <p id={helpId} className="text-xs text-gray-400">
-        Location is where they are from — a city, state, region or school:
-        Wisconsin / Badgers, San Diego State / Aztecs. Leave it blank only when
-        the name has no place in it.
-      </p>
 
       {/* NEO-254 — the era.
       
@@ -1038,15 +1014,6 @@ export default function NewTeamForm({
         </div>
       )}
 
-      {/* The whole point of three fields: the operator reads the row they are
-          about to create, composed the way it will read everywhere else.
-          Pointed at by both fields' `aria-describedby` (SC 3.3.2) rather than
-          made a live region — a preview that re-announced on every keystroke
-          would talk over the typing it is describing. */}
-      <p id={previewId} className="text-sm text-gray-400">
-        Shows as:{" "}
-        <span className="font-medium text-gray-100">{preview || "—"}</span>
-      </p>
     </div>
   );
 }

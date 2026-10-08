@@ -7,9 +7,11 @@
  * Brooklyn Dodgers NB already holds (MLB, 1911–1957). The panel now carries a
  * "Search all teams" type-ahead; this file proves, at the wizard level, that:
  *
- *  - on a TEAM step it IS the Possible matches box — no list of Link buttons —
- *    pre-filled with the row's name; it is there on every team step, with or
- *    without near matches; players keep their panel;
+ *  - on a TEAM step it IS the link section — headed "Link to existing team"
+ *    since NEO-326, no list of Link buttons — and it opens EMPTY, offering the
+ *    near matches on focus; it is there on every team step, with or without
+ *    near matches, and the "Remember …" checkbox sits inside it, directly
+ *    under the search; players keep their "Possible matches" panel;
  *  - typing and picking a team that is NOT among the near matches records
  *    exactly the decision a near-match click records — `action: "link"`,
  *    `linkedTeamId`, and the "Remember … as a name" answer (`saveAsAlias`),
@@ -205,48 +207,118 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("EntityReviewWizard — NEO-307 team search in Possible matches", () => {
-  it("IS the Possible matches box on a team step: the type-ahead, holding the row's name, and no Link buttons", () => {
+const linkSection = () => screen.getByRole("group", { name: "Link to existing team" });
+const rememberBox = (name: string) =>
+  screen.getByLabelText(`Remember “${name}” as a name for this team`) as HTMLInputElement;
+
+describe("EntityReviewWizard — NEO-307 team search in the link section", () => {
+  it("IS the 'Link to existing team' section on a team step: the type-ahead, EMPTY, and no Link buttons", () => {
     currentRows = [makeRow()];
     currentNearMatches = JASONS_NEAR_MATCHES;
     renderWizard();
 
-    const panelHeading = screen.getByText("Possible matches");
+    // NEO-326 — the team step's heading says what the section is for.
+    const panelHeading = screen.getByText("Link to existing team");
     expect(panelHeading.parentElement?.contains(teamSearch())).toBe(true);
-    expect(teamSearch().value).toBe("Brooklyn Dodgers");
+    expect(screen.queryByText("Possible matches")).toBeNull();
+    // NEO-326 — no pre-fill: the row's name in the box read as "this exact
+    // team already exists".
+    expect(teamSearch().value).toBe("");
     // No button list for teams any more — the near matches are options.
     expect(screen.queryByLabelText("Link to Brooklyn Gladiators")).toBeNull();
     expect(screen.queryByRole("list", { name: "Possible team matches" })).toBeNull();
+    // Focused and still empty, it offers every near match without a keystroke.
     fireEvent.focus(teamSearch());
-    expect(optionLabelled("Brooklyn Gladiators")).toBeTruthy();
+    for (const m of JASONS_NEAR_MATCHES) {
+      expect(optionLabelled(m.name)).toBeTruthy();
+    }
   });
 
-  it("is on a team step with NO near matches too: caption only, and nothing listed until the operator types", () => {
+  it("puts the 'Remember …' checkbox inside the section, directly under the search, ticked", () => {
+    currentRows = [makeRow()];
+    currentNearMatches = JASONS_NEAR_MATCHES;
+    renderWizard();
+
+    const section = linkSection();
+    const box = rememberBox("Brooklyn Dodgers");
+    expect(section.contains(box)).toBe(true);
+    expect(box.checked).toBe(true);
+    // Directly under the search: the next form control after the combobox in
+    // the section, with nothing focusable between them.
+    const controls = Array.from(section.querySelectorAll("input"));
+    expect(controls.indexOf(box)).toBe(controls.indexOf(teamSearch()) + 1);
+    // The help line rides along, and the box points at it.
+    const help = screen.getByText(
+      "Kicks in when you link. Next time this name shows up, it goes straight to that team.",
+    );
+    expect(section.contains(help)).toBe(true);
+    expect(box.getAttribute("aria-describedby")).toBe(help.id);
+    // Never collapsed or pulled from the tab order.
+    expect(box.closest("[hidden]")).toBeNull();
+    expect(box.tabIndex).toBe(0);
+  });
+
+  it("each team step starts the search empty again, and the checkbox answer stays with its own row", () => {
+    vi.useFakeTimers();
+    const first = makeRow({ name: "Brooklyn Robins" });
+    const second = makeRow({ name: "Brooklyn Superbas" });
+    currentRows = [first, second];
+    currentNearMatches = [];
+    const { rerender } = renderWizard();
+
+    expect(screen.getByRole("heading", { name: "New Team: Brooklyn Robins" })).toBeTruthy();
+    typeTeamSearch("Dodg");
+    expect(teamSearch().value).toBe("Dodg");
+    fireEvent.click(rememberBox("Brooklyn Robins"));
+    expect(rememberBox("Brooklyn Robins").checked).toBe(false);
+
+    // The first row is decided (skipped) server-side; the wizard walks on.
+    currentRows = [
+      { ...first, decision: { action: "skip" } },
+      second,
+    ];
+    rerender(
+      <EntityReviewWizard
+        isOpen
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId="batch-1"
+        summary={{ cardCount: 3, deleteCount: 0, reviewDecisionCount: 0 }}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("heading", { name: "New Team: Brooklyn Superbas" })).toBeTruthy();
+    expect(teamSearch().value).toBe("");
+    expect(rememberBox("Brooklyn Superbas").checked).toBe(true);
+  });
+
+  it("is on a team step with NO near matches too: heading and caption, and nothing listed until the operator types", () => {
     vi.useFakeTimers();
     currentRows = [makeRow({ name: "Brooklyn Robins" })];
     currentNearMatches = [];
     renderWizard();
 
-    expect(screen.queryByText("Possible matches")).toBeNull();
-    expect(teamSearch().value).toBe("Brooklyn Robins");
+    expect(screen.getByText("Link to existing team")).toBeTruthy();
+    expect(teamSearch().value).toBe("");
     fireEvent.focus(teamSearch());
     expect(screen.queryByRole("listbox")).toBeNull();
     expect(teamSearch().getAttribute("aria-expanded")).toBe("false");
-    // The "Remember …" box is shown on every team step (Jason, 2026-09-25).
-    const remember = screen.getByLabelText(
-      "Remember “Brooklyn Robins” as a name for this team",
-    );
+    // The "Remember …" box is shown on every team step (Jason, 2026-09-25),
+    // inside the section (NEO-326).
+    const remember = rememberBox("Brooklyn Robins");
     expect(remember.closest("[hidden]")).toBeNull();
+    expect(linkSection().contains(remember)).toBe(true);
 
     typeTeamSearch("Dodgers");
     expect(optionLabelled("Brooklyn Dodgers")).toBeTruthy();
   });
 
-  it("is not offered on a player step", () => {
+  it("is not offered on a player step, which keeps its 'Possible matches' heading", () => {
     currentRows = [makeRow({ kind: "player", name: "Mike Trout" })];
     currentNearMatches = [{ _id: "p1", name: "Michael Trout", confidence: "close" }];
     renderWizard();
     expect(screen.getByText("Possible matches")).toBeTruthy();
+    expect(screen.queryByText("Link to existing team")).toBeNull();
     expect(screen.queryByRole("combobox", { name: "Search all teams" })).toBeNull();
   });
 

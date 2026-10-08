@@ -304,21 +304,21 @@ function TeamDetail({
    */
   const [panelStatus, setPanelStatus] = useState<Status>(null);
   /**
-   * NEO-212 (a11y) — the preview and the refusal are ASSOCIATED with BOTH
-   * fields, not merely printed under them.
+   * NEO-212 (a11y) — the refusal is ASSOCIATED with BOTH fields, not merely
+   * printed under them.
    *
-   * "Shows as: San Diego Padres" is a fact about Location and Name together, so
-   * both inputs point at it and a screen-reader user hears the composed name on
-   * entering either one. The ids live on the paragraphs; the inputs carry only
+   * A name-taken refusal is a fact about Location and Name together, so both
+   * inputs point at it and a screen-reader user hears it on entering either
+   * one. The id lives on the message; the inputs carry only
    * `aria-describedby`, because `Input` never emits an `id` of its own (an id
    * would clobber the `aria-label` Maestro derives `resource-id` from).
+   *
+   * NEO-326 (Jason, 2026-10-04) removed the "Shows as: <full name>" preview
+   * that used to be the other description here: it only repeated
+   * `${location} ${name}`, which the two boxes already read left to right. With
+   * no refusal showing, neither field has a description at all.
    */
-  const previewId = useId();
   const errorId = useId();
-  // NEO-236: the Location/Name rule, described by BOTH fields rather than sat
-  // silently beside them — the split is only obvious once you have been told
-  // what counts as a location.
-  const helpId = useId();
   // NEO-284: the alias caption. On the paragraph, pointed at by the box.
   const aliasCaptionId = useId();
 
@@ -354,14 +354,12 @@ function TeamDetail({
    *
    * `fullName` is what this team is called everywhere outside the two admin
    * master rows; `draftFullName` is what it WOULD be called if the operator
-   * pressed Save now, which is what the preview line under the fields shows.
+   * pressed Save now, which is what the save confirmation and a name-taken
+   * refusal both name.
    */
   const fullName = teamFullName(team);
   const draftFullName = teamFullName({ name, location });
-  const describedBy =
-    [helpId, name.trim() ? previewId : null, saveError ? errorId : null]
-      .filter(Boolean)
-      .join(" ") || undefined;
+  const describedBy = saveError ? errorId : undefined;
 
   const normalizedPrimary = primary ? normalizeHexColor(primary) : null;
   const normalizedSecondary = secondary ? normalizeHexColor(secondary) : null;
@@ -761,10 +759,9 @@ function TeamDetail({
           only place either half is ever typed: "We simply shouldn't allow for
           full string creation. Location & Team Name should be the input."
           Location leads because that is the order the name is said in, so the
-          two boxes read left-to-right as the thing they compose — and the
-          preview line under them shows that composition before it is saved,
-          which is the only way an operator can tell "Padres" with a blank
-          Location apart from a correctly split row.
+          two boxes read left-to-right as the thing they compose. (A "Shows
+          as:" line under them used to print that composition again; NEO-326
+          removed it as a repeat of the two boxes.)
 
           "Location", not "City": the leading part of a franchise name is a
           place and not reliably a city — Tampa Bay, New England, Golden State
@@ -772,8 +769,10 @@ function TeamDetail({
           blank for those teams. Location is wherever the team is FROM, which
           includes a school: "Wisconsin" / "Badgers", "San Diego State" /
           "Aztecs". It is empty only when the name carries no place at all
-          ("Athletics", "Liverpool", "Orix Buffaloes"), which is why the rule
-          is printed under the two boxes rather than left to be guessed.
+          ("Athletics", "Liverpool", "Orix Buffaloes"). NEO-326 took the
+          printed rule and the "Shows as" preview off the screen (Jason,
+          2026-10-04); the two labels and their placeholders are what the
+          operator reads now.
         */}
         <Input
           label="Location"
@@ -805,27 +804,6 @@ function TeamDetail({
             setNameTakenId(null);
           }}
         />
-
-        {/* Examples deliberately avoid a plain city pair: a city is the case
-            operators already get right. A state and a bay teach the two they
-            do not, and the last clause names the only reason to leave Location
-            empty. Kept clear of the literal "San Diego" — that string is how
-            the E2E flow finds this screen's empty Location box. */}
-        <p id={helpId} className="sm:col-span-2 -mt-1 text-xs text-slate-400">
-          Location is where they&rsquo;re from &mdash; city, state, region or
-          school. Wisconsin / Badgers, Tampa Bay / Buccaneers. Leave it blank
-          only if the name has no place in it, like Athletics.
-        </p>
-
-        {name.trim() && (
-          <p
-            id={previewId}
-            className="sm:col-span-2 -mt-1 text-xs text-slate-400"
-          >
-            Shows as:{" "}
-            <span className="font-medium text-slate-200">{draftFullName}</span>
-          </p>
-        )}
 
         {/* NEO-253 — a refused rename, and the way out of it, in ONE place.
             This sits with the two fields it is about rather than in the

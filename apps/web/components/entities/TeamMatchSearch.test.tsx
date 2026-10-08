@@ -1,13 +1,16 @@
 /**
- * NEO-307 — the team search inside the review wizard's Possible matches panel.
+ * NEO-307 — the team search inside the review wizard's "Link to existing team"
+ * section (NEO-326 renamed it from "Possible matches").
  *
  * Jason's case, as fixtures: a New Team step for "Brooklyn Dodgers" whose near
  * matches are four OTHER Brooklyn clubs, while NB already holds the Brooklyn
  * Dodgers (MLB, 1911–1957). What is locked in:
  *
- *  - The field opens holding the proposed name, and while it does its options
- *    are the near matches — with league and years under each — and no search
- *    is sent.
+ *  - NEO-326: the field opens EMPTY (a pre-filled row name read as "a team by
+ *    this exact name exists"), and while it is empty its options are the near
+ *    matches — with league and years under each — and no search is sent.
+ *  - NEO-326: the section is always headed "Link to existing team", and the
+ *    caller's children render inside it, directly under the field.
  *  - Typing hands the finding to `teams.search` (server-backed, sport-scoped,
  *    debounced), never to a client-side filter of a bulk list.
  *  - An option is "Location Name" with "League · years" on its own line, so
@@ -113,17 +116,16 @@ vi.mock("convex/react", () => ({
   },
 }));
 
-import { TeamMatchSearch, TEAM_MATCH_SEARCH_LABEL } from "./TeamMatchSearch";
+import {
+  TeamMatchSearch,
+  TEAM_MATCH_SEARCH_LABEL,
+  TEAM_MATCH_SECTION_HEADING,
+} from "./TeamMatchSearch";
 
 function renderSearch(defaultMatches: NearMatch[] = NEAR) {
   const onPick = vi.fn();
   render(
-    <TeamMatchSearch
-      sportId={SPORT_ID}
-      initialQuery="Brooklyn Dodgers"
-      defaultMatches={defaultMatches}
-      onPick={onPick}
-    />,
+    <TeamMatchSearch sportId={SPORT_ID} defaultMatches={defaultMatches} onPick={onPick} />,
   );
   return { onPick };
 }
@@ -162,16 +164,20 @@ afterEach(() => {
 });
 
 describe("TeamMatchSearch", () => {
-  it("is named 'Search all teams' — the E2E contract — and opens holding the proposed name", () => {
+  it("is named 'Search all teams' — the E2E contract — and opens EMPTY", () => {
     renderSearch();
-    expect(field().value).toBe("Brooklyn Dodgers");
+    // NEO-326 — no pre-fill: the row's own name in the box read as "a team by
+    // exactly this name already exists".
+    expect(field().value).toBe("");
     // The visible caption is the same words as the accessible name (SC 2.5.3).
     expect(screen.getByText(TEAM_MATCH_SEARCH_LABEL)).toBeTruthy();
   });
 
-  it("offers the near matches, with league and years under each, and sends no search", () => {
+  it("focused and empty, offers the near matches, with league and years under each, and sends no search", () => {
     renderSearch();
+    expect(field().value).toBe("");
     fireEvent.focus(field());
+    expect(field().getAttribute("aria-expanded")).toBe("true");
 
     const opts = options();
     expect(opts.map(labelOf)).toEqual([
@@ -213,26 +219,58 @@ describe("TeamMatchSearch", () => {
     ]);
   });
 
-  it("is headed 'Possible matches' and announces the count only when there are near matches", () => {
+  it("is headed 'Link to existing team', names its group by it, and announces the count of near matches", () => {
     const { container } = render(
-      <TeamMatchSearch
-        sportId={SPORT_ID}
-        initialQuery="Brooklyn Dodgers"
-        defaultMatches={NEAR}
-        onPick={vi.fn()}
-      />,
+      <TeamMatchSearch sportId={SPORT_ID} defaultMatches={NEAR} onPick={vi.fn()} />,
     );
-    expect(screen.getByText("Possible matches")).toBeTruthy();
+    expect(TEAM_MATCH_SECTION_HEADING).toBe("Link to existing team");
+    const heading = screen.getByText("Link to existing team");
+    const group = screen.getByRole("group", { name: "Link to existing team" });
+    expect(group.contains(heading)).toBe(true);
+    expect(group.contains(field())).toBe(true);
+    expect(screen.queryByText("Possible matches")).toBeNull();
     expect(container.querySelector("[aria-live='polite']")?.textContent).toBe(
       "3 possible matches",
     );
   });
 
-  it("with no near matches: just the caption and the field, and the list stays shut until the operator types", () => {
+  it("keeps the same heading and box with no near matches, so nothing reflows when the query lands", () => {
+    const { container, rerender } = render(
+      <TeamMatchSearch sportId={SPORT_ID} defaultMatches={[]} onPick={vi.fn()} />,
+    );
+    const group = screen.getByRole("group", { name: "Link to existing team" });
+    const boxClass = group.className;
+    expect(container.querySelector("[aria-live='polite']")?.textContent).toBe("");
+
+    rerender(<TeamMatchSearch sportId={SPORT_ID} defaultMatches={NEAR} onPick={vi.fn()} />);
+    // The very same element, wearing the very same box.
+    expect(screen.getByRole("group", { name: "Link to existing team" })).toBe(group);
+    expect(group.className).toBe(boxClass);
+  });
+
+  it("renders its children inside the section, directly under the field", () => {
+    render(
+      <TeamMatchSearch sportId={SPORT_ID} defaultMatches={NEAR} onPick={vi.fn()}>
+        <label>
+          <input type="checkbox" />
+          Remember this
+        </label>
+      </TeamMatchSearch>,
+    );
+    const group = screen.getByRole("group", { name: "Link to existing team" });
+    const box = screen.getByLabelText("Remember this");
+    expect(group.contains(box)).toBe(true);
+    // Document order: the field, then the child — nothing in between that
+    // takes focus.
+    const focusables = Array.from(group.querySelectorAll("input"));
+    expect(focusables).toEqual([field(), box]);
+  });
+
+  it("with no near matches: the caption and the field, and the list stays shut until the operator types", () => {
     const { onPick } = renderSearch([]);
-    expect(screen.queryByText("Possible matches")).toBeNull();
+    expect(screen.getByText("Link to existing team")).toBeTruthy();
     expect(screen.getByText(TEAM_MATCH_SEARCH_LABEL)).toBeTruthy();
-    expect(field().value).toBe("Brooklyn Dodgers");
+    expect(field().value).toBe("");
 
     fireEvent.focus(field());
     expect(screen.queryByRole("listbox")).toBeNull();
@@ -246,24 +284,23 @@ describe("TeamMatchSearch", () => {
   });
 
   it("renders the still-loading near-match query exactly as 'none'", () => {
-    render(
-      <TeamMatchSearch
-        sportId={SPORT_ID}
-        initialQuery="Brooklyn Dodgers"
-        defaultMatches={undefined}
-        onPick={vi.fn()}
-      />,
+    const { container } = render(
+      <TeamMatchSearch sportId={SPORT_ID} defaultMatches={undefined} onPick={vi.fn()} />,
     );
-    expect(screen.queryByText("Possible matches")).toBeNull();
+    expect(container.querySelector("[aria-live='polite']")?.textContent).toBe("");
     fireEvent.focus(field());
     expect(screen.queryByRole("listbox")).toBeNull();
   });
 
-  it("selects the pre-fill on focus, so typing replaces it rather than appending", () => {
+  it("selects a previous pick on focus, so typing replaces it rather than appending", () => {
     renderSearch();
     fireEvent.focus(field());
+    fireEvent.mouseDown(options()[0]);
+    expect(field().value).toBe("Brooklyn Bridegrooms");
+    fireEvent.blur(field());
+    fireEvent.focus(field());
     expect(field().selectionStart).toBe(0);
-    expect(field().selectionEnd).toBe("Brooklyn Dodgers".length);
+    expect(field().selectionEnd).toBe("Brooklyn Bridegrooms".length);
   });
 
   it("carries no DOM id on the input — flows find it by its accessible name", () => {
@@ -337,16 +374,27 @@ describe("TeamMatchSearch", () => {
     expect(screen.getByText("No teams by that name")).toBeTruthy();
   });
 
-  it("returns to the near matches when the proposed name is typed back", () => {
+  it("returns to the near matches when the field is cleared", () => {
     renderSearch();
     fireEvent.focus(field());
     typeInto("Dodgers");
     expect(options().map(labelOf)).toContain("Los Angeles Dodgers");
-    typeInto("Brooklyn Dodgers");
+    typeInto("");
     expect(options().map(labelOf)).toEqual([
       "Brooklyn Bridegrooms",
       "Brooklyn Cyclones",
       "Brooklyn Eagles",
     ]);
+  });
+
+  it("searches the server for the row's own name when it is typed — no longer a stand-in for the near matches", () => {
+    renderSearch();
+    fireEvent.focus(field());
+    typeInto("Brooklyn Dodgers");
+    const sent = queryCalls
+      .filter((c) => c.ref === "teams.search" && c.args !== "skip")
+      .map((c) => c.args);
+    expect(sent.at(-1)).toEqual({ query: "Brooklyn Dodgers", sportId: SPORT_ID, limit: 25 });
+    expect(options().map(labelOf)).toEqual(["Brooklyn Dodgers"]);
   });
 });

@@ -61,6 +61,12 @@ tags:
 #   * every one of those assertions is repeated after a full page reload, which
 #     is what separates "the form still holds what I typed" from "the database
 #     holds it".
+#   * NEO-326: the two stints reach the list by the two ways an operator adds
+#     one — STINT 1 by tapping "Add stint", STINT 2 by Enter in a year box. An
+#     Enter on an entry with no start year must leave every field as typed and
+#     print no refusal; the valid Enter must clear all three fields with no
+#     refusal, and the stint it adds is the 2001–2005 row the ordering
+#     assertion reads, before and after the reload.
 # There are no `when:` branches and no conditional runFlow, so there is no path
 # through this file that reaches the end without exercising the feature.
 #
@@ -464,11 +470,67 @@ tags:
     id: "Add PMT${output.ATTEMPT_TOKEN}( · .*)?"
 # Same popover, same dismissal as above — tap the heading, never a keycode.
 - tapOn: "Career history"
-- tapOn: ".*Stint from year.*"
-- inputText: "2001"
+
+# ── NEO-326: THIS STINT IS COMMITTED BY ENTER IN A YEAR FIELD ───────────────
+# STINT 1 commits by tapping "Add stint"; this one commits from the keyboard,
+# so both paths stay covered. Enter in "Stint from year" or "Stint to year
+# (optional)" is "Add stint" when the entry is valid and does nothing when it
+# is not. The invalid Enter goes in the TO box and the valid one in the FROM
+# box, so each box's own Enter handler is driven once.
+#
+# The key goes where focus is. maestro-web re-finds `document.activeElement`
+# by XPath and sends the key to whatever that matches (README "Anything a flow
+# drives with `pressKey` needs a unique, user-visible handle"). Each box is
+# focused by tapping its visible label text (the boxes are `primitives/Input`
+# with no aria-label, so `id:` cannot name them), and the Input primitive's
+# per-field marker class makes the re-found XPath match only that box, so the
+# Enter cannot land on the other year box or on "Add stint" beside them.
+# Nothing between each tap and its Enter moves focus: `inputText` types into
+# the focused box, and the invalid Enter does nothing.
+
+# INVALID: the team is picked and an end year typed, but there is no start
+# year (STINT 1's add cleared that box). Enter must do nothing.
 - tapOn: ".*Stint to year.*"
 - inputText: "2005"
-- tapOn: "Add stint"
+- pressKey: Enter
+# Nothing was added: an add clears all three fields before Maestro's next
+# read, so the end year still in its box and the team still picked are hard,
+# immediate proofs. maestro-web reads an <input> by its value, and no other
+# node on the screen is exactly "2005" (the stint rows read "PMT… · 2010–2012").
+- assertVisible:
+    text: "2005"
+- assertVisible:
+    id: "Remove team PMT${output.ATTEMPT_TOKEN}( · .*)?"
+# …and Enter did not run "Add stint" either: tapping it with no start year
+# prints this refusal under the row. Read on a page proved live by the two
+# positive reads just above, so this negative cannot pass on a dead screen.
+- assertNotVisible: "Pick a team and a whole start year\\."
+
+# VALID: the start year goes in, and Enter in the FROM box adds the stint.
+- tapOn: ".*Stint from year.*"
+- inputText: "2001"
+- pressKey: Enter
+# The fields cleared. The end box falls back to its "present" placeholder,
+# which is what maestro-web reads for an empty <input> — a positive read of
+# the cleared state, true only once the add has run.
+- extendedWaitUntil:
+    visible:
+      text: "present"
+    timeout: 7000
+# The start box and the team picker are empty too.
+- assertNotVisible:
+    text: "2001"
+- assertNotVisible:
+    id: "Remove team PMT${output.ATTEMPT_TOKEN}( · .*)?"
+# NOTHING ELSE HAPPENED: one add and no refusal. A second add from the same
+# keypress would find the fields already cleared and refuse with "Pick a team
+# and a whole start year."; a repeat of this stint would refuse with
+# "… already has a stint starting in 2001.". Both print in the alert line
+# directly under the row, which is on screen. The ordering assertion below
+# then proves the stint landed with the right years beside the untouched
+# 2010–2012 one.
+- assertNotVisible: "Pick a team and a whole start year\\."
+- assertNotVisible: ".*already has a stint starting in.*"
 
 # THE ORDERING ASSERTION. One assertion, both facts: both stints are on screen,
 # and the 2001 stint is ABOVE the 2010 stint even though it was entered second.

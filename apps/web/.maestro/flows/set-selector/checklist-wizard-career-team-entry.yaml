@@ -40,6 +40,14 @@ tags:
 #         the wizard's league-create coverage rides here rather than in a new
 #         flow (R3) — the dialog's existing-league and "No league" picks live
 #         in set-team-carries-down-to-cards.yaml.
+#     (g) NEO-326 — Enter in a year field is "+ Add". The second entry
+#         (TempTeam, STEP 5) is committed by `pressKey: Enter` in "From year"
+#         while the first (ProbeTeam, STEP 4) keeps the "+ Add" tap, so both
+#         paths are covered. Enter with no from-year leaves the typed name in
+#         its box; Enter with a valid entry clears the year, stages the New
+#         Team step, and leaves the header's reviewed count where it was (the
+#         keystroke did not also decide the player). The chip's years are read
+#         back in STEP 5 like every other entry's.
 #
 # ── WHAT THIS FLOW DELIBERATELY DOES NOT PROVE ──────────────────────────────
 #   The staged team is only WRITTEN at commit, where `resolveTeamIdByName`
@@ -273,6 +281,14 @@ tags:
 # the scrolling body. The list itself is a position:fixed layer in the
 # wizard's dialog that flips above the field or floats over the footer, so
 # no option needs the body scrolled.
+# NEO-326 moved things on both sides of League, and the pin is why that
+# needs no flow change. ABOVE it the team step gained an always-on "Link to
+# existing team" box (~60px) and lost the Location help line (~40px); BELOW
+# it the "Shows as:" line went (~28px). A pin to the END places League by
+# what is below it only, so expect League ~28px lower than measured above
+# (~y=355-389), still inside the slice. The step's overflow stays under the
+# one drag's ~313px (it was ~297px; net change about -8px), so the drag still
+# reaches the end. MEASURE on the next local run against a NEO-326 preview.
 - swipe:
     start: "18%, 70%"
     end: "18%, 20%"
@@ -384,18 +400,58 @@ tags:
 # takes that ONE entry away while leaving the other's years untouched. The
 # second half is what proves the per-player chip list from 71f23a4 is a real
 # list and not a single slot that the last add overwrites.
+#
+# This entry is committed from the keyboard (R2(g)); the "(2010–present)" chip
+# read after the hop is therefore also the proof that Enter carried the years.
 # ============================================================
 
 - tapOn:
     id: "Career team name"
 - inputText: "TempTeam${output.ATTEMPT_TOKEN}"
+
+# ── R2(g) NEO-326: THIS add is committed by ENTER in a year field ───────────
+# STEP 4 commits by tapping "+ Add"; this one commits from the keyboard, so
+# both paths stay covered. Enter in either year field is "+ Add" when the
+# entry is valid and does nothing when it is not.
+#
+# The key goes where focus is. maestro-web re-finds `document.activeElement`
+# by XPath and sends the key to whatever that matches (README "Anything a flow
+# drives with `pressKey` needs a unique, user-visible handle"). The tap below
+# focuses the field the user sees as "From year" (its aria-label), and the
+# Input primitive's per-field marker class makes that XPath match only that
+# field, so Enter cannot land on "To year" or "+ Add" beside it. Nothing
+# between this tap and the second Enter moves focus: the first Enter does
+# nothing and `inputText` types into the focused field.
 - tapOn:
     id: "From year"
+- copyTextFrom:
+    text: "[0-9]+ of [0-9]+ reviewed.*"
+- evalScript: '${output.REVIEWED_BEFORE = maestro.copiedText.match(/^[0-9]+/)[0]}'
+
+# INVALID: a name with no from-year. Enter must do nothing. A successful add
+# clears the form before Maestro's next read, so the name still being in its
+# box is a hard, immediate proof that nothing was added.
+- pressKey: Enter
+- assertVisible:
+    id: "Career team name"
+    text: ".*TempTeam${output.ATTEMPT_TOKEN}.*"
+
+# VALID: the from-year is in, so Enter adds the entry.
 - inputText: "2010"
-- tapOn:
-    id: "Add career team"
+- pressKey: Enter
+# The form cleared. This read is true in both screens that can follow a
+# successful add: the player row is still up while the new team is being
+# looked up (the field is empty), or the New Team step is already up (the
+# field is gone). It fails only if the year stayed in the box, which means
+# Enter added nothing. One read, so it cannot race the hop.
+- extendedWaitUntil:
+    notVisible:
+      id: "From year"
+      text: "2010"
+    timeout: 7000
 # The same three-part gate as STEP 4: this staged row queues on the shared
-# Wikidata pool too.
+# Wikidata pool too. The step can come up only from the add, so it also proves
+# Enter staged the right team name.
 - extendedWaitUntil:
     visible: "New Team: TempTeam${output.ATTEMPT_TOKEN}|.*still looking up.*"
     timeout: 7000
@@ -405,6 +461,14 @@ tags:
 - extendedWaitUntil:
     visible: "New Team: TempTeam${output.ATTEMPT_TOKEN}"
     timeout: 7000
+# NOTHING ELSE HAPPENED: Enter did not also decide the player. The header's
+# reviewed count is the one captured before either Enter (the total grew by the
+# staged team row, so only the first number is pinned). It moves only when a
+# row is decided, and nothing has been decided since the capture. The header
+# is pinned, so this read never depends on the body's scroll (README
+# "Asserting inside a dialog").
+- assertVisible:
+    text: "${output.REVIEWED_BEFORE} of [0-9]+ reviewed.*"
 # R2(f) NEO-307, second half: a league staged on ONE team's step is offered to
 # every later team as "<name> (new)", not re-offered as a create (NEO-254).
 # The bare <token> is a strict substring of "Lg<token>", so the staged option
