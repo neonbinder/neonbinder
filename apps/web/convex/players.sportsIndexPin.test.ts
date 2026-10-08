@@ -124,5 +124,36 @@ describe("NEO-318: players.alsoSportIds has one writer", () => {
     expect(blocks.length).toBeGreaterThan(0);
     expect(blocks.filter((b) => b.includes("alsoSportIds"))).toEqual([]);
   });
+
+  test("no players insert block spreads a whole object (a spread would copy a stale alsoSportIds)", () => {
+    // The alsoSportIds check above only sees the literal. `...source` or
+    // `...existing` in an insert would carry a whole doc's copy across with no
+    // mention of the field. Today's inserts do use the safe shape
+    // `...(cond ? { field } : {})`, which names exactly the fields it adds, so
+    // that one form is allowed and every other spread is an offender.
+    const blocks: string[] = [];
+    for (const file of sourceFiles(CONVEX_DIR)) {
+      const src = readFileSync(file, "utf8");
+      let from = 0;
+      for (;;) {
+        const at = src.indexOf('insert("players"', from);
+        if (at === -1) break;
+        blocks.push(src.slice(at, src.indexOf("});", at) + 3));
+        from = at + 1;
+      }
+    }
+    expect(blocks.length).toBeGreaterThan(0);
+    const offenders: string[] = [];
+    for (const block of blocks) {
+      for (const m of block.matchAll(/\.\.\./g)) {
+        const rest = block.slice(m.index! + 3);
+        const conditionalLiteral =
+          rest.startsWith("(") &&
+          /^\((?:(?!\.\.\.)(?:[^?]|\?\.))*?\?\s*\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}\s*:\s*\{\}\s*\)/.test(rest);
+        if (!conditionalLiteral) offenders.push(block.slice(m.index!, m.index! + 60));
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
 });
 
