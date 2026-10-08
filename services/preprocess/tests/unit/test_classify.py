@@ -20,6 +20,7 @@ from PIL import Image
 from app.classify import (
     ANTHROPIC_MAX_RAW_BYTES,
     DEFAULT_MODEL,
+    EFFORT,
     MAX_TOKENS,
     PROMPT,
     RETRY_PROMPT_SUFFIX,
@@ -29,7 +30,7 @@ from app.classify import (
     _strip_code_fences,
     classify_card,
 )
-from tests.unit._fake_anthropic import real_client
+from tests.unit._fake_anthropic import real_client, refusal, thinking_then_text
 
 
 def _png_bytes() -> bytes:
@@ -45,7 +46,9 @@ def _jpeg_bytes() -> bytes:
 
 
 def _response_with_text(text: str) -> SimpleNamespace:
-    return SimpleNamespace(content=[SimpleNamespace(text=text)])
+    return SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=text)], stop_reason="end_turn"
+    )
 
 
 def _empty_response() -> SimpleNamespace:
@@ -326,17 +329,64 @@ class TestClassifyCard:
         call = client.messages.create.call_args
         assert call.kwargs["model"] == "claude-test-model"
 
-    def test_passes_temperature_zero_via_extra_body(self):
-        # anthropic>=1.0 rejects `temperature=` as a direct kwarg; it rides in
-        # extra_body. A direct kwarg must not come back.
+    def test_sends_effort_low_and_no_temperature(self):
+        # Haiku 5.5 400s on any non-default sampling param, so temperature
+        # must not be sent by any route (kwarg or extra_body). Effort is set
+        # explicitly rather than taking the API default (medium).
         payload = '{"player":null,"team":null,"card_number":null,"side":"front"}'
         client = _mock_client(_response_with_text(payload))
 
         classify_card(_jpeg_bytes(), client=client)
 
         call = client.messages.create.call_args
-        assert call.kwargs["extra_body"] == {"temperature": 0.0}
+        assert call.kwargs["output_config"] == {"effort": "low"}
         assert "temperature" not in call.kwargs
+        assert "temperature" not in (call.kwargs.get("extra_body") or {})
+
+    def test_default_model_is_haiku_5_5(self):
+        assert DEFAULT_MODEL == "claude-haiku-5-5"
+        assert EFFORT == "low"
+
+    def test_answer_after_a_thinking_block_is_read(self):
+        # Haiku 5.5 thinks by default: content[0] is a thinking block (empty
+        # text) and the answer is the first `text` block after it.
+        good = '{"players":["Ichiro"],"team":"Mariners","card_number":"51","side":"back"}'
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="thinking", thinking="", signature="s"),
+                SimpleNamespace(type="text", text=good),
+            ],
+            stop_reason="end_turn",
+        )
+        client = _mock_client(response)
+
+        result = classify_card(_jpeg_bytes(), client=client)
+
+        assert result.card_number == "51"
+        assert client.messages.create.call_count == 1
+
+    def test_refusal_twice_raises_classify_error(self):
+        # A refusal has no text block; it must take the unparseable path
+        # (retry, then ClassifyError), never an IndexError/AttributeError.
+        refused = SimpleNamespace(content=[], stop_reason="refusal")
+        client = _mock_client(refused, refused)
+
+        with pytest.raises(ClassifyError):
+            classify_card(_jpeg_bytes(), client=client)
+        assert client.messages.create.call_count == 2
+
+    def test_max_tokens_stop_with_only_thinking_retries(self):
+        thinking_only = SimpleNamespace(
+            content=[SimpleNamespace(type="thinking", thinking="", signature="s")],
+            stop_reason="max_tokens",
+        )
+        good = '{"players":[],"team":null,"card_number":"7","side":"back"}'
+        client = _mock_client(thinking_only, _response_with_text(good))
+
+        result = classify_card(_jpeg_bytes(), client=client)
+
+        assert result.card_number == "7"
+        assert result.retried is True
 
 
 class TestClassifyWireRequest:
@@ -358,7 +408,7 @@ class TestClassifyWireRequest:
         assert transport.bodies[0] == {
             "model": DEFAULT_MODEL,
             "max_tokens": MAX_TOKENS,
-            "temperature": 0.0,
+            "output_config": {"effort": "low"},
             "messages": [
                 {
                     "role": "user",
@@ -377,7 +427,7 @@ class TestClassifyWireRequest:
             ],
         }
 
-    def test_retry_request_also_carries_temperature_zero(self):
+    def test_retry_request_also_carries_effort_and_no_temperature(self):
         good = '{"player":"Pujols","team":"Cardinals","card_number":"5","side":"front"}'
         client, transport = real_client("not json", good)
 
@@ -385,10 +435,31 @@ class TestClassifyWireRequest:
 
         assert result.player == "Pujols"
         assert len(transport.bodies) == 2
-        assert [body["temperature"] for body in transport.bodies] == [0.0, 0.0]
+        assert [body["output_config"] for body in transport.bodies] == [{"effort": "low"}] * 2
+        assert all("temperature" not in body for body in transport.bodies)
         assert transport.bodies[1]["messages"][0]["content"][1]["text"] == (
             PROMPT + RETRY_PROMPT_SUFFIX
         )
+
+    def test_thinking_block_before_text_over_the_wire(self):
+        # The real SDK parses a thinking block into a ThinkingBlock; the
+        # answer must still come from the text block that follows it.
+        good = '{"players":["Larry Fitzgerald"],"team":"Arizona Cardinals",'
+        good += '"card_number":"36","side":"back"}'
+        client, transport = real_client(thinking_then_text(good))
+
+        result = classify_card(_jpeg_bytes(), client=client)
+
+        assert result.card_number == "36"
+        assert result.retried is False
+        assert len(transport.requests) == 1
+
+    def test_refusal_over_the_wire_raises_classify_error(self):
+        client, transport = real_client(refusal(), refusal())
+
+        with pytest.raises(ClassifyError):
+            classify_card(_jpeg_bytes(), client=client)
+        assert len(transport.requests) == 2
 
 
 class TestSharedAnthropicClient:
