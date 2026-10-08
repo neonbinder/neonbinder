@@ -701,10 +701,12 @@ function AddPlayerForm({
         // link anything to anything.
         pickLabel={(_n, match) => openLabel(match)}
         onPick={(id) => open(id as Id<"players">, "panel")}
-        // NEO-319 — dimmed and deaf to the pointer while the form is busy;
-        // `open` swallows a keyboard press. Not `inert`: a pick from this
-        // panel leaves focus ON one of its rows, and inerting the focused
-        // node would drop it to <body> for the whole wait.
+        // NEO-319 — `busy` marks every row `aria-disabled` and swallows the
+        // press; the class dims them and turns the pointer away. Not `inert`:
+        // a pick from this panel leaves focus ON one of its rows, and
+        // inerting the focused node would drop it to <body> for the whole
+        // wait.
+        busy={formBusy}
         className={formBusy ? "pointer-events-none opacity-50" : ""}
       />
 
@@ -741,8 +743,13 @@ function AddPlayerForm({
         */}
         <NeonButton
           type="button"
-          onClick={() => {
+          onClick={(e) => {
             if (formBusy) return;
+            // NEO-319 — take focus BEFORE the fields lock. Safari and Firefox
+            // on macOS do not focus a button on click, so focus can still be
+            // in the name box — which is about to become `disabled`, and a
+            // disabled focused field blurs to <body>.
+            e.currentTarget.focus();
             if (exact) {
               open(exact._id as Id<"players">, "primary");
               return;
@@ -776,7 +783,12 @@ function AddPlayerForm({
         {exact && (
           <button
             type="button"
-            onClick={() => void create("anyway")}
+            onClick={(e) => {
+              if (formBusy) return;
+              // As the primary: hold focus here before the fields lock.
+              e.currentTarget.focus();
+              void create("anyway");
+            }}
             disabled={!formReady}
             aria-disabled={formBusy || undefined}
             aria-busy={busyOn === "anyway" || undefined}
@@ -786,9 +798,12 @@ function AddPlayerForm({
                 ? "Creating player"
                 : `Create player ${trimmed} anyway`
             }
+            // The pulse is motion-only; `opacity-70` is the busy cue a
+            // reduced-motion operator still sees (NeonButton dims its own
+            // aria-disabled state, so the primary needs nothing extra).
             className={`min-h-6 rounded px-2 py-1 text-sm text-slate-300 underline underline-offset-2 transition-colors hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-slate-300 ${
               busyOn === "anyway"
-                ? "motion-safe:animate-pulse"
+                ? "opacity-70 motion-safe:animate-pulse"
                 : formBusy
                   ? "opacity-50"
                   : ""
@@ -815,6 +830,16 @@ function AddPlayerForm({
           </p>
         )}
       </div>
+
+      {/* NEO-319 — the wait, said out loud (SC 4.1.3). The busy button's
+          own name change is not reliably announced while it holds focus, and
+          an Open from the panel changes no name at all. Mounted for the
+          form's whole life and empty when idle: a live region inserted
+          together with its text is announced unreliably (NearMatchPanel's
+          note). Outside the button row so it is nobody's label. */}
+      <p role="status" className="sr-only">
+        {creating ? "Creating player…" : pending ? "Opening player…" : ""}
+      </p>
     </div>
   );
 }
@@ -853,6 +878,26 @@ const SKELETON_BLOCK =
  * focus (and is announced) the moment the panel replaces this.
  */
 function PlayerDetailSkeleton() {
+  /**
+   * NEO-319 — somewhere for focus to wait. Two paths reach this skeleton by
+   * UNMOUNTING the control that was pressed: Cancel on an add form that has
+   * already handed a player over, and NAME_TAKEN's "Open the existing
+   * player" (which re-keys the panel). An unmount leaves focus on <body>
+   * (SC 2.4.3), so the skeleton takes it, and the panel's heading takes it
+   * from here once the player loads.
+   *
+   * Only when focus HAS been lost. A master-row click also lands here, and
+   * there the clicked row still holds focus — stealing it for the length of
+   * the fetch would make the list jumpier to drive by keyboard, and the
+   * heading takes over on load either way.
+   */
+  const holderRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    if (active === null || active === document.body) {
+      holderRef.current?.focus({ preventScroll: true });
+    }
+  }, []);
   const field = (
     <div>
       <div className={`mb-1 h-4 w-24 ${SKELETON_BLOCK}`} />
@@ -860,7 +905,11 @@ function PlayerDetailSkeleton() {
     </div>
   );
   return (
-    <div className="min-h-[28rem]">
+    <div
+      ref={holderRef}
+      tabIndex={-1}
+      className="min-h-[28rem] rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+    >
       <p role="status" className="sr-only">
         Loading player…
       </p>
@@ -2077,6 +2126,18 @@ export default function PlayerManagement() {
    * a later row click back to the same player is an ordinary click.
    */
   const [revealId, setRevealId] = useState<string | null>(null);
+  /**
+   * NEO-319 — the add form's hand-over resolved to NOTHING and closed onto the
+   * empty state, unmounting the button that held focus. The empty-state line
+   * takes focus so it is not left on <body> (SC 2.4.3). A flag rather than
+   * "whenever the line mounts": the line is also the screen's first paint,
+   * and focusing it there would fight the filter's own focus-on-load.
+   */
+  const [focusPlaceholder, setFocusPlaceholder] = useState(false);
+  const placeholderRef = useRef<HTMLParagraphElement>(null);
+  useLayoutEffect(() => {
+    if (focusPlaceholder) placeholderRef.current?.focus({ preventScroll: true });
+  }, [focusPlaceholder]);
 
   useEffect(() => {
     const timer = setTimeout(
@@ -2201,6 +2262,7 @@ export default function PlayerManagement() {
     setAdding(false);
     setPendingId(null);
     setRevealId(null);
+    setFocusPlaceholder(false);
     // The linked row has to be REACHABLE, not merely selected: both filters
     // can hide it from the master list, so following a link clears them. The
     // debounced copy is cleared with the box it mirrors, or the search
@@ -2341,6 +2403,7 @@ export default function PlayerManagement() {
     setAdding(false);
     if (selected === null) {
       setCreatedNotice(null);
+      setFocusPlaceholder(true);
     } else {
       setRevealId(selected._id);
     }
@@ -2371,6 +2434,7 @@ export default function PlayerManagement() {
     setSelectedId(id);
     setPendingId(fromAddForm ? id : null);
     setRevealId(null);
+    setFocusPlaceholder(false);
     if (!fromAddForm) setAdding(false);
     // Keep the URL in step with the selection, so the player on screen is the
     // player a reload or a shared link reopens — and so Back from a career
@@ -2476,6 +2540,7 @@ export default function PlayerManagement() {
           onClick={() => {
             setAdding(true);
             setCreatedNotice(null);
+            setFocusPlaceholder(false);
           }}
         >
           Add player
@@ -2691,7 +2756,11 @@ export default function PlayerManagement() {
                (`null`). NEO-319: it used to stand in for "still loading" as
                well, and its one line in place of a full panel is what
                collapsed the column under the operator. */
-            <p className="text-sm text-slate-400">
+            <p
+              ref={placeholderRef}
+              tabIndex={-1}
+              className="rounded-sm text-sm text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+            >
               Select a player to see and edit everything we know about them.
             </p>
           )}

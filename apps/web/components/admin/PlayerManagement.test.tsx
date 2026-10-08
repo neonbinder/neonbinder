@@ -1287,6 +1287,174 @@ describe("NEO-319: a player that is still loading", () => {
   });
 });
 
+/**
+ * NEO-319 accessibility audit — the wait has to be HEARD, and focus must never
+ * fall to <body> on the way through it.
+ */
+describe("NEO-319: the wait, for assistive tech and focus", () => {
+  /** The add form's own live line: the only status holding these words. */
+  const formStatus = (text: string) => {
+    const el = screen.getByText(text);
+    expect(el.getAttribute("role")).toBe("status");
+    expect(el.className).toContain("sr-only");
+    return el;
+  };
+
+  it("says 'Creating player…' while a create waits, and empties on a refusal", async () => {
+    let reject: ((e: unknown) => void) | undefined;
+    mockCreateByAdmin.mockReturnValue(
+      new Promise((_resolve, rej) => {
+        reject = rej;
+      }),
+    );
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    // Mounted, and silent, before anything is pressed: a live region that
+    // appears together with its text is announced unreliably.
+    const form = screen
+      .getByRole("heading", { level: 3, name: "Add a player" })
+      .closest("div")!;
+    const idleStatus = Array.from(
+      form.querySelectorAll('p[role="status"].sr-only'),
+    );
+    expect(idleStatus).toHaveLength(1);
+    expect(idleStatus[0].textContent).toBe("");
+
+    pressCreate("Mike Trout");
+    const line = formStatus("Creating player…");
+    expect(line).toBe(idleStatus[0]);
+    // Outside the button row: it labels nothing.
+    expect(
+      line.parentElement!.contains(screen.getByRole("button", { name: "Cancel" })),
+    ).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "Cancel" }).parentElement!.contains(line),
+    ).toBe(false);
+
+    reject?.(new ConvexError("Two players are already called Mike Trout."));
+    await screen.findByRole("alert");
+    expect(line.textContent).toBe("");
+  });
+
+  it("keeps saying 'Creating player…' after the create lands, while the player loads", async () => {
+    loadingIds.add("p-trout");
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    pressCreate("Mike Trout");
+    await waitFor(() => expect(mockCreateByAdmin).toHaveBeenCalledTimes(1));
+    await screen.findByRole("button", { name: "Creating player" });
+    expect(formStatus("Creating player…")).toBeTruthy();
+  });
+
+  it("says 'Opening player…' for an Open, and marks the near-match rows disabled", async () => {
+    nearMatches = [
+      { _id: "p-griffey", name: "Ken Griffey Jr.", confidence: "exact" },
+      { _id: "p-griffey-sr", name: "Ken Griffey", confidence: "close" },
+    ];
+    loadingIds.add("p-griffey");
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Ken Griffey Jr." },
+    });
+    const open = await screen.findByRole("button", { name: "Open Ken Griffey Jr." });
+    const row = screen.getByLabelText("Open Ken Griffey");
+    expect(row.hasAttribute("aria-disabled")).toBe(false);
+
+    fireEvent.click(open);
+
+    expect(formStatus("Opening player…")).toBeTruthy();
+    expect(screen.queryByText("Creating player…")).toBeNull();
+    // The panel's rows say they are out of action, not just look it — and
+    // stay focusable (no native `disabled`).
+    expect(row.getAttribute("aria-disabled")).toBe("true");
+    expect(row.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(row);
+    // Still waiting on the FIRST open: the second pick went nowhere.
+    expect(lastArgs("players.getByIdParam")).toEqual({ id: "p-griffey" });
+  });
+
+  it("moves focus to the pressed Create before the fields lock", async () => {
+    // Safari and Firefox on macOS do not focus a button on click, so focus
+    // can still be in the name box — which the busy state disables.
+    loadingIds.add("p-trout");
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    const nameBox = screen.getByLabelText("New player name");
+    fireEvent.change(nameBox, { target: { value: "Mike Trout" } });
+    nameBox.focus();
+    expect(document.activeElement).toBe(nameBox);
+
+    const create = screen.getByRole("button", { name: "Create player Mike Trout" });
+    fireEvent.click(create);
+
+    expect(document.activeElement).toBe(create);
+    await screen.findByRole("button", { name: "Creating player" });
+    expect(document.activeElement).toBe(create);
+    expect(nameBox).toHaveProperty("disabled", true);
+  });
+
+  it("parks focus on the loading panel when Cancel is pressed during the wait", async () => {
+    loadingIds.add("p-trout");
+    const { container, rerender } = render(<PlayerManagement />);
+    openAddForm(container);
+    pressCreate("Mike Trout");
+    await screen.findByRole("button", { name: "Creating player" });
+
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    cancel.focus();
+    fireEvent.click(cancel);
+
+    // The Cancel button is gone; focus waits on the skeleton, which carries
+    // the "Loading player…" line — not on <body>.
+    const holder = screen.getByText("Loading player…").parentElement!;
+    expect(document.activeElement).toBe(holder);
+    expect(holder.getAttribute("tabindex")).toBe("-1");
+
+    loadingIds.delete("p-trout");
+    rerender(<PlayerManagement />);
+    expect(document.activeElement).toBe(
+      screen.getByRole("heading", { level: 3, name: "Mike Trout" }),
+    );
+  });
+
+  it("leaves focus on a clicked row while it loads, then hands it to the heading", () => {
+    loadingIds.add("p-griffey");
+    const { rerender } = render(<PlayerManagement />);
+    const row = screen.getByRole("button", { name: /Ken Griffey Jr\./ });
+    row.focus();
+    fireEvent.click(row);
+
+    // Focus was not lost, so the skeleton does not take it.
+    expect(screen.getByText("Loading player…")).toBeTruthy();
+    expect(document.activeElement).toBe(row);
+
+    loadingIds.delete("p-griffey");
+    rerender(<PlayerManagement />);
+    expect(document.activeElement).toBe(
+      screen.getByRole("heading", { level: 3, name: "Ken Griffey Jr." }),
+    );
+  });
+
+  it("focuses the empty-state line when the hand-over resolves to nothing", async () => {
+    mockCreateByAdmin.mockResolvedValue({ id: "p-vanished", created: true });
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    pressCreate("Mike Trout");
+
+    const line = await screen.findByText(PLACEHOLDER);
+    expect(document.activeElement).toBe(line);
+    expect(line.getAttribute("tabindex")).toBe("-1");
+  });
+
+  it("does not focus the empty-state line on an ordinary first paint", () => {
+    render(<PlayerManagement />);
+    expect(document.activeElement).not.toBe(screen.getByText(PLACEHOLDER));
+    // The filter's own focus-on-load is what wins.
+    expect(document.activeElement).toBe(screen.getByLabelText("Filter players"));
+  });
+});
+
 describe("PlayerManagement — the detail panel", () => {
   it("names a stint's team in FULL while the master row is short", () => {
     // NEO-236, the whole contract of the split in one assertion. The Mariners
