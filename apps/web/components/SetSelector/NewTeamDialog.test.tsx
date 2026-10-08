@@ -484,11 +484,10 @@ describe("NewTeamDialog — refusals", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create team Padres" }));
     const alert = await screen.findByRole("alert");
 
-    // `aria-describedby` is a LIST: the shared form also points each field at
-    // the "Shows as" preview (and Location at the help line), so the refusal
-    // joins those rather than replacing them.
-    expect(nameField().getAttribute("aria-describedby")).toContain(alert.id);
-    expect(locationField().getAttribute("aria-describedby")).toContain(alert.id);
+    // NEO-326 took the help line and the "Shows as" preview off the shared
+    // form, so the refusal is the only thing either field is described by.
+    expect(nameField().getAttribute("aria-describedby")).toBe(alert.id);
+    expect(locationField().getAttribute("aria-describedby")).toBe(alert.id);
   });
 
   it("clears the refusal on the next keystroke, since it described what was in the boxes", async () => {
@@ -502,9 +501,11 @@ describe("NewTeamDialog — refusals", () => {
     fireEvent.change(nameField(), { target: { value: "Padres II" } });
 
     expect(screen.queryByRole("alert")).toBeNull();
-    // The help and preview ids stay — only the stale refusal goes.
-    expect(nameField().getAttribute("aria-describedby")).not.toContain(alertId);
-    expect(nameField().getAttribute("aria-describedby")).toBeTruthy();
+    // The stale refusal goes, and nothing dangling is left behind: with no
+    // help line or preview (NEO-326) the fields carry no description at all.
+    expect(document.getElementById(alertId)).toBeNull();
+    expect(nameField().hasAttribute("aria-describedby")).toBe(false);
+    expect(locationField().hasAttribute("aria-describedby")).toBe(false);
   });
 
   it("re-announces the same refusal on a second press", () => {

@@ -59,3 +59,15 @@ scrollUntilVisible"*. The `CommandWarned` decompilation is recorded at
 
 See also [[offline-flow-parse-harness]] (verify the parsed command object
 rather than trusting the YAML) and [[never-diagnose-timing-first]].
+
+## Asserting an action's effect when the screen may already have moved on
+
+The same race hits an ASSERT right after an action that can hop the screen
+(a wizard add that stages a step and presents it once a lookup lands). A
+`when: visible <old screen>` guard + assert is the TOCTOU above. Instead,
+assert a **negative that is true on every legal successor screen** and false
+only on failure: after Enter commits a career-team entry, `notVisible
+{id: "From year", text: "2010"}` holds whether the row is still up (field
+empty) or the next step is (field gone), and fails only if the year stayed
+in the box. One read, nothing to race; pair it with the positive gate that
+follows (NEO-326, `checklist-wizard-career-team-entry` STEP 5).

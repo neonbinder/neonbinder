@@ -1,6 +1,6 @@
 ---
 name: neo284-team-alias-fixture
-description: NEO-284 team-alias E2E — the one-sided Rickwood fixture (4 BSC cards, Negro League clubs, SportLots picker CANCELLED), how the "remember as alias" checkbox is asserted without a `checked` attribute, the decision read-back via "Back to previous decision", the wizard's TWO "Cancel (Esc)" texts, and the wrong-SportLots-slot recovery via the MultiSourcePanel chip
+description: NEO-284 team-alias E2E — the one-sided Rickwood fixture (4 BSC cards, Negro League clubs, SportLots picker CANCELLED), how the "remember as alias" checkbox is asserted without a `checked` attribute, the decision read-back via "Back to previous decision", the wizard's TWO "Cancel (Esc)" texts, the NEO-326 empty "Search all teams" + body pin, and the wrong-SportLots-slot recovery via the MultiSourcePanel chip
 metadata:
   type: reference
 ---
@@ -69,6 +69,19 @@ row by its printed short name `below:` the counter, then `scrollUntilVisible
 twice — the textarea VALUE and the chip — and `id: "Current aliases"` (the
 `<ul>`) is the chip list's presence. Empty textarea = its placeholder text
 ("LSU, Louisiana State, LSU Tigers baseball") is the positive for "gone".
+
+**NEO-326 team-step shape (2026-10-04):** `Search all teams` sits in an
+ALWAYS-ON bordered section headed `Link to existing team` (players/leagues
+keep "Possible matches") and starts EMPTY, so it reads back its placeholder
+`Type a team name` — assert `{id: "Search all teams", text: "Type a team
+name"}` for "empty". The `Remember “<row>” …` box is inside the section,
+`below: {id: "Search all teams"}`. The box's chrome (~60px) pushes the New
+Team form's Team name box under the footer on a body at its top, so the flow
+pins the body with one UP touch drag before tapping it and one long DOWN drag
+back to the top before the search (see [[touch-swipe-scrolls-a-dialog-body]]).
+With the search box empty and the wizard's "Shows as:" gone, the Team name
+input is the only full-name node under its caption; "New Team: <row>" (raw
+name, never the draft) proves the walk did not move.
 
 Related: [[maestro-web-getnodetext-form-values]], [[erase-text-needs-the-caret-at-the-end]],
 [[neo255-one-marketplace-surfaces]].

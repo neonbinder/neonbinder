@@ -18,9 +18,10 @@
  *     with the whole name in Name and a blank Location — a component that
  *     guessed "San Diego" out of "San Diego Padres" on its own would be the
  *     first-token heuristic the split was designed to avoid.
- *  2. **The preview composes.** "Shows as: …" is `teamFullName` over the draft,
- *     so the operator reads the row they are about to write, composed the way
- *     it will read everywhere else.
+ *  2. **No help line, no preview (NEO-326).** Jason, 2026-10-04: the
+ *     "Location is where they are from" line and the "Shows as: …" preview
+ *     came off the form; the two labelled boxes are the whole question.
+ *     `draftFullName` still composes the draft for every comparison.
  *  3. **League is a type-ahead combobox named "League" (NEO-307), not a
  *     `<select>`.** Its accessible name and each option's text are the E2E
  *     contract; its options are `<li role="option">`, which Maestro can tap —
@@ -191,17 +192,6 @@ const locationField = () =>
   screen.getByLabelText("New team location (optional)") as HTMLInputElement;
 const nameField = () => screen.getByLabelText("New team name") as HTMLInputElement;
 
-/**
- * The composed-name preview, read as one string.
- *
- * Testing Library's text matcher only sees an element's DIRECT text nodes, and
- * this line is "Shows as: " plus a `<span>` holding the composed name — so
- * `getByText("Shows as: San Diego Padres")` matches nothing. The paragraph is
- * addressed by its own literal text and its full `textContent` is what the
- * operator actually reads.
- */
-const previewText = () => screen.getByText("Shows as:").textContent;
-
 beforeEach(() => {
   vi.clearAllMocks();
   currentLeagues = [];
@@ -288,19 +278,16 @@ describe("NewTeamForm — fields", () => {
     expect(nameField().value).toBe("Padres");
   });
 
-  it("composes the two boxes into the 'Shows as' preview as they are typed", () => {
+  it("NEO-326: shows no 'Shows as' preview, blank or typed", () => {
     renderForm();
+    expect(screen.queryByText(/Shows as:/)).toBeNull();
 
     fireEvent.change(nameField(), { target: { value: "Padres" } });
-    expect(previewText()).toBe("Shows as: Padres");
-
     fireEvent.change(locationField(), { target: { value: "San Diego" } });
-    expect(previewText()).toBe("Shows as: San Diego Padres");
-  });
-
-  it("shows an em dash rather than an empty preview while both boxes are blank", () => {
-    renderForm();
-    expect(previewText()).toBe("Shows as: —");
+    expect(screen.queryByText(/Shows as:/)).toBeNull();
+    // The fields themselves still hold what was typed.
+    expect(locationField().value).toBe("San Diego");
+    expect(nameField().value).toBe("Padres");
   });
 
   it("carries the whole visible label in the location field's accessible name", () => {
@@ -313,11 +300,10 @@ describe("NewTeamForm — fields", () => {
     expect(screen.getByText("Location (optional)")).toBeTruthy();
   });
 
-  it("spells out what counts as a location, because the split is not obvious", () => {
+  it("NEO-326: carries no Location help line", () => {
     renderForm();
-    expect(
-      screen.getByText(/Location is where they are from/),
-    ).toBeTruthy();
+    expect(screen.queryByText(/Location is where they are from/)).toBeNull();
+    expect(screen.queryByText(/city, state, region or school/)).toBeNull();
   });
 
   it("shows a 'Needed by' line only when the host supplies one", () => {
@@ -330,54 +316,29 @@ describe("NewTeamForm — fields", () => {
     expect(screen.queryByText(/Needed by:/)).toBeNull();
   });
 
-  it("points both fields at the host's blocked-reason element", () => {
+  it("points both fields at the host's blocked-reason element, and at nothing else", () => {
     // Both, deliberately: the reason a create is blocked can be about the
-    // composed name, which is what the two boxes make together.
-    //
-    // `aria-describedby` is a space-separated LIST — each field also points at
-    // the preview, and Location at the help line — so this is a containment
-    // check, not an equality one.
+    // composed name, which is what the two boxes make together. With the help
+    // line and the preview gone (NEO-326) the host's reason is the whole list.
     renderForm({ describedBy: "why-blocked" });
 
-    expect(locationField().getAttribute("aria-describedby")).toContain(
-      "why-blocked",
-    );
-    expect(nameField().getAttribute("aria-describedby")).toContain("why-blocked");
-  });
-
-  it("describes Location by the help line, and both fields by the preview", () => {
-    // SC 3.3.2 (Labels or Instructions). Both were plain text nothing pointed
-    // at, so tabbing into Location announced "New team location (optional),
-    // edit text" and nothing about what a location IS.
-    renderForm({ initial: { ...EMPTY, location: "San Diego", name: "Padres" } });
-
-    const help = screen.getByText(/^Location is where they are from/);
-    const preview = screen.getByText("Shows as:");
-
-    const locationDescribed = (
-      locationField().getAttribute("aria-describedby") ?? ""
-    ).split(" ");
-    expect(locationDescribed).toContain(help.id);
-    expect(locationDescribed).toContain(preview.id);
-
-    const nameDescribed = (
-      nameField().getAttribute("aria-describedby") ?? ""
-    ).split(" ");
-    expect(nameDescribed).toContain(preview.id);
-    // The help line is about the Location box specifically; repeating it on
-    // Name would announce a rule that does not apply there.
-    expect(nameDescribed).not.toContain(help.id);
+    expect(locationField().getAttribute("aria-describedby")).toBe("why-blocked");
+    expect(nameField().getAttribute("aria-describedby")).toBe("why-blocked");
   });
 
   it("emits no dangling or empty aria-describedby when the host gives no reason", () => {
-    renderForm();
-
+    // NEO-326: nothing left on the form for either field to point at, so the
+    // attribute is absent rather than empty or aimed at a removed line.
+    const { unmount } = renderForm();
     for (const field of [locationField(), nameField()]) {
-      const value = field.getAttribute("aria-describedby");
-      expect(value).toBeTruthy();
-      for (const id of (value ?? "").split(" ")) {
-        expect(document.getElementById(id)).not.toBeNull();
-      }
+      expect(field.hasAttribute("aria-describedby")).toBe(false);
+    }
+    unmount();
+
+    // An empty string from a host is "no reason", not an empty attribute.
+    renderForm({ describedBy: "" });
+    for (const field of [locationField(), nameField()]) {
+      expect(field.hasAttribute("aria-describedby")).toBe(false);
     }
   });
 });

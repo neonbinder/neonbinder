@@ -457,8 +457,9 @@ tags:
 # ── TEAM A: START THE FRANCHISE, THEN SAVE ──────────────────────────────────
 # The master row is targeted by `id:` — NEO-236 made the row's `aria-label` the
 # full composed name exactly, which maestro turns into `resource-id`, so this
-# names one row and cannot drift onto the panel heading or the "Shows as:"
-# preview that print the same string as TEXT.
+# names one row and cannot drift onto the panel heading, which prints the same
+# string as TEXT. (NEO-326 removed the panel's "Shows as:" preview, the other
+# node that used to; no step here ever read it.)
 - tapOn:
     id: "Loc${output.TOKEN} Fr${output.TOKEN}A"
 

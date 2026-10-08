@@ -1341,11 +1341,13 @@ describe("TeamManagement — the detail panel's composed name", () => {
     ).toBeTruthy();
   });
 
-  it("previews what the two fields compose to, live", () => {
+  it("NEO-326: shows no 'Shows as' preview, as loaded or as typed", () => {
+    // It only repeated `${location} ${name}`, which the two boxes already read
+    // left to right (Jason, 2026-10-04). Typed into as well as loaded: the
+    // preview used to appear only once Name had text, so a test that never
+    // typed could pass with the line still wired to the edit.
     renderAt("/admin/teams?team=t-mariners");
-
-    const preview = () => screen.getByText(/^Shows as:/);
-    expect(preview().textContent).toBe("Shows as: Seattle Mariners");
+    expect(screen.queryByText(/Shows as/)).toBeNull();
 
     fireEvent.change(screen.getByLabelText("Location"), {
       target: { value: "San Diego" },
@@ -1354,30 +1356,26 @@ describe("TeamManagement — the detail panel's composed name", () => {
       target: { value: "Padres" },
     });
 
-    expect(preview().textContent).toBe("Shows as: San Diego Padres");
-
-    // Emptying Location is a legitimate answer, not a half-typed state, and the
-    // preview has to show what that actually produces.
-    fireEvent.change(screen.getByLabelText("Location"), {
-      target: { value: "" },
-    });
-    expect(preview().textContent).toBe("Shows as: Padres");
+    expect(screen.queryByText(/Shows as/)).toBeNull();
+    // And not reworded into some other line either: no fixture team is called
+    // this and the panel heading is the SAVED name, so the draft composition
+    // is printed nowhere.
+    expect(screen.queryByText(/San Diego Padres/)).toBeNull();
   });
 
-  it("associates the preview with BOTH fields", () => {
-    // A `<p>` under two inputs is a visual convention; nothing in the
-    // accessibility tree connects them, so a screen-reader user tabbing into
-    // Location would never learn what the pair composes to.
+  it("NEO-326: neither field has a description while there is no refusal", () => {
     renderAt("/admin/teams?team=t-mariners");
 
-    const previewId = screen.getByText(/^Shows as:/).id;
-    expect(previewId).toBeTruthy();
-    expect(
-      screen.getByLabelText("Location").getAttribute("aria-describedby"),
-    ).toContain(previewId);
-    expect(
-      screen.getByLabelText("Name").getAttribute("aria-describedby"),
-    ).toContain(previewId);
+    expect(screen.queryByText(/where they.re from/)).toBeNull();
+    expect(screen.queryByText(/city, state, region or\s+school/)).toBeNull();
+    // Absent, not empty and not pointing at an id that is no longer in the
+    // document: a describedby naming a removed node is read as nothing by some
+    // screen readers and as a stale string by others.
+    for (const label of ["Location", "Name"]) {
+      expect(
+        screen.getByLabelText(label).getAttribute("aria-describedby"),
+      ).toBeNull();
+    }
   });
 
   it("sends both halves, and clears the location with null", async () => {
@@ -1508,7 +1506,10 @@ describe("TeamManagement — a name that is already taken", () => {
     for (const label of ["Location", "Name"]) {
       const field = screen.getByLabelText(label);
       expect(field.getAttribute("aria-invalid")).toBe("true");
-      expect(field.getAttribute("aria-describedby")).toContain(alertId);
+      // NEO-326: EXACTLY the message. With the "Shows as" preview gone the
+      // refusal is the only description either field has, so nothing else may
+      // ride along in the list.
+      expect(field.getAttribute("aria-describedby")).toBe(alertId);
     }
   });
 
@@ -1529,6 +1530,13 @@ describe("TeamManagement — a name that is already taken", () => {
       screen.queryByRole("button", { name: "Open the existing team" }),
     ).toBeNull();
     expect(screen.getByLabelText("Name").getAttribute("aria-invalid")).toBeNull();
+    // And the description goes with the message rather than pointing at an id
+    // that has left the document.
+    for (const label of ["Location", "Name"]) {
+      expect(
+        screen.getByLabelText(label).getAttribute("aria-describedby"),
+      ).toBeNull();
+    }
   });
 
   it("falls back to plain words for a failure that carried no message", async () => {

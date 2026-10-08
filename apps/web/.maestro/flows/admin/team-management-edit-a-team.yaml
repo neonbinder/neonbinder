@@ -446,10 +446,12 @@ tags:
 # the same reason the button was. `admin-franchises-link-teams` asserts the same
 # string with no positioning step at all and is green.
 
-# The mutation confirms by name — and NEO-236 made that the COMPOSED name, so
-# this line is itself the first read-back of the split: "Saved Loc0 TMT<token>"
-# can only be said by a save that took the Location box and the Name box and
-# put them together in that order.
+# The mutation confirms by name — and NEO-236 made that the COMPOSED name:
+# "Saved Loc0 TMT<token>" is printed only once the save resolves, from the
+# Location box and the Name box put together in that order. It is composed
+# from the DRAFT, though, so it says the save went through, not what the row
+# now holds; that is read back from the database after the reload below
+# (assertions 1 and 2).
 - extendedWaitUntil:
     visible: '.*Saved Loc${WORKER_INDEX || "0"} TMT${output.ATTEMPT_TOKEN}.*'
     timeout: 15000
@@ -490,9 +492,24 @@ tags:
     centerElement: true
     timeout: 7000
 
-# 1. THE HEADING SAYS THE FULL NAME. Anchored ABOVE the Location label, because
-#    the live "Shows as: <full name>" preview under the two boxes says the same
-#    string — and it sits BELOW the label, so this can only be the heading.
+# 1. THE SAVED ROW'S DETAIL SAYS THE FULL NAME. This is the flow's proof that
+#    the COMPOSITION was stored, and it is a read of the database, not of the
+#    form: the panel heading renders `teamFullName(team)` off the row the query
+#    just returned after a full reload, never off the draft boxes, so
+#    "Loc0 TMT<token>" here can only come from a saved row whose location and
+#    nickname compose to that string in that order. The row was created with no
+#    location (heading "TMT<token>"), so a save that dropped the Location box
+#    or stored the halves swapped reads differently. (Both halves glued into
+#    the Name column would compose to the same string; assertions 3 and 4 —
+#    the row's short name and the Location box — are what catch that.)
+#    NEO-326 removed Team Management's live "Shows as: <full name>" preview,
+#    the only other node on this screen that printed the composed string; this
+#    assertion never read that preview (it was draft state, not stored state)
+#    and the heading carries the proof alone. It is still anchored ABOVE the
+#    Location label: nothing below the label prints the full name any more,
+#    and the anchor keeps this match on the panel heading if something there
+#    ever does again. The row assertion below is the second, independent read
+#    of the same stored name.
 - assertVisible:
     text: 'Loc${WORKER_INDEX || "0"} TMT${output.ATTEMPT_TOKEN}'
     above:

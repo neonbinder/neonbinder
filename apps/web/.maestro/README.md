@@ -702,7 +702,8 @@ any scroll a flow can perform.** The entity-review wizard is the shape that
 bites: a fixed-height flex column of a `shrink-0` header, a
 `flex-1 min-h-0 overflow-y-auto` body, and a pinned footer. The header and the
 footer are always on screen; the body is whatever height the current step wants,
-and on a tall step (a Possible-matches panel plus a whole New Team form) its
+and on a tall step (a team step's "Link to existing team" section, or a
+player's Possible-matches panel, plus a whole New Team form) its
 lower half is simply gone.
 
 So: **assert only on the pinned header and footer.** They carry everything a

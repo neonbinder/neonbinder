@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -286,6 +286,23 @@ export default function CareerTeamEntry({
   };
 
   /**
+   * Enter in either year field is "+ Add" (Jason, 2026-10-04): the years are
+   * the last thing filled in, so the keyboard operator should not have to Tab
+   * to the button. `commit` already refuses an invalid entry, so Enter on bad
+   * data does nothing, exactly like the disabled button.
+   *
+   * `preventDefault` on EVERY Enter, valid or not: nothing else acts on it — no
+   * implicit form submission if a caller ever wraps this in a `<form>`, and no
+   * ancestor shortcut that honours `defaultPrevented`. The name field keeps its
+   * own Enter (take a suggestion or close the list); it never adds.
+   */
+  const handleYearKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    commit();
+  };
+
+  /**
    * A suggestion is an existing (or already-staged) team's WHOLE name, and it
    * goes into the box verbatim — byte-for-byte the name the prelude will look
    * up, which is what makes it link rather than create.
@@ -476,6 +493,7 @@ export default function CareerTeamEntry({
           min={MIN_CAREER_YEAR}
           max={maxYear}
           onChange={(e) => setFromYear(e.target.value)}
+          onKeyDown={handleYearKeyDown}
           className="w-24 p-1.5 text-sm"
         />
         <Input
@@ -487,6 +505,7 @@ export default function CareerTeamEntry({
           min={MIN_CAREER_YEAR}
           max={maxYear}
           onChange={(e) => setToYear(e.target.value)}
+          onKeyDown={handleYearKeyDown}
           className="w-28 p-1.5 text-sm"
         />
         <button

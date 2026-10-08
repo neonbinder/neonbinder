@@ -1,4 +1,11 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { Link, useSearchParams } from "react-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { ConvexError } from "convex/values";
@@ -1214,21 +1221,24 @@ function PlayerDetail({
   const canSave =
     dirty && trimmedName.length > 0 && qidValid && birthYearValid && busy === null;
 
-  const addStint = () => {
-    setStintError(null);
+  /**
+   * The pending stint, checked: either the stint "Add stint" would append, or
+   * the refusal it would print instead. One function, so the button and the
+   * Enter key below cannot disagree about what counts as a valid entry.
+   */
+  const checkPendingStint = ():
+    | { stint: Stint; problem?: undefined }
+    | { stint?: undefined; problem: string } => {
     const from = Number(pendingFrom);
     if (!pendingTeam || !pendingFrom || !Number.isInteger(from)) {
-      setStintError("Pick a team and a whole start year.");
-      return;
+      return { problem: "Pick a team and a whole start year." };
     }
     const to = pendingTo ? Number(pendingTo) : undefined;
     if (pendingTo && !Number.isInteger(to)) {
-      setStintError("An end year must be a whole year.");
-      return;
+      return { problem: "An end year must be a whole year." };
     }
     if (to !== undefined && to < from) {
-      setStintError("A career stint cannot end before it starts.");
-      return;
+      return { problem: "A career stint cannot end before it starts." };
     }
     // (team, fromYear), NOT team: two stints at one franchise are real history
     // — traded away, re-signed later — and the server keeps both. Only a
@@ -1236,20 +1246,53 @@ function PlayerDetail({
     if (
       stints.some((s) => s.teamId === pendingTeam && s.fromYear === from)
     ) {
-      setStintError(
-        `${teamName(pendingTeam)} already has a stint starting in ${from}.`,
-      );
+      return {
+        problem: `${teamName(pendingTeam)} already has a stint starting in ${from}.`,
+      };
+    }
+    return {
+      stint: {
+        teamId: pendingTeam,
+        fromYear: from,
+        ...(to !== undefined ? { toYear: to } : {}),
+      },
+    };
+  };
+
+  const addStint = () => {
+    setStintError(null);
+    const { stint, problem } = checkPendingStint();
+    if (!stint) {
+      setStintError(problem);
       return;
     }
-    setStints(
-      sortStints([
-        ...stints,
-        { teamId: pendingTeam, fromYear: from, ...(to !== undefined ? { toYear: to } : {}) },
-      ]),
-    );
+    setStints(sortStints([...stints, stint]));
     setPendingTeam(null);
     setPendingFrom("");
     setPendingTo("");
+  };
+
+  /**
+   * NEO-326 — Enter in either stint year field is "Add stint" (Jason,
+   * 2026-10-04), the same as the career-team entry in the checklist wizard:
+   * the years are the last thing filled in, so a keyboard operator should not
+   * have to Tab to the button.
+   *
+   * Only for a VALID entry. An invalid one does nothing on Enter — no stint and
+   * no refusal line — so a stray Enter mid-entry never pops an error; the
+   * button still prints the refusal when it is pressed.
+   *
+   * `preventDefault` on EVERY Enter, valid or not, so nothing else acts on it.
+   * Today nothing else would: this screen has no `<form>` (implicit submission
+   * cannot happen), no dialog around the panel, no keyboard save shortcut, and
+   * the only other key handler here (the "Sports to add" group's Escape) is
+   * not an ancestor of these fields. The call keeps it that way if any of
+   * those arrive later, and any ancestor that honours `defaultPrevented`.
+   */
+  const handleStintYearKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    if (checkPendingStint().stint) addStint();
   };
 
   const removeStint = (index: number) => {
@@ -1635,6 +1678,7 @@ function PlayerDetail({
               type="number"
               value={pendingFrom}
               onChange={(e) => setPendingFrom(e.target.value)}
+              onKeyDown={handleStintYearKeyDown}
               className="w-full px-3 py-2 text-base"
             />
           </label>
@@ -1647,6 +1691,7 @@ function PlayerDetail({
               value={pendingTo}
               placeholder="present"
               onChange={(e) => setPendingTo(e.target.value)}
+              onKeyDown={handleStintYearKeyDown}
               className="w-full px-3 py-2 text-base"
             />
           </label>

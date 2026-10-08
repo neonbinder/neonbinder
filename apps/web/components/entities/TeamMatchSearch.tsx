@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -17,18 +17,30 @@ import type { NearMatch } from "./NearMatchPanel";
  * replaced by this: one type-ahead, on every team step, in the body where the
  * Possible matches list used to be.
  *
- * ## Pre-filled, and the near matches are its first answer
- * The field opens holding the row's own name, and while it still does, its
+ * ## Headed "Link to existing team", on every team step
+ * NEO-326 (Jason, 2026-10-04): the section says what it is FOR, not what the
+ * ranking found. "Possible matches" over a box with nothing in it read as a
+ * claim; "Link to existing team" is true with or without near matches, so the
+ * heading and the box are always there and never come and go with the
+ * near-match query. Whatever the caller passes as `children` sits directly
+ * under the field, inside the box — the wizard's "Remember … as a name"
+ * checkbox, which is a fact about linking and so belongs with the link control.
+ *
+ * ## Starts empty, and the near matches are its first answer
+ * NEO-326: the field opens EMPTY. Pre-filling the row's own name made it look
+ * as if a team by exactly that name already existed. While it is empty its
  * options ARE the near matches (the caller's list, with the lone exact match
  * already promoted to the footer's primary and left out), each with its
- * league and years under it. With no near matches the list stays shut until
- * the operator types (`hideWhenEmpty`): "No teams by that name" under a name
- * they never typed would answer a question nobody asked.
+ * league and years under it, so focusing the box still offers a real close
+ * match without a keystroke. With no near matches the list stays shut until
+ * the operator types (`hideWhenEmpty`): "No teams by that name" under a query
+ * nobody typed would answer a question nobody asked.
  *
- * Typing anything else ("Dodgers") hands the finding to `teams.search`, the
- * server-backed, sport-scoped, alias-aware index `CareerTeamEntry`,
- * `TeamPicker` and `EntityLinkSearch` already type against. Never a
- * fetch-all-and-filter: a sport can hold thousands of teams.
+ * Typing anything hands the finding to `teams.search`, the server-backed,
+ * sport-scoped, alias-aware index `CareerTeamEntry`, `TeamPicker` and
+ * `EntityLinkSearch` already type against. Never a fetch-all-and-filter: a
+ * sport can hold thousands of teams. Clearing the field goes back to the near
+ * matches.
  *
  * ## Why the second line is league and years
  * "Dodgers" is five teams. The full name tells Brooklyn from Los Angeles, and
@@ -41,7 +53,8 @@ import type { NearMatch } from "./NearMatchPanel";
  * Exactly what the old near-match row did: `onPick(id, name)`, which the
  * wizard hands to the one link path every team link goes through
  * (`handleLink`, with the "Remember … as a name" answer). This component
- * decides nothing itself.
+ * decides nothing itself. The caller keys it by row, so each step starts
+ * empty again.
  */
 
 /** See `PlayerAutocomplete`'s SEARCH_DEBOUNCE_MS — same value, same reasoning. */
@@ -52,6 +65,9 @@ const SEARCH_LIMIT = 25;
 
 /** The combobox's accessible name. An E2E contract: flows tap it by this. */
 export const TEAM_MATCH_SEARCH_LABEL = "Search all teams";
+
+/** NEO-326 — the section's visible heading, and the group's accessible name. */
+export const TEAM_MATCH_SECTION_HEADING = "Link to existing team";
 
 /** One option. `_id` is a team row; everything else is display. */
 type TeamOption = {
@@ -66,25 +82,28 @@ type TeamOption = {
 export interface TeamMatchSearchProps {
   /** NEO-96: the sport-level selectorOptions row id. Scopes every search. */
   sportId: Id<"selectorOptions">;
-  /** What the field opens holding — the row's name as the step proposes it. */
-  initialQuery: string;
   /**
-   * The near matches to open on, for as long as the field still holds
-   * `initialQuery`. `undefined` while the query is in flight, which renders
-   * exactly as "none" does.
+   * The near matches to offer while the field is empty. `undefined` while the
+   * query is in flight, which renders exactly as "none" does.
    */
   defaultMatches: NearMatch[] | undefined;
   onPick: (id: Id<"teams">, name: string) => void;
+  /** Rendered directly under the field, inside the section. */
+  children?: ReactNode;
 }
 
 export function TeamMatchSearch({
   sportId,
-  initialQuery,
   defaultMatches,
   onPick,
+  children,
 }: TeamMatchSearchProps) {
-  const [query, setQuery] = useState(initialQuery);
-  const [debouncedQuery, setDebouncedQuery] = useState(initialQuery);
+  const [query, setQuery] = useState("");
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  // On the heading <p>, never on the input: maestro-web reads an input's
+  // resource-id as `id || aria-label`, and "Search all teams" is the flows'
+  // handle on it.
+  const headingId = useId();
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedQuery(query), SEARCH_DEBOUNCE_MS);
@@ -92,17 +111,15 @@ export function TeamMatchSearch({
   }, [query]);
 
   /**
-   * Still holding the proposed name — the near matches answer, no search.
-   * Read off the LIVE query, not the debounced one, so the first keystroke
-   * away from it shows "Searching…" at once rather than 200ms of near matches
-   * that no longer describe what is typed.
+   * Nothing typed — the near matches answer, no search. Read off the LIVE
+   * query, not the debounced one, so the first keystroke shows "Searching…"
+   * at once rather than 200ms of near matches that no longer describe what is
+   * typed.
    */
-  const showingDefaults = query.trim() === initialQuery.trim();
+  const showingDefaults = query.trim() === "";
   const term = debouncedQuery.trim();
   const searchArgs =
-    !showingDefaults && term && term !== initialQuery.trim()
-      ? { query: term, sportId, limit: SEARCH_LIMIT }
-      : "skip";
+    !showingDefaults && term ? { query: term, sportId, limit: SEARCH_LIMIT } : "skip";
   const searched = useQuery(api.teams.search, searchArgs);
 
   /**
@@ -181,19 +198,17 @@ export function TeamMatchSearch({
 
   // In flight: typed away from the defaults and the answer is not back yet —
   // including the debounce window, when the query has not even been sent.
-  const loading = !showingDefaults && query.trim() !== "" && searched === undefined;
+  const loading = !showingDefaults && searched === undefined;
 
   return (
-    // The Possible matches box only when there are matches to head. With none
-    // it is the caption and one field, so on the commonest team step (a
-    // genuinely new team) the New Team form below is not pushed down by
-    // chrome with nothing in it.
+    // One box, always, named by its heading: "Link to existing team" is true
+    // with or without near matches, so nothing here comes and goes when the
+    // near-match query lands (NEO-326). A group rather than a <section>: a
+    // region landmark inside a dialog step is noise to a landmark list.
     <div
-      className={
-        matchCount > 0
-          ? "rounded-md border border-neon-blue/40 bg-neon-blue/5 p-3 space-y-2"
-          : "space-y-1"
-      }
+      role="group"
+      aria-labelledby={headingId}
+      className="rounded-md border border-neon-blue/40 bg-neon-blue/5 p-3 space-y-2"
     >
       {/* Mounted from the first render and never removed, as the old panel's
           was: a live region inserted at the instant its text appears is
@@ -203,9 +218,9 @@ export function TeamMatchSearch({
           ? ""
           : `${matchCount} possible match${matchCount === 1 ? "" : "es"}`}
       </span>
-      {matchCount > 0 && (
-        <p className="text-sm font-medium text-neon-blue">Possible matches</p>
-      )}
+      <p id={headingId} className="text-sm font-medium text-neon-blue">
+        {TEAM_MATCH_SECTION_HEADING}
+      </p>
       <div className="space-y-1">
         {/* The visible name of the field, word for word its accessible name
             (WCAG 2.2 SC 2.5.3). aria-hidden so it is not read twice: the
@@ -224,6 +239,9 @@ export function TeamMatchSearch({
             undefined
           }
           descriptionBelow
+          // Empty and focused: open on the near matches (NEO-326). With none,
+          // `hideWhenEmpty` keeps the list shut until the operator types.
+          openOnEmpty
           hideWhenEmpty={showingDefaults}
           onSelect={(t) => {
             // Leave the pick in the field, as `PlayerAutocomplete` does: if the
@@ -241,6 +259,7 @@ export function TeamMatchSearch({
           inputGeometryClassName="p-1.5 text-sm"
         />
       </div>
+      {children}
     </div>
   );
 }

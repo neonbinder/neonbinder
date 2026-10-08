@@ -646,3 +646,125 @@ describe("CareerTeamEntry — dismissing the suggestion list", () => {
     expect(listbox()).toBeTruthy();
   });
 });
+
+// ===========================================================================
+// NEO-326 — Enter in a year field is "+ Add"
+//
+// Jason, 2026-10-04: "When filling in the years, the enter key should have the
+// same effect as 'add' as long as the data is valid."
+//
+// Same `commit()` as the button: emit, reset all three fields, focus back on
+// the name for the next stint. Enter's default is prevented whether or not the
+// data is valid, and invalid data adds nothing. The name field's own Enter
+// (take a suggestion or close the list) is untouched.
+// ===========================================================================
+
+describe("CareerTeamEntry — Enter in a year field adds", () => {
+  const nameInput = () => screen.getByLabelText("Career team name") as HTMLInputElement;
+  const fromInput = () => screen.getByLabelText("From year") as HTMLInputElement;
+  const toInput = () => screen.getByLabelText("To year (optional)") as HTMLInputElement;
+
+  it("adds from From year with a valid name and year, resets, and refocuses the name", () => {
+    const { onAdd } = renderEntry();
+
+    typeName("Brand New Club");
+    fireEvent.change(fromInput(), { target: { value: "2021" } });
+    act(() => {
+      fromInput().focus();
+    });
+    fireEvent.keyDown(fromInput(), { key: "Enter" });
+
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(onAdd).toHaveBeenCalledWith({ name: "Brand New Club", fromYear: 2021 });
+    expect(nameInput().value).toBe("");
+    expect(fromInput().value).toBe("");
+    expect(toInput().value).toBe("");
+    expect(document.activeElement).toBe(nameInput());
+  });
+
+  it("adds from To year with a valid range", () => {
+    const { onAdd } = renderEntry();
+
+    typeName("Arizona Diamondbacks");
+    fireEvent.change(fromInput(), { target: { value: "2020" } });
+    fireEvent.change(toInput(), { target: { value: "2022" } });
+    act(() => {
+      toInput().focus();
+    });
+    fireEvent.keyDown(toInput(), { key: "Enter" });
+
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(onAdd).toHaveBeenCalledWith({
+      name: "Arizona Diamondbacks",
+      fromYear: 2020,
+      toYear: 2022,
+    });
+    expect(nameInput().value).toBe("");
+    expect(fromInput().value).toBe("");
+    expect(toInput().value).toBe("");
+    expect(document.activeElement).toBe(nameInput());
+  });
+
+  it.each([
+    { label: "no name", name: "", from: "2021", to: "" },
+    { label: "no From year", name: "Brand New Club", from: "", to: "" },
+    { label: "a From year below the floor", name: "Ancient Club", from: "1200", to: "" },
+    { label: "a From year past the ceiling", name: "Future Club", from: "9999", to: "" },
+    { label: "To earlier than From", name: "Backwards Club", from: "2022", to: "2020" },
+  ])("adds nothing on Enter with $label, from either year field", ({ name, from, to }) => {
+    const { onAdd } = renderEntry();
+
+    if (name) typeName(name);
+    fireEvent.change(fromInput(), { target: { value: from } });
+    fireEvent.change(toInput(), { target: { value: to } });
+    fireEvent.keyDown(fromInput(), { key: "Enter" });
+    fireEvent.keyDown(toInput(), { key: "Enter" });
+
+    expect(onAdd).not.toHaveBeenCalled();
+    // Nothing reset: the operator's half-finished entry is still there to fix.
+    expect(nameInput().value).toBe(name);
+    expect(fromInput().value).toBe(from);
+    expect(toInput().value).toBe(to);
+  });
+
+  it("prevents Enter's default in both year fields, valid or not", () => {
+    renderEntry();
+
+    // Invalid (blank) first: the default is still prevented.
+    expect(fireEvent.keyDown(fromInput(), { key: "Enter" })).toBe(false);
+    expect(fireEvent.keyDown(toInput(), { key: "Enter" })).toBe(false);
+
+    typeName("Brand New Club");
+    fireEvent.change(fromInput(), { target: { value: "2021" } });
+    expect(fireEvent.keyDown(fromInput(), { key: "Enter" })).toBe(false);
+
+    typeName("Arizona Diamondbacks");
+    fireEvent.change(fromInput(), { target: { value: "2020" } });
+    fireEvent.change(toInput(), { target: { value: "2022" } });
+    expect(fireEvent.keyDown(toInput(), { key: "Enter" })).toBe(false);
+  });
+
+  it("leaves other keys alone in the year fields", () => {
+    const { onAdd } = renderEntry();
+
+    typeName("Brand New Club");
+    fireEvent.change(fromInput(), { target: { value: "2021" } });
+
+    expect(fireEvent.keyDown(fromInput(), { key: "Tab" })).toBe(true);
+    expect(fireEvent.keyDown(toInput(), { key: "a" })).toBe(true);
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(fromInput().value).toBe("2021");
+  });
+
+  it("still never adds from the NAME field, even with valid years filled in", () => {
+    const { onAdd } = renderEntry();
+
+    typeName("Brand New Club");
+    fireEvent.change(fromInput(), { target: { value: "2021" } });
+    fireEvent.keyDown(nameInput(), { key: "Enter" });
+
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(nameInput().value).toBe("Brand New Club");
+    expect(fromInput().value).toBe("2021");
+  });
+});
