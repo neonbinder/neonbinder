@@ -83,7 +83,7 @@
     "@vitejs/plugin-react": "^6.1.1",
     "concurrently": "^10.0.5",
     "convex-test": "^0.0.58",
-    "dotenv": "^17.4.2",
+    "dotenv": "^18.0.0",
     "dotenv-cli": "^11.0.0",
     "eslint": "^10.10.0",
     "eslint-plugin-jsx-a11y": "^6.10.2",
