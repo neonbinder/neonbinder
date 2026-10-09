@@ -200,7 +200,14 @@ function namesLooselyAgree(card: LinkableNbCard, f: FetchedParallelCard): boolea
   return false;
 }
 
-function fetchedIsVariation(f: FetchedParallelCard): boolean {
+/**
+ * Is a FETCHED marketplace card a variation of another? The one reading the
+ * link uses, exported (NEO-325) so the Base match probe picks the "first card"
+ * of a marketplace set by the same rule.
+ */
+export function fetchedIsVariation(
+  f: Pick<FetchedParallelCard, "isVariation" | "cardVariation">,
+): boolean {
   return f.isVariation === true || !!f.cardVariation?.trim();
 }
 

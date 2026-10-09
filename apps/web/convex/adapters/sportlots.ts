@@ -1,6 +1,6 @@
 "use node";
 
-import { action, ActionCtx } from "../_generated/server";
+import { action, internalAction, ActionCtx } from "../_generated/server";
 import { v } from "convex/values";
 // NEO-237 — the all-brands predicate and the one brand-prefix matcher. Both
 // pure; the adapter compares a marketplace id to marketplace vocabulary and
@@ -50,6 +50,19 @@ import { isPlatformPaused } from "../marketplacePause";
 import { pausedSyncMessage } from "../selectorSyncStore";
 // NEO-321 follow-up — a structured reason beside `success: false`, and the
 // self-imposed-limiter log line.
+// NEO-325 — the Base match probe's bounds, wire shapes and "first card" rule,
+// shared with the default-runtime actions in `convex/baseMatchProbe.ts`.
+import {
+  MAX_SL_COUNT_IDS,
+  MAX_SL_FIRST_PAGE_IDS,
+  MAX_SL_PROBE_ID_LENGTH,
+  SL_PROBE_CONCURRENCY,
+  checkProbeIds,
+  mapWithConcurrency,
+  slListcardsSummaryValidator,
+  summarizeProbeCards,
+  type SlListcardsSummary,
+} from "../lib/baseMatchProbe";
 import {
   fetchFailureValidator,
   isAbortTimeout,
@@ -1512,6 +1525,306 @@ export function parseSlSubjects(residual: string): { players?: string[] } {
 }
 
 /**
+ * One card row of a SportLots `listcards.tpl` page, parsed. The shape
+ * `fetchSportLotsChecklist` returns per card.
+ */
+export type SlListcardsCard = {
+  cardNumber: string;
+  cardName: string;
+  team?: string;
+  teams?: string[];
+  players?: string[];
+  attributes?: string[];
+  printRun?: number;
+  autographType?: string;
+  cardVariation?: string;
+  /** NEO-189: SL marks a variation with ` [ VAR … ] ` and keeps the
+   *  parent's card number, so this flag is the only thing separating
+   *  these rows from the card they vary. */
+  isVariation?: boolean;
+  platformRef?: string;
+  sportlotsRef?: string;
+};
+
+/**
+ * What `walkSlListcards` answers: every row of the pages it read, or why a
+ * page failed. A failure carries no partial rows: a truncated set is the bug
+ * the pagination below exists to prevent.
+ */
+export type SlListcardsWalk =
+  | { cards: SlListcardsCard[]; pagesOk: number; slowestPageMs: number }
+  | { failure: FetchFailure; message: string };
+
+/**
+ * Safety valve on the walk: bounds the loop if SL ever returns a non-empty
+ * page forever. 200 pages = 20k listings, far beyond any real set. What
+ * `fetchSportLotsChecklist` walks with.
+ */
+export const SL_MAX_PAGES = 200;
+
+/**
+ * NEO-325 — the `listcards.tpl` page loop, lifted out of
+ * `fetchSportLotsChecklist` so a probe can read a set's first page (or count
+ * it) with the same parse and the same end-of-set rules. Reads at most
+ * `opts.maxPages` pages; stops earlier on an empty page or a page that did not
+ * advance. Never asks for the cookie itself: the caller reads it once, so a
+ * batch costs one token read, not one per set.
+ *
+ * Throws only for something unexpected outside a page request (a parse bug);
+ * every page-level failure is returned.
+ */
+export async function walkSlListcards(
+  sessionCookie: string,
+  setRadioId: string,
+  opts: { maxPages: number },
+): Promise<SlListcardsWalk> {
+  // Parse card table rows.
+  //
+  // Pattern: <td class="small(color)?left">CARD_NUMBER</td>
+  //          <td class="smallleft">DESCRIPTION</td>
+  //
+  // NEO-189 — the number cell carries a DIFFERENT class on a variation row.
+  // SportLots tints the card number when a row is a variation of the row
+  // above it, and it does that by swapping the class:
+  //
+  //   base row       <td class="smallleft">20</td>
+  //                  <td class="smallleft">2025 Topps Base Set #20 Coby Mayo</td>
+  //   variation row  <td class="smallcolorleft">20</td>
+  //                  <td class="smallleft">… #20 Coby Mayo [ VAR Factory Set ]</td>
+  //
+  // Verified against the live listcards page for set 328996 on 2026-08-27.
+  //
+  // The old pattern required "smallleft" on BOTH cells, so it matched the
+  // base row and skipped the variation entirely — silently, since a
+  // non-matching row is simply not a row. Every SportLots variation has
+  // therefore been invisible to NeonBinder: a 2025 Topps sync reported
+  // "0 SL-only" and paired 0 variations, and both numbers looked like
+  // "SportLots does not carry these" rather than "we never parsed them".
+  //
+  // Only the number cell varies; the description cell stays "smallleft".
+  const cardRegex = /<td class="small(?:color)?left">([^<]+)<\/td>\s*<td class="smallleft">([^<]+)<\/td>/gi;
+  const cards: SlListcardsCard[] = [];
+
+  // PAGINATE. `start` is a 1-BASED OFFSET INTO SL'S LISTING TABLE, not a
+  // page number, and SL's stride is a fixed 100 LISTINGS per request.
+  //
+  // Crucially, listings != parsed card rows: a request returns up to 100
+  // listings, but the number of rows matching the card pattern VARIES.
+  // Measured live on selset=309098 (2024 Topps Chrome Base, 300 cards):
+  //
+  //   start=1   -> 88 rows, cards #1..#88
+  //   start=101 -> 92 rows, cards #89..#180
+  //   start=201 -> 89 rows, cards #181..#269
+  //   start=301 -> 31 rows, cards #270..#300
+  //   start=401 ->  0 rows  <- the only reliable end-of-set signal
+  //
+  // and on selset=3628 that `start` is an offset, not an index:
+  //   start=1 -> #1..#100, start=2 -> #2..#101, start=101 -> #101..#200.
+  //
+  // Two consequences, both learned the hard way:
+  //
+  //   1. ADVANCE BY A FIXED 100, never by rows parsed. Advancing by rows
+  //      (88) would request start=89 and re-read cards #77..#164 — both
+  //      duplicating and, at the tail, skipping.
+  //   2. STOP ONLY ON AN EMPTY PAGE. Stopping on "fewer rows than a full
+  //      page" ends the walk at page one for this very set, since page one
+  //      legitimately yields 88.
+  //
+  // Before pagination existed this POSTed once with start=1, so any set
+  // over one page silently truncated. The reconciliation modal then showed
+  // "SportLots only (0)" against hundreds of BSC-only rows, which reads
+  // like a matching bug rather than a fetch bug.
+  const SL_PAGE_STRIDE = 100;
+  let start = 1;
+  let lastPageFingerprint = "";
+  // NEO-321 follow-up — where a failure landed, and how the pages timed.
+  let pagesOk = 0;
+  let slowestPageMs = 0;
+  const pageFailure = (
+    failure: Omit<FetchFailure, "pageStart" | "pagesOk">,
+  ): FetchFailure => ({ ...failure, pageStart: start, pagesOk });
+
+  // The caller's page budget (`SL_MAX_PAGES` for a checklist), never more.
+  const maxPages = Number.isFinite(opts.maxPages)
+    ? Math.max(1, Math.min(SL_MAX_PAGES, Math.floor(opts.maxPages)))
+    : 1;
+  for (let page = 0; page < maxPages; page++) {
+    const formData = new URLSearchParams({
+      selset: setRadioId,
+      dcond: "NM",
+      dbin: "1",
+      dval: "0.18",
+      dentry: "ADD",
+      pricing: "OLD",
+      start: String(start),
+    });
+
+    // NEO-321 follow-up — a throw on THIS page (our 30s timer, or the
+    // network) is answered here, with the page it hit, instead of falling
+    // to the outer catch with no position. The message is unchanged.
+    const pageStartedAt = Date.now();
+    let response: Response;
+    let html: string;
+    try {
+      response = await slFetch(LISTCARDS_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          Cookie: sessionCookie,
+        },
+        body: formData.toString(),
+      });
+
+      if (!response.ok) {
+        await response.text().catch(() => "");
+        // Fail the whole fetch rather than silently returning a partial
+        // checklist — a truncated set is exactly the bug this loop fixes,
+        // and committing one would persist missing cards.
+        return {
+          message: `SportLots HTTP error: ${response.status}`,
+          failure: pageFailure({
+            kind: "http_error",
+            httpStatus: response.status,
+            timedOut: false,
+          }),
+        };
+      }
+
+      // The body read is under the same abort timer as the request.
+      html = await response.text();
+    } catch (err) {
+      const timedOut =
+        err instanceof SlFetchTimeoutError || isAbortTimeout(err);
+      return {
+        message: `SportLots error: ${err instanceof Error ? err.message : "Unknown error"}`,
+        failure: pageFailure(
+          timedOut
+            ? { kind: "timeout", timedOut: true, timeoutMs: SL_FETCH_TIMEOUT_MS }
+            : { kind: "network", timedOut: false },
+        ),
+      };
+    }
+    slowestPageMs = Math.max(slowestPageMs, Date.now() - pageStartedAt);
+
+    if (isSessionExpired(html)) {
+      return {
+        message: "SportLots session expired. Re-authenticate from Profile.",
+        failure: pageFailure({
+          kind: "signed_out",
+          httpStatus: response.status,
+          timedOut: false,
+        }),
+      };
+    }
+    pagesOk++;
+
+    // Collect this page separately so an unchanged page can be detected
+    // and discarded BEFORE it contributes duplicates.
+    const pageCards: typeof cards = [];
+    cardRegex.lastIndex = 0;
+    let match;
+
+    while ((match = cardRegex.exec(html)) !== null) {
+      const cardNumber = match[1].trim();
+      // The description EXACTLY as SportLots served it. Never normalised,
+      // never decoded — see the platformRef note below.
+      const fullDescription = match[2].trim();
+
+      if (!cardNumber || !fullDescription) continue;
+
+      // NEO-251: decode SL's HTML entities ONCE, at the head of the
+      // DERIVATION path only. Everything downstream of here — cardName,
+      // attributes, the variation label, the player parse — sees the same
+      // decoded text, so an apostrophe in "Peter O&#39;Brien" is a real
+      // apostrophe in every derived field or in none.
+      //
+      // `fullDescription` itself deliberately stays raw. See platformRef.
+      const decodedDescription = decodeSlEntities(fullDescription);
+
+      // Strip a leading "#NNN" if the description echoes the card number,
+      // then run the token tokenizer to lift attributes / print run.
+      let working = decodedDescription;
+      const echo = working.indexOf(`#${cardNumber}`);
+      if (echo !== -1) {
+        working = working.substring(echo + cardNumber.length + 1).trim();
+      }
+
+      // NEO-189: lift SL's ` [ VAR … ] ` marker before tokenizing, so the
+      // marker never lands in cardName and the variation signal reaches
+      // the domain. SL keeps the parent's card number, so this flag is the
+      // ONLY thing distinguishing these rows from their parent.
+      const {
+        isVariation,
+        variationLabel,
+        residual: withoutVariation,
+      } = parseSlVariationMarker(working);
+
+      const { attributes, printRun, residual } =
+        tokenizeSlDescription(withoutVariation);
+      const cardName = residual || withoutVariation || decodedDescription;
+
+      // NEO-251: player names off the same residual `cardName` is built
+      // from. `cardName` itself is untouched — this only ADDS a field.
+      // Returns `{}` (so `players` stays undefined) on any doubt; see
+      // parseSlSubjects. `team`/`teams` are never set here, deliberately.
+      const { players } = parseSlSubjects(residual);
+
+      pageCards.push({
+        cardNumber,
+        cardName,
+        players,
+        attributes: attributes.length ? attributes : undefined,
+        printRun,
+        autographType: attributes.includes("AU") ? "Unknown" : undefined,
+        // NEO-189: SportLots' answer to the domain question, plus its own
+        // wording for the variation. Untranslated — see parseSlVariationMarker.
+        isVariation: isVariation || undefined,
+        cardVariation: variationLabel,
+        // NEO-91: the raw, un-tokenized description (not the bare card
+        // number) — this is what lands in cardChecklist.platformData.
+        // sportlots. SL reuses the same cardNumber across variation rows
+        // ("#10 Aaron Judge" vs "#10 Aaron Judge [ VAR All-Star Logo ]"),
+        // so only the full text disambiguates which SL row this card
+        // actually matched. sportlotsRef stays the bare number — that's
+        // still the correct key for BSC↔SL reconciliation matching below.
+        //
+        // NEO-251, THE REASON THIS IS `fullDescription` AND NOT THE
+        // DECODED STRING: this ref is an IDENTITY KEY, not display text.
+        // `buildCommitPrelude` matches stored rows on it byte-for-byte
+        // (`existingIdBySlRef` in selectorOptions.ts), and
+        // `fetchCardChecklist` warns about `orphanedSlRefs` for every
+        // stored ref the fetch no longer returns. Decoding it would
+        // change the key of every already-stored row whose description
+        // contains an entity — each one would go orphaned AND be
+        // re-inserted as a new card. A key is compared, never read, so it
+        // gains nothing from decoding and loses the one property it
+        // needs: stability. Decode for display; never for identity.
+        platformRef: fullDescription,
+        sportlotsRef: cardNumber,
+      });
+    }
+
+    // An EMPTY page is the only reliable end-of-set signal — see above.
+    // A short page is normal mid-set (88, 92, 89, 31 … all precede more
+    // data), so breaking on one truncates the walk.
+    if (pageCards.length === 0) break;
+
+    // Defence against a `start` that does not advance. If SL ever ignores
+    // the offset and re-serves the same page, appending would duplicate
+    // every row and the walk would only stop at SL_MAX_PAGES — 200 live
+    // requests. Comparing the page's identity fingerprint stops it at two.
+    const fingerprint = `${pageCards.length}|${pageCards[0].cardNumber}|${pageCards[0].platformRef}`;
+    if (fingerprint === lastPageFingerprint) break;
+    lastPageFingerprint = fingerprint;
+
+    cards.push(...pageCards);
+    start += SL_PAGE_STRIDE;
+  }
+
+  return { cards, pagesOk, slowestPageMs };
+}
+
+/**
  * Fetch card checklist from SportLots for a specific set.
  *
  * Returns rows in the same shape as fetchBscChecklist (most rich fields
@@ -1619,276 +1932,25 @@ export const fetchSportLotsChecklist = action({
         };
       }
 
-      // Parse card table rows.
-      //
-      // Pattern: <td class="small(color)?left">CARD_NUMBER</td>
-      //          <td class="smallleft">DESCRIPTION</td>
-      //
-      // NEO-189 — the number cell carries a DIFFERENT class on a variation row.
-      // SportLots tints the card number when a row is a variation of the row
-      // above it, and it does that by swapping the class:
-      //
-      //   base row       <td class="smallleft">20</td>
-      //                  <td class="smallleft">2025 Topps Base Set #20 Coby Mayo</td>
-      //   variation row  <td class="smallcolorleft">20</td>
-      //                  <td class="smallleft">… #20 Coby Mayo [ VAR Factory Set ]</td>
-      //
-      // Verified against the live listcards page for set 328996 on 2026-08-27.
-      //
-      // The old pattern required "smallleft" on BOTH cells, so it matched the
-      // base row and skipped the variation entirely — silently, since a
-      // non-matching row is simply not a row. Every SportLots variation has
-      // therefore been invisible to NeonBinder: a 2025 Topps sync reported
-      // "0 SL-only" and paired 0 variations, and both numbers looked like
-      // "SportLots does not carry these" rather than "we never parsed them".
-      //
-      // Only the number cell varies; the description cell stays "smallleft".
-      const cardRegex = /<td class="small(?:color)?left">([^<]+)<\/td>\s*<td class="smallleft">([^<]+)<\/td>/gi;
-      const cards: Array<{
-        cardNumber: string;
-        cardName: string;
-        team?: string;
-        teams?: string[];
-        players?: string[];
-        attributes?: string[];
-        printRun?: number;
-        autographType?: string;
-        cardVariation?: string;
-        /** NEO-189: SL marks a variation with ` [ VAR … ] ` and keeps the
-         *  parent's card number, so this flag is the only thing separating
-         *  these rows from the card they vary. */
-        isVariation?: boolean;
-        platformRef?: string;
-        sportlotsRef?: string;
-      }> = [];
-
-      // PAGINATE. `start` is a 1-BASED OFFSET INTO SL'S LISTING TABLE, not a
-      // page number, and SL's stride is a fixed 100 LISTINGS per request.
-      //
-      // Crucially, listings != parsed card rows: a request returns up to 100
-      // listings, but the number of rows matching the card pattern VARIES.
-      // Measured live on selset=309098 (2024 Topps Chrome Base, 300 cards):
-      //
-      //   start=1   -> 88 rows, cards #1..#88
-      //   start=101 -> 92 rows, cards #89..#180
-      //   start=201 -> 89 rows, cards #181..#269
-      //   start=301 -> 31 rows, cards #270..#300
-      //   start=401 ->  0 rows  <- the only reliable end-of-set signal
-      //
-      // and on selset=3628 that `start` is an offset, not an index:
-      //   start=1 -> #1..#100, start=2 -> #2..#101, start=101 -> #101..#200.
-      //
-      // Two consequences, both learned the hard way:
-      //
-      //   1. ADVANCE BY A FIXED 100, never by rows parsed. Advancing by rows
-      //      (88) would request start=89 and re-read cards #77..#164 — both
-      //      duplicating and, at the tail, skipping.
-      //   2. STOP ONLY ON AN EMPTY PAGE. Stopping on "fewer rows than a full
-      //      page" ends the walk at page one for this very set, since page one
-      //      legitimately yields 88.
-      //
-      // Before pagination existed this POSTed once with start=1, so any set
-      // over one page silently truncated. The reconciliation modal then showed
-      // "SportLots only (0)" against hundreds of BSC-only rows, which reads
-      // like a matching bug rather than a fetch bug.
-      const SL_PAGE_STRIDE = 100;
-      // Safety valve: bounds the loop if SL ever returns a non-empty page
-      // forever. 200 pages = 20k listings, far beyond any real set.
-      const SL_MAX_PAGES = 200;
-      let start = 1;
-      let lastPageFingerprint = "";
-      // NEO-321 follow-up — where a failure landed, and how the pages timed.
-      let pagesOk = 0;
-      let slowestPageMs = 0;
-      const pageFailure = (
-        failure: Omit<FetchFailure, "pageStart" | "pagesOk">,
-      ): FetchFailure => ({ ...failure, pageStart: start, pagesOk });
-
-      for (let page = 0; page < SL_MAX_PAGES; page++) {
-        const formData = new URLSearchParams({
-          selset: setRadioId,
-          dcond: "NM",
-          dbin: "1",
-          dval: "0.18",
-          dentry: "ADD",
-          pricing: "OLD",
-          start: String(start),
-        });
-
-        // NEO-321 follow-up — a throw on THIS page (our 30s timer, or the
-        // network) is answered here, with the page it hit, instead of falling
-        // to the outer catch with no position. The message is unchanged.
-        const pageStartedAt = Date.now();
-        let response: Response;
-        let html: string;
-        try {
-          response = await slFetch(LISTCARDS_URL, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/x-www-form-urlencoded",
-              Cookie: sessionCookie,
-            },
-            body: formData.toString(),
-          });
-
-          if (!response.ok) {
-            await response.text().catch(() => "");
-            // Fail the whole fetch rather than silently returning a partial
-            // checklist — a truncated set is exactly the bug this loop fixes,
-            // and committing one would persist missing cards.
-            return {
-              success: false,
-              cards: [],
-              message: `SportLots HTTP error: ${response.status}`,
-              failure: pageFailure({
-                kind: "http_error",
-                httpStatus: response.status,
-                timedOut: false,
-              }),
-            };
-          }
-
-          // The body read is under the same abort timer as the request.
-          html = await response.text();
-        } catch (err) {
-          const timedOut =
-            err instanceof SlFetchTimeoutError || isAbortTimeout(err);
-          return {
-            success: false,
-            cards: [],
-            message: `SportLots error: ${err instanceof Error ? err.message : "Unknown error"}`,
-            failure: pageFailure(
-              timedOut
-                ? { kind: "timeout", timedOut: true, timeoutMs: SL_FETCH_TIMEOUT_MS }
-                : { kind: "network", timedOut: false },
-            ),
-          };
-        }
-        slowestPageMs = Math.max(slowestPageMs, Date.now() - pageStartedAt);
-
-        if (isSessionExpired(html)) {
-          return {
-            success: false,
-            cards: [],
-            message: "SportLots session expired. Re-authenticate from Profile.",
-            failure: pageFailure({
-              kind: "signed_out",
-              httpStatus: response.status,
-              timedOut: false,
-            }),
-          };
-        }
-        pagesOk++;
-
-        // Collect this page separately so an unchanged page can be detected
-        // and discarded BEFORE it contributes duplicates.
-        const pageCards: typeof cards = [];
-        cardRegex.lastIndex = 0;
-        let match;
-
-        while ((match = cardRegex.exec(html)) !== null) {
-          const cardNumber = match[1].trim();
-          // The description EXACTLY as SportLots served it. Never normalised,
-          // never decoded — see the platformRef note below.
-          const fullDescription = match[2].trim();
-
-          if (!cardNumber || !fullDescription) continue;
-
-          // NEO-251: decode SL's HTML entities ONCE, at the head of the
-          // DERIVATION path only. Everything downstream of here — cardName,
-          // attributes, the variation label, the player parse — sees the same
-          // decoded text, so an apostrophe in "Peter O&#39;Brien" is a real
-          // apostrophe in every derived field or in none.
-          //
-          // `fullDescription` itself deliberately stays raw. See platformRef.
-          const decodedDescription = decodeSlEntities(fullDescription);
-
-          // Strip a leading "#NNN" if the description echoes the card number,
-          // then run the token tokenizer to lift attributes / print run.
-          let working = decodedDescription;
-          const echo = working.indexOf(`#${cardNumber}`);
-          if (echo !== -1) {
-            working = working.substring(echo + cardNumber.length + 1).trim();
-          }
-
-          // NEO-189: lift SL's ` [ VAR … ] ` marker before tokenizing, so the
-          // marker never lands in cardName and the variation signal reaches
-          // the domain. SL keeps the parent's card number, so this flag is the
-          // ONLY thing distinguishing these rows from their parent.
-          const {
-            isVariation,
-            variationLabel,
-            residual: withoutVariation,
-          } = parseSlVariationMarker(working);
-
-          const { attributes, printRun, residual } =
-            tokenizeSlDescription(withoutVariation);
-          const cardName = residual || withoutVariation || decodedDescription;
-
-          // NEO-251: player names off the same residual `cardName` is built
-          // from. `cardName` itself is untouched — this only ADDS a field.
-          // Returns `{}` (so `players` stays undefined) on any doubt; see
-          // parseSlSubjects. `team`/`teams` are never set here, deliberately.
-          const { players } = parseSlSubjects(residual);
-
-          pageCards.push({
-            cardNumber,
-            cardName,
-            players,
-            attributes: attributes.length ? attributes : undefined,
-            printRun,
-            autographType: attributes.includes("AU") ? "Unknown" : undefined,
-            // NEO-189: SportLots' answer to the domain question, plus its own
-            // wording for the variation. Untranslated — see parseSlVariationMarker.
-            isVariation: isVariation || undefined,
-            cardVariation: variationLabel,
-            // NEO-91: the raw, un-tokenized description (not the bare card
-            // number) — this is what lands in cardChecklist.platformData.
-            // sportlots. SL reuses the same cardNumber across variation rows
-            // ("#10 Aaron Judge" vs "#10 Aaron Judge [ VAR All-Star Logo ]"),
-            // so only the full text disambiguates which SL row this card
-            // actually matched. sportlotsRef stays the bare number — that's
-            // still the correct key for BSC↔SL reconciliation matching below.
-            //
-            // NEO-251, THE REASON THIS IS `fullDescription` AND NOT THE
-            // DECODED STRING: this ref is an IDENTITY KEY, not display text.
-            // `buildCommitPrelude` matches stored rows on it byte-for-byte
-            // (`existingIdBySlRef` in selectorOptions.ts), and
-            // `fetchCardChecklist` warns about `orphanedSlRefs` for every
-            // stored ref the fetch no longer returns. Decoding it would
-            // change the key of every already-stored row whose description
-            // contains an entity — each one would go orphaned AND be
-            // re-inserted as a new card. A key is compared, never read, so it
-            // gains nothing from decoding and loses the one property it
-            // needs: stability. Decode for display; never for identity.
-            platformRef: fullDescription,
-            sportlotsRef: cardNumber,
-          });
-        }
-
-        // An EMPTY page is the only reliable end-of-set signal — see above.
-        // A short page is normal mid-set (88, 92, 89, 31 … all precede more
-        // data), so breaking on one truncates the walk.
-        if (pageCards.length === 0) break;
-
-        // Defence against a `start` that does not advance. If SL ever ignores
-        // the offset and re-serves the same page, appending would duplicate
-        // every row and the walk would only stop at SL_MAX_PAGES — 200 live
-        // requests. Comparing the page's identity fingerprint stops it at two.
-        const fingerprint = `${pageCards.length}|${pageCards[0].cardNumber}|${pageCards[0].platformRef}`;
-        if (fingerprint === lastPageFingerprint) break;
-        lastPageFingerprint = fingerprint;
-
-        cards.push(...pageCards);
-        start += SL_PAGE_STRIDE;
+      const walked = await walkSlListcards(sessionCookie, setRadioId, {
+        maxPages: SL_MAX_PAGES,
+      });
+      if ("failure" in walked) {
+        return {
+          success: false,
+          cards: [],
+          message: walked.message,
+          failure: walked.failure,
+        };
       }
+      const { cards } = walked;
 
       return {
         success: true,
         cards,
         message: `Found ${cards.length} cards from SportLots`,
-        pages: pagesOk,
-        slowestPageMs,
+        pages: walked.pagesOk,
+        slowestPageMs: walked.slowestPageMs,
       };
     } catch (error) {
       console.error("[fetchSportLotsChecklist] Error:", error);
@@ -1905,3 +1967,105 @@ export const fetchSportLotsChecklist = action({
   },
 });
 
+/**
+ * NEO-325 — the Base match probe's SportLots half: read the session cookie
+ * ONCE for the whole batch, then walk each set id (one page, or the whole set,
+ * `SL_PROBE_CONCURRENCY` sets at a time) and answer a summary per id: the
+ * first non-variation row, the row counts and the pages read. Never the rows.
+ *
+ * One cookie read per batch matters: the browser service's token endpoint is
+ * rate-limited per credential key, so a read per id would spend that budget
+ * on a single dialog.
+ *
+ * Writes nothing. Never throws for a fetch: every failure is a per-id
+ * `failed` with the walk's `kind`. Reached only through
+ * `baseMatchProbe.probeSlFirstPage` / `probeSlCount`, which validate and cap
+ * the ids first; checked again here because this action trusts nothing.
+ */
+export const probeSlListcardsBatch = internalAction({
+  args: {
+    setIds: v.array(v.string()),
+    /** `firstPage`: one page per set. `count`: the whole set (`SL_MAX_PAGES`). */
+    mode: v.union(v.literal("firstPage"), v.literal("count")),
+  },
+  returns: v.array(slListcardsSummaryValidator),
+  handler: async (ctx, args): Promise<SlListcardsSummary[]> => {
+    await requireAdmin(ctx);
+    const setIds = checkProbeIds(args.setIds, {
+      max: args.mode === "firstPage" ? MAX_SL_FIRST_PAGE_IDS : MAX_SL_COUNT_IDS,
+      maxLength: MAX_SL_PROBE_ID_LENGTH,
+    });
+    const maxPages = args.mode === "firstPage" ? 1 : SL_MAX_PAGES;
+    const startedAt = Date.now();
+    const operation =
+      args.mode === "firstPage" ? "probe_first_page" : "probe_count";
+    const allFailed = (
+      kind: "refused" | "no_sign_in" | "unknown",
+    ): SlListcardsSummary[] =>
+      setIds.map((id) => ({ id, status: "failed" as const, kind }));
+    const log = (results: SlListcardsSummary[], outcome: string) =>
+      console.log(
+        JSON.stringify({
+          msg: "base_match_probe",
+          platform: "sportlots",
+          operation,
+          outcome,
+          ids: setIds.length,
+          ok: results.filter((r) => r.status === "ok").length,
+          failed: results.filter((r) => r.status === "failed").length,
+          durationMs: Date.now() - startedAt,
+        }),
+      );
+
+    if (setIds.length === 0) return [];
+
+    // NEO-287 — paused: refuse BEFORE the cookie is asked for, exactly as
+    // `fetchSportLotsChecklist` does.
+    if (isPlatformPaused("sportlots")) {
+      const results = allFailed("refused");
+      log(results, "paused");
+      return results;
+    }
+
+    let sessionCookie: string | null;
+    try {
+      sessionCookie = await getSportLotsCookie(ctx);
+    } catch {
+      const results = allFailed("unknown");
+      log(results, "cookie_read_failed");
+      return results;
+    }
+    if (!sessionCookie) {
+      const results = allFailed("no_sign_in");
+      log(results, "no_cookie");
+      return results;
+    }
+    const cookie = sessionCookie;
+
+    const results = await mapWithConcurrency(
+      setIds,
+      SL_PROBE_CONCURRENCY,
+      async (id): Promise<SlListcardsSummary> => {
+        try {
+          const walked = await walkSlListcards(cookie, id, { maxPages });
+          if ("failure" in walked) {
+            return { id, status: "failed", kind: walked.failure.kind };
+          }
+          const summary = summarizeProbeCards(walked.cards);
+          return { id, status: "ok", ...summary, pages: walked.pagesOk };
+        } catch (err) {
+          return {
+            id,
+            status: "failed",
+            kind:
+              err instanceof SlFetchTimeoutError || isAbortTimeout(err)
+                ? "timeout"
+                : "unknown",
+          };
+        }
+      },
+    );
+    log(results, "done");
+    return results;
+  },
+});
