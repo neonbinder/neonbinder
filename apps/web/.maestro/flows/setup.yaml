@@ -1515,6 +1515,12 @@ tags:
       # ReconciliationModal STRUCTURE coverage — folded in from the retired
       # cascade/sets-parallels (which couldn't survive a pre-saved column).
       # Verify the modal before saving the matched rows.
+      # NEO-325: `Parallel` is a `parallel`-role type and Base (above) has
+      # cards, so this dialog also checks every PENDING set against Base. It
+      # never touches Ready, so the Save below still writes the 41 that
+      # base-parallels-build-from-section pins; the check itself is proved
+      # in reconcile-sportlots-twins-keep-their-own-ids (SET-REGISTRY.md →
+      # "The Parallel reconcile's Base check").
       # NEO-137 — the dialog builds NB SETS now, not marketplace pairs. Its two
       # sections are Ready (sets that will be written) and Pending (marketplace
       # sets not yet assigned to one). The old "N matched, N BSC-only, N SL-only"

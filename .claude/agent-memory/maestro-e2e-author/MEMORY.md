@@ -129,3 +129,5 @@ Non-markdown helpers: `tools/`
 - [Disabled is unreadable on web](patterns_disabled_is_unreadable_on_web.md) — `enabled:` matches nothing on maestro-web; prove disabled by a safe no-op tap or a `title` reason (→ resource-id)
 - [Marketplace twin names + public search](reference_sportlots_twin_names_and_public_search.md) — ` (#<id>)` on repeated names; twin notice lines beat `.*#[0-9].*`; clash copy is curly-quoted; SL search + BSC facets; dealer-only twins (Chrome Black Refractor → seed Parallel 41)
 - [Placeholder pair-count forensics](reference_placeholder_pair_count_forensics.md) — count too HIGH = provisional runPairing + close finalize both inserted; sum per-writer inserts
+- [Guard a tap at a footer button's x](patterns_guard_a_tap_at_a_footer_buttons_x.md) — clipped body rows tap the footer (row buttons/× share Save's x); assert a lower element `above: Cancel` first
+- [NEO-325 Base check selectors](reference_neo325_base_check_selectors.md) — `Show N that don't match the Base, <side>`; wrapper/handle scoped by containsChild; Keep all counts checked rows only

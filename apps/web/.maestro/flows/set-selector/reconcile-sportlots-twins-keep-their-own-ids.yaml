@@ -1,14 +1,15 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Reconcile — two SportLots sets with one name show their ids, filter cleanly, each makes its own set by id, and Save waits until the two titles differ (NEO-325, read-only)"
+name: "Reconcile — SportLots twins show their ids, filter cleanly, make their own sets by id and block Save on one title; the twin that is no parallel of the Base is set aside (NEO-325, read-only)"
 tags:
   - set-selector
 ---
 # ════════════════════════════════════════════════════════════════════════════
-# R1 — ONE FEATURE: THE RECONCILE DIALOG TELLS SPORTLOTS TWINS APART BY ID,
-# AND WILL NOT SAVE TWO SETS NOBODY CAN TELL APART (NEO-325). SportLots lists
-# distinct sets under one name. On live data, under Baseball → 2024 → Topps →
-# Topps Chrome › `Parallel`:
+# R1 — ONE FEATURE: THE PARALLEL RECONCILE TELLS SPORTLOTS TWINS APART — BY
+# ID, AND BY WHETHER EACH ONE IS THE BASE'S PARALLEL — AND WILL NOT SAVE TWO
+# SETS NOBODY CAN TELL APART (NEO-325). SportLots lists distinct sets under
+# one name. On live data, under Baseball → 2024 → Topps → Topps Chrome ›
+# `Parallel` (NB role `parallel`, Base saved with 335 cards):
 #
 #   1. Two SportLots sets that share a name each carry their own id in the
 #      visible text AND the accessible name: `Make its own set: <name>
@@ -28,10 +29,25 @@ tags:
 #      footer says "Two sets are both named “<title>”. Rename one so you can
 #      tell them apart." and Save is disabled. Renaming either set clears the
 #      line and enables Save. Save is never pressed; the flow cancels out.
+#   5. THE BASE CHECK (Jason, 2026-10-09; runs FIRST, STEP 2b). Every pending
+#      marketplace set is checked against NB's saved Base (card count and
+#      first card, `lib/cards/base-match.ts`). SportLots' two "Chrome Black
+#      Refractor" sets are the reason it exists: one is the Black Refractor
+#      parallel of Topps Chrome (it MATCHES — it stays listed and says so),
+#      the other is the Topps Chrome Black set (it does NOT — it is set aside
+#      behind the column's "Show N that don't match the Base" and, revealed,
+#      carries its reason "Doesn't match the Base — …"). Hiding the toggle
+#      takes it away again. Same-name twins are the sharpest proof the check
+#      is per id, not per name: one name, two verdicts.
+#      The Chrome Update Sapphire twins (claims 1–4's fixture) are a
+#      different product (USCS-numbered), so they are set aside too; the
+#      toggle is left OPEN for STEPS 3–4 and claims 1–4 are proved on the
+#      revealed rows, each first awaited with its own "Doesn't match" reason.
 #
 # Unit tests cover the reducer and the save payload (ReconciliationModal
-# .duplicates.test.tsx); this flow proves the rendered dialog on SportLots'
-# real list.
+# .duplicates.test.tsx) and the Base rules (base-match / baseMatchProbe
+# tests); this flow proves the rendered dialog on SportLots' real list and a
+# real probe of SportLots' real sets.
 #
 # ── READ-ONLY (R7, R7a) ─────────────────────────────────────────────────────
 #   2024 Topps Chrome is the shared anchor (SET-REGISTRY.md → "Read-only
@@ -44,12 +60,28 @@ tags:
 #   dialog and writes nothing (`requestClose` → ConfirmDialog → `onClose`).
 #   Opening the dialog fetches each marketplace's list
 #   (`setReconciliation.fetchRawOptions`, an action that writes nothing).
+#   The Base check reads too and stores nothing: one query for the Base's
+#   signature (`baseMatchProbe.getBaseSignatureForVariantType`) and
+#   read-only probe actions per batch of pending sets (`probeSlFirstPage`,
+#   `probeSlCount`, `probeBscSets`); the verdicts die with the dialog, and
+#   closing it cancels the queue (a call already in flight finishes on the
+#   server and is ignored).
 #
 #   Claim 4's "Save is disabled" is therefore never proved by PRESSING Save:
 #   if the block regressed, that press would write two new parallels onto
 #   the shared anchor. Maestro web cannot read `disabled` either (maestro-web
 #   reports no enabled state, so an `enabled:` selector matches nothing), so
 #   the flow reads the blocked button by the reason it carries — see STEP 6.
+#
+#   SAVE SITS UNDER THE SPORTLOTS COLUMN'S RIGHT EDGE. The footer's Save
+#   (x≈877-983, y≈545) is at the same x as every row's `Make its own set`
+#   (x≈858-976) and the search box's `×` (x≈959-979). Maestro does not see
+#   the body's clip (memory: inner-scroller-clip-is-invisible-to-maestro), so
+#   a row button scrolled under the footer is still "visible" and a tap on it
+#   lands on SAVE — a write to the shared anchor. Every tap at that x is
+#   therefore preceded by a GUARD (an element known to sit BELOW the target
+#   is asserted ABOVE the footer's `Cancel`), so a layout change fails the
+#   flow by name instead of saving. `above:`/`below:` compare TOP edges.
 #
 #   Proving the link AFTER a save (the saved row's Attach sets pane no longer
 #   offers the attached twin's `id:`) needs a write to a real set, which only
@@ -60,25 +92,36 @@ tags:
 #   its own sole-writer flow on a different real set,
 #   `reconcile-sportlots-twins-save-each-to-its-own-set.yaml` (2024 Topps ›
 #   Topps › Insert, approved by Jason 2026-10-08) — see SET-REGISTRY.md →
-#   "SportLots twin names (NEO-325)".
+#   "SportLots twin names (NEO-325)". That set's `Insert` has NB role
+#   `insert`, so the Base check never runs there.
 #
-# ── THE FIXTURE: A REAL SPORTLOTS TWIN ──────────────────────────────────────
-#   SportLots lists TWO sets named "2024 Topps Chrome Update Sapphire" — ids
-#   323331 and 326059, each with its own cards (USCS18 … USCS346 under one,
-#   USCS24 … USCS345 under the other). Measured 2026-10-08 on SportLots' public
-#   search (each row's set id + set name):
-#   the only same-name pair among the 187 SportLots sets of 2024 Topps Chrome
-#   with stock. (The dealer list also holds a stockless twin the public search
-#   cannot see, "Chrome Black Refractor" #305604 / #309103; no query here
-#   matches it.) The dealer list the adapter reads (`fetchSetNames`) is the
-#   brand's whole 2024 list, brand-stripped, so both arrive as "Chrome Update
-#   Sapphire" — under the dialog's default SportLots prefix filter ("chrome"),
-#   so "Show all SportLots items" is not needed. SportLots could merge the
-#   two one day; this flow then fails by name at its first twin assert, and
-#   the registry section says how to find a replacement.
-#
+# ── THE FIXTURES: REAL SPORTLOTS TWINS ──────────────────────────────────────
+#   CHROME UPDATE SAPPHIRE (claims 1–4). SportLots lists TWO sets named
+#   "2024 Topps Chrome Update Sapphire" — ids 323331 and 326059, each with its
+#   own cards (USCS18 … USCS346 under one, USCS24 … USCS345 under the other).
+#   Measured 2026-10-08 on SportLots' public search (each row's set id + set
+#   name): the only same-name pair among the 187 SportLots sets of 2024 Topps
+#   Chrome with stock. The dealer list the adapter reads (`fetchSetNames`) is
+#   the brand's whole 2024 list, brand-stripped, so both arrive as "Chrome
+#   Update Sapphire" — under the dialog's default SportLots prefix filter
+#   ("chrome"), so "Show all SportLots items" is not needed. SportLots could
+#   merge the two one day; this flow then fails by name at its first twin
+#   assert, and the registry section says how to find a replacement.
 #   The same list holds "Chrome Update Sapphire Black Sapphire Refractor"
 #   (326060), the row that stays when the filter narrows past the twins.
+#
+#   CHROME BLACK REFRACTOR (claim 5). The dealer list also holds a twin the
+#   public search cannot see (no stock on one side): "Chrome Black
+#   Refractor" #305604 / #309103 (live dialog, 2026-10-08). Planner's reading,
+#   NOT YET MEASURED: 309103 is the Topps Chrome Black Refractor parallel (the
+#   Base's checklist, so its first card and its SportLots count agree with
+#   the Base) and 305604 is the Topps Chrome Black set (another checklist).
+#   MEASURE: pin `BR_MATCH` / `BR_OTHER` below from the first run on a
+#   preview that carries the Base check — the failure dump or a passing log
+#   names which id stayed listed. If BOTH are set aside (e.g. SportLots'
+#   parallel lists fewer cards than the Base's SportLots-linked count), the
+#   flow fails at its first live wait, by name: that is a finding about the
+#   fixture or the count rule, never a reason to loosen the assert.
 #
 # ── NEO-287: PAUSED ─────────────────────────────────────────────────────────
 #   Under `PAUSED_PLATFORMS=sportlots` there is no SportLots list and no
@@ -86,42 +129,82 @@ tags:
 #   single-platform STORE path — a write this read-only flow must not make.
 #   So the paused branch does not press it; it asserts the column it would
 #   have pressed (the drill landed, the button is there). The twin claim has
-#   no paused form. (README → "Operator switches".)
+#   no paused form, and neither does claim 5 (its fixture is SportLots').
+#   (README → "Operator switches".)
 #
 # ── R5 ──────────────────────────────────────────────────────────────────────
-#   7000 on every step but one: the wait for the dialog after `Sync
-#   Parallels` is a LIVE BSC + SportLots round-trip (R5's marketplace
-#   exception; setup.yaml measures this column's fetches at ~2s).
+#   7000 on every step but these, each a LIVE marketplace round-trip (R5's
+#   marketplace exception), named at its site:
+#     - the wait for the dialog after `Sync Parallels` — BSC + SportLots'
+#       lists (setup.yaml measures this column's fetches at ~2s);
+#     - the Base check's verdicts (STEP 2b, STEP 3) — each is a SportLots
+#       probe of real sets: a first-page read (32 ids a call, 8 at a time on
+#       the server) and, for a set whose first card agrees, a COUNT walk of
+#       every page; the dialog's queue runs two calls at a time and starts
+#       the moment it opens, so a typed query waits behind up to two calls
+#       already in flight. MEASURE: 120000 is a first-run ceiling, not a
+#       measurement. Read each wait's elapsed time from `maestro.log` on the
+#       first green CI run and pin the ceiling to it with headroom.
 #
 # ── R8 INSIDE THE DIALOG ────────────────────────────────────────────────────
 #   The dialog is a `fixed inset-0` portal whose body is its only scroller,
 #   so `scrollUntilVisible` cannot move it (R8 case 2) and Maestro does not
 #   see the body's clip. The body is moved with TOUCH swipes started at x=3%,
 #   in the body's own padding (never on a dnd-kit row): two DOWN pin it to
-#   the top, and one HALF touch UP (75%→50%, ~157px) from there lifts the
-#   SportLots column's first rows above the footer. Ready is filtered to
-#   nothing and BSC to nothing while the SportLots rows are worked, so the
-#   BSC and SportLots search boxes (side by side) sit in the body band at
-#   the pinned top. Never pin to the END here: the SportLots column is long
-#   even narrowed (STEP 3, STEP 4), so its end is far below the twins.
-#   Measured CI 37874717642 + a local run: body band ~133-520.
+#   the top; one FULL touch UP (75%→25%, ~312px) from there lifts the
+#   SportLots search box into the band; one more partial UP (75%→60%, ~94px)
+#   lifts the twins' row buttons clear of the footer for STEP 4's taps.
+#   Ready is filtered to nothing and BSC to nothing while the SportLots rows
+#   are worked. Never pin to the END here: the SportLots column is long even
+#   narrowed (STEP 3, STEP 4), so its end is far below the twins.
+#
+#   MEASURED BEFORE THE BASE CHECK (local run 2026-10-08, pinned top, Ready
+#   and BSC narrowed): body band ~124-529 (footer `Cancel` at y=545), `Filter
+#   NeonBinder sets` y=205, `Filter BSC items` and `Search SportLots items`
+#   y=383, the twins' row buttons at ~492 / ~540 (pitch 48).
+#   WHAT THE BASE CHECK ADDS (estimated from the markup, NOT MEASURED):
+#   above each column's search box, a counter line ("Checking against Base —
+#   X of Y" → "Checked against Base — A match, B don't") and a strip of one
+#   sleeve per set the check reaches (capped at 200, ~33 to a 463px row:
+#   ~7 rows for SportLots' "chrome" list, ~1-2 for BSC's) — ~155px on the
+#   SportLots column, ~50px on BSC's; below the SportLots search box and its
+#   two checkboxes, the toggle (~32px); and on every set-aside row, its
+#   reason line (11px, likely two lines on a twin: ~35px). Estimated
+#   positions: `Filter BSC items` ~430 at the pinned top (in the band, tapped
+#   there); `Search SportLots items` ~540 at the pinned top (UNDER THE
+#   FOOTER — hence the full swipe first) and T≈226-323 after it (T moves
+#   down when a short query clamps the body's scroll); the toggle T+~102;
+#   the first row T+~134. MEASURE: every one of these on the first run (the
+#   tap lines in `maestro.log` log the bounds) and replace this paragraph.
 #
 # ── HANDLES (visible text and accessible names; never a DOM id) ─────────────
 #   column   `Parallel`, `Parallels`, `Sync Parallels`
 #   dialog   `Reconcile Parallels`, `Filter NeonBinder sets` (+ its `Clear
 #            filter neonbinder sets`), `Filter BSC items`, `Search SportLots
-#            items`, headers `Ready (N of M)`, `BSC (N of M)`, `SportLots (N
-#            of M)`, rows' `Make its own set: <label>`, Ready chips `Remove
-#            <label> from <set>`, Ready titles `NeonBinder set name for
-#            <label>`, footer `Save N sets`, `Cancel`, the block line `Two
-#            sets are both named “<title>”. Rename one so you can tell them
-#            apart.` (curly quotes since NEO-325's copy pass, each matched by
-#            `.`), and the discard confirm's `Discard N set changes`
+#            items` (+ its `Clear search sportlots items`; empty, the box
+#            reads its placeholder `Search SportLots items...`), headers
+#            `Ready (N of M)`, `BSC (N of M)`, `SportLots (N of M)`, rows'
+#            `Make its own set: <label>`, Ready chips `Remove <label> from
+#            <set>`, Ready titles `NeonBinder set name for <label>`, footer
+#            `Save N sets`, `Cancel`, the block line `Two sets are both named
+#            “<title>”. Rename one so you can tell them apart.` (curly quotes
+#            since NEO-325's copy pass, each matched by `.`), and the discard
+#            confirm's `Discard N set changes`
+#   base     the toggle's accessible name `Show N that don't match the Base,
+#            SportLots` / `Hide N …, SportLots` (BASE_MATCH_COPY.toggleName:
+#            visible words first, then the column); a set-aside row's reason
+#            line `Doesn't match the Base — <observed> (Base: <expected>)`,
+#            the DIRECT child of the row's wrapper (`containsChild`); every
+#            row's screen-reader status, an sr-only span inside its handle,
+#            `, matches the Base` / `, doesn't match the Base` / `, checking
+#            against the Base` (maestro-web lists sr-only spans as 1×1
+#            nodes). Apostrophes are straight in the copy; matched by `.`.
 #   NOT a handle: each clashing title also gets its own body line, `Same
 #   name as another set. Tip: add the release, like “Series 1” or
 #   “Update”.` (DRAFT copy). No selector here matches it: the block line,
 #   the `.*so you can tell them apart\..*` negative and the Save reason
-#   are all phrases it does not contain.
+#   are all phrases it does not contain. Nor the column counter / pulse
+#   line: no selector here matches `Check(ing|ed) against Base`.
 # ════════════════════════════════════════════════════════════════════════════
 
 # THE TWIN, in one place. Swapping the fixture is these three lines (and the
@@ -130,6 +213,13 @@ tags:
 - evalScript: '${output.TWIN = "Chrome Update Sapphire"}'
 - evalScript: '${output.TWIN_A = "326059"}'
 - evalScript: '${output.TWIN_B = "323331"}'
+
+# THE BASE-CHECK TWIN (claim 5). MEASURE: the two ids are the planner's
+# reading (see the header) — swap them if the first run shows the other one
+# stays listed.
+- evalScript: '${output.BR = "Chrome Black Refractor"}'
+- evalScript: '${output.BR_MATCH = "309103"}'
+- evalScript: '${output.BR_OTHER = "305604"}'
 
 - launchApp
 - extendedWaitUntil:
@@ -193,8 +283,10 @@ tags:
       # parallel (~41), so Pending starts far below the footer. A Ready query
       # no set matches — and that the twins' new sets will not match either,
       # since neither title contains " Black" — keeps Ready one line tall for
-      # the whole of STEPS 3-4; the BSC query does the same for the left
+      # the whole of STEPS 2b-4; the BSC query does the same for the left
       # column, so the SportLots rows are the end of the body.
+      # `Filter BSC items` is tapped at the pinned top: ~430 with the Base
+      # check's BSC counter and sleeves above it (MEASURE: header "R8").
       # ============================================================
       - swipe:
           start: "3%, 30%"
@@ -226,38 +318,171 @@ tags:
           text: ".*so you can tell them apart\\..*"
 
       # ============================================================
+      # STEP 2b — CLAIM 5: ONE NAME, TWO VERDICTS
+      # Bring the SportLots search box into the band: from the pinned top it
+      # sits under the footer now (header "R8"), so re-pin and lift the body
+      # one full touch swipe. Its centre (x≈751) is clear of the footer's
+      # buttons either way, so a miss here fails on the next wait, never
+      # writes.
+      # ============================================================
+      - swipe:
+          start: "3%, 30%"
+          end: "3%, 80%"
+      - swipe:
+          start: "3%, 30%"
+          end: "3%, 80%"
+      # MEASURE: the lift that puts `Search SportLots items` mid-band.
+      - swipe:
+          start: "3%, 75%"
+          end: "3%, 25%"
+      - tapOn:
+          id: "Search SportLots items"
+          waitToSettleTimeoutMs: 250
+      # The twin's whole name, not just "Black Refractor": every row it
+      # matches starts with it, so the bare-name twins are the list's first
+      # rows (as "Update Sapphire" makes them in STEP 3) and the matching one
+      # sits at the top of the list, in the band, whatever else SportLots
+      # calls "… Black Refractor" (Autographs, Update, Prospects: those would
+      # sort around it under the shorter query).
+      - inputText: "${output.BR}"
+      # THE MATCH (R5 marketplace exception: a SportLots first-page read and
+      # a count walk, behind whatever the queue already had in flight). The
+      # twin that IS the Base's parallel stays listed and its row says so:
+      # its handle holds both its id suffix and the sr-only status `, matches
+      # the Base`. `containsChild` is direct-children-only, so the match
+      # resolves to the handle itself and never to a wrapper that merely
+      # holds the suffix of one row and the status of another. A row still
+      # being checked reads `, checking against the Base`, so this waits for
+      # the verdict, not for the row. MEASURE: the ceiling (header "R5").
+      - extendedWaitUntil:
+          visible:
+            containsChild:
+              text: ".*matches the Base"
+            containsDescendants:
+              - text: "\\(#${output.BR_MATCH}\\)"
+          timeout: 120000
+      # …and it is the row the operator acts on, by its own id (claim 1's
+      # form on the second twin).
+      - assertVisible:
+          id: "Make its own set: ${output.BR} \\(#${output.BR_MATCH}\\)"
+      # THE MISMATCH. The other twin leaves the list and the column offers
+      # the set-aside rows behind its toggle (positive first, R2). Its own
+      # verdict can land after its sibling's (a first card that agrees still
+      # needs a count), so both waits carry the live ceiling; on a run where
+      # it had already settled they return at once.
+      - extendedWaitUntil:
+          visible:
+            id: "Show [0-9]+ that don.t match the Base, SportLots"
+          timeout: 120000
+      - extendedWaitUntil:
+          notVisible:
+            id: "Make its own set: ${output.BR} \\(#${output.BR_OTHER}\\)"
+          timeout: 120000
+      # Reveal: the set-aside row comes back WITH its reason. The reason
+      # line is the direct child of the row's wrapper, beside the row that
+      # holds the twin's button, so this names exactly one node: the other
+      # twin, set aside for not matching the Base. Client state: 7000.
+      # The toggle sits just under the search box's two checkboxes, inside
+      # the band (x≈640: clear of the footer's buttons).
+      - tapOn:
+          id: "Show [0-9]+ that don.t match the Base, SportLots"
+      - extendedWaitUntil:
+          visible:
+            containsChild:
+              text: "Doesn.t match the Base.*"
+            containsDescendants:
+              - id: "Make its own set: ${output.BR} \\(#${output.BR_OTHER}\\)"
+          timeout: 7000
+      # The toggle now offers to hide them (and still names its column).
+      - assertVisible:
+          id: "Hide [0-9]+ that don.t match the Base, SportLots"
+      # Hide again: the row goes, the matching twin stays (positive first).
+      - tapOn:
+          id: "Hide [0-9]+ that don.t match the Base, SportLots"
+      - extendedWaitUntil:
+          visible:
+            id: "Show [0-9]+ that don.t match the Base, SportLots"
+          timeout: 7000
+      - assertVisible:
+          id: "Make its own set: ${output.BR} \\(#${output.BR_MATCH}\\)"
+      - assertNotVisible:
+          id: "Make its own set: ${output.BR} \\(#${output.BR_OTHER}\\)"
+
+      # Clear the search. The `×` sits at the box's right edge (x≈969) —
+      # SAVE's x — so GUARD first (header "Save sits under…"): the toggle,
+      # which renders below the box, is above the footer's Cancel, so the
+      # box's `×` is well clear of the footer.
+      - assertVisible:
+          id: "Show [0-9]+ that don.t match the Base, SportLots"
+          below:
+            id: "Clear search sportlots items"
+          above:
+            text: "Cancel"
+      - tapOn:
+          id: "Clear search sportlots items"
+      # Cleared: an empty box reads its placeholder (getNodeText).
+      - extendedWaitUntil:
+          visible:
+            id: "Search SportLots items"
+            text: "Search SportLots items\\.\\.\\."
+          timeout: 7000
+      # Re-open the set-aside rows for STEPS 3-4: the Chrome Update Sapphire
+      # twins are set aside too (header, claim 5), and claims 1-4 are proved
+      # on them revealed. With the box empty the toggle is certain to be
+      # here: BR_OTHER (in the column's scope, set aside above) is behind it.
+      - tapOn:
+          id: "Show [0-9]+ that don.t match the Base, SportLots"
+      - extendedWaitUntil:
+          visible:
+            id: "Hide [0-9]+ that don.t match the Base, SportLots"
+          timeout: 7000
+
+      # ============================================================
       # STEP 3 — CLAIMS 1 AND 2: BOTH TWINS SHOW THEIR IDS, AND A FILTER
       # THAT STOPS MATCHING THEM TAKES BOTH AWAY
-      # The body is still pinned to its TOP, and the SportLots search box
-      # sits beside `Filter BSC items` (the two Pending columns are a
-      # side-by-side grid), so it is inside the body band here: tap it where
-      # it is. Do NOT pin to the end first: until the query narrows it, the
+      # The body is where STEP 2b left it (lifted one full swipe, or a little
+      # less if "Black Refractor" clamped it), so the box is in the band: tap
+      # it where it is. The toggle took focus, so the box is tapped again.
+      # Do NOT pin to the end first: until the query narrows it, the
       # SportLots column is the prefix-filtered dealer list (CI 37874717642:
-      # "2417 pending", hundreds of "Chrome …" rows), so the end of the body
-      # is hundreds of rows below the box and two UP touches carried the box
-      # ~250px above the body's top, out of the viewport.
-      # Nothing is swiped between typing and the " Black" append below, so
-      # the box keeps focus and its caret.
+      # "2417 pending", hundreds of "Chrome …" rows) — and with the toggle
+      # open, every set-aside row above them.
+      # Nothing is swiped or tapped between typing and the " Black" append
+      # below, so the box keeps focus and its caret.
       # ============================================================
       - tapOn:
           id: "Search SportLots items"
           waitToSettleTimeoutMs: 250
       - inputText: "Update Sapphire"
-      # Claim 1 — each twin by its own id. `id:` is a full match, so the
-      # suffix must be there: a bare "Make its own set: Chrome Update
-      # Sapphire" (the pre-NEO-325 name) cannot satisfy either.
+      # Claims 1 and 5 — each twin by its own id, set aside with its reason.
+      # The same wrapper selector as STEP 2b: the reason line is the
+      # wrapper's direct child and the twin's button its descendant, so each
+      # names one row. `id:` is a full match, so the suffix must be there: a
+      # bare "Make its own set: Chrome Update Sapphire" (the pre-NEO-325
+      # name) satisfies neither. R5 marketplace exception (the verdict is a
+      # SportLots probe); usually already settled, since the column's whole
+      # scope has been checking since the dialog opened.
       - extendedWaitUntil:
           visible:
-            id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_A}\\)"
-          timeout: 7000
-      - assertVisible:
-          id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_B}\\)"
+            containsChild:
+              text: "Doesn.t match the Base.*"
+            containsDescendants:
+              - id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_A}\\)"
+          timeout: 120000
+      - extendedWaitUntil:
+          visible:
+            containsChild:
+              text: "Doesn.t match the Base.*"
+            containsDescendants:
+              - id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_B}\\)"
+          timeout: 120000
 
       # Claim 2 — narrow PAST the twins. The box still has focus and its
       # caret at the end of what was just typed, so this appends.
       - inputText: " Black"
       # The positive first (R2 — a negative alone passes on a dead page):
-      # the column re-rendered and still lists the longer name.
+      # the column re-rendered and still lists the longer name (revealed if
+      # it was set aside, listed if not — the toggle is open either way).
       - extendedWaitUntil:
           visible:
             id: "Make its own set: ${output.TWIN} Black.*"
@@ -277,19 +502,22 @@ tags:
 
       # ============================================================
       # STEP 4 — CLAIM 3: EACH TWIN MAKES ITS OWN SET BY ITS OWN ID
-      # From the pinned TOP, one HALF touch UP (~157px) lifts the SportLots
-      # column's first rows above the footer. Not a pin to the end: "Update
-      # Sapphire" also matches the whole "Chrome Update Sapphire …" family
-      # (Autos, Black/Gold/Orange/Padparadscha Sapphire Refractor, …; a
-      # dozen-plus rows in the local run of 2026-10-08), so the end of the
-      # body is far below the twins. The twins are the column's FIRST two
-      # rows (the bare name sorts before every longer one; STEP 3 asserted
-      # both on screen from the pinned top, just above and below the
-      # footer's edge). Re-pin first so the half swipe starts from a known
-      # place. Ready is filtered to a query the new sets do not match, so
-      # nothing above Pending grows while the twins are promoted: the second
-      # twin stays put or moves up one row, inside the band either way.
-      # The asserts after each tap are what prove it landed.
+      # Re-pin, then lift: one full touch UP and one partial (~94px) put the
+      # twins' row buttons mid-band. Not a pin to the end: "Update Sapphire"
+      # also matches the whole "Chrome Update Sapphire …" family (Autos,
+      # Black/Gold/Orange/Padparadscha Sapphire Refractor, …; a dozen-plus
+      # rows in the local run of 2026-10-08), all of them set aside and
+      # revealed, so the end of the body is far below the twins. The twins
+      # are the revealed group's FIRST two rows (the group keeps the
+      # column's order, and the bare name sorts before every longer one;
+      # local run 2026-10-08: #323331 first, then #326059). Ready is filtered
+      # to a query the new sets do not match, so nothing above Pending grows
+      # while the twins are promoted: the second twin stays put or moves up
+      # one row, inside the band either way.
+      # Each tap is GUARDED (header "Save sits under…"): a family row that
+      # renders BELOW the twin is asserted ABOVE the footer's Cancel, so the
+      # twin's button is at least one row clear of Save. The asserts after
+      # each tap are what prove it landed.
       # ============================================================
       - swipe:
           start: "3%, 30%"
@@ -297,9 +525,20 @@ tags:
       - swipe:
           start: "3%, 30%"
           end: "3%, 80%"
+      # MEASURE: the lift that puts both twins' buttons mid-band (estimated
+      # A's centre ~330-370 after these two).
       - swipe:
           start: "3%, 75%"
-          end: "3%, 50%"
+          end: "3%, 25%"
+      - swipe:
+          start: "3%, 75%"
+          end: "3%, 60%"
+      - assertVisible:
+          id: "Make its own set: ${output.TWIN} [A-Za-z].*"
+          below:
+            id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_A}\\)"
+          above:
+            text: "Cancel"
       - tapOn:
           id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_A}\\)"
       # The OTHER twin is still pending, under its own id (positive first) …
@@ -312,7 +551,13 @@ tags:
       - assertNotVisible:
           id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_A}\\)"
 
-      # The second twin, the same way (no swipe: see above).
+      # The second twin, the same way (no swipe: see above), and guarded.
+      - assertVisible:
+          id: "Make its own set: ${output.TWIN} [A-Za-z].*"
+          below:
+            id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_B}\\)"
+          above:
+            text: "Cancel"
       - tapOn:
           id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_B}\\)"
       # The positive first (R2): the column still lists the family — a row
@@ -335,7 +580,8 @@ tags:
       # so every control on a row names the row by the ids it maps
       # (`sharedTitleLabels`): the chip reads `Remove <name> (#A) from <name>
       # (#A)`. The id on BOTH halves is the claim: the row that holds A is
-      # the row called A.
+      # the row called A. A set-aside row promoted by its own "Make its own
+      # set" is an ordinary Ready set (the check judges Pending only).
       # ============================================================
       - swipe:
           start: "3%, 30%"
@@ -434,12 +680,12 @@ tags:
       # STEP 8 — CANCEL OUT, WRITING NOTHING (READ-ONLY, R7a)
       # Save is never pressed. Cancel asks first because the dialog holds
       # edits (two promoted sets and a rename); `Discard N set changes`
-      # closes it without a write. Both buttons are in pinned footers (R8
-      # case 2: `fixed inset-0` dialogs, measured on this one by
-      # inserts-1996-score-… — bounds unmoved across five swipes), so they
-      # are tapped where they are. `Cancel` is anchored to Save beside it;
-      # the confirm's own button is a full match, which its title (the same
-      # words plus "?") is not.
+      # closes it without a write — and cancels the Base check's queue.
+      # Both buttons are in pinned footers (R8 case 2: `fixed inset-0`
+      # dialogs, measured on this one by inserts-1996-score-… — bounds
+      # unmoved across five swipes), so they are tapped where they are.
+      # `Cancel` is anchored to Save beside it; the confirm's own button is a
+      # full match, which its title (the same words plus "?") is not.
       # ============================================================
       - tapOn:
           text: "Cancel"
