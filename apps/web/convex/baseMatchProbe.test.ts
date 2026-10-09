@@ -21,6 +21,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { stripNbCardNumberPrefix } from "./baseMatchProbe";
+import { SL_PROBE_ID_PATTERN, checkProbeIds, isProbeId } from "./lib/baseMatchProbe";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -194,13 +195,27 @@ async function addCards(t: T, optionId: Id<"selectorOptions">, cards: CardSeed[]
 const sig = (t: T, variantTypeId: Id<"selectorOptions">) =>
   t.withIdentity(ADMIN).query(api.baseMatchProbe.getBaseSignatureForVariantType, { variantTypeId });
 
-async function rowCounts(t: T): Promise<Record<string, number>> {
+async function rowCounts(t: T, except: string[] = []): Promise<Record<string, number>> {
   return t.run(async (ctx) => {
     const out: Record<string, number> = {};
     for (const name of Object.keys(schema.tables)) {
+      if (except.includes(name)) continue;
       out[name] = (await ctx.db.query(name as never).collect()).length;
     }
     return out;
+  });
+}
+
+/** The caller's profile with the credential-lock fields taken off each entry. */
+async function profileWithoutLock(t: T) {
+  return t.run(async (ctx) => {
+    const rows = await ctx.db.query("userProfiles").collect();
+    return rows.map((r) => ({
+      userId: r.userId,
+      siteCredentials: (r.siteCredentials ?? []).map(
+        ({ lockedAt: _a, lockedOp: _b, lockToken: _c, ...rest }: Record<string, unknown>) => rest,
+      ),
+    }));
   });
 }
 
@@ -772,26 +787,26 @@ describe("probeSlFirstPage", () => {
     const timeout = new Error("The operation was aborted due to timeout");
     timeout.name = "TimeoutError";
     stubSl((id) =>
-      id === "h"
+      id === "22"
         ? new Response("no", { status: 500 })
-        : id === "t"
+        : id === "33"
           ? timeout
-          : id === "s"
+          : id === "44"
             ? '<form action="login.tpl">'
             : slRow("1", "Good Player"),
     );
     const t = convexTest(schema, modules);
 
     const out = await asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, {
-      setIds: ["ok1", "h", "t", "s", "ok2"],
+      setIds: ["11", "22", "33", "44", "55"],
     });
 
     expect(out.map((r) => [r.id, r.status, "kind" in r ? r.kind : undefined])).toEqual([
-      ["ok1", "ok", undefined],
-      ["h", "failed", "http_error"],
-      ["t", "failed", "timeout"],
-      ["s", "failed", "signed_out"],
-      ["ok2", "ok", undefined],
+      ["11", "ok", undefined],
+      ["22", "failed", "http_error"],
+      ["33", "failed", "timeout"],
+      ["44", "failed", "signed_out"],
+      ["55", "ok", undefined],
     ]);
   });
 
@@ -849,7 +864,7 @@ describe("probeSlFirstPage", () => {
 
     await expect(
       asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, {
-        setIds: Array.from({ length: 33 }, (_, i) => `id${i}`),
+        setIds: Array.from({ length: 33 }, (_, i) => `${1000 + i}`),
       }),
     ).rejects.toThrow(/At most 32/);
     expect(st.reads.sportlots).toBe(0);
@@ -859,7 +874,7 @@ describe("probeSlFirstPage", () => {
   test("32 distinct ids plus duplicates are accepted", async () => {
     const { calls } = stubSl(() => slRow("1", "X Player"));
     const t = convexTest(schema, modules);
-    const ids = Array.from({ length: 32 }, (_, i) => `id${i}`);
+    const ids = Array.from({ length: 32 }, (_, i) => `${1000 + i}`);
 
     const out = await asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, {
       setIds: [...ids, ...ids.slice(0, 10)],
@@ -872,14 +887,14 @@ describe("probeSlFirstPage", () => {
 
   test.each([
     ["an empty id", ""],
-    ["a 65-character id", "x".repeat(65)],
+    ["a 65-character id", "1".repeat(65)],
     ["an id with a control character", "ab\ncd"],
   ])("%s throws before any session read or fetch", async (_label, bad) => {
     const { calls } = stubSl(() => "");
     const t = convexTest(schema, modules);
 
     await expect(
-      asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, { setIds: ["fine", bad] }),
+      asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, { setIds: ["11", bad] }),
     ).rejects.toThrow();
     expect(st.reads.sportlots).toBe(0);
     expect(calls).toHaveLength(0);
@@ -890,7 +905,7 @@ describe("probeSlFirstPage", () => {
     const t = convexTest(schema, modules);
 
     const out = await asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, {
-      setIds: ["x".repeat(64)],
+      setIds: ["1".repeat(64)],
     });
 
     expect(out).toHaveLength(1);
@@ -901,7 +916,7 @@ describe("probeSlFirstPage", () => {
     const t = convexTest(schema, modules);
 
     await asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, {
-      setIds: Array.from({ length: 32 }, (_, i) => `id${i}`),
+      setIds: Array.from({ length: 32 }, (_, i) => `${1000 + i}`),
     });
 
     expect(calls).toHaveLength(32);
@@ -911,7 +926,7 @@ describe("probeSlFirstPage", () => {
   test("results keep the request order", async () => {
     stubSl((id) => slRow("1", `Player ${id}`));
     const t = convexTest(schema, modules);
-    const ids = ["z", "b", "m", "a"];
+    const ids = ["99", "2", "55", "1"];
 
     const out = await asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, { setIds: ids });
 
@@ -971,7 +986,7 @@ describe("probeSlCount", () => {
     const t = convexTest(schema, modules);
 
     const out = await asAdmin(t).action(api.baseMatchProbe.probeSlCount, {
-      setIds: ["a", "b", "c", "d", "e", "f", "g", "h"],
+      setIds: ["1", "2", "3", "4", "5", "6", "7", "8"],
     });
 
     expect(out).toHaveLength(8);
@@ -980,7 +995,7 @@ describe("probeSlCount", () => {
 
   test("a failure on a later page fails that id only, with the walk's kind", async () => {
     stubSl((id, start) =>
-      id === "bad" && start === 101
+      id === "20" && start === 101
         ? new Response("x", { status: 502 })
         : start === 1
           ? slRow("1", `Player ${id}`)
@@ -988,11 +1003,11 @@ describe("probeSlCount", () => {
     );
     const t = convexTest(schema, modules);
 
-    const out = await asAdmin(t).action(api.baseMatchProbe.probeSlCount, { setIds: ["good", "bad"] });
+    const out = await asAdmin(t).action(api.baseMatchProbe.probeSlCount, { setIds: ["10", "20"] });
 
     expect(out).toEqual([
-      { id: "good", status: "ok", count: 1, pages: 2 },
-      { id: "bad", status: "failed", kind: "http_error" },
+      { id: "10", status: "ok", count: 1, pages: 2 },
+      { id: "20", status: "failed", kind: "http_error" },
     ]);
   });
 
@@ -1378,20 +1393,35 @@ describe("the probes write nothing and log no secret", () => {
     const t = convexTest(schema, modules);
     const { base, parallel } = await seedTree(t);
     await addCards(t, base, [{ cardNumber: "1", sortOrder: 1 }]);
-    const before = await rowCounts(t);
+    // The credential lock (and a re-auth's status write) may insert or patch
+    // the caller's `userProfiles` row: that is the F2 allowance, so the table
+    // is compared apart. Every other table must not change at all, and the
+    // profile must come back with the same credential status once the lock
+    // fields are taken off.
+    await t.run(async (ctx) =>
+      ctx.db.insert("userProfiles", {
+        userId: ADMIN.subject,
+        siteCredentials: [
+          { site: "buysportscards", hasCredentials: true, lastUpdated: "2026-10-01T00:00:00.000Z" },
+        ],
+      } as never),
+    );
+    const before = await rowCounts(t, ["userProfiles"]);
+    const profileBefore = await profileWithoutLock(t);
 
     stubSl((id, start) =>
-      id === "bad" ? new Response("x", { status: 500 }) : start === 1 ? slRow("1", "Some Player") : "",
+      id === "2" ? new Response("x", { status: 500 }) : start === 1 ? slRow("1", "Some Player") : "",
     );
-    await asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, { setIds: ["1", "bad"] });
-    await asAdmin(t).action(api.baseMatchProbe.probeSlCount, { setIds: ["1", "bad"] });
+    await asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, { setIds: ["1", "2"] });
+    await asAdmin(t).action(api.baseMatchProbe.probeSlCount, { setIds: ["1", "2"] });
     stubBsc((call) =>
       call.token === BSC_TOKEN ? new Response("x", { status: 401 }) : [bscCard("1", "Some Player")],
     );
     await probeBsc(t, parallel, ["a", "b"]);
     await sig(t, parallel);
 
-    expect(await rowCounts(t)).toEqual(before);
+    expect(await rowCounts(t, ["userProfiles"])).toEqual(before);
+    expect(await profileWithoutLock(t)).toEqual(profileBefore);
   });
 
   test("neither the SportLots cookie nor a BSC token reaches the console", async () => {
@@ -1402,10 +1432,10 @@ describe("the probes write nothing and log no secret", () => {
     const { parallel } = await seedTree(t);
 
     stubSl((id, start) =>
-      id === "bad" ? new Response("x", { status: 500 }) : start === 1 ? slRow("1", "Some Player") : "",
+      id === "2" ? new Response("x", { status: 500 }) : start === 1 ? slRow("1", "Some Player") : "",
     );
-    await asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, { setIds: ["1", "bad"] });
-    await asAdmin(t).action(api.baseMatchProbe.probeSlCount, { setIds: ["1", "bad"] });
+    await asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, { setIds: ["1", "2"] });
+    await asAdmin(t).action(api.baseMatchProbe.probeSlCount, { setIds: ["1", "2"] });
     stubBsc((call) =>
       call.token === BSC_TOKEN ? new Response("x", { status: 401 }) : [bscCard("1", "Some Player")],
     );
@@ -1510,5 +1540,144 @@ describe("the internal batch actions re-check their own inputs", () => {
 
     expect(out).toEqual([{ id: "a", status: "failed", kind: "refused" }]);
     expect(calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The id check itself (isProbeId / checkProbeIds)
+// ---------------------------------------------------------------------------
+
+describe("isProbeId", () => {
+  const BSC = { maxLength: 200 };
+  const SL = { maxLength: 64, pattern: SL_PROBE_ID_PATTERN };
+
+  test.each([
+    ["a leading space", " gold"],
+    ["a trailing space", "gold "],
+    ["a leading no-break space", "\u00a0gold"],
+    ["a trailing no-break space", "gold\u00a0"],
+    ["a leading byte-order mark", "\ufeffgold"],
+    ["a trailing newline", "gold\n"],
+    ["a tab inside", "go\tld"],
+    ["a DEL inside", "go\u007fld"],
+    ["a C1 control (NEL) inside", "go\u0085ld"],
+    ["the last C1 control inside", "go\u009fld"],
+    ["a line separator (U+2028) inside", "go\u2028ld"],
+    ["a paragraph separator (U+2029) inside", "go\u2029ld"],
+    ["a NUL inside", "go\u0000ld"],
+  ])("refuses %s even with no id shape to check", (_label, id) => {
+    expect(isProbeId(id, BSC)).toBe(false);
+  });
+
+  test("accepts a BSC slug", () => {
+    expect(isProbeId("2024-topps-chrome-gold-refractor", BSC)).toBe(true);
+  });
+
+  test("the character just past C1 (U+00A0 inside, U+00A1) is judged on its own", () => {
+    // U+00A1 is a plain character: it must not be caught by the C1 range.
+    expect(isProbeId("go\u00a1ld", BSC)).toBe(true);
+  });
+
+  test("refuses an empty id and an id one character over the bound", () => {
+    expect(isProbeId("", BSC)).toBe(false);
+    expect(isProbeId("x".repeat(200), BSC)).toBe(true);
+    expect(isProbeId("x".repeat(201), BSC)).toBe(false);
+  });
+
+  test.each([["abc"], ["12a"], ["-1"], ["1.5"], ["\u0661\u0662"], ["1 2"], ["１２"]])(
+    "the SportLots shape refuses %j, which a bare slug check would take",
+    (id) => {
+      expect(isProbeId(id, BSC)).toBe(true);
+      expect(isProbeId(id, SL)).toBe(false);
+    },
+  );
+
+  test("the SportLots shape accepts a numeric set id, up to its length bound", () => {
+    expect(isProbeId("328996", SL)).toBe(true);
+    expect(isProbeId("1".repeat(64), SL)).toBe(true);
+    expect(isProbeId("1".repeat(65), SL)).toBe(false);
+  });
+});
+
+describe("checkProbeIds", () => {
+  const SL = { max: 3, maxLength: 64, pattern: SL_PROBE_ID_PATTERN };
+
+  test("keeps first-seen order and drops repeats", () => {
+    expect(checkProbeIds(["3", "1", "3", "2", "1"], SL)).toEqual(["3", "1", "2"]);
+  });
+
+  test("one bad id refuses the call whatever its size, ahead of the count", () => {
+    // Four distinct ids is over the cap, but the bad id is what is named.
+    expect(() => checkProbeIds(["1", "2", "3", "abc"], SL)).toThrow(/not plain text/);
+  });
+
+  test("more than max distinct ids is refused, duplicates not counted", () => {
+    expect(() => checkProbeIds(["1", "2", "3", "4"], SL)).toThrow(/At most 3/);
+    expect(checkProbeIds(["1", "2", "3", "3", "2"], SL)).toHaveLength(3);
+  });
+
+  test("the refusal names the bound, never the id", () => {
+    let message = "";
+    try {
+      checkProbeIds(["secret-looking-id"], SL);
+    } catch (err) {
+      message = String((err as { data?: unknown }).data ?? err);
+    }
+    expect(message).not.toContain("secret-looking-id");
+    expect(message).toContain("64");
+  });
+});
+
+describe("a non-numeric SportLots set id refuses the whole call before any cookie read", () => {
+  const bad = ["12a", "abc", "-1", "1.5", "\u0661\u0662", " 12", "12\u2028"];
+
+  test.each(bad.map((b) => [JSON.stringify(b), b]))("probeSlFirstPage, %s", async (_l, id) => {
+    const { calls } = stubSl(() => "");
+    const t = convexTest(schema, modules);
+
+    await expect(
+      asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, { setIds: ["11", id] }),
+    ).rejects.toThrow(/not plain text/);
+    expect(st.reads.sportlots).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  test.each(bad.map((b) => [JSON.stringify(b), b]))("probeSlCount, %s", async (_l, id) => {
+    const { calls } = stubSl(() => "");
+    const t = convexTest(schema, modules);
+
+    await expect(
+      asAdmin(t).action(api.baseMatchProbe.probeSlCount, { setIds: ["11", id] }),
+    ).rejects.toThrow(/not plain text/);
+    expect(st.reads.sportlots).toBe(0);
+    expect(calls).toHaveLength(0);
+  });
+
+  test.each(["firstPage", "count"] as const)(
+    "the internal batch, %s mode, checks the shape itself",
+    async (mode) => {
+      const { calls } = stubSl(() => "");
+      const t = convexTest(schema, modules);
+
+      await expect(
+        asAdmin(t).action(internal.adapters.sportlots.probeSlListcardsBatch, {
+          setIds: ["11", "12a"],
+          mode,
+        }),
+      ).rejects.toThrow(/not plain text/);
+      expect(st.reads.sportlots).toBe(0);
+      expect(calls).toHaveLength(0);
+    },
+  );
+
+  test("a numeric id beside a duplicate still goes through", async () => {
+    stubSl(() => slRow("1", "Some Player"));
+    const t = convexTest(schema, modules);
+
+    const out = await asAdmin(t).action(api.baseMatchProbe.probeSlFirstPage, {
+      setIds: ["328996", "328996"],
+    });
+
+    expect(out.map((r) => r.id)).toEqual(["328996"]);
   });
 });

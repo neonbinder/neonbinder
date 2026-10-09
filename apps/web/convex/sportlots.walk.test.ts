@@ -303,3 +303,157 @@ describe("walkSlListcards parity with fetchSportLotsChecklist", () => {
     expect(tokenReads.count).toBe(1);
   });
 });
+
+describe("walkSlListcards: truncated says the page budget ran out mid-set", () => {
+  test("running out of pages while the last page still has rows is truncated", async () => {
+    stubPages((start) => distinctPage(start));
+
+    const walked = await walkSlListcards(COOKIE, "555", { maxPages: 3 });
+
+    expect(walked).toMatchObject({ pagesOk: 3, truncated: true });
+  });
+
+  test("an empty page inside the budget is the end of the set, not truncated", async () => {
+    stubPages((start) => (start <= 201 ? distinctPage(start) : ""));
+
+    const walked = await walkSlListcards(COOKIE, "555", { maxPages: 4 });
+
+    expect(walked).toMatchObject({ pagesOk: 4 });
+    expect("truncated" in walked).toBe(false);
+  });
+
+  test("a repeated page on the last allowed page is the end of the set, not truncated", async () => {
+    stubPages(() => row("7", "Same Player"));
+
+    const walked = await walkSlListcards(COOKIE, "555", { maxPages: 2 });
+
+    expect("cards" in walked && walked.cards).toHaveLength(1);
+    expect("truncated" in walked).toBe(false);
+  });
+
+  test("the empty page that ends the set is not truncated even when it is the last allowed page", async () => {
+    stubPages((start) => (start === 1 ? distinctPage(start) : ""));
+
+    const walked = await walkSlListcards(COOKIE, "555", { maxPages: 2 });
+
+    expect(walked).toMatchObject({ pagesOk: 2 });
+    expect("truncated" in walked).toBe(false);
+  });
+
+  test("a failure is a failure: it carries no truncated flag", async () => {
+    stubPages((start) => (start === 1 ? distinctPage(start) : new Response("x", { status: 503 })));
+
+    const walked = await walkSlListcards(COOKIE, "555", { maxPages: 2 });
+
+    expect(walked).toMatchObject({ failure: { kind: "http_error" } });
+    expect("truncated" in walked).toBe(false);
+  });
+
+  test("a one-page walk of a longer set is truncated (the first-page probe ignores it)", async () => {
+    stubPages((start) => distinctPage(start));
+
+    const walked = await walkSlListcards(COOKIE, "555", { maxPages: 1 });
+
+    expect(walked).toMatchObject({ pagesOk: 1, truncated: true });
+  });
+});
+
+describe("walkSlListcards: the caller's deadline", () => {
+  /** Move `Date.now` forward without waiting. */
+  const skew = { ms: 0 };
+  beforeEach(() => {
+    skew.ms = 0;
+    const real = Date.now.bind(Date);
+    vi.spyOn(Date, "now").mockImplementation(() => real() + skew.ms);
+  });
+
+  test("a deadline already past sends nothing and times out", async () => {
+    const calls = stubPages((start) => distinctPage(start));
+
+    const walked = await walkSlListcards(COOKIE, "555", { maxPages: 16, deadlineAt: Date.now() - 1 });
+
+    expect(calls).toHaveLength(0);
+    expect(walked).toMatchObject({
+      failure: { kind: "timeout", timedOut: true, pageStart: 1, pagesOk: 0 },
+    });
+    expect("cards" in walked).toBe(false);
+  });
+
+  test("a deadline exactly now is already spent", async () => {
+    const calls = stubPages((start) => distinctPage(start));
+
+    const walked = await walkSlListcards(COOKIE, "555", { maxPages: 16, deadlineAt: Date.now() });
+
+    expect(calls).toHaveLength(0);
+    expect(walked).toMatchObject({ failure: { kind: "timeout" } });
+  });
+
+  test("the budget running out between pages stops the walk where it is, with no partial cards", async () => {
+    const deadlineAt = Date.now() + 10_000;
+    const calls = stubPages((start) => {
+      if (start === 101) skew.ms += 20_000;
+      return distinctPage(start);
+    });
+
+    const walked = await walkSlListcards(COOKIE, "555", { maxPages: 16, deadlineAt });
+
+    expect(calls.map((c) => c.start)).toEqual([1, 101]);
+    expect(walked).toMatchObject({
+      failure: { kind: "timeout", timedOut: true, pageStart: 201, pagesOk: 2 },
+    });
+    expect("cards" in walked).toBe(false);
+  });
+
+  test("no deadline means the 30s page timer alone", async () => {
+    const timers: number[] = [];
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      timers.push(ms);
+      return real(ms);
+    });
+    stubPages(() => "");
+
+    await walkSlListcards(COOKIE, "555", { maxPages: 1 });
+
+    expect(timers).toEqual([30_000]);
+  });
+
+  test("a page's timer is cut to the time the deadline leaves", async () => {
+    const timers: number[] = [];
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      timers.push(ms);
+      return real(ms);
+    });
+    stubPages(() => "");
+
+    await walkSlListcards(COOKIE, "555", { maxPages: 1, deadlineAt: Date.now() + 4_000 });
+
+    expect(timers).toHaveLength(1);
+    expect(timers[0]).toBeGreaterThan(3_000);
+    expect(timers[0]).toBeLessThanOrEqual(4_000);
+  });
+
+  test("a request that hangs is aborted at about the time left, and says how long it waited", async () => {
+    vi.mocked(Date.now).mockRestore();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        (_url: string, init: RequestInit) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () => reject(init.signal?.reason));
+          }),
+      ),
+    );
+    const startedAt = Date.now();
+
+    const walked = await walkSlListcards(COOKIE, "555", { maxPages: 16, deadlineAt: startedAt + 120 });
+
+    const waitedMs = Date.now() - startedAt;
+    expect(walked).toMatchObject({ failure: { kind: "timeout", timedOut: true, pageStart: 1, pagesOk: 0 } });
+    expect(waitedMs).toBeGreaterThanOrEqual(100);
+    expect(waitedMs).toBeLessThan(2_000);
+    const failure = "failure" in walked ? walked.failure : undefined;
+    expect(failure?.timeoutMs).toBeLessThanOrEqual(120);
+  });
+});

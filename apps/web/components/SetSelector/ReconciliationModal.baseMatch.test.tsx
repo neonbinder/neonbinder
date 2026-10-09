@@ -202,7 +202,7 @@ const toggle = (side: "SportLots" | "BSC") =>
   screen.queryByRole("button", { name: new RegExp(`, ${side}$`) });
 const keepAll = (side: "SportLots" | "BSC") =>
   screen.getByRole("button", {
-    name: new RegExp(`^Keep all: \\d+ ${side} sets?$`),
+    name: new RegExp(`^Keep all( \\d+)?, ${side} sets?$`),
   }) as HTMLButtonElement;
 const srStatusIn = (row: HTMLElement) => row.querySelector(".sr-only")?.textContent ?? "";
 
@@ -240,7 +240,7 @@ describe("ReconciliationModal Base check — only when asked for", () => {
     expect(screen.queryByRole("button", { name: /that don't match the Base/ })).toBeNull();
     expect(srStatusIn(rowOf("Sl Bad"))).toBe("");
     expect(keepAll("SportLots").getAttribute("aria-label")).toBe(
-      "Keep all: 4 SportLots sets",
+      "Keep all, SportLots sets",
     );
   });
 
@@ -260,7 +260,7 @@ describe("ReconciliationModal Base check — only when asked for", () => {
     expect(f.client.action).not.toHaveBeenCalled();
     // Every row is listed and Keep all reaches them all.
     expect(keepAll("SportLots").getAttribute("aria-label")).toBe(
-      "Keep all: 4 SportLots sets",
+      "Keep all, SportLots sets",
     );
   });
 
@@ -275,7 +275,7 @@ describe("ReconciliationModal Base check — only when asked for", () => {
       expect(srStatusIn(rowOf("Sl Bad"))).toBe("");
       expect(f.client.action).not.toHaveBeenCalled();
       expect(keepAll("SportLots").getAttribute("aria-label")).toBe(
-        "Keep all: 4 SportLots sets",
+        "Keep all, SportLots sets",
       );
     },
   );
@@ -311,7 +311,7 @@ describe("ReconciliationModal Base check — rows and counter", () => {
     await renderModal(f, { sl: FOUR_SL });
 
     expect(ownSetButton("Sl Fail")).toBeTruthy();
-    expect(screen.getByText(BASE_MATCH_COPY.unverifiable("sportlots"))).toBeTruthy();
+    expect(screen.getByText(BASE_MATCH_COPY.unverifiable)).toBeTruthy();
   });
 });
 
@@ -332,15 +332,16 @@ describe("ReconciliationModal Base check — set aside, never removed", () => {
     const button = toggle("SportLots")!;
     expect(button.getAttribute("aria-expanded")).toBe("false");
     expect(button.getAttribute("aria-label")).toBe(
-      BASE_MATCH_COPY.toggleName(BASE_MATCH_COPY.showMismatched(1), "sportlots"),
+      BASE_MATCH_COPY.toggleName(BASE_MATCH_COPY.mismatchedToggle(1), "sportlots"),
     );
     // The other column has nothing set aside, so it has no toggle.
     expect(toggle("BSC")).toBeNull();
 
+    // Opening it changes the state, never the name.
     fireEvent.click(button);
     expect(button.getAttribute("aria-expanded")).toBe("true");
     expect(button.getAttribute("aria-label")).toBe(
-      BASE_MATCH_COPY.toggleName(BASE_MATCH_COPY.hideMismatched(1), "sportlots"),
+      BASE_MATCH_COPY.toggleName(BASE_MATCH_COPY.mismatchedToggle(1), "sportlots"),
     );
   });
 
@@ -383,7 +384,7 @@ describe("ReconciliationModal Base check — set aside, never removed", () => {
     expect(ownSetButton("Bsc Bad")).toBeNull();
     const button = toggle("BSC")!;
     expect(button.getAttribute("aria-label")).toBe(
-      BASE_MATCH_COPY.toggleName(BASE_MATCH_COPY.showMismatched(1), "bsc"),
+      BASE_MATCH_COPY.toggleName(BASE_MATCH_COPY.mismatchedToggle(1), "bsc"),
     );
     fireEvent.click(button);
     expect(ownSetButton("Bsc Bad")).toBeTruthy();
@@ -419,7 +420,7 @@ describe("ReconciliationModal Base check — Keep all", () => {
     const { onConfirm } = await renderModal(f, { sl: FOUR_SL });
 
     const button = keepAll("SportLots");
-    expect(button.getAttribute("aria-label")).toBe("Keep all: 3 SportLots sets");
+    expect(button.getAttribute("aria-label")).toBe("Keep all 3, SportLots sets");
     expect(button.textContent).toBe("Keep all 3");
     fireEvent.click(button);
 
@@ -438,7 +439,7 @@ describe("ReconciliationModal Base check — Keep all", () => {
     fireEvent.click(toggle("SportLots")!);
 
     expect(keepAll("SportLots").getAttribute("aria-label")).toBe(
-      "Keep all: 3 SportLots sets",
+      "Keep all 3, SportLots sets",
     );
     fireEvent.click(keepAll("SportLots"));
     const items = await savedItems(onConfirm);
@@ -451,13 +452,14 @@ describe("ReconciliationModal Base check — Keep all", () => {
     await renderModal(f, { sl: FOUR_SL });
 
     const waiting = keepAll("SportLots");
-    expect(waiting.disabled).toBe(true);
-    expect(waiting.getAttribute("aria-label")).toBe("Keep all: 0 SportLots sets");
+    expect(waiting.getAttribute("aria-disabled")).toBe("true");
+    expect(waiting.disabled).toBe(false);
+    expect(waiting.getAttribute("aria-label")).toBe("Keep all, SportLots sets");
 
     await f.answer(f.calls[0]);
     const settled = keepAll("SportLots");
-    expect(settled.disabled).toBe(false);
-    expect(settled.getAttribute("aria-label")).toBe("Keep all: 3 SportLots sets");
+    expect(settled.getAttribute("aria-disabled")).toBeNull();
+    expect(settled.getAttribute("aria-label")).toBe("Keep all 3, SportLots sets");
     expect(settled.textContent).toBe("Keep all 3");
   });
 
@@ -468,7 +470,7 @@ describe("ReconciliationModal Base check — Keep all", () => {
     const { onConfirm } = await renderModal(f, { bsc: many });
     await f.answer(f.calls[0]);
 
-    expect(keepAll("BSC").getAttribute("aria-label")).toBe("Keep all: 4 BSC sets");
+    expect(keepAll("BSC").getAttribute("aria-label")).toBe("Keep all 4, BSC sets");
     fireEvent.click(keepAll("BSC"));
     const items = await savedItems(onConfirm);
     expect(items).toHaveLength(4);

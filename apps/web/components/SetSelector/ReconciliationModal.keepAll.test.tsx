@@ -49,9 +49,9 @@ function pending(bscItems: PlatformItem[], slItems: PlatformItem[] = []): Initia
 }
 
 const keepAllBsc = () =>
-  screen.getByRole("button", { name: /^Keep all: \d+ BSC sets?$/ });
+  screen.getByRole("button", { name: /^Keep all( \d+)?, BSC sets?$/ });
 const keepAllSl = () =>
-  screen.getByRole("button", { name: /^Keep all: \d+ SportLots sets?$/ });
+  screen.getByRole("button", { name: /^Keep all( \d+)?, SportLots sets?$/ });
 
 async function savedItems(onConfirm: ReturnType<typeof vi.fn>) {
   fireEvent.click(screen.getByText(/^Save \d+ sets$/));
@@ -96,9 +96,7 @@ describe("ReconciliationModal — Keep all", () => {
 
     const button = keepAllBsc();
     expect(button.textContent).toBe("Keep all 2");
-    expect(button.getAttribute("aria-label")).toBe(
-      "Keep all: 2 BSC sets",
-    );
+    expect(button.getAttribute("aria-label")).toBe("Keep all 2, BSC sets");
     fireEvent.click(button);
 
     // The hidden row is still pending, and it is the only one.
@@ -107,9 +105,8 @@ describe("ReconciliationModal — Keep all", () => {
     });
     expect(screen.getByLabelText(`Make its own set: ${DK.value}`)).toBeTruthy();
     expect(screen.queryByLabelText(`Make its own set: ${S1.value}`)).toBeNull();
-    expect(keepAllBsc().getAttribute("aria-label")).toBe(
-      "Keep all: 1 BSC set",
-    );
+    // Nothing is filtered out any more, so the number is gone from the name.
+    expect(keepAllBsc().getAttribute("aria-label")).toBe("Keep all, BSC sets");
 
     const items = await savedItems(onConfirm);
     expect(items.map((i) => i.value)).toEqual([S1.value, S2.value]);
@@ -149,7 +146,9 @@ describe("ReconciliationModal — Keep all", () => {
     fireEvent.click(button);
     await flushFrame();
 
-    expect(keepAllBsc()).toHaveProperty("disabled", true);
+    // aria-disabled, not native `disabled`: a native one cannot hold focus.
+    expect(keepAllBsc().getAttribute("aria-disabled")).toBe("true");
+    expect(keepAllBsc()).toHaveProperty("disabled", false);
     expect(document.activeElement).toBe(screen.getByLabelText("Filter BSC items"));
   });
 
@@ -269,9 +268,9 @@ describe("ReconciliationModal — names begin with the visible text", () => {
     renderModal(pending([S1, S2, DK], [SL_AP]));
     const rowButton = screen.getByRole("button", { name: `Make its own set: ${S1.value}` });
     expect(beginsWithVisible(rowButton)).toBe(true);
-    expect(keepAllBsc().getAttribute("aria-label")).toBe("Keep all: 3 BSC sets");
+    expect(keepAllBsc().getAttribute("aria-label")).toBe("Keep all, BSC sets");
     expect(beginsWithVisible(keepAllBsc())).toBe(true);
-    expect(keepAllSl().getAttribute("aria-label")).toBe("Keep all: 1 SportLots set");
+    expect(keepAllSl().getAttribute("aria-label")).toBe("Keep all, SportLots sets");
 
     fireEvent.change(screen.getByLabelText("Filter BSC items"), {
       target: { value: "series" },
@@ -283,7 +282,7 @@ describe("ReconciliationModal — names begin with the visible text", () => {
   /**
    * maestro-web reports resource-id as `id || aria-label`: a DOM id on
    * either button would replace the name the flows tap it by
-   * ("Make its own set: Anime$", "Keep all: [1-9][0-9]* BSC sets?").
+   * ("Make its own set: Anime$", "Keep all, BSC sets").
    */
   test("Keep all, Make its own set and the row handle carry no DOM id", () => {
     renderModal(pending([S1, S2], [SL_AP]));

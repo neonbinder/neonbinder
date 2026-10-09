@@ -194,7 +194,7 @@ describe("useBaseMatchProbe — the signature", () => {
     });
     await settle();
     expect(h.raw.query).toHaveBeenCalledTimes(1);
-    expect(h.raw.query.mock.calls[0][1]).toEqual({ variantTypeId: VT });
+    expect((h.raw.query.mock.calls[0] as unknown[])[1]).toEqual({ variantTypeId: VT });
   });
 
   test.each(["noBase", "manyBases", "notParallelType", "noCards", "tooManyCards"])(

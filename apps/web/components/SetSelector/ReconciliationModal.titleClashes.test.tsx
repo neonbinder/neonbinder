@@ -234,7 +234,7 @@ describe("ReconciliationModal — identityOnly rides on sets the operator made t
         slCandidates: [],
       },
     });
-    fireEvent.click(screen.getByRole("button", { name: /^Keep all: 2 SportLots sets/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Keep all, SportLots sets/ }));
     fireEvent.click(saveButton());
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
 

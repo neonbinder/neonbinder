@@ -243,7 +243,7 @@ describe("judgeAgainstBase — count", () => {
       judgeAgainstBase(sig(), "sportlots", { status: "ok", first: null }),
     ).toEqual({
       verdict: "unverifiable",
-      reason: BASE_MATCH_COPY.nothingToCompare("sportlots"),
+      reason: BASE_MATCH_COPY.nothingToCompare,
     });
   });
 
@@ -255,7 +255,7 @@ describe("judgeAgainstBase — count", () => {
       }),
     ).toEqual({
       verdict: "unverifiable",
-      reason: BASE_MATCH_COPY.unverifiable("sportlots"),
+      reason: BASE_MATCH_COPY.unverifiable,
     });
   });
 
@@ -287,7 +287,7 @@ describe("judgeAgainstBase — the other outcomes", () => {
     for (const side of ["bsc", "sportlots"] as const) {
       expect(judgeAgainstBase(sig(), side, { status: "failed" })).toEqual({
         verdict: "unverifiable",
-        reason: BASE_MATCH_COPY.unverifiable(side),
+        reason: BASE_MATCH_COPY.unverifiable,
       });
     }
   });
@@ -403,10 +403,79 @@ describe("the copy a verdict puts on screen", () => {
   });
 
   test("the toggle's accessible name begins with its visible words and ends with the column", () => {
-    const visible = BASE_MATCH_COPY.showMismatched(4);
+    const visible = BASE_MATCH_COPY.mismatchedToggle(4);
     expect(BASE_MATCH_COPY.toggleName(visible, "sportlots")).toBe(
       `${visible}, SportLots`,
     );
     expect(BASE_MATCH_COPY.toggleName(visible, "bsc")).toBe(`${visible}, BSC`);
+  });
+});
+
+describe("BASE_MATCH_COPY: wording that carries behaviour", () => {
+  test("the set-aside toggle's words are the same however it is open", () => {
+    // The state is aria-expanded alone; a Show/Hide flip would rename the control.
+    expect(BASE_MATCH_COPY.mismatchedToggle(4)).toBe("4 that don't match the Base");
+    expect(BASE_MATCH_COPY.mismatchedToggle(1)).toBe("1 that don't match the Base");
+    expect("showMismatched" in BASE_MATCH_COPY).toBe(false);
+    expect("hideMismatched" in BASE_MATCH_COPY).toBe(false);
+  });
+
+  test("Keep all's name is its visible words, then the column", () => {
+    expect(BASE_MATCH_COPY.keepAllName(null, "BSC")).toBe("Keep all, BSC sets");
+    expect(BASE_MATCH_COPY.keepAllName(null, "SportLots")).toBe("Keep all, SportLots sets");
+    expect(BASE_MATCH_COPY.keepAllName(5, "BSC")).toBe("Keep all 5, BSC sets");
+    expect(BASE_MATCH_COPY.keepAllName(1, "SportLots")).toBe("Keep all 1, SportLots set");
+  });
+
+  test("Keep all's name begins with the words printed on the button, narrowed or not", () => {
+    expect(BASE_MATCH_COPY.keepAllName(null, "BSC").startsWith("Keep all")).toBe(true);
+    expect(BASE_MATCH_COPY.keepAllName(12, "BSC").startsWith("Keep all 12")).toBe(true);
+  });
+
+  test("the row reasons are plain strings and name no marketplace", () => {
+    for (const reason of [
+      BASE_MATCH_COPY.unverifiable,
+      BASE_MATCH_COPY.unverifiableSignIn,
+      BASE_MATCH_COPY.nothingToCompare,
+    ]) {
+      expect(typeof reason).toBe("string");
+      expect(reason).not.toMatch(/BSC|BuySportsCards|SportLots/);
+    }
+  });
+
+  test("a sign-in stop reads differently from an ordinary failure to check", () => {
+    expect(BASE_MATCH_COPY.unverifiableSignIn).not.toBe(BASE_MATCH_COPY.unverifiable);
+    expect(BASE_MATCH_COPY.unverifiableSignIn).toMatch(/sign in/i);
+    expect(BASE_MATCH_COPY.unverifiable).not.toMatch(/sign in/i);
+  });
+
+  test("the spoken stop and the visible stop are worded apart, and each names the column", () => {
+    for (const side of ["bsc", "sportlots"] as const) {
+      const label = side === "bsc" ? "BSC" : "SportLots";
+      expect(BASE_MATCH_COPY.liveStopped(side)).toContain(label);
+      expect(BASE_MATCH_COPY.stoppedNotice(side)).toContain(label);
+      expect(BASE_MATCH_COPY.liveStopped(side)).not.toBe(BASE_MATCH_COPY.stoppedNotice(side));
+    }
+  });
+
+  test("the two columns' stop sentences do not contain one another", () => {
+    expect(BASE_MATCH_COPY.stoppedNotice("bsc")).not.toContain(
+      BASE_MATCH_COPY.stoppedNotice("sportlots"),
+    );
+    expect(BASE_MATCH_COPY.liveStopped("sportlots")).not.toContain(
+      BASE_MATCH_COPY.liveStopped("bsc"),
+    );
+  });
+
+  test("the live line: a start, a quarter, a closing sentence", () => {
+    expect(BASE_MATCH_COPY.liveStart(1)).toBe("Checking 1 set against the Base.");
+    expect(BASE_MATCH_COPY.liveStart(40)).toBe("Checking 40 sets against the Base.");
+    expect(BASE_MATCH_COPY.liveQuarter(50)).toBe("Base check 50% done.");
+    expect(BASE_MATCH_COPY.liveDone(10, 6, 3, 1)).toBe(
+      "Checked 10 sets against the Base: 6 match, 3 don't, 1 couldn't be checked.",
+    );
+    expect(BASE_MATCH_COPY.liveDone(1, 1, 0, 0)).toBe(
+      "Checked 1 set against the Base: 1 match, 0 don't.",
+    );
   });
 });
