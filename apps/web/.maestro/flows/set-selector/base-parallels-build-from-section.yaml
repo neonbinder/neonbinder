@@ -74,7 +74,7 @@ tags:
 #   No `when:` branch. Under `PAUSED_PLATFORMS=sportlots` every parallel is
 #   BSC-only and the build fetches BSC alone; the section, the confirm, Stop,
 #   the ledger line and the title read the same. ONE value differs: the
-#   parallel count N is pinned to the measured 42 live and left open paused,
+#   parallel count N is pinned to the measured 41 live and left open paused,
 #   where the BSC-only reconcile's count is unmeasured (STEP 1,
 #   `output.PARALLELS_N`). (README → "Operator switches".)
 #
@@ -87,7 +87,7 @@ tags:
 #
 # ── THE LEDGER GROWS WITH ITS LINES (NEO-321, commit 7543bc7) ──────────────
 #   The run's ledger lists all N parallels as plain page content (no inner
-#   scroller below 100 lines): ~42 x 22px ≈ 950px between the columns row and
+#   scroller below 100 lines): ~41 x 22px ≈ 900px between the columns row and
 #   everything under the section. So STEP 3 scrolls DOWN to the built line
 #   before reading it, and STEP 4 reloads the set builder instead of
 #   travelling past the ledger — see each step.
@@ -107,9 +107,16 @@ tags:
 - runFlow:
     file: util-drill-to-2024-topps-chrome.yaml
 
-# N, THE PARALLEL COUNT. MEASURED 42 on the live seed (CI 37179999943: the
-# tap logged `Build 42 parallels from Base`): every row the seed's `Parallel`
-# reconcile saved, the union of BSC's and SportLots' parallel lists. Pinned,
+# N, THE PARALLEL COUNT. MEASURED 41 on the live seed (CI 37874717642: the
+# section read `Build 41 parallels from Base`, the seed's reconcile pressed
+# `Save 41 sets`): every row the seed's `Parallel` reconcile saved, i.e. the
+# pairs its matcher made. It was 42 (CI 37179999943) until NEO-325: SportLots
+# lists TWO "Chrome Black Refractor" sets (#305604, #309103), and a name
+# twin is never auto-paired (Jason, 2026-10-08), so BSC's `Black Refractors`
+# now waits in Pending, unsaved, instead of being linked to whichever twin
+# SportLots listed first. Verified 2026-10-08 by running main's and NEO-325's
+# `computeMatches` on the live dialog's names: 42 vs 41, the only difference
+# `Black Refractors <-> Chrome Black Refractor (305604)`. Pinned,
 # so a plan that drops rows (`getParallelsForBuild`'s byte-bounded read, a
 # truncation) fails by count rather than building fewer parallels quietly.
 # Under `PAUSED_PLATFORMS=sportlots` the reconcile is BSC's list alone and
@@ -117,7 +124,7 @@ tags:
 # (the drill util has just run `util-paused-platforms`, which sets
 # `output.SL_PAUSED`). Used in the button, the confirm and the stopped
 # heading below.
-- evalScript: '${output.PARALLELS_N = output.SL_PAUSED ? "[0-9]+" : "42"}'
+- evalScript: '${output.PARALLELS_N = output.SL_PAUSED ? "[0-9]+" : "41"}'
 
 # "Parallel" sits under "Base" in the same column; DOWN (the default),
 # centred for the tap (R8). Exact text: the column's three rows are Base,
@@ -213,7 +220,7 @@ tags:
 # `extendedWaitUntil` never scrolls, and need not: the heading is the
 # panel's first row, where Stop was. When the run ends Stop unmounts under
 # focus and the panel takes the focus (`ParallelBuildPanel`'s focus park);
-# a 42-line panel is taller than the viewport, so that focus may scroll the
+# a 41-line panel is taller than the viewport, so that focus may scroll the
 # page until the panel's top meets html's `scroll-padding-top` (80px). The
 # heading is on screen either way.
 - extendedWaitUntil:
@@ -264,7 +271,7 @@ tags:
 # A FRESH SET BUILDER, ON PURPOSE. The built parallel's cards are in its
 # row's checklist, which renders BELOW the section — and while the run is on
 # screen the section holds the whole ledger, one line per parallel (~950px
-# for 42; NEO-321 7543bc7 removed the 192px inner scroller). From the
+# for 41; NEO-321 7543bc7 removed the 192px inner scroller). From the
 # columns row, where the row is picked, to its `Attributes for …` header is
 # then ~1,750px of DOWN travel: ~5 driver swipes at ~2 s each, past R5's
 # 7000, and splitting it across two steps would only hide the same travel.

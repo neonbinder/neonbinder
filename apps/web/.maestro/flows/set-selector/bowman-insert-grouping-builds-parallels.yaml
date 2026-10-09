@@ -91,7 +91,9 @@ tags:
 # ── HANDLES (visible text and accessible names; never a DOM id) ─────────────
 #   reconcile     `Reconcile Inserts`, `Filter NeonBinder sets`, `Filter BSC
 #                 items`, `NeonBinder set name for <set>`, `Make its own set:
-#                 <item>`, `Keep all: <n> BSC sets`, the header `N ready, M
+#                 <item>`, `Keep all <n>, BSC set(s)` (a filter narrows
+#                 the column) / `Keep all, BSC sets` (it does not), the
+#                 header `N ready, M
 #                 pending`, `Save N sets`, `N already grouped …`, `Show
 #                 grouped`
 #   grouping      `Group Parallels`, `Drag inserts under a parent`, `Accept
@@ -327,13 +329,15 @@ tags:
       # column straight from BSC) — so live and paused now leave the SAME
       # BSC inserts, and STEP 4's Accept All nests every prefix family.
       #
-      # PRECONDITION (R2), HARD: the button is enabled only with ≥1 listed
-      # item, and its accessible name says how many — `Keep all: <n> BSC
-      # set(s)`. Still asserted on the "Anime" filter: a matcher that one day
-      # pairs every Anime item with SportLots fails here, by name.
+      # PRECONDITION (R2), HARD: while a filter narrows the column the
+      # button's accessible name says how many it reaches — `Keep all <n>,
+      # BSC set(s)` — and with nothing listed it drops the number (`Keep all,
+      # BSC sets`, aria-disabled). Still asserted on the "Anime" filter: a
+      # matcher that one day pairs every Anime item with SportLots fails
+      # here, by name.
       - extendedWaitUntil:
           visible:
-            id: "Keep all: [1-9][0-9]* BSC sets?"
+            id: "Keep all [1-9][0-9]*, BSC sets?"
           timeout: 7000
       # BRING THE COLUMN HEADER INTO THE BODY'S BAND, as for "Anime" above.
       # The body is pinned at its top here (the Anime block re-pinned it, or
@@ -361,9 +365,11 @@ tags:
       # while a filter narrows the column), so the count is read off the
       # column's own header, `BSC (<n>)` — one element of adjacent JSX text
       # nodes, so one string (memory: maestro-web-getnodetext). Its
-      # UN-narrowed form (no " of N") is also the proof the × took. The
-      # button's accessible name must then carry the same n, which ties the
-      # count read to the control pressed. split() rather than a regex:
+      # UN-narrowed form (no " of N") is also the proof the × took.
+      # Unfiltered, the accessible name carries no count either (`Keep all,
+      # BSC sets`), so the count is tied to the press by the Ready arithmetic
+      # below alone; the optional number keeps the selector valid should
+      # anything else narrow the column. split() rather than a regex:
       # braces and `$` inside evalScript collide with Maestro's own ${}
       # interpolation.
       - extendedWaitUntil:
@@ -377,12 +383,10 @@ tags:
           text: "BSC \\([1-9][0-9]*\\)"
       - evalScript: '${output.KEEP_ALL_N = Number(maestro.copiedText.split("(")[1].split(")")[0])}'
       - assertTrue: "${output.READY_BEFORE > 0 && output.KEEP_ALL_N > 0}"
-      - assertVisible:
-          id: "Keep all: ${output.KEEP_ALL_N} BSC sets?"
       - tapOn:
-          id: "Keep all: [1-9][0-9]* BSC sets?"
+          id: "Keep all(?: [1-9][0-9]*)?, BSC sets?"
       # ASSERTION: every listed item went up to Ready in the one press — the
-      # header's ready count grew by exactly the button's count. A Convex-free
+      # header's ready count grew by exactly the column's `BSC (<n>)`. A Convex-free
       # reducer update, the 7000 bar.
       - extendedWaitUntil:
           visible:

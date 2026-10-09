@@ -108,3 +108,149 @@ describe("ChecklistSourceFilter — BSC sources", () => {
     expect(screen.queryByText("BSC source")).toBeNull();
   });
 });
+
+describe("ChecklistSourceFilter — chips that share a label (NEO-325)", () => {
+  it("a label two chips share wears its (#id); a unique label stays bare", () => {
+    renderFilter({
+      sportlots: {
+        primaryId: "s0",
+        chips: [
+          { id: "s0", label: "Anime" },
+          { id: "s1", label: "Anime" },
+          { id: "s2", label: "Solo" },
+        ],
+      },
+    });
+
+    const chips = within(
+      screen.getByText("SL source").parentElement as HTMLElement,
+    ).getAllByRole("button");
+    const names = chips.map((c) => c.textContent);
+    expect(names).toContain("Solo");
+    const anime = names.filter((n) => n?.startsWith("Anime"));
+    expect(anime).toHaveLength(2);
+    for (const name of anime) expect(name).toMatch(/^Anime \(#.+\)$/);
+    expect(new Set(anime).size).toBe(2);
+  });
+
+  it("no shared label, no suffix anywhere", () => {
+    renderFilter({
+      bsc: {
+        primaryId: "b0",
+        chips: [
+          { id: "b0", label: "Series 1" },
+          { id: "b1", label: "Series 2" },
+        ],
+      },
+    });
+
+    expect(screen.queryByText(/\(#/)).toBeNull();
+  });
+
+  it("the fold is case- and space-insensitive: 'anime ' and 'Anime' are shared", () => {
+    renderFilter({
+      sportlots: {
+        primaryId: "s0",
+        chips: [
+          { id: "s0", label: "anime " },
+          { id: "s1", label: "Anime" },
+        ],
+      },
+    });
+
+    expect(screen.getAllByText(/\(#/).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("the suffix does not change which chip is the filter's value", () => {
+    const { onChange } = renderFilter({
+      sportlots: {
+        primaryId: "s0",
+        chips: [
+          { id: "s0", label: "Anime" },
+          { id: "s1", label: "Anime" },
+        ],
+      },
+    });
+    const chips = within(
+      screen.getByText("SL source").parentElement as HTMLElement,
+    ).getAllByRole("button");
+    const second = chips.find((c) => c.textContent?.startsWith("Anime") && c !== chips[1])!;
+    second.click();
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(onChange.mock.calls[0][0])).not.toContain("#");
+  });
+});
+
+describe("ChecklistSourceFilter — twin chips show the marketplace id, not the slot key (NEO-325)", () => {
+  const slChips = () =>
+    within(screen.getByText("SL source").parentElement as HTMLElement)
+      .getAllByRole("button")
+      .map((c) => c.textContent);
+
+  it("two same-label chips wear the id in their slot, never the slot key", () => {
+    renderFilter({
+      sportlots: {
+        primaryId: "s0",
+        chips: [
+          { id: "s0", label: "Anime", platformId: "378117" },
+          { id: "s1", label: "Anime", platformId: "378118" },
+        ],
+      },
+    });
+
+    const names = slChips();
+    expect(names).toContain("Anime (#378117)");
+    expect(names).toContain("Anime (#378118)");
+    expect(names.join(" ")).not.toMatch(/#s\d/);
+  });
+
+  it("the same marketplace id in two slots still tells the chips apart by their slot key", () => {
+    // One marketplace set held in two slots (NEO-137): both wear the same id,
+    // so they read alike, but each is still its own chip with its own value.
+    const { onChange } = renderFilter({
+      sportlots: {
+        primaryId: "s0",
+        chips: [
+          { id: "s0", label: "Anime", platformId: "378117" },
+          { id: "s1", label: "Anime", platformId: "378117" },
+        ],
+      },
+    });
+    const chips = within(
+      screen.getByText("SL source").parentElement as HTMLElement,
+    ).getAllByRole("button");
+
+    expect(chips.filter((c) => c.textContent?.startsWith("Anime"))).toHaveLength(2);
+    chips[chips.length - 1].click();
+    expect(JSON.stringify(onChange.mock.calls[0][0])).toContain("s1");
+  });
+
+  it("a chip with no platformId falls back to its slot key, as it always did", () => {
+    renderFilter({
+      sportlots: {
+        primaryId: "s0",
+        chips: [
+          { id: "s0", label: "Anime" },
+          { id: "s1", label: "Anime" },
+        ],
+      },
+    });
+
+    expect(slChips()).toEqual(expect.arrayContaining(["Anime (#s0)", "Anime (#s1)"]));
+  });
+
+  it("a unique label stays bare even when it carries a platformId", () => {
+    renderFilter({
+      bsc: {
+        primaryId: "b0",
+        chips: [
+          { id: "b0", label: "Series 1", platformId: "series-1" },
+          { id: "b1", label: "Series 2", platformId: "series-2" },
+        ],
+      },
+    });
+
+    expect(screen.queryByText(/\(#/)).toBeNull();
+  });
+});

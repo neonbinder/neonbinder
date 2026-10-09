@@ -332,7 +332,7 @@ describe("AttachSetsDialog — the BSC browse control changes the pool", () => {
     const bsc = within(bscPane());
     expect(bsc.queryByLabelText("Toggle Topps Heritage")).toBeNull();
     expect(
-      bsc.getByLabelText("Topps Heritage is already attached"),
+      bsc.getByText("Topps Heritage is already attached"),
     ).toBeTruthy();
     // Still listed, still a route down.
     expect(bsc.getByLabelText("Browse BSC set Topps Heritage")).toBeTruthy();
@@ -1050,7 +1050,7 @@ describe("AttachSetsDialog — re-mapping an untagged id (NEO-293)", () => {
     const bsc = within(bscPane());
     // The tagged one is still excluded; the untagged one is a candidate.
     expect(bsc.queryByLabelText("Toggle Rainbow Foil")).toBeNull();
-    expect(bsc.queryByLabelText("Gold Foil is already attached")).toBeNull();
+    expect(bsc.queryByText("Gold Foil is already attached")).toBeNull();
     // Named for what picking it does, in the panel's own words.
     expect(bsc.getByText("Needs re-mapping")).toBeTruthy();
   });
@@ -1160,7 +1160,7 @@ describe("AttachSetsDialog — re-mapping an untagged id (NEO-293)", () => {
     fireEvent.click(screen.getByLabelText("Browse all BSC sets"));
     await waitFor(() =>
       expect(
-        within(bscPane()).getByLabelText("Topps Heritage is already attached"),
+        within(bscPane()).getByText("Topps Heritage is already attached"),
       ).toBeTruthy(),
     );
     const bsc = within(bscPane());
@@ -1186,7 +1186,7 @@ describe("AttachSetsDialog — re-mapping an untagged id (NEO-293)", () => {
       ).toBeTruthy(),
     );
     const bsc = within(bscPane());
-    expect(bsc.queryByLabelText("Topps Heritage is already attached")).toBeNull();
+    expect(bsc.queryByText("Topps Heritage is already attached")).toBeNull();
     expect(bsc.getByText("Needs re-mapping")).toBeTruthy();
 
     fireEvent.click(bsc.getByLabelText("Toggle Topps Heritage"));
@@ -1195,5 +1195,78 @@ describe("AttachSetsDialog — re-mapping an untagged id (NEO-293)", () => {
     expect(mockAttach.mock.calls[0][0].additions.bsc).toEqual([
       { id: "topps-heritage", label: "Topps Heritage", facet: "setName" },
     ]);
+  });
+});
+
+describe("AttachSetsDialog — two candidates with one name (NEO-325)", () => {
+  const TWIN_SL = [
+    { value: "Anime", platformValue: "378117" },
+    { value: "Anime", platformValue: "378118" },
+    { value: "Solo", platformValue: "378119" },
+  ];
+
+  beforeEach(() => {
+    mockFetchSl.mockResolvedValue({ success: true, options: TWIN_SL, message: "" });
+  });
+
+  test("twins are told apart by (#id) in every control's name; a unique name is bare", async () => {
+    renderDialog();
+    await waitFor(() =>
+      expect(within(slPane()).getByLabelText("Toggle Solo")).toBeTruthy(),
+    );
+
+    const sl = within(slPane());
+    expect(sl.getByLabelText("Toggle Anime (#378117)")).toBeTruthy();
+    expect(sl.getByLabelText("Toggle Anime (#378118)")).toBeTruthy();
+    expect(sl.queryByLabelText("Toggle Anime")).toBeNull();
+  });
+
+  test("the label that is attached stays the bare marketplace name, twin or not", async () => {
+    renderDialog();
+    await waitFor(() =>
+      expect(within(slPane()).getByLabelText("Toggle Anime (#378118)")).toBeTruthy(),
+    );
+
+    fireEvent.click(within(slPane()).getByLabelText("Toggle Anime (#378118)"));
+    // The editable label field is named for the row, id and all, and holds
+    // the bare name.
+    const field = screen.getByLabelText("Edit label for Anime (#378118)") as HTMLInputElement;
+    expect(field.value).toBe("Anime");
+    fireEvent.click(screen.getByLabelText("Confirm attach sets"));
+
+    await waitFor(() => expect(mockAttach).toHaveBeenCalledTimes(1));
+    expect(mockAttach.mock.calls[0][0].additions.sportlots).toEqual([
+      { id: "378118", label: "Anime" },
+    ]);
+  });
+
+  test("selecting one twin selects only that twin", async () => {
+    renderDialog();
+    await waitFor(() =>
+      expect(within(slPane()).getByLabelText("Toggle Anime (#378117)")).toBeTruthy(),
+    );
+
+    fireEvent.click(within(slPane()).getByLabelText("Toggle Anime (#378117)"));
+    fireEvent.click(screen.getByLabelText("Confirm attach sets"));
+
+    await waitFor(() => expect(mockAttach).toHaveBeenCalledTimes(1));
+    expect(mockAttach.mock.calls[0][0].additions.sportlots.map((a: { id: string }) => a.id)).toEqual([
+      "378117",
+    ]);
+  });
+
+  test("an already-attached twin keeps its id in the name of its disabled mark", async () => {
+    renderDialog({
+      alreadyAttached: { bsc: new Set<string>(), sportlots: new Set(["378117"]) },
+    });
+    await waitFor(() =>
+      expect(within(slPane()).getByLabelText("Toggle Solo")).toBeTruthy(),
+    );
+
+    // Already-attached ids are excluded from the pane (NEO-196), so the
+    // remaining Anime is now the only one: its name is shared by no other
+    // candidate in the pane and reads bare.
+    expect(within(slPane()).queryByLabelText("Toggle Anime (#378117)")).toBeNull();
+    expect(within(slPane()).getByLabelText("Toggle Anime")).toBeTruthy();
   });
 });

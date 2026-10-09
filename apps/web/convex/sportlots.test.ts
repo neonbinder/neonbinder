@@ -181,22 +181,22 @@ describe("fetchSportLotsChecklist setRadioId resolution (NEO-91)", () => {
     expect(extractSelset(calls[0].body)).toBe("sl-topps-raw-display");
   });
 
-  test("platformFilters empty/undefined but parentFilters.setName present falls through to the DB-lookup path", async () => {
+  test("platformFilters empty/undefined but parentFilters.setName present is refused: a name is never looked up, even when a row with that name carries an SL id", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const calls: Array<{ body: string }> = [];
     vi.stubGlobal("fetch", makeListcardsFetch({ html: "<html></html>", calls }));
 
-    // Seed a root-level (no parentId) setName selectorOptions row whose
-    // platformData.sportlots is the resolved radio-button id —
-    // resolveSportLotsPlatformValue's findByLevelAndValue lookup matches on
-    // (level, parentId=undefined, value) case/whitespace-insensitively.
+    // NEO-256: the adapter used to look a root setName row up BY NAME and send
+    // its SL slot id. That lookup is gone. Seed exactly the row it would have
+    // matched, WITH an SL slot id, so a regression that restores any
+    // name-keyed fallback resolves it and sends a request.
     await t.run(async (ctx) => {
       await ctx.db.insert("selectorOptions", {
         level: "setName",
         value: "Topps",
         platformData: { sportlots: { s0: "db-resolved-99999" } },
-      platformSlotSeq: { sportlots: 1 },
+        platformSlotSeq: { sportlots: 1 },
         children: [],
         lastUpdated: Date.now(),
       });
@@ -206,8 +206,11 @@ describe("fetchSportLotsChecklist setRadioId resolution (NEO-91)", () => {
       parentFilters: { sport: "Baseball", year: "2026", setName: "Topps" },
     });
 
-    expect(result.success).toBe(true);
-    expect(extractSelset(calls[0].body)).toBe("db-resolved-99999");
+    expect(result.success).toBe(false);
+    expect(result.cards).toEqual([]);
+    expect(result.message).toMatch(/no SportLots ids/i);
+    expect(result.failure).toEqual({ kind: "refused", timedOut: false });
+    expect(calls).toHaveLength(0);
   });
 
   test("no setRadioId resolvable at all (no platformFilters, no parentFilters.setName) returns a graceful failure, not a crash", async () => {
@@ -727,5 +730,170 @@ describe("fetchSportLotsSelectorOptions — Decision 12: empty after retries is 
 
     expect(result.success).toBe(true);
     expect(result.options).toEqual([]);
+  });
+});
+
+describe("fetchSportLotsSelectorOptions — scope comes from slot ids only (NEO-256)", () => {
+  test("level year with a sport NAMED in parentFilters and no platformFilters is refused, even though a root sport row of that name carries an SL id", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const calls: Array<{ body: string }> = [];
+    vi.stubGlobal("fetch", makeListcardsFetch({ html: "<html></html>", calls }));
+
+    // The row the deleted name lookup would have matched and resolved to "BB".
+    await t.run(async (ctx) => {
+      await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: { sportlots: { s0: "BB" } },
+        platformSlotSeq: { sportlots: 1 },
+        children: [],
+        lastUpdated: Date.now(),
+      });
+    });
+
+    const result = await asAdmin.action(
+      api.adapters.sportlots.fetchSportLotsSelectorOptions,
+      { level: "year", parentFilters: { sport: "Baseball" } },
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.options).toEqual([]);
+    expect(result.message).toMatch(/no SportLots ids/i);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("the same call with the sport's id in platformFilters is sent, scoped by that id", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const calls: Array<{ body: string }> = [];
+    vi.stubGlobal("fetch", makeListcardsFetch({ html: "<html></html>", calls }));
+
+    await asAdmin.action(api.adapters.sportlots.fetchSportLotsSelectorOptions, {
+      level: "year",
+      parentFilters: { sport: "Baseball" },
+      platformFilters: { sport: "BB" },
+    });
+
+    expect(calls.length).toBeGreaterThan(0);
+    expect(new URLSearchParams(calls[0].body).get("sprt")).toBe("BB");
+  });
+});
+
+describe("fetchSportLotsSelectorOptions — the scope is keyed on the REQUEST level (NEO-325 security audit)", () => {
+  const dealsetsHtml =
+    '<input type="radio" Name="selset" Value="111"> </td> <td>1  Anime</td>';
+
+  async function run(args: {
+    level: "year" | "manufacturer" | "insert";
+    parentFilters: Record<string, string>;
+    platformFilters?: Record<string, string>;
+    html?: string;
+  }) {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const calls: Array<{ body: string }> = [];
+    vi.stubGlobal(
+      "fetch",
+      makeListcardsFetch({ html: args.html ?? dealsetsHtml, calls }),
+    );
+    const result = await asAdmin.action(
+      api.adapters.sportlots.fetchSportLotsSelectorOptions,
+      {
+        level: args.level,
+        parentFilters: args.parentFilters,
+        ...(args.platformFilters ? { platformFilters: args.platformFilters } : {}),
+      },
+    );
+    return { result, calls };
+  }
+
+  test("insert level sends brd = the manufacturer id when platformFilters carries it, even though parentFilters does not name the manufacturer", async () => {
+    const { result, calls } = await run({
+      level: "insert",
+      parentFilters: { sport: "Baseball", year: "2024" },
+      platformFilters: { sport: "BB", year: "2024", manufacturer: "77" },
+    });
+
+    expect(result.success).toBe(true);
+    expect(calls.length).toBeGreaterThan(0);
+    const sent = new URLSearchParams(calls[0].body);
+    expect(sent.get("sprt")).toBe("BB");
+    expect(sent.get("yr")).toBe("2024");
+    expect(sent.get("brd")).toBe("77");
+  });
+
+  test("insert level with no manufacturer id is refused and nothing is sent, even when parentFilters does not name the manufacturer", async () => {
+    // The widened-request hole: skipping a level parentFilters did not name
+    // sent brd="" -- every brand in the year, stored under the asked brand.
+    const { result, calls } = await run({
+      level: "insert",
+      parentFilters: { sport: "Baseball", year: "2024" },
+      platformFilters: { sport: "BB", year: "2024" },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.options).toEqual([]);
+    expect(result.message).toMatch(/no SportLots ids/i);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("insert level with a whitespace-only manufacturer id is refused: a blank is no id", async () => {
+    const { result, calls } = await run({
+      level: "insert",
+      parentFilters: { sport: "Baseball", year: "2024" },
+      platformFilters: { sport: "BB", year: "2024", manufacturer: "   " },
+    });
+
+    expect(result.success).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("insert level with no year id is refused", async () => {
+    const { result, calls } = await run({
+      level: "insert",
+      parentFilters: { sport: "Baseball" },
+      platformFilters: { sport: "BB", manufacturer: "77" },
+    });
+
+    expect(result.success).toBe(false);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("manufacturer level does not require a brand id when parentFilters does not name one", async () => {
+    const { result, calls } = await run({
+      level: "manufacturer",
+      parentFilters: { sport: "Baseball", year: "2024" },
+      platformFilters: { sport: "BB", year: "2024" },
+      html: "<html></html>",
+    });
+
+    expect(result.message ?? "").not.toMatch(/no SportLots ids/i);
+    expect(calls.length).toBeGreaterThan(0);
+    expect(new URLSearchParams(calls[0].body).get("brd") ?? "").toBe("");
+  });
+
+  test("a level parentFilters NAMES with no id is refused even when the request level does not require it", async () => {
+    const { result, calls } = await run({
+      level: "manufacturer",
+      parentFilters: { sport: "Baseball", year: "2024", manufacturer: "Topps" },
+      platformFilters: { sport: "BB", year: "2024" },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toMatch(/no SportLots ids/i);
+    expect(calls).toHaveLength(0);
+  });
+
+  test("a supplied id is sent even for a level parentFilters does not name: an id only narrows", async () => {
+    const { calls } = await run({
+      level: "manufacturer",
+      parentFilters: { sport: "Baseball", year: "2024" },
+      platformFilters: { sport: "BB", year: "2024", manufacturer: "77" },
+      html: "<html></html>",
+    });
+
+    expect(calls.length).toBeGreaterThan(0);
+    expect(new URLSearchParams(calls[0].body).get("brd")).toBe("77");
   });
 });

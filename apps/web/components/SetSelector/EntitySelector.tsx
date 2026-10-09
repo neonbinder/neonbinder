@@ -15,6 +15,7 @@ import { FunctionReference } from "convex/server";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { useComboboxHighlight } from "@/src/hooks/useComboboxHighlight";
 import { scrollRowIntoList } from "./list-scroll";
+import { siblingTwinSuffixes } from "./marketplace-item-label";
 
 export type SelectorItem = { _id: string; [key: string]: unknown };
 
@@ -196,6 +197,13 @@ const HIGHLIGHT_STROKE =
   "ring-2 ring-inset ring-emerald-700 dark:ring-[#00D558] dark:shadow-[inset_0_0_14px_rgba(0,213,88,0.28)] outline-2 -outline-offset-2 outline-transparent";
 const HIGHLIGHT_TINT =
   "bg-[#00D558]/20 border-emerald-700 dark:border-[#00D558]";
+/**
+ * NEO-325 — the `(#id)` after a twin's name: a step down in size and weight,
+ * and in the row's OWN text colour at reduced opacity rather than a fixed
+ * grey, so it stays legible on every column's selection fill in both themes
+ * (the same treatment the reconciler's mapped chips give it).
+ */
+const TWIN_SUFFIX = "text-xs font-normal tabular-nums opacity-75";
 const ROW_IDLE =
   "bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600 hover:bg-gray-100 dark:hover:bg-gray-600";
 
@@ -282,6 +290,19 @@ function EntitySelector({
   const selected =
     pinnedItems.find((item) => item._id === selectedId) ??
     items?.find((item: SelectorItem) => item._id === selectedId);
+
+  // NEO-325 — a row whose name a SIBLING (same parent) also carries is
+  // followed by its marketplace ids, `(#378117)`: column sync gives each
+  // same-named marketplace twin its own row, and three "Anime" rows read
+  // identically otherwise. A unique name gets nothing, so every existing
+  // visible text and accessible name is unchanged. Over the whole column,
+  // never the filtered rows, so a row reads the same at every keystroke.
+  const twinSuffixes = useMemo(
+    () => siblingTwinSuffixes((items ?? []) as SelectorItem[]),
+    [items],
+  );
+  const suffixOf = (item: SelectorItem): string | undefined =>
+    isPinnedItem(item) ? undefined : twinSuffixes.get(item._id);
 
   // Sort items by their display names (see `compareOptionNames`). Memoized on
   // `items` (and the `getDisplayName` reader the comparator uses) so an
@@ -585,13 +606,21 @@ function EntitySelector({
         ref={collapsedCardRef}
         type="button"
         className="w-full text-left bg-white dark:bg-gray-800 p-6 rounded-lg shadow flex items-center justify-between cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
-        aria-label={`${title}: ${nameOf(selected)} — change`}
+        aria-label={`${title}: ${nameOf(selected)}${
+          suffixOf(selected) ? ` ${suffixOf(selected)}` : ""
+        } — change`}
         aria-expanded={false}
         onClick={() => setExpanded(true)}
         onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
       >
         <div className="flex items-center gap-2">
           <div className="font-semibold">{nameOf(selected)}</div>
+          {suffixOf(selected) && (
+            <>
+              {" "}
+              <span className={TWIN_SUFFIX}>{suffixOf(selected)}</span>
+            </>
+          )}
         </div>
         <ChevronDownIcon className="w-5 h-5 text-gray-500" />
       </button>
@@ -767,6 +796,7 @@ function EntitySelector({
                 const isSelected = selectedId === item._id;
                 const isHighlighted = highlighted === item._id;
                 const pick = () => select(item._id);
+                const twinSuffix = suffixOf(item);
                 return (
                   <button
                     key={item._id}
@@ -813,6 +843,16 @@ function EntitySelector({
                   >
                     <div className="flex items-center gap-2">
                       <span className="font-semibold">{nameOf(item)}</span>
+                      {/* NEO-325: its own element beside the name, so the
+                          name stays alone in its text node (flows tap rows
+                          by that text) while the option's accessible name
+                          — its whole text — carries the id too. */}
+                      {twinSuffix && (
+                        <>
+                          {" "}
+                          <span className={TWIN_SUFFIX}>{twinSuffix}</span>
+                        </>
+                      )}
                       {showPills && pd?.sportlots && (
                         <span className="text-xs px-1 py-0.5 rounded bg-gray-200 dark:bg-gray-600 text-gray-600 dark:text-gray-300">
                           SL

@@ -3,9 +3,12 @@ import type {
   HeldElsewhereEntry,
   WithheldElsewhereEntry,
 } from "../../convex/selectorSyncStore";
+import type { SiblingWithholdReason } from "../../convex/selectorSyncMatch";
 import {
   HOLDER_PATH_SEPARATOR,
   holderPathOf,
+  type RefusedRename,
+  type SiblingHold,
   type StoreHolds,
 } from "./held-elsewhere";
 import {
@@ -38,73 +41,305 @@ import {
  * `role="status"` — announced when it appears, never interrupting — on the
  * sentences only; the withheld list sits beside the live region, not in it.
  *
+ * NEO-325 (a11y re-audit N1): every status region here is mounted EMPTY for
+ * as long as the component is, and filled when the store answers. A region
+ * that arrives already holding its text is often not announced at all. So
+ * callers mount this for the whole sync and pass `holds={null}` until there
+ * is something to say; an empty box carries no classes and takes no room.
+ *
  * All copy here is DRAFT pending Jason's sign-off (NEO-300).
  */
-export default function StoreHoldNotices({ holds }: { holds: StoreHolds }) {
+export default function StoreHoldNotices({ holds }: { holds: StoreHolds | null }) {
   const summaryId = useId();
-  const { withheld, withheldTotal, subtreeWalkSkipped } = holds;
+  const siblingSummaryId = useId();
+  const renameSummaryId = useId();
+  const withheld = holds?.withheld ?? [];
+  const withheldTotal = holds?.withheldTotal ?? 0;
+  const subtreeWalkSkipped = holds?.subtreeWalkSkipped ?? false;
   const kinds = withheldKinds(withheld);
   const box =
     "p-3 mb-4 bg-amber-400/10 border border-amber-700 dark:border-amber-400/70 rounded-md text-amber-800 dark:text-amber-300 text-sm";
+  const showWithheld = withheldTotal > 0;
+  // N2: when the withheld box already lists the unchecked items, it has said
+  // this and what to do; a second box would only repeat it.
+  const showSkipped = subtreeWalkSkipped && !(showWithheld && kinds.unchecked);
 
   return (
     <>
-      {withheldTotal > 0 && (
-        // a11y audit (NEO-300): only the summary and the fix are live. The
-        // list is a SIBLING of the status region, not inside it — a live
-        // region holding 50 items of up to 10 rows each would read them all.
-        <div className={box}>
-          <div role="status">
-            <p id={summaryId} className="font-medium">
-              {withheldSummary(withheldTotal, kinds)}
-            </p>
-            {kinds.clash && <p>{CLASH_FIX}</p>}
-            {kinds.linked && <p>{LINKED_FIX}</p>}
-            {kinds.unchecked && <p>{UNCHECKED_FIX}</p>}
-          </div>
-          {withheld.length > 0 && (
-            // Bounded for the same reason as HeldElsewhereNote's list: up to
-            // 50 items with up to 10 rows each. Focusable so the keyboard can
-            // scroll it; `group` is the house role for that.
-            <div
-              role="group"
-              aria-labelledby={summaryId}
-              tabIndex={0}
-              className="mt-2 max-h-48 overflow-y-auto overscroll-contain rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00C2FF]"
-            >
-              <ul className="space-y-2">
-                {withheld.map((w, i) => (
-                  <li key={`${i}-${w.label}`}>
-                    <span className="font-medium">{w.label}</span>
-                    <span className="block text-xs opacity-90">
-                      {reasonLine(w.reason)}
-                    </span>
-                    {w.holders.length > 0 && (
-                      <ul className="pl-3 text-xs">
-                        {w.holders.map((h) => (
-                          <li key={String(h.id)}>{holderLine(h)}</li>
-                        ))}
-                      </ul>
-                    )}
-                  </li>
-                ))}
-                {withheldTotal > withheld.length && (
-                  <li>+ {withheldTotal - withheld.length} more</li>
-                )}
-              </ul>
-            </div>
+      {/* a11y audit (NEO-300): only the summary and the fix are live. The
+          list is a SIBLING of the status region, not inside it — a live
+          region holding 50 items of up to 10 rows each would read them all. */}
+      <div className={showWithheld ? box : undefined}>
+        <div role="status">
+          {showWithheld && (
+            <>
+              <p id={summaryId} className="font-medium">
+                {withheldSummary(withheldTotal, kinds)}
+              </p>
+              {kinds.clash && <p>{CLASH_FIX}</p>}
+              {kinds.linked && <p>{LINKED_FIX}</p>}
+              {kinds.unchecked && <p>{UNCHECKED_FIX}</p>}
+            </>
           )}
         </div>
-      )}
-      {/* N2: when the withheld box already lists the unchecked items, it has
-          said this and what to do; a second box would only repeat it. */}
-      {subtreeWalkSkipped && !(withheldTotal > 0 && kinds.unchecked) && (
-        <div role="status" className={box}>
-          {SUBTREE_SKIPPED_MESSAGE}
-        </div>
-      )}
+        {showWithheld && withheld.length > 0 && (
+          // Bounded for the same reason as HeldElsewhereNote's list: up to
+          // 50 items with up to 10 rows each. Focusable so the keyboard can
+          // scroll it; `group` is the house role for that.
+          <div
+            role="group"
+            aria-labelledby={summaryId}
+            tabIndex={0}
+            className="mt-2 max-h-48 overflow-y-auto overscroll-contain rounded focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00C2FF]"
+          >
+            <ul className="space-y-2">
+              {withheld.map((w, i) => (
+                <li key={`${i}-${w.label}`}>
+                  <span className="font-medium">{w.label}</span>
+                  <span className="block text-xs opacity-90">
+                    {reasonLine(w.reason)}
+                  </span>
+                  {w.holders.length > 0 && (
+                    <ul className="pl-3 text-xs">
+                      {w.holders.map((h) => (
+                        <li key={String(h.id)}>{holderLine(h)}</li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              ))}
+              {withheldTotal > withheld.length && (
+                <li>+ {withheldTotal - withheld.length} more</li>
+              )}
+            </ul>
+          </div>
+        )}
+      </div>
+      <div role="status" className={showSkipped ? box : undefined}>
+        {showSkipped && SUBTREE_SKIPPED_MESSAGE}
+      </div>
+      <SiblingHoldsBox
+        box={box}
+        summaryId={siblingSummaryId}
+        siblings={holds?.siblings ?? []}
+        total={holds?.siblingsTotal ?? 0}
+      />
+      <RefusedRenamesBox
+        box={box}
+        summaryId={renameSummaryId}
+        renames={holds?.renames ?? []}
+        total={holds?.renamesTotal ?? 0}
+      />
     </>
   );
+}
+
+/**
+ * NEO-325 — the lines the store did not save because of what is ALREADY
+ * under this parent. Same shape as the withheld box above (the a11y audit's
+ * NEO-300 rule: only the summary and the fixes are live; the list sits beside
+ * the region), but the list grows with its content and the page scrolls — the
+ * store sends at most `UNLINK_NOTICE_LIMIT` (50), which no inner scroller is
+ * needed for (NEO-321).
+ */
+function SiblingHoldsBox({
+  box,
+  summaryId,
+  siblings,
+  total,
+}: {
+  box: string;
+  summaryId: string;
+  siblings: ReadonlyArray<SiblingHold>;
+  total: number;
+}) {
+  const show = total > 0;
+  const families = siblingFamiliesIn(siblings);
+  // Always mounted, empty while there is nothing to say (see the default
+  // export): the status region must exist before it fills.
+  return (
+    <div className={show ? box : undefined}>
+      <div role="status">
+        {show && (
+          <>
+            <p id={summaryId} className="font-medium">
+              {siblingHoldSummary(total)}
+            </p>
+            {SIBLING_FAMILY_ORDER.filter((f) => families.has(f)).map((f) => (
+              <p key={f}>{SIBLING_FIX[f]}</p>
+            ))}
+          </>
+        )}
+      </div>
+      {show && siblings.length > 0 && (
+        <ul aria-labelledby={summaryId} className="mt-2 space-y-2">
+          {siblings.map((w, i) => (
+            <li key={`${i}-${w.label}`}>
+              <span className="font-medium">{w.label}</span>
+              <span className="block text-xs opacity-90">
+                {SIBLING_REASON_LINE[siblingFamily(w.reason)]}
+              </span>
+              {w.rows.length > 0 && (
+                <ul className="pl-3 text-xs">
+                  {w.rows.map((r) => (
+                    <li key={r.id}>{r.value}</li>
+                  ))}
+                </ul>
+              )}
+            </li>
+          ))}
+          {total > siblings.length && <li>+ {total - siblings.length} more</li>}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** NEO-325 — the title edits the store refused; the sets themselves saved. */
+function RefusedRenamesBox({
+  box,
+  summaryId,
+  renames,
+  total,
+}: {
+  box: string;
+  summaryId: string;
+  renames: ReadonlyArray<RefusedRename>;
+  total: number;
+}) {
+  const show = total > 0;
+  const clash = renames.some((r) => r.reason === "clash") || renames.length === 0;
+  const invalid = renames.some((r) => r.reason === "invalid");
+  // Always mounted, empty while there is nothing to say (see the default
+  // export): the status region must exist before it fills.
+  return (
+    <div className={show ? box : undefined}>
+      <div role="status">
+        {show && (
+          <>
+            <p id={summaryId} className="font-medium">
+              {refusedRenameSummary(total)}
+            </p>
+            {clash && <p>{RENAME_CLASH_FIX}</p>}
+            {invalid && <p>{RENAME_INVALID_FIX}</p>}
+          </>
+        )}
+      </div>
+      {show && renames.length > 0 && (
+        <ul aria-labelledby={summaryId} className="mt-2 space-y-2">
+          {renames.map((r, i) => (
+            <li key={`${i}-${r.label}`}>
+              <span className="font-medium">{r.label}</span>
+              <span className="block text-xs opacity-90">
+                {refusedRenameLine(r)}
+              </span>
+            </li>
+          ))}
+          {total > renames.length && <li>+ {total - renames.length} more</li>}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * NEO-325 — the store's nine sibling-withhold reasons, in the four families
+ * an operator can act on. Each family has ONE fix line, shown once however
+ * many lines it covers.
+ *
+ *  - `name`  — a row here already goes by the title (it holds another set's
+ *    link, several rows share it, or there was no link to add).
+ *  - `twice` — two lines in this save pointed at one row (by `existingId`, by
+ *    marketplace id, or by name).
+ *  - `link`  — the line's link is already on more than one row here.
+ *  - `split` — its BSC link names one row and its SportLots link another.
+ */
+export type SiblingFamily = "name" | "twice" | "link" | "split";
+
+const SIBLING_FAMILY_ORDER: readonly SiblingFamily[] = [
+  "name",
+  "twice",
+  "link",
+  "split",
+];
+
+export function siblingFamily(reason: SiblingWithholdReason): SiblingFamily {
+  switch (reason) {
+    case "existingIdClaimed":
+    case "idClaimedTwice":
+    case "nameClaimedTwice":
+    case "rowClaimedInBatch":
+      return "twice";
+    case "idOnManySiblings":
+      return "link";
+    case "idsPointAtDifferentRows":
+      return "split";
+    case "nameSharedBySiblings":
+    case "nameLinkedToOtherSet":
+    case "noIdToAttach":
+    default:
+      return "name";
+  }
+}
+
+function siblingFamiliesIn(
+  siblings: ReadonlyArray<Pick<SiblingHold, "reason">>,
+): Set<SiblingFamily> {
+  const families = new Set(siblings.map((s) => siblingFamily(s.reason)));
+  // A store that sent only a count: the commonest case, a name already taken.
+  if (families.size === 0) families.add("name");
+  return families;
+}
+
+/** DRAFT (NEO-325). */
+export function siblingHoldSummary(n: number): string {
+  return n === 1
+    ? "Hold up: 1 set wasn't saved, so nothing was attached to it."
+    : `Hold up: ${n} sets weren't saved, so nothing was attached to them.`;
+}
+
+/**
+ * DRAFT (NEO-325). What to do, one line per family present. The verbs are the
+ * controls' own: "Detach" (MultiSourcePanel's detach confirm) and "Attach"
+ * (its `ATTACH_MORE_LABEL` button). Never "link", "take off" or "move".
+ */
+export const SIBLING_FIX: Record<SiblingFamily, string> = {
+  name: "Name taken? Sync again and give it a name of its own.",
+  twice:
+    "Doubled up? Sync again: pair just one with that set and give the other a name of its own.",
+  link: "On two sets? Detach it from the extra one, then sync again.",
+  split:
+    "Split across two sets? Detach one and Attach it on the other set, then sync again.",
+};
+
+/** DRAFT (NEO-325). The line under each item, before the rows it names. */
+export const SIBLING_REASON_LINE: Record<SiblingFamily, string> = {
+  name: "A set here already goes by that name:",
+  twice: "Points at the same set as another one in this save:",
+  link: "Its link is already on more than one set:",
+  split: "Its BSC and SportLots links point at different sets:",
+};
+
+/** DRAFT (NEO-325). */
+export function refusedRenameSummary(n: number): string {
+  return n === 1
+    ? "Heads up: 1 rename didn't stick. The set and its links were saved."
+    : `Heads up: ${n} renames didn't stick. The sets and their links were saved.`;
+}
+
+/** DRAFT (NEO-325). */
+export const RENAME_CLASH_FIX =
+  "Another set here already has that name. Pick a different one and rename it again.";
+/** DRAFT (NEO-325). */
+export const RENAME_INVALID_FIX =
+  "That name can't be used. Pick a different one and rename it again.";
+
+/** DRAFT (NEO-325). The line under each set that kept its name. */
+export function refusedRenameLine(r: RefusedRename): string {
+  if (r.reason === "invalid") {
+    return `Not renamed to “${r.requested}”: that name can't be used.`;
+  }
+  return `Not renamed to “${r.requested}”: ${r.clashWith ?? "another set"} already has that name.`;
 }
 
 /**

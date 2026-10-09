@@ -3,21 +3,10 @@ import {
   useEffect,
   useRef,
   useState,
-  type ComponentType,
   type RefObject,
-  type SVGProps,
 } from "react";
 import { useAction, useConvex, type ConvexReactClient } from "convex/react";
-import {
-  ArrowPathIcon,
-  CheckIcon,
-  ChevronRightIcon,
-  ClockIcon,
-  ExclamationTriangleIcon,
-  MinusCircleIcon,
-  NoSymbolIcon,
-  StopCircleIcon,
-} from "@heroicons/react/24/outline";
+import { ChevronRightIcon } from "@heroicons/react/24/outline";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
@@ -26,6 +15,16 @@ import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
+import {
+  LiveLine,
+  RunGlyph,
+  SleeveStrip,
+  pulseText,
+} from "../modules/RunLedger";
+
+// NEO-325 — the ledger pieces moved to `modules/RunLedger` on their second
+// use; re-exported so every existing import of them from here keeps working.
+export { SLEEVE_TONE, pulseText } from "../modules/RunLedger";
 
 /**
  * NEO-312 — building an insert's parallels from the insert's own checklist.
@@ -466,11 +465,6 @@ export function panelHeading(run: ParallelRun): string {
 /** Said once as a run starts: "Building 5 parallels of Anime". */
 export function startText(sourceValue: string, total: number): string {
   return `Building ${plural(total, "parallel", "parallels")} of ${sourceValue}`;
-}
-
-/** The live region's periodic pulse on a large run: "12 of 40 done". */
-export function pulseText(done: number, total: number): string {
-  return `${done} of ${total} done`;
 }
 
 /** Shown when the server capped the list (M5: at most 500 parallels). */
@@ -967,48 +961,9 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
 // The panel
 // ---------------------------------------------------------------------------
 
-type HeroIcon = ComponentType<SVGProps<SVGSVGElement>>;
-
-/**
- * Each state's glyph and colour. The glyph is `aria-hidden`: the line's text
- * says the state in words, so colour and shape are never the only signal
- * (SC 1.4.1). Colours are the `-700` / `-300` pairs this file's banner family
- * already clears 4.5:1 with on `blue-100` and `blue-900/30`-over-`gray-800`.
- */
-const LINE_GLYPH: Record<ParallelLine["kind"], { icon: HeroIcon; tone: string }> = {
-  waiting: { icon: ClockIcon, tone: "text-blue-700 dark:text-blue-300" },
-  building: {
-    icon: ArrowPathIcon,
-    tone: "text-blue-700 dark:text-[#00C2FF] motion-safe:animate-spin",
-  },
-  built: { icon: CheckIcon, tone: "text-green-700 dark:text-[#00D558]" },
-  skipped: { icon: MinusCircleIcon, tone: "text-blue-700 dark:text-blue-300" },
-  blocked: { icon: NoSymbolIcon, tone: "text-amber-700 dark:text-amber-300" },
-  stopped: { icon: StopCircleIcon, tone: "text-blue-700 dark:text-blue-300" },
-  failed: {
-    icon: ExclamationTriangleIcon,
-    tone: "text-pink-700 dark:text-pink-300",
-  },
-  unfinished: { icon: ClockIcon, tone: "text-amber-700 dark:text-amber-300" },
-};
-
-/**
- * The sleeve strip — one card-shaped slot per parallel, filling like a binder
- * page as each one lands. Decorative (the ledger below says everything in
- * words), so the whole strip is `aria-hidden`; a slot's `title` repeats its
- * line for a pointer. Exported so the Base-parallels section's pre-run strip
- * (NEO-321) draws the same sleeves the run then fills.
- */
-export const SLEEVE_TONE: Record<ParallelLine["kind"], string> = {
-  waiting: "border-blue-400 dark:border-blue-500 bg-transparent",
-  building: "border-[#00C2FF] bg-[#00C2FF]/40 motion-safe:animate-pulse",
-  built: "border-green-700 dark:border-[#00D558] bg-[#00D558]",
-  skipped: "border-blue-300 dark:border-blue-700 bg-blue-300/40 dark:bg-blue-700/40",
-  blocked: "border-amber-700 dark:border-amber-400 bg-amber-400",
-  stopped: "border-blue-300 dark:border-blue-700 bg-blue-300/40 dark:bg-blue-700/40",
-  failed: "border-pink-700 dark:border-pink-400 bg-[#FF2E9A]",
-  unfinished: "border-amber-700 dark:border-amber-400 bg-transparent",
-};
+// The glyphs, sleeves and live line are the shared run ledger
+// (modules/RunLedger, NEO-325): a parallel's line kinds are `RunLineKind`s,
+// which `RunGlyph`'s and `SleeveStrip`'s types hold this file to.
 
 /**
  * NEO-321 (Jason, on the preview) — the ledger grows with its lines and the
@@ -1038,20 +993,9 @@ export default function ParallelBuildPanel({
 }) {
   const Heading = headingLevel === 4 ? "h4" : "h3";
   const panelRef = useRef<HTMLElement>(null);
-  /**
-   * a11y (NEO-321 audit) — the live line must be EMPTY when it enters the
-   * tree: a screen reader registers a live region on insertion and speaks
-   * only later CHANGES, so a region that mounts already holding "Building 5
-   * parallels of Anime" says nothing. React renders the node with no
-   * children and this effect writes the text after the commit — on mount
-   * that is the change that gets spoken, and every later announcement is a
-   * change too. The node's text is owned here, never by React, so the two
-   * cannot fight over it.
-   */
-  const liveRef = useRef<HTMLParagraphElement>(null);
-  useEffect(() => {
-    if (liveRef.current) liveRef.current.textContent = run.announcement;
-  }, [run.announcement]);
+  // a11y (NEO-321 audit) — the live line is `LiveLine`, which enters the tree
+  // EMPTY and writes "Building 5 parallels of Anime" after the commit, so the
+  // first announcement is a change a screen reader speaks.
   const scrollerRef = useRef<HTMLDivElement>(null);
   // NEO-260: the E2E driver re-finds a focused control by an XPath built from
   // its class, so Stop carries the document-unique marker class — never a
@@ -1134,8 +1078,6 @@ export default function ParallelBuildPanel({
   const list = (
     <ul className="space-y-0.5">
       {run.entries.map((entry, i) => {
-        const glyph = LINE_GLYPH[entry.line.kind];
-        const Icon = glyph.icon;
         const result = entry.line.kind === "built" ? entry.line.result : null;
         const only = result ? sideOnlyText(result) : null;
         const text = parallelLineText(entry.value, entry.line, run.sourceValue);
@@ -1151,10 +1093,7 @@ export default function ParallelBuildPanel({
             className="leading-5"
           >
             <div className="flex items-start gap-1.5">
-              <Icon
-                aria-hidden="true"
-                className={`mt-0.5 h-4 w-4 shrink-0 ${glyph.tone}`}
-              />
+              <RunGlyph kind={entry.line.kind} />
               {hasDetail ? (
                 // The line IS the disclosure: its text is the button's name,
                 // so each one is unique and the E2E driver still reads the
@@ -1241,15 +1180,13 @@ export default function ParallelBuildPanel({
         )}
       </div>
 
-      <div aria-hidden="true" className="mt-2 flex flex-wrap gap-1">
-        {run.entries.map((entry) => (
-          <span
-            key={entry.id}
-            title={parallelLineText(entry.value, entry.line, run.sourceValue)}
-            className={`h-3.5 w-2.5 rounded-[2px] border ${SLEEVE_TONE[entry.line.kind]}`}
-          />
-        ))}
-      </div>
+      <SleeveStrip
+        items={run.entries.map((entry) => ({
+          key: entry.id,
+          kind: entry.line.kind,
+          title: parallelLineText(entry.value, entry.line, run.sourceValue),
+        }))}
+      />
 
       <div className="mt-2 text-xs">
         {scrolls ? (
@@ -1290,7 +1227,7 @@ export default function ParallelBuildPanel({
         in the final heading, said once at the end. Every line also stays in
         the ledger above to be read at leisure.
       */}
-      <p ref={liveRef} className="sr-only" role="status" />
+      <LiveLine text={run.announcement} />
     </section>
   );
 }

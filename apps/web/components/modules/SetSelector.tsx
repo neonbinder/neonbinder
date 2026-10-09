@@ -847,6 +847,8 @@ export default function SetSelector() {
         primaryId: primarySlotKey,
         chips: entries.map((e) => ({
           id: e.slot,
+          // NEO-325 — the marketplace id in the slot, for a twin's `(#id)`.
+          platformId: e.id,
           label: slotLabel(cardChecklistRow, side, e.slot),
         })),
       };

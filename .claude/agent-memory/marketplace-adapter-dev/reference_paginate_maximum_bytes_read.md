@@ -21,6 +21,12 @@ cards:
 
 Only one `paginate` per function: take/first/get beside it are fine.
 
+When the contract gives a query no cursor (a reactive read the client
+subscribes to whole), use ONE `paginate({ numItems: CAP + 1, cursor: null,
+maximumBytesRead })` and answer "too many" when `!isDone || page.length > CAP`:
+`isDone` is false both past the row cap and at the byte bound, so one check
+covers both, and the `+ 1` keeps an exactly-CAP list from reading as over.
+
 To test: `convexTest({ schema, modules, transactionLimits: { bytesRead: X } })`
 plus rows padded with `"x".repeat(kb * 1024)` in a field the code under test
 never copies. An unbounded read then THROWS exactly as on Convex. Seed heavy

@@ -1,8 +1,12 @@
 import { slotIds, type SlotBearingRow } from "../../convex/platformSlots";
 import type {
   HeldElsewhereEntry,
+  RenameRefusedEntry,
   WithheldElsewhereEntry,
+  WithheldSiblingEntry,
 } from "../../convex/selectorSyncStore";
+import type { SiblingWithholdReason } from "../../convex/selectorSyncMatch";
+import { sharedTitleLabels } from "./marketplace-item-label";
 
 /**
  * NEO-300 — marketplace ids a sync must leave alone because another NB row in
@@ -249,7 +253,98 @@ export type StoreHolds = {
   withheld: WithheldElsewhereEntry[];
   withheldTotal: number;
   subtreeWalkSkipped: boolean;
+  /**
+   * NEO-325 — items withheld against this parent's OWN rows: not saved, so
+   * their links were not stored. Until NEO-325 the store only logged these,
+   * and a SportLots twin saved after its namesake simply vanished.
+   * Optional (absent = none) so a holds value built before NEO-325 still
+   * reads; `storeHoldsOf` always sets all four.
+   */
+  siblings?: SiblingHold[];
+  siblingsTotal?: number;
+  /**
+   * NEO-325 — title edits the store refused. The set and its links were
+   * saved; only its name stayed as it was.
+   */
+  renames?: RefusedRename[];
+  renamesTotal?: number;
 };
+
+/** NEO-325 — one withheld item, as the notice names it. */
+export type SiblingHold = {
+  /**
+   * The title it was sent under — followed by its marketplace ids when
+   * another line in the same save carried that title (two SportLots twins
+   * both still called "Anime"), in the reconciler's own `(#id)` form.
+   */
+  label: string;
+  reason: SiblingWithholdReason;
+  /** The rows here it clashed with, by NB name. */
+  rows: Array<{ id: string; value: string }>;
+};
+
+/** NEO-325 — one refused rename, as the notice names it. */
+export type RefusedRename = {
+  /** The name the set KEPT, with its ids when another refusal shares it. */
+  label: string;
+  /** The name the operator asked for. */
+  requested: string;
+  reason: "clash" | "invalid";
+  /** The row that already has `requested`, for a clash. */
+  clashWith?: string;
+};
+
+/** What the form sent, so a withheld line can be named by its own ids. */
+export type SentReconciledItem = {
+  value: string;
+  platformData: { bsc?: string | string[]; sportlots?: string | string[] };
+};
+
+const wireIds = (v: string | string[] | undefined): string[] =>
+  typeof v === "string" ? [v] : Array.isArray(v) ? v : [];
+
+/**
+ * `index → label` for `entries`, each titled by `titleOf` and carrying the ids
+ * of the line it points at in `sent`: a title only one entry has is left as
+ * it is; a shared one gains its ids (`sharedTitleLabels`).
+ */
+function labelsWithIds<T extends { itemIndex: number }>(
+  entries: ReadonlyArray<T>,
+  titleOf: (entry: T) => string,
+  sent: ReadonlyArray<SentReconciledItem> | undefined,
+  sharedAcross: "entries" | "sent",
+): string[] {
+  const pv = (ids: string[]) => ids.map((platformValue) => ({ platformValue }));
+  const idsOf = (index: number) => {
+    const item = sent?.[index];
+    return {
+      bsc: pv(wireIds(item?.platformData.bsc)),
+      sl: pv(wireIds(item?.platformData.sportlots)),
+    };
+  };
+  if (sharedAcross === "sent" && sent) {
+    // Shared across everything SENT: a twin is ambiguous even when only one
+    // of the two was withheld — that is exactly the case to name.
+    const labels = sharedTitleLabels(
+      sent.map((item, index) => ({
+        key: String(index),
+        title: item.value,
+        ...idsOf(index),
+      })),
+    );
+    return entries.map(
+      (e) => labels.get(String(e.itemIndex)) ?? titleOf(e),
+    );
+  }
+  const labels = sharedTitleLabels(
+    entries.map((e, i) => ({
+      key: String(i),
+      title: titleOf(e),
+      ...idsOf(e.itemIndex),
+    })),
+  );
+  return entries.map((e, i) => labels.get(String(i)) ?? titleOf(e));
+}
 
 export function storeHoldsOf(
   stored:
@@ -257,9 +352,18 @@ export function storeHoldsOf(
         withheldElsewhere?: ReadonlyArray<WithheldElsewhereEntry>;
         withheldElsewhereTotal?: number;
         subtreeWalkSkipped?: boolean;
+        withheldSiblings?: ReadonlyArray<WithheldSiblingEntry>;
+        withheldSiblingsTotal?: number;
+        renameRefused?: ReadonlyArray<RenameRefusedEntry>;
+        renameRefusedTotal?: number;
       }
     | null
     | undefined,
+  /**
+   * NEO-325 — the `reconciledItems` the form sent, in order. Optional: with
+   * it, a withheld twin is named by its ids; without it, by its title.
+   */
+  sent?: ReadonlyArray<SentReconciledItem>,
 ): StoreHolds | null {
   const withheld = [...(stored?.withheldElsewhere ?? [])];
   const withheldTotal = Math.max(
@@ -267,6 +371,57 @@ export function storeHoldsOf(
     withheld.length,
   );
   const subtreeWalkSkipped = stored?.subtreeWalkSkipped === true;
-  if (withheldTotal === 0 && !subtreeWalkSkipped) return null;
-  return { withheld, withheldTotal, subtreeWalkSkipped };
+
+  const siblingEntries = stored?.withheldSiblings ?? [];
+  const siblingLabels = labelsWithIds(
+    siblingEntries,
+    (e) => e.label,
+    sent,
+    "sent",
+  );
+  const siblings: SiblingHold[] = siblingEntries.map((e, i) => ({
+    label: siblingLabels[i],
+    reason: e.reason,
+    rows: e.rows.map((r) => ({ id: String(r.id), value: r.value })),
+  }));
+  const siblingsTotal = Math.max(
+    stored?.withheldSiblingsTotal ?? 0,
+    siblings.length,
+  );
+
+  const renameEntries = stored?.renameRefused ?? [];
+  const renameLabels = labelsWithIds(
+    renameEntries,
+    (e) => e.value,
+    sent,
+    "entries",
+  );
+  const renames: RefusedRename[] = renameEntries.map((e, i) => ({
+    label: renameLabels[i],
+    requested: e.requested,
+    reason: e.reason,
+    ...(e.clashWith ? { clashWith: e.clashWith.value } : {}),
+  }));
+  const renamesTotal = Math.max(
+    stored?.renameRefusedTotal ?? 0,
+    renames.length,
+  );
+
+  if (
+    withheldTotal === 0 &&
+    !subtreeWalkSkipped &&
+    siblingsTotal === 0 &&
+    renamesTotal === 0
+  ) {
+    return null;
+  }
+  return {
+    withheld,
+    withheldTotal,
+    subtreeWalkSkipped,
+    siblings,
+    siblingsTotal,
+    renames,
+    renamesTotal,
+  };
 }

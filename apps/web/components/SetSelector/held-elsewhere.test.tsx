@@ -198,6 +198,10 @@ describe("storeHoldsOf", () => {
       withheld: [],
       withheldTotal: 0,
       subtreeWalkSkipped: true,
+      siblings: [],
+      siblingsTotal: 0,
+      renames: [],
+      renamesTotal: 0,
     });
   });
 
@@ -210,5 +214,90 @@ describe("storeHoldsOf", () => {
     });
     expect(out?.withheld).toHaveLength(1);
     expect(out?.withheldTotal).toBe(70);
+  });
+});
+
+describe("storeHoldsOf — withheld siblings and refused renames (NEO-325)", () => {
+  const sib = (itemIndex: number, label: string, rows: Array<{ id: string; value: string }> = []) => ({
+    itemIndex,
+    label,
+    reason: "nameSharedInBatch" as const,
+    rows: rows.map((r) => ({ id: r.id as never, value: r.value })),
+  });
+  const sent = (...lines: Array<[string, string]>) =>
+    lines.map(([value, sl]) => ({
+      value,
+      platformData: { sportlots: [sl] },
+    })) as never;
+
+  it("maps the sibling holds, stringifying row ids, and counts the true total", () => {
+    const out = storeHoldsOf({
+      withheldSiblings: [sib(0, "Anime", [{ id: "r1", value: "Anime Set" }])],
+      withheldSiblingsTotal: 9,
+    });
+    expect(out?.siblings).toEqual([
+      { label: "Anime", reason: "nameSharedInBatch", rows: [{ id: "r1", value: "Anime Set" }] },
+    ]);
+    expect(out?.siblingsTotal).toBe(9);
+  });
+
+  it("a total below the list never under-counts", () => {
+    const out = storeHoldsOf({ withheldSiblings: [sib(0, "A"), sib(1, "B")], withheldSiblingsTotal: 0 });
+    expect(out?.siblingsTotal).toBe(2);
+  });
+
+  it("twins withheld together are named by their ids, so two 'Anime' lines read differently", () => {
+    const out = storeHoldsOf(
+      { withheldSiblings: [sib(0, "Anime"), sib(1, "Anime")], withheldSiblingsTotal: 2 },
+      sent(["Anime", "111"], ["Anime", "222"]),
+    );
+    const [a, b] = (out?.siblings ?? []).map((x) => x.label);
+    expect(a).not.toBe(b);
+    expect(a).toContain("111");
+    expect(b).toContain("222");
+  });
+
+  it("a title only one line carries is left as it is, even with sent lines", () => {
+    const out = storeHoldsOf(
+      { withheldSiblings: [sib(0, "Anime")], withheldSiblingsTotal: 1 },
+      sent(["Anime", "111"], ["Gold", "222"]),
+    );
+    expect(out?.siblings?.[0].label).toBe("Anime");
+  });
+
+  it("a sibling hold is a hold: the result is not null on that alone", () => {
+    expect(storeHoldsOf({ withheldSiblings: [sib(0, "A")], withheldSiblingsTotal: 1 })).not.toBeNull();
+  });
+
+  it("maps a refused rename with the row in the way, and a refusal with none", () => {
+    const out = storeHoldsOf({
+      renameRefused: [
+        {
+          itemIndex: 0,
+          rowId: "r1" as never,
+          value: "Alpha",
+          requested: "Beta",
+          reason: "clash",
+          clashWith: { id: "r2" as never, value: "Beta" },
+        },
+        { itemIndex: 1, rowId: "r3" as never, value: "Gamma", requested: "x", reason: "invalid" },
+      ],
+      renameRefusedTotal: 2,
+    });
+    expect(out?.renames).toEqual([
+      { label: "Alpha", requested: "Beta", reason: "clash", clashWith: "Beta" },
+      { label: "Gamma", requested: "x", reason: "invalid" },
+    ]);
+    expect(out?.renamesTotal).toBe(2);
+    expect("clashWith" in out!.renames![1]).toBe(false);
+  });
+
+  it("a refused rename is a hold: the result is not null on that alone", () => {
+    expect(
+      storeHoldsOf({
+        renameRefused: [{ itemIndex: 0, rowId: "r" as never, value: "A", requested: "B", reason: "invalid" }],
+        renameRefusedTotal: 1,
+      }),
+    ).not.toBeNull();
   });
 });

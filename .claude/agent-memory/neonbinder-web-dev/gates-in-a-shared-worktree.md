@@ -62,6 +62,12 @@ Things that look like failures during the apps/web fast gates but are not.
    fixtures BOTH the old evidence and the new flag so they read right under
    either version (NEO-306).
 
+7. **A sibling can silently restore your file.** NEO-325: two of my edited
+   components reverted mid-round (a unit-test agent restored a copy taken
+   seconds earlier; no stash, no commit). Keep a scratchpad copy of each file
+   you edit, and before reporting grep each file for a marker of your change
+   (`grep -c <newSymbol> file`) and re-apply from your scripts if it is gone.
+
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.
 

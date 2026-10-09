@@ -32,6 +32,7 @@
  */
 
 import { MAX_RETURNED_IDS } from "../../convex/selectorSyncStore";
+import { ATTACH_MORE_LABEL, CUSTOM_BUTTON_LABEL } from "./control-labels";
 
 export type SyncSide = "bsc" | "sportlots";
 
@@ -541,9 +542,13 @@ export function slSetsToSortText(count: number): string {
 }
 
 /**
- * A save that stopped part-way: what it filed stays filed, the rest is still
- * in the review, and saving again finishes it (the save is resumable). The
- * sentence tells the operator the one thing to do.
+ * The review after a save that stopped part-way: saving again finishes it.
+ * NEO-325 — `partial` means only that. A save that finished but refused some
+ * lines for their name leaves `partial` false: those lines stay in the review
+ * and the dialog says, on each, why and what to rename; the pill still counts
+ * them as "to sort".
+ *
+ * DRAFT copy (NEO-306), accepted for now; Jason signs off on local Vite.
  */
 export function slSetsLeftText(count: number): string {
   return `${count} SportLots set${count === 1 ? "" : "s"} left — save again`;
@@ -552,7 +557,8 @@ export function slSetsLeftText(count: number): string {
 /**
  * The Sets column's pill, from `getSlSetReviewSummary`. `partial` is set by a
  * save that started and has not finished (on this admin's screen or anyone
- * else's — the review is shared).
+ * else's — the review is shared), and cleared when a save finishes, refused
+ * lines or not.
  */
 export function slReviewPillText(summary: {
   pending: number;
@@ -561,4 +567,111 @@ export function slReviewPillText(summary: {
   return summary.partial
     ? slSetsLeftText(summary.pending)
     : slSetsToSortText(summary.pending);
+}
+
+// ---------------------------------------------------------------------------
+// NEO-325 — name twins
+// ---------------------------------------------------------------------------
+
+/** The ids `fetchRawOptions` reports as name twins, per side. */
+export type TwinIds = {
+  bsc: readonly string[];
+  sportlots: readonly string[];
+};
+
+/**
+ * Would a single-platform store write a name twin? Jason's rule A: a name two
+ * or more marketplace ids share is never stored without the operator, so the
+ * forms open Reconcile instead. `twinIds` absent (an older result shape) is
+ * "no twins". Keyed on ids, never on names.
+ */
+export function storeItemsHitTwins(
+  items: ReadonlyArray<{
+    platformData: { bsc?: string; sportlots?: string };
+  }>,
+  twinIds: TwinIds | undefined,
+): boolean {
+  if (!twinIds) return false;
+  const twinBsc = new Set(twinIds.bsc);
+  const twinSl = new Set(twinIds.sportlots);
+  if (twinBsc.size === 0 && twinSl.size === 0) return false;
+  return items.some(
+    (i) =>
+      (i.platformData.bsc !== undefined && twinBsc.has(i.platformData.bsc)) ||
+      (i.platformData.sportlots !== undefined &&
+        twinSl.has(i.platformData.sportlots)),
+  );
+}
+
+/**
+ * The line Reconcile's header carries when it opened because of twins rather
+ * than because both marketplaces answered. Names the side when only one has
+ * them. DRAFT copy (NEO-325), pending Jason's sign-off.
+ */
+export function twinReconcileNotice(twinIds: TwinIds): string {
+  const sides = ALL_SIDES.filter((s) => twinIds[s].length > 0);
+  const who =
+    sides.length === 1 ? SIDE_LABEL[sides[0]] : "BSC and SportLots";
+  return `${who} list${sides.length === 1 ? "s" : ""} some of these under one name, so nothing's saved yet. Pair each with its set, or make it a new set with a name that sets it apart.`;
+}
+
+/** One name a sync left for the operator (`selectorSyncStatus.twinsLeft`). */
+export type TwinLeftEntry = {
+  name: string;
+  bsc: string[];
+  sportlots: string[];
+};
+
+/** How many twin lines the column notice shows before "Show all". */
+export const TWIN_LINES_SHOWN = 3;
+
+/**
+ * The opening sentence of the column's twin notice. Counts `total` (the
+ * server's true count; the list is capped). Names the marketplace when every
+ * listed twin is on one side. DRAFT copy (NEO-325), pending Jason's sign-off.
+ */
+export function twinsLeftSummary(
+  entries: ReadonlyArray<TwinLeftEntry>,
+  total: number | undefined,
+): string {
+  const n = Math.max(total ?? 0, entries.length);
+  const sides = ALL_SIDES.filter((s) => entries.some((e) => e[s].length > 0));
+  const who =
+    sides.length === 1 ? `${SIDE_LABEL[sides[0]]} lists` : "The marketplaces list";
+  const names = n === 1 ? "1 name" : `${n} names`;
+  return `Seeing double: ${who} ${names} more than once, so the sync didn't attach ${
+    n === 1 ? "it" : "them"
+  }.`;
+}
+
+/**
+ * One twin's ids as a person reads them, side named, house `#id` form:
+ * `SportLots #378117, #378118` / `BSC #chrome-a · SportLots #378117`. The
+ * same form as `sideNamedIdsText` in marketplace-item-label (keep in step;
+ * not shared, so neither module imports the other both ways).
+ */
+export function twinLeftIdsText(entry: TwinLeftEntry): string {
+  return ALL_SIDES.filter((s) => entry[s].length > 0)
+    .map((s) => `${SIDE_LABEL[s]} ${entry[s].map((id) => `#${id}`).join(", ")}`)
+    .join(" · ");
+}
+
+/**
+ * Where the operator attaches a twin from this column, or `null` where there
+ * is no attaching UI yet (brands, and every level above or beside sets and
+ * inserts) — the summary alone says it was not attached. Control names come
+ * from `control-labels`, so a renamed button moves this copy with it; the
+ * verbs are the controls' own (Attach more…, Pair in Reconcile), never "link".
+ * DRAFT copy (NEO-325), pending Jason's sign-off.
+ */
+export function twinsLeftGuidance(level: SelectorLevel | undefined): string | null {
+  switch (level) {
+    case "setName":
+      return `For each one, use ${ATTACH_MORE_LABEL} on its set's Base. Not a set yet? Add it with ${CUSTOM_BUTTON_LABEL}, then use ${ATTACH_MORE_LABEL} there.`;
+    case "insert":
+    case "parallel":
+      return "Run this column's Sync again and pair each one in Reconcile.";
+    default:
+      return null;
+  }
 }

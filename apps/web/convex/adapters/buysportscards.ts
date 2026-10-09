@@ -1,6 +1,6 @@
 "use node";
 
-import { action, internalAction } from "../_generated/server";
+import { action, internalAction, type ActionCtx } from "../_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "../_generated/api";
 import { requireAdmin } from "../auth";
@@ -20,6 +20,7 @@ import {
   legacyBscFacetForLevel,
   missingBscChecklistScope,
   planBscFanOut,
+  type BscFacet,
 } from "../bscFacets";
 import {
   platformServesLevel,
@@ -32,6 +33,19 @@ import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 // NEO-321 follow-up — a structured reason beside `success: false`, and the
 // self-imposed-limiter log line.
+// NEO-325 — the Base match probe's bounds and wire shapes, shared with the
+// default-runtime actions in `convex/baseMatchProbe.ts`.
+import {
+  BSC_PROBE_DEADLINE_MS,
+  MAX_BSC_PROBE_IDS,
+  MAX_BSC_PROBE_ID_LENGTH,
+  bscProbeRequestValidator,
+  bscProbeSummaryValidator,
+  checkProbeIds,
+  summarizeProbeCards,
+  type BscProbeSummary,
+} from "../lib/baseMatchProbe";
+import { isPlatformPaused } from "../marketplacePause";
 import {
   fetchFailureValidator,
   isAbortTimeout,
@@ -980,6 +994,752 @@ export function parsePlayersField(raw: string): {
   };
 }
 
+/** One card as `fetchBscChecklist` returns it. */
+export type BscChecklistCard = {
+  cardNumber: string;
+  cardName: string;
+  team?: string;
+  teams?: string[];
+  players?: string[];
+  attributes?: string[];
+  printRun?: number;
+  autographType?: string;
+  cardVariation?: string;
+  isVariation?: boolean;
+  platformRef?: string;
+  sportlotsRef?: string;
+  sourceBscSetSlug?: string;
+};
+
+/** What `fetchBscChecklist` answers. */
+export type BscChecklistResult = {
+  success: boolean;
+  cards: BscChecklistCard[];
+  message?: string;
+  failure?: FetchFailure;
+  pages?: number;
+  slowestPageMs?: number;
+  collisions?: Array<{ cardNumber: string; keptSource: string; skippedSource: string }>;
+};
+
+/** `fetchBscChecklist`'s arguments, as the request builder reads them. */
+export type BscChecklistArgs = {
+  parentFilters: Record<string, string>;
+  platformFilters?: Record<string, string[]>;
+  facetFilters?: Record<string, string[]>;
+  sourceFacet?: BscFacet;
+};
+
+/**
+ * NEO-325 — one BSC token shared by every request of one action call: the
+ * fan-out of a `fetchBscChecklist`, or every id of a `probeBscChecklistBatch`.
+ *
+ * A session spends AT MOST ONE re-auth. The first 401 sets `reauthAttempted`
+ * and refreshes through `credentials.refreshSiteTokenAfterRejection` (the
+ * NEO-278 backoff and the credential lock). After that:
+ *
+ *   - the re-auth failed (or was skipped, or the lock was busy), or no token
+ *     came back from it: `dead`;
+ *   - any later 401, on the retry or on a later request: `dead`.
+ *
+ * A dead session sends nothing more: every remaining request fails
+ * `signed_out` with no BSC request and no login call. Without this a failed
+ * re-auth left the stale token in place and each later request logged in
+ * again (security audit, NEO-325).
+ */
+export type BscSession = {
+  token: string;
+  reauthAttempted?: boolean;
+  dead?: boolean;
+};
+
+/**
+ * NEO-325 — everything `fetchBscChecklist` does after it has a token, lifted
+ * out so a batch (`probeBscChecklistBatch`) reads the token ONCE and reuses
+ * it. `session.token` is updated in place when a 401 forces a re-auth, so the
+ * next call in the batch sends the refreshed one; `session` also carries the
+ * one-re-auth budget (`BscSession`). Throws only for something unexpected;
+ * the action's own catch classifies it.
+ */
+async function bscChecklistWithSession(
+  ctx: ActionCtx,
+  args: BscChecklistArgs,
+  session: BscSession,
+  limits: {
+    /**
+     * Epoch ms. A wall-clock bound shared by every request of the caller's
+     * call: no request (first send or post-re-auth retry) and no re-auth
+     * starts at or after it, and each request's abort timer is cut to what
+     * is left. A request it stops fails `timeout` with nothing sent.
+     * `fetchBscChecklist` passes none; the probe batch passes its budget.
+     */
+    deadlineAt?: number;
+  } = {},
+): Promise<BscChecklistResult> {
+  // Build nested `filters: { sport: [...], year: [...], ... }`.
+  //
+  // NEO-239 — SLOT IDS ONLY, from two sources:
+  //
+  //   facetFilters    (NEO-189) — already bucketed by BSC facet from the
+  //                   row's slot tags. Authoritative and complete.
+  //   platformFilters — bucketed by NB level; the facet is derived via
+  //                   legacyBscFacetForLevel. variantType and parallel
+  //                   resolve to no facet, so an untagged id on either
+  //                   contributes nothing.
+  //
+  // The `parentFilters` else-branch is GONE, and so is the `variant` pin
+  // that used to sit outside the if/else re-deriving the facet from
+  // `parentFilters.variantType.toLowerCase()`. That pin was the last place
+  // an NB DISPLAY VALUE built a marketplace query, and BSC's variant set is
+  // not the closed base/insert/parallel enum it assumed ("Promo", "Mail In"
+  // occur upstream). `parentFilters` is now telemetry and log text only.
+  const filters: Record<string, string[]> = {};
+  const facetSource = args.facetFilters
+    ? Object.entries(args.facetFilters).map(
+        ([facet, values]) => [facet, values] as const,
+      )
+    : Object.entries(args.platformFilters ?? {}).map(
+        ([lvl, values]) => [legacyBscFacetForLevel(lvl), values] as const,
+      );
+  for (const [facet, values] of facetSource) {
+    if (!facet) continue;
+    if (values.length > 0) filters[facet] = values;
+  }
+
+  // REQUIRED FACETS — refuse, never widen.
+  //
+  // Dropping the display-value pin means a variantType row with no
+  // `variant`-tagged slot would otherwise send sport + year + setName with
+  // NO VARIANT AXIS, and BSC answers that with the base cards plus every
+  // insert and every parallel in the set — NEO-22's ~5000-card superset,
+  // returned as a 200 with no error for the caller to notice.
+  //
+  // The chain-level gate (`resolvableSides`, with `bscScope: "checklist"`)
+  // should already have skipped BSC before we get here, and since NEO-252
+  // it reaches that verdict by calling THIS function on THESE filters — so
+  // a skip upstream and a refusal here can no longer disagree. This stays
+  // as the second lock on the same door, placed at the boundary that
+  // actually issues the request, so no future caller can reach the wire
+  // around it.
+  const missingFacets = missingBscChecklistScope(filters);
+  if (missingFacets.length > 0) {
+    console.warn(
+      `[fetchBscChecklist] refusing an under-scoped checklist request — ` +
+        `no BSC id for facet(s): ${missingFacets.join(", ")}`,
+    );
+    return {
+      success: false,
+      cards: [],
+      message: BSC_UNSCOPED_MESSAGE,
+      failure: { kind: "refused", timedOut: false },
+    };
+  }
+
+  // FAN OUT — one request per SOURCE SET. Do NOT batch them.
+  //
+  // Measured live on dev 2026-08-12, 1996 Score inserts:
+  //   filters.variantName = ["…series-2"]                  -> returned=110
+  //   filters.variantName = ["…series-2", "…series-1"]      -> returned=0
+  // BSC answers 200 OK with an EMPTY body for a multi-value facet — it does
+  // not OR them. The comment that used to sit here claimed the opposite
+  // ("accepts multi-value facets in one call … no fan-out needed"); it was
+  // never true and nothing caught it, because the checklist tests mock this
+  // adapter at the validator boundary and never sent two values.
+  //
+  // The failure mode is silent and nasty: a well-formed query, no error, an
+  // empty checklist, and a UI that reports "0 BSC cards" as though the
+  // marketplace simply had nothing.
+  //
+  // NEO-189 generalises the axis. The fan-out used to key on `variantName`
+  // alone, which was the insert case it was written for; a row drawing from
+  // two BSC **setName** sets (Topps Series 1 + Series 2 under one NB Base
+  // row) sent both slugs as one multi-value facet and hit exactly the
+  // failure above. `planBscFanOut` now fans out over every multi-valued
+  // facet, so no outgoing request can carry two values for one facet
+  // regardless of which axis the operator split on.
+  //
+  // Sequential, not parallel: the 401 path refreshes `session.token` and the
+  // refreshed value has to be visible to the requests that follow.
+  const MAX_CARDS = 5000;
+  const plan = planBscFanOut(filters, MAX_BSC_FAN_OUT);
+  if (plan.multiFacets.length > 1) {
+    console.warn(
+      `[fetchBscChecklist] ${plan.multiFacets.length} facets are multi-valued ` +
+        `(${plan.multiFacets.join(", ")}) — fanning out over their cross ` +
+        `product (${plan.totalBeforeCap} request(s)). Combinations that do ` +
+        `not exist on BSC simply return no rows.`,
+    );
+  }
+  if (plan.capped) {
+    console.warn(
+      `[fetchBscChecklist] BSC fan-out capped at ${MAX_BSC_FAN_OUT} ` +
+        `(plan needed ${plan.totalBeforeCap}) — some source sets were not queried.`,
+    );
+  }
+  const fanOut = plan.combos;
+
+  // The batch shares one token across calls (NEO-325); a 401 refresh below
+  // writes the new token back so the calls after it use it, and spends the
+  // session's one re-auth (`BscSession`).
+
+  type OneResult =
+    | { ok: true; raw: Record<string, unknown>[]; elapsedMs: number }
+    | { ok: false; message: string; failure: FetchFailure };
+
+  /** The facet value this request should attribute its cards to. */
+  const sourceOf = (combo: Record<string, string>): string | undefined => {
+    if (args.sourceFacet) {
+      return combo[args.sourceFacet] ?? filters[args.sourceFacet]?.[0];
+    }
+    // Legacy attribution, unchanged: the variantName we queried, and
+    // nothing when there is none (the caller then falls back to the
+    // response row's own `setName`).
+    return combo.variantName ?? filters.variantName?.[0];
+  };
+
+  const describe = (combo: Record<string, string>): string => {
+    const parts = Object.entries(combo).map(([k, val]) => `${k}=${val}`);
+    return parts.length > 0 ? parts.join(" ") : "(no fan-out)";
+  };
+
+  const runOne = async (
+    combo: Record<string, string>,
+  ): Promise<OneResult> => {
+    const callFilters: Record<string, string[]> = { ...filters };
+    for (const [facet, value] of Object.entries(combo)) {
+      callFilters[facet] = [value];
+    }
+    // BSC's /search/bulk-upload/results ignores `size`/`page` and returns
+    // the full filtered set in one response — confirmed live. `size` is
+    // passed as a defense in case that changes.
+    const body = {
+      condition: "all",
+      page: 0,
+      size: MAX_CARDS,
+      sort: "default",
+      filters: callFilters,
+    };
+    // The abort timer of the request in flight: the 30s default, or less
+    // when the caller's deadline leaves less (NEO-325).
+    let requestTimeoutMs = BSC_CHECKLIST_FETCH_TIMEOUT_MS;
+    /** Time left before `limits.deadlineAt`; Infinity without one. */
+    const remainingMs = (): number =>
+      limits.deadlineAt === undefined ? Infinity : limits.deadlineAt - Date.now();
+    const doFetch = async (token: string): Promise<Response> => {
+      requestTimeoutMs = Math.max(
+        1,
+        Math.min(BSC_CHECKLIST_FETCH_TIMEOUT_MS, Math.floor(remainingMs())),
+      );
+      return await fetch(`${BSC_API_BASE}/search/bulk-upload/results`, {
+        method: "POST",
+        headers: bscHeaders(token),
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(requestTimeoutMs),
+      });
+    };
+    /** The caller's budget ran out before this step: nothing more is sent. */
+    const outOfTime = (retry: boolean): OneResult => {
+      console.warn(
+        `[fetchBscChecklist] platform=bsc op=checklist skipped: the call's deadline passed — ${retry ? "retry" : "request"} not sent`,
+      );
+      return {
+        ok: false,
+        message: retry
+          ? `BSC probe ran out of time before the retry; not sent`
+          : `BSC probe ran out of time before this request; not sent`,
+        failure: {
+          kind: "timeout",
+          timedOut: true,
+          ...(retry ? { reauthAttempted: true } : {}),
+        },
+      };
+    };
+
+    // NEO-321 follow-up — a thrown fetch, classified. Our own abort timer
+    // is a self-imposed limiter, so its firing is logged as one.
+    const threw = (
+      err: unknown,
+      startedAt: number,
+      retry: boolean,
+    ): OneResult => {
+      const waitedMs = Date.now() - startedAt;
+      if (isAbortTimeout(err)) {
+        logMarketplaceLimiter({
+          limiter: "bsc_checklist_timeout",
+          platform: "bsc",
+          operation: "fetchBscChecklist",
+          waitedMs,
+          timeoutMs: requestTimeoutMs,
+          outcome: "aborted",
+          retry,
+        });
+        const seconds = Math.ceil(requestTimeoutMs / 1000);
+        return {
+          ok: false,
+          message: retry
+            ? `BSC API retry timed out after ${seconds}s`
+            : `BSC API request timed out after ${seconds}s`,
+          failure: {
+            kind: "timeout",
+            timedOut: true,
+            timeoutMs: requestTimeoutMs,
+            ...(retry ? { reauthAttempted: true } : {}),
+          },
+        };
+      }
+      const detail = err instanceof Error ? err.message : String(err);
+      return {
+        ok: false,
+        message: retry
+          ? `BSC API retry failed: ${detail}`
+          : `BSC API request failed: ${detail}`,
+        failure: {
+          kind: "network",
+          timedOut: false,
+          ...(retry ? { reauthAttempted: true } : {}),
+        },
+      };
+    };
+
+    // A session BSC has already refused (or whose one re-auth failed) sends
+    // nothing more: no request with a token known to be dead, no login.
+    if (session.dead) {
+      console.warn(
+        `[fetchBscChecklist] platform=bsc op=checklist skipped: the session was signed out earlier in this call — no request, no re-auth`,
+      );
+      return {
+        ok: false,
+        message: `BSC signed us out earlier in this call; request not sent`,
+        failure: {
+          kind: "signed_out",
+          timedOut: false,
+          reauthAttempted: true,
+        },
+      };
+    }
+
+    if (!(remainingMs() > 0)) return outOfTime(false);
+
+    let response: Response;
+    let reauthAttempted = false;
+    let sentAt = Date.now();
+    try {
+      response = await doFetch(session.token);
+    } catch (err) {
+      return threw(err, sentAt, false);
+    }
+
+    // BSC intermittently 401s with a token our cache still thinks is fresh
+    // (their TTL doesn't always match what they advertise, especially under
+    // load). Refresh and retry once rather than failing the whole fetch —
+    // ONCE PER SESSION, not once per request: a 401 after the session has
+    // spent its re-auth is BSC refusing us again, and kills the session.
+    if (response.status === 401 && session.reauthAttempted) {
+      await response.text().catch(() => "");
+      session.dead = true;
+      console.warn(
+        `[fetchBscChecklist] platform=bsc op=checklist BSC API 401 after this call's re-auth — session signed out, no further re-auth`,
+      );
+      return {
+        ok: false,
+        message: `BSC API 401 after re-auth`,
+        failure: {
+          kind: "signed_out",
+          httpStatus: 401,
+          timedOut: false,
+          reauthAttempted: true,
+        },
+      };
+    }
+    if (response.status === 401) {
+      await response.text().catch(() => "");
+      // No re-auth the caller's budget could not use: a login started past
+      // the deadline would only delay the answer. The session keeps its
+      // re-auth (nothing was spent), but nothing after this is sent anyway.
+      if (!(remainingMs() > 0)) return outOfTime(false);
+      console.warn(
+        `[fetchBscChecklist] BSC API 401 with cached token — forcing re-auth and retrying once`,
+      );
+      reauthAttempted = true;
+      session.reauthAttempted = true;
+      // NEO-321 follow-up — the re-auth is a wait WE add before the
+      // retry; log how long it took and how it ended.
+      const reauthStartedAt = Date.now();
+      // Through `refreshSiteToken`, never `authenticateBsc` directly: the
+      // NEO-278 backoff and the per-(user, site) credential lock apply here
+      // exactly as they do to `getSiteToken`'s own refresh. A skip or a busy
+      // lock answers `refreshed: false`, the same as a failed login.
+      let refreshedLogin = false;
+      try {
+        const reAuth: { refreshed: boolean } = await ctx.runAction(
+          internal.credentials.refreshSiteTokenAfterRejection,
+          { site: "buysportscards" },
+        );
+        refreshedLogin = reAuth.refreshed;
+      } catch (err) {
+        console.error(
+          `[fetchBscChecklist] re-auth threw after 401: ${err instanceof Error ? err.name : "unknown"}`,
+        );
+      }
+      if (!refreshedLogin) {
+        session.dead = true;
+        console.error(
+          `[fetchBscChecklist] re-auth failed after 401 (failed, in NEO-278 backoff, or credential lock busy)`,
+        );
+        logMarketplaceLimiter({
+          limiter: "bsc_token_reauth",
+          platform: "bsc",
+          operation: "fetchBscChecklist",
+          waitedMs: Date.now() - reauthStartedAt,
+          outcome: "reauth_failed",
+        });
+        return {
+          ok: false,
+          message: `BSC API 401 and re-auth failed`,
+          failure: {
+            kind: "signed_out",
+            httpStatus: 401,
+            timedOut: false,
+            reauthAttempted: true,
+          },
+        };
+      }
+      const refreshed: { success: boolean; token?: string; error?: string } =
+        await ctx.runAction(internal.adapters.buysportscards.getBscToken, {});
+      logMarketplaceLimiter({
+        limiter: "bsc_token_reauth",
+        platform: "bsc",
+        operation: "fetchBscChecklist",
+        waitedMs: Date.now() - reauthStartedAt,
+        outcome: refreshed.success && refreshed.token ? "ok" : "no_token",
+      });
+      if (!refreshed.success || !refreshed.token) {
+        session.dead = true;
+        return {
+          ok: false,
+          message: refreshed.error || "No BSC token available after re-auth",
+          failure: {
+            kind: "no_sign_in",
+            timedOut: false,
+            reauthAttempted: true,
+          },
+        };
+      }
+      session.token = refreshed.token;
+      // The re-auth itself is not bounded by the deadline (it is the shared
+      // credential path); the retry is.
+      if (!(remainingMs() > 0)) return outOfTime(true);
+      sentAt = Date.now();
+      try {
+        response = await doFetch(session.token);
+      } catch (err) {
+        return threw(err, sentAt, true);
+      }
+    }
+
+    if (!response.ok) {
+      await response.text().catch(() => "");
+      // A second 401, after a re-auth that said it worked, is still BSC
+      // refusing our session — and the session has no re-auth left.
+      if (response.status === 401) session.dead = true;
+      return {
+        ok: false,
+        message: `BSC API error: ${response.status}`,
+        failure: {
+          kind: response.status === 401 ? "signed_out" : "http_error",
+          httpStatus: response.status,
+          timedOut: false,
+          ...(reauthAttempted ? { reauthAttempted: true } : {}),
+        },
+      };
+    }
+
+    // The body read is under the same abort timer as the request.
+    let data: unknown;
+    try {
+      data = await response.json();
+    } catch (err) {
+      if (isAbortTimeout(err)) return threw(err, sentAt, reauthAttempted);
+      return {
+        ok: false,
+        message: `BSC API answered ${response.status} with a body that could not be read`,
+        failure: {
+          kind: "bad_response",
+          httpStatus: response.status,
+          timedOut: false,
+          ...(reauthAttempted ? { reauthAttempted: true } : {}),
+        },
+      };
+    }
+    const elapsedMs = Date.now() - sentAt;
+    const results = Array.isArray(data) ? data : [];
+    const raw: Record<string, unknown>[] = [];
+    for (const r of results) {
+      if (r && typeof r === "object") raw.push(r as Record<string, unknown>);
+      if (raw.length >= MAX_CARDS) break;
+    }
+    console.log(
+      `[fetchBscChecklist] ${describe(combo)} returned=${results.length} kept=${raw.length}`,
+    );
+    if (results.length >= MAX_CARDS) {
+      console.warn(
+        `[fetchBscChecklist] hit MAX_CARDS=${MAX_CARDS} ceiling — set may be larger than expected.`,
+      );
+    }
+    return { ok: true, raw, elapsedMs };
+  };
+
+  const tagged: Array<{
+    raw: Record<string, unknown>;
+    queriedSlug?: string;
+  }> = [];
+  const failures: string[] = [];
+  // NEO-321 follow-up — the FIRST failure's structured reason stands for
+  // the fetch (the message still lists every one).
+  let firstFailure: FetchFailure | undefined;
+  let slowestPageMs = 0;
+  for (const combo of fanOut) {
+    const res = await runOne(combo);
+    if (!res.ok) {
+      failures.push(`${describe(combo)}: ${res.message}`);
+      firstFailure ??= res.failure;
+      continue;
+    }
+    slowestPageMs = Math.max(slowestPageMs, res.elapsedMs);
+    const queriedSlug = sourceOf(combo);
+    for (const raw of res.raw) tagged.push({ raw, queriedSlug });
+  }
+
+  // Fail the whole fetch if ANY request failed. A partial checklist is
+  // worse than none: commit replaces the stored checklist, so silently
+  // returning the slugs that happened to succeed would delete the cards
+  // belonging to the one that didn't — and it would look like a clean run.
+  if (failures.length > 0) {
+    return {
+      success: false,
+      cards: [],
+      message:
+        failures.length === fanOut.length
+          ? `BSC error: ${failures.join("; ")}`
+          : `BSC returned only ${fanOut.length - failures.length} of ${fanOut.length} source sets — refusing a partial checklist: ${failures.join("; ")}`,
+      failure: {
+        ...(firstFailure ?? { kind: "unknown", timedOut: false }),
+        requests: fanOut.length,
+        requestsOk: fanOut.length - failures.length,
+      },
+    };
+  }
+
+  console.log(
+    `[fetchBscChecklist] ${fanOut.length} request(s) -> ${tagged.length} raw rows (bulk-upload catalog)`,
+  );
+
+  // Map raw → checklist card shape. Bulk-upload row keys are:
+  //   id, setName, players (string), cardNo, playerAttribute,
+  //   playerAttributeDesc, imgFront, imgBack, cardNoOrder,
+  //   cardNoSequence, cardNoSort.
+  // No year, sport, features, printRun, autograph, sportlots — those
+  // don't exist on the catalog template. `team`/`teams` are populated
+  // ONLY when `players` decodes to a Team Checklist card (parsePlayersField) —
+  // the raw response itself never carries a separate team field.
+  const seenRefs = new Set<string>();
+  const mapped = tagged
+    .map(({ raw: r, queriedSlug }) => {
+      const cardNumberRaw = r.cardNo ?? r.cardNumber ?? r.number;
+      const cardNumber = typeof cardNumberRaw === "string" || typeof cardNumberRaw === "number"
+        ? String(cardNumberRaw).trim()
+        : "";
+      if (!cardNumber) return null;
+
+      // `players` is a single string in the bulk-upload response —
+      // parse it for the team-checklist and multi-player-parenthetical
+      // conventions (see parsePlayersField's own doc comment).
+      const playersRaw = typeof r.players === "string" ? r.players : "";
+      const {
+        players,
+        teams,
+        namePrefix,
+        unrepresentable,
+      } = parsePlayersField(playersRaw);
+
+      const attributes = parsePlayerAttributeTokens(r.playerAttribute);
+      // NEO-189: only a genuine printing variety reaches `cardVariation`.
+      // BSC reuses `playerAttributeDesc` for shelf notes and for "this is
+      // the base card", neither of which belongs in the eBay
+      // Parallel/Variety aspect this field feeds — see
+      // `parseVariationDescription`.
+      const parsedVariation = parseVariationDescription(r.playerAttributeDesc);
+      const cardVariation = parsedVariation?.isVariety
+        ? parsedVariation.text
+        : undefined;
+
+      // The parenthetical form only makes sense with names to put in it —
+      // a refused roster must not leave "League Leaders ()" behind.
+      const cardName = namePrefix
+        ? players.length
+          ? `${namePrefix} (${players.join(" / ")})`
+          : namePrefix
+        : players.length
+          ? players.join(" / ")
+          : `Card #${cardNumber}`;
+
+      const platformRefRaw = r.id;
+      const platformRef = typeof platformRefRaw === "string" || typeof platformRefRaw === "number"
+        ? String(platformRefRaw)
+        : undefined;
+
+      // Source attribution: prefer the slug WE queried. `r.setName` is the
+      // parent set ("score" for a 1996 Score insert), which never matches a
+      // slot on an insert row — so before the fan-out, per-card source
+      // resolution silently found nothing and the BSC SOURCE chips could
+      // not tell two attached sets apart. Fall back to r.setName for levels
+      // with no variantName facet (Base), where it IS the row's own slug.
+      const rawSetName = r.setName;
+      const fallbackSlug =
+        typeof rawSetName === "string" && rawSetName.trim()
+          ? rawSetName.trim()
+          : undefined;
+      const sourceBscSetSlug = queriedSlug ?? fallbackSlug;
+
+      return {
+        cardNumber,
+        cardName,
+        team: undefined,
+        teams: teams.length ? teams : undefined,
+        players: players.length ? players : undefined,
+        attributes: attributes.length ? attributes : undefined,
+        printRun: undefined,
+        autographType: undefined,
+        cardVariation,
+        // NEO-189: BSC's answer to the domain question. Reads both signals
+        // because they disagree in both directions — see isBscVariationRow.
+        isVariation: isBscVariationRow({
+          attributes,
+          playerAttributeDesc: r.playerAttributeDesc,
+        }),
+        platformRef,
+        sportlotsRef: undefined,
+        sourceBscSetSlug,
+        // Not part of the checklist card shape — stripped below, once the
+        // dedupe has run, so an overlapping row is not counted twice.
+        __unrepresentable: unrepresentable === true,
+      };
+    })
+    .filter((c): c is NonNullable<typeof c> => c !== null)
+    // Dedupe by BSC card id — overlapping source sets can legitimately
+    // return the same card twice once several are mapped to one NB set.
+    .filter((c) => {
+      if (!c.platformRef) return true;
+      if (seenRefs.has(c.platformRef)) return false;
+      seenRefs.add(c.platformRef);
+      return true;
+    });
+
+  // NEO-246 — how many cards carried a player/team field NB could not
+  // represent (see `boundParsedNames`). Counted AFTER the dedupe, so a row
+  // two source sets both returned is one card, not two; and stripped here,
+  // because the marker is a parse outcome rather than part of the checklist
+  // card shape this action returns.
+  const unrepresentableCount = mapped.filter(
+    (c) => c.__unrepresentable,
+  ).length;
+  const cards = mapped.map(
+    ({ __unrepresentable: _unrepresentable, ...card }) => card,
+  );
+  if (unrepresentableCount > 0) {
+    // The COUNT, never the text. What was dropped is precisely the string
+    // NB could not make sense of, and it came off a marketplace page.
+    console.warn(
+      `[fetchBscChecklist] ${unrepresentableCount} of ${cards.length} row(s) ` +
+        `carried a player/team field NB could not represent — names not imported`,
+    );
+  }
+
+  // NEO-189 — CARD NUMBER collisions ACROSS source sets. REPORT THEM; DO
+  // NOT DROP.
+  //
+  // Two attached sets legitimately share card numbers, and for the set this
+  // whole feature exists for they share ALL of them: BSC splits 1996 Score
+  // Dugout Collection Artist's Proofs into Series 1 and Series 2 and numbers
+  // BOTH #1-110. 220 distinct cards over 110 numbers.
+  //
+  // An earlier revision deduped here, first-source-wins, on the reasoning
+  // that "a duplicate-numbered checklist is not representable, because
+  // commitCardChecklist upserts by cardNumber". That reasoning was wrong on
+  // both halves:
+  //
+  //   IT IS REPRESENTABLE. `commitCardChecklist` keys its upsert against
+  //   rows ALREADY IN THE DATABASE (`existingByNumber`, built from a
+  //   by_selector_option query before the write loop). Rows written by the
+  //   same batch are never added to that map, so a fresh commit inserts one
+  //   `cardChecklist` row per incoming card — 220 of them — and Convex
+  //   indexes carry no uniqueness constraint. `.maestro/flows/set-selector/
+  //   inserts-1996-score-one-nb-set-two-bsc-sources.yaml` asserts exactly
+  //   that end to end ("Saved 220 cards").
+  //
+  //   AND DROPPING HERE IS THE WRONG PLACE REGARDLESS. Even where something
+  //   downstream cannot hold two rows, narrowing at FETCH time destroys the
+  //   conflict before the operator can see it. They chose to attach these
+  //   two sets; they are the only one who can say whether the overlap is
+  //   intended. A silently halved checklist is indistinguishable from a
+  //   correct one — which is how this shipped: the fan-out fixture had been
+  //   renumbered so the union still came to 220, and only CI's real-data
+  //   flow caught the 110.
+  //
+  // So this mirrors `mergeSlFanOut` exactly: dedup on the marketplace's own
+  // IDENTITY (BSC's card id, already done above via `seenRefs`), and report
+  // number overlaps without touching the rows.
+  //
+  // Still scoped to cross-source ONLY and gated on an actual fan-out. Two
+  // rows sharing a number inside ONE BSC set is a marketplace data error,
+  // not an overlap between attached sets — with a single request there are
+  // no "two source sets" to name, and saying otherwise sends the operator
+  // to inspect a set that does not exist.
+  const collisions: Array<{
+    cardNumber: string;
+    keptSource: string;
+    skippedSource: string;
+  }> = [];
+  if (fanOut.length >= 2) {
+    const sourceByNumber = new Map<string, string | undefined>();
+    for (const c of cards) {
+      if (!sourceByNumber.has(c.cardNumber)) {
+        sourceByNumber.set(c.cardNumber, c.sourceBscSetSlug);
+        continue;
+      }
+      const firstSource = sourceByNumber.get(c.cardNumber);
+      if (firstSource === c.sourceBscSetSlug) continue; // same set — not cross-source
+      collisions.push({
+        cardNumber: c.cardNumber,
+        keptSource: firstSource ?? "(unattributed)",
+        skippedSource: c.sourceBscSetSlug ?? "(unattributed)",
+      });
+    }
+  }
+  for (const col of collisions.slice(0, 10)) {
+    console.warn(
+      `[fetchBscChecklist] BSC cardNumber in two source sets: ${col.cardNumber} ` +
+        `(${col.keptSource} and ${col.skippedSource}) — both rows kept`,
+    );
+  }
+
+  return {
+    success: true,
+    cards,
+    // NEO-246: the unrepresentable count rides out on `message` the same
+    // way `collisions` does — an operator-relevant fact about the fetch
+    // they just ran, which they would otherwise only find by noticing that
+    // some cards came back with no names.
+    message:
+      unrepresentableCount > 0
+        ? `Found ${cards.length} cards from BSC catalog — ${unrepresentableCount} had a player/team field NeonBinder could not represent, so those names were not imported`
+        : `Found ${cards.length} cards from BSC catalog`,
+    pages: fanOut.length,
+    slowestPageMs,
+    ...(collisions.length > 0 ? { collisions } : {}),
+  };
+}
+
 /**
  * Fetch card checklist from BSC for a specific set/variant.
  *
@@ -1054,7 +1814,7 @@ export const fetchBscChecklist = action({
       ),
     ),
   }),
-  handler: async (ctx, args): Promise<{ success: boolean; cards: Array<{ cardNumber: string; cardName: string; team?: string; teams?: string[]; players?: string[]; attributes?: string[]; printRun?: number; autographType?: string; cardVariation?: string; isVariation?: boolean; platformRef?: string; sportlotsRef?: string; sourceBscSetSlug?: string }>; message?: string; failure?: FetchFailure; pages?: number; slowestPageMs?: number; collisions?: Array<{ cardNumber: string; keptSource: string; skippedSource: string }> }> => {
+  handler: async (ctx, args): Promise<BscChecklistResult> => {
     await requireAdmin(ctx);
     try {
       const tokenResult: { success: boolean; token?: string; error?: string } = await ctx.runAction(
@@ -1071,576 +1831,9 @@ export const fetchBscChecklist = action({
         };
       }
 
-      // Build nested `filters: { sport: [...], year: [...], ... }`.
-      //
-      // NEO-239 — SLOT IDS ONLY, from two sources:
-      //
-      //   facetFilters    (NEO-189) — already bucketed by BSC facet from the
-      //                   row's slot tags. Authoritative and complete.
-      //   platformFilters — bucketed by NB level; the facet is derived via
-      //                   legacyBscFacetForLevel. variantType and parallel
-      //                   resolve to no facet, so an untagged id on either
-      //                   contributes nothing.
-      //
-      // The `parentFilters` else-branch is GONE, and so is the `variant` pin
-      // that used to sit outside the if/else re-deriving the facet from
-      // `parentFilters.variantType.toLowerCase()`. That pin was the last place
-      // an NB DISPLAY VALUE built a marketplace query, and BSC's variant set is
-      // not the closed base/insert/parallel enum it assumed ("Promo", "Mail In"
-      // occur upstream). `parentFilters` is now telemetry and log text only.
-      const filters: Record<string, string[]> = {};
-      const facetSource = args.facetFilters
-        ? Object.entries(args.facetFilters).map(
-            ([facet, values]) => [facet, values] as const,
-          )
-        : Object.entries(args.platformFilters ?? {}).map(
-            ([lvl, values]) => [legacyBscFacetForLevel(lvl), values] as const,
-          );
-      for (const [facet, values] of facetSource) {
-        if (!facet) continue;
-        if (values.length > 0) filters[facet] = values;
-      }
-
-      // REQUIRED FACETS — refuse, never widen.
-      //
-      // Dropping the display-value pin means a variantType row with no
-      // `variant`-tagged slot would otherwise send sport + year + setName with
-      // NO VARIANT AXIS, and BSC answers that with the base cards plus every
-      // insert and every parallel in the set — NEO-22's ~5000-card superset,
-      // returned as a 200 with no error for the caller to notice.
-      //
-      // The chain-level gate (`resolvableSides`, with `bscScope: "checklist"`)
-      // should already have skipped BSC before we get here, and since NEO-252
-      // it reaches that verdict by calling THIS function on THESE filters — so
-      // a skip upstream and a refusal here can no longer disagree. This stays
-      // as the second lock on the same door, placed at the boundary that
-      // actually issues the request, so no future caller can reach the wire
-      // around it.
-      const missingFacets = missingBscChecklistScope(filters);
-      if (missingFacets.length > 0) {
-        console.warn(
-          `[fetchBscChecklist] refusing an under-scoped checklist request — ` +
-            `no BSC id for facet(s): ${missingFacets.join(", ")}`,
-        );
-        return {
-          success: false,
-          cards: [],
-          message: BSC_UNSCOPED_MESSAGE,
-          failure: { kind: "refused", timedOut: false },
-        };
-      }
-
-      // FAN OUT — one request per SOURCE SET. Do NOT batch them.
-      //
-      // Measured live on dev 2026-08-12, 1996 Score inserts:
-      //   filters.variantName = ["…series-2"]                  -> returned=110
-      //   filters.variantName = ["…series-2", "…series-1"]      -> returned=0
-      // BSC answers 200 OK with an EMPTY body for a multi-value facet — it does
-      // not OR them. The comment that used to sit here claimed the opposite
-      // ("accepts multi-value facets in one call … no fan-out needed"); it was
-      // never true and nothing caught it, because the checklist tests mock this
-      // adapter at the validator boundary and never sent two values.
-      //
-      // The failure mode is silent and nasty: a well-formed query, no error, an
-      // empty checklist, and a UI that reports "0 BSC cards" as though the
-      // marketplace simply had nothing.
-      //
-      // NEO-189 generalises the axis. The fan-out used to key on `variantName`
-      // alone, which was the insert case it was written for; a row drawing from
-      // two BSC **setName** sets (Topps Series 1 + Series 2 under one NB Base
-      // row) sent both slugs as one multi-value facet and hit exactly the
-      // failure above. `planBscFanOut` now fans out over every multi-valued
-      // facet, so no outgoing request can carry two values for one facet
-      // regardless of which axis the operator split on.
-      //
-      // Sequential, not parallel: the 401 path refreshes `activeToken` and the
-      // refreshed value has to be visible to the requests that follow.
-      const MAX_CARDS = 5000;
-      const plan = planBscFanOut(filters, MAX_BSC_FAN_OUT);
-      if (plan.multiFacets.length > 1) {
-        console.warn(
-          `[fetchBscChecklist] ${plan.multiFacets.length} facets are multi-valued ` +
-            `(${plan.multiFacets.join(", ")}) — fanning out over their cross ` +
-            `product (${plan.totalBeforeCap} request(s)). Combinations that do ` +
-            `not exist on BSC simply return no rows.`,
-        );
-      }
-      if (plan.capped) {
-        console.warn(
-          `[fetchBscChecklist] BSC fan-out capped at ${MAX_BSC_FAN_OUT} ` +
-            `(plan needed ${plan.totalBeforeCap}) — some source sets were not queried.`,
-        );
-      }
-      const fanOut = plan.combos;
-
-      let activeToken = tokenResult.token;
-
-      type OneResult =
-        | { ok: true; raw: Record<string, unknown>[]; elapsedMs: number }
-        | { ok: false; message: string; failure: FetchFailure };
-
-      /** The facet value this request should attribute its cards to. */
-      const sourceOf = (combo: Record<string, string>): string | undefined => {
-        if (args.sourceFacet) {
-          return combo[args.sourceFacet] ?? filters[args.sourceFacet]?.[0];
-        }
-        // Legacy attribution, unchanged: the variantName we queried, and
-        // nothing when there is none (the caller then falls back to the
-        // response row's own `setName`).
-        return combo.variantName ?? filters.variantName?.[0];
-      };
-
-      const describe = (combo: Record<string, string>): string => {
-        const parts = Object.entries(combo).map(([k, val]) => `${k}=${val}`);
-        return parts.length > 0 ? parts.join(" ") : "(no fan-out)";
-      };
-
-      const runOne = async (
-        combo: Record<string, string>,
-      ): Promise<OneResult> => {
-        const callFilters: Record<string, string[]> = { ...filters };
-        for (const [facet, value] of Object.entries(combo)) {
-          callFilters[facet] = [value];
-        }
-        // BSC's /search/bulk-upload/results ignores `size`/`page` and returns
-        // the full filtered set in one response — confirmed live. `size` is
-        // passed as a defense in case that changes.
-        const body = {
-          condition: "all",
-          page: 0,
-          size: MAX_CARDS,
-          sort: "default",
-          filters: callFilters,
-        };
-        const doFetch = async (token: string): Promise<Response> =>
-          await fetch(`${BSC_API_BASE}/search/bulk-upload/results`, {
-            method: "POST",
-            headers: bscHeaders(token),
-            body: JSON.stringify(body),
-            signal: AbortSignal.timeout(BSC_CHECKLIST_FETCH_TIMEOUT_MS),
-          });
-
-        // NEO-321 follow-up — a thrown fetch, classified. Our own 30s abort
-        // timer is a self-imposed limiter, so its firing is logged as one.
-        const threw = (
-          err: unknown,
-          startedAt: number,
-          retry: boolean,
-        ): OneResult => {
-          const waitedMs = Date.now() - startedAt;
-          if (isAbortTimeout(err)) {
-            logMarketplaceLimiter({
-              limiter: "bsc_checklist_timeout",
-              platform: "bsc",
-              operation: "fetchBscChecklist",
-              waitedMs,
-              timeoutMs: BSC_CHECKLIST_FETCH_TIMEOUT_MS,
-              outcome: "aborted",
-              retry,
-            });
-            return {
-              ok: false,
-              message: retry
-                ? `BSC API retry timed out after ${BSC_CHECKLIST_FETCH_TIMEOUT_MS / 1000}s`
-                : `BSC API request timed out after ${BSC_CHECKLIST_FETCH_TIMEOUT_MS / 1000}s`,
-              failure: {
-                kind: "timeout",
-                timedOut: true,
-                timeoutMs: BSC_CHECKLIST_FETCH_TIMEOUT_MS,
-                ...(retry ? { reauthAttempted: true } : {}),
-              },
-            };
-          }
-          const detail = err instanceof Error ? err.message : String(err);
-          return {
-            ok: false,
-            message: retry
-              ? `BSC API retry failed: ${detail}`
-              : `BSC API request failed: ${detail}`,
-            failure: {
-              kind: "network",
-              timedOut: false,
-              ...(retry ? { reauthAttempted: true } : {}),
-            },
-          };
-        };
-
-        let response: Response;
-        let reauthAttempted = false;
-        let sentAt = Date.now();
-        try {
-          response = await doFetch(activeToken);
-        } catch (err) {
-          return threw(err, sentAt, false);
-        }
-
-        // BSC intermittently 401s with a token our cache still thinks is fresh
-        // (their TTL doesn't always match what they advertise, especially under
-        // load). Refresh and retry once rather than failing the whole fetch.
-        if (response.status === 401) {
-          console.warn(
-            `[fetchBscChecklist] BSC API 401 with cached token — forcing re-auth and retrying once`,
-          );
-          await response.text().catch(() => "");
-          reauthAttempted = true;
-          // NEO-321 follow-up — the re-auth is a wait WE add before the
-          // retry; log how long it took and how it ended.
-          const reauthStartedAt = Date.now();
-          const reAuth = (await ctx.runAction(
-            internal.credentials.authenticateBsc,
-            {},
-          )) as { success: boolean; message?: string };
-          if (!reAuth.success) {
-            console.error(
-              `[fetchBscChecklist] re-auth failed after 401: ${reAuth.message ?? "(no message)"}`,
-            );
-            logMarketplaceLimiter({
-              limiter: "bsc_token_reauth",
-              platform: "bsc",
-              operation: "fetchBscChecklist",
-              waitedMs: Date.now() - reauthStartedAt,
-              outcome: "reauth_failed",
-            });
-            return {
-              ok: false,
-              message: `BSC API 401 and re-auth failed`,
-              failure: {
-                kind: "signed_out",
-                httpStatus: 401,
-                timedOut: false,
-                reauthAttempted: true,
-              },
-            };
-          }
-          const refreshed: { success: boolean; token?: string; error?: string } =
-            await ctx.runAction(internal.adapters.buysportscards.getBscToken, {});
-          logMarketplaceLimiter({
-            limiter: "bsc_token_reauth",
-            platform: "bsc",
-            operation: "fetchBscChecklist",
-            waitedMs: Date.now() - reauthStartedAt,
-            outcome: refreshed.success && refreshed.token ? "ok" : "no_token",
-          });
-          if (!refreshed.success || !refreshed.token) {
-            return {
-              ok: false,
-              message: refreshed.error || "No BSC token available after re-auth",
-              failure: {
-                kind: "no_sign_in",
-                timedOut: false,
-                reauthAttempted: true,
-              },
-            };
-          }
-          activeToken = refreshed.token;
-          sentAt = Date.now();
-          try {
-            response = await doFetch(activeToken);
-          } catch (err) {
-            return threw(err, sentAt, true);
-          }
-        }
-
-        if (!response.ok) {
-          await response.text().catch(() => "");
-          return {
-            ok: false,
-            message: `BSC API error: ${response.status}`,
-            failure: {
-              // A second 401, after a re-auth that said it worked, is still
-              // BSC refusing our session.
-              kind: response.status === 401 ? "signed_out" : "http_error",
-              httpStatus: response.status,
-              timedOut: false,
-              ...(reauthAttempted ? { reauthAttempted: true } : {}),
-            },
-          };
-        }
-
-        // The body read is under the same abort timer as the request.
-        let data: unknown;
-        try {
-          data = await response.json();
-        } catch (err) {
-          if (isAbortTimeout(err)) return threw(err, sentAt, reauthAttempted);
-          return {
-            ok: false,
-            message: `BSC API answered ${response.status} with a body that could not be read`,
-            failure: {
-              kind: "bad_response",
-              httpStatus: response.status,
-              timedOut: false,
-              ...(reauthAttempted ? { reauthAttempted: true } : {}),
-            },
-          };
-        }
-        const elapsedMs = Date.now() - sentAt;
-        const results = Array.isArray(data) ? data : [];
-        const raw: Record<string, unknown>[] = [];
-        for (const r of results) {
-          if (r && typeof r === "object") raw.push(r as Record<string, unknown>);
-          if (raw.length >= MAX_CARDS) break;
-        }
-        console.log(
-          `[fetchBscChecklist] ${describe(combo)} returned=${results.length} kept=${raw.length}`,
-        );
-        if (results.length >= MAX_CARDS) {
-          console.warn(
-            `[fetchBscChecklist] hit MAX_CARDS=${MAX_CARDS} ceiling — set may be larger than expected.`,
-          );
-        }
-        return { ok: true, raw, elapsedMs };
-      };
-
-      const tagged: Array<{
-        raw: Record<string, unknown>;
-        queriedSlug?: string;
-      }> = [];
-      const failures: string[] = [];
-      // NEO-321 follow-up — the FIRST failure's structured reason stands for
-      // the fetch (the message still lists every one).
-      let firstFailure: FetchFailure | undefined;
-      let slowestPageMs = 0;
-      for (const combo of fanOut) {
-        const res = await runOne(combo);
-        if (!res.ok) {
-          failures.push(`${describe(combo)}: ${res.message}`);
-          firstFailure ??= res.failure;
-          continue;
-        }
-        slowestPageMs = Math.max(slowestPageMs, res.elapsedMs);
-        const queriedSlug = sourceOf(combo);
-        for (const raw of res.raw) tagged.push({ raw, queriedSlug });
-      }
-
-      // Fail the whole fetch if ANY request failed. A partial checklist is
-      // worse than none: commit replaces the stored checklist, so silently
-      // returning the slugs that happened to succeed would delete the cards
-      // belonging to the one that didn't — and it would look like a clean run.
-      if (failures.length > 0) {
-        return {
-          success: false,
-          cards: [],
-          message:
-            failures.length === fanOut.length
-              ? `BSC error: ${failures.join("; ")}`
-              : `BSC returned only ${fanOut.length - failures.length} of ${fanOut.length} source sets — refusing a partial checklist: ${failures.join("; ")}`,
-          failure: {
-            ...(firstFailure ?? { kind: "unknown", timedOut: false }),
-            requests: fanOut.length,
-            requestsOk: fanOut.length - failures.length,
-          },
-        };
-      }
-
-      console.log(
-        `[fetchBscChecklist] ${fanOut.length} request(s) -> ${tagged.length} raw rows (bulk-upload catalog)`,
-      );
-
-      // Map raw → checklist card shape. Bulk-upload row keys are:
-      //   id, setName, players (string), cardNo, playerAttribute,
-      //   playerAttributeDesc, imgFront, imgBack, cardNoOrder,
-      //   cardNoSequence, cardNoSort.
-      // No year, sport, features, printRun, autograph, sportlots — those
-      // don't exist on the catalog template. `team`/`teams` are populated
-      // ONLY when `players` decodes to a Team Checklist card (parsePlayersField) —
-      // the raw response itself never carries a separate team field.
-      const seenRefs = new Set<string>();
-      const mapped = tagged
-        .map(({ raw: r, queriedSlug }) => {
-          const cardNumberRaw = r.cardNo ?? r.cardNumber ?? r.number;
-          const cardNumber = typeof cardNumberRaw === "string" || typeof cardNumberRaw === "number"
-            ? String(cardNumberRaw).trim()
-            : "";
-          if (!cardNumber) return null;
-
-          // `players` is a single string in the bulk-upload response —
-          // parse it for the team-checklist and multi-player-parenthetical
-          // conventions (see parsePlayersField's own doc comment).
-          const playersRaw = typeof r.players === "string" ? r.players : "";
-          const {
-            players,
-            teams,
-            namePrefix,
-            unrepresentable,
-          } = parsePlayersField(playersRaw);
-
-          const attributes = parsePlayerAttributeTokens(r.playerAttribute);
-          // NEO-189: only a genuine printing variety reaches `cardVariation`.
-          // BSC reuses `playerAttributeDesc` for shelf notes and for "this is
-          // the base card", neither of which belongs in the eBay
-          // Parallel/Variety aspect this field feeds — see
-          // `parseVariationDescription`.
-          const parsedVariation = parseVariationDescription(r.playerAttributeDesc);
-          const cardVariation = parsedVariation?.isVariety
-            ? parsedVariation.text
-            : undefined;
-
-          // The parenthetical form only makes sense with names to put in it —
-          // a refused roster must not leave "League Leaders ()" behind.
-          const cardName = namePrefix
-            ? players.length
-              ? `${namePrefix} (${players.join(" / ")})`
-              : namePrefix
-            : players.length
-              ? players.join(" / ")
-              : `Card #${cardNumber}`;
-
-          const platformRefRaw = r.id;
-          const platformRef = typeof platformRefRaw === "string" || typeof platformRefRaw === "number"
-            ? String(platformRefRaw)
-            : undefined;
-
-          // Source attribution: prefer the slug WE queried. `r.setName` is the
-          // parent set ("score" for a 1996 Score insert), which never matches a
-          // slot on an insert row — so before the fan-out, per-card source
-          // resolution silently found nothing and the BSC SOURCE chips could
-          // not tell two attached sets apart. Fall back to r.setName for levels
-          // with no variantName facet (Base), where it IS the row's own slug.
-          const rawSetName = r.setName;
-          const fallbackSlug =
-            typeof rawSetName === "string" && rawSetName.trim()
-              ? rawSetName.trim()
-              : undefined;
-          const sourceBscSetSlug = queriedSlug ?? fallbackSlug;
-
-          return {
-            cardNumber,
-            cardName,
-            team: undefined,
-            teams: teams.length ? teams : undefined,
-            players: players.length ? players : undefined,
-            attributes: attributes.length ? attributes : undefined,
-            printRun: undefined,
-            autographType: undefined,
-            cardVariation,
-            // NEO-189: BSC's answer to the domain question. Reads both signals
-            // because they disagree in both directions — see isBscVariationRow.
-            isVariation: isBscVariationRow({
-              attributes,
-              playerAttributeDesc: r.playerAttributeDesc,
-            }),
-            platformRef,
-            sportlotsRef: undefined,
-            sourceBscSetSlug,
-            // Not part of the checklist card shape — stripped below, once the
-            // dedupe has run, so an overlapping row is not counted twice.
-            __unrepresentable: unrepresentable === true,
-          };
-        })
-        .filter((c): c is NonNullable<typeof c> => c !== null)
-        // Dedupe by BSC card id — overlapping source sets can legitimately
-        // return the same card twice once several are mapped to one NB set.
-        .filter((c) => {
-          if (!c.platformRef) return true;
-          if (seenRefs.has(c.platformRef)) return false;
-          seenRefs.add(c.platformRef);
-          return true;
-        });
-
-      // NEO-246 — how many cards carried a player/team field NB could not
-      // represent (see `boundParsedNames`). Counted AFTER the dedupe, so a row
-      // two source sets both returned is one card, not two; and stripped here,
-      // because the marker is a parse outcome rather than part of the checklist
-      // card shape this action returns.
-      const unrepresentableCount = mapped.filter(
-        (c) => c.__unrepresentable,
-      ).length;
-      const cards = mapped.map(
-        ({ __unrepresentable: _unrepresentable, ...card }) => card,
-      );
-      if (unrepresentableCount > 0) {
-        // The COUNT, never the text. What was dropped is precisely the string
-        // NB could not make sense of, and it came off a marketplace page.
-        console.warn(
-          `[fetchBscChecklist] ${unrepresentableCount} of ${cards.length} row(s) ` +
-            `carried a player/team field NB could not represent — names not imported`,
-        );
-      }
-
-      // NEO-189 — CARD NUMBER collisions ACROSS source sets. REPORT THEM; DO
-      // NOT DROP.
-      //
-      // Two attached sets legitimately share card numbers, and for the set this
-      // whole feature exists for they share ALL of them: BSC splits 1996 Score
-      // Dugout Collection Artist's Proofs into Series 1 and Series 2 and numbers
-      // BOTH #1-110. 220 distinct cards over 110 numbers.
-      //
-      // An earlier revision deduped here, first-source-wins, on the reasoning
-      // that "a duplicate-numbered checklist is not representable, because
-      // commitCardChecklist upserts by cardNumber". That reasoning was wrong on
-      // both halves:
-      //
-      //   IT IS REPRESENTABLE. `commitCardChecklist` keys its upsert against
-      //   rows ALREADY IN THE DATABASE (`existingByNumber`, built from a
-      //   by_selector_option query before the write loop). Rows written by the
-      //   same batch are never added to that map, so a fresh commit inserts one
-      //   `cardChecklist` row per incoming card — 220 of them — and Convex
-      //   indexes carry no uniqueness constraint. `.maestro/flows/set-selector/
-      //   inserts-1996-score-one-nb-set-two-bsc-sources.yaml` asserts exactly
-      //   that end to end ("Saved 220 cards").
-      //
-      //   AND DROPPING HERE IS THE WRONG PLACE REGARDLESS. Even where something
-      //   downstream cannot hold two rows, narrowing at FETCH time destroys the
-      //   conflict before the operator can see it. They chose to attach these
-      //   two sets; they are the only one who can say whether the overlap is
-      //   intended. A silently halved checklist is indistinguishable from a
-      //   correct one — which is how this shipped: the fan-out fixture had been
-      //   renumbered so the union still came to 220, and only CI's real-data
-      //   flow caught the 110.
-      //
-      // So this mirrors `mergeSlFanOut` exactly: dedup on the marketplace's own
-      // IDENTITY (BSC's card id, already done above via `seenRefs`), and report
-      // number overlaps without touching the rows.
-      //
-      // Still scoped to cross-source ONLY and gated on an actual fan-out. Two
-      // rows sharing a number inside ONE BSC set is a marketplace data error,
-      // not an overlap between attached sets — with a single request there are
-      // no "two source sets" to name, and saying otherwise sends the operator
-      // to inspect a set that does not exist.
-      const collisions: Array<{
-        cardNumber: string;
-        keptSource: string;
-        skippedSource: string;
-      }> = [];
-      if (fanOut.length >= 2) {
-        const sourceByNumber = new Map<string, string | undefined>();
-        for (const c of cards) {
-          if (!sourceByNumber.has(c.cardNumber)) {
-            sourceByNumber.set(c.cardNumber, c.sourceBscSetSlug);
-            continue;
-          }
-          const firstSource = sourceByNumber.get(c.cardNumber);
-          if (firstSource === c.sourceBscSetSlug) continue; // same set — not cross-source
-          collisions.push({
-            cardNumber: c.cardNumber,
-            keptSource: firstSource ?? "(unattributed)",
-            skippedSource: c.sourceBscSetSlug ?? "(unattributed)",
-          });
-        }
-      }
-      for (const col of collisions.slice(0, 10)) {
-        console.warn(
-          `[fetchBscChecklist] BSC cardNumber in two source sets: ${col.cardNumber} ` +
-            `(${col.keptSource} and ${col.skippedSource}) — both rows kept`,
-        );
-      }
-
-      return {
-        success: true,
-        cards,
-        // NEO-246: the unrepresentable count rides out on `message` the same
-        // way `collisions` does — an operator-relevant fact about the fetch
-        // they just ran, which they would otherwise only find by noticing that
-        // some cards came back with no names.
-        message:
-          unrepresentableCount > 0
-            ? `Found ${cards.length} cards from BSC catalog — ${unrepresentableCount} had a player/team field NeonBinder could not represent, so those names were not imported`
-            : `Found ${cards.length} cards from BSC catalog`,
-        pages: fanOut.length,
-        slowestPageMs,
-        ...(collisions.length > 0 ? { collisions } : {}),
-      };
+      return await bscChecklistWithSession(ctx, args, {
+        token: tokenResult.token,
+      });
     } catch (error) {
       console.error("[fetchBscChecklist] Error:", error);
       return {
@@ -1652,6 +1845,127 @@ export const fetchBscChecklist = action({
           : { kind: "unknown", timedOut: false },
       };
     }
+  },
+});
+
+/**
+ * NEO-325 — the Base match probe's BSC half: read the BSC token ONCE, then
+ * run each request through the same checklist path `fetchBscChecklist` uses
+ * (`bscChecklistWithSession`: the required-facet refusal, the fan-out, the
+ * 401 re-auth) and answer a summary per id — the non-variation count and the
+ * first non-variation card. Never the rows.
+ *
+ * Sequential on purpose, like the fan-out inside one fetch: a 401 refreshes
+ * the shared token, and the requests after it must send the new one. The
+ * whole batch shares ONE session and so at most one re-auth (`BscSession`):
+ * once it fails, or BSC answers 401 again, every remaining id is `failed` /
+ * `signed_out` with no request and no login.
+ *
+ * Bounded in wall-clock by `BSC_PROBE_DEADLINE_MS` for the whole batch, from
+ * the first request: each request's abort timer is cut to the time left, and a
+ * request (or a post-re-auth retry) the budget does not reach is `failed` /
+ * `timeout` with nothing sent. The re-auth's own login is the one step the
+ * budget cannot cut short; no re-auth starts once the budget is spent.
+ *
+ * Writes no catalog row. The token read and the one re-auth may update the
+ * user's credential status (the lock, `needsReauth`), exactly as any
+ * `fetchBscChecklist` does. Never throws for a fetch. Reached only through
+ * `baseMatchProbe.probeBscSets`, which builds `facetFilters` from the chain's
+ * slots and caps the batch; the ids are checked again here.
+ */
+export const probeBscChecklistBatch = internalAction({
+  args: { requests: v.array(bscProbeRequestValidator) },
+  returns: v.array(bscProbeSummaryValidator),
+  handler: async (ctx, args): Promise<BscProbeSummary[]> => {
+    await requireAdmin(ctx);
+    const ids = checkProbeIds(
+      args.requests.map((r) => r.id),
+      { max: MAX_BSC_PROBE_IDS, maxLength: MAX_BSC_PROBE_ID_LENGTH },
+    );
+    if (ids.length !== args.requests.length) {
+      throw new Error("probeBscChecklistBatch: duplicate request ids");
+    }
+    const startedAt = Date.now();
+    const log = (results: BscProbeSummary[], outcome: string) =>
+      console.log(
+        JSON.stringify({
+          msg: "base_match_probe",
+          platform: "bsc",
+          operation: "probe_sets",
+          outcome,
+          ids: ids.length,
+          ok: results.filter((r) => r.status === "ok").length,
+          failed: results.filter((r) => r.status === "failed").length,
+          durationMs: Date.now() - startedAt,
+        }),
+      );
+    const allFailed = (
+      kind: "refused" | "no_sign_in" | "unknown",
+    ): BscProbeSummary[] =>
+      ids.map((id) => ({ id, status: "failed" as const, kind }));
+
+    if (ids.length === 0) return [];
+    // NEO-287 — a paused marketplace is not contacted, not even for a token.
+    if (isPlatformPaused("buysportscards")) {
+      const results = allFailed("refused");
+      log(results, "paused");
+      return results;
+    }
+
+    let token: string | undefined;
+    try {
+      const tokenResult: { success: boolean; token?: string; error?: string } =
+        await ctx.runAction(internal.adapters.buysportscards.getBscToken, {});
+      token = tokenResult.success ? tokenResult.token : undefined;
+    } catch {
+      const results = allFailed("unknown");
+      log(results, "token_read_failed");
+      return results;
+    }
+    if (!token) {
+      const results = allFailed("no_sign_in");
+      log(results, "no_token");
+      return results;
+    }
+
+    const session: BscSession = { token };
+    // One budget for the whole batch, from the first request: an id it does
+    // not reach fails `timeout` without a request (NEO-325).
+    const deadlineAt = Date.now() + BSC_PROBE_DEADLINE_MS;
+    const results: BscProbeSummary[] = [];
+    for (const request of args.requests) {
+      try {
+        const res = await bscChecklistWithSession(
+          ctx,
+          { parentFilters: {}, facetFilters: request.facetFilters },
+          session,
+          { deadlineAt },
+        );
+        if (!res.success) {
+          results.push({
+            id: request.id,
+            status: "failed",
+            kind: res.failure?.kind ?? "unknown",
+          });
+          continue;
+        }
+        const summary = summarizeProbeCards(res.cards);
+        results.push({
+          id: request.id,
+          status: "ok",
+          count: summary.nonVariationRows,
+          ...(summary.first ? { first: summary.first } : {}),
+        });
+      } catch (err) {
+        results.push({
+          id: request.id,
+          status: "failed",
+          kind: isAbortTimeout(err) ? "timeout" : "unknown",
+        });
+      }
+    }
+    log(results, "done");
+    return results;
   },
 });
 

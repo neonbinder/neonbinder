@@ -483,6 +483,24 @@ tags:
 # true, so say the precondition out loud.
 - assertTrue: ${Number(output.FETCHED) > 0}
 
+# ── ZERO SPORTLOTS CARDS, SAID ON SCREEN (NEO-256) ──────────────────────────
+# The gate above is loose about the side on purpose (copy-sensitive). This
+# line pins it. `soloKeptMessage` prints only on the one-marketplace branch
+# (CardChecklist: the server's attached sides, less paused ones, are exactly
+# one AND no fetched card paired or carried a conflict), it names that one
+# side, and "no other marketplace attached." is its tail when no paused side
+# is attached either. So "from BSC. … no other marketplace attached." says
+# the run asked BSC alone. Before NEO-256 a chain attached to BSC alone could
+# still come back with SportLots cards through the adapter's name-keyed set
+# lookup; SportLots' cards for this set would pair with BSC's by number, send
+# the run to Match Cards instead, and fail here by name. A SportLots card
+# that paired with nothing would be kept as "SL only" — STEP 7's badge check
+# is the cover for that shape. Same node the gate just matched, so no wait.
+# Both modes: the fixture never carries a SportLots id on the set, so the
+# pause does not change this sentence.
+- assertVisible:
+    text: ".*Kept all ${output.FETCHED} cards? from BSC\\. Nothing to match, no other marketplace attached\\..*"
+
 # ── THE DIALOG IS NOT THERE — first of two moments ──────────────────────────
 # The dialog closes only on Confirm or Cancel, so a regressed build that opened
 # it would still have it up here. Paired with the positive assert above on

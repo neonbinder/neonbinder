@@ -5,6 +5,11 @@ import NeonButton from "../modules/NeonButton";
 import type { PlatformItem } from "./ReconciliationModal";
 import { Input } from "../primitives/Input";
 import { PAUSE_NOTICE_COPY, sideLabel } from "@/lib/marketplace/pause-notice";
+import {
+  duplicateNames,
+  itemLabel,
+  itemLabelParts,
+} from "./marketplace-item-label";
 
 /** Which job this dialog is doing — see `remapNotice`. */
 export type BaseSetPickerMode = "initial" | "remap";
@@ -125,6 +130,32 @@ export function preselectScore(score: number): boolean {
   return score >= PREFIX_STRIPPED_SCORE;
 }
 
+/**
+ * NEO-325 — the candidate to pre-select, or `null`: the ONE candidate whose
+ * score clears `preselectScore`, and only when it is the only one.
+ *
+ * SportLots lists distinct sets under one name, so two rows can both be an
+ * exact match for the set. Picking the first of them would be a guess wearing
+ * a pre-selection, and Enter would link it. Two or more exact matches select
+ * nothing; the operator chooses (CLAUDE.md invariant 7, exactly-one-match).
+ * The same holds for one exact and one prefix-stripped exact match: both
+ * clear the bar, so neither is "the" match. Exported so the rule can be
+ * tested without rendering the dialog.
+ */
+export function soleExactMatch<T>(
+  candidates: readonly T[],
+  scoreOf: (candidate: T) => number | null,
+): T | null {
+  let found: T | null = null;
+  for (const candidate of candidates) {
+    const score = scoreOf(candidate);
+    if (score === null || !preselectScore(score)) continue;
+    if (found !== null) return null;
+    found = candidate;
+  }
+  return found;
+}
+
 // Returns a score indicating how likely `slValue` is the base set.
 // Tiers (higher = more likely):
 //   1000 — exact match on the set name
@@ -192,6 +223,35 @@ type Candidate = {
   isSetListing: boolean;
 };
 
+/**
+ * NEO-325 — a candidate's name, plus its id when another candidate on the
+ * same side shares the name. The suffix is secondary: normal weight, a size
+ * down, in the side's badge hue at 80% (still 4.5:1+ on gray-800). It is real
+ * text after a real space, so the row's accessible name — which `itemLabel`
+ * spells out the same way — contains exactly what is shown.
+ */
+function CandidateName({
+  parts,
+  tone,
+}: {
+  parts: { name: string; suffix: string | null };
+  tone: string;
+}) {
+  return (
+    <>
+      {parts.name}
+      {parts.suffix && (
+        <>
+          {" "}
+          <span className={`text-xs font-normal tabular-nums ${tone}`}>
+            {parts.suffix}
+          </span>
+        </>
+      )}
+    </>
+  );
+}
+
 const FOCUSABLE_SELECTOR =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -226,7 +286,12 @@ export default function BaseSetPicker({
 }: BaseSetPickerProps) {
   const slPaused = pausedSides.includes("sportlots");
   const bscPaused = pausedSides.includes("bsc");
-  const [selectedValue, setSelectedValue] = useState<string | null>(null);
+  // NEO-325: the SportLots pick is held by marketplace id. SportLots lists
+  // distinct sets under one name, and a name-keyed pick resolved every twin
+  // to the first — so choosing the 2nd "Base Set" linked the 1st one's id.
+  const [selectedPlatformValue, setSelectedPlatformValue] = useState<
+    string | null
+  >(null);
   const [userPicked, setUserPicked] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [searchFilter, setSearchFilter] = useState("");
@@ -242,6 +307,12 @@ export default function BaseSetPicker({
   const bscRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const triggerRef = useRef<HTMLElement | null>(null);
   const initialFocusDone = useRef(false);
+
+  // NEO-325 (D2) — names more than one SportLots / BSC candidate carries. Only
+  // those rows show their id; over the whole option list, never the search
+  // results, so a row's name does not change as the operator types.
+  const slDups = useMemo(() => duplicateNames(slOptions), [slOptions]);
+  const bscDups = useMemo(() => duplicateNames(bscOptions), [bscOptions]);
 
   const sortedSlOptions = useMemo(() => {
     if (slPaused) return [];
@@ -270,7 +341,9 @@ export default function BaseSetPicker({
       .map((opt) => ({
         key: `bsc:${opt.platformValue}:${opt.value}`,
         item: opt,
-        label: opt.value,
+        // NEO-325: a BSC name two candidates share carries its slug, the same
+        // rule the SportLots list follows. A unique name is unchanged.
+        label: itemLabel(opt, "bsc", bscDups),
         score: scoreBaseSetMatch(opt.value, setName, manufacturer),
         isSetListing: false,
       }))
@@ -285,13 +358,15 @@ export default function BaseSetPicker({
       });
     }
     return scored;
-  }, [bscOptions, setListing, setName, manufacturer, bscPaused]);
+  }, [bscOptions, setListing, setName, manufacturer, bscPaused, bscDups]);
 
   useEffect(() => {
     if (userPicked) return;
-    const top = sortedSlOptions[0];
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- pre-selects only an EXACT name match; latched by userPicked so it always yields to the operator
-    setSelectedValue(top && preselectScore(top.score) ? top.value : null);
+    // Only a SOLE exact match: two same-named SportLots twins that both match
+    // the set exactly leave the pick empty until the operator chooses one.
+    const sole = soleExactMatch(sortedSlOptions, (opt) => opt.score);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- pre-selects only a SOLE exact name match; latched by userPicked so it always yields to the operator
+    setSelectedPlatformValue(sole ? sole.platformValue : null);
   }, [sortedSlOptions, userPicked]);
 
   useEffect(() => {
@@ -304,10 +379,9 @@ export default function BaseSetPicker({
       setSelectedBscKey(bscCandidates[0].key);
       return;
     }
-    const top = bscCandidates.find((c) => !c.isSetListing);
-    setSelectedBscKey(
-      top && top.score !== null && preselectScore(top.score) ? top.key : null,
-    );
+    // The set listing is unscored (`score: null`), so it never counts here.
+    const sole = soleExactMatch(bscCandidates, (c) => c.score);
+    setSelectedBscKey(sole ? sole.key : null);
   }, [bscCandidates, userPickedBsc]);
 
   const filteredSlOptions = useMemo(() => {
@@ -345,7 +419,7 @@ export default function BaseSetPicker({
 
   const selectedSl = slPaused
     ? undefined
-    : slOptions.find((o) => o.value === selectedValue);
+    : slOptions.find((o) => o.platformValue === selectedPlatformValue);
   const selectedBsc = bscCandidates.find((c) => c.key === selectedBscKey)?.item;
   const hasPick = !!selectedSl || !!selectedBsc;
 
@@ -416,8 +490,8 @@ export default function BaseSetPicker({
     el.focus();
   };
 
-  const selectSl = (value: string) => {
-    setSelectedValue(value);
+  const selectSl = (platformValue: string) => {
+    setSelectedPlatformValue(platformValue);
     setUserPicked(true);
   };
   const selectBsc = (key: string) => {
@@ -691,7 +765,16 @@ export default function BaseSetPicker({
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-gray-200">{cand.label}</span>
+                          <span className="text-gray-200">
+                            {cand.isSetListing ? (
+                              cand.label
+                            ) : (
+                              <CandidateName
+                                parts={itemLabelParts(cand.item, "bsc", bscDups)}
+                                tone="text-blue-300/80"
+                              />
+                            )}
+                          </span>
                           {cand.score !== null &&
                             cand.score >= LIKELY_MATCH_SCORE && (
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-300 border border-blue-700 shrink-0">
@@ -766,29 +849,37 @@ export default function BaseSetPicker({
                   className="space-y-1.5"
                 >
                   {filteredSlOptions.map((opt, i) => {
-                    const selected = selectedValue === opt.value;
+                    const selected =
+                      selectedPlatformValue === opt.platformValue;
+                    const { name, suffix } = itemLabelParts(opt, "sl", slDups);
                     return (
                       <button
                         key={`${opt.platformValue}-${opt.value}`}
                         type="button"
                         role="option"
                         aria-selected={selected}
-                        aria-label={`SportLots base candidate: ${opt.value}`}
+                        // A unique name stays exactly `…: <name>` — five flows
+                        // match this label; a twin adds its id, as it shows.
+                        aria-label={`SportLots base candidate: ${itemLabel(opt, "sl", slDups)}`}
                         tabIndex={i === slFocusIndex ? 0 : -1}
                         ref={(el) => {
                           slRefs.current[i] = el;
                         }}
                         onFocus={() => setSlFocusIndex(i)}
-                        onClick={() => selectSl(opt.value)}
+                        onClick={() => selectSl(opt.platformValue)}
                         onKeyDown={(e) =>
                           onOptionKeyDown(
                             e,
                             "sl",
                             i,
                             filteredSlOptions.length,
-                            () => selectSl(opt.value),
+                            () => selectSl(opt.platformValue),
                             {
-                              sl: slOptions.find((o) => o.value === opt.value),
+                              // By id: Enter confirms THIS row, not the
+                              // first row that happens to share its name.
+                              sl: slOptions.find(
+                                (o) => o.platformValue === opt.platformValue,
+                              ),
                               bsc: selectedBsc,
                             },
                           )
@@ -800,7 +891,12 @@ export default function BaseSetPicker({
                         }`}
                       >
                         <div className="flex items-center justify-between gap-2">
-                          <span className="text-gray-200">{opt.value}</span>
+                          <span className="text-gray-200">
+                            <CandidateName
+                              parts={{ name, suffix }}
+                              tone="text-purple-300/80"
+                            />
+                          </span>
                           {opt.score >= LIKELY_MATCH_SCORE && (
                             <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-900/40 text-green-400 border border-green-700 shrink-0">
                               likely match

@@ -929,3 +929,142 @@ describe("routeBscSets routes an EXISTING row by the NB name (NEO-294 audit)", (
     ]);
   });
 });
+
+describe("routeBscSets — a brand-prefix tie routes to no brand (NEO-325)", () => {
+  test("two brands whose prefixes fold to the same string: the set goes to neither, and falls to Unknown", () => {
+    const plan = routeBscSets({
+      sets: [set("Topps Chrome", "bsc-1")],
+      manufacturers: [
+        mfr("m1", { prefix: "Topps" }),
+        mfr("m2", { prefix: " topps " }),
+        mfr("unk", { unknown: true }),
+      ],
+      holdersByBscId: new Map(),
+    });
+    expect(plan.buckets.has("m1")).toBe(false);
+    expect(plan.buckets.has("m2")).toBe(false);
+    expect(plan.unknown).toEqual([set("Topps Chrome", "bsc-1")]);
+  });
+
+  test("a tie on one prefix does not stop an unrelated set routing to its own brand", () => {
+    const plan = routeBscSets({
+      sets: [set("Topps Chrome", "bsc-1"), set("Bowman Draft", "bsc-2")],
+      manufacturers: [
+        mfr("m1", { prefix: "Topps" }),
+        mfr("m2", { prefix: "Topps" }),
+        mfr("bow", { prefix: "Bowman" }),
+      ],
+      holdersByBscId: new Map(),
+    });
+    expect(plan.buckets.get("bow")).toEqual([set("Bowman Draft", "bsc-2")]);
+    expect(plan.buckets.has("m1")).toBe(false);
+  });
+
+  test("a longer prefix still outranks a shorter one: that is a ranking, not a tie", () => {
+    const plan = routeBscSets({
+      sets: [set("Topps Chrome Update", "bsc-1")],
+      manufacturers: [
+        mfr("m1", { prefix: "Topps" }),
+        mfr("m2", { prefix: "Topps Chrome" }),
+      ],
+      holdersByBscId: new Map(),
+    });
+    expect(plan.buckets.get("m2")).toEqual([set("Topps Chrome Update", "bsc-1")]);
+    expect(plan.buckets.has("m1")).toBe(false);
+  });
+});
+
+describe("routeSlSets — name twins (NEO-325)", () => {
+  test("an exact-name twin of a known set is NOT hidden: it is a review entry flagged twin", () => {
+    const plan = routeSlSets({
+      entries: [
+        { id: "sl-1", label: "Chrome" },
+        { id: "sl-2", label: "Chrome" },
+      ],
+      coveredSlIds: new Set(),
+      knownSetNameKeys: new Set(["chrome"]),
+    });
+    expect(plan.variants).toBe(0);
+    expect(plan.entries).toEqual([
+      { id: "sl-1", label: "Chrome", twin: true },
+      { id: "sl-2", label: "Chrome", twin: true },
+    ]);
+  });
+
+  test("the same name on ONE id is not a twin: it is hidden as before", () => {
+    const plan = routeSlSets({
+      entries: [{ id: "sl-1", label: "Chrome" }],
+      coveredSlIds: new Set(),
+      knownSetNameKeys: new Set(["chrome"]),
+    });
+    expect(plan.variants).toBe(1);
+    expect(plan.entries).toEqual([]);
+  });
+
+  test("a twin whose namesake is covered by an id is still a twin: the uncovered one is offered, flagged", () => {
+    const plan = routeSlSets({
+      entries: [
+        { id: "sl-1", label: "Chrome" },
+        { id: "sl-2", label: "Chrome" },
+      ],
+      coveredSlIds: new Set(["sl-1"]),
+      knownSetNameKeys: new Set(["chrome"]),
+    });
+    expect(plan.covered).toBe(1);
+    expect(plan.entries).toEqual([{ id: "sl-2", label: "Chrome", twin: true }]);
+  });
+
+  test("a twin that is a STRICT-prefix variant of a known set is still hidden", () => {
+    const plan = routeSlSets({
+      entries: [
+        { id: "sl-1", label: "Chrome Sepia" },
+        { id: "sl-2", label: "Chrome Sepia" },
+      ],
+      coveredSlIds: new Set(),
+      knownSetNameKeys: new Set(["chrome"]),
+    });
+    expect(plan.variants).toBe(2);
+    expect(plan.entries).toEqual([]);
+  });
+
+  test("a unique entry carries no twin key at all", () => {
+    const plan = routeSlSets({
+      entries: [
+        { id: "sl-1", label: "Heritage" },
+        { id: "sl-2", label: "Chrome" },
+        { id: "sl-3", label: "Chrome" },
+      ],
+      coveredSlIds: new Set(),
+      knownSetNameKeys: new Set(),
+    });
+    const heritage = plan.entries.find((e) => e.label === "Heritage");
+    expect(heritage).toEqual({ id: "sl-1", label: "Heritage" });
+    expect(heritage && "twin" in heritage).toBe(false);
+  });
+
+  test("the twin fold is case- and whitespace-insensitive", () => {
+    const plan = routeSlSets({
+      entries: [
+        { id: "sl-1", label: "chrome" },
+        { id: "sl-2", label: "Chrome " },
+      ],
+      coveredSlIds: new Set(),
+      knownSetNameKeys: new Set(["chrome"]),
+    });
+    expect(plan.entries.map((e) => e.twin)).toEqual([true, true]);
+  });
+
+  test("the scope prefix re-formed label of a twin is also not hidden by an equals match", () => {
+    const plan = routeSlSets({
+      entries: [
+        { id: "sl-1", label: "Chrome" },
+        { id: "sl-2", label: "Chrome" },
+      ],
+      coveredSlIds: new Set(),
+      knownSetNameKeys: new Set(["topps chrome"]),
+      scopePrefix: "Topps",
+    });
+    expect(plan.variants).toBe(0);
+    expect(plan.entries.every((e) => e.twin === true)).toBe(true);
+  });
+});

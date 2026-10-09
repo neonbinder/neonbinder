@@ -629,8 +629,9 @@ export const rehomeFromBrandUnknownBatch = internalMutation({
 export type EnsureBrandRowResult = {
   /**
    * The brand row to file sets under, or `null` when the year already has a
-   * manufacturer of that name that is NOT a usable brand — today that is
-   * only the flagged Unknown row, wearing an operator's rename. Nothing is
+   * manufacturer of that name that is NOT a usable brand — the flagged
+   * Unknown row wearing an operator's rename, or (NEO-325) two or more rows
+   * folding to the name, which the name cannot choose between. Nothing is
    * created in that case and the caller leaves those sets in Unknown, which
    * is where the row in question puts them anyway.
    */
@@ -719,7 +720,19 @@ export async function ensureBrandRowForName(
     )
     .collect();
   const key = selectorValueKey(name);
-  const existing = siblings.find((m) => selectorValueKey(m.value) === key);
+  // NEO-325 — exactly-one guard. Two manufacturer rows already folding to
+  // this name cannot be told apart by it; adopting "the first" would file
+  // sets under whichever the index happened to return first. Refused like
+  // the flagged row below: nothing is written, the sets stay in Unknown.
+  const sameName = siblings.filter((m) => selectorValueKey(m.value) === key);
+  if (sameName.length > 1) {
+    console.warn(
+      `[ensureBrandRowForName] ${sameName.length} manufacturer rows share ` +
+        `one folded name under this year — refusing to pick one`,
+    );
+    return { id: null, created: false };
+  }
+  const existing = sameName[0];
   if (existing) {
     if (existing.metadata?.isBrandUnknown === true) {
       return { id: null, created: false };

@@ -551,10 +551,12 @@ describe("R3 — SportLots refuses an unscoped request", () => {
   });
 
   test("a sport named in parentFilters with no SL id is refused, not sent by name", async () => {
-    // `resolveSportLotsPlatformValue` used to end `|| displayValue`, so this
-    // exact call put "E2E Test Sport 3" in the `sprt` form field. SL matches
-    // nothing, returns a page, and the empty parse reads as "SportLots does
-    // not carry this" — indistinguishable from a real empty answer.
+    // History: a name lookup used to end `|| displayValue`, so this exact call
+    // put "E2E Test Sport 3" in the `sprt` form field. SL matches nothing,
+    // returns a page, and the empty parse reads as "SportLots does not carry
+    // this" — indistinguishable from a real empty answer. NEO-256 deleted the
+    // lookup. The ROOT sport row seeded below carries the same name AND an SL
+    // slot id, so a restored name lookup would resolve it and send a request.
     const outgoing: string[] = [];
     vi.stubGlobal(
       "fetch",
@@ -564,6 +566,16 @@ describe("R3 — SportLots refuses an unscoped request", () => {
       }) as unknown as typeof fetch,
     );
     const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "E2E Test Sport 3",
+        platformData: { sportlots: { s0: "ZZ" } },
+        platformSlotSeq: { sportlots: 1 },
+        children: [],
+        lastUpdated: SENTINEL,
+      });
+    });
 
     const res = await t
       .withIdentity(ADMIN)
@@ -577,6 +589,7 @@ describe("R3 — SportLots refuses an unscoped request", () => {
     expect(res.message).toMatch(/no SportLots ids/i);
     // Nothing containing the display value was ever put on the wire.
     expect(outgoing.join(" ")).not.toContain("E2E");
+    expect(outgoing).toEqual([]);
   });
 });
 

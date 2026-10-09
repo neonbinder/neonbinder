@@ -731,8 +731,12 @@ function namesOnCardOf(row: Doc<"cardChecklist">): string[] {
   ];
 }
 
-/** A stored card reduced to what the link key reads. */
-function linkableOf(row: Doc<"cardChecklist">) {
+/**
+ * A stored card reduced to what the link key reads. Exported (NEO-325) so the
+ * Base match probe reads a Base card's names, team-card flag and variation
+ * flag exactly as the build does.
+ */
+export function linkableOf(row: Doc<"cardChecklist">) {
   const namesOnCard = namesOnCardOf(row);
   const hasTeams =
     (row.teamOnCardIds?.length ?? 0) > 0 ||

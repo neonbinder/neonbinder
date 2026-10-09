@@ -41,8 +41,31 @@ vi.mock("../../convex/_generated/api", () => ({
     setParallelConversion: {
       getBrandSlHolders: "getBrandSlHolders",
     },
+    // NEO-325 — the Reconcile dialog's Base check (probe refs are read at
+    // call time by the dialog's hook).
+    baseMatchProbe: {
+      getBaseSignatureForVariantType: "getBaseSignatureForVariantType",
+      probeBscSets: "probeBscSets",
+      probeSlFirstPage: "probeSlFirstPage",
+      probeSlCount: "probeSlCount",
+    },
   },
 }));
+
+/**
+ * NEO-325: status regions are always mounted (empty until the store answers),
+ * so `findByRole("status")` is ambiguous. Wait for the first one with words.
+ */
+async function findLiveStatus(): Promise<HTMLElement> {
+  let found: HTMLElement | undefined;
+  await waitFor(() => {
+    found = screen.getAllByRole("status").find((el) => el.textContent) as
+      | HTMLElement
+      | undefined;
+    expect(found).toBeTruthy();
+  });
+  return found as HTMLElement;
+}
 
 const mockFetchRawOptions = vi.fn();
 const mockStore = vi.fn();
@@ -59,18 +82,37 @@ let brandHolders: { rows: unknown[]; truncated: boolean } = {
   rows: [],
   truncated: false,
 };
+// NEO-325: the inserts already saved under this variant type (what the
+// reconciler treats as `existingRows`). Empty by default.
+let savedRows: unknown[] = [];
+// NEO-325: replaces the chain's variantType row, to give it an NB role.
+let variantTypeRow: Record<string, unknown> | null = null;
+// NEO-325: the client the Reconcile dialog gets from `useConvex()` — only when
+// it was asked for the Base check. Its signature query answers "skip", so the
+// dialog stays as it was and the call itself is the observable.
+const mockConvexQuery = vi.fn();
+const mockConvexAction = vi.fn();
+const mockUseConvex = vi.fn();
 
 vi.mock("convex/react", () => ({
+  useConvex: () => {
+    mockUseConvex();
+    return { query: mockConvexQuery, action: mockConvexAction };
+  },
   useAction: (ref: string) =>
     ref === "fetchRawOptions" ? mockFetchRawOptions : vi.fn(),
   useMutation: (ref: string) =>
     ref === "storeReconciledOptions" ? mockStore : vi.fn(),
   useQuery: (ref: string) => {
-    if (ref === "getAncestorChain") return CHAIN;
+    if (ref === "getAncestorChain") {
+      return variantTypeRow
+        ? CHAIN.map((row) => (row.level === "variantType" ? variantTypeRow : row))
+        : CHAIN;
+    }
     // Loaded-but-absent, not undefined: the auto-sync effect gates on
     // `baseVariant !== undefined`, so undefined would never fire doSync.
     if (ref === "getBaseVariantBySet") return null;
-    if (ref === "getSelectorOptions") return [];
+    if (ref === "getSelectorOptions") return savedRows;
     if (ref === "getInsertTreeByVariantType") return insertTree;
     if (ref === "getUsedInsertIdentifiersBySet") return usedIds;
     // NEO-305 — loaded-but-empty: the auto-sync is gated on it too.
@@ -81,6 +123,9 @@ vi.mock("convex/react", () => ({
 
 import VariantForm from "./VariantForm";
 import { RECONCILED_STORE_MAX_PAGES } from "./store-reconciled-until-done";
+import { twinReconcileNotice } from "./selector-sync-feedback";
+import { HOLDER_PATH_SEPARATOR } from "./held-elsewhere";
+import { titleClashMessage } from "./ready-title-clashes";
 
 const CHAIN = [
   { _id: "sport1", level: "sport", value: "Hockey" },
@@ -128,6 +173,9 @@ beforeEach(() => {
   insertTree = [];
   usedIds = { slPlatformValues: [], bscPlatformValues: [] };
   brandHolders = { rows: [], truncated: false };
+  savedRows = [];
+  variantTypeRow = null;
+  mockConvexQuery.mockResolvedValue({ status: "noBase" });
 });
 
 describe("VariantForm — single-platform store (NEO-211 plan B)", () => {
@@ -585,7 +633,7 @@ describe("VariantForm — the store is replayed until it is finished (NEO-296)",
 
     await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(2));
     expect(mockStore.mock.calls[1][0]).toEqual(mockStore.mock.calls[0][0]);
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toBe("Stored 2 variants (single platform)");
     await waitFor(() => expect(onDone).toHaveBeenCalled());
   });
@@ -609,7 +657,7 @@ describe("VariantForm — the store is replayed until it is finished (NEO-296)",
     await waitFor(() =>
       expect(mockStore).toHaveBeenCalledTimes(RECONCILED_STORE_MAX_PAGES),
     );
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain("1 of 2 not reached this time");
     expect(status.textContent).not.toContain("Stored 2 variants");
     expect(onDone).not.toHaveBeenCalled();
@@ -726,7 +774,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
       "team-canada",
     ]);
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain("Stored 1 variants (single platform)");
     expect(status.textContent).toContain(
       "2 already grouped as parallels. Leaving those be.",
@@ -750,7 +798,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     mockStore.mockResolvedValue({ success: true, unlinked: [], optionsCount: 1, hasMore: false });
     await renderForm();
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain("1 already grouped as a parallel. Leaving it be.");
     const toggle = screen.getByRole("button", { name: "Show grouped" });
     expect(status.contains(toggle)).toBe(false);
@@ -779,7 +827,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     });
     const { onDone } = await renderForm();
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain("No new inserts to add.");
     expect(status.textContent).toContain(
       "1 already grouped as a parallel. Leaving it be.",
@@ -817,7 +865,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     });
     const { onDone } = await renderForm();
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain(
       "1 already grouped as a parallel. Leaving it be.",
     );
@@ -842,7 +890,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
     });
     await renderForm();
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain("60 already grouped as parallels.");
     fireEvent.click(screen.getByRole("button", { name: "Show grouped" }));
     expect(screen.getByText("+ 59 more")).toBeTruthy();
@@ -885,7 +933,7 @@ describe("VariantForm — grouped parallels are left alone (NEO-300)", () => {
       fireEvent.click(await screen.findByText(/Save 1 sets/));
     });
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain("Saved 1 set.");
     expect(status.textContent).not.toContain("Saved 1 sets");
     expect(status.textContent).toContain(
@@ -1175,7 +1223,7 @@ describe("VariantForm — ids another set in the brand holds are left alone (NEO
     expect(args.reconciledItems).toHaveLength(1);
     expect(args.reconciledItems[0].platformData.sportlots).toBe("sl-stars");
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain(
       "1 already linked to another set in this brand. Leaving it be.",
     );
@@ -1328,7 +1376,7 @@ describe("VariantForm — store-named holders carry their path (NEO-312)", () =>
     });
     await renderForm();
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain(
       "1 already linked to a row elsewhere. Leaving it be.",
     );
@@ -1355,7 +1403,7 @@ describe("VariantForm — store-named holders carry their path (NEO-312)", () =>
     });
     await renderForm();
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain(
       "1 already linked to a row elsewhere. Leaving it be.",
     );
@@ -1382,7 +1430,7 @@ describe("VariantForm — store-named holders carry their path (NEO-312)", () =>
     });
     await renderForm();
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain(
       "1 already grouped as a parallel. Leaving it be.",
     );
@@ -1390,5 +1438,165 @@ describe("VariantForm — store-named holders carry their path (NEO-312)", () =>
     expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
       "Topps › Insert › Chrome › Blue",
     ]);
+  });
+});
+
+describe("VariantForm — name twins open Reconcile and are never stored (NEO-325, rule A)", () => {
+  const TWIN = { value: "Team Canada", platformValue: "team-canada" };
+  const oneSided = (twinIds: { bsc: string[]; sportlots: string[] }) => ({
+    success: true,
+    bscOptions: [TWIN],
+    slOptions: [],
+    autoMatched: [],
+    unmatchedBsc: [TWIN],
+    unmatchedSl: [],
+    slCandidates: [],
+    errors: [],
+    message: "BSC: 1, SL: 0",
+    skippedSides: [],
+    pausedSides: [],
+    twinIds,
+  });
+
+  it("stores nothing and opens the reconcile dialog, with the twin's id shown and a notice saying why", async () => {
+    mockFetchRawOptions.mockResolvedValue(oneSided({ bsc: ["team-canada"], sportlots: [] }));
+    await renderForm();
+
+    expect(
+      await screen.findByLabelText("Make its own set: Team Canada (#team-canada)"),
+    ).toBeTruthy();
+    expect(mockStore).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(twinReconcileNotice({ bsc: ["team-canada"], sportlots: [] })),
+    ).toBeTruthy();
+  });
+
+  it("twins elsewhere in the list (none among the items to store) do not stop the store", async () => {
+    mockFetchRawOptions.mockResolvedValue(oneSided({ bsc: ["some-other-id"], sportlots: [] }));
+    await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    expect(screen.queryByLabelText(/Make its own set/)).toBeNull();
+  });
+
+  it("a result without twinIds (an older shape) stores as before", async () => {
+    const result = oneSided({ bsc: [], sportlots: [] });
+    delete (result as { twinIds?: unknown }).twinIds;
+    mockFetchRawOptions.mockResolvedValue(result);
+    await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("VariantForm — where a clashing title would sit (NEO-325)", () => {
+  it("tells the operator which set and variant type the sets are saved under", async () => {
+    // A set already saved here under the twin's name, with no marketplace id.
+    savedRows = [{ _id: "saved1", value: "Team Canada", platformData: {}, children: [] }];
+    mockFetchRawOptions.mockResolvedValue({
+      success: true,
+      bscOptions: [{ value: "Team Canada", platformValue: "team-canada" }],
+      slOptions: [],
+      autoMatched: [],
+      unmatchedBsc: [{ value: "Team Canada", platformValue: "team-canada" }],
+      unmatchedSl: [],
+      slCandidates: [],
+      errors: [],
+      message: "BSC: 1, SL: 0",
+      skippedSides: [],
+      pausedSides: [],
+      twinIds: { bsc: ["team-canada"], sportlots: [] },
+    });
+    await renderForm();
+
+    fireEvent.click(
+      await screen.findByLabelText("Make its own set: Team Canada (#team-canada)"),
+    );
+
+    const scope = ["Topps", "Insert"].join(HOLDER_PATH_SEPARATOR);
+    expect(
+      await screen.findAllByText(
+        titleClashMessage(
+          { key: "team canada", title: "Team Canada", readyKeys: ["a"], existingCount: 1 },
+          scope,
+        ),
+      ),
+    ).not.toHaveLength(0);
+  });
+});
+
+describe("VariantForm — the status regions exist before the store answers (NEO-325 a11y)", () => {
+  it("mounts its notice regions empty for the whole sync, and fills the same elements", async () => {
+    let release!: (v: unknown) => void;
+    mockFetchRawOptions.mockReturnValue(new Promise((r) => (release = r)));
+    await renderForm();
+
+    const before = screen.getAllByRole("status");
+    expect(before.length).toBeGreaterThanOrEqual(4);
+    for (const region of before) expect(region.textContent).toBe("");
+
+    await act(async () => {
+      release(bscOnly());
+    });
+    await findLiveStatus();
+
+    for (const region of before) expect(region.isConnected).toBe(true);
+  });
+});
+
+describe("VariantForm — the Base match check is for the parallel variant type only (NEO-325)", () => {
+  // The twin shape opens the reconcile dialog without needing a pair.
+  const TWIN = { value: "Team Canada", platformValue: "team-canada" };
+  const opensDialog = () => ({
+    success: true,
+    bscOptions: [TWIN],
+    slOptions: [],
+    autoMatched: [],
+    unmatchedBsc: [TWIN],
+    unmatchedSl: [],
+    slCandidates: [],
+    errors: [],
+    message: "BSC: 1, SL: 0",
+    skippedSides: [],
+    pausedSides: [],
+    twinIds: { bsc: ["team-canada"], sportlots: [] },
+  });
+
+  async function openDialogFor(metadata: Record<string, unknown> | undefined, value = "Insert") {
+    variantTypeRow = { _id: "vt1", level: "variantType", value, metadata };
+    mockFetchRawOptions.mockResolvedValue(opensDialog());
+    await renderForm();
+    expect(
+      await screen.findByLabelText("Make its own set: Team Canada (#team-canada)"),
+    ).toBeTruthy();
+    await act(async () => {});
+  }
+
+  it("a variant type with the parallel role hands the dialog the check, keyed on its id", async () => {
+    await openDialogFor({ variantRole: "parallel" });
+
+    expect(mockUseConvex).toHaveBeenCalled();
+    expect(mockConvexQuery).toHaveBeenCalledTimes(1);
+    expect(mockConvexQuery).toHaveBeenCalledWith("getBaseSignatureForVariantType", {
+      variantTypeId: "vt1",
+    });
+  });
+
+  it("the Base type itself gets no check", async () => {
+    await openDialogFor({ isBase: true });
+    expect(mockUseConvex).not.toHaveBeenCalled();
+    expect(mockConvexQuery).not.toHaveBeenCalled();
+  });
+
+  it("an insert type gets no check", async () => {
+    await openDialogFor({ variantRole: "insert" });
+    expect(mockUseConvex).not.toHaveBeenCalled();
+    expect(mockConvexQuery).not.toHaveBeenCalled();
+  });
+
+  it("a row merely NAMED Parallel, with no role, gets no check", async () => {
+    await openDialogFor(undefined, "Parallel");
+    expect(mockUseConvex).not.toHaveBeenCalled();
+    expect(mockConvexQuery).not.toHaveBeenCalled();
   });
 });

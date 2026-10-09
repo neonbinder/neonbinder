@@ -1,6 +1,6 @@
 ---
 name: neo91_sku_and_sl_setradioid_wiring
-description: Test recipes for generateSku (convex/sku.ts) pure-function edge cases, fetchSportLotsChecklist's setRadioId precedence fix, and commitCardChecklist/addCustomCard SKU insert-then-patch wiring (NEO-91)
+description: Test recipes for generateSku (convex/sku.ts) pure-function edge cases, fetchSportLotsChecklist's setRadioId precedence (slot ids only, refused otherwise), and commitCardChecklist/addCustomCard SKU insert-then-patch wiring (NEO-91)
 metadata:
   type: reference
 ---
@@ -16,8 +16,10 @@ Only `sportCode` (known sports already exactly 2 chars; unknown sports `.padEnd(
 
 `slugify` uppercases then strips `[^A-Z0-9]` — this strips accented letters entirely (toUpperCase doesn't fold diacritics to ASCII), not just emoji/punctuation. An empty result after stripping falls back to the literal `"X"`.
 
-**fetchSportLotsChecklist setRadioId precedence (convex/adapters/sportlots.ts ~line 784-807):**
-`parallel > insert > variantType > platformFilters.setName > parentFilters.setName-direct > DB lookup via resolveSportLotsPlatformValue`. The DB-lookup branch only fires when NONE of platformFilters.{parallel,insert,variantType,setName} are set AND parentFilters.setName is present. To exercise it you must seed a real `selectorOptions` row: `level: "setName"`, `value` matching `parentFilters.setName` (case/whitespace-insensitive match), `parentId: undefined` (root-level — `findByLevelAndValue`'s query is `by_level_and_parent` with `parentId` exactly matching what's passed, and `resolveSportLotsPlatformValue` here is called with no `parentId` arg), `platformData.sportlots` set to the expected radio id.
+**fetchSportLotsChecklist setRadioId precedence (convex/adapters/sportlots.ts):**
+`parallel > insert > variantType > platformFilters.setName`, from the caller's slot-derived `platformFilters` ONLY. There is NO DB-lookup fallback any more (NEO-256 deleted `resolveSportLotsPlatformValue` and the public `findByLevelAndValue`): with no id at any of those levels the action returns `success:false`, `failure: { kind: "refused", timedOut: false }` and the "no SportLots ids" message, and sends nothing. The same holds for `resolveSlScope` (a level named in `parentFilters` with no id in `platformFilters` is refused). To prove "a name is never looked up", seed the root row the old lookup would have matched (same `level`/`value`, `platformData.sportlots` slot id, `parentId` undefined) and assert refused plus ZERO outgoing fetches; an unseeded refusal passes even if the lookup is restored.
+
+Break-checking a deleted lookup: `git show HEAD~1:<path>` both the adapter and `selectorOptions.ts` into place, neuter one of the two sites by string replace, run, then `cp` the saved originals back and `cmp`. This separates the setName-fallback proof from the scope-lookup proof.
 
 **Mocking pattern for admin-gated SL/BSC actions that need a credential cookie/token without seeding real encrypted creds:** `vi.mock("./credentials", ...)` (spread `importOriginal`, replace just `getSiteToken` with an `internalAction` stub returning `{ token: "..." }`). Combine with `vi.stubGlobal("fetch", ...)` (capture POST body via `new URLSearchParams(body).get("selset")`) for the outbound SL request, and `t.withIdentity({ role: "admin", ... })` for `requireAdmin`. This is the same module-replacement convention as `[[reference_fetchcardchecklist_multi_adapter_mock_pattern]]` but applied to `./credentials` instead of an adapter module.
 

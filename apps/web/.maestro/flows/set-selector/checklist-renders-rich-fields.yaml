@@ -71,11 +71,15 @@ tags:
 # SCROLL INTO THE CARD ROWS
 # The drill leaves the "Add Card" / "Refresh" action row visible.
 # Card rows render below it; scroll one into view before asserting.
+# A FULL match on a row's number cell ("#123", its own span in
+# CardChecklistItem), never `.*#[0-9].*`: since NEO-325 a column's twin notice
+# reads "Anime (SportLots #378117, #378118)", which the substring pattern would
+# take for a card row. The 2024 Topps Chrome Base numbers are all digits.
 # ============================================================
 
 - scrollUntilVisible:
     element:
-      text: ".*#[0-9].*"
+      text: "#[0-9][^ ]*"
     centerElement: true
     timeout: 7000
 

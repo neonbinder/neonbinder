@@ -94,7 +94,7 @@ tags:
 - extendedWaitUntil:
     visible:
       id: "Search BSC sets"
-    timeout: 10000
+    timeout: 7000 # R5: a client-side dialog mount
 
 # ============================================================
 # TYPE INTO THE BSC SEARCH INPUT AND VERIFY LIST NARROWS
@@ -113,6 +113,39 @@ tags:
     visible:
       text: ".*Chrome.*"
     timeout: 7000
+
+# ============================================================
+# THE SPORTLOTS PANE LISTS SETS BY ID (NEO-242/NEO-256/NEO-325)
+# The SportLots pane is fetched from the row's own SportLots slot ids
+# (`setReconciliation.fetchSlAttachSets` → the adapter's insert level); since
+# NEO-242 there is no name-to-id lookup behind it, so an unscoped request is
+# REFUSED and the pane would show its error or skip note instead. Every
+# candidate row prints its SportLots id (`id: <n>`, AttachSetsDialog
+# CandidateRow) — the one place an operator reads which SportLots set they
+# are about to attach. Scoped to the pane's own region (`childOf`, its
+# aria-label), so a BSC row can never answer. Read-only: nothing is ticked.
+# R5 marketplace exception — the pane's list is a live SportLots round-trip
+# started when the dialog opened.
+#
+# PAUSED (`output.SL_PAUSED`, set by the drill util): SportLots is not asked
+# at all and the pane shows its pause line, so only the pane is asserted.
+# ============================================================
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: "id: [0-9]+"
+            childOf:
+              id: "SportLots candidates"
+          timeout: 30000
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertVisible:
+          id: "SportLots candidates"
 
 # ============================================================
 # CANCEL OUT OF THE DIALOG

@@ -4,6 +4,7 @@ import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { primarySlot, slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
+import { variantTypeRole } from "../../convex/variantRole";
 import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem, type SlCandidateGroup } from "./ReconciliationModal";
 import SyncDoneNotice from "./SyncDoneNotice";
 import {
@@ -15,6 +16,9 @@ import {
   totalsBySideFor,
   partialFailureMessage,
   planSinglePlatformStore,
+  storeItemsHitTwins,
+  twinReconcileNotice,
+  type TwinIds,
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { storeReconciledUntilDone } from "./store-reconciled-until-done";
@@ -34,6 +38,7 @@ import {
   type StoreHolds,
   parallelsInTree,
   type HeldRow,
+  HOLDER_PATH_SEPARATOR,
 } from "./held-elsewhere";
 
 type RawOptionsResult = {
@@ -48,6 +53,11 @@ type RawOptionsResult = {
   slCandidates?: SlCandidateGroup[];
   errors: Array<{ platform: string; message: string }>;
   message?: string;
+  /**
+   * NEO-325 — ids whose name two or more ids share on that side's full list.
+   * Optional so an older result shape reads as "no twins".
+   */
+  twinIds?: TwinIds;
 };
 
 // Stable, unique-to-this-error-mode string. Maestro flows assert on this
@@ -130,9 +140,17 @@ export default function VariantForm({
     api.selectorOptions.getUsedInsertIdentifiersBySet,
     setId ? { setId, excludeVariantTypeId: variantTypeId } : "skip",
   );
-  const variantTypeValue = ancestorChain?.find(
+  const variantTypeRow = ancestorChain?.find(
     (a: { level: string }) => a.level === "variantType",
-  )?.value;
+  );
+  const variantTypeValue = variantTypeRow?.value;
+  // NEO-325 (Jason, 2026-10-09) — the Reconcile dialog checks every pending
+  // set against the saved Base, for the PARALLEL variant type only: a
+  // parallel is the Base's checklist in another colour, an insert is not.
+  // Decided by NB's role flag on the chain's own row (`variantTypeRole`),
+  // never by the row's name. Parallels of an insert (ParallelForm) are out
+  // of scope.
+  const checksAgainstBase = variantTypeRole(variantTypeRow) === "parallel";
   // Pluralized variantType label ("Insert" → "Inserts") for headings and
   // the reconciliation modal title. Falls back to "Variants" until the
   // ancestor chain resolves.
@@ -341,6 +359,18 @@ export default function VariantForm({
             })),
         ];
 
+        // NEO-325 — rule A (Jason): a name two or more marketplace ids share
+        // is never stored without the operator. If anything this store would
+        // write is one of those ids, open Reconcile on the same fetch instead
+        // — one side may be empty there, and the modal handles that like any
+        // other unpaired item. Keyed on ids (`twinIds`), never on names.
+        if (storeItemsHitTwins(items, result.twinIds)) {
+          setReconciliationData(result);
+          setShowReconciliation(true);
+          setMessage(null);
+          return;
+        }
+
         // NEO-300: everything that came back is already grouped. Nothing to
         // store, but the operator is told why rather than the panel closing on
         // a sync that looked like it did nothing.
@@ -405,7 +435,8 @@ export default function VariantForm({
         setHeldSkipped(heldAll.rows);
         setHeldTotal(heldAll.total);
         setBrandHeldSkipped(brandSkipped);
-        const holds = storeHoldsOf(stored);
+        // NEO-325: with what was sent, so a withheld twin is named by its id.
+        const holds = storeHoldsOf(stored, items);
         setStoreHolds(holds);
         setMessage(
           // NEO-296 — the count is the SERVER'S (`optionsCount`: rows now
@@ -470,27 +501,34 @@ export default function VariantForm({
       : undefined;
     // Clear any previous failure so a retry does not show a stale reason.
     setSaveError(null);
+    const reconciledItems = result.items.map((item) => ({
+      value: item.value,
+      platformData: item.platformData,
+      // Forwarded so every allocated slot gets the marketplace's own set
+      // name. A set may map to several sets per side, and without labels
+      // the slots are indistinguishable ids downstream.
+      platformLabels: item.platformLabels,
+      metadata: item.metadata,
+      // NEO-211 (plan E): the NB row this modal row IS. With it the store
+      // treats a title edit as a rename of that row, keeping its _id and its
+      // whole subtree; without it, a rename was delete-and-reinsert.
+      existingId: item.existingId,
+      // NEO-325: a set the operator made with "Make its own set" is matched
+      // by identity only, so a twin saved after its namesake is its own row
+      // instead of being withheld against it by name.
+      ...(item.identityOnly ? { identityOnly: true } : {}),
+    }));
     let drained;
     try {
       // NEO-296 — replayed until the store is finished; see the doSync path.
       drained = await storeReconciledUntilDone(storeReconciledOptions, {
         level: "insert",
         parentId: variantTypeId,
-        reconciledItems: result.items.map((item) => ({
-          value: item.value,
-          platformData: item.platformData,
-          // Forwarded so every allocated slot gets the marketplace's own set
-          // name. A set may map to several sets per side, and without labels
-          // the slots are indistinguishable ids downstream.
-          platformLabels: item.platformLabels,
-          metadata: item.metadata,
-          // NEO-211 (plan E): the NB row this modal row IS. With it the store
-          // treats a title edit as a rename of that row, keeping its _id and its
-          // whole subtree; without it, a rename was delete-and-reinsert.
-          existingId: item.existingId,
-        })),
-        // Every side that answered. Both did here (the modal only opens when both
-        // returned rows), but deriving it keeps the guarantee honest. Spread
+        reconciledItems,
+        // Every side that answered. The modal opens when both returned rows, or
+        // (NEO-325) when a one-sided fetch carried a name twin — then the empty
+        // side was reached and empty, exactly as the single-platform store
+        // would have claimed. Derived from the fetch either way. Spread
         // rather than assigned so an absent fetch result OMITS the arg — the
         // store then unlinks nothing, instead of being told both sides were fine.
         ...(covered ? { coveredSides: covered } : {}),
@@ -537,7 +575,7 @@ export default function VariantForm({
     // Likewise anything the store WITHHELD or could not check (StoreHoldNotices):
     // the operator has to act on it, so the panel stays up to carry it.
     const heldAll = mergeServerHeld(modalHeldRows, stored, isGroupedHere);
-    const holds = storeHoldsOf(stored);
+    const holds = storeHoldsOf(stored, reconciledItems);
     if (heldAll.extra > 0 || holds !== null) {
       setHeldSkipped(heldAll.extra > 0 ? heldAll.rows : []);
       setHeldTotal(heldAll.extra > 0 ? heldAll.total : 0);
@@ -706,9 +744,12 @@ export default function VariantForm({
                   </div>
                 )}
 
-              {storeHolds && !showReconciliation && !isError && (
-                <StoreHoldNotices holds={storeHolds} />
-              )}
+              {/* Mounted for the whole sync, empty until the store answers:
+                  its status regions must exist BEFORE they fill, or a screen
+                  reader may never announce them. */}
+              <StoreHoldNotices
+                holds={storeHolds && !showReconciliation && !isError ? storeHolds : null}
+              />
 
               {!loading && !showReconciliation && (
                 <div className="flex gap-2">
@@ -738,6 +779,29 @@ export default function VariantForm({
           saveError={saveError}
           level="insert"
           levelLabel={variantsLabel}
+          twinIds={reconciliationData.twinIds}
+          baseCheck={checksAgainstBase ? { variantTypeId } : undefined}
+          // NEO-325 — where the reconciled rows are saved: the set and this
+          // variant type.
+          parentPath={
+            setNameValue && variantTypeValue
+              ? [setNameValue, variantTypeValue].join(HOLDER_PATH_SEPARATOR)
+              : undefined
+          }
+          twinNotice={
+            // Said only when twins are WHY the modal opened (one side empty);
+            // a two-sided reconcile is what the operator expects.
+            reconciliationData.twinIds &&
+            (reconciliationData.bscOptions.length === 0 ||
+              reconciliationData.slOptions.length === 0)
+              ? twinReconcileNotice(reconciliationData.twinIds)
+              : undefined
+          }
+          showAllSlInitially={
+            !!reconciliationData.twinIds &&
+            (reconciliationData.bscOptions.length === 0 ||
+              reconciliationData.slOptions.length === 0)
+          }
           initialData={{
             autoMatched: reconciliationData.autoMatched,
             unmatchedBsc: reconciliationData.unmatchedBsc,

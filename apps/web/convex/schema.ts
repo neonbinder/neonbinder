@@ -122,10 +122,10 @@ export const selectorOptionLevelValidator = v.union(
  * exported so every hand-written `returns` validator can be built FROM the
  * schema instead of re-listing it.
  *
- * Four queries used to enumerate these fields by hand
- * (`getSelectorOptions`, `getSelectorOptionById`, `findByLevelAndValue`,
+ * Several queries used to enumerate these fields by hand
+ * (`getSelectorOptions`, `getSelectorOptionById`,
  * `getInsertTreeByVariantType`). Convex validates `returns` STRICTLY, so every
- * field added to the table had to be copied into all four or the query would
+ * field added to the table had to be copied into each of them or the query would
  * throw `Object contains extra field '<name>'` at runtime for any row carrying
  * it. That is exactly how `getInsertTreeByVariantType` came to be missing
  * `platformLabels`, `primaryPlatformId` and `sportConfig` — it broke Group
@@ -133,7 +133,7 @@ export const selectorOptionLevelValidator = v.union(
  * same bug after `sportConfig` (NEO-96).
  *
  * Deriving the validator from this object makes that drift structurally
- * impossible: a new field is in the `returns` of all four the moment it is in
+ * impossible: a new field is in the `returns` of every one the moment it is in
  * the table. See `selectorOptionDocValidator` in convex/selectorOptions.ts.
  */
 /**
@@ -820,6 +820,23 @@ export default defineSchema({
       ),
     ),
     unlinkedTotal: v.optional(v.number()),
+    // NEO-325 — names this sync LEFT FOR THE OPERATOR because two or more
+    // marketplace ids share them on one side (name twins): no row was created
+    // or paired for them. Only names with at least one id no NB row holds yet
+    // are listed. Capped at TWIN_NOTICE_LIMIT names with the true count in
+    // `twinsLeftTotal`, for the same reactive-payload reason as `unlinked`.
+    twinsLeft: v.optional(
+      v.array(
+        v.object({
+          // The marketplace's label as listed (first seen). Display only.
+          name: v.string(),
+          // The UNHELD ids under that name, per side (capped per side).
+          bsc: v.array(v.string()),
+          sportlots: v.array(v.string()),
+        }),
+      ),
+    ),
+    twinsLeftTotal: v.optional(v.number()),
     updatedAt: v.number(),
   }).index("by_level_and_parent", ["level", "parentId"]),
 
@@ -840,12 +857,50 @@ export default defineSchema({
     manufacturerId: v.id("selectorOptions"),
     // Bounded at MAX_SL_SETS_PER_SYNC, sorted by folded label; labels are the
     // brand-stripped SportLots names (≤ MAX_SLOT_LABEL_LENGTH).
-    entries: v.array(v.object({ slId: v.string(), label: v.string() })),
+    // NEO-325 — `twin: true` when two or more distinct SportLots ids share the
+    // entry's folded label in its brand scope's list (covered ones included);
+    // absent otherwise. The review shows a twin with its id and the operator
+    // names it.
+    // NEO-325 — `lastRefusal`: why the last save that reached this line
+    // refused it for its NAME (the line stays; the operator renames it), so
+    // a reopened review still says why. Overwritten by the next save that
+    // reaches the line (filed → the entry leaves; refused again → the new
+    // refusal). Kept across a sync that leaves the line's id and label as
+    // they were; dropped otherwise. Absent = never refused.
+    entries: v.array(
+      v.object({
+        slId: v.string(),
+        label: v.string(),
+        twin: v.optional(v.boolean()),
+        lastRefusal: v.optional(
+          v.object({
+            reason: v.union(
+              v.literal("nameTaken"),
+              v.literal("existsElsewhere"),
+              v.literal("invalid"),
+            ),
+            name: v.string(),
+            target: v.union(v.literal("set"), v.literal("variantType")),
+            variantTypeId: v.optional(v.id("selectorOptions")),
+            clashWith: v.optional(
+              v.object({
+                _id: v.id("selectorOptions"),
+                value: v.string(),
+                brand: v.optional(v.string()),
+              }),
+            ),
+            detail: v.optional(v.string()),
+          }),
+        ),
+      }),
+    ),
     // How many SportLots-only names did not fit this sync ("more next sync").
     rootsTruncated: v.optional(v.number()),
     classifiedAt: v.number(),
-    // Set when a save starts; cleared when a sync changes the entries. A doc
-    // that still has entries and a `saveStartedAt` is a partial save.
+    // Set when a save starts. Cleared when that save finishes without
+    // stopping part-way (even if it left name-refused or undecided lines),
+    // and when a sync changes the entries. A doc that still has entries and
+    // a `saveStartedAt` is a save that STOPPED part-way ("save again").
     saveStartedAt: v.optional(v.number()),
   }).index("by_year_and_manufacturer", ["yearId", "manufacturerId"]),
 

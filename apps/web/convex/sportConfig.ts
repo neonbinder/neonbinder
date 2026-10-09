@@ -28,7 +28,7 @@
  *
  * NOT marketplace wire formats. Those live in `platformData.bsc` /
  * `platformData.sportlots` ("baseball" / "BB") and are resolved at the adapter
- * boundary — see `resolveSportLotsPlatformValue` in adapters/sportlots.ts.
+ * boundary — see `resolveSlScope` in adapters/sportlots.ts.
  * Nothing here should ever be sent to a marketplace, and nothing a marketplace
  * returns should ever be stored on a domain entity.
  *

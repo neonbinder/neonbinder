@@ -32,6 +32,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+  MAX_DECISION_NAME_LENGTH,
   MAX_SIBLINGS_PER_TYPE,
   applySlSetReviewImpl,
   rowNameUnderSet,
@@ -281,7 +282,7 @@ async function seedReviewDoc(
   t: T,
   yearId: RowId,
   manufacturerId: RowId,
-  entries: Array<{ slId: string; label: string }>,
+  entries: Doc<"slSetReviews">["entries"],
   extra: Partial<Doc<"slSetReviews">> = {},
 ) {
   return t.run(async (ctx) =>
@@ -494,10 +495,27 @@ describe("the dialog's reads", () => {
     expect(review?.ofSets.map((s) => s.value)).toEqual(["Bowman", "Bowman Chrome"]);
     expect(review?.ofSets.map((s) => s._id)).not.toContain(ids.slOnlySetId);
     // Longest whole-word prefix of the NB name ("Bowman Chrome Blue").
+    // NEO-325 — `defaultName` is the own-set name a save gives a line the
+    // operator did not name (the brand prefix + label); no line is a twin.
     expect(review?.entries).toEqual([
-      { slId: "sl-aa", label: "All-America", suggestedOfSetId: ids.flagshipId },
-      { slId: "sl-chrome-blue", label: "Chrome Blue", suggestedOfSetId: chromeId },
-      { slId: "sl-gold", label: "Gold", suggestedOfSetId: ids.flagshipId },
+      {
+        slId: "sl-aa",
+        label: "All-America",
+        suggestedOfSetId: ids.flagshipId,
+        defaultName: "Bowman All-America",
+      },
+      {
+        slId: "sl-chrome-blue",
+        label: "Chrome Blue",
+        suggestedOfSetId: chromeId,
+        defaultName: "Bowman Chrome Blue",
+      },
+      {
+        slId: "sl-gold",
+        label: "Gold",
+        suggestedOfSetId: ids.flagshipId,
+        defaultName: "Bowman Gold",
+      },
     ]);
 
     const summary = await t
@@ -694,6 +712,7 @@ describe("applySlSetReview — every landing", () => {
         invalid: 0,
       },
       knownBrandsAdded: 0,
+      refused: [],
       remaining: 0,
       incomplete: false,
     });
@@ -775,7 +794,7 @@ describe("applySlSetReview — every landing", () => {
     expect(doc.entries.map((e) => e.slId)).toEqual(["sl-aa", "sl-aa-autos"]);
   });
 
-  test("a same-key sibling under the type is skipped and counted, never merged by name", async () => {
+  test("a same-key sibling under the type is refused and counted, never merged by name, and the line stays in the review", async () => {
     const t = convexTest(schema, modules);
     const { yearId, bowmanId } = await seedYear(t);
     const ids = await seedBowmanSets(t, bowmanId);
@@ -797,8 +816,23 @@ describe("applySlSetReview — every landing", () => {
     expect(result.underType.parallel).toBe(0);
     expect(await t.run(async (ctx) => ctx.db.get(existingId))).toEqual(existingBefore);
     expect(await childrenAt(t, ids.parallelTypeId, "insert")).toHaveLength(1);
-    // Decided: it leaves the review (the next sync offers it again).
-    expect(await reviews(t)).toEqual([]);
+    // NEO-325 — refused for its name, reported with the row holding it, and
+    // KEPT in the review for the operator to rename (it used to leave, and a
+    // twin refused this way never came back).
+    expect(result.refused).toEqual([
+      {
+        slId: "sl-gold",
+        label: "Gold",
+        name: "Gold",
+        reason: "nameTaken",
+        target: "variantType",
+        variantTypeId: ids.parallelTypeId,
+        clashWith: { _id: existingId, value: "gold" },
+      },
+    ]);
+    const [doc] = await reviews(t);
+    expect(doc.entries.map((e) => e.slId)).toEqual(["sl-gold"]);
+    expect(result.remaining).toBe(1);
   });
 
   test("an id already linked under the brand is skipped as already linked and leaves the review", async () => {
@@ -825,13 +859,16 @@ describe("applySlSetReview — every landing", () => {
     expect(await childrenAt(t, ids.parallelTypeId, "insert")).toEqual([]);
     const [doc] = await reviews(t);
     expect(doc.entries.map((e) => e.slId)).toEqual(["sl-blue"]);
-    // A save that left entries behind is a partial save for the pill.
+    // NEO-325 — a save that ran to the end is not a partial save, even with
+    // an undecided line left behind: "partial" means a save that STOPPED.
     expect(result.remaining).toBe(1);
+    expect(result.incomplete).toBe(false);
+    expect(doc.saveStartedAt).toBeUndefined();
     expect(
       await t
         .withIdentity(ADMIN)
         .query(api.slSetReview.getSlSetReviewSummary, { manufacturerId: bowmanId }),
-    ).toEqual({ pending: 1, partial: true, moreNextSync: 0 });
+    ).toEqual({ pending: 1, partial: false, moreNextSync: 0 });
   });
 
   test("Unknown's review: a name matching a known brand is filed as a set under that brand (NEO-294 split)", async () => {
@@ -1144,4 +1181,463 @@ describe("createSlRowsUnderVariantType — the sibling read is bounded and fails
       ),
     );
   }
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-325 — "partial" means a save that stopped; a refused line keeps why
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("NEO-325 — a finished save is not partial, and each refused line keeps why", () => {
+  const saveNamed = (
+    t: T,
+    manufacturerId: RowId,
+    decisions: Array<{ slId: string; variantTypeId?: RowId; name?: string }>,
+  ) =>
+    t.withIdentity(ADMIN).action(api.slSetReview.applySlSetReview, {
+      manufacturerId,
+      decisions,
+    });
+  const summaryOf = (t: T, manufacturerId: RowId) =>
+    t.withIdentity(ADMIN).query(api.slSetReview.getSlSetReviewSummary, { manufacturerId });
+
+  test("a save that finishes with a name-refused line clears saveStartedAt and stores the refusal on that line", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const ids = await seedBowmanSets(t, bowmanId);
+    const holderId = await insertRow(t, {
+      level: "insert",
+      value: "gold",
+      parentId: ids.parallelTypeId,
+    });
+    await seedReviewDoc(t, yearId, bowmanId, [
+      { slId: "sl-gold", label: "Gold" },
+      { slId: "sl-blue", label: "Blue" },
+    ]);
+
+    const result = await saveNamed(t, bowmanId, [
+      { slId: "sl-gold", variantTypeId: ids.parallelTypeId },
+      { slId: "sl-blue", variantTypeId: ids.parallelTypeId },
+    ]);
+
+    expect(result.incomplete).toBe(false);
+    expect(result.underType.parallel).toBe(1);
+    expect(result.refused.map((r) => r.slId)).toEqual(["sl-gold"]);
+    const refusal = {
+      name: "Gold",
+      reason: "nameTaken",
+      target: "variantType",
+      variantTypeId: ids.parallelTypeId,
+      clashWith: { _id: holderId, value: "gold" },
+    };
+    const [doc] = await reviews(t);
+    expect(doc.entries).toEqual([{ slId: "sl-gold", label: "Gold", lastRefusal: refusal }]);
+    expect(doc.saveStartedAt).toBeUndefined();
+    expect(await summaryOf(t, bowmanId)).toEqual({
+      pending: 1,
+      partial: false,
+      moreNextSync: 0,
+    });
+    // Reopening the review still says why.
+    const review = await t
+      .withIdentity(ADMIN)
+      .query(api.slSetReview.getSlSetReview, { manufacturerId: bowmanId });
+    expect(review?.partial).toBe(false);
+    expect(review?.entries.map((e) => [e.slId, e.lastRefusal])).toEqual([
+      ["sl-gold", refusal],
+    ]);
+  });
+
+  test("an own-set refusal stores the set it clashed with; the line saved under a new name leaves, and no other line gains a refusal", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const existingSetId = await insertRow(t, {
+      level: "setName",
+      value: "Bowman All-America",
+      parentId: bowmanId,
+    });
+    await seedReviewDoc(t, yearId, bowmanId, [
+      { slId: "sl-aa", label: "All-America" },
+      { slId: "sl-blue", label: "Blue" },
+    ]);
+
+    const first = await saveNamed(t, bowmanId, [{ slId: "sl-aa" }]);
+
+    expect(first.refused).toHaveLength(1);
+    const [refusedDoc] = await reviews(t);
+    expect(refusedDoc.entries).toEqual([
+      {
+        slId: "sl-aa",
+        label: "All-America",
+        lastRefusal: {
+          name: "Bowman All-America",
+          reason: "nameTaken",
+          target: "set",
+          clashWith: { _id: existingSetId, value: "Bowman All-America" },
+        },
+      },
+      // Not in this save's decisions: untouched.
+      { slId: "sl-blue", label: "Blue" },
+    ]);
+
+    // The save reads the stored entries back (its own read strips the
+    // refusal) and files the line under the operator's new name.
+    const second = await saveNamed(t, bowmanId, [
+      { slId: "sl-aa", name: "Bowman All-America Retail" },
+    ]);
+
+    expect(second.sets).toBe(1);
+    expect(second.refused).toEqual([]);
+    expect(second.incomplete).toBe(false);
+    const [doc] = await reviews(t);
+    expect(doc.entries).toEqual([{ slId: "sl-blue", label: "Blue" }]);
+    expect(doc.saveStartedAt).toBeUndefined();
+  });
+
+  test("re-filing a refused line replaces its refusal with the new attempt's", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const ids = await seedBowmanSets(t, bowmanId);
+    await insertRow(t, { level: "insert", value: "Gold", parentId: ids.parallelTypeId });
+    const goldSetId = await insertRow(t, {
+      level: "setName",
+      value: "Bowman Gold",
+      parentId: bowmanId,
+    });
+    await seedReviewDoc(t, yearId, bowmanId, [{ slId: "sl-gold", label: "Gold" }]);
+
+    await saveNamed(t, bowmanId, [{ slId: "sl-gold", variantTypeId: ids.parallelTypeId }]);
+    const [underType] = await reviews(t);
+    expect(underType.entries[0].lastRefusal?.target).toBe("variantType");
+
+    // Re-filed as its own set, and refused there too: the stored refusal is
+    // the set one, with no variant type left over from the first attempt.
+    await saveNamed(t, bowmanId, [{ slId: "sl-gold" }]);
+
+    const [asSet] = await reviews(t);
+    expect(asSet.entries).toEqual([
+      {
+        slId: "sl-gold",
+        label: "Gold",
+        lastRefusal: {
+          name: "Bowman Gold",
+          reason: "nameTaken",
+          target: "set",
+          clashWith: { _id: goldSetId, value: "Bowman Gold" },
+        },
+      },
+    ]);
+  });
+
+  test("a save that stops part-way stays partial; save again that finishes is not partial though a refused line remains", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const ids = await seedBowmanSets(t, bowmanId);
+    // Line 44 lands in the second chunk and clashes with an existing row.
+    await insertRow(t, {
+      level: "insert",
+      value: "Colour 44",
+      parentId: ids.parallelTypeId,
+    });
+    const entries = Array.from({ length: 45 }, (_, i) => ({
+      slId: `sl-${String(i).padStart(2, "0")}`,
+      label: `Colour ${String(i).padStart(2, "0")}`,
+    }));
+    await seedReviewDoc(t, yearId, bowmanId, entries);
+    const decisions = entries.map((e) => ({ slId: e.slId, variantTypeId: ids.parallelTypeId }));
+
+    const rowsUnderType = getFunctionName(internal.slSetReview.createSlRowsUnderVariantType);
+    let rowCalls = 0;
+    type Ctx = Parameters<typeof applySlSetReviewImpl>[0];
+    const flaky: Ctx = {
+      runQuery: ((ref: FunctionReference<"query">, args: Record<string, unknown>) =>
+        t.query(ref, args)) as Ctx["runQuery"],
+      runMutation: (async (
+        ref: FunctionReference<"mutation">,
+        args: Record<string, unknown>,
+      ) => {
+        if (getFunctionName(ref) === rowsUnderType && ++rowCalls === 2) {
+          throw new Error("transaction failed");
+        }
+        return t.mutation(ref, args);
+      }) as Ctx["runMutation"],
+    };
+
+    const stopped = await applySlSetReviewImpl(flaky, ADMIN.subject, {
+      manufacturerId: bowmanId,
+      decisions,
+    });
+
+    expect(stopped.incomplete).toBe(true);
+    const [afterStop] = await reviews(t);
+    expect(afterStop.saveStartedAt).toBeDefined();
+    // The chunk that threw wrote nothing, so no line carries a refusal yet.
+    expect(afterStop.entries.some((e) => e.lastRefusal !== undefined)).toBe(false);
+    expect(await summaryOf(t, bowmanId)).toEqual({
+      pending: 5,
+      partial: true,
+      moreNextSync: 0,
+    });
+
+    const again = await saveNamed(t, bowmanId, decisions);
+
+    expect(again.incomplete).toBe(false);
+    expect(again.underType.parallel).toBe(4);
+    expect(again.refused.map((r) => r.slId)).toEqual(["sl-44"]);
+    const [doc] = await reviews(t);
+    expect(doc.entries.map((e) => [e.slId, e.lastRefusal?.reason])).toEqual([
+      ["sl-44", "nameTaken"],
+    ]);
+    expect(doc.saveStartedAt).toBeUndefined();
+    expect(await summaryOf(t, bowmanId)).toEqual({
+      pending: 1,
+      partial: false,
+      moreNextSync: 0,
+    });
+  });
+
+  test("markSaveFinished clears only its own stamp: a save started since keeps its mark", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId, toppsId } = await seedYear(t);
+    const docId = await seedReviewDoc(t, yearId, bowmanId, [{ slId: "sl-a", label: "A" }], {
+      saveStartedAt: 7,
+    });
+
+    expect(
+      await t.mutation(internal.slSetReview.markSaveFinished, {
+        yearId,
+        manufacturerId: bowmanId,
+        startedAt: 6,
+      }),
+    ).toBe(false);
+    expect((await t.run(async (ctx) => ctx.db.get(docId)))?.saveStartedAt).toBe(7);
+
+    expect(
+      await t.mutation(internal.slSetReview.markSaveFinished, {
+        yearId,
+        manufacturerId: bowmanId,
+        startedAt: 7,
+      }),
+    ).toBe(true);
+    expect((await t.run(async (ctx) => ctx.db.get(docId)))?.saveStartedAt).toBeUndefined();
+
+    // No doc (the save emptied it): nothing to clear.
+    expect(
+      await t.mutation(internal.slSetReview.markSaveFinished, {
+        yearId,
+        manufacturerId: toppsId,
+        startedAt: 7,
+      }),
+    ).toBe(false);
+  });
+
+  test("a sync keeps a refusal on a line it left as it was and drops it from a line whose label changed", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const ids = await seedBowmanSets(t, bowmanId);
+    const refusal = {
+      name: "Gold",
+      reason: "nameTaken" as const,
+      target: "variantType" as const,
+      variantTypeId: ids.parallelTypeId,
+      clashWith: { _id: ids.flagshipId, value: "Gold" },
+    };
+    const docId = await seedReviewDoc(
+      t,
+      yearId,
+      bowmanId,
+      [
+        { slId: "sl-a", label: "A", lastRefusal: refusal },
+        { slId: "sl-b", label: "B", lastRefusal: { ...refusal, name: "B" } },
+      ],
+      { saveStartedAt: 5 },
+    );
+
+    // An unchanged list (refusals aside) writes nothing: the refusals stay.
+    const unchanged = await t.mutation(internal.slSetReview.replaceScope, {
+      yearId,
+      manufacturerId: bowmanId,
+      entries: [
+        { slId: "sl-a", label: "A" },
+        { slId: "sl-b", label: "B" },
+      ],
+      rootsTruncated: 0,
+    });
+    expect(unchanged.written).toBe(false);
+
+    await t.mutation(internal.slSetReview.replaceScope, {
+      yearId,
+      manufacturerId: bowmanId,
+      entries: [
+        { slId: "sl-a", label: "A" },
+        { slId: "sl-b", label: "B Renamed" },
+        { slId: "sl-c", label: "C" },
+      ],
+      rootsTruncated: 0,
+    });
+
+    const doc = await t.run(async (ctx) => ctx.db.get(docId));
+    expect(doc?.entries).toEqual([
+      { slId: "sl-a", label: "A", lastRefusal: refusal },
+      { slId: "sl-b", label: "B Renamed" },
+      { slId: "sl-c", label: "C" },
+    ]);
+    expect(doc?.saveStartedAt).toBeUndefined();
+  });
+
+  test("an operator name under a variant type names the new ROW, replacing the default row name", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const ids = await seedBowmanSets(t, bowmanId);
+    await seedReviewDoc(t, yearId, bowmanId, [{ slId: "sl-gold", label: "Gold" }]);
+
+    const result = await saveNamed(t, bowmanId, [
+      { slId: "sl-gold", variantTypeId: ids.parallelTypeId, name: "Gold Wave" },
+    ]);
+
+    expect(result.underType.parallel).toBe(1);
+    const rows = await childrenAt(t, ids.parallelTypeId, "insert");
+    expect(rows.map((r) => r.value)).toEqual(["Gold Wave"]);
+  });
+
+  test("a blank operator name is no name: the default is used", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const ids = await seedBowmanSets(t, bowmanId);
+    await seedReviewDoc(t, yearId, bowmanId, [{ slId: "sl-gold", label: "Gold" }]);
+
+    await saveNamed(t, bowmanId, [
+      { slId: "sl-gold", variantTypeId: ids.parallelTypeId, name: "   " },
+    ]);
+
+    expect((await childrenAt(t, ids.parallelTypeId, "insert")).map((r) => r.value)).toEqual([
+      "Gold",
+    ]);
+  });
+
+  test("an own-set operator name is the set's whole name: no brand prefix is added", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    await seedReviewDoc(t, yearId, bowmanId, [{ slId: "sl-aa", label: "All-America" }]);
+
+    await saveNamed(t, bowmanId, [{ slId: "sl-aa", name: "All-America Retail" }]);
+
+    expect((await childrenAt(t, bowmanId, "setName")).map((r) => r.value)).toEqual([
+      "All-America Retail",
+    ]);
+  });
+
+  test("an own-set name held by a set under ANOTHER brand is refused existsElsewhere, naming the brand, and the line stays", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId, toppsId } = await seedYear(t);
+    const elsewhereId = await insertRow(t, {
+      level: "setName",
+      value: "Bowman All-America",
+      parentId: toppsId,
+    });
+    await seedReviewDoc(t, yearId, bowmanId, [{ slId: "sl-aa", label: "All-America" }]);
+
+    const result = await saveNamed(t, bowmanId, [{ slId: "sl-aa" }]);
+
+    expect(result.skippedByReason.existsElsewhere).toBe(1);
+    expect(result.refused).toHaveLength(1);
+    expect(result.refused[0]).toMatchObject({
+      slId: "sl-aa",
+      name: "Bowman All-America",
+      reason: "existsElsewhere",
+      target: "set",
+      clashWith: { _id: elsewhereId, value: "Bowman All-America", brand: "Topps" },
+    });
+    expect(result.remaining).toBe(1);
+    expect((await reviews(t))[0].entries.map((e) => e.slId)).toEqual(["sl-aa"]);
+    expect(await childrenAt(t, bowmanId, "setName")).toEqual([]);
+  });
+
+  test("a name no row can carry is refused invalid with our own detail, and the line stays", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    const ids = await seedBowmanSets(t, bowmanId);
+    await seedReviewDoc(t, yearId, bowmanId, [
+      { slId: "sl-a", label: "A" },
+      { slId: "sl-b", label: "B" },
+    ]);
+
+    const result = await saveNamed(t, bowmanId, [
+      { slId: "sl-a", variantTypeId: ids.parallelTypeId, name: "x".repeat(300) },
+      { slId: "sl-b", name: "y".repeat(300) },
+    ]);
+
+    expect(result.skippedByReason.invalid).toBe(2);
+    expect(
+      result.refused.map((r) => [r.slId, r.reason, r.target]).sort(),
+    ).toEqual([
+      ["sl-a", "invalid", "variantType"],
+      ["sl-b", "invalid", "set"],
+    ]);
+    for (const r of result.refused) {
+      expect(typeof r.detail).toBe("string");
+      expect(r.detail).not.toContain("xxxxx");
+    }
+    expect(result.remaining).toBe(2);
+  });
+
+  test("a decision name past MAX_DECISION_NAME_LENGTH is refused before anything is written", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    await seedReviewDoc(t, yearId, bowmanId, [{ slId: "sl-a", label: "A" }]);
+
+    await expect(
+      saveNamed(t, bowmanId, [{ slId: "sl-a", name: "z".repeat(MAX_DECISION_NAME_LENGTH + 1) }]),
+    ).rejects.toThrow(/too long/i);
+    expect((await reviews(t))[0].entries).toEqual([{ slId: "sl-a", label: "A" }]);
+    expect(await childrenAt(t, bowmanId, "setName")).toEqual([]);
+  });
+
+  test("getSlSetReview returns the default name, the twin flag, and the stored refusal", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    await seedReviewDoc(t, yearId, bowmanId, [
+      { slId: "sl-a", label: "Anime", twin: true },
+      { slId: "sl-b", label: "Anime", twin: true },
+      { slId: "sl-c", label: "Chrome" },
+    ]);
+    // A refusal on sl-b, stored by a real save.
+    await insertRow(t, { level: "setName", value: "Bowman Anime", parentId: bowmanId });
+    await saveNamed(t, bowmanId, [{ slId: "sl-b" }]);
+
+    const review = await t
+      .withIdentity(ADMIN)
+      .query(api.slSetReview.getSlSetReview, { manufacturerId: bowmanId });
+
+    const byId = new Map(review!.entries.map((e) => [e.slId, e] as const));
+    expect(byId.get("sl-a")).toMatchObject({ defaultName: "Bowman Anime", twin: true });
+    expect(byId.get("sl-a")?.lastRefusal).toBeUndefined();
+    expect(byId.get("sl-b")?.lastRefusal).toMatchObject({
+      name: "Bowman Anime",
+      reason: "nameTaken",
+      target: "set",
+    });
+    expect(byId.get("sl-c")?.twin).toBeUndefined();
+    expect(byId.get("sl-c")?.defaultName).toBe("Bowman Chrome");
+  });
+
+  test("the sync stores twin: true on a twinned SportLots label and nothing on a unique one", async () => {
+    const t = convexTest(schema, modules);
+    const { yearId, bowmanId } = await seedYear(t);
+    mockState.sl = {
+      success: true,
+      options: [
+        { value: "Bowman Anime", platformValue: "sl-1" },
+        { value: "Bowman Anime", platformValue: "sl-2" },
+        { value: "Bowman Chrome", platformValue: "sl-3" },
+      ],
+    };
+
+    await sync(t, yearId, bowmanId);
+
+    const [doc] = await reviews(t);
+    const byId = new Map(doc.entries.map((e) => [e.slId, e] as const));
+    expect(byId.get("sl-1")?.twin).toBe(true);
+    expect(byId.get("sl-2")?.twin).toBe(true);
+    expect(byId.get("sl-3")?.twin).toBeUndefined();
+  });
 });

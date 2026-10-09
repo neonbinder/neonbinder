@@ -15,7 +15,12 @@ import { v } from "convex/values";
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { MAX_SLOT_LABEL_LENGTH, type PlatformSide } from "./platformSlots";
-import type { IncomingItem } from "./selectorSyncMatch";
+import {
+  MAX_SL_ID_LENGTH,
+  checkSelectorValue,
+  type IncomingItem,
+  type SiblingWithholdReason,
+} from "./selectorSyncMatch";
 
 /**
  * Hard ceiling on the ARGUMENT a single sync batch may carry.
@@ -174,6 +179,99 @@ export function unaskedSidesNotice(
  * the true count so the notice can say "50 of 312" honestly.
  */
 export const UNLINK_NOTICE_LIMIT = 50;
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-325 — names a sync LEFT FOR THE OPERATOR because they are twinned
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Names kept in one column's twin notice; `twinsLeftTotal` is the true count. */
+export const TWIN_NOTICE_LIMIT = 50;
+/** Ids kept per side for one name in that notice. */
+export const TWIN_NOTICE_IDS_PER_SIDE = 10;
+
+/**
+ * One name a sync left for the operator: two or more marketplace ids share it
+ * on one side, so no row was created or paired for it (rule A, Jason
+ * 2026-10-08). `name` is the marketplace's label as listed (display only).
+ * `bsc` / `sportlots` are the ids under that name NO NB row holds yet — a name
+ * whose every id is already held is not listed — each at most
+ * `TWIN_NOTICE_IDS_PER_SIDE`. A side can be empty: SportLots twins beside one
+ * BSC id that IS held list only the SportLots ids.
+ */
+export const twinLeftEntryValidator = v.object({
+  name: v.string(),
+  bsc: v.array(v.string()),
+  sportlots: v.array(v.string()),
+});
+
+export type TwinLeftEntry = { name: string; bsc: string[]; sportlots: string[] };
+
+/**
+ * NEO-325 (security re-audit) — the longest marketplace id the twin notice
+ * keeps, per side. The notice is written to `selectorSyncStatus`, reactive
+ * state every open column re-ships, and its ids come straight from a
+ * marketplace response. SportLots ids are short slugs (`MAX_SL_ID_LENGTH`,
+ * the bound `routeSlSets` already drops on); BSC ids are facet slugs derived
+ * from a set name, so they get the name's own ceiling. Anything longer is not
+ * an id NB could store or list against.
+ */
+export const MAX_TWIN_NOTICE_ID_LENGTH: Record<PlatformSide, number> = {
+  bsc: MAX_SLOT_LABEL_LENGTH,
+  sportlots: MAX_SL_ID_LENGTH,
+};
+
+/** May this marketplace id go into a twin notice (or the holder read for one)? */
+export function twinNoticeIdOk(side: PlatformSide, id: string): boolean {
+  return id.length > 0 && id.length <= MAX_TWIN_NOTICE_ID_LENGTH[side];
+}
+
+/**
+ * The twin notice for one column, from every twinned name's ids and the ids
+ * NB rows already hold. `held: null` means the holder read could not finish
+ * (its bound): every id is then reported, because telling the operator about
+ * a name they already linked is recoverable and hiding one is not.
+ *
+ * NEO-325 (security re-audit) — every name and id here is a marketplace
+ * string bound for reactive state, so it is validated before it is kept: a
+ * name that fails `checkSelectorValue` (empty, over the length ceiling, line
+ * breaks, control or zero-width characters) is left out of the notice, and
+ * the stored name is the checked (trimmed) one; an id that fails
+ * `twinNoticeIdOk` is dropped. A name left with no valid unheld id is not
+ * listed.
+ *
+ * Sorted by folded name, then capped; `total` counts every name kept before
+ * the cap. Pure.
+ */
+export function buildTwinsLeft(
+  groups: ReadonlyArray<{ name: string; key: string; bsc: string[]; sportlots: string[] }>,
+  held: { bsc: ReadonlySet<string>; sportlots: ReadonlySet<string> } | null,
+): { twinsLeft: TwinLeftEntry[]; twinsLeftTotal: number } {
+  const kept: Array<TwinLeftEntry & { key: string }> = [];
+  for (const group of groups) {
+    const name = checkSelectorValue(group.name);
+    if (!name.ok) continue;
+    const bsc = [...new Set(group.bsc)].filter(
+      (id) => twinNoticeIdOk("bsc", id) && !held?.bsc.has(id),
+    );
+    const sportlots = [...new Set(group.sportlots)].filter(
+      (id) => twinNoticeIdOk("sportlots", id) && !held?.sportlots.has(id),
+    );
+    if (bsc.length === 0 && sportlots.length === 0) continue;
+    kept.push({
+      key: group.key,
+      name: name.value,
+      bsc: bsc.slice(0, TWIN_NOTICE_IDS_PER_SIDE),
+      sportlots: sportlots.slice(0, TWIN_NOTICE_IDS_PER_SIDE),
+    });
+  }
+  kept.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  return {
+    twinsLeft: kept
+      .slice(0, TWIN_NOTICE_LIMIT)
+      .map(({ name, bsc, sportlots }) => ({ name, bsc, sportlots })),
+    twinsLeftTotal: kept.length,
+  };
+}
 
 /** Levels whose rows can own a stored checklist. */
 const CHECKLIST_BEARING_LEVELS = new Set(["variantType", "insert", "parallel"]);
@@ -410,7 +508,12 @@ export type HeldElsewhereEntry = {
  *                           by another row. That id was NOT attached to the
  *                           matched row; the row's existing links and the
  *                           rest of the refresh stand. `holders` names the
- *                           row that holds it.
+ *                           row that holds it. NEO-325: also an item the
+ *                           reconcile store INSERTED as a new row, for a
+ *                           non-primary id a sibling or a row elsewhere
+ *                           already holds (or, as `notChecked`, one on a
+ *                           side the walk could not finish): the row was
+ *                           created with its other ids, without that one.
  *
  * `label` is the item's own `value` as the caller sent it (the line the
  * operator saw in the modal), trimmed to the selector value limit; `holders`
@@ -437,6 +540,79 @@ export type WithheldElsewhereEntry = {
   label: string;
   reason: WithheldElsewhereReason;
   holders: HeldElsewhereEntry[];
+};
+
+/**
+ * NEO-325 — an item the reconcile store WITHHELD at sibling level (against
+ * the rows under this very parent), reported to the operator rather than only
+ * logged. Nothing was written for it, so the link it carries is not stored:
+ * without this, a twin saved after its namesake vanished silently.
+ *
+ *   itemIndex — index into the `reconciledItems` the caller sent. The label
+ *               alone cannot say which line it was: twins share it.
+ *   label     — that item's `value` as sent.
+ *   reason    — `SiblingWithholdReason` (selectorSyncMatch.ts).
+ *   rows      — the sibling rows the decision is about, NB id and NB name,
+ *               at most `WITHHELD_HOLDERS_LIMIT`. Empty for
+ *               `nameSharedInBatch` (twins with no namesake row yet): the
+ *               other twins are the items with the same `label`.
+ *
+ * Only items that carry at least one marketplace id are reported: an id-less
+ * line has no link to lose.
+ */
+export const withheldSiblingEntryValidator = v.object({
+  itemIndex: v.number(),
+  label: v.string(),
+  reason: v.union(
+    v.literal("existingIdClaimed"),
+    v.literal("idOnManySiblings"),
+    v.literal("idClaimedTwice"),
+    v.literal("idsPointAtDifferentRows"),
+    v.literal("nameSharedBySiblings"),
+    v.literal("noIdToAttach"),
+    v.literal("nameLinkedToOtherSet"),
+    v.literal("nameClaimedTwice"),
+    v.literal("nameSharedInBatch"),
+    v.literal("rowClaimedInBatch"),
+  ),
+  rows: v.array(
+    v.object({ id: v.id("selectorOptions"), value: v.string() }),
+  ),
+});
+
+export type WithheldSiblingEntry = {
+  itemIndex: number;
+  label: string;
+  reason: SiblingWithholdReason;
+  rows: Array<{ id: Id<"selectorOptions">; value: string }>;
+};
+
+/**
+ * NEO-325 — a title edit (tier-0 rename) the reconcile store REFUSED. The
+ * row's links were still applied; only the name stayed as it was.
+ *
+ *   reason "clash"   — another row under this parent already has the name;
+ *                      `clashWith` names it.
+ *   reason "invalid" — the name failed validation or names a reserved row.
+ */
+export const renameRefusedEntryValidator = v.object({
+  itemIndex: v.number(),
+  rowId: v.id("selectorOptions"),
+  value: v.string(),
+  requested: v.string(),
+  reason: v.union(v.literal("clash"), v.literal("invalid")),
+  clashWith: v.optional(
+    v.object({ id: v.id("selectorOptions"), value: v.string() }),
+  ),
+});
+
+export type RenameRefusedEntry = {
+  itemIndex: number;
+  rowId: Id<"selectorOptions">;
+  value: string;
+  requested: string;
+  reason: "clash" | "invalid";
+  clashWith?: { id: Id<"selectorOptions">; value: string };
 };
 
 /** At most this many holders are named per withheld entry. */

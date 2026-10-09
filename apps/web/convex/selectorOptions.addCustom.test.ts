@@ -255,3 +255,113 @@ describe("addCustomSelectorOption", () => {
     ).rejects.toThrow();
   });
 });
+
+describe("addCustomSelectorOption — two siblings already share the name (NEO-325)", () => {
+  async function seedYear(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    value: string,
+    ids: { sportlots?: string } = {},
+  ) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "year",
+        value,
+        parentId: sportId,
+        platformData: ids.sportlots ? { sportlots: { s0: ids.sportlots } } : {},
+        ...(ids.sportlots ? { platformSlotSeq: { sportlots: 1 } } : {}),
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+  async function seedSport(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+  const countYears = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) =>
+      (await ctx.db.query("selectorOptions").collect()).filter((r) => r.level === "year").length,
+    );
+
+  test("two same-named siblings: CUSTOM_NAME_SHARED naming both with their paths, and nothing is inserted", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const a = await seedYear(t, sportId, "2024", { sportlots: "sl-a" });
+    const b = await seedYear(t, sportId, "2024", { sportlots: "sl-b" });
+
+    const err = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "year",
+        parentId: sportId,
+        value: " 2024 ",
+      })
+      .then(
+        () => null,
+        (e: { data?: unknown }) => e,
+      );
+
+    expect(err).not.toBeNull();
+    const data = (err as { data: { code: string; total: number; matches: Array<Record<string, unknown>> } }).data;
+    expect(data.code).toBe("CUSTOM_NAME_SHARED");
+    expect(data.total).toBe(2);
+    expect(data.matches.map((m) => String(m._id)).sort()).toEqual([String(a), String(b)].sort());
+    for (const m of data.matches) {
+      expect(m.value).toBe("2024");
+      expect(String(m.parentId)).toBe(String(sportId));
+      expect(m.path).toEqual([
+        { _id: sportId, level: "sport", value: "Baseball" },
+        { _id: m._id, level: "year", value: "2024" },
+      ]);
+    }
+    expect(await countYears(t)).toBe(2);
+  });
+
+  test("the matches are capped while total keeps the true count", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    for (let i = 0; i < 22; i++) await seedYear(t, sportId, "2024", { sportlots: `sl-${i}` });
+
+    const err = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "year",
+        parentId: sportId,
+        value: "2024",
+      })
+      .then(
+        () => null,
+        (e: { data?: unknown }) => e,
+      );
+
+    const data = (err as { data: { total: number; matches: unknown[] } }).data;
+    expect(data.total).toBe(22);
+    expect(data.matches).toHaveLength(20);
+  });
+
+  test("exactly one same-named sibling is still returned as is, with no insert", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const only = await seedYear(t, sportId, "2024", { sportlots: "sl-a" });
+    await seedYear(t, sportId, "2023");
+
+    const id = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.selectorOptions.addCustomSelectorOption, {
+        level: "year",
+        parentId: sportId,
+        value: "2024",
+      });
+
+    expect(id).toBe(only);
+    expect(await countYears(t)).toBe(2);
+  });
+});

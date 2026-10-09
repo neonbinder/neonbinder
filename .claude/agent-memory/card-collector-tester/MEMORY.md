@@ -9,3 +9,4 @@
 - [Known-brand curation tests](known-brand-curation-tests.md) — issuer? two-rows-one-issuer? did the line outlive its parent?; plus the "Other …"/"NBA …"/"Team Issue …" leading-qualifier artifacts
 - [Multi-landing dialog copy follows the landing](multi_landing_dialog_copy_follows_the_landing.md) — title/confirm/aria per landing, conditional "link moves", count labels, n=0 grammar
 - [Rebuild/copy features checklist](rebuild-and-copy-features-checklist.md) — SKU churn, hand-edit loss, parallel vs card facts, printing plates, unlinked parallels, counts without names
+- [Twin-names copy review](twin-names-copy-review.md) — fix verbs = control labels; a bare #id is not a tell; series as hint, never prefill

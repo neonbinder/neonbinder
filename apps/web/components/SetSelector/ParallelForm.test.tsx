@@ -31,6 +31,21 @@ vi.mock("../../convex/_generated/api", () => ({
   },
 }));
 
+/**
+ * NEO-325: status regions are always mounted (empty until the store answers),
+ * so `findByRole("status")` is ambiguous. Wait for the first one with words.
+ */
+async function findLiveStatus(): Promise<HTMLElement> {
+  let found: HTMLElement | undefined;
+  await waitFor(() => {
+    found = screen.getAllByRole("status").find((el) => el.textContent) as
+      | HTMLElement
+      | undefined;
+    expect(found).toBeTruthy();
+  });
+  return found as HTMLElement;
+}
+
 const mockFetchRawOptions = vi.fn();
 const mockStore = vi.fn();
 // NEO-300: what getInsertTreeByVariantType answers. Loaded-but-empty by
@@ -41,6 +56,10 @@ let insertTree: unknown[] = [];
 let usedIds:
   | { values?: string[]; slPlatformValues: string[]; bscPlatformValues: string[] }
   | undefined = { slPlatformValues: [], bscPlatformValues: [] };
+// NEO-325: the parallels already saved under this insert (the reconciler's
+// `existingRows`), and the ancestor chain the form reads its path from.
+let savedRows: unknown[] = [];
+let chainOverride: Array<{ _id: string; level: string; value: string }> | undefined;
 
 vi.mock("convex/react", () => ({
   useAction: (ref: string) =>
@@ -48,8 +67,8 @@ vi.mock("convex/react", () => ({
   useMutation: (ref: string) =>
     ref === "storeReconciledOptions" ? mockStore : vi.fn(),
   useQuery: (ref: string) => {
-    if (ref === "getAncestorChain") return CHAIN;
-    if (ref === "getSelectorOptions") return [];
+    if (ref === "getAncestorChain") return chainOverride ?? CHAIN;
+    if (ref === "getSelectorOptions") return savedRows;
     if (ref === "getInsertTreeByVariantType") return insertTree;
     if (ref === "getUsedInsertIdentifiersBySet") return usedIds;
     return undefined;
@@ -58,6 +77,9 @@ vi.mock("convex/react", () => ({
 
 import ParallelForm from "./ParallelForm";
 import { RECONCILED_STORE_MAX_PAGES } from "./store-reconciled-until-done";
+import { twinReconcileNotice } from "./selector-sync-feedback";
+import { HOLDER_PATH_SEPARATOR } from "./held-elsewhere";
+import { titleClashMessage } from "./ready-title-clashes";
 
 const CHAIN = [
   { _id: "sport1", level: "sport", value: "Hockey" },
@@ -96,6 +118,8 @@ beforeEach(() => {
   mockStore.mockResolvedValue({ success: true, unlinked: [] });
   insertTree = [];
   usedIds = { slPlatformValues: [], bscPlatformValues: [] };
+  savedRows = [];
+  chainOverride = undefined;
 });
 
 describe("ParallelForm — single-platform store (NEO-211 plan B)", () => {
@@ -423,7 +447,7 @@ describe("ParallelForm — the store is replayed until it is finished (NEO-296)"
     // Byte-identical payloads: that is what makes the prefix free and the
     // second call reach the tail.
     expect(mockStore.mock.calls[1][0]).toEqual(mockStore.mock.calls[0][0]);
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     // The SERVER's count of rows now linked, not the 2 items we sent — those
     // happen to agree here, and the next test is the one where they do not.
     expect(status.textContent).toBe("Stored 2 parallels (single platform)");
@@ -454,7 +478,7 @@ describe("ParallelForm — the store is replayed until it is finished (NEO-296)"
     await waitFor(() =>
       expect(mockStore).toHaveBeenCalledTimes(RECONCILED_STORE_MAX_PAGES),
     );
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain("1 of 2 not reached this time");
     expect(status.textContent).not.toContain("Stored 2 parallels");
     expect(onDone).not.toHaveBeenCalled();
@@ -556,7 +580,7 @@ describe("ParallelForm — sets held elsewhere in the variant type (NEO-300)", (
       args.reconciledItems.map((i: { platformData: { bsc?: string } }) => i.platformData.bsc),
     ).toEqual(["bsc-own"]);
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain(
       "2 already live elsewhere in Inserts. Leaving those be.",
     );
@@ -620,7 +644,7 @@ describe("ParallelForm — sets held elsewhere in the variant type (NEO-300)", (
     });
     const { onDone } = await renderForm();
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain(
       "1 already lives elsewhere in Inserts. Leaving it be.",
     );
@@ -803,7 +827,7 @@ describe("ParallelForm — store-named holders carry their path (NEO-312)", () =
     });
     await renderForm();
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain(
       "1 already linked to a row elsewhere. Leaving it be.",
     );
@@ -825,7 +849,7 @@ describe("ParallelForm — store-named holders carry their path (NEO-312)", () =
     });
     await renderForm();
 
-    const status = await screen.findByRole("status");
+    const status = await findLiveStatus();
     expect(status.textContent).toContain(
       "1 already lives elsewhere in Inserts. Leaving it be.",
     );
@@ -833,5 +857,113 @@ describe("ParallelForm — store-named holders carry their path (NEO-312)", () =
     expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([
       "Topps › Insert › Chrome Stars",
     ]);
+  });
+});
+
+describe("ParallelForm — name twins open Reconcile and are never stored (NEO-325, rule A)", () => {
+  const TWIN = { value: "Gold", platformValue: "gold" };
+  const oneSided = (twinIds: { bsc: string[]; sportlots: string[] }) => ({
+    success: true,
+    bscOptions: [TWIN],
+    slOptions: [],
+    autoMatched: [],
+    unmatchedBsc: [TWIN],
+    unmatchedSl: [],
+    slCandidates: [],
+    errors: [],
+    message: "BSC: 1, SL: 0",
+    skippedSides: [],
+    pausedSides: [],
+    twinIds,
+  });
+
+  it("stores nothing and opens the reconcile dialog, with the twin's id shown and a notice saying why", async () => {
+    mockFetchRawOptions.mockResolvedValue(oneSided({ bsc: ["gold"], sportlots: [] }));
+    await renderForm();
+
+    expect(
+      await screen.findByLabelText("Make its own set: Gold (#gold)"),
+    ).toBeTruthy();
+    expect(mockStore).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(twinReconcileNotice({ bsc: ["gold"], sportlots: [] })),
+    ).toBeTruthy();
+  });
+
+  it("twins elsewhere in the list (none among the items to store) do not stop the store", async () => {
+    mockFetchRawOptions.mockResolvedValue(oneSided({ bsc: ["some-other-id"], sportlots: [] }));
+    await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+    expect(screen.queryByLabelText(/Make its own set/)).toBeNull();
+  });
+
+  it("a result without twinIds (an older shape) stores as before", async () => {
+    const result = oneSided({ bsc: [], sportlots: [] });
+    delete (result as { twinIds?: unknown }).twinIds;
+    mockFetchRawOptions.mockResolvedValue(result);
+    await renderForm();
+
+    await waitFor(() => expect(mockStore).toHaveBeenCalledTimes(1));
+  });
+});
+
+describe("ParallelForm — where a clashing title would sit (NEO-325)", () => {
+  const GOLD = { value: "Gold", platformValue: "gold" };
+  const oneSided = {
+    success: true,
+    bscOptions: [GOLD],
+    slOptions: [],
+    autoMatched: [],
+    unmatchedBsc: [GOLD],
+    unmatchedSl: [],
+    slCandidates: [],
+    errors: [],
+    message: "BSC: 1, SL: 0",
+    skippedSides: [],
+    pausedSides: [],
+    twinIds: { bsc: ["gold"], sportlots: [] },
+  };
+  const clash = { key: "gold", title: "Gold", readyKeys: ["a"], existingCount: 1 };
+
+  it("names the set, variant type and insert the parallels are saved under", async () => {
+    chainOverride = [...CHAIN, { _id: "ins1", level: "insert", value: "Anime" }];
+    savedRows = [{ _id: "saved1", value: "Gold", platformData: {}, children: [] }];
+    mockFetchRawOptions.mockResolvedValue(oneSided);
+    await renderForm();
+
+    fireEvent.click(await screen.findByLabelText("Make its own set: Gold (#gold)"));
+
+    const scope = ["Topps", "Insert", "Anime"].join(HOLDER_PATH_SEPARATOR);
+    expect(await screen.findAllByText(titleClashMessage(clash, scope))).not.toHaveLength(0);
+  });
+
+  it("with no insert in the chain it says 'here' rather than a half path", async () => {
+    savedRows = [{ _id: "saved1", value: "Gold", platformData: {}, children: [] }];
+    mockFetchRawOptions.mockResolvedValue(oneSided);
+    await renderForm();
+
+    fireEvent.click(await screen.findByLabelText("Make its own set: Gold (#gold)"));
+
+    expect(await screen.findAllByText(titleClashMessage(clash))).not.toHaveLength(0);
+  });
+});
+
+describe("ParallelForm — the status regions exist before the store answers (NEO-325 a11y)", () => {
+  it("mounts its notice regions empty for the whole sync, and fills the same elements", async () => {
+    let release!: (v: unknown) => void;
+    mockFetchRawOptions.mockReturnValue(new Promise((r) => (release = r)));
+    await renderForm();
+
+    const before = screen.getAllByRole("status");
+    expect(before.length).toBeGreaterThanOrEqual(4);
+    for (const region of before) expect(region.textContent).toBe("");
+
+    await act(async () => {
+      release(bscOnly());
+    });
+    await findLiveStatus();
+
+    for (const region of before) expect(region.isConnected).toBe(true);
   });
 });

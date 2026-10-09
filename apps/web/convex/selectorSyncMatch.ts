@@ -435,6 +435,22 @@ export type IncomingItem = {
   ids: Partial<Record<PlatformSide, string>>;
   /** Tier 0, reconciled items only. Verified against the sibling snapshot. */
   existingId?: string;
+  /**
+   * NEO-325 — match this item by IDENTITY only (tier 0, tier 1, then the
+   * elsewhere holders) and otherwise INSERT it as its own row; never by name.
+   * Set ONLY by an operator decision: the reconcile modal sends it for a
+   * line the operator promoted to its own set, typically one of two or more
+   * marketplace sets sharing a name ("frequently the same insert set lives
+   * in both Bowman and Bowman Chrome", Jason), so a twin saved after its
+   * namesake is not withheld against it. No sync sets it: a name twin is
+   * the operator's to reconcile ("the user should be reconciling as we
+   * cannot automate that"), so the column sync leaves twinned names out
+   * altogether (`fetchAggregatedOptions`).
+   * The result can be a same-named sibling; that is the price of two real
+   * products sharing a name, and a rename tells them apart. Absent → today's
+   * rule exactly.
+   */
+  identityOnly?: boolean;
 };
 
 export type MatchOutcome<TId extends string = string> =
@@ -502,9 +518,51 @@ export type MatchAmbiguity = {
   reason: string;
 };
 
+/**
+ * NEO-325 — WHY a sibling-level withhold happened, in a form a store can
+ * hand the operator (the reason strings are for the log). `rowIds` are the
+ * sibling rows the decision is about. Kept off `MatchOutcome` so every
+ * existing outcome shape is unchanged.
+ *
+ *   existingIdClaimed       two lines name the same row (`existingId`)
+ *   idOnManySiblings        the item's id is held by several siblings (M:1)
+ *   idClaimedTwice          two items resolve to one row by marketplace id
+ *   idsPointAtDifferentRows the BSC id names one row, the SportLots id another
+ *   nameSharedBySiblings    several siblings share the item's name
+ *   noIdToAttach            nothing to attach; a same-named row exists
+ *   nameLinkedToOtherSet    the one same-named row holds a different id
+ *                           upstream still lists (the twin-saved-later case)
+ *   nameClaimedTwice        two or more items fold to the one same-named row
+ *   nameSharedInBatch       two or more items share a name no row has yet
+ *                           (marketplace name twins); `rowIds` is empty
+ *   rowClaimedInBatch       the same-named row was already claimed by an id
+ */
+export type SiblingWithholdReason =
+  | "existingIdClaimed"
+  | "idOnManySiblings"
+  | "idClaimedTwice"
+  | "idsPointAtDifferentRows"
+  | "nameSharedBySiblings"
+  | "noIdToAttach"
+  | "nameLinkedToOtherSet"
+  | "nameClaimedTwice"
+  | "nameSharedInBatch"
+  | "rowClaimedInBatch";
+
+export type SiblingWithhold<TId extends string = string> = {
+  reason: SiblingWithholdReason;
+  rowIds: TId[];
+};
+
 export type SelectorSyncPlan<TId extends string = string> = {
   /** Parallel to the `items` array passed in. */
   outcomes: Array<MatchOutcome<TId>>;
+  /**
+   * NEO-325 — parallel to `outcomes`: set exactly where the outcome is a
+   * SIBLING-level withhold (never on an `elsewhere` one, which carries its
+   * own detail), undefined everywhere else.
+   */
+  siblingWithholds: Array<SiblingWithhold<TId> | undefined>;
   /** Sides this run is allowed to unlink on. Never inferred — see below. */
   coveredSides: PlatformSide[];
   /** Every marketplace id this run returned, per side. */
@@ -875,6 +933,13 @@ export function planSelectorSync<TId extends string>(args: {
   );
   /** A tier-1 problem that must still withhold the item if tier 2 finds nothing. */
   const carriedReason: Array<string | undefined> = items.map(() => undefined);
+  /** NEO-325 — the structured twin of `carriedReason`, and of every withhold. */
+  const carriedSibling: Array<SiblingWithhold<TId> | undefined> = items.map(
+    () => undefined,
+  );
+  const siblingWithholds: Array<SiblingWithhold<TId> | undefined> = items.map(
+    () => undefined,
+  );
 
   // ── Pass 1 — identity: tier 0, then tier 1 ─────────────────────────────
   //
@@ -897,6 +962,7 @@ export function planSelectorSync<TId extends string>(args: {
           const reason = "existingId already claimed in this batch";
           ambiguities.push({ item: item.value, reason });
           outcomes[i] = { kind: "withheld", reason };
+          siblingWithholds[i] = { reason: "existingIdClaimed", rowIds: [row._id] };
         } else {
           claimed.add(row._id);
           outcomes[i] = { kind: "matched", existingId: row._id, tier: 0 };
@@ -926,6 +992,10 @@ export function planSelectorSync<TId extends string>(args: {
         const reason = `${side} id is held by ${holders.length} sibling rows`;
         ambiguities.push({ item: item.value, reason });
         carriedReason[i] = reason;
+        carriedSibling[i] = {
+          reason: "idOnManySiblings",
+          rowIds: holders.map((h) => h._id),
+        };
         continue;
       }
       tier1.add(holders[0]);
@@ -937,6 +1007,7 @@ export function planSelectorSync<TId extends string>(args: {
         const reason = "two incoming items resolve to one row by marketplace id";
         ambiguities.push({ item: item.value, reason });
         outcomes[i] = { kind: "withheld", reason };
+        siblingWithholds[i] = { reason: "idClaimedTwice", rowIds: [row._id] };
       } else {
         claimed.add(row._id);
         outcomes[i] = { kind: "matched", existingId: row._id, tier: 1 };
@@ -950,6 +1021,10 @@ export function planSelectorSync<TId extends string>(args: {
       const reason = "bsc and sportlots ids resolve to different rows";
       ambiguities.push({ item: item.value, reason });
       carriedReason[i] = reason;
+      carriedSibling[i] = {
+        reason: "idsPointAtDifferentRows",
+        rowIds: [...tier1].map((r) => r._id),
+      };
     }
 
     // NEO-300 — no sibling holds anything this item names. Before it can
@@ -988,19 +1063,71 @@ export function planSelectorSync<TId extends string>(args: {
   }
 
   // ── Pass 2 — name, over whatever pass 1 left unclaimed ─────────────────
+  //
+  // NEO-325 — exactly-one guard on the INCOMING side too. The existing side
+  // has always refused two siblings sharing a name; two incoming items folding
+  // to one existing row used to let the first in list order claim it, and two
+  // folding to a name no row has yet were each inserted as a same-named row.
+  // List order is the marketplace's, so both were a coin flip with a write
+  // behind it. Counted over the items that reach this pass carrying an id (an
+  // id-less item is withheld below whatever the count says when a namesake
+  // exists), excluding operator-promoted `identityOnly` lines.
+  const incomingByKey = new Map<string, number>();
+  for (let i = 0; i < items.length; i++) {
+    if (outcomes[i]) continue;
+    if (items[i].identityOnly) continue;
+    if (!PLATFORM_SIDES.some((s) => items[i].ids[s])) continue;
+    const key = selectorValueKey(items[i].value);
+    incomingByKey.set(key, (incomingByKey.get(key) ?? 0) + 1);
+  }
   for (let i = 0; i < items.length; i++) {
     if (outcomes[i]) continue;
     const item = items[i];
     let withheld = carriedReason[i];
+    let sibling = carriedSibling[i];
 
     const sameName = byKey.get(selectorValueKey(item.value)) ?? [];
     const sidesCarried = PLATFORM_SIDES.filter((s) => item.ids[s]);
+
+    if (item.identityOnly) {
+      // NEO-325 — a line the operator promoted to its own set, which no row
+      // holds by id: its own new row. Never the name tier, which would fold
+      // it into its same-named namesake. A pass-1 problem still withholds
+      // it; an id-less line has nothing to be a row for.
+      if (!withheld && sidesCarried.length === 0) {
+        withheld = "identity-only item carries no marketplace id";
+        sibling = { reason: "noIdToAttach", rowIds: [] };
+        ambiguities.push({ item: item.value, reason: withheld });
+      }
+      outcomes[i] = withheld ? { kind: "withheld", reason: withheld } : { kind: "insert" };
+      if (withheld) siblingWithholds[i] = sibling;
+      continue;
+    }
 
     if (sameName.length > 1) {
       // Two siblings already fold to one name. Nothing here can say which of
       // them upstream means, and picking would attach a marketplace id to a
       // coin-flip.
       withheld = `${sameName.length} sibling rows share this name`;
+      sibling = {
+        reason: "nameSharedBySiblings",
+        rowIds: sameName.map((r) => r._id),
+      };
+      ambiguities.push({ item: item.value, reason: withheld });
+    } else if (
+      sameName.length === 0 &&
+      (incomingByKey.get(selectorValueKey(item.value)) ?? 0) > 1
+    ) {
+      // NEO-325 — name twins with no namesake row: two or more incoming items
+      // carrying DIFFERENT marketplace ids (pass 1 matched none of them) under
+      // one name. Inserting each would auto-create same-named rows, one per
+      // twin; inserting one would pick a twin by list order. Neither is this
+      // sync's call: "the user should be reconciling as we cannot automate
+      // that" (Jason). Withheld and reported; the operator links each one
+      // (reconcile dialog, Attach sets) or, from the modal, promotes a line
+      // to its own set with `identityOnly`, which this count excludes.
+      withheld = `${incomingByKey.get(selectorValueKey(item.value))} incoming items share this name`;
+      sibling = { reason: "nameSharedInBatch", rowIds: [] };
       ambiguities.push({ item: item.value, reason: withheld });
     } else if (sameName.length === 1) {
       const row = sameName[0];
@@ -1012,6 +1139,7 @@ export function planSelectorSync<TId extends string>(args: {
         // adopt an existing set. The only legitimately id-less rows are custom
         // ones, and those arrive through addCustomSelectorOption, not here.
         withheld = "item carries no marketplace id to attach";
+        sibling = { reason: "noIdToAttach", rowIds: [row._id] };
         ambiguities.push({ item: item.value, reason: withheld });
       } else if (
         !sidesCarried.every((side) =>
@@ -1022,9 +1150,15 @@ export function planSelectorSync<TId extends string>(args: {
         // different id upstream still lists. Inserting a same-named sibling
         // would break the one-name-per-parent rule every picker relies on.
         withheld = "name matches a row already linked to a different live id";
+        sibling = { reason: "nameLinkedToOtherSet", rowIds: [row._id] };
+        ambiguities.push({ item: item.value, reason: withheld });
+      } else if ((incomingByKey.get(selectorValueKey(item.value)) ?? 0) > 1) {
+        withheld = `${incomingByKey.get(selectorValueKey(item.value))} incoming items fold to one existing row`;
+        sibling = { reason: "nameClaimedTwice", rowIds: [row._id] };
         ambiguities.push({ item: item.value, reason: withheld });
       } else if (claimed.has(row._id)) {
         withheld = "row already claimed in this batch";
+        sibling = { reason: "rowClaimedInBatch", rowIds: [row._id] };
         ambiguities.push({
           item: item.value,
           reason: "two incoming items fold to one existing row",
@@ -1050,10 +1184,12 @@ export function planSelectorSync<TId extends string>(args: {
     }
 
     outcomes[i] = withheld ? { kind: "withheld", reason: withheld } : { kind: "insert" };
+    if (withheld) siblingWithholds[i] = sibling;
   }
 
   return {
     outcomes: outcomes as Array<MatchOutcome<TId>>,
+    siblingWithholds,
     coveredSides,
     returnedIds,
     ambiguities,
@@ -1292,6 +1428,31 @@ export function planValueRename(args: {
 export type MarketplaceSetEntry = { value: string; platformValue: string };
 
 /**
+ * NEO-325 — the folded names (`selectorValueKey`) that two or more DISTINCT
+ * marketplace ids share in one list: name twins. The same id listed twice is
+ * one set, not a twin of itself. A sync never creates a row for a twin, nor
+ * pairs one by name: "the user should be reconciling as we cannot automate
+ * that" (Jason).
+ */
+export function nameTwinKeys(
+  entries: ReadonlyArray<MarketplaceSetEntry>,
+): Set<string> {
+  const idsByKey = new Map<string, Set<string>>();
+  for (const entry of entries) {
+    const key = selectorValueKey(entry.value);
+    let ids = idsByKey.get(key);
+    if (!ids) {
+      ids = new Set();
+      idsByKey.set(key, ids);
+    }
+    ids.add(entry.platformValue);
+  }
+  const twins = new Set<string>();
+  for (const [key, ids] of idsByKey) if (ids.size > 1) twins.add(key);
+  return twins;
+}
+
+/**
  * What the router needs to know about one manufacturer row under the year.
  * Read off `metadata`, never off `value`: a row lacking `setNamePrefix`
  * claims nothing by prefix (schema.ts), and a flagged row is never a prefix
@@ -1464,8 +1625,23 @@ export function routeBscSets<TId extends string>(args: {
   candidates.sort(
     (a, b) => selectorValueKey(b.prefix).length - selectorValueKey(a.prefix).length,
   );
-  const brandByPrefix = (label: string): TId | undefined =>
-    candidates.find((c) => matchesBrandPrefix(label, c.prefix))?._id;
+  // NEO-325 — exactly-one guard. Two candidates can only both match at the
+  // same folded length when their prefixes fold to the SAME string (a renamed
+  // brand plus a new one created under the old name). The sort cannot rank
+  // them, so "first" was index order; a tie routes to no brand, and the set
+  // falls through to the known list and then Unknown, as an unprefixed one does.
+  const brandByPrefix = (label: string): TId | undefined => {
+    const hit = candidates.find((c) => matchesBrandPrefix(label, c.prefix));
+    if (hit === undefined) return undefined;
+    const hitLength = selectorValueKey(hit.prefix).length;
+    const tied = candidates.some(
+      (c) =>
+        c !== hit &&
+        selectorValueKey(c.prefix).length === hitLength &&
+        matchesBrandPrefix(label, c.prefix),
+    );
+    return tied ? undefined : hit._id;
+  };
 
   const buckets = new Map<TId, MarketplaceSetEntry[]>();
   const unknown: MarketplaceSetEntry[] = [];
@@ -1569,6 +1745,14 @@ export const MAX_SL_ID_LENGTH = 64;
 
 export type SlSetEntry = { id: string; label: string };
 
+/**
+ * NEO-325 — one review entry as `routeSlSets` emits it. `twin` is set (only
+ * ever `true`) when the entry's folded label is shared by two or more
+ * DISTINCT SportLots ids in the scope's whole list, covered ones included:
+ * the review shows such an entry with its id (D2), and the operator names it.
+ */
+export type SlSetReviewEntry = SlSetEntry & { twin?: true };
+
 export type SlSetRoutePlan = {
   /** Entries whose id is already attached somewhere under the brand. */
   covered: number;
@@ -1577,9 +1761,10 @@ export type SlSetRoutePlan = {
   /**
    * The SportLots-only names for the brand's review, one entry each, sorted
    * by folded label (so "All-America" sits right above "All-America Game
-   * Autos"), capped at `MAX_SL_SETS_PER_SYNC`.
+   * Autos"), capped at `MAX_SL_SETS_PER_SYNC`. A twinned label carries
+   * `twin: true` (NEO-325).
    */
-  entries: SlSetEntry[];
+  entries: SlSetReviewEntry[];
   /** Entries past `MAX_SL_SETS_PER_SYNC`, dropped after the sort. */
   truncated: number;
   /** Entries dropped because their label exceeds `MAX_SLOT_LABEL_LENGTH`. */
@@ -1641,6 +1826,14 @@ export function knownSetNameKeys(
  *              the flagship hid the whole brand: "Topps" prefixed the
  *              re-prefixed form of every entry ("Topps Heritage", "Topps
  *              Finest", …) the moment the Topps row existed.
+ *              NEO-325 — EXCEPT A TWIN. A label two or more distinct
+ *              SportLots ids share in this scope's list (covered ones
+ *              included) is NOT hidden by an EQUALS match: the known set of
+ *              that name is, as often as not, the operator's save of the
+ *              OTHER twin, and hiding this one as "its variant" meant a twin
+ *              whose save was refused for the name never came back. The
+ *              PREFIXES test still applies to a twin — "City Connect Gold"
+ *              listed twice is still a variant of a known "City Connect".
  *   entry    — everything else: a SportLots-only name, ONE review entry each
  *              (NEO-306). Nothing is written here or by the caller's sync:
  *              the operator decides in the brand's review whether "Bowman
@@ -1684,15 +1877,40 @@ export function routeSlSets(args: {
   // The prefix-hiders: what remains of each known name after the scope
   // prefix. The flagship named after its brand contributes nothing here.
   const knownHiders = [...new Set(known.map(stripScopePrefix))].filter(Boolean);
+  // NEO-325 — the folded labels two or more DISTINCT ids share in the whole
+  // scope list, covered entries included (the twin a save already filed is
+  // covered, and it is exactly the namesake that would hide this one). Only
+  // well-formed ids count, the same ones the loop below keeps.
+  const idsByKey = new Map<string, Set<string>>();
+  for (const entry of args.entries) {
+    if (!entry.id || entry.id.length > MAX_SL_ID_LENGTH) continue;
+    const key = selectorValueKey(entry.label.trim());
+    if (!key) continue;
+    let ids = idsByKey.get(key);
+    if (!ids) {
+      ids = new Set();
+      idsByKey.set(key, ids);
+    }
+    ids.add(entry.id);
+  }
+  const isTwin = (key: string): boolean => (idsByKey.get(key)?.size ?? 0) > 1;
   const isVariantOfKnown = (label: string): boolean => {
     const key = selectorValueKey(label);
-    if (knownSet.has(key)) return true;
-    if (prefix && knownSet.has(selectorValueKey(`${prefix} ${label}`))) return true;
+    // A twin is never hidden by an exact name match (see the doc above).
+    if (!isTwin(key)) {
+      if (knownSet.has(key)) return true;
+      if (prefix && knownSet.has(selectorValueKey(`${prefix} ${label}`))) {
+        return true;
+      }
+    }
     // A label that IS the brand name (kept whole by the adapter's strip) has
     // nothing after the prefix to test; it is only ever an exact match.
     const stripped = stripScopePrefix(key);
     if (!stripped) return false;
     for (const hider of knownHiders) {
+      // `foldedPrefixMatches` accepts equality too, which is the EQUALS test
+      // by another road; a twin is hidden only by a STRICT prefix.
+      if (isTwin(key) && stripped === hider) continue;
       if (foldedPrefixMatches(stripped, hider)) return true;
     }
     return false;
@@ -1739,7 +1957,9 @@ export function routeSlSets(args: {
   return {
     covered,
     variants,
-    entries: kept.map(({ id, label }) => ({ id, label })),
+    entries: kept.map(({ id, label, key }) =>
+      isTwin(key) ? { id, label, twin: true as const } : { id, label },
+    ),
     truncated: fresh.length - kept.length,
     unnameable,
     badIds,

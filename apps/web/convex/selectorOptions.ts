@@ -117,6 +117,7 @@ import {
   knownSetNameKeys,
   matchesBrandPrefix,
   routeBscSets,
+  nameTwinKeys,
   routeSlSets,
   // NEO-305 — whether a scope's flagship absorbs its SportLots-only names.
   stripMatchedBrandPrefix,
@@ -167,7 +168,12 @@ import {
   unaskedSidesNotice,
   unionChildren,
   unlinkedEntryValidator,
+  buildTwinsLeft,
+  twinLeftEntryValidator,
+  twinNoticeIdOk,
+  TWIN_NOTICE_LIMIT,
   type HeldElsewhereEntry,
+  type TwinLeftEntry,
   type UnlinkedEntry,
   type WithheldElsewhereEntry,
 } from "./selectorSyncStore";
@@ -946,27 +952,6 @@ export const getSelectorOptionById = query({
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     return await ctx.db.get(args.id);
-  },
-});
-
-export const findByLevelAndValue = query({
-  args: {
-    level: levelValidator,
-    value: v.string(),
-    parentId: v.optional(v.id("selectorOptions")),
-  },
-  returns: v.union(v.null(), selectorOptionDocValidator),
-  handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-    const options = await ctx.db
-      .query("selectorOptions")
-      .withIndex("by_level_and_parent", (q) =>
-        q.eq("level", args.level).eq("parentId", args.parentId),
-      )
-      .collect();
-
-    const normalizedTarget = args.value.toLowerCase().trim();
-    return options.find((o) => o.value.toLowerCase().trim() === normalizedTarget) || null;
   },
 });
 
@@ -3276,9 +3261,33 @@ export const addCustomSelectorOption = mutation({
       .collect();
 
     const normalizedValue = value.toLowerCase().trim();
-    const duplicate = existing.find(
+    const duplicates = existing.filter(
       (o) => o.value.toLowerCase().trim() === normalizedValue,
     );
+
+    // NEO-325 (security re-audit) — EXACTLY ONE. Two siblings can now share a
+    // name (a reconcile line saved as its own set with `identityOnly`), and
+    // `.find` returned whichever the index listed first — a coin flip the
+    // caller then selects and drills into as "the" row. With more than one
+    // there is nothing to resolve to: refuse, structured, with every
+    // candidate and its path, so the operator picks. Nothing is written.
+    if (duplicates.length > 1) {
+      const matches: ElsewhereMatch[] = [];
+      for (const row of duplicates.slice(0, MAX_ELSEWHERE_MATCHES)) {
+        matches.push({
+          _id: row._id,
+          value: row.value,
+          ...(row.parentId ? { parentId: row.parentId } : {}),
+          path: await ancestorPathFor(ctx, row._id),
+        });
+      }
+      throw new ConvexError({
+        code: "CUSTOM_NAME_SHARED",
+        matches,
+        total: duplicates.length,
+      });
+    }
+    const duplicate = duplicates[0];
 
     if (duplicate) {
       // Typing a value that already exists — whether it came from a marketplace
@@ -9069,6 +9078,9 @@ export const setSelectorSyncStatus = internalMutation({
     requestId: v.optional(v.string()),
     unlinked: v.optional(v.array(unlinkedEntryValidator)),
     unlinkedTotal: v.optional(v.number()),
+    /** NEO-325 — names this sync left for the operator (see schema.ts). */
+    twinsLeft: v.optional(v.array(twinLeftEntryValidator)),
+    twinsLeftTotal: v.optional(v.number()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -9091,6 +9103,8 @@ export const setSelectorSyncStatus = internalMutation({
       requestId: args.requestId,
       unlinked: args.unlinked?.slice(0, UNLINK_NOTICE_LIMIT),
       unlinkedTotal: args.unlinkedTotal,
+      twinsLeft: args.twinsLeft?.slice(0, TWIN_NOTICE_LIMIT),
+      twinsLeftTotal: args.twinsLeftTotal,
       updatedAt: Date.now(),
     };
     if (existing) await ctx.db.patch(existing._id, fields);
@@ -9120,6 +9134,13 @@ export const getSelectorSyncStatus = query({
       message: v.optional(v.string()),
       unlinked: v.optional(v.array(unlinkedEntryValidator)),
       unlinkedTotal: v.optional(v.number()),
+      /**
+       * NEO-325 — names twinned on a marketplace that this sync left for the
+       * operator (no row created or paired), with their unheld ids. Present
+       * only on a `done` row; `twinsLeftTotal` is the true count.
+       */
+      twinsLeft: v.optional(v.array(twinLeftEntryValidator)),
+      twinsLeftTotal: v.optional(v.number()),
     }),
     v.null(),
   ),
@@ -9140,6 +9161,10 @@ export const getSelectorSyncStatus = query({
           message: row.message,
           unlinked: row.unlinked,
           unlinkedTotal: row.unlinkedTotal,
+          ...(row.twinsLeft !== undefined ? { twinsLeft: row.twinsLeft } : {}),
+          ...(row.twinsLeftTotal !== undefined
+            ? { twinsLeftTotal: row.twinsLeftTotal }
+            : {}),
         }
       : null;
   },
@@ -9769,6 +9794,8 @@ export const ensureSelectorOptions = action({
         failedPlatforms: string[];
         skippedSides: Array<"bsc" | "sportlots">;
         pausedSides: Array<"bsc" | "sportlots">;
+        twinsLeft: TwinLeftEntry[];
+        twinsLeftTotal: number;
       };
       if (level === "setName") {
         if (!yearId) {
@@ -9886,7 +9913,12 @@ export const ensureSelectorOptions = action({
       const message = [pausedNotice, failedNotice ?? skippedNotice]
         .filter((part): part is string => part !== undefined)
         .join(" ") || undefined;
-      const hasNotice = res.unlinkedTotal > 0 || message !== undefined;
+      // NEO-325 — names twinned on a marketplace that this sync LEFT for the
+      // operator are a notice too: no row was created or paired for them, and
+      // without this the column would read as complete. Data only — the
+      // sentence is the web's (copy to Jason), not composed into `message`.
+      const hasNotice =
+        res.unlinkedTotal > 0 || res.twinsLeftTotal > 0 || message !== undefined;
       await ctx.runMutation(internal.selectorOptions.setSelectorSyncStatus, {
         level,
         parentId,
@@ -9899,6 +9931,12 @@ export const ensureSelectorOptions = action({
                   ? {
                       unlinked: res.unlinked,
                       unlinkedTotal: res.unlinkedTotal,
+                    }
+                  : {}),
+                ...(res.twinsLeftTotal > 0
+                  ? {
+                      twinsLeft: res.twinsLeft,
+                      twinsLeftTotal: res.twinsLeftTotal,
                     }
                   : {}),
               }
@@ -9955,6 +9993,14 @@ type AggregatedSyncResult = {
    * operator paused the marketplace. Always a subset of `skippedSides`.
    */
   pausedSides: Array<"bsc" | "sportlots">;
+  /**
+   * NEO-325 — names twinned on a marketplace that this sync left for the
+   * operator, with their unheld ids (capped at `TWIN_NOTICE_LIMIT`), and
+   * the true count. `ensureSelectorOptions` writes both onto the column's
+   * `selectorSyncStatus` row as a `done` notice.
+   */
+  twinsLeft: TwinLeftEntry[];
+  twinsLeftTotal: number;
 };
 
 const EMPTY_SYNC_RESULT = {
@@ -9964,6 +10010,8 @@ const EMPTY_SYNC_RESULT = {
   failedPlatforms: [] as string[],
   skippedSides: [] as Array<"bsc" | "sportlots">,
   pausedSides: [] as Array<"bsc" | "sportlots">,
+  twinsLeft: [] as TwinLeftEntry[],
+  twinsLeftTotal: 0,
 };
 
 export const fetchAggregatedOptions = action({
@@ -10006,6 +10054,9 @@ export const fetchAggregatedOptions = action({
      * paused side is already in `skippedSides`.
      */
     pausedSides: v.array(platformSideValidator),
+    /** NEO-325 — see `AggregatedSyncResult.twinsLeft`. */
+    twinsLeft: v.array(twinLeftEntryValidator),
+    twinsLeftTotal: v.number(),
   }),
   handler: async (ctx, args): Promise<AggregatedSyncResult> => {
     // Admin check is outside the try/catch so authorization errors surface
@@ -10079,10 +10130,11 @@ export const fetchAggregatedOptions = action({
       }
 
       // Build platform-specific filters from the ancestor chain so each
-      // adapter receives its own slugs instead of display labels. Catch
-      // missing slugs for BSC at the levels it actually filters on; SL
-      // is intentionally not preconditioned because its adapter does its
-      // own DB lookup / has no setName-level concept (see fetchCardChecklist).
+      // adapter receives its own ids instead of display labels. Both sides
+      // read ids ONLY from the chain's platform slots, and `resolvableSides`
+      // below gates each side on the ids its request needs at this level. SL
+      // has no name lookup behind it (NEO-256): its adapter refuses any
+      // request whose named scope has no id here rather than guess one.
       let slPlatformFilters: Record<string, string> | undefined;
       let bscPlatformFilters: Record<string, string[]> | undefined;
       let slBrandScope: { setNamePrefix: string } | undefined;
@@ -10420,36 +10472,105 @@ export const fetchAggregatedOptions = action({
         }
       }
 
-      // 3. Deduplicate by normalized value
-      const valueMap = new Map<
+      // 3. Deduplicate by normalized value — the BSC↔SportLots pairing BY
+      // NAME for this column, so it carries the NEO-325 exactly-one guard
+      // (CLAUDE.md invariant 7). The old merge kept whichever id came LAST on
+      // each side and paired it with the other side's, so two sets sharing a
+      // name on one marketplace ("frequently the same insert set lives in
+      // both Bowman and Bowman Chrome", Jason) collapsed into one row linked
+      // to a coin flip.
+      //
+      // A name that maps to exactly ONE id on each side it appears on syncs
+      // and pairs as before. A name with TWO OR MORE ids on EITHER side (name
+      // twins) is the operator's to reconcile, never this sync's: "anytime we
+      // see situations like this the user should be reconciling as we cannot
+      // automate that" (Jason, NEO-325). So a twinned name contributes NO
+      // item at all — no NB row is created for any twin, and the other
+      // side's lone same-named id is not paired either ("leave them unlinked
+      // and let the user use the linking dialog to match them").
+      //
+      // Nothing already linked is disturbed:
+      //   • every twin id, and the lone other-side id, stays in
+      //     `returnedIds` (built from the RAW options below), so the unlink
+      //     pass reads none of them as dropped;
+      //   • a row an earlier sync (or the operator) already linked to one
+      //     twin keeps that link and its name untouched — the store never
+      //     sees the twinned name, so it can neither re-pair nor rename it,
+      //     and re-sync is stable.
+      // The operator meets the twins, with their ids, where linking happens
+      // (Attach sets / the reconcile dialog / the Base picker).
+      const valueGroups = new Map<
         string,
         {
           value: string;
-          platformData: { bsc?: string | string[]; sportlots?: string };
+          bsc: Map<string, string | string[]>;
+          sportlots: Set<string>;
         }
       >();
 
       for (const option of allOptions) {
-        const normalizedValue = option.value.toLowerCase().trim();
-        const existing = valueMap.get(normalizedValue);
-
-        if (existing) {
-          // Merge platform data
-          if (option.platformData.sportlots) {
-            existing.platformData.sportlots = option.platformData.sportlots;
-          }
-          if (option.platformData.bsc) {
-            existing.platformData.bsc = option.platformData.bsc;
-          }
-        } else {
-          valueMap.set(normalizedValue, {
-            value: option.value,
-            platformData: { ...option.platformData },
-          });
+        // The store's own fold, so "twinned here" and "folds to one name in
+        // `planSelectorSync`" can never disagree.
+        const normalizedValue = selectorValueKey(option.value);
+        let group = valueGroups.get(normalizedValue);
+        if (!group) {
+          group = { value: option.value, bsc: new Map(), sportlots: new Set() };
+          valueGroups.set(normalizedValue, group);
+        }
+        const bsc = option.platformData.bsc;
+        if (bsc !== undefined && (Array.isArray(bsc) ? bsc.length > 0 : bsc)) {
+          // Identity of a BSC side = its id set, order-free.
+          const bscKey = Array.isArray(bsc)
+            ? JSON.stringify([...bsc].sort())
+            : JSON.stringify([bsc]);
+          if (!group.bsc.has(bscKey)) group.bsc.set(bscKey, bsc);
+        }
+        if (option.platformData.sportlots) {
+          group.sportlots.add(option.platformData.sportlots);
         }
       }
 
-      const deduped = Array.from(valueMap.values());
+      const deduped: Array<{
+        value: string;
+        platformData: { bsc?: string | string[]; sportlots?: string };
+      }> = [];
+      const nameTwins: string[] = [];
+      // NEO-325 — every twinned name with ALL its ids, for the operator's
+      // notice (`twinsLeft`), which keeps only the ids no row holds yet.
+      const twinGroups: Array<{
+        name: string;
+        key: string;
+        bsc: string[];
+        sportlots: string[];
+      }> = [];
+      for (const [key, group] of valueGroups) {
+        if (group.bsc.size > 1 || group.sportlots.size > 1) {
+          nameTwins.push(`bsc=${group.bsc.size},sl=${group.sportlots.size}`);
+          twinGroups.push({
+            name: group.value,
+            key,
+            bsc: [...group.bsc.values()].flatMap((b) => (Array.isArray(b) ? b : [b])),
+            sportlots: [...group.sportlots],
+          });
+          continue;
+        }
+        const platformData: { bsc?: string | string[]; sportlots?: string } = {};
+        if (group.bsc.size === 1) platformData.bsc = [...group.bsc.values()][0];
+        if (group.sportlots.size === 1) {
+          platformData.sportlots = [...group.sportlots][0];
+        }
+        deduped.push({ value: group.value, platformData });
+      }
+      if (nameTwins.length > 0) {
+        // Counts only, never the names: a log line carries platform,
+        // operation and shape.
+        console.warn(
+          `[fetchAggregatedOptions] ${nameTwins.length} name(s) matched more ` +
+            `than one id on a side; no row created or paired for them, left ` +
+            `for the operator to link (level=${level}; ` +
+            `${nameTwins.slice(0, 10).join(" ")})`,
+        );
+      }
 
       // 4. Log adapter errors to PostHog if any adapter failed
       if (Object.keys(platformErrors).length > 0) {
@@ -10476,7 +10597,11 @@ export const fetchAggregatedOptions = action({
       // 5. If no options were fetched from any platform, report failure.
       // NEO-237 — a routed all-brands option counts as something fetched: a
       // year whose SportLots brand list is ONLY that option has still synced.
-      if (deduped.length === 0 && !slAllBrandsOption) {
+      // Judged on `allOptions`, not `deduped`: a list whose every name is
+      // twinned (NEO-325) leaves `deduped` empty, but the marketplace DID
+      // answer — that is a successful sync with nothing to create, and its
+      // ids must still reach the unlink pass as returned.
+      if (allOptions.length === 0 && !slAllBrandsOption) {
         await recordAdapterCall(ctx, {
           requestId,
           operation: "fetchAggregatedOptions",
@@ -10541,9 +10666,11 @@ export const fetchAggregatedOptions = action({
       }
 
       // …and `returnedIds` comes from the RAW adapter results, not from
-      // `deduped`. The dedupe above folds two options with the same normalised
-      // name into one entry and keeps only the last id per side, so an id the
-      // marketplace really did return can vanish from the list the store sees.
+      // `deduped`. The dedupe above folds options with the same normalised
+      // name into one entry, and (NEO-325) leaves a twinned name out
+      // entirely — every twin and its lone other-side namesake — so an id the
+      // marketplace really did return can be absent from the list the store
+      // sees.
       // Deriving the unlink universe from `deduped` would then read that as
       // "upstream dropped it" and detach a live link.
       const fetchedIds: { bsc: string[]; sportlots: string[] } = {
@@ -10624,6 +10751,69 @@ export const fetchAggregatedOptions = action({
             : undefined,
       });
 
+      // NEO-325 — the twins this sync left for the operator, less every id an
+      // NB row already holds (an earlier sync's, or the operator's, link). The
+      // holder read is bounded; past its bound every twin id is reported.
+      let twinNotice: { twinsLeft: TwinLeftEntry[]; twinsLeftTotal: number } = {
+        twinsLeft: [],
+        twinsLeftTotal: 0,
+      };
+      if (twinGroups.length > 0) {
+        // NEO-325 (security re-audit) — BEST EFFORT. The store above has
+        // already committed this sync's rows, so a throw here must not turn
+        // a sync that wrote its data into a reported failure (the catch below
+        // would). A failed read falls back to `held: null`, which reports
+        // every twin id: naming a twin the operator already linked is
+        // recoverable, hiding one is not. Only ids the notice could keep are
+        // sent (`twinNoticeIdOk`).
+        let held: { bsc: string[]; sportlots: string[] } | null = null;
+        try {
+          held = await ctx.runQuery(
+            internal.selectorOptions.heldIdsForTwinNotice,
+            {
+              level,
+              ...(parentId ? { parentId } : {}),
+              bsc: [
+                ...new Set(
+                  twinGroups
+                    .flatMap((g) => g.bsc)
+                    .filter((id) => twinNoticeIdOk("bsc", id)),
+                ),
+              ],
+              sportlots: [
+                ...new Set(
+                  twinGroups
+                    .flatMap((g) => g.sportlots)
+                    .filter((id) => twinNoticeIdOk("sportlots", id)),
+                ),
+              ],
+            },
+          );
+        } catch (error) {
+          // Platform, operation and the error class only — no ids, no names.
+          console.warn(
+            JSON.stringify({
+              msg: "selector_sync_twin_holders_failed",
+              fn: "fetchAggregatedOptions",
+              level,
+              requestId,
+              twinNames: twinGroups.length,
+              error_class: classifyAdapterError(
+                error instanceof Error ? error.message : String(error),
+              ),
+              effect: "every twin id reported",
+            }),
+          );
+          held = null;
+        }
+        twinNotice = buildTwinsLeft(
+          twinGroups,
+          held
+            ? { bsc: new Set(held.bsc), sportlots: new Set(held.sportlots) }
+            : null,
+        );
+      }
+
       // A skipped side is worth saying out loud — the column looks
       // half-populated and the operator is owed the reason. Built from the
       // platform NAME only (NEO-47): `selectorSyncStatus.message` is reactive
@@ -10651,6 +10841,7 @@ export const fetchAggregatedOptions = action({
         failedPlatforms: Object.keys(platformErrors),
         skippedSides,
         pausedSides: pausedList,
+        ...twinNotice,
       };
     } catch (error) {
       console.error(`[fetchAggregatedOptions] Error:`, error);
@@ -11048,6 +11239,87 @@ export async function brandSubtreeSlIds(
   return { ids: [...ids], truncated: false };
 }
 
+/**
+ * NEO-325 — which of `bsc` / `sportlots` an NB row already holds, for the
+ * twin notice of the column (`level`, `parentId`). `null` = the read hit its
+ * bound and cannot say (the caller then reports every id).
+ *
+ * Under a brand (a Sets column and everything below it) the whole BRAND
+ * subtree is walked, both sides, bounded at `MAX_SYNC_ITEMS` rows: an
+ * insert-level SportLots list is the brand's flat set list, and its twins are
+ * usually held as other sets' Bases, or grouped as parallels, not as rows of
+ * this column. Above the brand (Sports, Years, Manufacturers) the column's
+ * own rows are the holders.
+ */
+export const heldIdsForTwinNotice = internalQuery({
+  args: {
+    level: levelValidator,
+    parentId: v.optional(v.id("selectorOptions")),
+    bsc: v.array(v.string()),
+    sportlots: v.array(v.string()),
+  },
+  returns: v.union(
+    v.null(),
+    v.object({ bsc: v.array(v.string()), sportlots: v.array(v.string()) }),
+  ),
+  handler: async (ctx, args) => {
+    const wanted = {
+      bsc: new Set(args.bsc),
+      sportlots: new Set(args.sportlots),
+    };
+    const held = { bsc: new Set<string>(), sportlots: new Set<string>() };
+    const take = (row: Doc<"selectorOptions">) => {
+      for (const side of ["bsc", "sportlots"] as const) {
+        for (const id of slotIds(row, side)) {
+          if (wanted[side].has(id)) held[side].add(id);
+        }
+      }
+    };
+    // The brand above the column, if any (≤ 4 hops: insert → vt → set → brand).
+    let brandId: Id<"selectorOptions"> | undefined;
+    let cursor = args.parentId;
+    for (let hops = 0; cursor && hops < 6; hops++) {
+      const row: Doc<"selectorOptions"> | null = await ctx.db.get(cursor);
+      if (!row) break;
+      if (row.level === "manufacturer") {
+        brandId = row._id;
+        break;
+      }
+      cursor = row.parentId;
+    }
+    if (brandId) {
+      let frontier: Id<"selectorOptions">[] = [brandId];
+      let read = 0;
+      while (frontier.length > 0) {
+        const next: Id<"selectorOptions">[] = [];
+        for (const parentId of frontier) {
+          const rows = await ctx.db
+            .query("selectorOptions")
+            .withIndex("by_parent", (q) => q.eq("parentId", parentId))
+            .take(MAX_SYNC_ITEMS - read + 1);
+          read += rows.length;
+          if (read > MAX_SYNC_ITEMS) return null;
+          for (const row of rows) {
+            take(row);
+            if (row.level !== "parallel") next.push(row._id);
+          }
+        }
+        frontier = next;
+      }
+    } else {
+      const rows = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", args.level).eq("parentId", args.parentId),
+        )
+        .take(MAX_SYNC_ITEMS + 1);
+      if (rows.length > MAX_SYNC_ITEMS) return null;
+      for (const row of rows) take(row);
+    }
+    return { bsc: [...held.bsc], sportlots: [...held.sportlots] };
+  },
+});
+
 export const listBrandSubtreeSlIds = internalQuery({
   args: { manufacturerId: v.id("selectorOptions") },
   returns: v.object({ ids: v.array(v.string()), truncated: v.boolean() }),
@@ -11265,16 +11537,15 @@ export async function createSetsFromSlRootsImpl(
   ctx: MutationCtx,
   args: {
     manufacturerId: Id<"selectorOptions">;
-    roots: Array<{ id: string; label: string }>;
+    /**
+     * NEO-325 — `name`, when present, is the OPERATOR's name for the set (the
+     * review's per-line name) and replaces `candidateDefaultName`. It passes
+     * the same per-level rule and the same two clash checks.
+     */
+    roots: Array<{ id: string; label: string; name?: string }>;
     createdByUserId?: string;
   },
-): Promise<{
-  created: number;
-  clashedAtTarget: number;
-  existsElsewhere: number;
-  invalid: number;
-  indexTruncated: boolean;
-}> {
+): Promise<CreateSetsFromSlRootsResult> {
   if (args.roots.length > MAX_SL_SETS_PER_MUTATION) {
     throw new Error(
       `createSetsFromSlRoots: ${args.roots.length} roots exceeds ` +
@@ -11296,9 +11567,11 @@ export async function createSetsFromSlRootsImpl(
     );
     return {
       created: 0,
+      createdIds: [],
       clashedAtTarget: 0,
       existsElsewhere: 0,
       invalid: 0,
+      refused: [],
       indexTruncated: true,
     };
   }
@@ -11307,17 +11580,22 @@ export async function createSetsFromSlRootsImpl(
   let clashedAtTarget = 0;
   let existsElsewhere = 0;
   let invalid = 0;
+  const createdIds: string[] = [];
+  const refused: SlRootRefusal[] = [];
   const seen = new Set<string>();
   for (const root of args.roots) {
     if (!root.id || seen.has(root.id)) continue;
     seen.add(root.id);
     assertValidSlotLabel(root.label, "createSetsFromSlRoots");
-    const { defaultName } = candidateDefaultName(root.label, prefix);
+    const operatorName = root.name?.trim();
+    const name = operatorName
+      ? operatorName
+      : candidateDefaultName(root.label, prefix).defaultName;
     const result = await insertSetWithBaseFromSl(
       ctx,
       {
         brandId: brand._id,
-        name: defaultName,
+        name,
         sl: { id: root.id, label: root.label },
         ...(args.createdByUserId
           ? { createdByUserId: args.createdByUserId }
@@ -11327,17 +11605,35 @@ export async function createSetsFromSlRootsImpl(
     );
     if (result.ok) {
       created++;
+      createdIds.push(root.id);
       continue;
     }
     switch (result.reason) {
       case "clash_at_target":
         clashedAtTarget++;
+        refused.push({
+          id: root.id,
+          name,
+          reason: "nameTaken",
+          clashWith: { _id: result.existingId, value: result.value },
+        });
         break;
-      case "exists_elsewhere":
+      case "exists_elsewhere": {
         existsElsewhere++;
+        const first = result.matches[0];
+        refused.push({
+          id: root.id,
+          name,
+          reason: "existsElsewhere",
+          ...(first
+            ? { clashWith: { _id: first._id, value: first.value, brand: first.brand } }
+            : {}),
+        });
         break;
+      }
       case "invalid_name":
         invalid++;
+        refused.push({ id: root.id, name, reason: "invalid", detail: result.detail });
         console.warn(
           `[createSetsFromSlRoots] skipped an unnameable SportLots set ` +
             `(reason=${result.detail})`,
@@ -11358,12 +11654,41 @@ export async function createSetsFromSlRootsImpl(
   );
   return {
     created,
+    createdIds,
     clashedAtTarget,
     existsElsewhere,
     invalid,
+    refused,
     indexTruncated: false,
   };
 }
+
+/**
+ * NEO-325 — one root `createSetsFromSlRootsImpl` refused, by SportLots id.
+ * `name` is the name it tried (the operator's, or the default); `clashWith`
+ * is the NB set already holding that name (and, for `existsElsewhere`, the
+ * other brand it sits under).
+ */
+export type SlRootRefusal = {
+  id: string;
+  name: string;
+  reason: "nameTaken" | "existsElsewhere" | "invalid";
+  clashWith?: { _id: Id<"selectorOptions">; value: string; brand?: string };
+  /** `invalid` only: the per-level name rule's sentence (ours, fixed text). */
+  detail?: string;
+};
+
+export type CreateSetsFromSlRootsResult = {
+  created: number;
+  /** The SportLots ids filed as sets, in root order. */
+  createdIds: string[];
+  clashedAtTarget: number;
+  existsElsewhere: number;
+  invalid: number;
+  /** Every refused root, with why (NEO-325). Counts above stay for callers. */
+  refused: SlRootRefusal[];
+  indexTruncated: boolean;
+};
 
 /** The internal-mutation door onto `createSetsFromSlRootsImpl`. */
 export const createSetsFromSlRoots = internalMutation({
@@ -11385,7 +11710,18 @@ export const createSetsFromSlRoots = internalMutation({
      */
     indexTruncated: v.boolean(),
   }),
-  handler: async (ctx, args) => createSetsFromSlRootsImpl(ctx, args),
+  handler: async (ctx, args) => {
+    // The door keeps its counts-only shape; the per-root detail is for the
+    // review's save, which calls the impl directly.
+    const r = await createSetsFromSlRootsImpl(ctx, args);
+    return {
+      created: r.created,
+      clashedAtTarget: r.clashedAtTarget,
+      existsElsewhere: r.existsElsewhere,
+      invalid: r.invalid,
+      indexTruncated: r.indexTruncated,
+    };
+  },
 });
 
 /**
@@ -11487,6 +11823,15 @@ export const syncSetsAcrossManufacturers = action({
     /** NEO-287 — see `fetchAggregatedOptions`. Either side may appear. */
     pausedSides: v.array(platformSideValidator),
     /**
+     * NEO-325 — BSC set names two or more BSC sets share in the year's list
+     * that this run left for the operator (no NB row holds those ids), for
+     * the brand that asked (every brand, from the All Brands view). The
+     * SportLots side's twins go to the review instead (`slSetReviews`, each
+     * entry flagged `twin`). Same shape as `fetchAggregatedOptions`.
+     */
+    twinsLeft: v.array(twinLeftEntryValidator),
+    twinsLeftTotal: v.number(),
+    /**
      * NEO-306 — SportLots-only names this run wrote into the brands' reviews
      * (`slSetReviews`), summed across every brand scope it classified. The
      * SportLots phase mints nothing (NEO-237's roots-become-sets and
@@ -11539,6 +11884,13 @@ export const syncSetsAcrossManufacturers = action({
       // them once, so the operator reads one number per fact.
       let knownBrandsAdded = 0;
       let knownBrandSetsFiled = 0;
+      // NEO-325 — BSC set names twinned in the year's list that this run left
+      // for the operator (no NB row holds the id), scoped to the column that
+      // asked. See the twin filter in the BSC phase.
+      let bscTwinNotice: { twinsLeft: TwinLeftEntry[]; twinsLeftTotal: number } = {
+        twinsLeft: [],
+        twinsLeftTotal: 0,
+      };
 
       // ── BSC phase ─────────────────────────────────────────────────────
       //
@@ -11664,9 +12016,38 @@ export const syncSetsAcrossManufacturers = action({
               setNamePrefix?: string;
               isBrandUnknown?: boolean;
             }> = index.manufacturers;
+            // NEO-325 — NAME TWINS ARE NOT FILED. Two or more BSC sets sharing
+            // a name in the year's list are the operator's to reconcile ("the
+            // user should be reconciling as we cannot automate that", Jason),
+            // so a twin no NB row holds is left out before routing: no set
+            // row is auto-created for it, and it cannot mint a brand row or
+            // the Unknown row either. A twin an NB row already holds by id is
+            // routed and stored as before and matches that row by id (tier
+            // 1), so re-sync is stable. Decided year-wide on the raw list, so
+            // twins routed to different brands or split across store calls
+            // are caught too. The operator reaches the left-out twins, with
+            // their ids, in Attach sets (its BSC pane lists the year's sets).
+            const bscTwinKeys = nameTwinKeys(bscResult.options);
+            const bscSetsToFile =
+              bscTwinKeys.size === 0
+                ? bscResult.options
+                : bscResult.options.filter(
+                    (s) =>
+                      !bscTwinKeys.has(selectorValueKey(s.value)) ||
+                      holdersByBscId.has(s.platformValue),
+                  );
+            if (bscTwinKeys.size > 0) {
+              // Counts only, never names (platform, operation, shape).
+              console.warn(
+                `[syncSetsAcrossManufacturers] ${bscTwinKeys.size} BSC set ` +
+                  `name(s) shared by more than one set; ` +
+                  `${bscResult.options.length - bscSetsToFile.length} ` +
+                  `unlinked twin(s) left for the operator to link`,
+              );
+            }
             const route = () =>
               routeBscSets<Id<"selectorOptions">>({
-                sets: bscResult.options,
+                sets: bscSetsToFile,
                 manufacturers: routeManufacturers,
                 holdersByBscId,
                 // NEO-294 — consulted ONLY for a set that would land in
@@ -11716,6 +12097,51 @@ export const syncSetsAcrossManufacturers = action({
               );
               knownBrandsAdded += brandsAdded;
               knownBrandSetsFiled += filed;
+            }
+
+            // 2c. NEO-325 — the twin notice. The left-out twins are routed
+            // (pure, nothing minted, no known-brand list) only to say WHICH
+            // column's notice lists them: a brand's Sets column hears about its
+            // own, the All Brands view about all of them. Every id here is
+            // unheld by construction (a held twin was filed above).
+            if (bscTwinKeys.size > 0) {
+              const leftTwins = bscResult.options.filter(
+                (s) =>
+                  bscTwinKeys.has(selectorValueKey(s.value)) &&
+                  !holdersByBscId.has(s.platformValue),
+              );
+              const twinPlan = routeBscSets<Id<"selectorOptions">>({
+                sets: leftTwins,
+                manufacturers: routeManufacturers,
+                holdersByBscId,
+              });
+              const scopedRow = args.manufacturerId
+                ? routeManufacturers.find((m) => m._id === args.manufacturerId)
+                : undefined;
+              const inScope: MarketplaceSetEntry[] = args.manufacturerId
+                ? [
+                    ...(twinPlan.buckets.get(args.manufacturerId) ?? []),
+                    ...(scopedRow?.isBrandUnknown === true ? twinPlan.unknown : []),
+                  ]
+                : [...[...twinPlan.buckets.values()].flat(), ...twinPlan.unknown];
+              const byKey = new Map<
+                string,
+                { name: string; key: string; bsc: string[]; sportlots: string[] }
+              >();
+              for (const entry of inScope) {
+                const key = selectorValueKey(entry.value);
+                const group = byKey.get(key);
+                if (group) group.bsc.push(entry.platformValue);
+                else {
+                  byKey.set(key, {
+                    name: entry.value,
+                    key,
+                    bsc: [entry.platformValue],
+                    sportlots: [],
+                  });
+                }
+              }
+              bscTwinNotice = buildTwinsLeft([...byKey.values()], null);
             }
 
             // 3. Re-home Unknown → brand BEFORE storing, so the brand's bucket
@@ -12019,7 +12445,11 @@ export const syncSetsAcrossManufacturers = action({
           await ctx.runMutation(internal.slSetReview.replaceScope, {
             yearId: args.yearId,
             manufacturerId: scope._id,
-            entries: routed.entries.map((e) => ({ slId: e.id, label: e.label })),
+            entries: routed.entries.map((e) => ({
+              slId: e.id,
+              label: e.label,
+              ...(e.twin ? { twin: true } : {}),
+            })),
             rootsTruncated: routed.truncated,
           });
           slPendingReview += routed.entries.length;
@@ -12141,6 +12571,7 @@ export const syncSetsAcrossManufacturers = action({
         skippedSides,
         pausedSides: pausedList,
         slPendingReview: slPendingReviewTotal,
+        ...bscTwinNotice,
       };
     } catch (error) {
       console.error("[syncSetsAcrossManufacturers] Error:", error);

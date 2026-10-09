@@ -1617,11 +1617,28 @@ describe("NEO-306: the SportLots-only review is admin-gated", () => {
     ["createSlRowsUnderVariantType", "internalMutation"],
     ["removeReviewEntries", "internalMutation"],
     ["markSaveStarted", "internalMutation"],
+    ["markSaveFinished", "internalMutation"],
     ["readReviewForSave", "internalQuery"],
     ["validateReviewTypes", "internalQuery"],
   ])("slSetReview.ts :: %s is declared %s (they trust their arguments)", (fn, keyword) => {
     const src = readFileSync(join(__dirname, "slSetReview.ts"), "utf8");
     expect(src).toContain(`export const ${fn} = ${keyword}({`);
+  });
+});
+
+/**
+ * NEO-325 (security re-audit) — two internal queries that trust their
+ * arguments. `heldIdsForTwinNotice` reads rows by caller-supplied ids and
+ * `baseSlIdsBesideVariantType` reads a variant type's Base ids; neither runs
+ * `requireAdmin`, so either exported as a public `query` would leak slot ids.
+ */
+describe("NEO-325 internal queries stay internal", () => {
+  test.each([
+    ["selectorOptions.ts", "heldIdsForTwinNotice"],
+    ["setReconciliation.ts", "baseSlIdsBesideVariantType"],
+  ])("%s :: %s is declared internalQuery (it trusts its arguments)", (file, fn) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = internalQuery({`);
   });
 });
 
@@ -1805,5 +1822,69 @@ describe("NEO-224: the set builder's deep-link resolver is admin-gated", () => {
     expect(handler.indexOf("await requireAdmin(ctx)")).toBeLessThan(
       handler.indexOf("ctx.db"),
     );
+  });
+});
+
+/**
+ * NEO-325 — the Base match probe (the PARALLEL Reconcile dialog's check of an
+ * unmatched marketplace set against NB's saved Base). One query and three
+ * actions, all public because the dialog calls them, all `requireAdmin`: the
+ * query reads a Base's whole checklist and the actions spend the caller's
+ * marketplace session. The control for each refusal is an admin call that
+ * passes the gate and contacts nothing (an empty id list, a non-parallel row).
+ *
+ * The two adapter halves the actions call trust their ids after the public
+ * action checked them, so they stay `internalAction`.
+ */
+describe("NEO-325: the Base match probe is admin-gated, its adapter halves internal", () => {
+  async function seedNonParallelType(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+        metadata: { variantRole: "insert" },
+      }),
+    );
+  }
+
+  test.each([
+    [
+      "baseMatchProbe.getBaseSignatureForVariantType",
+      (tt: ReturnType<typeof convexTest>, id: Id<"selectorOptions">) =>
+        tt.query(api.baseMatchProbe.getBaseSignatureForVariantType, { variantTypeId: id }),
+    ],
+    [
+      "baseMatchProbe.probeSlFirstPage",
+      (tt: ReturnType<typeof convexTest>) =>
+        tt.action(api.baseMatchProbe.probeSlFirstPage, { setIds: [] }),
+    ],
+    [
+      "baseMatchProbe.probeSlCount",
+      (tt: ReturnType<typeof convexTest>) =>
+        tt.action(api.baseMatchProbe.probeSlCount, { setIds: [] }),
+    ],
+    [
+      "baseMatchProbe.probeBscSets",
+      (tt: ReturnType<typeof convexTest>, id: Id<"selectorOptions">) =>
+        tt.action(api.baseMatchProbe.probeBscSets, { variantTypeId: id, variantNameIds: [] }),
+    ],
+  ])("%s refuses a signed-in non-admin and a signed-out caller, and answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const id = await seedNonParallelType(t);
+    await expect(call(t.withIdentity(SIGNED_IN), id)).rejects.toThrow();
+    await expect(call(t, id)).rejects.toThrow();
+    await expect(call(t.withIdentity(ADMIN), id)).resolves.toBeDefined();
+  });
+
+  test.each([
+    ["adapters/sportlots.ts", "probeSlListcardsBatch"],
+    ["adapters/buysportscards.ts", "probeBscChecklistBatch"],
+  ])("%s :: %s is declared internalAction", (file, fn) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = internalAction({`);
+    expect(src).not.toContain(`export const ${fn} = action({`);
   });
 });

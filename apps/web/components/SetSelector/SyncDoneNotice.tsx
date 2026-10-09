@@ -1,4 +1,13 @@
-import type { UnlinkedNotice as Notice } from "./selector-sync-feedback";
+import { useId, useState } from "react";
+import {
+  TWIN_LINES_SHOWN,
+  twinLeftIdsText,
+  twinsLeftGuidance,
+  twinsLeftSummary,
+  type SelectorLevel,
+  type TwinLeftEntry,
+  type UnlinkedNotice as Notice,
+} from "./selector-sync-feedback";
 
 /**
  * NEO-211 (plans B + D) — everything a FINISHED sync still has to tell you.
@@ -57,6 +66,7 @@ export default function SyncDoneNotice({
   onDismiss,
   dismissing,
   columnLabel,
+  twins,
 }: {
   /** Server-composed partial-failure text. Rendered verbatim. */
   message?: string;
@@ -80,8 +90,25 @@ export default function SyncDoneNotice({
    * old bare name until they are given one.
    */
   columnLabel?: string;
+  /**
+   * NEO-325 — names this sync LEFT for the operator because two or more
+   * marketplace ids share them (`selectorSyncStatus.twinsLeft`, capped; `total`
+   * is the true count). `level` picks where the guidance line points.
+   */
+  twins?: {
+    entries: TwinLeftEntry[];
+    total?: number;
+    level?: SelectorLevel;
+  };
 }) {
-  if (!message && notices.length === 0) return null;
+  const hasTwins = !!twins && twins.entries.length > 0;
+  // NEO-325 (a11y re-audit N1): with nothing to say, the live region is still
+  // rendered, empty and unstyled, in the SAME element the notice fills. A
+  // caller that keeps this mounted for the whole sync (VariantForm,
+  // ParallelForm) then has a region that exists before its text arrives,
+  // which is what gets a polite region announced. (EntityColumn mounts it
+  // only with content; its toast announces the transition instead.)
+  if (!message && notices.length === 0 && !hasTwins) return <div role="status" />;
 
   return (
     <div
@@ -109,6 +136,14 @@ export default function SyncDoneNotice({
             These are still yours — only the marketplace link was removed.
           </p>
         )}
+        {hasTwins && twins && (
+          <TwinsLeft
+            entries={twins.entries}
+            total={twins.total}
+            level={twins.level}
+            columnLabel={columnLabel}
+          />
+        )}
       </div>
       <button
         type="button"
@@ -130,6 +165,84 @@ export default function SyncDoneNotice({
       >
         Dismiss
       </button>
+    </div>
+  );
+}
+
+/**
+ * NEO-325 — the twin half of the notice: what the sync left alone because a
+ * marketplace lists the name more than once, each with its ids, and where to
+ * link it from this column.
+ *
+ * Three lines show; the rest sit behind "Show all N". The button comes
+ * BEFORE the list it reveals, in the DOM and on screen, so a keyboard or
+ * screen-reader user who opens it moves straight on into the new lines. The
+ * revealed list is still wrapped in `aria-live="off"`: this whole box is
+ * `role="status"`, which is atomic, so without it opening the list would
+ * re-announce every line.
+ *
+ * Each line is ONE text node — "Anime (SportLots #378117, #378118)" — so a
+ * flow's full-string `text:` on a set name never matches the notice by
+ * accident.
+ */
+function TwinsLeft({
+  entries,
+  total,
+  level,
+  columnLabel,
+}: {
+  entries: TwinLeftEntry[];
+  total?: number;
+  level?: SelectorLevel;
+  columnLabel?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const listId = useId();
+  const shown = entries.slice(0, TWIN_LINES_SHOWN);
+  const rest = entries.slice(TWIN_LINES_SHOWN);
+  // Past the server's cap: named nowhere, counted here.
+  const unnamed = Math.max(0, (total ?? entries.length) - entries.length);
+  const guidance = twinsLeftGuidance(level);
+  const where = columnLabel ? `the ${columnLabel} notice` : "this notice";
+  const line = (e: TwinLeftEntry, i: number) => (
+    <li key={`${i}:${e.name}`} className="break-words">
+      {`${e.name} (${twinLeftIdsText(e)})`}
+    </li>
+  );
+  return (
+    <div className="space-y-1 pt-1">
+      <p className="break-words">{twinsLeftSummary(entries, total)}</p>
+      <ul className="space-y-0.5 pl-3 text-xs">{shown.map(line)}</ul>
+      {rest.length > 0 ? (
+        <div>
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={listId}
+            aria-label={
+              open
+                ? `Show fewer names in ${where}`
+                : `Show all ${entries.length} names in ${where}`
+            }
+            onClick={() => setOpen((o) => !o)}
+            // WCAG 2.5.8: padded to 24px+; the negative margin keeps the line.
+            className="inline-block min-h-6 px-1 py-0.5 -my-0.5 -ml-1 text-xs underline underline-offset-2 hover:no-underline focus:outline-none focus:ring-2 focus:ring-[#00B7FF] rounded"
+          >
+            {open ? "Show fewer" : `Show all ${entries.length}`}
+          </button>
+          <div id={listId} aria-live="off">
+            {open && (
+              <ul className="space-y-0.5 pl-3 pt-0.5 text-xs">
+                {rest.map((e, i) => line(e, i + TWIN_LINES_SHOWN))}
+                {unnamed > 0 && <li>+ {unnamed} more</li>}
+              </ul>
+            )}
+          </div>
+        </div>
+      ) : (
+        unnamed > 0 && <p className="pl-3 text-xs">+ {unnamed} more</p>
+      )}
+      {guidance && <p className="text-xs opacity-80">{guidance}</p>}
     </div>
   );
 }

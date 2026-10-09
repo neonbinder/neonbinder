@@ -193,4 +193,43 @@ describe("storeReconciledUntilDone", () => {
     expect(stored.withheldElsewhere?.map((e) => e.label)).toEqual(["Refractor", "Gold"]);
     expect(stored.subtreeWalkSkipped).toBe(true);
   });
+
+  it("takes the LAST page's withheldSiblings and renameRefused pairs, never a sum (NEO-325)", async () => {
+    const sib = (itemIndex: number) => ({
+      itemIndex,
+      label: "Anime",
+      reason: "nameSharedInBatch" as const,
+      rows: [],
+    });
+    const ren = (itemIndex: number) => ({
+      itemIndex,
+      rowId: "r1" as never,
+      value: "Alpha",
+      requested: "Beta",
+      reason: "clash" as const,
+    });
+    const store = vi
+      .fn<(a: typeof ARGS) => Promise<ReconciledStoreResult>>()
+      .mockResolvedValueOnce({
+        hasMore: true,
+        withheldSiblings: [sib(0)],
+        withheldSiblingsTotal: 1,
+        renameRefused: [ren(0)],
+        renameRefusedTotal: 1,
+      })
+      .mockResolvedValueOnce({
+        hasMore: false,
+        withheldSiblings: [sib(0), sib(1)],
+        withheldSiblingsTotal: 2,
+        renameRefused: [ren(0), ren(1)],
+        renameRefusedTotal: 2,
+      });
+
+    const { stored } = await storeReconciledUntilDone(store, ARGS);
+
+    expect(stored.withheldSiblingsTotal).toBe(2);
+    expect(stored.withheldSiblings?.map((e) => e.itemIndex)).toEqual([0, 1]);
+    expect(stored.renameRefusedTotal).toBe(2);
+    expect(stored.renameRefused?.map((e) => e.itemIndex)).toEqual([0, 1]);
+  });
 });

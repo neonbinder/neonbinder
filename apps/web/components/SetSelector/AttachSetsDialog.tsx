@@ -12,6 +12,12 @@ import {
   NO_MARKETPLACE_IDS_MESSAGE,
 } from "../../convex/marketplaceResolvability";
 import { PAUSE_NOTICE_COPY, sideLabel } from "@/lib/marketplace/pause-notice";
+import {
+  duplicateNames,
+  itemLabel,
+  itemLabelParts,
+  type MarketplaceSide,
+} from "./marketplace-item-label";
 
 /**
  * Combined attach dialog (NEO-6 phase 1, reworked in NEO-196). Lists BSC and
@@ -74,6 +80,18 @@ import { PAUSE_NOTICE_COPY, sideLabel } from "@/lib/marketplace/pause-notice";
  *   Escape  — cancel
  */
 type Side = "bsc" | "sportlots";
+
+/** This dialog's side names → the label helper's. */
+const LABEL_SIDE: Record<Side, MarketplaceSide> = { bsc: "bsc", sportlots: "sl" };
+
+/**
+ * NEO-325 — the id suffix on a repeated candidate name, secondary to the name
+ * in the side's own hue (the ReconciliationModal / BaseSetPicker treatment).
+ */
+const ID_SUFFIX: Record<Side, string> = {
+  bsc: "text-[11px] font-normal tabular-nums text-blue-300/80",
+  sportlots: "text-[11px] font-normal tabular-nums text-purple-300/80",
+};
 
 type Candidate = {
   value: string;
@@ -473,6 +491,13 @@ export default function AttachSetsDialog({
     return () => document.removeEventListener("keydown", onKey);
   }, [isOpen, submitting, onClose, handleConfirm]);
 
+  // NEO-325 (D2) — names more than one candidate in a pane carries. Over the
+  // pane's WHOLE list (this BSC rung, or every SportLots set), never the
+  // search results, so a row's name does not change as the operator types.
+  // Only those rows add their id to the name they show and are called by.
+  const bscDups = useMemo(() => duplicateNames(bscCandidates), [bscCandidates]);
+  const slDups = useMemo(() => duplicateNames(slCandidates), [slCandidates]);
+
   const filteredBsc = useMemo(
     () => searchFilter(bscCandidates, bscSearch),
     [bscCandidates, bscSearch],
@@ -491,6 +516,13 @@ export default function AttachSetsDialog({
       } else {
         next.set(candidate.platformValue, {
           id: candidate.platformValue,
+          // NEO-325: the STORED label is the bare marketplace name, twin or
+          // not. Slot labels are data other code reads — the Base's labels
+          // are Reconcile's SportLots prefix filter, and name suggestions
+          // compare against them — so an "(#id)" baked in here would leak
+          // into both. The id is added where the label is SHOWN beside a
+          // same-named sibling (`ChecklistSourceFilter`, and this row's own
+          // name above the field). Still editable.
           label: candidate.value,
           ...(facet ? { facet } : {}),
         });
@@ -518,7 +550,9 @@ export default function AttachSetsDialog({
   };
   const browseSet = (candidate: Candidate) => {
     setBscSetSlug(candidate.platformValue);
-    setBscSetLabel(candidate.value);
+    // The pane title and the "Back to …" crumb name the set the way its row
+    // did, id and all when another set in the list shares its name.
+    setBscSetLabel(itemLabel(candidate, "bsc", bscDups));
     setBscView("variants");
     setBscSearch("");
     // The operator has picked a set to look inside, so the note that explained
@@ -627,6 +661,7 @@ export default function AttachSetsDialog({
                     side="bsc"
                     facet="setName"
                     candidate={c}
+                    dups={bscDups}
                     selection={bscSelected.get(c.platformValue)}
                     attached={alreadyAttached.bsc.has(c.platformValue)}
                     remap={needsRemap?.bsc.has(c.platformValue)}
@@ -641,6 +676,7 @@ export default function AttachSetsDialog({
                     side="bsc"
                     facet="variantName"
                     candidate={c}
+                    dups={bscDups}
                     selection={bscSelected.get(c.platformValue)}
                     remap={needsRemap?.bsc.has(c.platformValue)}
                     onToggle={toggle}
@@ -670,6 +706,7 @@ export default function AttachSetsDialog({
                 key={c.platformValue}
                 side="sportlots"
                 candidate={c}
+                dups={slDups}
                 selection={slSelected.get(c.platformValue)}
                 onToggle={toggle}
                 onLabel={updateLabel}
@@ -984,6 +1021,7 @@ function CandidateRow({
   side,
   facet,
   candidate,
+  dups,
   selection,
   attached,
   remap,
@@ -995,6 +1033,8 @@ function CandidateRow({
   /** BSC only — the facet this rung's ids belong to. */
   facet?: BscFacet;
   candidate: Candidate;
+  /** NEO-325 — names this pane lists more than once (`duplicateNames`). */
+  dups: ReadonlySet<string>;
   selection: Selection | undefined;
   /**
    * Already attached to this row. Set rows stay listed when attached — the set
@@ -1016,6 +1056,11 @@ function CandidateRow({
   // trip lands in the label field of the row that was tapped.
   const fieldClass = useFieldTestClass();
   const isSelected = !!selection;
+  // NEO-325 — a repeated name shows and is called by its id: two SportLots
+  // sets both named "Anime" were two identical "Toggle Anime" checkboxes. A
+  // unique name is unchanged. Every control below names the row the same way.
+  const { name, suffix } = itemLabelParts(candidate, LABEL_SIDE[side], dups);
+  const label = itemLabel(candidate, LABEL_SIDE[side], dups);
   return (
     <li
       className={`flex items-start gap-1 rounded ${
@@ -1028,11 +1073,16 @@ function CandidateRow({
         }`}
       >
         {attached ? (
-          <span
-            className="mt-0.5 shrink-0 text-[10px] uppercase tracking-wide text-gray-500"
-            aria-label={`${candidate.value} is already attached`}
-          >
-            attached
+          // a11y: an aria-label on a role-less span is not reliably read, so
+          // the visible marker is hidden and a sentence says it instead.
+          <span className="mt-0.5 shrink-0">
+            <span
+              aria-hidden="true"
+              className="text-[10px] uppercase tracking-wide text-gray-500"
+            >
+              attached
+            </span>
+            <span className="sr-only">{`${label} is already attached`}</span>
           </span>
         ) : (
           <input
@@ -1040,11 +1090,19 @@ function CandidateRow({
             checked={isSelected}
             onChange={() => onToggle(side, candidate, facet)}
             className="accent-[#00D558] mt-1"
-            aria-label={`Toggle ${candidate.value}`}
+            aria-label={`Toggle ${label}`}
           />
         )}
         <div className="flex-1 min-w-0">
-          <div className="truncate font-medium">{candidate.value}</div>
+          <div className="truncate font-medium">
+            {name}
+            {suffix && (
+              <>
+                {" "}
+                <span className={ID_SUFFIX[side]}>{suffix}</span>
+              </>
+            )}
+          </div>
           <div className="text-[10px] text-gray-500 truncate">
             id: {candidate.platformValue}
           </div>
@@ -1064,7 +1122,7 @@ function CandidateRow({
               value={selection.label}
               onChange={(e) => onLabel(side, candidate.platformValue, e.target.value)}
               placeholder="Label shown on filter chip"
-              aria-label={`Edit label for ${candidate.value}`}
+              aria-label={`Edit label for ${label}`}
               className={`${fieldClass("label")} mt-1 w-full px-2 py-0.5 text-xs`}
             />
           )}
@@ -1074,7 +1132,7 @@ function CandidateRow({
         <button
           type="button"
           onClick={() => onBrowse(candidate)}
-          aria-label={`Browse BSC set ${candidate.value}`}
+          aria-label={`Browse BSC set ${label}`}
           className="shrink-0 self-start mt-1.5 mr-1 text-xs px-2 py-0.5 rounded border border-gray-700 text-[#00B7FF] hover:border-[#00B7FF] focus:border-[#00B7FF] focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
         >
           Browse ›

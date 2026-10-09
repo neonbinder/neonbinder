@@ -192,7 +192,7 @@ describe("ReconciliationModal — NB sets with 0-N mappings per side", () => {
       .find((b) =>
         b
           .getAttribute("aria-label")
-          ?.startsWith(`Add ${SL_COMBINED.value} to ${BSC_S2.value}`),
+          ?.startsWith(`Add ${SL_COMBINED.value} to this set, ${BSC_S2.value}`),
       );
     fireEvent.click(add!);
 
