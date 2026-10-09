@@ -140,6 +140,30 @@ describe("NearMatchPanel", () => {
     expect(onPick).toHaveBeenCalledWith("p1", "Ken Griffey");
   });
 
+  it("marks every pick aria-disabled and swallows the press while busy (NEO-319)", () => {
+    const onPick = vi.fn();
+    const { rerender } = render(
+      <NearMatchPanel kind="player" matches={[close, exact]} onPick={onPick} busy />,
+    );
+    for (const row of screen.getAllByRole("button")) {
+      expect(row.getAttribute("aria-disabled")).toBe("true");
+      // Focusable still: the pressed row may be the one holding focus.
+      expect(row.hasAttribute("disabled")).toBe(false);
+    }
+    fireEvent.click(screen.getByLabelText("Link to Ken Griffey"));
+    expect(onPick).not.toHaveBeenCalled();
+
+    // Idle again: no attribute at all, and the press goes through.
+    rerender(
+      <NearMatchPanel kind="player" matches={[close, exact]} onPick={onPick} />,
+    );
+    expect(
+      screen.getByLabelText("Link to Ken Griffey").hasAttribute("aria-disabled"),
+    ).toBe(false);
+    fireEvent.click(screen.getByLabelText("Link to Ken Griffey"));
+    expect(onPick).toHaveBeenCalledWith("p1", "Ken Griffey");
+  });
+
   // -------------------------------------------------------------------------
   // NEO-284 — a team hit on one of its aliases
   // -------------------------------------------------------------------------

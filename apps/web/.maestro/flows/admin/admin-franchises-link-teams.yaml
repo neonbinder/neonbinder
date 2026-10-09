@@ -249,43 +249,25 @@ tags:
 # player already exists — opened it." So the vehicle for the rest of the flow
 # is this run's own player and nobody else's.
 
-# THE CONFIRMATION MOVED. THIS SCROLL STAYED, AND NOT FOR THE ASSERTION.
-#
-# NEO-260 took `Added <name>.` out of `PlayerManagement`'s page-level status
-# line and put it at the head of the DETAIL COLUMN, `sticky` under the binder
-# header. The old line sat at document y=293-313 while the `Create player`
-# button that earns it is at y=809-841: the button is fully visible only from
-# scroll 216 and the line is clear of the 79px header only to scroll 214, so no
-# scroll position on the 1024x629 viewport ever showed both, and the line's own
-# insertion moved the page away from it (+39px of content above the scroll
-# position, +39px of Chrome scroll anchoring). That is what reddened six flows
-# in run 34437403394. A stuck element reports its STUCK position to the driver
-# — `binder-header`, `sticky top-0`, reads [64,16][228,61] in every hierarchy
-# dump at every scroll — so the assertion below now passes from wherever the
-# tap left the page, with or without this step.
-#
-# WHAT THIS STEP IS FOR NOW is the commands AFTER it: the centred career-history scroll below, whose measured bounds were taken
-# from the page position THIS step produces. It stays until a green run says
-# otherwise.
-# It is positioning only, and nothing this flow proves changes. `Filter
-# players` is still the right anchor — it is the label of the list this screen
-# is built around and it is on the page whatever the create did, so a create
-# that was genuinely REFUSED still fails on the assertion below with the
-# refusal on screen in the screenshot. Its document position moved 332 -> 293
-# with the page-level line's removal, and the post-create scroll is now
-# 367 (813 - 500 for the button, +54 for the notice inserted above the
-# scroll position), so the travel is one UP swipe of ~313px, landing the page at scroll ~54 — the same swipe count as the
-# green measurement this note replaces.
-- scrollUntilVisible:
-    element:
-      text: "Filter players"
-    direction: UP
-    centerElement: true
+# NO SCROLL after the tap (NEO-319). The add form stays up, busy, until the new
+# player has loaded; the panel then replaces it in one render with its heading
+# revealed just under the app bar (~y=160), the sticky `Added …` notice above
+# it. (Until NEO-319 the form unmounted first, the page clamped and scroll
+# anchoring left the panel's top above the viewport, so this flow scrolled UP
+# to `Filter players` before reading anything.) The heading selector is the
+# panel's <h3> alone — `above:` is a top-edge test, the panel's name box sits
+# BELOW its `Player name` label and the busy form has no such label (see
+# player-management-add-and-career-history). The next scroll is a centred DOWN
+# scroll to a target below this position, so where it parks the page is set
+# by the target, not by where this step left it.
+- extendedWaitUntil:
+    visible:
+      text: "Frp${output.TOKEN}"
+      above:
+        text: "Player name"
     timeout: 7000
 
-- extendedWaitUntil:
-    visible: ".*Added Frp${output.TOKEN}.*"
-    timeout: 7000
+- assertVisible: ".*Added Frp${output.TOKEN}.*"
 
 # The career-history section is below the fold the moment the panel opens: at
 # 1024x629 the panel runs out of viewport around the Wikidata box. The scroll IS

@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -395,12 +396,19 @@ const STINT_LABEL_CLASS =
 function AddPlayerForm({
   sports,
   defaultSportId,
+  pending,
   onCreated,
   onCancel,
 }: {
   sports: SportRow[];
   /** Pre-selected from the list's sport filter, when one is set. */
   defaultSportId: Id<"selectorOptions"> | null;
+  /**
+   * NEO-319 — `onCreated` has handed the screen a player and the screen is
+   * still loading it. The form stays on screen, busy, until the panel that
+   * replaces it can render in the same commit — see `pendingId` in the screen.
+   */
+  pending: boolean;
   /**
    * NEO-260 — the confirmation travels WITH the id, because this form is gone
    * by the time anyone could read it.
@@ -419,7 +427,31 @@ function AddPlayerForm({
   const [name, setName] = useState("");
   const [sportId, setSportId] = useState<string>(defaultSportId ?? "");
   const [debouncedName, setDebouncedName] = useState("");
+  /** The create mutation is in flight. Narrower than `formBusy` below. */
   const [busy, setBusy] = useState(false);
+  /**
+   * NEO-319 — which control the operator pressed, so the busy state lands on
+   * THAT control: the primary (`Create player` or `Open {name}`), `Create
+   * anyway`, or a near-match row in the panel. Cleared by a refusal.
+   */
+  const [pressed, setPressed] = useState<
+    "primary" | "anyway" | "panel" | null
+  >(null);
+  /**
+   * NEO-319 — the near matches as they stood when Create was pressed.
+   *
+   * Before this ticket the form unmounted the instant `createByAdmin`
+   * resolved. It now stays up until the new player's panel can replace it, and
+   * `nearMatches` is a live subscription: the row that was just created comes
+   * back as an EXACT match of the name still in the box. Read live, the
+   * primary would flip to `Open {name}` and the panel would grow a row under a
+   * button that says `Creating…` — the form contradicting itself for the
+   * second or two it is waiting. Frozen at the press, it stays exactly what
+   * the operator pressed. `null` = not creating (never pressed, or refused).
+   */
+  const [frozen, setFrozen] = useState<{
+    matches: NearMatch[] | undefined;
+  } | null>(null);
   /**
    * NEO-260 — a REFUSED create, shown where the operator can act on it.
    *
@@ -469,12 +501,24 @@ function AddPlayerForm({
   // Three characters, not two: `nearMatches` is a duplicate guard, and two
   // letters match half the table without telling the operator anything.
   const probe = debouncedName.trim();
-  const matches: NearMatch[] | undefined = useQuery(
+  const liveMatches: NearMatch[] | undefined = useQuery(
     api.players.nearMatches,
     probe.length >= 3 && sportId
       ? { name: probe, sportId: sportId as Id<"selectorOptions"> }
       : "skip",
   );
+  const matches = frozen ? frozen.matches : liveMatches;
+  /** A create was pressed and has not been refused. */
+  const creating = frozen !== null;
+  /**
+   * NEO-319 — everything on the form is held while a create is in flight AND
+   * while the screen loads the player it produced (or the one a near match
+   * opened). The fields would otherwise invite edits that can no longer go
+   * anywhere: the row already exists.
+   */
+  const formBusy = creating || pending;
+  /** The control carrying `aria-busy` and the pulse, if any. */
+  const busyOn = formBusy ? pressed : null;
 
   const trimmed = name.trim();
   // The panel exports `hasExact` for callers that only need the boolean; this
@@ -517,12 +561,26 @@ function AddPlayerForm({
     (Number.isInteger(birthYearNum) &&
       birthYearNum >= MIN_BIRTH_YEAR &&
       birthYearNum <= MAX_BIRTH_YEAR);
-  const canCreate =
-    trimmed.length > 0 && sportId.length > 0 && birthYearValid && !busy;
+  const formReady =
+    trimmed.length > 0 && sportId.length > 0 && birthYearValid;
+  const canCreate = formReady && !formBusy;
 
-  const create = async () => {
+  /**
+   * NEO-319 — open a row that already exists: the promoted primary or a
+   * near-match pick. Goes through `onCreated` with no notice, exactly as
+   * before; the screen holds this form busy until that row has loaded.
+   */
+  const open = (id: Id<"players">, via: "primary" | "panel") => {
+    if (formBusy) return;
+    setPressed(via);
+    onCreated(id);
+  };
+
+  const create = async (via: "primary" | "anyway") => {
     if (!canCreate) return;
     setBusy(true);
+    setPressed(via);
+    setFrozen({ matches: liveMatches });
     setError(null);
     try {
       const parsedNewAliases = newAliases
@@ -555,6 +613,9 @@ function AddPlayerForm({
        * into "Could not add that player", which says nothing the operator can
        * act on.
        */
+      // NEO-319 — a refusal hands the form back: live matches, live fields.
+      setFrozen(null);
+      setPressed(null);
       setError(userFacingMessage(e, "Could not add that player."));
     } finally {
       setBusy(false);
@@ -565,10 +626,14 @@ function AddPlayerForm({
     <div className="space-y-4">
       <h3 className="text-lg font-semibold">Add a player</h3>
 
+      {/* NEO-319 — every field is natively `disabled` while the form is busy.
+          None of them is the control that was just pressed (that is a button
+          below, which stays focusable), so nothing loses focus to <body>. */}
       <Input
         label="New player name"
         value={name}
         placeholder="Ken Griffey Jr."
+        disabled={formBusy}
         onChange={(e) => setName(e.target.value)}
       />
 
@@ -582,8 +647,9 @@ function AddPlayerForm({
         <select
           id="new-player-sport"
           value={sportId}
+          disabled={formBusy}
           onChange={(e) => setSportId(e.target.value)}
-          className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF]"
+          className="w-full rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:outline-none focus:ring-2 focus:ring-[#00C2FF] disabled:cursor-not-allowed disabled:opacity-50"
         >
           <option value="">— pick a sport —</option>
           {sports.map((sport) => (
@@ -605,6 +671,7 @@ function AddPlayerForm({
         max={MAX_BIRTH_YEAR}
         value={birthYear}
         placeholder="1969"
+        disabled={formBusy}
         aria-invalid={birthYearValid ? undefined : true}
         onChange={(e) => setBirthYear(e.target.value)}
         helperText={
@@ -622,6 +689,7 @@ function AddPlayerForm({
         label="Other names (optional)"
         value={newAliases}
         placeholder="Ron Artest"
+        disabled={formBusy}
         onChange={(e) => setNewAliases(e.target.value)}
         helperText="Separate with commas. Names this player's cards also use."
       />
@@ -632,7 +700,14 @@ function AddPlayerForm({
         // Not "Link to": this button opens the row for editing, it does not
         // link anything to anything.
         pickLabel={(_n, match) => openLabel(match)}
-        onPick={(id) => onCreated(id as Id<"players">)}
+        onPick={(id) => open(id as Id<"players">, "panel")}
+        // NEO-319 — `busy` marks every row `aria-disabled` and swallows the
+        // press; the class dims them and turns the pointer away. Not `inert`:
+        // a pick from this panel leaves focus ON one of its rows, and
+        // inerting the focused node would drop it to <body> for the whole
+        // wait.
+        busy={formBusy}
+        className={formBusy ? "pointer-events-none opacity-50" : ""}
       />
 
       {/* The primary action swaps rather than the create button merely warning.
@@ -652,17 +727,46 @@ function AddPlayerForm({
           2.2 SC 3.2.2 / 2.4.3). Label, handler and enablement are props on a
           single element, so React patches the node and focus survives.
         */}
+        {/*
+          NEO-319 — busy is `aria-disabled` + `aria-busy`, never native
+          `disabled`, the rule SetRowActionButton documents: this is the button
+          the operator just pressed, and disabling a focused button blurs it to
+          <body> for the whole time the new player is loading. `formReady` is
+          unchanged while busy (the fields are locked), so native `disabled`
+          still means only what it meant before — the form is not filled in.
+
+          The busy NAME follows AddLeagueForm: "Creating player", not the
+          static `Create player {name}`, so a screen-reader user hears that
+          the press took rather than an invitation to press again (SC 4.1.2).
+          Every flow taps the idle name and never re-finds the button while it
+          is busy.
+        */}
         <NeonButton
           type="button"
-          onClick={() => {
+          onClick={(e) => {
+            if (formBusy) return;
+            // NEO-319 — take focus BEFORE the fields lock. Safari and Firefox
+            // on macOS do not focus a button on click, so focus can still be
+            // in the name box — which is about to become `disabled`, and a
+            // disabled focused field blurs to <body>.
+            e.currentTarget.focus();
             if (exact) {
-              onCreated(exact._id as Id<"players">);
+              open(exact._id as Id<"players">, "primary");
               return;
             }
-            void create();
+            void create("primary");
           }}
-          disabled={exact ? false : !canCreate}
-          aria-label={exact ? undefined : `Create player ${trimmed}`}
+          disabled={exact ? false : !formReady}
+          aria-disabled={formBusy || undefined}
+          aria-busy={busyOn === "primary" || undefined}
+          aria-label={
+            exact
+              ? undefined
+              : busyOn === "primary"
+                ? "Creating player"
+                : `Create player ${trimmed}`
+          }
+          className={busyOn === "primary" ? "motion-safe:animate-pulse" : undefined}
         >
           {/* NEO-254: the disambiguated label, which is byte-identical to
               `Open {name}` whenever the name matches exactly one row — so the
@@ -670,19 +774,48 @@ function AddPlayerForm({
               Rendered as the visible TEXT rather than an aria-label override,
               so the accessible name and what is on screen stay the same string
               (WCAG 2.2 SC 2.5.3). */}
-          {exact ? openLabel(exact) : busy ? "Adding…" : "Create player"}
+          {exact
+            ? openLabel(exact)
+            : busyOn === "primary"
+              ? "Creating…"
+              : "Create player"}
         </NeonButton>
         {exact && (
           <button
             type="button"
-            onClick={() => void create()}
-            disabled={!canCreate}
-            aria-label={`Create player ${trimmed} anyway`}
-            className="min-h-6 rounded px-2 py-1 text-sm text-slate-300 underline underline-offset-2 transition-colors hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={(e) => {
+              if (formBusy) return;
+              // As the primary: hold focus here before the fields lock.
+              e.currentTarget.focus();
+              void create("anyway");
+            }}
+            disabled={!formReady}
+            aria-disabled={formBusy || undefined}
+            aria-busy={busyOn === "anyway" || undefined}
+            // Same rule as the primary: the name says busy because the text does.
+            aria-label={
+              busyOn === "anyway"
+                ? "Creating player"
+                : `Create player ${trimmed} anyway`
+            }
+            // The pulse is motion-only; `opacity-70` is the busy cue a
+            // reduced-motion operator still sees (NeonButton dims its own
+            // aria-disabled state, so the primary needs nothing extra).
+            className={`min-h-6 rounded px-2 py-1 text-sm text-slate-300 underline underline-offset-2 transition-colors hover:text-neon-green focus:outline-none focus:ring-2 focus:ring-neon-green disabled:cursor-not-allowed disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:text-slate-300 ${
+              busyOn === "anyway"
+                ? "opacity-70 motion-safe:animate-pulse"
+                : formBusy
+                  ? "opacity-50"
+                  : ""
+            }`}
           >
-            {busy ? "Adding…" : "Create anyway"}
+            {busyOn === "anyway" ? "Creating…" : "Create anyway"}
           </button>
         )}
+        {/* NEO-319 — natively disabled only while the mutation is in flight,
+            as before: cancelling then cannot stop a write that is already on
+            its way. Live again while the screen LOADS the result, so a slow
+            load always has a way out — see `cancelAdd` in the screen. */}
         <NeonButton type="button" cancel onClick={onCancel} disabled={busy}>
           Cancel
         </NeonButton>
@@ -697,6 +830,16 @@ function AddPlayerForm({
           </p>
         )}
       </div>
+
+      {/* NEO-319 — the wait, said out loud (SC 4.1.3). The busy button's
+          own name change is not reliably announced while it holds focus, and
+          an Open from the panel changes no name at all. Mounted for the
+          form's whole life and empty when idle: a live region inserted
+          together with its text is announced unreliably (NearMatchPanel's
+          note). Outside the button row so it is nobody's label. */}
+      <p role="status" className="sr-only">
+        {creating ? "Creating player…" : pending ? "Opening player…" : ""}
+      </p>
     </div>
   );
 }
@@ -704,6 +847,102 @@ function AddPlayerForm({
 // ---------------------------------------------------------------------------
 // Detail panel
 // ---------------------------------------------------------------------------
+
+/** NEO-319 — one skeleton block: the screen's inline skeleton vocabulary
+ *  (BaseSetPicker's, on this screen's slate surface). */
+const SKELETON_BLOCK =
+  "rounded-md border border-slate-700 bg-slate-800/60 motion-safe:animate-pulse";
+
+/**
+ * NEO-319 — what the detail column shows while the player it is opening
+ * loads: a list click, a deep link, NAME_TAKEN's "Open the existing player",
+ * or a Cancel on an add form that had already handed one over.
+ *
+ * Before this the column showed the "Select a player…" placeholder for
+ * loading and for nothing-selected alike. One line of text standing in for a
+ * full panel collapsed the column for the length of the fetch — the page
+ * shortened under the operator, the browser clamped the scroll, and the
+ * panel then landed wherever scroll anchoring put it. The placeholder also
+ * said the wrong thing: a player HAD been selected.
+ *
+ * Shaped like the top of `PlayerDetail` — the name bar, then the
+ * `Player name` | `Sport: …` row and the birth-year row on the same grid and
+ * box height — so the swap reads as the panel filling in rather than a layout
+ * change. `min-h-[28rem]` holds the column at about the add form's height
+ * (its button row sits 437px down, NEO-260's measurement), so a Cancel from a
+ * busy form onto this does not shrink the page either.
+ *
+ * The status line is a SIBLING of the `aria-busy` block, not inside it: a
+ * screen reader may hold back changes inside a busy region until it clears,
+ * and this line is the one thing here meant to be heard. The heading takes
+ * focus (and is announced) the moment the panel replaces this.
+ */
+function PlayerDetailSkeleton() {
+  /**
+   * NEO-319 — somewhere for focus to wait. Two paths reach this skeleton by
+   * UNMOUNTING the control that was pressed: Cancel on an add form that has
+   * already handed a player over, and NAME_TAKEN's "Open the existing
+   * player" (which re-keys the panel). An unmount leaves focus on <body>
+   * (SC 2.4.3), so the skeleton takes it, and the panel's heading takes it
+   * from here once the player loads.
+   *
+   * Only when focus HAS been lost. A master-row click also lands here, and
+   * there the clicked row still holds focus — stealing it for the length of
+   * the fetch would make the list jumpier to drive by keyboard, and the
+   * heading takes over on load either way.
+   */
+  const holderRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const active = document.activeElement;
+    if (active === null || active === document.body) {
+      holderRef.current?.focus({ preventScroll: true });
+    }
+  }, []);
+  const field = (
+    <div>
+      <div className={`mb-1 h-4 w-24 ${SKELETON_BLOCK}`} />
+      <div className={`${FIELD_BOX_HEIGHT} ${SKELETON_BLOCK}`} />
+    </div>
+  );
+  return (
+    <div
+      ref={holderRef}
+      tabIndex={-1}
+      className="min-h-[28rem] rounded-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+    >
+      <p role="status" className="sr-only">
+        Loading player…
+      </p>
+      <div aria-busy="true" className="space-y-5">
+        <div className={`h-6 w-56 max-w-full ${SKELETON_BLOCK}`} />
+        <div className="space-y-3">
+          <div className="grid grid-cols-1 gap-x-4 gap-y-3 sm:grid-cols-2 sm:items-end">
+            {field}
+            <div className={`${FIELD_BOX_HEIGHT} ${SKELETON_BLOCK}`} />
+          </div>
+          <div className="grid grid-cols-1 gap-x-4 sm:grid-cols-2">
+            {field}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * NEO-319 — is the whole heading on screen and clear of the sticky app bar?
+ *
+ * The bar's height is read from `html`'s `scroll-padding-top` (globals.css
+ * reserves it there for every `scrollIntoView`), so this cannot drift from the
+ * value the reveal itself honours. No layout (happy-dom) reads as in view.
+ */
+function headingInView(el: HTMLElement): boolean {
+  const rect = el.getBoundingClientRect();
+  const barBottom =
+    parseFloat(getComputedStyle(document.documentElement).scrollPaddingTop) ||
+    0;
+  return rect.top >= barBottom && rect.bottom <= window.innerHeight;
+}
 
 /**
  * NEO-313 — a refusal from `players.setAdditionalSports` that means "something
@@ -983,6 +1222,7 @@ function PlayerDetail({
   sportLabel,
   sports,
   sportNameById,
+  reveal,
   onSelect,
 }: {
   player: Player;
@@ -990,10 +1230,56 @@ function PlayerDetail({
   /** NEO-313: every sport row, for the Sports field's "Add sport" choices. */
   sports: SportRow[];
   sportNameById: Map<string, string>;
+  /**
+   * NEO-319 — this panel replaced the add form (a create, or a near match's
+   * `Open`), so its header is brought into view on mount whether or not it
+   * already is. See `revealId` in the screen.
+   */
+  reveal: boolean;
   onSelect: (id: Id<"players">) => void;
 }) {
   const savePlayerFields = useMutation(api.players.savePlayerFields);
   const enrichFromWikidata = useAction(api.players.enrichFromWikidata);
+
+  /**
+   * NEO-319 — the panel's own heading takes focus whenever the player it is
+   * showing changes; LeagueManagement's pattern, for its reason.
+   *
+   * Every path that fills this column swaps it out from under the control
+   * that was pressed: Create and a near match's `Open` unmount the add form,
+   * and the NAME_TAKEN alert's "Open the existing player" changes this
+   * panel's `key`. A React unmount does not move focus — it leaves it on
+   * <body>, so the operator's next Tab restarts at the top of the page and a
+   * screen reader is told nothing about the panel that just appeared (WCAG 2.2
+   * SC 2.4.3). Focusing the heading announces the player now on screen and
+   * lets Tab continue into the fields. `tabIndex={-1}` makes it focusABLE
+   * without adding a tab stop.
+   *
+   * `preventScroll`, and the scroll decided here instead, because Chrome's
+   * `focus()` CENTRES an off-screen target (measured: headless Chrome, a
+   * 629px viewport) — a different spot every time, and `scroll-margin` does
+   * not steer it. So:
+   *
+   *  - `reveal` (the column was the add form a moment ago): always
+   *    `scrollIntoView`. The operator pressed Create at the BOTTOM of a form
+   *    and the header of what replaced it is wherever that leaves it —
+   *    NEO-319 was filed on exactly this, the header above the viewport.
+   *  - otherwise (a master-row click, a deep link): only when the heading is
+   *    out of view, i.e. under the sticky app bar or below the fold. A row
+   *    click whose panel header is already on screen must not move the page.
+   *
+   * A layout effect so the scroll lands before paint: one frame at the old
+   * position first would read as the very jump this ticket removes.
+   */
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useLayoutEffect(() => {
+    const heading = headingRef.current;
+    if (!heading) return;
+    heading.focus({ preventScroll: true });
+    if (reveal || !headingInView(heading)) {
+      heading.scrollIntoView({ block: "start" });
+    }
+  }, [player._id, reveal]);
 
   // Local draft state, re-seeded when the selected player changes. Binding
   // straight to the live row would drop keystrokes whenever an unrelated
@@ -1378,7 +1664,21 @@ function PlayerDetail({
         {/* NEO-212 (a11y): h3, not h4. Nothing on this screen renders an
             <h3> above it, so an <h4> here skipped a level and a screen reader
             navigating by heading gets a broken outline (WCAG 2.2 SC 1.3.1). */}
-        <h3 className="text-lg font-semibold leading-tight">{player.name}</h3>
+        {/* NEO-319 — `scroll-mt-20` (80px) on top of `html`'s
+            `scroll-padding-top: 80px` (the sticky app bar): the two ADD
+            (measured, headless Chrome — `scrollIntoView` parks a 128px-margin
+            heading at y=208, not 128), so the heading lands at y=160. With
+            the sticky `Added {name}.` notice above it the column's top is then
+            at ~y=94, just under the 79px bar, and the notice sits in flow
+            rather than pinned over the heading (SC 2.4.11). Without a notice
+            the column simply starts ~50px lower. */}
+        <h3
+          ref={headingRef}
+          tabIndex={-1}
+          className="scroll-mt-20 text-lg font-semibold leading-tight focus:outline-none focus-visible:rounded-sm focus-visible:ring-2 focus-visible:ring-neon-blue"
+        >
+          {player.name}
+        </h3>
         <CopyButton value={player.name} label="player name" />
         {qid &&
           (qidUrl ? (
@@ -1803,6 +2103,41 @@ export default function PlayerManagement() {
    * never be read as a report about a row it is not about.
    */
   const [createdNotice, setCreatedNotice] = useState<string | null>(null);
+  /**
+   * NEO-319 — the player the add form handed over and the screen is still
+   * loading. While set, the form stays mounted (busy) instead of unmounting.
+   *
+   * The page jump this ticket was filed on: `selectPlayer` used to close the
+   * form the instant `createByAdmin` resolved, while `getByIdParam` was still
+   * fetching the new id. For those ~2-3s the column held only the one-line
+   * "Select a player…" placeholder, so the document shrank by the form's
+   * height and the browser clamped the scroll UP; when the panel finally
+   * mounted, Chrome's scroll anchoring left its header above the viewport,
+   * and focus — the Create button having been unmounted — was on <body>.
+   *
+   * Holding the form until `selected` answers for this id makes the swap ONE
+   * commit: form out, panel in, the document never shrinks, and the panel's
+   * heading takes focus and is revealed as it mounts (see `revealId`).
+   */
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  /**
+   * NEO-319 — the panel that replaced the add form, whose header is brought
+   * into view on mount. Cleared by every other way of selecting a player, so
+   * a later row click back to the same player is an ordinary click.
+   */
+  const [revealId, setRevealId] = useState<string | null>(null);
+  /**
+   * NEO-319 — the add form's hand-over resolved to NOTHING and closed onto the
+   * empty state, unmounting the button that held focus. The empty-state line
+   * takes focus so it is not left on <body> (SC 2.4.3). A flag rather than
+   * "whenever the line mounts": the line is also the screen's first paint,
+   * and focusing it there would fight the filter's own focus-on-load.
+   */
+  const [focusPlaceholder, setFocusPlaceholder] = useState(false);
+  const placeholderRef = useRef<HTMLParagraphElement>(null);
+  useLayoutEffect(() => {
+    if (focusPlaceholder) placeholderRef.current?.focus({ preventScroll: true });
+  }, [focusPlaceholder]);
 
   useEffect(() => {
     const timer = setTimeout(
@@ -1925,6 +2260,9 @@ export default function PlayerManagement() {
     // here, so none of them gets an error banner — and none of them may throw.
     setSelectedId(playerParam);
     setAdding(false);
+    setPendingId(null);
+    setRevealId(null);
+    setFocusPlaceholder(false);
     // The linked row has to be REACHABLE, not merely selected: both filters
     // can hide it from the master list, so following a link clears them. The
     // debounced copy is cleared with the box it mirrors, or the search
@@ -1936,14 +2274,33 @@ export default function PlayerManagement() {
 
   // Bring the row into view once it has rendered. The master list is a 32rem
   // scroller, so the selected row can easily sit outside it and the link would
-  // look like it had done nothing. `block: "nearest"` leaves a row that is
-  // already on screen where it is — the usual case for `selectPlayer`, which
-  // writes the param too. A deep-linked player with no row at all (past the
-  // cap) simply has nothing to scroll to; the detail panel still opens.
+  // look like it had done nothing. A row that is already in the list's view
+  // stays where it is — the usual case for `selectPlayer`, which writes the
+  // param too. A deep-linked player with no row at all (past the cap) simply
+  // has nothing to scroll to; the detail panel still opens.
+  //
+  // NEO-319 — scrolls the LIST and nothing else. This was
+  // `row.scrollIntoView({ block: "nearest" })`, which scrolls every scrolling
+  // ancestor, the window included. After a create the new player's row
+  // appears in the list while the operator is down at the form's Create
+  // button, and "nearest" then dragged the whole page up to the row — a
+  // second jump, fighting the panel's own reveal. The window belongs to the
+  // detail panel (`PlayerDetail`'s heading effect); this effect only ever
+  // moves `masterListRef`.
   const followedPlayerParam = followedParams[0];
+  const masterListRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (followedPlayerParam === null) return;
-    selectedRowRef.current?.scrollIntoView({ block: "nearest" });
+    const list = masterListRef.current;
+    const row = selectedRowRef.current;
+    if (!list || !row) return;
+    const listBox = list.getBoundingClientRect();
+    const rowBox = row.getBoundingClientRect();
+    if (rowBox.top < listBox.top) {
+      list.scrollTop -= listBox.top - rowBox.top;
+    } else if (rowBox.bottom > listBox.bottom) {
+      list.scrollTop += rowBox.bottom - listBox.bottom;
+    }
   }, [followedPlayerParam]);
 
   const loaded = useMemo(() => management?.players ?? [], [management]);
@@ -2032,6 +2389,26 @@ export default function PlayerManagement() {
     selectedId ? { id: selectedId } : "skip",
   );
 
+  // NEO-319 — the add form's hand-over completes the moment the id it handed
+  // over has an answer. Followed during render, like `?player=` above: an
+  // effect would commit one frame of the form AND the panel's absence first.
+  //
+  // A player: the form closes and the panel opens in the same commit, with
+  // its header revealed. `null` (the id resolved to nothing — a row deleted
+  // between the create and the read): the form closes onto the existing
+  // empty state, and the confirmation goes with it, since a message about a
+  // row that is not on screen is the thing NEO-260 rules out.
+  if (pendingId !== null && selectedId === pendingId && selected !== undefined) {
+    setPendingId(null);
+    setAdding(false);
+    if (selected === null) {
+      setCreatedNotice(null);
+      setFocusPlaceholder(true);
+    } else {
+      setRevealId(selected._id);
+    }
+  }
+
   /**
    * Every path that opens a player goes through here — a master row, the add
    * form's `Added {name}.`, its near-match `Open {name}` pick, and the detail
@@ -2043,10 +2420,22 @@ export default function PlayerManagement() {
    * the row that was just created must not still be on screen over the next
    * row the operator clicks (NEO-260).
    */
-  const selectPlayer = (id: Id<"players">, notice?: string) => {
+  const selectPlayer = (
+    id: Id<"players">,
+    notice?: string,
+    /**
+     * NEO-319 — set ONLY by the add form (Create, `Open {name}`, a near-match
+     * pick): keep the form up, busy, until this id has loaded, instead of
+     * closing it now. See `pendingId`.
+     */
+    fromAddForm = false,
+  ) => {
     setCreatedNotice(notice ?? null);
     setSelectedId(id);
-    setAdding(false);
+    setPendingId(fromAddForm ? id : null);
+    setRevealId(null);
+    setFocusPlaceholder(false);
+    if (!fromAddForm) setAdding(false);
     // Keep the URL in step with the selection, so the player on screen is the
     // player a reload or a shared link reopens — and so Back from a career
     // stint's Team Management link comes back to this player rather than to
@@ -2057,6 +2446,20 @@ export default function PlayerManagement() {
     // this screen rather than a walk back through every row they looked at.
     followParam(id);
     setSearchParams({ player: id }, { replace: true });
+  };
+
+  /**
+   * NEO-319 — Cancel on the add form. While the form is waiting on a player it
+   * has already handed over, that player EXISTS (or is an existing row the
+   * operator chose to open): Cancel closes the form onto it — the loading
+   * skeleton, then its panel, header revealed — rather than pretending
+   * nothing happened. With nothing pending it is the plain close it always
+   * was.
+   */
+  const cancelAdd = () => {
+    if (pendingId !== null) setRevealId(pendingId);
+    setPendingId(null);
+    setAdding(false);
   };
 
   const counter = searching
@@ -2137,6 +2540,7 @@ export default function PlayerManagement() {
           onClick={() => {
             setAdding(true);
             setCreatedNotice(null);
+            setFocusPlaceholder(false);
           }}
         >
           Add player
@@ -2145,7 +2549,10 @@ export default function PlayerManagement() {
 
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,18rem)_1fr] gap-4">
         {/* Master */}
-        <div className="rounded-lg border border-slate-800 max-h-[32rem] overflow-y-auto">
+        <div
+          ref={masterListRef}
+          className="rounded-lg border border-slate-800 max-h-[32rem] overflow-y-auto"
+        >
           {searching && results === undefined ? (
             <p className="p-3 text-sm text-slate-400">Searching…</p>
           ) : management === undefined && !searching ? (
@@ -2292,16 +2699,23 @@ export default function PlayerManagement() {
             than opening a dialog. A modal here would hide the very list the
             operator is checking their new name against. */}
         <div className="rounded-lg border border-slate-800 p-4">
-          {createdNotice && (
+          {createdNotice && selected && !adding && (
             /* The add form's confirmation, at the head of the column that
                replaced the form — and `sticky`, so it is under the header
                rather than above it however far down the page the operator was
                when they pressed Create. See `createdNotice` for the
                measurements. `z-10` sits below `binder-header`'s `z-20`; the
                solid background is what stops panel content showing through it
-               once it is pinned. It does not move the page: the operator is
-               being handed to the career editor and scrolling them off it
-               would be a worse bug than the one this fixes.
+               once it is pinned. The notice itself does not move the page;
+               since NEO-319 the panel's heading does, once, to bring the
+               header the operator is being handed to into view — see
+               `PlayerDetail`'s heading effect.
+
+               NEO-319 — rendered only beside the panel it reports on. The id
+               now arrives while the form is still up (busy) and, after a
+               Cancel, while the loading skeleton is; the confirmation waits
+               for the player it confirms, so `Added {name}.` and the panel's
+               `Sport: …` line land in the same commit, as before.
 
                `pointer-events-none` for the reason `binder-header` carries it
                and NEO-260 found the cost of getting it wrong: a sticky box
@@ -2319,8 +2733,9 @@ export default function PlayerManagement() {
             <AddPlayerForm
               sports={sportList}
               defaultSportId={sportId ?? null}
-              onCreated={selectPlayer}
-              onCancel={() => setAdding(false)}
+              pending={pendingId !== null}
+              onCreated={(id, notice) => selectPlayer(id, notice, true)}
+              onCancel={cancelAdd}
             />
           ) : selected ? (
             <PlayerDetail
@@ -2331,10 +2746,21 @@ export default function PlayerManagement() {
               }
               sports={sportList}
               sportNameById={sportNameById}
+              reveal={revealId === selected._id}
               onSelect={selectPlayer}
             />
+          ) : selectedId && selected === undefined ? (
+            <PlayerDetailSkeleton />
           ) : (
-            <p className="text-sm text-slate-400">
+            /* Only for NO selection and for an id that resolved to nothing
+               (`null`). NEO-319: it used to stand in for "still loading" as
+               well, and its one line in place of a full panel is what
+               collapsed the column under the operator. */
+            <p
+              ref={placeholderRef}
+              tabIndex={-1}
+              className="rounded-sm text-sm text-slate-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-neon-blue"
+            >
               Select a player to see and edit everything we know about them.
             </p>
           )}

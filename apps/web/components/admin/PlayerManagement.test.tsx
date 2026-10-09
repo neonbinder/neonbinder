@@ -238,7 +238,24 @@ const GWYNN = {
   lastUpdated: 1,
 };
 
+/**
+ * NEO-319 — the second Bob Allen the NEO-254 fork tests create. Registered so
+ * `getByIdParam` answers for him: since NEO-319 the confirmation renders only
+ * beside the panel it reports on, and a create whose id resolved to NOTHING
+ * (a test's unregistered id) now closes onto the empty state, notice and all.
+ */
+const NEW_BOB_ALLEN = {
+  _id: "p-new",
+  _creationTime: 9,
+  name: "Bob Allen",
+  nameNormalized: "allen bob",
+  sportId: "sport-baseball",
+  birthYear: 1937,
+  lastUpdated: 1,
+};
+
 const PLAYERS_BY_ID: Record<string, unknown> = {
+  "p-new": NEW_BOB_ALLEN,
   "p-gwynn": GWYNN,
   "p-griffey": GRIFFEY,
   "p-trout": TROUT,
@@ -383,6 +400,12 @@ let searchResults: unknown;
 let nearMatches: unknown;
 /** NEO-313 — `players.cardsForPlayer`'s answer, keyed by player id. */
 let cardsForPlayerById: Record<string, unknown> = {};
+/**
+ * NEO-319 — ids `players.getByIdParam` is still LOADING: answered `undefined`,
+ * as a real subscription does until its first result. The rest of the file
+ * resolves every id synchronously, which is exactly what hid the page jump.
+ */
+const loadingIds = new Set<string>();
 
 function routeQuery(ref: string, args: Record<string, unknown>): unknown {
   switch (ref) {
@@ -402,6 +425,7 @@ function routeQuery(ref: string, args: Record<string, unknown>): unknown {
     // table at all, where `players.get` would have REJECTED the argument and
     // thrown the query into the app-level error boundary.
     case "players.getByIdParam":
+      if (loadingIds.has(args.id as string)) return undefined;
       return PLAYERS_BY_ID[args.id as string] ?? null;
     case "teams.getManyByIds":
       return TEAMS.filter((t) =>
@@ -432,6 +456,7 @@ beforeEach(() => {
   searchResults = [GRIFFEY, TROUT];
   nearMatches = undefined;
   cardsForPlayerById = {};
+  loadingIds.clear();
   PLAYERS_BY_ID["p-gwynn"] = GWYNN;
   mockCreateByAdmin.mockResolvedValue({ id: "p-trout", created: true });
   mockSavePlayerFields.mockResolvedValue(null);
@@ -931,6 +956,502 @@ describe("PlayerManagement — the add form", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(mockCreateByAdmin).not.toHaveBeenCalled();
     expect(screen.queryByLabelText("New player name")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-319 — the hand-over from the add form, and the loading state
+// ---------------------------------------------------------------------------
+
+/**
+ * NEO-319 — pressing Create made the page jump.
+ *
+ * `selectPlayer` closed the add form the instant `createByAdmin` resolved,
+ * while `players.getByIdParam` was still loading the new id, and the detail
+ * column showed the one-line "Select a player…" placeholder for loading and
+ * for nothing-selected alike. The column collapsed, the browser clamped the
+ * scroll up, the panel mounted 2-3s later wherever scroll anchoring left it
+ * (header above the viewport), and focus — its button unmounted — was on
+ * <body>.
+ *
+ * Every other test in this file resolves `getByIdParam` synchronously, which
+ * is precisely how all of that stayed invisible. These hold the id in
+ * `loadingIds` (answered `undefined`) and release it by hand.
+ */
+
+const PLACEHOLDER =
+  "Select a player to see and edit everything we know about them.";
+
+/**
+ * Records whether the placeholder EVER renders while it runs — not just at the
+ * moments a test happens to look. A MutationObserver sees every commit.
+ */
+function watchForPlaceholder() {
+  let seen = document.body.textContent?.includes(PLACEHOLDER) ?? false;
+  const observer = new MutationObserver(() => {
+    if (document.body.textContent?.includes(PLACEHOLDER)) seen = true;
+  });
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
+  return {
+    seen: () => seen,
+    stop: () => observer.disconnect(),
+  };
+}
+
+/** Type a name and press Create — the form already open with a sport chosen. */
+function pressCreate(name: string) {
+  fireEvent.change(screen.getByLabelText("New player name"), {
+    target: { value: name },
+  });
+  fireEvent.click(screen.getByRole("button", { name: `Create player ${name}` }));
+}
+
+describe("NEO-319: the add form hands over without a jump", () => {
+  it("holds the form busy until the new player loads, then opens it focused and revealed", async () => {
+    const scrollIntoView = vi
+      .spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    loadingIds.add("p-trout");
+    const { container, rerender } = render(<PlayerManagement />);
+    openAddForm(container);
+    const watch = watchForPlaceholder();
+
+    pressCreate("Mike Trout");
+
+    // Busy, on the control that was pressed: the name says so as well as the
+    // text (AddLeagueForm's rule), and it stays FOCUSABLE — aria-disabled,
+    // never native `disabled`, which would blur it to <body>.
+    const busy = await screen.findByRole("button", { name: "Creating player" });
+    await waitFor(() => expect(mockCreateByAdmin).toHaveBeenCalledTimes(1));
+    expect(busy.textContent).toBe("Creating…");
+    expect(busy.getAttribute("aria-busy")).toBe("true");
+    expect(busy.getAttribute("aria-disabled")).toBe("true");
+    expect(busy.hasAttribute("disabled")).toBe(false);
+    expect(busy.className).toContain("motion-safe:animate-pulse");
+    // The fields are locked: the row exists now, edits could go nowhere.
+    expect(screen.getByLabelText("New player name")).toHaveProperty("disabled", true);
+    expect(container.querySelector("#new-player-sport")).toHaveProperty("disabled", true);
+    // And the form is STILL THERE — the column has not collapsed — while the
+    // confirmation waits for the panel it confirms.
+    expect(screen.getByRole("heading", { level: 3, name: "Add a player" })).toBeTruthy();
+    expect(screen.queryByText("Added Mike Trout.")).toBeNull();
+    expect(screen.queryByRole("heading", { level: 3, name: "Mike Trout" })).toBeNull();
+
+    // The id loads.
+    loadingIds.delete("p-trout");
+    rerender(<PlayerManagement />);
+
+    const heading = await screen.findByRole("heading", {
+      level: 3,
+      name: "Mike Trout",
+    });
+    // Form out, panel AND confirmation in, in one commit.
+    expect(screen.queryByRole("heading", { level: 3, name: "Add a player" })).toBeNull();
+    expect(screen.getByText("Added Mike Trout.")).toBeTruthy();
+    // Focus lands on the panel's heading rather than <body>...
+    expect(document.activeElement).toBe(heading);
+    // ...and the heading was brought into view: it replaced the form, so it
+    // is revealed whether or not it looks on screen.
+    expect(scrollIntoView.mock.contexts).toContain(heading);
+    // The empty-state copy never rendered at any point after the press.
+    expect(watch.seen()).toBe(false);
+    watch.stop();
+  });
+
+  it("keeps the busy form exactly as pressed while the new row shows up as a match", async () => {
+    // `nearMatches` is live, and the row just created comes back as an EXACT
+    // match of the name still in the box. Read live, the primary would flip
+    // to "Open Mike Trout" under a press that said Create.
+    loadingIds.add("p-trout");
+    const { container, rerender } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Mike Trout" },
+    });
+    // Past the debounce, so the lookup is SUBSCRIBED for this name — without
+    // it the query is skipped and the assertion below would pass vacuously.
+    await waitFor(() =>
+      expect(lastArgs("players.nearMatches")).toEqual({
+        name: "Mike Trout",
+        sportId: "sport-baseball",
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create player Mike Trout" }),
+    );
+    await screen.findByRole("button", { name: "Creating player" });
+
+    nearMatches = [{ _id: "p-trout", name: "Mike Trout", confidence: "exact" }];
+    rerender(<PlayerManagement />);
+
+    expect(screen.getByRole("button", { name: "Creating player" }).textContent).toBe(
+      "Creating…",
+    );
+    expect(screen.queryByRole("button", { name: /^Open Mike Trout/ })).toBeNull();
+    expect(screen.queryByText("Possible matches")).toBeNull();
+  });
+
+  it("hands a refused create back: busy clears and the refusal shows as before", async () => {
+    let reject: ((e: unknown) => void) | undefined;
+    mockCreateByAdmin.mockReturnValue(
+      new Promise((_resolve, rej) => {
+        reject = rej;
+      }),
+    );
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    pressCreate("Mike Trout");
+
+    const busy = await screen.findByRole("button", { name: "Creating player" });
+    expect(busy.getAttribute("aria-busy")).toBe("true");
+
+    reject?.(new ConvexError("Two players are already called Mike Trout."));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Two players are already called Mike Trout.");
+    // The SAME element, back to idle — focus never had to move.
+    const idle = screen.getByRole("button", { name: "Create player Mike Trout" });
+    expect(idle).toBe(busy);
+    expect(idle.textContent).toBe("Create player");
+    expect(idle.hasAttribute("aria-busy")).toBe(false);
+    expect(idle.hasAttribute("aria-disabled")).toBe(false);
+    expect(screen.getByLabelText("New player name")).toHaveProperty("disabled", false);
+  });
+
+  it("closes onto the new player when Cancel is pressed while it loads", async () => {
+    const scrollIntoView = vi
+      .spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    loadingIds.add("p-trout");
+    const { container, rerender } = render(<PlayerManagement />);
+    openAddForm(container);
+    const watch = watchForPlaceholder();
+    pressCreate("Mike Trout");
+    await screen.findByRole("button", { name: "Creating player" });
+
+    // The player exists; Cancel cannot un-create it. It closes the form onto
+    // the player — never onto "Select a player…", which would be untrue.
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    expect(cancel.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(cancel);
+
+    expect(screen.queryByLabelText("New player name")).toBeNull();
+    expect(screen.getByText("Loading player…")).toBeTruthy();
+
+    loadingIds.delete("p-trout");
+    rerender(<PlayerManagement />);
+
+    const heading = await screen.findByRole("heading", {
+      level: 3,
+      name: "Mike Trout",
+    });
+    expect(screen.getByText("Added Mike Trout.")).toBeTruthy();
+    expect(document.activeElement).toBe(heading);
+    expect(scrollIntoView.mock.contexts).toContain(heading);
+    expect(watch.seen()).toBe(false);
+    watch.stop();
+  });
+
+  it("falls back to the empty state if the new id resolves to nothing", async () => {
+    // A row deleted between the create and the read. Nothing to open, so the
+    // form closes onto the ordinary empty state — and does not leave a
+    // confirmation standing over a row that is not on screen.
+    mockCreateByAdmin.mockResolvedValue({ id: "p-vanished", created: true });
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    pressCreate("Mike Trout");
+
+    expect(await screen.findByText(PLACEHOLDER)).toBeTruthy();
+    expect(screen.queryByLabelText("New player name")).toBeNull();
+    expect(screen.queryByText("Added Mike Trout.")).toBeNull();
+    expect(screen.queryByText("Loading player…")).toBeNull();
+  });
+
+  it("holds the form the same way for a near match's Open", async () => {
+    nearMatches = [
+      { _id: "p-griffey", name: "Ken Griffey Jr.", confidence: "exact" },
+    ];
+    loadingIds.add("p-griffey");
+    const { container, rerender } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Ken Griffey Jr." },
+    });
+    const open = await screen.findByRole("button", { name: "Open Ken Griffey Jr." });
+    fireEvent.click(open);
+
+    // Busy on the pressed control, which keeps its own name: it is opening,
+    // not creating.
+    expect(open.getAttribute("aria-busy")).toBe("true");
+    expect(open.textContent).toBe("Open Ken Griffey Jr.");
+    expect(screen.getByLabelText("New player name")).toHaveProperty("disabled", true);
+    // A second press while busy does nothing.
+    fireEvent.click(screen.getByLabelText("Create player Ken Griffey Jr. anyway"));
+    expect(mockCreateByAdmin).not.toHaveBeenCalled();
+    expect(screen.queryByText(PLACEHOLDER)).toBeNull();
+
+    loadingIds.delete("p-griffey");
+    rerender(<PlayerManagement />);
+
+    const heading = await screen.findByRole("heading", {
+      level: 3,
+      name: "Ken Griffey Jr.",
+    });
+    expect(document.activeElement).toBe(heading);
+  });
+});
+
+describe("NEO-319: a player that is still loading", () => {
+  it("shows a loading skeleton, not the empty copy, after a list click", () => {
+    loadingIds.add("p-griffey");
+    const { rerender } = render(<PlayerManagement />);
+    selectGriffey();
+
+    expect(screen.queryByText(PLACEHOLDER)).toBeNull();
+    const status = screen.getByText("Loading player…");
+    expect(status.getAttribute("role")).toBe("status");
+    expect(status.className).toContain("sr-only");
+    // The skeleton is a busy region holding the column open...
+    const busy = document.querySelector('[aria-busy="true"]')!;
+    expect(busy).toBeTruthy();
+    expect(busy.parentElement!.className).toContain("min-h-[28rem]");
+    // ...and the status line is OUTSIDE it, where a screen reader will not
+    // hold it back until the region clears.
+    expect(busy.contains(status)).toBe(false);
+
+    loadingIds.delete("p-griffey");
+    rerender(<PlayerManagement />);
+
+    const heading = screen.getByRole("heading", {
+      level: 3,
+      name: "Ken Griffey Jr.",
+    });
+    expect(screen.queryByText("Loading player…")).toBeNull();
+    expect(document.activeElement).toBe(heading);
+  });
+
+  it("keeps the empty copy for no selection at all", () => {
+    render(<PlayerManagement />);
+    expect(screen.getByText(PLACEHOLDER)).toBeTruthy();
+    expect(screen.queryByText("Loading player…")).toBeNull();
+  });
+
+  it("does not move the page for a list click whose panel header is already on screen", () => {
+    // happy-dom does no layout, so every box is 0x0 at the top — "on screen".
+    const scrollIntoView = vi
+      .spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    const heading = screen.getByRole("heading", {
+      level: 3,
+      name: "Ken Griffey Jr.",
+    });
+    expect(document.activeElement).toBe(heading);
+    expect(scrollIntoView.mock.contexts).not.toContain(heading);
+  });
+
+  it("brings the header into view for a list click when it is off screen", () => {
+    // The page scrolled far enough that the column's top — and the heading in
+    // it — is above the viewport. Focusing it must not leave it there.
+    const scrollIntoView = vi
+      .spyOn(Element.prototype, "scrollIntoView")
+      .mockImplementation(() => {});
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      () =>
+        ({
+          top: -300,
+          bottom: -276,
+          left: 0,
+          right: 0,
+          width: 0,
+          height: 24,
+          x: 0,
+          y: -300,
+        }) as DOMRect,
+    );
+    render(<PlayerManagement />);
+    selectGriffey();
+
+    const heading = screen.getByRole("heading", {
+      level: 3,
+      name: "Ken Griffey Jr.",
+    });
+    expect(document.activeElement).toBe(heading);
+    expect(scrollIntoView.mock.contexts).toContain(heading);
+  });
+});
+
+/**
+ * NEO-319 accessibility audit — the wait has to be HEARD, and focus must never
+ * fall to <body> on the way through it.
+ */
+describe("NEO-319: the wait, for assistive tech and focus", () => {
+  /** The add form's own live line: the only status holding these words. */
+  const formStatus = (text: string) => {
+    const el = screen.getByText(text);
+    expect(el.getAttribute("role")).toBe("status");
+    expect(el.className).toContain("sr-only");
+    return el;
+  };
+
+  it("says 'Creating player…' while a create waits, and empties on a refusal", async () => {
+    let reject: ((e: unknown) => void) | undefined;
+    mockCreateByAdmin.mockReturnValue(
+      new Promise((_resolve, rej) => {
+        reject = rej;
+      }),
+    );
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    // Mounted, and silent, before anything is pressed: a live region that
+    // appears together with its text is announced unreliably.
+    const form = screen
+      .getByRole("heading", { level: 3, name: "Add a player" })
+      .closest("div")!;
+    const idleStatus = Array.from(
+      form.querySelectorAll('p[role="status"].sr-only'),
+    );
+    expect(idleStatus).toHaveLength(1);
+    expect(idleStatus[0].textContent).toBe("");
+
+    pressCreate("Mike Trout");
+    const line = formStatus("Creating player…");
+    expect(line).toBe(idleStatus[0]);
+    // Outside the button row: it labels nothing.
+    expect(
+      line.parentElement!.contains(screen.getByRole("button", { name: "Cancel" })),
+    ).toBe(true);
+    expect(
+      screen.getByRole("button", { name: "Cancel" }).parentElement!.contains(line),
+    ).toBe(false);
+
+    reject?.(new ConvexError("Two players are already called Mike Trout."));
+    await screen.findByRole("alert");
+    expect(line.textContent).toBe("");
+  });
+
+  it("keeps saying 'Creating player…' after the create lands, while the player loads", async () => {
+    loadingIds.add("p-trout");
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    pressCreate("Mike Trout");
+    await waitFor(() => expect(mockCreateByAdmin).toHaveBeenCalledTimes(1));
+    await screen.findByRole("button", { name: "Creating player" });
+    expect(formStatus("Creating player…")).toBeTruthy();
+  });
+
+  it("says 'Opening player…' for an Open, and marks the near-match rows disabled", async () => {
+    nearMatches = [
+      { _id: "p-griffey", name: "Ken Griffey Jr.", confidence: "exact" },
+      { _id: "p-griffey-sr", name: "Ken Griffey", confidence: "close" },
+    ];
+    loadingIds.add("p-griffey");
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    fireEvent.change(screen.getByLabelText("New player name"), {
+      target: { value: "Ken Griffey Jr." },
+    });
+    const open = await screen.findByRole("button", { name: "Open Ken Griffey Jr." });
+    const row = screen.getByLabelText("Open Ken Griffey");
+    expect(row.hasAttribute("aria-disabled")).toBe(false);
+
+    fireEvent.click(open);
+
+    expect(formStatus("Opening player…")).toBeTruthy();
+    expect(screen.queryByText("Creating player…")).toBeNull();
+    // The panel's rows say they are out of action, not just look it — and
+    // stay focusable (no native `disabled`).
+    expect(row.getAttribute("aria-disabled")).toBe("true");
+    expect(row.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(row);
+    // Still waiting on the FIRST open: the second pick went nowhere.
+    expect(lastArgs("players.getByIdParam")).toEqual({ id: "p-griffey" });
+  });
+
+  it("moves focus to the pressed Create before the fields lock", async () => {
+    // Safari and Firefox on macOS do not focus a button on click, so focus
+    // can still be in the name box — which the busy state disables.
+    loadingIds.add("p-trout");
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    const nameBox = screen.getByLabelText("New player name");
+    fireEvent.change(nameBox, { target: { value: "Mike Trout" } });
+    nameBox.focus();
+    expect(document.activeElement).toBe(nameBox);
+
+    const create = screen.getByRole("button", { name: "Create player Mike Trout" });
+    fireEvent.click(create);
+
+    expect(document.activeElement).toBe(create);
+    await screen.findByRole("button", { name: "Creating player" });
+    expect(document.activeElement).toBe(create);
+    expect(nameBox).toHaveProperty("disabled", true);
+  });
+
+  it("parks focus on the loading panel when Cancel is pressed during the wait", async () => {
+    loadingIds.add("p-trout");
+    const { container, rerender } = render(<PlayerManagement />);
+    openAddForm(container);
+    pressCreate("Mike Trout");
+    await screen.findByRole("button", { name: "Creating player" });
+
+    const cancel = screen.getByRole("button", { name: "Cancel" });
+    cancel.focus();
+    fireEvent.click(cancel);
+
+    // The Cancel button is gone; focus waits on the skeleton, which carries
+    // the "Loading player…" line — not on <body>.
+    const holder = screen.getByText("Loading player…").parentElement!;
+    expect(document.activeElement).toBe(holder);
+    expect(holder.getAttribute("tabindex")).toBe("-1");
+
+    loadingIds.delete("p-trout");
+    rerender(<PlayerManagement />);
+    expect(document.activeElement).toBe(
+      screen.getByRole("heading", { level: 3, name: "Mike Trout" }),
+    );
+  });
+
+  it("leaves focus on a clicked row while it loads, then hands it to the heading", () => {
+    loadingIds.add("p-griffey");
+    const { rerender } = render(<PlayerManagement />);
+    const row = screen.getByRole("button", { name: /Ken Griffey Jr\./ });
+    row.focus();
+    fireEvent.click(row);
+
+    // Focus was not lost, so the skeleton does not take it.
+    expect(screen.getByText("Loading player…")).toBeTruthy();
+    expect(document.activeElement).toBe(row);
+
+    loadingIds.delete("p-griffey");
+    rerender(<PlayerManagement />);
+    expect(document.activeElement).toBe(
+      screen.getByRole("heading", { level: 3, name: "Ken Griffey Jr." }),
+    );
+  });
+
+  it("focuses the empty-state line when the hand-over resolves to nothing", async () => {
+    mockCreateByAdmin.mockResolvedValue({ id: "p-vanished", created: true });
+    const { container } = render(<PlayerManagement />);
+    openAddForm(container);
+    pressCreate("Mike Trout");
+
+    const line = await screen.findByText(PLACEHOLDER);
+    expect(document.activeElement).toBe(line);
+    expect(line.getAttribute("tabindex")).toBe("-1");
+  });
+
+  it("does not focus the empty-state line on an ordinary first paint", () => {
+    render(<PlayerManagement />);
+    expect(document.activeElement).not.toBe(screen.getByText(PLACEHOLDER));
+    // The filter's own focus-on-load is what wins.
+    expect(document.activeElement).toBe(screen.getByLabelText("Filter players"));
   });
 });
 
@@ -1627,9 +2148,25 @@ describe("PlayerManagement — the ?player deep link", () => {
     // The scroll matters as much as the selection: the master list is a 32rem
     // scroller, so a selected row can land off-screen and the link would look
     // like it did nothing.
+    //
+    // NEO-319 — and it scrolls the LIST, never the page. This used to be the
+    // row's own `scrollIntoView`, which moves every scrolling ancestor, the
+    // window included; after a create that dragged the page up to the new
+    // row while the operator was down at the form. happy-dom does no layout,
+    // so the geometry is handed in: the list's box at y 100-612, Trout's row
+    // 40px below its bottom edge.
     const scrollIntoView = vi
       .spyOn(Element.prototype, "scrollIntoView")
       .mockImplementation(() => {});
+    const box = (top: number, bottom: number) =>
+      ({ top, bottom, left: 0, right: 0, width: 0, height: bottom - top, x: 0, y: top }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (this.getAttribute("aria-current") === "true") return box(612, 652);
+        if (this.className.includes("max-h-[32rem]")) return box(100, 612);
+        return box(0, 0);
+      },
+    );
 
     renderAt("/admin/players?player=p-trout");
 
@@ -1639,9 +2176,13 @@ describe("PlayerManagement — the ?player deep link", () => {
       "value",
       "Mike Trout",
     );
-    expect(scrollIntoView).toHaveBeenCalled();
-
-    scrollIntoView.mockRestore();
+    const list = listRow(/Mike Trout/).closest("div")!;
+    expect(list.className).toContain("max-h-[32rem]");
+    expect(list.scrollTop).toBe(40);
+    // Nothing asked the window to move to the ROW.
+    expect(
+      scrollIntoView.mock.contexts.some((el) => el === listRow(/Mike Trout/)),
+    ).toBe(false);
   });
 
   it("leaves the screen alone for an id this deployment does not have", () => {
