@@ -73,11 +73,11 @@ tags:
 #       reads as its VALUE (`Q…`) and its label (`Wikidata id`), and the master
 #       row dropped its Q-glyph in NEO-235, so nothing else on screen answers
 #       to this pattern.
-#       The long wait is NOT on the link itself. It is on that input's value
-#       (`Q[0-9]+`), which re-seeds from the same live row (NEO-235) and sits
-#       on screen where the create leaves the page; the link is then reached
-#       by a centred UP scroll, which is the assertion. See (d) below for why
-#       a wait on the link is a wait on an element above the viewport.
+#       The long wait is on the link itself: since NEO-319 the create
+#       reveals the detail header under the app bar and nothing scrolls the
+#       page afterwards, so the link renders where the operator is already
+#       looking. (Before NEO-319 the header was left above the viewport and
+#       this flow gated on the `Wikidata id` input's value, then scrolled UP.)
 # No `when:` branch and no conditional runFlow: there is no path to the end
 # that skips the live lookup (R2/R10).
 #
@@ -103,9 +103,9 @@ tags:
 #
 # R5 — every wait states its timeout. 7000 everywhere in-app, 45000 on the
 # post-launchApp heading gate, and ONE sanctioned exception at step (d): a
-# live external round-trip, recorded at the site with its arithmetic. Per R5's
-# "split it", that long wait is a GATE on an on-screen element, and the
-# scroll that asserts the header link under it runs at 7000.
+# live external round-trip, recorded at the site with its arithmetic. No
+# scroll follows it (the header link is already on screen), so there is
+# nothing for R5's "split it" to separate.
 #
 # R7 / R7a — writes ONE global `players` row (permanent; no delete exists),
 # under a name no other flow or product path will ever search for. No set,
@@ -214,43 +214,40 @@ tags:
 - tapOn:
     id: "Create player Harmon Killebrew"
 
-# R2(b). INSERTED, not adopted — the only branch that enqueues enrichment.
-# Renders at the head of the detail column, `sticky` under the binder header,
-# so it is on screen at every scroll position the create can leave behind.
+# WHERE THE CREATE LEAVES THE PAGE (NEO-319). The add form stays up, busy,
+# until `players.getByIdParam` answers for the new id; the detail panel then
+# replaces it in one render and scrolls its heading to sit just under the
+# sticky app bar (~y=160). Nothing after this scrolls: the heading, the
+# `Added …` notice above it, the `Sport:` row below it and the header's
+# `Wikidata Q…` link (when it lands) are all on screen from here on. (Before
+# NEO-319 the form unmounted first, the page clamped, then scroll anchoring put
+# the heading ABOVE the viewport — CI run 37009932571 — and this flow needed a
+# mount gate and an UP scroll to read the header.)
+#
+# The heading, and only the heading: the name is also the value of the busy
+# form's `New player name` box and of the panel's `Player name` box (maestro
+# reads an input by its value), and the filter's nonsense string keeps it off
+# every master row. `above:` is a top-edge test, the heading sits above the
+# panel's `Player name` label, the panel's box below it, and the busy form has
+# no such label — so this matches the panel's <h3> alone, with no scroll before
+# it. A create that was refused, or a panel that mounts with its header off
+# screen, fails HERE on 7000 with the screen in the screenshot.
 - extendedWaitUntil:
-    visible: ".*Added Harmon Killebrew.*"
+    visible:
+      text: "Harmon Killebrew"
+      above:
+        text: "Player name"
     timeout: 7000
 
-# ── WHERE THE CREATE LEAVES THE PAGE (CI run 37009932571, both attempts) ─────
-# NOTHING BELOW MAY SCROLL UNTIL THE DETAIL PANEL HAS MOUNTED. The create does
-# not leave the page in one place, it leaves it in two, one after the other:
-#   1. the add form unmounts and, until `players.getByIdParam` answers for the
-#      new id, the detail column holds only the notice and its placeholder —
-#      the document shrinks to ~711px and the browser CLAMPS the scroll to its
-#      new maximum (~82-86);
-#   2. the detail panel mounts (document ~1620px) and Chrome's scroll
-#      anchoring puts the page BACK where it was before the tap — the
-#      centred-Create position, ~464 — with no script involved. Measured over
-#      CDP on this screen: 464 → 82 → 464 within one frame of the mount, and
-#      with `overflow-anchor: none` it stays at 82. In CI the mount landed
-#      ~2-3s after the tap (the hierarchy reads either side of it).
-# The old positioning step (`scrollUntilVisible` UP to `Filter players`) read
-# the page in whichever state it caught. Green runs caught state 2 (the label
-# ABOVE the viewport, so it swiped up to scroll 0); both attempts of run
-# 37009932571 caught state 1, found the label already at y=207 inside the
-# centring band, did NOT scroll — and the mount then restored ~464, leaving
-# the header and its link above the viewport for the whole 600s wait while
-# the `Wikidata id` field below read `Q1585630`. So: wait for the mount
-# WITHOUT scrolling, and every later step starts from state 2.
-#
-# The mount gate is the `Wikidata id` field's label: it exists only in the
-# detail panel (not in the add form), and in state 2 it sits at viewport
-# y≈373 (both failure screenshots), on screen with its input under it. A
-# failed mount, or a create that was refused, fails HERE on 7000 with the
-# screen in the screenshot.
-- extendedWaitUntil:
-    visible: "Wikidata id"
-    timeout: 7000
+# R2(b). INSERTED, not adopted — the only branch that enqueues enrichment.
+# Renders at the head of the detail column, `sticky` under the binder header,
+# in the same commit as the panel — so it is on screen with the heading.
+- assertVisible: ".*Added Harmon Killebrew.*"
+
+# R2(c). The row is under the sport that was picked; the lookup's `wdt:P641`
+# filter is that sport's QID. The `Sport:` row is the panel's first field row,
+# directly under the heading the create just revealed.
+- assertVisible: ".*Sport: Baseball.*"
 
 # ── R2(d) — THE FEATURE: THE LIVE LOOKUP LANDS ───────────────────────────────
 #
@@ -306,42 +303,21 @@ tags:
 # or `WIKIDATA_MAX_PARALLELISM`, or a new flow that drains a bigger set
 # through the wizard.
 #
-# WHAT IS WAITED ON: the `Wikidata id` input's VALUE, which maestro-web reads
-# as the input's text — on screen from the mount gate above, with no scroll in
-# between. Its placeholder is `Q…` (an ellipsis), so an EMPTY field cannot
-# satisfy `Q[0-9]+`, and the header link reads `Wikidata Q…` as one string,
-# which a full match of `Q[0-9]+` rejects; nothing else on this screen is a
-# bare id. The field adopts the live row whenever its draft is untouched
-# (NEO-235's re-seed), so its value turning into an id IS the row gaining
-# `externalIds.wikidataId`. It is a gate, not the claim: the claim is the
-# header link, asserted by the scroll below it (R5 "split it").
-- extendedWaitUntil:
-    visible: "Q[0-9]+"
-    timeout: 600000
-
-# THE CLAIM: the detail header renders the stored id as its `Wikidata Q…`
-# link. In state 2 the header (document y≈443) is ~20px ABOVE the viewport
-# and the gate's field is below it in DOM order, so the scroll is UP;
-# centring it needs scroll ≈140, which the page has, so it centres (R8
-# case 1, no spacer dependency at this end of the page). Nothing above the
-# header changes height when the lookup lands — it grows the career history,
-# BELOW — so the page has not moved since the gate.
+# WHAT IS WAITED ON — THE CLAIM ITSELF: the detail header renders the stored
+# id as its `Wikidata Q…` link. Since NEO-319 that header is on screen from the
+# create (above), so the long wait is on the link directly; there is no second
+# element to gate on and no scroll to split off (R5 "split it" applies only
+# where a scroll follows). Nothing above the header changes height when the
+# lookup lands — it grows the career history, BELOW — so the page does not
+# move while this waits.
 # The matcher is a FULL match of the link's own text (README → pressKey
 # section: `textMatches` is `Regex.matches`), so `Wikidata Q[0-9]+` is exactly
 # the header link and cannot be satisfied by the `Wikidata id` field's label
-# or value. The specific entity is not pinned (Q1585630 at probe time) — a
-# Wikidata merge would move the id without the lane being broken, and which
-# entity the search picks is the adapter's unit-test concern. A header that
-# never renders the link fails this step on 7000 (R2).
-- scrollUntilVisible:
-    element:
-      text: "Wikidata Q[0-9]+"
-    direction: UP
-    centerElement: true
-    timeout: 7000
-
-# R2(c). The row is under the sport that was picked; the lookup's `wdt:P641`
-# filter is that sport's QID. Asserted here, with the header centred, because
-# this is where the `Sport:` row is actually visible: in state 2 it sits at
-# y≈59-101, under the binder header and the pinned notice.
-- assertVisible: ".*Sport: Baseball.*"
+# or value. Maestro reads the LIVE row through the Convex subscription, so
+# this is the database holding the id, not a draft. The specific entity is
+# not pinned (Q1585630 at probe time) — a Wikidata merge would move the id
+# without the lane being broken, and which entity the search picks is the
+# adapter's unit-test concern.
+- extendedWaitUntil:
+    visible: "Wikidata Q[0-9]+"
+    timeout: 600000

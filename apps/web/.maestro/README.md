@@ -1153,11 +1153,10 @@ What that changes for flows:
 - **The live lane is proved by ONE flow:**
   `flows/admin/player-live-wikidata-enrichment.yaml`. It adds a real Hall
   of Famer by hand on `/admin/players` — a name deliberately absent from the
-  recording and from every checklist the suite commits — waits for the
-  detail panel's `Wikidata id` field to hold a `Q…` value, then scrolls UP
-  to the `Wikidata Q…` link in the detail header (never waits on the link
-  itself: after Create the page clamps, then scroll anchoring restores it
-  with the header above the viewport). It carries the suite's one
+  recording and from every checklist the suite commits — and waits for the
+  `Wikidata Q…` link in the detail header, which since NEO-319 is on screen
+  from the moment the create lands (the panel reveals its heading under the
+  app bar; nothing scrolls after it). It carries the suite's one
   in-flow R5 exception above 7 s, recorded at the site with its arithmetic,
   and it is **expected to go red during a genuine Wikidata outage**. Since
   NEO-301 a transport failure (timeout, network error, 5xx, 429) is
