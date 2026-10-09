@@ -449,3 +449,142 @@ describe("setAdditionalSports", () => {
     ).rejects.toThrow(/Only a sport can be added/);
   });
 });
+
+// ===========================================================================
+// NEO-318 — players.alsoSportIds, the derived copy of playerSports
+// ===========================================================================
+
+describe("NEO-318: setAdditionalSports keeps players.alsoSportIds in step", () => {
+  const rawPlayer = (t: T, id: Id<"players">) => t.run((ctx) => ctx.db.get(id));
+  const memberRows = (t: T, id: Id<"players">) =>
+    t.run((ctx) =>
+      ctx.db
+        .query("playerSports")
+        .withIndex("by_player_id", (q) => q.eq("playerId", id))
+        .collect(),
+    );
+
+  test("writes the copy for the sports it adds", async () => {
+    const t = convexTest(schema, modules);
+    const football = await seedSport(t, "Football");
+    const baseball = await seedSport(t, "Baseball");
+    const bo = await insertPlayer(t, { name: "Bo Jackson", sportId: football });
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.players.setAdditionalSports, {
+      playerId: bo,
+      sportIds: [baseball],
+    });
+
+    expect((await rawPlayer(t, bo))?.alsoSportIds).toEqual([baseball]);
+  });
+
+  test("clearing to [] leaves the field absent, never an empty array", async () => {
+    const t = convexTest(schema, modules);
+    const football = await seedSport(t, "Football");
+    const baseball = await seedSport(t, "Baseball");
+    const bo = await insertPlayer(t, { name: "Bo Jackson", sportId: football });
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    await asAdmin.mutation(api.players.setAdditionalSports, { playerId: bo, sportIds: [baseball] });
+
+    await asAdmin.mutation(api.players.setAdditionalSports, { playerId: bo, sportIds: [] });
+
+    const row = await rawPlayer(t, bo);
+    expect(row).not.toBeNull();
+    expect("alsoSportIds" in (row as object)).toBe(false);
+  });
+
+  test("a planted wrong copy is healed by a call with the same list", async () => {
+    const t = convexTest(schema, modules);
+    const football = await seedSport(t, "Football");
+    const baseball = await seedSport(t, "Baseball");
+    const hockey = await seedSport(t, "Hockey");
+    const bo = await insertPlayer(t, { name: "Bo Jackson", sportId: football });
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    await asAdmin.mutation(api.players.setAdditionalSports, { playerId: bo, sportIds: [baseball] });
+    await t.run((ctx) => ctx.db.patch(bo, { alsoSportIds: [hockey] }));
+
+    await asAdmin.mutation(api.players.setAdditionalSports, { playerId: bo, sportIds: [baseball] });
+
+    expect((await rawPlayer(t, bo))?.alsoSportIds).toEqual([baseball]);
+  });
+
+  test("a stale copy on a player with no memberships is removed by an empty call", async () => {
+    const t = convexTest(schema, modules);
+    const football = await seedSport(t, "Football");
+    const hockey = await seedSport(t, "Hockey");
+    const bo = await insertPlayer(t, { name: "Bo Jackson", sportId: football });
+    await t.run((ctx) => ctx.db.patch(bo, { alsoSportIds: [hockey] }));
+
+    await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.players.setAdditionalSports, { playerId: bo, sportIds: [] });
+
+    expect("alsoSportIds" in ((await rawPlayer(t, bo)) as object)).toBe(false);
+  });
+
+  test("the copy's order is by_player_id order: kept rows first, then new ones as requested", async () => {
+    const t = convexTest(schema, modules);
+    const football = await seedSport(t, "Football");
+    const baseball = await seedSport(t, "Baseball");
+    const hockey = await seedSport(t, "Hockey");
+    const golf = await seedSport(t, "Golf");
+    const bo = await insertPlayer(t, { name: "Bo Jackson", sportId: football });
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    await asAdmin.mutation(api.players.setAdditionalSports, { playerId: bo, sportIds: [baseball] });
+
+    // Requested order puts the new sports BEFORE the one already held.
+    await asAdmin.mutation(api.players.setAdditionalSports, {
+      playerId: bo,
+      sportIds: [golf, baseball, hockey],
+    });
+
+    const rows = await memberRows(t, bo);
+    expect(rows.map((r) => r.sportId)).toEqual([baseball, golf, hockey]);
+    expect((await rawPlayer(t, bo))?.alsoSportIds).toEqual(rows.map((r) => r.sportId));
+  });
+
+  test("the home sport is never copied", async () => {
+    const t = convexTest(schema, modules);
+    const football = await seedSport(t, "Football");
+    const baseball = await seedSport(t, "Baseball");
+    const bo = await insertPlayer(t, { name: "Bo Jackson", sportId: football });
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.players.setAdditionalSports, {
+      playerId: bo,
+      sportIds: [football, baseball],
+    });
+
+    expect((await rawPlayer(t, bo))?.alsoSportIds).toEqual([baseball]);
+  });
+
+  test("writing the copy does not bump lastUpdated", async () => {
+    const t = convexTest(schema, modules);
+    const football = await seedSport(t, "Football");
+    const baseball = await seedSport(t, "Baseball");
+    const bo = await insertPlayer(t, { name: "Bo Jackson", sportId: football });
+    await t.run((ctx) => ctx.db.patch(bo, { lastUpdated: 1234 }));
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.players.setAdditionalSports, {
+      playerId: bo,
+      sportIds: [baseball],
+    });
+
+    expect((await rawPlayer(t, bo))?.lastUpdated).toBe(1234);
+  });
+
+  test("a rename through savePlayerFields keeps the copy", async () => {
+    const t = convexTest(schema, modules);
+    const football = await seedSport(t, "Football");
+    const baseball = await seedSport(t, "Baseball");
+    const bo = await insertPlayer(t, { name: "Bo Jackson", sportId: football });
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    await asAdmin.mutation(api.players.setAdditionalSports, { playerId: bo, sportIds: [baseball] });
+
+    await asAdmin.mutation(api.players.savePlayerFields, { id: bo, name: "Vincent Jackson" });
+
+    const row = await rawPlayer(t, bo);
+    expect(row?.name).toBe("Vincent Jackson");
+    expect(row?.alsoSportIds).toEqual([baseball]);
+  });
+});
+

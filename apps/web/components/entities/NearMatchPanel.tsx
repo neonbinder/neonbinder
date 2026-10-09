@@ -96,6 +96,15 @@ export interface NearMatchPanelProps {
    */
   pickLabel?: (name: string, match: NearMatch) => string;
   className?: string;
+  /**
+   * NEO-319 — the caller is busy (its create or open is in flight) and every
+   * pick is inert until it clears. Each row says so to assistive tech with
+   * `aria-disabled` and swallows the press; it stays FOCUSABLE, never native
+   * `disabled`, because a pick from this panel can be the very button that
+   * holds focus while the caller waits. The visual dimming is the caller's,
+   * through `className`.
+   */
+  busy?: boolean;
 }
 
 /**
@@ -116,6 +125,7 @@ export function NearMatchPanel({
   onPick,
   pickLabel = defaultPickLabel,
   className = "",
+  busy = false,
 }: NearMatchPanelProps) {
   // Exact first, otherwise stable in the order the server ranked them.
   const ordered = [...(matches ?? [])].sort((a, b) => {
@@ -162,7 +172,17 @@ export function NearMatchPanel({
                 <li key={match._id}>
                   <button
                     type="button"
-                    onClick={() => onPick(match._id, match.name)}
+                    onClick={(e) => {
+                      if (busy) return;
+                      // NEO-319 — Safari and Firefox on macOS do not focus a
+                      // button on click. A caller that locks its fields on a
+                      // pick (the Players add form) would otherwise blur a
+                      // focused input to <body>; taking focus here first is
+                      // what Chrome already does, so no caller changes.
+                      e.currentTarget.focus();
+                      onPick(match._id, match.name);
+                    }}
+                    aria-disabled={busy || undefined}
                     // NEO-212 (a11y): the badge is IN the accessible name. An
                     // aria-label of just `pickLabel(name)` overrode the button's
                     // content, so "same name" — the single most decision-relevant

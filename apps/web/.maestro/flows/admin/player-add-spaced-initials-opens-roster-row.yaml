@@ -173,25 +173,27 @@ tags:
 # ============================================================
 - tapOn: "Open J\\.?T\\.? Realmuto"
 
-# NOTHING MAY SCROLL UNTIL THE DETAIL PANEL HAS MOUNTED. The form unmounts,
-# the page clamps while `getByIdParam` loads, then Chrome's scroll anchoring
-# restores the pre-tap position when the panel mounts (measured on this screen,
-# player-live-wikidata-enrichment; memory: clamp-then-anchor-restore). The
-# `Wikidata id` field label exists only in the detail panel, unconditionally,
-# and sits on screen in the restored state — so it is the mount gate.
+# NO SCROLL after the tap (NEO-319). An Open from the add form holds the form
+# busy until the roster row has loaded, then the detail panel replaces it in
+# one render and scrolls its heading to sit just under the sticky app bar —
+# so the heading and the `Sport:` row under it are on screen with nothing in
+# between. (Before NEO-319 the form unmounted first and scroll anchoring left
+# the panel's top above the viewport; this flow needed a mount gate and an UP
+# scroll.)
+#
+# The roster spelling, in the panel HEADING — the unspaced initials prove this
+# is the synced row, not one the typed "J. T." spelling could have produced.
+# The heading and only the heading: `above:` is a top-edge test and the
+# heading sits above the panel's `Player name` label (the panel's box, which
+# reads the same name as its value, sits below it); the busy form has no such
+# label and its box holds the SPACED spelling, which `J\.?T\.?` refuses; the
+# filter's "Realmutozzzz" keeps the name off every master row.
 - extendedWaitUntil:
-    visible: "Wikidata id"
+    visible:
+      text: "J\\.?T\\.? Realmuto"
+      above:
+        text: "Player name"
     timeout: 7000
 # `Sport: <label>` is the row's own sport read back, in the panel's first field
-# row — ABOVE the restored position, so UP (R5: never rely on the document
-# bottoming out). The scroll is the assertion (R6).
-- scrollUntilVisible:
-    element:
-      text: ".*Sport: Baseball.*"
-    direction: UP
-    centerElement: true
-    timeout: 7000
-# The roster spelling, in the panel heading and the Player name box beside the
-# Sport line — the unspaced initials prove this is the synced row, not one the
-# typed "J. T." spelling could have produced.
-- assertVisible: "J\\.?T\\.? Realmuto"
+# row directly under the heading.
+- assertVisible: ".*Sport: Baseball.*"

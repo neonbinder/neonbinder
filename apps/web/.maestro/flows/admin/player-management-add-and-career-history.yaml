@@ -226,48 +226,40 @@ tags:
 - tapOn:
     id: "Create player PM${output.ATTEMPT_TOKEN}"
 
+# ── NEO-319: CREATE LANDS THE OPERATOR ON THE NEW PLAYER'S HEADER ───────────
+# NO SCROLL between the tap and this assertion, and that is the claim. The add
+# form stays up (busy: "Creating…") until the new player has loaded, then the
+# detail panel replaces it in one render and scrolls its heading to sit just
+# under the sticky app bar (~y=160). Before NEO-319 the form unmounted first,
+# the page clamped, and scroll anchoring then left the heading ABOVE the
+# viewport — this flow needed an UP scroll to `Filter players` to read
+# anything in the panel. A regression back to that fails HERE on 7000: maestro
+# prunes off-viewport nodes, so an assertVisible never finds a heading the page
+# left above the fold.
+#
+# Why this selector is the HEADING and only the heading. Maestro reads an
+# input by its value, so the name is on screen three ways: the add form's
+# `New player name` box (while the form is busy), the panel's `Player name`
+# box, and the panel's <h3>. The filter still holds "zzzznotaplayer" (an id the
+# screen selects itself never clears it), so no master row carries the name.
+# `above: "Player name"` is a TOP-EDGE test (maestro Filters: `it.y < other.y`):
+# the heading sits above the panel's `Player name` label, the panel's box sits
+# below it, and the busy form has no `Player name` label at all (its label is
+# "New player name", and `text:` is a full match), so only the panel's heading
+# can satisfy it.
+- extendedWaitUntil:
+    visible:
+      text: "PM${output.ATTEMPT_TOKEN}"
+      above:
+        text: "Player name"
+    timeout: 7000
+
 # "Added <name>." is said ONLY for a row that was inserted. A create that found
 # an existing row instead says "That player already exists — opened it.", so
-# this is the assertion that the hand-entry actually created something.
-
-# THE CONFIRMATION MOVED. THIS SCROLL STAYED, AND NOT FOR THE ASSERTION.
-#
-# NEO-260 took `Added <name>.` out of `PlayerManagement`'s page-level status
-# line and put it at the head of the DETAIL COLUMN, `sticky` under the binder
-# header. The old line sat at document y=293-313 while the `Create player`
-# button that earns it is at y=809-841: the button is fully visible only from
-# scroll 216 and the line is clear of the 79px header only to scroll 214, so no
-# scroll position on the 1024x629 viewport ever showed both, and the line's own
-# insertion moved the page away from it (+39px of content above the scroll
-# position, +39px of Chrome scroll anchoring). That is what reddened six flows
-# in run 34437403394. A stuck element reports its STUCK position to the driver
-# — `binder-header`, `sticky top-0`, reads [64,16][228,61] in every hierarchy
-# dump at every scroll — so the assertion below now passes from wherever the
-# tap left the page, with or without this step.
-#
-# WHAT THIS STEP IS FOR NOW is the commands AFTER it: `assertVisible ".*Sport: Baseball.*"` never scrolls, and that line is
-# in the new panel's FIRST field row at document y~460-502. Left where the tap
-# ends the page it is above the fold and pruned; this scroll is what puts it on
-# screen. Removing this step reds the very next command.
-# It is positioning only, and nothing this flow proves changes. `Filter
-# players` is still the right anchor — it is the label of the list this screen
-# is built around and it is on the page whatever the create did, so a create
-# that was genuinely REFUSED still fails on the assertion below with the
-# refusal on screen in the screenshot. Its document position moved 332 -> 293
-# with the page-level line's removal, and the post-create scroll is now
-# 523 (813 - 344 for the button, +54 for the notice inserted above the
-# scroll position), so the travel is two UP swipes of ~313px, landing the page at scroll 0 — the same swipe count as the
-# green measurement this note replaces.
-- scrollUntilVisible:
-    element:
-      text: "Filter players"
-    direction: UP
-    centerElement: true
-    timeout: 7000
-
-- extendedWaitUntil:
-    visible: ".*Added PM${output.ATTEMPT_TOKEN}.*"
-    timeout: 7000
+# this is the assertion that the hand-entry actually created something. It
+# renders with the panel (same commit), sticky at the head of the detail
+# column, so the heading being on screen means it is too.
+- assertVisible: ".*Added PM${output.ATTEMPT_TOKEN}.*"
 
 # The new player's own panel is now open — these two lines exist nowhere else on
 # the screen. The sport line proves the row was created under the sport that was

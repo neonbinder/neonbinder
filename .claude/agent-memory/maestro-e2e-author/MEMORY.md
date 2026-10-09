@@ -126,3 +126,4 @@ Non-markdown helpers: `tools/`
 - [Dead-branch guards can cover a second outcome](patterns_dead_branch_guards_can_cover_a_second_outcome.md) — enumerate every outcome a guard admits before deleting a dead-premise branch
 - [Prove focus by what Enter does](patterns_prove_focus_by_what_enter_does.md) — maestro-web has no focus attribute; prove safe preconditions by sight, then Enter + assert effect
 - [Present in the failure dump = arrived late](patterns_present_in_failure_dump_means_late_arrival.md) — target fully on-screen in the failure PNG/hierarchy means it landed after the last poll; heading gates are Clerk-only
+- [Heading-only selector via `above:` a field label](patterns_heading_only_via_above_field_label.md) — name in h3 AND input values: anchor `above: "<label>"`; leftOf/rightOf are left-edge only

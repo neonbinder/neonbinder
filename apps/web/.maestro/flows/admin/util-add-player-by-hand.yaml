@@ -31,6 +31,9 @@ tags:
 #   and "Sport: <SPORT>" both asserted). The list filter holds a nonsense
 #   string and the sport picker reads SPORT, so a caller that wants the list
 #   back re-opens the page (openLink) rather than reasoning about that state.
+#   The page is left where the create's reveal put it (the panel heading just
+#   under the app bar), not at scroll 0: anything in the panel below the
+#   identity rows is reached by a DOWN scroll, anything above the panel by UP.
 #
 # R2 — "Added <name>." is said only for an INSERTED row ("That player already
 # exists — opened it." otherwise) and "Sport: <SPORT>" is the row's own sport
@@ -82,17 +85,18 @@ tags:
 - tapOn:
     id: "Create player ${PLAYER_NAME}"
 
-# Positioning only: "Sport: <SPORT>" is in the panel's first field row, above
-# where the tap leaves the page, and assertVisible never scrolls. UP because
-# the anchor is above the current position (R5 — never rely on the document
-# bottoming out).
-- scrollUntilVisible:
-    element:
-      text: "Filter players"
-    direction: UP
-    centerElement: true
-    timeout: 7000
+# NO SCROLL (NEO-319): the add form stays up, busy, until the new player has
+# loaded, then the panel replaces it in one render with its heading revealed
+# just under the app bar (~y=160) — so the heading, the `Added …` notice above
+# it and the `Sport:` row below it are all on screen from the tap. The heading
+# selector is the panel's <h3> alone: `above:` is a top-edge test, the panel's
+# name box sits BELOW its `Player name` label, and the busy form has no such
+# label (player-management-add-and-career-history explains it in full).
 - extendedWaitUntil:
-    visible: ".*Added ${PLAYER_NAME}.*"
+    visible:
+      text: "${PLAYER_NAME}"
+      above:
+        text: "Player name"
     timeout: 7000
+- assertVisible: ".*Added ${PLAYER_NAME}.*"
 - assertVisible: ".*Sport: ${SPORT}.*"
