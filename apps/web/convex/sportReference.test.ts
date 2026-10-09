@@ -535,14 +535,19 @@ describe("NEO-96 queries returning selectorOptions docs accept sportConfig", () 
     expect(row?.value).toBe("Baseball");
   });
 
-  test("findByLevelAndValue returns a configured sport row", async () => {
+  test("the configured sport row reads back from the table by level and value", async () => {
+    // NEO-325: the public lookup query this once exercised is deleted.
     const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     await seedTree(t);
 
-    const row = await asAdmin.query(api.selectorOptions.findByLevelAndValue, {
-      level: "sport",
-      value: "Baseball",
+    const row = await t.run(async (ctx) => {
+      const rows = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "sport").eq("parentId", undefined),
+        )
+        .collect();
+      return rows.find((r) => r.value === "Baseball") ?? null;
     });
     expect(row?.value).toBe("Baseball");
   });

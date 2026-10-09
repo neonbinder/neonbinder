@@ -1,0 +1,559 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Reconcile — two SportLots sets with one name are each saved to their own NeonBinder set and stay linked by id through a re-sync (NEO-325, 2024 Topps City Connect)"
+tags:
+  - set-selector
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE FEATURE: SPORTLOTS TWINS KEEP THEIR OWN IDS THROUGH A SAVE
+# (NEO-325). SportLots lists two distinct sets under one name; an operator
+# pairs each with its own BuySportsCards set in the Reconcile dialog, saves,
+# and each saved NeonBinder set is linked to the SportLots id that was
+# pressed — never to "the first set with that name" — and stays linked to it
+# through a re-sync.
+#
+#   0. Before pairing: both twins wait UNLINKED in Pending. Jason, 2026-10-08:
+#      a marketplace twin is never auto-linked and never auto-created; the
+#      operator decides in Reconcile.
+#   1. Before Save: each pairing lands on the row that was pressed (each Ready
+#      set's chip names its own twin's id), and the two titles differ, so
+#      Save is not blocked (the same-title block is proved on Topps Chrome by
+#      the read-only sibling).
+#   2. After Save: each saved insert row's Attach sets dialog no longer offers
+#      the twin it holds and still offers the other one
+#      (util-attach-pane-sportlots-twin-ids.yaml).
+#   3. Re-sync: `Sync Inserts` + Save restores each row with its own twin,
+#      leaves no twin in Pending, makes no duplicate row and no row for a
+#      twin, and both rows still pass claim 2.
+#
+# The read-only sibling, reconcile-sportlots-twins-keep-their-own-ids.yaml,
+# proves the dialog's names and filtering on 2024 Topps Chrome without
+# saving; this flow is the after-save half it could not prove there.
+#
+# ── THE FIXTURE (approved by Jason 2026-10-08 — registry rule 1) ─────────────
+#   Baseball → 2024 → Topps → Topps (the flagship) › Insert.
+#   SportLots lists "2024 Topps City Connect Swatch Collection" twice:
+#     299607  the SERIES ONE relics (card numbers CC-…;  10 with stock)
+#     307437  the SERIES TWO relics (card numbers CC2-…; 15 with stock)
+#   BuySportsCards files both under ONE set, "Topps" (Series 1 + 2), as two
+#   Insert variants that say which series they are:
+#     City Connect Swatch Collection Relics (Series One)  32 cards, CC-…
+#     City Connect Swatch Collection Relics (Series Two)  40 cards, CC2-…
+#   Every stocked SportLots card of 299607 is a CC- number and every one of
+#   307437 a CC2- number, so each twin has exactly one BSC counterpart: the
+#   product move is to PAIR them (Series One ↔ 299607, Series Two ↔ 307437),
+#   giving two NB insert rows with distinct titles, each holding one twin.
+#   Measured 2026-10-08 from both marketplaces' public listings (SportLots
+#   buyer search `SetNbr`/`SetInfo`/`CardInfo`; BSC shop `variantName` and
+#   `cardNo` facets). See SET-REGISTRY.md → "SportLots twin names (NEO-325)".
+#
+#   Nothing pairs a twin but the operator: a marketplace twin is never
+#   auto-linked or auto-created (Jason, 2026-10-08), so both wait in Pending
+#   and neither series row is auto-matched to one. STEP 2 asserts that as its
+#   precondition, so a matcher or a column sync that one day links or files a
+#   twin fails there, by name.
+#
+# ── SOLE WRITER (R7, R7a) ───────────────────────────────────────────────────
+#   The flagship `Topps` set row exists after the seed's 2024 Topps Sets sync
+#   and no flow reads or writes below it. This flow is its ONLY writer:
+#     - the flagship's Variant Types (synced on first entry by the drill);
+#     - Topps › Insert: EVERY Ready set the reconcile holds is saved — the
+#       auto-matched pairs as well as the two this flow builds (the Save
+#       writes all of Ready; filters narrow the view, not the write — as
+#       1996 Score and 2026 Bowman). Pending is discarded unsaved.
+#   STEP 8's re-sync saves the same Ready list again (id-keyed: it updates
+#   the rows it restored and must create none).
+#   No cards are fetched (no checklist, no players, no teams). Nothing is
+#   detached or deleted. NOT self-cleaning: cleanup is the run-start reset
+#   every real-set sole writer relies on (`e2e-baseline.sh reset` before
+#   `setup.yaml`): a fresh preview has no Topps › Insert rows, so the dialog
+#   below is REQUIRED; on a dirty deployment the flow fails at that gate, by
+#   name, instead of asserting on rows it never built (the 1996 Score
+#   precedent).
+#
+# ── NEO-287: PAUSED ─────────────────────────────────────────────────────────
+#   Under `PAUSED_PLATFORMS=sportlots` there is no SportLots list, so no twin,
+#   and entering Insert with one marketplace takes the single-platform STORE
+#   path. The claim has no paused form: the paused branch asserts the drill
+#   landed and stops, writing nothing below the Variant Types.
+#
+# ── R5 ──────────────────────────────────────────────────────────────────────
+#   7000 everywhere except the marketplace waits, each named at its step:
+#   the dialog opening (a COLD insert-level BSC + SportLots fetch, 240000 —
+#   the ceiling 1996 Score's identical step carries), the re-sync's dialog
+#   (the same live fetch, the same ceiling, as 1996 Score STEP 8b) and the
+#   Attach dialog's SportLots pane (in the util). Both Saves are our own
+#   write: 7000, and a miss is a product finding, never a bigger number
+#   (1996 Score's identical Save measured ~3 s tap-to-closed, CI 37859759647).
+#
+# ── R8 INSIDE THE DIALOG — ⚠️ GEOMETRY UNMEASURED UNTIL THE FIRST RUN ────────
+#   The dialog body is the only scroller of a `fixed inset-0` portal, so it is
+#   moved with TOUCH swipes started at x=3% (the body's own padding, never a
+#   dnd-kit row) and Maestro never sees its clip. Ready is filtered so the
+#   rows this flow builds stay HIDDEN until the read-back (Pending never
+#   moves while it pairs), BSC to the two series rows, and SportLots to the
+#   twins' name. The assumption to check on the first run: SportLots lists
+#   the two bare-name twins FIRST in the narrowed column (its dealer list is
+#   alphabetical in every capture so far, and the bare name sorts before
+#   "… Black / Gold / Red"), so a HALF swipe from the top puts the BSC rows
+#   and both twins inside the body band (~117-525). Read the tap lines'
+#   `Element bounds` in `maestro.log` against that band. Every tap is
+#   followed by an assert of its effect, so a tap that lands nowhere fails
+#   at the next line, by name.
+#
+# ── HANDLES (visible text and accessible names; never a DOM id) ─────────────
+#   column   `Insert`, `Reconcile Inserts`, `Search inserts`, `Sync Inserts`
+#   dialog   `Filter NeonBinder sets` (+ `Clear filter neonbinder sets`),
+#            `Filter BSC items`, `Show all SportLots items`, `Search
+#            SportLots items`; headers `Ready (N of M)`, `BSC (N of M)`;
+#            a Pending BSC row by its visible name; a Pending SportLots twin
+#            by its visible id suffix `(#<id>)` (the bare name is on both
+#            twins); `Make its own set: <name> (#<id>)`; Ready chips
+#            `Remove <item> from <set>`; footer `Save N sets` and the
+#            same-title block line `Two sets are both named “<title>”. …`
+#            (asserted ABSENT here, by the `so you can tell them apart.` tail
+#            every form of it shares; the read-only sibling proves it shows)
+#   pairing  click one Pending item, then one on the other side: the two
+#            become one Ready set (`handlePendingClick` → PROMOTE_PAIR), the
+#            click-to-pair an operator uses instead of a drag
+# ════════════════════════════════════════════════════════════════════════════
+
+# THE FIXTURE, in one place. Names are plain words, ids digits; the series
+# rows' parentheses are escaped where they are used as a selector.
+- evalScript: '${output.TWIN = "City Connect Swatch Collection"}'
+- evalScript: '${output.S1_ID = "299607"}'
+- evalScript: '${output.S2_ID = "307437"}'
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — BASEBALL → 2024 → TOPPS → TOPPS (THE FLAGSHIP)
+# R9 — the warm drill (Sport/Year/Manufacturer/Sets are the seed's). It also
+# runs util-paused-platforms, which sets `output.SL_PAUSED`. The flagship's
+# Variant Types are cold on a fresh preview; the util's 60000 on "Base" is
+# its sanctioned ceiling for exactly that sync. `SET: "Topps"` taps the row
+# whose name is EXACTLY "Topps" under the Sets search box (a full match, so
+# never "Topps Chrome").
+# ============================================================
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SET: "Topps"
+
+# "Insert" is a row of the Variant Types column; DOWN, centred for the tap
+# (R8). This scroll is also the paused branch's hard assert (R2).
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 7000
+
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertVisible: "Variant Types"
+
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - tapOn: "Insert"
+      # REQUIRED (see SOLE WRITER): an empty Insert column fires the
+      # reconcile on its own. R5 marketplace exception — a COLD insert-level
+      # BSC + SportLots fetch for a set no flow has opened.
+      - extendedWaitUntil:
+          visible: "Reconcile Inserts"
+          timeout: 240000
+
+      # ============================================================
+      # STEP 2 — NARROW THE THREE LISTS, AND THE PRECONDITION
+      # Pin the body to its top first (two DOWN touches), so every
+      # position below starts from the same place.
+      # ============================================================
+      - swipe:
+          start: "3%, 30%"
+          end: "3%, 80%"
+      - swipe:
+          start: "3%, 30%"
+          end: "3%, 80%"
+
+      # PRECONDITION (R2): neither series row was auto-matched. The Ready
+      # filter matches a set's title AND the names of the items it maps, so
+      # "Swatch Collection Relics (Series" finds any Ready set holding
+      # either BSC row.
+      - tapOn:
+          id: "Filter NeonBinder sets"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Swatch Collection Relics (Series"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Ready \\(0 of [0-9]+\\).*"
+          timeout: 7000
+      # Then narrow Ready to Series TWO only. Pair 1 (Series One) then
+      # lands in Ready HIDDEN, so Pending does not move between the pairs;
+      # Pair 2's arrival is what turns this to (1 of M). The "×" clears the
+      # box and focuses it (FilterInput.clear).
+      - tapOn:
+          id: "Clear filter neonbinder sets"
+      - inputText: "Swatch Collection Relics (Series Two)"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Ready \\(0 of [0-9]+\\).*"
+          timeout: 7000
+
+      # BSC → exactly the two series rows ("… Relics Black (Series One)"
+      # and the other parallels do not contain "Relics (Series").
+      - tapOn:
+          id: "Filter BSC items"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Swatch Collection Relics (Series"
+      - extendedWaitUntil:
+          visible:
+            text: ".*BSC \\(2 of [0-9]+\\).*"
+          timeout: 7000
+
+      # SportLots → the twins. Off by default, the column shows only names
+      # starting with the set's own name ("topps"), and SportLots' names
+      # arrive brand-stripped ("City Connect Swatch Collection"), so the
+      # prefix filter is switched off first.
+      - tapOn:
+          id: "Show all SportLots items"
+      - tapOn:
+          id: "Search SportLots items"
+          waitToSettleTimeoutMs: 250
+      - inputText: ${output.TWIN}
+      # PRECONDITION (R2): BOTH TWINS WAIT UNLINKED IN PENDING. Jason,
+      # 2026-10-08: a marketplace twin is never auto-linked or auto-created;
+      # it waits for the operator here. `Make its own set: …` renders only on
+      # a Pending row (`renderPendingColumn`; the "Show sets already mapped"
+      # reveal is off and carries no such button), and mapping an item takes
+      # it out of Pending, so these two are the proof that neither twin was
+      # linked into a Ready set — together with Ready (0 of M) above, which
+      # says neither series row was paired with anything. Each twin by its
+      # own id; `id:` is a full match, so the bare name cannot satisfy it.
+      - extendedWaitUntil:
+          visible:
+            id: "Make its own set: ${output.TWIN} \\(#${output.S1_ID}\\)"
+          timeout: 7000
+      - assertVisible:
+          id: "Make its own set: ${output.TWIN} \\(#${output.S2_ID}\\)"
+
+      # Bring the Pending rows into the body band: ONE HALF touch UP (~157px)
+      # from the pinned top. ⚠️ UNMEASURED — see R8 in the header.
+      - swipe:
+          start: "3%, 75%"
+          end: "3%, 50%"
+
+      # ============================================================
+      # STEP 3 — PAIR SERIES ONE WITH 299607
+      # Click the BSC row, then the SportLots twin. The twin is clicked on
+      # its id suffix: the name is on both twins, the suffix on one. The
+      # suffix sits inside the row's handle, so the click selects the row.
+      # `retryTapIfNoChange: false` on both: arming changes nothing Maestro
+      # can see (Ready is filtered to nothing, so no "Add … to this set"
+      # button appears), and a retried tap would DISARM the row.
+      # ============================================================
+      - tapOn:
+          text: "City Connect Swatch Collection Relics \\(Series One\\)"
+          retryTapIfNoChange: false
+      - tapOn:
+          text: "\\(#${output.S1_ID}\\)"
+          retryTapIfNoChange: false
+      # The pair left Pending: one BSC row remains (positive first) …
+      - extendedWaitUntil:
+          visible:
+            text: ".*BSC \\(1 of [0-9]+\\).*"
+          timeout: 7000
+      # … the OTHER twin is still pending under its own id …
+      - assertVisible:
+          id: "Make its own set: ${output.TWIN} \\(#${output.S2_ID}\\)"
+      # … and the pressed one is gone. A name-keyed resolver would have
+      # taken the first same-named row, which may be the other one.
+      - assertNotVisible:
+          id: "Make its own set: ${output.TWIN} \\(#${output.S1_ID}\\)"
+
+      # ============================================================
+      # STEP 4 — PAIR SERIES TWO WITH 307437
+      # Pending lost one row per column; both remaining targets moved UP, so
+      # they are still inside the band.
+      # ============================================================
+      - tapOn:
+          text: "City Connect Swatch Collection Relics \\(Series Two\\)"
+          retryTapIfNoChange: false
+      - tapOn:
+          text: "\\(#${output.S2_ID}\\)"
+          retryTapIfNoChange: false
+      # The new set is the one Ready shows under the Series Two filter.
+      - extendedWaitUntil:
+          visible:
+            text: ".*Ready \\(1 of [0-9]+\\).*"
+          timeout: 7000
+      - assertNotVisible:
+          id: "Make its own set: ${output.TWIN} \\(#[0-9]+\\)"
+
+      # ============================================================
+      # STEP 5 — CLAIM 1: EACH SET HOLDS THE TWIN THAT WAS PRESSED
+      # Widen Ready to both series. Each set's title is its BSC row's name,
+      # so the titles differ and each chip reads `Remove <twin> (#id) from
+      # <title>`: the chip is the read-back of which SportLots set the row
+      # will map (the twin keeps its suffix — the side still lists the name
+      # twice, chips included).
+      # ============================================================
+      - swipe:
+          start: "3%, 30%"
+          end: "3%, 80%"
+      - swipe:
+          start: "3%, 30%"
+          end: "3%, 80%"
+      - tapOn:
+          id: "Clear filter neonbinder sets"
+      - inputText: "Swatch Collection Relics (Series"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Ready \\(2 of [0-9]+\\).*"
+          timeout: 7000
+      - assertVisible:
+          id: "Remove ${output.TWIN} \\(#${output.S1_ID}\\) from City Connect Swatch Collection Relics \\(Series One\\)"
+      - assertVisible:
+          id: "Remove ${output.TWIN} \\(#${output.S2_ID}\\) from City Connect Swatch Collection Relics \\(Series Two\\)"
+      # The two titles differ, so Save is not blocked: no clash line in the
+      # footer (the chips above are the positive this negative follows, R2).
+      # The pattern is the tail all three forms share — "Two sets are both
+      # named “…”", "N sets are all named “…”" and "There's already a set
+      # named “…” under <Set › Type>" (a Ready title matching a saved row)
+      # each end "so you can tell them apart." — so a clash with any other
+      # Ready set or saved row fails here too, by name. Save closing the
+      # dialog below is the proof it was enabled.
+      - assertNotVisible:
+          text: ".*so you can tell them apart\\..*"
+
+      # ============================================================
+      # STEP 6 — SAVE
+      # R8 case 2, measured on this dialog by inserts-1996-score-… (bounds
+      # held at y=545 across five swipes): the footer is outside the body's
+      # scroller, so the button is shown, never centred. R5: our own write,
+      # however many chunks — 7000 (README R5, "A multi-transaction NB write
+      # is not an exception"). The dialog closing alone could pass on a dead
+      # page; STEP 7's first gate is the positive that follows it (R2).
+      # ============================================================
+      - scrollUntilVisible:
+          element:
+            text: ".*Save [0-9]+ sets.*"
+          timeout: 7000
+      - tapOn:
+          text: ".*Save [0-9]+ sets.*"
+      - extendedWaitUntil:
+          notVisible: "Reconcile Inserts"
+          timeout: 7000
+
+      # ============================================================
+      # STEP 7 — CLAIM 2: EACH SAVED ROW HOLDS ITS OWN TWIN, AND ONLY IT
+      # Each row's Attach sets: its own twin's id is gone from the SportLots
+      # candidates, the other twin's is offered. Both rows, so the claim
+      # holds whichever twin SportLots lists first.
+      # ============================================================
+      - runFlow:
+          file: util-attach-pane-sportlots-twin-ids.yaml
+          env:
+            SET: "Topps"
+            INSERT_QUERY: "Swatch Collection Relics (Series One)"
+            INSERT_ROW: "City Connect Swatch Collection Relics \\(Series One\\)"
+            TWIN: ${output.TWIN}
+            ATTACHED_ID: ${output.S1_ID}
+            OTHER_ID: ${output.S2_ID}
+      - runFlow:
+          file: util-attach-pane-sportlots-twin-ids.yaml
+          env:
+            SET: "Topps"
+            INSERT_QUERY: "Swatch Collection Relics (Series Two)"
+            INSERT_ROW: "City Connect Swatch Collection Relics \\(Series Two\\)"
+            TWIN: ${output.TWIN}
+            ATTACHED_ID: ${output.S2_ID}
+            OTHER_ID: ${output.S1_ID}
+
+      # ============================================================
+      # STEP 8 — CLAIM 3: A RE-SYNC KEEPS EACH ROW ON ITS OWN TWIN
+      # `Sync Inserts` re-runs the insert-level fetch and re-opens the
+      # reconcile with every saved row restored as a Ready set (its own _id,
+      # its own SportLots slot). Saving that with no edits is the re-sync an
+      # operator runs, and sync is additive and id-keyed: each row must come
+      # back holding its own twin, no twin may come back loose in Pending,
+      # and the Save must create no row (STEP 9 reads the column).
+      # RE-DRILL first (R9): STEP 7's util leaves an insert row selected,
+      # which collapses the Inserts column to a card, and a fresh drill puts
+      # the columns row back at a known horizontal offset.
+      # ============================================================
+      - runFlow:
+          file: util-drill-to-2024-topps-chrome.yaml
+          env:
+            SET: "Topps"
+      - scrollUntilVisible:
+          element:
+            text: "Insert"
+          centerElement: true
+          timeout: 7000
+      - tapOn: "Insert"
+      # The column is populated now, so it renders instead of re-opening the
+      # reconcile (EntityColumn fires the form only when empty); the
+      # operator's `Sync Inserts` is the way in. It sits under the column's
+      # list: DOWN, centred for the tap (R8) — the step
+      # reconcile-sportlots-twins-keep-their-own-ids takes for `Sync
+      # Parallels` on the same layout.
+      - scrollUntilVisible:
+          element:
+            text: "Sync Inserts"
+          centerElement: true
+          timeout: 7000
+      - tapOn: "Sync Inserts"
+      # R5 marketplace exception — the same live insert-level BSC +
+      # SportLots fetch as STEP 1, at the same ceiling (1996 Score STEP 8b).
+      - extendedWaitUntil:
+          visible: "Reconcile Inserts"
+          timeout: 240000
+
+      # Pin the body to its top, then narrow Ready to the two series rows.
+      # EXACTLY two: a duplicate row from STEP 6 would be restored as a
+      # third. Each chip names its own twin, as in STEP 5.
+      - swipe:
+          start: "3%, 30%"
+          end: "3%, 80%"
+      - swipe:
+          start: "3%, 30%"
+          end: "3%, 80%"
+      - tapOn:
+          id: "Filter NeonBinder sets"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Swatch Collection Relics (Series"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Ready \\(2 of [0-9]+\\).*"
+          timeout: 7000
+      - assertVisible:
+          id: "Remove ${output.TWIN} \\(#${output.S1_ID}\\) from City Connect Swatch Collection Relics \\(Series One\\)"
+      - assertVisible:
+          id: "Remove ${output.TWIN} \\(#${output.S2_ID}\\) from City Connect Swatch Collection Relics \\(Series Two\\)"
+
+      # No twin came back loose. Ready is narrowed to a query nothing
+      # matches first, so the Pending controls sit where STEP 2 tapped them
+      # (the same geometry, Ready one line tall). Then the twins' name in
+      # the SportLots column, with the prefix filter off as in STEP 2.
+      - tapOn:
+          id: "Clear filter neonbinder sets"
+      - inputText: "Swatch Collection Relics (Series Three)"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Ready \\(0 of [0-9]+\\).*"
+          timeout: 7000
+      - tapOn:
+          id: "Show all SportLots items"
+      - tapOn:
+          id: "Search SportLots items"
+          waitToSettleTimeoutMs: 250
+      - inputText: ${output.TWIN}
+      # The positive first (R2): the "… Black" twins (299608 / 307438) match
+      # the same search and nobody pairs them, so they still wait in Pending
+      # under their own ids — the column is listing, and listing twins.
+      - extendedWaitUntil:
+          visible:
+            id: "Make its own set: ${output.TWIN} Black \\(#[0-9]+\\)"
+          timeout: 7000
+      # … and neither of ours is among them: each is held by its restored
+      # row, not offered again.
+      - assertNotVisible:
+          id: "Make its own set: ${output.TWIN} \\(#[0-9]+\\)"
+
+      # The titles still differ, so Save is not blocked. Then the same Save
+      # as STEP 6 (R8 case 2; R5 7000, our own write).
+      - assertNotVisible:
+          text: ".*so you can tell them apart\\..*"
+      - scrollUntilVisible:
+          element:
+            text: ".*Save [0-9]+ sets.*"
+          timeout: 7000
+      - tapOn:
+          text: ".*Save [0-9]+ sets.*"
+      - extendedWaitUntil:
+          notVisible: "Reconcile Inserts"
+          timeout: 7000
+
+      # ============================================================
+      # STEP 9 — CLAIM 3: THE RE-SYNC MADE NO ROW
+      # A fresh read of the Inserts column (re-drill, as STEP 8): each
+      # series row is there ONCE, and no row is named for a twin (a twin
+      # filed as its own row would carry the bare SportLots name). Type
+      # first, then wait for the filtered row (NEO-224: the box renders from
+      # the column's first frame). A Convex read of saved rows — 7000.
+      # ============================================================
+      - runFlow:
+          file: util-drill-to-2024-topps-chrome.yaml
+          env:
+            SET: "Topps"
+      - scrollUntilVisible:
+          element:
+            text: "Insert"
+          centerElement: true
+          timeout: 7000
+      - tapOn: "Insert"
+      - scrollUntilVisible:
+          element:
+            text: ".*Search inserts.*"
+          centerElement: true
+          timeout: 7000
+      - tapOn:
+          text: ".*Search inserts.*"
+          waitToSettleTimeoutMs: 250
+      - inputText: "City Connect Swatch"
+      - extendedWaitUntil:
+          visible:
+            text: "City Connect Swatch Collection Relics \\(Series One\\)"
+            below:
+              id: "Search inserts"
+          timeout: 7000
+      - assertVisible:
+          text: "City Connect Swatch Collection Relics \\(Series Two\\)"
+          below:
+            id: "Search inserts"
+      # A second match of either title is a duplicate row (`index` counts
+      # matches top to bottom, so 1 is the second).
+      - assertNotVisible:
+          text: "City Connect Swatch Collection Relics \\(Series One\\)"
+          below:
+            id: "Search inserts"
+          index: 1
+      - assertNotVisible:
+          text: "City Connect Swatch Collection Relics \\(Series Two\\)"
+          below:
+            id: "Search inserts"
+          index: 1
+      # No row for a twin (`text:` is a full match: the bare name only).
+      - assertNotVisible:
+          text: "${output.TWIN}"
+          below:
+            id: "Search inserts"
+
+      # ============================================================
+      # STEP 10 — CLAIM 3: AFTER THE RE-SYNC, EACH ROW STILL HOLDS ITS OWN
+      # TWIN, AND ONLY IT — STEP 7 again, on the re-saved rows.
+      # ============================================================
+      - runFlow:
+          file: util-attach-pane-sportlots-twin-ids.yaml
+          env:
+            SET: "Topps"
+            INSERT_QUERY: "Swatch Collection Relics (Series One)"
+            INSERT_ROW: "City Connect Swatch Collection Relics \\(Series One\\)"
+            TWIN: ${output.TWIN}
+            ATTACHED_ID: ${output.S1_ID}
+            OTHER_ID: ${output.S2_ID}
+      - runFlow:
+          file: util-attach-pane-sportlots-twin-ids.yaml
+          env:
+            SET: "Topps"
+            INSERT_QUERY: "Swatch Collection Relics (Series Two)"
+            INSERT_ROW: "City Connect Swatch Collection Relics \\(Series Two\\)"
+            TWIN: ${output.TWIN}
+            ATTACHED_ID: ${output.S2_ID}
+            OTHER_ID: ${output.S1_ID}

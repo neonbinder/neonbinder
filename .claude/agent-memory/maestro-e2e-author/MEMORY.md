@@ -107,7 +107,7 @@ Non-markdown helpers: `tools/`
 - [Guard-then-tap is a TOCTOU](patterns_guard_then_tap_toctou.md) — `when: visible X` + `tapOn X` are two reads 0.33s apart; the test for a…
 - [NEO-300 Group Parallels multi-select](reference_neo300_grouping_multi_select.md) — `Select <row>` tick (no text), `N selected` pill, N-row hints; a focus-m…
 - [childOf searches under the FIRST parent match](patterns_childof_parent_is_first_match.md) — `index:` for a same-named trigger+list; above/below anchors are scoped to the parent too
-- [NEO-306 SL review, Make insert of…, Fill button](reference_neo306_sl_review_and_insert_door.md) — picker names lead with the choice; populated insert column never auto-reconciles
+- [NEO-306 SL review, Make insert of…, Fill button](reference_neo306_sl_review_and_insert_door.md) — picker names lead with the choice; own-set lines carry a `Name for <label>` field; populated insert column never auto-reconciles
 - [Flow `name:` is a directory name](patterns_flow_name_is_a_directory_name.md) — >255 BYTES = "File name too long" in CI before command one; keep names <~200 bytes
 - [NEO-307 League combobox + Search all teams](reference_neo307_league_combobox.md) — `id: "League"`, Create only on no-match (end minted names in a letter); team steps link via "Search all teams"
 - [Wizard headings include staged career teams](patterns_wizard_headings_include_staged_career_teams.md) — a `New Team:` heading ≠ a checklist club; verify on a committed card/alias first
@@ -126,3 +126,5 @@ Non-markdown helpers: `tools/`
 - [Dead-branch guards can cover a second outcome](patterns_dead_branch_guards_can_cover_a_second_outcome.md) — enumerate every outcome a guard admits before deleting a dead-premise branch
 - [Prove focus by what Enter does](patterns_prove_focus_by_what_enter_does.md) — maestro-web has no focus attribute; prove safe preconditions by sight, then Enter + assert effect
 - [Present in the failure dump = arrived late](patterns_present_in_failure_dump_means_late_arrival.md) — target fully on-screen in the failure PNG/hierarchy means it landed after the last poll; heading gates are Clerk-only
+- [Disabled is unreadable on web](patterns_disabled_is_unreadable_on_web.md) — `enabled:` matches nothing on maestro-web; prove disabled by a safe no-op tap or a `title` reason (→ resource-id)
+- [Marketplace twin names + public search](reference_sportlots_twin_names_and_public_search.md) — ` (#<id>)` on repeated names; twin notice lines beat `.*#[0-9].*`; clash copy is curly-quoted; SL search + BSC facets

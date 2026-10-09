@@ -1,0 +1,139 @@
+appId: com.neonbinder.web
+name: "Util — open a saved insert row's Attach sets and read which SportLots twin it holds (NEO-325)"
+tags:
+  - util
+---
+# THE AFTER-SAVE READ-BACK for a SportLots twin, from what an operator sees.
+#
+# A row that holds a SportLots set does not offer it again: the Attach sets
+# dialog's SportLots pane drops every id already attached to the row
+# (AttachSetsDialog: `alreadyAttached.sportlots`), and every candidate prints
+# its id (`id: <n>`). So, on the row that was paired with twin A:
+#   - twin B is still a candidate (`id: B` listed) — the positive, which also
+#     proves the pane loaded (R2: the absence below is meaningless before it);
+#   - B's checkbox is called by the BARE name (`Toggle <twin>`): a candidate
+#     name carries its `(#id)` only while the pane lists it more than once,
+#     so a bare name means A is no longer in the list;
+#   - searching A's id finds nothing (`No matches for "A".`), a positive
+#     statement of the absence.
+# A row that had silently lost its link, or had been given the wrong twin,
+# fails one of the three by name.
+#
+# INPUTS (all required; the caller is the sole writer of the row):
+#   SET          the NB set under Baseball → 2024 → Topps (e.g. "Topps")
+#   INSERT_QUERY plain text typed into `Search inserts` (no regex)
+#   INSERT_ROW   the row's full title as a REGEX (parentheses escaped)
+#   TWIN         the twins' shared SportLots name, plain words
+#   ATTACHED_ID  the SportLots id this row must hold
+#   OTHER_ID     the other twin's id, which must still be offered
+#
+# RETURN CONTRACT: the dialog is closed (Cancel), nothing was attached.
+# READ-ONLY: Cancel writes nothing; no checkbox is ticked.
+
+# ── RE-DRILL (R9) ────────────────────────────────────────────────────────────
+# Re-entering resets the columns row's horizontal offset (a save leaves it
+# wherever the dialog was opened from, and Maestro cannot scroll sideways —
+# see inserts-1996-score-… STEP 2) and re-opens the Inserts column after a
+# previous row's selection collapsed it to a card.
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+    env:
+      SET: ${SET}
+
+# "Insert" is a row of the Variant Types column; DOWN, centred for the tap
+# (R8). The column is populated now, so selecting it renders the column and
+# never re-opens the reconcile (EntityColumn fires the form only when empty).
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Insert"
+
+# Type first, then wait for the FILTERED ROW under the box: the box renders
+# from the column's first frame, so it is not a content signal (NEO-224).
+# A Convex read of rows the caller just saved — the 7000 bar (R5).
+- scrollUntilVisible:
+    element:
+      text: ".*Search inserts.*"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${INSERT_QUERY}
+- extendedWaitUntil:
+    visible:
+      text: "${INSERT_ROW}"
+      below:
+        id: "Search inserts"
+    timeout: 7000
+- tapOn:
+    text: "${INSERT_ROW}"
+    below:
+      id: "Search inserts"
+
+# The panel follows the selection and sits below the columns: DOWN, centred
+# (as inserts-1996-score-… STEP 3).
+- scrollUntilVisible:
+    element:
+      text: "Multi-source sets"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Attach more source sets"
+# The SportLots search box exists only inside the dialog — the open signal.
+# Client-side mount, the 7000 bar.
+- extendedWaitUntil:
+    visible:
+      id: "Search SportLots sets"
+    timeout: 7000
+
+# ── THE OTHER TWIN IS OFFERED ────────────────────────────────────────────────
+# The pane's search matches the id as well as the name (AttachSetsDialog
+# `searchFilter`), so typing the id narrows to exactly that candidate and
+# keeps its row at the top of the pane, inside the dialog. The wait is the
+# pane's list landing: a LIVE SportLots round-trip started when the dialog
+# opened (`fetchSlAttachSets`) — R5's marketplace exception, the 30000 the
+# sibling `multi-source-panel-opens-dialog` carries for the same fetch.
+- tapOn:
+    id: "Search SportLots sets"
+    waitToSettleTimeoutMs: 250
+- inputText: ${OTHER_ID}
+- extendedWaitUntil:
+    visible:
+      text: "id: ${OTHER_ID}"
+      childOf:
+        id: "SportLots candidates"
+    timeout: 30000
+# Called by the bare name: the pane no longer lists the name twice.
+- assertVisible:
+    id: "Toggle ${TWIN}"
+
+# ── THE ATTACHED TWIN IS NOT ─────────────────────────────────────────────────
+# The caret is at the end of what was just typed; ids are six digits, and
+# extra backspaces on an empty box are harmless.
+- eraseText: 10
+- inputText: ${ATTACHED_ID}
+# Positive form of the absence: the pane's empty line names the query
+# (`No matches for “<q>”.` — curly quotes, hence the dots). Client-side
+# filter of a list already loaded, the 7000 bar.
+- extendedWaitUntil:
+    visible:
+      text: "No matches for .${ATTACHED_ID}.\\."
+      childOf:
+        id: "SportLots candidates"
+    timeout: 7000
+- assertNotVisible:
+    text: "id: ${ATTACHED_ID}"
+
+# ── CLOSE WITHOUT ATTACHING ──────────────────────────────────────────────────
+# The footer is pinned in a `fixed inset-0` dialog (R8 case 2, measured on
+# this dialog in multi-source-panel-opens-dialog: bounds unmoved across five
+# swipes), so it is tapped where it is.
+- tapOn:
+    id: "Cancel attach sets"
+- extendedWaitUntil:
+    notVisible:
+      id: "Search SportLots sets"
+    timeout: 7000

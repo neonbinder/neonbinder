@@ -2,7 +2,6 @@
 
 import { action, ActionCtx } from "../_generated/server";
 import { v } from "convex/values";
-import { primaryId } from "../platformSlots";
 // NEO-237 — the all-brands predicate and the one brand-prefix matcher. Both
 // pure; the adapter compares a marketplace id to marketplace vocabulary and
 // applies an NB-owned prefix to the PARSED response, never to the request.
@@ -15,6 +14,9 @@ import {
   platformServesLevel,
   unsupportedLevelMessage,
 } from "../platformLevels";
+// NEO-325 — the per-level REQUIRED scope. One table, read by the chain gate
+// (`resolvableSides`) and by `resolveSlScope` below, so the two cannot drift.
+import { SL_SCOPE_BY_LEVEL } from "../marketplaceResolvability";
 // NEO-251: the parser below refuses against NB's OWN bounds rather than
 // re-declaring them. A number duplicated here would drift from the mutation
 // that actually enforces it, and the adapter would start minting names the
@@ -26,9 +28,8 @@ import {
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { MAX_CARD_PLAYERS } from "../features/cardAttention";
 import { displayVariationLabel } from "../../lib/cards/variations";
-import { api, internal } from "../_generated/api";
+import { internal } from "../_generated/api";
 import { getCurrentUserId, requireAdmin } from "../auth";
-import { Id } from "../_generated/dataModel";
 import {
   recordAdapterCall,
   recordAdapterPhase,
@@ -55,8 +56,6 @@ import {
   logMarketplaceLimiter,
   type FetchFailure,
 } from "../lib/marketplaceFetchFailure";
-
-type Level = "sport" | "year" | "manufacturer" | "setName" | "variantType" | "insert" | "parallel";
 
 const SPORTLOTS_BASE_URL = "https://www.sportlots.com";
 const NEWINVEN_URL = `${SPORTLOTS_BASE_URL}/inven/dealbin/newinven.tpl`;
@@ -234,54 +233,35 @@ function parseSelectOptions(
 }
 
 /**
- * Resolve a display value (e.g., "Baseball") to a SportLots platform value (e.g., "BB")
- * by looking up the selectorOptions table.
- */
-async function resolveSportLotsPlatformValue(
-  ctx: ActionCtx,
-  level: Level,
-  displayValue: string,
-  parentId?: Id<"selectorOptions">,
-): Promise<string | undefined> {
-  try {
-    const option: any = await ctx.runQuery(
-      api.selectorOptions.findByLevelAndValue,
-      { level, value: displayValue, parentId },
-    );
-    // NEO-137: platformData.sportlots is a SLOT MAP now. Interpolating it
-    // straight into the request body produced "[object Object]" as the SL
-    // set radio id, which matches nothing.
-    return option ? primaryId(option, "sportlots") : undefined;
-  } catch {
-    // NEO-239: a lookup that failed is NOT evidence of an id. Returning
-    // `undefined` is the whole point of this function's new contract — see
-    // the note above.
-    return undefined;
-  }
-}
-
-/**
  * NEO-239 — the SportLots request scope, built from SLOT IDS ONLY.
  *
  * SportLots scopes every set query with three form fields: `sprt`, `yr`,
- * `brd`. Before this ticket each one fell back to the NB row's DISPLAY VALUE
- * (`resolveSportLotsPlatformValue` ended `|| displayValue`, and its catch
- * returned the display value too), so a row with no SL id sent its own name
- * as a marketplace id. Two failure modes, both silent:
+ * `brd`, and each one comes from `platformFilters` — the caller's ids, read
+ * off the rows' platform slots — and nowhere else. A name is never sent as an
+ * id, and an empty `brd` would widen the query to every brand in the year
+ * rather than narrow it. A refusal is an error, so the caller's
+ * `coveredSides` never reads it as positive evidence.
  *
- *   • a name SportLots does not recognise scopes nothing, and the empty
- *     result reads as "SportLots does not carry this";
- *   • an empty `brd` is not a narrower query but a WIDER one — every brand in
- *     the year — and the caller stored that superset under one manufacturer.
+ * NEO-256 / NEO-242: there is no name→id lookup behind this any more; the old
+ * by-name DB fallback is deleted. `parentFilters` never reaches the wire.
  *
- * Neither raises an error, which is what made them dangerous: the caller's
- * `coveredSides` is built from errors, so a fail-open answer was treated as
- * positive evidence and could unlink live rows.
+ * NEO-325 (security audit) — the REQUEST LEVEL decides the shape, never
+ * `parentFilters`. The first version skipped any level `parentFilters` did not
+ * name BEFORE reading its id, so a client that sent a brand id with no brand
+ * name (`parentFilters` is client-supplied on two public actions) got an empty
+ * `brd`: the widened every-brand-in-the-year list, stored under the brand it
+ * asked about. Now, in this order:
  *
- * The rule now: a level NAMED in `parentFilters` must have an id in
- * `platformFilters`, or be resolvable to one off its row. Otherwise the whole
- * request is refused. `parentFilters` itself never reaches the wire — it is
- * the caller's declaration of what scope it intended, plus telemetry.
+ *   1. Every id supplied in `platformFilters` is sent. An id only narrows.
+ *   2. `SL_SCOPE_BY_LEVEL[level]` is the REQUIRED set for this request; a
+ *      required level with no id refuses it.
+ *   3. A level `parentFilters` names with no id also refuses it — the caller
+ *      declared a scope it cannot supply. Naming a level can only add a
+ *      refusal; it can never drop an id or loosen a requirement.
+ *
+ * A level absent from `SL_SCOPE_BY_LEVEL` is one SportLots does not answer;
+ * the adapter refuses those earlier (`platformServesLevel`), and this refuses
+ * them again rather than guess a scope.
  */
 const SL_UNSCOPED_MESSAGE =
   "SportLots was not queried: this path has no SportLots ids to scope the " +
@@ -295,33 +275,44 @@ type SlParentFilters = {
   variantType?: string;
 };
 
-async function resolveSlScope(
-  ctx: ActionCtx,
+const SL_SCOPE_FIELDS = [
+  ["sport", "sprt"],
+  ["year", "yr"],
+  ["manufacturer", "brd"],
+] as const;
+
+function resolveSlScope(
+  level: string,
   parentFilters: SlParentFilters,
   platformFilters?: Record<string, string>,
-): Promise<{
+): {
   fields: { sprt?: string; yr?: string; brd?: string };
   missing: string[];
-}> {
+} {
   const fields: { sprt?: string; yr?: string; brd?: string } = {};
   const missing: string[] = [];
 
-  const resolve = async (
-    level: "sport" | "year" | "manufacturer",
-    field: "sprt" | "yr" | "brd",
-  ) => {
-    const display = parentFilters[level];
-    if (!display) return; // level not in scope for this request at all
-    const id =
-      platformFilters?.[level] ??
-      (await resolveSportLotsPlatformValue(ctx, level, display));
-    if (id) fields[field] = id;
-    else missing.push(level);
-  };
+  const required = Object.prototype.hasOwnProperty.call(
+    SL_SCOPE_BY_LEVEL,
+    level,
+  )
+    ? SL_SCOPE_BY_LEVEL[level]
+    : undefined;
+  if (required === undefined) {
+    return { fields, missing: [`level=${level}`] };
+  }
 
-  await resolve("sport", "sprt");
-  await resolve("year", "yr");
-  await resolve("manufacturer", "brd");
+  for (const [scopeLevel, field] of SL_SCOPE_FIELDS) {
+    // Sent byte-exact; a whitespace-only id is no id.
+    const id = platformFilters?.[scopeLevel];
+    if (id !== undefined && id.trim() !== "") {
+      fields[field] = id;
+      continue;
+    }
+    if (required.includes(scopeLevel) || parentFilters[scopeLevel]) {
+      missing.push(scopeLevel);
+    }
+  }
 
   return { fields, missing };
 }
@@ -411,8 +402,9 @@ export const fetchSportLotsSelectorOptions = action({
       setName: v.optional(v.string()),
       variantType: v.optional(v.string()),
     }),
-    // Pre-resolved SportLots platform values keyed by level (e.g., { sport: "BB", year: "2024" }).
-    // When provided, these are used directly instead of resolving via DB lookup.
+    // SportLots ids keyed by level (e.g., { sport: "BB", year: "2024" }), read
+    // by the caller off the rows' platform slots. The only source of request
+    // ids: a level named in parentFilters with no id here is refused.
     platformFilters: v.optional(v.record(v.string(), v.string())),
     /**
      * NEO-239 — NB display values used ONLY to clean the labels this action
@@ -565,7 +557,6 @@ export const fetchSportLotsSelectorOptions = action({
       // SL combines set+variant into a flat list of set names.
       if (args.level === "insert") {
         const insertResult = await fetchSetNames(
-          ctx,
           sessionCookie,
           args.parentFilters,
           args.platformFilters,
@@ -593,7 +584,11 @@ export const fetchSportLotsSelectorOptions = action({
       }
 
       // sport, year, manufacturer: POST to newinven.tpl and parse select options
-      const scope = await resolveSlScope(ctx, args.parentFilters, args.platformFilters);
+      const scope = resolveSlScope(
+        args.level,
+        args.parentFilters,
+        args.platformFilters,
+      );
       if (scope.missing.length > 0) {
         await recordAdapterCall(ctx, {
           requestId,
@@ -936,7 +931,6 @@ export const fetchSportLotsSelectorOptions = action({
  * 3. Parse radio buttons and return set name + radio ID
  */
 async function fetchSetNames(
-  ctx: ActionCtx,
   sessionCookie: string,
   parentFilters: {
     sport?: string;
@@ -962,7 +956,7 @@ async function fetchSetNames(
   // `brd: ""` is not a narrower request, it is a request for every brand in
   // the year, and the caller would have stored that superset under whichever
   // manufacturer row it asked about.
-  const scope = await resolveSlScope(ctx, parentFilters, platformFilters);
+  const scope = resolveSlScope("insert", parentFilters, platformFilters);
   if (scope.missing.length > 0) {
     console.warn(
       `[fetchSetNames] refusing an unscoped request — no SportLots id on: ` +
@@ -1603,36 +1597,18 @@ export const fetchSportLotsChecklist = action({
         };
       }
 
-      // Look up the set's platformData.sportlots (the radio button ID).
-      // SL has no setName-level concept — it combines set+variant at the
-      // insert/parallel level (see fetchCardChecklist's own comment on this
-      // in selectorOptions.ts), so the resolved id lives under one of
-      // variantType/insert/parallel, never setName. Deepest level wins,
-      // matching fetchSl's own variantSlIds precedence in selectorOptions.ts.
-      // Bug fix (NEO-91): this used to read only platformFilters.setName,
-      // which is never populated, so setRadioId always fell through to the
-      // raw display string and SL's per-card fetch silently matched nothing.
-      //
-      // NEO-239 — SLOT IDS ONLY. This used to end `|| args.parentFilters.setName`,
-      // so a row with no SL id sent NB's own set NAME as SportLots' `selset`
-      // radio id. That matched nothing, the empty page parsed as zero cards,
-      // and "SportLots does not carry this set" was indistinguishable from "we
-      // asked SportLots a question it could not understand".
-      let setRadioId =
+      // The set's SportLots radio id (`selset`), from the caller's
+      // slot-derived `platformFilters` ONLY (NEO-91, NEO-239, NEO-256). SL
+      // combines set+variant into one list, so the id usually sits on
+      // variantType/insert/parallel; deepest level wins, matching
+      // fetchCardChecklist's own precedence in selectorOptions.ts. No id means
+      // no request: a set name is never sent as an id and never looked up.
+      const setRadioId =
         args.platformFilters?.parallel
         || args.platformFilters?.insert
         || args.platformFilters?.variantType
         || args.platformFilters?.setName
         || "";
-
-      // Fall back to a DB lookup — for the row's ID, never for its name — if
-      // no pre-resolved platform value arrived at any of those levels.
-      if (!setRadioId && args.parentFilters.setName) {
-        setRadioId =
-          (await resolveSportLotsPlatformValue(
-            ctx, "setName", args.parentFilters.setName,
-          )) ?? "";
-      }
 
       if (!setRadioId) {
         return {

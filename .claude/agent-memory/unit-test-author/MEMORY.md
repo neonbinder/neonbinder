@@ -25,3 +25,5 @@
 - [Neo237 All Brands view second pass](reference_neo237_all_brands_view_second_pass.md) — ensureBrandUnknownRow/rehomeSetRowsForSync test files (setCandidates tests died with the table), the resolvableSides "unlinked set" chain-shape trap for insert-level SL fixtures, pinned-entry component recipes, no jest-dom matchers in this repo
 - [NEO-296 transaction bound tests](reference_neo296_transaction_bound_tests.md) — write-budget/replay trio, the reversed-sortOrder fixed-point trap, fake timers to observe between pages, pinning a private bound by consequence
 - [Neo322 rekey arm test pattern](reference_neo322_rekey_arm_test_pattern.md) — snapshot-all-tables for "writes nothing", two independent arm doors need two red proofs
+- [Typecheck and lint blind spots for tests](reference_typecheck_and_lint_blind_spots_for_tests.md) — typecheck skips *.test.ts, eslint ignores components/**/*.ts; key-collision console.error probe; filter-hides-twin fixture
+- [NEO-325 twin test patterns](reference_neo325_twin_test_patterns.md) — twin test layout, break-check loop, status-region helper, module-registry query swap, equivalent mutants

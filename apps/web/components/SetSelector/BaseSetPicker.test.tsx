@@ -496,3 +496,115 @@ describe("BaseSetPicker — a paused marketplace pane (NEO-287)", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Candidates that share a name (NEO-325)
+// ---------------------------------------------------------------------------
+
+describe("BaseSetPicker — SportLots candidates that share a name (NEO-325)", () => {
+  const TWIN_1 = { value: "Rookie Cup", platformValue: "tc1" };
+  const TWIN_2 = { value: "Rookie Cup", platformValue: "tc2" };
+  const UNIQUE = { value: "Solo Set", platformValue: "solo1" };
+
+  it("labels twins with their id and leaves a unique name exactly as it was", () => {
+    renderPicker({ slOptions: [TWIN_1, TWIN_2, UNIQUE] });
+
+    expect(
+      screen.getByLabelText("SportLots base candidate: Rookie Cup (#tc1)"),
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText("SportLots base candidate: Rookie Cup (#tc2)"),
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText("SportLots base candidate: Solo Set"),
+    ).toBeTruthy();
+    expect(
+      screen.queryByLabelText("SportLots base candidate: Rookie Cup"),
+    ).toBeNull();
+  });
+
+  it("clicking the second twin confirms the second twin's id", async () => {
+    const { onConfirm } = renderPicker({ slOptions: [TWIN_1, TWIN_2, UNIQUE] });
+
+    await act(async () => {
+      fireEvent.click(
+        screen.getByLabelText("SportLots base candidate: Rookie Cup (#tc2)"),
+      );
+    });
+    expect(
+      screen
+        .getByLabelText("SportLots base candidate: Rookie Cup (#tc2)")
+        .getAttribute("aria-selected"),
+    ).toBe("true");
+    // Selecting one twin must not light up the other.
+    expect(
+      screen
+        .getByLabelText("SportLots base candidate: Rookie Cup (#tc1)")
+        .getAttribute("aria-selected"),
+    ).toBe("false");
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Confirm Base Set"));
+    });
+
+    expect(onConfirm).toHaveBeenCalledWith({ sl: TWIN_2, bsc: undefined });
+  });
+
+  it("Enter on the second twin confirms the second twin's id", async () => {
+    const { onConfirm } = renderPicker({ slOptions: [TWIN_1, TWIN_2, UNIQUE] });
+
+    const second = screen.getByLabelText(
+      "SportLots base candidate: Rookie Cup (#tc2)",
+    );
+    await act(async () => {
+      second.focus();
+      fireEvent.keyDown(second, { key: "Enter" });
+    });
+
+    expect(onConfirm).toHaveBeenCalledWith({ sl: TWIN_2, bsc: undefined });
+  });
+
+  it("the id suffix does not come and go as the operator searches", async () => {
+    renderPicker({
+      slOptions: [
+        TWIN_1,
+        TWIN_2,
+        ...Array.from({ length: 8 }, (_, i) => ({
+          value: `Filler Set ${i}`,
+          platformValue: `f${i}`,
+        })),
+      ],
+    });
+
+    await act(async () => {
+      fireEvent.change(screen.getByPlaceholderText("Search SportLots sets..."), {
+        target: { value: "Rookie" },
+      });
+    });
+
+    expect(
+      screen.getByLabelText("SportLots base candidate: Rookie Cup (#tc1)"),
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText("SportLots base candidate: Rookie Cup (#tc2)"),
+    ).toBeTruthy();
+  });
+
+  it("a BSC name two candidates share carries its slug; a unique one does not", () => {
+    renderPicker({
+      bscOptions: [
+        { value: "Twin Set", platformValue: "twin-a" },
+        { value: "Twin Set", platformValue: "twin-b" },
+        { value: "Lone Set", platformValue: "lone" },
+      ],
+    });
+
+    expect(
+      screen.getByLabelText("BSC base candidate: Twin Set (#twin-a)"),
+    ).toBeTruthy();
+    expect(
+      screen.getByLabelText("BSC base candidate: Twin Set (#twin-b)"),
+    ).toBeTruthy();
+    expect(screen.getByLabelText("BSC base candidate: Lone Set")).toBeTruthy();
+  });
+});

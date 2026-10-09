@@ -36,6 +36,14 @@ slots are tagged `setName`/`variantName`, so no backfill will ever give them a
 facet must make the side UNRESOLVABLE (skip), never omit the filter.
 
 **3. The display-value fallbacks are not all at the call sites.**
+*RESOLVED by NEO-256/NEO-242:* `resolveSportLotsPlatformValue` and its by-name
+DB fallback are deleted; the SL request body is built only by `resolveSlScope`
+from slot ids, with `SL_SCOPE_BY_LEVEL[level]` as the required set (a supplied
+id is always sent, a required or named level with no id refuses the request,
+and whether `parentFilters` names a level never decides the query shape). The
+brand strip survives only as `labelContext`, applied to the parsed response.
+Keep the trap below as the pattern to re-check when a new adapter lands: audit
+the adapter's own request builder, not only its callers.
 `resolveSportLotsPlatformValue` (`adapters/sportlots.ts:175-193`) ends
 `|| displayValue` and its catch returns `displayValue`; `:324-336` and
 `:630-640` reach it via `?? await resolveSportLotsPlatformValue(...)`. So even

@@ -21,6 +21,7 @@ import {
   resolveReturnedIds,
   selectorValueKey,
   indistinguishableByMarketplaceIds,
+  nameTwinKeys,
   unlinkStalePrimary,
   type IncomingItem,
   type MatchableRow,
@@ -196,14 +197,22 @@ describe("planSelectorSync tiers", () => {
     expect(plan.ambiguities[0].reason).toContain("share this name");
   });
 
-  test("two incoming items folding to ONE existing row: first wins, second withheld", () => {
+  test("two incoming items folding to ONE existing row: BOTH withheld, neither picked (NEO-325)", () => {
+    // Exactly-one rule on the incoming side: list order is the marketplace's,
+    // so letting the first claim the row was a coin flip with a write behind
+    // it. Same answer in either order.
     const a = row("a", "Topps");
-    const plan = planSelectorSync({
-      existing: [a],
-      items: [item("Topps", { bsc: "b1" }), item("topps", { sportlots: "s1" })],
-    });
-    expect(plan.outcomes[0]).toMatchObject({ kind: "matched", existingId: "a" });
-    expect(plan.outcomes[1].kind).toBe("withheld");
+    for (const items of [
+      [item("Topps", { bsc: "b1" }), item("topps", { sportlots: "s1" })],
+      [item("topps", { sportlots: "s1" }), item("Topps", { bsc: "b1" })],
+    ]) {
+      const plan = planSelectorSync({ existing: [a], items });
+      expect(plan.outcomes.map((o) => o.kind)).toEqual(["withheld", "withheld"]);
+      expect(plan.ambiguities.map((x) => x.reason)).toEqual([
+        "2 incoming items fold to one existing row",
+        "2 incoming items fold to one existing row",
+      ]);
+    }
   });
 
   test("no candidate at any tier → insert", () => {
@@ -233,7 +242,7 @@ describe("planSelectorSync — ambiguity edge cases (NEO-211 adversarial pass)",
     // tier 1 resolves cleanly, the fact that some OTHER pair of siblings
     // happens to collide on display value must not withhold or redirect it.
     const a = row("a", "Topps", { platformData: { bsc: { b0: "topps-2024" } } });
-    const c = row("c", "Topps", { isCustom: true }); // a second sibling named "Topps"
+    const c = row("c", "Topps"); // a second sibling named "Topps"
     const plan = planSelectorSync({
       existing: [a, c],
       items: [item("Topps Chewing Gum", { bsc: "topps-2024" })],
@@ -1165,5 +1174,264 @@ describe("clearDeclinedIfLabelChanged", () => {
       "Bowman",
     );
     expect(out.next).toEqual({ sportlots: "tpps" });
+  });
+});
+
+describe("planSelectorSync — name twins in the batch (NEO-325)", () => {
+  test("two incoming items sharing a name no row has are BOTH withheld as nameSharedInBatch, in either order", () => {
+    for (const items of [
+      [item("Anime", { sportlots: "s1" }), item("Anime", { sportlots: "s2" })],
+      [item("Anime", { sportlots: "s2" }), item("Anime", { sportlots: "s1" })],
+    ]) {
+      const plan = planSelectorSync({ existing: [], items });
+      expect(plan.outcomes.map((o) => o.kind)).toEqual(["withheld", "withheld"]);
+      expect(plan.siblingWithholds).toEqual([
+        { reason: "nameSharedInBatch", rowIds: [] },
+        { reason: "nameSharedInBatch", rowIds: [] },
+      ]);
+      expect(plan.ambiguities.map((a) => a.reason)).toEqual([
+        "2 incoming items share this name",
+        "2 incoming items share this name",
+      ]);
+    }
+  });
+
+  test("the fold is case-insensitive and trims: 'anime ' and 'Anime' are twins", () => {
+    const plan = planSelectorSync({
+      existing: [],
+      items: [item("anime ", { bsc: "b1" }), item("Anime", { bsc: "b2" })],
+    });
+    expect(plan.outcomes.map((o) => o.kind)).toEqual(["withheld", "withheld"]);
+  });
+
+  test("an item beside twins that has a name of its own still inserts", () => {
+    const plan = planSelectorSync({
+      existing: [],
+      items: [
+        item("Anime", { sportlots: "s1" }),
+        item("Anime", { sportlots: "s2" }),
+        item("Gold", { sportlots: "s3" }),
+      ],
+    });
+    expect(plan.outcomes.map((o) => o.kind)).toEqual(["withheld", "withheld", "insert"]);
+    expect(plan.siblingWithholds[2]).toBeUndefined();
+  });
+
+  test("identityOnly lines insert as their own rows and are NOT counted as twins of each other", () => {
+    const plan = planSelectorSync({
+      existing: [],
+      items: [
+        { value: "Anime", ids: { sportlots: "s1" }, identityOnly: true },
+        { value: "Anime", ids: { sportlots: "s2" }, identityOnly: true },
+      ],
+    });
+    expect(plan.outcomes.map((o) => o.kind)).toEqual(["insert", "insert"]);
+    expect(plan.siblingWithholds).toEqual([undefined, undefined]);
+  });
+
+  test("an identityOnly line is not counted toward a non-promoted line's twin count", () => {
+    const plan = planSelectorSync({
+      existing: [],
+      items: [
+        { value: "Anime", ids: { sportlots: "s1" }, identityOnly: true },
+        item("Anime", { sportlots: "s2" }),
+      ],
+    });
+    // The non-promoted line is alone in the count, so nothing withholds it.
+    expect(plan.outcomes.map((o) => o.kind)).toEqual(["insert", "insert"]);
+  });
+
+  test("an identityOnly line is never folded into a same-named row by name", () => {
+    const namesake = row("a", "Anime", { platformData: { sportlots: { s0: "s-old" } } });
+    const plan = planSelectorSync({
+      existing: [namesake],
+      items: [{ value: "Anime", ids: { sportlots: "s-new" }, identityOnly: true }],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "insert" });
+  });
+
+  test("an identityOnly line still matches the row that holds its id", () => {
+    const holder = row("a", "Anime Renamed", {
+      platformData: { sportlots: { s0: "s1" } },
+    });
+    const plan = planSelectorSync({
+      existing: [holder],
+      items: [{ value: "Anime", ids: { sportlots: "s1" }, identityOnly: true }],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 1 });
+  });
+
+  test("an identityOnly line with no marketplace id is withheld as noIdToAttach", () => {
+    const plan = planSelectorSync({
+      existing: [],
+      items: [{ value: "Anime", ids: {}, identityOnly: true }],
+    });
+    expect(plan.outcomes[0].kind).toBe("withheld");
+    expect(plan.siblingWithholds[0]).toEqual({ reason: "noIdToAttach", rowIds: [] });
+  });
+
+  test("one twin held by a row matches that row by id; the other twin is withheld (not inserted)", () => {
+    const held = row("a", "Anime", { platformData: { sportlots: { s0: "s1" } } });
+    const plan = planSelectorSync({
+      existing: [held],
+      items: [item("Anime", { sportlots: "s1" }), item("Anime", { sportlots: "s2" })],
+    });
+    expect(plan.outcomes[0]).toEqual({ kind: "matched", existingId: "a", tier: 1 });
+    expect(plan.outcomes[1].kind).toBe("withheld");
+    expect(plan.siblingWithholds[1]?.reason).toBe("nameLinkedToOtherSet");
+    expect(plan.siblingWithholds[1]?.rowIds).toEqual(["a"]);
+  });
+
+  test("a unique new name beside a held twin still inserts", () => {
+    const held = row("a", "Anime", { platformData: { sportlots: { s0: "s1" } } });
+    const plan = planSelectorSync({
+      existing: [held],
+      items: [item("Anime", { sportlots: "s1" }), item("Brand New", { sportlots: "s9" })],
+    });
+    expect(plan.outcomes[1]).toEqual({ kind: "insert" });
+  });
+});
+
+describe("planSelectorSync — siblingWithholds reasons (NEO-325)", () => {
+  const reasonOf = (
+    existing: Row[],
+    items: IncomingItem[],
+    index = items.length - 1,
+  ) => planSelectorSync({ existing, items }).siblingWithholds[index];
+
+  test("existingIdClaimed: two lines name the same row", () => {
+    const a = row("a", "Topps");
+    expect(
+      reasonOf([a], [item("One", { bsc: "b1" }, "a"), item("Two", { bsc: "b2" }, "a")]),
+    ).toEqual({ reason: "existingIdClaimed", rowIds: ["a"] });
+  });
+
+  test("idOnManySiblings: the item's id is held by two siblings, rowIds are both holders", () => {
+    const a = row("a", "S1", { platformData: { bsc: { b0: "shared" } } });
+    const b = row("b", "S2", { platformData: { bsc: { b0: "shared" } } });
+    expect(reasonOf([a, b], [item("New", { bsc: "shared" })])).toEqual({
+      reason: "idOnManySiblings",
+      rowIds: ["a", "b"],
+    });
+  });
+
+  test("idClaimedTwice: two items resolve to one row by id", () => {
+    const a = row("a", "Topps", { platformData: { bsc: { b0: "x" } } });
+    expect(
+      reasonOf([a], [item("First", { bsc: "x" }), item("Second", { bsc: "x" })]),
+    ).toEqual({ reason: "idClaimedTwice", rowIds: ["a"] });
+  });
+
+  test("idsPointAtDifferentRows: the BSC id names one row, the SportLots id another", () => {
+    const a = row("a", "A", { platformData: { bsc: { b0: "b1" } } });
+    const b = row("b", "B", { platformData: { sportlots: { s0: "s1" } } });
+    const w = reasonOf([a, b], [item("Whatever", { bsc: "b1", sportlots: "s1" })]);
+    expect(w?.reason).toBe("idsPointAtDifferentRows");
+    expect([...(w?.rowIds ?? [])].sort()).toEqual(["a", "b"]);
+  });
+
+  test("nameSharedBySiblings: several siblings share the item's name", () => {
+    const a = row("a", "Topps");
+    const b = row("b", "topps");
+    const w = reasonOf([a, b], [item("Topps", { bsc: "b9" })]);
+    expect(w?.reason).toBe("nameSharedBySiblings");
+    expect([...(w?.rowIds ?? [])].sort()).toEqual(["a", "b"]);
+  });
+
+  test("noIdToAttach: a same-named row exists and the item carries nothing to attach", () => {
+    expect(reasonOf([row("a", "Topps")], [item("Topps")])).toEqual({
+      reason: "noIdToAttach",
+      rowIds: ["a"],
+    });
+  });
+
+  test("nameLinkedToOtherSet: the one same-named row holds a different live id", () => {
+    const a = row("a", "Topps", { platformData: { bsc: { b0: "old" } } });
+    // The old id must still be LIVE upstream for the row to count as bound.
+    const plan = planSelectorSync({
+      existing: [a],
+      items: [item("Topps", { bsc: "new" }), item("Other", { bsc: "old" })],
+      coveredSides: ["bsc"],
+      returnedIds: { bsc: ["old", "new"], sportlots: [] },
+    });
+    expect(plan.siblingWithholds[0]).toEqual({
+      reason: "nameLinkedToOtherSet",
+      rowIds: ["a"],
+    });
+  });
+
+  test("nameClaimedTwice: two or more items fold to the one same-named row", () => {
+    const a = row("a", "Topps");
+    const plan = planSelectorSync({
+      existing: [a],
+      items: [item("Topps", { bsc: "b1" }), item("topps", { sportlots: "s1" })],
+    });
+    expect(plan.siblingWithholds).toEqual([
+      { reason: "nameClaimedTwice", rowIds: ["a"] },
+      { reason: "nameClaimedTwice", rowIds: ["a"] },
+    ]);
+  });
+
+  test("rowClaimedInBatch: the same-named row was already claimed by an id", () => {
+    const a = row("a", "Topps", { platformData: { bsc: { b0: "b1" } } });
+    const plan = planSelectorSync({
+      existing: [a],
+      items: [item("Topps Chewing Gum", { bsc: "b1" }), item("Topps", { sportlots: "s1" })],
+    });
+    expect(plan.outcomes[0]).toMatchObject({ kind: "matched", existingId: "a" });
+    expect(plan.siblingWithholds[1]).toEqual({ reason: "rowClaimedInBatch", rowIds: ["a"] });
+  });
+
+  test("a matched or inserted item has no sibling withhold", () => {
+    const a = row("a", "Topps", { platformData: { bsc: { b0: "b1" } } });
+    const plan = planSelectorSync({
+      existing: [a],
+      items: [item("Topps", { bsc: "b1" }), item("Fresh", { bsc: "b2" })],
+    });
+    expect(plan.siblingWithholds).toEqual([undefined, undefined]);
+  });
+
+  test("a withhold is parallel to outcomes (same length, same index)", () => {
+    const plan = planSelectorSync({
+      existing: [row("a", "Topps")],
+      items: [item("Fresh", { bsc: "b2" }), item("Topps")],
+    });
+    expect(plan.siblingWithholds).toHaveLength(plan.outcomes.length);
+    expect(plan.siblingWithholds[0]).toBeUndefined();
+    expect(plan.siblingWithholds[1]?.reason).toBe("noIdToAttach");
+  });
+});
+
+describe("nameTwinKeys (NEO-325)", () => {
+  test("a folded name carried by two DISTINCT ids is a twin", () => {
+    expect(
+      nameTwinKeys([
+        { value: "Anime", platformValue: "1" },
+        { value: " anime", platformValue: "2" },
+        { value: "Gold", platformValue: "3" },
+      ]),
+    ).toEqual(new Set(["anime"]));
+  });
+
+  test("the same id listed twice is one set, not a twin of itself", () => {
+    expect(
+      nameTwinKeys([
+        { value: "Anime", platformValue: "1" },
+        { value: "Anime", platformValue: "1" },
+      ]),
+    ).toEqual(new Set());
+  });
+
+  test("an empty list has no twins", () => {
+    expect(nameTwinKeys([])).toEqual(new Set());
+  });
+
+  test("names that differ beyond case and trim are not twins", () => {
+    expect(
+      nameTwinKeys([
+        { value: "Gold /50", platformValue: "1" },
+        { value: "Gold 50", platformValue: "2" },
+      ]),
+    ).toEqual(new Set());
   });
 });

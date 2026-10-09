@@ -213,15 +213,25 @@ describe("selectorOptions returns-validator drift", () => {
     expect(row?.platformData.sportlots).toEqual({ s0: "884412" });
   });
 
-  test("findByLevelAndValue returns a fully-populated row", async () => {
+  test("the fully-populated insert row reads back whole from the table", async () => {
+    // NEO-325: the public lookup query this once exercised is deleted. The
+    // seeded row is still the schema-level proof that the fully-populated
+    // fixture is valid, so read it straight off the table.
     const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId } = await seedFullTree(t);
 
-    const row = await asAdmin.query(api.selectorOptions.findByLevelAndValue, {
-      level: "insert",
-      value: "Dugout Collection Artist's Proofs Series 1",
-      parentId: variantTypeId,
+    const row = await t.run(async (ctx) => {
+      const rows = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level_and_parent", (q) =>
+          q.eq("level", "insert").eq("parentId", variantTypeId),
+        )
+        .collect();
+      return (
+        rows.find(
+          (r) => r.value === "Dugout Collection Artist's Proofs Series 1",
+        ) ?? null
+      );
     });
 
     expect(row).not.toBeNull();

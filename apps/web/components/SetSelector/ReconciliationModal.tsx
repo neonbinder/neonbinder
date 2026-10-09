@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useMemo, useReducer, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import {
@@ -9,8 +9,12 @@ import {
   PointerSensor,
   KeyboardSensor,
   useDroppable,
+  type Active,
+  type Announcements,
   type DragStartEvent,
   type DragEndEvent,
+  type Over,
+  type UniqueIdentifier,
 } from "@dnd-kit/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -24,6 +28,22 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import HeldElsewhereNote from "./HeldElsewhereNote";
 import { heldIdSets, type HeldRow } from "./held-elsewhere";
+import {
+  duplicateNames,
+  itemLabel,
+  nameKey,
+  itemLabelParts,
+  sharedTitleLabels,
+} from "./marketplace-item-label";
+import {
+  RENAME_TIP,
+  TITLE_CLASH_ROW_LINE,
+  readyTitleClashes,
+  titleClashMessage,
+  titleClashSignature,
+  type ClashExistingRow,
+} from "./ready-title-clashes";
+import { MAX_SELECTOR_VALUE_LENGTH } from "../../convex/selectorSyncMatch";
 
 // ===== TYPES =====
 
@@ -83,6 +103,14 @@ export type ReadySet = {
   metadata?: ItemMetadata;
   /** Auto-match score, for display only. 0 once an operator has touched it. */
   confidence: number;
+  /**
+   * NEO-325 — made with "Make its own set" (PROMOTE_SOLO). Saved with
+   * `identityOnly`: the store matches it by its marketplace ids or inserts it,
+   * and never folds it into a same-named row by name — which is what withheld
+   * a SportLots twin saved after its namesake. Kept through later attaches and
+   * renames: the operator still meant it as its own set.
+   */
+  ownSet?: boolean;
 };
 
 type ReconciliationState = {
@@ -154,6 +182,12 @@ export type ReconciledResult = {
       sportlots?: Record<string, string>;
     };
     metadata?: ItemMetadata;
+    /**
+     * NEO-325 — the operator made this set with "Make its own set". The store
+     * matches it by identity only and otherwise inserts it; see
+     * `ReadySet.ownSet`. Absent on every other set.
+     */
+    identityOnly?: true;
   }>;
 };
 
@@ -172,6 +206,28 @@ function withoutPending(
   return list.some((i) => i.platformValue === item.platformValue)
     ? list.filter((i) => i.platformValue !== item.platformValue)
     : list;
+}
+
+/**
+ * Return items to a Pending column, skipping any id already there.
+ *
+ * NEO-325: Pending is keyed by `platformValue` (React keys, dnd ids, selection),
+ * so the same id twice in one column is a key collision. It happens when a
+ * marketplace set mapped by two NB sets is detached from, or disbanded out of,
+ * both — each return used to append another copy.
+ */
+function withPendingAdded(
+  list: PlatformItem[],
+  items: PlatformItem[],
+): PlatformItem[] {
+  const have = new Set(list.map((i) => i.platformValue));
+  const added: PlatformItem[] = [];
+  for (const item of items) {
+    if (have.has(item.platformValue)) continue;
+    have.add(item.platformValue);
+    added.push(item);
+  }
+  return added.length === 0 ? list : [...list, ...added];
 }
 
 /** Exported for its unit test; the component is the only production caller. */
@@ -212,6 +268,7 @@ export function reconciliationReducer(
             bsc: action.side === "bsc" ? [action.item] : [],
             sl: action.side === "sl" ? [action.item] : [],
             confidence: 0,
+            ownSet: true,
           },
         ],
         pendingBsc:
@@ -241,6 +298,9 @@ export function reconciliationReducer(
         bsc: action.side === "bsc" ? [item] : [],
         sl: action.side === "sl" ? [item] : [],
         confidence: 0,
+        // NEO-325 — "Keep all" is "Make its own set" on every row, so each
+        // set it makes is saved by identity (`identityOnly`) the same way.
+        ownSet: true,
       }));
       const drop = (list: PlatformItem[]) =>
         list.filter((i) => !seen.has(i.platformValue));
@@ -307,9 +367,13 @@ export function reconciliationReducer(
           ? state.ready.filter((s) => s.key !== action.key)
           : state.ready.map((s) => (s.key === action.key ? nextSet : s)),
         pendingBsc:
-          action.side === "bsc" ? [...state.pendingBsc, item] : state.pendingBsc,
+          action.side === "bsc"
+            ? withPendingAdded(state.pendingBsc, [item])
+            : state.pendingBsc,
         pendingSl:
-          action.side === "sl" ? [...state.pendingSl, item] : state.pendingSl,
+          action.side === "sl"
+            ? withPendingAdded(state.pendingSl, [item])
+            : state.pendingSl,
       };
     }
     case "DISBAND": {
@@ -318,8 +382,8 @@ export function reconciliationReducer(
       return {
         ...state,
         ready: state.ready.filter((s) => s.key !== action.key),
-        pendingBsc: [...state.pendingBsc, ...target.bsc],
-        pendingSl: [...state.pendingSl, ...target.sl],
+        pendingBsc: withPendingAdded(state.pendingBsc, target.bsc),
+        pendingSl: withPendingAdded(state.pendingSl, target.sl),
       };
     }
     case "RENAME": {
@@ -423,6 +487,32 @@ type ReconciliationModalProps = {
    * they just did.
    */
   saveError?: string | null;
+  /**
+   * NEO-325 — `fetchRawOptions`' `twinIds`: ids whose name another id on the
+   * same side shares in the marketplace's FULL list. An item listed here
+   * always wears its `(#id)`, even when its namesake is not in this dialog
+   * (the Base's own SportLots set is dropped from the list by id).
+   */
+  twinIds?: { bsc: readonly string[]; sportlots: readonly string[] };
+  /**
+   * NEO-325 — one sentence for the header when twins are why this dialog
+   * opened (a one-sided fetch the form would otherwise have stored).
+   */
+  twinNotice?: string;
+  /**
+   * NEO-325 — where the Ready sets will be saved, as the operator reads it
+   * ("2024 Topps Chrome › Inserts"). A title that clashes with a set already
+   * saved there names this rather than "here". Optional: without it the
+   * sentence says "here".
+   */
+  parentPath?: string;
+  /**
+   * NEO-325 — open with the SportLots prefix filter OFF. For a dialog opened
+   * in place of a one-sided store: that store would have written every
+   * fetched SportLots set, so hiding the ones outside the set's prefix would
+   * hide work the operator is now answering for.
+   */
+  showAllSlInitially?: boolean;
   existingRows?: Array<{
     /** The row's own `_id` — see `ReadySet.existingId`. Optional so callers
      *  that predate NEO-211 (and the tests that construct rows by hand) keep
@@ -505,16 +595,103 @@ function FilterInput({
   );
 }
 
+/** Names that more than one distinct item carries, per side (NEO-325). */
+type SideDups = { bsc: ReadonlySet<string>; sl: ReadonlySet<string> };
+
+/**
+ * dnd ids for marketplace items: `${side}-${platformValue}` for a Pending row,
+ * and the same behind `mapped-` for a row in the "already mapped" reveal.
+ *
+ * The prefix is not decoration. DETACH and DISBAND return an item to Pending
+ * even while another Ready set still maps it, so with the reveal on, the same
+ * marketplace id can be a Pending row AND a mapped row at once — and dnd-kit
+ * must never see one id registered twice. Both still resolve by platformValue.
+ */
+const MAPPED_DND_PREFIX = "mapped-";
+
+/**
+ * The side and marketplace id a dnd item id names, or `null` for anything
+ * else (a Ready set's `ready-<key>`). Sliced, never `replace`d: replace strips
+ * the first occurrence anywhere, which corrupts a BSC slug containing it.
+ */
+function parseItemDndId(
+  id: string,
+): { side: Side; platformValue: string } | null {
+  const rest = id.startsWith(MAPPED_DND_PREFIX)
+    ? id.slice(MAPPED_DND_PREFIX.length)
+    : id;
+  const side: Side | null = rest.startsWith("bsc-")
+    ? "bsc"
+    : rest.startsWith("sl-")
+      ? "sl"
+      : null;
+  if (!side) return null;
+  return { side, platformValue: rest.slice(side.length + 1) };
+}
+
+/**
+ * What a screen reader hears on every drag handle (dnd-kit's
+ * aria-describedby). It describes the drag this dialog really has: the
+ * KeyboardSensor is registered and `keyboardAwareCollision` lands keyboard
+ * drops (NEO-300), so Space/Enter, the arrows and Space/Enter again do pair
+ * and attach. A click on the handle selects instead, but that is pointer-only:
+ * Enter on the handle starts a keyboard drag, never a click.
+ */
+const DRAG_INSTRUCTIONS =
+  "Press Space or Enter to pick up this set. Use the arrow keys to move it onto a set from the other marketplace, or onto a Ready set above, then press Space or Enter to drop it. Press Escape to put it back.";
+
+/**
+ * NEO-325 — the id suffix on a twin's name. Secondary to the name: normal
+ * weight, a size down, in the side's own badge hue at 80% (still 4.5:1+ on
+ * the row's gray-800), so "(#12345)" reads as belonging to the SL badge
+ * beside it without competing with the name. Unique names get no suffix.
+ */
+const ID_SUFFIX: Record<Side, string> = {
+  bsc: "text-[11px] font-normal tabular-nums text-blue-300/80",
+  sl: "text-[11px] font-normal tabular-nums text-purple-300/80",
+};
+
+/**
+ * An item's visible name, with the id suffix when the name is shared. The
+ * suffix is real text, separated by a real space, so it is part of the
+ * accessible name of whatever control wraps it (WCAG 2.5.3 label in name).
+ */
+function ItemName({
+  item,
+  side,
+  dups,
+  suffixClassName,
+}: {
+  item: PlatformItem;
+  side: Side;
+  dups: SideDups;
+  suffixClassName?: string;
+}) {
+  const { name, suffix } = itemLabelParts(item, side, dups[side]);
+  return (
+    <>
+      {name}
+      {suffix && (
+        <>
+          {" "}
+          <span className={suffixClassName ?? ID_SUFFIX[side]}>{suffix}</span>
+        </>
+      )}
+    </>
+  );
+}
+
 function DraggableItem({
   id,
-  value,
+  name,
   platform,
   isSelected,
   onClick,
   action,
 }: {
   id: string;
-  value: string;
+  /** The row's visible name — `<ItemName>`, so a twin carries its id. */
+  name: React.ReactNode;
   platform: "bsc" | "sl";
   isSelected?: boolean;
   onClick?: () => void;
@@ -576,7 +753,7 @@ function DraggableItem({
         >
           {platformLabel}
         </span>
-        <span className="text-gray-200 break-words min-w-0">{value}</span>
+        <span className="text-gray-200 break-words min-w-0">{name}</span>
       </div>
       {action && <div className="shrink-0 py-1.5 pr-1.5">{action}</div>}
     </div>
@@ -607,6 +784,7 @@ const KEEP_ALL_BUTTON = `${OWN_SET_BUTTON} border-[#00D558]/70 text-[#00D558] ho
  */
 function ReadySetRow({
   set,
+  label,
   onRename,
   onDetach,
   onDisband,
@@ -614,8 +792,17 @@ function ReadySetRow({
   attachHint,
   showMetadata,
   onUpdateMetadata,
+  dups,
+  onDraftChange,
+  clashMessageId,
 }: {
   set: ReadySet;
+  /**
+   * NEO-325 — what this row's controls call the set: its title, plus its
+   * mapped ids when another Ready set has the same title (two promoted SL
+   * twins). See `sharedTitleLabels`. Never written back into `title`.
+   */
+  label: string;
   onRename: (title: string) => void;
   onDetach: (side: Side, platformValue: string) => void;
   onDisband: () => void;
@@ -624,8 +811,25 @@ function ReadySetRow({
   attachHint?: string;
   showMetadata?: boolean;
   onUpdateMetadata?: (metadata: ItemMetadata) => void;
+  /** NEO-325 — so a mapped twin's chip names its id, as its Pending row did. */
+  dups: SideDups;
+  /**
+   * NEO-325 — every edit of the title draft, and `null` once it is committed
+   * or reverted, so the dialog can block Save on a title clash while the
+   * operator is still typing (see `readyTitleClashes`).
+   */
+  onDraftChange?: (draft: string | null) => void;
+  /**
+   * NEO-325 — set while this row's title clashes with another set's: the id
+   * of the sentence beside Save that says so. Marks the title field invalid,
+   * puts a short line under it (so the clash is not told by colour alone),
+   * and describes the field by that line first, then by the sentence.
+   */
+  clashMessageId?: string;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // The row's OWN line; the footer's sentence ids are never reused here.
+  const clashLineId = useId();
   const { setNodeRef, isOver } = useDroppable({ id: `ready-${set.key}` });
 
   // Title is edited against a LOCAL draft and committed on blur / Enter.
@@ -636,13 +840,18 @@ function ReadySetRow({
   // It is not hypothetical here: a real reconcile can hold a dozen-plus sets.
   // `key` is stable and never reused, so seeding from props is safe.
   const [titleDraft, setTitleDraft] = useState(set.title);
+  // Enter and Escape act in place and leave focus in the field: blurring it
+  // dropped focus to <body>, outside this aria-modal dialog. A later blur
+  // (Tab, a click away) still commits, and finds nothing left to do.
   const commitTitle = () => {
     const next = titleDraft.trim();
+    onDraftChange?.(null);
     // An empty title would save a nameless set; snap back instead.
     if (!next) {
       setTitleDraft(set.title);
       return;
     }
+    if (next !== titleDraft) setTitleDraft(next);
     if (next !== set.title) onRename(next);
   };
 
@@ -663,13 +872,22 @@ function ReadySetRow({
       }`}
     >
       <span className="opacity-70">{side === "bsc" ? "BSC" : "SL"}</span>
-      <span className="break-words">{item.value}</span>
+      <span className="break-words">
+        {/* The chip's own "BSC"/"SL" tag is already muted with opacity-70;
+            the id suffix matches it rather than adding a third tone. */}
+        <ItemName
+          item={item}
+          side={side}
+          dups={dups}
+          suffixClassName="opacity-70 font-normal tabular-nums"
+        />
+      </span>
       <button
         type="button"
         onClick={() => onDetach(side, item.platformValue)}
         className="text-pink-400 hover:text-pink-300 px-0.5 rounded"
         title="Remove this mapping"
-        aria-label={`Remove ${item.value} from ${set.title}`}
+        aria-label={`Remove ${itemLabel(item, side, dups[side])} from ${label}`}
       >
         ✕
       </button>
@@ -679,7 +897,12 @@ function ReadySetRow({
   return (
     <div
       ref={setNodeRef}
-      className={`border-l-4 border-[#00D558] rounded-r-lg p-3 mb-2 transition-colors ${
+      // NEO-325: the green rail says "this saves". A title another set also
+      // carries cannot save, so its rail turns the dialog's error pink until
+      // the titles differ; the sentence beside Save says why.
+      className={`border-l-4 ${
+        clashMessageId ? "border-[#FF2EB3]" : "border-[#00D558]"
+      } rounded-r-lg p-3 mb-2 transition-colors ${
         isOver ? "bg-[#00B7FF]/10 ring-1 ring-[#00B7FF]" : "bg-gray-800/50"
       }`}
     >
@@ -689,13 +912,15 @@ function ReadySetRow({
           bare
           type="text"
           value={titleDraft}
-          onChange={(e) => setTitleDraft(e.target.value)}
+          onChange={(e) => {
+            setTitleDraft(e.target.value);
+            onDraftChange?.(e.target.value);
+          }}
           onBlur={commitTitle}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
               commitTitle();
-              (e.target as HTMLInputElement).blur();
             } else if (e.key === "Escape") {
               e.preventDefault();
               // NEO-220 (D8): Escape here reverts the title and nothing else.
@@ -704,11 +929,23 @@ function ReadySetRow({
               // thrown away every set on the screen.
               e.stopPropagation();
               setTitleDraft(set.title);
-              (e.target as HTMLInputElement).blur();
+              onDraftChange?.(null);
             }
           }}
-          aria-label={`NeonBinder set name for ${set.title}`}
-          className="flex-1 min-w-0 px-2 py-1 text-sm font-medium text-gray-100 bg-gray-900/60 border border-gray-700 rounded focus:border-[#00B7FF]"
+          // A name over the store's ceiling is refused at Save; never let one
+          // be typed.
+          maxLength={MAX_SELECTOR_VALUE_LENGTH}
+          // Shown only once the field is cleared to retype; the line below
+          // carries the same tip while the title clashes.
+          placeholder={clashMessageId ? RENAME_TIP : undefined}
+          aria-label={`NeonBinder set name for ${label}`}
+          aria-invalid={clashMessageId ? true : undefined}
+          aria-describedby={
+            clashMessageId ? `${clashLineId} ${clashMessageId}` : undefined
+          }
+          className={`flex-1 min-w-0 px-2 py-1 text-sm font-medium text-gray-100 bg-gray-900/60 border rounded focus:border-[#00B7FF] ${
+            clashMessageId ? "border-[#FF2EB3]" : "border-gray-700"
+          }`}
         />
         {set.confidence > 0 && (
           <span className={`text-xs shrink-0 ${confidenceColor}`}>
@@ -719,7 +956,7 @@ function ReadySetRow({
           <button
             onClick={() => setExpanded(!expanded)}
             className="text-xs text-gray-400 hover:text-gray-200 px-2"
-            aria-label={`Toggle details for ${set.title}`}
+            aria-label={`Toggle details for ${label}`}
           >
             {expanded ? "▲" : "▼"}
           </button>
@@ -728,11 +965,18 @@ function ReadySetRow({
           onClick={onDisband}
           className="text-xs text-pink-400 hover:text-pink-300 px-2 py-1 rounded hover:bg-pink-900/20 shrink-0"
           title="Remove this set (its mappings return to Pending)"
-          aria-label={`Remove set ${set.title}`}
+          aria-label={`Remove set ${label}`}
         >
           ✕
         </button>
       </div>
+      {clashMessageId && (
+        <p id={clashLineId} className="mt-1 text-xs text-[#FF2EB3]">
+          {TITLE_CLASH_ROW_LINE}{" "}
+          {/* gray-400: a hint, quieter than the pink fact it follows. */}
+          <span className="text-gray-400">{RENAME_TIP}</span>
+        </p>
+      )}
 
       <div className="flex flex-wrap gap-1.5 mt-2">
         {set.bsc.map((i) => chip("bsc", i))}
@@ -750,7 +994,10 @@ function ReadySetRow({
           type="button"
           onClick={onAttachClick}
           className="mt-2 text-[11px] font-semibold rounded px-2 py-1 bg-[#00B7FF] text-gray-900 hover:bg-[#33C6FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF]"
-          aria-label={`Add ${attachHint} to ${set.title}`}
+          // WCAG 2.5.3: the name begins with the visible words, then names
+          // the set — every Ready row offers this button at once, so "this
+          // set" alone would be the same name a dozen times.
+          aria-label={`Add ${attachHint} to this set, ${label}`}
         >
           Add “{attachHint}” to this set
         </button>
@@ -818,6 +1065,10 @@ export default function ReconciliationModal({
   saveError = null,
   heldElsewhere,
   heldInBrand,
+  twinIds,
+  twinNotice,
+  parentPath,
+  showAllSlInitially = false,
 }: ReconciliationModalProps) {
   const usedSlSet = useMemo(
     () => new Set(usedSlPlatformValues),
@@ -833,8 +1084,13 @@ export default function ReconciliationModal({
   // restored. The old code kept only the first id per side (`firstBsc`), which
   // silently dropped operator-attached extras every time the modal reopened —
   // invisible, because the row still looked plausible with one id.
-  const initialState: ReconciliationState = useMemo(() => {
+  //
+  // NEO-325: the same pass records every saved row under the parent — the
+  // ones seeded into Ready and the ones that were not — so Save can refuse a
+  // title that would sit beside one of them (`readyTitleClashes`).
+  const seed = useMemo(() => {
     const ready: ReadySet[] = [];
+    const savedSiblings: ClashExistingRow[] = [];
     const usedBsc = new Set<string>();
     const usedSl = new Set<string>();
     let seq = 0;
@@ -854,9 +1110,21 @@ export default function ReconciliationModal({
     for (const row of existingRows) {
       const bscIds = toIds(row.platformData.bsc);
       const slIds = toIds(row.platformData.sportlots);
-      if (bscIds.length === 0 && slIds.length === 0) continue;
+      if (bscIds.length === 0 && slIds.length === 0) {
+        // Not seeded: a row with no marketplace ids has nothing to reconcile,
+        // but it is still a set under this parent with this name.
+        savedSiblings.push({ name: row.value, bsc: [], sportlots: [] });
+        continue;
+      }
+      const key = `set-${seq++}`;
+      savedSiblings.push({
+        name: row.value,
+        bsc: bscIds,
+        sportlots: slIds,
+        seededKey: key,
+      });
       ready.push({
-        key: `set-${seq++}`,
+        key,
         existingId: row.existingId,
         title: row.value,
         bsc: bscIds.map(
@@ -989,22 +1257,30 @@ export default function ReconciliationModal({
         return true;
       });
     };
-    return {
+    const state: ReconciliationState = {
       ready,
       pendingBsc: pendingOf([...initialData.unmatchedBsc, ...releasedBsc], usedBsc),
       pendingSl: pendingOf([...initialData.unmatchedSl, ...releasedSl], usedSl),
       seq,
     };
+    return { state, savedSiblings };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+  const initialState = seed.state;
+  const savedSiblings = seed.savedSiblings;
   const [state, dispatch] = useReducer(reconciliationReducer, initialState);
 
   // ONE selection at a time, either side. Clicking the opposite side pairs
   // them; clicking a Ready set attaches to it. Drag does the same things but
   // is not keyboard-operable, so the click path is the accessible one.
-  const [selected, setSelected] = useState<{ side: Side; value: string } | null>(
-    null,
-  );
+  //
+  // NEO-325: held by `platformValue`, never by name. SportLots lists distinct
+  // sets under one name, and a name-keyed selection resolved every twin to
+  // the first one — so "pair the 3rd Anime" linked the 1st Anime's id.
+  const [selected, setSelected] = useState<{
+    side: Side;
+    platformValue: string;
+  } | null>(null);
   const [activeDragId, setActiveDragId] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   /**
@@ -1044,7 +1320,7 @@ export default function ReconciliationModal({
   }, [setName, manufacturer, extraSlPrefixes]);
 
   const [slFilter, setSlFilter] = useState<string>("");
-  const [showAllSl, setShowAllSl] = useState<boolean>(false);
+  const [showAllSl, setShowAllSl] = useState<boolean>(showAllSlInitially);
   const [bscFilter, setBscFilter] = useState<string>("");
   const [readyFilter, setReadyFilter] = useState<string>("");
   // Reveal marketplace sets that some NB set already maps. NOT a sharing
@@ -1130,17 +1406,18 @@ export default function ReconciliationModal({
     [state.ready],
   );
 
-  // Resolve a dragged/clicked value to its item, whether it is still pending or
-  // already mapped somewhere.
+  // Resolve a dragged/clicked item by its marketplace id, whether it is still
+  // pending or already mapped somewhere. NEO-325: by id ONLY — a name is not
+  // an identity, and SportLots reuses names across distinct sets.
   const resolveItem = useCallback(
-    (side: Side, value: string): PlatformItem | undefined => {
+    (side: Side, platformValue: string): PlatformItem | undefined => {
       const pending = (side === "bsc" ? state.pendingBsc : state.pendingSl).find(
-        (i) => i.value === value,
+        (i) => i.platformValue === platformValue,
       );
       if (pending) return pending;
       for (const set of state.ready) {
         const hit = (side === "bsc" ? set.bsc : set.sl).find(
-          (i) => i.value === value,
+          (i) => i.platformValue === platformValue,
         );
         if (hit) return hit;
       }
@@ -1149,10 +1426,194 @@ export default function ReconciliationModal({
     [state.pendingBsc, state.pendingSl, state.ready],
   );
 
+  // NEO-325 (D2) — which names more than one distinct item on a side carries,
+  // so only those rows show their id. Computed over the WHOLE side (Pending
+  // plus every item mapped in Ready), never the filtered view: a suffix that
+  // came and went as the operator typed would make the same row read
+  // differently from one keystroke to the next.
+  const dups = useMemo<SideDups>(() => {
+    const allBsc = [...state.pendingBsc, ...state.ready.flatMap((set) => set.bsc)];
+    const allSl = [...state.pendingSl, ...state.ready.flatMap((set) => set.sl)];
+    // NEO-325 — plus every name the FETCH called a twin, judged on the
+    // marketplace's whole list: a twin whose namesake never reached this
+    // dialog still needs its id to be told from that namesake elsewhere.
+    const withTwins = (
+      items: PlatformItem[],
+      ids: readonly string[] | undefined,
+    ): Set<string> => {
+      const out = duplicateNames(items);
+      if (!ids || ids.length === 0) return out;
+      const twin = new Set(ids);
+      for (const item of items) {
+        if (twin.has(item.platformValue)) out.add(nameKey(item.value));
+      }
+      return out;
+    };
+    return {
+      bsc: withTwins(allBsc, twinIds?.bsc),
+      sl: withTwins(allSl, twinIds?.sportlots),
+    };
+  }, [state.pendingBsc, state.pendingSl, state.ready, twinIds]);
+
+  // NEO-325 — Ready rows' names for their own controls. Over EVERY Ready set,
+  // never the filtered view, for the same reason as `dups` above.
+  const readyLabels = useMemo(
+    () => sharedTitleLabels(state.ready),
+    [state.ready],
+  );
+  const readyLabelOf = useCallback(
+    (set: ReadySet) => readyLabels.get(set.key) ?? set.title,
+    [readyLabels],
+  );
+
+  // NEO-325 — Save is blocked while two sets would save under one title
+  // (`readyTitleClashes`). A Ready row's title draft is NOT dispatched per
+  // keystroke — a RENAME per letter would re-render every row and column of
+  // the dialog — so the live drafts are kept in a ref, and `titleDraftView`,
+  // the copy the render reads, is replaced only when a keystroke changes the
+  // answer (starts or ends a clash, or changes what its sentence says) and on
+  // every commit or revert. Save therefore re-enables the moment the titles
+  // differ, at one render per change of answer rather than one per letter.
+  const titleDraftsRef = useRef<Map<string, string>>(new Map());
+  const shownDraftsRef = useRef<ReadonlyMap<string, string>>(new Map());
+  const [titleDraftView, setTitleDraftView] = useState<
+    ReadonlyMap<string, string>
+  >(() => new Map());
+  const titleClashes = useMemo(
+    () => readyTitleClashes(state.ready, titleDraftView, savedSiblings),
+    [state.ready, titleDraftView, savedSiblings],
+  );
+  const handleTitleDraft = useCallback(
+    (key: string, draft: string | null) => {
+      const drafts = titleDraftsRef.current;
+      if (draft === null) {
+        // A blur after Enter or Escape already cleared this row's draft.
+        if (!drafts.has(key)) return;
+        drafts.delete(key);
+      } else {
+        drafts.set(key, draft);
+      }
+      const answerOf = (view: ReadonlyMap<string, string>) =>
+        titleClashSignature(readyTitleClashes(state.ready, view, savedSiblings));
+      if (draft !== null && answerOf(shownDraftsRef.current) === answerOf(drafts)) {
+        return;
+      }
+      const next = new Map(drafts);
+      shownDraftsRef.current = next;
+      setTitleDraftView(next);
+    },
+    [state.ready, savedSiblings],
+  );
+  const clashBaseId = useId();
+  const clashMessageIdOf = (index: number) => `${clashBaseId}-title-clash-${index}`;
+  // Ready key → the id of the sentence that names its clash.
+  const clashMessageIdByKey = useMemo(() => {
+    const byKey = new Map<string, string>();
+    titleClashes.forEach((clash, index) => {
+      for (const key of clash.readyKeys) {
+        byKey.set(key, `${clashBaseId}-title-clash-${index}`);
+      }
+    });
+    return byKey;
+  }, [titleClashes, clashBaseId]);
+  const saveBlockedByTitles = titleClashes.length > 0;
+  const clashMessageOf = useCallback(
+    (clash: (typeof titleClashes)[number]) => titleClashMessage(clash, parentPath),
+    [parentPath],
+  );
+  const twinNoticeId = useId();
+
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
     useSensor(KeyboardSensor),
   );
+
+  // What a screen reader hears during a drag. dnd-kit's defaults speak the raw
+  // dnd id ("Picked up draggable item sl-11"); these speak the item the way
+  // its row reads, id suffix and all for a twin, and the set it lands on.
+  const announcements = useMemo<Announcements>(() => {
+    const labelOf = (id: UniqueIdentifier): string | null => {
+      const ref = parseItemDndId(String(id));
+      if (!ref) return null;
+      const item = resolveItem(ref.side, ref.platformValue);
+      return item ? itemLabel(item, ref.side, dups[ref.side]) : null;
+    };
+    const readySetOf = (id: UniqueIdentifier): ReadySet | undefined => {
+      const raw = String(id);
+      if (!raw.startsWith("ready-")) return undefined;
+      const key = raw.slice("ready-".length);
+      return state.ready.find((s) => s.key === key);
+    };
+    // Mirrors handleDragEnd: what this drop does, said before it happens.
+    const outcome = (
+      active: Active,
+      over: Over | null,
+    ):
+      | { kind: "attach"; set: ReadySet; already: boolean }
+      | { kind: "pair"; other: string }
+      | { kind: "none"; other: string | null } => {
+      if (!over || over.id === active.id) return { kind: "none", other: null };
+      const set = readySetOf(over.id);
+      const ref = parseItemDndId(String(active.id));
+      if (set && ref) {
+        const mapped = ref.side === "bsc" ? set.bsc : set.sl;
+        return {
+          kind: "attach",
+          set,
+          already: mapped.some((i) => i.platformValue === ref.platformValue),
+        };
+      }
+      const overRef = parseItemDndId(String(over.id));
+      const other = labelOf(over.id);
+      if (ref && overRef && other && overRef.side !== ref.side) {
+        return { kind: "pair", other };
+      }
+      return { kind: "none", other };
+    };
+    return {
+      onDragStart: ({ active }) => {
+        const label = labelOf(active.id);
+        return label ? `Picked up ${label}.` : undefined;
+      },
+      onDragOver: ({ active, over }) => {
+        const label = labelOf(active.id);
+        if (!label) return undefined;
+        if (over && over.id === active.id) {
+          return `${label} is back where it started.`;
+        }
+        const next = outcome(active, over);
+        if (next.kind === "attach") {
+          return next.already
+            ? `${label} is over ${readyLabelOf(next.set)}, which already has it.`
+            : `${label} is over ${readyLabelOf(next.set)}. Drop to add it to that set.`;
+        }
+        if (next.kind === "pair") {
+          return `${label} is over ${next.other}. Drop to make them one set.`;
+        }
+        return next.other
+          ? `${label} is over ${next.other}, from the same marketplace. Dropping here changes nothing.`
+          : `${label} is not over anywhere it can be dropped.`;
+      },
+      onDragEnd: ({ active, over }) => {
+        const label = labelOf(active.id);
+        if (!label) return undefined;
+        const next = outcome(active, over);
+        if (next.kind === "attach") {
+          return next.already
+            ? `${readyLabelOf(next.set)} already has ${label}. Nothing changed.`
+            : `Dropped ${label} on ${readyLabelOf(next.set)}.`;
+        }
+        if (next.kind === "pair") {
+          return `Dropped ${label} on ${next.other}. They are now one set.`;
+        }
+        return `Dropped ${label}. Nothing changed.`;
+      },
+      onDragCancel: ({ active }) => {
+        const label = labelOf(active.id);
+        return label ? `Put ${label} back. Nothing changed.` : undefined;
+      },
+    };
+  }, [resolveItem, dups, state.ready, readyLabelOf]);
 
   const handleDragStart = useCallback((event: DragStartEvent) => {
     setActiveDragId(event.active.id as string);
@@ -1167,17 +1628,10 @@ export default function ReconciliationModal({
       const activeId = active.id as string;
       const overId = over.id as string;
 
-      // Values are sliced, not `replace`d — replace strips the first occurrence
-      // anywhere in the string, which corrupts any value containing the prefix.
-      const activeSide: Side | null = activeId.startsWith("bsc-")
-        ? "bsc"
-        : activeId.startsWith("sl-")
-          ? "sl"
-          : null;
-      if (!activeSide) return;
-      const activeValue = activeId.slice(activeSide.length + 1);
-
-      const activeItem = resolveItem(activeSide, activeValue);
+      const activeRef = parseItemDndId(activeId);
+      if (!activeRef) return;
+      const activeSide = activeRef.side;
+      const activeItem = resolveItem(activeSide, activeRef.platformValue);
       if (!activeItem) return;
 
       // Dropped on a Ready set → join it.
@@ -1192,13 +1646,9 @@ export default function ReconciliationModal({
       }
 
       // Dropped on the opposite side's pending item → the two become a set.
-      const overSide: Side | null = overId.startsWith("bsc-")
-        ? "bsc"
-        : overId.startsWith("sl-")
-          ? "sl"
-          : null;
-      if (!overSide || overSide === activeSide) return;
-      const overItem = resolveItem(overSide, overId.slice(overSide.length + 1));
+      const overRef = parseItemDndId(overId);
+      if (!overRef || overRef.side === activeSide) return;
+      const overItem = resolveItem(overRef.side, overRef.platformValue);
       if (!overItem) return;
 
       dispatch({
@@ -1212,10 +1662,10 @@ export default function ReconciliationModal({
 
   // Click-to-link, the keyboard-reachable mirror of the drags above.
   const handlePendingClick = useCallback(
-    (side: Side, value: string) => {
+    (side: Side, platformValue: string) => {
       if (selected && selected.side !== side) {
-        const here = resolveItem(side, value);
-        const there = resolveItem(selected.side, selected.value);
+        const here = resolveItem(side, platformValue);
+        const there = resolveItem(selected.side, selected.platformValue);
         if (here && there) {
           dispatch({
             type: "PROMOTE_PAIR",
@@ -1227,9 +1677,11 @@ export default function ReconciliationModal({
         return;
       }
       setSelected(
-        selected && selected.side === side && selected.value === value
+        selected &&
+          selected.side === side &&
+          selected.platformValue === platformValue
           ? null
-          : { side, value },
+          : { side, platformValue },
       );
     },
     [selected, resolveItem],
@@ -1238,7 +1690,7 @@ export default function ReconciliationModal({
   const handleAttachClick = useCallback(
     (key: string) => {
       if (!selected) return;
-      const item = resolveItem(selected.side, selected.value);
+      const item = resolveItem(selected.side, selected.platformValue);
       if (item) dispatch({ type: "ATTACH", key, side: selected.side, item });
       setSelected(null);
     },
@@ -1270,8 +1722,8 @@ export default function ReconciliationModal({
   }, []);
 
   const handlePromoteSolo = useCallback(
-    (side: Side, value: string, index: number) => {
-      const item = resolveItem(side, value);
+    (side: Side, platformValue: string, index: number) => {
+      const item = resolveItem(side, platformValue);
       if (item) dispatch({ type: "PROMOTE_SOLO", side, item });
       setSelected(null);
       refocusColumn(side, index);
@@ -1280,6 +1732,16 @@ export default function ReconciliationModal({
   );
 
   const handleConfirm = useCallback(async () => {
+    // NEO-325: Save is aria-disabled (not removed from the tab order) while
+    // titles clash, so a press still arrives here. It must not save; it
+    // takes the operator to the first title that needs a new name instead
+    // (a press that did nothing at all read as a broken button).
+    if (saveBlockedByTitles) {
+      dialogRef.current
+        ?.querySelector<HTMLElement>('input[aria-invalid="true"]')
+        ?.focus();
+      return;
+    }
     setConfirming(true);
     try {
       const items: ReconciledResult["items"] = state.ready.map((set) => {
@@ -1310,6 +1772,10 @@ export default function ReconciliationModal({
               }
             : {}),
           metadata: set.metadata,
+          // NEO-325: a set the operator made its own is matched by identity
+          // only, so a SportLots twin saved after its namesake is stored as
+          // its own row rather than withheld against the namesake by name.
+          ...(set.ownSet ? { identityOnly: true as const } : {}),
         };
       });
 
@@ -1319,7 +1785,7 @@ export default function ReconciliationModal({
     } finally {
       setConfirming(false);
     }
-  }, [state, onConfirm]);
+  }, [state, onConfirm, saveBlockedByTitles]);
 
   /**
    * NEO-220 — how much of this session a dismissal would throw away.
@@ -1372,19 +1838,24 @@ export default function ReconciliationModal({
     };
   }, [isOpen]);
 
-  // Find the dragged item for the overlay
+  // Find the dragged item for the overlay. Resolved by id, like the drop, so
+  // the overlay names the item that will actually land.
   const activeDragItem = useMemo(() => {
     if (!activeDragId) return null;
-    if (activeDragId.startsWith("bsc-")) {
-      const value = activeDragId.replace("bsc-", "");
-      return { value, platform: "bsc" as const };
-    }
-    if (activeDragId.startsWith("sl-")) {
-      const value = activeDragId.replace("sl-", "");
-      return { value, platform: "sl" as const };
-    }
-    return null;
-  }, [activeDragId]);
+    const ref = parseItemDndId(activeDragId);
+    if (!ref) return null;
+    const item = resolveItem(ref.side, ref.platformValue);
+    return item ? { item, side: ref.side } : null;
+  }, [activeDragId, resolveItem]);
+
+  // The item a Ready row's "Add … to this set" would attach, for its label.
+  const selectedItem = selected
+    ? resolveItem(selected.side, selected.platformValue)
+    : undefined;
+  const attachHint =
+    selected && selectedItem
+      ? itemLabel(selectedItem, selected.side, dups[selected.side])
+      : undefined;
 
   if (!isOpen) return null;
 
@@ -1509,26 +1980,34 @@ export default function ReconciliationModal({
         </label>
         <div className="space-y-1.5 min-h-[60px]">
           {filtered.map((item, index) => (
+            // NEO-325: keyed and dnd-identified by marketplace id. Keyed by
+            // name, two same-named SportLots sets shared a React key, and
+            // filtering the column left a stale twin on screen.
             <DraggableItem
-              key={`${side}-${item.value}`}
-              id={`${side}-${item.value}`}
-              value={item.value}
+              key={`${side}-${item.platformValue}`}
+              id={`${side}-${item.platformValue}`}
+              name={<ItemName item={item} side={side} dups={dups} />}
               platform={side}
               isSelected={
-                selected?.side === side && selected.value === item.value
+                selected?.side === side &&
+                selected.platformValue === item.platformValue
               }
-              onClick={() => handlePendingClick(side, item.value)}
+              onClick={() => handlePendingClick(side, item.platformValue)}
               action={
                 <button
                   type="button"
                   data-own-set={side}
-                  onClick={() => handlePromoteSolo(side, item.value, index)}
+                  onClick={() =>
+                    handlePromoteSolo(side, item.platformValue, index)
+                  }
                   className={OWN_SET_ROW_BUTTON}
                   // WCAG 2.5.3: the name begins with the visible text, then
-                  // names the row. parallel-grouping-promoted-insert-fetches-
-                  // from-bsc.yaml taps this by id (Maestro id: is a full-string
-                  // regex match).
-                  aria-label={`Make its own set: ${item.value}`}
+                  // names the row — with its id when the name is shared, so
+                  // twins are distinct to a screen reader too.
+                  // bowman-insert-grouping-builds-parallels.yaml taps this by
+                  // id (Maestro id: is a full-string regex match), so a
+                  // unique name must stay exactly `Make its own set: <name>`.
+                  aria-label={`Make its own set: ${itemLabel(item, side, dups[side])}`}
                 >
                   Make its own set
                 </button>
@@ -1536,17 +2015,21 @@ export default function ReconciliationModal({
             />
           ))}
           {mapped.map(({ item, usedBy }) => (
-            <div key={`mapped-${side}-${item.value}`}>
+            <div key={`mapped-${side}-${item.platformValue}`}>
               <DraggableItem
-                id={`${side}-${item.value}`}
-                value={item.value}
+                // Its own dnd id: the same marketplace id can be a Pending
+                // row above at the same time (see MAPPED_DND_PREFIX).
+                id={`${MAPPED_DND_PREFIX}${side}-${item.platformValue}`}
+                name={<ItemName item={item} side={side} dups={dups} />}
                 platform={side}
                 isSelected={
-                  selected?.side === side && selected.value === item.value
+                  selected?.side === side &&
+                  selected.platformValue === item.platformValue
                 }
-                onClick={() => handlePendingClick(side, item.value)}
+                onClick={() => handlePendingClick(side, item.platformValue)}
               />
-              <p className="text-[11px] text-gray-500 mt-0.5 px-1 truncate">
+              {/* gray-400: gray-500 on the gray-900 panel is 3.67:1. */}
+              <p className="text-[11px] text-gray-400 mt-0.5 px-1 truncate">
                 mapped to {usedBy.join(", ")}
               </p>
             </div>
@@ -1586,6 +2069,9 @@ export default function ReconciliationModal({
       role="dialog"
       aria-modal="true"
       aria-labelledby="reconciliation-heading"
+      // NEO-325 — the twin sentence is why this dialog opened in place of a
+      // save; it is read with the heading, not announced.
+      aria-describedby={twinNotice ? twinNoticeId : undefined}
       tabIndex={-1}
       ref={dialogRef}
       onClick={requestClose}
@@ -1642,6 +2128,14 @@ export default function ReconciliationModal({
             {saveCount} ready
             {pendingCount > 0 ? `, ${pendingCount} pending` : ""}
           </p>
+          {twinNotice && (
+            // NEO-325 — why this opened instead of saving on its own. Amber,
+            // the builder's "a person should look at this" tone; not live:
+            // it is on screen when the dialog opens, read with its heading.
+            <p id={twinNoticeId} className="text-sm text-amber-300 mt-1 max-w-[80ch]">
+              {twinNotice}
+            </p>
+          )}
           {heldElsewhere && heldElsewhere.rows.length > 0 && (
             <div className="mt-1">
               <HeldElsewhereNote
@@ -1669,6 +2163,10 @@ export default function ReconciliationModal({
           // NEO-300 — not bare `pointerWithin`: a keyboard drag has no
           // pointer, and that dropped every keyboard drag on nothing.
           collisionDetection={keyboardAwareCollision}
+          accessibility={{
+            announcements,
+            screenReaderInstructions: { draggable: DRAG_INSTRUCTIONS },
+          }}
           onDragStart={handleDragStart}
           onDragEnd={handleDragEnd}
         >
@@ -1709,10 +2207,14 @@ export default function ReconciliationModal({
                   <ReadySetRow
                     key={set.key}
                     set={set}
+                    label={readyLabelOf(set)}
                     showMetadata={showMetadata}
-                    attachHint={selected?.value}
+                    dups={dups}
+                    attachHint={attachHint}
                     onAttachClick={
-                      selected ? () => handleAttachClick(set.key) : undefined
+                      attachHint !== undefined
+                        ? () => handleAttachClick(set.key)
+                        : undefined
                     }
                     onRename={(title) =>
                       dispatch({ type: "RENAME", key: set.key, title })
@@ -1724,6 +2226,8 @@ export default function ReconciliationModal({
                     onUpdateMetadata={(metadata) =>
                       dispatch({ type: "UPDATE_METADATA", key: set.key, metadata })
                     }
+                    onDraftChange={(draft) => handleTitleDraft(set.key, draft)}
+                    clashMessageId={clashMessageIdByKey.get(set.key)}
                   />
                 ))
               )}
@@ -1748,7 +2252,13 @@ export default function ReconciliationModal({
           <DragOverlay>
             {activeDragItem && (
               <div className="px-3 py-2 rounded-lg border bg-gray-800 border-[#00B7FF] ring-2 ring-[#00B7FF] shadow-lg text-sm font-medium">
-                <span className="text-gray-200">{activeDragItem.value}</span>
+                <span className="text-gray-200">
+                  <ItemName
+                    item={activeDragItem.item}
+                    side={activeDragItem.side}
+                    dups={dups}
+                  />
+                </span>
               </div>
             )}
           </DragOverlay>
@@ -1766,12 +2276,44 @@ export default function ReconciliationModal({
               {saveError}
             </span>
           )}
+          {/* NEO-325 — why Save is unavailable, said beside it. Always
+              mounted so the region exists before a clash fills it (polite:
+              it appears as the operator types). Empty, it takes no room. */}
+          <div
+            role="status"
+            className="max-w-md text-right text-sm text-[#FF2EB3] space-y-1"
+          >
+            {titleClashes.map((clash, index) => (
+              <p key={clash.key} id={clashMessageIdOf(index)}>
+                {clashMessageOf(clash)}
+              </p>
+            ))}
+          </div>
           <NeonButton cancel onClick={requestClose} disabled={confirming}>
             Cancel
           </NeonButton>
           <NeonButton
             onClick={handleConfirm}
             disabled={confirming || saveCount === 0}
+            // aria-disabled, not disabled: a disabled button leaves the tab
+            // order, and the reason it is unavailable would be unreachable
+            // from it (the CardPairingModal Confirm precedent).
+            aria-disabled={saveBlockedByTitles || undefined}
+            // Maestro web cannot read disabled / aria-disabled /
+            // aria-describedby, so the reason rides on `title` too: with no
+            // aria-label on this button, maestro-web takes it as the
+            // button's id, and it is a hover tooltip. Only while blocked;
+            // the visible text stays `Save N sets` either way.
+            title={
+              saveBlockedByTitles
+                ? titleClashes.map(clashMessageOf).join(" ")
+                : undefined
+            }
+            aria-describedby={
+              saveBlockedByTitles
+                ? titleClashes.map((_, index) => clashMessageIdOf(index)).join(" ")
+                : undefined
+            }
           >
             {confirming ? "Saving..." : `Save ${saveCount} sets`}
           </NeonButton>

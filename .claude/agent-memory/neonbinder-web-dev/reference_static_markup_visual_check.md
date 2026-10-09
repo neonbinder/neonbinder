@@ -32,6 +32,12 @@ Vite, an iframe, a fake Convex client) is overkill. This takes about a minute:
 4. To attribute a reflow fix, render the pre-fix classes too: `sed` the old
    classes back into a copy of the scratch HTML and screenshot both.
 
+5. A component with no Convex hooks (e.g. `SyncDoneNotice`) can supply its
+   REAL markup instead of a hand copy: a throwaway `.tsx` in `apps/web` (so
+   tsconfig paths resolve) that `renderToStaticMarkup(<Comp …/>)` and prints
+   JSON, run with `npx tsx file.tsx`, then delete it. Put `class="dark"` on the
+   scratch `<html>` so `dark:` variants apply.
+
 Limits: no React state, no live data, and the page's own container padding is
 whatever you write. A layout problem the mock shows in markup you did NOT
 change is a lead to check in the real app, not proof.

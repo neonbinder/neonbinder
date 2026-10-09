@@ -1,6 +1,6 @@
 ---
 name: dndkit-row-control-is-a-handle-sibling
-description: A real button inside a dnd-kit draggable row goes beside the handle (setNodeRef on the row, activator+listeners on a handle), and every draggable needs an activator node, or Enter/Space on a child button starts a drag
+description: A real button inside a dnd-kit draggable row goes beside the handle (activator+listeners on a handle), every draggable needs an activator node, and a click-select on the handle is pointer-only (Enter starts a drag)
 metadata:
   type: reference
 ---
@@ -36,4 +36,14 @@ still works, because it runs on `tabIndex` and the `onKeyDown` listener, not
 on the role. Pin it in happy-dom with `fireEvent.keyDown(child, {code:"Enter"})`:
 it returns `false` when a handler called `preventDefault`.
 
-Related: [[maestro-web-text-is-direct-text-nodes-only]].
+**A click handler on the handle is pointer-only.** `onClick` on the handle div
+never fires from the keyboard: Enter and Space on it start a KeyboardSensor
+drag. So with a KeyboardSensor registered, the drag IS the keyboard path; a
+"click to select" mirror is not. Pass `DndContext accessibility={{
+announcements, screenReaderInstructions }}` that describe that real drag
+(dnd-kit's defaults speak the raw dnd id, "Picked up draggable item sl-11").
+Resolve announcement labels from the id the same way the drop handler does
+(NEO-325 `ReconciliationModal`). Before trusting a brief that says "drag is
+pointer-only", grep for `useSensor(KeyboardSensor)`.
+
+Related: [[maestro-web-text-is-direct-text-nodes-only]], [[dndkit-pointerwithin-kills-keyboard-drops]].

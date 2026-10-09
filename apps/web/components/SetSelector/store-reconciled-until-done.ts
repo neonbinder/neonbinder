@@ -35,8 +35,9 @@
  *
  *  - `optionsCount`, `itemsProcessed`, `message`, `returnedIdsTruncatedSides`
  *    and (NEO-300) `heldElsewhere` / `heldElsewhereTotal`,
- *    `withheldElsewhere` / `withheldElsewhereTotal` and `subtreeWalkSkipped`
- *    are recomputed per
+ *    `withheldElsewhere` / `withheldElsewhereTotal` and `subtreeWalkSkipped`,
+ *    and (NEO-325) `withheldSiblings` / `withheldSiblingsTotal` and
+ *    `renameRefused` / `renameRefusedTotal` are recomputed per
  *    page and the LAST page reached furthest, so the last page's value is the
  *    whole answer. Summing would count the prefix once per page — a row held
  *    elsewhere is re-found by every page that walks past it.
@@ -50,7 +51,9 @@
 import {
   UNLINK_NOTICE_LIMIT,
   type HeldElsewhereEntry,
+  type RenameRefusedEntry,
   type WithheldElsewhereEntry,
+  type WithheldSiblingEntry,
 } from "../../convex/selectorSyncStore";
 import type { SyncSide, UnlinkedEntry } from "./selector-sync-feedback";
 
@@ -115,6 +118,23 @@ export type ReconciledStoreResult = {
    * `notChecked`). Last page wins.
    */
   subtreeWalkSkipped?: boolean;
+  /**
+   * NEO-325 — items the store WITHHELD against this parent's own rows (a
+   * namesake linked to a different set, an id on several siblings, two lines
+   * claiming one row, …). Nothing was written for them, so their links are
+   * not stored. `itemIndex` points into the `reconciledItems` sent; ≤50
+   * entries, `withheldSiblingsTotal` is the real count. Last page wins.
+   */
+  withheldSiblings?: WithheldSiblingEntry[];
+  withheldSiblingsTotal?: number;
+  /**
+   * NEO-325 — title edits the store refused (another row here already has
+   * the name, or the name is not usable). The row's links WERE applied; only
+   * the name stayed. ≤50 entries, `renameRefusedTotal` is the real count.
+   * Last page wins.
+   */
+  renameRefused?: RenameRefusedEntry[];
+  renameRefusedTotal?: number;
 };
 
 export type ReconciledStoreDrain = {
@@ -171,8 +191,9 @@ export async function storeReconciledUntilDone<TArgs>(
     // `hasMore` is left exactly as the last page reported it, so a caller that
     // reads the merged result alone still sees an unfinished store.
     // The NEO-300 fields (`heldElsewhere*`, `withheldElsewhere*`,
-    // `subtreeWalkSkipped`) ride in on `...last` on purpose:
-    // recomputed per page, never summed (see the header).
+    // `subtreeWalkSkipped`) and the NEO-325 ones (`withheldSiblings*`,
+    // `renameRefused*`) ride in on `...last` on purpose: recomputed per page,
+    // never summed (see the header).
     stored: {
       ...last,
       unlinked: unlinked.slice(0, UNLINK_NOTICE_LIMIT),

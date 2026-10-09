@@ -207,7 +207,7 @@ tags:
       # on the row's right edge and "Keep all" in the column header, so the
       # name wraps to two lines, [96,509][348,549] (it was one line at
       # [96,497][383,517]). Its centre, y=529, is one pixel into the footer:
-      # the tap armed nothing and "Add … to …" never rendered.
+      # the tap armed nothing and "Add … to this set, …" never rendered.
       #
       # One touch swipe UP pins this short body to its end. The body scrolls
       # 48px at most here (content ends at 560 + 16px padding against a 528
@@ -219,7 +219,7 @@ tags:
       # (y=219-304 unswiped) stays inside the body at ~171-256.
       #
       # This swipe cannot be gated: every check passes on a clipped row. The
-      # `scrollUntilVisible` for the Ready row's "Add … to …" button below is
+      # `scrollUntilVisible` for the Ready row's "Add … to this set, …" button below is
       # the hard assert that the tap armed the row (R2).
       - swipe:
           start: "3%, 75%"
@@ -233,11 +233,11 @@ tags:
           retryTapIfNoChange: true
       - scrollUntilVisible:
           element:
-            id: "Add Dugout Collection Artist's Proofs Series 1 to Dugout Collection Artist's Proofs Series 2"
+            id: "Add Dugout Collection Artist's Proofs Series 1 to this set, Dugout Collection Artist's Proofs Series 2"
           centerElement: true
           timeout: 7000
       - tapOn:
-          id: "Add Dugout Collection Artist's Proofs Series 1 to Dugout Collection Artist's Proofs Series 2"
+          id: "Add Dugout Collection Artist's Proofs Series 1 to this set, Dugout Collection Artist's Proofs Series 2"
           retryTapIfNoChange: true
 
       # Consumed from Pending — the BSC column is now empty under the filter.
@@ -273,9 +273,14 @@ tags:
           timeout: 7000
       - tapOn:
           text: ".*Save [0-9]+ sets.*"
+      # R5: the Save is our own write (chunked store, no marketplace call),
+      # so 7000 like any mutation — README R5, "A multi-transaction NB write
+      # is not an exception". Measured in green CI run 37859759647: ~1.0 s
+      # from the tap returning to the dialog gone, at both Saves. A miss is
+      # a product finding (make the save faster), never a bigger number.
       - extendedWaitUntil:
           notVisible: "Reconcile Inserts"
-          timeout: 60000
+          timeout: 7000
 
       # ============================================================
       # STEP 2 — ONE INSERT ROW, CARRYING OUR NAME
@@ -1195,9 +1200,14 @@ tags:
           timeout: 7000
       - tapOn:
           text: ".*Save [0-9]+ sets.*"
+      # R5: the Save is our own write (chunked store, no marketplace call),
+      # so 7000 like any mutation — README R5, "A multi-transaction NB write
+      # is not an exception". Measured in green CI run 37859759647: ~1.0 s
+      # from the tap returning to the dialog gone, at both Saves. A miss is
+      # a product finding (make the save faster), never a bigger number.
       - extendedWaitUntil:
           notVisible: "Reconcile Inserts"
-          timeout: 60000
+          timeout: 7000
 
       # ============================================================
       # 8c. THE ROW SURVIVED, STILL ALONE AND STILL OURS

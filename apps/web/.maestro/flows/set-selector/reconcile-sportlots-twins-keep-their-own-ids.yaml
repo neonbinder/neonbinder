@@ -1,0 +1,440 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Reconcile — two SportLots sets with one name show their ids, filter cleanly, each makes its own set by id, and Save waits until the two titles differ (NEO-325, read-only)"
+tags:
+  - set-selector
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE FEATURE: THE RECONCILE DIALOG TELLS SPORTLOTS TWINS APART BY ID,
+# AND WILL NOT SAVE TWO SETS NOBODY CAN TELL APART (NEO-325). SportLots lists
+# distinct sets under one name. On live data, under Baseball → 2024 → Topps →
+# Topps Chrome › `Parallel`:
+#
+#   1. Two SportLots sets that share a name each carry their own id in the
+#      visible text AND the accessible name: `Make its own set: <name>
+#      (#<id>)`. A name SportLots does not repeat is unchanged (every other
+#      flow's `Make its own set: <name>` keeps matching).
+#   2. Filtering the SportLots column leaves no stale twin behind: when the
+#      query stops matching the twins, both rows go (the NEO-325 symptom was a
+#      duplicate React key leaving a same-named row on screen after the list
+#      shrank).
+#   3. `Make its own set` acts on the row that was pressed, never on the first
+#      row that happens to share its name: the new Ready set's chip names the
+#      pressed id, and the OTHER twin stays in Pending under its own id. Both
+#      twins are promoted, one after the other, so the claim holds whichever
+#      of the two SportLots lists first (the order is SportLots', and a
+#      name-keyed resolver is only wrong for the second).
+#   4. Two Ready sets with one title block Save (Jason, 2026-10-08): the
+#      footer says "Two sets are both named “<title>”. Rename one so you can
+#      tell them apart." and Save is disabled. Renaming either set clears the
+#      line and enables Save. Save is never pressed; the flow cancels out.
+#
+# Unit tests cover the reducer and the save payload (ReconciliationModal
+# .duplicates.test.tsx); this flow proves the rendered dialog on SportLots'
+# real list.
+#
+# ── READ-ONLY (R7, R7a) ─────────────────────────────────────────────────────
+#   2024 Topps Chrome is the shared anchor (SET-REGISTRY.md → "Read-only
+#   consumers of the shared real set"). This flow opens the Parallels
+#   reconcile with the column's own `Sync Parallels` and NEVER presses Save:
+#   the reconcile is client state (ReconciliationModal's reducer), and
+#   `VariantForm` writes only in `handleReconciliationConfirm`. A title edit
+#   is a RENAME in that same client state (committed on blur, still unsaved).
+#   The flow ends with Cancel → `Discard N set changes`, which closes the
+#   dialog and writes nothing (`requestClose` → ConfirmDialog → `onClose`).
+#   Opening the dialog fetches each marketplace's list
+#   (`setReconciliation.fetchRawOptions`, an action that writes nothing).
+#
+#   Claim 4's "Save is disabled" is therefore never proved by PRESSING Save:
+#   if the block regressed, that press would write two new parallels onto
+#   the shared anchor. Maestro web cannot read `disabled` either (maestro-web
+#   reports no enabled state, so an `enabled:` selector matches nothing), so
+#   the flow reads the blocked button by the reason it carries — see STEP 6.
+#
+#   Proving the link AFTER a save (the saved row's Attach sets pane no longer
+#   offers the attached twin's `id:`) needs a write to a real set, which only
+#   that set's sole writer may make, and the obvious writer here
+#   (`setup.yaml`'s Topps Chrome `Parallel` reconcile) would file "Chrome
+#   Update Sapphire" as a parallel of Topps Chrome and move the 42 that
+#   `base-parallels-build-from-section` pins. So the after-save proof lives in
+#   its own sole-writer flow on a different real set,
+#   `reconcile-sportlots-twins-save-each-to-its-own-set.yaml` (2024 Topps ›
+#   Topps › Insert, approved by Jason 2026-10-08) — see SET-REGISTRY.md →
+#   "SportLots twin names (NEO-325)".
+#
+# ── THE FIXTURE: A REAL SPORTLOTS TWIN ──────────────────────────────────────
+#   SportLots lists TWO sets named "2024 Topps Chrome Update Sapphire" — ids
+#   323331 and 326059, each with its own cards (USCS18 … USCS346 under one,
+#   USCS24 … USCS345 under the other). Measured 2026-10-08 on SportLots' public
+#   search (each row's set id + set name):
+#   the only same-name pair among the 187 SportLots sets of 2024 Topps Chrome
+#   with stock. The dealer list the adapter reads (`fetchSetNames`) is the
+#   brand's whole 2024 list, brand-stripped, so both arrive as "Chrome Update
+#   Sapphire" — under the dialog's default SportLots prefix filter ("chrome"),
+#   so "Show all SportLots items" is not needed. SportLots could merge the
+#   two one day; this flow then fails by name at its first twin assert, and
+#   the registry section says how to find a replacement.
+#
+#   The same list holds "Chrome Update Sapphire Black Sapphire Refractor"
+#   (326060), the row that stays when the filter narrows past the twins.
+#
+# ── NEO-287: PAUSED ─────────────────────────────────────────────────────────
+#   Under `PAUSED_PLATFORMS=sportlots` there is no SportLots list and no
+#   twin, and `Sync Parallels` with one marketplace takes the
+#   single-platform STORE path — a write this read-only flow must not make.
+#   So the paused branch does not press it; it asserts the column it would
+#   have pressed (the drill landed, the button is there). The twin claim has
+#   no paused form. (README → "Operator switches".)
+#
+# ── R5 ──────────────────────────────────────────────────────────────────────
+#   7000 on every step but one: the wait for the dialog after `Sync
+#   Parallels` is a LIVE BSC + SportLots round-trip (R5's marketplace
+#   exception; setup.yaml measures this column's fetches at ~2s).
+#
+# ── R8 INSIDE THE DIALOG ────────────────────────────────────────────────────
+#   The dialog is a `fixed inset-0` portal whose body is its only scroller,
+#   so `scrollUntilVisible` cannot move it (R8 case 2) and Maestro does not
+#   see the body's clip. The body is moved with TOUCH swipes started at x=3%,
+#   in the body's own padding (never on a dnd-kit row): two DOWN pin it to
+#   the top, two UP pin it to the end. Ready is filtered to nothing and BSC
+#   to nothing while the SportLots rows are worked, so the SportLots column
+#   is the end of the body and pinning to the end puts its rows above the
+#   footer. ⚠️ GEOMETRY UNMEASURED until the first CI run: read the tap
+#   lines' bounds in `maestro.log` against the body band (~117-525).
+#
+# ── HANDLES (visible text and accessible names; never a DOM id) ─────────────
+#   column   `Parallel`, `Parallels`, `Sync Parallels`
+#   dialog   `Reconcile Parallels`, `Filter NeonBinder sets` (+ its `Clear
+#            filter neonbinder sets`), `Filter BSC items`, `Search SportLots
+#            items`, headers `Ready (N of M)`, `BSC (N of M)`, `SportLots (N
+#            of M)`, rows' `Make its own set: <label>`, Ready chips `Remove
+#            <label> from <set>`, Ready titles `NeonBinder set name for
+#            <label>`, footer `Save N sets`, `Cancel`, the block line `Two
+#            sets are both named “<title>”. Rename one so you can tell them
+#            apart.` (curly quotes since NEO-325's copy pass, each matched by
+#            `.`), and the discard confirm's `Discard N set changes`
+#   NOT a handle: each clashing title also gets its own body line, `Same
+#   name as another set. Tip: add the release, like “Series 1” or
+#   “Update”.` (DRAFT copy). No selector here matches it: the block line,
+#   the `.*so you can tell them apart\..*` negative and the Save reason
+#   are all phrases it does not contain.
+# ════════════════════════════════════════════════════════════════════════════
+
+# THE TWIN, in one place. Swapping the fixture is these three lines (and the
+# registry). Names are plain words and the ids digits, so nothing below needs
+# regex escaping beyond the literal parentheses of the suffix.
+- evalScript: '${output.TWIN = "Chrome Update Sapphire"}'
+- evalScript: '${output.TWIN_A = "326059"}'
+- evalScript: '${output.TWIN_B = "323331"}'
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — TOPPS CHROME › PARALLEL
+# R9 — the warm drill (it also runs util-paused-platforms, which sets
+# `output.SL_PAUSED`). Returns with the Variant Types column on screen.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+
+# "Parallel" sits under "Base" in the same column; DOWN (the default),
+# centred for the tap (R8). Base, Insert and Parallel are the column's only
+# rows and nothing else on the page full-matches "Parallel".
+- scrollUntilVisible:
+    element:
+      text: "Parallel"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Parallel"
+- extendedWaitUntil:
+    visible: "Parallels"
+    timeout: 7000
+
+# The column is POPULATED (the seed saved its reconcile), so it never
+# auto-syncs (EntityColumn fires the form only on an empty column); the
+# operator's `Sync Parallels` is the way in. It sits under the column's list,
+# DOWN, centred for the tap (R8) — the same step
+# `bowman-sportlots-links-move-between-set-parallel-insert` STEP 10 takes.
+- scrollUntilVisible:
+    element:
+      text: "Sync Parallels"
+    centerElement: true
+    timeout: 7000
+
+# PAUSED — the claim has no paused form, and pressing Sync would STORE (see
+# the header). The scroll above is this branch's hard assert (R2).
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertVisible: "Parallels"
+
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - tapOn: "Sync Parallels"
+      # R5 marketplace exception — BSC + SportLots' lists, live.
+      - extendedWaitUntil:
+          visible: "Reconcile Parallels"
+          timeout: 60000
+
+      # ============================================================
+      # STEP 2 — NARROW READY AND BSC TO NOTHING
+      # The body is the dialog's only scroller and Ready holds every saved
+      # parallel (~42), so Pending starts far below the footer. A Ready query
+      # no set matches — and that the twins' new sets will not match either,
+      # since neither title contains " Black" — keeps Ready one line tall for
+      # the whole of STEPS 3-4; the BSC query does the same for the left
+      # column, so the SportLots rows are the end of the body.
+      # ============================================================
+      - swipe:
+          start: "3%, 30%"
+          end: "3%, 80%"
+      - swipe:
+          start: "3%, 30%"
+          end: "3%, 80%"
+      - tapOn:
+          id: "Filter NeonBinder sets"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Update Sapphire Black"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Ready \\(0 of [0-9]+\\).*"
+          timeout: 7000
+      - tapOn:
+          id: "Filter BSC items"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Update Sapphire"
+      - extendedWaitUntil:
+          visible:
+            text: ".*BSC \\(0 of [0-9]+\\).*"
+          timeout: 7000
+      # PRECONDITION for claim 4 (R2): nothing blocks Save yet. The ~42
+      # restored parallels carry distinct titles, so the block line STEP 6
+      # expects is caused by the twins this flow promotes, not by the seed.
+      # (Positive first: the BSC count above proves the dialog is live.)
+      - assertNotVisible:
+          text: ".*so you can tell them apart\\..*"
+
+      # ============================================================
+      # STEP 3 — CLAIMS 1 AND 2: BOTH TWINS SHOW THEIR IDS, AND A FILTER
+      # THAT STOPS MATCHING THEM TAKES BOTH AWAY
+      # Pin the body to its end first: with Ready and BSC one line each, the
+      # SportLots column is the body's tail, so its search box and its rows
+      # all sit inside the body band from here on.
+      # ============================================================
+      - swipe:
+          start: "3%, 75%"
+          end: "3%, 25%"
+      - swipe:
+          start: "3%, 75%"
+          end: "3%, 25%"
+      - tapOn:
+          id: "Search SportLots items"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Update Sapphire"
+      # Claim 1 — each twin by its own id. `id:` is a full match, so the
+      # suffix must be there: a bare "Make its own set: Chrome Update
+      # Sapphire" (the pre-NEO-325 name) cannot satisfy either.
+      - extendedWaitUntil:
+          visible:
+            id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_A}\\)"
+          timeout: 7000
+      - assertVisible:
+          id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_B}\\)"
+
+      # Claim 2 — narrow PAST the twins. The box still has focus and its
+      # caret at the end of what was just typed, so this appends.
+      - inputText: " Black"
+      # The positive first (R2 — a negative alone passes on a dead page):
+      # the column re-rendered and still lists the longer name.
+      - extendedWaitUntil:
+          visible:
+            id: "Make its own set: ${output.TWIN} Black.*"
+          timeout: 7000
+      - assertVisible:
+          text: ".*SportLots \\([0-9]+ of [0-9]+\\).*"
+      # …and neither twin survived the shrink.
+      - assertNotVisible:
+          id: "Make its own set: ${output.TWIN} \\(#[0-9]+\\)"
+
+      # Back to the twins: the caret is still at the end.
+      - eraseText: 6
+      - extendedWaitUntil:
+          visible:
+            id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_A}\\)"
+          timeout: 7000
+
+      # ============================================================
+      # STEP 4 — CLAIM 3: EACH TWIN MAKES ITS OWN SET BY ITS OWN ID
+      # Pin the body to its end, so the SportLots rows sit above the footer
+      # (the gate above passes on a clipped row; the asserts after each tap
+      # are what prove it landed).
+      # ============================================================
+      - swipe:
+          start: "3%, 75%"
+          end: "3%, 25%"
+      - swipe:
+          start: "3%, 75%"
+          end: "3%, 25%"
+      - tapOn:
+          id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_A}\\)"
+      # The OTHER twin is still pending, under its own id (positive first) …
+      - extendedWaitUntil:
+          visible:
+            id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_B}\\)"
+          timeout: 7000
+      # … and the pressed one left Pending. A name-keyed resolver would have
+      # moved the FIRST same-named row instead, leaving this one here.
+      - assertNotVisible:
+          id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_A}\\)"
+
+      # The second twin, the same way. Re-pin: Pending is one row shorter.
+      - swipe:
+          start: "3%, 75%"
+          end: "3%, 25%"
+      - tapOn:
+          id: "Make its own set: ${output.TWIN} \\(#${output.TWIN_B}\\)"
+      - extendedWaitUntil:
+          visible:
+            id: "Make its own set: ${output.TWIN} Black.*"
+          timeout: 7000
+      - assertNotVisible:
+          id: "Make its own set: ${output.TWIN} \\(#[0-9]+\\)"
+
+      # ============================================================
+      # STEP 5 — THE TWO NEW SETS, EACH HOLDING THE ID THAT WAS PRESSED
+      # Ready shows exactly the two sets once filtered to the twin's name.
+      # Their chips name the item WITH its id (the name is still shared), so
+      # each chip is a read-back of which SportLots set the set will map.
+      # The two sets also share a TITLE (each is titled with the bare name),
+      # so every control on a row names the row by the ids it maps
+      # (`sharedTitleLabels`): the chip reads `Remove <name> (#A) from <name>
+      # (#A)`. The id on BOTH halves is the claim: the row that holds A is
+      # the row called A.
+      # ============================================================
+      - swipe:
+          start: "3%, 30%"
+          end: "3%, 80%"
+      - swipe:
+          start: "3%, 30%"
+          end: "3%, 80%"
+      # The "×" clears the box AND focuses it (FilterInput.clear), so the
+      # new query types straight in.
+      - tapOn:
+          id: "Clear filter neonbinder sets"
+      - inputText: "Update Sapphire"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Ready \\(2 of [0-9]+\\).*"
+          timeout: 7000
+      - assertVisible:
+          id: "Remove ${output.TWIN} \\(#${output.TWIN_A}\\) from ${output.TWIN} \\(#${output.TWIN_A}\\)"
+      - assertVisible:
+          id: "Remove ${output.TWIN} \\(#${output.TWIN_B}\\) from ${output.TWIN} \\(#${output.TWIN_B}\\)"
+
+      # ============================================================
+      # STEP 6 — CLAIM 4: TWO SETS WITH ONE TITLE BLOCK SAVE
+      # Both new sets are titled "Chrome Update Sapphire", so the footer
+      # names the clash and Save is disabled (Jason, 2026-10-08). Footer
+      # only, which is pinned outside the body's scroller (README "Asserting
+      # inside a dialog"). The curly quotes around the title (“…”, one
+      # UTF-16 unit each) are matched by `.`.
+      #
+      # "Disabled" is read off the button ITSELF. The blocked Save is
+      # `aria-disabled` and described by the sentence (`aria-describedby`),
+      # and its handler refuses while titles clash — none of which Maestro
+      # web can see: maestro-web.js emits text, resource-id, bounds and
+      # `selected` only (TreeNode.enabled is always null, so `enabled:`
+      # matches nothing), and a describedby target is not an attribute it
+      # reads. Pressing Save to prove it refuses would write to the shared
+      # anchor the moment the guard regressed (R7a). So the blocked button
+      # also carries the sentence as its tooltip (`title`), which maestro-web
+      # reports as the button's `id` — the dimmed Save a sighted operator
+      # hovers says why it is dimmed. One node matching BOTH the Save text
+      # and that reason is the blocked Save.
+      # ============================================================
+      - assertVisible:
+          text: ".*Two sets are both named .${output.TWIN}.\\. Rename one so you can tell them apart\\..*"
+      - assertVisible:
+          text: ".*Save [0-9]+ sets.*"
+          id: "Two sets are both named .${output.TWIN}.\\. Rename one so you can tell them apart\\."
+
+      # ============================================================
+      # STEP 7 — CLAIM 4: RENAMING ONE OF THEM CLEARS THE BLOCK
+      # Rename the set that holds A. Its title input is named for the row by
+      # the id it maps (`NeonBinder set name for <name> (#A)`), so the tap
+      # lands on A's row whichever of the two Ready lists first. The body is
+      # pinned to its top and Ready is two rows, so both inputs sit at the
+      # top of the body band.
+      #
+      # The click lands at the input's centre, well past the end of the
+      # 22-character title in a full-width row, so the caret is at the end
+      # and the typing APPENDS (no erase needed). The block follows the
+      # DRAFT (it clears as the operator types), but the row's name — what
+      # the read-back below keys on — changes only when the title commits,
+      # on blur or Enter (ReadySetRow's local draft). Since NEO-325's a11y
+      # pass Enter commits IN PLACE and keeps focus in the field; blur still
+      # commits (`onBlur={commitTitle}`). Not Enter: the two title inputs
+      # are identically classed siblings, so pressKey's XPath re-find would
+      # send it to whichever is FIRST (README "pressKey needs a unique
+      # handle"). A tap on the dialog's own heading blurs the input instead:
+      # an <h2> with no handler, above the body, inside the panel (so the
+      # backdrop's close never fires).
+      # ============================================================
+      - tapOn:
+          id: "NeonBinder set name for ${output.TWIN} \\(#${output.TWIN_A}\\)"
+          waitToSettleTimeoutMs: 250
+      - inputText: " Second"
+      - tapOn: "Reconcile Parallels"
+      # The positive first (R2): B's row is no longer one of two, so its
+      # controls drop the id from the row's name — the chip reads `… from
+      # Chrome Update Sapphire` (`id:` is a full match). A's row is called
+      # by its new title, which proves the rename went to the row pressed.
+      - extendedWaitUntil:
+          visible:
+            id: "Remove ${output.TWIN} \\(#${output.TWIN_B}\\) from ${output.TWIN}"
+          timeout: 7000
+      - assertVisible:
+          id: "Remove ${output.TWIN} \\(#${output.TWIN_A}\\) from ${output.TWIN} Second"
+      # The line is gone and Save is no longer the blocked button.
+      - assertNotVisible:
+          text: ".*so you can tell them apart\\..*"
+      - assertVisible:
+          text: ".*Save [0-9]+ sets.*"
+      - assertNotVisible:
+          text: ".*Save [0-9]+ sets.*"
+          id: "Two sets are both named.*"
+
+      # ============================================================
+      # STEP 8 — CANCEL OUT, WRITING NOTHING (READ-ONLY, R7a)
+      # Save is never pressed. Cancel asks first because the dialog holds
+      # edits (two promoted sets and a rename); `Discard N set changes`
+      # closes it without a write. Both buttons are in pinned footers (R8
+      # case 2: `fixed inset-0` dialogs, measured on this one by
+      # inserts-1996-score-… — bounds unmoved across five swipes), so they
+      # are tapped where they are. `Cancel` is anchored to Save beside it;
+      # the confirm's own button is a full match, which its title (the same
+      # words plus "?") is not.
+      # ============================================================
+      - tapOn:
+          text: "Cancel"
+          leftOf:
+            text: ".*Save [0-9]+ sets.*"
+      - extendedWaitUntil:
+          visible: "Discard [0-9]+ set changes?"
+          timeout: 7000
+      - tapOn: "Discard [0-9]+ set changes?"
+      # Closed (negative), then the page it returned to (positive, R2): the
+      # column the dialog was opened from, still where it was.
+      - extendedWaitUntil:
+          notVisible: "Reconcile Parallels"
+          timeout: 7000
+      - extendedWaitUntil:
+          visible: "Sync Parallels"
+          timeout: 7000

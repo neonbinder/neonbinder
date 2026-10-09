@@ -15,6 +15,9 @@ import {
   totalsBySideFor,
   partialFailureMessage,
   planSinglePlatformStore,
+  storeItemsHitTwins,
+  twinReconcileNotice,
+  type TwinIds,
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { storeReconciledUntilDone } from "./store-reconciled-until-done";
@@ -33,6 +36,7 @@ import {
   type StoreHolds,
   rowsOutsideInsert,
   type HeldRow,
+  HOLDER_PATH_SEPARATOR,
 } from "./held-elsewhere";
 
 type RawOptionsResult = {
@@ -47,6 +51,8 @@ type RawOptionsResult = {
   slCandidates?: SlCandidateGroup[];
   errors: Array<{ platform: string; message: string }>;
   message?: string;
+  /** NEO-325 — see VariantForm's `RawOptionsResult.twinIds`. */
+  twinIds?: TwinIds;
 };
 
 // Mirrors VariantForm's SYNC_FAILED_PREFIX. Phrased for the parallel
@@ -126,6 +132,15 @@ export default function ParallelForm({
   );
   const setNameValue = setNameAncestor?.value;
   const setId = setNameAncestor?._id as GenericId<"selectorOptions"> | undefined;
+  // NEO-325 — where the reconciled parallels are saved, as the operator reads
+  // it: the set, its variant type, and this insert.
+  const insertValue = ancestorChain?.find(
+    (a: { level: string }) => a.level === "insert",
+  )?.value;
+  const parentPath =
+    setNameValue && variantTypeValue && insertValue
+      ? [setNameValue, variantTypeValue, insertValue].join(HOLDER_PATH_SEPARATOR)
+      : undefined;
   // Previously-saved parallel rows for THIS insert. Threaded into the modal
   // as existingRows so re-running preserves prior reconciliation work.
   const existingParallelRows = useQuery(
@@ -282,6 +297,15 @@ export default function ParallelForm({
             })),
         ];
 
+        // NEO-325 — rule A: a name twin is never stored without the
+        // operator. See VariantForm.doSync.
+        if (storeItemsHitTwins(items, result.twinIds)) {
+          setReconciliationData(result);
+          setShowReconciliation(true);
+          setMessage(null);
+          return;
+        }
+
         if (items.length === 0 && skipped.length > 0) {
           setHeldSkipped(skipped);
           setHeldTotal(skipped.length);
@@ -336,7 +360,8 @@ export default function ParallelForm({
         const heldAll = mergeServerHeld(skipped, stored, isInThisType);
         setHeldSkipped(heldAll.rows);
         setHeldTotal(heldAll.total);
-        const holds = storeHoldsOf(stored);
+        // NEO-325: with what was sent, so a withheld twin is named by its id.
+        const holds = storeHoldsOf(stored, items);
         setStoreHolds(holds);
         setMessage(
           // NEO-296 — the count is the SERVER'S (`optionsCount`: rows now
@@ -398,26 +423,32 @@ export default function ParallelForm({
       : undefined;
     // Clear any previous failure so a retry does not show a stale reason.
     setSaveError(null);
+    const reconciledItems = result.items.map((item) => ({
+      value: item.value,
+      platformData: item.platformData,
+      // Forwarded so every allocated slot gets the marketplace's own set
+      // name. A set may map to several sets per side, and without labels
+      // the slots are indistinguishable ids downstream.
+      platformLabels: item.platformLabels,
+      metadata: item.metadata,
+      // NEO-211 (plan E): the NB row this modal row IS, so a title edit here
+      // renames that row instead of deleting and reinserting it.
+      existingId: item.existingId,
+      // NEO-325: a set the operator made with "Make its own set" is matched
+      // by identity only, so a twin saved after its namesake is its own row
+      // instead of being withheld against it by name.
+      ...(item.identityOnly ? { identityOnly: true } : {}),
+    }));
     let drained;
     try {
       // NEO-296 — replayed until the store is finished; see the doSync path.
       drained = await storeReconciledUntilDone(storeReconciledOptions, {
         level: "parallel",
         parentId: insertId,
-        reconciledItems: result.items.map((item) => ({
-          value: item.value,
-          platformData: item.platformData,
-          // Forwarded so every allocated slot gets the marketplace's own set
-          // name. A set may map to several sets per side, and without labels
-          // the slots are indistinguishable ids downstream.
-          platformLabels: item.platformLabels,
-          metadata: item.metadata,
-          // NEO-211 (plan E): the NB row this modal row IS, so a title edit here
-          // renames that row instead of deleting and reinserting it.
-          existingId: item.existingId,
-        })),
-        // Every side that answered. Both did here (the modal only opens when both
-        // returned rows), but deriving it keeps the guarantee honest. Spread
+        reconciledItems,
+        // Every side that answered. The modal opens when both returned rows, or
+        // (NEO-325) when a one-sided fetch carried a name twin — see
+        // VariantForm. Derived from the fetch either way. Spread
         // rather than assigned so an absent fetch result OMITS the arg — the
         // store then unlinks nothing, instead of being told both sides were fine.
         ...(covered ? { coveredSides: covered } : {}),
@@ -464,7 +495,7 @@ export default function ParallelForm({
     // Likewise anything the store WITHHELD or could not check (StoreHoldNotices):
     // the operator has to act on it, so the panel stays up to carry it.
     const heldAll = mergeServerHeld(modalHeldRows, stored, isInThisType);
-    const holds = storeHoldsOf(stored);
+    const holds = storeHoldsOf(stored, reconciledItems);
     if (heldAll.extra > 0 || holds !== null) {
       setHeldSkipped(heldAll.extra > 0 ? heldAll.rows : []);
       setHeldTotal(heldAll.extra > 0 ? heldAll.total : 0);
@@ -589,9 +620,12 @@ export default function ParallelForm({
                 </div>
               )}
 
-              {storeHolds && !showReconciliation && !isError && (
-                <StoreHoldNotices holds={storeHolds} />
-              )}
+              {/* Mounted for the whole sync, empty until the store answers:
+                  its status regions must exist BEFORE they fill, or a screen
+                  reader may never announce them. */}
+              <StoreHoldNotices
+                holds={storeHolds && !showReconciliation && !isError ? storeHolds : null}
+              />
 
               {!loading && !showReconciliation && (
                 <div className="flex gap-2">
@@ -620,6 +654,20 @@ export default function ParallelForm({
           onConfirm={handleReconciliationConfirm}
           saveError={saveError}
           level="parallel"
+          twinIds={reconciliationData.twinIds}
+          parentPath={parentPath}
+          twinNotice={
+            reconciliationData.twinIds &&
+            (reconciliationData.bscOptions.length === 0 ||
+              reconciliationData.slOptions.length === 0)
+              ? twinReconcileNotice(reconciliationData.twinIds)
+              : undefined
+          }
+          showAllSlInitially={
+            !!reconciliationData.twinIds &&
+            (reconciliationData.bscOptions.length === 0 ||
+              reconciliationData.slOptions.length === 0)
+          }
           initialData={{
             autoMatched: reconciliationData.autoMatched,
             unmatchedBsc: reconciliationData.unmatchedBsc,

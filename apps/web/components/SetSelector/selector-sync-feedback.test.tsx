@@ -19,6 +19,10 @@ import {
   slReviewPillText,
   slSetsLeftText,
   slSetsToSortText,
+  storeItemsHitTwins,
+  twinLeftIdsText,
+  twinReconcileNotice,
+  twinsLeftSummary,
   blockedMessageFromErrors,
   buildUnlinkedNotices,
   returnedIdsFromFetch,
@@ -542,5 +546,80 @@ describe("the SportLots-only review count (NEO-306)", () => {
     expect(slReviewPillText({ pending: 2, partial: true })).toBe(
       "2 SportLots sets left — save again",
     );
+  });
+});
+
+describe("storeItemsHitTwins (NEO-325, rule A)", () => {
+  const item = (platformData: { bsc?: string; sportlots?: string }) => ({ platformData });
+
+  it("is false when the fetch named no twins, or an older result shape sent none", () => {
+    expect(storeItemsHitTwins([item({ sportlots: "1" })], undefined)).toBe(false);
+    expect(storeItemsHitTwins([item({ sportlots: "1" })], { bsc: [], sportlots: [] })).toBe(false);
+  });
+
+  it("is true when an item to store carries a twin SportLots id", () => {
+    expect(
+      storeItemsHitTwins([item({ sportlots: "2" }), item({ sportlots: "9" })], {
+        bsc: [],
+        sportlots: ["9"],
+      }),
+    ).toBe(true);
+  });
+
+  it("is true when an item carries a twin BSC id", () => {
+    expect(storeItemsHitTwins([item({ bsc: "gold-a" })], { bsc: ["gold-a"], sportlots: [] })).toBe(true);
+  });
+
+  it("an id is a twin only on ITS side: a BSC slug equal to a twin SportLots id is not one", () => {
+    expect(storeItemsHitTwins([item({ bsc: "9" })], { bsc: [], sportlots: ["9"] })).toBe(false);
+    expect(storeItemsHitTwins([item({ sportlots: "gold-a" })], { bsc: ["gold-a"], sportlots: [] })).toBe(false);
+  });
+
+  it("is keyed on ids, never names: items without a twin id are false whatever they are called", () => {
+    expect(
+      storeItemsHitTwins([{ platformData: { sportlots: "5" } }], { bsc: [], sportlots: ["6"] }),
+    ).toBe(false);
+  });
+
+  it("no items, no hit", () => {
+    expect(storeItemsHitTwins([], { bsc: ["a"], sportlots: ["b"] })).toBe(false);
+  });
+});
+
+describe("twin notice helpers (NEO-325)", () => {
+  it("twinLeftIdsText names the side and uses the house #id form", () => {
+    expect(twinLeftIdsText({ name: "A", bsc: [], sportlots: ["1", "2"] })).toBe("SportLots #1, #2");
+    expect(twinLeftIdsText({ name: "A", bsc: ["x"], sportlots: ["1"] })).toBe("BSC #x · SportLots #1");
+    expect(twinLeftIdsText({ name: "A", bsc: ["x", "y"], sportlots: [] })).toBe("BSC #x, #y");
+  });
+
+  it("twinsLeftSummary counts the server's true total, not the capped list", () => {
+    const entries = [{ name: "A", bsc: [], sportlots: ["1", "2"] }];
+    expect(twinsLeftSummary(entries, 1)).toContain("1 name ");
+    expect(twinsLeftSummary(entries, 60)).toContain("60 names");
+    // A total below the list length never under-counts.
+    expect(twinsLeftSummary(entries, 0)).toContain("1 name ");
+  });
+
+  it("twinsLeftSummary names the marketplace only when every twin is on one side", () => {
+    const sl = twinsLeftSummary([{ name: "A", bsc: [], sportlots: ["1", "2"] }], 1);
+    const both = twinsLeftSummary(
+      [
+        { name: "A", bsc: [], sportlots: ["1", "2"] },
+        { name: "B", bsc: ["x", "y"], sportlots: [] },
+      ],
+      2,
+    );
+    expect(sl).toContain("SportLots");
+    expect(sl).not.toContain("BSC");
+    expect(both).not.toBe(sl);
+    expect(both).toContain("marketplaces");
+  });
+
+  it("twinReconcileNotice names the side that has twins, or both", () => {
+    expect(twinReconcileNotice({ bsc: [], sportlots: ["1"] })).toContain("SportLots");
+    expect(twinReconcileNotice({ bsc: [], sportlots: ["1"] })).not.toContain("BSC");
+    expect(twinReconcileNotice({ bsc: ["a"], sportlots: [] })).toContain("BSC");
+    expect(twinReconcileNotice({ bsc: ["a"], sportlots: ["1"] })).toContain("BSC and SportLots");
   });
 });

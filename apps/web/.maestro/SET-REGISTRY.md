@@ -98,6 +98,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
 | Baseball → 2026 → Bowman (the whole brand-year) | **setup:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `flows/setup.yaml` (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row), `flows/set-selector/bowman-insert-grouping-builds-parallels.yaml` (Bowman › Insert's BSC inserts and their grouping), `flows/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
+| Baseball → 2024 → Topps → Topps (the flagship: BSC's Series 1 + 2 set) | `Insert` — Variant Types synced on first entry; the `Insert` reconcile SAVED twice (once built, once re-synced): every Ready set it holds, including `City Connect Swatch Collection Relics (Series One)` linked to SportLots **299607** and `… (Series Two)` linked to **307437**. No checklist is fetched (NOT pre-synced; the `Topps` row itself is the seed's 2024 Topps Sets sync) | `flows/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.yaml` — **sole writer**, not self-cleaning (the run-start reset is its cleanup). ✅ Approved by Jason 2026-10-08 (NEO-325); see "SportLots twin names" |
 
 ### 2024 Topps NHL Sticker Collection — NEO-211, sole-writer ⚠️ SUBSTITUTED, NEEDS SIGN-OFF
 
@@ -1928,7 +1929,8 @@ teams or variants**. They are the reason the set must stay pristine.
 - `checklist-renders-rich-fields.yaml`
 - `drill-restores-from-url.yaml` (NEO-224 — picks rows and goes Back; writes nothing)
 - `keyboard-only-drill.yaml` (NEO-224 — picks rows by keyboard; writes nothing)
-- `multi-source-panel-opens-dialog.yaml`
+- `multi-source-panel-opens-dialog.yaml` (NEO-325: also reads the Attach dialog's SportLots pane; ticks nothing)
+- `reconcile-sportlots-twins-keep-their-own-ids.yaml` (NEO-325 — opens the `Parallel` reconcile and never saves; see "SportLots twin names" below)
 - `sets-base.yaml`
 - `sets-resync-already-loaded.yaml`
 - `topps-chrome-marketplace-read.yaml`
@@ -1988,6 +1990,107 @@ Concurrent Base writers: `signed-by-autofills-from-players` edits card #300's
 copied with it or skipped ("skipped — Base changed them mid-build"); the flow
 asserts neither the card nor the count, only that N > 0 cards were built and
 that a copy's title names its parallel.
+
+### SportLots twin names (NEO-325) — read-only on the shared anchor, plus one sole writer
+
+SportLots lists distinct sets under one name, and since NEO-325 every place
+that names a marketplace set adds its id when the name is repeated on that
+side: `Make its own set: <name> (#<id>)`, `Remove <name> (#<id>) from <set>`,
+`SportLots base candidate: <name> (#<id>)`, and in Attach sets `Toggle <name>
+(#<id>)`. The form is the same on both sides (`#` + the marketplace id). A
+name SportLots does not repeat is unchanged. An Attach sets BSC set row that
+is already attached shows a visible `attached` marker (`aria-hidden`) and a
+screen-reader sentence `<label> is already attached`; that sentence is TEXT
+in an sr-only span, not an accessible name, so no `id:` selector can match it
+(it was a role-less span's `aria-label` before the NEO-325 a11y pass). The
+SportLots pane never shows the marker: it drops attached ids instead. When
+two Ready sets in the Reconcile dialog share a TITLE (two promoted twins,
+both titled with the bare name), every control on each row names the row by
+the ids it maps — `Remove <name> (#A) from <name> (#A)`, `NeonBinder set name
+for <name> (#A)` — then `, N of M` if the ids are identical too. Ids from one
+marketplace stay bare (`(#A)`, `(#A, #B)`); a row holding ids from BOTH names
+each side, BSC first: `<title> (BSC #x · SportLots #y)`. A unique title is
+unchanged. Neither twin flow builds a mixed-side shared title: the read-only
+flow's two rows are SportLots-only, and City Connect's two rows pair a BSC and
+a SportLots set each but carry different titles (Series One / Series Two).
+
+Jason, 2026-10-08, two rules both flows now assert: **a marketplace twin is
+never auto-linked or auto-created** — it waits unattached in Reconcile's
+Pending for the operator (column sync creates no row for one); and
+**Reconcile blocks Save while two Ready sets share a title**, saying "Two
+sets are both named “<title>”. Rename one so you can tell them apart." (curly
+quotes since NEO-325's copy pass; the flows match each quote with `.`). Three
+or more read "<N> sets are all named “<title>”. Rename them …", and a single
+Ready set beside a saved row reads "There's already a set named “<title>”
+under <Set › Type>. Rename this one …" (or "here" without a parent path);
+every form ends "so you can tell them apart.", which is the tail the flows'
+negatives match. Each clashing title field also carries its own line, "Same
+name as another set. Tip: add the release, like “Series 1” or “Update”."
+(DRAFT copy) — no twin-flow selector matches it.
+
+#### Read-only: `reconcile-sportlots-twins-keep-their-own-ids.yaml`
+
+Proves the names and filtering live with no new real set: 2024 Topps Chrome's
+`Parallel` reconcile already receives SportLots' whole 2024 Topps list (the
+adapter's insert level is the brand-year list, brand-stripped), and that list
+holds a real twin. Promoting both twins gives two Ready sets with one title,
+so it also proves the same-title block (message + blocked Save) and that
+renaming one clears it. It never presses Save, and leaves through Cancel →
+`Discard N set changes`.
+
+| | |
+| -- | -- |
+| twin | "Chrome Update Sapphire" — SportLots ids **323331** and **326059** (USCS18…USCS346 vs USCS24…USCS345, interleaved, one card — USCS220 — in both: SportLots split one checklist across two ids) |
+| neighbour | "Chrome Update Sapphire Black Sapphire Refractor" (326060), the row left when the filter narrows past the twins |
+| measured | 2026-10-08, SportLots' public buyer search (each row's set id and set name): 824 sets with stock under "2024 Topps Baseball" hold three same-name pairs — this one, "City Connect Swatch Collection" (299607 / 307437) and its "… Black" (299608 / 307438). Only this one starts with "Chrome", so only it shows under the dialog's default SportLots prefix filter |
+| writes | none: the dialog is client state (promotions and the rename included), Save is never pressed, and the flow closes it with Cancel → Discard |
+| paused | no SportLots list, no twin; the flow does not press `Sync Parallels` (one marketplace takes the single-platform STORE path) |
+
+#### Sole writer — Baseball → 2024 → Topps → Topps (the flagship) › `Insert`: `reconcile-sportlots-twins-save-each-to-its-own-set.yaml` — ✅ approved by Jason 2026-10-08
+
+The after-save proof (Attach sets on each saved row no longer offers the
+twin it holds, and still offers the other) needs a SAVE, which is a write to
+a real set; the owner approved this set for it on 2026-10-08 (rule 1). The
+flow is this set's **sole writer** and is **not self-cleaning**: like every
+real-set sole writer it relies on the run-start reset (`e2e-baseline.sh
+reset` before `setup.yaml`), and it REQUIRES a fresh `Insert` column (the
+reconcile must open on its own), so a dirty deployment fails it at that
+gate, by name.
+
+| | |
+| -- | -- |
+| set | Baseball → 2024 → Topps → **Topps** (BSC's flagship set: Series 1 + Series 2 in one) › `Insert` |
+| twin | SportLots "City Connect Swatch Collection": **299607** = the Series One relics (every stocked card `CC-…`, 10 with stock) and **307437** = the Series Two relics (every stocked card `CC2-…`, 15 with stock) |
+| BSC counterparts | `City Connect Swatch Collection Relics (Series One)` (32 cards, `CC-AB` … `CC-XB`) and `… (Series Two)` (40 cards, `CC2-ARE` … `CC2-ZN`), both BSC variant `Insert` under setName `Topps` |
+| what the flow does | asserts both twins wait in Pending and neither series row is auto-matched; pairs Series One ↔ 299607 and Series Two ↔ 307437 (click one Pending item, then the other), asserts each Ready chip names its own twin and that Save is not blocked, presses `Save N sets`, then opens Attach sets on each saved row: its own twin's id is gone (`No matches for “<id>”.`), the other twin's `id:` is listed and its checkbox reads the bare name. Then the RE-SYNC: `Sync Inserts`, asserts exactly the two series rows come back as Ready sets each holding its own twin and no twin is back in Pending, saves again, and reads the column (each series row once, no row named for the twin) and both rows' Attach sets again |
+| cost | no new sync tier: Sport/Year/Manufacturer/Sets are the seed's (the flagship `Topps` row is filed by the seed's 2024 Topps Sets sync); the flow pays one cold Variant Types sync for the flagship and two insert-level BSC + SportLots list fetches (the reconcile, then the re-sync), plus one SportLots list per Attach sets open (four). No checklist is fetched |
+| writes | the flagship's Variant Types; every Ready set of the `Insert` reconcile (the auto-matched pairs plus the two built here — the Save writes all of Ready), twice: the re-sync's Save re-stores the same rows by id and must create none. No cards, players or teams. Nothing is detached or deleted. Not self-cleaning: the run-start reset is the cleanup |
+| readers | none: no other flow drills below the flagship `Topps` set (only this flow passes `SET: "Topps"` to the drill), so nothing in the queue sees the rows mid-run |
+| paused | the flow stops after the drill and writes nothing below the Variant Types |
+| unmeasured | the reconcile body geometry (see the flow's R8 note), the number of auto-matched Ready sets (so the Save's size, against R5's 7000), that no two of them share a title (the same-title block would stop the Save), that the flagship's `Topps` row is present after the seed, and that the "… Black" twins (299608 / 307438) sit in Pending on the re-sync (the positive the no-twin-in-Pending check follows) |
+
+Why this set (the candidates weighed, 2026-10-08, all from the public
+listings):
+
+| candidate | NB set it would be | why the twins belong there | already loaded by | verdict |
+| -- | -- | -- | -- | -- |
+| **City Connect Swatch Collection** 299607 / 307437 | 2024 Topps › **Topps** › Insert, two rows (Series One, Series Two) | Series One and Series Two relics of one product; card prefixes `CC-` / `CC2-` match BSC's two series variants one-to-one | seed (Baseball / 2024 / Topps Sets) | **recommended** — each twin goes to its OWN row with its own BSC counterpart |
+| City Connect Swatch Collection Black 299608 / 307438 | same set › Insert, the Black relics of each series | same split (`CC-` 2 stocked / `CC2-` 4 stocked) vs BSC `… Relics Black (Series One/Two)` | seed | possible, but the Black rows are parallels of the relics, so the faithful shape needs grouping too |
+| Chrome Update Sapphire 323331 / 326059 | 2024 Topps › Topps **Chrome Update Sapphire Edition** › Base (BSC: 350 base cards) | one checklist SportLots split across two ids (interleaved numbers, a shared card): both twins belong to the SAME row | seed (Sets only) | rejected: a Topps Chrome product (owner: not Topps Chrome), and both twins land on one row, so Attach shows neither — no "the other is still offered" proof |
+| Bowman vs Bowman Chrome (2022–2026) | 2026 Bowman (seed) / older years (cold) | — | — | **no twin exists**: SportLots names each product's sets with its product word (`Bowman Prospects` `BP-` vs `Bowman Chrome Prospects` `BCP-`), and it files the paper product's `BCP-` chrome prospects and Bowman Chrome's own in ONE set (`2025 Bowman Chrome Prospects` 337845 holds `BCP-1`…`BCP-150`, Bowman's own chrome prospects, AND `BCP-151` on, Bowman Chrome's). That is the 1996 Score shape (one SportLots set backing two NB sets), not a twin. Searched "<year> Bowman Baseball" for 2022, 2023, 2024, 2025 and 2026: zero same-name pairs |
+
+No twin was found in the other provisioned scopes' public listings (2026
+Bowman, 1996 Score, 1997 SPx, 2024 Topps hockey) either, nor in 2023 Topps
+Baseball (689 sets with stock, for comparison), and none of the 2024
+Topps sets the suite uses as a Base (Topps Chrome, Big League, Heritage,
+Chicago Cubs, Baltimore Orioles, Brooklyn Collection, 206) is a twin.
+SportLots disambiguates most repeats itself with a code (`Mega Box (Mojo
+Refractor) (CMP183)` vs `(CMP651)`), so a true twin is rare and SportLots may
+merge one. If it does, the flow fails by name at its first `Make its own
+set: … (#…)` assert; find a replacement by paging the public search for a
+scope the seed already provisions and grouping rows by `SetInfo` with more
+than one `SetNbr`, then change the `evalScript` lines at the top of the flow
+and this section.
 
 ## Adding a set
 

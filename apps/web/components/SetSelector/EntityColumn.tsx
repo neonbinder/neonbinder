@@ -18,12 +18,15 @@ import {
   buildUnlinkedNotices,
   levelLabelPlural,
   LEVEL_SINGULAR,
+  levelNoun,
   unlinkNoticeText,
   UNLINKED_NAME_LIMIT_TOAST,
   type SyncSide,
+  type TwinLeftEntry,
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { checkCustomSelectorValue } from "../../convex/selectorSyncMatch";
+import { siblingTwinSuffixes } from "./marketplace-item-label";
 
 type Level =
   | "sport"
@@ -64,7 +67,17 @@ type CustomStage =
   /** `findSelectorOptionElsewhere` in flight. The input stays mounted. */
   | { kind: "checking" }
   | { kind: "confirm-create"; value: string }
-  | { kind: "confirm-exists"; value: string; matches: ElsewhereMatch[] };
+  | { kind: "confirm-exists"; value: string; matches: ElsewhereMatch[] }
+  /**
+   * NEO-325 — two or more rows in THIS column already carry the typed name
+   * (SportLots twins each saved as their own set). There is no "the" row to
+   * select, so the operator picks one; nothing is created and nothing is
+   * picked for them.
+   */
+  | { kind: "pick-shared"; value: string; matches: SharedMatch[]; total: number };
+
+/** NEO-325 — one same-named row in this column, as the operator reads it. */
+type SharedMatch = { _id: GenericId<"selectorOptions">; label: string };
 
 /**
  * The server's structured refusals for a custom create.
@@ -79,14 +92,16 @@ function customRefusal(
 ):
   | { code: "CUSTOM_VALUE_INVALID"; reason: string }
   | { code: "CUSTOM_EXISTS_ELSEWHERE"; matches: ElsewhereMatch[] }
+  | { code: "CUSTOM_NAME_SHARED"; matches: ElsewhereMatch[]; total: number }
   | null {
   if (typeof e !== "object" || e === null) return null;
   const data = (e as { data?: unknown }).data;
   if (typeof data !== "object" || data === null) return null;
-  const { code, reason, matches } = data as {
+  const { code, reason, matches, total } = data as {
     code?: unknown;
     reason?: unknown;
     matches?: unknown;
+    total?: unknown;
   };
   if (code === "CUSTOM_VALUE_INVALID") {
     return {
@@ -101,6 +116,14 @@ function customRefusal(
     return {
       code,
       matches: Array.isArray(matches) ? (matches as ElsewhereMatch[]) : [],
+    };
+  }
+  if (code === "CUSTOM_NAME_SHARED") {
+    const list = Array.isArray(matches) ? (matches as ElsewhereMatch[]) : [];
+    return {
+      code,
+      matches: list,
+      total: typeof total === "number" ? Math.max(total, list.length) : list.length,
     };
   }
   return null;
@@ -554,11 +577,21 @@ export default function EntityColumn({
   // still deletes the row). All three shapes are one dismissable surface.
   const doneMessage =
     syncStatus?.status === "done" ? syncStatus.message : undefined;
+  // NEO-325 — names this sync LEFT for the operator because a marketplace
+  // lists them more than once. The backend writes a done row for these too
+  // (`hasNotice`), and without a line here that row would render nothing and
+  // the column would read as complete.
+  const doneTwins: TwinLeftEntry[] =
+    syncStatus?.status === "done" && Array.isArray(syncStatus.twinsLeft)
+      ? (syncStatus.twinsLeft as TwinLeftEntry[])
+      : [];
   const noticeKey = `${doneMessage ?? ""}::${doneUnlinked
     .map((u) => `${u.side}:${u.id}`)
+    .join("|")}::${doneTwins
+    .map((t) => [...t.bsc, ...t.sportlots].join(","))
     .join("|")}`;
   const noticeVisible =
-    (!!doneMessage || doneUnlinked.length > 0) &&
+    (!!doneMessage || doneUnlinked.length > 0 || doneTwins.length > 0) &&
     noticeKey !== dismissedNoticeKey;
   // `unlinkedTotal` is one scalar across both sides, so it can only be
   // attributed when a single side is involved — which is the common case (one
@@ -849,6 +882,17 @@ export default function EntityColumn({
       // else still cannot get the write through. Render the STRUCTURE
       // (`data.reason` / `data.matches`), never the raw text.
       const refusal = customRefusal(error);
+      if (refusal?.code === "CUSTOM_NAME_SHARED") {
+        // A same-named row arrived after this form looked (another session,
+        // a sync): the server will not pick one, and neither do we.
+        setCustomStage({
+          kind: "pick-shared",
+          value,
+          matches: sharedMatchesOf(refusal.matches),
+          total: refusal.total,
+        });
+        return;
+      }
       if (refusal?.code === "CUSTOM_EXISTS_ELSEWHERE") {
         setCustomStage({
           kind: "confirm-exists",
@@ -902,15 +946,28 @@ export default function EntityColumn({
     // this is a navigation, not a write. (The server's addCustomSelectorOption
     // is idempotent and returns the existing _id on a match, but the FE drives
     // the actual selection so the cascade advances.)
+    //
+    // NEO-325 — EXACTLY ONE. Two rows here can share a name (SportLots twins
+    // each saved as their own set), and the first in list order is a coin
+    // flip. One match selects it; two or more ask the operator which.
     const normalized = trimmed.toLowerCase();
-    const existing = (items ?? []).find(
+    const sameNamed = (items ?? []).filter(
       (o) => o.value.toLowerCase().trim() === normalized,
     );
-    if (existing) {
+    if (sameNamed.length === 1) {
       setCustomValue("");
       setCustomStage({ kind: "input" });
       setMode("idle");
-      onSelectExisting?.(existing._id);
+      onSelectExisting?.(sameNamed[0]._id);
+      return;
+    }
+    if (sameNamed.length > 1) {
+      setCustomStage({
+        kind: "pick-shared",
+        value: trimmed,
+        matches: sharedMatchesOf(sameNamed),
+        total: sameNamed.length,
+      });
       return;
     }
 
@@ -935,6 +992,35 @@ export default function EntityColumn({
     );
   };
 
+  /**
+   * NEO-325 — how each same-named row is told apart: the `(#id)` the column
+   * list already shows for it (`siblingTwinSuffixes`, over this column's own
+   * rows), and, when even that is missing or shared, its place in the list.
+   */
+  const sharedMatchesOf = (
+    rows: ReadonlyArray<{ _id: GenericId<"selectorOptions">; value: string }>,
+  ): SharedMatch[] => {
+    const suffixes = siblingTwinSuffixes(items ?? []);
+    const labels = rows.map((r) => {
+      const suffix = suffixes.get(r._id);
+      return suffix ? `${r.value} ${suffix}` : r.value;
+    });
+    return rows.map((r, i) => {
+      const clashes = labels.filter((l) => l === labels[i]).length > 1;
+      return {
+        _id: r._id,
+        label: clashes ? `${labels[i]}, ${i + 1} of ${rows.length}` : labels[i],
+      };
+    });
+  };
+
+  const handlePickShared = (match: SharedMatch) => {
+    setCustomValue("");
+    setCustomStage({ kind: "input" });
+    setMode("idle");
+    onSelectExisting?.(match._id);
+  };
+
   // NEO-219: move the whole cascade onto the row that already exists elsewhere.
   // `path` is root-first and ends at the matched row itself, so the parent can
   // replay it through its own level-select handlers in order.
@@ -953,7 +1039,9 @@ export default function EntityColumn({
   const backToInput = () => {
     pendingCreateEnterRef.current = false;
     setCustomStage((stage) =>
-      stage.kind === "confirm-create" || stage.kind === "confirm-exists"
+      stage.kind === "confirm-create" ||
+      stage.kind === "confirm-exists" ||
+      stage.kind === "pick-shared"
         ? { kind: "input" }
         : stage,
     );
@@ -970,7 +1058,11 @@ export default function EntityColumn({
   // Focus the confirm's primary button the moment it mounts, and replay a
   // buffered Enter onto the CREATE confirm only.
   useEffect(() => {
-    if (customStage.kind !== "confirm-create" && customStage.kind !== "confirm-exists") {
+    if (
+      customStage.kind !== "confirm-create" &&
+      customStage.kind !== "confirm-exists" &&
+      customStage.kind !== "pick-shared"
+    ) {
       return;
     }
     confirmPrimaryRef.current?.focus();
@@ -1033,6 +1125,12 @@ export default function EntityColumn({
     : `'${confirmValue}' already exists elsewhere`;
   const otherMatchCount =
     customStage.kind === "confirm-exists" ? customStage.matches.length - 1 : 0;
+  // NEO-325 — the pick-shared stage. DRAFT copy, pending Jason's sign-off.
+  const sharedSentence =
+    customStage.kind === "pick-shared"
+      ? `${customStage.total} ${levelNoun(level, customStage.total)} here are already named “${customStage.value}”. Pick the one you mean.`
+      : "";
+  const pickSharedLabel = (label: string) => `Go to ${levelNounSingular} ${label}`;
 
   // NEO-237 — what creating a brand DOES to the year's sets, said once, under
   // the create sentence: the brand's prefix defaults to its name, and the
@@ -1263,6 +1361,45 @@ export default function EntityColumn({
           </div>
         </>
       )}
+
+      {customStage.kind === "pick-shared" && (
+        <>
+          <p className="text-sm mb-2">{sharedSentence}</p>
+          {/* One button per row, never a pre-picked default: the first in list
+              order is exactly the coin flip this stage exists to stop. Focus
+              lands on the first only so the keyboard has somewhere to start. */}
+          <ul className="flex flex-col gap-1.5 mb-3">
+            {customStage.matches.map((match, i) => (
+              <li key={match._id}>
+                <NeonButton
+                  secondary
+                  ref={i === 0 ? confirmPrimaryRef : undefined}
+                  className={fieldClass(`btn-pick-shared-${i}`)}
+                  aria-label={pickSharedLabel(match.label)}
+                  onClick={() => handlePickShared(match)}
+                  onKeyDown={(e) => activateOnEnter(e, () => handlePickShared(match))}
+                >
+                  {match.label}
+                </NeonButton>
+              </li>
+            ))}
+            {customStage.total > customStage.matches.length && (
+              <li className="text-xs text-gray-600 dark:text-gray-400">
+                + {customStage.total - customStage.matches.length} more
+              </li>
+            )}
+          </ul>
+          <NeonButton
+            cancel
+            className={fieldClass("btn-shared-back")}
+            aria-label={backToInputLabel}
+            onClick={backToInput}
+            onKeyDown={(e) => activateOnEnter(e, backToInput)}
+          >
+            Back
+          </NeonButton>
+        </>
+      )}
     </div>
   );
 
@@ -1440,6 +1577,15 @@ export default function EntityColumn({
             notices={buildUnlinkedNotices(doneUnlinked, level, {
               totalsBySide: unlinkedTotals,
             })}
+            twins={
+              doneTwins.length > 0
+                ? {
+                    entries: doneTwins,
+                    total: syncStatus?.twinsLeftTotal,
+                    level,
+                  }
+                : undefined
+            }
             dismissing={dismissingNotice}
             onDismiss={handleDismissNotice}
           />

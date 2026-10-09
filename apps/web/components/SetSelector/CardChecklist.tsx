@@ -1126,21 +1126,22 @@ export default function CardChecklist({
          * performs — and is only a lift, rather than a LOSS, when there is no
          * pair for a disagreement to sit on.
          *
-         * One attached side ought to guarantee that, and does not quite.
-         * `fetchSportLotsChecklist` still falls back to a name-keyed DB lookup
-         * for the SportLots set id when no SL slot is attached (NEO-256, filed
-         * separately and deliberately not touched here), so a chain that
-         * reports `["bsc"]` can still come back with SportLots rows, pair them,
-         * and carry a real cross-marketplace disagreement. Committing that
-         * silently would throw away the operator's only chance to answer "which
-         * of these two names is this card", and the answer would then look like
-         * settled NB data on every later re-sync.
+         * One attached side ought to guarantee that, and since NEO-256 it
+         * does: `fetchSportLotsChecklist` no longer falls back to a name-keyed
+         * DB lookup for the SportLots set id, so with no SL slot attached the
+         * SportLots side is skipped and a chain that reports `["bsc"]` comes
+         * back BSC-only. This guard stays anyway, as defense in depth. If any
+         * future path does return paired rows here, they carry a real
+         * cross-marketplace disagreement, and committing it silently would
+         * throw away the operator's only chance to answer "which of these two
+         * names is this card" — the answer would then look like settled NB
+         * data on every later re-sync.
          *
          * So the batch itself gets the last word: anything paired, or carrying
          * either conflict, goes to the dialog exactly as a two-sided run does.
-         * Checked on the LIVE rows rather than on `attachedSides`, because this
-         * is the case where attachment turned out not to describe what came
-         * back.
+         * Checked on the LIVE rows rather than on `attachedSides`, because a
+         * guard that trusted attachment would fail exactly when attachment
+         * did not describe what came back.
          */
         const needsOperator = live.cards.some(
           (c) => c.bucket === "matched" || c.nameConflict || c.playersConflict,

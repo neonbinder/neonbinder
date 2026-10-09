@@ -1110,8 +1110,18 @@ tags:
       text: ".*Saved 335 cards.*"
     timeout: 120000
 # A "#NNN" card row confirms the fetch + save pipeline ran end-to-end.
+#
+# CARD ROWS ONLY — a FULL match on the row's number cell, never `.*#[0-9].*`.
+# `CardChecklistItem` renders the number alone in its own span (`#{cardNumber}`,
+# read as "#123"). Since NEO-325 the column twin notice (`SyncDoneNotice`) has
+# lines like "Anime (SportLots #378117, #378118)", which the old substring
+# pattern matched with no card on screen. A notice line, a Reconcile/review
+# twin suffix "(#123)" and a pairing line "#12 Name" all fail this pattern: it
+# needs the node to START with "#" and a digit and hold no space. The numbers
+# this file reads (2024 Topps Chrome Base, and Gold Wave's copies of it) are
+# all digits.
 - assertVisible:
-    text: ".*#[0-9].*"
+    text: "#[0-9][^ ]*"
 
 # ════════════════════════════════════════════════════════════════════════════
 # RE-DRILL TO INSERT — NEO-62 Lever 1.
@@ -1747,9 +1757,11 @@ tags:
     when:
       true: "${!output.SL_PAUSED}"
     commands:
+      # A card row's number cell, full match (see the "Saved 335 cards"
+      # step: a twin notice line must not stand in for a card row).
       - scrollUntilVisible:
           element:
-            text: ".*#[0-9].*"
+            text: "#[0-9][^ ]*"
           centerElement: true
           timeout: 15000
       - assertVisible: "SL"
@@ -1757,9 +1769,11 @@ tags:
     when:
       true: "${output.SL_PAUSED}"
     commands:
+      # A card row's number cell, full match (see the "Saved 335 cards"
+      # step: a twin notice line must not stand in for a card row).
       - scrollUntilVisible:
           element:
-            text: ".*#[0-9].*"
+            text: "#[0-9][^ ]*"
           centerElement: true
           timeout: 15000
       - assertVisible: "BSC"
@@ -1998,6 +2012,28 @@ tags:
           visible: "Sort SportLots sets for ${output.BRAND}"
           timeout: 7000
 
+      # NEO-325, TWO THINGS EVERY ROW NOW MAY CARRY, and why no tap below
+      # changes for them:
+      #   * A `Name` field on every line filed as its own set — which is
+      #     every line until 1c files them (no decision = its own set), and
+      #     Bowman Sterling again after 1e. Its accessible name is `Name for
+      #     <label>` and its text is its VALUE (the default set name, e.g.
+      #     `Bowman All-America Game Autos`), so it never full-matches a
+      #     picker name, `Its own set`, a type or a footer below. The two
+      #     `below:` taps pick the node NEAREST under a header trigger — the
+      #     open list hanging off it — and the fields sit in body rows
+      #     further down. Two own-set lines whose names fold together block
+      #     Save (a footer line, and the reason on Save's `title`); by 1f
+      #     only Bowman Sterling is its own set, so nothing can clash there.
+      #   * ` (#<id>)` after the label of a line SportLots lists more than
+      #     once in the brand (judged server-side on the brand's whole list).
+      #     INSERT_ROW, SOURCE_ROW and OWN_LABEL are addressed by full-match
+      #     names (`Select <label>`, `… <label> is filed`, `… set <label>
+      #     belongs to`), so if SportLots ever twins one of them those steps
+      #     fail by name, which is the right failure: the fixture moved.
+      #     SportLots' public search found no 2026 Bowman twin among the sets
+      #     it stocks (2026-10-08); sets without stock cannot be seen that way.
+
       # 1c — BULK: EVERY ROW → filed under Bowman › Parallel. `Select all
       # shown` is the tick in the table's sticky header row, the first thing
       # in the body. The Apply button's count is the proof the tick took
@@ -2174,7 +2210,12 @@ tags:
           timeout: 7000
       # The pill's slot is on screen (the page is where the pill was
       # centred): `Sync Sets` there, the pill gone — the review doc is
-      # deleted once every row is filed. Positive first (R2).
+      # deleted once every row is filed. Positive first (R2). Both of the
+      # pill's spellings (`slReviewPillText`): `to sort`, and `left — save
+      # again` after a save that stopped part-way. NEO-325: a save that
+      # finished but REFUSED a line for its name clears `partial`, so a
+      # refused line keeps the pill on `to sort`. The pill's visible text is
+      # its accessible name; full match.
       - assertVisible: "Sync Sets"
       - assertNotVisible:
           text: "[0-9]+ SportLots sets? (to sort|left — save again)"

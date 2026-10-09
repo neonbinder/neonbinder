@@ -17,6 +17,21 @@ import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
 import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
+import {
+  duplicateNames,
+  itemLabel,
+  itemLabelParts,
+  nameKey,
+} from "./marketplace-item-label";
+import {
+  RENAME_TIP,
+  TITLE_CLASH_ROW_LINE,
+  readyTitleClashes,
+  titleClashMessage,
+  titleClashSignature,
+  type ClashReadySet,
+} from "./ready-title-clashes";
+import { MAX_SELECTOR_VALUE_LENGTH } from "../../convex/selectorSyncMatch";
 
 /**
  * NEO-306 — the SportLots-only review: "Sort SportLots sets for {brand}".
@@ -45,6 +60,17 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
  *   set is chosen; the row says so, and so does the Save button's
  *   description.
  *
+ * ## Two lines, one name
+ *
+ * SportLots twins ("Anime" twice) start out with the same default name, and
+ * the store refuses the second own set of a name under the brand. So Save is
+ * blocked while two or more lines filed as their own sets would save under
+ * one folded name (`readyTitleClashes`, the Reconcile dialog's same-title
+ * block): their name fields are `aria-invalid`, described by the sentence in
+ * the footer, which says the name. It follows the field as the operator types
+ * (drafts kept in a ref; the dialog re-renders only when a keystroke starts or
+ * ends a clash), so Save comes back the moment the names differ.
+ *
  * ## The review is shared
  *
  * One doc per brand, not per admin. Another admin's save removes entries
@@ -71,7 +97,30 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 
 type RowId = Id<"selectorOptions">;
 
-type ReviewEntry = { slId: string; label: string; suggestedOfSetId?: RowId };
+type ReviewEntry = {
+  slId: string;
+  label: string;
+  suggestedOfSetId?: RowId;
+  /**
+   * NEO-325 — what an own-set save names this line when no name is given
+   * (the server's `candidateDefaultName`): the name field's prefill. Optional
+   * so an older payload reads as the bare label.
+   */
+  defaultName?: string;
+  /**
+   * NEO-325 — two or more SportLots ids share this label in the brand's list
+   * (covered ones included). Shown with its id, in text and name alike.
+   */
+  twin?: boolean;
+  /**
+   * NEO-325 — why the last save refused this line for its name, stored on the
+   * review so a reopened dialog says it as a fresh refusal would. Read only
+   * through `refusedReasonText`, which names `clashWith.value` and never
+   * resolves its `_id` (that row may have moved or gone since). Absent on a
+   * line never refused.
+   */
+  lastRefusal?: Omit<SlRefusedLine, "slId" | "label">;
+};
 type OfSet = { _id: RowId; value: string };
 type Review = {
   yearId: RowId;
@@ -91,6 +140,21 @@ type TypeRole = "insert" | "parallel" | "none";
 type Decision = { setId?: RowId; typeId?: RowId; typeRole?: TypeRole };
 type LocalSync = "syncing" | "done" | "failed";
 
+/**
+ * NEO-325 — a line the save REFUSED for its name (`applySlSetReview`'s
+ * `refused`). It stays in the review; the operator renames it and saves again.
+ */
+export type SlRefusedLine = {
+  slId: string;
+  label: string;
+  name: string;
+  reason: "nameTaken" | "existsElsewhere" | "invalid";
+  target: "set" | "variantType";
+  variantTypeId?: RowId;
+  clashWith?: { _id: RowId; value: string; brand?: string };
+  detail?: string;
+};
+
 export type SlSetReviewResult = {
   sets: number;
   underType: { insert: number; parallel: number; none: number };
@@ -103,12 +167,17 @@ export type SlSetReviewResult = {
     invalid: number;
   };
   knownBrandsAdded: number;
+  /** NEO-325 — absent from an older server; those lines are counted in `skipped`. */
+  refused?: SlRefusedLine[];
   remaining: number;
   incomplete: boolean;
 };
 
 /** The server's cap on one save (`MAX_REVIEW_DECISIONS`). */
 export const MAX_REVIEW_DECISIONS = 200;
+
+/** A clash line's marketplace items: none matter among own-set lines. */
+const NO_ITEMS: ReadonlyArray<{ platformValue: string }> = [];
 
 /** The bulk bar's picker key; never a SportLots id (slugs carry no spaces). */
 const BULK = " bulk";
@@ -128,6 +197,10 @@ export const slReviewCopy = {
     `SportLots lists these under ${brand}. Leave each as its own set, or file it under one of ${brand}'s sets. Parallels of an insert? File them as inserts here, then use Make insert of… on each.`,
   moreNextSync: (n: number) =>
     `${plural(n, "more SportLots set")} will show up after the next Sync Sets.`,
+  /**
+   * `partial` is "a save stopped part-way" (NEO-325: a save that finished but
+   * refused some names clears it; those lines say so with `needNames`).
+   */
   partial: "A save stopped part-way. What it saved is saved; save again to finish.",
   empty: "Nothing left to sort here.",
   loading: "Loading the SportLots sets…",
@@ -137,6 +210,51 @@ export const slReviewCopy = {
   filter: "Find a SportLots set",
   selectAllShown: "Select all shown",
   selectRow: (name: string) => `Select ${name}`,
+  /**
+   * NEO-325 — the per-line name field. Visible "Name"; the accessible name
+   * starts with it and says whose name (with the id, for a twin).
+   */
+  nameLabel: "Name",
+  nameField: (name: string) => `Name for ${name}`,
+  /**
+   * Why the save refused a line, in plain words, said under its name field.
+   * Names are quoted with curly quotes and "named", the house form.
+   */
+  refusedTakenSet: (clash: string) =>
+    `There's already a set named “${clash}”. Give this one a different name.`,
+  refusedTakenType: (clash: string) =>
+    `There's already one named “${clash}” where this is filed. Give this one a different name.`,
+  refusedElsewhere: (clash: string, brand?: string) =>
+    `“${clash}” is already a set under ${brand ?? "another brand"}. Give this one a different name.`,
+  /**
+   * A name no row can carry. The server's own reason reads as a rule ("Name
+   * cannot contain zero-width or invisible characters"), so the line is
+   * chosen from the NAME it refused, by the same checks the store runs
+   * (`checkSelectorValue`), and says what to do about it.
+   */
+  refusedInvalid: (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return "That name is blank. Type one in.";
+    if (trimmed.length > MAX_SELECTOR_VALUE_LENGTH) {
+      return `That name is too long. Keep it to ${MAX_SELECTOR_VALUE_LENGTH} characters or fewer.`;
+    }
+    if (/[\u0000-\u001F\u007F]/.test(trimmed)) {
+      return "That name has a line break in it. Keep it on one line.";
+    }
+    if (/[\u200B-\u200D\u2060\uFEFF]/.test(trimmed)) {
+      return "That name has hidden characters in it, often from a copy and paste. Type it in fresh.";
+    }
+    return "That name won't work. Try another one.";
+  },
+  /**
+   * A line the last save refused under a variant type, now showing as its own
+   * set (a reopened review starts every line there). DRAFT (NEO-325).
+   */
+  refusedParked: (reason: string) =>
+    `Not filed last time: ${reason} To rename it, pick that set and type again.`,
+  /** The save's tally of refused lines; they are still in the list. */
+  needNames: (n: number) =>
+    n === 1 ? "1 set needs a new name." : `${n} sets need new names.`,
   ownSet: "Its own set",
   suggested: "suggested",
   /** The one prompt for the type, on the row's picker and the bulk bar's alike. */
@@ -193,6 +311,28 @@ const SKIP_REASON_TEXT: Record<keyof SlSetReviewResult["skippedByReason"], (n: n
   invalid: (n) => `${n} with no usable name`,
 };
 
+/** NEO-325 — the skip reasons that are refusals once the server says so. */
+const NAME_REASONS = new Set<keyof SlSetReviewResult["skippedByReason"]>([
+  "nameTaken",
+  "existsElsewhere",
+  "invalid",
+]);
+
+/** NEO-325 — a refused line's reason, in the operator's words. */
+export function refusedReasonText(line: SlRefusedLine): string {
+  const clash = line.clashWith?.value ?? line.name;
+  switch (line.reason) {
+    case "nameTaken":
+      return line.target === "variantType"
+        ? slReviewCopy.refusedTakenType(clash)
+        : slReviewCopy.refusedTakenSet(clash);
+    case "existsElsewhere":
+      return slReviewCopy.refusedElsewhere(clash, line.clashWith?.brand);
+    case "invalid":
+      return slReviewCopy.refusedInvalid(line.name);
+  }
+}
+
 /**
  * The save's outcome in one sentence — the toast when the review is done,
  * the dialog's status line when it is not. "Saved" answers "Save". A row
@@ -206,12 +346,24 @@ export function slReviewSavedText(result: SlSetReviewResult): string {
   if (result.underType.parallel > 0) parts.push(plural(result.underType.parallel, "parallel"));
   if (inserts > 0) parts.push(plural(inserts, "insert"));
   let text = parts.length > 0 ? `Saved ${parts.join(", ")}.` : "Nothing new saved.";
-  if (result.skipped > 0) {
-    const reasons = (Object.keys(SKIP_REASON_TEXT) as Array<keyof typeof SKIP_REASON_TEXT>)
+  // NEO-325 — a server that reports `refused` keeps those lines in the
+  // review: they are not "skipped", they are waiting for a name. Their three
+  // reasons leave the skipped tail and get their own sentence.
+  const reportsRefused = result.refused !== undefined;
+  const keys = (Object.keys(SKIP_REASON_TEXT) as Array<keyof typeof SKIP_REASON_TEXT>).filter(
+    (k) => !reportsRefused || !NAME_REASONS.has(k),
+  );
+  const skipped = reportsRefused
+    ? keys.reduce((n, k) => n + result.skippedByReason[k], 0)
+    : result.skipped;
+  if (skipped > 0) {
+    const reasons = keys
       .filter((k) => result.skippedByReason[k] > 0)
       .map((k) => SKIP_REASON_TEXT[k](result.skippedByReason[k]));
-    text += ` ${result.skipped} skipped${reasons.length > 0 ? `: ${reasons.join(", ")}` : ""}.`;
+    text += ` ${skipped} skipped${reasons.length > 0 ? `: ${reasons.join(", ")}` : ""}.`;
   }
+  const refused = result.refused?.length ?? 0;
+  if (refused > 0) text += ` ${slReviewCopy.needNames(refused)}`;
   return text;
 }
 
@@ -450,12 +602,150 @@ function TickBox({
   );
 }
 
+/**
+ * NEO-325 — a line's name, edited against a LOCAL draft and committed on blur
+ * or Enter (the ReconciliationModal title's pattern): a keystroke never
+ * re-renders the dialog's two hundred rows. Enter commits and Escape reverts
+ * IN PLACE — focus stays in the field, inside the dialog; a blank field snaps
+ * back rather than sending no name.
+ *
+ * A new prefill (the committed name coming back, a refusal, a reset) replaces
+ * the draft. It used to be a `key`, which remounted the field on every commit
+ * — the committed name IS the next prefill — and dropped focus to <body>.
+ */
+function NameField({
+  rowName,
+  prefill,
+  clashLineId,
+  refusalId,
+  clashId,
+  onCommit,
+  onDraftChange,
+}: {
+  /** The row's name as read aloud (its id included for a twin). */
+  rowName: string;
+  prefill: string;
+  /**
+   * NEO-325 — the id of the row's own "Same name as another set" line, while
+   * the name clashes. Read first.
+   */
+  clashLineId?: string;
+  /** The id of the line saying why the last save refused this name. */
+  refusalId?: string;
+  /**
+   * NEO-325 — the id of the footer sentence saying another line here would
+   * save under the same name. Either id marks the field invalid.
+   */
+  clashId?: string;
+  onCommit: (value: string) => void;
+  /**
+   * NEO-325 — every edit of the draft, and `null` once it is committed or
+   * reverted (or the field goes away), so the dialog can block Save on a
+   * same-name clash while the operator is still typing.
+   */
+  onDraftChange: (draft: string | null) => void;
+}) {
+  const [draft, setDraft] = useState(prefill);
+  // Adjusting state to a changed prop during render (React's documented
+  // pattern): the draft follows the prefill without a remount.
+  const [prefillShown, setPrefillShown] = useState(prefill);
+  if (prefill !== prefillShown) {
+    setPrefillShown(prefill);
+    setDraft(prefill);
+  }
+  // A field removed while it holds a draft fires no blur; its draft must not
+  // outlive it in the dialog's clash check. Nor may a draft a new prefill
+  // just replaced.
+  const draftChangeRef = useRef(onDraftChange);
+  useEffect(() => {
+    draftChangeRef.current = onDraftChange;
+  });
+  useEffect(() => {
+    const ref = draftChangeRef;
+    return () => ref.current(null);
+  }, []);
+  useEffect(() => {
+    draftChangeRef.current(null);
+  }, [prefill]);
+  const commit = () => {
+    const next = draft.trim();
+    onDraftChange(null);
+    if (!next) {
+      setDraft(prefill);
+      return;
+    }
+    if (next !== draft) setDraft(next);
+    if (next !== prefill) onCommit(next);
+  };
+  const describedBy =
+    [clashLineId, refusalId, clashId].filter(Boolean).join(" ") || undefined;
+  return (
+    <label className="flex w-full max-w-sm items-center gap-2 text-xs text-slate-400">
+      <span className="shrink-0">{slReviewCopy.nameLabel}</span>
+      <Input
+        bare
+        type="text"
+        value={draft}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          onDraftChange(e.target.value);
+        }}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.stopPropagation();
+            commit();
+          } else if (e.key === "Escape") {
+            // Reverts this field only; the dialog's Escape is "cancel all".
+            e.preventDefault();
+            e.stopPropagation();
+            setDraft(prefill);
+            onDraftChange(null);
+          }
+        }}
+        // A name over the store's ceiling would be refused; never let one be
+        // typed.
+        maxLength={MAX_SELECTOR_VALUE_LENGTH}
+        // Seen once the field is cleared to retype. Never a prefill.
+        placeholder={RENAME_TIP}
+        aria-label={slReviewCopy.nameField(rowName)}
+        aria-invalid={describedBy ? true : undefined}
+        aria-describedby={describedBy}
+        // `aria-invalid:` (class + attribute) outranks the primitive's own
+        // border class without an !important.
+        className="min-w-0 flex-1 rounded-md px-2 py-1 text-sm aria-invalid:border-[#FF2EB3]"
+      />
+    </label>
+  );
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // One row
 // ───────────────────────────────────────────────────────────────────────────
 
 type RowProps = {
   entry: ReviewEntry;
+  /**
+   * NEO-325 — the row's name split for display (a twin's `(#id)` as a muted
+   * suffix) and joined for every accessible name, so twins never share one.
+   */
+  display: { name: string; suffix: string | null; label: string };
+  /** NEO-325 — the name field, when this line shows one; see `nameFieldOf`. */
+  nameField?: { prefill: string; refusal?: SlRefusedLine };
+  onCommitName: (value: string) => void;
+  /** NEO-325 — the name field's live draft; see `NameField`. */
+  onNameDraft: (draft: string | null) => void;
+  /**
+   * NEO-325 — while another own-set line would save under this line's name:
+   * the id of the footer sentence that says so.
+   */
+  nameClashId?: string;
+  /**
+   * NEO-325 — a refusal under a variant type, while the line is NOT filed
+   * there (see `parkedRefusalOf`): said on the line, with no field.
+   */
+  parkedRefusal?: SlRefusedLine;
   decision: Decision;
   ofSets: OfSet[];
   setName: (id: RowId) => string | undefined;
@@ -474,6 +764,12 @@ type RowProps = {
 
 function ReviewRow({
   entry,
+  display,
+  nameField,
+  onCommitName,
+  onNameDraft,
+  nameClashId,
+  parkedRefusal,
   decision,
   ofSets,
   setName,
@@ -492,13 +788,20 @@ function ReviewRow({
   const setListId = useId();
   const typeListId = useId();
   const reasonId = useId();
+  const refusalId = useId();
+  // The row's OWN clash line; the footer's sentence ids are never reused here.
+  const clashLineId = useId();
   const setId = decision.setId;
   const setLabel = setId ? (setName(setId) ?? "") : "";
   const { phase, types, failed } = useSetTypes(setId, setId ? localSync(setId) : undefined);
   const chosenType = decision.typeId
     ? types.find((t) => t._id === decision.typeId)
     : undefined;
-  const name = entry.label;
+  // NEO-325 — every control on the row is named by this: the label, plus the
+  // id for a twin ("Select Anime (#378117)"), so two "Anime" lines no longer
+  // share their names.
+  const name = display.label;
+  const refusal = nameField?.refusal;
 
   const setOptions: PickerOption[] = [
     { key: "", label: slReviewCopy.ownSet, current: !setId },
@@ -556,8 +859,50 @@ function ReviewRow({
       <div role="cell">
         <TickBox label={slReviewCopy.selectRow(name)} checked={selected} onToggle={onToggleSelect} />
       </div>
-      <div role="cell" className="flex min-h-8 items-center text-sm text-gray-100">
-        <span className="break-words">{name}</span>
+      <div role="cell" className="flex min-h-8 flex-col justify-center gap-1 text-sm text-gray-100">
+        <span className="break-words">
+          {display.name}
+          {display.suffix && (
+            <>
+              {" "}
+              {/* The SL side's id hue (ReconciliationModal's), a size down. */}
+              <span className="text-[11px] font-normal tabular-nums text-purple-300/80">
+                {display.suffix}
+              </span>
+            </>
+          )}
+        </span>
+        {nameField && (
+          <NameField
+            rowName={name}
+            prefill={nameField.prefill}
+            clashLineId={nameClashId ? clashLineId : undefined}
+            refusalId={refusal ? refusalId : undefined}
+            clashId={nameClashId}
+            onCommit={onCommitName}
+            onDraftChange={onNameDraft}
+          />
+        )}
+        {nameField && nameClashId && (
+          // NEO-325 — the clash in words beside the field, not by its pink
+          // border alone; the footer sentence says which name and why Save
+          // waits.
+          <p id={clashLineId} className="text-xs text-[#FF2EB3]">
+            {TITLE_CLASH_ROW_LINE}{" "}
+            <span className="text-slate-400">{RENAME_TIP}</span>
+          </p>
+        )}
+        {refusal && (
+          <p id={refusalId} className="text-xs text-[#FF2EB3]">
+            {refusedReasonText(refusal)}
+          </p>
+        )}
+        {!refusal && parkedRefusal && (
+          // Amber, not pink: nothing on this line is invalid as it stands.
+          <p className="text-xs text-amber-300">
+            {slReviewCopy.refusedParked(refusedReasonText(parkedRefusal))}
+          </p>
+        )}
       </div>
       <div role="cell" className="col-start-2 sm:col-start-auto">
         <span aria-hidden="true" className="mb-0.5 block text-[11px] text-slate-400 sm:hidden">
@@ -871,6 +1216,21 @@ export default function SlSetReviewModal({
   const [error, setError] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  /**
+   * NEO-325 — the operator's committed name per line (SportLots id → name).
+   * Sent with the line's decision when it says something the default would
+   * not; cleared when the line is filed somewhere else.
+   */
+  const [names, setNames] = useState<Record<string, string>>({});
+  /**
+   * NEO-325 — the last save's refusals, by SportLots id. Those lines are still
+   * in the review; each shows why under its name field until it is renamed,
+   * filed elsewhere, or the next save answers again. `null` = this dialog has
+   * set the line's refusal aside (renamed, or filed elsewhere), so the one the
+   * review stored (`lastRefusal`) no longer speaks for it either. A line with
+   * no key here reads the stored one: that is what a reopened dialog shows.
+   */
+  const [refused, setRefused] = useState<Record<string, SlRefusedLine | null>>({});
 
   /** Sets this opening of the dialog has already asked to sync. */
   const requestedRef = useRef<Set<string>>(new Set());
@@ -881,6 +1241,13 @@ export default function SlSetReviewModal({
   const descriptionId = useId();
   const saveReasonId = useId();
   const errorId = useId();
+  const nameClashBaseId = useId();
+  // NEO-325 — name drafts still being typed, for the same-name block.
+  const nameDraftsRef = useRef<Map<string, string>>(new Map());
+  const shownNameDraftsRef = useRef<ReadonlyMap<string, string>>(new Map());
+  const [nameDraftView, setNameDraftView] = useState<ReadonlyMap<string, string>>(
+    () => new Map(),
+  );
 
   // While THIS dialog saves, render the rows it is saving: the save empties
   // the doc chunk by chunk before the action returns.
@@ -897,8 +1264,97 @@ export default function SlSetReviewModal({
     return d;
   };
 
+  // NEO-325 — names SportLots lists more than once: the server's `twin` flag
+  // (judged on the brand's whole list) plus any label two lines here share.
+  const twinKeys = useMemo(() => {
+    const keys = duplicateNames(entries.map((e) => ({ value: e.label, platformValue: e.slId })));
+    for (const e of entries) if (e.twin) keys.add(nameKey(e.label));
+    return keys;
+  }, [entries]);
+  const displayOf = (e: ReviewEntry) => {
+    const item = { value: e.label, platformValue: e.slId };
+    return { ...itemLabelParts(item, "sl", twinKeys), label: itemLabel(item, "sl", twinKeys) };
+  };
+
+  /**
+   * NEO-325 — the line's name field, or none. A line filed as its own set
+   * always has one: its name is a new set's name, and any line can collide
+   * (a twin with its namesake, a SportLots name with a set BSC already made).
+   * Under a variant type the row's default name comes from the set, which the
+   * dialog does not know, so the field appears only once the save has
+   * refused that name, prefilled with the name it tried.
+   */
+  const refusalOf = (e: ReviewEntry): SlRefusedLine | undefined => {
+    if (e.slId in refused) return refused[e.slId] ?? undefined;
+    return e.lastRefusal ? { ...e.lastRefusal, slId: e.slId, label: e.label } : undefined;
+  };
+
+  const nameFieldOf = (e: ReviewEntry, d: Decision) => {
+    const refusal = refusalOf(e);
+    if (!d.setId) {
+      const own = refusal?.target === "set" ? refusal : undefined;
+      return {
+        prefill: names[e.slId] ?? own?.name ?? e.defaultName ?? e.label,
+        ...(own ? { refusal: own } : {}),
+      };
+    }
+    if (refusal?.target === "variantType" && refusal.variantTypeId === d.typeId) {
+      return { prefill: names[e.slId] ?? refusal.name, refusal };
+    }
+    // Renamed here after that refusal: the rename sets the refusal aside
+    // (`commitName`), and the field must stay — it holds the name Save sends,
+    // and the operator is still in it. `names` is cleared whenever the line
+    // is filed somewhere else (`forgetLines`), so this is this target's name.
+    if (names[e.slId] !== undefined) return { prefill: names[e.slId] };
+    return undefined;
+  };
+
+  const commitName = (e: ReviewEntry, value: string) => {
+    const slId = e.slId;
+    setNames((prev) => ({ ...prev, [slId]: value }));
+    const stored = e.lastRefusal;
+    setRefused((prev) => {
+      const r = slId in prev ? prev[slId] : stored;
+      if (!r || nameKey(r.name) === nameKey(value)) return prev;
+      return { ...prev, [slId]: null };
+    });
+  };
+
+  /**
+   * A line filed somewhere new starts over: that target's default name.
+   *
+   * Its refusal is KEPT. A refusal is about one target, and every place that
+   * shows one checks the target first (`nameFieldOf`, `parkedRefusalOf`), so
+   * a refusal for the old target is simply not shown under the new one. It
+   * used to be set aside here, which made a stored variant-type refusal
+   * unreachable: a reopened review shows every line as its own set, and
+   * picking the refused type again went through here and erased the refusal
+   * on the way. Only a rename sets a refusal aside (`commitName`).
+   */
+  const forgetLines = (slIds: readonly string[]) => {
+    if (slIds.length === 0) return;
+    setNames((prev) => {
+      if (!slIds.some((id) => id in prev)) return prev;
+      const next = { ...prev };
+      for (const id of slIds) delete next[id];
+      return next;
+    });
+  };
+  /**
+   * NEO-325 — a variant-type refusal on a line showing as its own set: what a
+   * reopened review shows (decisions start empty, and the review does not
+   * store which set the type is under). Said on the line so the refusal is
+   * not lost; picking that set and type again brings back its name field.
+   */
+  const parkedRefusalOf = (e: ReviewEntry, d: Decision): SlRefusedLine | undefined => {
+    const refusal = refusalOf(e);
+    return refusal?.target === "variantType" && !d.setId ? refusal : undefined;
+  };
+  const targetOf = (d: Decision) => (d.setId ? `${d.setId}/${d.typeId ?? ""}` : "own");
+
   const q = filter.trim().toLowerCase();
-  const shown = q ? entries.filter((e) => e.label.toLowerCase().includes(q)) : entries;
+  // The filter reads the name as shown, so a twin's id finds it too.
+  const shown = q ? entries.filter((e) => displayOf(e).label.toLowerCase().includes(q)) : entries;
   const selectedLive = entries.filter((e) => selected.has(e.slId));
   const allShownSelected = shown.length > 0 && shown.every((e) => selected.has(e.slId));
   const someShownSelected = shown.some((e) => selected.has(e.slId));
@@ -919,7 +1375,62 @@ export default function SlSetReviewModal({
     },
     { sets: 0, parallels: 0, inserts: 0 },
   );
-  const saveBlocked = needingType > 0 || entries.length === 0;
+
+  // NEO-325 — own-set lines that would save under one folded name. Only the
+  // lines this Save sends (the first MAX_REVIEW_DECISIONS), all under the same
+  // brand. A line's live name is its committed one, else its prefill; a draft
+  // still being typed counts too (`nameDraftView`, below).
+  const ownSetLines: ClashReadySet[] = entries
+    .slice(0, MAX_REVIEW_DECISIONS)
+    .filter((e) => !decisionOf(e.slId).setId)
+    .map((e) => ({
+      key: e.slId,
+      title: nameFieldOf(e, {})?.prefill ?? e.label,
+      ownSet: true,
+      bsc: NO_ITEMS,
+      sl: NO_ITEMS,
+    }));
+  const nameClashes = readyTitleClashes(ownSetLines, nameDraftView);
+  const nameClashIdOf = (index: number) => `${nameClashBaseId}-${index}`;
+  const nameClashIdBySlId = new Map<string, string>();
+  nameClashes.forEach((clash, index) => {
+    for (const slId of clash.readyKeys) nameClashIdBySlId.set(slId, nameClashIdOf(index));
+  });
+  const saveBlockedByNames = nameClashes.length > 0;
+
+  /**
+   * A name field's draft, per keystroke. Kept in a ref: the dialog re-renders
+   * (all of its rows) only when the keystroke changes the answer — starts or
+   * ends a clash, or changes what its sentence says — and on every commit or
+   * revert. Reconcile's title drafts work the same way.
+   */
+  const handleNameDraft = (slId: string, draft: string | null) => {
+    const drafts = nameDraftsRef.current;
+    if (draft === null) {
+      if (!drafts.has(slId)) return;
+      drafts.delete(slId);
+    } else {
+      drafts.set(slId, draft);
+    }
+    const answerOf = (view: ReadonlyMap<string, string>) =>
+      titleClashSignature(readyTitleClashes(ownSetLines, view));
+    if (draft !== null && answerOf(shownNameDraftsRef.current) === answerOf(drafts)) return;
+    const next = new Map(drafts);
+    shownNameDraftsRef.current = next;
+    setNameDraftView(next);
+  };
+
+  const saveBlocked = needingType > 0 || entries.length === 0 || saveBlockedByNames;
+  /** Lines showing a refusal under their name field right now. */
+  const refusedShown = entries.filter((e) => {
+    const d = decisionOf(e.slId);
+    return nameFieldOf(e, d)?.refusal !== undefined || parkedRefusalOf(e, d) !== undefined;
+  }).length;
+  const saveDescribedBy =
+    [
+      ...(needingType > 0 ? [saveReasonId] : []),
+      ...nameClashes.map((_, index) => nameClashIdOf(index)),
+    ].join(" ") || undefined;
 
   // Focus: in on the filter, back out to the pill (or the column) on close.
   useEffect(() => {
@@ -1031,6 +1542,7 @@ export default function SlSetReviewModal({
   };
 
   const pickRowSet = (slId: string, setId: RowId | null) => {
+    if ((decisionOf(slId).setId ?? null) !== setId) forgetLines([slId]);
     setDecisions((prev) => {
       const current = prev[slId];
       if (setId && current?.setId === setId) return prev;
@@ -1041,6 +1553,7 @@ export default function SlSetReviewModal({
   };
 
   const pickRowType = (slId: string, type: VariantTypeOption) => {
+    if (decisionOf(slId).typeId !== type._id) forgetLines([slId]);
     setDecisions((prev) => {
       const current = prev[slId];
       if (!current?.setId) return prev;
@@ -1066,6 +1579,8 @@ export default function SlSetReviewModal({
     const { setId, typeId, typeRole } = bulk;
     if (!setId || !typeId || selectedLive.length === 0) return;
     const ids = selectedLive.map((e) => e.slId);
+    const target = targetOf({ setId, typeId });
+    forgetLines(ids.filter((id) => targetOf(decisionOf(id)) !== target));
     setDecisions((prev) => {
       const next = { ...prev };
       for (const id of ids) next[id] = { setId, typeId, typeRole };
@@ -1078,6 +1593,7 @@ export default function SlSetReviewModal({
   const markOwn = () => {
     const ids = selectedLive.map((e) => e.slId);
     if (ids.length === 0) return;
+    forgetLines(ids.filter((id) => decisionOf(id).setId !== undefined));
     setDecisions((prev) => {
       const next = { ...prev };
       for (const id of ids) next[id] = {};
@@ -1108,7 +1624,18 @@ export default function SlSetReviewModal({
     const snapshot = liveReview;
     const payload = snapshot.entries.slice(0, MAX_REVIEW_DECISIONS).map((e) => {
       const d = decisionOf(e.slId);
-      return d.setId && d.typeId ? { slId: e.slId, variantTypeId: d.typeId } : { slId: e.slId };
+      const field = nameFieldOf(e, d);
+      // NEO-325 — the operator's name, only when it says something the
+      // server's default would not (an untouched own-set field is the
+      // default; blank is never sent).
+      const typed = field ? names[e.slId]?.trim() : undefined;
+      const name =
+        typed && (d.setId || typed !== (e.defaultName ?? e.label)) ? typed : undefined;
+      return {
+        slId: e.slId,
+        ...(d.setId && d.typeId ? { variantTypeId: d.typeId } : {}),
+        ...(name ? { name } : {}),
+      };
     });
     setSaveSnapshot(snapshot);
     setBusy(true);
@@ -1122,12 +1649,28 @@ export default function SlSetReviewModal({
         decisions: payload,
       })) as SlSetReviewResult;
       const text = slReviewSavedText(result);
+      // NEO-325 — this save's refusals overwrite the last one's: a line it
+      // filed is gone, and a line it refused again says why again. A line it
+      // never reached (a save that stopped part-way, or past the cap) keeps
+      // what it had.
+      const thisSave = result.refused ?? [];
+      if (thisSave.length > 0) {
+        setRefused((prev) => {
+          const next = { ...prev };
+          for (const line of thisSave) next[line.slId] = line;
+          return next;
+        });
+      }
       if (result.incomplete) {
         setOutcome(`${text} ${slReviewCopy.left(result.remaining)}`);
         announce(`${text} ${slReviewCopy.left(result.remaining)}`);
       } else if (result.remaining > 0) {
-        setOutcome(`${text} ${slReviewCopy.stillToSort(result.remaining)}`);
-        announce(`${text} ${slReviewCopy.stillToSort(result.remaining)}`);
+        // The refused lines are already counted in `text` ("1 needs a new
+        // name."); only the rest are "still to sort".
+        const unsorted = result.remaining - (result.refused?.length ?? 0);
+        const said = unsorted > 0 ? `${text} ${slReviewCopy.stillToSort(unsorted)}` : text;
+        setOutcome(said);
+        announce(said);
       } else {
         onSaved(text);
       }
@@ -1138,6 +1681,23 @@ export default function SlSetReviewModal({
       setBusy(false);
       setSaveSnapshot(null);
     }
+  };
+
+  /**
+   * Save, or — while names clash — the first name field that needs a new name
+   * (a blocked press that did nothing read as a broken button). Blocked for a
+   * missing type only, it stays put: the line beside Save says what to do.
+   */
+  const pressSave = () => {
+    if (busy) return;
+    if (!saveBlocked) {
+      void handleSave();
+      return;
+    }
+    if (!saveBlockedByNames) return;
+    dialogRef.current
+      ?.querySelector<HTMLElement>('input[aria-invalid="true"]')
+      ?.focus();
   };
 
   const onDialogKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -1203,6 +1763,13 @@ export default function SlSetReviewModal({
             )}
             {review?.partial && !outcome && !busy && (
               <p className="text-xs text-amber-300">{slReviewCopy.partial}</p>
+            )}
+            {/* NEO-325 — lines a save refused for their name, on a reopened
+                review too (`lastRefusal`): how many, since they may sit
+                anywhere in the list. After a save in this dialog the outcome
+                line already says it. */}
+            {refusedShown > 0 && !outcome && !busy && (
+              <p className="text-xs text-amber-300">{slReviewCopy.needNames(refusedShown)}</p>
             )}
             {hasEntries && (
               <>
@@ -1276,6 +1843,12 @@ export default function SlSetReviewModal({
                       <ReviewRow
                         key={entry.slId}
                         entry={entry}
+                        display={displayOf(entry)}
+                        nameField={nameFieldOf(entry, decisionOf(entry.slId))}
+                        parkedRefusal={parkedRefusalOf(entry, decisionOf(entry.slId))}
+                        onCommitName={(value) => commitName(entry, value)}
+                        onNameDraft={(draft) => handleNameDraft(entry.slId, draft)}
+                        nameClashId={nameClashIdBySlId.get(entry.slId)}
                         decision={decisionOf(entry.slId)}
                         ofSets={ofSets}
                         setName={setName}
@@ -1312,6 +1885,16 @@ export default function SlSetReviewModal({
                   {slReviewCopy.rowsNeedType(needingType)}
                 </p>
               )}
+              {/* NEO-325 — why Save is unavailable while two lines share a
+                  name. Always mounted, so the region exists before a clash
+                  fills it (polite: it can appear as the operator types). */}
+              <div role="status" className="flex flex-col gap-0.5 text-xs text-[#FF2EB3]">
+                {nameClashes.map((clash, index) => (
+                  <p key={clash.key} id={nameClashIdOf(index)}>
+                    {titleClashMessage(clash)}
+                  </p>
+                ))}
+              </div>
               {outcome && <p className="text-xs text-amber-300">{outcome}</p>}
               {error && (
                 <p id={errorId} role="alert" className="text-xs text-[#FF2EB3]">
@@ -1325,11 +1908,17 @@ export default function SlSetReviewModal({
                   type="button"
                   disabled={busy}
                   aria-disabled={saveBlocked && !busy ? true : undefined}
-                  aria-describedby={needingType > 0 ? saveReasonId : undefined}
-                  onClick={() => {
-                    if (!saveBlocked) void handleSave();
-                  }}
-                  onKeyDown={(e) => activateOnEnter(e, () => void handleSave(), saveBlocked || busy)}
+                  aria-describedby={saveDescribedBy}
+                  // Maestro web reads neither disabled nor aria-disabled, so
+                  // the same-name reason rides on `title` too, only while it
+                  // blocks; the visible text stays `Save N SportLots sets`.
+                  title={
+                    saveBlockedByNames
+                      ? nameClashes.map((clash) => titleClashMessage(clash)).join(" ")
+                      : undefined
+                  }
+                  onClick={pressSave}
+                  onKeyDown={(e) => activateOnEnter(e, pressSave, busy)}
                 >
                   {busy ? slReviewCopy.saving : slReviewCopy.save(entries.length)}
                 </NeonButton>

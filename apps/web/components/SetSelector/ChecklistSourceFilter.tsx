@@ -1,3 +1,5 @@
+import { duplicateNames, itemLabel } from "./marketplace-item-label";
+
 /**
  * Source-set filter chips (NEO-6 phase 1). Renders one row per marketplace
  * that has more than one attached source set. Each row gets an "All" chip
@@ -9,9 +11,17 @@
  */
 type Side = "bsc" | "sportlots";
 
+/**
+ * One chip. `id` is the SLOT key — what cards store in `platformData.<side>.src`
+ * and what the filter compares. `platformId` is the marketplace's own id in
+ * that slot: the `(#id)` a twin label wears. A slot key (`s0`) means nothing
+ * to an operator.
+ */
+export type SourceChip = { id: string; label: string; platformId?: string };
+
 export type SourceChips = {
-  bsc?: { primaryId: string; chips: Array<{ id: string; label: string }> };
-  sportlots?: { primaryId: string; chips: Array<{ id: string; label: string }> };
+  bsc?: { primaryId: string; chips: SourceChip[] };
+  sportlots?: { primaryId: string; chips: SourceChip[] };
 };
 
 export type SourceFilter = {
@@ -48,6 +58,16 @@ export default function ChecklistSourceFilter({
         const cfg = chips[side];
         if (!cfg || cfg.chips.length <= 1) return null;
         const selected = filter[side];
+        // NEO-325 — a slot label is stored bare (AttachSetsDialog), so two
+        // attached SportLots twins are two "Anime" labels. Shown here, beside
+        // each other, the one that shares its label wears its `(#id)`; the
+        // stored label is untouched.
+        // Twins are told apart by the marketplace id in the slot, never the
+        // slot key; a chip from an older caller with no `platformId` falls
+        // back to the slot key, as it always did.
+        const dups = duplicateNames(
+          cfg.chips.map((c) => ({ value: c.label, platformValue: c.platformId ?? c.id })),
+        );
         return (
           <div key={side} className="flex items-center gap-2 flex-wrap">
             <span className="text-xs font-semibold text-gray-400 uppercase tracking-wide w-24 shrink-0">
@@ -65,7 +85,11 @@ export default function ChecklistSourceFilter({
               // See the note in MultiSourcePanel.
               <Chip
                 key={c.id}
-                label={c.label}
+                label={itemLabel(
+                  { value: c.label, platformValue: c.platformId ?? c.id },
+                  side === "bsc" ? "bsc" : "sl",
+                  dups,
+                )}
                 active={selected === c.id}
                 onClick={() => onChange({ ...filter, [side]: c.id })}
               />

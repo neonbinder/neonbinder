@@ -203,3 +203,119 @@ describe("EntityColumn — '+ Custom' select-on-match (NEO-46)", () => {
     expect(onSelectExisting).not.toHaveBeenCalled();
   });
 });
+
+describe("EntityColumn — '+ Custom' when two rows already carry the name (NEO-325)", () => {
+  const TWIN_ITEMS = [
+    {
+      _id: "anime-a" as unknown as OptionId,
+      value: "Anime",
+      platformData: { sportlots: { s0: "111" } },
+    },
+    {
+      _id: "anime-b" as unknown as OptionId,
+      value: "Anime",
+      platformData: { sportlots: { s0: "222" } },
+    },
+    { _id: "sport-solo-id" as unknown as OptionId, value: "Solo" },
+  ];
+  const pickButtons = () =>
+    screen.getAllByRole("button", { name: /^Go to sport / }) as HTMLButtonElement[];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockQuery.mockReturnValue(TWIN_ITEMS);
+    mockAddCustom.mockResolvedValue("newly-created-id");
+    mockFindElsewhere.mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("a name two rows carry opens the picker: nothing is selected or created until the operator picks", async () => {
+    const onSelectExisting = vi.fn();
+
+    await submitCustomValue("anime", onSelectExisting);
+
+    await waitFor(() => expect(pickButtons()).toHaveLength(2));
+    expect(onSelectExisting).not.toHaveBeenCalled();
+    expect(mockAddCustom).not.toHaveBeenCalled();
+    // Told apart by the ids the column list shows for them.
+    expect(pickButtons().map((b) => b.textContent)).toEqual([
+      "Anime (#111)",
+      "Anime (#222)",
+    ]);
+  });
+
+  it("picking one selects that row's id, and only that", async () => {
+    const onSelectExisting = vi.fn();
+    await submitCustomValue("Anime", onSelectExisting);
+    await waitFor(() => expect(pickButtons()).toHaveLength(2));
+
+    await act(async () => {
+      fireEvent.click(pickButtons()[1]);
+    });
+
+    expect(onSelectExisting).toHaveBeenCalledTimes(1);
+    expect(onSelectExisting).toHaveBeenCalledWith("anime-b");
+    expect(mockAddCustom).not.toHaveBeenCalled();
+    // The picker is gone and the custom field is closed again.
+    expect(screen.queryAllByRole("button", { name: /^Go to sport / })).toHaveLength(0);
+  });
+
+  it("Back returns to the typed name without selecting anything", async () => {
+    const onSelectExisting = vi.fn();
+    await submitCustomValue("Anime", onSelectExisting);
+    await waitFor(() => expect(pickButtons()).toHaveLength(2));
+
+    await act(async () => {
+      fireEvent.click(screen.getByText("Back"));
+    });
+
+    expect(screen.getByPlaceholderText("Enter custom value...")).toBeTruthy();
+    expect(onSelectExisting).not.toHaveBeenCalled();
+    expect(mockAddCustom).not.toHaveBeenCalled();
+  });
+
+  it("exactly one row with the name is still selected straight away", async () => {
+    const onSelectExisting = vi.fn();
+
+    await submitCustomValue("Solo", onSelectExisting);
+
+    await waitFor(() => expect(onSelectExisting).toHaveBeenCalledWith("sport-solo-id"));
+    expect(screen.queryAllByRole("button", { name: /^Go to sport / })).toHaveLength(0);
+  });
+
+  it("a server CUSTOM_NAME_SHARED (the rows arrived after the list loaded) opens the same picker with '+ N more'", async () => {
+    mockQuery.mockReturnValue([{ _id: "sport-solo-id" as unknown as OptionId, value: "Solo" }]);
+    mockAddCustom.mockRejectedValueOnce({
+      data: {
+        code: "CUSTOM_NAME_SHARED",
+        matches: [
+          { _id: "anime-a", value: "Anime", path: [] },
+          { _id: "anime-b", value: "Anime", path: [] },
+        ],
+        total: 5,
+      },
+    });
+    const onSelectExisting = vi.fn();
+
+    await submitCustomValue("Anime", onSelectExisting);
+    await confirmCreate();
+
+    await waitFor(() => expect(pickButtons()).toHaveLength(2));
+    expect(mockAddCustom).toHaveBeenCalledTimes(1);
+    // The list the column holds cannot tell them apart, so their place does.
+    expect(pickButtons().map((b) => b.textContent)).toEqual([
+      "Anime, 1 of 2",
+      "Anime, 2 of 2",
+    ]);
+    expect(screen.getByText("+ 3 more")).toBeTruthy();
+    expect(onSelectExisting).not.toHaveBeenCalled();
+
+    await act(async () => {
+      fireEvent.click(pickButtons()[0]);
+    });
+    expect(onSelectExisting).toHaveBeenCalledWith("anime-a");
+  });
+});

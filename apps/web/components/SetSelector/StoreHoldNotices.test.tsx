@@ -10,7 +10,20 @@
 import { describe, expect, test } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import type { Id } from "../../convex/_generated/dataModel";
-import StoreHoldNotices, { UNCHECKED_FIX } from "./StoreHoldNotices";
+import StoreHoldNotices, {
+  RENAME_CLASH_FIX,
+  RENAME_INVALID_FIX,
+  SIBLING_FIX,
+  SIBLING_REASON_LINE,
+  UNCHECKED_FIX,
+  refusedRenameLine,
+  refusedRenameSummary,
+  siblingFamily,
+  siblingHoldSummary,
+  type SiblingFamily,
+} from "./StoreHoldNotices";
+import type { SiblingHold, RefusedRename, StoreHolds } from "./held-elsewhere";
+import type { SiblingWithholdReason } from "../../convex/selectorSyncMatch";
 import {
   ATTACH_MORE_LABEL,
   CUSTOM_BUTTON_LABEL,
@@ -76,7 +89,7 @@ describe("StoreHoldNotices — where a holder lives (NEO-312)", () => {
   });
 
   function renderWithheld(
-    withheld: Parameters<typeof StoreHoldNotices>[0]["holds"]["withheld"],
+    withheld: NonNullable<Parameters<typeof StoreHoldNotices>[0]["holds"]>["withheld"],
     subtreeWalkSkipped = false,
   ) {
     render(
@@ -195,7 +208,10 @@ describe("StoreHoldNotices — where a holder lives (NEO-312)", () => {
 
   test("a skipped walk with its unchecked items listed says it once, in the withheld box", () => {
     renderWithheld([{ label: "Gold", reason: "notChecked", holders: [] }], true);
-    expect(screen.getAllByRole("status")).toHaveLength(1);
+    // NEO-325: the regions are always mounted; only one has words in it.
+    expect(
+      screen.getAllByRole("status").filter((el) => el.textContent),
+    ).toHaveLength(1);
     expect(screen.queryByText(/^Heads up:/)).toBeNull();
   });
 
@@ -223,7 +239,10 @@ describe("StoreHoldNotices — where a holder lives (NEO-312)", () => {
         holds={{ withheld: [], withheldTotal: 0, subtreeWalkSkipped: true }}
       />,
     );
-    const notice = screen.getByRole("status");
+    const [notice, ...others] = screen
+      .getAllByRole("status")
+      .filter((el) => el.textContent);
+    expect(others).toHaveLength(0);
     expect(notice.textContent).toBe(
       "Heads up: this set is too big to check new links automatically, so new ones weren't added.",
     );
@@ -286,5 +305,273 @@ describe("StoreHoldNotices — the by-hand fix names real controls (NEO-312)", (
       "Attach more…",
       "Multi-source sets",
     ]);
+  });
+});
+
+/**
+ * NEO-325 — the two boxes for what the store did NOT save under this parent:
+ * lines withheld against its own rows, and title edits it refused. They share
+ * the shape of the withheld box: the summary and the fixes are live, the list
+ * sits beside the region.
+ */
+describe("StoreHoldNotices — mounted before it has anything to say (NEO-325 a11y)", () => {
+  const empty: StoreHolds = { withheld: [], withheldTotal: 0, subtreeWalkSkipped: false };
+  const liveRegions = () => screen.getAllByRole("status");
+
+  test("with no holds it renders four bare status regions and no text", () => {
+    const { container } = render(<StoreHoldNotices holds={null} />);
+
+    expect(liveRegions()).toHaveLength(4);
+    for (const region of liveRegions()) {
+      expect(region.textContent).toBe("");
+      expect(region.hasAttribute("class")).toBe(false);
+    }
+    expect(container.textContent).toBe("");
+    expect(screen.queryByRole("group")).toBeNull();
+  });
+
+  test("holds with nothing in them render the same bare regions", () => {
+    const { container } = render(<StoreHoldNotices holds={empty} />);
+
+    expect(liveRegions()).toHaveLength(4);
+    expect(container.textContent).toBe("");
+    // No amber box around nothing.
+    expect(container.querySelector(".bg-amber-400\\/10")).toBeNull();
+  });
+
+  test("the regions are the SAME elements when the answer arrives, so it is announced", () => {
+    const { rerender } = render(<StoreHoldNotices holds={null} />);
+    const before = liveRegions();
+
+    rerender(
+      <StoreHoldNotices
+        holds={{
+          ...empty,
+          siblings: [{ label: "Anime", reason: "nameSharedBySiblings", rows: [] }],
+          siblingsTotal: 1,
+          renames: [{ label: "Alpha", requested: "Beta", reason: "clash", clashWith: "Beta" }],
+          renamesTotal: 1,
+          subtreeWalkSkipped: true,
+        }}
+      />,
+    );
+
+    const after = liveRegions();
+    expect(after).toHaveLength(before.length);
+    after.forEach((region, i) => expect(region).toBe(before[i]));
+    // Each box that has something to say now says it in its own region.
+    expect(after.filter((r) => r.textContent).length).toBe(3);
+  });
+});
+
+describe("StoreHoldNotices — lines withheld against the parent's own rows (NEO-325)", () => {
+  const hold = (
+    label: string,
+    reason: SiblingWithholdReason,
+    rows: Array<{ id: string; value: string }> = [],
+  ): SiblingHold => ({ label, reason, rows });
+  const renderSiblings = (siblings: SiblingHold[], total = siblings.length) =>
+    render(
+      <StoreHoldNotices
+        holds={{
+          withheld: [],
+          withheldTotal: 0,
+          subtreeWalkSkipped: false,
+          siblings,
+          siblingsTotal: total,
+        }}
+      />,
+    );
+  const summaryRegion = (total: number) =>
+    screen.getByText(siblingHoldSummary(total)).closest('[role="status"]') as HTMLElement;
+
+  test("the summary and one fix per kind are live; the list is beside the region, not in it", () => {
+    renderSiblings([
+      hold("Anime", "nameSharedBySiblings", [{ id: "r1", value: "Anime" }]),
+      hold("Gold", "idOnManySiblings"),
+    ]);
+
+    const live = summaryRegion(2);
+    expect(live.textContent).toContain(SIBLING_FIX.name);
+    expect(live.textContent).toContain(SIBLING_FIX.link);
+    expect(live.textContent).not.toContain(SIBLING_FIX.twice);
+    expect(live.textContent).not.toContain(SIBLING_FIX.split);
+    // Kinds appear in the fixed order, however the store listed them.
+    expect(live.textContent!.indexOf(SIBLING_FIX.name)).toBeLessThan(
+      live.textContent!.indexOf(SIBLING_FIX.link),
+    );
+    const list = screen.getByRole("list", { name: siblingHoldSummary(2) });
+    expect(live.contains(list)).toBe(false);
+  });
+
+  test("each item says its kind of reason, then the rows it clashed with by NB name", () => {
+    renderSiblings([
+      hold("Anime", "nameSharedBySiblings", [
+        { id: "r1", value: "Anime" },
+        { id: "r2", value: "Anime" },
+      ]),
+      hold("Gold", "idsPointAtDifferentRows"),
+    ]);
+
+    const list = screen.getByRole("list", { name: siblingHoldSummary(2) });
+    const items = within(list).getAllByRole("listitem").filter((li) => li.parentElement === list);
+    expect(items).toHaveLength(2);
+    expect(items[0].textContent).toContain("Anime");
+    expect(items[0].textContent).toContain(SIBLING_REASON_LINE.name);
+    expect(within(items[0]).getAllByRole("listitem").map((r) => r.textContent)).toEqual([
+      "Anime",
+      "Anime",
+    ]);
+    expect(items[1].textContent).toContain(SIBLING_REASON_LINE.split);
+    expect(within(items[1]).queryAllByRole("listitem")).toHaveLength(0);
+  });
+
+  test("past the store's cap the true count leads and '+ N more' closes the list", () => {
+    renderSiblings([hold("Anime", "nameSharedBySiblings")], 9);
+
+    expect(screen.getByText(siblingHoldSummary(9))).toBeTruthy();
+    expect(screen.getByText("+ 8 more")).toBeTruthy();
+  });
+
+  test("a store that sent only a count reads as the commonest case, a name already taken", () => {
+    render(
+      <StoreHoldNotices
+        holds={{
+          withheld: [],
+          withheldTotal: 0,
+          subtreeWalkSkipped: false,
+          siblings: [],
+          siblingsTotal: 3,
+        }}
+      />,
+    );
+
+    const live = summaryRegion(3);
+    expect(live.textContent).toContain(SIBLING_FIX.name);
+    expect(screen.queryByRole("list")).toBeNull();
+  });
+
+  test("one set and many sets read differently", () => {
+    expect(siblingHoldSummary(1)).not.toBe(siblingHoldSummary(2));
+    expect(siblingHoldSummary(1)).toContain("1 set ");
+    expect(siblingHoldSummary(4)).toContain("4 sets");
+  });
+
+  test("the verbs in the fixes are the controls' own, never 'link' or 'move'", () => {
+    for (const fix of Object.values(SIBLING_FIX)) {
+      expect(fix).not.toMatch(/\blink(ed|s)?\b|take off|\bmove\b/i);
+    }
+    expect(SIBLING_FIX.link).toContain("Detach");
+    expect(SIBLING_FIX.split).toContain("Attach");
+  });
+
+  test.each<[SiblingWithholdReason, SiblingFamily]>([
+    ["nameSharedBySiblings", "name"],
+    ["nameLinkedToOtherSet", "name"],
+    ["noIdToAttach", "name"],
+    ["existingIdClaimed", "twice"],
+    ["idClaimedTwice", "twice"],
+    ["nameClaimedTwice", "twice"],
+    ["rowClaimedInBatch", "twice"],
+    ["idOnManySiblings", "link"],
+    ["idsPointAtDifferentRows", "split"],
+    ["nameSharedInBatch", "name"],
+  ])("%s is the %s kind", (reason, family) => {
+    expect(siblingFamily(reason)).toBe(family);
+  });
+
+  test("an unknown reason from a newer store reads as a name already taken, not a crash", () => {
+    expect(siblingFamily("somethingNew" as SiblingWithholdReason)).toBe("name");
+  });
+});
+
+describe("StoreHoldNotices — title edits the store refused (NEO-325)", () => {
+  const rename = (over: Partial<RefusedRename> = {}): RefusedRename => ({
+    label: "Alpha",
+    requested: "Beta",
+    reason: "clash",
+    clashWith: "Beta",
+    ...over,
+  });
+  const renderRenames = (renames: RefusedRename[], total = renames.length) =>
+    render(
+      <StoreHoldNotices
+        holds={{
+          withheld: [],
+          withheldTotal: 0,
+          subtreeWalkSkipped: false,
+          renames,
+          renamesTotal: total,
+        }}
+      />,
+    );
+  const summaryRegion = (total: number) =>
+    screen.getByText(refusedRenameSummary(total)).closest('[role="status"]') as HTMLElement;
+
+  test("a clash and an invalid name each get their fix line, once, in the live region", () => {
+    renderRenames([
+      rename(),
+      rename({ label: "Gamma", requested: "x", reason: "invalid", clashWith: undefined }),
+      rename({ label: "Delta", requested: "Beta" }),
+    ]);
+
+    const live = summaryRegion(3);
+    expect(live.textContent).toContain(RENAME_CLASH_FIX);
+    expect(live.textContent).toContain(RENAME_INVALID_FIX);
+    expect(live.textContent!.split(RENAME_CLASH_FIX)).toHaveLength(2);
+  });
+
+  test("only the kinds present get a fix", () => {
+    renderRenames([rename({ reason: "invalid", clashWith: undefined })]);
+
+    const live = summaryRegion(1);
+    expect(live.textContent).toContain(RENAME_INVALID_FIX);
+    expect(live.textContent).not.toContain(RENAME_CLASH_FIX);
+  });
+
+  test("each line names the set that kept its name and what was asked for", () => {
+    const clash = rename();
+    const invalid = rename({ label: "Gamma", requested: "bad", reason: "invalid", clashWith: undefined });
+    renderRenames([clash, invalid]);
+
+    const list = screen.getByRole("list", { name: refusedRenameSummary(2) });
+    expect(within(list).getByText("Alpha")).toBeTruthy();
+    expect(within(list).getByText(refusedRenameLine(clash))).toBeTruthy();
+    expect(within(list).getByText(refusedRenameLine(invalid))).toBeTruthy();
+    expect(refusedRenameLine(clash)).toContain("Beta");
+    expect(refusedRenameLine(invalid)).toContain("bad");
+    // The list is beside the live region.
+    expect(summaryRegion(2).contains(list)).toBe(false);
+  });
+
+  test("a clash with no named holder still reads, and a count past the cap closes with '+ N more'", () => {
+    expect(refusedRenameLine(rename({ clashWith: undefined }))).toContain("another set");
+    renderRenames([rename()], 5);
+
+    expect(screen.getByText(refusedRenameSummary(5))).toBeTruthy();
+    expect(screen.getByText("+ 4 more")).toBeTruthy();
+  });
+
+  test("a store that sent only a count reads as a clash", () => {
+    render(
+      <StoreHoldNotices
+        holds={{
+          withheld: [],
+          withheldTotal: 0,
+          subtreeWalkSkipped: false,
+          renames: [],
+          renamesTotal: 2,
+        }}
+      />,
+    );
+
+    expect(summaryRegion(2).textContent).toContain(RENAME_CLASH_FIX);
+    expect(summaryRegion(2).textContent).not.toContain(RENAME_INVALID_FIX);
+  });
+
+  test("the sets and their links were saved is said, so nobody redoes the sync", () => {
+    expect(refusedRenameSummary(1)).toMatch(/saved/);
+    expect(refusedRenameSummary(3)).toMatch(/saved/);
+    expect(refusedRenameSummary(1)).not.toBe(refusedRenameSummary(3));
   });
 });

@@ -1,4 +1,4 @@
-import { action, mutation } from "./_generated/server";
+import { action, internalQuery, mutation } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "./_generated/api";
@@ -12,6 +12,7 @@ import {
   primaryId,
   pruneEmptySides,
   setPrimarySlotId,
+  type PlatformSide,
 } from "./platformSlots";
 // NEO-211: the shared matcher / rename guard / unlink rule. The same module
 // backs storeSelectorOptions, so the two stores cannot drift apart again.
@@ -20,6 +21,7 @@ import {
   checkSelectorValue,
   clearDeclinedIfLabelChanged,
   itemsReachPastSiblings,
+  nameTwinKeys,
   planSelectorSync,
   planValueRename,
   resolveReturnedIds,
@@ -41,6 +43,9 @@ import {
   loadSyncHoldersElsewhere,
   withheldElsewhereEntry,
   withheldElsewhereEntryValidator,
+  withheldSiblingEntryValidator,
+  renameRefusedEntryValidator,
+  WITHHELD_HOLDERS_LIMIT,
   pausedSyncMessage,
   platformSideValidator,
   returnedIdsValidator,
@@ -50,6 +55,8 @@ import {
   type HeldElsewhereEntry,
   type UnlinkedEntry,
   type WithheldElsewhereEntry,
+  type WithheldSiblingEntry,
+  type RenameRefusedEntry,
 } from "./selectorSyncStore";
 import {
   resolveBscFacetFilters,
@@ -58,7 +65,11 @@ import {
 } from "./bscFacets";
 // NEO-291 — the insert/parallel flags are derived from where a row sits, not
 // taken from the client. See convex/variantRole.ts.
-import { conferredVariantRole, derivedVariantFlags } from "./variantRole";
+import {
+  conferredVariantRole,
+  derivedVariantFlags,
+  variantTypeRole,
+} from "./variantRole";
 // NEO-291 — the one rule for a card number prefix, shared with
 // `setSelectorOptionCardNumberPrefix` so the modal and the panel agree.
 import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
@@ -280,6 +291,19 @@ export function computeMatches(
   bscItems: PlatformItem[],
   slItems: PlatformItem[],
   slStripPrefix?: string,
+  /**
+   * NEO-325 — ids that must never be auto-paired, by side: name twins the
+   * caller found on the FULL marketplace list, including a twin whose
+   * namesake was removed from `slItems` before the call (the Base set's own
+   * SportLots id). The exactly-one guard below sees only the list it is
+   * given, so a twin whose sibling was filtered out would look unique to it.
+   * A blocked item goes to `unmatched*` in its original position and still
+   * gets `slCandidates` (offered, never linked).
+   */
+  blocked?: {
+    bsc?: ReadonlySet<string>;
+    sportlots?: ReadonlySet<string>;
+  },
 ): {
   autoMatched: MatchedPair[];
   unmatchedBsc: PlatformItem[];
@@ -295,8 +319,11 @@ export function computeMatches(
   }>;
 } {
   const autoMatched: MatchedPair[] = [];
-  const remainingBsc = [...bscItems];
-  const remainingSl = [...slItems];
+  const isBlocked = (side: "bsc" | "sportlots", item: PlatformItem) =>
+    blocked?.[side]?.has(item.platformValue) === true;
+  // Blocked items never enter a pass; they are put back, in order, at the end.
+  const remainingBsc = bscItems.filter((b) => !isBlocked("bsc", b));
+  const remainingSl = slItems.filter((sl) => !isBlocked("sportlots", sl));
 
   // Stripped SL values used only for comparison; the original SL value is
   // preserved in the emitted pair so the UI shows the marketplace name.
@@ -305,22 +332,59 @@ export function computeMatches(
     slStripPrefix ? stripSlBasePrefix(sl.value, slStripPrefix) : sl.value,
   );
 
+  // NEO-325 — EXACTLY-ONE GUARD (CLAUDE.md invariant 7). Every pass below
+  // auto-pairs only when its key matches exactly one candidate on EACH side.
+  // Two SportLots sets (or two BSC sets) that normalize to the same name are
+  // twins the name cannot tell apart; pairing "the first" one silently linked
+  // whichever the marketplace happened to list first. Tied twins fall through
+  // to `unmatchedBsc` / `unmatchedSl` and stay Pending for the operator, who
+  // sees their ids. No pass may consume a twin: the exact and bag passes refuse
+  // the key outright, and the fuzzy pass refuses a tied best score (twins
+  // always tie, since the ratio is computed on the normalized name).
+  //
+  // Each pass computes its keys ONCE, index-aligned with `remainingBsc` /
+  // `slStripped`, and counts them in a map; a match splices the key arrays
+  // with the items and drops that key's counts. Same answers as recounting
+  // the remaining lists on every iteration (a unique key leaving both sides
+  // changes no other key's count), without the quadratic normalisation.
+  const countKeys = (keys: readonly string[]): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (const k of keys) counts.set(k, (counts.get(k) ?? 0) + 1);
+    return counts;
+  };
+  const dropKey = (counts: Map<string, number>, key: string) => {
+    const n = (counts.get(key) ?? 0) - 1;
+    if (n > 0) counts.set(key, n);
+    else counts.delete(key);
+  };
+
   // Pass 1: Exact match on normalized strings
-  for (let i = remainingBsc.length - 1; i >= 0; i--) {
-    const bscNorm = normalizeForMatch(remainingBsc[i].value);
-    const slIndex = remainingSl.findIndex(
-      (_, j) => normalizeForMatch(slStripped[j]) === bscNorm,
-    );
-    if (slIndex !== -1) {
-      autoMatched.push({
-        displayName: remainingBsc[i].value,
-        bsc: remainingBsc[i],
-        sl: remainingSl[slIndex],
-        confidence: 1.0,
-      });
-      remainingBsc.splice(i, 1);
-      remainingSl.splice(slIndex, 1);
-      slStripped.splice(slIndex, 1);
+  {
+    const bscNorms = remainingBsc.map((b) => normalizeForMatch(b.value));
+    const slNorms = slStripped.map((sl) => normalizeForMatch(sl));
+    const bscCounts = countKeys(bscNorms);
+    const slCounts = countKeys(slNorms);
+    for (let i = remainingBsc.length - 1; i >= 0; i--) {
+      const bscNorm = bscNorms[i];
+      if (bscCounts.get(bscNorm) !== 1 || slCounts.get(bscNorm) !== 1) {
+        continue;
+      }
+      const slIndex = slNorms.indexOf(bscNorm);
+      if (slIndex !== -1) {
+        autoMatched.push({
+          displayName: remainingBsc[i].value,
+          bsc: remainingBsc[i],
+          sl: remainingSl[slIndex],
+          confidence: 1.0,
+        });
+        remainingBsc.splice(i, 1);
+        bscNorms.splice(i, 1);
+        remainingSl.splice(slIndex, 1);
+        slStripped.splice(slIndex, 1);
+        slNorms.splice(slIndex, 1);
+        dropKey(bscCounts, bscNorm);
+        dropKey(slCounts, bscNorm);
+      }
     }
   }
 
@@ -330,22 +394,33 @@ export function computeMatches(
   // changes). Sorted-token join preserves duplicate-token semantics.
   const bagOf = (s: string): string =>
     normalizeForMatch(s).split(" ").filter(Boolean).sort().join(" ");
-  for (let i = remainingBsc.length - 1; i >= 0; i--) {
-    const bscBag = bagOf(remainingBsc[i].value);
-    if (!bscBag) continue;
-    const slIndex = remainingSl.findIndex(
-      (_, j) => bagOf(slStripped[j]) === bscBag,
-    );
-    if (slIndex !== -1) {
-      autoMatched.push({
-        displayName: remainingBsc[i].value,
-        bsc: remainingBsc[i],
-        sl: remainingSl[slIndex],
-        confidence: 0.95,
-      });
-      remainingBsc.splice(i, 1);
-      remainingSl.splice(slIndex, 1);
-      slStripped.splice(slIndex, 1);
+  {
+    const bscBags = remainingBsc.map((b) => bagOf(b.value));
+    const slBags = slStripped.map((sl) => bagOf(sl));
+    const bscCounts = countKeys(bscBags);
+    const slCounts = countKeys(slBags);
+    for (let i = remainingBsc.length - 1; i >= 0; i--) {
+      const bscBag = bscBags[i];
+      if (!bscBag) continue;
+      if (bscCounts.get(bscBag) !== 1 || slCounts.get(bscBag) !== 1) {
+        continue;
+      }
+      const slIndex = slBags.indexOf(bscBag);
+      if (slIndex !== -1) {
+        autoMatched.push({
+          displayName: remainingBsc[i].value,
+          bsc: remainingBsc[i],
+          sl: remainingSl[slIndex],
+          confidence: 0.95,
+        });
+        remainingBsc.splice(i, 1);
+        bscBags.splice(i, 1);
+        remainingSl.splice(slIndex, 1);
+        slStripped.splice(slIndex, 1);
+        slBags.splice(slIndex, 1);
+        dropKey(bscCounts, bscBag);
+        dropKey(slCounts, bscBag);
+      }
     }
   }
 
@@ -356,24 +431,38 @@ export function computeMatches(
   // BSC names ("Aqua Lava Refractors") match their SL counterparts that
   // carry an extra brand-prefix token ("Chrome Aqua Lava Refractor").
   const MAX_RATIO = 0.4;
+  const fuzzyBscNorms = remainingBsc.map((b) => normalizeForMatch(b.value));
+  const fuzzySlNorms = slStripped.map((sl) => normalizeForMatch(sl));
+  const fuzzyBscCounts = countKeys(fuzzyBscNorms);
   for (let i = remainingBsc.length - 1; i >= 0; i--) {
-    const bscNorm = normalizeForMatch(remainingBsc[i].value);
+    const bscNorm = fuzzyBscNorms[i];
+    // A BSC twin cannot be told from its sibling by name either.
+    if (fuzzyBscCounts.get(bscNorm) !== 1) {
+      continue;
+    }
     let bestSlIndex = -1;
     let bestRatio = Infinity;
+    // NEO-325 — `ratio < bestRatio` alone kept the FIRST of several equally
+    // good SportLots candidates. A tie for best is ambiguous, not a win.
+    let bestTied = false;
 
     for (let j = 0; j < remainingSl.length; j++) {
-      const slNorm = normalizeForMatch(slStripped[j]);
+      const slNorm = fuzzySlNorms[j];
       const maxLen = Math.max(bscNorm.length, slNorm.length);
       if (maxLen === 0) continue;
       const ratio = levenshteinDistance(bscNorm, slNorm) / maxLen;
       if (ratio < bestRatio) {
         bestRatio = ratio;
         bestSlIndex = j;
+        bestTied = false;
+      } else if (ratio === bestRatio) {
+        bestTied = true;
       }
     }
 
     if (
       bestSlIndex !== -1 &&
+      !bestTied &&
       bestRatio < MAX_RATIO &&
       isTokenSubsetOrSuperset(
         remainingBsc[i].value,
@@ -387,8 +476,11 @@ export function computeMatches(
         confidence: 1 - bestRatio,
       });
       remainingBsc.splice(i, 1);
+      fuzzyBscNorms.splice(i, 1);
+      dropKey(fuzzyBscCounts, bscNorm);
       remainingSl.splice(bestSlIndex, 1);
       slStripped.splice(bestSlIndex, 1);
+      fuzzySlNorms.splice(bestSlIndex, 1);
     }
   }
 
@@ -408,7 +500,17 @@ export function computeMatches(
   // is not inferable (both can contain a card #1).
   const MAX_CANDIDATES = 5;
   const CANDIDATE_FLOOR = 0.3;
-  const slCandidates = remainingBsc.map((bsc) => {
+  // Original order, blocked items included (NEO-325). Identity-filtered, so
+  // with nothing blocked these are exactly `remainingBsc` / `remainingSl`.
+  const leftBsc = new Set(remainingBsc);
+  const leftSl = new Set(remainingSl);
+  const unmatchedBsc = bscItems.filter(
+    (b) => leftBsc.has(b) || isBlocked("bsc", b),
+  );
+  const unmatchedSl = slItems.filter(
+    (sl) => leftSl.has(sl) || isBlocked("sportlots", sl),
+  );
+  const slCandidates = unmatchedBsc.map((bsc) => {
     const bscNorm = normalizeForMatch(bsc.value);
     const scored = slItems
       .map((sl) => {
@@ -439,13 +541,63 @@ export function computeMatches(
 
   return {
     autoMatched,
-    unmatchedBsc: remainingBsc,
-    unmatchedSl: remainingSl,
+    unmatchedBsc,
+    unmatchedSl,
     slCandidates,
   };
 }
 
 // ===== ACTIONS =====
+
+/** Variant types read under one set to find its Base (one is normal). */
+const MAX_VARIANT_TYPES_READ = 500;
+
+/**
+ * NEO-325 — the SportLots ids on the Base row of the set `variantTypeId`
+ * sits under: what `fetchRawOptions` drops from an insert-level SportLots
+ * list, BY ID. The Base is the NB role (`metadata.isBase`, `variantTypeRole`),
+ * never a name. Empty when `variantTypeId` IS the Base (the Base picker is
+ * choosing the Base's own SportLots set, so nothing may be hidden from it),
+ * when it is not a variant type, or when the set has no Base or the Base no
+ * SportLots slot. Every slot counts, not only the primary: each is a
+ * SportLots set holding the set's base cards, none is a variant candidate.
+ */
+export const baseSlIdsBesideVariantType = internalQuery({
+  args: { variantTypeId: v.id("selectorOptions") },
+  returns: v.array(v.string()),
+  handler: async (ctx, args) => {
+    const type = await ctx.db.get(args.variantTypeId);
+    if (!type || type.level !== "variantType" || !type.parentId) return [];
+    if (variantTypeRole(type) === "base") return [];
+    const setId = type.parentId;
+    const types = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level_and_parent", (q) =>
+        q.eq("level", "variantType").eq("parentId", setId),
+      )
+      .take(MAX_VARIANT_TYPES_READ);
+    const ids = new Set<string>();
+    for (const row of types) {
+      if (variantTypeRole(row) !== "base") continue;
+      for (const id of slotIds(row, "sportlots")) ids.add(id);
+    }
+    return [...ids];
+  },
+});
+
+/**
+ * NEO-325 — the ids in `items` whose folded name (`selectorValueKey`, the
+ * store's fold) two or more DISTINCT ids share: name twins.
+ */
+function twinIdsOf(items: readonly PlatformItem[]): string[] {
+  const keys = nameTwinKeys(items);
+  if (keys.size === 0) return [];
+  const ids = new Set<string>();
+  for (const item of items) {
+    if (keys.has(selectorValueKey(item.value))) ids.add(item.platformValue);
+  }
+  return [...ids];
+}
 
 export const fetchRawOptions = action({
   args: {
@@ -460,12 +612,15 @@ export const fetchRawOptions = action({
         variantType: v.optional(v.string()),
       }),
     ),
-    // Display name of the SL Base set (e.g. "Prizm Stars & Stripes").
-    // When provided, the SL row whose value exactly matches is excluded
-    // from slOptions (it's the parent set, not a variant), and the
-    // prefix is stripped from remaining SL values before auto-matching
-    // so "Prizm Stars & Stripes Blue Prizm" lines up against BSC's
-    // "Prizms Blue".
+    // The SportLots label of the set's Base (e.g. "Prizm Stars & Stripes"),
+    // used ONLY as a matching aid: it is stripped from SL values before
+    // auto-matching so "Prizm Stars & Stripes Blue Prizm" lines up against
+    // BSC's "Prizms Blue".
+    //
+    // NEO-325 — it no longer FILTERS anything. The Base's own SportLots set
+    // is dropped from `slOptions` by its id, read server-side off the Base
+    // row's slots (`baseSlIdsBesideVariantType`); the old exact-name drop
+    // also hid every SportLots twin of the Base's name.
     baseSlPrefix: v.optional(v.string()),
   },
   returns: v.object({
@@ -513,6 +668,19 @@ export const fetchRawOptions = action({
      * paused side is already in `skippedSides`.
      */
     pausedSides: v.array(platformSideValidator),
+    /**
+     * NEO-325 — every id, per side, whose folded name (`selectorValueKey`)
+     * two or more DISTINCT ids share in the side's FULL list — counted before
+     * the Base's own SportLots set is dropped, so a twin of the Base's name
+     * is listed although its namesake is not in `slOptions`. These are never
+     * auto-paired here (`computeMatches`' `blocked`) and must never be stored
+     * by a single-platform save: any item the caller would store whose id is
+     * in its side's list means "open Reconcile" (Jason's rule A).
+     */
+    twinIds: v.object({
+      bsc: v.array(v.string()),
+      sportlots: v.array(v.string()),
+    }),
   }),
   // Explicit return type: without it, adding `slCandidates` pushed the
   // inferred type past TypeScript's inference budget and `fetchRawOptions`
@@ -539,6 +707,7 @@ export const fetchRawOptions = action({
     message: string;
     skippedSides: Array<"bsc" | "sportlots">;
     pausedSides: Array<"bsc" | "sportlots">;
+    twinIds: { bsc: string[]; sportlots: string[] };
   }> => {
     await requireAdmin(ctx);
     // NEO-287 — read once per call. `pausedList` is derived from the chain's
@@ -668,11 +837,16 @@ export const fetchRawOptions = action({
               : NO_MARKETPLACE_IDS_MESSAGE,
           skippedSides,
           pausedSides: pausedList,
+          twinIds: { bsc: [], sportlots: [] },
         };
       }
 
       let bscOptions: PlatformItem[] = [];
       let slOptions: PlatformItem[] = [];
+      const twinIds: { bsc: string[]; sportlots: string[] } = {
+        bsc: [],
+        sportlots: [],
+      };
       const platformErrors: Record<string, string> = {};
 
       // Fetch from SportLots — only when the chain can scope it (NEO-239).
@@ -694,15 +868,27 @@ export const fetchRawOptions = action({
           },
         );
         if (result.success && result.options) {
-          // Drop the SL Base anchor row itself (e.g. "Prizm Stars & Stripes")
-          // so it doesn't surface as a variant candidate downstream.
-          slOptions = baseSlPrefix
-            ? result.options.filter(
-                (o) =>
-                  o.value.trim().toLowerCase() !==
-                  baseSlPrefix.trim().toLowerCase(),
-              )
-            : result.options;
+          // NEO-325 — twins are judged on the FULL list, before the Base's
+          // own set leaves it, so a twin of the Base's name is still one.
+          twinIds.sportlots = twinIdsOf(result.options);
+          // Drop the set's Base SportLots set(s) — BY ID, read off the Base
+          // row's slots — so it doesn't surface as a variant candidate. Never
+          // by name: a name drop also hid every SportLots twin of that name
+          // (invariant 4). Insert level only: that is where the brand's flat
+          // SportLots list (which contains the Base's own set) is asked for.
+          const baseSlIds =
+            level === "insert" && parentId
+              ? new Set(
+                  await ctx.runQuery(
+                    internal.setReconciliation.baseSlIdsBesideVariantType,
+                    { variantTypeId: parentId },
+                  ),
+                )
+              : new Set<string>();
+          slOptions =
+            baseSlIds.size > 0
+              ? result.options.filter((o) => !baseSlIds.has(o.platformValue))
+              : result.options;
         } else if (!result.success) {
           platformErrors.sportlots = result.message || "Unknown error";
         }
@@ -729,6 +915,7 @@ export const fetchRawOptions = action({
         );
         if (result.success && result.options) {
           bscOptions = result.options;
+          twinIds.bsc = twinIdsOf(result.options);
         } else if (!result.success) {
           platformErrors.bsc = result.message || "Unknown error";
         }
@@ -762,10 +949,15 @@ export const fetchRawOptions = action({
       }
 
       // Run matching algorithm. The SL Base anchor is already filtered
-      // out of slOptions above; passing baseSlPrefix here lets the matcher
-      // compare BSC names against SL values with the prefix stripped.
+      // out of slOptions above (by id); passing baseSlPrefix here lets the
+      // matcher compare BSC names against SL values with the prefix stripped.
+      // NEO-325 — twins are never auto-paired, including a twin whose
+      // namesake left `slOptions` with the Base.
       const { autoMatched, unmatchedBsc, unmatchedSl, slCandidates } =
-        computeMatches(bscOptions, slOptions, baseSlPrefix);
+        computeMatches(bscOptions, slOptions, baseSlPrefix, {
+          bsc: new Set(twinIds.bsc),
+          sportlots: new Set(twinIds.sportlots),
+        });
 
       const warningSuffix =
         Object.keys(platformErrors).length > 0
@@ -800,6 +992,7 @@ export const fetchRawOptions = action({
         message: `BSC: ${bscOptions.length}, SL: ${slOptions.length}, Auto-matched: ${autoMatched.length}${warningSuffix}${skipSuffix}`,
         skippedSides,
         pausedSides: pausedList,
+        twinIds,
       };
     } catch (error) {
       console.error(`[fetchRawOptions] Error:`, error);
@@ -820,6 +1013,7 @@ export const fetchRawOptions = action({
         message: `Failed to fetch options: ${error instanceof Error ? error.message : "Unknown error"}`,
         skippedSides: [] as Array<"bsc" | "sportlots">,
         pausedSides: pausedList,
+        twinIds: { bsc: [], sportlots: [] },
       };
     }
   },
@@ -1386,6 +1580,15 @@ export const storeReconciledOptions = mutation({
          * id/name tiers rather than failing.
          */
         existingId: v.optional(v.id("selectorOptions")),
+        /**
+         * NEO-325 — the operator saved this line as ITS OWN set. Matched by
+         * identity only (`existingId`, then the marketplace ids) and
+         * otherwise inserted; never matched by name, so a twin saved after
+         * its namesake ("the same insert set in both Bowman and Bowman
+         * Chrome") becomes its own row instead of being withheld against the
+         * namesake. See `IncomingItem.identityOnly`.
+         */
+        identityOnly: v.optional(v.boolean()),
       }),
     ),
     /**
@@ -1473,7 +1676,9 @@ export const storeReconciledOptions = mutation({
      * holders). Nothing was written for them; the operator is told rather
      * than only the log. NEO-312 `linkHeldElsewhere`: the item DID match one
      * of these rows, but an id it carries is held by another row, so that id
-     * alone was not attached (the holder is named). Capped at `UNLINK_NOTICE_LIMIT`; the true count is
+     * alone was not attached (the holder is named). NEO-325: the same entry
+     * for an item INSERTED as a new row whose non-primary id a sibling or a
+     * row elsewhere holds — the row exists, without that id. Capped at `UNLINK_NOTICE_LIMIT`; the true count is
      * `withheldElsewhereTotal`. Recomputed per page — last page wins.
      */
     withheldElsewhere: v.array(withheldElsewhereEntryValidator),
@@ -1486,6 +1691,24 @@ export const storeReconciledOptions = mutation({
      * effort and never sets it.) Last page wins.
      */
     subtreeWalkSkipped: v.boolean(),
+    /**
+     * NEO-325 — items WITHHELD against this parent's own rows (a namesake
+     * linked to a different set, siblings sharing the name, an id on several
+     * siblings, …). Nothing was written for them, so their links are NOT
+     * stored; until NEO-325 this was log-only. Only items carrying a
+     * marketplace id. Capped at `UNLINK_NOTICE_LIMIT`; the true count is
+     * `withheldSiblingsTotal`. Recomputed per page — last page wins. A line
+     * the operator means as its own set can be re-sent with `identityOnly`.
+     */
+    withheldSiblings: v.array(withheldSiblingEntryValidator),
+    withheldSiblingsTotal: v.number(),
+    /**
+     * NEO-325 — title edits (tier-0 renames) refused, with the row they were
+     * for. The row's links were applied regardless. Until NEO-325 log-only.
+     * Capped at `UNLINK_NOTICE_LIMIT`; recomputed per page — last page wins.
+     */
+    renameRefused: v.array(renameRefusedEntryValidator),
+    renameRefusedTotal: v.number(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
@@ -1527,8 +1750,43 @@ export const storeReconciledOptions = mutation({
           ...(sportlots ? { sportlots } : {}),
         },
         ...(item.existingId ? { existingId: item.existingId } : {}),
+        ...(item.identityOnly === true ? { identityOnly: true } : {}),
       };
     });
+
+    // NEO-325 (security re-audit) — every id an item carries PAST the first
+    // per side. The planner sees only `items` (the first id per side), so
+    // tier 1, the held-elsewhere check and the unchecked-side check never
+    // look at these; the insert path below used to give every one of them a
+    // slot anyway, putting one marketplace id on two rows. Each extra is now
+    // checked there (`blockedInsertExtra`) before it is allocated. Deduped,
+    // empty ids and repeats of the primary dropped.
+    const extraIdsByItem = reconciledItems.map((item, i) => {
+      const extras = (side: PlatformSide) => {
+        const primary = items[i].ids[side];
+        return [
+          ...new Set(
+            wireToIds(item.platformData[side])
+              .slice(1)
+              .filter((id) => id && id !== primary),
+          ),
+        ];
+      };
+      return { bsc: extras("bsc"), sportlots: extras("sportlots") };
+    });
+    // What the holder walk is asked about: the planner's items plus one
+    // single-id probe per extra, so an extra no sibling holds still loads the
+    // set (and brand) holders. Used ONLY for the walk, never planned.
+    const holderProbe: IncomingItem[] = [
+      ...items,
+      ...extraIdsByItem.flatMap((extras, i) => [
+        ...extras.bsc.map((id) => ({ value: items[i].value, ids: { bsc: id } })),
+        ...extras.sportlots.map((id) => ({
+          value: items[i].value,
+          ids: { sportlots: id },
+        })),
+      ]),
+    ];
 
     // NEO-211 — a `returnedIds` side over the cap DEGRADES, it does not throw.
     // The old throw took down a real sync: SportLots lists 2,563 sets for one
@@ -1594,12 +1852,15 @@ export const storeReconciledOptions = mutation({
     // re-created at its old level. Read only when some item names an id or
     // an `existingId` no sibling holds; a re-sync that stays inside the
     // siblings pays nothing. See `loadSyncHoldersElsewhere` (NEO-312: the whole set, then the brand).
-    const subtree = itemsReachPastSiblings(existingOptions, items)
+    //
+    // NEO-325 — asked about `holderProbe`, so a non-primary id reaching past
+    // the siblings loads the walk too (see `extraIdsByItem`).
+    const subtree = itemsReachPastSiblings(existingOptions, holderProbe)
       ? await loadSyncHoldersElsewhere(ctx, {
           level,
           parent: parentRowForCopyDown,
           siblings: existingOptions,
-          items,
+          items: holderProbe,
         })
       : null;
 
@@ -1786,8 +2047,49 @@ export const storeReconciledOptions = mutation({
     );
     const heldElsewhereById = new Map<string, HeldElsewhereEntry>();
     const withheldElsewhereAll: WithheldElsewhereEntry[] = [];
+    const withheldSiblingsAll: WithheldSiblingEntry[] = [];
+    const renameRefusedAll: RenameRefusedEntry[] = [];
     // NEO-312 — asked before a matched row takes an id it does not hold yet.
     const blockLink = linkBlocker(subtree);
+    // NEO-325 (security re-audit) — the sibling half of the same question,
+    // for an insert's NON-PRIMARY ids, which the planner never saw. A primary
+    // id a sibling holds is a tier-1 match, so it never reaches an insert; an
+    // extra a sibling holds would put that link on a second row. Read from
+    // the snapshot, not the working rows, so the answer does not depend on
+    // item order.
+    const siblingHoldersBySide: Record<PlatformSide, Map<string, string[]>> = {
+      bsc: new Map(),
+      sportlots: new Map(),
+    };
+    for (const row of existingOptions) {
+      for (const side of PLATFORM_SIDES) {
+        for (const id of slotIds(row, side)) {
+          const list = siblingHoldersBySide[side].get(id);
+          if (!list) siblingHoldersBySide[side].set(id, [row._id]);
+          else if (!list.includes(row._id)) list.push(row._id);
+        }
+      }
+    }
+    /** Why an insert's non-primary id may not be allocated, or `null`. */
+    const blockedInsertExtra = (side: PlatformSide, id: string): LinkBlock | null => {
+      const siblings = siblingHoldersBySide[side].get(id);
+      if (siblings && siblings.length > 0) {
+        return { reason: "linkHeldElsewhere", holderIds: siblings };
+      }
+      return blockLink({ platformData: {} }, side, id);
+    };
+    // Names the holder of a blocked extra: a row elsewhere OR a sibling, and
+    // the sibling's parent (this call's parent) for its path.
+    const insertNoticeRows = new Map<string, Doc<"selectorOptions">>([
+      ...subtreeRowsById,
+      ...existingOptions.map((row) => [row._id as string, row] as const),
+    ]);
+    const insertNoticeParents = new Map<string, Doc<"selectorOptions">>(
+      subtree?.parentsById ?? [],
+    );
+    if (parentRowForCopyDown) {
+      insertNoticeParents.set(parentRowForCopyDown._id, parentRowForCopyDown);
+    }
 
     for (let i = 0; i < reconciledItems.length; i++) {
       // The bound is checked BEFORE the item, so the last item admitted is the
@@ -1801,7 +2103,8 @@ export const storeReconciledOptions = mutation({
       const outcome = plan.outcomes[i];
       if (outcome.kind === "withheld") {
         // NEO-300 — a subtree withhold reaches the operator, not only the
-        // log. Sibling-level withholds are unchanged (log-only).
+        // log. NEO-325 — and so does a sibling-level one, when the item
+        // carries a link that is now not stored.
         if (outcome.elsewhere) {
           withheldElsewhereAll.push(
             withheldElsewhereEntry(
@@ -1811,6 +2114,23 @@ export const storeReconciledOptions = mutation({
               subtree?.parentsById ?? new Map(),
             ),
           );
+        }
+        const sibling = plan.siblingWithholds[i];
+        if (
+          sibling &&
+          PLATFORM_SIDES.some((side) => parsed.ids[side] !== undefined)
+        ) {
+          withheldSiblingsAll.push({
+            itemIndex: i,
+            label: item.value,
+            reason: sibling.reason,
+            rows: sibling.rowIds.slice(0, WITHHELD_HOLDERS_LIMIT).flatMap((id) => {
+              const row = byRowId.get(id);
+              return row
+                ? [{ id: row._id, value: working.get(row._id)?.value ?? row.value }]
+                : [];
+            }),
+          });
         }
         continue;
       }
@@ -1873,6 +2193,29 @@ export const storeReconciledOptions = mutation({
               `[storeReconciledOptions] rename refused (${renamePlan.reason}) ` +
                 `for ${row._id} at level=${level}: ${renamePlan.message}`,
             );
+            // NEO-325 — and told to the operator, with the row in the way.
+            const clashKey = selectorValueKey(item.value);
+            const clash =
+              renamePlan.reason === "clash"
+                ? workingSiblings().find(
+                    (o) => o._id !== row._id && selectorValueKey(o.value) === clashKey,
+                  )
+                : undefined;
+            renameRefusedAll.push({
+              itemIndex: i,
+              rowId: row._id,
+              value: w.value,
+              requested: item.value,
+              reason: renamePlan.reason,
+              ...(clash
+                ? {
+                    clashWith: {
+                      id: clash._id as Id<"selectorOptions">,
+                      value: clash.value,
+                    },
+                  }
+                : {}),
+            });
           }
         }
 
@@ -2035,8 +2378,35 @@ export const storeReconciledOptions = mutation({
         const checked = checkSelectorValue(raw);
         return checked.ok ? { label: checked.value } : {};
       };
-      const bscIds = wireToIds(item.platformData.bsc);
-      const slIds = wireToIds(item.platformData.sportlots);
+      // NEO-325 (security re-audit) — one link, one row, for EVERY id the item
+      // carries. The primary id per side is the one the planner cleared; each
+      // further id is asked here (a sibling or a row elsewhere holding it, or
+      // a side the holder walk could not finish) and a blocked one is left
+      // off the new row and reported in `withheldElsewhere`, exactly as the
+      // match path reports an id it could not attach. The row is still
+      // created with every id that is free.
+      const insertBlocks: LinkBlock[] = [];
+      const idsToAllocate = (side: PlatformSide): string[] => {
+        const primary = parsed.ids[side];
+        const free = extraIdsByItem[i][side].filter((id) => {
+          const block = blockedInsertExtra(side, id);
+          if (block) insertBlocks.push(block);
+          return block === null;
+        });
+        return primary ? [primary, ...free] : free;
+      };
+      const bscIds = idsToAllocate("bsc");
+      const slIds = idsToAllocate("sportlots");
+      if (insertBlocks.length > 0) {
+        withheldElsewhereAll.push(
+          linkWithheldEntry(
+            item.value,
+            insertBlocks,
+            insertNoticeRows,
+            insertNoticeParents,
+          ),
+        );
+      }
       const alloc = initialSlots({
         bsc: bscIds.map((id) => ({ id, ...safeLabel("bsc", id) })),
         sportlots: slIds.map((id) => ({ id, ...safeLabel("sportlots", id) })),
@@ -2270,6 +2640,10 @@ export const storeReconciledOptions = mutation({
       withheldElsewhere: withheldElsewhereAll.slice(0, UNLINK_NOTICE_LIMIT),
       withheldElsewhereTotal: withheldElsewhereAll.length,
       subtreeWalkSkipped,
+      withheldSiblings: withheldSiblingsAll.slice(0, UNLINK_NOTICE_LIMIT),
+      withheldSiblingsTotal: withheldSiblingsAll.length,
+      renameRefused: renameRefusedAll.slice(0, UNLINK_NOTICE_LIMIT),
+      renameRefusedTotal: renameRefusedAll.length,
     };
   },
 });

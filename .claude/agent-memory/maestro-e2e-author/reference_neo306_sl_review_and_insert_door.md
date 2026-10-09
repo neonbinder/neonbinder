@@ -7,7 +7,9 @@ metadata:
 
 **Sync Sets no longer mints SportLots-only sets.** Each such name waits in a
 per-BRAND review doc; the amber pill `N SportLots sets to sort` (or `N
-SportLots sets left — save again`) sits in a brand's Sets-column idle row
+SportLots sets left — save again`, only after a save that STOPPED part-way;
+since NEO-325 a save that refused names clears that, so refused lines read
+`to sort`) sits in a brand's Sets-column idle row
 beside `Sync Sets`. Never on the All Brands view (it spans brands). Paused
 SportLots → no review, no pill. A flow that needs an SL-only set must save a
 review first.
@@ -27,6 +29,14 @@ in the body scroller):
 * `Apply to N selected` (0 after an apply), footer `Save will file: 1 set · N
   parallels · M inserts` (no period), `Save N SportLots sets`; column toast
   `Saved 1 set, N parallels, M inserts.` (+ ` K skipped: …`).
+* NEO-325: a line filed as its own set (EVERY line before any decision)
+  shows a `Name` field, `id: "Name for <label>"`, whose TEXT is its value
+  (the default set name, e.g. `Bowman <label>` when the brand prefix is
+  missing) — a `text:` selector on a set name can hit it. A twin's row names
+  all gain ` (#<id>)` (`Select <label> (#id)`, `… set <label> (#id) belongs
+  to`). Two own-set lines whose names fold together block Save (footer
+  `role=status` line; Save's `title` carries the reason, its text does not
+  change). Refused lines stay with a reason under the field.
 * Rows sorted by folded label: a filter puts the shortest match first, so its
   inline list opens at the top of the body.
 

@@ -96,7 +96,123 @@ const MAX_VARIANT_TYPES_PER_SET = 100;
  */
 export const MAX_SIBLINGS_PER_TYPE = 3000;
 
-const entryValidator = v.object({ slId: v.string(), label: v.string() });
+const entryValidator = v.object({
+  slId: v.string(),
+  label: v.string(),
+  /** NEO-325 — see `slSetReviews.entries` in schema.ts. */
+  twin: v.optional(v.boolean()),
+});
+
+/** A stored entry, its last name refusal included (NEO-325). */
+type ReviewEntry = ReviewDoc["entries"][number];
+/** What a line's last refusal stores: a `RefusedLine` without its id and label. */
+type LastRefusal = NonNullable<ReviewEntry["lastRefusal"]>;
+
+/**
+ * NEO-325 — a review line the save REFUSED for its name. It is NOT removed
+ * from the review: the operator renames it (the decision's `name`) and saves
+ * again. Before this a refused line left the review, and a SportLots twin of
+ * a set the operator had just saved never came back.
+ *
+ *   reason   — `nameTaken`: a set under the brand (own-set line) or a row
+ *              under the variant type (variant line) already folds to
+ *              `name`; `existsElsewhere`: a set under ANOTHER brand of the
+ *              year folds to it; `invalid`: no NB name can be made of it
+ *              (`detail` says why, in our words).
+ *   name     — the name the save tried: the operator's, or the default.
+ *   target   — `set` (own set) or `variantType` (with `variantTypeId`).
+ *   clashWith — the NB row already holding the name, and for
+ *              `existsElsewhere` the brand it sits under.
+ */
+export const refusedLineValidator = v.object({
+  slId: v.string(),
+  label: v.string(),
+  name: v.string(),
+  reason: v.union(
+    v.literal("nameTaken"),
+    v.literal("existsElsewhere"),
+    v.literal("invalid"),
+  ),
+  target: v.union(v.literal("set"), v.literal("variantType")),
+  variantTypeId: v.optional(v.id("selectorOptions")),
+  clashWith: v.optional(
+    v.object({
+      _id: v.id("selectorOptions"),
+      value: v.string(),
+      brand: v.optional(v.string()),
+    }),
+  ),
+  detail: v.optional(v.string()),
+});
+
+export type RefusedLine = {
+  slId: string;
+  label: string;
+  name: string;
+  reason: "nameTaken" | "existsElsewhere" | "invalid";
+  target: "set" | "variantType";
+  variantTypeId?: RowId;
+  clashWith?: { _id: RowId; value: string; brand?: string };
+  detail?: string;
+};
+
+/**
+ * NEO-325 — `slSetReviews.entries[].lastRefusal` as `getSlSetReview` returns
+ * it: the line's last name refusal, stored so a reopened review still says
+ * why. Same fields as `refusedLineValidator` without `slId` and `label`.
+ */
+export const lastRefusalValidator = v.object({
+  name: v.string(),
+  reason: v.union(
+    v.literal("nameTaken"),
+    v.literal("existsElsewhere"),
+    v.literal("invalid"),
+  ),
+  target: v.union(v.literal("set"), v.literal("variantType")),
+  variantTypeId: v.optional(v.id("selectorOptions")),
+  clashWith: v.optional(
+    v.object({
+      _id: v.id("selectorOptions"),
+      value: v.string(),
+      brand: v.optional(v.string()),
+    }),
+  ),
+  detail: v.optional(v.string()),
+});
+
+/** The stored form of a refusal: no id or label (the entry carries both). */
+function lastRefusalOf(r: RefusedLine): LastRefusal {
+  return {
+    name: r.name,
+    reason: r.reason,
+    target: r.target,
+    ...(r.variantTypeId ? { variantTypeId: r.variantTypeId } : {}),
+    ...(r.clashWith ? { clashWith: r.clashWith } : {}),
+    ...(r.detail !== undefined ? { detail: r.detail } : {}),
+  };
+}
+
+/** An entry as the sync and the save's first read see it: no refusal. */
+function bareEntry(e: ReviewEntry): { slId: string; label: string; twin?: boolean } {
+  return { slId: e.slId, label: e.label, ...(e.twin === true ? { twin: true } : {}) };
+}
+
+/** Per-line operator names a save chunk carries (NEO-325). */
+const namesValidator = v.optional(
+  v.array(v.object({ slId: v.string(), name: v.string() })),
+);
+
+/** The operator's name for each id, trimmed; blank names are no name. */
+function namesById(
+  names: ReadonlyArray<{ slId: string; name: string }> | undefined,
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const n of names ?? []) {
+    const name = n.name.trim();
+    if (name && !out.has(n.slId)) out.set(n.slId, name);
+  }
+  return out;
+}
 
 // ───────────────────────────────────────────────────────────────────────────
 // Shared reads
@@ -211,9 +327,9 @@ async function typeRefusal(
 function entriesStillInDoc(
   doc: ReviewDoc | null,
   slIds: readonly string[],
-): { entries: Array<{ slId: string; label: string }>; notInReview: number } {
+): { entries: ReviewEntry[]; notInReview: number } {
   const byId = new Map((doc?.entries ?? []).map((e) => [e.slId, e] as const));
-  const entries: Array<{ slId: string; label: string }> = [];
+  const entries: ReviewEntry[] = [];
   let notInReview = 0;
   const seen = new Set<string>();
   for (const slId of slIds) {
@@ -251,19 +367,33 @@ async function linkedUnderBrands(
   return linked;
 }
 
-/** Drop `slIds` from the doc; delete it when nothing is left. */
-async function removeFromDoc(
+/**
+ * Drop `slIds` from the doc and record each of `refused` on its line
+ * (NEO-325: `lastRefusal`, replacing any earlier one); delete the doc when
+ * nothing is left. One write, in the transaction that filed the lines. A
+ * refused id the doc no longer holds is ignored.
+ */
+async function settleInDoc(
   ctx: MutationCtx,
   doc: ReviewDoc | null,
   slIds: ReadonlySet<string>,
+  refused: readonly RefusedLine[] = [],
 ): Promise<number> {
-  if (!doc || slIds.size === 0) return doc?.entries.length ?? 0;
-  const next = doc.entries.filter((e) => !slIds.has(e.slId));
-  if (next.length === doc.entries.length) return next.length;
+  if (!doc || (slIds.size === 0 && refused.length === 0)) {
+    return doc?.entries.length ?? 0;
+  }
+  const refusalOf = new Map(refused.map((r) => [r.slId, lastRefusalOf(r)] as const));
+  const next = doc.entries
+    .filter((e) => !slIds.has(e.slId))
+    .map((e) => {
+      const refusal = refusalOf.get(e.slId);
+      return refusal ? { ...e, lastRefusal: refusal } : e;
+    });
   if (next.length === 0) {
     await ctx.db.delete(doc._id);
     return 0;
   }
+  if (next.length === doc.entries.length && refusalOf.size === 0) return next.length;
   await ctx.db.patch(doc._id, { entries: next });
   return next.length;
 }
@@ -320,15 +450,28 @@ export const replaceScope = internalMutation({
         existing.entries.length === args.entries.length &&
         existing.entries.every(
           (e, i) =>
-            e.slId === args.entries[i].slId && e.label === args.entries[i].label,
+            e.slId === args.entries[i].slId &&
+            e.label === args.entries[i].label &&
+            (e.twin === true) === (args.entries[i].twin === true),
         );
       if (sameEntries && existing.rootsTruncated === truncated) {
         return { written: false, entries: existing.entries.length };
       }
+      // NEO-325 — a line the sync left exactly as it was (same id, same
+      // label) keeps its last name refusal; any other line starts clean.
+      const refusalOf = new Map(
+        existing.entries.flatMap((e) =>
+          e.lastRefusal ? [[e.slId, { label: e.label, refusal: e.lastRefusal }] as const] : [],
+        ),
+      );
+      const entries: ReviewEntry[] = args.entries.map((e) => {
+        const kept = refusalOf.get(e.slId);
+        return kept && kept.label === e.label ? { ...e, lastRefusal: kept.refusal } : e;
+      });
       await ctx.db.replace(existing._id, {
         yearId: args.yearId,
         manufacturerId: args.manufacturerId,
-        entries: args.entries,
+        entries,
         ...(truncated !== undefined ? { rootsTruncated: truncated } : {}),
         classifiedAt: Date.now(),
         // A half-finished save only survives a re-classification that left
@@ -406,6 +549,23 @@ export const getSlSetReview = query({
           slId: v.string(),
           label: v.string(),
           suggestedOfSetId: v.optional(v.id("selectorOptions")),
+          /**
+           * NEO-325 — what an own-set save names this line when the operator
+           * gives no name (`candidateDefaultName`): the field's prefill.
+           */
+          defaultName: v.string(),
+          /**
+           * NEO-325 — two or more distinct SportLots ids share this label in
+           * the brand's list (`routeSlSets`). Show the id (D2); the operator
+           * names the line. Absent = not a twin.
+           */
+          twin: v.optional(v.boolean()),
+          /**
+           * NEO-325 — why the last save that reached this line refused it
+           * for its name (stored on the entry, so a reopened review still
+           * says why). Absent = never refused, or filed since.
+           */
+          lastRefusal: v.optional(lastRefusalValidator),
         }),
       ),
       ofSets: v.array(v.object({ _id: v.id("selectorOptions"), value: v.string() })),
@@ -435,6 +595,9 @@ export const getSlSetReview = query({
         slId: entry.slId,
         label: entry.label,
         ...(suggested ? { suggestedOfSetId: suggested._id } : {}),
+        defaultName: full,
+        ...(entry.twin === true ? { twin: true } : {}),
+        ...(entry.lastRefusal ? { lastRefusal: entry.lastRefusal } : {}),
       };
     });
     return {
@@ -510,7 +673,7 @@ export const readReviewForSave = internalQuery({
     return {
       yearId: brand.parentId,
       isBrandUnknown: brand.metadata?.isBrandUnknown === true,
-      entries: doc?.entries ?? [],
+      entries: (doc?.entries ?? []).map(bareEntry),
     };
   },
 });
@@ -531,17 +694,43 @@ export const validateReviewTypes = internalQuery({
   },
 });
 
-/** Marks a save as started (the pill's "N left — save again" state). */
+/**
+ * Marks a save as started (the pill's "N left — save again" state) and
+ * returns the stamp, which the save hands back to `markSaveFinished`.
+ */
 export const markSaveStarted = internalMutation({
   args: {
     yearId: v.id("selectorOptions"),
     manufacturerId: v.id("selectorOptions"),
   },
-  returns: v.null(),
+  returns: v.union(v.null(), v.number()),
   handler: async (ctx, args) => {
     const doc = await reviewDocFor(ctx, args.yearId, args.manufacturerId);
-    if (doc) await ctx.db.patch(doc._id, { saveStartedAt: Date.now() });
-    return null;
+    if (!doc) return null;
+    const startedAt = Date.now();
+    await ctx.db.patch(doc._id, { saveStartedAt: startedAt });
+    return startedAt;
+  },
+});
+
+/**
+ * NEO-325 — a save that ran to the end (not `incomplete`) clears its
+ * `saveStartedAt`, so "partial" means only a save that stopped part-way, not
+ * one that left name-refused or undecided lines. Cleared only when the doc
+ * still carries THIS save's stamp: a save started since keeps its own mark.
+ */
+export const markSaveFinished = internalMutation({
+  args: {
+    yearId: v.id("selectorOptions"),
+    manufacturerId: v.id("selectorOptions"),
+    startedAt: v.number(),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const doc = await reviewDocFor(ctx, args.yearId, args.manufacturerId);
+    if (!doc || doc.saveStartedAt !== args.startedAt) return false;
+    await ctx.db.patch(doc._id, { saveStartedAt: undefined });
+    return true;
   },
 });
 
@@ -555,7 +744,7 @@ export const removeReviewEntries = internalMutation({
   returns: v.object({ remaining: v.number() }),
   handler: async (ctx, args) => {
     const doc = await reviewDocFor(ctx, args.yearId, args.manufacturerId);
-    const remaining = await removeFromDoc(ctx, doc, new Set(args.slIds));
+    const remaining = await settleInDoc(ctx, doc, new Set(args.slIds));
     return { remaining };
   },
 });
@@ -564,10 +753,11 @@ export const removeReviewEntries = internalMutation({
  * Phase 1: file ≤ `REVIEW_CHUNK_SIZE` entries as their own sets under
  * `targetManufacturerId` (the review's brand, or — for the Unknown brand — a
  * known brand the name belongs to, NEO-294), and remove them from the review
- * in the same transaction. A clash is decided, not retried: it is counted
- * and the entry leaves the review (the next sync offers it again if it is
- * still SportLots-only). A truncated year index files nothing and removes
- * nothing.
+ * in the same transaction. NEO-325 — a line refused for its NAME (a set by
+ * that name under the brand or elsewhere in the year, or no valid name) is
+ * counted, reported in `refused` and KEPT in the review for the operator to
+ * rename; only filed and already-linked lines leave. A truncated year index
+ * files nothing and removes nothing.
  */
 export const saveSetsChunk = internalMutation({
   args: {
@@ -575,6 +765,8 @@ export const saveSetsChunk = internalMutation({
     reviewManufacturerId: v.id("selectorOptions"),
     targetManufacturerId: v.id("selectorOptions"),
     slIds: v.array(v.string()),
+    /** NEO-325 — the operator's name per line; absent = the default name. */
+    names: namesValidator,
     createdByUserId: v.string(),
   },
   returns: v.object({
@@ -586,6 +778,8 @@ export const saveSetsChunk = internalMutation({
     alreadyLinked: v.number(),
     indexTruncated: v.boolean(),
     remaining: v.number(),
+    /** NEO-325 — the lines refused for their name; still in the review. */
+    refused: v.array(refusedLineValidator),
   }),
   handler: async (ctx, args) => {
     if (args.slIds.length > REVIEW_CHUNK_SIZE) {
@@ -602,8 +796,10 @@ export const saveSetsChunk = internalMutation({
       alreadyLinked: 0,
       indexTruncated: false,
       remaining: doc?.entries.length ?? 0,
+      refused: [] as RefusedLine[],
     };
     if (entries.length === 0) return nothing;
+    const names = namesById(args.names);
     // Already linked under the review's brand, or under the known brand the
     // Unknown review files it to — decided here, in this transaction.
     const linked = await linkedUnderBrands(ctx, [
@@ -616,14 +812,42 @@ export const saveSetsChunk = internalMutation({
       toCreate.length > 0
         ? await createSetsFromSlRootsImpl(ctx, {
             manufacturerId: args.targetManufacturerId,
-            roots: toCreate.map((e) => ({ id: e.slId, label: e.label })),
+            roots: toCreate.map((e) => {
+              const name = names.get(e.slId);
+              return { id: e.slId, label: e.label, ...(name ? { name } : {}) };
+            }),
             createdByUserId: args.createdByUserId,
           })
-        : { ...nothing, notInReview: 0 };
+        : {
+            created: 0,
+            createdIds: [] as string[],
+            clashedAtTarget: 0,
+            existsElsewhere: 0,
+            invalid: 0,
+            refused: [],
+            indexTruncated: false,
+          };
     if (written.indexTruncated) {
-      return { ...written, notInReview, alreadyLinked: 0, remaining: nothing.remaining };
+      return { ...nothing, notInReview, indexTruncated: true };
     }
-    const remaining = await removeFromDoc(ctx, doc, new Set(entries.map((e) => e.slId)));
+    const labelOf = new Map(entries.map((e) => [e.slId, e.label] as const));
+    const refused: RefusedLine[] = written.refused.map((r) => ({
+      slId: r.id,
+      label: labelOf.get(r.id) ?? "",
+      name: r.name,
+      reason: r.reason,
+      target: "set",
+      ...(r.clashWith ? { clashWith: r.clashWith } : {}),
+      ...(r.detail !== undefined ? { detail: r.detail } : {}),
+    }));
+    // Only what was filed, or is linked already, leaves the review.
+    const refusedIds = new Set(refused.map((r) => r.slId));
+    const remaining = await settleInDoc(
+      ctx,
+      doc,
+      new Set(entries.map((e) => e.slId).filter((id) => !refusedIds.has(id))),
+      refused,
+    );
     return {
       created: written.created,
       clashedAtTarget: written.clashedAtTarget,
@@ -633,6 +857,7 @@ export const saveSetsChunk = internalMutation({
       notInReview,
       alreadyLinked,
       remaining,
+      refused,
     };
   },
 });
@@ -646,9 +871,12 @@ export const saveSetsChunk = internalMutation({
  * (`initialSlots({sportlots})` — no BSC slot is written or read), the flags
  * the type's NB role gives it (`derivedVariantFlags`), the type's features
  * copied down plus its own level's, the type's teams. A sibling under the
- * type that already folds to the name, or already holds the SportLots id, is
- * SKIPPED and counted — never merged by name. The type is re-validated by id
- * here, inside the write.
+ * type that already holds the SportLots id is SKIPPED and counted (the line
+ * leaves the review: it is linked). A sibling that already folds to the name,
+ * or a name no row can carry, is never merged by name: NEO-325 — the line is
+ * reported in `refused` and KEPT in the review for the operator to rename.
+ * The operator's per-line `name` replaces `rowNameUnderSet`. The type is
+ * re-validated by id here, inside the write.
  */
 export const createSlRowsUnderVariantType = internalMutation({
   args: {
@@ -656,6 +884,8 @@ export const createSlRowsUnderVariantType = internalMutation({
     manufacturerId: v.id("selectorOptions"),
     typeId: v.id("selectorOptions"),
     slIds: v.array(v.string()),
+    /** NEO-325 — the operator's name per line; absent = `rowNameUnderSet`. */
+    names: namesValidator,
     createdByUserId: v.string(),
   },
   returns: v.object({
@@ -666,6 +896,8 @@ export const createSlRowsUnderVariantType = internalMutation({
     invalid: v.number(),
     notInReview: v.number(),
     remaining: v.number(),
+    /** NEO-325 — the lines refused for their name; still in the review. */
+    refused: v.array(refusedLineValidator),
   }),
   handler: async (ctx, args) => {
     if (args.slIds.length > REVIEW_CHUNK_SIZE) {
@@ -699,7 +931,13 @@ export const createSlRowsUnderVariantType = internalMutation({
           `so a new one can't be checked against them. Nothing more was saved.`,
       );
     }
-    const siblingKeys = new Set(siblings.map((s) => selectorValueKey(s.value)));
+    // Key → the sibling holding it, so a refusal can name the row (NEO-325).
+    const siblingKeys = new Map<string, { _id: RowId; value: string }>();
+    for (const sib of siblings) {
+      const key = selectorValueKey(sib.value);
+      if (!siblingKeys.has(key)) siblingKeys.set(key, { _id: sib._id, value: sib.value });
+    }
+    const names = namesById(args.names);
     // Every id already linked anywhere under the brand, read in THIS
     // transaction (the type's own siblings are part of that walk).
     const heldIds = await linkedUnderBrands(ctx, [brand._id]);
@@ -713,22 +951,41 @@ export const createSlRowsUnderVariantType = internalMutation({
     let nameTaken = 0;
     let alreadyLinked = 0;
     let invalid = 0;
+    const refused: RefusedLine[] = [];
     for (const entry of entries) {
       if (heldIds.has(entry.slId)) {
         alreadyLinked++;
         continue;
       }
-      const named = checkCustomSelectorValue(
-        "insert",
-        rowNameUnderSet(entry.label, prefix, set.value),
-      );
+      const tried =
+        names.get(entry.slId) ?? rowNameUnderSet(entry.label, prefix, set.value);
+      const named = checkCustomSelectorValue("insert", tried);
       if (!named.ok) {
         invalid++;
+        refused.push({
+          slId: entry.slId,
+          label: entry.label,
+          name: tried,
+          reason: "invalid",
+          target: "variantType",
+          variantTypeId: type._id,
+          detail: named.reason,
+        });
         continue;
       }
       const key = selectorValueKey(named.value);
-      if (siblingKeys.has(key)) {
+      const holder = siblingKeys.get(key);
+      if (holder) {
         nameTaken++;
+        refused.push({
+          slId: entry.slId,
+          label: entry.label,
+          name: named.value,
+          reason: "nameTaken",
+          target: "variantType",
+          variantTypeId: type._id,
+          clashWith: holder,
+        });
         continue;
       }
       const slots = initialSlots({
@@ -752,17 +1009,20 @@ export const createSlRowsUnderVariantType = internalMutation({
         ...(teamIds ? { teamIds } : {}),
         lastUpdated: now,
       });
-      siblingKeys.add(key);
+      siblingKeys.set(key, { _id: id, value: named.value });
       heldIds.add(entry.slId);
       newIds.push(id);
     }
     if (newIds.length > 0) {
       await ctx.db.patch(type._id, { children: unionChildren(type.children, newIds) });
     }
-    const remaining = await removeFromDoc(
+    // Only what was filed, or is linked already, leaves the review.
+    const refusedIds = new Set(refused.map((r) => r.slId));
+    const remaining = await settleInDoc(
       ctx,
       doc,
-      new Set(entries.map((e) => e.slId)),
+      new Set(entries.map((e) => e.slId).filter((id) => !refusedIds.has(id))),
+      refused,
     );
     console.log(
       JSON.stringify({
@@ -785,6 +1045,7 @@ export const createSlRowsUnderVariantType = internalMutation({
       invalid,
       notInReview,
       remaining,
+      refused,
     };
   },
 });
@@ -796,7 +1057,17 @@ export const createSlRowsUnderVariantType = internalMutation({
 const decisionValidator = v.object({
   slId: v.string(),
   variantTypeId: v.optional(v.id("selectorOptions")),
+  /**
+   * NEO-325 — the operator's name for this line. Own set: the set's name
+   * (replaces `candidateDefaultName`, so no brand prefix is added). Under a
+   * variant type: the row's name (replaces `rowNameUnderSet`). Blank or
+   * absent = the default. Validated by the per-level rule in the write.
+   */
+  name: v.optional(v.string()),
 });
+
+/** Bound on one operator name sent with a decision (a hard arg guard). */
+export const MAX_DECISION_NAME_LENGTH = 500;
 
 const applyResultValidator = v.object({
   /** Entries filed as their own set. */
@@ -823,6 +1094,13 @@ const applyResultValidator = v.object({
   }),
   /** Brands minted from the known list for Unknown's sets (NEO-294). */
   knownBrandsAdded: v.number(),
+  /**
+   * NEO-325 — every line refused for its NAME, with why. These lines are
+   * STILL IN THE REVIEW (counted in `remaining` and, by reason, in
+   * `skippedByReason`); the operator gives each a name and saves again.
+   * At most `MAX_REVIEW_DECISIONS` (one per decision).
+   */
+  refused: v.array(refusedLineValidator),
   /** Entries still in the review after this save. */
   remaining: v.number(),
   /**
@@ -845,13 +1123,14 @@ export type ApplySlSetReviewResult = {
     invalid: number;
   };
   knownBrandsAdded: number;
+  refused: RefusedLine[];
   remaining: number;
   incomplete: boolean;
 };
 
 export type ApplySlSetReviewArgs = {
   manufacturerId: RowId;
-  decisions: Array<{ slId: string; variantTypeId?: RowId }>;
+  decisions: Array<{ slId: string; variantTypeId?: RowId; name?: string }>;
 };
 
 /**
@@ -868,6 +1147,9 @@ export async function applySlSetReviewImpl(
     throw new ConvexError(
       `Save at most ${MAX_REVIEW_DECISIONS} SportLots sets at a time.`,
     );
+  }
+  if (args.decisions.some((d) => (d.name?.length ?? 0) > MAX_DECISION_NAME_LENGTH)) {
+    throw new ConvexError("A name is too long. Shorten it and save again.");
   }
   const review = await ctx.runQuery(internal.slSetReview.readReviewForSave, {
     manufacturerId: args.manufacturerId,
@@ -889,6 +1171,7 @@ export async function applySlSetReviewImpl(
       invalid: 0,
     },
     knownBrandsAdded: 0,
+    refused: [],
     remaining: review.entries.length,
     incomplete: false,
   };
@@ -901,7 +1184,12 @@ export async function applySlSetReviewImpl(
   // is skipped and counted, never written.
   const inDoc = new Map(review.entries.map((e) => [e.slId, e] as const));
   const seen = new Set<string>();
-  const decisions: Array<{ slId: string; label: string; variantTypeId?: RowId }> = [];
+  const decisions: Array<{
+    slId: string;
+    label: string;
+    variantTypeId?: RowId;
+    name?: string;
+  }> = [];
   for (const d of args.decisions) {
     if (seen.has(d.slId)) continue;
     seen.add(d.slId);
@@ -910,8 +1198,25 @@ export async function applySlSetReviewImpl(
       skip("notInReview", 1);
       continue;
     }
-    decisions.push({ ...entry, ...(d.variantTypeId ? { variantTypeId: d.variantTypeId } : {}) });
+    const name = d.name?.trim();
+    decisions.push({
+      slId: entry.slId,
+      label: entry.label,
+      ...(d.variantTypeId ? { variantTypeId: d.variantTypeId } : {}),
+      ...(name ? { name } : {}),
+    });
   }
+  // The operator's names, by id, sent with each chunk that files them.
+  const nameOf = new Map(
+    decisions.flatMap((d) => (d.name ? [[d.slId, d.name] as const] : [])),
+  );
+  const namesFor = (slIds: readonly string[]) => {
+    const names = slIds.flatMap((slId) => {
+      const name = nameOf.get(slId);
+      return name ? [{ slId, name }] : [];
+    });
+    return names.length > 0 ? { names } : {};
+  };
 
   // Every named type validated by id before anything is written.
   const typeIds = [...new Set(decisions.flatMap((d) => (d.variantTypeId ? [d.variantTypeId] : [])))];
@@ -937,7 +1242,7 @@ export async function applySlSetReviewImpl(
   const coveredNow = decisions.filter((d) => coveredIds.has(d.slId));
   const toFile = decisions.filter((d) => !coveredIds.has(d.slId));
 
-  await ctx.runMutation(internal.slSetReview.markSaveStarted, {
+  const startedAt = await ctx.runMutation(internal.slSetReview.markSaveStarted, {
     yearId,
     manufacturerId: args.manufacturerId,
   });
@@ -997,6 +1302,7 @@ export async function applySlSetReviewImpl(
           reviewManufacturerId: args.manufacturerId,
           targetManufacturerId: group.target,
           slIds: chunk,
+          ...namesFor(chunk),
           createdByUserId: adminUserId,
         });
         result.remaining = written.remaining;
@@ -1012,6 +1318,7 @@ export async function applySlSetReviewImpl(
         skip("existsElsewhere", written.existsElsewhere);
         skip("invalid", written.invalid);
         skip("notInReview", written.notInReview);
+        result.refused.push(...written.refused);
       }
     }
 
@@ -1033,6 +1340,7 @@ export async function applySlSetReviewImpl(
           invalid: number;
           notInReview: number;
           remaining: number;
+          refused: RefusedLine[];
         } = await ctx.runMutation(
           internal.slSetReview.createSlRowsUnderVariantType,
           {
@@ -1040,6 +1348,7 @@ export async function applySlSetReviewImpl(
             manufacturerId: args.manufacturerId,
             typeId,
             slIds: chunk,
+            ...namesFor(chunk),
             createdByUserId: adminUserId,
           },
         );
@@ -1049,6 +1358,7 @@ export async function applySlSetReviewImpl(
         skip("alreadyLinked", written.alreadyLinked);
         skip("invalid", written.invalid);
         skip("notInReview", written.notInReview);
+        result.refused.push(...written.refused);
       }
     }
   } catch (error) {
@@ -1073,6 +1383,28 @@ export async function applySlSetReviewImpl(
     result.remaining = after?.entries.length ?? result.remaining;
   }
 
+  // NEO-325 — ran to the end: no longer a partial save, whatever it left.
+  // A failure here costs only the pill's wording ("save again" is harmless),
+  // so it is logged, never thrown over a save that committed.
+  if (!result.incomplete && startedAt !== null) {
+    try {
+      await ctx.runMutation(internal.slSetReview.markSaveFinished, {
+        yearId,
+        manufacturerId: args.manufacturerId,
+        startedAt,
+      });
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          msg: "sl_review_mark_finished_failed",
+          adminUserId,
+          manufacturerId: args.manufacturerId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  }
+
   console.log(
     JSON.stringify({
       msg: "sl_review_saved",
@@ -1082,6 +1414,7 @@ export async function applySlSetReviewImpl(
       sets: result.sets,
       underType: result.underType,
       skipped: result.skipped,
+      refused: result.refused.length,
       knownBrandsAdded: result.knownBrandsAdded,
       remaining: result.remaining,
       incomplete: result.incomplete,
@@ -1093,8 +1426,10 @@ export async function applySlSetReviewImpl(
 /**
  * Save the operator's decisions for one brand's review. Each decision is
  * `{slId}` (its own set, the default) or `{slId, variantTypeId}` (a row under
- * that variant type of one of the brand's BSC-linked sets). Admin only; at
- * most `MAX_REVIEW_DECISIONS`. Additive: nothing is renamed or deleted.
+ * that variant type of one of the brand's BSC-linked sets), either with an
+ * optional operator `name` (NEO-325). A line refused for its name stays in
+ * the review and comes back in `refused`. Admin only; at most
+ * `MAX_REVIEW_DECISIONS`. Additive: nothing is renamed or deleted.
  */
 export const applySlSetReview = action({
   args: {

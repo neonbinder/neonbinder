@@ -1,6 +1,6 @@
 ---
 name: narrowing-convex-validator-is-a-runtime-break
-description: Narrowing a Convex `v.object` args validator (e.g. metadata to one key) passes tsc but fails at runtime with "Unexpected field" wherever the FE forwards a stored doc sub-object whole; grep the FE forwards before narrowing
+description: Narrowing a Convex `v.object` validator, or WIDENING a stored sub-object, passes tsc but fails at runtime with "Unexpected field" wherever a stored sub-object is forwarded whole (FE args, or a query/returns that echoes doc fields)
 metadata:
   type: reference
 ---
@@ -23,3 +23,11 @@ validator accepted and go red for the right reason.
 forward of that arg and name each site in the report so the FE builder
 projects it; a red `writeOnceFeatureSnapshots`-style test on the same
 field is expected, not a regression.
+
+**The reverse direction bites too.** Adding an optional field to a stored
+array element (schema) breaks every `returns` validator that forwards that
+array whole with the OLD element validator (e.g. an internal read returning
+`doc.entries` under a slimmer `entryValidator`), and every args validator a
+caller feeds those elements back into. tsc stays green (`doc.entries` is
+assignable). Project at the read (`entries.map(bare)`) and pin it with a
+test that stores the new field and then runs the path that reads it back.

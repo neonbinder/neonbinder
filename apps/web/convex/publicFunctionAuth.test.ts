@@ -1617,11 +1617,28 @@ describe("NEO-306: the SportLots-only review is admin-gated", () => {
     ["createSlRowsUnderVariantType", "internalMutation"],
     ["removeReviewEntries", "internalMutation"],
     ["markSaveStarted", "internalMutation"],
+    ["markSaveFinished", "internalMutation"],
     ["readReviewForSave", "internalQuery"],
     ["validateReviewTypes", "internalQuery"],
   ])("slSetReview.ts :: %s is declared %s (they trust their arguments)", (fn, keyword) => {
     const src = readFileSync(join(__dirname, "slSetReview.ts"), "utf8");
     expect(src).toContain(`export const ${fn} = ${keyword}({`);
+  });
+});
+
+/**
+ * NEO-325 (security re-audit) — two internal queries that trust their
+ * arguments. `heldIdsForTwinNotice` reads rows by caller-supplied ids and
+ * `baseSlIdsBesideVariantType` reads a variant type's Base ids; neither runs
+ * `requireAdmin`, so either exported as a public `query` would leak slot ids.
+ */
+describe("NEO-325 internal queries stay internal", () => {
+  test.each([
+    ["selectorOptions.ts", "heldIdsForTwinNotice"],
+    ["setReconciliation.ts", "baseSlIdsBesideVariantType"],
+  ])("%s :: %s is declared internalQuery (it trusts its arguments)", (file, fn) => {
+    const src = readFileSync(join(__dirname, file), "utf8");
+    expect(src).toContain(`export const ${fn} = internalQuery({`);
   });
 });
 
