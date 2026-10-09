@@ -19,12 +19,19 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
-MAX_TOKENS = 512
-# Structured extraction benefits from low temperature — cuts LLM drift on
-# ambiguous fields (e.g. whether the team appears on a given card back) and
-# keeps integration-test assertions stable across reruns.
-TEMPERATURE = 0.0
+# NEO-328: Haiku 5.5 read the card number on 106/106 labelled 2014 Score
+# backs where Haiku 4.5 managed 82/106 (it invented digits and read jersey
+# numbers off fronts), for ~+0.1 s and far fewer tokens.
+DEFAULT_MODEL = "claude-haiku-5-5"
+# Haiku 5.5 thinks by default (adaptive), and thinking counts toward
+# `max_tokens`. At effort low the eval averaged ~44 output tokens per card, so
+# this is a runaway ceiling, not a budget: billing is on tokens used, and a cap
+# near the old 512 would risk a `max_tokens` stop before any text block.
+MAX_TOKENS = 4096
+# Haiku 5.5 rejects non-default sampling parameters (`temperature` is a 400),
+# so none is sent. Effort is set explicitly instead of taking the default
+# (medium): low read every labelled back correctly and was stable across runs.
+EFFORT = "low"
 
 # Anthropic rejects base64 image payloads over 5 MB. Base64 expands raw bytes
 # by ~33%, so we target a raw-byte ceiling of ~3.5 MB with comfortable margin.
@@ -256,6 +263,26 @@ def _nullable_str(value: object) -> str | None:
     return text or None
 
 
+def response_text(response: object) -> str:
+    """The text of the first `text` block in a Messages response, or "".
+
+    Shared with the haiku_bbox crop strategy. Haiku 5.5 thinks by default, so
+    `content` can open with `thinking` blocks (their text empty unless asked
+    for); `content[0]` is no longer the answer. A response with no text block
+    at all (`stop_reason` "refusal", or "max_tokens" spent on thinking) yields
+    "" and is logged, so each caller's existing unparseable-response path
+    handles it rather than an IndexError or AttributeError.
+    """
+    for block in getattr(response, "content", None) or []:
+        if getattr(block, "type", None) == "text":
+            return getattr(block, "text", "") or ""
+    logger.warning(
+        "anthropic: response has no text block (stop_reason=%s)",
+        getattr(response, "stop_reason", None),
+    )
+    return ""
+
+
 def _call_model(
     client: anthropic.Anthropic,
     *,
@@ -267,10 +294,7 @@ def _call_model(
     response = client.messages.create(
         model=model,
         max_tokens=MAX_TOKENS,
-        # anthropic>=1.0 dropped `temperature` from the create() signature
-        # (a direct kwarg is a TypeError). The API still honours it for this
-        # model, and the SDK merges `extra_body` into the request JSON as-is.
-        extra_body={"temperature": TEMPERATURE},
+        output_config={"effort": EFFORT},
         messages=[
             {
                 "role": "user",
@@ -288,10 +312,7 @@ def _call_model(
             }
         ],
     )
-    if not response.content:
-        return ""
-    block = response.content[0]
-    return getattr(block, "text", "") or ""
+    return response_text(response)
 
 
 def classify_card(
@@ -304,8 +325,9 @@ def classify_card(
     """Classify a card image.
 
     Makes up to two Anthropic calls: an initial attempt, and one retry if the
-    first response fails to parse as JSON. Raises `ClassifyError` if both
-    attempts fail. `prompt` overrides `PROMPT` and exists for
+    first response fails to parse as JSON (including a response with no text
+    block, e.g. a refusal). Raises `ClassifyError` if both attempts fail.
+    `prompt` overrides `PROMPT` and exists for
     `scripts/eval_classify.py`, which scores prompt wordings side by side;
     production always uses the default.
     """

@@ -27,11 +27,13 @@ from app.cropper.haiku_bbox import (
     _strip_code_fences,
     haiku_bbox_crop,
 )
-from tests.unit._fake_anthropic import real_client
+from tests.unit._fake_anthropic import real_client, refusal, thinking_then_text
 
 
 def _response_with_text(text: str) -> SimpleNamespace:
-    return SimpleNamespace(content=[SimpleNamespace(text=text)])
+    return SimpleNamespace(
+        content=[SimpleNamespace(type="text", text=text)], stop_reason="end_turn"
+    )
 
 
 def _empty_response() -> SimpleNamespace:
@@ -190,10 +192,47 @@ class TestHaikuBboxCrop:
 
         call = client.messages.create.call_args
         assert call.kwargs["model"] == "claude-test-model"
-        # anthropic>=1.0 rejects `temperature=` as a direct kwarg; it rides in
-        # extra_body. A direct kwarg must not come back.
-        assert call.kwargs["extra_body"] == {"temperature": 0.0}
+        # Haiku 5.5 400s on any non-default sampling param, so temperature
+        # must not be sent by any route; effort is set explicitly.
+        assert call.kwargs["output_config"] == {"effort": "low"}
         assert "temperature" not in call.kwargs
+        assert "temperature" not in (call.kwargs.get("extra_body") or {})
+
+    def test_default_model_is_haiku_5_5(self):
+        assert DEFAULT_MODEL == "claude-haiku-5-5"
+
+    def test_box_after_a_thinking_block_is_read(self):
+        image = _jpeg_bytes(size=(1200, 1600))
+        response = SimpleNamespace(
+            content=[
+                SimpleNamespace(type="thinking", thinking="", signature="s"),
+                SimpleNamespace(
+                    type="text", text=json.dumps({"x": 100, "y": 200, "w": 800, "h": 1100})
+                ),
+            ],
+            stop_reason="end_turn",
+        )
+        client = _mock_client(response)
+
+        result = haiku_bbox_crop(image, client=client)
+
+        assert result is not None
+        with Image.open(io.BytesIO(result)) as out:
+            assert abs(out.size[0] - 800) <= 2
+
+    def test_refusal_returns_none(self):
+        client = _mock_client(SimpleNamespace(content=[], stop_reason="refusal"))
+
+        assert haiku_bbox_crop(_jpeg_bytes(), client=client) is None
+
+    def test_max_tokens_stop_with_only_thinking_returns_none(self):
+        thinking_only = SimpleNamespace(
+            content=[SimpleNamespace(type="thinking", thinking="", signature="s")],
+            stop_reason="max_tokens",
+        )
+        client = _mock_client(thinking_only)
+
+        assert haiku_bbox_crop(_jpeg_bytes(), client=client) is None
 
     def test_unreadable_image_returns_none(self):
         client = _mock_client(_response_with_text(json.dumps({"x": 0, "y": 0, "w": 10, "h": 10})))
@@ -224,7 +263,7 @@ class TestHaikuBboxWireRequest:
         assert transport.bodies[0] == {
             "model": DEFAULT_MODEL,
             "max_tokens": MAX_TOKENS,
-            "temperature": 0.0,
+            "output_config": {"effort": "low"},
             "messages": [
                 {
                     "role": "user",
@@ -243,6 +282,22 @@ class TestHaikuBboxWireRequest:
             ],
         }
 
+    def test_thinking_block_before_box_over_the_wire(self):
+        image = _jpeg_bytes(size=(1200, 1600))
+        box = json.dumps({"x": 100, "y": 200, "w": 800, "h": 1100})
+        client, transport = real_client(thinking_then_text(box))
+
+        result = haiku_bbox_crop(image, client=client)
+
+        assert len(transport.requests) == 1
+        assert result is not None
+
+    def test_refusal_over_the_wire_returns_none(self):
+        client, transport = real_client(refusal())
+
+        assert haiku_bbox_crop(_jpeg_bytes(), client=client) is None
+        assert len(transport.requests) == 1
+
 
 class TestSharedAnthropicClient:
     """NEO-315 D2: haiku_bbox uses the same process-wide client as classify."""
@@ -252,7 +307,7 @@ class TestSharedAnthropicClient:
 
         shared = MagicMock()
         shared.messages.create.return_value = SimpleNamespace(
-            content=[SimpleNamespace(text='{"x": 0, "y": 0, "w": 0, "h": 0}')]
+            content=[SimpleNamespace(type="text", text='{"x": 0, "y": 0, "w": 0, "h": 0}')]
         )
         monkeypatch.setattr(haiku_bbox, "get_anthropic_client", lambda: shared)
         buf = io.BytesIO()

@@ -27,13 +27,15 @@ from io import BytesIO
 import anthropic
 from PIL import Image
 
-from app.classify import _prepare_for_anthropic, get_anthropic_client
+from app.classify import EFFORT, _prepare_for_anthropic, get_anthropic_client, response_text
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
-MAX_TOKENS = 200
-TEMPERATURE = 0.0
+DEFAULT_MODEL = "claude-haiku-5-5"
+# Haiku 5.5 thinks by default and thinking counts toward `max_tokens`; the
+# old 200 could be spent before the JSON box was written. A runaway ceiling,
+# not a budget (billing is on tokens used). Same reasoning as classify.
+MAX_TOKENS = 4096
 
 PROMPT = """You are looking at a photo that contains a single trading card.
 
@@ -91,10 +93,8 @@ def _call_haiku(
     response = client.messages.create(
         model=model,
         max_tokens=MAX_TOKENS,
-        # anthropic>=1.0 dropped `temperature` from the create() signature
-        # (a direct kwarg is a TypeError). The API still honours it for this
-        # model, and the SDK merges `extra_body` into the request JSON as-is.
-        extra_body={"temperature": TEMPERATURE},
+        # No `temperature`: Haiku 5.5 rejects non-default sampling params.
+        output_config={"effort": EFFORT},
         messages=[
             {
                 "role": "user",
@@ -112,10 +112,9 @@ def _call_haiku(
             }
         ],
     )
-    if not response.content:
-        return ""
-    block = response.content[0]
-    return getattr(block, "text", "") or ""
+    # First `text` block, skipping thinking; "" on a refusal or a max_tokens
+    # stop, which `_parse_bbox` turns into None like any unparseable reply.
+    return response_text(response)
 
 
 def _rescale_bbox(
