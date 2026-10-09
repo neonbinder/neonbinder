@@ -165,9 +165,19 @@ export const BASE_MATCH_COPY = {
    */
   liveStopped: (side: BaseMatchSide) =>
     `Stopped checking the ${MARKETPLACE_LABEL[side]} sets against the Base: ${MARKETPLACE_LABEL[side]} needs you to sign in. Sign in, then reopen this to check them.`,
+  /**
+   * The column's visible line once its check has stopped for want of a
+   * sign-in (the live line above says it to a screen reader; this is for
+   * everyone else). Worded apart from `liveStopped` so the page never
+   * carries one sentence twice.
+   */
+  stoppedNotice: (side: BaseMatchSide) =>
+    `Stopped checking against the Base: ${MARKETPLACE_LABEL[side]} needs you to sign in. Sign in, then reopen this to check the rest.`,
   /** Row reasons. Never names a marketplace as why a check failed. */
   matched: "Matches the Base",
   unverifiable: "Couldn't check this one against the Base. Try again later.",
+  /** A row settled by a sign-in stop: asking again later will not help. */
+  unverifiableSignIn: "Couldn't check this one against the Base: sign in, then reopen this.",
   nothingToCompare: "Couldn't check this one against the Base: no card to compare.",
   onlyVariations: "only variations on its first page",
   mismatch: (observed: string, base: string) =>

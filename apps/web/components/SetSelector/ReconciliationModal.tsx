@@ -2414,6 +2414,16 @@ function ReconciliationDialog({
             />
           </div>
         )}
+        {checksOn && probe.stopped[probeSide] && (
+          // NEO-325 (security F1) — the column's check stopped because the
+          // marketplace answered a whole batch "signed out". The dialog's
+          // live line says it to a screen reader; this says it to everyone,
+          // in the dialog's amber "a person should look at this" tone (the
+          // twin notice). Not itself a live region: said once, up there.
+          <p className="mb-2 text-xs text-amber-300">
+            {BASE_MATCH_COPY.stoppedNotice(probeSide)}
+          </p>
+        )}
         <FilterInput
           value={isBsc ? bscFilter : slFilter}
           onChange={isBsc ? setBscFilter : setSlFilter}

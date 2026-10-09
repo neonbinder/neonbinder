@@ -112,6 +112,8 @@ export type BaseMatchProbe = {
   checks: ReadonlyMap<string, RowCheck>;
   /** The dialog's live line for the check; "" until there is something to say. */
   announcement: string;
+  /** Sides whose check stopped for want of a sign-in (security F1). */
+  stopped: Readonly<Record<BaseMatchSide, boolean>>;
 };
 
 export const checkKey = (side: BaseMatchSide, id: string) => `${side}:${id}`;
@@ -156,6 +158,12 @@ function snapshotOf(entries: Map<string, Entry>): Map<string, RowCheck> {
   }
   return out;
 }
+
+/** How a set settled by a sign-in stop reads: never a mismatch. */
+const SIGN_IN_JUDGEMENT: BaseJudgement = {
+  verdict: "unverifiable",
+  reason: BASE_MATCH_COPY.unverifiableSignIn,
+};
 
 /** The failure kinds that mean "sign in again" — asking more cannot help. */
 const SIGN_IN_KINDS: ReadonlySet<string> = new Set(["signed_out", "no_sign_in"]);
@@ -283,6 +291,9 @@ export function useBaseMatchProbe({
     () => new Map(),
   );
   const [announcement, setAnnouncement] = useState("");
+  const [stopped, setStopped] = useState<Record<BaseMatchSide, boolean>>(
+    NOT_STOPPED,
+  );
 
   const entriesRef = useRef(new Map<string, Entry>());
   const seqRef = useRef(0);
@@ -342,7 +353,7 @@ export function useBaseMatchProbe({
           // joining its scope now settles as "couldn't be checked" at once.
           if (stoppedRef.current[side] && sig) {
             entry.status = "done";
-            entry.judgement = judgeAgainstBase(sig, side, { status: "failed" });
+            entry.judgement = SIGN_IN_JUDGEMENT;
           }
           entriesRef.current.set(key, entry);
         }
@@ -381,15 +392,19 @@ export function useBaseMatchProbe({
     e.judgement = judgement;
   }, []);
 
-  /** Stop asking `side`: settle everything it still has queued as unverifiable. */
+  /**
+   * Stop asking `side`: the batch that came back signed out, and everything
+   * the side still has queued, settle as "couldn't be checked" with the
+   * sign-in reason (asking again later would not help).
+   */
   const stopSide = useCallback(
-    (side: BaseMatchSide, sig: BaseSignature) => {
+    (side: BaseMatchSide, batch: readonly Entry[]) => {
       stoppedRef.current[side] = true;
+      for (const e of batch) finish(e, SIGN_IN_JUDGEMENT);
       for (const e of entriesRef.current.values()) {
-        if (e.side === side && e.status === "queued") {
-          finish(e, judgeAgainstBase(sig, side, { status: "failed" }));
-        }
+        if (e.side === side && e.status === "queued") finish(e, SIGN_IN_JUDGEMENT);
       }
+      setStopped({ ...stoppedRef.current });
     },
     [finish],
   );
@@ -438,7 +453,7 @@ export function useBaseMatchProbe({
               );
             }
           }
-          if (signedOut) stopSide(side, sig);
+          if (signedOut) stopSide(side, batch);
           return;
         }
         if (stage === "first") {
@@ -478,7 +493,7 @@ export function useBaseMatchProbe({
               finish(e, judgeAgainstBase(sig, side, { status: "ok", first }));
             }
           }
-          if (signedOut) stopSide(side, sig);
+          if (signedOut) stopSide(side, batch);
           return;
         }
         const results: SlCountResult[] = await convex.action(
@@ -501,7 +516,7 @@ export function useBaseMatchProbe({
             );
           }
         }
-        if (signedOut) stopSide(side, sig);
+        if (signedOut) stopSide(side, batch);
       };
 
       void call()
@@ -622,6 +637,7 @@ export function useBaseMatchProbe({
       announceRef.current = freshAnnounce();
       stoppedRef.current = { bsc: false, sportlots: false };
       setAnnouncement("");
+      setStopped(NOT_STOPPED);
     };
   }, [client, variantTypeId, syncScope, publish]);
 
@@ -630,7 +646,13 @@ export function useBaseMatchProbe({
     signature,
     checks: phase === "on" ? checks : EMPTY,
     announcement: phase === "on" ? announcement : "",
+    stopped: phase === "on" ? stopped : NOT_STOPPED,
   };
 }
+
+const NOT_STOPPED: Readonly<Record<BaseMatchSide, boolean>> = {
+  bsc: false,
+  sportlots: false,
+};
 
 const EMPTY: ReadonlyMap<string, RowCheck> = new Map();
