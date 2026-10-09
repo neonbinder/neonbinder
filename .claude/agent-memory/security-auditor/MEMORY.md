@@ -65,3 +65,4 @@
 - [Patterns neo322 initials key rekey](patterns_neo322_initials_key_rekey.md) — sorted key not idempotent after initials join; initials = short word ("Al"); written-collision safe only while readers take lists
 - [Patterns neo327 pair decision log + OCR parse](patterns_neo327_pair_decision_log_and_ocr_parse.md) — decision-log content rules (cap filename, no userId, mutation logs survive rollback); per-prefix full-word scan is quadratic
 - [Patterns neo325 identity-only and twins](patterns_neo325_identity_only_and_twins.md) — forced-insert flag vs multi-id insert; upstream label bound on notice rows; pin internal id readers
+- [Inline re-auth bypasses backoff](patterns_inline_reauth_bypasses_backoff.md) — adapter 401 → authenticate* skips NEO-278 backoff + lock; batches multiply logins

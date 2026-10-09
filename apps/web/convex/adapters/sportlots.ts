@@ -57,6 +57,9 @@ import {
   MAX_SL_FIRST_PAGE_IDS,
   MAX_SL_PROBE_ID_LENGTH,
   SL_PROBE_CONCURRENCY,
+  SL_PROBE_COUNT_MAX_PAGES,
+  SL_PROBE_DEADLINE_MS,
+  SL_PROBE_ID_PATTERN,
   checkProbeIds,
   mapWithConcurrency,
   slListcardsSummaryValidator,
@@ -1552,7 +1555,18 @@ export type SlListcardsCard = {
  * the pagination below exists to prevent.
  */
 export type SlListcardsWalk =
-  | { cards: SlListcardsCard[]; pagesOk: number; slowestPageMs: number }
+  | {
+      cards: SlListcardsCard[];
+      pagesOk: number;
+      slowestPageMs: number;
+      /**
+       * Set only when the walk stopped because it used up `maxPages` while
+       * the last page still held new rows: the set may be longer than what
+       * was read. Absent when the walk saw SportLots' end-of-set signal (an
+       * empty page, or a page that did not advance).
+       */
+      truncated?: true;
+    }
   | { failure: FetchFailure; message: string };
 
 /**
@@ -1570,13 +1584,19 @@ export const SL_MAX_PAGES = 200;
  * advance. Never asks for the cookie itself: the caller reads it once, so a
  * batch costs one token read, not one per set.
  *
+ * `opts.deadlineAt` (epoch ms, optional) is a wall-clock bound on the whole
+ * walk: no page starts at or after it, and each page's own timeout is clamped
+ * to what is left, so the walk cannot run past it by more than the abort
+ * takes. Reaching it is a `timeout` failure carrying no rows, like any other
+ * page failure.
+ *
  * Throws only for something unexpected outside a page request (a parse bug);
  * every page-level failure is returned.
  */
 export async function walkSlListcards(
   sessionCookie: string,
   setRadioId: string,
-  opts: { maxPages: number },
+  opts: { maxPages: number; deadlineAt?: number },
 ): Promise<SlListcardsWalk> {
   // Parse card table rows.
   //
@@ -1648,7 +1668,22 @@ export async function walkSlListcards(
   const maxPages = Number.isFinite(opts.maxPages)
     ? Math.max(1, Math.min(SL_MAX_PAGES, Math.floor(opts.maxPages)))
     : 1;
+  // Cleared when the walk sees the end-of-set signal; still set after the
+  // loop means `maxPages` ran out while SportLots was still returning rows.
+  let endSeen = false;
   for (let page = 0; page < maxPages; page++) {
+    // NEO-325 — the caller's wall-clock budget, checked before every page.
+    let pageTimeoutMs = SL_FETCH_TIMEOUT_MS;
+    if (opts.deadlineAt !== undefined) {
+      const remainingMs = opts.deadlineAt - Date.now();
+      if (!(remainingMs > 0)) {
+        return {
+          message: "SportLots probe ran out of time before this page",
+          failure: pageFailure({ kind: "timeout", timedOut: true }),
+        };
+      }
+      pageTimeoutMs = Math.max(1, Math.min(SL_FETCH_TIMEOUT_MS, Math.floor(remainingMs)));
+    }
     const formData = new URLSearchParams({
       selset: setRadioId,
       dcond: "NM",
@@ -1666,14 +1701,18 @@ export async function walkSlListcards(
     let response: Response;
     let html: string;
     try {
-      response = await slFetch(LISTCARDS_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          Cookie: sessionCookie,
+      response = await slFetch(
+        LISTCARDS_URL,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            Cookie: sessionCookie,
+          },
+          body: formData.toString(),
         },
-        body: formData.toString(),
-      });
+        pageTimeoutMs,
+      );
 
       if (!response.ok) {
         await response.text().catch(() => "");
@@ -1699,7 +1738,7 @@ export async function walkSlListcards(
         message: `SportLots error: ${err instanceof Error ? err.message : "Unknown error"}`,
         failure: pageFailure(
           timedOut
-            ? { kind: "timeout", timedOut: true, timeoutMs: SL_FETCH_TIMEOUT_MS }
+            ? { kind: "timeout", timedOut: true, timeoutMs: pageTimeoutMs }
             : { kind: "network", timedOut: false },
         ),
       };
@@ -1807,21 +1846,29 @@ export async function walkSlListcards(
     // An EMPTY page is the only reliable end-of-set signal — see above.
     // A short page is normal mid-set (88, 92, 89, 31 … all precede more
     // data), so breaking on one truncates the walk.
-    if (pageCards.length === 0) break;
+    if (pageCards.length === 0) {
+      endSeen = true;
+      break;
+    }
 
     // Defence against a `start` that does not advance. If SL ever ignores
     // the offset and re-serves the same page, appending would duplicate
     // every row and the walk would only stop at SL_MAX_PAGES — 200 live
     // requests. Comparing the page's identity fingerprint stops it at two.
     const fingerprint = `${pageCards.length}|${pageCards[0].cardNumber}|${pageCards[0].platformRef}`;
-    if (fingerprint === lastPageFingerprint) break;
+    if (fingerprint === lastPageFingerprint) {
+      endSeen = true;
+      break;
+    }
     lastPageFingerprint = fingerprint;
 
     cards.push(...pageCards);
     start += SL_PAGE_STRIDE;
   }
 
-  return { cards, pagesOk, slowestPageMs };
+  return endSeen
+    ? { cards, pagesOk, slowestPageMs }
+    : { cards, pagesOk, slowestPageMs, truncated: true };
 }
 
 /**
@@ -1977,15 +2024,21 @@ export const fetchSportLotsChecklist = action({
  * rate-limited per credential key, so a read per id would spend that budget
  * on a single dialog.
  *
- * Writes nothing. Never throws for a fetch: every failure is a per-id
- * `failed` with the walk's `kind`. Reached only through
+ * Bounded in wall-clock and pages (`SL_PROBE_DEADLINE_MS` for the whole call
+ * from the first walk; `SL_PROBE_COUNT_MAX_PAGES` per id in `count` mode). A
+ * `count` walk that used up its pages while the set was still returning rows
+ * is `failed` / `timeout`, never a count: a truncated walk's count is wrong.
+ *
+ * Writes no catalog row; the cookie read may update credential status, as
+ * every SportLots fetch's does. Never throws for a fetch: every failure is a
+ * per-id `failed` with the walk's `kind`. Reached only through
  * `baseMatchProbe.probeSlFirstPage` / `probeSlCount`, which validate and cap
  * the ids first; checked again here because this action trusts nothing.
  */
 export const probeSlListcardsBatch = internalAction({
   args: {
     setIds: v.array(v.string()),
-    /** `firstPage`: one page per set. `count`: the whole set (`SL_MAX_PAGES`). */
+    /** `firstPage`: one page per set. `count`: the whole set (`SL_PROBE_COUNT_MAX_PAGES`). */
     mode: v.union(v.literal("firstPage"), v.literal("count")),
   },
   returns: v.array(slListcardsSummaryValidator),
@@ -1994,8 +2047,9 @@ export const probeSlListcardsBatch = internalAction({
     const setIds = checkProbeIds(args.setIds, {
       max: args.mode === "firstPage" ? MAX_SL_FIRST_PAGE_IDS : MAX_SL_COUNT_IDS,
       maxLength: MAX_SL_PROBE_ID_LENGTH,
+      pattern: SL_PROBE_ID_PATTERN,
     });
-    const maxPages = args.mode === "firstPage" ? 1 : SL_MAX_PAGES;
+    const maxPages = args.mode === "firstPage" ? 1 : SL_PROBE_COUNT_MAX_PAGES;
     const startedAt = Date.now();
     const operation =
       args.mode === "firstPage" ? "probe_first_page" : "probe_count";
@@ -2041,15 +2095,22 @@ export const probeSlListcardsBatch = internalAction({
       return results;
     }
     const cookie = sessionCookie;
+    // One budget for the whole call, from the first walk: an id the budget
+    // does not reach fails `timeout` without a request.
+    const deadlineAt = Date.now() + SL_PROBE_DEADLINE_MS;
 
     const results = await mapWithConcurrency(
       setIds,
       SL_PROBE_CONCURRENCY,
       async (id): Promise<SlListcardsSummary> => {
         try {
-          const walked = await walkSlListcards(cookie, id, { maxPages });
+          const walked = await walkSlListcards(cookie, id, { maxPages, deadlineAt });
           if ("failure" in walked) {
             return { id, status: "failed", kind: walked.failure.kind };
+          }
+          // `firstPage` reads one page by design; only a count needs the end.
+          if (args.mode === "count" && walked.truncated) {
+            return { id, status: "failed", kind: "timeout" };
           }
           const summary = summarizeProbeCards(walked.cards);
           return { id, status: "ok", ...summary, pages: walked.pagesOk };

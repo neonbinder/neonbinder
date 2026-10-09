@@ -5,9 +5,14 @@
  *
  * The client compares each unmatched marketplace set's card count and first
  * card (number + player) with the Base's, and puts a set that disagrees behind
- * a toggle. Everything here only READS: the NB Base's signature, and a
- * summary of each marketplace set fetched by its own id. Nothing is written,
- * and the comparison itself is the client's.
+ * a toggle. Everything here only READS the catalog: the NB Base's signature,
+ * and a summary of each marketplace set fetched by its own id. No catalog row
+ * (selector option, card, player, team) is written, and the comparison itself
+ * is the client's. The marketplace token path is the one exception, the same
+ * one every checklist fetch has: reading a token may refresh it, and a 401
+ * re-auth goes through `credentials.refreshSiteTokenAfterRejection`, so the
+ * user's credential status (`userProfiles.siteCredentials`: the credential
+ * lock, `needsReauth`) can be updated along the way.
  *
  * ## The invariant, here
  *
@@ -29,9 +34,12 @@
  *   - `probeSlFirstPage`: one token read + one SportLots page per id, 8 at a
  *     time.
  *   - `probeSlCount`: one token read + a full walk per id (a 300-card set is
- *     5 pages), 8 at a time.
+ *     5 pages), 8 at a time, at most `SL_PROBE_COUNT_MAX_PAGES` pages per id
+ *     and `SL_PROBE_DEADLINE_MS` for the whole call.
  *   - `probeBscSets`: one chain query, one token read, then per id one BSC
- *     request per fan-out combination (usually one), sequentially.
+ *     request per fan-out combination (usually one), sequentially. At most
+ *     one re-auth for the whole batch, through the NEO-278 backoff and the
+ *     credential lock.
  */
 
 import { v } from "convex/values";
@@ -55,6 +63,7 @@ import {
   MAX_SL_COUNT_IDS,
   MAX_SL_FIRST_PAGE_IDS,
   MAX_SL_PROBE_ID_LENGTH,
+  SL_PROBE_ID_PATTERN,
   bscProbeResultValidator,
   checkProbeIds,
   slCountResultValidator,
@@ -267,8 +276,10 @@ export const getBaseSignatureForVariantType = query({
 /**
  * The first page of each SportLots set: its first non-variation row (SL's
  * listing order), how many non-variation rows the page held, and whether it
- * held any row at all. At most 32 distinct ids per call (refused above);
- * one cookie read for the whole batch. Reads only.
+ * held any row at all. At most 32 distinct ids per call, each a numeric
+ * SportLots set id (refused above); one cookie read for the whole batch.
+ * Writes no catalog row; the cookie read may update credential status, as
+ * every SportLots fetch's does.
  */
 export const probeSlFirstPage = action({
   args: { setIds: v.array(v.string()) },
@@ -278,6 +289,7 @@ export const probeSlFirstPage = action({
     const setIds = checkProbeIds(args.setIds, {
       max: MAX_SL_FIRST_PAGE_IDS,
       maxLength: MAX_SL_PROBE_ID_LENGTH,
+      pattern: SL_PROBE_ID_PATTERN,
     });
     if (setIds.length === 0) return [];
     if (isPlatformPaused("sportlots")) {
@@ -303,8 +315,11 @@ export const probeSlFirstPage = action({
 
 /**
  * Each SportLots set walked in full: its non-variation row count and the
- * pages read. At most 8 distinct ids per call (refused above); one cookie
- * read for the whole batch. Reads only.
+ * pages read. At most 8 distinct ids per call, each a numeric SportLots set
+ * id (refused above); one cookie read for the whole batch. A set longer than
+ * `SL_PROBE_COUNT_MAX_PAGES`, or not finished inside `SL_PROBE_DEADLINE_MS`,
+ * is `failed` / `timeout`, never a count. Writes no catalog row; the cookie
+ * read may update credential status, as every SportLots fetch's does.
  */
 export const probeSlCount = action({
   args: { setIds: v.array(v.string()) },
@@ -314,6 +329,7 @@ export const probeSlCount = action({
     const setIds = checkProbeIds(args.setIds, {
       max: MAX_SL_COUNT_IDS,
       maxLength: MAX_SL_PROBE_ID_LENGTH,
+      pattern: SL_PROBE_ID_PATTERN,
     });
     if (setIds.length === 0) return [];
     if (isPlatformPaused("sportlots")) {
@@ -342,7 +358,8 @@ export const probeSlCount = action({
  * (`missingBscChecklistScope`) is `refused` without a request. At most 4
  * distinct ids per call (refused above); one token read for the whole batch.
  * `count` is non-variation cards; `first` the first non-variation card in
- * BSC's order. Reads only.
+ * BSC's order. Writes no catalog row; the token read and a 401's single
+ * re-auth may update credential status, as every BSC checklist fetch's do.
  */
 export const probeBscSets = action({
   args: {

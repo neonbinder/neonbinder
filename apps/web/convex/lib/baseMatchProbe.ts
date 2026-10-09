@@ -40,8 +40,34 @@ export const MAX_SL_COUNT_IDS = 8;
 export const MAX_BSC_PROBE_IDS = 4;
 /** SportLots sets read at once inside one call. */
 export const SL_PROBE_CONCURRENCY = 8;
+/**
+ * Pages one `probeSlCount` walk may read per set id: 1,600 listings, past
+ * every real Base set (the largest run ~800 cards, ~9 pages plus the empty
+ * end-of-set page). A checklist walks up to `SL_MAX_PAGES` (200); a probe has
+ * no business spending that. A set that is still returning rows on its last
+ * allowed page is answered `failed` / `timeout`, never as a count: a count of
+ * a truncated walk would be a wrong number the client then compares.
+ */
+export const SL_PROBE_COUNT_MAX_PAGES = 16;
+/**
+ * Wall-clock budget for one SportLots probe call (either mode), measured from
+ * the moment the batch starts walking. Well under the 10-minute Convex action
+ * limit, and well over what a full batch takes at SportLots' normal pace
+ * (8 ids x 16 pages, 8 at a time, is 16 sequential pages). Each page's own
+ * timeout is clamped to what is left, so no page can run past it; an id the
+ * budget does not reach is answered `failed` / `timeout` without a request.
+ */
+export const SL_PROBE_DEADLINE_MS = 90_000;
 /** A SportLots set id is a short slug (`MAX_SL_ID_LENGTH`). */
 export const MAX_SL_PROBE_ID_LENGTH = MAX_SL_ID_LENGTH;
+/**
+ * The shape of a SportLots SET id: the `selset` radio value `fetchSetNames`
+ * parses (`Value="(\d+)"`), which is what a set-level `sportlots` slot holds
+ * and the only kind of id the probe sends. ASCII digits only. (Sport and
+ * brand ids are not numeric, "BB" for instance, but the probe never takes
+ * one.)
+ */
+export const SL_PROBE_ID_PATTERN = /^[0-9]+$/;
 /**
  * A BSC id is a facet slug derived from a set name, so it gets the name's
  * ceiling — the same bound the twin notice keeps (`MAX_TWIN_NOTICE_ID_LENGTH`).
@@ -156,24 +182,49 @@ export type BscProbeResult = Infer<typeof bscProbeResultValidator>;
 // Helpers
 // ---------------------------------------------------------------------------
 
-const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
+/**
+ * Characters no marketplace id carries: C0 controls, DEL, C1 controls, and the
+ * Unicode line and paragraph separators (U+2028, U+2029), which split a log
+ * line as surely as a newline does.
+ */
+const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F\u2028\u2029]/;
+
+/**
+ * True when `id` is a probe id under `bounds`: non-empty, at most
+ * `maxLength`, no leading or trailing whitespace (`trim`'s definition, so
+ * NBSP and BOM count), no control or line-separator character, and, when the
+ * side has one, the side's own id shape (`pattern`).
+ */
+export function isProbeId(
+  id: string,
+  bounds: { maxLength: number; pattern?: RegExp },
+): boolean {
+  return (
+    id.length > 0 &&
+    id.length <= bounds.maxLength &&
+    id.trim() === id &&
+    !CONTROL_CHARS.test(id) &&
+    (bounds.pattern === undefined || bounds.pattern.test(id))
+  );
+}
 
 /**
  * The ids of one probe call, checked and de-duplicated (first-seen order).
  * Throws a `ConvexError` naming the bound, never the id, when the call asks
- * for more than `max` distinct ids or any id is empty, too long or carries a
- * control character: a refusal before anything is fetched.
+ * for more than `max` distinct ids or any id fails `isProbeId`: a refusal
+ * before anything is fetched. Each id is checked before the count, so one bad
+ * id refuses the call whatever its size.
  */
 export function checkProbeIds(
   ids: readonly string[],
-  bounds: { max: number; maxLength: number },
+  bounds: { max: number; maxLength: number; pattern?: RegExp },
 ): string[] {
   const unique: string[] = [];
   const seen = new Set<string>();
   for (const id of ids) {
-    if (id.length === 0 || id.length > bounds.maxLength || CONTROL_CHARS.test(id)) {
+    if (!isProbeId(id, bounds)) {
       throw new ConvexError(
-        `A marketplace set id is empty, longer than ${bounds.maxLength} characters or not plain text.`,
+        `A marketplace set id is empty, longer than ${bounds.maxLength} characters, padded with whitespace, or not plain text in that marketplace's id shape.`,
       );
     }
     if (seen.has(id)) continue;

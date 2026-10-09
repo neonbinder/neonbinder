@@ -1026,10 +1026,12 @@ async function inReauthBackoff(
  * the right place to confirm the new site's auth flow handles cached
  * tokens properly.
  *
- * Only `getSiteToken` calls this. The user-initiated paths
- * (`testSiteCredentials`, `saveCredentials`) run their own login directly and
- * are never subject to the NEO-278 backoff below — a user who clicks "Test" or
- * signs in again must always get a real attempt.
+ * Two callers, both fetch-driven: `getSiteToken`, and
+ * `refreshSiteTokenAfterRejection` (an adapter whose request the marketplace
+ * refused with a token the cache still called fresh). The user-initiated
+ * paths (`testSiteCredentials`, `saveCredentials`) run their own login
+ * directly and are never subject to the NEO-278 backoff below — a user who
+ * clicks "Test" or signs in again must always get a real attempt.
  */
 async function refreshSiteToken(
   ctx: {
@@ -1074,6 +1076,46 @@ async function refreshSiteToken(
     }
   }, false);
 }
+
+/**
+ * NEO-325 security follow-up — the ONLY way an adapter may force a re-auth
+ * after the marketplace refused a request (BSC's 401 with a token our cache
+ * still called fresh). It is `refreshSiteToken`, so the refresh inherits both
+ * of that function's guards:
+ *
+ *   - the NEO-278 `inReauthBackoff` check: a session whose stored-session
+ *     login answered `reauth_required` under 15 minutes ago is not logged in
+ *     again, and
+ *   - the per-(user, site) `withCredentialLock`: a refresh never runs beside
+ *     another credential op (a Clear, a store, or a second refresh), which
+ *     could otherwise interleave two Secret Manager writes for one key.
+ *
+ * Calling `authenticateBsc` / `authenticateSportlots` directly from an adapter
+ * skipped both; a batch with two calls in flight then ran concurrent unlocked
+ * logins. Answers `{ refreshed: false }` for a backoff skip, a busy lock, a
+ * failed login or a paused marketplace alike (the caller fails its request
+ * either way); `refreshed: true` means a login succeeded and the caller should
+ * re-read the token. Never throws for a refresh failure.
+ *
+ * Writes credential status only, through the login it runs (`needsReauth`,
+ * the NEO-278 stamp, the lock). Logs carry the platform and the outcome,
+ * never a credential.
+ */
+export const refreshSiteTokenAfterRejection = internalAction({
+  args: {
+    site: v.union(v.literal("buysportscards"), v.literal("sportlots")),
+  },
+  returns: v.object({ refreshed: v.boolean() }),
+  handler: async (ctx, args): Promise<{ refreshed: boolean }> => {
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    // NEO-287 — a paused marketplace is never logged in to.
+    if (isPlatformPaused(args.site)) return { refreshed: false };
+    return { refreshed: await refreshSiteToken(ctx, userId, args.site) };
+  },
+});
 
 /**
  * List all sites with stored credentials for the current user.

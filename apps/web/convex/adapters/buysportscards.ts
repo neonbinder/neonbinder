@@ -1030,16 +1030,40 @@ export type BscChecklistArgs = {
 };
 
 /**
+ * NEO-325 — one BSC token shared by every request of one action call: the
+ * fan-out of a `fetchBscChecklist`, or every id of a `probeBscChecklistBatch`.
+ *
+ * A session spends AT MOST ONE re-auth. The first 401 sets `reauthAttempted`
+ * and refreshes through `credentials.refreshSiteTokenAfterRejection` (the
+ * NEO-278 backoff and the credential lock). After that:
+ *
+ *   - the re-auth failed (or was skipped, or the lock was busy), or no token
+ *     came back from it: `dead`;
+ *   - any later 401, on the retry or on a later request: `dead`.
+ *
+ * A dead session sends nothing more: every remaining request fails
+ * `signed_out` with no BSC request and no login call. Without this a failed
+ * re-auth left the stale token in place and each later request logged in
+ * again (security audit, NEO-325).
+ */
+export type BscSession = {
+  token: string;
+  reauthAttempted?: boolean;
+  dead?: boolean;
+};
+
+/**
  * NEO-325 — everything `fetchBscChecklist` does after it has a token, lifted
  * out so a batch (`probeBscChecklistBatch`) reads the token ONCE and reuses
  * it. `session.token` is updated in place when a 401 forces a re-auth, so the
- * next call in the batch sends the refreshed one. Throws only for something
- * unexpected; the action's own catch classifies it.
+ * next call in the batch sends the refreshed one; `session` also carries the
+ * one-re-auth budget (`BscSession`). Throws only for something unexpected;
+ * the action's own catch classifies it.
  */
 async function bscChecklistWithSession(
   ctx: ActionCtx,
   args: BscChecklistArgs,
-  session: { token: string },
+  session: BscSession,
 ): Promise<BscChecklistResult> {
   // Build nested `filters: { sport: [...], year: [...], ... }`.
   //
@@ -1144,7 +1168,8 @@ async function bscChecklistWithSession(
   const fanOut = plan.combos;
 
   // The batch shares one token across calls (NEO-325); a 401 refresh below
-  // writes the new token back so the calls after it use it.
+  // writes the new token back so the calls after it use it, and spends the
+  // session's one re-auth (`BscSession`).
 
   type OneResult =
     | { ok: true; raw: Record<string, unknown>[]; elapsedMs: number }
@@ -1236,6 +1261,23 @@ async function bscChecklistWithSession(
       };
     };
 
+    // A session BSC has already refused (or whose one re-auth failed) sends
+    // nothing more: no request with a token known to be dead, no login.
+    if (session.dead) {
+      console.warn(
+        `[fetchBscChecklist] platform=bsc op=checklist skipped: the session was signed out earlier in this call — no request, no re-auth`,
+      );
+      return {
+        ok: false,
+        message: `BSC signed us out earlier in this call; request not sent`,
+        failure: {
+          kind: "signed_out",
+          timedOut: false,
+          reauthAttempted: true,
+        },
+      };
+    }
+
     let response: Response;
     let reauthAttempted = false;
     let sentAt = Date.now();
@@ -1247,23 +1289,56 @@ async function bscChecklistWithSession(
 
     // BSC intermittently 401s with a token our cache still thinks is fresh
     // (their TTL doesn't always match what they advertise, especially under
-    // load). Refresh and retry once rather than failing the whole fetch.
+    // load). Refresh and retry once rather than failing the whole fetch —
+    // ONCE PER SESSION, not once per request: a 401 after the session has
+    // spent its re-auth is BSC refusing us again, and kills the session.
+    if (response.status === 401 && session.reauthAttempted) {
+      await response.text().catch(() => "");
+      session.dead = true;
+      console.warn(
+        `[fetchBscChecklist] platform=bsc op=checklist BSC API 401 after this call's re-auth — session signed out, no further re-auth`,
+      );
+      return {
+        ok: false,
+        message: `BSC API 401 after re-auth`,
+        failure: {
+          kind: "signed_out",
+          httpStatus: 401,
+          timedOut: false,
+          reauthAttempted: true,
+        },
+      };
+    }
     if (response.status === 401) {
       console.warn(
         `[fetchBscChecklist] BSC API 401 with cached token — forcing re-auth and retrying once`,
       );
       await response.text().catch(() => "");
       reauthAttempted = true;
+      session.reauthAttempted = true;
       // NEO-321 follow-up — the re-auth is a wait WE add before the
       // retry; log how long it took and how it ended.
       const reauthStartedAt = Date.now();
-      const reAuth = (await ctx.runAction(
-        internal.credentials.authenticateBsc,
-        {},
-      )) as { success: boolean; message?: string };
-      if (!reAuth.success) {
+      // Through `refreshSiteToken`, never `authenticateBsc` directly: the
+      // NEO-278 backoff and the per-(user, site) credential lock apply here
+      // exactly as they do to `getSiteToken`'s own refresh. A skip or a busy
+      // lock answers `refreshed: false`, the same as a failed login.
+      let refreshedLogin = false;
+      try {
+        const reAuth: { refreshed: boolean } = await ctx.runAction(
+          internal.credentials.refreshSiteTokenAfterRejection,
+          { site: "buysportscards" },
+        );
+        refreshedLogin = reAuth.refreshed;
+      } catch (err) {
         console.error(
-          `[fetchBscChecklist] re-auth failed after 401: ${reAuth.message ?? "(no message)"}`,
+          `[fetchBscChecklist] re-auth threw after 401: ${err instanceof Error ? err.name : "unknown"}`,
+        );
+      }
+      if (!refreshedLogin) {
+        session.dead = true;
+        console.error(
+          `[fetchBscChecklist] re-auth failed after 401 (failed, in NEO-278 backoff, or credential lock busy)`,
         );
         logMarketplaceLimiter({
           limiter: "bsc_token_reauth",
@@ -1293,6 +1368,7 @@ async function bscChecklistWithSession(
         outcome: refreshed.success && refreshed.token ? "ok" : "no_token",
       });
       if (!refreshed.success || !refreshed.token) {
+        session.dead = true;
         return {
           ok: false,
           message: refreshed.error || "No BSC token available after re-auth",
@@ -1314,12 +1390,13 @@ async function bscChecklistWithSession(
 
     if (!response.ok) {
       await response.text().catch(() => "");
+      // A second 401, after a re-auth that said it worked, is still BSC
+      // refusing our session — and the session has no re-auth left.
+      if (response.status === 401) session.dead = true;
       return {
         ok: false,
         message: `BSC API error: ${response.status}`,
         failure: {
-          // A second 401, after a re-auth that said it worked, is still
-          // BSC refusing our session.
           kind: response.status === 401 ? "signed_out" : "http_error",
           httpStatus: response.status,
           timedOut: false,
@@ -1730,9 +1807,14 @@ export const fetchBscChecklist = action({
  * first non-variation card. Never the rows.
  *
  * Sequential on purpose, like the fan-out inside one fetch: a 401 refreshes
- * the shared token, and the requests after it must send the new one.
+ * the shared token, and the requests after it must send the new one. The
+ * whole batch shares ONE session and so at most one re-auth (`BscSession`):
+ * once it fails, or BSC answers 401 again, every remaining id is `failed` /
+ * `signed_out` with no request and no login.
  *
- * Writes nothing. Never throws for a fetch. Reached only through
+ * Writes no catalog row. The token read and the one re-auth may update the
+ * user's credential status (the lock, `needsReauth`), exactly as any
+ * `fetchBscChecklist` does. Never throws for a fetch. Reached only through
  * `baseMatchProbe.probeBscSets`, which builds `facetFilters` from the chain's
  * slots and caps the batch; the ids are checked again here.
  */
@@ -1791,7 +1873,7 @@ export const probeBscChecklistBatch = internalAction({
       return results;
     }
 
-    const session = { token };
+    const session: BscSession = { token };
     const results: BscProbeSummary[] = [];
     for (const request of args.requests) {
       try {
