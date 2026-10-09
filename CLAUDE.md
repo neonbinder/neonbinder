@@ -61,8 +61,13 @@ whether they do or don't."
    only when the ids that side needs are present; otherwise that side is
    skipped, never guessed by name. `isCustom` is being retired
    (NEO-239).
-7. **Card numbers are never unique at any scope.** Never key logic on a
-   card number without an exactly-one-match guard.
+7. **Card number is the strongest key, but it is not guaranteed unique.**
+   Within a set a card number is almost always unique (Jason, 2026-10-08:
+   "probably 99.99%"), far more often than a player, who frequently has
+   several cards in one set. Rank the number above the player when
+   matching, but never key logic on a card number without an
+   exactly-one-match guard. A number/player disagreement is a likely
+   misread to surface as a conflict, never one to settle silently.
 
 Marketplace refs may be read only inside the sync/adapter boundary, to
 route a marketplace's own update to the row linked to it.

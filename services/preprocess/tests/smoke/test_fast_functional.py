@@ -89,7 +89,9 @@ class TestFastFunctionalProcess:
         assert set(body.keys()) == EXPECTED_KEYS, f"unexpected keys {sorted(body.keys())}"
         assert body["cropped_source"] == "precropped", body["cropped_source"]
         assert body["cropped_image_b64"] is None
-        assert body["side"] in {"front", "back"}, f"bad side {body['side']!r}"
+        # side is None when the model cannot tell (NEO-327): a smoke image is
+        # not a real card, so an honest "can't tell" is a valid answer here.
+        assert body["side"] in {"front", "back", None}, f"bad side {body['side']!r}"
         assert body["rotation_degrees"] in {0, 90, 180, 270}
         assert 0.0 <= body["orient_confidence"] <= 1.0
         assert isinstance(body["text_count"], int) and body["text_count"] >= 1

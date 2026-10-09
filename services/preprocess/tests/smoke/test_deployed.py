@@ -85,7 +85,9 @@ class TestProcessHappyPath:
             "cropped_image_b64",
         }
         assert set(body.keys()) == expected_keys, f"unexpected keys {sorted(body.keys())}"
-        assert body["side"] in {"front", "back"}, f"bad side {body['side']!r}"
+        # side is None when the model cannot tell (NEO-327): a smoke image is
+        # not a real card, so an honest "can't tell" is a valid answer here.
+        assert body["side"] in {"front", "back", None}, f"bad side {body['side']!r}"
         assert isinstance(body["players"], list), f"bad players {body['players']!r}"
         assert body["rotation_degrees"] in {
             0,
