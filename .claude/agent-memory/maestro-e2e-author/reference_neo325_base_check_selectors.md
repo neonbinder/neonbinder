@@ -1,6 +1,6 @@
 ---
 name: neo325-base-check-selectors
-description: Parallel Reconcile's Base check (NEO-325) — toggle accessible names, the row wrapper + reason line and sr-only status that a containsChild/containsDescendants pair scopes to ONE row, where it runs (parallel role + Base cards only), and what it does to Keep all and column counts
+description: Parallel Reconcile's Base check (NEO-325) — the constant toggle name (open/closed proved by the revealed row), Keep all's names, the row wrapper + reason line and sr-only status that a containsChild/containsDescendants pair scopes to ONE row, where it runs (parallel role + Base cards only), and what it does to Keep all and column counts
 metadata:
   type: reference
 ---
@@ -14,14 +14,21 @@ Save, is untouched.
 
 **Handles** (copy in `lib/cards/base-match.ts` `BASE_MATCH_COPY`; straight
 apostrophes, match with `.`):
-- toggle, per column: `Show N that don't match the Base, SportLots` /
-  `Hide N …, BSC` (aria-label = visible words + `, <side>`). It renders under
-  the column's checkboxes only while the column's QUERIED view holds a
-  mismatch; its open/closed state survives the query changing.
+- toggle, per column: a disclosure named `N that don't match the Base,
+  SportLots` / `…, BSC` (visible text `N that don't match the Base` + `,
+  <side>`). The name is the SAME open or closed — the state is
+  `aria-expanded` only, which maestro-web cannot read — so prove OPEN by a
+  revealed row's reason visible and CLOSED by it gone (positives after the
+  negative). Selector: `[0-9]+ that don.t match the Base, SportLots`. It
+  renders under the column's checkboxes only while the column's QUERIED view
+  holds a mismatch; its open/closed state survives the query changing.
 - revealed rows render FIRST (above the matched/checking rows), each in a
   wrapper `<div>` whose direct children are the row and its reason `<p>`
   (`Doesn't match the Base — <observed> (Base: <expected>)`, or `Couldn't
-  check against the Base — …` for an unverifiable row, which stays listed).
+  check this one against the Base. Try again later.` / `…: no card to
+  compare.` / `…: sign in, then reopen this.` for an unverifiable row, which
+  stays LISTED, never in the revealed group). So a bare
+  `containsChild: {text: "Doesn.t match the Base.*"}` names only revealed rows.
 - every row's handle holds an sr-only span `, matches the Base` / `,
   doesn't match the Base` / `, checking against the Base` / `, couldn't be
   checked against the Base` (a 1×1 node maestro-web lists).
@@ -39,9 +46,13 @@ visibility), and `ElementSelector.evaluateScripts` recurses into
 `containsChild`/`containsDescendants`, so `${output.X}` works inside them.
 
 **Side effects on other selectors:** `<Side> (N of M)` counts only the
-listed rows (set-aside rows leave N); `Keep all: N <side> sets` counts only
-rows already CHECKED and not set aside, so a Keep all pressed while the
-check runs promotes fewer rows. A probe that fails is `unverifiable`, never
+listed rows (set-aside rows leave N). Keep all's name is `Keep all, <side>
+sets` when it reaches the whole column (NO count) and `Keep all N, <side>
+set(s)` when a filter, the SL prefix filter or the check narrows it; with 0
+reachable it drops the number (aria-disabled). It reaches only rows already
+CHECKED and not set aside, so a Keep all pressed while the check runs
+promotes fewer rows. Unfiltered, read the count off `<Side> (N)` and prove it
+by the Ready arithmetic, not the button name. A probe that fails is `unverifiable`, never
 set aside.
 
 Related: [[guard-a-tap-at-a-footer-buttons-x]],

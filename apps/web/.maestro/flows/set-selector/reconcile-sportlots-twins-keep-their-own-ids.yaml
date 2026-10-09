@@ -35,8 +35,8 @@ tags:
 #      Refractor" sets are the reason it exists: one is the Black Refractor
 #      parallel of Topps Chrome (it MATCHES — it stays listed and says so),
 #      the other is the Topps Chrome Black set (it does NOT — it is set aside
-#      behind the column's "Show N that don't match the Base" and, revealed,
-#      carries its reason "Doesn't match the Base — …"). Hiding the toggle
+#      behind the column's "N that don't match the Base" toggle and, revealed,
+#      carries its reason "Doesn't match the Base — …"). Closing the toggle
 #      takes it away again. Same-name twins are the sharpest proof the check
 #      is per id, not per name: one name, two verdicts.
 #      The Chrome Update Sapphire twins (claims 1–4's fixture) are a
@@ -190,9 +190,11 @@ tags:
 #            “<title>”. Rename one so you can tell them apart.` (curly quotes
 #            since NEO-325's copy pass, each matched by `.`), and the discard
 #            confirm's `Discard N set changes`
-#   base     the toggle's accessible name `Show N that don't match the Base,
-#            SportLots` / `Hide N …, SportLots` (BASE_MATCH_COPY.toggleName:
-#            visible words first, then the column); a set-aside row's reason
+#   base     the toggle's accessible name `N that don't match the Base,
+#            SportLots` (BASE_MATCH_COPY.toggleName: visible words first, then
+#            the column), the SAME open or closed — `aria-expanded` carries
+#            the state, which maestro-web cannot read, so open/closed is
+#            proved by the revealed row, never by the name; a set-aside row's reason
 #            line `Doesn't match the Base — <observed> (Base: <expected>)`,
 #            the DIRECT child of the row's wrapper (`containsChild`); every
 #            row's screen-reader status, an sr-only span inside its handle,
@@ -372,7 +374,7 @@ tags:
       # it had already settled they return at once.
       - extendedWaitUntil:
           visible:
-            id: "Show [0-9]+ that don.t match the Base, SportLots"
+            id: "[0-9]+ that don.t match the Base, SportLots"
           timeout: 120000
       - extendedWaitUntil:
           notVisible:
@@ -384,8 +386,10 @@ tags:
       # twin, set aside for not matching the Base. Client state: 7000.
       # The toggle sits just under the search box's two checkboxes, inside
       # the band (x≈640: clear of the footer's buttons).
+      # The wait below is the proof it OPENED: the toggle's name does not
+      # change with its state (aria-expanded, unreadable here).
       - tapOn:
-          id: "Show [0-9]+ that don.t match the Base, SportLots"
+          id: "[0-9]+ that don.t match the Base, SportLots"
       - extendedWaitUntil:
           visible:
             containsChild:
@@ -393,18 +397,23 @@ tags:
             containsDescendants:
               - id: "Make its own set: ${output.BR} \\(#${output.BR_OTHER}\\)"
           timeout: 7000
-      # The toggle now offers to hide them (and still names its column).
-      - assertVisible:
-          id: "Hide [0-9]+ that don.t match the Base, SportLots"
-      # Hide again: the row goes, the matching twin stays (positive first).
+      # Close it again: the revealed row goes (client state: 7000). The
+      # positives after the wait prove the dialog is alive, so the negative
+      # cannot pass on a dead page (R2): the matching twin stays, and the
+      # toggle is still offered under the same name.
       - tapOn:
-          id: "Hide [0-9]+ that don.t match the Base, SportLots"
+          id: "[0-9]+ that don.t match the Base, SportLots"
       - extendedWaitUntil:
-          visible:
-            id: "Show [0-9]+ that don.t match the Base, SportLots"
+          notVisible:
+            containsChild:
+              text: "Doesn.t match the Base.*"
+            containsDescendants:
+              - id: "Make its own set: ${output.BR} \\(#${output.BR_OTHER}\\)"
           timeout: 7000
       - assertVisible:
           id: "Make its own set: ${output.BR} \\(#${output.BR_MATCH}\\)"
+      - assertVisible:
+          id: "[0-9]+ that don.t match the Base, SportLots"
       - assertNotVisible:
           id: "Make its own set: ${output.BR} \\(#${output.BR_OTHER}\\)"
 
@@ -413,7 +422,7 @@ tags:
       # which renders below the box, is above the footer's Cancel, so the
       # box's `×` is well clear of the footer.
       - assertVisible:
-          id: "Show [0-9]+ that don.t match the Base, SportLots"
+          id: "[0-9]+ that don.t match the Base, SportLots"
           below:
             id: "Clear search sportlots items"
           above:
@@ -430,11 +439,16 @@ tags:
       # twins are set aside too (header, claim 5), and claims 1-4 are proved
       # on them revealed. With the box empty the toggle is certain to be
       # here: BR_OTHER (in the column's scope, set aside above) is behind it.
+      # Opened, proved by a revealed row: only set-aside rows carry a
+      # "Doesn't match the Base — …" reason (a row that couldn't be checked
+      # stays listed, with a "Couldn't check…" reason), and the group renders
+      # straight under the toggle, so its first row is in the band.
       - tapOn:
-          id: "Show [0-9]+ that don.t match the Base, SportLots"
+          id: "[0-9]+ that don.t match the Base, SportLots"
       - extendedWaitUntil:
           visible:
-            id: "Hide [0-9]+ that don.t match the Base, SportLots"
+            containsChild:
+              text: "Doesn.t match the Base.*"
           timeout: 7000
 
       # ============================================================

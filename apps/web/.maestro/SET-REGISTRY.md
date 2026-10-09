@@ -2047,7 +2047,7 @@ is set aside with its reason (table below).
 | neighbour | "Chrome Update Sapphire Black Sapphire Refractor" (326060), the row left when the filter narrows past the twins |
 | measured | 2026-10-08, SportLots' public buyer search (each row's set id and set name): 824 sets with stock under "2024 Topps Baseball" hold three same-name pairs — this one, "City Connect Swatch Collection" (299607 / 307437) and its "… Black" (299608 / 307438). Only this one starts with "Chrome", so only it shows under the dialog's default SportLots prefix filter. The DEALER list the dialog reads holds one more "Chrome" twin the public search could not see (no stock on one side): "Chrome Black Refractor" (**305604** / **309103**), listed as `Chrome Black Refractor (#305604)` / `(#309103)` (live dialog, 2026-10-08). Since NEO-325 it is never auto-paired, so the seed's Topps Chrome `Parallel` reconcile saves **41** sets, not 42 (BSC `Black Refractors` stays in Pending; `base-parallels-build-from-section` pins 41). Since the Base check (below) the flow DOES match it, as claim 5's fixture |
 | writes | none: the dialog is client state (promotions and the rename included), Save is never pressed, and the flow closes it with Cancel → Discard |
-| base check (claim 5) | The dialog checks every pending set of this `Parallel` (NB role `parallel`) against the saved Base — 335 cards — by first card and per-marketplace count (`lib/cards/base-match.ts`), and sets a mismatch aside behind `Show N that don't match the Base, SportLots` with its reason, `Doesn't match the Base — …`. The flow types the twin's name and proves ONE NAME, TWO VERDICTS: **309103** stays listed with its row status `, matches the Base`, **305604** is set aside and, revealed, carries its reason. The ids are the planner's reading (309103 = the Topps Chrome Black Refractor parallel, 305604 = the Topps Chrome Black set) and are **NOT YET MEASURED**: pin them, and the probe waits' ceilings, from the first run on a preview carrying the check. The Chrome Update Sapphire twins are USCS-numbered (another product), so they are set aside too; the flow reveals them and proves claims 1–4 on the revealed rows |
+| base check (claim 5) | The dialog checks every pending set of this `Parallel` (NB role `parallel`) against the saved Base — 335 cards — by first card and per-marketplace count (`lib/cards/base-match.ts`), and sets a mismatch aside behind the toggle `N that don't match the Base, SportLots` (the same name open or closed; `aria-expanded` carries the state, so the flow proves open and closed by the revealed row) with its reason, `Doesn't match the Base — …`. The flow types the twin's name and proves ONE NAME, TWO VERDICTS: **309103** stays listed with its row status `, matches the Base`, **305604** is set aside and, revealed, carries its reason. The ids are the planner's reading (309103 = the Topps Chrome Black Refractor parallel, 305604 = the Topps Chrome Black set) and are **NOT YET MEASURED**: pin them, and the probe waits' ceilings, from the first run on a preview carrying the check. The Chrome Update Sapphire twins are USCS-numbered (another product), so they are set aside too; the flow reveals them and proves claims 1–4 on the revealed rows |
 | base check reads | one query (`getBaseSignatureForVariantType`) and read-only probe actions (`probeSlFirstPage`, `probeSlCount`, `probeBscSets`) over the column's whole scope, two calls in flight per side, from the moment the dialog opens until it closes; nothing is stored. The seed's own Topps Chrome `Parallel` reconcile runs the same check for the second or two before it presses Save — Save writes Ready only, so it still saves the **41**; the check only changes what Pending SHOWS and what `Keep all` reaches |
 | paused | no SportLots list, no twin; the flow does not press `Sync Parallels` (one marketplace takes the single-platform STORE path) |
 
@@ -2104,16 +2104,17 @@ Base only for a variant type whose NB role is `parallel` AND whose Base has
 saved cards (`getBaseSignatureForVariantType` answers anything else with a
 skip, and the dialog then shows no check at all). It never touches Ready, so
 it never changes what a reconcile's Save writes; it changes what Pending
-shows (mismatches behind `Show N that don't match the Base, <side>`) and
-what `Keep all` reaches (`Keep all: N <side> sets` counts only rows already
-checked and not set aside).
+shows (mismatches behind the toggle `N that don't match the Base, <side>`)
+and what `Keep all` reaches (only rows already checked and not set aside; the
+button's name is `Keep all, <side> sets` when it reaches the whole column and
+`Keep all N, <side> set(s)` when a filter or the check narrows it).
 
 | Reconcile in the suite | Role | Base cards? | Check runs? | Effect on the flow |
 | -- | -- | -- | -- | -- |
 | `setup.yaml` — 2024 Topps Chrome › `Parallel` | parallel | 335 (seeded earlier in setup) | yes | none: presses `Save N sets` at once; Ready (the 41) is untouched |
 | `reconcile-sportlots-twins-keep-their-own-ids` — same column | parallel | 335 | yes | the flow's claim 5; its twin claims run on the revealed rows |
 | `bowman-sportlots-links-move-between-set-parallel-insert` STEP 10 and its re-sync — 2026 Bowman › Bowman › `Parallel` | parallel | none (no flow fetches Bowman's Base checklist) | no (skip: no cards) | none; if a Base checklist is ever saved there, still none — the flow reads Ready chips and presses Save |
-| `bowman-insert-grouping-builds-parallels` — 2026 Bowman › `Insert` | insert | — | no | none (its `Keep all: N BSC sets` is unchanged) |
+| `bowman-insert-grouping-builds-parallels` — 2026 Bowman › `Insert` | insert | — | no | none (its `Keep all N, BSC set(s)` / `Keep all, BSC sets` behave as without the check) |
 | `inserts-1996-score-…`, `reconcile-sportlots-twins-save-each-to-its-own-set` — `Insert` columns | insert | — | no | none |
 
 ## Adding a set
