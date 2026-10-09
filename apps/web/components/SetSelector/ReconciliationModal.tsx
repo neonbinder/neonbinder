@@ -44,6 +44,22 @@ import {
   type ClashExistingRow,
 } from "./ready-title-clashes";
 import { MAX_SELECTOR_VALUE_LENGTH } from "../../convex/selectorSyncMatch";
+import { useConvex } from "convex/react";
+import { ChevronRightIcon } from "@heroicons/react/24/outline";
+import { activateOnEnter } from "@/lib/dom/activate-on-enter";
+import {
+  LiveLine,
+  RunGlyph,
+  SleeveStrip,
+  type RunLineKind,
+} from "../modules/RunLedger";
+import {
+  checkKey,
+  useBaseMatchProbe,
+  type BaseMatchClient,
+  type RowCheck,
+} from "./base-match-probe";
+import { BASE_MATCH_COPY, type BaseMatchSide } from "@/lib/cards/base-match";
 
 // ===== TYPES =====
 
@@ -513,6 +529,17 @@ type ReconciliationModalProps = {
    * hide work the operator is now answering for.
    */
   showAllSlInitially?: boolean;
+  /**
+   * NEO-325 (Jason, 2026-10-09) — check every pending set against the saved
+   * Base of this variant type. Passed only for the variant type whose NB role
+   * is `parallel` (VariantForm); never for Inserts. Each pending set is
+   * probed on its marketplace and judged by `lib/cards/base-match.ts`: one
+   * whose card count and first card agree with the Base stays listed, one
+   * that disagrees is set aside behind "Show N that don't match the Base",
+   * with the reason on its row. Nothing is stored; the verdicts die with the
+   * dialog. Without it, the dialog is exactly what it was.
+   */
+  baseCheck?: { variantTypeId: Id<"selectorOptions"> };
   existingRows?: Array<{
     /** The row's own `_id` — see `ReadySet.existingId`. Optional so callers
      *  that predate NEO-211 (and the tests that construct rows by hand) keep
@@ -688,10 +715,17 @@ function DraggableItem({
   isSelected,
   onClick,
   action,
+  status,
 }: {
   id: string;
   /** The row's visible name — `<ItemName>`, so a twin carries its id. */
   name: React.ReactNode;
+  /**
+   * NEO-325 — the row's Base check: a glyph before the badge, and the same
+   * state in words for a screen reader after the name, both inside the
+   * handle so they are part of what the row is called.
+   */
+  status?: { kind: RunLineKind; srText: string };
   platform: "bsc" | "sl";
   isSelected?: boolean;
   onClick?: () => void;
@@ -748,12 +782,14 @@ function DraggableItem({
         onClick={onClick}
         className="flex-1 min-w-0 self-stretch flex items-start gap-2 px-3 py-2 rounded-lg cursor-grab active:cursor-grabbing focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#00B7FF]"
       >
+        {status && <RunGlyph kind={status.kind} tones={CHECK_GLYPH_TONE} />}
         <span
           className={`text-[10px] px-1.5 py-0.5 rounded border ${platformColor} shrink-0 mt-0.5`}
         >
           {platformLabel}
         </span>
         <span className="text-gray-200 break-words min-w-0">{name}</span>
+        {status && <span className="sr-only">{`, ${status.srText}`}</span>}
       </div>
       {action && <div className="shrink-0 py-1.5 pr-1.5">{action}</div>}
     </div>
@@ -774,6 +810,64 @@ const OWN_SET_BUTTON =
   "inline-flex items-center min-h-[28px] px-2.5 rounded-md border text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF]";
 const OWN_SET_ROW_BUTTON = `${OWN_SET_BUTTON} border-gray-500 text-gray-300 hover:border-[#00D558] hover:text-[#00D558] hover:bg-[#00D558]/10 focus-visible:text-[#00D558]`;
 const KEEP_ALL_BUTTON = `${OWN_SET_BUTTON} border-[#00D558]/70 text-[#00D558] hover:bg-[#00D558]/10 hover:border-[#00D558] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent`;
+
+// ===== BASE CHECK (NEO-325) =====
+
+/**
+ * The run ledger's glyphs and sleeves (modules/RunLedger), in tones for THIS
+ * dialog, which is dark whatever the OS theme: the ledger's own defaults are
+ * light/dark pairs for the blue build banner, and a `-700` glyph on this
+ * dialog's gray-800 rows would vanish in a light OS. Every tone below clears
+ * 3:1 against gray-800 (SC 1.4.11); the state is also said in words.
+ */
+const CHECK_GLYPH_TONE: Record<RunLineKind, string> = {
+  waiting: "text-gray-400",
+  building: "text-[#00C2FF] motion-safe:animate-spin",
+  built: "text-[#00D558]",
+  skipped: "text-gray-300",
+  blocked: "text-amber-300",
+  stopped: "text-gray-400",
+  failed: "text-pink-300",
+  unfinished: "text-amber-300",
+};
+const CHECK_SLEEVE_TONE: Record<RunLineKind, string> = {
+  waiting: "border-gray-500 bg-transparent",
+  building: "border-[#00C2FF] bg-[#00C2FF]/40 motion-safe:animate-pulse",
+  built: "border-[#00D558] bg-[#00D558]",
+  skipped: "border-gray-400 bg-gray-400/40",
+  blocked: "border-amber-400 bg-amber-400",
+  stopped: "border-gray-600 bg-gray-600/40",
+  failed: "border-pink-400 bg-[#FF2E9A]",
+  unfinished: "border-amber-400 bg-transparent",
+};
+/** The column's sleeve strip draws at most this many; the rest are "+N". */
+const SLEEVE_CAP = 200;
+
+/** A check, in the ledger's terms: waiting, spinning, check, no-entry, minus. */
+function checkKind(check: RowCheck): RunLineKind {
+  if (check.state === "queued") return "waiting";
+  if (check.state === "checking") return "building";
+  return check.verdict === "match"
+    ? "built"
+    : check.verdict === "mismatch"
+      ? "blocked"
+      : "skipped";
+}
+
+function checkSrText(check: RowCheck): string {
+  if (check.state !== "done") return BASE_MATCH_COPY.srChecking;
+  return check.verdict === "match"
+    ? BASE_MATCH_COPY.srMatch
+    : check.verdict === "mismatch"
+      ? BASE_MATCH_COPY.srMismatch
+      : BASE_MATCH_COPY.srUnverifiable;
+}
+
+const isMismatch = (check: RowCheck | undefined) =>
+  check?.state === "done" && check.verdict === "mismatch";
+
+const toProbeSide = (side: Side): BaseMatchSide =>
+  side === "bsc" ? "bsc" : "sportlots";
 
 // ===== READY SET ROW =====
 
@@ -1048,7 +1142,27 @@ function MetadataEditor({
 
 // ===== MAIN COMPONENT =====
 
-export default function ReconciliationModal({
+/**
+ * NEO-325 — the Convex client is read only when the caller asked for the
+ * Base check. The dialog's other callers (and their component tests, whose
+ * hand-built `convex/react` mocks predate it) never touch `useConvex`.
+ * `baseCheck` is fixed for a dialog's life (VariantForm decides it before
+ * the dialog opens), so the two paths never swap under a mounted dialog.
+ */
+export default function ReconciliationModal(props: ReconciliationModalProps) {
+  return props.baseCheck ? (
+    <ReconciliationDialogWithClient {...props} />
+  ) : (
+    <ReconciliationDialog {...props} client={null} />
+  );
+}
+
+function ReconciliationDialogWithClient(props: ReconciliationModalProps) {
+  const client = useConvex();
+  return <ReconciliationDialog {...props} client={client ?? null} />;
+}
+
+function ReconciliationDialog({
   isOpen,
   onClose,
   onConfirm,
@@ -1069,7 +1183,9 @@ export default function ReconciliationModal({
   twinNotice,
   parentPath,
   showAllSlInitially = false,
-}: ReconciliationModalProps) {
+  baseCheck,
+  client,
+}: ReconciliationModalProps & { client: BaseMatchClient | null }) {
   const usedSlSet = useMemo(
     () => new Set(usedSlPlatformValues),
     [usedSlPlatformValues],
@@ -1347,7 +1463,13 @@ export default function ReconciliationModal({
   // NOTE what is deliberately NOT here: nothing is hidden because some other NB
   // set already maps to it. `usedSlPlatformValues` scopes this modal to its own
   // level; within it, a marketplace set may be mapped by any number of NB sets.
-  const filteredPendingSl = useMemo(() => {
+  //
+  // NEO-325 — in three steps, because the Base check needs two of them. The
+  // SCOPE is what a column shows with its search box empty (other-level ids
+  // and the SportLots prefix applied): that is what the check reaches. The
+  // QUERIED list adds the search box: that is the check's priority. The
+  // FILTERED list (below) then sets aside what does not match the Base.
+  const scopedPendingSl = useMemo(() => {
     return state.pendingSl.filter((item) => {
       if (usedSlSet.has(item.platformValue)) return false;
       const v = item.value.toLowerCase();
@@ -1357,18 +1479,94 @@ export default function ReconciliationModal({
       ) {
         return false;
       }
-      if (slQuery && !v.includes(slQuery)) return false;
       return true;
     });
-  }, [state.pendingSl, activeSlPrefixes, slQuery, usedSlSet]);
+  }, [state.pendingSl, activeSlPrefixes, usedSlSet]);
+
+  const queriedPendingSl = useMemo(() => {
+    if (!slQuery) return scopedPendingSl;
+    return scopedPendingSl.filter((item) =>
+      item.value.toLowerCase().includes(slQuery),
+    );
+  }, [scopedPendingSl, slQuery]);
+
+  const scopedPendingBsc = useMemo(() => {
+    return state.pendingBsc.filter(
+      (item) => !usedBscSet.has(item.platformValue),
+    );
+  }, [state.pendingBsc, usedBscSet]);
+
+  const queriedPendingBsc = useMemo(() => {
+    if (!bscQuery) return scopedPendingBsc;
+    return scopedPendingBsc.filter((item) =>
+      item.value.toLowerCase().includes(bscQuery),
+    );
+  }, [scopedPendingBsc, bscQuery]);
+
+  // NEO-325 — the Base check (see `baseCheck`). It runs over the columns
+  // BEFORE anything is set aside, so a set keeps its verdict whether or not
+  // it is on screen; closing the dialog cancels it.
+  const probeScope = useMemo(
+    () => ({
+      bsc: scopedPendingBsc.map((i) => i.platformValue),
+      sportlots: scopedPendingSl.map((i) => i.platformValue),
+    }),
+    [scopedPendingBsc, scopedPendingSl],
+  );
+  const probeView = useMemo(
+    () => ({
+      bsc: queriedPendingBsc.map((i) => i.platformValue),
+      sportlots: queriedPendingSl.map((i) => i.platformValue),
+    }),
+    [queriedPendingBsc, queriedPendingSl],
+  );
+  const probe = useBaseMatchProbe({
+    client,
+    variantTypeId: isOpen ? baseCheck?.variantTypeId : undefined,
+    scope: probeScope,
+    view: probeView,
+  });
+  const checksOn = probe.phase === "on";
+  const probeChecks = probe.checks;
+  const checkOf = useCallback(
+    (side: Side, platformValue: string): RowCheck | undefined =>
+      checksOn
+        ? probeChecks.get(checkKey(toProbeSide(side), platformValue))
+        : undefined,
+    [checksOn, probeChecks],
+  );
+  // Set aside: a VIEW filter only. The rows stay in Pending (reducer state)
+  // and behind each column's "Show N that don't match the Base".
+  const [showMismatched, setShowMismatched] = useState<Record<Side, boolean>>({
+    bsc: false,
+    sl: false,
+  });
+  const mismatchedSl = useMemo(
+    () =>
+      checksOn
+        ? queriedPendingSl.filter((i) => isMismatch(checkOf("sl", i.platformValue)))
+        : [],
+    [checksOn, queriedPendingSl, checkOf],
+  );
+  const mismatchedBsc = useMemo(
+    () =>
+      checksOn
+        ? queriedPendingBsc.filter((i) => isMismatch(checkOf("bsc", i.platformValue)))
+        : [],
+    [checksOn, queriedPendingBsc, checkOf],
+  );
+
+  const filteredPendingSl = useMemo(() => {
+    if (mismatchedSl.length === 0) return queriedPendingSl;
+    const out = new Set(mismatchedSl.map((i) => i.platformValue));
+    return queriedPendingSl.filter((i) => !out.has(i.platformValue));
+  }, [queriedPendingSl, mismatchedSl]);
 
   const filteredPendingBsc = useMemo(() => {
-    return state.pendingBsc.filter((item) => {
-      if (usedBscSet.has(item.platformValue)) return false;
-      if (!bscQuery) return true;
-      return item.value.toLowerCase().includes(bscQuery);
-    });
-  }, [state.pendingBsc, usedBscSet, bscQuery]);
+    if (mismatchedBsc.length === 0) return queriedPendingBsc;
+    const out = new Set(mismatchedBsc.map((i) => i.platformValue));
+    return queriedPendingBsc.filter((i) => !out.has(i.platformValue));
+  }, [queriedPendingBsc, mismatchedBsc]);
 
   // A real reconcile can hold a dozen-plus Ready sets, which pushes Pending out
   // of reach — the dialog body is its own scroller, so there is no getting back
@@ -1721,6 +1919,36 @@ export default function ReconciliationModal({
     });
   }, []);
 
+  /**
+   * NEO-325 (a11y, WCAG 2.4.3) — a verdict that sets a row aside takes the
+   * row out of its column under the operator. If focus was on it (its handle
+   * or its "Make its own set"), the browser drops it to <body>, outside this
+   * aria-modal dialog. Park it on that column's "Show N that don't match the
+   * Base", which just appeared or grew and says where the row went. Only when
+   * focus really was dropped; anywhere else, the operator put it there.
+   */
+  const mismatchCountsRef = useRef<Record<Side, number>>({ bsc: 0, sl: 0 });
+  useEffect(() => {
+    const prev = mismatchCountsRef.current;
+    const grew: Side | null =
+      mismatchedSl.length > prev.sl
+        ? "sl"
+        : mismatchedBsc.length > prev.bsc
+          ? "bsc"
+          : null;
+    mismatchCountsRef.current = {
+      bsc: mismatchedBsc.length,
+      sl: mismatchedSl.length,
+    };
+    if (!grew || !isOpen) return;
+    if (document.activeElement !== document.body) return;
+    dialogRef.current
+      ?.querySelector<HTMLElement>(`button[data-base-toggle="${grew}"]`)
+      ?.focus();
+  }, [mismatchedBsc.length, mismatchedSl.length, isOpen]);
+
+  const mismatchGroupBaseId = useId();
+
   const handlePromoteSolo = useCallback(
     (side: Side, platformValue: string, index: number) => {
       const item = resolveItem(side, platformValue);
@@ -1876,23 +2104,40 @@ export default function ReconciliationModal({
     const all = isBsc ? state.pendingBsc : state.pendingSl;
     const query = isBsc ? bscQuery : slQuery;
     const sideName = isBsc ? "BSC" : "SportLots";
+    const probeSide = toProbeSide(side);
     const narrowed = filtered.length !== all.length;
+    // NEO-325 — the Base check's view of this column. `scoped` is what the
+    // check reaches (the counter and the sleeves); `mismatched` is what the
+    // search box shows of the sets set aside.
+    const scoped = isBsc ? scopedPendingBsc : scopedPendingSl;
+    const mismatched = isBsc ? mismatchedBsc : mismatchedSl;
+    const revealMismatched = checksOn && mismatched.length > 0 && showMismatched[side];
     // NEO-300 — Keep all acts on exactly the rows that carry a "Make its own
     // set" button: `filtered`, i.e. after the search box, the SportLots
     // prefix filter ("Show all" off) and the other-level exclusion. The
     // "already mapped" reveal is not included — those already back a set,
     // and none of them offers "Make its own set" either.
     //
+    // NEO-325 — and, while the Base check runs, never a row that does not
+    // match the Base (revealed or not) or one still being checked: Keep all
+    // promotes only what has been checked. A set-aside row is promoted only
+    // by its own "Make its own set".
+    const keepable = checksOn
+      ? filtered.filter((i) => checkOf(side, i.platformValue)?.state === "done")
+      : filtered;
+    const stillChecking = filtered.length - keepable.length;
+    const keepNarrowed = keepable.length !== all.length;
+    //
     // Labels: the accessible name BEGINS with the visible words (WCAG 2.5.3
     // label in name), then says what they reach. The two columns' names share
     // no substring either way, and neither matches CardPairingModal's
     // "Keep all BSC-only cards".
-    const keepAllName = `Keep all: ${filtered.length} ${sideName} ${
-      filtered.length === 1 ? "set" : "sets"
+    const keepAllName = `Keep all: ${keepable.length} ${sideName} ${
+      keepable.length === 1 ? "set" : "sets"
     }`;
     const keepAll = () => {
-      if (filtered.length === 0) return;
-      dispatch({ type: "PROMOTE_SOLO_MANY", side, items: filtered });
+      if (keepable.length === 0) return;
+      dispatch({ type: "PROMOTE_SOLO_MANY", side, items: keepable });
       setSelected(null);
       // The list this emptied took the focused button with it.
       requestAnimationFrame(() =>
@@ -1909,6 +2154,118 @@ export default function ReconciliationModal({
         )
       : [];
 
+    // The column's Base-check counter, over everything the check reaches.
+    let settled = 0;
+    let matched = 0;
+    let notMatched = 0;
+    let unverifiable = 0;
+    if (checksOn) {
+      for (const item of scoped) {
+        const check = checkOf(side, item.platformValue);
+        if (check?.state !== "done") continue;
+        settled++;
+        if (check.verdict === "match") matched++;
+        else if (check.verdict === "mismatch") notMatched++;
+        else unverifiable++;
+      }
+    }
+    const checkTotal = scoped.length;
+    const checkHeader =
+      settled < checkTotal
+        ? BASE_MATCH_COPY.checkingHeader(settled, checkTotal)
+        : BASE_MATCH_COPY.checkedHeader(matched, notMatched, unverifiable);
+    // Said in tenths, then once at the end: a 579-row column is not read
+    // aloud row by row. Worded apart from the counter (side name, full stop)
+    // so the page never carries the counter's text twice.
+    const tenth = checkTotal > 0 ? Math.floor((settled * 10) / checkTotal) : 0;
+    const checkPulse =
+      checkTotal === 0
+        ? ""
+        : settled === checkTotal
+          ? BASE_MATCH_COPY.pulseDone(probeSide, checkHeader)
+          : tenth > 0
+            ? BASE_MATCH_COPY.pulse(probeSide, tenth * 10)
+            : "";
+    const toggleVisible = showMismatched[side]
+      ? BASE_MATCH_COPY.hideMismatched(mismatched.length)
+      : BASE_MATCH_COPY.showMismatched(mismatched.length);
+    const mismatchGroupId = `${mismatchGroupBaseId}-${side}`;
+
+    /** A row's check, for its glyph and words; undefined with the check off. */
+    const statusOf = (item: PlatformItem) => {
+      const check = checkOf(side, item.platformValue);
+      return check ? { kind: checkKind(check), srText: checkSrText(check) } : undefined;
+    };
+
+    /**
+     * One pending row. With the check on, every row is wrapped (so a verdict
+     * landing never swaps the row's element type and remounts it under
+     * focus), and a row set aside or not checkable carries its reason under it.
+     */
+    const pendingRow = (item: PlatformItem, buttonIndex: number) => {
+      const row = (
+        // NEO-325: keyed and dnd-identified by marketplace id. Keyed by
+        // name, two same-named SportLots sets shared a React key, and
+        // filtering the column left a stale twin on screen.
+        <DraggableItem
+          key={`${side}-${item.platformValue}`}
+          id={`${side}-${item.platformValue}`}
+          name={<ItemName item={item} side={side} dups={dups} />}
+          platform={side}
+          isSelected={
+            selected?.side === side &&
+            selected.platformValue === item.platformValue
+          }
+          onClick={() => handlePendingClick(side, item.platformValue)}
+          status={statusOf(item)}
+          action={
+            <button
+              type="button"
+              data-own-set={side}
+              onClick={() =>
+                handlePromoteSolo(side, item.platformValue, buttonIndex)
+              }
+              className={OWN_SET_ROW_BUTTON}
+              // WCAG 2.5.3: the name begins with the visible text, then
+              // names the row — with its id when the name is shared, so
+              // twins are distinct to a screen reader too.
+              // bowman-insert-grouping-builds-parallels.yaml taps this by
+              // id (Maestro id: is a full-string regex match), so a
+              // unique name must stay exactly `Make its own set: <name>`.
+              aria-label={`Make its own set: ${itemLabel(item, side, dups[side])}`}
+            >
+              Make its own set
+            </button>
+          }
+        />
+      );
+      if (!checksOn) return row;
+      const check = checkOf(side, item.platformValue);
+      const reason =
+        check?.state === "done" && check.verdict !== "match" ? check : undefined;
+      return (
+        <div key={`${side}-${item.platformValue}`}>
+          {row}
+          {reason && (
+            // amber-300: the dialog's "a person should look at this" tone
+            // (the twin notice); gray-400 for "couldn't check", a fact
+            // rather than a finding. Both clear 4.5:1 on gray-900.
+            <p
+              className={`text-[11px] mt-0.5 px-1 ${
+                reason.verdict === "mismatch" ? "text-amber-300" : "text-gray-400"
+              }`}
+            >
+              {reason.reason}
+            </p>
+          )}
+        </div>
+      );
+    };
+    // "Make its own set" buttons are found again by DOM order after a
+    // promote (`refocusColumn`), so the index counts the revealed rows, which
+    // render first.
+    const revealedCount = revealMismatched ? mismatched.length : 0;
+
     return (
       <div>
         <div className="flex items-center justify-between gap-2 mb-2">
@@ -1923,22 +2280,55 @@ export default function ReconciliationModal({
           <button
             type="button"
             onClick={keepAll}
-            disabled={filtered.length === 0}
+            disabled={keepable.length === 0}
             aria-label={keepAllName}
-            title={
-              narrowed
-                ? `Make each of the ${filtered.length} listed ${sideName} sets its own NeonBinder set`
+            title={`${
+              keepNarrowed
+                ? `Make each of the ${keepable.length} listed ${sideName} sets its own NeonBinder set`
                 : `Make every pending ${sideName} set its own NeonBinder set`
-            }
+            }${
+              checksOn
+                ? BASE_MATCH_COPY.keepAllLeftOut(stillChecking, mismatched.length)
+                : ""
+            }`}
             className={KEEP_ALL_BUTTON}
           >
             {/* Filtered, the number says the button reaches only what is
                 listed — never the rows the search is hiding. */}
-            {narrowed && filtered.length > 0
-              ? `Keep all ${filtered.length}`
+            {keepNarrowed && keepable.length > 0
+              ? `Keep all ${keepable.length}`
               : "Keep all"}
           </button>
         </div>
+        {checksOn && checkTotal > 0 && (
+          // NEO-325 — the column's Base check, in the run ledger's shape: a
+          // counter, a sleeve per set filling as each one settles, and one
+          // polite line that says it in tenths. The sleeves are decorative
+          // (aria-hidden); the counter and the rows say it all in words.
+          <div className="mb-2">
+            <p className="text-[11px] text-gray-400 tabular-nums">
+              {checkHeader}
+            </p>
+            <SleeveStrip
+              items={scoped.slice(0, SLEEVE_CAP).map((item) => {
+                const check = checkOf(side, item.platformValue);
+                const label = itemLabel(item, side, dups[side]);
+                return {
+                  key: item.platformValue,
+                  kind: check ? checkKind(check) : "waiting",
+                  title:
+                    check?.state === "done"
+                      ? `${label} — ${check.reason}`
+                      : `${label} — ${BASE_MATCH_COPY.srChecking}`,
+                };
+              })}
+              tones={CHECK_SLEEVE_TONE}
+              more={Math.max(0, scoped.length - SLEEVE_CAP)}
+              moreClassName="text-[10px] leading-[14px] text-gray-400 tabular-nums"
+            />
+            <LiveLine text={checkPulse} />
+          </div>
+        )}
         <FilterInput
           value={isBsc ? bscFilter : slFilter}
           onChange={isBsc ? setBscFilter : setSlFilter}
@@ -1978,42 +2368,48 @@ export default function ReconciliationModal({
           />
           Show sets already mapped
         </label>
-        <div className="space-y-1.5 min-h-[60px]">
-          {filtered.map((item, index) => (
-            // NEO-325: keyed and dnd-identified by marketplace id. Keyed by
-            // name, two same-named SportLots sets shared a React key, and
-            // filtering the column left a stale twin on screen.
-            <DraggableItem
-              key={`${side}-${item.platformValue}`}
-              id={`${side}-${item.platformValue}`}
-              name={<ItemName item={item} side={side} dups={dups} />}
-              platform={side}
-              isSelected={
-                selected?.side === side &&
-                selected.platformValue === item.platformValue
-              }
-              onClick={() => handlePendingClick(side, item.platformValue)}
-              action={
-                <button
-                  type="button"
-                  data-own-set={side}
-                  onClick={() =>
-                    handlePromoteSolo(side, item.platformValue, index)
-                  }
-                  className={OWN_SET_ROW_BUTTON}
-                  // WCAG 2.5.3: the name begins with the visible text, then
-                  // names the row — with its id when the name is shared, so
-                  // twins are distinct to a screen reader too.
-                  // bowman-insert-grouping-builds-parallels.yaml taps this by
-                  // id (Maestro id: is a full-string regex match), so a
-                  // unique name must stay exactly `Make its own set: <name>`.
-                  aria-label={`Make its own set: ${itemLabel(item, side, dups[side])}`}
-                >
-                  Make its own set
-                </button>
-              }
+        {checksOn && mismatched.length > 0 && (
+          // NEO-325 — the sets the Base check set aside, never silently gone.
+          // A disclosure: its text says how many and its state is
+          // `aria-expanded`. Enter is handled here because the E2E driver's
+          // `pressKey` has no default action.
+          <button
+            type="button"
+            data-base-toggle={side}
+            aria-expanded={showMismatched[side]}
+            aria-controls={showMismatched[side] ? mismatchGroupId : undefined}
+            aria-label={BASE_MATCH_COPY.toggleName(toggleVisible, probeSide)}
+            onClick={() =>
+              setShowMismatched((prev) => ({ ...prev, [side]: !prev[side] }))
+            }
+            onKeyDown={(event) =>
+              activateOnEnter(event, () =>
+                setShowMismatched((prev) => ({ ...prev, [side]: !prev[side] })),
+              )
+            }
+            className="group mb-2 inline-flex items-center gap-1 min-h-[24px] rounded-sm text-xs font-medium text-amber-300 hover:text-amber-200 underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF]"
+          >
+            <ChevronRightIcon
+              aria-hidden="true"
+              className={`h-3.5 w-3.5 shrink-0 motion-safe:transition-transform ${
+                showMismatched[side] ? "rotate-90" : ""
+              }`}
             />
-          ))}
+            {toggleVisible}
+          </button>
+        )}
+        <div className="space-y-1.5 min-h-[60px]">
+          {revealMismatched && (
+            // Set apart from the rows that matched by an amber rule, the
+            // reason's own tone, so the eye reads them as one group.
+            <div
+              id={mismatchGroupId}
+              className="space-y-1.5 border-l-2 border-amber-400/70 pl-2 pb-1"
+            >
+              {mismatched.map((item, index) => pendingRow(item, index))}
+            </div>
+          )}
+          {filtered.map((item, index) => pendingRow(item, revealedCount + index))}
           {mapped.map(({ item, usedBy }) => (
             <div key={`mapped-${side}-${item.platformValue}`}>
               <DraggableItem
@@ -2039,7 +2435,7 @@ export default function ReconciliationModal({
               Nothing pending on {isBsc ? "BSC" : "SportLots"}
             </p>
           )}
-          {all.length > 0 && filtered.length === 0 && (
+          {all.length > 0 && filtered.length === 0 && mismatched.length === 0 && (
             <p className="text-xs text-gray-500 italic py-2">
               {query
                 ? `No ${isBsc ? "BSC" : "SL"} items contain "${query}"`
