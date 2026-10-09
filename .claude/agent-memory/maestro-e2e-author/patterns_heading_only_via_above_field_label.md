@@ -34,6 +34,7 @@ only, so a box starting at the same column left edge passes too. (Extends
 the label TEXT is the only usable anchor; see [[input-primitive-has-no-resource-id]].)
 
 Also worth knowing: since NEO-319 a Create or Open on /admin/players reveals the
-panel heading at ~y=160 with no flow scroll needed. Older flows still carry an
-UP scroll to `Filter players` after Create; it still passes (one swipe to
-scroll 0) but is no longer needed for positioning.
+panel heading at ~y=160 with no flow scroll needed, and that leaves the FILTER
+ROW at ~y=10-74, under the 79px sticky app bar. A step that then taps
+`Filter players` or reads the counter still needs an UP scroll first (one swipe
+to scroll 0); a step that goes on DOWN into the panel needs none.

@@ -207,19 +207,24 @@ tags:
 - tapOn:
     id: "Create player Alp${output.TOKEN}"
 
-# Same positioning pair as admin-teams-two-eras (read its note): the UP swipe
-# to the list label gives the page a deterministic position, and centring the
-# empty-stints line is what puts "+ Add team" and its popover clear of the
-# fold. Both centre — measured there at 0.5-4.8s, inside 7000.
-- scrollUntilVisible:
-    element:
-      text: "Filter players"
-    direction: UP
-    centerElement: true
-    timeout: 7000
+# NO SCROLL after the tap (NEO-319). The add form stays up, busy, until the new
+# player has loaded; the panel then replaces it in one render with its heading
+# revealed just under the app bar (~y=160), the sticky `Added …` notice above
+# it. (Until NEO-319 the form unmounted first, the page clamped and scroll
+# anchoring left the panel's top above the viewport, so this flow scrolled UP
+# to `Filter players` before reading anything.) The heading selector is the
+# panel's <h3> alone — `above:` is a top-edge test, the panel's name box sits
+# BELOW its `Player name` label and the busy form has no such label (see
+# player-management-add-and-career-history). The next scroll is a centred DOWN
+# scroll to a target below this position, so where it parks the page is set
+# by the target, not by where this step left it.
 - extendedWaitUntil:
-    visible: ".*Added Alp${output.TOKEN}.*"
+    visible:
+      text: "Alp${output.TOKEN}"
+      above:
+        text: "Player name"
     timeout: 7000
+- assertVisible: ".*Added Alp${output.TOKEN}.*"
 - scrollUntilVisible:
     element:
       text: "No stints recorded yet."
