@@ -27,3 +27,4 @@
 - [Neo322 rekey arm test pattern](reference_neo322_rekey_arm_test_pattern.md) — snapshot-all-tables for "writes nothing", two independent arm doors need two red proofs
 - [Typecheck and lint blind spots for tests](reference_typecheck_and_lint_blind_spots_for_tests.md) — typecheck skips *.test.ts, eslint ignores components/**/*.ts; key-collision console.error probe; filter-hides-twin fixture
 - [NEO-325 twin test patterns](reference_neo325_twin_test_patterns.md) — twin test layout, break-check loop, status-region helper, module-registry query swap, equivalent mutants
+- [Placeholder pairing race tests](reference_placeholder_pairing_race_tests.md) — hand-driven interleave, two-layer guards, blind stored-read registry swap
