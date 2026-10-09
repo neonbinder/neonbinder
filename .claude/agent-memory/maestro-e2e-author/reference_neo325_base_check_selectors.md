@@ -1,6 +1,6 @@
 ---
 name: neo325-base-check-selectors
-description: Parallel Reconcile's Base check (NEO-325) — the constant toggle name (open/closed proved by the revealed row), Keep all's names, the row wrapper + reason line and sr-only status that a containsChild/containsDescendants pair scopes to ONE row, where it runs (parallel role + Base cards only), and what it does to Keep all and column counts
+description: Parallel Reconcile's Base check (NEO-325) — the constant toggle name (open/closed proved by the revealed row), Keep all's names, the row wrapper + reason line a containsChild/containsDescendants pair scopes to ONE row, per-id verdicts via sleeve titles (the sr-only status is unreachable), where it runs (parallel role + Base cards only), and what it does to Keep all and column counts
 metadata:
   type: reference
 ---
@@ -29,18 +29,22 @@ apostrophes, match with `.`):
   compare.` / `…: sign in, then reopen this.` for an unverifiable row, which
   stays LISTED, never in the revealed group). So a bare
   `containsChild: {text: "Doesn.t match the Base.*"}` names only revealed rows.
-- every row's handle holds an sr-only span `, matches the Base` / `,
-  doesn't match the Base` / `, checking against the Base` / `, couldn't be
-  checked against the Base` (a 1×1 node maestro-web lists).
+- every row's handle holds an sr-only span `, matches the Base` / `, doesn't
+  match the Base` / … — UNUSABLE: the body scroller is unpositioned, so the
+  span stays at its scrollTop-0 spot and is pruned once the body is lifted
+  ([[sr-only-in-unpositioned-scroller]]; CI-proved). Per-id verdict instead:
+  the sleeve strip's `title` → `id: "<label> — Matches the Base"` (or `<label>
+  — <reason>`; `— checking against the Base` while pending). The strip draws
+  the scope's first 200 sets only (`+N`). The verdict glyph is an svg, which
+  maestro-web never lists.
 - column counter `Checking against Base — X of Y` → `Checked against Base —
   A match, B don't[, C couldn't be checked]` + an aria-hidden sleeve strip
   (≤200 sleeves, ~33 per 463px row) above the search box.
 
 **One row, one node:** `containsChild` is direct-children-only, so
 `{containsChild: {text: "Doesn.t match the Base.*"}, containsDescendants:
-[{id: "Make its own set: <label>"}]}` resolves to exactly that row's wrapper,
-and `{containsChild: {text: ".*matches the Base"}, containsDescendants:
-[{text: "\\(#<id>\\)"}]}` to that row's handle. Verified by javap (2.8.0):
+[{id: "Make its own set: <label>"}]}` resolves to exactly that row's wrapper (the `.*matches the Base` handle
+form is dead, above). Verified by javap (2.8.0):
 `Filters.containsChild` runs the child filter over the whole node list (no
 visibility), and `ElementSelector.evaluateScripts` recurses into
 `containsChild`/`containsDescendants`, so `${output.X}` works inside them.

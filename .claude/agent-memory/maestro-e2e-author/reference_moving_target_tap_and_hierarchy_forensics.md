@@ -69,6 +69,14 @@ plus `flex-1 min-h-0 overflow-y-auto` on the body. Then the footer's y is invari
 NEO-110 shipped the min-height bound twice (108px → ~28px → ~13px) before the 13px
 came due; do not re-litigate it with a bigger number.
 
+**Flow-side guard when the product is fine as is:** gate the FIRST tap on the
+async content that sets the dialog's final height, never on a control that
+renders from frame 1. NEO-325, Attach sets (`items-center`, `max-h-[85vh]`):
+`Search SportLots sets` resolved at y=305 while the pane read `Loading…`, the
+2,500-set list landed, the box rose 99px, and the tap ticked the candidate
+under it; the id was typed into nothing. Gate on `text: "id: [0-9]+"` childOf
+`SportLots candidates` first — a full list pins the dialog at max height.
+
 ## Verifying layout geometry with NO app server (headless-shell + --dump-dom)
 
 `~/.cache/puppeteer/chrome-headless-shell/*/chrome-headless-shell-mac-arm64/chrome-headless-shell`

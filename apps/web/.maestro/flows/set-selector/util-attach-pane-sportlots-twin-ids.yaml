@@ -89,13 +89,31 @@ tags:
       id: "Search SportLots sets"
     timeout: 7000
 
+# ── THE PANE'S LIST HAS LANDED ───────────────────────────────────────────────
+# Wait for a candidate BEFORE touching the search box. The dialog is centred
+# (`items-center`) and grows to `max-h-[85vh]` only when the SportLots list
+# arrives, so the box MOVES: CI 37960551124 resolved it at y=305-339 while
+# the pane read "Loading…", the list landed before the click, the dialog's
+# top rose ~99px (box at y=206-240), and the tap ticked the candidate now
+# under it ("1989 Topps All Star"); the id was then typed into nothing and
+# the wait below failed on an unfiltered list. Any candidate's `id: <n>`
+# line exists only once the list is in, and 2,500+ sets hold the dialog at
+# its maximum height, so the box stays put from here. A LIVE SportLots
+# round-trip started when the dialog opened (`fetchSlAttachSets`): R5's
+# marketplace exception, the 30000 the sibling
+# `multi-source-panel-opens-dialog` carries for the same fetch.
+- extendedWaitUntil:
+    visible:
+      text: "id: [0-9]+"
+      childOf:
+        id: "SportLots candidates"
+    timeout: 30000
+
 # ── THE OTHER TWIN IS OFFERED ────────────────────────────────────────────────
 # The pane's search matches the id as well as the name (AttachSetsDialog
 # `searchFilter`), so typing the id narrows to exactly that candidate and
-# keeps its row at the top of the pane, inside the dialog. The wait is the
-# pane's list landing: a LIVE SportLots round-trip started when the dialog
-# opened (`fetchSlAttachSets`) — R5's marketplace exception, the 30000 the
-# sibling `multi-source-panel-opens-dialog` carries for the same fetch.
+# keeps its row at the top of the pane, inside the dialog. Client-side
+# filter of the list already loaded: the 7000 bar.
 - tapOn:
     id: "Search SportLots sets"
     waitToSettleTimeoutMs: 250
@@ -105,7 +123,7 @@ tags:
       text: "id: ${OTHER_ID}"
       childOf:
         id: "SportLots candidates"
-    timeout: 30000
+    timeout: 7000
 # Called by the bare name: the pane no longer lists the name twice.
 - assertVisible:
     id: "Toggle ${TWIN}"

@@ -112,16 +112,14 @@ tags:
 #
 #   CHROME BLACK REFRACTOR (claim 5). The dealer list also holds a twin the
 #   public search cannot see (no stock on one side): "Chrome Black
-#   Refractor" #305604 / #309103 (live dialog, 2026-10-08). Planner's reading,
-#   NOT YET MEASURED: 309103 is the Topps Chrome Black Refractor parallel (the
-#   Base's checklist, so its first card and its SportLots count agree with
-#   the Base) and 305604 is the Topps Chrome Black set (another checklist).
-#   MEASURE: pin `BR_MATCH` / `BR_OTHER` below from the first run on a
-#   preview that carries the Base check — the failure dump or a passing log
-#   names which id stayed listed. If BOTH are set aside (e.g. SportLots'
-#   parallel lists fewer cards than the Base's SportLots-linked count), the
-#   flow fails at its first live wait, by name: that is a finding about the
-#   fixture or the count rule, never a reason to loosen the assert.
+#   Refractor" #305604 / #309103 (live dialog, 2026-10-08). MEASURED on CI
+#   37960551124 (the sleeves' tooltips): 309103 `Matches the Base` and stays
+#   listed; 305604 `Doesn't match the Base — first #1 Mookie Betts (Base:
+#   300 on SportLots, first #1 Shohei Ohtani)` and is set aside. If BOTH are
+#   ever set aside (e.g. SportLots' parallel lists fewer cards than the
+#   Base's SportLots-linked count), the flow fails at its first live wait,
+#   by name: that is a finding about the fixture or the count rule, never a
+#   reason to loosen the assert.
 #
 # ── NEO-287: PAUSED ─────────────────────────────────────────────────────────
 #   Under `PAUSED_PLATFORMS=sportlots` there is no SportLots list and no
@@ -196,11 +194,12 @@ tags:
 #            the state, which maestro-web cannot read, so open/closed is
 #            proved by the revealed row, never by the name; a set-aside row's reason
 #            line `Doesn't match the Base — <observed> (Base: <expected>)`,
-#            the DIRECT child of the row's wrapper (`containsChild`); every
-#            row's screen-reader status, an sr-only span inside its handle,
-#            `, matches the Base` / `, doesn't match the Base` / `, checking
-#            against the Base` (maestro-web lists sr-only spans as 1×1
-#            nodes). Apostrophes are straight in the copy; matched by `.`.
+#            the DIRECT child of the row's wrapper (`containsChild`); a
+#            sleeve's tooltip (`title`, Maestro `id`) `<label> — Matches the
+#            Base` / `<label> — <the row's reason>`. NOT the row's sr-only
+#            status span: it does not scroll with the body (STEP 2b), so it
+#            is off the viewport whenever the body is lifted. Apostrophes
+#            are straight in the copy; matched by `.`.
 #   NOT a handle: each clashing title also gets its own body line, `Same
 #   name as another set. Tip: add the release, like “Series 1” or
 #   “Update”.` (DRAFT copy). No selector here matches it: the block line,
@@ -216,9 +215,7 @@ tags:
 - evalScript: '${output.TWIN_A = "326059"}'
 - evalScript: '${output.TWIN_B = "323331"}'
 
-# THE BASE-CHECK TWIN (claim 5). MEASURE: the two ids are the planner's
-# reading (see the header) — swap them if the first run shows the other one
-# stays listed.
+# THE BASE-CHECK TWIN (claim 5). Measured on CI 37960551124 (see the header).
 - evalScript: '${output.BR = "Chrome Black Refractor"}'
 - evalScript: '${output.BR_MATCH = "309103"}'
 - evalScript: '${output.BR_OTHER = "305604"}'
@@ -349,19 +346,22 @@ tags:
       - inputText: "${output.BR}"
       # THE MATCH (R5 marketplace exception: a SportLots first-page read and
       # a count walk, behind whatever the queue already had in flight). The
-      # twin that IS the Base's parallel stays listed and its row says so:
-      # its handle holds both its id suffix and the sr-only status `, matches
-      # the Base`. `containsChild` is direct-children-only, so the match
-      # resolves to the handle itself and never to a wrapper that merely
-      # holds the suffix of one row and the status of another. A row still
-      # being checked reads `, checking against the Base`, so this waits for
-      # the verdict, not for the row. MEASURE: the ceiling (header "R5").
+      # twin that IS the Base's parallel says so on its sleeve: the column's
+      # strip gives every set it checks a sleeve whose tooltip is the row's
+      # label and verdict (`<label> — Matches the Base`; `<label> — checking
+      # against the Base` until it lands), the same label as its `Make its
+      # own set: <label>`, so this names one id and waits for its verdict,
+      # not for the row. NOT the row's sr-only status: the body scroller is
+      # not positioned, so an sr-only span stays where its row was at
+      # scrollTop 0 (CI 37960551124: row at y=444, its span ~217px lower,
+      # past the 629px viewport, so Maestro prunes it). The strip draws the
+      # first 200 sets of the column's scope (`+N` after); this twin was
+      # sleeve 100 of 580 there. If SportLots ever pushes it past 200, this
+      # fails by name: re-measure, never loosen. MEASURE: the ceiling
+      # (header "R5"); CI 37960551124 had every verdict in before the query.
       - extendedWaitUntil:
           visible:
-            containsChild:
-              text: ".*matches the Base"
-            containsDescendants:
-              - text: "\\(#${output.BR_MATCH}\\)"
+            id: "${output.BR} \\(#${output.BR_MATCH}\\) — Matches the Base"
           timeout: 120000
       # …and it is the row the operator acts on, by its own id (claim 1's
       # form on the second twin).

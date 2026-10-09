@@ -45,4 +45,5 @@ exposure from that comment and it cost a CI round.
 
 Also: maestro-web splits node text at child ELEMENT boundaries only, so
 `<h2>Cards <span>(220)</span></h2>` is two nodes while a `<p>` of text + JSX
-expressions is one. And `sr-only` spans DO appear, as 1×1px nodes.
+expressions is one. And `sr-only` spans DO appear, as 1×1px nodes — at their scrollTop-0 spot
+inside an unpositioned scroller ([[sr-only-in-unpositioned-scroller]]).
