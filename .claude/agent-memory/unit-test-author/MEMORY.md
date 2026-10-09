@@ -29,3 +29,4 @@
 - [NEO-325 twin test patterns](reference_neo325_twin_test_patterns.md) — twin test layout, break-check loop, status-region helper, module-registry query swap, equivalent mutants
 - [Placeholder pairing race tests](reference_placeholder_pairing_race_tests.md) — hand-driven interleave, two-layer guards, blind stored-read registry swap
 - [NEO-325 base match probe tests](reference_neo325_base_match_probe_tests.md) — probe fixture traps, double-layer pause backstop, token-read counter, break-check driver
+- [NEO-325 base match client tests](reference_neo325_base_match_client_tests.md) — hand-resolved fake client + getFunctionName, by-id mapping break trap, loop breaks crash the worker, equivalent catch guard

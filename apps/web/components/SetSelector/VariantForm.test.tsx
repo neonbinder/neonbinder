@@ -41,6 +41,14 @@ vi.mock("../../convex/_generated/api", () => ({
     setParallelConversion: {
       getBrandSlHolders: "getBrandSlHolders",
     },
+    // NEO-325 — the Reconcile dialog's Base check (probe refs are read at
+    // call time by the dialog's hook).
+    baseMatchProbe: {
+      getBaseSignatureForVariantType: "getBaseSignatureForVariantType",
+      probeBscSets: "probeBscSets",
+      probeSlFirstPage: "probeSlFirstPage",
+      probeSlCount: "probeSlCount",
+    },
   },
 }));
 
@@ -77,14 +85,30 @@ let brandHolders: { rows: unknown[]; truncated: boolean } = {
 // NEO-325: the inserts already saved under this variant type (what the
 // reconciler treats as `existingRows`). Empty by default.
 let savedRows: unknown[] = [];
+// NEO-325: replaces the chain's variantType row, to give it an NB role.
+let variantTypeRow: Record<string, unknown> | null = null;
+// NEO-325: the client the Reconcile dialog gets from `useConvex()` — only when
+// it was asked for the Base check. Its signature query answers "skip", so the
+// dialog stays as it was and the call itself is the observable.
+const mockConvexQuery = vi.fn();
+const mockConvexAction = vi.fn();
+const mockUseConvex = vi.fn();
 
 vi.mock("convex/react", () => ({
+  useConvex: () => {
+    mockUseConvex();
+    return { query: mockConvexQuery, action: mockConvexAction };
+  },
   useAction: (ref: string) =>
     ref === "fetchRawOptions" ? mockFetchRawOptions : vi.fn(),
   useMutation: (ref: string) =>
     ref === "storeReconciledOptions" ? mockStore : vi.fn(),
   useQuery: (ref: string) => {
-    if (ref === "getAncestorChain") return CHAIN;
+    if (ref === "getAncestorChain") {
+      return variantTypeRow
+        ? CHAIN.map((row) => (row.level === "variantType" ? variantTypeRow : row))
+        : CHAIN;
+    }
     // Loaded-but-absent, not undefined: the auto-sync effect gates on
     // `baseVariant !== undefined`, so undefined would never fire doSync.
     if (ref === "getBaseVariantBySet") return null;
@@ -150,6 +174,8 @@ beforeEach(() => {
   usedIds = { slPlatformValues: [], bscPlatformValues: [] };
   brandHolders = { rows: [], truncated: false };
   savedRows = [];
+  variantTypeRow = null;
+  mockConvexQuery.mockResolvedValue({ status: "noBase" });
 });
 
 describe("VariantForm — single-platform store (NEO-211 plan B)", () => {
@@ -1515,5 +1541,62 @@ describe("VariantForm — the status regions exist before the store answers (NEO
     await findLiveStatus();
 
     for (const region of before) expect(region.isConnected).toBe(true);
+  });
+});
+
+describe("VariantForm — the Base match check is for the parallel variant type only (NEO-325)", () => {
+  // The twin shape opens the reconcile dialog without needing a pair.
+  const TWIN = { value: "Team Canada", platformValue: "team-canada" };
+  const opensDialog = () => ({
+    success: true,
+    bscOptions: [TWIN],
+    slOptions: [],
+    autoMatched: [],
+    unmatchedBsc: [TWIN],
+    unmatchedSl: [],
+    slCandidates: [],
+    errors: [],
+    message: "BSC: 1, SL: 0",
+    skippedSides: [],
+    pausedSides: [],
+    twinIds: { bsc: ["team-canada"], sportlots: [] },
+  });
+
+  async function openDialogFor(metadata: Record<string, unknown> | undefined, value = "Insert") {
+    variantTypeRow = { _id: "vt1", level: "variantType", value, metadata };
+    mockFetchRawOptions.mockResolvedValue(opensDialog());
+    await renderForm();
+    expect(
+      await screen.findByLabelText("Make its own set: Team Canada (#team-canada)"),
+    ).toBeTruthy();
+    await act(async () => {});
+  }
+
+  it("a variant type with the parallel role hands the dialog the check, keyed on its id", async () => {
+    await openDialogFor({ variantRole: "parallel" });
+
+    expect(mockUseConvex).toHaveBeenCalled();
+    expect(mockConvexQuery).toHaveBeenCalledTimes(1);
+    expect(mockConvexQuery).toHaveBeenCalledWith("getBaseSignatureForVariantType", {
+      variantTypeId: "vt1",
+    });
+  });
+
+  it("the Base type itself gets no check", async () => {
+    await openDialogFor({ isBase: true });
+    expect(mockUseConvex).not.toHaveBeenCalled();
+    expect(mockConvexQuery).not.toHaveBeenCalled();
+  });
+
+  it("an insert type gets no check", async () => {
+    await openDialogFor({ variantRole: "insert" });
+    expect(mockUseConvex).not.toHaveBeenCalled();
+    expect(mockConvexQuery).not.toHaveBeenCalled();
+  });
+
+  it("a row merely NAMED Parallel, with no role, gets no check", async () => {
+    await openDialogFor(undefined, "Parallel");
+    expect(mockUseConvex).not.toHaveBeenCalled();
+    expect(mockConvexQuery).not.toHaveBeenCalled();
   });
 });
