@@ -37,7 +37,8 @@
  *     5 pages), 8 at a time, at most `SL_PROBE_COUNT_MAX_PAGES` pages per id
  *     and `SL_PROBE_DEADLINE_MS` for the whole call.
  *   - `probeBscSets`: one chain query, one token read, then per id one BSC
- *     request per fan-out combination (usually one), sequentially. At most
+ *     request per fan-out combination (usually one), sequentially, inside
+ *     `BSC_PROBE_DEADLINE_MS` for the whole batch. At most
  *     one re-auth for the whole batch, through the NEO-278 backoff and the
  *     credential lock.
  */

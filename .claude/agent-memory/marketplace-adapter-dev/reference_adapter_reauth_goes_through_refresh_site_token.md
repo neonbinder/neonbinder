@@ -5,7 +5,7 @@ metadata:
   type: reference
 ---
 
-An adapter that forces a re-auth after the marketplace refuses a request (BSC 401 with a "fresh" cached token) must go through `internal.credentials.refreshSiteTokenAfterRejection` (NEO-325), which is `refreshSiteToken`: NEO-278 `inReauthBackoff` + the per-(user, site) `withCredentialLock`. Calling `internal.credentials.authenticateBsc` / `authenticateSportlots` directly skips both, so a batch (or two in-flight calls) runs repeated, concurrent, unlocked logins. The SportLots selector empty-result retry still calls `authenticateSportlots` directly (same bug class, not yet fixed as of 2026-10-09).
+An adapter that forces a re-auth after the marketplace refuses a request (BSC 401 with a "fresh" cached token) must go through `internal.credentials.refreshSiteTokenAfterRejection` (NEO-325), which is `refreshSiteToken`: NEO-278 `inReauthBackoff` + the per-(user, site) `withCredentialLock`. Calling `internal.credentials.authenticateBsc` / `authenticateSportlots` directly skips both, so a batch (or two in-flight calls) runs repeated, concurrent, unlocked logins. The SportLots selector empty-result retry was moved onto it in the same ticket; grep `authenticateBsc|authenticateSportlots` under convex/adapters should find comments only.
 
 A shared session object gets a one-re-auth budget (`BscSession.reauthAttempted` / `dead`): after a failed re-auth or a second 401, remaining requests fail `signed_out` with no request and no login.
 

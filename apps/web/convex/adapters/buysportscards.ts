@@ -36,6 +36,7 @@ import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 // NEO-325 — the Base match probe's bounds and wire shapes, shared with the
 // default-runtime actions in `convex/baseMatchProbe.ts`.
 import {
+  BSC_PROBE_DEADLINE_MS,
   MAX_BSC_PROBE_IDS,
   MAX_BSC_PROBE_ID_LENGTH,
   bscProbeRequestValidator,
@@ -1064,6 +1065,16 @@ async function bscChecklistWithSession(
   ctx: ActionCtx,
   args: BscChecklistArgs,
   session: BscSession,
+  limits: {
+    /**
+     * Epoch ms. A wall-clock bound shared by every request of the caller's
+     * call: no request (first send or post-re-auth retry) and no re-auth
+     * starts at or after it, and each request's abort timer is cut to what
+     * is left. A request it stops fails `timeout` with nothing sent.
+     * `fetchBscChecklist` passes none; the probe batch passes its budget.
+     */
+    deadlineAt?: number;
+  } = {},
 ): Promise<BscChecklistResult> {
   // Build nested `filters: { sport: [...], year: [...], ... }`.
   //
@@ -1208,16 +1219,44 @@ async function bscChecklistWithSession(
       sort: "default",
       filters: callFilters,
     };
-    const doFetch = async (token: string): Promise<Response> =>
-      await fetch(`${BSC_API_BASE}/search/bulk-upload/results`, {
+    // The abort timer of the request in flight: the 30s default, or less
+    // when the caller's deadline leaves less (NEO-325).
+    let requestTimeoutMs = BSC_CHECKLIST_FETCH_TIMEOUT_MS;
+    /** Time left before `limits.deadlineAt`; Infinity without one. */
+    const remainingMs = (): number =>
+      limits.deadlineAt === undefined ? Infinity : limits.deadlineAt - Date.now();
+    const doFetch = async (token: string): Promise<Response> => {
+      requestTimeoutMs = Math.max(
+        1,
+        Math.min(BSC_CHECKLIST_FETCH_TIMEOUT_MS, Math.floor(remainingMs())),
+      );
+      return await fetch(`${BSC_API_BASE}/search/bulk-upload/results`, {
         method: "POST",
         headers: bscHeaders(token),
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(BSC_CHECKLIST_FETCH_TIMEOUT_MS),
+        signal: AbortSignal.timeout(requestTimeoutMs),
       });
+    };
+    /** The caller's budget ran out before this step: nothing more is sent. */
+    const outOfTime = (retry: boolean): OneResult => {
+      console.warn(
+        `[fetchBscChecklist] platform=bsc op=checklist skipped: the call's deadline passed — ${retry ? "retry" : "request"} not sent`,
+      );
+      return {
+        ok: false,
+        message: retry
+          ? `BSC probe ran out of time before the retry; not sent`
+          : `BSC probe ran out of time before this request; not sent`,
+        failure: {
+          kind: "timeout",
+          timedOut: true,
+          ...(retry ? { reauthAttempted: true } : {}),
+        },
+      };
+    };
 
-    // NEO-321 follow-up — a thrown fetch, classified. Our own 30s abort
-    // timer is a self-imposed limiter, so its firing is logged as one.
+    // NEO-321 follow-up — a thrown fetch, classified. Our own abort timer
+    // is a self-imposed limiter, so its firing is logged as one.
     const threw = (
       err: unknown,
       startedAt: number,
@@ -1230,19 +1269,20 @@ async function bscChecklistWithSession(
           platform: "bsc",
           operation: "fetchBscChecklist",
           waitedMs,
-          timeoutMs: BSC_CHECKLIST_FETCH_TIMEOUT_MS,
+          timeoutMs: requestTimeoutMs,
           outcome: "aborted",
           retry,
         });
+        const seconds = Math.ceil(requestTimeoutMs / 1000);
         return {
           ok: false,
           message: retry
-            ? `BSC API retry timed out after ${BSC_CHECKLIST_FETCH_TIMEOUT_MS / 1000}s`
-            : `BSC API request timed out after ${BSC_CHECKLIST_FETCH_TIMEOUT_MS / 1000}s`,
+            ? `BSC API retry timed out after ${seconds}s`
+            : `BSC API request timed out after ${seconds}s`,
           failure: {
             kind: "timeout",
             timedOut: true,
-            timeoutMs: BSC_CHECKLIST_FETCH_TIMEOUT_MS,
+            timeoutMs: requestTimeoutMs,
             ...(retry ? { reauthAttempted: true } : {}),
           },
         };
@@ -1278,6 +1318,8 @@ async function bscChecklistWithSession(
       };
     }
 
+    if (!(remainingMs() > 0)) return outOfTime(false);
+
     let response: Response;
     let reauthAttempted = false;
     let sentAt = Date.now();
@@ -1310,10 +1352,14 @@ async function bscChecklistWithSession(
       };
     }
     if (response.status === 401) {
+      await response.text().catch(() => "");
+      // No re-auth the caller's budget could not use: a login started past
+      // the deadline would only delay the answer. The session keeps its
+      // re-auth (nothing was spent), but nothing after this is sent anyway.
+      if (!(remainingMs() > 0)) return outOfTime(false);
       console.warn(
         `[fetchBscChecklist] BSC API 401 with cached token — forcing re-auth and retrying once`,
       );
-      await response.text().catch(() => "");
       reauthAttempted = true;
       session.reauthAttempted = true;
       // NEO-321 follow-up — the re-auth is a wait WE add before the
@@ -1380,6 +1426,9 @@ async function bscChecklistWithSession(
         };
       }
       session.token = refreshed.token;
+      // The re-auth itself is not bounded by the deadline (it is the shared
+      // credential path); the retry is.
+      if (!(remainingMs() > 0)) return outOfTime(true);
       sentAt = Date.now();
       try {
         response = await doFetch(session.token);
@@ -1812,6 +1861,12 @@ export const fetchBscChecklist = action({
  * once it fails, or BSC answers 401 again, every remaining id is `failed` /
  * `signed_out` with no request and no login.
  *
+ * Bounded in wall-clock by `BSC_PROBE_DEADLINE_MS` for the whole batch, from
+ * the first request: each request's abort timer is cut to the time left, and a
+ * request (or a post-re-auth retry) the budget does not reach is `failed` /
+ * `timeout` with nothing sent. The re-auth's own login is the one step the
+ * budget cannot cut short; no re-auth starts once the budget is spent.
+ *
  * Writes no catalog row. The token read and the one re-auth may update the
  * user's credential status (the lock, `needsReauth`), exactly as any
  * `fetchBscChecklist` does. Never throws for a fetch. Reached only through
@@ -1874,6 +1929,9 @@ export const probeBscChecklistBatch = internalAction({
     }
 
     const session: BscSession = { token };
+    // One budget for the whole batch, from the first request: an id it does
+    // not reach fails `timeout` without a request (NEO-325).
+    const deadlineAt = Date.now() + BSC_PROBE_DEADLINE_MS;
     const results: BscProbeSummary[] = [];
     for (const request of args.requests) {
       try {
@@ -1881,6 +1939,7 @@ export const probeBscChecklistBatch = internalAction({
           ctx,
           { parentFilters: {}, facetFilters: request.facetFilters },
           session,
+          { deadlineAt },
         );
         if (!res.success) {
           results.push({

@@ -751,9 +751,32 @@ export const fetchSportLotsSelectorOptions = action({
         selectorAttempt++;
         // Re-authenticate to recover a fresh shared SL session, then refresh
         // the cookie — re-POSTing the same invalidated cookie can't help.
-        await ctx
-          .runAction(internal.credentials.authenticateSportlots, {})
-          .catch(() => {});
+        //
+        // NEO-325 — through `refreshSiteTokenAfterRejection` (that is,
+        // `refreshSiteToken`), never `authenticateSportlots` directly: the
+        // NEO-278 re-auth backoff and the per-(user, site) credential lock
+        // apply here as they do to every fetch-driven refresh. A skipped,
+        // busy or failed refresh answers `refreshed: false`; the loop ignores
+        // the answer exactly as it ignored the old login's, re-reads the
+        // cookie and re-POSTs, and an unchanged cookie simply comes back
+        // empty again.
+        const refreshStartedAt = Date.now();
+        const refresh = await ctx
+          .runAction(internal.credentials.refreshSiteTokenAfterRejection, {
+            site: "sportlots",
+          })
+          .catch(() => ({ refreshed: false }));
+        console.log(
+          JSON.stringify({
+            msg: "sl_selector_empty_reauth",
+            platform: "sportlots",
+            requestId,
+            level: args.level,
+            attempt: selectorAttempt,
+            refreshed: refresh.refreshed,
+            durationMs: Date.now() - refreshStartedAt,
+          }),
+        );
         sessionCookie = (await getSportLotsCookie(ctx)) ?? sessionCookie;
         // Brief backoff so the fresh session settles before the re-POST.
         await new Promise((resolve) =>

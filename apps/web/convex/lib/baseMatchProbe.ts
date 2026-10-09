@@ -58,6 +58,14 @@ export const SL_PROBE_COUNT_MAX_PAGES = 16;
  * budget does not reach is answered `failed` / `timeout` without a request.
  */
 export const SL_PROBE_DEADLINE_MS = 90_000;
+/**
+ * Wall-clock budget for one BSC probe batch (`probeBscChecklistBatch`), from
+ * its first request: the same 90s as SportLots, well under the 10-minute
+ * Convex action limit. Each request's 30s abort timer is cut to what is left;
+ * a request the budget does not reach is answered `failed` / `timeout`
+ * without being sent.
+ */
+export const BSC_PROBE_DEADLINE_MS = 90_000;
 /** A SportLots set id is a short slug (`MAX_SL_ID_LENGTH`). */
 export const MAX_SL_PROBE_ID_LENGTH = MAX_SL_ID_LENGTH;
 /**

@@ -26,8 +26,10 @@
  * Both adapters begin by resolving a session token
  * (`getSportLotsCookie` / `getBscToken` → `internal.credentials.getSiteToken`),
  * and the SportLots empty-result recovery loop forces a re-auth between
- * attempts (`internal.credentials.authenticateSportlots`). Those paths are NOT
- * bounded by anything the caller can express:
+ * attempts (`internal.credentials.refreshSiteTokenAfterRejection`, which runs
+ * `refreshSiteToken` and so `authenticateSportlots` under the NEO-278 backoff
+ * and the credential lock; NEO-325). Those paths are NOT bounded by anything
+ * the caller can express:
  *
  *   - `readCachedToken` → `browserFetch` is capped at BROWSER_FETCH_TIMEOUT_MS
  *     (15s, convex/credentials.ts) and `getSiteToken` can make up to two of
