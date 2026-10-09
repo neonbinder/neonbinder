@@ -1013,6 +1013,7 @@ describe("unchanged rows are not rewritten", () => {
     const result = await t.mutation(internal.placeholderPairing.applyPairDiff, {
       jobId: JOB,
       userId: USER_A.subject,
+      final: true,
       deleteIds: [],
       patches: [
         {
@@ -1028,7 +1029,13 @@ describe("unchanged rows are not rewritten", () => {
       inserts: [],
     });
 
-    expect(result).toEqual({ deleted: 0, revised: 1, inserted: 0 });
+    expect(result).toEqual({
+      stale: false,
+      deleted: 0,
+      revised: 1,
+      inserted: 0,
+      skipped: [],
+    });
     const after = await t.run(async (ctx) => ctx.db.get(pairId));
     expect(after?._creationTime).toBe(before?._creationTime);
     expect(after?.confidence).toBe("exact");
@@ -1057,6 +1064,7 @@ describe("unchanged rows are not rewritten", () => {
     const result = await t.mutation(internal.placeholderPairing.applyPairDiff, {
       jobId: "job-mine",
       userId: USER_A.subject,
+      final: true,
       deleteIds: [foreignId],
       patches: [],
       inserts: [],

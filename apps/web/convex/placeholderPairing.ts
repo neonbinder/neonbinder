@@ -107,6 +107,71 @@ const REPAIR_ALLOWED_STATUSES = new Set([
   "failed",
 ]);
 
+/**
+ * May a pairing run with these flags write to a job in this status?
+ *
+ * The single definition, used twice: by `runPairing` as its early exit before
+ * it reads anything, and again INSIDE every write mutation it makes (`applyPairDiff`,
+ * `syncImagePairStatus`). The second check is the one that matters for
+ * correctness. An action's read and its writes are separate transactions, and
+ * the job can leave a writable status in between — most sharply when
+ * `closePlaceholderStream` finalizes inline and writes the terminal pairs in
+ * the gap. A provisional run that checked only at the start then wrote its
+ * stale diff on top, and the batch printed duplicate pairs. Re-reading the job
+ * inside the write also puts the job row in that mutation's read set, so a
+ * close that commits concurrently forces a retry that sees the new status.
+ *
+ * A `final` run is never refused: it is the only thing that moves a job out of
+ * "pairing" (see `runPairing`). A `force` re-pair keeps its own wider set.
+ */
+export function pairingRunMayWrite(
+  status: string,
+  run: { final: boolean; force?: boolean },
+): boolean {
+  return (
+    run.final ||
+    INCREMENTAL_PAIRING_STATUSES.has(status) ||
+    (run.force === true && REPAIR_ALLOWED_STATUSES.has(status))
+  );
+}
+
+/**
+ * True when a non-final run must not write: its job is gone or has left the
+ * statuses that run may write to. Called first inside each write mutation, so
+ * the answer is the one in force when the write commits.
+ */
+async function pairingWriteIsStale(
+  ctx: MutationCtx,
+  jobId: string,
+  run: { final: boolean; force?: boolean },
+): Promise<boolean> {
+  if (run.final) return false;
+  const job = await findJob(ctx, jobId);
+  return job === null || !pairingRunMayWrite(job.status, run);
+}
+
+/**
+ * Every entry index that is a half of some stored pair of this job. An image
+ * belongs to at most one pair, so this is what both write helpers check before
+ * creating a pair or stamping a verdict. Bounded like `listPairsForDiff`: at
+ * most MAX_ZIP_ENTRIES / 2 pairs per job.
+ */
+async function pairedEntryIndexes(
+  ctx: MutationCtx,
+  jobId: string,
+): Promise<Set<number>> {
+  const pairs = await ctx.db
+    .query("placeholderPairs")
+    .withIndex("by_job", (q) => q.eq("jobId", jobId))
+    .collect();
+  const taken = new Set<number>();
+  for (const pair of pairs) {
+    taken.add(pair.frontIndex);
+    taken.add(pair.backIndex);
+  }
+  return taken;
+}
+
 /** Rows written per applyPairDiff / syncImagePairStatus invocation. */
 const PAIR_CHUNK_SIZE = 50;
 
@@ -229,6 +294,9 @@ type PairPatch = {
 function pairKey(frontIndex: number, backIndex: number): string {
   return `${frontIndex}:${backIndex}`;
 }
+
+/** A pair named by its two entry indexes — what `applyPairDiff` reports skipping. */
+export type PairKey = { frontIndex: number; backIndex: number };
 
 /** Just the identity fields of a done image row, as the backfill reads them. */
 type PairingRowIdentity = {
@@ -958,6 +1026,41 @@ function logPairDecisions(
 }
 
 /**
+ * The decisions for pairs that were actually stored: everything except the
+ * inserts `applyPairDiff` skipped. Inserts and patches never share a key (the
+ * diff's three lists are disjoint), so filtering by key removes only the skips.
+ */
+function withoutSkipped(
+  decisions: readonly PairDecision[],
+  skipped: readonly PairKey[],
+): PairDecision[] {
+  if (skipped.length === 0) return [...decisions];
+  const gone = new Set(skipped.map((s) => pairKey(s.frontIndex, s.backIndex)));
+  return decisions.filter((d) => !gone.has(pairKey(d.frontIndex, d.backIndex)));
+}
+
+/**
+ * A run that found, inside one of its writes, that its job had moved on. Not an
+ * error — it is the guard working — but worth a line: a run that keeps going
+ * stale is how the close-path race shows itself in the logs.
+ */
+function logStaleRun(
+  jobId: string,
+  run: { final: boolean; force: boolean },
+  at: "pairs" | "pairStatus",
+): void {
+  console.log(
+    JSON.stringify({
+      msg: "placeholder_pairing_stale",
+      jobId,
+      final: run.final,
+      force: run.force,
+      at,
+    }),
+  );
+}
+
+/**
  * Pair up a batch and — on the final run only — set its terminal status.
  *
  * The terminal decision is made here rather than at the end of processing
@@ -1048,11 +1151,12 @@ export const runPairing = internalAction({
       // where there are no meaningful done rows and a diff would fight the
       // restart. It never runs the terminal decision (it is not `final`), so it
       // cannot un-succeed a batch.
-      const canRun =
-        final ||
-        INCREMENTAL_PAIRING_STATUSES.has(job.status) ||
-        (args.force && REPAIR_ALLOWED_STATUSES.has(job.status));
-      if (!canRun) return null;
+      //
+      // This is only the early exit. The same rule is checked again inside
+      // every write below (`pairingRunMayWrite`), because the job can change
+      // status between this read and those writes.
+      const run = { final, force: args.force ?? false };
+      if (!pairingRunMayWrite(job.status, run)) return null;
 
       const rows = await ctx.runQuery(
         internal.placeholderPipeline.listDoneImagesForPairing,
@@ -1082,55 +1186,96 @@ export const runPairing = internalAction({
       // appears" is the honest intermediate state. The reverse order briefly
       // shows the same image paired twice. Chunked so a large sheet's pairs
       // never build one oversized, conflict-prone transaction.
+      //
+      // Every chunk carries the run's flags, and each one re-checks the job
+      // status inside its own transaction (`pairingRunMayWrite`). A chunk that
+      // finds the run stale writes nothing, and the run stops there: the job
+      // moved on (closed and finalized, canceled, restarted) while this diff
+      // was being computed, and the rest of it is stale too.
+      const chunks: Array<{
+        deleteIds: Id<"placeholderPairs">[];
+        patches: PairPatch[];
+        inserts: PairInsertRow[];
+      }> = [];
       for (let i = 0; i < diff.deleteIds.length; i += PAIR_CHUNK_SIZE) {
-        await ctx.runMutation(internal.placeholderPairing.applyPairDiff, {
-          jobId: args.jobId,
-          userId: args.userId,
+        chunks.push({
           deleteIds: diff.deleteIds.slice(i, i + PAIR_CHUNK_SIZE),
           patches: [],
           inserts: [],
         });
       }
       for (let i = 0; i < diff.patches.length; i += PAIR_CHUNK_SIZE) {
-        await ctx.runMutation(internal.placeholderPairing.applyPairDiff, {
-          jobId: args.jobId,
-          userId: args.userId,
+        chunks.push({
           deleteIds: [],
           patches: diff.patches.slice(i, i + PAIR_CHUNK_SIZE),
           inserts: [],
         });
       }
       for (let i = 0; i < diff.insertRows.length; i += PAIR_CHUNK_SIZE) {
-        await ctx.runMutation(internal.placeholderPairing.applyPairDiff, {
-          jobId: args.jobId,
-          userId: args.userId,
+        chunks.push({
           deleteIds: [],
           patches: [],
           inserts: diff.insertRows.slice(i, i + PAIR_CHUNK_SIZE),
         });
       }
 
+      // Inserts another writer made redundant (an image already in a pair).
+      // Collected so the decision log and the summary describe what was
+      // actually stored.
+      const skippedInserts: PairKey[] = [];
+      for (const chunk of chunks) {
+        const result = await ctx.runMutation(
+          internal.placeholderPairing.applyPairDiff,
+          {
+            jobId: args.jobId,
+            userId: args.userId,
+            final,
+            force: run.force,
+            ...chunk,
+          },
+        );
+        if (result.stale) {
+          logStaleRun(args.jobId, run, "pairs");
+          return null;
+        }
+        skippedInserts.push(...result.skipped);
+      }
+
       // The same diff, applied to `placeholderImages.pairStatus`. Rows whose
       // verdict is unchanged were excluded inside `computePairingDiff` so an
       // unchanged batch costs zero mutations, not one per chunk.
+      const statusChunks: Array<{
+        pairStatus: "paired" | "unmatched";
+        imageIds: Id<"placeholderImages">[];
+      }> = [];
       for (let i = 0; i < diff.becomingPaired.length; i += PAIR_CHUNK_SIZE) {
-        await ctx.runMutation(internal.placeholderPairing.syncImagePairStatus, {
-          jobId: args.jobId,
+        statusChunks.push({
           pairStatus: "paired",
           imageIds: diff.becomingPaired.slice(i, i + PAIR_CHUNK_SIZE),
         });
       }
       for (let i = 0; i < diff.becomingUnmatched.length; i += PAIR_CHUNK_SIZE) {
-        await ctx.runMutation(internal.placeholderPairing.syncImagePairStatus, {
-          jobId: args.jobId,
+        statusChunks.push({
           pairStatus: "unmatched",
           imageIds: diff.becomingUnmatched.slice(i, i + PAIR_CHUNK_SIZE),
         });
       }
+      for (const chunk of statusChunks) {
+        const result = await ctx.runMutation(
+          internal.placeholderPairing.syncImagePairStatus,
+          { jobId: args.jobId, final, force: run.force, ...chunk },
+        );
+        if (result.stale) {
+          logStaleRun(args.jobId, run, "pairStatus");
+          return null;
+        }
+      }
 
       // After the writes landed, so a decision is never logged for a pair a
-      // failed chunk did not store (NEO-327).
-      logPairDecisions(args.jobId, final, diff.decisions);
+      // failed chunk did not store (NEO-327) — nor for one a chunk skipped.
+      const storedDecisions = withoutSkipped(diff.decisions, skippedInserts);
+      logPairDecisions(args.jobId, final, storedDecisions);
+      const insertedCount = diff.insertRows.length - skippedInserts.length;
 
       if (rows.length > 0) {
         // The log's shape counters are reconstructed from the same two inputs the
@@ -1156,7 +1301,7 @@ export const runPairing = internalAction({
         // and a diagnostic that under-reports the thing it names is worse than
         // no diagnostic. `settled` beside it says how many of these are locked.
         const autoPairs =
-          autoStoredCount - diff.deleteIds.length + diff.insertRows.length;
+          autoStoredCount - diff.deleteIds.length + insertedCount;
         const pairs = autoPairs + settledPairs.length;
         console.log(
           JSON.stringify({
@@ -1173,7 +1318,10 @@ export const runPairing = internalAction({
             settled: settledPairs.length,
             pairs,
             unmatched: autoImages - autoPairs * 2,
-            inserted: diff.insertRows.length,
+            inserted: insertedCount,
+            // Inserts dropped because another writer had already paired one of
+            // the images. Non-zero means two runs overlapped on this job.
+            skipped: skippedInserts.length,
             revised: diff.patches.length,
             removed: diff.deleteIds.length,
             resolverCalls: diff.resolverCalls,
@@ -1412,11 +1560,26 @@ export async function recordResolverCallsImpl(
  * is what identifies an image to the user and to the preprocess service, and a
  * stored document id would be a second, redundant identity that a restart would
  * silently invalidate.
+ *
+ * Two guards against the read→write gap, both inside this transaction:
+ *
+ *  - STATUS. A non-final run re-reads the job and writes nothing when it has
+ *    left the statuses that run may write to (`pairingRunMayWrite`), returning
+ *    `stale: true` so the action stops. This is what keeps a provisional run
+ *    from landing on top of the close path's inline finalize.
+ *  - ONE PAIR PER IMAGE. Inserts are idempotent: an insert whose front or back
+ *    image is already a half of a stored pair is skipped and reported in
+ *    `skipped`. Inserts used to be blind, and reading nothing meant OCC could
+ *    not see a concurrent writer, so two overlapping runs each stored the same
+ *    pairs. Reading the job's pairs here puts that range in the read set too.
  */
 export const applyPairDiff = internalMutation({
   args: {
     jobId: v.string(),
     userId: v.string(),
+    /** The run's own flags — what the status guard checks against. */
+    final: v.boolean(),
+    force: v.optional(v.boolean()),
     deleteIds: v.array(v.id("placeholderPairs")),
     patches: v.array(
       v.object({
@@ -1453,16 +1616,24 @@ export const applyPairDiff = internalMutation({
     ),
   },
   returns: v.object({
+    /** True when the run was stale and NOTHING was written. */
+    stale: v.boolean(),
     deleted: v.number(),
     revised: v.number(),
     inserted: v.number(),
+    skipped: v.array(v.object({ frontIndex: v.number(), backIndex: v.number() })),
   }),
   handler: async (ctx, args) => {
-    return applyPairDiffImpl(ctx, args.jobId, args.userId, {
+    const run = { final: args.final, force: args.force };
+    if (await pairingWriteIsStale(ctx, args.jobId, run)) {
+      return { stale: true, deleted: 0, revised: 0, inserted: 0, skipped: [] };
+    }
+    const result = await applyPairDiffImpl(ctx, args.jobId, args.userId, {
       deleteIds: args.deleteIds,
       patches: args.patches,
       inserts: args.inserts,
     });
+    return { stale: false, ...result };
   },
 });
 
@@ -1472,6 +1643,11 @@ export const applyPairDiff = internalMutation({
  * (unchunked) with the exact delete/patch/insert semantics the chunked action
  * uses — the same id-keyed reads, the same `jobId` re-check, the same insert
  * shape. Keeping one implementation is what stops the two paths diverging.
+ *
+ * The one-pair-per-image check lives here, not in the wrapper, so the inline
+ * finalize gets it too. It reads the pairs AFTER this call's own deletes, which
+ * the transaction already sees, so a diff that replaces {0,2} with {0,1} in one
+ * call is not refused by the row it is removing.
  */
 export async function applyPairDiffImpl(
   ctx: MutationCtx,
@@ -1482,7 +1658,12 @@ export async function applyPairDiffImpl(
     patches: PairPatch[];
     inserts: PairInsertRow[];
   },
-): Promise<{ deleted: number; revised: number; inserted: number }> {
+): Promise<{
+  deleted: number;
+  revised: number;
+  inserted: number;
+  skipped: PairKey[];
+}> {
   let deleted = 0;
   for (const pairId of args.deleteIds) {
     const pair = await ctx.db.get(pairId);
@@ -1507,7 +1688,24 @@ export async function applyPairDiffImpl(
     revised += 1;
   }
 
+  // Only a call that inserts pays for the read; delete and patch chunks never
+  // create a pair.
+  const taken =
+    args.inserts.length > 0
+      ? await pairedEntryIndexes(ctx, jobId)
+      : new Set<number>();
+  const skipped: PairKey[] = [];
+  let inserted = 0;
   for (const insert of args.inserts) {
+    if (taken.has(insert.frontIndex) || taken.has(insert.backIndex)) {
+      skipped.push({ frontIndex: insert.frontIndex, backIndex: insert.backIndex });
+      continue;
+    }
+    // Claimed before the next insert in this call is checked, so one call can
+    // never pair an image twice either.
+    taken.add(insert.frontIndex);
+    taken.add(insert.backIndex);
+    inserted += 1;
     await ctx.db.insert("placeholderPairs", {
       jobId,
       userId,
@@ -1523,7 +1721,12 @@ export async function applyPairDiffImpl(
     });
   }
 
-  return { deleted, revised, inserted: args.inserts.length };
+  if (skipped.length > 0) {
+    console.log(
+      JSON.stringify({ msg: "placeholder_pair_insert_skipped", jobId, skipped }),
+    );
+  }
+  return { deleted, revised, inserted, skipped };
 }
 
 /**
@@ -1542,16 +1745,32 @@ export async function applyPairDiffImpl(
  * the diff arithmetic must not be able to stamp a different (possibly another
  * user's) job's images. By document ID, and a row that is gone is skipped
  * rather than reported.
+ *
+ * Carries the run's flags for the same status guard `applyPairDiff` applies:
+ * a stale run's verdicts would overwrite the ones the close path's inline
+ * finalize just wrote, so a stale call writes nothing and says so.
  */
 export const syncImagePairStatus = internalMutation({
   args: {
     jobId: v.string(),
+    final: v.boolean(),
+    force: v.optional(v.boolean()),
     pairStatus: v.union(v.literal("paired"), v.literal("unmatched")),
     imageIds: v.array(v.id("placeholderImages")),
   },
-  returns: v.number(),
+  returns: v.object({ stale: v.boolean(), marked: v.number() }),
   handler: async (ctx, args) => {
-    return syncImagePairStatusImpl(ctx, args.jobId, args.pairStatus, args.imageIds);
+    const run = { final: args.final, force: args.force };
+    if (await pairingWriteIsStale(ctx, args.jobId, run)) {
+      return { stale: true, marked: 0 };
+    }
+    const marked = await syncImagePairStatusImpl(
+      ctx,
+      args.jobId,
+      args.pairStatus,
+      args.imageIds,
+    );
+    return { stale: false, marked };
   },
 });
 
@@ -1561,6 +1780,14 @@ export const syncImagePairStatus = internalMutation({
  * re-check, and skip-if-gone semantics the chunked action uses. The caller has
  * already filtered rows whose stored verdict matches, so every id is a genuine
  * change.
+ *
+ * The verdict is checked against the pairs table as it stands in THIS
+ * transaction: an image is stamped "paired" only if it is a half of a stored
+ * pair, and "unmatched" only if it is not. Once `applyPairDiff` can skip an
+ * insert another writer made redundant, the run's own idea of which images it
+ * paired can be wrong, and a "paired" image with no pair is stuck: manual
+ * pairing refuses it and there is no pair to unpair. The next run reconciles
+ * anything left unstamped here.
  */
 export async function syncImagePairStatusImpl(
   ctx: MutationCtx,
@@ -1568,11 +1795,14 @@ export async function syncImagePairStatusImpl(
   pairStatus: "paired" | "unmatched",
   imageIds: Id<"placeholderImages">[],
 ): Promise<number> {
+  if (imageIds.length === 0) return 0;
+  const paired = await pairedEntryIndexes(ctx, jobId);
   let marked = 0;
   for (const imageId of imageIds) {
     const image = await ctx.db.get(imageId);
     if (!image) continue;
     if (image.jobId !== jobId) continue;
+    if (paired.has(image.entryIndex) !== (pairStatus === "paired")) continue;
     await ctx.db.patch(image._id, { pairStatus });
     marked += 1;
   }
@@ -1665,7 +1895,7 @@ export async function finalizePairingInline(
 
   // The whole diff at once — a small batch fits one transaction, which is the
   // precondition the caller checks before taking this path.
-  await applyPairDiffImpl(ctx, job.jobId, job.userId, {
+  const applied = await applyPairDiffImpl(ctx, job.jobId, job.userId, {
     deleteIds: diff.deleteIds,
     patches: diff.patches,
     inserts: diff.insertRows,
@@ -1707,7 +1937,7 @@ export async function finalizePairingInline(
   // LAST, after every write this function makes: a throw anywhere above rolls
   // the whole mutation back, and a log line already emitted would describe
   // pairs that were never stored.
-  logPairDecisions(job.jobId, true, diff.decisions);
+  logPairDecisions(job.jobId, true, withoutSkipped(diff.decisions, applied.skipped));
   return outcome;
 }
 
@@ -1900,7 +2130,17 @@ export const manuallyPairPlaceholderImages = mutation({
     if (front.status !== "done" || back.status !== "done") {
       throw new Error("both images must be processed before pairing");
     }
-    if (front.pairStatus === "paired" || back.pairStatus === "paired") {
+    // Checked against the pairs table as well as `pairStatus`. The automatic
+    // run stores a pair and stamps its images in separate transactions, so in
+    // between an image can be in a pair while its row still says otherwise;
+    // trusting the row alone would put that image in a second pair.
+    const taken = await pairedEntryIndexes(ctx, args.jobId);
+    if (
+      front.pairStatus === "paired" ||
+      back.pairStatus === "paired" ||
+      taken.has(args.frontIndex) ||
+      taken.has(args.backIndex)
+    ) {
       throw new Error("image is already paired — unpair it first");
     }
 

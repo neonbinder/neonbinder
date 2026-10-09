@@ -128,3 +128,4 @@ Non-markdown helpers: `tools/`
 - [Present in the failure dump = arrived late](patterns_present_in_failure_dump_means_late_arrival.md) — target fully on-screen in the failure PNG/hierarchy means it landed after the last poll; heading gates are Clerk-only
 - [Disabled is unreadable on web](patterns_disabled_is_unreadable_on_web.md) — `enabled:` matches nothing on maestro-web; prove disabled by a safe no-op tap or a `title` reason (→ resource-id)
 - [Marketplace twin names + public search](reference_sportlots_twin_names_and_public_search.md) — ` (#<id>)` on repeated names; twin notice lines beat `.*#[0-9].*`; clash copy is curly-quoted; SL search + BSC facets; dealer-only twins (Chrome Black Refractor → seed Parallel 41)
+- [Placeholder pair-count forensics](reference_placeholder_pair_count_forensics.md) — count too HIGH = provisional runPairing + close finalize both inserted; sum per-writer inserts

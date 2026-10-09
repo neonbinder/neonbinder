@@ -90,3 +90,4 @@
 - [Live validation without keystroke renders](reference_live_validation_without_keystroke_renders.md) — drafts in a ref + snapshot state swapped on answer change; ref.current in useMemo fails react-hooks/refs; blocked button gets title for Maestro
 - [Escape blur commits the draft](reference_escape_blur_commits_the_draft.md) — Enter/Escape act in place, never blur (focus leaves aria-modal); never key={prefill}
 - [Local override of server state needs a null tombstone](reference_local_override_of_server_state_needs_a_null_tombstone.md) — `null` not a deleted key over a stored per-row value; merge save results; readyTitleClashes reuse for own-set names
+- [Action blind insert is invisible to OCC](reference_action_blind_insert_is_invisible_to_occ.md) — re-check status + read the range inside the write; repro the interleave by driving the action steps by hand
