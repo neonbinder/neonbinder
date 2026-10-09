@@ -716,6 +716,7 @@ function DraggableItem({
   onClick,
   action,
   status,
+  describedBy,
 }: {
   id: string;
   /** The row's visible name — `<ItemName>`, so a twin carries its id. */
@@ -736,6 +737,12 @@ function DraggableItem({
    * vanishes from the accessibility tree and would start a drag on press.
    */
   action?: React.ReactNode;
+  /**
+   * NEO-325 (a11y) — the id of a line that belongs to this row (the Base
+   * check's reason under it), read as the handle's description ahead of
+   * dnd-kit's own drag instructions, which it is merged with.
+   */
+  describedBy?: string;
 }) {
   const {
     attributes,
@@ -779,6 +786,11 @@ function DraggableItem({
         ref={setActivatorNodeRef}
         {...attributes}
         {...listeners}
+        aria-describedby={
+          describedBy
+            ? [describedBy, attributes["aria-describedby"]].filter(Boolean).join(" ")
+            : attributes["aria-describedby"]
+        }
         onClick={onClick}
         className="flex-1 min-w-0 self-stretch flex items-start gap-2 px-3 py-2 rounded-lg cursor-grab active:cursor-grabbing focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[#00B7FF]"
       >
@@ -809,7 +821,7 @@ function DraggableItem({
 const OWN_SET_BUTTON =
   "inline-flex items-center min-h-[28px] px-2.5 rounded-md border text-xs font-medium whitespace-nowrap transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF]";
 const OWN_SET_ROW_BUTTON = `${OWN_SET_BUTTON} border-gray-500 text-gray-300 hover:border-[#00D558] hover:text-[#00D558] hover:bg-[#00D558]/10 focus-visible:text-[#00D558]`;
-const KEEP_ALL_BUTTON = `${OWN_SET_BUTTON} border-[#00D558]/70 text-[#00D558] hover:bg-[#00D558]/10 hover:border-[#00D558] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent`;
+const KEEP_ALL_BUTTON = `${OWN_SET_BUTTON} border-[#00D558]/70 text-[#00D558] hover:bg-[#00D558]/10 hover:border-[#00D558] aria-disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent`;
 
 // ===== BASE CHECK (NEO-325) =====
 
@@ -1393,7 +1405,7 @@ function ReconciliationDialog({
   // NEO-325: held by `platformValue`, never by name. SportLots lists distinct
   // sets under one name, and a name-keyed selection resolved every twin to
   // the first one — so "pair the 3rd Anime" linked the 1st Anime's id.
-  const [selected, setSelected] = useState<{
+  const [storedSelected, setSelected] = useState<{
     side: Side;
     platformValue: string;
   } | null>(null);
@@ -1555,6 +1567,44 @@ function ReconciliationDialog({
         : [],
     [checksOn, queriedPendingBsc, checkOf],
   );
+
+  // NEO-325 (a11y) — a selected Pending row the Base check sets aside while
+  // its column's set-aside rows are hidden is no longer on screen, so it is
+  // no longer selected: otherwise the next click would pair with a row the
+  // operator cannot see. Derived (never an effect), so no render ever holds
+  // it; the toggle clears it for good (below), so revealing the group never
+  // brings back a selection the operator did not see made. A row of the
+  // "already mapped" reveal carrying the same id still shows it, so it stays.
+  const selected = useMemo(() => {
+    const sel = storedSelected;
+    if (!sel || showMismatched[sel.side]) return sel;
+    if (!isMismatch(checkOf(sel.side, sel.platformValue))) return sel;
+    const pending = sel.side === "bsc" ? state.pendingBsc : state.pendingSl;
+    if (!pending.some((i) => i.platformValue === sel.platformValue)) return sel;
+    const showMapped = sel.side === "bsc" ? showMappedBsc : showMappedSl;
+    const query = sel.side === "bsc" ? bscQuery : slQuery;
+    const mappedShown =
+      showMapped &&
+      state.ready.some((set) =>
+        (sel.side === "bsc" ? set.bsc : set.sl).some(
+          (i) =>
+            i.platformValue === sel.platformValue &&
+            (!query || i.value.toLowerCase().includes(query)),
+        ),
+      );
+    return mappedShown ? sel : null;
+  }, [
+    storedSelected,
+    showMismatched,
+    checkOf,
+    state.pendingBsc,
+    state.pendingSl,
+    state.ready,
+    showMappedBsc,
+    showMappedSl,
+    bscQuery,
+    slQuery,
+  ]);
 
   const filteredPendingSl = useMemo(() => {
     if (mismatchedSl.length === 0) return queriedPendingSl;
@@ -1928,14 +1978,20 @@ function ReconciliationDialog({
    * focus really was dropped; anywhere else, the operator put it there.
    */
   const mismatchCountsRef = useRef<Record<Side, number>>({ bsc: 0, sl: 0 });
+  /** The column focus was last in (`onFocusCapture`), for when both grew. */
+  const lastFocusSideRef = useRef<Side | null>(null);
   useEffect(() => {
     const prev = mismatchCountsRef.current;
+    const grewSl = mismatchedSl.length > prev.sl;
+    const grewBsc = mismatchedBsc.length > prev.bsc;
     const grew: Side | null =
-      mismatchedSl.length > prev.sl
-        ? "sl"
-        : mismatchedBsc.length > prev.bsc
-          ? "bsc"
-          : null;
+      grewSl && grewBsc
+        ? (lastFocusSideRef.current ?? "sl")
+        : grewSl
+          ? "sl"
+          : grewBsc
+            ? "bsc"
+            : null;
     mismatchCountsRef.current = {
       bsc: mismatchedBsc.length,
       sl: mismatchedSl.length,
@@ -1948,6 +2004,13 @@ function ReconciliationDialog({
   }, [mismatchedBsc.length, mismatchedSl.length, isOpen]);
 
   const mismatchGroupBaseId = useId();
+  const reasonBaseId = useId();
+  /** A row's reason line id. Marketplace ids are made safe for an IDREF list. */
+  const reasonIdOf = (side: Side, platformValue: string) =>
+    `${reasonBaseId}-reason-${side}-${platformValue.replace(
+      /[^A-Za-z0-9_-]/g,
+      (c) => `_${c.charCodeAt(0)}_`,
+    )}`;
 
   const handlePromoteSolo = useCallback(
     (side: Side, platformValue: string, index: number) => {
@@ -2129,11 +2192,22 @@ function ReconciliationDialog({
     const keepNarrowed = keepable.length !== all.length;
     //
     // Labels: the accessible name BEGINS with the visible words (WCAG 2.5.3
-    // label in name), then says what they reach. The two columns' names share
-    // no substring either way, and neither matches CardPairingModal's
-    // "Keep all BSC-only cards".
-    const keepAllName = `Keep all: ${keepable.length} ${sideName} ${
-      keepable.length === 1 ? "set" : "sets"
+    // label in name: "Keep all" or "Keep all N"), then names the column.
+    // Neither column's name is a substring of the other's, and neither
+    // matches CardPairingModal's "Keep all BSC-only cards". What it does and
+    // what it leaves out is its DESCRIPTION (an sr-only line), not its name.
+    const keepAllShown = keepNarrowed && keepable.length > 0 ? keepable.length : null;
+    const keepAllName = BASE_MATCH_COPY.keepAllName(keepAllShown, sideName);
+    const keepAllDescription = `${
+      keepNarrowed
+        ? keepable.length === 1
+          ? `Make the 1 listed ${sideName} set its own NeonBinder set.`
+          : `Make each of the ${keepable.length} listed ${sideName} sets its own NeonBinder set.`
+        : `Make every pending ${sideName} set its own NeonBinder set.`
+    }${
+      checksOn
+        ? BASE_MATCH_COPY.keepAllLeftOut(stillChecking, mismatched.length)
+        : ""
     }`;
     const keepAll = () => {
       if (keepable.length === 0) return;
@@ -2174,22 +2248,25 @@ function ReconciliationDialog({
       settled < checkTotal
         ? BASE_MATCH_COPY.checkingHeader(settled, checkTotal)
         : BASE_MATCH_COPY.checkedHeader(matched, notMatched, unverifiable);
-    // Said in tenths, then once at the end: a 579-row column is not read
-    // aloud row by row. Worded apart from the counter (side name, full stop)
-    // so the page never carries the counter's text twice.
-    const tenth = checkTotal > 0 ? Math.floor((settled * 10) / checkTotal) : 0;
-    const checkPulse =
-      checkTotal === 0
-        ? ""
-        : settled === checkTotal
-          ? BASE_MATCH_COPY.pulseDone(probeSide, checkHeader)
-          : tenth > 0
-            ? BASE_MATCH_COPY.pulse(probeSide, tenth * 10)
-            : "";
-    const toggleVisible = showMismatched[side]
-      ? BASE_MATCH_COPY.hideMismatched(mismatched.length)
-      : BASE_MATCH_COPY.showMismatched(mismatched.length);
+    // The check is SPOKEN once for the whole dialog (`probe.announcement`,
+    // rendered under the Pending heading), never per column.
+    const toggleVisible = BASE_MATCH_COPY.mismatchedToggle(mismatched.length);
     const mismatchGroupId = `${mismatchGroupBaseId}-${side}`;
+    const toggleTextId = `${mismatchGroupBaseId}-${side}-toggle`;
+    const keepAllDescId = `${mismatchGroupBaseId}-${side}-keep-all`;
+    const toggleMismatched = () => {
+      // Whichever way it goes, a selected set-aside row of this column stops
+      // being selected: hidden, it would pair unseen; revealed, it would come
+      // back selected without the operator having seen it chosen.
+      setSelected((prev) =>
+        prev &&
+        prev.side === side &&
+        isMismatch(checkOf(side, prev.platformValue))
+          ? null
+          : prev,
+      );
+      setShowMismatched((prev) => ({ ...prev, [side]: !prev[side] }));
+    };
 
     /** A row's check, for its glyph and words; undefined with the check off. */
     const statusOf = (item: PlatformItem) => {
@@ -2198,11 +2275,17 @@ function ReconciliationDialog({
     };
 
     /**
-     * One pending row. With the check on, every row is wrapped (so a verdict
-     * landing never swaps the row's element type and remounts it under
-     * focus), and a row set aside or not checkable carries its reason under it.
+     * One pending row. When the Base check was asked for, every row is
+     * wrapped from the first render (so neither the check starting nor a
+     * verdict landing swaps the row's element type and remounts it under
+     * focus), and a row set aside or not checkable carries its reason under
+     * it — the handle's description, so the reason is read with the row.
      */
     const pendingRow = (item: PlatformItem, buttonIndex: number) => {
+      const check = checkOf(side, item.platformValue);
+      const reason =
+        check?.state === "done" && check.verdict !== "match" ? check : undefined;
+      const reasonId = reason ? reasonIdOf(side, item.platformValue) : undefined;
       const row = (
         // NEO-325: keyed and dnd-identified by marketplace id. Keyed by
         // name, two same-named SportLots sets shared a React key, and
@@ -2218,6 +2301,7 @@ function ReconciliationDialog({
           }
           onClick={() => handlePendingClick(side, item.platformValue)}
           status={statusOf(item)}
+          describedBy={reasonId}
           action={
             <button
               type="button"
@@ -2239,10 +2323,10 @@ function ReconciliationDialog({
           }
         />
       );
-      if (!checksOn) return row;
-      const check = checkOf(side, item.platformValue);
-      const reason =
-        check?.state === "done" && check.verdict !== "match" ? check : undefined;
+      // Decided on `baseCheck`, which is fixed for the dialog's life — never
+      // on the probe's phase, whose off → on flip would swap every row's
+      // element type and remount it, dropping focus to <body>.
+      if (!baseCheck) return row;
       return (
         <div key={`${side}-${item.platformValue}`}>
           {row}
@@ -2251,6 +2335,7 @@ function ReconciliationDialog({
             // (the twin notice); gray-400 for "couldn't check", a fact
             // rather than a finding. Both clear 4.5:1 on gray-900.
             <p
+              id={reasonId}
               className={`text-[11px] mt-0.5 px-1 ${
                 reason.verdict === "mismatch" ? "text-amber-300" : "text-gray-400"
               }`}
@@ -2267,7 +2352,11 @@ function ReconciliationDialog({
     const revealedCount = revealMismatched ? mismatched.length : 0;
 
     return (
-      <div>
+      <div
+        onFocusCapture={() => {
+          lastFocusSideRef.current = side;
+        }}
+      >
         <div className="flex items-center justify-between gap-2 mb-2">
           <div
             className={`text-xs font-medium uppercase tracking-wide ${
@@ -2277,34 +2366,31 @@ function ReconciliationDialog({
             {sideName} ({filtered.length}
             {narrowed ? ` of ${all.length}` : ""})
           </div>
+          {/* aria-disabled, never `disabled`: a Base verdict that sets aside
+              the column's last keepable row must not take focus with it (a
+              disabled button drops focus to <body>). `keepAll` guards. */}
           <button
             type="button"
             onClick={keepAll}
-            disabled={keepable.length === 0}
+            aria-disabled={keepable.length === 0 ? true : undefined}
             aria-label={keepAllName}
-            title={`${
-              keepNarrowed
-                ? `Make each of the ${keepable.length} listed ${sideName} sets its own NeonBinder set`
-                : `Make every pending ${sideName} set its own NeonBinder set`
-            }${
-              checksOn
-                ? BASE_MATCH_COPY.keepAllLeftOut(stillChecking, mismatched.length)
-                : ""
-            }`}
+            aria-describedby={keepAllDescId}
+            title={keepAllDescription}
             className={KEEP_ALL_BUTTON}
           >
             {/* Filtered, the number says the button reaches only what is
                 listed — never the rows the search is hiding. */}
-            {keepNarrowed && keepable.length > 0
-              ? `Keep all ${keepable.length}`
-              : "Keep all"}
+            {keepAllShown === null ? "Keep all" : `Keep all ${keepAllShown}`}
           </button>
+          <span id={keepAllDescId} className="sr-only">
+            {keepAllDescription}
+          </span>
         </div>
         {checksOn && checkTotal > 0 && (
           // NEO-325 — the column's Base check, in the run ledger's shape: a
-          // counter, a sleeve per set filling as each one settles, and one
-          // polite line that says it in tenths. The sleeves are decorative
-          // (aria-hidden); the counter and the rows say it all in words.
+          // counter and a sleeve per set filling as each one settles. The
+          // sleeves are decorative (aria-hidden); the counter and the rows say
+          // it all in words, and the dialog's one live line speaks the run.
           <div className="mb-2">
             <p className="text-[11px] text-gray-400 tabular-nums">
               {checkHeader}
@@ -2326,7 +2412,6 @@ function ReconciliationDialog({
               more={Math.max(0, scoped.length - SLEEVE_CAP)}
               moreClassName="text-[10px] leading-[14px] text-gray-400 tabular-nums"
             />
-            <LiveLine text={checkPulse} />
           </div>
         )}
         <FilterInput
@@ -2370,23 +2455,19 @@ function ReconciliationDialog({
         </label>
         {checksOn && mismatched.length > 0 && (
           // NEO-325 — the sets the Base check set aside, never silently gone.
-          // A disclosure: its text says how many and its state is
-          // `aria-expanded`. Enter is handled here because the E2E driver's
-          // `pressKey` has no default action.
+          // A disclosure: its words (constant) say how many, and its state is
+          // `aria-expanded` alone — the name never flips Show/Hide. Enter is
+          // handled here because the E2E driver's `pressKey` has no default
+          // action. No DOM id on the button (Maestro's id is `id ||
+          // aria-label`): the group is labelled by the span inside it.
           <button
             type="button"
             data-base-toggle={side}
             aria-expanded={showMismatched[side]}
             aria-controls={showMismatched[side] ? mismatchGroupId : undefined}
             aria-label={BASE_MATCH_COPY.toggleName(toggleVisible, probeSide)}
-            onClick={() =>
-              setShowMismatched((prev) => ({ ...prev, [side]: !prev[side] }))
-            }
-            onKeyDown={(event) =>
-              activateOnEnter(event, () =>
-                setShowMismatched((prev) => ({ ...prev, [side]: !prev[side] })),
-              )
-            }
+            onClick={toggleMismatched}
+            onKeyDown={(event) => activateOnEnter(event, toggleMismatched)}
             className="group mb-2 inline-flex items-center gap-1 min-h-[24px] rounded-sm text-xs font-medium text-amber-300 hover:text-amber-200 underline decoration-dotted underline-offset-2 hover:decoration-solid focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#00B7FF]"
           >
             <ChevronRightIcon
@@ -2395,7 +2476,7 @@ function ReconciliationDialog({
                 showMismatched[side] ? "rotate-90" : ""
               }`}
             />
-            {toggleVisible}
+            <span id={toggleTextId}>{toggleVisible}</span>
           </button>
         )}
         <div className="space-y-1.5 min-h-[60px]">
@@ -2404,6 +2485,8 @@ function ReconciliationDialog({
             // reason's own tone, so the eye reads them as one group.
             <div
               id={mismatchGroupId}
+              role="group"
+              aria-labelledby={toggleTextId}
               className="space-y-1.5 border-l-2 border-amber-400/70 pl-2 pb-1"
             >
               {mismatched.map((item, index) => pendingRow(item, index))}
@@ -2638,6 +2721,12 @@ function ReconciliationDialog({
                 Drag one onto the other to make a set, or onto a set above to add
                 it there. Anything left here is not saved.
               </p>
+              {/* NEO-325 — the Base check's ONE live line for both columns:
+                  a start line, at most a line per quarter, one closing
+                  sentence (see base-match-probe). Mounted for the dialog's
+                  life when the check was asked for, so it is in the tree
+                  (empty) before its first words. */}
+              {baseCheck && <LiveLine text={probe.announcement} />}
               <div className="grid grid-cols-2 gap-4">
                 {renderPendingColumn("bsc")}
                 {renderPendingColumn("sl")}

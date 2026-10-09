@@ -114,6 +114,8 @@ const MARKETPLACE_LABEL: Record<BaseMatchSide, string> = {
 
 const cards = (n: number) => `${n} ${n === 1 ? "card" : "cards"}`;
 
+const sets = (n: number) => `${n} ${n === 1 ? "set" : "sets"}`;
+
 export const BASE_MATCH_COPY = {
   /** Column counter while checks are running. */
   checkingHeader: (done: number, total: number) =>
@@ -123,9 +125,12 @@ export const BASE_MATCH_COPY = {
     `Checked against Base — ${match} match, ${mismatch} don't${
       unverifiable > 0 ? `, ${unverifiable} couldn't be checked` : ""
     }`,
-  /** The reveal toggle's visible text. */
-  showMismatched: (n: number) => `Show ${n} that don't match the Base`,
-  hideMismatched: (n: number) => `Hide ${n} that don't match the Base`,
+  /**
+   * The reveal toggle's visible text. Constant whichever way it is open:
+   * `aria-expanded` carries the state, so the name never flips under a
+   * screen reader (and the visible words stay inside the name, WCAG 2.5.3).
+   */
+  mismatchedToggle: (n: number) => `${n} that don't match the Base`,
   /**
    * The toggle's accessible name: the visible words first (WCAG 2.5.3), then
    * the column, because both columns can show one at once.
@@ -138,23 +143,44 @@ export const BASE_MATCH_COPY = {
   srMismatch: "doesn't match the Base",
   srUnverifiable: "couldn't be checked against the Base",
   /**
-   * The live line's pulse and its closing sentence, per column. The pulse
-   * moves in tenths so a 579-row column is said ten times, not 579.
+   * The dialog's ONE polite live line for the whole check (both columns):
+   * a start line, at most a line per quarter, and one closing sentence.
+   * Progress is counted against the total taken when the check started.
    */
-  pulse: (side: BaseMatchSide, percent: number) =>
-    `${MARKETPLACE_LABEL[side]}: ${percent}% checked against the Base`,
-  pulseDone: (side: BaseMatchSide, header: string) =>
-    `${MARKETPLACE_LABEL[side]}: ${header}.`,
-  /** Row reasons. */
+  liveStart: (total: number) => `Checking ${sets(total)} against the Base.`,
+  liveQuarter: (percent: number) => `Base check ${percent}% done.`,
+  liveDone: (
+    checked: number,
+    match: number,
+    mismatch: number,
+    unverifiable: number,
+  ) =>
+    `Checked ${sets(checked)} against the Base: ${match} match, ${mismatch} don't${
+      unverifiable > 0 ? `, ${unverifiable} couldn't be checked` : ""
+    }.`,
+  /**
+   * Said once when a column's check stops because the marketplace answered
+   * every set in a batch with a sign-in failure (security F1): its remaining
+   * sets are marked "couldn't be checked" rather than asked again.
+   */
+  liveStopped: (side: BaseMatchSide) =>
+    `Stopped checking the ${MARKETPLACE_LABEL[side]} sets against the Base: ${MARKETPLACE_LABEL[side]} needs you to sign in. Sign in, then reopen this to check them.`,
+  /** Row reasons. Never names a marketplace as why a check failed. */
   matched: "Matches the Base",
-  unverifiable: (side: BaseMatchSide) =>
-    `Couldn't check against the Base — ${MARKETPLACE_LABEL[side]} didn't answer`,
-  nothingToCompare: (side: BaseMatchSide) =>
-    `Couldn't check against the Base — ${MARKETPLACE_LABEL[side]} listed no card to compare`,
+  unverifiable: "Couldn't check this one against the Base. Try again later.",
+  nothingToCompare: "Couldn't check this one against the Base: no card to compare.",
   onlyVariations: "only variations on its first page",
   mismatch: (observed: string, base: string) =>
     `Doesn't match the Base — ${observed} (Base: ${base})`,
-  /** Keep all's tooltip clause for what it leaves out. */
+  /**
+   * Keep all's accessible name: its visible words ("Keep all" or
+   * "Keep all N") first, then the column (WCAG 2.5.3 label in name).
+   */
+  keepAllName: (shown: number | null, sideName: string) =>
+    shown === null
+      ? `Keep all, ${sideName} sets`
+      : `Keep all ${shown}, ${sideName} ${shown === 1 ? "set" : "sets"}`,
+  /** Keep all's description clause for what it leaves out. */
   keepAllLeftOut: (checking: number, mismatched: number) => {
     const parts: string[] = [];
     if (checking > 0) parts.push(`${checking} still being checked against the Base`);
@@ -299,7 +325,7 @@ export function judgeAgainstBase(
   observed: BaseObservation,
 ): BaseJudgement {
   if (observed.status !== "ok") {
-    return { verdict: "unverifiable", reason: BASE_MATCH_COPY.unverifiable(side) };
+    return { verdict: "unverifiable", reason: BASE_MATCH_COPY.unverifiable };
   }
   const outcome = judgeFirstCard(signature, observed.first);
   if (outcome === "unknown" && observed.onlyVariations) {
@@ -317,7 +343,7 @@ export function judgeAgainstBase(
   const expected = signature.perSide[side];
   if (expected > 0) {
     if (observed.count === undefined) {
-      return { verdict: "unverifiable", reason: BASE_MATCH_COPY.unverifiable(side) };
+      return { verdict: "unverifiable", reason: BASE_MATCH_COPY.unverifiable };
     }
     if (observed.count !== expected) {
       return {
@@ -332,6 +358,6 @@ export function judgeAgainstBase(
   }
   return {
     verdict: "unverifiable",
-    reason: BASE_MATCH_COPY.nothingToCompare(side),
+    reason: BASE_MATCH_COPY.nothingToCompare,
   };
 }

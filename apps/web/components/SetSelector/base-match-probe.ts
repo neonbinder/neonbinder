@@ -8,6 +8,7 @@ import type {
   SlFirstPageResult,
 } from "../../convex/lib/baseMatchProbe";
 import {
+  BASE_MATCH_COPY,
   judgeAgainstBase,
   judgeFirstCard,
   needsCount,
@@ -42,6 +43,22 @@ import {
  *     step (4 ids a call). Two calls in flight per side.
  *   - Verdicts are cached by side + id for the dialog's life, so a set that
  *     goes to Ready and comes back (DETACH, DISBAND) is not asked twice.
+ *
+ * ## Sign-in stop (security F1, client half)
+ *
+ * When a batch comes back `failed` with kind `signed_out` or `no_sign_in`
+ * for EVERY id it asked about, that side is not asked again for the rest of
+ * the sitting: every set of that side still queued (and any that joins the
+ * scope later) is settled as "couldn't be checked", and the live line says
+ * so once. One signed-out answer is not a stop; a whole batch of them is.
+ *
+ * ## The live line
+ *
+ * `announcement` is the dialog's one polite line for the whole check. Its
+ * total is FIXED when the check starts (the scope at that moment), so a
+ * column shrinking as rows go up to Ready never moves it: a start line, at
+ * most one line per quarter, one closing sentence, never repeated. A set
+ * that left the columns before it was checked counts as accounted for.
  *
  * ## Cancel
  *
@@ -93,6 +110,8 @@ export type BaseMatchProbe = {
   signature: BaseSignature | null;
   /** Every check so far, keyed by `checkKey(side, id)`. A fresh map per change. */
   checks: ReadonlyMap<string, RowCheck>;
+  /** The dialog's live line for the check; "" until there is something to say. */
+  announcement: string;
 };
 
 export const checkKey = (side: BaseMatchSide, id: string) => `${side}:${id}`;
@@ -138,6 +157,100 @@ function snapshotOf(entries: Map<string, Entry>): Map<string, RowCheck> {
   return out;
 }
 
+/** The failure kinds that mean "sign in again" — asking more cannot help. */
+const SIGN_IN_KINDS: ReadonlySet<string> = new Set(["signed_out", "no_sign_in"]);
+
+/** Did every id in the batch come back failed for want of a sign-in? */
+export function wholeBatchSignedOut(
+  ids: readonly string[],
+  results: readonly { id: string; status: string; kind?: string }[] | undefined,
+): boolean {
+  if (ids.length === 0) return false;
+  const got = byId(results);
+  return ids.every((id) => {
+    const r = got.get(id);
+    return r !== undefined && r.status === "failed" && SIGN_IN_KINDS.has(r.kind ?? "");
+  });
+}
+
+export type AnnounceState = {
+  started: boolean;
+  quarter: number;
+  done: boolean;
+  stoppedSaid: Set<BaseMatchSide>;
+};
+
+export const freshAnnounce = (): AnnounceState => ({
+  started: false,
+  quarter: 0,
+  done: false,
+  stoppedSaid: new Set(),
+});
+
+/**
+ * The live line's next text, or null when nothing new is to be said. Moves
+ * `state` forward; every milestone is said at most once per sitting.
+ */
+export function nextAnnouncement({
+  state,
+  startKeys,
+  entries,
+  inScope,
+  stopped,
+}: {
+  state: AnnounceState;
+  startKeys: ReadonlySet<string>;
+  entries: ReadonlyMap<string, Pick<Entry, "status" | "judgement">>;
+  inScope: ReadonlySet<string>;
+  stopped: Record<BaseMatchSide, boolean>;
+}): string | null {
+  const parts: string[] = [];
+  for (const side of SIDES) {
+    if (stopped[side] && !state.stoppedSaid.has(side)) {
+      state.stoppedSaid.add(side);
+      parts.push(BASE_MATCH_COPY.liveStopped(side));
+    }
+  }
+  const total = startKeys.size;
+  if (total > 0 && !state.done) {
+    let accounted = 0;
+    let checked = 0;
+    let match = 0;
+    let mismatch = 0;
+    let unverifiable = 0;
+    for (const key of startKeys) {
+      const e = entries.get(key);
+      if (e?.status === "done" && e.judgement) {
+        accounted++;
+        checked++;
+        if (e.judgement.verdict === "match") match++;
+        else if (e.judgement.verdict === "mismatch") mismatch++;
+        else unverifiable++;
+      } else if (!inScope.has(key)) {
+        // Left the columns (made a set, attached) before it was checked.
+        accounted++;
+      }
+    }
+    const quarter = Math.floor((accounted * 4) / total);
+    if (!state.started) {
+      state.started = true;
+      state.quarter = quarter;
+      if (accounted < total) parts.push(BASE_MATCH_COPY.liveStart(total));
+    }
+    if (accounted >= total) {
+      state.done = true;
+      // Nothing was actually checked: no closing sentence to say.
+      if (checked > 0) {
+        parts.push(BASE_MATCH_COPY.liveDone(checked, match, mismatch, unverifiable));
+      }
+    } else if (quarter > state.quarter) {
+      state.quarter = quarter;
+      parts.push(BASE_MATCH_COPY.liveQuarter(quarter * 25));
+    }
+  }
+  return parts.length > 0 ? parts.join(" ") : null;
+}
+
 function byId<T extends { id: string }>(results: readonly T[] | undefined): Map<string, T> {
   const map = new Map<string, T>();
   for (const r of results ?? []) map.set(r.id, r);
@@ -169,6 +282,7 @@ export function useBaseMatchProbe({
   const [checks, setChecks] = useState<ReadonlyMap<string, RowCheck>>(
     () => new Map(),
   );
+  const [announcement, setAnnouncement] = useState("");
 
   const entriesRef = useRef(new Map<string, Entry>());
   const seqRef = useRef(0);
@@ -186,9 +300,26 @@ export function useBaseMatchProbe({
   const variantTypeIdRef = useRef<Id<"selectorOptions"> | undefined>(undefined);
   const scopeRef = useRef(scope);
   const viewRef = useRef(view);
+  /** The scope when the check started: the live line's fixed total. */
+  const startKeysRef = useRef<ReadonlySet<string>>(new Set());
+  const announceRef = useRef<AnnounceState>(freshAnnounce());
+  /** Sides stopped for want of a sign-in: never asked again this sitting. */
+  const stoppedRef = useRef<Record<BaseMatchSide, boolean>>({
+    bsc: false,
+    sportlots: false,
+  });
 
   const publish = useCallback(() => {
     setChecks(snapshotOf(entriesRef.current));
+    if (!sigRef.current) return;
+    const next = nextAnnouncement({
+      state: announceRef.current,
+      startKeys: startKeysRef.current,
+      entries: entriesRef.current,
+      inScope: inScopeRef.current,
+      stopped: stoppedRef.current,
+    });
+    if (next !== null) setAnnouncement(next);
   }, []);
 
   /** Bring the queue in line with the latest scope and view. */
@@ -199,13 +330,21 @@ export function useBaseMatchProbe({
         const key = checkKey(side, id);
         inScope.add(key);
         if (!entriesRef.current.has(key)) {
-          entriesRef.current.set(key, {
+          const sig = sigRef.current;
+          const entry: Entry = {
             side,
             id,
             stage: "first",
             status: "queued",
             seq: seqRef.current++,
-          });
+          };
+          // A side stopped for want of a sign-in is not asked again: a set
+          // joining its scope now settles as "couldn't be checked" at once.
+          if (stoppedRef.current[side] && sig) {
+            entry.status = "done";
+            entry.judgement = judgeAgainstBase(sig, side, { status: "failed" });
+          }
+          entriesRef.current.set(key, entry);
         }
       }
     }
@@ -242,6 +381,19 @@ export function useBaseMatchProbe({
     e.judgement = judgement;
   }, []);
 
+  /** Stop asking `side`: settle everything it still has queued as unverifiable. */
+  const stopSide = useCallback(
+    (side: BaseMatchSide, sig: BaseSignature) => {
+      stoppedRef.current[side] = true;
+      for (const e of entriesRef.current.values()) {
+        if (e.side === side && e.status === "queued") {
+          finish(e, judgeAgainstBase(sig, side, { status: "failed" }));
+        }
+      }
+    },
+    [finish],
+  );
+
   // `pump` and `dispatch` call each other; the ref breaks the cycle.
   const pumpRef = useRef<() => void>(() => undefined);
 
@@ -266,6 +418,7 @@ export function useBaseMatchProbe({
             { variantTypeId: variantTypeIdNow, variantNameIds: ids },
           );
           const got = byId(results);
+          const signedOut = wholeBatchSignedOut(ids, results);
           for (const e of batch) {
             const r = got.get(e.id);
             // `failed` (a paused marketplace answers `refused` as its kind)
@@ -285,6 +438,7 @@ export function useBaseMatchProbe({
               );
             }
           }
+          if (signedOut) stopSide(side, sig);
           return;
         }
         if (stage === "first") {
@@ -293,6 +447,7 @@ export function useBaseMatchProbe({
             { setIds: ids },
           );
           const got = byId(results);
+          const signedOut = wholeBatchSignedOut(ids, results);
           for (const e of batch) {
             const r = got.get(e.id);
             if (!r || r.status !== "ok") {
@@ -323,6 +478,7 @@ export function useBaseMatchProbe({
               finish(e, judgeAgainstBase(sig, side, { status: "ok", first }));
             }
           }
+          if (signedOut) stopSide(side, sig);
           return;
         }
         const results: SlCountResult[] = await convex.action(
@@ -330,6 +486,7 @@ export function useBaseMatchProbe({
           { setIds: ids },
         );
         const got = byId(results);
+        const signedOut = wholeBatchSignedOut(ids, results);
         for (const e of batch) {
           const r = got.get(e.id);
           if (!r || r.status !== "ok") unverifiable(e);
@@ -344,6 +501,7 @@ export function useBaseMatchProbe({
             );
           }
         }
+        if (signedOut) stopSide(side, sig);
       };
 
       void call()
@@ -360,13 +518,14 @@ export function useBaseMatchProbe({
           pumpRef.current();
         });
     },
-    [finish, publish],
+    [finish, publish, stopSide],
   );
 
   const pump = useCallback(() => {
     if (!sigRef.current || !clientRef.current) return;
     let sent = false;
     for (const side of SIDES) {
+      if (stoppedRef.current[side]) continue;
       while (inFlightRef.current[side] < MAX_IN_FLIGHT_PER_SIDE) {
         let stage: Stage = "first";
         let batch: Entry[];
@@ -439,6 +598,8 @@ export function useBaseMatchProbe({
           return;
         }
         sigRef.current = result;
+        // The live line's total, fixed now: the scope as the check starts.
+        startKeysRef.current = new Set(inScopeRef.current);
         setSignature(result);
         setPhase("on");
         publish();
@@ -457,6 +618,10 @@ export function useBaseMatchProbe({
       // Nothing outlives the sitting: the next open starts from nothing.
       entriesRef.current = new Map();
       seqRef.current = 0;
+      startKeysRef.current = new Set();
+      announceRef.current = freshAnnounce();
+      stoppedRef.current = { bsc: false, sportlots: false };
+      setAnnouncement("");
     };
   }, [client, variantTypeId, syncScope, publish]);
 
@@ -464,6 +629,7 @@ export function useBaseMatchProbe({
     phase,
     signature,
     checks: phase === "on" ? checks : EMPTY,
+    announcement: phase === "on" ? announcement : "",
   };
 }
 

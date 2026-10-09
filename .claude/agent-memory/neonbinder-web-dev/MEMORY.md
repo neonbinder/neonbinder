@@ -92,3 +92,4 @@
 - [Local override of server state needs a null tombstone](reference_local_override_of_server_state_needs_a_null_tombstone.md) — `null` not a deleted key over a stored per-row value; merge save results; readyTitleClashes reuse for own-set names
 - [Action blind insert is invisible to OCC](reference_action_blind_insert_is_invisible_to_occ.md) — re-check status + read the range inside the write; repro the interleave by driving the action steps by hand
 - [ReconciliationModal lists unstable per render](reference_reconciliation_modal_lists_are_unstable_per_render.md) — default `[]` props → new list identity each render; key setState effects on content or the modal loops silently
+- [Vitest console hidden in passing tests](reference_vitest_console_hidden_in_passing_tests.md) — console.log from a passing test prints nothing; scratch probes log via appendFileSync
