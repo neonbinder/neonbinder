@@ -97,3 +97,13 @@ set-selector`) still includes wip flows despite the script's own comment.
 Related: [[measure-a-fixture-from-ci-artifacts]] (adapter `result_count` per
 scope from convex logs), [[touch-swipe-scrolls-a-dialog-body]],
 [[inner-scroller-clip-is-invisible-to-maestro]].
+
+**Dealer-list twins the public search missed (live dialog, 2026-10-08).**
+2024 Topps' dealer list also has "Chrome Black Refractor" twice (305604 /
+309103, one side stockless), and in the City Connect family the twinned
+variant is `… Gold` (307439 / 299609), NOT `… Black` (one `… Black` plus a
+`… Black /199`). Consequence: since the exactly-one guard, the seed's 2024
+Topps Chrome `Parallel` reconcile saves 41, not 42 (BSC `Black Refractors`
+stays Pending) — a fixture count pinned before a matcher change is a
+suspect, not a regression, until the delta is named. Prove which pair
+dropped with [[probe-a-fixture-without-draining-it]] (matcher diff recipe).

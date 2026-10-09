@@ -86,20 +86,22 @@ tags:
 #   write: 7000, and a miss is a product finding, never a bigger number
 #   (1996 Score's identical Save measured ~3 s tap-to-closed, CI 37859759647).
 #
-# ── R8 INSIDE THE DIALOG — ⚠️ GEOMETRY UNMEASURED UNTIL THE FIRST RUN ────────
+# ── R8 INSIDE THE DIALOG ────────────────────────────────────────────────────
 #   The dialog body is the only scroller of a `fixed inset-0` portal, so it is
 #   moved with TOUCH swipes started at x=3% (the body's own padding, never a
 #   dnd-kit row) and Maestro never sees its clip. Ready is filtered so the
 #   rows this flow builds stay HIDDEN until the read-back (Pending never
 #   moves while it pairs), BSC to the two series rows, and SportLots to the
-#   twins' name. The assumption to check on the first run: SportLots lists
-#   the two bare-name twins FIRST in the narrowed column (its dealer list is
-#   alphabetical in every capture so far, and the bare name sorts before
-#   "… Black / Gold / Red"), so a HALF swipe from the top puts the BSC rows
-#   and both twins inside the body band (~117-525). Read the tap lines'
-#   `Element bounds` in `maestro.log` against that band. Every tap is
-#   followed by an assert of its effect, so a tap that lands nowhere fails
-#   at the next line, by name.
+#   twins' name. SportLots lists the two bare-name twins FIRST in the
+#   narrowed column, so ONE HALF swipe from the pinned top puts the BSC rows
+#   and both twins inside the body band (~133-520). Measured CI 37874717642:
+#   BSC row tapped at y=332-372, twin suffixes at y=419 then 355. Every tap
+#   is followed by an assert of its effect, so a tap that lands nowhere
+#   fails at the next line, by name. A Ready row that DOES appear while the
+#   body is scrolled (pair 2, under the Series Two filter) pushes the Ready
+#   header above y=0 (scroll anchoring holds Pending still), so asserts
+#   there read the Pending headers, and the Ready header only after a
+#   re-pin to the top (STEP 4 → STEP 5).
 #
 # ── HANDLES (visible text and accessible names; never a DOM id) ─────────────
 #   column   `Insert`, `Reconcile Inserts`, `Search inserts`, `Sync Inserts`
@@ -243,7 +245,7 @@ tags:
           id: "Make its own set: ${output.TWIN} \\(#${output.S2_ID}\\)"
 
       # Bring the Pending rows into the body band: ONE HALF touch UP (~157px)
-      # from the pinned top. ⚠️ UNMEASURED — see R8 in the header.
+      # from the pinned top (measured — see R8 in the header).
       - swipe:
           start: "3%, 75%"
           end: "3%, 50%"
@@ -287,10 +289,17 @@ tags:
       - tapOn:
           text: "\\(#${output.S2_ID}\\)"
           retryTapIfNoChange: false
-      # The new set is the one Ready shows under the Series Two filter.
+      # The pair left Pending: no BSC row remains (positive first, as after
+      # pair 1). NOT `Ready (1 of M)`: this pair is the one the Series Two
+      # filter shows, so a Ready row appears ABOVE Pending, the browser's
+      # scroll anchoring keeps Pending still, and the Ready header goes
+      # above y=0, out of the hierarchy (CI 37874717642: the pair landed —
+      # chip `(#307437)` on the Series Two row — and the header was pruned).
+      # The Pending headers stay in view; STEP 5 re-pins to the top and
+      # reads Ready.
       - extendedWaitUntil:
           visible:
-            text: ".*Ready \\(1 of [0-9]+\\).*"
+            text: ".*BSC \\(0 of [0-9]+\\).*"
           timeout: 7000
       - assertNotVisible:
           id: "Make its own set: ${output.TWIN} \\(#[0-9]+\\)"
@@ -454,12 +463,16 @@ tags:
           id: "Search SportLots items"
           waitToSettleTimeoutMs: 250
       - inputText: ${output.TWIN}
-      # The positive first (R2): the "… Black" twins (299608 / 307438) match
-      # the same search and nobody pairs them, so they still wait in Pending
-      # under their own ids — the column is listing, and listing twins.
+      # The positive first (R2): the family's OTHER twins match the same
+      # search and nobody pairs them, so they still wait in Pending under
+      # their own ids — the column is listing, and listing twins. Which
+      # variant is twinned is SportLots' (CI 37874717642's dealer list had
+      # `… Gold` twice, #307439 / #299609, but ONE `… Black` and a `… Black
+      # /199`), so the pattern is any `<name> <variant> (#id)`; `.+` needs a
+      # word after the name, so neither bare-name twin can satisfy it.
       - extendedWaitUntil:
           visible:
-            id: "Make its own set: ${output.TWIN} Black \\(#[0-9]+\\)"
+            id: "Make its own set: ${output.TWIN} .+ \\(#[0-9]+\\)"
           timeout: 7000
       # … and neither of ours is among them: each is held by its restored
       # row, not offered again.

@@ -39,3 +39,15 @@ product bugs — confirm them in a Maestro run instead:
 To time a UI window precisely, install an in-page 250ms recorder that pushes a
 snapshot whenever the interesting lines change, then read the array back — that
 is how NEO-255's inline progress line was measured at ~0.25s.
+
+**Name the pair a matcher change dropped (NEO-325).** When a pinned count
+moves after a matching change (e.g. `Build 42` → `Build 41`): open the
+Reconcile dialog over CDP (puppeteer-core from `main/services/browser`
+node_modules + the pinned Chrome; click by exact innerText, read the dialog's
+`innerText`, then Cancel — opening writes nothing), parse its `BSC` / `SL`
+name lines (twins carry ` (#id)`), and run `computeMatches` from BOTH the
+worktree and `main/` on those names with `apps/web/node_modules/.bin/tsx`
+(absolute imports of each tree's `convex/setReconciliation.ts`). The diff of
+`autoMatched` names the exact pair — evidence that the count change is the
+intended rule, not a loss. A Maestro hierarchy dump cannot do this: it only
+lists the viewport.

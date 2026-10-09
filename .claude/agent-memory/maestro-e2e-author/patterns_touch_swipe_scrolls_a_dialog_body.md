@@ -65,3 +65,26 @@ bottom edge, so a flow that tapped it unswiped goes red with no flow change. The
 failure reads as `No visible element found` on the NEXT step (what the tap should
 have revealed); compare the tap's logged text bounds against the body's bottom in
 the failure hierarchy before anything else.
+
+**Pin-to-END is only safe when the tail is SHORT — check what the query
+leaves, not what you hope it leaves (NEO-325, CI 37874717642).** In
+ReconciliationModal the two Pending columns are a side-by-side grid, so the
+tail of the body is the LONGER column. Unfiltered, the SportLots column is the
+prefix-filtered dealer list (hundreds of rows): two UP pins carried the
+`Search SportLots items` box ~250px above the body. Even narrowed, a twin's
+name matches its whole family ("Update Sapphire" → a dozen-plus `Chrome
+Update Sapphire …` rows), and the bare-name twins sort FIRST, so the end is
+far below them. Recipe: tap the SL search box at the pinned TOP (it sits
+beside `Filter BSC items`, in the band), type, assert, then re-pin top + ONE
+half swipe (75%→50%) to lift the column's first rows above the footer.
+
+**A Ready row that appears while the body is scrolled moves the Ready header
+OUT of the hierarchy.** Scroll anchoring holds Pending still, so everything
+above the insertion point goes up; a `Ready (N of M)` gate then fails on a
+pair that landed. Gate on a Pending header (`BSC (0 of M)`) and read Ready
+after a re-pin to the top.
+
+**After a fixed-portal dialog closes, the page is back at its TOP** (the
+column it was opened from is there, but a button under a 400px column list is
+below the fold). The post-close positive is a `scrollUntilVisible`, not an
+`extendedWaitUntil`.
