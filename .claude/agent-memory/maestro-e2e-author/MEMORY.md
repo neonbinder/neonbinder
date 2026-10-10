@@ -134,3 +134,4 @@ Non-markdown helpers: `tools/`
 - [Heading-only selector via `above:` a field label](patterns_heading_only_via_above_field_label.md) — name in h3 AND input values: anchor `above: "<label>"`; leftOf/rightOf are left-edge only
 - [sr-only in an unpositioned scroller](patterns_sr_only_in_unpositioned_scroller.md) — span stays at its scrollTop-0 spot, pruned past y=629; compare a known sr-only node to its parent
 - [Multi-team row needs a team count](patterns_multi_team_row_needs_a_team_count.md) — "A, B" sub-line = 2 links OR 1 combined team; Team Mgmt "1 of" on one half closes it; settle lookups before checking team steps
+- [Closed <details> content is in the hierarchy](patterns_closed_details_content_is_in_the_hierarchy.md) — listed with live bounds while hidden; open the summary before asserting inside

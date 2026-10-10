@@ -152,7 +152,9 @@ const candidateInputValidator = v.object({
  * Nothing downstream observes the split. The auto-keep path already polls
  * `getReadyCandidates` until `total` equals the count the action reported
  * (`CardChecklist.awaitStreamedBatch`, 30s budget) before it commits anything,
- * and the pairing modal's Confirm is gated on the action's own promise. The
+ * and the pairing modal's Confirm is gated on the action's own promise — and,
+ * since NEO-333, both also wait for `ready` to reach the action's
+ * `readyAfterTeams`, so the team lookup's writes are on the client too. The
  * one ordering that had to be made explicit is the team lookup's — see
  * `resolveCandidateTeams`, which now retries a card whose row this chain had
  * not reached yet.
@@ -590,6 +592,10 @@ export const resolveCandidateTeams = internalMutation({
     // NEO-294 — refs this call found no row for. Retried once (see above) and
     // then reported.
     missing: v.number(),
+    // NEO-333 — the batch's `ready` count as this call commits it. The fetch
+    // hands the LAST one back to the client as its team fence: see
+    // `readyAfterTeams` on `fetchCardChecklist`.
+    ready: v.number(),
   }),
   handler: async (ctx, args) => {
     const rows = await ctx.db
@@ -661,6 +667,7 @@ export const resolveCandidateTeams = internalMutation({
     for (const stem of touchedStems) {
       if (!pendingByStem.has(stem)) released++;
     }
+    const ready = fresh.filter((r) => r.status === "ready").length;
 
     /*
      * NEO-294 — the one retry. `args.retry` marks the retry itself, so this
@@ -687,7 +694,7 @@ export const resolveCandidateTeams = internalMutation({
         }),
       );
     }
-    return { patched, released, missing: missed.length };
+    return { patched, released, missing: missed.length, ready };
   },
 });
 
