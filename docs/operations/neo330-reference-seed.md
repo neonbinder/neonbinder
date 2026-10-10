@@ -99,7 +99,9 @@ needs its sport rows first, and opening the Set Selector once creates them.
 atomic import of empty tables. It needs no deployed code (see §6).
 
 `load` refuses a hollow bundle before it contacts Convex. Each of the seven
-reference tables needs at least one row, there must be at least
+reference tables needs at least one row, except `playerSports`, which
+production legitimately leaves empty (`TABLES_THAT_MAY_BE_EMPTY`). There
+must be at least
 `MIN_BUNDLE_PLAYERS` (1,000) players and `MIN_BUNDLE_TEAMS` (100) teams,
 and import mode needs at least one sport row. Both the manifest counts and
 the rows themselves must clear these floors. `build` warns when a bundle

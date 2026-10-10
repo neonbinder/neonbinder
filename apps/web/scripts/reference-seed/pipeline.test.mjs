@@ -483,3 +483,53 @@ describe("schema validation", () => {
     expect(checkFiles(f).ok).toBe(false);
   });
 });
+
+describe("an export whose playerSports is a 0-byte member (as production's is)", () => {
+  let edir;
+  let efiles;
+  let emanifest;
+
+  beforeAll(async () => {
+    edir = makeTempDir("pipeline-empty-test");
+    const fx = makeFixtureExport(path.join(edir, "export.zip"), { emptyTables: ["playerSports"] });
+    const listing = execFileSync("unzip", ["-l", fx.path], { encoding: "utf8" });
+    expect(listing).toMatch(/^\s*0\s.*\splayerSports\/documents\.jsonl$/m);
+    const out = path.join(edir, "bundle.zip");
+    ({ manifest: emanifest } = await buildBundle(fx.path, out, { log: () => {} }));
+    efiles = readZipText(out);
+  });
+
+  afterAll(() => {
+    if (edir) rmSync(edir, { recursive: true, force: true });
+  });
+
+  test("build carries an empty playerSports and every other table as usual", () => {
+    expect(emanifest.counts).toEqual({ ...FIXTURE_IMPORT_EXPECTED, playerSports: 0 });
+    expect(efiles.get("playerSports/documents.jsonl")).toBe("");
+  });
+
+  test("check passes", () => {
+    const r = checkFiles(efiles);
+    expect(r.problems).toEqual({});
+    expect(r.ok).toBe(true);
+    expect(r.rows.playerSports).toBe(0);
+  });
+
+  test("import mode keeps everything else and validates", () => {
+    const out = transformBundle(parseBundle(efiles), { tableNumbers: TARGET }, { sports: "import" });
+    expect(out.expected).toEqual({ ...FIXTURE_IMPORT_EXPECTED, playerSports: 0 });
+    expect(checkFiles(out.files, { toleratedDangling: emanifest.integrity.dangling }).ok).toBe(true);
+    expect(validateAgainstSchema(out.files, EXPORTED_SCHEMA).errors).toEqual({});
+  });
+
+  test("remap mode keeps everything else and validates", () => {
+    const out = transformBundle(parseBundle(efiles), { tableNumbers: TARGET, sports: fixtureTargetSports() }, { sports: "remap" });
+    expect(out.expected).toEqual({ ...FIXTURE_REMAP_EXPECTED, playerSports: 0 });
+    const r = checkFiles(out.files, {
+      toleratedDangling: emanifest.integrity.dangling,
+      externalTableNumbers: { selectorOptions: FIXTURE_TARGET_TABLE_NUMBERS.selectorOptions },
+    });
+    expect(r.ok).toBe(true);
+    expect(validateAgainstSchema(out.files, EXPORTED_SCHEMA).errors).toEqual({});
+  });
+});

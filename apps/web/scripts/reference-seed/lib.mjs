@@ -12,7 +12,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { createWriteStream, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { once } from "node:events";
-import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
@@ -479,6 +478,14 @@ export function redactConvexOutput(stdout = "", stderr = "") {
 // sit far below that so a real refresh never trips them, and far above
 // anything a dev or preview deployment accumulates by hand.
 
+/**
+ * Reference tables that may legitimately be empty in production, so a bundle
+ * without rows in them is not hollow. `playerSports` records extra sports for
+ * multi-sport players; production held none when the first real bundle was
+ * built (2026-10-10).
+ */
+export const TABLES_THAT_MAY_BE_EMPTY = ["playerSports"];
+
 /** Fewest players a loadable bundle may carry. */
 export const MIN_BUNDLE_PLAYERS = 1000;
 
@@ -488,8 +495,8 @@ export const MIN_BUNDLE_TEAMS = 100;
 /**
  * Reasons a bundle is too hollow to load, from its manifest counts and its
  * actual rows (both must clear every floor). Every one of the seven
- * reference tables needs at least one row; import mode also needs at least
- * one sport row. Pure.
+ * reference tables except TABLES_THAT_MAY_BE_EMPTY needs at least one row;
+ * import mode also needs at least one sport row. Pure.
  *
  * @param {Record<string,number>|undefined} manifestCounts manifest.counts
  * @param {Record<string,number>} rowCounts rows actually in the bundle, per table
@@ -508,7 +515,7 @@ export function hollowBundleProblems(manifestCounts, rowCounts, mode) {
       if (n < min) problems.push(`${t}: ${n} (${label}), needs at least ${min}${why}`);
     }
   };
-  for (const t of TABLES) floor(t, 1, "");
+  for (const t of TABLES) if (!TABLES_THAT_MAY_BE_EMPTY.includes(t)) floor(t, 1, "");
   floor("players", MIN_BUNDLE_PLAYERS, " (MIN_BUNDLE_PLAYERS)");
   floor("teams", MIN_BUNDLE_TEAMS, " (MIN_BUNDLE_TEAMS)");
   if (mode === "import") floor(SPORT_TABLE, 1, " (import mode replaces selectorOptions with these)");
@@ -546,19 +553,43 @@ function assertSafeEntry(entry) {
   if (!/^[A-Za-z0-9_./-]+$/.test(entry)) throw new Error(`unsafe zip entry name: ${entry}`);
 }
 
-/** Async iterator of non-empty raw lines of one ZIP entry, streamed. */
+/**
+ * Async iterator of non-empty raw lines of one ZIP entry, streamed.
+ *
+ * Splits the child's stdout by hand instead of using readline. readline's
+ * async iterator pauses the interface when a slow consumer falls behind, and
+ * if `unzip` finishes while it is paused, the next resume() throws
+ * ERR_USE_AFTER_CLOSE ("readline was closed") and the entry's last line is
+ * lost. A Readable's own async iterator has no such race, and an empty or
+ * instantly-closed member simply yields nothing.
+ */
 export async function* zipLines(zipPath, entry) {
   assertSafeEntry(entry);
   const child = spawn("unzip", ["-p", zipPath, entry], { stdio: ["ignore", "pipe", "pipe"] });
   let stderr = "";
+  child.stderr.setEncoding("utf8");
   child.stderr.on("data", (d) => (stderr += d));
   const exited = once(child, "close");
-  const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-  for await (const line of rl) {
-    if (line.trim() !== "") yield line;
+  child.stdout.setEncoding("utf8"); // decodes multi-byte characters across chunk edges
+  let finished = false;
+  try {
+    let rest = "";
+    for await (const chunk of child.stdout) {
+      const parts = (rest + chunk).split("\n");
+      rest = parts.pop();
+      for (const raw of parts) {
+        const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
+        if (line.trim() !== "") yield line;
+      }
+    }
+    if (rest.trim() !== "") yield rest.endsWith("\r") ? rest.slice(0, -1) : rest;
+    const [code] = await exited;
+    finished = true;
+    if (code !== 0) throw new Error(`unzip -p ${entry} exited ${code}: ${stderr.trim()}`);
+  } finally {
+    // The consumer stopped early (break/return/throw): do not leave unzip running.
+    if (!finished && child.exitCode === null) child.kill();
   }
-  const [code] = await exited;
-  if (code !== 0) throw new Error(`unzip -p ${entry} exited ${code}: ${stderr.trim()}`);
 }
 
 /** Async iterator of parsed JSON objects of one JSONL entry. */

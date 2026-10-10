@@ -32,6 +32,9 @@ import {
   MIN_BUNDLE_TEAMS,
   hollowBundleProblems,
   TABLES,
+  TABLES_THAT_MAY_BE_EMPTY,
+  zipLines,
+  zipJsonl,
 } from "./lib.mjs";
 import { FIXTURE_SOURCE_TABLE_NUMBERS, fixtureTables } from "./make-fixture.mjs";
 import { REFERENCE_SEED_TABLES } from "../../convex/selectorOptions";
@@ -203,6 +206,71 @@ describe("JSONL helpers", () => {
       ["players", 7],
       ["teams", 9],
     ]);
+  });
+});
+
+describe("zipLines / zipJsonl (streamed ZIP members)", () => {
+  // A ZIP with an empty member and a long one, written by the real `zip`.
+  const withZip = async (fn) => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "nb-ref-seed-ziplines-"));
+    try {
+      const src = path.join(dir, "src");
+      execFileSync("mkdir", ["-p", path.join(src, "empty"), path.join(src, "long")]);
+      writeFileSync(path.join(src, "empty", "documents.jsonl"), "");
+      const lines = Array.from({ length: LONG_LINES }, (_, i) => `{"i":${i}.0}`);
+      writeFileSync(path.join(src, "long", "documents.jsonl"), lines.join("\n") + "\n");
+      execFileSync("zip", ["-q", "-r", path.join(dir, "t.zip"), "."], { cwd: src });
+      await fn(path.join(dir, "t.zip"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const LONG_LINES = 20_000;
+
+  test("a 0-byte member yields nothing and does not throw (production's playerSports)", async () => {
+    await withZip(async (zip) => {
+      const got = [];
+      for await (const l of zipLines(zip, "empty/documents.jsonl")) got.push(l);
+      expect(got).toEqual([]);
+      const rows = [];
+      for await (const r of zipJsonl(zip, "empty/documents.jsonl")) rows.push(r);
+      expect(rows).toEqual([]);
+    });
+  });
+
+  test("a slow consumer still gets every line of a long member (readline closed under it before)", async () => {
+    // readline's async iterator paused under a consumer that awaits between
+    // lines; when unzip finished meanwhile, the next resume() threw
+    // ERR_USE_AFTER_CLOSE and the last line was lost. build awaits a write
+    // per row, so it hit this on production's teams table.
+    await withZip(async (zip) => {
+      let n = 0;
+      let last;
+      for await (const r of zipJsonl(zip, "long/documents.jsonl")) {
+        n++;
+        last = r.i;
+        if (n % 200 === 0) await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      expect(n).toBe(LONG_LINES);
+      expect(last).toBe(LONG_LINES - 1);
+    });
+  });
+
+  test("stopping early does not hang or throw", async () => {
+    await withZip(async (zip) => {
+      let n = 0;
+      for await (const _ of zipLines(zip, "long/documents.jsonl")) if (++n === 3) break;
+      expect(n).toBe(3);
+    });
+  });
+
+  test("a missing member fails with unzip's exit code", async () => {
+    await withZip(async (zip) => {
+      const drain = async () => {
+        for await (const _ of zipLines(zip, "nope/documents.jsonl")) void _;
+      };
+      await expect(drain()).rejects.toThrow(/unzip -p nope\/documents\.jsonl exited \d+/);
+    });
   });
 });
 
@@ -412,10 +480,15 @@ describe("hollowBundleProblems", () => {
     expect(hollowBundleProblems(full, full, "remap")).toEqual([]);
   });
 
-  test.each(TABLES)("an empty %s table is a problem", (t) => {
+  test.each(TABLES.filter((t) => !TABLES_THAT_MAY_BE_EMPTY.includes(t)))("an empty %s table is a problem", (t) => {
     const counts = { ...full, [t]: 0 };
     const problems = hollowBundleProblems(counts, counts, "remap");
     expect(problems.some((p) => p.startsWith(`${t}: 0`))).toBe(true);
+  });
+
+  test.each(TABLES_THAT_MAY_BE_EMPTY)("an empty %s table is allowed (production holds none)", (t) => {
+    const counts = { ...full, [t]: 0 };
+    expect(hollowBundleProblems(counts, counts, "import")).toEqual([]);
   });
 
   test("players and teams must clear their floors; one under is refused, exactly at is not", () => {

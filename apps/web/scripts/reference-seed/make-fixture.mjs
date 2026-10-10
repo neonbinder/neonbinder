@@ -44,6 +44,10 @@
 //   playerSports  PS1 P1/Curling drop · PS2 P3/Baseball keep
 //   → kept: leagues 1, franchises 1, teams 2, teamAliases 1, players 2, playerAliases 1, playerSports 1
 //
+// Variant: makeFixtureExport(out, { emptyTables: ["playerSports"] }) writes
+// playerSports as a 0-byte documents.jsonl, as production's export does.
+// Every other table's expectation is unchanged; playerSports expects 0.
+//
 // Expected outcome in IMPORT mode: every row of the eight tables kept (2 sport
 // rows, 2/2/3/3/3/3/2), every id re-encoded onto the target's numbers, sport
 // rows' platformData unchanged.
@@ -117,8 +121,13 @@ function makeIdFactory(numbers) {
 /**
  * The fixture's rows, keyed by table, plus the named ids tests assert on.
  * Pure: no I/O.
+ *
+ * @param {{ emptyTables?: string[] }} [opts] tables to write with no rows (a
+ *   0-byte documents.jsonl in the export), the way production's playerSports
+ *   is. Only tables nothing else references may be emptied (playerSports), so
+ *   the default fixture's expectations hold for every other table.
  */
-export function fixtureTables() {
+export function fixtureTables({ emptyTables = [] } = {}) {
   const id = makeIdFactory(FIXTURE_SOURCE_TABLE_NUMBERS);
   let clock = 1_700_000_000_000;
   // Mostly fractional like real _creationTime values; every fourth integral,
@@ -202,6 +211,12 @@ export function fixtureTables() {
     prizePool: [],
   };
 
+  for (const t of emptyTables) {
+    if (!(t in tables)) throw new Error(`fixtureTables: no table ${t}`);
+    if (t !== "playerSports") throw new Error(`fixtureTables: emptying ${t} would leave references dangling; only playerSports may be emptied`);
+    tables[t] = [];
+  }
+
   const ids = { S1, S2, Y1, L1, L2, F1, F2, T1, T2, T3, TX, P1, P2, P3, A1, A2, A3, PA1, PA2, PA3, PS1, PS2, U1 };
   return { tables, ids };
 }
@@ -217,12 +232,14 @@ export function fixtureTargetSports() {
 
 /**
  * Writes the fixture export ZIP.
+ * @param {string} outZip
+ * @param {{ emptyTables?: string[] }} [opts] see fixtureTables()
  * @returns {{ path: string, ids: Record<string,string>, tables: Record<string, object[]> }}
  */
-export function makeFixtureExport(outZip) {
+export function makeFixtureExport(outZip, { emptyTables = [] } = {}) {
   requireZipTools();
   const out = path.resolve(outZip);
-  const { tables, ids } = fixtureTables();
+  const { tables, ids } = fixtureTables({ emptyTables });
   const dir = makeTempDir("fixture");
   try {
     const w = (rel, body) => {
