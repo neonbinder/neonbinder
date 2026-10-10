@@ -135,3 +135,4 @@ Non-markdown helpers: `tools/`
 - [sr-only in an unpositioned scroller](patterns_sr_only_in_unpositioned_scroller.md) — span stays at its scrollTop-0 spot, pruned past y=629; compare a known sr-only node to its parent
 - [NEO-334 variant type title is its kind](reference_neo334_sub_variants_column_is_role_gated.md) — Base/Insert(s)/Parallel(s) by exact title, hand-made too; column 7 only under Insert; refusal selectors; re-point the panel
 - [NEO-334 title kind vs Insert › Base pair](reference_neo334_title_kind_and_insert_base_pair.md) — kind read at variantType level only; the "Base" insert is not the Base; keep the type "Insert"
+- [centerElement is one-sided](patterns_center_element_is_one_sided.md) — UP accepts centre > 0.3H, DOWN < 0.7H, one ~313px swipe; scroll to each row you assert
