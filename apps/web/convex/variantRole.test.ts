@@ -15,6 +15,7 @@ import {
   bscVariantEvidence,
   conferredVariantRole,
   derivedVariantFlags,
+  subVariantsAllowedUnder,
   variantTypeRole,
   withVariantFlags,
   type VariantEvidenceRow,
@@ -291,5 +292,24 @@ describe("withVariantFlags", () => {
     expect(withVariantFlags(undefined, { isInsert: true })).toEqual({
       isInsert: true,
     });
+  });
+});
+
+describe("subVariantsAllowedUnder (NEO-334)", () => {
+  test("an Insert type admits sub-variants", () => {
+    expect(subVariantsAllowedUnder({ metadata: { variantRole: "insert" } })).toBe(true);
+  });
+
+  test("a Parallel type, the Base and a type with no role do not", () => {
+    expect(subVariantsAllowedUnder({ metadata: { variantRole: "parallel" } })).toBe(false);
+    expect(subVariantsAllowedUnder({ metadata: { isBase: true } })).toBe(false);
+    // isBase wins over a stray role, as it does in variantTypeRole.
+    expect(
+      subVariantsAllowedUnder({ metadata: { isBase: true, variantRole: "insert" } }),
+    ).toBe(false);
+    expect(subVariantsAllowedUnder({ metadata: {} })).toBe(false);
+    expect(subVariantsAllowedUnder({})).toBe(false);
+    expect(subVariantsAllowedUnder(null)).toBe(false);
+    expect(subVariantsAllowedUnder(undefined)).toBe(false);
   });
 });

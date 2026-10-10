@@ -248,3 +248,43 @@ describe("resolveDrillPath", () => {
     await expect(t.query(api.drillPath.resolveDrillPath, { ids: [c.sport] })).rejects.toThrow();
   });
 });
+
+describe("resolveDrillPath — sub-variants only under an Insert type (NEO-334)", () => {
+  test("a parallel under an Insert type's insert is kept", async () => {
+    const t = convexTest(schema, modules);
+    const c = await seedChain(t);
+    const ids = [c.sport, c.year, c.brand, c.set, c.type, c.insert, c.parallel];
+
+    expect(idsOf(await resolve(t, ids))).toEqual(ids);
+  });
+
+  for (const [label, metadata] of [
+    ["a Parallel type", { variantRole: "parallel" as const }],
+    ["a type with no role", undefined],
+  ] as const) {
+    test(`under ${label} the path stops at the insert and the parallel is dropped`, async () => {
+      const t = convexTest(schema, modules);
+      const c = await seedChain(t);
+      const type = await row(t, "variantType", "Parallel", c.set, metadata);
+      const insert = await row(t, "insert", "Gold", type);
+      // A stale link: no such row can be created today, but a URL can name one.
+      const parallel = await row(t, "parallel", "Gold /50", insert);
+
+      expect(
+        idsOf(await resolve(t, [c.sport, c.year, c.brand, c.set, type, insert, parallel])),
+      ).toEqual([c.sport, c.year, c.brand, c.set, type, insert]);
+    });
+  }
+
+  test("the role decides, never the name: a roleless type called \"Insert\" stops at the insert", async () => {
+    const t = convexTest(schema, modules);
+    const c = await seedChain(t);
+    const lookalike = await row(t, "variantType", "Insert", c.set);
+    const insert = await row(t, "insert", "All-Stars", lookalike);
+    const parallel = await row(t, "parallel", "Gold", insert);
+
+    expect(
+      idsOf(await resolve(t, [c.sport, c.year, c.brand, c.set, lookalike, insert, parallel])),
+    ).toEqual([c.sport, c.year, c.brand, c.set, lookalike, insert]);
+  });
+});

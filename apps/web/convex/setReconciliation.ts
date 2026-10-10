@@ -75,6 +75,7 @@ import {
 import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
 // NEO-277: the set-level team a fresh child inherits from its parent.
 import { inheritedTeamIds } from "./lib/selectorTeams";
+import { assertSubVariantParent } from "./lib/selectorAncestry";
 // NEO-239 — the per-side "can this marketplace be asked?" rule, shared with
 // selectorOptions.ts so the reconciler and the aggregator cannot disagree.
 import {
@@ -1720,6 +1721,11 @@ export const storeReconciledOptions = mutation({
           `${MAX_SYNC_ITEMS}-per-call limit`,
       );
     }
+
+    // NEO-334 — sub-variants live only under an Insert type's inserts. The
+    // whole call shares one parent, so it is refused before anything is read
+    // or written (see `assertSubVariantParent`).
+    await assertSubVariantParent(ctx, level, parentId);
 
     // NEO-71-74: reconciledItems share one parentId — fetch its
     // already-complete `features` snapshot once and copy it onto every

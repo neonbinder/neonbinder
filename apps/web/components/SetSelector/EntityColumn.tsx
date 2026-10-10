@@ -26,6 +26,7 @@ import {
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { checkCustomSelectorValue } from "../../convex/selectorSyncMatch";
+import { SUB_VARIANT_INSERT_ONLY } from "../../convex/variantRole";
 import { siblingTwinSuffixes } from "./marketplace-item-label";
 
 type Level =
@@ -103,9 +104,11 @@ function customRefusal(
     matches?: unknown;
     total?: unknown;
   };
-  if (code === "CUSTOM_VALUE_INVALID") {
+  // NEO-334: a sub-variant refused outside an Insert type reads like an
+  // invalid value — one inline sentence under the field, the server's own.
+  if (code === "CUSTOM_VALUE_INVALID" || code === SUB_VARIANT_INSERT_ONLY) {
     return {
-      code,
+      code: "CUSTOM_VALUE_INVALID",
       reason:
         typeof reason === "string" && reason.length > 0
           ? reason

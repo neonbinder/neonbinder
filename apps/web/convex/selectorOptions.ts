@@ -185,6 +185,7 @@ import { findSportForSelectorOption } from "./cardChecklist";
 // NEO-254: the set's year — the evidence that turns "two same-name players"
 // back into one. See convex/lib/selectorAncestry.ts.
 import {
+  assertSubVariantParent,
   collectDescendantIds,
   findSetYearForSelectorOption,
 } from "./lib/selectorAncestry";
@@ -250,8 +251,10 @@ import {
 // BSC slot), once, at creation and on a level move. Never from a name, never
 // from the client.
 import {
+  SUB_VARIANT_INSERT_ONLY_MESSAGE,
   conferredVariantRole,
   derivedVariantFlags,
+  subVariantsAllowedUnder,
   variantTypeRole,
   withVariantFlags,
 } from "./variantRole";
@@ -2143,6 +2146,11 @@ export const storeSelectorOptions = mutation({
       );
     }
 
+    // NEO-334 — sub-variants live only under an Insert type's inserts. Every
+    // item in a call shares the one parent, so the whole call is refused
+    // before anything is read or written (see `assertSubVariantParent`).
+    await assertSubVariantParent(ctx, level, parentId);
+
     // NEO-71-74: every option in this batch shares one parentId — fetch its
     // already-complete `features` snapshot once and copy it onto every
     // fresh insert below (write-once feature snapshots: see
@@ -3244,6 +3252,12 @@ export const addCustomSelectorOption = mutation({
       });
     }
     const value = checked.value;
+
+    // NEO-334 — a sub-variant is refused anywhere but under an insert of an
+    // Insert type, BEFORE the idempotent duplicate return below: the set
+    // builder shows no Sub-Variants column there, so a row resolved or
+    // created there is one nobody can reach.
+    await assertSubVariantParent(ctx, level, parentId);
 
     // NEO-71-74: fetch the parent once, up front — reused both for the
     // fresh row's copy-down `features` snapshot below and for the
@@ -7395,6 +7409,12 @@ export const groupingRefusal = {
   /** A row is no longer where the screen showed it (another session moved it). */
   moved: (value: string) =>
     `"${value}" has moved since you opened this. Refresh and try again.`,
+  /**
+   * NEO-334 — the plan moves rows under an insert (a promotion or a
+   * reparenting) but the variant type is not an Insert type, and sub-variants
+   * live only there. Demotions alone are still accepted anywhere.
+   */
+  notInsertType: () => SUB_VARIANT_INSERT_ONLY_MESSAGE,
   /** A target that is not (and will not be) an insert of this variant type. */
   notAnInsert: (value: string) =>
     `"${value}" isn't an insert here, so nothing can go under it. Refresh and try again.`,
@@ -7483,6 +7503,16 @@ export const applyParallelGroupings = mutation({
     const variantType = await ctx.db.get(args.variantTypeId);
     if (!variantType || variantType.level !== "variantType") {
       throw new ConvexError(groupingRefusal.gone());
+    }
+    // NEO-334 — a promotion or a reparenting lands a row as a sub-variant
+    // (`parallel` level) under one of this type's inserts, and sub-variants
+    // live only under an Insert type. Demotions lift rows OUT of that level,
+    // so a plan of nothing but demotions is still accepted on any type.
+    if (
+      (args.promotions.length > 0 || (args.reparentings?.length ?? 0) > 0) &&
+      !subVariantsAllowedUnder(variantType)
+    ) {
+      throw new ConvexError(groupingRefusal.notInsertType());
     }
 
     // Track in-memory children sets keyed by row id so multiple promotions/

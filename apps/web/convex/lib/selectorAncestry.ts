@@ -18,7 +18,14 @@
  * what the subtree is.
  */
 
+import { ConvexError } from "convex/values";
 import type { Id } from "../_generated/dataModel";
+import {
+  SUB_VARIANT_INSERT_ONLY,
+  SUB_VARIANT_INSERT_ONLY_MESSAGE,
+  subVariantsAllowedUnder,
+  type VariantRoleRow,
+} from "../variantRole";
 
 /**
  * Depth cutoff for every walk here.
@@ -131,4 +138,63 @@ export async function findSetYearForSelectorOption(
     depth += 1;
   }
   return undefined;
+}
+
+/**
+ * What the sub-variant gate reads of a row: where it sits, and (for the
+ * variant type) its NB role flags. Structural, like `AncestryCtx`, so a
+ * query or a mutation ctx both pass.
+ */
+type SubVariantGateCtx = {
+  db: {
+    get: (id: Id<"selectorOptions">) => Promise<
+      | ({
+          _id: Id<"selectorOptions">;
+          level?: string;
+          parentId?: Id<"selectorOptions">;
+        } & VariantRoleRow)
+      | null
+    >;
+  };
+};
+
+/**
+ * NEO-334 — may a `parallel`-level row be created under `parentId`?
+ *
+ * Only when the parent is an `insert`-level row whose own parent is a
+ * `variantType` row with the NB role `insert` (`subVariantsAllowedUnder`).
+ * No parent, a missing row, a parent at another level, or a variant type
+ * of any other role (Base, Parallel, none) is a no. Two point reads.
+ */
+export async function subVariantParentAllowed(
+  ctx: SubVariantGateCtx,
+  parentId: Id<"selectorOptions"> | undefined,
+): Promise<boolean> {
+  if (!parentId) return false;
+  const insert = await ctx.db.get(parentId);
+  if (!insert || insert.level !== "insert" || !insert.parentId) return false;
+  const variantType = await ctx.db.get(insert.parentId);
+  if (!variantType || variantType.level !== "variantType") return false;
+  return subVariantsAllowedUnder(variantType);
+}
+
+/**
+ * NEO-334 — the refusal every write path that creates rows at `level` under
+ * `parentId` runs first. A no-op at every level but `parallel`; at
+ * `parallel` it throws a structured `ConvexError`
+ * (`{ code: SUB_VARIANT_INSERT_ONLY, reason }`) unless
+ * `subVariantParentAllowed`. Thrown before anything is written, so a refused
+ * call leaves the tree exactly as it was.
+ */
+export async function assertSubVariantParent(
+  ctx: SubVariantGateCtx,
+  level: string,
+  parentId: Id<"selectorOptions"> | undefined,
+): Promise<void> {
+  if (level !== "parallel") return;
+  if (await subVariantParentAllowed(ctx, parentId)) return;
+  throw new ConvexError({
+    code: SUB_VARIANT_INSERT_ONLY,
+    reason: SUB_VARIANT_INSERT_ONLY_MESSAGE,
+  });
 }

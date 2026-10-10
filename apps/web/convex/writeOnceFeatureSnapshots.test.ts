@@ -35,6 +35,37 @@ const ADMIN_IDENTITY = {
   role: "admin",
 };
 
+/**
+ * NEO-334 — a sub-variant can only be created under an insert of an Insert
+ * type, so the `parallel` own-level cases need that parent. Both rows are
+ * seeded with no `features`, so the parallel's snapshot is its own level's
+ * and nothing copied down.
+ */
+async function seedFeaturelessInsert(
+  t: ReturnType<typeof convexTest>,
+): Promise<Id<"selectorOptions">> {
+  return t.run(async (ctx) => {
+    const variantType = await ctx.db.insert("selectorOptions", {
+      level: "variantType",
+      value: "Insert",
+      platformData: {},
+      metadata: { variantRole: "insert" },
+      children: [],
+      lastUpdated: 0,
+    });
+    const insert = await ctx.db.insert("selectorOptions", {
+      level: "insert",
+      value: "Chrome Update",
+      platformData: {},
+      parentId: variantType,
+      children: [],
+      lastUpdated: 0,
+    });
+    await ctx.db.patch(variantType, { children: [insert] });
+    return insert;
+  });
+}
+
 async function getFeatures(
   t: ReturnType<typeof convexTest>,
   id: Id<"selectorOptions">,
@@ -110,9 +141,11 @@ describe("own-level heuristic on a root (parentless) node", () => {
       api.selectorOptions.addCustomSelectorOption,
       { level: "insert", value: "Chrome Update" },
     );
+    // NEO-334: a parentless sub-variant is refused, so the parallel case is
+    // created under a featureless insert of an Insert type instead.
     const parallelId = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
-      { level: "parallel", value: "Gold" },
+      { level: "parallel", value: "Gold", parentId: await seedFeaturelessInsert(t) },
     );
     expect(await getFeatures(t, variantTypeId)).toEqual({
       cardType: "Base",
@@ -143,7 +176,7 @@ describe("own-level heuristic on a root (parentless) node", () => {
     );
     const parallelId = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
-      { level: "parallel", value: "Gold" },
+      { level: "parallel", value: "Gold", parentId: await seedFeaturelessInsert(t) },
     );
     expect((await getFeatures(t, insertId))?.parallelName).toBeUndefined();
     expect((await getFeatures(t, parallelId))?.parallelName).toBeUndefined();

@@ -293,6 +293,7 @@ NEO-312 split):
 | 2–3 — Insert reconcile, Group Parallels, re-sync; the parallel build | `set-selector/bowman-insert-grouping-builds-parallels.yaml` | 2–9 |
 | 4–5 — `Blue` pairs, Promote / Make parallel of; Make insert of… | `set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` | 10–14 |
 | 9 — a moved SportLots link is never re-created by a later sync (NEO-312) | `set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` | 15–16 |
+| 10 — only an insert opens the sub-variants column: none under `Parallel`'s `Blue`, `Sync Sub-Variants` under `Insert`'s `All-America Game Autos` (NEO-334; reads only, no new write) | `set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` | 10, 16 |
 
 1. Sync Sets mints no SportLots-only set; the brand's review (the pill `N
    SportLots sets to sort`) files them — every row under Bowman › Parallel in

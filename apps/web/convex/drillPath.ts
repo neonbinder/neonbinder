@@ -27,6 +27,11 @@
  * shows no Variants column beneath it, so a path that carries anything past a
  * Base variant type stops at the Base.
  *
+ * NEO-334 — the same, one level down: the Sub-Variants column exists only
+ * under an Insert type (`subVariantsAllowedUnder`, the NB role again), so
+ * under any other variant type the insert is the end of the path and a
+ * `parallel` id after it is dropped like any other bad link.
+ *
  * Admin-only, like every other read behind the set builder.
  */
 import { v } from "convex/values";
@@ -34,7 +39,7 @@ import { query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import { selectorOptionLevelValidator } from "./schema";
-import { variantTypeRole } from "./variantRole";
+import { subVariantsAllowedUnder, variantTypeRole } from "./variantRole";
 
 /**
  * The cascade's levels, root first. Position n of the `ids` argument is a
@@ -83,6 +88,8 @@ export const resolveDrillPath = query({
       level: (typeof DRILL_LEVELS)[number];
     }> = [];
     let parentId: Id<"selectorOptions"> | null = null;
+    // Set at the variant type; read at the insert below it.
+    let subVariantsOpen = false;
     for (const [position, raw] of args.ids.slice(0, MAX_DRILL_IDS).entries()) {
       const level = DRILL_LEVELS[position];
       if (raw.length === 0 || raw.length > MAX_ID_LENGTH) break;
@@ -95,6 +102,8 @@ export const resolveDrillPath = query({
       if ((row.parentId ?? null) !== parentId) break;
       path.push({ _id: row._id, level });
       if (level === "variantType" && variantTypeRole(row) === "base") break;
+      if (level === "variantType") subVariantsOpen = subVariantsAllowedUnder(row);
+      if (level === "insert" && !subVariantsOpen) break;
       parentId = row._id;
     }
     return path;

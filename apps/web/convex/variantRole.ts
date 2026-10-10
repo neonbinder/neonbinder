@@ -186,3 +186,36 @@ export function withVariantFlags<M extends { isInsert?: boolean; isParallel?: bo
     DerivedVariantFlags;
   return Object.keys(next).length > 0 ? next : undefined;
 }
+
+/**
+ * NEO-334 — sub-variants (`parallel`-level rows) exist ONLY beneath an insert
+ * of a variant type whose NB role is `insert` (Jason, 2026-10-10). Never under
+ * the Base, a Parallel type, a Promo type, or a type with no role: the set
+ * builder shows no Sub-Variants column there, so a row created there could
+ * never be seen or reached.
+ *
+ * The role, never the row's name (product invariant 4): a variant type an
+ * operator typed as "Insert" is a row called "Insert", and has no role until
+ * NB confers one.
+ *
+ * `variantTypeRow` is the insert's PARENT, the variant type. Every creation
+ * site of a `parallel`-level row asks this one rule (through
+ * `assertSubVariantParent` in `lib/selectorAncestry.ts`, or directly when it
+ * already holds the variant type), and the set builder's column gate reads
+ * the same `variantTypeRole(...) === "insert"`.
+ */
+export function subVariantsAllowedUnder(
+  variantTypeRow: VariantRoleRow | null | undefined,
+): boolean {
+  return variantTypeRole(variantTypeRow) === "insert";
+}
+
+/** The `ConvexError` code a refused sub-variant creation carries. */
+export const SUB_VARIANT_INSERT_ONLY = "SUB_VARIANT_INSERT_ONLY";
+
+/**
+ * The operator's sentence for that refusal. NB words only. DRAFT copy —
+ * pending a brand-voice pass and Jason's sign-off (NEO-245: no copywriter).
+ */
+export const SUB_VARIANT_INSERT_ONLY_MESSAGE =
+  "Sub-variants only live under an Insert type.";
