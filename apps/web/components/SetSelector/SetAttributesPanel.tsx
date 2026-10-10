@@ -683,10 +683,9 @@ export default function SetAttributesPanel({
         // feature rows would otherwise render the toast off-screen above
         // the fold — invisible to the user (and the e2e assertion).
         //
-        // NEO-239: outside the `expanded` branch, because the header now holds
-        // a control ("Mark as base set") that is reachable while the panel is
-        // collapsed. A confirmation that only renders in the expanded state
-        // would leave that action looking like it did nothing.
+        // NEO-239: outside the `expanded` branch, so a confirmation raised
+        // while the panel is collapsed is still seen. (The header control that
+        // first needed this, "Mark as base set", went with NEO-334.)
         <div
           className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
           role="status"

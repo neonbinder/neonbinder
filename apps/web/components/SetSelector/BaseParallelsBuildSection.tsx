@@ -86,7 +86,7 @@ export function buildAllLabel(
 
 export const LOADING_TEXT = "Counting parallels…";
 export const NO_SOURCE_TEXT =
-  "No single base set to copy from. Mark one variant type as the base set first.";
+  "No single base set to copy from. Rename one variant type to Base first.";
 
 /** The server's reason there is no source (no Base, or more than one), as a sentence. */
 export function noSourceText(serverReason?: string): string {
