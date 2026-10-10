@@ -299,6 +299,35 @@ describe("teams.searchForManagement (NEO-330)", () => {
     }
   });
 
+  test("reads only the first 16 words of what it is sent (security clamp)", async () => {
+    // Sixteen words that all start "San Diego Padres", then a word no team
+    // carries. Every typed word must match, so the team is found only if the
+    // seventeenth word never reached the matcher.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const padres = await seedTeam(t, sportId, "San Diego Padres");
+    const sixteen = Array.from({ length: 16 }, (_, i) =>
+      ["san", "diego", "padres"][i % 3],
+    ).join(" ");
+
+    const asAdmin = t.withIdentity(ADMIN);
+    const result = await asAdmin.query(api.teams.searchForManagement, {
+      query: `${sixteen} zzzzzz`,
+    });
+    expect(result.teams.map((team) => team._id)).toEqual([padres]);
+
+    // …and a flood of text is an answer, not a thrown query.
+    const flood = await asAdmin.query(api.teams.searchForManagement, {
+      query: "padres ".repeat(5000),
+    });
+    expect(flood.teams.map((team) => team._id)).toEqual([padres]);
+    expect(
+      await t
+        .withIdentity(MEMBER)
+        .query(api.teams.search, { query: `${sixteen} zzzzzz ${"x".repeat(9000)}` }),
+    ).toEqual([expect.objectContaining({ _id: padres })]);
+  });
+
   test("requires admin", async () => {
     const t = convexTest(schema, modules);
     await expect(

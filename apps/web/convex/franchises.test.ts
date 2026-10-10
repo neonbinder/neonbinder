@@ -296,13 +296,75 @@ describe("franchises.list", () => {
     expect(listed.truncated).toBe(false);
   });
 
-  test("skips the team scan — and reports 0 — unless counts were asked for", () => {
+  test("skips the team reads — and reports 0 — unless counts were asked for", () => {
     // Not a micro-optimisation: Team Management reads this list for NAMES on a
-    // screen that re-renders on every keystroke, and the counts cost a scan of
-    // every team in scope. Pinned so nobody makes the scan unconditional again
-    // once `teams` is large.
+    // screen that re-renders on every keystroke, and the counts cost a
+    // `by_franchise_id` read per franchise. Pinned so nobody makes the reads
+    // unconditional.
     const src = readFileSync(join(__dirname, "franchises.ts"), "utf8");
-    expect(src).toContain("const teamRows = !args.withTeamCounts");
+    expect(src).toContain("const counts = !args.withTeamCounts");
+  });
+
+  test("NEO-330: the GLOBAL listing counts exactly past 2000 teams", async () => {
+    // The old tally scanned an unordered window of at most 2000 teams with no
+    // sport, so a franchise whose teams lay outside it read 0 — and the flag
+    // said "truncated" for every listing on a real-sized table. Counted per
+    // franchise, the size of `teams` no longer matters.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const titans = await t
+      .withIdentity(ADMIN)
+      .mutation(api.franchises.findOrCreate, { name: "Titans Oilers", sportId });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 2100; i += 1) {
+        await ctx.db.insert("teams", {
+          name: `Filler ${i}`,
+          nameNormalized: `filler ${i}`,
+          sportId,
+          lastUpdated: 1,
+        });
+      }
+    });
+    // Linked LAST, so both rows sit past the first 2000 in insertion order.
+    for (const name of ["Oilers", "Titans"]) {
+      const teamId = await seedTeam(t, sportId, { name });
+      await t
+        .withIdentity(ADMIN)
+        .mutation(api.teams.saveTeamFields, { id: teamId, franchiseId: titans.id });
+    }
+
+    const listed = await t
+      .withIdentity(ADMIN)
+      .query(api.franchises.list, { withTeamCounts: true });
+    expect(listed.franchises.map((f) => [f.name, f.teamCount])).toEqual([
+      ["Titans Oilers", 2],
+    ]);
+    expect(listed.truncated).toBe(false);
+  });
+
+  test("NEO-330: a count past its cap is reported as truncated, never silently short", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const big = await t
+      .withIdentity(ADMIN)
+      .mutation(api.franchises.findOrCreate, { name: "Big Thread", sportId });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 21; i += 1) {
+        await ctx.db.insert("teams", {
+          name: `Era ${i}`,
+          nameNormalized: `era ${i}`,
+          sportId,
+          franchiseId: big.id,
+          lastUpdated: 1,
+        });
+      }
+    });
+
+    const listed = await t
+      .withIdentity(ADMIN)
+      .query(api.franchises.list, { sportId, withTeamCounts: true });
+    expect(listed.franchises[0].teamCount).toBe(20);
+    expect(listed.truncated).toBe(true);
   });
 
   test("returns nothing at all when signed out", async () => {

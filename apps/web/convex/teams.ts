@@ -42,6 +42,7 @@ import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 // NEO-330: the one definition of "this team matches what was typed", shared
 // with Team Management's own one-character filter.
 import { teamFilterReadings, teamMatchesFilter } from "../lib/teams/team-filter";
+import { clampSearchQuery } from "./lib/searchQueryClamp";
 
 /**
  * The dedup key on `teams.nameNormalized`.
@@ -1953,7 +1954,11 @@ export const search = query({
     //
     // NEO-322 — `entityNameQueryReadings(...)[0]` IS `nameTokens`; the second
     // reading exists only for text ending in a run of initials (below).
-    const [reading, ...alternates] = entityNameQueryReadings(args.query);
+    //
+    // NEO-330 — every reading below comes from the CLAMPED text: the raw
+    // argument is whatever a client sends (see `clampSearchQuery`).
+    const typed = clampSearchQuery(args.query);
+    const [reading, ...alternates] = entityNameQueryReadings(typed);
     const term = reading.join(" ");
     if (!term) return [];
 
@@ -1997,7 +2002,7 @@ export const search = query({
      * is the order `nearMatches` already ranks in. Without a sport the read
      * is on the index's leading field alone, so it stays one read either way.
      */
-    const aliasKey = normalizeTeamName(args.query);
+    const aliasKey = normalizeTeamName(typed);
     if (!aliasKey) return hits;
     const aliasRows = await ctx.db
       .query("teamAliases")
@@ -2089,7 +2094,9 @@ export const searchForManagement = query({
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
 
-    const readings = teamFilterReadings(args.query);
+    // Bounded before anything reads it — see `clampSearchQuery`.
+    const typed = clampSearchQuery(args.query);
+    const readings = teamFilterReadings(typed);
     if (readings.length === 0) return { teams: [], truncated: false };
 
     const inLeague = (team: Doc<"teams">) =>
@@ -2109,7 +2116,7 @@ export const searchForManagement = query({
 
     // The exact-alias leg, first — the order `search` ranks in. Read one past
     // the limit so a query answered by aliases alone can still say truncated.
-    const aliasKey = normalizeTeamName(args.query);
+    const aliasKey = normalizeTeamName(typed);
     if (aliasKey) {
       const aliasRows = await ctx.db
         .query("teamAliases")

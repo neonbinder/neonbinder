@@ -12,7 +12,6 @@ import {
 import NeonButton from "@/components/modules/NeonButton";
 import { parseAliases } from "@/components/SetSelector/NewLeagueForm";
 import { AddLeagueDialog } from "./AddLeagueDialog";
-import { FIELD_BOX_HEIGHT } from "./AddLeagueForm";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { teamFullName, teamShortName } from "@/lib/teams/team-name";
@@ -1163,6 +1162,80 @@ function TeamDetail({
   );
 }
 
+/**
+ * NEO-330 — the team the detail panel shows.
+ *
+ * The by-id read is the truth once it has answered: a row, or `null` for a
+ * team that is gone (which closes the panel rather than leaving a stale row
+ * open). Until it answers, the first stand-in that IS the selected team: the
+ * row on screen (a click), then the row a `?team=` link was read through (a
+ * link to a team outside the list's window has no row on screen). Without the
+ * second, a followed link to such a team flashed the "Select a team"
+ * placeholder for a round trip before its panel opened.
+ */
+export function resolveSelectedTeam({
+  selectedId,
+  selectedById,
+  selectedOnScreen,
+  linkedTeam,
+}: {
+  selectedId: Id<"teams"> | null;
+  selectedById: Team | null | undefined;
+  selectedOnScreen: Team | null;
+  linkedTeam: Team | null | undefined;
+}): Team | null {
+  if (!selectedId) return null;
+  if (selectedById !== undefined) return selectedById;
+  return (
+    selectedOnScreen ?? (linkedTeam?._id === selectedId ? linkedTeam : null)
+  );
+}
+
+/**
+ * NEO-330 — what the counter's live region says, or `null` while the typed
+ * filter is waiting on the server.
+ *
+ * A separate, plainer sentence than the visible counter, for two reasons. The
+ * visible one changes on every keystroke (the browser filters the window,
+ * then the server's answer replaces it), and a live region fed that would
+ * announce a count that is about to be wrong; this one is only ever a
+ * SETTLED answer. And it leaves out the need-attention count, which is about
+ * the rows rather than the filter and would double the length of every
+ * announcement.
+ *
+ * Provisional copy (NEO-330): flagged for sign-off.
+ */
+export function teamCounterAnnouncement({
+  typed,
+  matched,
+  answered,
+  serverTruncated,
+  windowTruncated,
+}: {
+  /** The filter box's text, trimmed. */
+  typed: string;
+  /** Rows the master list shows. */
+  matched: number;
+  /** Whether the server has answered `typed` (irrelevant below two chars). */
+  answered: boolean;
+  /** The server's answer ran past its limit. */
+  serverTruncated: boolean;
+  /** `listForManagement`'s window is truncated. */
+  windowTruncated: boolean;
+}): string | null {
+  if (typed.length >= SEARCH_MIN_CHARS) {
+    if (!answered) return null;
+    if (matched === 0) return "No teams match";
+    if (serverTruncated) return "More teams match, keep typing";
+    return `${matched} matching ${matched === 1 ? "team" : "teams"}`;
+  }
+  if (matched === 0) return "No teams match";
+  const noun = matched === 1 ? "team" : "teams";
+  return windowTruncated
+    ? `${matched} ${noun}, list truncated, type to search`
+    : `${matched} ${noun}`;
+}
+
 // ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
@@ -1287,10 +1360,19 @@ export default function TeamManagement() {
   // ignored as if the id were stale. `getByIdParam` takes the raw string and
   // answers `null` for anything that is not a live team id, so a hand-mangled
   // param is an unselected screen rather than a thrown query.
+  //
+  // The subscription outlives the follow while the linked team is the open
+  // one: `selectedById` below asks for the same row with the same args, and a
+  // Convex subscription that is still live answers a second identical one
+  // synchronously. Dropped the moment the link was followed, the panel's own
+  // read would start cold and the panel would blink to its placeholder for a
+  // round trip (NEO-330 audit). Same query, same args — no extra read.
   const linkPending = teamParam !== null && !followedTeam.hasFollowed(teamParam);
   const linkedTeam = useQuery(
     api.teams.getByIdParam,
-    linkPending && teamParam !== null ? { id: teamParam } : "skip",
+    teamParam !== null && (linkPending || selectedId === teamParam)
+      ? { id: teamParam }
+      : "skip",
   );
 
   if (
@@ -1453,8 +1535,12 @@ export default function TeamManagement() {
       teams.find((t) => t._id === selectedId) ??
       null)
     : null;
-  const selected =
-    selectedById === undefined ? selectedOnScreen : selectedById;
+  const selected = resolveSelectedTeam({
+    selectedId,
+    selectedById,
+    selectedOnScreen,
+    linkedTeam,
+  });
   /**
    * NEO-254 — the franchise threads for the panel's Franchise pills, scoped to
    * the SELECTED team's sport.
@@ -1478,6 +1564,37 @@ export default function TeamManagement() {
   // truncated window it is "of these", never a claim about every team.
   const needingAttention = base.filter((t) => attentionFor(t) !== null).length;
 
+  /**
+   * NEO-330 (a11y, SC 4.1.3) — the counter, announced.
+   *
+   * Held at the last settled sentence while a typed filter waits on the
+   * server, so the region only ever changes to an answer, never to the
+   * interim browser-side count. Adjusted during render (the "state from a
+   * changing value" pattern the `?team=` follower uses), not in an effect.
+   */
+  const settledAnnouncement =
+    management === undefined
+      ? null
+      : teamCounterAnnouncement({
+          typed: filter.trim(),
+          matched: visible.length,
+          answered: searchAnswer !== undefined,
+          serverTruncated: searchAnswer?.truncated ?? false,
+          windowTruncated: management.truncated,
+        });
+  const [announcement, setAnnouncement] = useState("");
+  if (settledAnnouncement !== null && settledAnnouncement !== announcement) {
+    setAnnouncement(settledAnnouncement);
+  }
+
+  /**
+   * NEO-330 — a typed filter the server has not answered yet, with nothing in
+   * the loaded window to show meanwhile. That is a search in flight, not a
+   * miss, so the list says "Searching…" rather than "No teams match".
+   */
+  const awaitingSearch =
+    filter.trim().length >= SEARCH_MIN_CHARS && searchAnswer === undefined;
+
   if (management === undefined) {
     return <p className="text-sm text-slate-400">Loading teams…</p>;
   }
@@ -1491,7 +1608,7 @@ export default function TeamManagement() {
           franchise box) have moved all of them into the panel, beside the
           controls that produce them. Nothing was left to render. */}
 
-      <div className="flex flex-wrap items-end gap-3">
+      <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
         <Input
           ref={filterRef}
           label="Filter teams"
@@ -1546,19 +1663,26 @@ export default function TeamManagement() {
             ))}
           </select>
         </div>
-        {/* Floored and matched to the field-box height like its siblings
-            (LeagueManagement.tsx, PlayerManagement.tsx, FranchiseManagement.tsx)
-            rather than nudged up with a `pb-2`: centred against the field boxes
-            it stays put when the row wraps, and the `min-w` floor keeps a
-            resolving count from widening the row under the cursor. */}
-        <p
-          className={`flex items-center text-xs text-slate-400 min-w-[13rem] ${FIELD_BOX_HEIGHT}`}
-        >
+        {/* NEO-330 — the counter always takes a line of its own, under the
+            fields and directly over the list it counts (`basis-full` in a
+            wrapping row forces the break).
+
+            Beside the fields it was the one item whose width followed the
+            data: from two typed characters its text switches between the
+            window's count and the server's ("· more match, keep typing"), and
+            at 1024px the longer string tipped it past the row's wrap boundary
+            — so the whole master list dropped a line on the second keystroke,
+            under the operator's eyes. On its own line its length moves
+            nothing: one line at every width the admin screens are used at,
+            and floored so the first render does not collapse it. */}
+        <p className="basis-full min-h-5 text-xs leading-5 text-slate-400">
           {/* NEO-330 — one string, as the E2E flows read it. Browsing, the
               "of N" is the loaded window and the truncation note says how to
               reach past it; filtering, it is the server's matches, from every
               team, and the note says the matches themselves ran past the
-              limit. */}
+              limit. Not a live region: it changes on every keystroke, and a
+              screen reader would read the interim count. The settled sentence
+              is the sr-only status line beside it. */}
           {visible.length} of {base.length}{" "}
           {searchAnswer ? "matching teams" : "teams"}
           {needingAttention > 0 && ` · ${needingAttention} need attention`}
@@ -1566,12 +1690,20 @@ export default function TeamManagement() {
             ? searchAnswer.truncated && " · more match, keep typing"
             : management.truncated && " · list truncated, type to search"}
         </p>
+        {/* NEO-330 (SC 4.1.3) — mounted for the screen's whole life: a live
+            region inserted together with its text is announced unreliably
+            (PlayerManagement's note on its own status line). */}
+        <p role="status" className="sr-only">
+          {announcement}
+        </p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,18rem)_1fr] gap-4">
         {/* Master */}
         <div className="rounded-lg border border-slate-800 max-h-[32rem] overflow-y-auto">
-          {visible.length === 0 ? (
+          {visible.length === 0 && awaitingSearch ? (
+            <p className="p-3 text-sm text-slate-400">Searching…</p>
+          ) : visible.length === 0 ? (
             <p className="p-3 text-sm text-slate-400">
               No teams match that filter.
             </p>

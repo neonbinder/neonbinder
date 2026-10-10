@@ -289,7 +289,10 @@ vi.mock("convex/react", () => ({
   useAction: () => vi.fn(),
 }));
 
-import TeamManagement from "./TeamManagement";
+import TeamManagement, {
+  resolveSelectedTeam,
+  teamCounterAnnouncement,
+} from "./TeamManagement";
 
 // The URL is the thing under test in half of these, so it is rendered.
 function LocationProbe() {
@@ -497,8 +500,12 @@ describe("TeamManagement — team aliases (NEO-284)", () => {
    * sentence, never one per keystroke.
    */
   describe("the shared-alias note", () => {
+    // Scoped to the detail panel: NEO-330 gave the screen's counter a status
+    // region of its own, outside the panel.
+    const panel = () =>
+      screen.getByRole("button", { name: "Save" }).closest("div.rounded-lg")! as HTMLElement;
     const status = () =>
-      screen.getByRole("status", { name: "" }) as HTMLElement;
+      within(panel()).getByRole("status", { name: "" }) as HTMLElement;
     const hit = (alias: string, name: string) => ({ alias, name });
     const sentence = (name: string, alias: string) =>
       `${name} also answers to “${alias}”. Cards will ask which one when the years don't decide.`;
@@ -513,7 +520,7 @@ describe("TeamManagement — team aliases (NEO-284)", () => {
     it("the live region is mounted from the first render, empty, and the visible note is not itself a live region", () => {
       renderAt("/admin/teams?team=t-yankees");
       // Exactly one status region in the panel, present before any note.
-      const regions = screen.getAllByRole("status");
+      const regions = within(panel()).getAllByRole("status");
       expect(regions).toHaveLength(1);
       expect(regions[0].textContent).toBe("");
 
@@ -524,7 +531,7 @@ describe("TeamManagement — team aliases (NEO-284)", () => {
       expect(visible.getAttribute("role")).toBeNull();
       expect(visible.getAttribute("aria-live")).toBeNull();
       // Synchronous for the eyes, silent for the ear until it settles.
-      expect(screen.getAllByRole("status")).toHaveLength(1);
+      expect(within(panel()).getAllByRole("status")).toHaveLength(1);
       expect(status().textContent).toBe("");
     });
 
@@ -1790,5 +1797,219 @@ describe("TeamManagement — teams outside the list's window (NEO-330)", () => {
     await waitFor(() =>
       expect(counter().textContent).toBe("2 of 2 matching teams · 1 need attention"),
     );
+  });
+});
+
+/**
+ * NEO-330 audit — what the counter says to a screen reader, what the list says
+ * while a search is in flight, the counter's own line, and the panel not
+ * blinking on a followed link.
+ */
+describe("TeamManagement — the counter, announced and held still (NEO-330)", () => {
+  const EXPOS = {
+    _id: "t-expos",
+    _creationTime: 0,
+    name: "Expos",
+    location: "Montreal",
+    nameNormalized: "expos montreal",
+    sportId: "sport-baseball",
+    colors: { primary: "#003087" },
+  };
+
+  const status = () => {
+    const regions = screen
+      .getAllByRole("status")
+      .filter((el) => el.classList.contains("sr-only"));
+    expect(regions).toHaveLength(1);
+    return regions[0];
+  };
+  const counter = () => screen.getByText(/ of \d+ (matching )?teams/);
+
+  it("is a status region from the first render, and the visible counter is not live", () => {
+    renderAt("/admin/teams");
+    // Mounted with the screen, holding a settled sentence — no need-attention.
+    expect(status().textContent).toBe("5 teams");
+    expect(counter().getAttribute("role")).toBeNull();
+    expect(counter().getAttribute("aria-live")).toBeNull();
+  });
+
+  it("holds the last settled sentence while the server works, then says its answer", async () => {
+    searchAnswer = { teams: [EXPOS], truncated: false };
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "expos" },
+    });
+    // Before the debounce: the interim browser-side count is NOT announced.
+    expect(status().textContent).toBe("5 teams");
+    await waitFor(() => expect(status().textContent).toBe("1 matching team"));
+  });
+
+  it("announces a truncated answer as 'keep typing'", async () => {
+    searchAnswer = { teams: [EXPOS], truncated: true };
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "ex" },
+    });
+    await waitFor(() =>
+      expect(status().textContent).toBe("More teams match, keep typing"),
+    );
+  });
+
+  it("says Searching… — not 'No teams match' — until the server answers an empty window", async () => {
+    searchAnswer = { teams: [], truncated: false };
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "zzzznotateam" },
+    });
+    // Nothing in the window matches and the server has not been asked yet.
+    expect(screen.getByText("Searching…")).toBeTruthy();
+    expect(screen.queryByText("No teams match that filter.")).toBeNull();
+
+    // The server's answer is the one that may say "none".
+    expect(await screen.findByText("No teams match that filter.")).toBeTruthy();
+    expect(screen.queryByText("Searching…")).toBeNull();
+    expect(status().textContent).toBe("No teams match");
+    // The flow's assertion on the counter still holds.
+    expect(counter().textContent).toBe("0 of 0 matching teams");
+  });
+
+  it("does not say Searching… below two characters", () => {
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "z" },
+    });
+    expect(screen.getByText("No teams match that filter.")).toBeTruthy();
+    expect(screen.queryByText("Searching…")).toBeNull();
+  });
+
+  it("gives the counter a line of its own, so its length cannot re-wrap the fields", () => {
+    // `basis-full` in the wrapping filter row is the whole fix; pinned because
+    // happy-dom has no layout to measure the shift with.
+    renderAt("/admin/teams");
+    expect(counter().classList.contains("basis-full")).toBe(true);
+    expect(counter().className).not.toMatch(/min-w-/);
+  });
+});
+
+describe("teamCounterAnnouncement (NEO-330)", () => {
+  const base = {
+    typed: "",
+    matched: 5,
+    answered: false,
+    serverTruncated: false,
+    windowTruncated: false,
+  };
+
+  it("says nothing new while a typed filter waits on the server", () => {
+    expect(teamCounterAnnouncement({ ...base, typed: "ex" })).toBeNull();
+  });
+
+  it("speaks the window below two characters, truncation included", () => {
+    expect(teamCounterAnnouncement(base)).toBe("5 teams");
+    expect(teamCounterAnnouncement({ ...base, typed: "s", matched: 1 })).toBe("1 team");
+    expect(teamCounterAnnouncement({ ...base, windowTruncated: true })).toBe(
+      "5 teams, list truncated, type to search",
+    );
+    expect(teamCounterAnnouncement({ ...base, matched: 0 })).toBe("No teams match");
+  });
+
+  it("speaks the server's answer from two characters", () => {
+    const answered = { ...base, typed: "ex", answered: true };
+    expect(teamCounterAnnouncement({ ...answered, matched: 2 })).toBe("2 matching teams");
+    expect(teamCounterAnnouncement({ ...answered, matched: 0 })).toBe("No teams match");
+    expect(
+      teamCounterAnnouncement({ ...answered, matched: 50, serverTruncated: true }),
+    ).toBe("More teams match, keep typing");
+  });
+
+  it("never reads like the visible counter the E2E flows match", () => {
+    // The flows match ".*of .* teams.*" and "No teams match that filter.";
+    // a hidden status line matching either could be the element they find.
+    const samples = [
+      teamCounterAnnouncement(base),
+      teamCounterAnnouncement({ ...base, windowTruncated: true }),
+      teamCounterAnnouncement({ ...base, typed: "ex", answered: true, matched: 3 }),
+      teamCounterAnnouncement({ ...base, typed: "ex", answered: true, matched: 0 }),
+      teamCounterAnnouncement({
+        ...base,
+        typed: "ex",
+        answered: true,
+        serverTruncated: true,
+      }),
+    ];
+    for (const sample of samples) {
+      expect(sample).not.toMatch(/^.*of .* teams.*$/);
+      expect(sample).not.toBe("No teams match that filter.");
+    }
+  });
+});
+
+describe("resolveSelectedTeam (NEO-330)", () => {
+  const team = (id: string) => ({ _id: id }) as unknown as Parameters<
+    typeof resolveSelectedTeam
+  >[0]["selectedOnScreen"] & object;
+
+  it("is nothing when nothing is selected", () => {
+    expect(
+      resolveSelectedTeam({
+        selectedId: null,
+        selectedById: undefined,
+        selectedOnScreen: null,
+        linkedTeam: team("t-1"),
+      }),
+    ).toBeNull();
+  });
+
+  it("trusts the by-id read once it answers, including a team that is gone", () => {
+    const fresh = team("t-1");
+    expect(
+      resolveSelectedTeam({
+        selectedId: "t-1" as never,
+        selectedById: fresh,
+        selectedOnScreen: team("t-1"),
+        linkedTeam: undefined,
+      }),
+    ).toBe(fresh);
+    expect(
+      resolveSelectedTeam({
+        selectedId: "t-1" as never,
+        selectedById: null,
+        selectedOnScreen: team("t-1"),
+        linkedTeam: undefined,
+      }),
+    ).toBeNull();
+  });
+
+  it("stands in the linked team while the by-id read is cold, so a link does not flash", () => {
+    const linked = team("t-expos");
+    expect(
+      resolveSelectedTeam({
+        selectedId: "t-expos" as never,
+        selectedById: undefined,
+        selectedOnScreen: null,
+        linkedTeam: linked,
+      }),
+    ).toBe(linked);
+    // …but only when it IS the selected team.
+    expect(
+      resolveSelectedTeam({
+        selectedId: "t-other" as never,
+        selectedById: undefined,
+        selectedOnScreen: null,
+        linkedTeam: linked,
+      }),
+    ).toBeNull();
+  });
+
+  it("prefers the row on screen to the linked one while both stand in", () => {
+    const onScreen = team("t-1");
+    expect(
+      resolveSelectedTeam({
+        selectedId: "t-1" as never,
+        selectedById: undefined,
+        selectedOnScreen: onScreen,
+        linkedTeam: team("t-1"),
+      }),
+    ).toBe(onScreen);
   });
 });

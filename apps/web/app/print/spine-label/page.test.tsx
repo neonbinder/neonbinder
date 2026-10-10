@@ -205,6 +205,43 @@ describe("SpineLabelPage — the team picker reaches every team (NEO-330)", () =
     expect(screen.queryByText("Montreal Royals")).toBeNull();
   });
 
+  it("says Searching… while a search is in flight, never a false 'No teams match'", async () => {
+    // Nothing in the window matches, and the server has not answered yet.
+    render(<SpineLabelPage />);
+    fireEvent.change(screen.getByLabelText("Find a team"), {
+      target: { value: "Expos" },
+    });
+
+    expect(screen.getByText("Searching…")).toBeTruthy();
+    expect(screen.queryByText("No teams match")).toBeNull();
+    // Past the debounce, still unanswered: still searching.
+    await waitFor(() => expect(searchCalls).toContainEqual({ query: "Expos", limit: 25 }));
+    expect(screen.getByText("Searching…")).toBeTruthy();
+    expect(screen.queryByText("No teams match")).toBeNull();
+  });
+
+  it("says No teams match once the search answers with nothing", async () => {
+    searchedTeams = [];
+    render(<SpineLabelPage />);
+    fireEvent.change(screen.getByLabelText("Find a team"), {
+      target: { value: "zzzz" },
+    });
+
+    expect(await screen.findByText("No teams match")).toBeTruthy();
+    expect(screen.queryByText("Searching…")).toBeNull();
+  });
+
+  it("keeps showing window matches, not Searching…, while the search is in flight", () => {
+    allTeams = [{ _id: "team-1", name: "Expos", location: "Montreal" }];
+    render(<SpineLabelPage />);
+    fireEvent.change(screen.getByLabelText("Find a team"), {
+      target: { value: "Expos" },
+    });
+
+    expect(screen.getByText("Montreal Expos")).toBeTruthy();
+    expect(screen.queryByText("Searching…")).toBeNull();
+  });
+
   it("does not search on a single character", async () => {
     render(<SpineLabelPage />);
     fireEvent.change(screen.getByLabelText("Find a team"), {

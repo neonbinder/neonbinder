@@ -627,6 +627,15 @@ export default function SpineLabelPage() {
                   label="Find a team"
                   placeholder="Start typing a team name…"
                   emptyMessage="No teams match"
+                  // NEO-330 — a 2+ character query the server has not answered
+                  // yet, with nothing in the loaded window to show meanwhile,
+                  // is a search in flight, not a miss: "Searching…" until the
+                  // answer lands, never a false "No teams match".
+                  loading={
+                    teamQuery.trim().length >= TEAM_SEARCH_MIN_CHARS &&
+                    searchedTeams === undefined &&
+                    teamMatches.length === 0
+                  }
                 />
               </label>
               {teamQuery.trim().length > 0 && (
