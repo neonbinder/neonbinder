@@ -4246,6 +4246,63 @@ describe("EntityReviewWizard — back and re-decide", () => {
     const disclosure = screen.getByText("Decided (1)").closest("details") as HTMLDetailsElement;
     expect(disclosure.open).toBe(true);
   });
+
+  // NEO-332 (E2E run): the list stayed expanded at 54 rows. A browser fires
+  // `toggle` when React ITSELF sets `open` — on the first decision, while the
+  // list is short — and the handler latched that as the operator's choice.
+  const decidedRowsOf = (n: number) =>
+    Array.from({ length: n }, (_, i) =>
+      makeRow({
+        _id: `row-d${i}` as unknown as Id<"entityReviewQueue">,
+        name: `Name ${i}`,
+        status: "ready",
+        decision: { action: "create" },
+      }),
+    );
+  const decidedDisclosure = () =>
+    screen.getByText(/^Decided \(\d+\)$/).closest("details") as HTMLDetailsElement;
+
+  it("still collapses past five after the toggle React's own open fired", () => {
+    currentRows = [...decidedRowsOf(1), bravo()];
+    const { rerender } = render(wizardEl());
+    const disclosure = decidedDisclosure();
+    expect(disclosure.open).toBe(true);
+    // The event a browser dispatches for the `open` React rendered.
+    fireEvent(disclosure, new Event("toggle"));
+
+    currentRows = [...decidedRowsOf(6), bravo()];
+    rerender(wizardEl());
+
+    expect(decidedDisclosure().open).toBe(false);
+  });
+
+  it("keeps a list the operator opened open as it grows", () => {
+    currentRows = [...decidedRowsOf(6), bravo()];
+    const { rerender } = render(wizardEl());
+    const disclosure = decidedDisclosure();
+    expect(disclosure.open).toBe(false);
+
+    // The operator opens it: the browser flips `open`, then fires `toggle`.
+    disclosure.open = true;
+    fireEvent(disclosure, new Event("toggle"));
+    currentRows = [...decidedRowsOf(7), bravo()];
+    rerender(wizardEl());
+
+    expect(decidedDisclosure().open).toBe(true);
+  });
+
+  it("keeps a short list the operator closed closed", () => {
+    currentRows = [...decidedRowsOf(1), bravo()];
+    const { rerender } = render(wizardEl());
+    const disclosure = decidedDisclosure();
+
+    disclosure.open = false;
+    fireEvent(disclosure, new Event("toggle"));
+    currentRows = [...decidedRowsOf(2), bravo()];
+    rerender(wizardEl());
+
+    expect(decidedDisclosure().open).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -8729,6 +8786,63 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       expect(screen.getByText(/^Already decided:/).textContent).toBe(
         "Already decided: Linked to Bob Allen, b. 1937 · Padres 1961–present",
       );
+    });
+
+    it("the decided panel of a same-name link hides the row's own lookup", async () => {
+      // Create new ran the lookup, then the operator went back and linked:
+      // the lookup describes whoever Wikidata found, not the man linked to.
+      currentLinkedPlayers = [{ _id: "player-young", name: "Bob Allen" }];
+      const rowA = ambiguousRow({
+        enrichment: {
+          existingCandidates: CANDIDATES,
+          wikidataId: "Q42",
+          enwikiTitle: "Bob_Allen",
+          description: "Japanese baseball players",
+          birthYear: 2005,
+        },
+      });
+      const rowB = makeRow({ name: "Other Guy" });
+      currentRows = [rowA, rowB];
+      const { rerender } = renderWizard();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+      );
+      await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+      currentRows = [{ ...rowA, decision: youngLink }, rowB];
+      rerenderWizard(rerender);
+
+      fireEvent.click(screen.getByLabelText("Back to previous decision"));
+
+      expect(screen.getByText(/^Already decided:/).textContent).toBe(
+        "Already decided: Linked to Bob Allen, b. 1937 · Padres 1961–present",
+      );
+      expect(screen.queryByText(/Wikidata Q42/)).toBeNull();
+      expect(screen.queryByRole("link", { name: /Wikipedia/ })).toBeNull();
+      expect(screen.queryByText(/Japanese baseball players/)).toBeNull();
+      expect(screen.queryByText("No career-team history found.")).toBeNull();
+      expect(screen.queryByText("No Wikidata match found.")).toBeNull();
+    });
+
+    it("the decided panel of any other decision still shows the lookup", async () => {
+      const rowA = makeRow({
+        name: "Mike Trout",
+        enrichment: { wikidataId: "Q42", description: "American baseball player" },
+      });
+      const rowB = makeRow({ name: "Other Guy" });
+      currentRows = [rowA, rowB];
+      const { rerender } = renderWizard();
+      fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+      await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+      currentRows = [{ ...rowA, decision: { action: "create" } }, rowB];
+      rerenderWizard(rerender);
+
+      fireEvent.click(screen.getByLabelText("Back to previous decision"));
+
+      expect(screen.getByText(/^Already decided:/).textContent).toBe(
+        "Already decided: Added as new",
+      );
+      expect(screen.getByRole("link", { name: /Wikidata Q42/ })).toBeTruthy();
+      expect(screen.getByText("American baseball player")).toBeTruthy();
     });
 
     it("a pick from the live fallback reads back the detail it was picked by", async () => {

@@ -2915,6 +2915,22 @@ export default function EntityReviewWizard({
   };
 
   /**
+   * NEO-332 — the row's own Wikidata answer (links, description line, career
+   * teams, "No career-team history found.") is about a NEW player, so it is
+   * hidden wherever no new player is in question:
+   *
+   *  - the pick step, which asks which of ours this is; and
+   *  - the read-only "Already decided" panel of a row linked to one of its
+   *    same-name candidates. If Create new had run the lookup before the
+   *    operator went back and linked, that answer describes whoever Wikidata
+   *    found — "Japanese baseball players · b. 2005" above "Linked to Shuya
+   *    Yamada, b. 1852" reads as a description of the man it was linked to.
+   *    The read-back line already says which of ours it is.
+   */
+  const lookupHidden =
+    pickStep || (reviewingDecided && current !== null && sameNameLinkFor(current) !== null);
+
+  /**
    * NEO-221 (D13) — the batch is gone.
    *
    * `sweepAbandonedBatches` deletes a batch nobody has touched for a day, and a
@@ -3493,8 +3509,9 @@ export default function EntityReviewWizard({
                       below is not enough to tell two people apart — the source
                       record itself, one click away.
 
-                      NEO-332: never on the pick step, and neither is the
-                      description line below. Jason, 2026-10-10: an ambiguous
+                      NEO-332: never on the pick step, nor on the decided
+                      panel of a same-name link (`lookupHidden`), and neither
+                      is the description line below. Jason, 2026-10-10: an ambiguous
                       name gets no Wikidata lookup until "Create new" — there
                       is no new player to look up — so the pick step is ours
                       alone: the players on file and what tells them apart.
@@ -3502,7 +3519,7 @@ export default function EntityReviewWizard({
                       lookup; it is not shown here either, because a
                       description of one person beside a list of two reads as
                       a verdict on which of ours it is. */}
-                  {!pickStep &&
+                  {!lookupHidden &&
                     current.enrichment &&
                     (current.enrichment.wikidataId || current.enrichment.enwikiTitle) && (
                       <p className="mt-1 flex flex-wrap items-center gap-3 text-xs">
@@ -3543,7 +3560,7 @@ export default function EntityReviewWizard({
                   {/* The one line that most often settles "is this the same
                       Mike Smith?": Wikidata's own short description and a birth
                       year. */}
-                  {!pickStep &&
+                  {!lookupHidden &&
                     current.enrichment &&
                     (current.enrichment.description || current.enrichment.birthYear) && (
                       <p className="mt-1 text-sm text-gray-300">
@@ -3560,8 +3577,9 @@ export default function EntityReviewWizard({
 
                   {/* NEO-332 — the career teams to CREATE with this player
                       are a New Player question; the pick step is not creating
-                      anyone, so it leaves them for the step that is. */}
-                  {!pickStep && (
+                      anyone, so it leaves them for the step that is. Nor
+                      does a same-name link's decided panel (`lookupHidden`). */}
+                  {!lookupHidden && (
                     <div className="mt-2 text-sm text-gray-400 space-y-1">
                       {current.status === "pending" &&
                       (current.kind === "league" || createNewStep) ? (
@@ -4501,7 +4519,19 @@ export default function EntityReviewWizard({
             {!expired && decidedRows.length > 0 && (
               <details
                 open={decidedListExpanded}
-                onToggle={(e) => setDecidedListOpen(e.currentTarget.open)}
+                /*
+                  Only the OPERATOR's toggle overrides the collapse rule.
+                  `toggle` also fires when React itself sets `open` — on the
+                  first decision, while the list is short and rendered open —
+                  and latching that made the list stay expanded at fifty rows.
+                  An event that agrees with what this render asked for is
+                  React's own change, so it is not an override.
+                */
+                onToggle={(e) => {
+                  if (e.currentTarget.open !== decidedListExpanded) {
+                    setDecidedListOpen(e.currentTarget.open);
+                  }
+                }}
                 className="border-t border-gray-800 pt-3"
               >
                 {/* gray-400, not gray-500 (SC 1.4.3): gray-500 on this
