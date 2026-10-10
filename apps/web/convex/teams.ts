@@ -49,6 +49,8 @@ import { eraLabel, teamOptionLabel } from "../lib/teams/team-era";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 // NEO-331: the picker's set-context tiers — pure, shared with tests.
 import { rankTeamsForContext } from "../lib/teams/team-rank";
+// NEO-331: the substring test TeamPicker filtered with before the server ranked.
+import { nameMatchesQuery } from "../lib/entities/name-search";
 
 /**
  * The dedup key on `teams.nameNormalized`.
@@ -1991,13 +1993,14 @@ export const search = query({
 /**
  * NEO-331 — candidate-pool sizes for `pickerCandidates`.
  *
- * Search: the league leg reads wider than the sport leg because it is the one
- * that guarantees the set's own league is in the pool before ranking — a
- * shared prefix across a college preload can push every MLB club out of a
- * 25-row sport-wide window. Browse: the same 500 ceiling `teamsIn` uses per
- * league, applied to the league leg and the sport leg each.
+ * The league leg (search and browse alike) reads the set's league by
+ * `by_league_id` — the league's own teams, up to the same 500 ceiling
+ * `teamsIn` uses per league. It is what guarantees the set's league is in the
+ * pool before ranking: a shared prefix across a college preload can push every
+ * MLB club out of the sport leg's 25-row search window. Browse applies the
+ * same 500 to the sport leg.
  */
-const PICKER_LEAGUE_LEG_TAKE = 64;
+const PICKER_LEAGUE_LEG_TAKE = 500;
 const PICKER_SPORT_LEG_TAKE = 25;
 const PICKER_ALIAS_LEG_TAKE = 25;
 const PICKER_SEARCH_MAX_LIMIT = 25;
@@ -2118,6 +2121,37 @@ function leagueByUniqueAbbreviation(
 }
 
 /**
+ * NEO-331 — does a pooled picker row match what the operator typed?
+ *
+ * Either reading is enough:
+ *
+ *   - `nameMatchesQuery` on the composed full name — the substring test
+ *     TeamPicker applied client-side before the server ranked, so "Pirates"
+ *     and "burgh Pir" keep matching exactly as they did;
+ *   - every token of one of the query's readings is a prefix of some token of
+ *     the row's `nameNormalized` — the search index's own terms, with
+ *     ALL-terms where the index is any-term. This is what lets "St Louis" find
+ *     "St. Louis Cardinals" (the substring test keeps the dot) and what keeps
+ *     the NEO-322 alternate reading ("ny m" for "N Y M") meaningful.
+ *
+ * Neither admits "Pittsburgh Crawfords" for Pittsburgh Pirates: "crawfords"
+ * is in neither the name nor a prefix of any of its tokens.
+ */
+function pickerRowMatchesQuery(
+  team: Doc<"teams">,
+  query: string,
+  readings: ReadonlyArray<ReadonlyArray<string>>,
+): boolean {
+  if (nameMatchesQuery(teamFullName(team), query)) return true;
+  const keyTokens = team.nameNormalized.split(" ").filter(Boolean);
+  return readings.some(
+    (reading) =>
+      reading.length > 0 &&
+      reading.every((token) => keyTokens.some((key) => key.startsWith(token))),
+  );
+}
+
+/**
  * NEO-331 — the team picker's candidates, ranked by the set being worked on.
  *
  * `teams.search` answers "which teams match this text"; this answers "which
@@ -2128,12 +2162,23 @@ function leagueByUniqueAbbreviation(
  * wrong signal.
  *
  * Search (`query` non-empty), three legs merged and deduped before ranking:
- *   A. the set's league, through `search_name` filtered by sport AND league
- *      (wider window — it is what guarantees L's teams are in the pool);
- *   B. the sport, through `search_name` filtered by sport;
+ *   A. the set's league, read by `by_league_id` (the league's teams, up to
+ *      `PICKER_LEAGUE_LEG_TAKE`) — it is what guarantees L's teams are in the
+ *      pool;
+ *   B. the sport, through `search_name` filtered by sport, retrying with the
+ *      NEO-322 alternate reading when the joined one finds nothing, exactly as
+ *      `teams.search` does;
  *   C. the exact-alias leg `teams.search` has (NEO-284).
- * Each search leg retries with the NEO-322 alternate reading when the joined
- * one finds nothing, exactly as `teams.search` does.
+ * Then every pooled row must match the typed text (`pickerRowMatchesQuery`)
+ * unless it is an exact-alias hit — see the note at that filter.
+ *
+ * ONE search per index per query, never two with the same text. Leg A was
+ * once a second `search_name` read with the same text and an extra `leagueId`
+ * filter; Convex then invalidated the subscribed answer only for inserts
+ * matching the NARROWER filter, so a team created outside the set's league
+ * never reached a picker whose query was already typed (measured on a PR
+ * preview: stale for minutes). convex-test does not model subscriptions, so
+ * no test here can catch a regression — keep leg A on a plain index range.
  *
  * Browse (`query` blank): the set's league by `by_league_id` plus the sport by
  * `by_sport_id`, merged and ranked with the same tiers, so the popover opens
@@ -2202,6 +2247,12 @@ export const pickerCandidates = query({
       if (sportId && team.sportId !== sportId) return;
       if (!pool.has(team._id)) pool.set(team._id, team);
     };
+    // The set's league, by plain index range — never a search (see above).
+    const leagueLeg = (id: Id<"leagues">) =>
+      ctx.db
+        .query("teams")
+        .withIndex("by_league_id", (q) => q.eq("leagueId", id))
+        .take(PICKER_LEAGUE_LEG_TAKE);
 
     // ── Browse ────────────────────────────────────────────────────────────
     if (!args.query.trim()) {
@@ -2212,13 +2263,7 @@ export const pickerCandidates = query({
         PICKER_BROWSE_DEFAULT_LIMIT,
         PICKER_BROWSE_MAX_LIMIT,
       );
-      if (leagueId) {
-        const inLeague = await ctx.db
-          .query("teams")
-          .withIndex("by_league_id", (q) => q.eq("leagueId", leagueId))
-          .take(PICKER_BROWSE_TAKE);
-        inLeague.forEach(add);
-      }
+      if (leagueId) (await leagueLeg(leagueId)).forEach(add);
       const inSport = sportId
         ? await ctx.db
             .query("teams")
@@ -2244,34 +2289,25 @@ export const pickerCandidates = query({
       PICKER_SEARCH_MAX_LIMIT,
     );
 
-    const searchLeg = async (
-      take: number,
-      filterLeagueId: Id<"leagues"> | undefined,
-    ): Promise<Doc<"teams">[]> => {
-      const run = (text: string) =>
-        ctx.db
-          .query("teams")
-          .withSearchIndex("search_name", (q) => {
-            const search = q.search("nameNormalized", text);
-            if (!sportId) return search;
-            const bySport = search.eq("sportId", sportId);
-            return filterLeagueId ? bySport.eq("leagueId", filterLeagueId) : bySport;
-          })
-          .take(take);
-      let hits = await run(term);
-      // NEO-322 — the keystroke after a run of initials; see `teams.search`.
-      if (hits.length === 0 && alternates.length > 0) {
-        hits = await run(alternates[0].join(" "));
-      }
-      return hits;
-    };
+    // Leg A — only when the league resolved, which needs a sport. A plain
+    // index range, name-matched below with every other leg's rows.
+    if (leagueId) (await leagueLeg(leagueId)).forEach(add);
 
-    // Leg A — only when the league resolved, which needs a sport.
-    if (leagueId && sportId) {
-      (await searchLeg(PICKER_LEAGUE_LEG_TAKE, leagueId)).forEach(add);
+    // Leg B — the ONLY search read in this query (see the note above).
+    const runSearch = (text: string) =>
+      ctx.db
+        .query("teams")
+        .withSearchIndex("search_name", (q) => {
+          const search = q.search("nameNormalized", text);
+          return sportId ? search.eq("sportId", sportId) : search;
+        })
+        .take(PICKER_SPORT_LEG_TAKE);
+    let sportHits = await runSearch(term);
+    // NEO-322 — the keystroke after a run of initials; see `teams.search`.
+    if (sportHits.length === 0 && alternates.length > 0) {
+      sportHits = await runSearch(alternates[0].join(" "));
     }
-    // Leg B.
-    (await searchLeg(PICKER_SPORT_LEG_TAKE, undefined)).forEach(add);
+    sportHits.forEach(add);
 
     // Leg C — the exact alias, as `teams.search` reads it (NEO-284).
     const aliasHitIds = new Set<string>();
@@ -2295,8 +2331,21 @@ export const pickerCandidates = query({
       }
     }
 
+    // Every row must match what was typed. The search is any-term, so
+    // "Pittsburgh Crawfords" scores Pittsburgh Pirates on "pittsburgh" alone,
+    // and leg A is the whole league, unfiltered. TeamPicker shows the current
+    // answer as-is (it has to, or an alias hit whose name lacks the text would
+    // vanish), so a partial match left in here reaches the list, hides "No
+    // matches.", and can rank first under Enter. An exact-alias hit is kept
+    // whatever its name: the operator typed a name the team answers to.
+    const matched = [...pool.values()].filter(
+      (team) =>
+        aliasHitIds.has(team._id) ||
+        pickerRowMatchesQuery(team, args.query, [reading, ...alternates]),
+    );
+
     return rankTeamsForContext(
-      [...pool.values()],
+      matched,
       rankContext,
       args.query,
       aliasHitIds,

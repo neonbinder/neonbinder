@@ -134,4 +134,5 @@ Non-markdown helpers: `tools/`
 - [Heading-only selector via `above:` a field label](patterns_heading_only_via_above_field_label.md) — name in h3 AND input values: anchor `above: "<label>"`; leftOf/rightOf are left-edge only
 - [sr-only in an unpositioned scroller](patterns_sr_only_in_unpositioned_scroller.md) — span stays at its scrollTop-0 spot, pruned past y=629; compare a known sr-only node to its parent
 - [Branch on copied button text](patterns_branch_on_copied_button_text.md) — vary a drain by step kind: copyTextFrom the guarded button + `when: true:` script; never a 2nd visibility guard
-- [NEO-331 team picker ranking](reference_neo331_team_picker_ranking.md) — 4 tiers by set league+year; zero-write quick-add proof; level pills required; "MLB" resolves by name/alias only; held-rows "No matches."
+- [NEO-331 team picker ranking](reference_neo331_team_picker_ranking.md) — 4 tiers by set league+year; zero-write proof; level pills required; "MLB" by name/alias only; held rows never say "No matches."; any-term search regression
+- [Same-text search legs go stale](patterns_convex_same_text_search_legs_go_stale.md) — two search_name reads, same text, in one query: other-filter inserts never invalidate; prove via HTTP API + ws frames

@@ -4,7 +4,8 @@
  * The pure ordering is `lib/teams/team-rank.test.ts`; this file is everything
  * the SERVER adds to it: reading the set context off the selectorOptions tree
  * (the League feature, resolved by name OR alias, and the year from the year
- * ancestor), the three candidate legs, the browse window, and the gates.
+ * ancestor), the three candidate legs, the typed-text filter over them, the
+ * browse window, and the gates.
  *
  * **convex-test's search is not the backend.** Its `withSearchIndex` returns
  * rows in insertion order (the backend is BM25, ties toward NEWER rows),
@@ -384,7 +385,9 @@ describe("teams.pickerCandidates — the abbreviation fallback", () => {
 
 describe("teams.pickerCandidates — what the league leg guarantees", () => {
   // Thirty teams share the typed token across the sport; the set's own club
-  // is one more. The sport leg reads 25.
+  // is one more. The sport leg reads 25; the league leg reads the set's league
+  // by `by_league_id`, so the club is in the pool whatever the search window
+  // drops.
   async function seedCrowd(t: T, sportId: SelId, mlbFirst: boolean) {
     const mlb = await seedLeague(t, sportId, "Major League Baseball", "major", ["MLB"]);
     const crowd = async () => {
@@ -445,6 +448,126 @@ describe("teams.pickerCandidates — what the league leg guarantees", () => {
     });
 
     expect(rows.length).toBeLessThanOrEqual(25);
+  });
+});
+
+describe("teams.pickerCandidates — every row matches the typed text", () => {
+  // The search leg is any-term ("Pittsburgh Crawfords" scores Pittsburgh
+  // Pirates on "pittsburgh"), and the league leg is the whole league. The
+  // server drops every pooled row the text does not match, because TeamPicker
+  // shows the current answer as-is.
+  //
+  // Not testable here: the reason the league leg is an index range and not a
+  // second `search_name` read. Convex invalidated that query only for inserts
+  // matching the narrower search filter, so a new team outside the set's
+  // league never reached an already-typed picker. convex-test re-runs every
+  // query from scratch and has no subscriptions, so it cannot model that; the
+  // E2E ranking flow is what covers it.
+
+  test("'Pittsburgh Crawfords' with only Pittsburgh Pirates present returns nothing", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    await seedTeam(t, baseball, "Pittsburgh Pirates", { yearsActive: { from: 1887 } });
+
+    expect(await pick(t, { query: "Pittsburgh Crawfords", sportId: baseball })).toEqual([]);
+  });
+
+  test("…nor when the Pirates are in the set's league, so the league leg reads them too", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major", ["MLB"]);
+    await seedTeam(t, baseball, "Pittsburgh Pirates", {
+      leagueId: mlb,
+      yearsActive: { from: 1887 },
+    });
+    const { setId } = await seedSet(t, baseball, "1935", "MLB");
+
+    const rows = await pick(t, {
+      query: "Pittsburgh Crawfords",
+      sportId: baseball,
+      contextOptionId: setId,
+    });
+
+    expect(rows).toEqual([]);
+  });
+
+  test("the league leg returns only the set-league teams the text matches", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major", ["MLB"]);
+    await seedTeam(t, baseball, "Texas Rangers", { leagueId: mlb, yearsActive: { from: 1972 } });
+    await seedTeam(t, baseball, "Seattle Mariners", { leagueId: mlb, yearsActive: { from: 1977 } });
+    const { setId } = await seedSet(t, baseball, "2024", "MLB");
+
+    const rows = await pick(t, { query: "Rangers", sportId: baseball, contextOptionId: setId });
+
+    expect(summary(rows)).toEqual(["Texas Rangers:1"]);
+  });
+
+  test("a matching team in another league, one in none, and the set's league team all return", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major", ["MLB"]);
+    const nnl = await seedLeague(t, baseball, "Negro National League", "major");
+    await seedTeam(t, baseball, "Pittsburgh Pirates", { leagueId: mlb, yearsActive: { from: 1887 } });
+    await seedTeam(t, baseball, "Pittsburgh Crawfords", { leagueId: nnl, yearsActive: { from: 1931, to: 1938 } });
+    await seedTeam(t, baseball, "Pittsburgh Keystones", { yearsActive: { from: 1921, to: 1922 } });
+    const { setId } = await seedSet(t, baseball, "1935", "MLB");
+
+    const rows = await pick(t, { query: "Pittsburgh", sportId: baseball, contextOptionId: setId });
+
+    expect(summary(rows)).toEqual([
+      "Pittsburgh Pirates:1",
+      "Pittsburgh Crawfords:4",
+      "Pittsburgh Keystones:4",
+    ]);
+  });
+
+  test("an exact-alias hit whose name lacks the text still returns", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    const owner = await seedTeam(t, baseball, "Homestead Grays");
+    await seedTeam(t, baseball, "Pittsburgh Pirates");
+    await t.run(async (ctx) =>
+      ctx.db.insert("teamAliases", {
+        teamId: owner,
+        sportId: baseball,
+        aliasNormalized: normalizeTeamName("Pittsburgh Grays"),
+      }),
+    );
+
+    const rows = await pick(t, { query: "Pittsburgh Grays", sportId: baseball });
+
+    // The Pirates match "pittsburgh" alone and are dropped; the Grays answer
+    // to the exact alias and stay.
+    expect(rows.map((r) => r.team.name)).toEqual(["Homestead Grays"]);
+  });
+
+  test("punctuation in the stored name does not hide it: 'St Louis' finds 'St. Louis Cardinals'", async () => {
+    // The substring test alone keeps the dot and misses; the token reading
+    // (the search index's own terms, all of them) matches.
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    await seedTeam(t, baseball, "St. Louis Cardinals");
+    await seedTeam(t, baseball, "St. Paul Saints");
+
+    const rows = await pick(t, { query: "St Louis", sportId: baseball });
+
+    expect(rows.map((r) => r.team.name)).toEqual(["St. Louis Cardinals"]);
+  });
+
+  test("the NEO-322 alternate reading still finds its row: 'N Y M' on the way to 'NY Mets'", async () => {
+    // Joined, "N Y M" reads "nym", the prefix of nothing; the alternate
+    // reading ["ny", "m"] is what the retry searches, and the filter accepts
+    // a row either reading matches.
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    await seedTeam(t, baseball, "NY Mets");
+    await seedTeam(t, baseball, "NY Yankees");
+
+    const rows = await pick(t, { query: "N Y M", sportId: baseball });
+
+    expect(rows.map((r) => r.team.name)).toEqual(["NY Mets"]);
   });
 });
 

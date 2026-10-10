@@ -44,7 +44,16 @@ finds it by name and adds no alias. Symptom: ranking flow round 1 reads
 Y, W, X, Z (tiers 1/3 empty). Check the league row before blaming the ranking.
 
 **Trap 2 — held rows.** TeamPicker keeps the previous answer on screen while
-a new query loads (no "Loading…" flash), so `No matches.` can render from a
-STALE pool before the server answers. `assertVisible: "No matches."` is then a
-weak "nothing has this name" precondition; gate on a positive option instead
-where the distinction matters.
+a new query loads (no "Loading…" flash). Since 10c466b held rows render an
+aria-hidden spacer, never `No matches.`, so that line now means "the CURRENT
+answer is empty". A row on screen that does not contain the typed text is the
+current answer, not held rows (held rows are name-filtered).
+
+**Trap 3 — measured on the first CI run (2026-10-10).** (a) The server's
+search legs are BM25 any-term: "Pittsburgh Crawfords" returns Pittsburgh
+Pirates, and once the client stopped name-filtering current answers (to admit
+alias hits) the row showed and `No matches.` never came — and tier sorts
+before prefix, so a tier-1 partial match beats the exact row for Enter.
+(b) A missing row that every fresh probe returns = the stale same-text search
+read set ([[convex-same-text-search-legs-go-stale]]), not held rows. Both are
+product findings; the ranking flow and link-team-saves-alias flow were right.

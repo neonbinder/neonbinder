@@ -1709,16 +1709,9 @@ export default defineSchema({
     // `withSearchIndex`, because the backend prefix-matches only the final
     // term. `teams.search` normalises the term in source order for exactly
     // that reason.
-    //
-    // NEO-331: `leagueId` is filterable too, for `teams.pickerCandidates`'s
-    // league leg. A 25-row sport-wide BM25 window can miss the set's own
-    // league entirely when a shared prefix matches hundreds of teams (a
-    // college preload makes that common), and the picker's whole job is to
-    // put that league first; the league-filtered leg guarantees its teams
-    // are in the candidate pool before ranking.
     .searchIndex("search_name", {
       searchField: "nameNormalized",
-      filterFields: ["sportId", "leagueId"],
+      filterFields: ["sportId"],
     }),
 
   /**
