@@ -30,8 +30,11 @@ tags:
 # No `when:` branch wraps any of it.
 #
 # R3 — DEDUP: player-picker-create-custom-card proves create-and-attach on the
-#   default path; set-fill-teams-from-teammate-card picks an existing player on
-#   it. Neither touches the sport switch. The wizard's switch is proved by
+#   default path in the drawer, and checklist-attention-badge-and-filter in the
+#   quick-add form (its card 3, since NEO-335 retired
+#   set-fill-teams-from-teammate-card); admin/player-sports-multi-sport-
+#   membership picks an existing player in the quick-add form. None of them
+#   touches the sport switch. The wizard's switch is proved by
 #   checklist-wizard-link-commits; the multi-sport MEMBERSHIP (case B) by
 #   admin/player-sports-multi-sport-membership. Drilling is R9's
 #   util-drill-to-custom; the player is made by ../admin/util-add-player-by-hand.
@@ -113,8 +116,9 @@ tags:
 # ============================================================
 # STEP 3 — R2(a)+(b): the default search, then the switch
 # ============================================================
-# The trigger sits below the fold of the open form (the fill-teams flow
-# measured the same fold trap); centred, per R8.
+# The trigger sits below the fold of the open form (the Players row opens at
+# y≈595 — checklist-attention-badge-and-filter measured the same fold trap on
+# the same form); centred, per R8.
 - scrollUntilVisible:
     element:
       id: "Add a player to the new card"

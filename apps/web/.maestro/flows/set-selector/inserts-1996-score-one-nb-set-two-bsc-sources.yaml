@@ -1030,12 +1030,50 @@ tags:
           id: "Apply selected changes"
 
       # Every player and team on these 220 cards was created by STEP 6's commit, so
-      # the entity wizard has nothing to ask and the commit runs straight through.
-      # 120s mirrors STEP 6's budget for the identical 220-card commit.
+      # the entity wizard has no NAMES to ask about. NEO-335: it can still open
+      # TEAMS-ONLY — same title, straight onto its final step, no "Skip
+      # remaining names" — when a card would save with no team (a re-synced row
+      # that already holds a team is not asked again; one STEP 6 saved teamless
+      # is). Whether any card here is in that state is the marketplaces'
+      # business, so both shapes are accepted and the save is asserted after
+      # either.
+      #
+      # One gate for both terminal states, then ONE read of which it was,
+      # branched on as a value (`when: true:`) so the common direct-commit path
+      # pays no 7s missed-`when: visible` lookup (R10). The two never coexist:
+      # the sync cleared the previous run's "Saved 220 cards." banner when it
+      # started (CardChecklist `setSyncMessage(null)`), and the wizard is open
+      # until its commit writes the next one. 120s mirrors STEP 6's budget for
+      # the identical 220-card commit.
       - extendedWaitUntil:
           visible:
-            text: ".*Saved 220 cards.*"
+            text: "Confirm New Players & Teams|.*Saved 220 cards.*"
           timeout: 120000
+      - copyTextFrom:
+          text: "Confirm New Players & Teams|.*Saved 220 cards.*"
+      - evalScript: '${output.TEAMS_ONLY_REVIEW = maestro.copiedText.indexOf("Confirm New Players") === 0}'
+      - runFlow:
+          when:
+            true: "${output.TEAMS_ONLY_REVIEW}"
+          commands:
+            # R2 — the precondition, by name: no names to decide (so this
+            # really is the teams-only shape, not a names review this flow
+            # would wrongly confirm), and the final step is up.
+            - assertNotVisible:
+                text: ".*Skip remaining names.*"
+            # The count is left open here: what the re-sync writes is the
+            # review's business, and "Saved 220 cards" below pins the result.
+            - assertVisible:
+                text: ".*All reviewed — save [0-9]+ cards?\\?.*"
+            # Teams are not this flow's business: Confirm & Save takes the
+            # section's own defaults (a pre-filled suggestion, else "Leave for
+            # later"). The save is asserted just below.
+            - tapOn:
+                text: ".*Confirm & Save.*"
+            - extendedWaitUntil:
+                visible:
+                  text: ".*Saved 220 cards.*"
+                timeout: 120000
 
       # THE ACCEPTANCE CRITERION. The marketplace's name for this card was offered
       # and declined, so the checklist still shows OURS. If the re-sync had written

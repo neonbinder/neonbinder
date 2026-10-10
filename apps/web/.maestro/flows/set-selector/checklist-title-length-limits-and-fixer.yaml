@@ -23,8 +23,9 @@ tags:
 #     it says what the risk is and the save goes through — because which NB
 #     field maps verbatim onto which marketplace aspect is not settled.
 #   • A card left over that cap is then badged "needs attention", counted in
-#     the header chip, and answerable in the walker's TitleFixer — whose Save
-#     writes through `updateCard`, so the badge clears because the ROW changed.
+#     the header's amber "N need you" pill (NEO-335), and answerable in the
+#     walker that pill opens, through its TitleFixer — whose Save writes
+#     through `updateCard`, so the badge clears because the ROW changed.
 #
 # WHAT MAKES IT FAIL IF THE FEATURE BREAKS (R2)
 #   Every step asserts the product's own words, not the mere presence of a
@@ -56,14 +57,12 @@ tags:
 #     80-character core, i.e. a fixture whose only purpose is to be long. The
 #     generator's cut is unit-covered (generateListing.test.ts) and the fixer's
 #     note is component-covered (TitleFixer.test.tsx).
-#   • The post-commit banner's "K need attention — Fix them one at a time" CTA.
-#     It only renders after a `commitCardChecklist`, which needs a real
-#     marketplace fetch; a hand-made subtree carries no marketplace ids so
-#     neither side is ever fetched (NEO-239), and the real sets are read-only
-#     (R7a). Component-covered in
-#     CardChecklist.test.tsx. The walker never opens on its own, so this flow
-#     opens it by hand from the header — the same door the sibling NEO-102
-#     walker flow uses.
+#   • Where a title card falls in a MIXED walk (NEO-335 orders missing teams,
+#     then unlinked names, then titles). This checklist holds one card, so
+#     there is no order to see; the sort is component-covered in
+#     CardAttentionWalker.test.tsx. The walker never opens on its own, so this
+#     flow opens it by hand from the header's pill — the same door the
+#     sibling NEO-102 walker flow uses, and since NEO-335 the only one.
 #
 # R3 — no other flow tests a length cap. `card-detail-panel.yaml` types a
 #   title and proves it round-trips, and its marker is deliberately SHORT so
@@ -574,23 +573,26 @@ tags:
 
 # An EXACT count — this attempt's checklist holds exactly one card, so a rule
 # that over- or under-flags fails here rather than reading as "a badge exists".
+# The pill (NEO-335) is singular for one card and its visible text is its
+# accessible name, so this full match is the count. UP: the attention row is
+# in the checklist header, above the row the badge scroll just centred.
 - scrollUntilVisible:
     element:
-      text: "1 need attention"
+      text: "1 needs you"
     direction: UP
     centerElement: true
     timeout: 7000
 
 # ════════════════════════════════════════════════════════════════════════════
-# THE WALKER — opened by hand from the header (it never opens itself).
+# THE WALKER — opened by hand from the header pill (it never opens itself).
 # ════════════════════════════════════════════════════════════════════════════
 
-- tapOn: "Fix them one at a time"
+- tapOn: "1 needs you"
 - extendedWaitUntil:
     visible: "Cards Needing Attention"
     timeout: 7000
 
-# It opened on THIS card, and its own counter agrees with the header chip.
+# It opened on THIS card, and its own counter agrees with the header pill.
 # The "." matches the middot separator.
 - assertVisible:
     id: "Skip card 101-${ATTEMPT_ID} for now"
@@ -665,13 +667,14 @@ tags:
 
 # ════════════════════════════════════════════════════════════════════════════
 # BACK ON THE GRID — the badge is gone because the ROW changed.
-# The whole header row goes with it: with nothing flagged there is no count chip
-# and no way into the walker.
+# The whole header row goes with it: with nothing flagged there is no pill and
+# no way into the walker. The pill was centred before the walker opened and
+# the walker never scrolls the window, so its absence is read where it was.
 # ════════════════════════════════════════════════════════════════════════════
 
 - extendedWaitUntil:
     notVisible:
       id: "Card 101-${ATTEMPT_ID}(, .*)? needs attention: variation text is over the 65-character limit"
     timeout: 7000
-- assertNotVisible: "Fix them one at a time"
+- assertNotVisible: "[0-9]+ needs? you"
 - assertVisible: "#101-${ATTEMPT_ID}"

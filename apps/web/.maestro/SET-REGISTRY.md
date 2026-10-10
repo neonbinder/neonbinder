@@ -93,7 +93,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 2024 → Topps → Topps Heritage | `Base` — SportLots base mapping CONFIRMED in-flow (NOT pre-synced) | `flows/set-selector/sets-base.yaml` — **sole writer** of that mapping. ✅ **RATIFIED 2026-09-09** (NEO-260) — it was already in use and had never been listed |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
-| Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
+| Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced); one card answered "No team on this card" in the review's final step, 24 left for later (NEO-335) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; the per-brand SportLots reviews the year-wide Sync Sets leaves behind (NEO-306: SportLots-only names are no longer saved as sets; the reviews stay unsaved, labels never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
 | Baseball → 2026 → Bowman (the whole brand-year) | **setup:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `flows/setup.yaml` (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row), `flows/set-selector/bowman-insert-grouping-builds-parallels.yaml` (Bowman › Insert's BSC inserts and their grouping), `flows/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
@@ -858,11 +858,40 @@ not change; none of them can express the =1 half.
     a cold preview: drill to the year ~30s (SportLots years + manufacturers),
     Sets column ~20s, variant types ~15s, base picker ~8s, checklist fetch
     1.4s, wizard 2s, `Skip remaining names` → `All reviewed` 0.5s, commit 1.2s
-    (with a further ~15s tail as the attention count climbs to 25). The Maestro
+    (with a further ~15s tail as the attention count climbs to 25 — gone
+    since NEO-335: the commit stamps every card whose fetch-time lookup
+    answered, so the count is whole at "Saved", and the flow now asserts it
+    within R5's 7s). The Maestro
     run reached the base picker's cancel at **t≈95s** including sign-in, so the
     whole flow should land near **~2 minutes** — comfortably inside the budget,
     and in the same band as `checklist-pairing-dialog-cancel` (2m29s, measured
     on the same preview the same evening).
+
+#### What STEP 6b answers, and what that writes (NEO-335)
+
+The review's final step now asks about every card that would save with no
+team, and this fixture is a true blank: BSC lists no team for any of the 25,
+so the section reads `25 cards have no team yet` (`K` = the fetch count — the
+same 25 the old attention count climbed to). Every name is skipped, so each
+card is its own line with exactly `No team on this card` and `Leave for later`,
+the second checked. The flow answers the TOP line `No team on this card` and
+leaves the other 24 for later, then asserts the checklist's pill reads
+`24 need you` within 7s of `Saved 25 cards.`.
+
+So the commit writes, on top of the 25 cards: ONE card stamped
+`teamNoneConfirmedAt` (the operator's "no team" answer), and every card's
+`teamCheckDoneAt` (its fetch-time BSC lookup answered). Nothing else changes,
+the set stays single-use per preview deployment, and the flow remains its
+sole writer. Which of the 25 cards is the answered one is decided by POSITION
+(the section's top line), never by number — every card is `NNO` — or by a
+marketplace name.
+
+What it does NOT cover, disclosed in the flow: a PRE-FILLED suggestion. Every
+name is skipped and no card carries a team, so no line has evidence. A
+pre-fill needs a linked player with a 1995 hockey stint or a teamed sibling
+card; setup provisions no hockey roster, so that half is unit- and
+component-covered (`teams-on-cards.test.ts`,
+`EntityReviewWizard.teamsOnCards.test.tsx`).
 
 #### What STEP 8 writes, and why it has to write anything (NEO-272)
 
@@ -1513,7 +1542,6 @@ would put the wrong question on screen.
 | `cpx-` | `set-attributes-card-prefix.yaml` — an Insert row `CPXROW` under it carries the Card prefix under test; the flow clears the prefix before it ends. |
 | `cvar-` | `variation-link-group-and-unlink.yaml` |
 | `fp-` | `features-propagation.yaml` |
-| `ftl-` | `set-fill-teams-from-teammate-card.yaml` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, the `stt-` shape for the same League-combobox reason. Per-attempt because the Fill teams confirm's title and toast are EXACT card counts. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows, its player `FTP<token>` and its team `FTT<token>` stand. The set is given NO set-level team (NEO-277 would copy it onto every card and leave nothing to fill). |
 | `msp-` | `admin/player-sports-multi-sport-membership.yaml` (NEO-313) — under the REAL `Baseball` › 2024 › `Topps` (the set's sport must be Baseball: the flow gives a football player Baseball and proves a baseball card's picker finds him); `Insert` › `Base`, one card `316-<attempt>` linking the player `Gm<token>`, DELETED at the end. The set and its rows stand. |
 | `msb-` | `move-set-to-another-brand.yaml` — its OWN sport `msb-sport-<worker>`, brand rows `Topps` / `Panini` under it in 2026 (hand-made, no ids), and ONE set `msb-a-<worker>` under `Topps`. The flow moves that set to `Panini` and back, so it ends where it started; `Panini` stays empty. Per-worker only (no count is asserted). **Never under `E2E Test Sport <worker>`** — it adds a brand row, see the fold note below. |
 | `parallel-feature-` | `cards-parallel-custom.yaml` |
@@ -1812,9 +1840,8 @@ whole thing; never assume which letter the worker half starts with.
 | Prefix | Owning flow | Notes |
 |---|---|---|
 | `CNAA`, `CNAB` | `checklist-attention-badge-and-filter.yaml` | two teams; CNAB is the born-linked card's alone, which is what makes its row assertion single-row |
+| `CNAP` | `checklist-attention-badge-and-filter.yaml` | a PLAYER — the born-linked card #703's, created from the quick-add form's PlayerPicker ("Create player CNAP<token>") and read back from that card's drawer. The quick-add create path's one E2E since NEO-335 retired `set-fill-teams-from-teammate-card` (and its `ftl-`/`FTP`/`FTT` names). Diverges from CNAA/CNAB at its fourth character, and lives in `players.search`, not `teams.search` |
 | `CNWT` | `checklist-attention-walker-missing-team.yaml` | |
-| `FTP` | `set-selector/set-fill-teams-from-teammate-card.yaml` | a PLAYER — the one both of that flow's cards name; created from the quick-add form's PlayerPicker on card #781 and PICKED from its results on card #782 (the only flow that selects an existing player there). `FTT` below is his team; the two diverge at their third character |
-| `FTT` | `set-selector/set-fill-teams-from-teammate-card.yaml` | the team card #781 is born with and card #782 borrows through Fill teams. Carries the Location `Loc<token>` (typed into the DIALOG, never into a picker) so the composed `Loc<token> FTT<token>` is what rows, chips and the Fill teams ledger print |
 | `NBTeam` | `team-picker-create-custom-card.yaml` | created under `E2E Test Sport <w>`, not Baseball |
 | `NBPlayer` | `player-picker-create-custom-card.yaml` | a PLAYER, not a team — `players.search` tokenises identically, and the row persists the same way |
 | `Gw` | `set-selector/checklist-wizard-link-commits.yaml` | a FOOTBALL player (NEO-313), made on `/admin/players` through `admin/util-add-player-by-hand.yaml`, which the review wizard links a Topps Brooklyn Collection name to after switching that row to Football. `Gp`/`Gm` below are its siblings; the three diverge at their SECOND character, so none is a prefix of another |

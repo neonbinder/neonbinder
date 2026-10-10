@@ -161,6 +161,34 @@ tags:
 #   selector can pick one of twenty-five identical rows that is also on screen —
 #   the whole argument is in STEP 8's block, along with what that trades away.
 #
+# ── R1/R2 — AND A THIRD, ON THE SAME COMMIT (NEO-335) ───────────────────────
+#   STEP 6b and the pill read in STEP 7 prove the team half of the save: the
+#   review's final step asks about every card that would save with NO team
+#   ("K cards have no team yet", one line per card, "No team on this card" /
+#   "Leave for later"), the operator's answers ride the commit, and the
+#   checklist's "N need you" count is FINAL the moment "Saved N cards." shows
+#   — a card whose fetch-time BSC lookup answered is stamped at the commit,
+#   so nothing is left to climb. Before NEO-335 that count climbed for ~15s
+#   (SET-REGISTRY measurement 10) as the background queue re-asked BSC what
+#   the fetch had already asked it.
+#
+#   Same justification as STEP 8: this is the suite's one fixture where every
+#   card is a TRUE BLANK (BSC lists no team for any of the 25, so K = the
+#   fetch count), it is already committed here, and only a real fetch +
+#   commit can put a BSC-linked card through the stamp. A hand-made set
+#   carries no BSC ref (NEO-239), so its cards never wait on a lookup and
+#   could not tell a final count from a climbing one.
+#
+#   WHAT IT DOES NOT PROVE, stated plainly: a PRE-FILLED team. The section
+#   suggests one only from evidence — a sibling card of the same player with a
+#   team, or a linked player's stored cards or career stint in the set's year.
+#   Every name here is skipped (no player link) and no card carries a team,
+#   so every line offers exactly "No team on this card" and "Leave for later"
+#   and defaults to the second. Linking one Roanoke name to a hockey player
+#   with a 1995 stint would need a player minted for it (setup provisions no
+#   hockey roster); that is unit/component-covered (teams-on-cards.test.ts,
+#   EntityReviewWizard.teamsOnCards.test.tsx) and disclosed here.
+#
 # ── R3 — NO OTHER FLOW TESTS THIS ───────────────────────────────────────────
 #   Every other flow that reaches the pairing dialog is on a TWO-sided set and
 #   proves the opposite half of the same rule, unchanged by this ticket:
@@ -566,6 +594,86 @@ tags:
 - assertVisible:
     text: ".*All reviewed — save ${output.FETCHED} cards?.*"
 
+# ============================================================
+# STEP 6b — THE CARDS THAT WOULD SAVE WITH NO TEAM ARE ASKED ABOUT FIRST
+#           (NEO-335; see the third R1/R2 block in the header)
+#
+# The final step carries, below "All reviewed — save N cards?" and its summary,
+# a "K cards have no team yet" section. A skipped name is nobody, so every
+# card here is its own line, named `#<number> <card name>` (`lineOwner`,
+# TeamsOnCardsSection.tsx), and each line is a radio group "Team for <owner>"
+# whose radios are named "<choice> — <owner>". With no evidence on any card
+# each line offers just "No team on this card" and "Leave for later", and the
+# second is checked. Every card number here is `NNO` and the card names are
+# the marketplace's (STEP 8's block), so the lines are told apart by POSITION:
+# `index:` sorts by y then x, and line 1 is the top-most.
+#
+# ⚠️ BODY CONTENT, which the README's dialog rule ("header and footer only")
+# warns about: the section lives in the wizard's inner-scrolling body. Only
+# the FIRST two lines are touched, and the guard below fails by name if they
+# are not clear of the pinned footer (README; guard-a-tap-at-a-footer).
+# Nothing here scrolls the body.
+#
+# "checked" is unreadable as an attribute on maestro-web, so it is read off
+# the radio's own ✓ glyph — rendered INSIDE the checked radio only (1.4.1:
+# checked is not colour alone), and a `childOf:` scope ties it to one radio.
+# ============================================================
+
+# K — every card this commit will save is teamless (the fixture is a true
+# blank: SET-REGISTRY measurement 10 saw the attention count reach all 25),
+# so the heading's count is the fetch count, exactly. The number is its own
+# <span> inside the <h3> and maestro-web reads only a node's direct text, so
+# the heading reads "<space>cards have no team yet" and the count is its
+# child.
+- assertVisible:
+    text: ".*cards? ha(s|ve) no team yet"
+- assertVisible:
+    text: ${output.FETCHED}
+    childOf:
+      text: ".*cards? ha(s|ve) no team yet"
+
+# "LEAVE FOR LATER" IS THE DEFAULT where nothing is known — line 1 says so
+# before anything is touched.
+- assertVisible:
+    text: "✓"
+    childOf:
+      id: "Leave for later — #.*"
+      index: 0
+
+# GUARD (README dialog rule): line 2's radio group is ABOVE the footer's
+# Confirm & Save, so line 1 is wholly inside the visible body and the tap
+# below cannot land on a footer button through a clipped row.
+- assertVisible:
+    id: "Team for #.*"
+    index: 1
+    above:
+      text: ".*Confirm & Save.*"
+
+# ANSWER LINE 1: "No team on this card". Recorded on the card at commit as the
+# operator's answer (`teamNone`), so it is not flagged after the save.
+- tapOn:
+    id: "No team on this card — #.*"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      text: "✓"
+      childOf:
+        id: "No team on this card — #.*"
+        index: 0
+    timeout: 7000
+# …and line 2, untouched, is still left for later — the answer is per line.
+- assertVisible:
+    text: "✓"
+    childOf:
+      id: "Leave for later — #.*"
+      index: 1
+
+# What the checklist must say once this saves: every card left for later is
+# flagged, the one answered "no team" is not — K - 1, in the pill's own
+# words ("1 needs you" singular, "N need you" otherwise).
+- evalScript: '${output.NEED_YOU = (Number(output.FETCHED) - 1) === 1 ? "1 needs you" : (Number(output.FETCHED) - 1) + " need you"}'
+
+# Never gated by the section: Confirm & Save is the same footer button.
 - tapOn:
     text: ".*Confirm & Save.*"
 
@@ -579,8 +687,9 @@ tags:
 # ============================================================
 
 # ── LINK 3 OF THE CHAIN: fetched == offered == SAVED ────────────────────────
-# `.*`-wrapped because the banner appends the attention count after the
-# sentence as team enrichment lands ("Saved 25 cards. 7 need attention — …").
+# The banner is "Saved 25 cards." — NEO-335 removed the attention count and
+# its "Fix them one at a time" button that used to trail it. `.*`-wrapped so
+# the full stop and any later clause cannot break the count's match.
 # R5 — the commit of a live fetch is the sanctioned wait, so it gets its own
 # GATE and the scroll gets the bar. The banner appears once the server has
 # written every fetched card plus its skip records; that is the R5
@@ -609,6 +718,22 @@ tags:
     element:
       text: ".*[(]${output.FETCHED}[)].*"
     centerElement: true
+    timeout: 7000
+
+# ── THE COUNT IS FINAL AT "Saved" (NEO-335) ─────────────────────────────────
+# The header's amber pill counts the cards that need a person, and it must
+# read K - 1 now — STEP 6b answered one card "No team on this card" and left
+# the rest for later. Before NEO-335 a BSC card was not flagged until the
+# background queue re-asked BSC (300ms a card, a measured ~15s tail to 25), so
+# this count started near 0 and climbed; now the commit stamps every card
+# whose fetch-time lookup answered and the count is whole the moment the
+# banner shows. 7000 is the R5 bar, and it is the discriminator: the old
+# climb could not finish inside it. Full match, so a count that is still
+# moving fails by its number. The pill sits in the checklist header's
+# attention row, a few rows under the Cards header just centred.
+- extendedWaitUntil:
+    visible:
+      text: ${output.NEED_YOU}
     timeout: 7000
 
 # ── THE BADGE: these cards came from ONE marketplace, and the row says so ───
@@ -687,8 +812,9 @@ tags:
 #     scroll offset was 183px in that run, an emergent value nothing in the flow
 #     chose (Virtuoso's `initialTopMostItemIndex` racing 25 rows' arrival), and
 #     maestro-web's only scroll is `window.scroll` (README, R8) so no flow can
-#     move it. The lowest anchor above the list is the ATTENTION filter row at
-#     y=373 against a list viewport starting at y=406: a shift of 19-42px in
+#     move it. The lowest anchor above the list was the ATTENTION row at
+#     y=373 (then the filter chip, now NEO-335's "N need you" pill) against a
+#     list viewport starting at y=406: a shift of 19-42px in
 #     that offset silently puts a fully-clipped row on the near side of the
 #     anchor and the tap lands on page chrome again.
 #
@@ -779,26 +905,24 @@ tags:
     waitToSettleTimeoutMs: 1000
     timeout: 7000
 
-# THE RETRY IS NOT DECORATION. `Saved 25 cards. <n> need attention` is still
-# climbing here as the background team pass lands (SET-REGISTRY: a ~15s tail to
-# 25), and a row whose attention slot flips re-measures the Virtuoso list under
-# the bounds Maestro has already read — CardChecklist.tsx's "bounds-then-tap
-# window races Virtuoso's height recompute", the long-standing dropped-tap
-# flake. Result-keyed and bounded: tap, wait for the drawer, tap once more if
-# the first one was eaten. It costs nothing when the tap lands.
+# NO RETRY ANY MORE (NEO-335). One wrapped this tap while the attention count
+# was still climbing after the commit: a row whose attention slot flipped
+# re-measured the Virtuoso list under bounds Maestro had already read
+# (CardChecklist.tsx's "bounds-then-tap window races Virtuoso's height
+# recompute"). The count is now final at "Saved" — STEP 7 asserts exactly
+# that — and this card is born with its own badge, so no row's attention slot
+# changes between the bounds read and the click. A dropped tap here is a
+# finding about the list, not a retry to restore.
 #
 # The gate is `Card title`, not `Card name`: the add form has a `Card name` too,
 # and a gate that a just-closed form could satisfy is not a gate.
-- retry:
-    maxRetries: 1
-    commands:
-      - tapOn:
-          id: "Edit card NB272-${ATTEMPT_ID}(, .*)?"
-          waitToSettleTimeoutMs: 1000
-      - extendedWaitUntil:
-          visible:
-            id: "Card title"
-          timeout: 7000
+- tapOn:
+    id: "Edit card NB272-${ATTEMPT_ID}(, .*)?"
+    waitToSettleTimeoutMs: 1000
+- extendedWaitUntil:
+    visible:
+      id: "Card title"
+    timeout: 7000
 
 # THE POSITIVE, FIRST — a negative alone is satisfied by a drawer that never
 # opened. For an `<input>` Maestro's getNodeText returns its VALUE, so this

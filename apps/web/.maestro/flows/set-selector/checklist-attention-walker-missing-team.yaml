@@ -5,9 +5,13 @@ tags:
   - set-selector
 ---
 # ════════════════════════════════════════════════════════════════════════════
-# R1 — ONE feature (NEO-102): the "Fix them one at a time" walker lets an
-# operator answer the missing-team question on each flagged card, and each of
-# its three answers behaves differently.
+# R1 — ONE feature (NEO-102): the attention walker lets an operator answer the
+# missing-team question on each flagged card, and each of its three answers
+# behaves differently. Since NEO-335 its one door is the checklist header's
+# amber "N need you" pill ("1 needs you" for one card): the filter chip, the
+# "Fix them one at a time" link and the set-wide "N cards need a team" Fill
+# control are gone, so this flow opens the walker from the pill and reads the
+# pill's count where it used to read the chip's.
 #
 #   • SKIP  — defers. Nothing is written: the card keeps its badge and comes
 #             back the next time the walker opens.
@@ -34,12 +38,17 @@ tags:
 #   fails immediately instead of silently answering someone else's question.
 #
 # NOT COVERED HERE — and why
-#   • The post-commit banner CTA ("K need attention — Fix them one at a time").
-#     It only renders after a commitCardChecklist, which needs a real
-#     marketplace fetch; a hand-made subtree carries no marketplace ids so
-#     neither side is ever fetched (NEO-239), and the real sets are read-only
-#     (R7a). Component-covered in
-#     CardChecklist.test.tsx. (The walker never opens on its own — an earlier
+#   • The walk ORDER across kinds (NEO-335: missing team, then unlinked names,
+#     then titles). Both cards here carry the same kind, so the order is card
+#     number alone; a mixed queue would assert the sort, not the fixer this
+#     flow is about. Component-covered in CardAttentionWalker.test.tsx.
+#   • The "All clear for now — K more cards are still being checked for a
+#     team." done line. It counts BSC-linked cards whose lookup has not
+#     answered; a hand-made card carries no BSC ref, so it can never be one
+#     (NEO-239), and the real sets are read-only (R7a). Component-covered in
+#     CardAttentionWalker.test.tsx. The live proof that a sync's count is
+#     final the moment it saves is checklist-one-marketplace-skips-match-
+#     dialog STEP 7. (The walker never opens on its own — an earlier
 #     auto-open was removed after it swallowed taps in two wizard flows.)
 #   • The preselected suggestion chips. They come from the card's PLAYERS'
 #     career years, and a custom card added through the add-card form has
@@ -186,26 +195,31 @@ tags:
     timeout: 7000
 
 # ════════════════════════════════════════════════════════════════════════════
-# OPEN THE WALKER from the header. Centering the chip row also parks the two
-# card rows just below it, in view — which is what makes the badge assertions
-# after each close meaningful rather than trivially-absent (an off-screen
-# element reads as ABSENT to Maestro). Nothing scrolls the window from here on;
-# the walker is a fixed z-50 portal, so its controls are tapped directly.
+# OPEN THE WALKER from the header's "N need you" pill (NEO-335). The pill's
+# visible text IS its accessible name (SetRowActionButton takes no
+# aria-label), so `text:` finds it; its DOM id is never a handle (README).
+# The count is EXACT — two teamless cards, so "2 need you" — and centring the
+# pill's row also parks the two card rows just below it, in view, which is
+# what makes the badge assertions after each close meaningful rather than
+# trivially-absent (an off-screen element reads as ABSENT to Maestro).
+# direction: UP — the attention row is in the checklist header, above the row
+# the last scroll centred. Nothing scrolls the window from here on; the walker
+# is a fixed z-50 portal, so its controls are tapped directly.
 # ════════════════════════════════════════════════════════════════════════════
 
 - scrollUntilVisible:
     element:
-      text: "2 need attention"
+      text: "2 need you"
     direction: UP
     centerElement: true
     timeout: 7000
-- tapOn: "Fix them one at a time"
+- tapOn: "2 need you"
 
 - extendedWaitUntil:
     visible: "Cards Needing Attention"
     timeout: 7000
 # The walker opened on the LOWEST-numbered flagged card, and its own counter
-# agrees with the header chip. The "." matches the middot separator.
+# agrees with the header pill. The "." matches the middot separator.
 - assertVisible:
     id: "Skip card 801-${ATTEMPT_ID} for now"
 - assertVisible:
@@ -248,21 +262,22 @@ tags:
     timeout: 7000
 
 # Back on the grid: #802 is answered and un-flagged, #801 was only DEFERRED and
-# keeps its badge, and the header count is back to the truth.
+# keeps its badge, and the pill's count is back to the truth — singular now,
+# and a full match, so "1 need you" or a stale "2 need you" fails here.
 - extendedWaitUntil:
     notVisible:
       id: "Card 802-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
     timeout: 7000
 - assertVisible:
     id: "Card 801-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
-- assertVisible: "1 need attention"
+- assertVisible: "1 needs you"
 
 # ════════════════════════════════════════════════════════════════════════════
 # ANSWER 3 — a real team for #801, through the walker's own TeamPicker.
 # Re-opening also proves the skip was session-only: #801 is back in the queue.
 # ════════════════════════════════════════════════════════════════════════════
 
-- tapOn: "Fix them one at a time"
+- tapOn: "1 needs you"
 - extendedWaitUntil:
     visible:
       id: "Skip card 801-${ATTEMPT_ID} for now"
@@ -412,12 +427,15 @@ tags:
     timeout: 7000
 
 # Nothing on this checklist needs attention any more, so the whole header row
-# — count chip and walker link — is gone, and #801 shows the team it was given.
+# — the pill and its "Attention" label — is gone, and #801 shows the team it
+# was given. The pill's row was centred before the walker opened and the
+# walker never scrolls the window, so the negative is read where the pill
+# would be, on a page the badge wait and the team text prove live.
 - extendedWaitUntil:
     notVisible:
       id: "Card 801-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
     timeout: 7000
-- assertNotVisible: "Fix them one at a time"
+- assertNotVisible: "[0-9]+ needs? you"
 - assertVisible:
     text: ".*CNWT${output.ATTEMPT_TOKEN}.*"
 
@@ -450,4 +468,4 @@ tags:
     id: "Card 802-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
 - assertNotVisible:
     id: "Card 801-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
-- assertNotVisible: "Fix them one at a time"
+- assertNotVisible: "[0-9]+ needs? you"
