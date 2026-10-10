@@ -137,6 +137,46 @@ describe("planSelectorSync with sameName = sameTitleWord", () => {
     expect(plan.siblingWithholds[0]?.reason).toBe("nameSharedInBatch");
   });
 
+  test("id-less 'Base' + id-less 'Bases', no namesake → both withheld, never two rows", () => {
+    const plan = planSelectorSync({
+      existing: [],
+      items: [item("Base"), item("Bases")],
+      sameName: sameTitleWord,
+    });
+    expect(plan.outcomes.map((o) => o.kind)).toEqual(["withheld", "withheld"]);
+    expect(plan.siblingWithholds.map((w) => w?.reason)).toEqual([
+      "nameSharedInBatch",
+      "nameSharedInBatch",
+    ]);
+  });
+
+  test("id-less 'Base' + id-carrying 'Bases', no namesake → both withheld", () => {
+    const plan = planSelectorSync({
+      existing: [],
+      items: [item("Base"), item("Bases", { bsc: "x" })],
+      sameName: sameTitleWord,
+    });
+    expect(plan.outcomes.map((o) => o.kind)).toEqual(["withheld", "withheld"]);
+    expect(plan.siblingWithholds[1]?.reason).toBe("nameSharedInBatch");
+  });
+
+  test("control: the exact rule is unchanged — id-less same-name items still insert", () => {
+    const plan = planSelectorSync({
+      existing: [],
+      items: [item("Gold"), item("Gold", { bsc: "x" })],
+    });
+    expect(plan.outcomes.map((o) => o.kind)).toEqual(["insert", "insert"]);
+  });
+
+  test("control: one id-less item of a word is still inserted alone", () => {
+    const plan = planSelectorSync({
+      existing: [],
+      items: [item("Base"), item("Insert")],
+      sameName: sameTitleWord,
+    });
+    expect(plan.outcomes.map((o) => o.kind)).toEqual(["insert", "insert"]);
+  });
+
   test("two incoming items folding to one existing word → both withheld", () => {
     const plan = planSelectorSync({
       existing: [row("a", "Insert")],
@@ -281,6 +321,25 @@ describe("storeSelectorOptions at variantType — one row per word", () => {
     expect(rows[0]._id).toBe(ids[0]);
     expect(bscIds(rows[0])).toEqual(["insert-a"]);
     expect(rows[0].lastUpdated).toBe(SENTINEL);
+  });
+
+  test("one call cannot mint two Bases: 'Base' + 'Bases' (one id-less) on an empty set inserts nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { setId } = await seedSet(t, []);
+
+    await t.withIdentity(ADMIN).mutation(api.selectorOptions.storeSelectorOptions, {
+      level: "variantType",
+      parentId: setId,
+      options: [
+        { value: "Base", platformData: {} },
+        { value: "Bases", platformData: { bsc: "x" } },
+        { value: "Insert", platformData: { bsc: "insert" } },
+      ],
+      coveredSides: ["bsc"],
+    });
+
+    const rows = await variantTypesOf(t, setId);
+    expect(rows.map((r) => r.value)).toEqual(["Insert"]);
   });
 
   test("other levels keep the exact-name rule: 'Gold Refractors' beside 'Gold Refractor' inserts", async () => {

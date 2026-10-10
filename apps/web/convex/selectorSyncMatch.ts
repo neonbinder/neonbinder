@@ -1097,18 +1097,30 @@ export function planSelectorSync<TId extends string>(args: {
   // behind it. Counted over the items that reach this pass carrying an id (an
   // id-less item is withheld below whatever the count says when a namesake
   // exists), excluding operator-promoted `identityOnly` lines.
+  const sameNameRule = args.sameName;
   const incomingByKey = new Map<string, number>();
-  /** NEO-334 — the items counted above, for the `sameName` rule's scan. */
+  /** NEO-334 — the id-carrying items counted above, for the `sameName` scan. */
   const countedValues: string[] = [];
+  /**
+   * NEO-334 — every item reaching this pass (id-less too, `identityOnly`
+   * excluded), for the `sameName` rule's NO-NAMESAKE twin check only. Under
+   * the exact rule an id-less item with no namesake row is inserted alone;
+   * under the word rule two items of one word ("Base" and "Bases", either
+   * carrying an id or not) would become two rows of one word — a second
+   * Base — so each is withheld instead (`nameSharedInBatch`, same family,
+   * same channel). Where a namesake row EXISTS an id-less item is withheld
+   * as `noIdToAttach` anyway, so the id-carrying count stays the rule there.
+   */
+  const allValues: string[] = [];
   for (let i = 0; i < items.length; i++) {
     if (outcomes[i]) continue;
     if (items[i].identityOnly) continue;
+    allValues.push(items[i].value);
     if (!PLATFORM_SIDES.some((s) => items[i].ids[s])) continue;
     const key = selectorValueKey(items[i].value);
     incomingByKey.set(key, (incomingByKey.get(key) ?? 0) + 1);
     countedValues.push(items[i].value);
   }
-  const sameNameRule = args.sameName;
   /** Siblings that carry this item's name (NEO-334: or its word). */
   const namesakesOf = (value: string): Array<MatchableRow<TId>> =>
     sameNameRule
@@ -1119,6 +1131,11 @@ export function planSelectorSync<TId extends string>(args: {
     sameNameRule
       ? countedValues.filter((other) => sameNameRule(other, value)).length
       : (incomingByKey.get(selectorValueKey(value)) ?? 0);
+  /** NEO-334 — the no-namesake twin count: id-less items too, under the rule. */
+  const incomingNamedAny = (value: string): number =>
+    sameNameRule
+      ? allValues.filter((other) => sameNameRule(other, value)).length
+      : (incomingByKey.get(selectorValueKey(value)) ?? 0);
   for (let i = 0; i < items.length; i++) {
     if (outcomes[i]) continue;
     const item = items[i];
@@ -1127,6 +1144,7 @@ export function planSelectorSync<TId extends string>(args: {
 
     const sameName = namesakesOf(item.value);
     const incomingCount = incomingNamed(item.value);
+    const incomingCountAny = incomingNamedAny(item.value);
     const sidesCarried = PLATFORM_SIDES.filter((s) => item.ids[s]);
 
     if (item.identityOnly) {
@@ -1154,7 +1172,7 @@ export function planSelectorSync<TId extends string>(args: {
         rowIds: sameName.map((r) => r._id),
       };
       ambiguities.push({ item: item.value, reason: withheld });
-    } else if (sameName.length === 0 && incomingCount > 1) {
+    } else if (sameName.length === 0 && incomingCountAny > 1) {
       // NEO-325 — name twins with no namesake row: two or more incoming items
       // carrying DIFFERENT marketplace ids (pass 1 matched none of them) under
       // one name. Inserting each would auto-create same-named rows, one per
@@ -1163,7 +1181,7 @@ export function planSelectorSync<TId extends string>(args: {
       // that" (Jason). Withheld and reported; the operator links each one
       // (reconcile dialog, Attach sets) or, from the modal, promotes a line
       // to its own set with `identityOnly`, which this count excludes.
-      withheld = `${incomingCount} incoming items share this name`;
+      withheld = `${incomingCountAny} incoming items share this name`;
       sibling = { reason: "nameSharedInBatch", rowIds: [] };
       ambiguities.push({ item: item.value, reason: withheld });
     } else if (sameName.length === 1) {
