@@ -25,6 +25,13 @@ import {
   deploymentNameProblem,
   deployKeyProblem,
   effectiveDeployKey,
+  redactConvexOutput,
+  CONVEX_OUTPUT_REDACT_MARKERS,
+  CONVEX_OUTPUT_MAX_LINE,
+  MIN_BUNDLE_PLAYERS,
+  MIN_BUNDLE_TEAMS,
+  hollowBundleProblems,
+  TABLES,
 } from "./lib.mjs";
 import { FIXTURE_SOURCE_TABLE_NUMBERS, fixtureTables } from "./make-fixture.mjs";
 import { REFERENCE_SEED_TABLES } from "../../convex/selectorOptions";
@@ -264,10 +271,11 @@ describe("deployKeyProblem", () => {
 });
 
 describe("effectiveDeployKey", () => {
-  const withWebDir = (envLocal, fn) => {
+  const withWebDir = (envLocal, fn, env = null) => {
     const dir = mkdtempSync(path.join(os.tmpdir(), "nb-seed-envkey-"));
     try {
       if (envLocal !== null) writeFileSync(path.join(dir, ".env.local"), envLocal);
+      if (env !== null) writeFileSync(path.join(dir, ".env"), env);
       return fn(dir);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -284,6 +292,22 @@ describe("effectiveDeployKey", () => {
     withWebDir('OTHER=1\nCONVEX_DEPLOY_KEY="dev:happy-animal-123|tok" # note\n', (dir) => {
       expect(effectiveDeployKey({}, dir)).toBe("dev:happy-animal-123|tok");
     });
+  });
+
+  test("a key in .env is found when .env.local has none", () => {
+    withWebDir("OTHER=1\n", (dir) => expect(effectiveDeployKey({}, dir)).toBe("from-dotenv"), "CONVEX_DEPLOY_KEY=from-dotenv\n");
+    withWebDir(null, (dir) => expect(effectiveDeployKey({}, dir)).toBe("from-dotenv"), "CONVEX_DEPLOY_KEY=from-dotenv\n");
+  });
+
+  test(".env.local wins over .env, and the environment wins over both", () => {
+    withWebDir(
+      "CONVEX_DEPLOY_KEY=from-local\n",
+      (dir) => {
+        expect(effectiveDeployKey({}, dir)).toBe("from-local");
+        expect(effectiveDeployKey({ CONVEX_DEPLOY_KEY: "from-env" }, dir)).toBe("from-env");
+      },
+      "CONVEX_DEPLOY_KEY=from-dotenv\n",
+    );
   });
 
   test("is empty with no env key and no file, or no matching line", () => {
@@ -311,5 +335,113 @@ describe("no bundle is tracked", () => {
     const files = out.split("\n").filter(Boolean);
     expect(files.length).toBeGreaterThan(0); // the scripts themselves, so the command is really listing
     expect(files.filter((f) => /\.(zip|jsonl)$/i.test(f))).toEqual([]);
+  });
+});
+
+describe("redactConvexOutput", () => {
+  // Shaped like a Convex schema-rejection from `convex import`: the summary
+  // line first, then the offending document, its validator and the bad value.
+  const REJECTION = [
+    "✖ Import failed: Document in table players failed schema validation.",
+    "Path: players",
+    "Object: {",
+    '  _id: "SECRET-ID-123",',
+    '  name: "Secret Player Name",',
+    "  birthYear: 2005,",
+    "  note: \"error: could not parse\",",
+    "}",
+    "Validator: v.object({ name: v.string(), birthYear: v.float64() })",
+    "Value: \"Secret Player Name\"",
+    "A later line that says failed and also holds SECRET-TAIL",
+  ].join("\n");
+
+  test("keeps the summary and drops every field value of a quoted document", () => {
+    const out = redactConvexOutput("", REJECTION);
+    expect(out).toContain("Import failed");
+    for (const secret of ["SECRET-ID-123", "Secret Player Name", "2005", "SECRET-TAIL", "could not parse"]) {
+      expect(out).not.toContain(secret);
+    }
+  });
+
+  test("cuts each stream at its first marker and drops all later lines, even ones naming an error", () => {
+    const stderr = "Object: {\n  name: x\n}\nerror: LATER-LINE";
+    expect(redactConvexOutput("", stderr)).toBe("(error text withheld: it quoted document data)");
+  });
+
+  test("a marker mid-line keeps only the text before it", () => {
+    expect(redactConvexOutput("", "Import failed at Value: SECRETVALUE")).toBe("Import failed at");
+  });
+
+  test("redacts stdout the same way as stderr", () => {
+    const out = redactConvexOutput(REJECTION, "");
+    expect(out).toContain("Import failed");
+    expect(out).not.toContain("Secret Player Name");
+  });
+
+  test.each(CONVEX_OUTPUT_REDACT_MARKERS)("treats %s as a marker", (marker) => {
+    expect(redactConvexOutput("", `error here ${marker} SECRETVALUE`)).not.toContain("SECRETVALUE");
+  });
+
+  test("lists exactly the Object, Validator and Value markers", () => {
+    expect(CONVEX_OUTPUT_REDACT_MARKERS).toEqual(["Object:", "Validator:", "Value:"]);
+  });
+
+  test("picks the first error/fail line, preferring stderr, else falls back to the last line", () => {
+    expect(redactConvexOutput("progress\nall good", "noise\nsomething failed here\nmore")).toBe("something failed here");
+    expect(redactConvexOutput("first\nlast line", "")).toBe("last line");
+  });
+
+  test("caps a long line at CONVEX_OUTPUT_MAX_LINE characters plus an ellipsis", () => {
+    const out = redactConvexOutput("", `error ${"x".repeat(1000)}`);
+    expect(CONVEX_OUTPUT_MAX_LINE).toBe(300);
+    expect(out).toHaveLength(CONVEX_OUTPUT_MAX_LINE + 1);
+    expect(out.endsWith("…")).toBe(true);
+  });
+
+  test("says so when there was no output at all", () => {
+    expect(redactConvexOutput("", "")).toBe("(no output)");
+    expect(redactConvexOutput()).toBe("(no output)");
+  });
+});
+
+describe("hollowBundleProblems", () => {
+  const full = { leagues: 5, franchises: 5, teams: MIN_BUNDLE_TEAMS, teamAliases: 1, players: MIN_BUNDLE_PLAYERS, playerAliases: 1, playerSports: 1, selectorOptions: 4 };
+
+  test("a bundle clearing every floor has no problems, in both modes", () => {
+    expect(hollowBundleProblems(full, full, "import")).toEqual([]);
+    expect(hollowBundleProblems(full, full, "remap")).toEqual([]);
+  });
+
+  test.each(TABLES)("an empty %s table is a problem", (t) => {
+    const counts = { ...full, [t]: 0 };
+    const problems = hollowBundleProblems(counts, counts, "remap");
+    expect(problems.some((p) => p.startsWith(`${t}: 0`))).toBe(true);
+  });
+
+  test("players and teams must clear their floors; one under is refused, exactly at is not", () => {
+    const players = { ...full, players: MIN_BUNDLE_PLAYERS - 1 };
+    expect(hollowBundleProblems(players, players, "remap").join()).toMatch(/players: 999 .*MIN_BUNDLE_PLAYERS/);
+    const teams = { ...full, teams: MIN_BUNDLE_TEAMS - 1 };
+    expect(hollowBundleProblems(teams, teams, "remap").join()).toMatch(/teams: 99 .*MIN_BUNDLE_TEAMS/);
+  });
+
+  test("a sport row is needed in import mode only", () => {
+    const none = { ...full, selectorOptions: 0 };
+    expect(hollowBundleProblems(none, none, "import").join()).toMatch(/selectorOptions: 0/);
+    expect(hollowBundleProblems(none, none, "remap")).toEqual([]);
+  });
+
+  test("the manifest counts and the actual rows are both checked", () => {
+    const hollowRows = { ...full, players: 3 };
+    const fromRows = hollowBundleProblems(full, hollowRows, "import");
+    expect(fromRows).toHaveLength(1);
+    expect(fromRows[0]).toContain("(rows)");
+    const fromManifest = hollowBundleProblems(hollowRows, full, "import");
+    expect(fromManifest).toHaveLength(1);
+    expect(fromManifest[0]).toContain("(manifest)");
+  });
+
+  test("missing counts count as zero", () => {
+    expect(hollowBundleProblems(undefined, {}, "import").length).toBeGreaterThan(0);
   });
 });

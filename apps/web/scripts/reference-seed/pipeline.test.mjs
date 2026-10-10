@@ -4,6 +4,7 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import {
   TABLES,
@@ -118,6 +119,21 @@ describe("build", () => {
   test("no row carries a bare integer literal (integral floats are written N.0)", () => {
     for (const t of BUNDLE_TABLES) expect(countIntegerLiterals(bundleFiles.get(`${t}/documents.jsonl`))).toBe(0);
     expect(bundleFiles.get("players/documents.jsonl")).toContain('"birthYear":2005.0');
+  });
+
+  test("a bundle under the load floors carries a `load will refuse` warning per short table", () => {
+    const w = manifest.warnings.filter((x) => x.startsWith("load will refuse this bundle: "));
+    expect(w.some((x) => /players: 3, needs at least 1000/.test(x))).toBe(true);
+    expect(w.some((x) => /teams: 3, needs at least 100/.test(x))).toBe(true);
+    expect(w.some((x) => x.includes("leagues"))).toBe(false); // 2 rows clears the floor of 1
+    expect(w.every((x) => !x.includes("(manifest)"))).toBe(true);
+  });
+
+  test("throws on an export missing one of the eight tables rather than writing it empty", async () => {
+    const partial = path.join(dir, "partial-export.zip");
+    execFileSync("cp", [path.join(dir, "export.zip"), partial]);
+    execFileSync("zip", ["-q", "-d", partial, "leagues/documents.jsonl", "leagues/generated_schema.jsonl"]);
+    await expect(buildBundle(partial, path.join(dir, "partial-bundle.zip"), { log: () => {} })).rejects.toThrow(/export has no leagues\/documents\.jsonl/);
   });
 
   test("refuses an output that is not .zip or is the export itself", async () => {

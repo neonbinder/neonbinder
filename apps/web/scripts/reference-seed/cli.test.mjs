@@ -14,7 +14,9 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 import { spawn, spawnSync } from "node:child_process";
 import { PROD_DEPLOYMENT_NAME, makeTempDir, zipDir } from "./lib.mjs";
-import { main, parseArgs, RefusedError, UsageError } from "./cli.mjs";
+import { main, parseArgs, RefusedError, UsageError, SELECTOR_DEPENDANT_TABLES, SELECTOR_DEPENDANT_UNDRAINED_TABLES } from "./cli.mjs";
+import { BUNDLE_TABLES } from "./lib.mjs";
+import schema from "../../convex/schema";
 import { makeFixtureExport } from "./make-fixture.mjs";
 
 let dir;
@@ -175,6 +177,18 @@ describe("main: refusals return before the Convex CLI is spawned", () => {
     expect(spawned().filter((b) => b === "npx")).toEqual([]);
   });
 
+  test("the fixture bundle (under the floors) exits 3 as hollow before any spawn of npx", async () => {
+    const o = io();
+    const code = await main(["load", bundleZip, "--deployment", "happy-animal-123", "--sports", "import", "--dry-run"], {
+      env: { CONVEX_DEPLOY_KEY: "dev:happy-animal-123|tok" },
+      ...o,
+    });
+    expect(code).toBe(3);
+    expect(o.err.join("\n")).toMatch(/too hollow/);
+    expect(o.out.join("\n")).toMatch(/too few rows: players: 3/);
+    expect(spawned().filter((b) => b === "npx")).toEqual([]);
+  });
+
   test("a bundle that fails its own check is refused with exit 3, not loaded", async () => {
     // A dev key gets past the name and key guards without the dashboard probe
     // (which would spawn npx); the broken bundle is then refused next.
@@ -208,5 +222,40 @@ describe("main: usage and check", () => {
   test("check on a missing file is a failure (1), not a crash", async () => {
     const o = io();
     expect(await main(["check", path.join(dir, "nope.zip")], o)).toBe(1);
+  });
+});
+
+/** Every table in the schema export with a field that is an id into `target`. */
+function tablesPointingInto(exported, target) {
+  const found = new Set();
+  const walk = (node, table) => {
+    if (!node || typeof node !== "object") return;
+    if (node.type === "id" && node.tableName === target) found.add(table);
+    for (const v of Object.values(node)) {
+      if (Array.isArray(v)) v.forEach((x) => walk(x, table));
+      else walk(v, table);
+    }
+  };
+  for (const t of exported.tables) walk(t.documentType, t.tableName);
+  return found;
+}
+
+describe("selectorOptions dependants vs convex/schema.ts", () => {
+  const exported = JSON.parse(schema.export());
+  const dependants = [...tablesPointingInto(exported, "selectorOptions")].filter((t) => !BUNDLE_TABLES.includes(t)).sort();
+
+  test("the schema walk finds the dependants it should (guards the walker itself)", () => {
+    expect(dependants).toEqual(expect.arrayContaining(["cardChecklist", "slSetReviews"]));
+    expect(tablesPointingInto(exported, "selectorOptions").has("leagues")).toBe(true);
+  });
+
+  test("every table holding a selectorOptions id is in exactly one of the two lists, so a new table cannot slip past the import guard", () => {
+    const listed = [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES];
+    expect([...listed].sort()).toEqual(dependants);
+    expect(new Set(listed).size).toBe(listed.length);
+  });
+
+  test("none of the listed tables is in the reference set", () => {
+    for (const t of [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES]) expect(BUNDLE_TABLES).not.toContain(t);
   });
 });

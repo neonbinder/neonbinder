@@ -43,6 +43,8 @@ import { describe, expect, test, vi, afterEach } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
+// @ts-expect-error plain .mjs with no declaration file; test files are not typechecked anyway
+import { SELECTOR_DEPENDANT_TABLES } from "../scripts/reference-seed/cli.mjs";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -940,6 +942,12 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       }
       return out;
     });
+
+  test("DEPENDANTS is the reference-seed loader's drained-dependant list", () => {
+    // cli.mjs refuses an import-mode load while any of these hold rows; the
+    // drain tests below prove the scoped reset empties every one of them.
+    expect([...DEPENDANTS].sort()).toEqual([...SELECTOR_DEPENDANT_TABLES].sort());
+  });
 
   test("leaves all eight reference tables' rows untouched and drains every dependant", async () => {
     vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
