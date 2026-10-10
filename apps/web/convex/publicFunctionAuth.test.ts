@@ -272,6 +272,18 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
           batchId: "no-such-batch",
         }),
     ],
+    // NEO-332. Pinned here because the action's return shape grew
+    // (`ambiguousPlayers`); the gate runs before the cards are read, so an
+    // empty list is inert and the refusal is the gate.
+    [
+      "selectorOptions.resolveChecklistEntities",
+      (t, sportId) =>
+        t.action(api.selectorOptions.resolveChecklistEntities, {
+          selectorOptionId: sportId,
+          sportId,
+          cards: [],
+        }),
+    ],
     [
       "entityReviewSkips.listForSet",
       (t, sportId) => t.query(api.entityReviewSkips.listForSet, { selectorOptionId: sportId }),

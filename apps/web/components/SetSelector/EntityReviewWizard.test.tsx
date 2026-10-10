@@ -6874,7 +6874,7 @@ describe("NEO-254: an ambiguous name is a choice, not a promoted primary", () =>
     },
   ];
 
-  it("shows the candidates and does NOT promote one of them to the primary", () => {
+  it("opens a pick step with the candidates and does NOT promote one of them to the primary", () => {
     // `players.nearMatches` returns every row on the exact key now, so without
     // the guard `showExactHierarchy` would turn the main button into "Link to
     // Bob Allen" for whichever came first — a one-tap path to the wrong man.
@@ -6887,9 +6887,18 @@ describe("NEO-254: an ambiguous name is a choice, not a promoted primary", () =>
     ];
     renderWizard();
 
-    expect(screen.getByText("Same name, different people")).toBeTruthy();
-    // The primary is still creation, not a link to one of two identical names.
-    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Which Bob Allen is this?" })).toBeTruthy();
+    expect(
+      screen.getByText("We've got 2 on file under that name. Pick the one on this card."),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Link to Bob Allen, b. 1867 · Phillies 1890–1894",
+      }),
+    ).toBeTruthy();
+    // The pick step's primary slot is "Create new"; creating is not on it.
+    expect(screen.getByRole("button", { name: "Create new" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add as New Player" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Link to Bob Allen" })).toBeNull();
   });
 
@@ -6942,7 +6951,9 @@ describe("NEO-254: an ambiguous name is a choice, not a promoted primary", () =>
     currentRows = [makeRow({ enrichment: { wikidataId: "Q1" } })];
     currentNearMatches = [];
     renderWizard();
-    expect(screen.queryByText("Same name, different people")).toBeNull();
+    expect(screen.queryByRole("heading", { name: /^Which .* is this\?$/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Create new" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
   });
 });
 
@@ -7047,7 +7058,7 @@ describe("NEO-254: undated Wikidata teams in the player step", () => {
 });
 
 describe("NEO-254: the wizard defends itself when the stored marker is missing", () => {
-  it("does NOT promote a primary when nearMatches holds two exact rows and enrichment is absent", () => {
+  it("falls back to a pick step when nearMatches holds two exact rows and enrichment is absent", () => {
     // The row the completion backstop or the stale-row sweep settled: status
     // "error", no enrichment ever written, so `existingCandidates` is missing
     // even though two people really do share this name. The independent check
@@ -7059,15 +7070,19 @@ describe("NEO-254: the wizard defends itself when the stored marker is missing",
     ];
     renderWizard();
 
-    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
-    // Two identically-named rows must never collapse into one promoted button.
-    expect(screen.queryByRole("button", { name: /^Add as New Player anyway$/ })).toBeNull();
+    expect(screen.getByRole("heading", { name: "Which Bob Allen is this?" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create new" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Link to existing instead" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Skip Bob Allen — not a person" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add as New Player" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Add as New Player anyway/ })).toBeNull();
 
     // They are routed to the same-name panel, NOT to NearMatchPanel — which
     // would have labelled both `Link to Bob Allen — same name`, two controls
     // with one accessible name on the screen where telling them apart is the
     // whole task.
-    expect(screen.getByText("Same name, different people")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: "Link to Bob Allen, option 1 of 2" }),
     ).toBeTruthy();
@@ -7094,7 +7109,7 @@ describe("NEO-254: the wizard defends itself when the stored marker is missing",
     ).toBeTruthy();
   });
 
-  it("says so when the server stopped counting at its scan cap", () => {
+  it("says so on the pick step when the server stopped counting at its scan cap", () => {
     // A silently truncated list invites the operator to conclude none of the
     // eight is right and create a ninth — the duplicate the panel exists to
     // prevent, with the panel's own blessing.
@@ -7115,14 +7130,13 @@ describe("NEO-254: the wizard defends itself when the stored marker is missing",
     renderWizard();
 
     expect(
-      screen.getByText(/More than 8 players are already filed under this name/),
-    ).toBeTruthy();
-    expect(
-      screen.getByText(/use Link to Existing to search them all/),
+      screen.getByText(
+        "More than 8 answer to that name — here are the first 8. Can't see them? Link to Existing searches them all.",
+      ),
     ).toBeTruthy();
   });
 
-  it("gives an exact count when the scan did not hit the cap", () => {
+  it("gives an exact count on the pick step when the scan did not hit the cap", () => {
     currentRows = [
       makeRow({
         name: "Bob Allen",
@@ -7138,7 +7152,7 @@ describe("NEO-254: the wizard defends itself when the stored marker is missing",
     renderWizard();
 
     expect(
-      screen.getByText(/^2 players are already filed under this name\./),
+      screen.getByText("We've got 2 on file under that name. Pick the one on this card."),
     ).toBeTruthy();
     expect(screen.queryByText(/More than/)).toBeNull();
   });
@@ -7864,5 +7878,338 @@ describe("EntityReviewWizard — NEO-307 a New Team name another team holds as a
     expect(
       screen.getByRole("button", { name: "Add as New Team" }).getAttribute("aria-disabled"),
     ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-332 — an ambiguous same-name row opens a PICK step; "Create new" leads
+// to the New Player step and "Back to the list" returns to the pick step.
+//
+// The panel's own copy and labels are in SameNamePlayerPanel.test.tsx; what is
+// asserted HERE is the wizard-owned state: which step shows, what each control
+// records (or does NOT record), where focus goes, and when the "Create new"
+// answer is forgotten.
+// ---------------------------------------------------------------------------
+
+describe("NEO-332: the pick step and the New Player step it opens", () => {
+  const CANDIDATES = [
+    { playerId: "player-old", name: "Bob Allen", birthYear: 1867, careerSummary: "Phillies 1890–1894" },
+    { playerId: "player-young", name: "Bob Allen", birthYear: 1937, careerSummary: "Padres 1961–present" },
+  ];
+  const ambiguousRow = (overrides: Partial<Row> = {}) =>
+    makeRow({ name: "Bob Allen", enrichment: { existingCandidates: CANDIDATES }, ...overrides });
+  const pickHeading = () => screen.queryByRole("heading", { name: "Which Bob Allen is this?" });
+  const clickCreateNew = () =>
+    fireEvent.click(screen.getByRole("button", { name: "Create new" }));
+  const SET_SPORT_ID = "selopt-sport-1" as unknown as Id<"selectorOptions">;
+  const OTHER_SPORT_ID = "selopt-sport-9" as unknown as Id<"selectorOptions">;
+
+  it("opens with Create new, Link to Existing and Skip, and without Add as New Player", () => {
+    currentRows = [ambiguousRow()];
+    renderWizard();
+
+    expect(pickHeading()).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create new" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Link to existing instead" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Skip Bob Allen — not a person" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add as New Player" })).toBeNull();
+  });
+
+  it("Create new decides nothing: it opens the New Player step without the candidates", () => {
+    currentRows = [ambiguousRow()];
+    renderWizard();
+
+    clickCreateNew();
+
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+    expect(pickHeading()).toBeNull();
+    expect(
+      screen.queryByRole("button", {
+        name: "Link to Bob Allen, b. 1867 · Phillies 1890–1894",
+      }),
+    ).toBeNull();
+    expect(screen.queryByText(/on file under that name/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Back to the list" })).toBeTruthy();
+    // One Back per screen: the previous-decision Back gives way to it.
+    expect(screen.queryByLabelText("Back to previous decision")).toBeNull();
+  });
+
+  it("Create new moves focus to the step's heading", async () => {
+    currentRows = [ambiguousRow()];
+    renderWizard();
+
+    clickCreateNew();
+
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("heading", { name: "Bob Allen" }),
+      ),
+    );
+  });
+
+  it("Add as New Player on the opened step records a create decision", async () => {
+    currentRows = [ambiguousRow()];
+    renderWizard();
+
+    clickCreateNew();
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+    await waitFor(() =>
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "create" }),
+      ),
+    );
+  });
+
+  it("Back to the list returns to the pick step, records nothing, and focuses Create new", async () => {
+    currentRows = [ambiguousRow()];
+    renderWizard();
+    clickCreateNew();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to the list" }));
+
+    expect(pickHeading()).toBeTruthy();
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+    expect(mockClearDecision).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Create new" }),
+      ),
+    );
+  });
+
+  it("Escape on the New Player step goes back to the pick step without a discard confirm", () => {
+    // A decided row makes a plain Escape ask "Discard 1 decision?", so the
+    // absence of that dialog is the one-level-at-a-time rule, not an empty batch.
+    currentRows = [makeRow({ name: "Done", decision: { action: "create" } }), ambiguousRow()];
+    renderWizard();
+    clickCreateNew();
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+
+    expect(pickHeading()).toBeTruthy();
+    expect(screen.queryByText("Discard 1 decision?")).toBeNull();
+    expect(mockCancelBatch).not.toHaveBeenCalled();
+  });
+
+  it("Escape on the pick step itself still asks before discarding", () => {
+    currentRows = [makeRow({ name: "Done", decision: { action: "create" } }), ambiguousRow()];
+    renderWizard();
+
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+
+    expect(screen.getByText("Discard 1 decision?")).toBeTruthy();
+  });
+
+  it("Skip on the pick step records a skip decision", async () => {
+    currentRows = [ambiguousRow()];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip Bob Allen — not a person" }));
+
+    await waitFor(() =>
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "skip" }),
+      ),
+    );
+  });
+
+  it("a re-opened row shows the pick step again after Change decision", async () => {
+    // Row A: Create new -> Add as New Player. The flag must not outlive that
+    // answer, or "Change decision" would reopen A straight on the create form.
+    const rowA = ambiguousRow();
+    const rowB = makeRow({ name: "Other Guy" });
+    currentRows = [rowA, rowB];
+    const { rerender } = renderWizard();
+    clickCreateNew();
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+
+    currentRows = [{ ...rowA, decision: { action: "create" } }, rowB];
+    rerenderWizard(rerender);
+    fireEvent.click(screen.getByLabelText("Back to previous decision"));
+    fireEvent.click(screen.getByRole("button", { name: "Change decision" }));
+    await waitFor(() => expect(mockClearDecision).toHaveBeenCalledTimes(1));
+
+    currentRows = [rowA, rowB];
+    rerenderWizard(rerender);
+
+    expect(pickHeading()).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add as New Player" })).toBeNull();
+  });
+
+  it("a row decided from outside while on Create new does not strand the walk, and reopens on the pick step", async () => {
+    // The shape of a bulk "Skip remaining names" landing while the operator is
+    // on the New Player step: the row gets a decision it was not asked for.
+    const rowA = ambiguousRow();
+    const rowB = makeRow({ name: "Other Guy" });
+    currentRows = [rowA, rowB];
+    const { rerender } = renderWizard();
+    clickCreateNew();
+
+    currentRows = [{ ...rowA, decision: { action: "skip" } }, rowB];
+    rerenderWizard(rerender);
+    expect(screen.getByRole("heading", { name: "Other Guy" })).toBeTruthy();
+
+    currentRows = [
+      { ...rowA, decision: { action: "skip" } },
+      { ...rowB, decision: { action: "skip" } },
+    ];
+    rerenderWizard(rerender);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Change decision for Bob Allen" }),
+    );
+    await waitFor(() => expect(mockClearDecision).toHaveBeenCalledTimes(1));
+    currentRows = [rowA, { ...rowB, decision: { action: "skip" } }];
+    rerenderWizard(rerender);
+
+    expect(pickHeading()).toBeTruthy();
+  });
+
+  it("switching the row's sport drops Create new: the candidates were the old sport's", async () => {
+    currentSports = [
+      { _id: SET_SPORT_ID, value: "Baseball" },
+      { _id: OTHER_SPORT_ID, value: "Football" },
+    ];
+    const row = ambiguousRow({
+      sportId: SET_SPORT_ID,
+      setSportId: SET_SPORT_ID,
+      setSportValue: "Baseball",
+    });
+    currentRows = [row];
+    const { rerender } = renderWizard();
+    clickCreateNew();
+    expect(pickHeading()).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("Sport for this name: Baseball"));
+    fireEvent.click(
+      within(screen.getByRole("listbox", { name: "Choose a sport" })).getByRole(
+        "option",
+        { name: "Football" },
+      ),
+    );
+    await waitFor(() => expect(mockSwitchRowSport).toHaveBeenCalledTimes(1));
+    // The server moves the row and refreshes its stored candidates.
+    currentRows = [{ ...row, sportId: OTHER_SPORT_ID }];
+    rerenderWizard(rerender);
+
+    await waitFor(() => expect(pickHeading()).toBeTruthy());
+  });
+
+  it("while the link search is open the step offers no Create new, so the two states cannot cross", () => {
+    currentRows = [ambiguousRow()];
+    renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Link to existing instead" }));
+
+    expect(screen.getByLabelText("Entity link search (stub)")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Create new" })).toBeNull();
+    expect(
+      screen.queryByRole("button", {
+        name: "Link to Bob Allen, b. 1867 · Phillies 1890–1894",
+      }),
+    ).toBeNull();
+  });
+
+  describe("the live fallback (no stored candidates)", () => {
+    it("carries the birth year and the alias that answered into the pick rows", () => {
+      currentRows = [makeRow({ name: "Bob Allen", status: "error" })];
+      currentNearMatches = [
+        { _id: "player-old", name: "Bob Allen", confidence: "exact", birthYear: 1867 },
+        {
+          _id: "player-young",
+          name: "Bob Allen",
+          confidence: "exact",
+          matchedAlias: "Robert Allen",
+        },
+      ];
+      renderWizard();
+
+      expect(screen.getByRole("button", { name: "Link to Bob Allen, b. 1867" })).toBeTruthy();
+      expect(
+        screen.getByRole("button", {
+          name: "Link to Bob Allen, also known as Robert Allen",
+        }),
+      ).toBeTruthy();
+    });
+
+    it("picking a fallback row records a link naming that player", async () => {
+      currentRows = [makeRow({ name: "Bob Allen", status: "error" })];
+      currentNearMatches = [
+        { _id: "player-old", name: "Bob Allen", confidence: "exact", birthYear: 1867 },
+        { _id: "player-young", name: "Bob Allen", confidence: "exact", birthYear: 1937 },
+      ];
+      renderWizard();
+
+      fireEvent.click(screen.getByRole("button", { name: "Link to Bob Allen, b. 1937" }));
+
+      await waitFor(() =>
+        expect(mockRecordDecision).toHaveBeenCalledWith(
+          expect.objectContaining({ action: "link", linkedPlayerId: "player-young" }),
+        ),
+      );
+    });
+
+    it("a second exact match landing turns the open New Player step into the pick step", () => {
+      const row = makeRow({ name: "Bob Allen", status: "error" });
+      currentRows = [row];
+      currentNearMatches = [];
+      const { rerender } = renderWizard();
+      expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+
+      currentNearMatches = [
+        { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+        { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+      ];
+      rerenderWizard(rerender);
+
+      expect(pickHeading()).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Create new" })).toBeTruthy();
+    });
+
+    it("Create new survives the fallback list changing underneath it", () => {
+      currentRows = [makeRow({ name: "Bob Allen", status: "error" })];
+      currentNearMatches = [
+        { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+        { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+      ];
+      const { rerender } = renderWizard();
+      clickCreateNew();
+
+      currentNearMatches = [
+        { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+        { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+        { _id: "player-third", name: "Bob Allen", confidence: "exact" },
+      ];
+      rerenderWizard(rerender);
+
+      expect(pickHeading()).toBeNull();
+      expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    });
+  });
+
+  describe("unambiguous names are unchanged", () => {
+    it("one exact match: Link to X is the primary and there is no pick step", () => {
+      currentRows = [makeRow({ name: "Mike Trout" })];
+      currentNearMatches = [{ _id: "player-1", name: "Mike Trout", confidence: "exact" }];
+      renderWizard();
+
+      expect(screen.getByRole("button", { name: "Link to Mike Trout" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Create new" })).toBeNull();
+      expect(screen.queryByRole("heading", { name: /^Which / })).toBeNull();
+    });
+
+    it("no match: the New Player step with Add as New Player", () => {
+      currentRows = [makeRow({ name: "Daulton Varsho" })];
+      currentNearMatches = [];
+      renderWizard();
+
+      expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Create new" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Back to the list" })).toBeNull();
+    });
   });
 });

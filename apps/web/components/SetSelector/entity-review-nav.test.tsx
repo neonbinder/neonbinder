@@ -24,6 +24,7 @@ import {
   countBulkCreatable,
   countDecided,
   countPendingUndecided,
+  isAmbiguousPlayerRow,
   describeDecision,
   isPresentable,
   nextUndecided,
@@ -1098,5 +1099,56 @@ describe("resolveNav — an implicitly pinned player yields to a pending league"
     ];
     const nav = { rowId: "p1", explicit: true };
     expect(resolveNav(rows, nav)).toBe(nav);
+  });
+});
+
+describe("NEO-332: isAmbiguousPlayerRow", () => {
+  const two = [{ playerId: "a" }, { playerId: "b" }];
+
+  it("is true for a row with two stored same-name candidates", () => {
+    expect(
+      isAmbiguousPlayerRow({
+        ...player("p1"),
+        enrichment: { existingCandidates: two },
+      }),
+    ).toBe(true);
+  });
+
+  it("is false for one candidate, none, an empty list, or no enrichment", () => {
+    expect(
+      isAmbiguousPlayerRow({
+        ...player("p1"),
+        enrichment: { existingCandidates: [{ playerId: "a" }] },
+      }),
+    ).toBe(false);
+    expect(
+      isAmbiguousPlayerRow({ ...player("p1"), enrichment: { existingCandidates: [] } }),
+    ).toBe(false);
+    expect(isAmbiguousPlayerRow({ ...player("p1"), enrichment: {} })).toBe(false);
+    expect(isAmbiguousPlayerRow({ ...player("p1"), enrichment: null })).toBe(false);
+    expect(isAmbiguousPlayerRow(player("p1"))).toBe(false);
+  });
+});
+
+describe("NEO-332: countBulkCreatable leaves the same-name picks out", () => {
+  const ambiguous: NavRow = {
+    ...player("amb"),
+    enrichment: { existingCandidates: [{ playerId: "a" }, { playerId: "b" }] },
+  };
+
+  it("does not count an undecided ambiguous player", () => {
+    expect(countBulkCreatable([ambiguous, player("p2")])).toBe(1);
+  });
+
+  it("counts zero when the only undecided player is ambiguous", () => {
+    expect(countBulkCreatable([ambiguous])).toBe(0);
+  });
+
+  it("still counts a player with exactly one stored candidate", () => {
+    expect(
+      countBulkCreatable([
+        { ...player("one"), enrichment: { existingCandidates: [{ playerId: "a" }] } },
+      ]),
+    ).toBe(1);
   });
 });
