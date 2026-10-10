@@ -133,3 +133,4 @@ Non-markdown helpers: `tools/`
 - [NEO-325 Base check selectors](reference_neo325_base_check_selectors.md) — toggle `N that don't match the Base, <side>` never flips (prove by revealed row); `Keep all[ N], <side> sets`
 - [Heading-only selector via `above:` a field label](patterns_heading_only_via_above_field_label.md) — name in h3 AND input values: anchor `above: "<label>"`; leftOf/rightOf are left-edge only
 - [sr-only in an unpositioned scroller](patterns_sr_only_in_unpositioned_scroller.md) — span stays at its scrollTop-0 spot, pruned past y=629; compare a known sr-only node to its parent
+- [Same-name player panel](reference_same_name_player_panel.md) — bulk skips these rows; drain must link via `childOf` list + `index: 0`; heading `Same name, different people`

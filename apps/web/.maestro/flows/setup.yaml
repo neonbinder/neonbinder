@@ -989,9 +989,8 @@ tags:
             # same-name row — two NB players already carry that name and the wizard is
             # asking which one is on the card (NEO-254 `decideAllRemaining`). Tapping
             # `Add as New Player` there mints a third one silently, which is the exact
-            # failure this ticket exists to remove. Excluded from the matcher, the
-            # loop instead runs out and the `extendedWaitUntil` below fails loudly —
-            # the outcome to want.
+            # failure this ticket exists to remove. Such a row is answered by the
+            # same-name branch at the bottom of this loop, which LINKS it.
             #
             # It also cannot hit the two other buttons that carry a similar name: the
             # demoted `Add as New {kind} anyway` link (an exact-match step promotes
@@ -1000,9 +999,19 @@ tags:
             # same property: `Add as New (Team|League)` carries no trailing `.*`, so
             # `Add as New Team anyway`, `Add as New Player` and `Add remaining players
             # as new (N)` fall outside both branches of the full match.
+            #
+            # NEO-330 — THE THIRD WAKE-UP, `Same name, different people`. With the
+            # reference catalogue loaded the Base batch is a handful of names, not
+            # ~300, and some of them are same-name rows the bulk leaves for the
+            # operator (`players.isAmbiguousPlayerName`, entityReviewQueue.ts). CI run
+            # 38062111821 parked on one ("Jose Rodriguez", four NB players on file,
+            # "2 of 3 reviewed") and this wait, which knew only the team/league
+            # buttons and the terminal state, ran its 240s out. The panel heading is a
+            # full-match text node of its own (`SameNamePlayerPanel.tsx`), so it adds
+            # a branch without widening the other two.
             - extendedWaitUntil:
                 visible:
-                  text: "Add as New (Team|League)|.*Confirm & Save.*"
+                  text: "Add as New (Team|League)|.*Confirm & Save.*|Same name, different people"
                 timeout: 240000
             # `optional: true` — THE GUARD/TAP RACE, AND WHAT ADJUDICATES IT
             # HERE. The probe above and this tap are two hierarchy reads ~0.3s
@@ -1046,6 +1055,36 @@ tags:
                   - tapOn:
                       id: "Add as New (Team|League)"
                       optional: true
+            # NEO-330 (plan D12) — ANSWER A SAME-NAME PLAYER ROW BY LINKING IT,
+            # never by `Add as New Player` (that mints one more same-name player,
+            # see above). Linking a seed card to any of the people already on file
+            # is harmless here: no flow reads these rows, and the reset rebuilds
+            # them on the next run.
+            #
+            # The FIRST candidate (`index: 0`, positional — top of the list), not
+            # one flagged `On a roster that year`: the panel renders directly
+            # under the row's name, so its top row always sits inside the dialog
+            # body, while a lower one can sit under the footer and a tap there
+            # lands on a footer button. `childOf` the panel's own list keeps
+            # `Link to existing instead` (the footer search, also `Link to …`)
+            # out of the match.
+            #
+            # Not `optional`: the bulk never decides this row, so the button
+            # cannot vanish between guard and tap the way a team step's can. A
+            # tap during the link's own round-trip lands on an `aria-disabled`
+            # button and does nothing; the next iteration finds the panel again
+            # and taps again. A row this branch fails to answer still leaves
+            # `Confirm & Save` unrendered, so the gate after the loop fails by
+            # name (R2).
+            - runFlow:
+                when:
+                  visible: "Same name, different people"
+                commands:
+                  - tapOn:
+                      id: "Link to .*"
+                      childOf:
+                        id: "Players already filed under this name"
+                      index: 0
       # NEO-221 — the bulk button no longer decides rows whose Wikidata lookup
       # is still in flight (deciding a name nobody has looked up yet was the
       # defect). It decides the SETTLED rows now and stays armed, adding the
