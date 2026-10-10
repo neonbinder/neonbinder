@@ -171,12 +171,14 @@ vi.mock("./EntityReviewWizard", () => ({
     teamsOnly,
     previewCards,
     onTeamAnswersChange,
+    cardsWithStoredTeam,
   }: {
     // NEO-335 — the final step's teams section, reduced to what the parent
     // owns: whether the wizard opened teams-only, and the answer channel.
     teamsOnly?: boolean;
     previewCards?: unknown[];
     onTeamAnswersChange?: (answers: Array<{ teamNone?: true } | undefined>) => void;
+    cardsWithStoredTeam?: number[];
     summary: {
       cardCount: number;
       deleteCount: number;
@@ -203,6 +205,21 @@ vi.mock("./EntityReviewWizard", () => ({
         >
           Answer every card with no team
         </button>
+      )}
+      {onTeamAnswersChange && (
+        <button
+          type="button"
+          onClick={() =>
+            onTeamAnswersChange(
+              (previewCards ?? []).map((_, i) => (i === 1 ? { teamNone: true } : undefined)),
+            )
+          }
+        >
+          Answer only the second card
+        </button>
+      )}
+      {cardsWithStoredTeam && (
+        <p>{`Stored-team positions: [${cardsWithStoredTeam.join(",")}]`}</p>
       )}
       <button type="button" onClick={onConfirm}>
         Confirm entity review
@@ -946,6 +963,56 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await syncTeamless(rerender);
       expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
       expect(mockCommitChecklist).not.toHaveBeenCalled();
+    });
+
+    it("answers ride POSITIONALLY: only the card answered carries the answer", async () => {
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Answer only the second card"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      const cards = mockCommitChecklist.mock.calls[0][0].cards;
+      expect(cards[0]).not.toHaveProperty("teamNone");
+      expect(cards[1].teamNone).toBe(true);
+    });
+
+    it("answers from a cancelled run never ride on the next run's commit", async () => {
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Answer every card with no team"));
+      fireEvent.click(screen.getByText("Cancel entity review"));
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+
+      mockResolveEntities.mockClear();
+      // The cancelled run's candidates are gone; the next run streams afresh.
+      await streamCandidates(rerender, undefined);
+      await syncTeamless(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      for (const card of mockCommitChecklist.mock.calls[0][0].cards) {
+        expect(card).not.toHaveProperty("teamNone");
+      }
+    });
+
+    it("hands the wizard the stored-team positions so a partly re-synced set asks only about the rest", async () => {
+      state.cards = [settledCard({ _id: "row-2", cardNumber: "2" })];
+      mockDiffChecklist.mockResolvedValue({
+        ...emptyDiff,
+        cards: [
+          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "identical", existingId: "row-2", fields: [] },
+        ],
+      });
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      expect(screen.getByText("Stored-team positions: [1]")).toBeTruthy();
     });
 
     it("commits straight through when the node's set-level team covers the new cards", async () => {

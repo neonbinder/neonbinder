@@ -691,3 +691,339 @@ describe("commitCardChecklist — re-sync of existing rows, same rule (NEO-335)"
     await settle(t);
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// Adversarial pass (NEO-335): the edges the happy-path blocks above leave open
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("commitCardChecklist — adversarial edges of the team answer (NEO-335)", () => {
+  /** Every row under the leaf, keyed by its BSC ref — never by card number. */
+  async function rowsByBscRef(
+    t: T,
+    leafId: Id<"selectorOptions">,
+  ): Promise<Map<string, Doc<"cardChecklist">>> {
+    const rows = await t.run(async (ctx) =>
+      ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", leafId))
+        .collect(),
+    );
+    return new Map(rows.map((r) => [r.platformData?.bsc?.ref ?? r._id, r]));
+  }
+
+  test("teams WIN on insert: the node's set-level team fills a card the operator answered \"No team on this card\"", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+    await t.run(async (ctx) => ctx.db.patch(leafId, { teamIds: [reds] }));
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", bscRef: "B1", teamNone: true, teamLookup: "answered" })],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamOnCardIds).toEqual([reds]);
+    // The answer was dropped, not stamped beside a team it contradicts.
+    expect(row.teamNoneConfirmedAt).toBeUndefined();
+    expect(row.teamNoneConfirmedByUserId).toBeUndefined();
+    expect((await settle(t)).has(row._id)).toBe(false);
+  });
+
+  test("a pick whose team was deleted does not count as a team: \"No team on this card\" still applies", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const gone = await seedTeam(t, sportId, "Montreal Expos");
+    await t.run(async (ctx) => ctx.db.delete(gone));
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", bscRef: "B1", teamIds: [gone], teamNone: true })],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamOnCardIds).toBeUndefined();
+    expect(row.teamNoneConfirmedAt).toEqual(expect.any(Number));
+    expect(row.teamNoneConfirmedByUserId).toBe(ADMIN_IDENTITY.subject);
+    await settle(t);
+  });
+
+  test("two cards sharing a card number keep their OWN answers — the number is never the key", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        card({ cardNumber: "7", bscRef: "B7a", teamIds: [reds] }),
+        card({ cardNumber: "7", bscRef: "B7b", teamNone: true }),
+        card({ cardNumber: "7", bscRef: "B7c", teamLookup: "failed" }),
+      ],
+    });
+
+    const rows = await rowsByBscRef(t, leafId);
+    expect(rows.size).toBe(3);
+    expect(rows.get("B7a")!.teamOnCardIds).toEqual([reds]);
+    expect(rows.get("B7a")!.teamNoneConfirmedAt).toBeUndefined();
+    expect(rows.get("B7b")!.teamOnCardIds).toBeUndefined();
+    expect(rows.get("B7b")!.teamNoneConfirmedAt).toEqual(expect.any(Number));
+    expect(rows.get("B7c")!.teamOnCardIds).toBeUndefined();
+    expect(rows.get("B7c")!.teamNoneConfirmedAt).toBeUndefined();
+    const queued = await settle(t);
+    expect(queued.has(rows.get("B7a")!._id)).toBe(false);
+    expect(queued.has(rows.get("B7b")!._id)).toBe(false);
+    expect(queued.has(rows.get("B7c")!._id)).toBe(true);
+  });
+
+  test("a node with no sport to check against fails CLOSED: any picked team refuses the commit", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t, "Baseball");
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+    // An orphan node: no sport ancestor, so no team can be verified for it.
+    const orphanId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Orphan",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: orphanId,
+        sportId,
+        cards: [card({ cardNumber: "1", bscRef: "B1", teamIds: [reds] })],
+      }),
+    ).rejects.toThrow(/could not be checked/);
+    expect((await rowsByNumber(t, orphanId)).size).toBe(0);
+    await settle(t);
+  });
+
+  test("operator team ids are validated across pages: a foreign team past the first page still refuses the whole commit", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const football = await seedSport(t, "Football");
+    // 500 same-sport teams fill page one exactly; the foreign team is the
+    // 501st distinct id, so only the SECOND validation page can see it.
+    const teamIds = await t.run(async (ctx) => {
+      const ids: Array<Id<"teams">> = [];
+      for (let i = 0; i < 500; i++) {
+        ids.push(
+          await ctx.db.insert("teams", {
+            name: `Team ${i}`,
+            nameNormalized: normalizeTeamName(`Team ${i}`),
+            sportId,
+            lastUpdated: Date.now(),
+          }),
+        );
+      }
+      return ids;
+    });
+    const bengals = await seedTeam(t, football, "Cincinnati Bengals");
+    const all = [...teamIds, bengals];
+    const cards = [];
+    for (let i = 0; i < all.length; i += MAX_CARD_TEAMS) {
+      cards.push(
+        card({ cardNumber: String(i), bscRef: `B${i}`, teamIds: all.slice(i, i + MAX_CARD_TEAMS) }),
+      );
+    }
+
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards,
+      }),
+    ).rejects.toThrow(/another sport/);
+    expect((await rowsByNumber(t, leafId)).size).toBe(0);
+    await settle(t);
+  });
+
+  test("a team validated on the SECOND page is written by name like one from the first", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const teamIds = await t.run(async (ctx) => {
+      const ids: Array<Id<"teams">> = [];
+      for (let i = 0; i < 501; i++) {
+        ids.push(
+          await ctx.db.insert("teams", {
+            name: `Team ${i}`,
+            nameNormalized: normalizeTeamName(`Team ${i}`),
+            sportId,
+            lastUpdated: Date.now(),
+          }),
+        );
+      }
+      return ids;
+    });
+    const cards = [];
+    for (let i = 0; i < teamIds.length; i += MAX_CARD_TEAMS) {
+      cards.push(
+        card({ cardNumber: String(i), bscRef: `B${i}`, teamIds: teamIds.slice(i, i + MAX_CARD_TEAMS) }),
+      );
+    }
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards,
+    });
+
+    // The last card carries only the 501st id — the one page two validated.
+    const last = (await rowsByBscRef(t, leafId)).get("B496")!;
+    expect(last.teamOnCardIds).toEqual(teamIds.slice(496));
+    expect(last.listingTitle).toContain("Team 500");
+    await settle(t);
+  });
+});
+
+describe("commitCardChecklist — adversarial edges on re-sync (NEO-335)", () => {
+  /**
+   * How many queue entries name this row. The first sync's own entry stays
+   * in `_scheduled_functions` (cancelled), so a re-sync is judged by whether
+   * it ADDED one, never by whether one exists.
+   */
+  async function queueEntriesFor(t: T, rowId: Id<"cardChecklist">): Promise<number> {
+    const rows = await t.run(async (ctx) =>
+      (
+        ctx as unknown as {
+          db: {
+            system: {
+              query: (n: string) => {
+                collect: () => Promise<Array<{ name: string; args: unknown[] }>>;
+              };
+            };
+          };
+        }
+      ).db.system.query("_scheduled_functions").collect(),
+    );
+    return rows.filter(
+      (r) =>
+        r.name.includes("processBscTeamEnrichmentQueue") &&
+        ((r.args[0] as { cardChecklistIds?: string[] }).cardChecklistIds ?? []).includes(rowId),
+    ).length;
+  }
+
+  async function firstSync(t: T) {
+    const { sportId, leafId } = await seedTree(t);
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", bscRef: "B1" })],
+    });
+    await settle(t);
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    return { sportId, leafId, rowId: row._id };
+  }
+
+  test("an existing row's teamCheckDoneAt is never re-stamped by \"No team on this card\"", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId, rowId } = await firstSync(t);
+    await t.run(async (ctx) => ctx.db.patch(rowId, { teamCheckDoneAt: 1111 }));
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", bscRef: "B1", teamNone: true })],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamNoneConfirmedAt).toEqual(expect.any(Number));
+    expect(row.teamNoneConfirmedByUserId).toBe(ADMIN_IDENTITY.subject);
+    expect(row.teamCheckDoneAt).toBe(1111);
+    await settle(t);
+  });
+
+  test("an ANSWERED re-sync leaves an existing teamCheckDoneAt and bscTeamName exactly as they were", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId, rowId } = await firstSync(t);
+    await t.run(async (ctx) =>
+      ctx.db.patch(rowId, { teamCheckDoneAt: 1111, bscTeamName: "Older Hint" }),
+    );
+    await skipTeamName(t, {
+      selectorOptionId: leafId,
+      sportId,
+      batchId: "batch-2",
+      name: "Gotham Knights",
+    });
+    const queuedBefore = await queueEntriesFor(t, rowId);
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      batchId: "batch-2",
+      cards: [
+        card({ cardNumber: "1", bscRef: "B1", teams: ["Gotham Knights"], teamLookup: "answered" }),
+      ],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamCheckDoneAt).toBe(1111);
+    expect(row.bscTeamName).toBe("Older Hint");
+    expect(await queueEntriesFor(t, rowId)).toBe(queuedBefore);
+    await settle(t);
+  });
+
+  test("\"No team on this card\" never lands on an existing row that already has a team", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId, rowId } = await firstSync(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+    await t.run(async (ctx) => ctx.db.patch(rowId, { teamOnCardIds: [reds] }));
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", bscRef: "B1", teamNone: true, teamLookup: "answered" })],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamOnCardIds).toEqual([reds]);
+    expect(row.teamNoneConfirmedAt).toBeUndefined();
+    // Nor does the lookup's answer stamp a row that has its team.
+    expect(row.teamCheckDoneAt).toBeUndefined();
+    await settle(t);
+  });
+
+  test("\"No team on this card\" is not stamped over an existing row's pending team name", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId, rowId } = await firstSync(t);
+    await t.run(async (ctx) => ctx.db.patch(rowId, { pendingTeamNames: ["Gotham Knights"] }));
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", bscRef: "B1", teamNone: true })],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.pendingTeamNames).toEqual(["Gotham Knights"]);
+    expect(row.teamNoneConfirmedAt).toBeUndefined();
+    expect(row.teamNoneConfirmedByUserId).toBeUndefined();
+    await settle(t);
+  });
+
+  test("picked teamIds fill an existing row while its pending team name stays for review", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId, rowId } = await firstSync(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+    await t.run(async (ctx) => ctx.db.patch(rowId, { pendingTeamNames: ["Gotham Knights"] }));
+    const queuedBefore = await queueEntriesFor(t, rowId);
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", bscRef: "B1", teamIds: [reds] })],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamOnCardIds).toEqual([reds]);
+    expect(await queueEntriesFor(t, rowId)).toBe(queuedBefore);
+    await settle(t);
+  });
+});

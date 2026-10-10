@@ -360,3 +360,134 @@ describe("choices and answers", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Adversarial pass (NEO-335)
+// ---------------------------------------------------------------------------
+
+describe("adversarial — evidence that must NOT pre-fill", () => {
+  test("a batch disagreement stops the search: the server's answer is neither pre-filled nor offered", () => {
+    const groups = build(
+      [
+        card("1", ["Johnny Bench"]),
+        card("2", ["Johnny Bench"], ["Reds"]),
+        card("3", ["Johnny Bench"], ["Yankees"]),
+      ],
+      [],
+      { "name:bench johnny": answered([PHILLIES, "Philadelphia Phillies"]) },
+    );
+    expect(groups[0].suggestion).toBeNull();
+    expect(groups[0].options.map(optionLabel)).toEqual(["Reds", "Yankees"]);
+    expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+  });
+
+  test("two siblings printing the SAME team in a different spelling are one answer, not a tie", () => {
+    const groups = build([
+      card("1", ["Johnny Bench"]),
+      card("2", ["Johnny Bench"], ["Reds"]),
+      card("3", ["Johnny Bench"], ["  reds "]),
+    ]);
+    expect(groups[0].suggestion).not.toBeNull();
+    expect(optionLabel(groups[0].suggestion!)).toBe("Reds");
+  });
+
+  test("a sibling settled by its stored row is still a sibling, but a skipped string on it is no evidence", () => {
+    const rows = [row({ kind: "team", name: "Team Card", decision: { action: "skip" } })];
+    const groups = buildTeamsGroups({
+      cards: [card("1", ["Johnny Bench"]), card("2", ["Johnny Bench"], ["Team Card"])],
+      rows,
+      serverEvidence: new Map(),
+      setYear: undefined,
+      linkedTeamNameById: new Map(),
+      currentYear: 2026,
+      settled: new Set([1]),
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].cards.map((c) => c.index)).toEqual([0]);
+    // Nothing printed resolves on the sibling, so the line falls to the
+    // server — which has not answered yet.
+    expect(groups[0].suggestion).toBeNull();
+    expect(groups[0].loading).toBe(true);
+  });
+
+  test("multi-player: a union over the per-card cap is never pre-filled", () => {
+    const names = Array.from({ length: 9 }, (_, i) => `Player ${i}`);
+    const cards = [card("1", names)];
+    const requests = evidenceRequests(cards, []);
+    expect(requests).toHaveLength(9);
+    const evidence = Object.fromEntries(
+      requests.map((r, i) => [
+        r.key,
+        answered([`team_${i}` as Id<"teams">, `Team ${i}`]),
+      ]),
+    );
+    const groups = build(cards, [], evidence);
+    expect(groups[0].suggestion).toBeNull();
+    // Every team stays a choice, capped at what a line may offer.
+    expect(groups[0].options).toHaveLength(6);
+    expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+  });
+
+  test("a created player and a known player on one card: the known one still loading holds the pre-fill", () => {
+    const rows = [
+      row({
+        kind: "player",
+        name: "Rookie Guy",
+        enrichment: { careerTeams: [{ name: "Reds", fromYear: 2024 }] },
+        decision: { action: "create" },
+      }),
+    ];
+    const cards = [card("1", ["Rookie Guy", "Johnny Bench"])];
+    const loading = build(cards, rows);
+    expect(loading[0].loading).toBe(true);
+    expect(loading[0].suggestion).toBeNull();
+
+    const arrived = build(cards, rows, {
+      "name:bench johnny": answered([YANKEES, "New York Yankees"]),
+    });
+    expect(arrived[0].loading).toBe(false);
+    expect(answerForChoice(arrived[0], defaultChoice(arrived[0]))).toEqual({
+      teamIds: [YANKEES],
+      teams: ["Reds"],
+    });
+  });
+
+  test("a created player whose only career team was skipped as not-a-team offers nothing", () => {
+    const rows = [
+      row({
+        kind: "player",
+        name: "Rookie Guy",
+        enrichment: { careerTeams: [{ name: "Team Card", fromYear: 2024 }] },
+        decision: { action: "create" },
+      }),
+      row({ kind: "team", name: "Team Card", decision: { action: "skip" } }),
+    ];
+    const groups = build([card("1", ["Rookie Guy"])], rows);
+    expect(groups[0].suggestion).toBeNull();
+    expect(groups[0].options).toEqual([]);
+    expect(groups[0].loading).toBe(false);
+  });
+});
+
+describe("adversarial — answers are positional, never by card number", () => {
+  test("one line's answer lands on every card in it, including two that share a number", () => {
+    const cards = [
+      card("12", ["Johnny Bench"]),
+      card("12", ["Pete Rose"]),
+      card("12", ["Johnny Bench"]),
+    ];
+    const groups = build(cards, [], {
+      "name:bench johnny": unsure(),
+      "name:pete rose": unsure(),
+    });
+    expect(groups.map((g) => g.cards.map((c) => c.index))).toEqual([[0, 2], [1]]);
+    const answers = teamAnswersByCard(groups, { [groups[0].key]: { kind: "none" } }, cards.length);
+    expect(answers).toEqual([{ teamNone: true }, undefined, { teamNone: true }]);
+  });
+
+  test("a position past the card count is never written (a stale group after the cards shrank)", () => {
+    const groups = build([card("1", ["A"]), card("2", ["A"])], [], { "name:a": unsure() });
+    const answers = teamAnswersByCard(groups, { [groups[0].key]: { kind: "none" } }, 1);
+    expect(answers).toEqual([{ teamNone: true }]);
+  });
+});

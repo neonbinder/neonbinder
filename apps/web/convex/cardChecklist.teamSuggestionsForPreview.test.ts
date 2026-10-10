@@ -301,3 +301,150 @@ describe("teamSuggestionsForPreview — gate and bounds", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Adversarial pass (NEO-335)
+// ---------------------------------------------------------------------------
+
+describe("teamSuggestionsForPreview — adversarial", () => {
+  test("a same-name player in ANOTHER sport does not make a name ambiguous", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const footballId = await t.run(async (ctx) =>
+      (await ctx.db.query("selectorOptions").collect()).find((r) => r.value === "Football")!._id,
+    );
+    await player(t, s.sportId, "Bo Jackson", [{ teamId: s.reds, fromYear: 1980 }]);
+    await player(t, footballId, "Bo Jackson", [{ teamId: s.jets, fromYear: 1980 }]);
+
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [{ name: "Bo Jackson" }],
+    });
+    expect(result.players[0].answer?.teams.map((x) => x.teamId)).toEqual([s.reds]);
+  });
+
+  test("a stored answer naming a deleted team is offered as candidates, never as a partial pre-fill", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const gone = await t.run((ctx) =>
+      ctx.db.insert("teams", {
+        name: "Expos",
+        nameNormalized: normalizeTeamName("Expos"),
+        sportId: s.sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const combo = await player(t, s.sportId, "Combo Guy");
+    await storedCard(t, s.sportId, s.insertId, [combo], [s.reds, gone]);
+    await t.run((ctx) => ctx.db.delete(gone));
+
+    const [result] = (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId: combo }],
+      })
+    ).players;
+    expect(result.answer).toBeNull();
+    expect(result.candidates.map((c) => c.teamId)).toEqual([s.reds]);
+  });
+
+  test("two variantTypes flagged as the base: the base tier is skipped, never guessed", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const setId = await t.run(async (ctx) => (await ctx.db.get(s.baseId))!.parentId!);
+    const secondBase = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Also Flagged",
+        platformData: {},
+        parentId: setId,
+        children: [],
+        lastUpdated: Date.now(),
+        metadata: { isBase: true },
+      });
+      const set = (await ctx.db.get(setId))!;
+      await ctx.db.patch(setId, { children: [...(set.children ?? []), id] });
+      return id;
+    });
+    const b = await player(t, s.sportId, "Player B");
+    await storedCard(t, s.sportId, s.baseId, [b], [s.phillies]);
+    await storedCard(t, s.sportId, secondBase, [b], [s.phillies]);
+
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [{ playerId: b }],
+    });
+    expect(result.players[0].answer).toBeNull();
+  });
+
+  test("a node merely NAMED \"Base\" without the flag is not the base", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    // Drop the flag from the real base and call it "Base" instead.
+    await t.run((ctx) => ctx.db.patch(s.baseId, { value: "Base", metadata: undefined }));
+    const b = await player(t, s.sportId, "Player B");
+    await storedCard(t, s.sportId, s.baseId, [b], [s.phillies]);
+
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [{ playerId: b }],
+    });
+    expect(result.players[0].answer).toBeNull();
+  });
+
+  test("a deleted player id answers empty rather than throwing; a repeated one answers twice, identically", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const gone = await player(t, s.sportId, "Gone Guy");
+    await t.run((ctx) => ctx.db.delete(gone));
+    const bench = await player(t, s.sportId, "Johnny Bench", [{ teamId: s.reds, fromYear: 1967 }]);
+
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [{ playerId: gone }, { playerId: bench }, { name: "Johnny Bench" }],
+    });
+    expect(result.players[0]).toEqual({ playerId: gone, answer: null, candidates: [] });
+    expect(result.players[2]).toEqual(result.players[1]);
+    expect(result.players[1].answer?.teams.map((x) => x.teamId)).toEqual([s.reds]);
+  });
+
+  test("exactly the cap is answered", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const players = Array.from({ length: TEAM_SUGGESTION_MAX_PLAYERS }, (_, i) => ({
+      name: `Player ${i}`,
+    }));
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players,
+    });
+    expect(result.players).toHaveLength(TEAM_SUGGESTION_MAX_PLAYERS);
+  });
+
+  test("evidence past the per-player link window costs the suggestion, never produces a wrong one", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const star = await player(t, s.sportId, "Star Guy", [
+      { teamId: s.reds, fromYear: 1970, toYear: 1979 },
+      { teamId: s.yankees, fromYear: 1990, toYear: 1995 },
+    ]);
+    // The sameNode card is written FIRST (oldest)…
+    await storedCard(t, s.sportId, s.insertId, [star], [s.reds]);
+    // …then 24 newer cards in an unrelated node fill the read window.
+    for (let i = 0; i < 24; i++) {
+      await storedCard(t, s.sportId, s.otherInsertId, [star], [s.yankees]);
+    }
+    const [result] = (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId: star }],
+      })
+    ).players;
+    // Today the window hides the sameNode card and the career has two teams
+    // with none in 1985, so nothing is pre-filled. A wider window may find
+    // the Reds card instead; what may NEVER happen is the unrelated node's
+    // team becoming the answer.
+    expect([null, "sameNode"]).toContain(result.answer?.tier ?? null);
+    expect(result.answer?.teams.map((x) => x.teamId) ?? []).not.toContain(s.yankees);
+  });
+});

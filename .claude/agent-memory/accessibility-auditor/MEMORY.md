@@ -43,3 +43,4 @@
 - [League combobox name collision NEO-307](league-combobox-name-collision-neo307.md) — NewTeamForm's League field went from a radiogroup to Autocomplete, named exactly "League" (E2E contract); two mounted instances (wizard step + TeamPicker's NewTeamDialog) can coexist unmarked-inert
 - [Chunked save partial refusal NEO-308](chunked-save-partial-refusal-neo308.md) — RESET-then-re-INIT after a mid-loop chunk refusal: focus-park extended correctly, overlayRef outline-none focus target reused a third time, momentary empty-list render
 - [Combobox drill focus NEO-224](combobox-drill-focus-neo224.md) — same-row re-pick drops focus to body; label-only role=status is silent; highlight ring contrast measured
+- [Teams on cards radio lines NEO-335](teams-on-cards-radio-lines-neo335.md) — unused loading flag, status unmounted at 0, Confirm autofocus hides questions, retired-control E2E strings
