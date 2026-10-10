@@ -1191,26 +1191,59 @@ export function resolveSelectedTeam({
   );
 }
 
+/** Counts print with thousands separators: "2,000 teams", never "2000 teams". */
+export function formatCount(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/**
+ * NEO-330 — the counter's sentence: bare counts (Jason's sign-off).
+ *
+ * Browsing, it is how many rows the list shows ("2,000 teams"); with anything
+ * in the filter box it is how many of them match ("12 matches"), whether the
+ * browser or the server answered. A server answer that ran past its limit is
+ * "50+ matches" — the count it returned, with a plus, because how many more
+ * there are is exactly what the limit stops it knowing. The "type to search"
+ * hint that used to ride here is the filter's placeholder.
+ *
+ * No "of N": the window's size is not a number the operator acts on, and the
+ * old "N of M" made two numbers to read on every keystroke.
+ */
+export function teamCounterSentence({
+  typed,
+  matched,
+  serverTruncated,
+}: {
+  /** The filter box's text, trimmed. */
+  typed: string;
+  /** Rows the master list shows. */
+  matched: number;
+  /** The server answered `typed` and its answer ran past its limit. */
+  serverTruncated: boolean;
+}): string {
+  if (typed.length === 0) {
+    return `${formatCount(matched)} ${matched === 1 ? "team" : "teams"}`;
+  }
+  if (serverTruncated) return `${formatCount(matched)}+ matches`;
+  return `${formatCount(matched)} ${matched === 1 ? "match" : "matches"}`;
+}
+
 /**
  * NEO-330 — what the counter's live region says, or `null` while the typed
  * filter is waiting on the server.
  *
- * A separate, plainer sentence than the visible counter, for two reasons. The
- * visible one changes on every keystroke (the browser filters the window,
- * then the server's answer replaces it), and a live region fed that would
- * announce a count that is about to be wrong; this one is only ever a
- * SETTLED answer. And it leaves out the need-attention count, which is about
- * the rows rather than the filter and would double the length of every
- * announcement.
- *
- * Provisional copy (NEO-330): flagged for sign-off.
+ * The same sentence as the visible counter, with two differences. It is only
+ * ever a SETTLED answer: the visible counter changes on every keystroke (the
+ * browser filters the window, then the server's answer replaces it), and a
+ * live region fed that would announce a count that is about to be wrong. And
+ * it leaves out the need-attention count, which is about the rows rather than
+ * the filter and would double the length of every announcement.
  */
 export function teamCounterAnnouncement({
   typed,
   matched,
   answered,
   serverTruncated,
-  windowTruncated,
 }: {
   /** The filter box's text, trimmed. */
   typed: string;
@@ -1220,20 +1253,13 @@ export function teamCounterAnnouncement({
   answered: boolean;
   /** The server's answer ran past its limit. */
   serverTruncated: boolean;
-  /** `listForManagement`'s window is truncated. */
-  windowTruncated: boolean;
 }): string | null {
-  if (typed.length >= SEARCH_MIN_CHARS) {
-    if (!answered) return null;
-    if (matched === 0) return "No teams match";
-    if (serverTruncated) return "More teams match, keep typing";
-    return `${matched} matching ${matched === 1 ? "team" : "teams"}`;
-  }
-  if (matched === 0) return "No teams match";
-  const noun = matched === 1 ? "team" : "teams";
-  return windowTruncated
-    ? `${matched} ${noun}, list truncated, type to search`
-    : `${matched} ${noun}`;
+  if (typed.length >= SEARCH_MIN_CHARS && !answered) return null;
+  return teamCounterSentence({
+    typed,
+    matched,
+    serverTruncated: answered && serverTruncated,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1476,7 +1502,7 @@ export default function TeamManagement() {
    * happened to return them.
    */
   /**
-   * NEO-330 — the rows the counter's "of N" counts: the server's answer to the
+   * NEO-330 — the rows the master list filters: the server's answer to the
    * typed filter once it has one, the loaded window otherwise.
    */
   const base = searchAnswer?.teams ?? teams;
@@ -1560,9 +1586,10 @@ export default function TeamManagement() {
     api.franchises.list,
     selected ? { sportId: selected.sportId } : "skip",
   );
-  // Counted over `base`, the rows the counter's "of N" names — so on a
-  // truncated window it is "of these", never a claim about every team.
-  const needingAttention = base.filter((t) => attentionFor(t) !== null).length;
+  // Counted over `visible`, the rows the counter's number names: with the
+  // "of N" gone, "12 matches · 3 need attention" can only be read as 3 of
+  // those 12, so that is what it has to count.
+  const needingAttention = visible.filter((t) => attentionFor(t) !== null).length;
 
   /**
    * NEO-330 (a11y, SC 4.1.3) — the counter, announced.
@@ -1580,8 +1607,16 @@ export default function TeamManagement() {
           matched: visible.length,
           answered: searchAnswer !== undefined,
           serverTruncated: searchAnswer?.truncated ?? false,
-          windowTruncated: management.truncated,
         });
+  const counterText =
+    teamCounterSentence({
+      typed: filter.trim(),
+      matched: visible.length,
+      serverTruncated: searchAnswer?.truncated ?? false,
+    }) +
+    (needingAttention > 0
+      ? ` · ${formatCount(needingAttention)} need attention`
+      : "");
   const [announcement, setAnnouncement] = useState("");
   if (settledAnnouncement !== null && settledAnnouncement !== announcement) {
     setAnnouncement(settledAnnouncement);
@@ -1669,26 +1704,20 @@ export default function TeamManagement() {
 
             Beside the fields it was the one item whose width followed the
             data: from two typed characters its text switches between the
-            window's count and the server's ("· more match, keep typing"), and
+            window's count and the server's (then with a "keep typing" tail), and
             at 1024px the longer string tipped it past the row's wrap boundary
             — so the whole master list dropped a line on the second keystroke,
             under the operator's eyes. On its own line its length moves
             nothing: one line at every width the admin screens are used at,
             and floored so the first render does not collapse it. */}
         <p className="basis-full min-h-5 text-xs leading-5 text-slate-400">
-          {/* NEO-330 — one string, as the E2E flows read it. Browsing, the
-              "of N" is the loaded window and the truncation note says how to
-              reach past it; filtering, it is the server's matches, from every
-              team, and the note says the matches themselves ran past the
-              limit. Not a live region: it changes on every keystroke, and a
-              screen reader would read the interim count. The settled sentence
-              is the sr-only status line beside it. */}
-          {visible.length} of {base.length}{" "}
-          {searchAnswer ? "matching teams" : "teams"}
-          {needingAttention > 0 && ` · ${needingAttention} need attention`}
-          {searchAnswer
-            ? searchAnswer.truncated && " · more match, keep typing"
-            : management.truncated && " · list truncated, type to search"}
+          {/* NEO-330 — one string in ONE text node, as the E2E flows read
+              it: "2,000 teams" browsing, "12 matches" / "50+ matches"
+              filtering, plus " · K need attention". Not a live region: it
+              changes on every keystroke, and a screen reader would read the
+              interim count. The settled sentence is the sr-only status line
+              beside it. */}
+          {counterText}
         </p>
         {/* NEO-330 (SC 4.1.3) — mounted for the screen's whole life: a live
             region inserted together with its text is announced unreliably

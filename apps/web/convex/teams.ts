@@ -2040,7 +2040,7 @@ export const search = query({
  * Twice `TEAM_SEARCH_MAX_LIMIT`, because this is a list an operator scans
  * rather than a typeahead they pick from, and a name like "Giants" is shared by
  * a few dozen rows across five sports and their minor leagues. Past it the
- * screen says "keep typing" — see `truncated` below.
+ * screen shows "N+ matches" — see `truncated` below.
  */
 const TEAM_MANAGEMENT_SEARCH_LIMIT = 50;
 
@@ -2079,7 +2079,7 @@ const TEAM_MANAGEMENT_SEARCH_SCAN = 256;
  * the screen's own "teams with no league" value.
  *
  * `truncated` says more rows matched than were returned, so the screen can
- * say "keep typing" instead of implying the list is complete. Admin-gated, like
+ * show "N+ matches" instead of implying the list is complete. Admin-gated, like
  * the list it stands in for.
  */
 export const searchForManagement = query({

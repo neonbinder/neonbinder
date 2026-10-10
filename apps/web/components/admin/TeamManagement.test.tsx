@@ -292,6 +292,7 @@ vi.mock("convex/react", () => ({
 import TeamManagement, {
   resolveSelectedTeam,
   teamCounterAnnouncement,
+  teamCounterSentence,
 } from "./TeamManagement";
 
 // The URL is the thing under test in half of these, so it is rendered.
@@ -309,6 +310,19 @@ function renderAt(entry: string) {
 }
 
 const row = (name: string) => screen.getByRole("button", { name: new RegExp(name) });
+
+/**
+ * NEO-330 — the VISIBLE counter. The sr-only status line can say the very same
+ * sentence ("5 teams"), so the counter is the one counter-shaped line that is
+ * not the status region.
+ */
+const counter = () => {
+  const lines = screen
+    .getAllByText(/^[\d,]+\+? (teams?|match(es)?)( · [\d,]+ need attention)?$/)
+    .filter((el) => !el.classList.contains("sr-only"));
+  expect(lines).toHaveLength(1);
+  return lines[0];
+};
 
 /** A select by id — "League" labels two of them, so a label lookup is ambiguous. */
 const select = (id: string) =>
@@ -1689,7 +1703,6 @@ describe("TeamManagement — teams outside the list's window (NEO-330)", () => {
     colors: { primary: "#003087" },
   };
 
-  const counter = () => screen.getByText(/ of \d+ (matching )?teams/);
 
   it("asks the server once two characters are typed, and lists its answer", async () => {
     offWindowTeams = [EXPOS];
@@ -1703,8 +1716,7 @@ describe("TeamManagement — teams outside the list's window (NEO-330)", () => {
     // The window has no Expos; only the server's answer can put the row here.
     expect(await screen.findByRole("button", { name: "Montreal Expos" })).toBeTruthy();
     expect(searchCalls).toContainEqual({ query: "Expos" });
-    // The flows read "1 of .* teams.*" — the shape holds in both modes.
-    expect(counter().textContent).toBe("1 of 1 matching teams");
+    expect(counter().textContent).toBe("1 match");
   });
 
   it("keeps filtering the loaded list until the server has answered the text in the box", () => {
@@ -1717,7 +1729,9 @@ describe("TeamManagement — teams outside the list's window (NEO-330)", () => {
 
     expect(row("Seattle Mariners")).toBeTruthy();
     expect(screen.queryByText("No teams match that filter.")).toBeNull();
-    expect(counter().textContent).toBe("1 of 5 teams · 3 need attention");
+    // Attention is counted over the matches the number names, and the
+    // Mariners have their colours — so no suffix.
+    expect(counter().textContent).toBe("1 match");
   });
 
   it("does not ask the server for a single character", async () => {
@@ -1764,14 +1778,25 @@ describe("TeamManagement — teams outside the list's window (NEO-330)", () => {
     expect(screen.getByLabelText("Location")).toHaveProperty("value", "Montreal");
   });
 
-  it("says the window is truncated and how to reach past it", () => {
+  it("gives a bare count on a truncated window — no 'of N', no truncation note", () => {
     listTruncated = true;
     renderAt("/admin/teams");
-    // Three fixtures have no colours. The count is over the rows the "of 5"
-    // names, which is what keeps it honest on a truncated window.
-    expect(counter().textContent).toBe(
-      "5 of 5 teams · 3 need attention · list truncated, type to search",
-    );
+    // Three fixtures have no colours.
+    expect(counter().textContent).toBe("5 teams · 3 need attention");
+    // The "type to search" hint lives in the filter's placeholder.
+    expect(
+      screen.getByLabelText("Filter teams").getAttribute("placeholder"),
+    ).toBe("Start typing a team name…");
+  });
+
+  it("counts attention over the rows the number names, not the whole window", () => {
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "new york" },
+    });
+    // The Yankees have colours, the New York Giants do not: one of the two
+    // matches, not the three uncoloured teams in the window.
+    expect(counter().textContent).toBe("2 matches · 1 need attention");
   });
 
   it("says when the server's matches ran past its limit", async () => {
@@ -1781,9 +1806,7 @@ describe("TeamManagement — teams outside the list's window (NEO-330)", () => {
       target: { value: "ex" },
     });
     await waitFor(() =>
-      expect(counter().textContent).toBe(
-        "1 of 1 matching teams · more match, keep typing",
-      ),
+      expect(counter().textContent).toBe("1+ matches"),
     );
   });
 
@@ -1795,7 +1818,7 @@ describe("TeamManagement — teams outside the list's window (NEO-330)", () => {
       target: { value: "expos" },
     });
     await waitFor(() =>
-      expect(counter().textContent).toBe("2 of 2 matching teams · 1 need attention"),
+      expect(counter().textContent).toBe("2 matches · 1 need attention"),
     );
   });
 });
@@ -1823,7 +1846,6 @@ describe("TeamManagement — the counter, announced and held still (NEO-330)", (
     expect(regions).toHaveLength(1);
     return regions[0];
   };
-  const counter = () => screen.getByText(/ of \d+ (matching )?teams/);
 
   it("is a status region from the first render, and the visible counter is not live", () => {
     renderAt("/admin/teams");
@@ -1841,17 +1863,17 @@ describe("TeamManagement — the counter, announced and held still (NEO-330)", (
     });
     // Before the debounce: the interim browser-side count is NOT announced.
     expect(status().textContent).toBe("5 teams");
-    await waitFor(() => expect(status().textContent).toBe("1 matching team"));
+    await waitFor(() => expect(status().textContent).toBe("1 match"));
   });
 
-  it("announces a truncated answer as 'keep typing'", async () => {
+  it("announces a truncated answer as 'N+ matches'", async () => {
     searchAnswer = { teams: [EXPOS], truncated: true };
     renderAt("/admin/teams");
     fireEvent.change(screen.getByLabelText("Filter teams"), {
       target: { value: "ex" },
     });
     await waitFor(() =>
-      expect(status().textContent).toBe("More teams match, keep typing"),
+      expect(status().textContent).toBe("1+ matches"),
     );
   });
 
@@ -1868,9 +1890,8 @@ describe("TeamManagement — the counter, announced and held still (NEO-330)", (
     // The server's answer is the one that may say "none".
     expect(await screen.findByText("No teams match that filter.")).toBeTruthy();
     expect(screen.queryByText("Searching…")).toBeNull();
-    expect(status().textContent).toBe("No teams match");
-    // The flow's assertion on the counter still holds.
-    expect(counter().textContent).toBe("0 of 0 matching teams");
+    expect(status().textContent).toBe("0 matches");
+    expect(counter().textContent).toBe("0 matches");
   });
 
   it("does not say Searching… below two characters", () => {
@@ -1891,54 +1912,89 @@ describe("TeamManagement — the counter, announced and held still (NEO-330)", (
   });
 });
 
+describe("teamCounterSentence (NEO-330)", () => {
+  it("is a bare count of teams with nothing typed", () => {
+    expect(teamCounterSentence({ typed: "", matched: 2000, serverTruncated: false })).toBe(
+      "2,000 teams",
+    );
+    expect(teamCounterSentence({ typed: "", matched: 1, serverTruncated: false })).toBe(
+      "1 team",
+    );
+    expect(teamCounterSentence({ typed: "", matched: 0, serverTruncated: false })).toBe(
+      "0 teams",
+    );
+  });
+
+  it("counts matches once anything is typed, local or server", () => {
+    expect(teamCounterSentence({ typed: "s", matched: 12, serverTruncated: false })).toBe(
+      "12 matches",
+    );
+    expect(teamCounterSentence({ typed: "ex", matched: 1, serverTruncated: false })).toBe(
+      "1 match",
+    );
+    expect(teamCounterSentence({ typed: "ex", matched: 0, serverTruncated: false })).toBe(
+      "0 matches",
+    );
+    expect(
+      teamCounterSentence({ typed: "new", matched: 1234, serverTruncated: false }),
+    ).toBe("1,234 matches");
+  });
+
+  it("says N+ when the server's answer hit its limit", () => {
+    expect(teamCounterSentence({ typed: "new", matched: 50, serverTruncated: true })).toBe(
+      "50+ matches",
+    );
+  });
+});
+
 describe("teamCounterAnnouncement (NEO-330)", () => {
   const base = {
     typed: "",
     matched: 5,
     answered: false,
     serverTruncated: false,
-    windowTruncated: false,
   };
 
   it("says nothing new while a typed filter waits on the server", () => {
     expect(teamCounterAnnouncement({ ...base, typed: "ex" })).toBeNull();
   });
 
-  it("speaks the window below two characters, truncation included", () => {
+  it("speaks the list below two characters", () => {
     expect(teamCounterAnnouncement(base)).toBe("5 teams");
-    expect(teamCounterAnnouncement({ ...base, typed: "s", matched: 1 })).toBe("1 team");
-    expect(teamCounterAnnouncement({ ...base, windowTruncated: true })).toBe(
-      "5 teams, list truncated, type to search",
-    );
-    expect(teamCounterAnnouncement({ ...base, matched: 0 })).toBe("No teams match");
+    expect(teamCounterAnnouncement({ ...base, matched: 2000 })).toBe("2,000 teams");
+    expect(teamCounterAnnouncement({ ...base, typed: "s", matched: 1 })).toBe("1 match");
+    expect(teamCounterAnnouncement({ ...base, typed: "s", matched: 0 })).toBe("0 matches");
   });
 
   it("speaks the server's answer from two characters", () => {
     const answered = { ...base, typed: "ex", answered: true };
-    expect(teamCounterAnnouncement({ ...answered, matched: 2 })).toBe("2 matching teams");
-    expect(teamCounterAnnouncement({ ...answered, matched: 0 })).toBe("No teams match");
+    expect(teamCounterAnnouncement({ ...answered, matched: 12 })).toBe("12 matches");
+    expect(teamCounterAnnouncement({ ...answered, matched: 0 })).toBe("0 matches");
     expect(
       teamCounterAnnouncement({ ...answered, matched: 50, serverTruncated: true }),
-    ).toBe("More teams match, keep typing");
+    ).toBe("50+ matches");
   });
 
-  it("never reads like the visible counter the E2E flows match", () => {
-    // The flows match ".*of .* teams.*" and "No teams match that filter.";
-    // a hidden status line matching either could be the element they find.
+  it("never carries an 'of N', a truncation note or the attention count", () => {
     const samples = [
       teamCounterAnnouncement(base),
-      teamCounterAnnouncement({ ...base, windowTruncated: true }),
+      teamCounterAnnouncement({ ...base, matched: 2000 }),
+      teamCounterAnnouncement({ ...base, typed: "s", matched: 3 }),
       teamCounterAnnouncement({ ...base, typed: "ex", answered: true, matched: 3 }),
       teamCounterAnnouncement({ ...base, typed: "ex", answered: true, matched: 0 }),
       teamCounterAnnouncement({
         ...base,
         typed: "ex",
         answered: true,
+        matched: 50,
         serverTruncated: true,
       }),
     ];
     for (const sample of samples) {
-      expect(sample).not.toMatch(/^.*of .* teams.*$/);
+      expect(sample).not.toBeNull();
+      expect(sample).not.toMatch(/of /);
+      expect(sample).not.toMatch(/truncated|type to search|keep typing/);
+      expect(sample).not.toMatch(/need attention/);
       expect(sample).not.toBe("No teams match that filter.");
     }
   });

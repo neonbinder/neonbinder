@@ -2504,7 +2504,7 @@ const MAX_PLAYER_TEAM_YEARS = 64;
  * reads as "that is all the players", which is the kind of wrong the operator
  * cannot see. Here it is not a distant scale worry — 500 is a number a real
  * deployment passes early — so the flag is load-bearing from day one, and the
- * page uses it to say "keep typing" instead of implying completeness.
+ * page uses it to show "N+ matches" instead of implying completeness.
  *
  * `createdByUserId` is stripped by `toPublicPlayer`, exactly as in every other
  * public query in this file. Admin-gated, but that is not a licence to leak the
