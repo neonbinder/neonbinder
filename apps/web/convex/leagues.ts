@@ -5,12 +5,13 @@
  * reliably: 0 of 35 dev teams and 2 of 58 prod teams carried one. Every team
  * belongs to a league, so the relationship is modelled instead of typed.
  *
- * The important piece here is {@link resolveDefaultLeagueId}. There are seven
- * `insert("teams", …)` sites across three files, and "attach a league when a
- * team is created" is only true if every one of them does it. Rather than trust
- * seven copies to stay in step, they all call this one resolver — a new
- * creation path that forgets it is a visible omission at the call site, not a
- * silently league-less row.
+ * NEO-156 made {@link resolveDefaultLeagueId} the one resolver every
+ * `insert("teams", …)` site called, so a team was never created league-less.
+ * NEO-331 reversed the policy (Jason, 2026-10-10): "An unanswered League stays
+ * blank, same as No league. No team lands under MLB without someone saying
+ * so." A team now carries a league only when an operator chose one
+ * ({@link resolveOperatorLeagueId}) or a bulk dataset row names one; no
+ * creation path calls the default resolver any more.
  */
 
 import { ConvexError, v } from "convex/values";
@@ -341,14 +342,15 @@ export async function findOrCreateLeague(
  *    `findLeagueByName`, so "ABL" lands on the Australian Baseball League if
  *    we know it under that name — and REFUSED when nothing answers. A league
  *    now requires a level, which only the New League form asks for, so this
- *    path cannot create one; and returning undefined on a miss would hand the
- *    team to the sport default, filing a club side under MLB with nobody
- *    having said so (the NEO-236 defect). A thrown refusal is the honest
- *    answer: the operator adds the league, then picks it.
+ *    path cannot create one; and returning undefined on a miss would quietly
+ *    create the team with no league when the operator plainly named one. A
+ *    thrown refusal is the honest answer: the operator adds the league, then
+ *    picks it.
  *
- * Returning undefined means "the operator did not choose" — NOT "no league".
- * The caller decides what that means for it; `teams.findOrCreate` falls back to
- * the sport default there, and only there.
+ * Returning undefined means "the operator did not choose", null "no league".
+ * Since NEO-331 both create the team with no league — `teams.findOrCreate`
+ * no longer falls back to the sport default (Jason, 2026-10-10: "An
+ * unanswered League stays blank, same as No league").
  */
 export async function resolveOperatorLeagueId(
   ctx: MutationCtx,
@@ -396,11 +398,10 @@ export async function resolveOperatorLeagueId(
  * NEO-284 — the sport's configured league NAME, read-only.
  *
  * The naming half of `resolveDefaultLeagueId`, split out so a query context
- * can answer "which league would a bulk-loaded team fall back to" without the
- * create that the full resolver performs: the NCAA/ABL preload's dry run
- * (`bulkLoad.previewTeams`) reports the resolution of every league in a
- * chunk before anything is armed, and a dry run that inserted the sport
- * default would not be a dry run. `sportConfig` is read from the sport ROW
+ * can name the sport's default league without the create that the full
+ * resolver performs. (NEO-284's bulk-load dry run read it to report the
+ * league a league-less team would fall back to; since NEO-331 such a team
+ * gets no league, so bulkLoad no longer calls it.) `sportConfig` is read from the sport ROW
  * first, falling back to the bootstrap defaults, because a row's config is
  * editable and the defaults are only a seed (NEO-96).
  */
@@ -422,8 +423,15 @@ export async function defaultLeagueNameFor(
 }
 
 /**
- * The league a newly-created team in this sport belongs to, creating the row
- * on first use.
+ * The sport's configured top-flight league, creating the row on first use.
+ *
+ * NEO-331: NO team-creation path calls this any more. It used to be the
+ * fallback for a team created with no league answer, which filed minor,
+ * independent, college and overseas clubs under MLB with nothing on screen
+ * saying so; Jason ruled (2026-10-10) that an unanswered League stays blank.
+ * Kept for a surface that SHOWS the sport default to an operator before they
+ * accept it — such a pre-fill needs the row to exist — and not to be wired
+ * back in as a silent fallback.
  *
  * Sourced from the sport's own `sportConfig` — `league` is the abbreviation
  * ("MLB") and `espn.leagueName` the full name ("Major League Baseball") — so
@@ -440,9 +448,8 @@ export async function resolveDefaultLeagueId(
   ctx: MutationCtx,
   sportId: Id<"selectorOptions">,
   /**
-   * NEO-254 — passed straight through to `findOrCreateLeague`. The sport
-   * default is the league a bulk-loaded team falls back to, so without this the
-   * opt-out would leak on the one path that takes it most often.
+   * NEO-254 — passed straight through to `findOrCreateLeague`, so a caller
+   * that must not queue a Wikidata lookup can say so.
    */
   options?: { skipEnrichment?: boolean },
 ): Promise<Id<"leagues"> | undefined> {

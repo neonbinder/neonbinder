@@ -217,9 +217,11 @@ const teamCreateValidator = v.object({
    * `leagueId` is a UNION with null on purpose: an id is "this league", null is
    * "no league, deliberately", and ABSENT is "not answered" — which is the only
    * one of the three that lets the prelude fall back to the enrichment's P118
-   * label and then to the sport default. Without the null case an operator
-   * could not say that a team belongs to no league at all, and the sport
-   * default would silently reassert itself.
+   * label (the suggestion the field showed as its answer). Without the null
+   * case an operator could not decline that suggestion. NEO-331 (Jason,
+   * 2026-10-10): with no suggestion, "not answered" lands exactly where "no
+   * league" does — blank. The sport default is never applied to a team the
+   * operator did not put in it.
    *
    * `leagueName` names a league by name. NEO-331: the prelude only LINKS it
    * (staged New League step first, then an existing row by name or alias); a
@@ -544,7 +546,9 @@ function requireTeamEra(era: { from: number; to?: number }): {
  *
  * `leagueId` passes through untouched INCLUDING null, because null is an
  * answer ("no league") and dropping it would be read as "not answered", which
- * is the one state that lets the sport default back in.
+ * is the one state that lets the enrichment's suggested league back in.
+ * (Before NEO-331 it also let the sport default in; Jason, 2026-10-10: "An
+ * unanswered League stays blank, same as No league" — so it no longer does.)
  *
  * `leagueName` is only meaningful when no id was given — the two are answers to
  * the same question, and an id is the more specific one. It is trimmed, and an
@@ -2216,9 +2220,9 @@ export const stageCareerTeamRows = mutation({
  * NEO-331 — when staging FAILS (the client calls this fire-and-forget), the
  * commit does not rescue the name by creating a league: `create.leagueName`
  * is link-only in the prelude. It resolves to an existing league by name or
- * alias, or the team commits with NO league — and never throws, and never
- * falls back to the sport default, because a named league counts as answered
- * (`leagueAnswered` in `commitCardChecklistPrelude`). Only the interactive
+ * alias, or the team commits with NO league — and never throws. (Nothing in
+ * the prelude falls back to the sport default any more, answered or not:
+ * NEO-331, Jason 2026-10-10.) Only the interactive
  * `teams.findOrCreate` refuses an unknown name, because an operator is there
  * to add it.
  *

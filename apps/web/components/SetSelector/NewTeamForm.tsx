@@ -98,7 +98,10 @@ export type NewTeamDraft = {
    * treats differently:
    *   - a league id — this existing league;
    *   - `null` — no league, said deliberately;
-   *   - `undefined` — not answered, so the server's own fallbacks apply.
+   *   - `undefined` — not answered: the wizard's commit falls back to the
+   *     lookup's suggested league (the one this field shows as its answer),
+   *     and with no suggestion the team gets no league. The sport default is
+   *     never applied (NEO-331).
    * The form only ever produces the first two once it has rendered; `undefined`
    * is the initial value a host may seed it with.
    */

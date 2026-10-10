@@ -13,12 +13,13 @@
  *
  *   - an `Id<"leagues">` — that league, validated against this team's sport;
  *   - `null`             — "no league", said deliberately;
- *   - absent             — never asked, and only then does
- *                          `resolveDefaultLeagueId` apply.
+ *   - absent             — never asked.
  *
- * The `null` case is why the argument is a nullable union rather than merely
- * optional: without it, "no league" and "not asked" are the same value and the
- * sport default silently reasserts itself.
+ * NEO-331 (Jason, 2026-10-10): "An unanswered League stays blank, same as No
+ * league. No team lands under MLB without someone saying so." Absent and
+ * `null` now land in the same place — no league. The dialog's League field is
+ * empty until the operator picks something, so the old absent → sport-default
+ * fallback filed teams under MLB with nothing on screen saying so.
  *
  * `leagueName` is the other half — a league we hold no row for yet, accepted
  * off a "Create league X" button whose X is typically a Wikidata P118 label.
@@ -143,17 +144,15 @@ describe("teams.findOrCreate: the operator's League beats the sport default", ()
     await drainScheduled(t);
 
     expect((await leagueOf(t, teamId)).id).toBe(ablId);
-    // `resolveDefaultLeagueId` was never consulted, so it never minted MLB.
+    // Nothing consults the sport default, so MLB was never minted.
     expect((await allLeagues(t)).map((row) => row.name)).toEqual([
       "Australian Baseball League",
     ]);
   });
 
   test("leagueId: null means NO league, even though the sport has a default", async () => {
-    // The state the nullable union exists for. "No league" writes nothing,
-    // which is byte-identical to "not answered" unless the caller keeps them
-    // apart — and here `resolveOperatorLeagueId` returns null rather than
-    // undefined so that `findOrCreate` can.
+    // The explicit answer — unchanged by NEO-331, which made "not answered"
+    // land in the same place.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const sportId = await seedBaseball(t);
@@ -172,9 +171,9 @@ describe("teams.findOrCreate: the operator's League beats the sport default", ()
   test("NEO-331: a leagueName we hold no row for is REFUSED — no team, no league, no sport default", async () => {
     // Was "creates the league ONCE and reuses it". A league row now requires
     // a level, which only the New League form asks for, so `leagueName` is
-    // link-only. Returning "not chosen" on a miss would hand the team to the
-    // sport default (MLB) — the NEO-236 defect — so the miss is refused and
-    // the operator adds the league first.
+    // link-only. Returning "not chosen" on a miss would quietly create the
+    // team with no league when the operator named one, so the miss is refused
+    // and the operator adds the league first.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const sportId = await seedBaseball(t);
@@ -274,20 +273,60 @@ describe("teams.findOrCreate: the operator's League beats the sport default", ()
   });
 });
 
-describe("teams.findOrCreate: the pre-NEO-236 behaviour with no League answer is unchanged", () => {
-  test("neither leagueId nor leagueName still files the team under the sport's default", async () => {
+describe("teams.findOrCreate: no League answer means no league (NEO-331)", () => {
+  test("neither leagueId nor leagueName files the team with NO league, and mints no default", async () => {
+    // The League field was left untouched — an empty box. Before NEO-331 this
+    // fell back to the sport's configured default and created "Major League
+    // Baseball" on first use; now nobody chose a league, so there is none.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const sportId = await seedBaseball(t);
 
     const teamId = await asAdmin.mutation(api.teams.findOrCreate, {
-      location: "San Diego",
-      name: "Padres",
+      location: "Hickory",
+      name: "Crawdads",
       sportId,
     });
     await drainScheduled(t);
 
-    expect((await leagueOf(t, teamId)).name).toBe("Major League Baseball");
+    expect(await leagueOf(t, teamId)).toEqual({ id: undefined, name: undefined });
+    expect(await allLeagues(t)).toEqual([]);
+  });
+
+  test("no answer is not filed under the default even when the default league row EXISTS", async () => {
+    // The row being there is not someone saying so: an empty League field on a
+    // deployment that already holds MLB still creates a league-less team.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const sportId = await seedBaseball(t);
+    await seedLeague(t, sportId, "Major League Baseball");
+
+    const teamId = await asAdmin.mutation(api.teams.findOrCreate, {
+      location: "Hickory",
+      name: "Crawdads",
+      sportId,
+    });
+    await drainScheduled(t);
+
+    expect(await leagueOf(t, teamId)).toEqual({ id: undefined, name: undefined });
+  });
+
+  test("an explicit pick of the default league still lands there", async () => {
+    // Someone said so: the operator picked Major League Baseball off the list.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN);
+    const sportId = await seedBaseball(t);
+    const mlbId = await seedLeague(t, sportId, "Major League Baseball");
+
+    const teamId = await asAdmin.mutation(api.teams.findOrCreate, {
+      location: "San Diego",
+      name: "Padres",
+      sportId,
+      leagueId: mlbId,
+    });
+    await drainScheduled(t);
+
+    expect((await leagueOf(t, teamId)).id).toBe(mlbId);
   });
 
   test("a sport with no configured league still yields a team with no league", async () => {

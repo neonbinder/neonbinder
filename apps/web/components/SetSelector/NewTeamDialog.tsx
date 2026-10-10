@@ -254,9 +254,9 @@ export default function NewTeamDialog({
         ...(location ? { location } : {}),
         // Only ever one of the two — `NewTeamForm` clears the other on every
         // pick. `leagueId: null` is sent VERBATIM, because null is the
-        // operator's "no league" and the server tells it apart from "not
-        // answered" (which is what an omitted key means, and what still lets
-        // the sport default apply).
+        // operator's "no league". An omitted key is "not answered" — which,
+        // since NEO-331, the server also files with no league: the field
+        // shows no sport default, so the server applies none.
         ...(draft.leagueId !== undefined ? { leagueId: draft.leagueId } : {}),
         ...(draft.leagueName ? { leagueName: draft.leagueName } : {}),
         // NEO-254 — the era, and the operator's confirmation of it. Both

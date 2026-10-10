@@ -1566,9 +1566,10 @@ export default defineSchema({
     nameNormalized: v.string(),
     // NEO-96: reference, not a copied display label — see players.sportId.
     sportId: v.id("selectorOptions"),
-    // NEO-156: the league this team plays in. Every creation path attaches one
-    // through `leagues.resolveDefaultLeagueId`, so a team without it is either
-    // a pre-NEO-156 row or one whose sport has no configured league.
+    // NEO-156: the league this team plays in. NEO-331: only ever the league
+    // someone chose (an operator, or a dataset row that names it) — absent
+    // means nobody did, or "No league" was answered. No creation path files
+    // a team under its sport's default league (Jason, 2026-10-10).
     leagueId: v.optional(v.id("leagues")),
     // DEPRECATED (NEO-156) — the free-text predecessor of `leagueId`. Kept so
     // existing rows still validate and so the backfill has something to read;

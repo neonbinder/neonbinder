@@ -289,9 +289,9 @@ describe("adopt-by-name gap-fills only absent fields, never touches name/locatio
     armed();
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    // leagueId set too, so the sport's bootstrap-default league (Baseball →
-    // MLB) has nothing left to fill and `filled` isolates the years/wikidata
-    // behaviour this test is actually about.
+    // leagueId set too, so `filled` isolates the years/wikidata behaviour this
+    // test is actually about. (Since NEO-331 a league-less dataset row fills
+    // no league anyway; the seeded one keeps the test independent of that.)
     const leagueId = await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
         name: "Placeholder League",
@@ -360,12 +360,15 @@ describe("adopt-by-alias, both directions, always reports a suggestion, never re
       matchedBy: "alias",
       matchedOn: "Washington Huskies baseball",
       suggestion: { location: "Washington", name: "Huskies" },
-      filled: expect.arrayContaining(["leagueId", "yearsActive", "wikidataId"]),
+      // NEO-331: no `leagueId` — the dataset row names no league, and a row
+      // that names none no longer falls back to the sport default.
+      filled: ["yearsActive", "wikidataId"],
       // The two dataset aliases the row did not have, PLUS the incoming
       // canonical name — see the next test for why that one matters.
       aliasesAdded: 3,
     });
     const team = await t.run(async (ctx) => ctx.db.get(labelRow));
+    expect(team!.leagueId).toBeUndefined();
     // Never renamed.
     expect(team!.name).toBe("Washington Huskies baseball");
     expect(team!.location).toBeUndefined();
@@ -898,12 +901,13 @@ describe("the operation budget is alias-weighted, and a partial run is legible",
     // The arithmetic, measured rather than asserted loosely. Per row on the
     // create path: 64 identity lookups × 2 (nothing answers to these strings)
     // + 1 name leg + 1 alias leg + 1 `nearExisting` search + 1 insert +
-    // (1 collect + 64 alias inserts) = 197. Plus 1 for the sport row and 3
-    // for the one league-cache miss. So after five rows: 4 + 5×197 = 989,
-    // which is the first total at or past the 900 budget — and the check runs
-    // BETWEEN rows, so row six is never started.
+    // (1 collect + 64 alias inserts) = 197. Plus 1 for the sport row. No
+    // league-cache miss: these rows name no league, and since NEO-331 that
+    // costs nothing (it used to resolve the sport default, 3 more). So after
+    // five rows: 1 + 5×197 = 986, which is the first total at or past the 900
+    // budget — and the check runs BETWEEN rows, so row six is never started.
     expect(res.processed).toBe(5);
-    expect(res.opsSpent).toBe(989);
+    expect(res.opsSpent).toBe(986);
     expect(res.opsSpent).toBeGreaterThanOrEqual(BULK_LOAD_TEAM_OP_BUDGET);
     expect(res.hasMore).toBe(true);
     expect(res.nextKey).toBe("heavy-5");
@@ -982,8 +986,10 @@ describe("the operation budget is alias-weighted, and a partial run is legible",
   test("the ordinary preload is untouched: a full 50-row chunk of 4-alias rows still lands in one call", async () => {
     // The regression guard on the bound itself. 4 aliases × 2 + 1 name leg +
     // 1 alias leg + 1 search + 1 insert + (1 collect + 4 alias inserts) = 17
-    // per row; 50 × 17 + 4 = 854, inside the 900 budget. The NCAA/ABL dataset
-    // this loader was written for keeps working at its existing chunk size.
+    // per row; 50 × 17 + 1 (the sport row) = 851, inside the 900 budget. (854
+    // before NEO-331: a league-less row resolved the sport default, a 3-op
+    // cache miss.) The NCAA/ABL dataset this loader was written for keeps
+    // working at its existing chunk size.
     armed();
     const t = convexTest(schema, modules);
     await seedSport(t);
@@ -1003,7 +1009,7 @@ describe("the operation budget is alias-weighted, and a partial run is legible",
     expect(res.hasMore).toBe(false);
     expect(res.nextKey).toBeNull();
     expect(res.processed).toBe(50);
-    expect(res.opsSpent).toBe(854);
+    expect(res.opsSpent).toBe(851);
     expect(res.opsSpent).toBeLessThan(BULK_LOAD_TEAM_OP_BUDGET);
     expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(50);
   });
@@ -1216,5 +1222,94 @@ describe("NEO-331: a team never creates its league (find-only)", () => {
     expect(res.results[0].status).toBe("created");
     const team = (await t.run(async (ctx) => ctx.db.query("teams").collect()))[0];
     expect(team.leagueId).toBe(abl);
+  });
+});
+
+describe("NEO-331: a dataset row that names no league gets no league", () => {
+  // Jason, 2026-10-10: "An unanswered League stays blank, same as No league.
+  // No team lands under MLB without someone saying so." Before this a
+  // league-less row resolved the sport's configured default — creating
+  // "Major League Baseball" on first use — on both the create and the adopt.
+
+  test("create: the row is inserted with no leagueId, the default league is not minted, and the summary is empty", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    const res = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ key: "k", location: "Hickory", name: "Crawdads" }],
+    });
+
+    expect(res.results[0].status).toBe("created");
+    const team = (await t.run(async (ctx) => ctx.db.query("teams").collect()))[0];
+    expect(team.leagueId).toBeUndefined();
+    expect(await t.run(async (ctx) => ctx.db.query("leagues").collect())).toEqual([]);
+    expect(res.leagues).toEqual([]);
+  });
+
+  test("create: not filed under the default even when the default league row already exists", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedLeague(t, sportId, "Major League Baseball");
+
+    await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ key: "k", location: "Hickory", name: "Crawdads" }],
+    });
+
+    const team = (await t.run(async (ctx) => ctx.db.query("teams").collect()))[0];
+    expect(team.leagueId).toBeUndefined();
+  });
+
+  test("adopt: a league-less row on file stays league-less, and leagueId is not reported filled", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const bare = await seedTeam(t, sportId, { location: "Adelaide", name: "Giants" });
+
+    const res = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ key: "g", location: "Adelaide", name: "Giants", yearsActive: { from: 2009 } }],
+    });
+
+    expect(res.results[0]).toMatchObject({ status: "adopted", filled: ["yearsActive"] });
+    const team = await t.run(async (ctx) => ctx.db.get(bare));
+    expect(team!.leagueId).toBeUndefined();
+    expect(await t.run(async (ctx) => ctx.db.query("leagues").collect())).toEqual([]);
+  });
+
+  test("a row that NAMES the default league still lands in it — the dataset said so", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const mlb = await seedLeague(t, sportId, "Major League Baseball");
+
+    await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ key: "k", location: "San Diego", name: "Padres", league: "Major League Baseball" }],
+    });
+
+    const team = (await t.run(async (ctx) => ctx.db.query("teams").collect()))[0];
+    expect(team.leagueId).toBe(mlb);
+  });
+
+  test("the dry run predicts the same: no league line for a league-less row", async () => {
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    const preview = await t.query(internal.bulkLoad.previewTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ key: "k", location: "Hickory", name: "Crawdads" }],
+    });
+
+    expect(preview.results[0].status).toBe("would-create");
+    expect(preview.leagues).toEqual([]);
   });
 });

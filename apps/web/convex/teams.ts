@@ -15,8 +15,8 @@ import {
   findLeagueByName,
   // NEO-331: the picker's abbreviation fallback compares on the same reading.
   normalizeLeagueName,
-  resolveDefaultLeagueId,
-  // NEO-236: the operator's own league choice, which outranks the sport default.
+  // NEO-236: the operator's own league choice — the only league a new team
+  // gets (NEO-331: no sport-default fallback).
   resolveOperatorLeagueId,
 } from "./leagues";
 import { normalizePlayerName } from "./players";
@@ -805,10 +805,11 @@ export const findOrCreate = mutation({
      * asks for. Both optional, because the pickers that create a team without
      * ever showing a league still exist and still work.
      *
-     * When either is given it WINS: the sport default is never applied over an
-     * operator's answer. That is the defect this argument exists to close — a
-     * college or club side created off a player's career list used to be filed
-     * under the sport's top flight because nothing else was on offer.
+     * Neither given means NO league (NEO-331): the sport default is never
+     * applied, answered or not. A college or club side created off a player's
+     * career list used to be filed under the sport's top flight because
+     * nothing else was on offer, and until NEO-331 an untouched League field
+     * still was.
      */
     leagueId: v.optional(v.union(v.id("leagues"), v.null())),
     leagueName: v.optional(v.string()),
@@ -968,23 +969,23 @@ export const findOrCreate = mutation({
     }
 
     /**
-     * NEO-236 — the operator's league, or the sport's default when they gave
-     * none. The order is the whole fix: `resolveDefaultLeagueId` is consulted
-     * ONLY when nothing was chosen, so a New Team dialog that says "Australian
-     * Baseball League" can no longer be silently overruled by "MLB".
+     * NEO-236 — the operator's league, and only the operator's league.
+     *
+     * NEO-331 (Jason, 2026-10-10): "An unanswered League stays blank, same as
+     * No league. No team lands under MLB without someone saying so." The New
+     * Team dialog's League field shows no sport default — left untouched it
+     * is an empty box — so an omitted answer (`undefined`) and "No league"
+     * (`null`) both create the team with no league. Before this the omitted
+     * case fell back to `resolveDefaultLeagueId`, filing every untouched
+     * dialog's team under the sport's top flight with nothing on screen
+     * saying so.
      */
-    const chosenLeagueId = await resolveOperatorLeagueId(ctx, {
-      sportId: args.sportId,
-      leagueId: args.leagueId,
-      leagueName: args.leagueName,
-    });
-    // `undefined` is "not asked"; `null` is the operator answering "no league".
-    // Only the first lets the sport default in — which is the whole point of
-    // the distinction, and why this is not a `??`.
     const leagueId =
-      chosenLeagueId === undefined
-        ? await resolveDefaultLeagueId(ctx, args.sportId)
-        : (chosenLeagueId ?? undefined);
+      (await resolveOperatorLeagueId(ctx, {
+        sportId: args.sportId,
+        leagueId: args.leagueId,
+        leagueName: args.leagueName,
+      })) ?? undefined;
 
     // NEO-284 — bounded and de-duplicated against the full name this row is
     // about to carry. NOT checked for collisions: an alias another team
@@ -1008,9 +1009,9 @@ export const findOrCreate = mutation({
       sportId: args.sportId,
       ...(args.yearsActive ? { yearsActive: args.yearsActive } : {}),
       ...(aliases.length ? { aliases } : {}),
-      // NEO-156: every creation path attaches a league. Undefined when the
-      // sport has no configured one (a custom sport) AND the operator named
-      // none — legitimate, and assignable later in Team Management.
+      // Undefined when the operator answered "No league" or left the League
+      // field blank (NEO-331) — legitimate, and assignable later in Team
+      // Management.
       leagueId,
       lastUpdated: Date.now(),
     });

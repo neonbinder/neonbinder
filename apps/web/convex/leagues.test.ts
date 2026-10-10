@@ -1,10 +1,11 @@
 /**
- * NEO-156 — leagues as an entity, and the guarantee that every team-creation
- * path attaches one.
+ * NEO-156 — leagues as an entity.
  *
- * The last describe block is the one that matters most: it asserts the
- * guarantee at each real creation site rather than trusting that seven
- * `insert("teams", …)` calls stayed in step with one another.
+ * NEO-156 also guaranteed that every team-creation path attached a league,
+ * falling back to the sport's default. NEO-331 reversed that (Jason,
+ * 2026-10-10: "An unanswered League stays blank, same as No league. No team
+ * lands under MLB without someone saying so."), so the team-creation block
+ * below now pins the opposite at the real entry point: no answer, no league.
  */
 
 import { convexTest } from "convex-test";
@@ -207,28 +208,25 @@ describe("league creation (NEO-331: through createByAdmin)", () => {
   });
 });
 
-describe("every team-creation path attaches a league", () => {
-  // The point of routing all seven insert sites through one resolver. Each
-  // case exercises a REAL entry point, so a new path that forgets the resolver
-  // fails here rather than silently producing league-less rows.
+describe("no team-creation path files a team under the sport default (NEO-331)", () => {
+  // Each case exercises a REAL entry point. Before NEO-331 these asserted the
+  // opposite — every path routed through `resolveDefaultLeagueId` — which is
+  // how unanswered minor, indie and college clubs landed in MLB.
 
-  test("teams.findOrCreate", async () => {
+  test("teams.findOrCreate with no league answer creates the team league-less", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
     const teamId = await t.withIdentity(ADMIN).mutation(api.teams.findOrCreate, {
-      name: "New York Yankees",
+      name: "Hickory Crawdads",
       sportId,
     });
     await drainScheduled(t);
 
     const team = await t.run(async (ctx) => ctx.db.get(teamId));
-    expect(team!.leagueId).toBeDefined();
-    const league = await t.run(async (ctx) => ctx.db.get(team!.leagueId!));
-    // Full name from sportConfig.espn.leagueName, abbreviation from .league —
-    // neither invented here.
-    expect(league!.name).toBe("Major League Baseball");
-    expect(league!.abbreviation).toBe("MLB");
+    expect(team!.leagueId).toBeUndefined();
+    // …and the sport's default league was not minted on the way.
+    expect(await leagues(t)).toHaveLength(0);
   });
 
   /**
@@ -288,7 +286,7 @@ describe("every team-creation path attaches a league", () => {
     expect(await leagues(t)).toHaveLength(0);
   });
 
-  test("reuses one league row across many teams", async () => {
+  test("many unanswered teams mint no league at all", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
@@ -297,7 +295,9 @@ describe("every team-creation path attaches a league", () => {
       await drainScheduled(t);
     }
 
-    expect(await leagues(t)).toHaveLength(1);
+    expect(await leagues(t)).toHaveLength(0);
+    const teams = await t.run(async (ctx) => ctx.db.query("teams").collect());
+    expect(teams.map((team) => team.leagueId)).toEqual([undefined, undefined, undefined]);
   });
 });
 

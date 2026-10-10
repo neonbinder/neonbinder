@@ -22,7 +22,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { normalizeLeagueName } from "./leagues";
+import { normalizeLeagueName, resolveDefaultLeagueId } from "./leagues";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -153,12 +153,13 @@ describe("NEO-240: findOrCreateLeague matches on aliases, not just the name", ()
     // `resolveDefaultLeagueId` is the one place a level and an alias can be
     // asserted without an operator: `sportConfig.league` is the sport's top
     // flight by definition, and its abbreviation is what people type.
+    // NEO-331: called directly — no team-creation path reaches it any more.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
 
-    await t
-      .withIdentity(ADMIN)
-      .mutation(api.teams.findOrCreate, { name: "New York Yankees", sportId });
+    await t.run(async (ctx) => {
+      await resolveDefaultLeagueId(ctx, sportId);
+    });
     await drainScheduled(t);
 
     const rows = await allLeagues(t);
@@ -175,9 +176,9 @@ describe("NEO-240: findOrCreateLeague matches on aliases, not just the name", ()
     // future writer had to guess between.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    await t
-      .withIdentity(ADMIN)
-      .mutation(api.teams.findOrCreate, { name: "New York Yankees", sportId });
+    await t.run(async (ctx) => {
+      await resolveDefaultLeagueId(ctx, sportId);
+    });
     await drainScheduled(t);
     const defaultRow = (await allLeagues(t))[0];
 
