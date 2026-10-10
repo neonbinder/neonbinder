@@ -1,23 +1,27 @@
 ---
 name: wizard-returns-to-batch-order-player-after-staged-team
-description: After "Add career team" hops to the club's New Team step and it is answered, the wizard presents the FIRST settled undecided player in batch order, not the player who staged it — so a flow's "back on the player, chip reads <club> (2001–2005)" holds only when the two coincide (found NEO-330 on Memphis RiverKings)
+description: Since NEO-330 an answered New Team step that player A's typed career team (or "Decide team") staged returns the walk to A (league → team → A); before that it went to the first undecided player in batch order. Back / Change / Back to review clear the return; A decided meanwhile falls back to batch order
 metadata:
   type: reference
 ---
 
-Mechanism (`entity-review-nav.ts`): the walk's player is an IMPLICIT pin —
-whichever row settled first (a Wikidata no-match settles fastest, so on a
-mixed batch it is often not the first row in order). Staging a career team
-makes that pin stale (`waitingOnStagedTeams`); answering the step makes the
-team row stale; `resolveNav` then takes `nextUndecided(rows)` = the first
-settled undecided player IN BATCH ORDER. Nothing returns to the staging row.
-The chip is not lost (keyed by that row id), it is just on a row no longer
-shown.
+**Current behaviour (NEO-330, `returnTo` in `entity-review-nav.ts`):** typing a
+career team on player A (or pressing "Decide team") stages a New Team step and
+records a return stack; once that step — and any `New League:` step staged
+ahead of it — is answered (create, link or skip), the walk presents A again.
+Only when the operator had started editing A; if A was decided meanwhile the
+walk falls back to batch order. Back, the Decided list's "Change" and "Back to
+review" clear the return.
 
-Measured 2026-10-10: typed on "Dan Brown" (first settled), came back on
-"Scott Brower" (first in order); `checklist-wizard-career-team-commits` red on
-its chip assert. Orioles/Big League passed only because the two rows were the
-same. Reported as a product finding (return to the staging player?) — do not
-route a flow around it without a decision. A flow-side alternative, if the
-nav is ruled correct: decide the walk's row first so the presented player IS
-`nextUndecided`, then stage. See [[neo248-career-team-entry-years-lost]].
+**What a flow can lean on:** the career-team chip list is keyed by A's review
+row, so asserting `<club> (2001.2005)` right after the step proves the walk
+returned to A — `checklist-wizard-career-team-commits` is the E2E proof
+(red on the old nav, green on the new, Memphis RiverKings, 2026-10-10).
+After A is DECIDED the walk moves on in batch order as before.
+
+**History:** before the fix `resolveNav` took `nextUndecided(rows)` (first
+settled undecided player in batch ORDER), while the walk util stops on
+whichever row settled FIRST (a Wikidata no-match settles fastest), so on a
+mixed batch the two differed and the chip assert failed on a row that never
+had a chip. Flows on fixtures where they coincided (Orioles, Big League)
+passed by luck. See [[neo248-career-team-entry-years-lost]].

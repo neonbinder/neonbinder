@@ -185,7 +185,61 @@ rm <scratch>/prod-export.zip <scratch>/reference-bundle.zip
 - Bucket versioning keeps the previous object. If the new bundle turns CI
   red, restore the prior version instead of debugging under a red suite.
 - The next E2E run on every open PR picks up the new bundle. No code change
-  is needed.
+  is needed — but see 5a before you call the refresh done.
+
+### 5a. Re-measure the wizard fixtures before CI relies on the new bundle
+
+The bundle is a copy of prod's players and teams, and the entity-review
+wizard stages only names the deployment does not know. So a refresh can
+empty an E2E fixture that was green: any set an operator has built in prod
+since the last refresh (or any set sharing its roster) becomes known, and its
+fetch stops raising the rows a flow needs. Measure every wizard fixture
+against the new bundle **before** the next PR run depends on it, and fix the
+ones it drained in the same sitting.
+
+**1. Get a preview holding the new bundle.** Either load the local bundle
+onto one quiet PR's Convex preview before you upload (`cli.mjs load
+<bundle> --deployment <that preview> --sports import`), or upload and re-run
+that PR's E2E once so its seed job loads it. No other run may be in flight on
+that PR while you probe (a seed resets the preview under you). If you upload
+first and a fixture turns out drained, restore the previous object version
+(bucket versioning) so other PRs stay green while you re-fixture.
+
+**2. Probe each fixture set, read-only.** Point a spare-port Vite at the
+preview (root `CLAUDE.md`, "Debugging a red flow against the PR's own
+services") and run a throwaway probe flow per set, never committed: drill to the set, cancel the base picker, fetch, read
+the wizard, then **Cancel → Discard** so nothing is saved. Read four lines:
+the fetch's `Kept all N cards from BSC … P new players + T new teams need
+confirmation`, the header `0 of R reviewed` once `still looking up` has gone,
+`Add remaining players as new (P)`, and every `New Team:` / `New League:`
+heading the walk presents (skip each one). Note how long the lookups took to
+settle. Delete the probe when done.
+
+**3. Check the named rows, read-only.** `npx convex run --deployment <preview>
+--codegen disable --typecheck disable --inline-query '…'` is sandboxed
+read-only. Look names up by `nameNormalized` (lowercase, diacritics folded,
+tokens sorted: "Wayne Gretzky" → `gretzky wayne`) on `players` /
+`playerAliases` / `teams` with the `by_name_normalized_and_sport_id` index.
+
+**4. Compare against what each flow needs** (each flow's header and
+`apps/web/.maestro/SET-REGISTRY.md` carry the full reasoning):
+
+| Flow | Fixture | Needs, at least |
+|---|---|---|
+| `checklist-wizard-link-commits` | Hockey 1995 San Antonio Iguanas CHL | 2 unknown player rows; exactly one Hockey `players` row "Wayne Gretzky" |
+| `checklist-wizard-skip-commits-and-unskip` | Hockey 1995 Tulsa Oilers CHL | unknown player rows to skip (measured 16) |
+| `checklist-wizard-career-team-commits` | Hockey 1995 Memphis RiverKings CHL | 1 unknown player row |
+| `checklist-wizard-skip-not-a-person` | Hockey 1995 Fort Worth Fire CHL | 2 unknown player rows (one per-row skip, one left for the footer skip) |
+| `checklist-wizard-link-team-saves-alias` | Baseball 1996 Line Up Venezuelan Winter League | team steps for both "Navegantes del Magallanes" and "Tigres de Aragua"; exactly one Baseball team "Pittsburgh Crawfords" with no aliases; lookups settling well inside the flow's 180 s ceiling (measured ~144 s) |
+| `checklist-wizard-career-team-entry`, `-link-to-existing-player`, `-back-to-matching-resumes-decisions` | Baseball 2024 Topps Big League | the player rows and link target each header names |
+| `admin/player-live-wikidata-enrichment` | — | its live-proof name absent from `players` and `playerAliases` (README, "Enrichment fixtures") |
+| `setup.yaml` | Baseball 2024 Topps Chrome | its drain finishes; a new same-name player panel is handled by the drain's link step |
+
+**5. Fix what drained.** A fixture that no longer raises what its flow needs
+gets a new set, and a new real set needs the owner's approval
+(SET-REGISTRY rule 1): bring measured candidates, not a guess. Record the new
+measurement in SET-REGISTRY's row for the set, and say in the PR which
+fixtures the refresh changed.
 
 ## 6. Schema rule for the eight tables: additive and optional only
 

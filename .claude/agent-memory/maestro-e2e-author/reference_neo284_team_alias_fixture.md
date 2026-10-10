@@ -1,21 +1,25 @@
 ---
 name: neo284-team-alias-fixture
-description: NEO-284 team-alias E2E — the one-sided Rickwood fixture (4 BSC cards, Negro League clubs, SportLots picker CANCELLED), how the "remember as alias" checkbox is asserted without a `checked` attribute, the decision read-back via "Back to previous decision", the wizard's TWO "Cancel (Esc)" texts, the NEO-326 empty "Search all teams" + body pin, and the wrong-SportLots-slot recovery via the MultiSourcePanel chip
+description: NEO-284 team-alias E2E — since NEO-330 the one-sided 1996 Line Up Venezuelan Winter League fixture (300 cards, 8 unknown clubs, two clubs acted on BY NAME), how the "remember as alias" checkbox is asserted without a `checked` attribute, the decision read-back via "Back to previous decision", the wizard's TWO "Cancel (Esc)" texts, the NEO-326 empty "Search all teams" + body pin, and the wrong-SportLots-slot recovery via the MultiSourcePanel chip
 metadata:
   type: reference
 ---
 
 # NEO-284 — `checklist-wizard-link-team-saves-alias` facts (2026-09-16)
 
-**Fixture:** Baseball → 2024 → Topps → *Topps MLB at Rickwood Field Negro
-Leagues Collection* → Base. BSC: 4 cards (Paige, Gibson, Robinson, Mays) on
-Negro League clubs; 8 unknown names = 4 players + clubs + ONE staged league
-("Negro league baseball", presented FIRST — skip it with `Skip .* has no
-league`, then the first team row follows). It is the smallest 2024 Topps set
-whose wizard opens on a TEAM row (team sets of MLB clubs have 0 unknown teams
-because the Chrome seed commit creates all 30).
+**Fixture (NEO-330):** Baseball → 1996 → All Brands → *Line Up Venezuelan
+Winter League* → Base, BSC only, via
+`util-fetch-one-marketplace-set-checklist-to-wizard`. 200 players + 8 clubs
+unknown; 211 rows settle (a staged league + 2 staged career teams) after
+~144 s of live lookups. The walk reads every team/league heading and acts on
+two checklist clubs BY NAME (Navegantes → alias link; Tigres → past-era link
+to the catalogue's single `Pittsburgh Crawfords`, remember-box UNTICKED so no
+alias lands on a shared catalogue row), skipping the rest — `runFlow when:
+true: ${heading === …}` branches are free. The alias-clash holder (`Pca`) now
+lives on the minted `Loc Ali` team. Until NEO-330 it was the 4-card Rickwood
+Field set, whose clubs the reference catalogue now holds.
 
-**It is ONE-SIDED — cancel the base picker.** SportLots does not carry the
+**It is ONE-SIDED — cancel the base picker.** (Rickwood history:) SportLots did not carry the
 set; the picker's SL column is the year's whole catalogue with "Base Set"
 flagged "likely match" (= 2024 Topps flagship, 352 cards). Taking the
 first-candidate path (`util-drill-to-base-variant`) attaches that wrong set

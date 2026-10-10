@@ -15,10 +15,15 @@ tags:
 # R2 — HARD ASSERTIONS:
 #     (a) the row under test is a PLAYER row — only a player renders the
 #         career-team mini-form — asserted by its stable control before use;
-#     (b) a complete entry keeps its years across the New Team step it triggers
-#         — back on the player row the chip still reads "<name> (2001–2005)";
-#     (c) "Add as New Player" records a CREATE carrying that entry — the
-#         history reads "Added as new";
+#     (b) once the New Team step it triggers is answered, the walk comes BACK
+#         to the player the team was typed on (NEO-330), and the entry has kept
+#         its years across the hop — the chip reads "<name> (2001–2005)". The
+#         chip list is keyed by that player's review row, so the chip on screen
+#         is itself the proof the presented row is the same player;
+#     (c) "Add as New Player" records exactly ONE decision (the header's
+#         "K of N reviewed" moves by one), and at all-decided the summary lists
+#         "New players and teams" — skips create nothing, so that line is this
+#         create (with the team step's);
 #     (d) the commit lands ("Saved N cards");
 #     (e) THE POINT: `/admin/teams` now holds a team by the staged name, and the
 #         list narrows to exactly "1 match" for it. Since NEO-236 that row
@@ -35,8 +40,18 @@ tags:
 #   the NAME. 71f23a4 stores the years on the staged step as
 #   `source.manualStint` and keys the chip list by player review-row id, so both
 #   survive — and carries them through to `players.teamYears` at commit.
-#   Navigation is unchanged: the hop is expected, and STEP 3 walks it
-#   deliberately rather than around it.
+#   The hop is expected, and STEP 3 walks it deliberately rather than around it.
+#
+# ── THE WALK COMES BACK TO THE SAME PLAYER (NEO-330) ────────────────────────
+#   Until NEO-330 the answered team step handed the walk to the first settled
+#   undecided player IN BATCH ORDER, which is not necessarily the player the
+#   team was typed on (the walk util stops on whichever row settled first; on
+#   Memphis RiverKings that was a different player, and this flow's chip
+#   assert failed on a row that never had a chip). Jason's decision
+#   2026-10-10: answering a step staged from player A's career-team entry
+#   returns to A (`returnTo` in `entity-review-nav.ts`; a nested league step
+#   is answered first, then the team, then A). This flow is that feature's
+#   E2E proof: the chip assert in STEP 3 can only pass on A.
 #
 #
 # ── DO NOT REACH FOR THE AUTO-ADD SWEEP HERE (c657a57) ──────────────────────
@@ -228,10 +243,12 @@ tags:
 # itself to "Link to <name>" on an exact hierarchy match, and this name is
 # per-worker unique, so it can have none.
 - tapOn: "Add as New Team"
+# Back on a PLAYER row. 7000 (R5): one in-app decision write plus the walk's
+# return, no external round-trip.
 - extendedWaitUntil:
     visible:
       id: "Career team name"
-    timeout: 30000
+    timeout: 7000
 
 # THE REGRESSION FIXED IN 71f23a4, asserted where the operator would see it.
 # Before that commit this chip was gone and the typed years with it: the chip
@@ -240,18 +257,33 @@ tags:
 # ride on the staged step as `source.manualStint` and the chip list is keyed by
 # player review-row id, so both survive the hop. The en dash (U+2013) is matched
 # with "." to keep a literal non-ASCII character out of the matcher.
+# NEO-330: the chip renders only on the row it was typed on, so this is also
+# the assert that the walk RETURNED to that player rather than moving on to
+# the first undecided player in batch order.
 - assertVisible:
     text: ".*MintedTeam${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
 
+# R2(c): one decision. Not "Added as new" from the Decided list: that list
+# sits in the scrolling body under this row and falls below the fold on a
+# tall row (memory: wizard-decisions-read-from-header-and-summary). The
+# header counts every decision, so read it before and after.
+- copyTextFrom:
+    text: "[0-9]+ of [0-9]+ reviewed.*"
+- evalScript: '${output.DECIDED_BEFORE = Number(maestro.copiedText.match(/^([0-9]+) of ([0-9]+)/)[1])}'
+- evalScript: '${output.TOTAL = maestro.copiedText.match(/^([0-9]+) of ([0-9]+)/)[2]}'
 - tapOn: "Add as New Player"
 - extendedWaitUntil:
     visible:
-      text: "Added as new"
+      text: "${output.DECIDED_BEFORE + 1} of ${output.TOTAL} reviewed.*"
+    timeout: 7000
 
 # ============================================================
 # STEP 4 — R2(d): resolve the rest as skips, then COMMIT
 # Skips mint nothing, so exactly ONE player is created — the one carrying the
-# staged team. 120s for the bulk (live Wikidata queue), 60s for the commit.
+# staged team. 7000 for both (R5, our own server writes): the walk util has
+# already waited every lookup out, so the bulk is one mutation. MEASURED on
+# PR #314's preview, 2026-10-10: "Confirm & Save" 0.34s after the bulk tap,
+# "Saved N cards" 0.35s after the commit tap.
 # ============================================================
 
 - tapOn:
@@ -259,13 +291,18 @@ tags:
 - extendedWaitUntil:
     visible:
       text: ".*Confirm & Save.*"
-    timeout: 120000
+    timeout: 7000
+# The all-decided summary sits at the TOP of the body and omits a zero line,
+# so this one is present only because the create in STEP 3 (and the team
+# step's) landed; everything else was skipped.
+- assertVisible:
+    text: "New players and teams"
 - tapOn:
     text: ".*Confirm & Save.*"
 - extendedWaitUntil:
     visible:
       text: ".*Saved [0-9]+ cards.*"
-    timeout: 60000
+    timeout: 7000
 
 # ============================================================
 # STEP 5 — R2(e): THE POINT — the staged team is a real row now
@@ -288,9 +325,10 @@ tags:
     visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 - inputText: "MintedTeam${output.ATTEMPT_TOKEN}"
+# 7000 (R5): the debounced server search. Measured 0.35s on PR #314's preview.
 - extendedWaitUntil:
     visible: "1 match( . [0-9,]+ need attention)?"
-    timeout: 15000
+    timeout: 7000
 - assertVisible:
     text: "MintedTeam${output.ATTEMPT_TOKEN}"
     below:
