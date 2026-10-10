@@ -27,3 +27,4 @@
 - [Judge twins before filtering](reference_judge_twins_before_filtering.md) — twin-ness on the raw list, carried as ids; a filtered twin makes its sibling look unique; prefix test includes equality
 - [Planner sees the first wire id only](reference_planner_sees_first_wire_id_only.md) — reconcile store plans ids[0] per side; extras need their own one-link-one-row check at the insert
 - [Adapter re-auth goes through refreshSiteToken](reference_adapter_reauth_goes_through_refresh_site_token.md) — never authenticate* from an adapter; one re-auth per session; the lock inserts a userProfiles row in convex-test
+- [Team names contain separators](reference_team_names_contain_separators.md) — teams split on comma only (Bodø/Glimt, "Korea, South"); players on , / |; resolve the whole raw value first

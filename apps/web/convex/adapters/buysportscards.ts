@@ -28,9 +28,16 @@ import {
 } from "../platformLevels";
 // NEO-246/NEO-251: the same bounds the commit boundary
 // (`assertCardBatchWithinLimits`) enforces on a card, imported rather than
-// respelled so this parser cannot emit a card that boundary refuses.
-import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
+// respelled so this parser cannot emit a card that boundary refuses. (The
+// name-length bound is applied inside `./marketplaceNames`.)
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
+// NEO-333 — one splitter for a separated player/team value, shared with the
+// SportLots adapter. Players split on `,` `/` `|`; teams on `,` only.
+import {
+  boundParsedNames,
+  splitMarketplacePlayerNames,
+  splitMarketplaceTeamNames,
+} from "./marketplaceNames";
 // NEO-321 follow-up — a structured reason beside `success: false`, and the
 // self-imposed-limiter log line.
 // NEO-325 — the Base match probe's bounds and wire shapes, shared with the
@@ -827,69 +834,9 @@ export function parseVariationDescription(
  */
 const TEAM_CARD_SUFFIXES = ["TC"];
 
-/**
- * NEO-246/NEO-251 — bound what this parser is allowed to emit for one card.
- *
- * `parsePlayersField` splits a single free-text BSC field, so its output
- * length is a property of a marketplace page, not of anything NB controls: a
- * row carrying a checklist blob in the player field, or an upstream change to
- * how that field is punctuated, turns one string into an arbitrary list.
- * `assertCardBatchWithinLimits` refuses such a card at the commit boundary —
- * which is the right answer for a payload a client hands us, but a poor one
- * for a real upstream row, because it fails the operator's whole sync over a
- * page NB merely read. So the bound is closed HERE too, and the boundary
- * becomes the backstop it was meant to be rather than the only guard.
- *
- * Derived from the shared constants rather than respelled, the same way the
- * SportLots parser does it (`SL_MAX_SUBJECTS = Math.min(4, MAX_CARD_PLAYERS)`,
- * `SL_MAX_SUBJECT_LENGTH = MAX_PLAYER_NAME_LENGTH`), so this can never emit a
- * list the DB side refuses.
- *
- * ## Over-cap is a REFUSED roster, not a trimmed one
- *
- * The count cap returns `[]`. It does not keep the first N. A field holding
- * more names than a card can carry is not a long roster — it is a field whose
- * meaning NB has misread, almost always a checklist blob or a punctuation
- * change upstream. Keeping the first 20 of 27 mints a plausible-looking roster
- * out of one, and a wrong roster that looks right is worse than no roster at
- * all: nothing downstream can tell it from a real one, and it would be
- * committed, listed and read back as fact. This is the same rule
- * `startCandidateBatch` states for the pairing conflict — "refused, never
- * trimmed: a truncated roster is a wrong roster that looks right" — and the
- * two must not disagree about the same field.
- *
- * The card itself still survives; only its roster is dropped, so it lands as
- * `Card #<n>` with no players, exactly as a BSC row with an empty player field
- * always has. The entity-review wizard already handles a card with no names.
- *
- * ## An over-length name is a DROP, and that argument is different
- *
- * A single name past `MAX_PLAYER_NAME_LENGTH` says nothing about its
- * neighbours — "Mike Trout" is still Mike Trout — so the row keeps what is
- * sound. It is dropped rather than truncated because a truncated name is a
- * person who does not exist and would reach `players.findOrCreate` looking
- * exactly like a real one.
- *
- * ## Nothing is silent
- *
- * Either outcome sets `unrepresentable`, which `fetchBscChecklist` counts and
- * reports in its `message`. A COUNT only: the dropped names are the very text
- * NB could not make sense of, and echoing marketplace text into an operator
- * message is what the no-echo rule in `assertCardBatchWithinLimits` exists to
- * prevent.
- */
-function boundParsedNames(
-  names: string[],
-  limit: number,
-): { names: string[]; unrepresentable: boolean } {
-  const kept = names.filter((n) => n.length <= MAX_PLAYER_NAME_LENGTH);
-  // Over the count cap: the whole list is refused, because the field's meaning
-  // is in doubt rather than merely its tail.
-  if (kept.length > limit) return { names: [], unrepresentable: true };
-  // Under it: what survived the length filter stands, and a name having been
-  // dropped is still reported.
-  return { names: kept, unrepresentable: kept.length !== names.length };
-}
+// NEO-246/NEO-251 `boundParsedNames` (the emit bound: over-length names
+// dropped, an over-cap list refused) and the NEO-333 splitter that applies it
+// live in `./marketplaceNames`, shared with the SportLots adapter.
 
 /**
  * Parse BSC's raw `players` field (a single string) into clean player
@@ -916,7 +863,7 @@ export function parsePlayersField(raw: string): {
    * text NB could not represent, so the caller can COUNT it rather than let it
    * pass silently. Absent on an ordinary row, so the common case still
    * compares equal to a plain `{ players, teams }`. Never carries the offending
-   * text: see `boundParsedNames`.
+   * text: see `boundParsedNames` in `./marketplaceNames`.
    */
   unrepresentable?: true;
 } {
@@ -959,13 +906,9 @@ export function parsePlayersField(raw: string): {
   const parenMatch = trimmed.match(/^(.*)\(([^)]*)\)(.*)$/);
   if (parenMatch) {
     const [, before, inside, after] = parenMatch;
-    const players = boundParsedNames(
-      inside
-        .split(/\s*[/,]\s*/)
-        .map((p) => p.trim())
-        .filter(Boolean),
-      MAX_CARD_PLAYERS,
-    );
+    // NEO-333: the shared player splitter (`,`, `/`, `|`, suffix re-attach,
+    // case-insensitive dedupe, bounded).
+    const players = splitMarketplacePlayerNames(inside);
     // The surrounding description is NB card-name text, not a roster, so a
     // refused player list does not take it with it.
     const namePrefix = `${before.trim()} ${after.trim()}`
@@ -980,13 +923,8 @@ export function parsePlayersField(raw: string): {
   }
 
   // 3. Fallback — today's behavior: a plain single- or multi-player string.
-  const players = boundParsedNames(
-    trimmed
-      .split(/\s*[/,]\s*/)
-      .map((p) => p.trim())
-      .filter(Boolean),
-    MAX_CARD_PLAYERS,
-  );
+  // NEO-333: the shared player splitter — see `./marketplaceNames`.
+  const players = splitMarketplacePlayerNames(trimmed);
   return {
     players: players.names,
     teams: [],
@@ -1972,15 +1910,41 @@ export const probeBscChecklistBatch = internalAction({
 /**
  * NEO-90: call BSC's per-card detail endpoint and return its `teamName`.
  * `success: false` means the HTTP call itself failed (non-2xx or thrown
- * error) — distinct from `success: true, teamName: ""`, which means BSC
+ * error) — distinct from `success: true, teamNames: []`, which means BSC
  * answered but genuinely has no team on file (an insert/subset card).
  * Callers that need retry semantics (resolveBscCardTeam) care about this
  * distinction; `fetchBscCardTeamNames` (the synchronous batch path) treats
  * both the same — it just won't populate a team either way. Shared by both.
+ *
+ * NEO-333: BSC answers a multi-team card with ONE comma-separated string
+ * ("Cleveland Guardians, Washington Nationals"), which used to reach the
+ * entity-review wizard as one new team. `teamNames` is that string split by
+ * the shared TEAM rule (comma only, never `/`: see `./marketplaceNames`),
+ * deduped and bounded by `MAX_CARD_TEAMS` — an over-cap list is refused to
+ * `[]`, never trimmed.
+ *
+ * `rawTeamName` is the trimmed, UNSPLIT string, and every caller carries it.
+ * A comma is not a perfect team separator (real team names carry one — "Korea,
+ * South" — and BSC has sent a single team as "Scranton, Wilkes-Barre
+ * RailRiders"), so the resolvers try the WHOLE string against existing team
+ * names and aliases first, and fall back to `teamNames` only when it does not
+ * resolve to exactly one team (Jason, 2026-10-10). This adapter has no
+ * database, so it hands both forms on and never decides between them.
  */
+export type BscCardTeamLookup = {
+  teamNames: string[];
+  rawTeamName: string;
+  success: boolean;
+};
+
 async function fetchBscCardTeamNameRaw(
   bscCardId: string,
-): Promise<{ teamName: string; success: boolean }> {
+): Promise<BscCardTeamLookup> {
+  const failed: BscCardTeamLookup = {
+    teamNames: [],
+    rawTeamName: "",
+    success: false,
+  };
   try {
     const response = await fetch(
       `${BSC_API_BASE}/marketplace/card/${bscCardId}/card-listing`,
@@ -1993,20 +1957,28 @@ async function fetchBscCardTeamNameRaw(
       console.warn(
         `[fetchBscCardTeamNameRaw] card-listing fetch failed status=${response.status} bscCardId=${bscCardId}`,
       );
-      return { teamName: "", success: false };
+      return failed;
     }
-    const data = await response.json();
-    const teamName =
+    const data: unknown = await response.json();
+    const rawTeamName =
       data && typeof data === "object" && typeof (data as { teamName?: unknown }).teamName === "string"
         ? (data as { teamName: string }).teamName.trim()
         : "";
-    return { teamName, success: true };
+    const { names: teamNames, unrepresentable } =
+      splitMarketplaceTeamNames(rawTeamName);
+    if (unrepresentable) {
+      // A flag and the card id only — never the marketplace text.
+      console.warn(
+        `[fetchBscCardTeamNameRaw] card-listing team value not representable bscCardId=${bscCardId}`,
+      );
+    }
+    return { teamNames, rawTeamName, success: true };
   } catch (error) {
     console.warn(
       `[fetchBscCardTeamNameRaw] card-listing fetch error bscCardId=${bscCardId}:`,
       error,
     );
-    return { teamName: "", success: false };
+    return failed;
   }
 }
 
@@ -2029,15 +2001,20 @@ export const resolveBscCardTeam = internalAction({
       });
     if (!row || !row.needsCheck) return null;
 
-    const { teamName, success } = await fetchBscCardTeamNameRaw(row.bscCardId);
+    const { teamNames, rawTeamName, success } =
+      await fetchBscCardTeamNameRaw(row.bscCardId);
     // The fetch itself failed — leave the row untouched so a future
     // enqueue retries it (do NOT distinguish "no team" from "couldn't
     // check" here; only a successful call is allowed to mark this done).
     if (!success) return null;
 
+    // NEO-333: both forms. The mutation tries the whole raw string first and
+    // only then the split parts; the raw string is also the unmatched hint.
+    // An empty raw string means BSC had no team on file.
     await ctx.runMutation(internal.cardChecklist.applyBscTeamResolution, {
       cardChecklistId: args.cardChecklistId,
-      teamName,
+      rawTeamName,
+      teamNames,
     });
     return null;
   },
@@ -2051,24 +2028,38 @@ export const resolveBscCardTeam = internalAction({
  * `BSC_TEAM_LOOKUP_CONCURRENCY` and awaits each chunk before starting the
  * next (matches the existing `MAX_SL_FAN_OUT` bounded-fan-out precedent in
  * selectorOptions.ts — no concurrency-limiting utility exists elsewhere in
- * this codebase to reuse). Returns only the ids that resolved to a
- * non-empty team name; a card whose lookup failed or had no team on file
+ * this codebase to reuse). Returns only the ids BSC answered with a non-empty
+ * team value; a card whose lookup failed or had no team on file
  * (e.g. an insert/subset card) is simply absent from the result — the
  * caller treats that the same as "no team" either way.
+ *
+ * NEO-333: each value carries BOTH forms of the card's team value: the raw,
+ * unsplit string and its comma split (see `fetchBscCardTeamNameRaw`).
+ * `checklistCandidates.resolveCandidateTeams` tries the whole string against
+ * existing teams first and falls back to the split. `teamNames` may be empty
+ * while `rawTeamName` is not (a value naming more teams than a card carries);
+ * the raw string is still worth a whole-name match.
  */
 export const fetchBscCardTeamNames = internalAction({
   args: { bscCardIds: v.array(v.string()) },
-  returns: v.record(v.string(), v.string()),
-  handler: async (_ctx, args): Promise<Record<string, string>> => {
-    const result: Record<string, string> = {};
+  returns: v.record(
+    v.string(),
+    v.object({ rawTeamName: v.string(), teamNames: v.array(v.string()) }),
+  ),
+  handler: async (
+    _ctx,
+    args,
+  ): Promise<Record<string, { rawTeamName: string; teamNames: string[] }>> => {
+    const result: Record<string, { rawTeamName: string; teamNames: string[] }> =
+      {};
     for (let i = 0; i < args.bscCardIds.length; i += BSC_TEAM_LOOKUP_CONCURRENCY) {
       const chunk = args.bscCardIds.slice(i, i + BSC_TEAM_LOOKUP_CONCURRENCY);
       const results = await Promise.all(
         chunk.map((bscCardId) => fetchBscCardTeamNameRaw(bscCardId)),
       );
       chunk.forEach((bscCardId, idx) => {
-        const { teamName } = results[idx];
-        if (teamName) result[bscCardId] = teamName;
+        const { rawTeamName, teamNames } = results[idx];
+        if (rawTeamName) result[bscCardId] = { rawTeamName, teamNames };
       });
     }
     return result;

@@ -37,6 +37,7 @@ import { requireAdmin } from "./auth";
 import { resolveTeamForSetYear } from "./lib/teamRow";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { teamFullName } from "../lib/teams/team-name";
+import { MAX_CARD_TEAMS } from "./features/cardAttention";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -310,8 +311,26 @@ const MAX_BSC_TEAM_NAME_LENGTH = 120;
 export const applyBscTeamResolution = internalMutation({
   args: {
     cardChecklistId: v.id("cardChecklist"),
-    /** Empty string means BSC's card-listing endpoint had no team on file. */
-    teamName: v.string(),
+    /**
+     * NEO-333: BSC's team value exactly as the card-listing endpoint gave it
+     * (trimmed, UNSPLIT). Tried FIRST: a comma is not a reliable team
+     * separator — "Korea, South" and "Scranton, Wilkes-Barre RailRiders" are
+     * one team each — so when the whole string resolves to exactly one team,
+     * that is the card's team and the split is never consulted. Also the
+     * unmatched hint kept in `bscTeamName`.
+     *
+     * Empty (with no `teamNames`) means BSC had no team on file.
+     */
+    rawTeamName: v.string(),
+    /**
+     * NEO-333: the same value split on commas by the adapter
+     * (`splitMarketplaceTeamNames`), in BSC's order. Used only when the whole
+     * string does not resolve: on a pairings card the string names several
+     * teams ("Chicago Cubs, Texas Rangers"), and each part must resolve.
+     * Empty when BSC named more teams than a card can carry — the adapter
+     * refuses that list rather than trimming it.
+     */
+    teamNames: v.array(v.string()),
   },
   returns: v.object({
     applied: v.boolean(),
@@ -358,13 +377,31 @@ export const applyBscTeamResolution = internalMutation({
       return { applied: false, unmatched: false };
     }
 
-    const teamName = args.teamName.trim();
-    if (!teamName) {
+    // NEO-333: trimmed, blanks dropped, exact repeats dropped. The adapter has
+    // already done all three; this is the mutation not trusting its caller's
+    // shape, not a second parser — it never splits a part further.
+    const rawTeamName = args.rawTeamName.trim();
+    const teamNames: string[] = [];
+    for (const raw of args.teamNames) {
+      const name = raw.trim();
+      if (name && !teamNames.includes(name)) teamNames.push(name);
+    }
+    if (!rawTeamName && teamNames.length === 0) {
       // No team on file for this card (insert/subset cards like League
       // Leaders) — remember we checked so it's never re-enqueued.
       await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
       return { applied: false, unmatched: false };
     }
+
+    // NEO-333: what an unmatched card keeps as its hint — BSC's raw value,
+    // exactly as it was given, so the operator sees what the marketplace said
+    // rather than our reading of it. The join is only a fallback for a caller
+    // that sent parts without the raw string. See the unmatched branch below
+    // for why a hint is kept at all.
+    const hint = (rawTeamName || teamNames.join(", ")).slice(
+      0,
+      MAX_BSC_TEAM_NAME_LENGTH,
+    );
 
     const sportId = await findSportForSelectorOption(ctx, row.selectorOptionId);
     if (!sportId) {
@@ -378,21 +415,85 @@ export const applyBscTeamResolution = internalMutation({
       return { applied: false, unmatched: false };
     }
 
-    // NEO-236: the shared identity lookup on BSC's full team string, so a row
-    // already split into location + nickname still matches.
+    // NEO-236: the shared identity lookup on each of BSC's full team strings,
+    // so a row already split into location + nickname still matches.
     //
     // NEO-254: narrowed by the set's year — the name may name several eras,
-    // and BSC's string carries none of that.
-    const { teamId: resolvedTeamId } = await resolveTeamForSetYear(
+    // and BSC's string carries none of that. Read once: it is the set's year,
+    // the same for every part.
+    //
+    // NEO-333: all or nothing. Every part must resolve to exactly one team
+    // (`resolveTeamForSetYear` returns null for "unknown" and for "several
+    // eras the year did not separate" alike) or NOTHING is linked. Jason,
+    // 2026-10-10: "keep unmatched". A subset would be wrong in a way nobody
+    // sees: the card would have a team, so it would leave the missing-team
+    // lane, and the operator would never learn the second team was dropped.
+    // The first miss ends the walk — the answer cannot change after it.
+    const setYear = await findSetYearForSelectorOption(
       ctx,
-      sportId,
-      teamName,
-      await findSetYearForSelectorOption(ctx, row.selectorOptionId),
-      // NEO-307: a SET year — a card can show a team's past.
-      { allowPastEra: true },
+      row.selectorOptionId,
     );
 
-    if (!resolvedTeamId) {
+    // NEO-333: WHOLE NAME FIRST (Jason, 2026-10-10). The raw string as one
+    // team name or alias; exactly one hit settles the card and the split is
+    // never consulted. Skipped when the split is just the raw string again —
+    // the loop below asks the identical question.
+    const splitIsJustRaw =
+      teamNames.length === 1 && teamNames[0] === rawTeamName;
+    if (
+      rawTeamName &&
+      !splitIsJustRaw &&
+      rawTeamName.length <= MAX_BSC_TEAM_NAME_LENGTH
+    ) {
+      const { teamId: wholeTeamId } = await resolveTeamForSetYear(
+        ctx,
+        sportId,
+        rawTeamName,
+        setYear,
+        // NEO-307: a SET year — a card can show a team's past.
+        { allowPastEra: true },
+      );
+      if (wholeTeamId) {
+        await ctx.db.patch(row._id, {
+          teamOnCardIds: [wholeTeamId],
+          teamCheckDoneAt: Date.now(),
+          // Same as the split path's success below: a resolved team leaves
+          // the hint nothing to say.
+          bscTeamName: undefined,
+          lastUpdated: Date.now(),
+        });
+        return { applied: true, unmatched: false };
+      }
+    }
+
+    // NEO-333: the split. No parts (BSC named more teams than a card can
+    // carry, so the adapter refused the list) or too many (a caller that
+    // skipped the adapter — `selectorOptions.updateCard` refuses the same
+    // array, and the bound keeps this loop's index reads finite) cannot
+    // resolve: the same landing as an unknown team — stamped, hinted with the
+    // raw value, left for the operator. NOT "no team on file": BSC did name
+    // a team.
+    const resolvedTeamIds: Id<"teams">[] = [];
+    let allResolved = teamNames.length > 0 && teamNames.length <= MAX_CARD_TEAMS;
+    for (const teamName of allResolved ? teamNames : []) {
+      const { teamId } = await resolveTeamForSetYear(
+        ctx,
+        sportId,
+        teamName,
+        setYear,
+        // NEO-307: a SET year — a card can show a team's past.
+        { allowPastEra: true },
+      );
+      if (!teamId) {
+        allResolved = false;
+        break;
+      }
+      // Two parts can land on one row (a name and its alias); the card links
+      // that team once. Order is BSC's, for display only.
+      if (!resolvedTeamIds.includes(teamId)) resolvedTeamIds.push(teamId);
+    }
+
+    if (!allResolved) {
       // NEO-236: link-or-leave. No insert, and no team on the card.
       //
       // `teamCheckDoneAt` is still STAMPED, and that is deliberate rather than
@@ -420,15 +521,19 @@ export const applyBscTeamResolution = internalMutation({
       // this branch exists to leave it in. Capped at the same length a stored
       // team name is capped at: this is a third party's string reaching an
       // admin screen, and nothing downstream should have to bound it again.
+      //
+      // NEO-333: the hint is BSC's raw value — on a multi-team card that
+      // includes the parts that DID resolve, so the operator sees the whole
+      // card's claim, not just the half we could not place.
       await ctx.db.patch(row._id, {
         teamCheckDoneAt: Date.now(),
-        bscTeamName: teamName.slice(0, MAX_BSC_TEAM_NAME_LENGTH),
+        bscTeamName: hint,
       });
       return { applied: false, unmatched: true };
     }
 
     await ctx.db.patch(row._id, {
-      teamOnCardIds: [resolvedTeamId],
+      teamOnCardIds: resolvedTeamIds,
       teamCheckDoneAt: Date.now(),
       // A matched card has a real team now, so the hint has nothing left to
       // say — and a stale "Marketplace says: …" beside a resolved team reads
