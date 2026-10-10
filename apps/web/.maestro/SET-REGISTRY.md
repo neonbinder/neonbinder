@@ -93,7 +93,7 @@ BuySportsCards alone for the whole run:
 | Baseball → 2024 → Topps → Topps Heritage | `Base` — SportLots base mapping CONFIRMED in-flow (NOT pre-synced) | `flows/set-selector/sets-base.yaml` — **sole writer** of that mapping. ✅ **RATIFIED 2026-09-09** (NEO-260) — it was already in use and had never been listed |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
-| Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced); one card answered "No team on this card" in the review's final step, 24 left for later (NEO-335) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
+| Hockey → 1995 → Unknown (reached through the All Brands view) → Roanoke Express ECHL | `Base` — 25 cards, fetched and COMMITTED in-flow, BSC only (NOT pre-synced); NEO-335: one player CREATED in the review with one career team (`RXT<token>`, pre-filled onto his card), one card answered "No team on this card", 23 left for later; then RE-SYNCED once (teams-only review) | `flows/set-selector/checklist-one-marketplace-skips-match-dialog.yaml` — **sole writer**. ✅ **APPROVED 2026-09-09** (NEO-260); manufacturer row renamed by NEO-237 (the marketplace's "All Brands" option is routed onto the year's `Unknown` row, never stored under its label) |
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; the per-brand SportLots reviews the year-wide Sync Sets leaves behind (NEO-306: SportLots-only names are no longer saved as sets; the reviews stay unsaved, labels never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
 | Baseball → 2026 → Bowman (the whole brand-year) | **setup:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | `flows/setup.yaml` (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row), `flows/set-selector/bowman-insert-grouping-builds-parallels.yaml` (Bowman › Insert's BSC inserts and their grouping), `flows/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
@@ -867,31 +867,40 @@ not change; none of them can express the =1 half.
     and in the same band as `checklist-pairing-dialog-cancel` (2m29s, measured
     on the same preview the same evening).
 
-#### What STEP 6b answers, and what that writes (NEO-335)
+#### What STEPs 6, 6b, 9 and 10 do, and what that writes (NEO-335)
 
 The review's final step now asks about every card that would save with no
 team, and this fixture is a true blank: BSC lists no team for any of the 25,
 so the section reads `25 cards have no team yet` (`K` = the fetch count — the
-same 25 the old attention count climbed to). Every name is skipped, so each
-card is its own line with exactly `No team on this card` and `Leave for later`,
-the second checked. The flow answers the TOP line `No team on this card` and
-leaves the other 24 for later, then asserts the checklist's pill reads
-`24 need you` within 7s of `Saved 25 cards.`.
+same 25 the old attention count climbed to).
 
-So the commit writes, on top of the 25 cards: ONE card stamped
-`teamNoneConfirmedAt` (the operator's "no team" answer), and every card's
-`teamCheckDoneAt` (its fetch-time BSC lookup answered). Nothing else changes,
-the set stays single-use per preview deployment, and the flow remains its
-sole writer. Which of the 25 cards is the answered one is decided by POSITION
-(the section's top line), never by number — every card is `NNO` — or by a
-marketplace name.
+- **STEP 6** creates the first player the wizard presents ("Add as New
+  Player"), with ONE hand-staged career team `RXT<token>` (1994–1996),
+  decided "Add as New Team" in its own New Team step. Every other name is
+  skipped. Whichever Roanoke name that is, no other flow touches it.
+- **STEP 6b** reads the section: that player's card is a player line with
+  `RXT<token>` CHECKED by default (a one-team career is an answer —
+  `createdPlayerVerdict` in `teams-on-cards.ts`); the top card-only line is
+  answered `No team on this card`; the rest stay on `Leave for later`.
+- **STEP 7** asserts the pill reads `23 need you` within 7s of
+  `Saved 25 cards.` (25 − the "no team" card − the pre-filled card; one card
+  per player here, measurement 5).
+- **STEP 9** walks the drawer's `Next card` from `NB272-…` (it sorts first)
+  to the one card with a team chip and asserts `Remove team RXT<token>`.
+- **STEP 10** re-syncs. The content review always opens (the pre-filled card
+  stores a team BSC does not list; skipped cards store no player link
+  against an incoming name), and the flow presses `Skip changes`. With no
+  names left the review opens TEAMS-ONLY — no bulk links,
+  `All reviewed — save 25 cards?`, `23 cards have no team yet` — and
+  Confirm & Save lands `Saved 25 cards.` again.
 
-What it does NOT cover, disclosed in the flow: a PRE-FILLED suggestion. Every
-name is skipped and no card carries a team, so no line has evidence. A
-pre-fill needs a linked player with a 1995 hockey stint or a teamed sibling
-card; setup provisions no hockey roster, so that half is unit- and
-component-covered (`teams-on-cards.test.ts`,
-`EntityReviewWizard.teamsOnCards.test.tsx`).
+So the flow writes, on top of the 25 cards: one PLAYER (a real Roanoke name,
+Hockey) with one stint, one TEAM `RXT<token>` (Hockey), that team on one card,
+`teamNoneConfirmedAt` on another, `teamCheckDoneAt` on every card, and a
+second commit of the same 25 cards. The set stays single-use per preview
+deployment and the flow remains its sole writer. Every card is `NNO`, so
+cards are told apart by POSITION in the section, by the team they carry, or
+by the drawer's own order — never by number or marketplace name.
 
 #### What STEP 8 writes, and why it has to write anything (NEO-272)
 
@@ -1840,6 +1849,7 @@ whole thing; never assume which letter the worker half starts with.
 | Prefix | Owning flow | Notes |
 |---|---|---|
 | `CNAA`, `CNAB` | `checklist-attention-badge-and-filter.yaml` | two teams; CNAB is the born-linked card's alone, which is what makes its row assertion single-row |
+| `RXT` | `set-selector/checklist-one-marketplace-skips-match-dialog.yaml` | a HOCKEY team, staged as a career team on the one Roanoke player that flow creates in its review (1994–1996) and decided "Add as New Team"; the NEO-335 pre-fill evidence, read back as `Remove team RXT<token>` in a card drawer |
 | `CNAP` | `checklist-attention-badge-and-filter.yaml` | a PLAYER — the born-linked card #703's, created from the quick-add form's PlayerPicker ("Create player CNAP<token>") and read back from that card's drawer. The quick-add create path's one E2E since NEO-335 retired `set-fill-teams-from-teammate-card` (and its `ftl-`/`FTP`/`FTT` names). Diverges from CNAA/CNAB at its fourth character, and lives in `players.search`, not `teams.search` |
 | `CNWT` | `checklist-attention-walker-missing-team.yaml` | |
 | `NBTeam` | `team-picker-create-custom-card.yaml` | created under `E2E Test Sport <w>`, not Baseball |

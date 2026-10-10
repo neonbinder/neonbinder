@@ -44,3 +44,22 @@ clears the previous "Saved N" banner when it starts).
 
 After save the header pill (`N need you`) is FINAL at "Saved N cards." — the
 commit stamps cards whose fetch-time BSC lookup answered.
+
+**Pre-fill from a created player:** a player row decided "Add as New Player"
+with ONE staged career team (CareerTeamEntry → its New Team step → "Add as
+New Team") pre-fills his card's line (`createdPlayerVerdict`: one-team career
+= answer; else the single stint covering the set year). Chip radio id is
+`<team full name> — <printed player name>`.
+
+**Re-sync of a committed set:** the NEO-203 content review ALWAYS opens when a
+stored card's team or player link differs from the incoming card (a stored
+team vs a blank marketplace team, a skipped name vs no player link) — tap
+`id: "Skip reviewing changes and continue"`. With every name known or skipped
+for the set (skip records are consulted), the review then opens teams-only and
+asks only about stored-teamless cards (rows with a team / "no team" / pending
+team name are settled via the diff's `existingId`).
+
+**Reaching one of many identically-numbered cards:** open any drawer and walk
+`id: "Next card"` in a `repeat while notVisible` on what only the target
+shows (e.g. `id: "Remove team .*"` when it is the only teamed card). Display
+order is `compareCardNumbers` (digits before text; "NB…" before "NNO").
