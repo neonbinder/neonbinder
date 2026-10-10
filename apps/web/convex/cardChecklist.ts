@@ -381,12 +381,21 @@ export const applyBscTeamResolution = internalMutation({
     // already done all three; this is the mutation not trusting its caller's
     // shape, not a second parser — it never splits a part further.
     const rawTeamName = args.rawTeamName.trim();
+    // Security review N2: bounded BEFORE the dedupe loop, so an oversized
+    // array costs nothing here. Over `MAX_CARD_TEAMS` the split is unusable —
+    // no card may carry that many teams (`selectorOptions.updateCard` refuses
+    // the same array) — so it is set aside unread; the raw string still gets
+    // its whole-name match below, and a miss lands as unmatched, not as "no
+    // team on file", because BSC did name teams.
+    const splitOverCap = args.teamNames.length > MAX_CARD_TEAMS;
     const teamNames: string[] = [];
-    for (const raw of args.teamNames) {
-      const name = raw.trim();
-      if (name && !teamNames.includes(name)) teamNames.push(name);
+    if (!splitOverCap) {
+      for (const raw of args.teamNames) {
+        const name = raw.trim();
+        if (name && !teamNames.includes(name)) teamNames.push(name);
+      }
     }
-    if (!rawTeamName && teamNames.length === 0) {
+    if (!rawTeamName && !splitOverCap && teamNames.length === 0) {
       // No team on file for this card (insert/subset cards like League
       // Leaders) — remember we checked so it's never re-enqueued.
       await ctx.db.patch(row._id, { teamCheckDoneAt: Date.now() });
@@ -467,14 +476,12 @@ export const applyBscTeamResolution = internalMutation({
     }
 
     // NEO-333: the split. No parts (BSC named more teams than a card can
-    // carry, so the adapter refused the list) or too many (a caller that
-    // skipped the adapter — `selectorOptions.updateCard` refuses the same
-    // array, and the bound keeps this loop's index reads finite) cannot
-    // resolve: the same landing as an unknown team — stamped, hinted with the
-    // raw value, left for the operator. NOT "no team on file": BSC did name
-    // a team.
+    // carry, so the adapter refused the list, or a caller sent more than
+    // `MAX_CARD_TEAMS` and N2 above set it aside) cannot resolve: the same
+    // landing as an unknown team — stamped, hinted with the raw value, left
+    // for the operator. NOT "no team on file": BSC did name a team.
     const resolvedTeamIds: Id<"teams">[] = [];
-    let allResolved = teamNames.length > 0 && teamNames.length <= MAX_CARD_TEAMS;
+    let allResolved = teamNames.length > 0;
     for (const teamName of allResolved ? teamNames : []) {
       const { teamId } = await resolveTeamForSetYear(
         ctx,
@@ -527,7 +534,10 @@ export const applyBscTeamResolution = internalMutation({
       // card's claim, not just the half we could not place.
       await ctx.db.patch(row._id, {
         teamCheckDoneAt: Date.now(),
-        bscTeamName: hint,
+        // No hint at all when there is nothing displayable to keep (the raw
+        // string was over the adapter's cap AND the split was over
+        // `MAX_CARD_TEAMS`): an empty "Marketplace says:" helps nobody.
+        bscTeamName: hint || undefined,
       });
       return { applied: false, unmatched: true };
     }

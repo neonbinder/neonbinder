@@ -71,7 +71,10 @@ type SlCard = {
 const mockState = vi.hoisted(() => ({
   bscCards: [] as BscCard[],
   slCards: [] as SlCard[],
-  teamNamesResult: {} as Record<string, string>,
+  teamNamesResult: {} as Record<
+    string,
+    { rawTeamName: string; teamNames: string[] }
+  >,
   teamLookupCalls: [] as string[][],
 }));
 
@@ -104,8 +107,14 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
     }),
     fetchBscCardTeamNames: internalAction({
       args: { bscCardIds: v.array(v.string()) },
-      returns: v.record(v.string(), v.string()),
-      handler: async (_ctx, args): Promise<Record<string, string>> => {
+      returns: v.record(
+        v.string(),
+        v.object({ rawTeamName: v.string(), teamNames: v.array(v.string()) }),
+      ),
+      handler: async (
+        _ctx,
+        args,
+      ): Promise<Record<string, { rawTeamName: string; teamNames: string[] }>> => {
         mockState.teamLookupCalls.push(args.bscCardIds);
         return mockState.teamNamesResult;
       },
@@ -324,7 +333,12 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
         // no team/teams — parsePlayersField's bulk parse found nothing.
       },
     ];
-    mockState.teamNamesResult = { "bsc-50": "Cincinnati Reds" };
+    mockState.teamNamesResult = {
+      "bsc-50": {
+        rawTeamName: "Cincinnati Reds",
+        teamNames: ["Cincinnati Reds"],
+      },
+    };
 
     const result = await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
       selectorOptionId: variantTypeId,

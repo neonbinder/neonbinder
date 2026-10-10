@@ -103,7 +103,7 @@ describe("candidates are visible immediately; teams fill in behind them", () => 
 
     await t.mutation(internal.checklistCandidates.resolveCandidateTeams, {
       batchId: "batch-1",
-      resolved: [{ bscRef: "b1", teamName: "Phillies" }],
+      resolved: [{ bscRef: "b1", rawTeamName: "Phillies", teamNames: ["Phillies"] }],
     });
 
     const res = await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
@@ -127,7 +127,7 @@ describe("candidates are visible immediately; teams fill in behind them", () => 
 
     await t.mutation(internal.checklistCandidates.resolveCandidateTeams, {
       batchId: "batch-1",
-      resolved: [{ bscRef: "b1", teamName: undefined }],
+      resolved: [{ bscRef: "b1" }],
     });
 
     const res = await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
@@ -185,7 +185,7 @@ describe("a parent and its variations arrive together", () => {
 
     await t.mutation(internal.checklistCandidates.resolveCandidateTeams, {
       batchId: "batch-1",
-      resolved: [{ bscRef: "b20", teamName: "Orioles" }],
+      resolved: [{ bscRef: "b20", rawTeamName: "Orioles", teamNames: ["Orioles"] }],
     });
     const res = await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, {
       selectorOptionId: id,
@@ -714,8 +714,8 @@ describe("resolveCandidateTeams survives a row that is not written yet (NEO-294)
       {
         batchId: "batch-1",
         resolved: [
-          { bscRef: "b1", teamName: "Orioles" },
-          { bscRef: "b2", teamName: "Padres" },
+          { bscRef: "b1", rawTeamName: "Orioles", teamNames: ["Orioles"] },
+          { bscRef: "b2", rawTeamName: "Padres", teamNames: ["Padres"] },
         ],
       },
     );
@@ -751,7 +751,7 @@ describe("resolveCandidateTeams survives a row that is not written yet (NEO-294)
       internal.checklistCandidates.resolveCandidateTeams,
       {
         batchId: "batch-1",
-        resolved: [{ bscRef: "gone", teamName: "Padres" }],
+        resolved: [{ bscRef: "gone", rawTeamName: "Padres", teamNames: ["Padres"] }],
         retry: true,
       },
     );

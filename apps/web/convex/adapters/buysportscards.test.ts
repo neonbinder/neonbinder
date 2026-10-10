@@ -71,6 +71,45 @@ describe("parsePlayersField", () => {
     });
   });
 
+  test("NEO-333: a pipe separates players, with or without surrounding spaces", () => {
+    expect(parsePlayersField("Mike Trout | Shohei Ohtani")).toEqual({
+      players: ["Mike Trout", "Shohei Ohtani"],
+      teams: [],
+    });
+    expect(parsePlayersField("Mike Trout|Shohei Ohtani")).toEqual({
+      players: ["Mike Trout", "Shohei Ohtani"],
+      teams: [],
+    });
+  });
+
+  test("NEO-333: a pipe inside a parenthetical list splits too", () => {
+    expect(parsePlayersField("Muscle Men (Aaron Judge|Cody Bellinger) CPC")).toEqual({
+      players: ["Aaron Judge", "Cody Bellinger"],
+      teams: [],
+      namePrefix: "Muscle Men CPC",
+    });
+  });
+
+  test("NEO-333: a suffix after a comma re-attaches instead of becoming a player", () => {
+    expect(parsePlayersField("Ken Griffey, Jr., Mike Trout")).toEqual({
+      players: ["Ken Griffey Jr.", "Mike Trout"],
+      teams: [],
+    });
+  });
+
+  test("NEO-333: a Team Checklist value is NOT split, even when the team name carries a comma or slash", () => {
+    // The TC branch reports the whole team name; the comma/pipe splitter is a
+    // player rule and must not cut a team.
+    expect(parsePlayersField("Korea, South TC")).toEqual({
+      players: ["Korea, South"],
+      teams: ["Korea, South"],
+    });
+    expect(parsePlayersField("Bodø/Glimt TC")).toEqual({
+      players: ["Bodø/Glimt"],
+      teams: ["Bodø/Glimt"],
+    });
+  });
+
   test("Team Checklist card — team name reported into BOTH players and teams", () => {
     expect(parsePlayersField("Kansas City Royals TC")).toEqual({
       players: ["Kansas City Royals"],

@@ -89,9 +89,22 @@ export const REPORT_PAGE_SIZE: Record<ReportSource, number> = {
   entityReviewSkips: 500,
   cardChecklist: 150,
 };
+/**
+ * Security review S2: the byte bound on one `scanPage` read. The row counts
+ * above assume ordinary documents; a page of unusually large ones (a card's
+ * platform data can grow) would otherwise read past a query's limit and fail
+ * the same page on every resume. `paginate` stops at this many bytes and
+ * still returns the row that crossed it, so every page makes progress.
+ */
+export const REPORT_PAGE_MAX_BYTES = 4 * 1024 * 1024;
 /** Ids returned per kind (the count is always the full count). */
 export const REPORT_MAX_IDS_PER_KIND = 500;
-/** Wall-clock budget per run, inside Convex's 10-minute action timeout. */
+/**
+ * Wall-clock budget per run, inside Convex's 10-minute action timeout. Also the
+ * CEILING on a caller's `timeBudgetMs` (security review S2): a larger value
+ * would only let the action run into the platform timeout and lose its
+ * partial result.
+ */
 export const REPORT_TIME_BUDGET_MS = 8 * 60 * 1000;
 
 /** Every kind of hit, one per (field, check). */
@@ -181,6 +194,8 @@ export const scanPage = internalQuery({
     const opts = {
       cursor: args.cursor,
       numItems: REPORT_PAGE_SIZE[args.source],
+      // S2 — see `REPORT_PAGE_MAX_BYTES`.
+      maximumBytesRead: REPORT_PAGE_MAX_BYTES,
     };
     const hits: Hit[] = [];
     const flag = (kind: ReportKind, id: string) => hits.push({ kind, id });
@@ -260,7 +275,10 @@ export const run = internalAction({
   args: {
     /** A previous run's `resume`: continue at exactly the next page. */
     resume: v.optional(resumeValidator),
-    /** Wall-clock budget in ms (default `REPORT_TIME_BUDGET_MS`). */
+    /**
+     * Wall-clock budget in ms (default `REPORT_TIME_BUDGET_MS`). Clamped to
+     * `[0, REPORT_TIME_BUDGET_MS]`.
+     */
     timeBudgetMs: v.optional(v.number()),
   },
   returns: v.object({
@@ -277,6 +295,12 @@ export const run = internalAction({
     truncated: v.boolean(),
     /** The run stopped on its wall-clock budget. */
     timedOut: v.boolean(),
+    /**
+     * Security review S2: pages that failed to read. The run stops at the
+     * first one (0 or 1), returns what it had, and `resume` points AT the
+     * failed page so a rerun retries exactly it.
+     */
+    errors: v.number(),
     /** Pass back as `resume` to continue; absent once every table is read. */
     resume: v.optional(resumeValidator),
     /** Every kind, in `REPORT_KINDS` order, including the zero ones. */
@@ -293,7 +317,12 @@ export const run = internalAction({
   }),
   handler: async (ctx, args) => {
     const started = Date.now();
-    const budgetMs = Math.max(0, args.timeBudgetMs ?? REPORT_TIME_BUDGET_MS);
+    // S2 — clamped both ways: never negative, never past the default, which
+    // is already sized to finish inside the action timeout.
+    const budgetMs = Math.min(
+      Math.max(0, args.timeBudgetMs ?? REPORT_TIME_BUDGET_MS),
+      REPORT_TIME_BUDGET_MS,
+    );
     const overBudget = () => Date.now() - started >= budgetMs;
 
     const scanned: Record<ReportSource, number> = {
@@ -310,6 +339,7 @@ export const run = internalAction({
     let cursor: string | null = args.resume ? args.resume.cursor : null;
     let pagesRead = 0;
     let timedOut = false;
+    let errors = 0;
 
     while (sourceIndex < REPORT_SOURCES.length) {
       // At least one page per run, so a resumed run always advances.
@@ -318,12 +348,32 @@ export const run = internalAction({
         break;
       }
       const source = REPORT_SOURCES[sourceIndex];
-      const page: {
+      let page: {
         hits: Hit[];
         scanned: number;
         isDone: boolean;
         continueCursor: string;
-      } = await ctx.runQuery(internal.combinedNamesReport.scanPage, { source, cursor });
+      };
+      try {
+        page = await ctx.runQuery(internal.combinedNamesReport.scanPage, {
+          source,
+          cursor,
+        });
+      } catch (error) {
+        // S2 — a failed page ends the run with everything gathered so far.
+        // `sourceIndex` and `cursor` still name the failed page, so the
+        // `resume` below retries exactly it. The error's class only: a
+        // message from a failed read may quote document content.
+        errors++;
+        console.warn(
+          JSON.stringify({
+            msg: "report_combined_names_page_failed",
+            source,
+            error: error instanceof Error ? error.name : "unknown",
+          }),
+        );
+        break;
+      }
       pagesRead++;
       scanned[source] += page.scanned;
       for (const hit of page.hits) {
@@ -357,6 +407,7 @@ export const run = internalAction({
         totalHits,
         truncated,
         timedOut,
+        errors,
         durationMs: Date.now() - started,
       }),
     );
@@ -368,10 +419,15 @@ export const run = internalAction({
         "suffix; fixing it is the operator's decision. cardBscTeamNameSeparator " +
         "hits written after NEO-333 are the intended hint for an unmatched " +
         "multi-team card." +
-        (truncated ? " The run stopped before the end: pass resume to continue." : ""),
+        (errors > 0
+          ? " A page failed to read; the counts are partial. Pass resume to retry it."
+          : truncated
+            ? " The run stopped before the end: pass resume to continue."
+            : ""),
       scanned,
       truncated,
       timedOut,
+      errors,
       ...(truncated ? { resume: { source: REPORT_SOURCES[sourceIndex], cursor } } : {}),
       kinds,
       totalHits,

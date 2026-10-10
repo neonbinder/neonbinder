@@ -29,7 +29,9 @@ import {
 // NEO-246/NEO-251: the same bounds the commit boundary
 // (`assertCardBatchWithinLimits`) enforces on a card, imported rather than
 // respelled so this parser cannot emit a card that boundary refuses. (The
-// name-length bound is applied inside `./marketplaceNames`.)
+// split's name-length bound is applied inside `./marketplaceNames`; the raw
+// team string's own bound is applied in `fetchBscCardTeamNameRaw`.)
+import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 // NEO-333 — one splitter for a separated player/team value, shared with the
 // SportLots adapter. Players split on `,` `/` `|`; teams on `,` only.
@@ -1924,6 +1926,8 @@ export const probeBscChecklistBatch = internalAction({
  * `[]`, never trimmed.
  *
  * `rawTeamName` is the trimmed, UNSPLIT string, and every caller carries it.
+ * It is `""` when BSC's value is longer than `MAX_PLAYER_NAME_LENGTH` (security
+ * review N1: bounded at the adapter, flagged in the log, never truncated).
  * A comma is not a perfect team separator (real team names carry one — "Korea,
  * South" — and BSC has sent a single team as "Scranton, Wilkes-Barre
  * RailRiders"), so the resolvers try the WHOLE string against existing team
@@ -1960,13 +1964,24 @@ async function fetchBscCardTeamNameRaw(
       return failed;
     }
     const data: unknown = await response.json();
-    const rawTeamName =
+    const upstreamTeamName =
       data && typeof data === "object" && typeof (data as { teamName?: unknown }).teamName === "string"
         ? (data as { teamName: string }).teamName.trim()
         : "";
-    const { names: teamNames, unrepresentable } =
-      splitMarketplaceTeamNames(rawTeamName);
-    if (unrepresentable) {
+    const { names: teamNames, unrepresentable: splitUnrepresentable } =
+      splitMarketplaceTeamNames(upstreamTeamName);
+    // NEO-333 (security review N1): the raw string is bounded HERE, at the
+    // adapter, by the same cap a stored name has. It travels whole through
+    // `fetchBscCardTeamNames` into `resolveCandidateTeams`' args for a
+    // 50-card chunk and into `applyBscTeamResolution`, so an outsized upstream
+    // value must not ride along. Over the cap it is sent as "" — no team name
+    // or alias can be that long, so the whole-name match it feeds could never
+    // succeed, and the split above still stands on its own bounded parts.
+    // Dropped, never truncated: a truncated string is a team name nobody
+    // wrote.
+    const rawOverCap = upstreamTeamName.length > MAX_PLAYER_NAME_LENGTH;
+    const rawTeamName = rawOverCap ? "" : upstreamTeamName;
+    if (splitUnrepresentable || rawOverCap) {
       // A flag and the card id only — never the marketplace text.
       console.warn(
         `[fetchBscCardTeamNameRaw] card-listing team value not representable bscCardId=${bscCardId}`,
@@ -2028,8 +2043,8 @@ export const resolveBscCardTeam = internalAction({
  * `BSC_TEAM_LOOKUP_CONCURRENCY` and awaits each chunk before starting the
  * next (matches the existing `MAX_SL_FAN_OUT` bounded-fan-out precedent in
  * selectorOptions.ts — no concurrency-limiting utility exists elsewhere in
- * this codebase to reuse). Returns only the ids BSC answered with a non-empty
- * team value; a card whose lookup failed or had no team on file
+ * this codebase to reuse). Returns only the ids BSC answered with a usable
+ * team value (a raw string or at least one part); a card whose lookup failed or had no team on file
  * (e.g. an insert/subset card) is simply absent from the result — the
  * caller treats that the same as "no team" either way.
  *
@@ -2059,7 +2074,11 @@ export const fetchBscCardTeamNames = internalAction({
       );
       chunk.forEach((bscCardId, idx) => {
         const { rawTeamName, teamNames } = results[idx];
-        if (rawTeamName) result[bscCardId] = { rawTeamName, teamNames };
+        // Either form is enough: `rawTeamName` is "" when BSC's value was
+        // over the length cap (N1) while its comma parts may still stand.
+        if (rawTeamName || teamNames.length > 0) {
+          result[bscCardId] = { rawTeamName, teamNames };
+        }
       });
     }
     return result;
