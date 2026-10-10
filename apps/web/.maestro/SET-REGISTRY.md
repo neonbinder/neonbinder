@@ -1444,6 +1444,59 @@ sanctioned writer — the 1996 Score shape. That is an owner decision; do not
 reach for it by letting one of these four flows write to a set the other three
 read.
 
+### Topps Chrome NPB — the same-name PICK STEP fixture (NEO-332) ✅ APPROVED by Jason 2026-10-10
+
+`Baseball → 2024 → Topps → Topps Chrome NPB → Base` belongs to exactly one flow,
+`checklist-wizard-same-name-pick-step`. `setup.yaml` provisions nothing for it:
+the flow syncs its variant types and maps Base on both sides on its first drill,
+through `util-fetch-real-set-checklist-to-wizard`, like the three committing
+fixtures above.
+
+**What the flow does to make the fixture.** Before it fetches, it forks two
+Baseball players named after card #1 on `/admin/players` — `Shuya Yamada`,
+b. 1851 and b. 1852 — so that name reaches the wizard as a row two players on
+file answer to, which is what the pick step ("Which Shuya Yamada is this?") is
+for. Card #1 is Shuya Yamada RC, Hanshin Tigers (TCDb), and BSC spells it the
+same: the pick heading read `Which Shuya Yamada is this?` on the first live
+fetch.
+
+**Why NPB, and not an MLB team set.** The name only reaches the pick step while
+card-year narrowing (`narrowSameNamePlayersByCardYear`) cannot pick one row: no
+same-name player may hold a stint on the card's printed team covering 2024. The
+forks hold no stints at all. An NPB club can never be that team for a
+catalogue player either, including NEO-330's prod catalogue, whereas any MLB
+team set's names would narrow to the catalogue's row and skip the step.
+
+**Read-only on the set.** The flow leaves through Cancel → Discard: it commits
+nothing and creates nothing from the wizard. It does write two GLOBAL `players`
+rows named `Shuya Yamada` that nothing deletes, so:
+
+* ⚠️ **No other flow may fetch a checklist carrying that name.** Its wizard
+  would open a pick step where it expects a New Player step.
+* ⚠️ **No flow may commit this set.** A commit creates or links a Yamada with a
+  2024 Hanshin stint, which narrows the name and removes the step for the rest
+  of the run.
+* **Re-runs are idempotent.** On a deployment that already holds both forks,
+  each create ADOPTS (a birth year exactly one row carries), and the flow
+  asserts both rows exist rather than that it created them. The flow also
+  clears a review batch a red attempt left behind
+  (`util-discard-resumed-review-batch`, with `SET` passed through).
+
+**It is the one wizard flow that does not walk.** The set is large: the first
+live fetch (dev, 2026-10-10) brought **244 unknown names, 216 players + 28
+teams**, every one behind a live Wikidata lookup (none are in the enrichment
+recording). 129 of them settled in 180s, so `util-wizard-walk-to-player-row`'s
+first wait — the sanctioned 180s Wikidata ceiling — expired with 115 still
+looking up and no team settled. The flow does not need it: the same-name row
+arrives READY (no lookup until Create new), so the wizard opens on its pick
+step while the rest are still looking up, and it holds still because
+`startBatch` inserts every player before any team and the pool drains FIFO, so
+no team settles for minutes. The flow states this at its STEP 1.
+
+**Measured (fill in from the first green PR-preview run):** fetch-to-wizard
+time, total flow time against the 600s per-flow cap, and that the wizard opened
+on the pick step with `0 of 244 reviewed · 243 still being looked up`.
+
 **The kind guard.** Two flows (`link-to-existing`, `career-team`) act on
 controls only a PLAYER row renders, and which row settles first is a race
 between live Wikidata lookups. Each opens with a `when: visible: id: "Skip .* not
