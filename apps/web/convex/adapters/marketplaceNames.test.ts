@@ -12,6 +12,7 @@ import {
   boundParsedNames,
   splitMarketplacePlayerNames,
   splitMarketplaceTeamNames,
+  stripZeroWidth,
 } from "./marketplaceNames";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
@@ -107,6 +108,28 @@ describe("splitMarketplaceNames: tidying", () => {
     ]);
   });
 
+  test("zero-width characters (U+200B-U+200D, U+FEFF) are stripped before trimming", () => {
+    expect(splitMarketplacePlayerNames("Mike Trout\u200B, \u200CShohei Ohtani\u200D").names).toEqual([
+      "Mike Trout",
+      "Shohei Ohtani",
+    ]);
+    // A zero-width copy of a name dedupes against the plain one.
+    expect(splitMarketplacePlayerNames("Mike Trout, Mike\uFEFF Trout\u200B").names).toEqual([
+      "Mike Trout",
+    ]);
+    // A part that is nothing but zero-width characters is an empty part.
+    expect(splitMarketplaceTeamNames("Cleveland Guardians,\u200B\u200D,Washington Nationals").names).toEqual([
+      "Cleveland Guardians",
+      "Washington Nationals",
+    ]);
+    expect(splitMarketplaceTeamNames("\u200B\uFEFF")).toEqual({ names: [], unrepresentable: false });
+  });
+
+  test("stripZeroWidth removes only the zero-width characters", () => {
+    expect(stripZeroWidth("Bod\u200Bø/Glimt\uFEFF")).toBe("Bodø/Glimt");
+    expect(stripZeroWidth("Korea, South")).toBe("Korea, South");
+  });
+
   test("a fullwidth comma is NOT a separator (documented limit: the value stays whole)", () => {
     expect(splitMarketplaceTeamNames("Chicago Cubs，Texas Rangers").names).toEqual([
       "Chicago Cubs，Texas Rangers",
@@ -145,6 +168,21 @@ describe("splitMarketplaceNames: generational suffixes", () => {
 
   test("a suffix after an empty part ('A,,Jr.') still attaches to the name before the gap (documented: the shared splitter ignores empty parts)", () => {
     expect(splitMarketplacePlayerNames("Ken Griffey,,Jr.").names).toEqual(["Ken Griffey Jr."]);
+  });
+
+  test("a doubled suffix collapses to the first: 'Ken Griffey Jr, Jr.' is 'Ken Griffey Jr'", () => {
+    expect(splitMarketplacePlayerNames("Ken Griffey Jr, Jr.").names).toEqual(["Ken Griffey Jr"]);
+    expect(splitMarketplacePlayerNames("Ken Griffey Jr., JR, Mike Trout").names).toEqual([
+      "Ken Griffey Jr.",
+      "Mike Trout",
+    ]);
+    // Two bare suffixes after one name: the first attaches, the second is dropped.
+    expect(splitMarketplacePlayerNames("Ken Griffey, Jr., Sr.").names).toEqual(["Ken Griffey Jr."]);
+    // A suffix after a DIFFERENT, suffix-free name still attaches to it.
+    expect(splitMarketplacePlayerNames("Ken Griffey Jr., Cal Ripken, Jr.").names).toEqual([
+      "Ken Griffey Jr.",
+      "Cal Ripken Jr.",
+    ]);
   });
 
   test("a suffix does not count toward the cap", () => {

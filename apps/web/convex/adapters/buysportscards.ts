@@ -39,6 +39,7 @@ import {
   boundParsedNames,
   splitMarketplacePlayerNames,
   splitMarketplaceTeamNames,
+  stripZeroWidth,
 } from "./marketplaceNames";
 // NEO-321 follow-up — a structured reason beside `success: false`, and the
 // self-imposed-limiter log line.
@@ -1966,7 +1967,7 @@ async function fetchBscCardTeamNameRaw(
     const data: unknown = await response.json();
     const upstreamTeamName =
       data && typeof data === "object" && typeof (data as { teamName?: unknown }).teamName === "string"
-        ? (data as { teamName: string }).teamName.trim()
+        ? stripZeroWidth((data as { teamName: string }).teamName).trim()
         : "";
     const { names: teamNames, unrepresentable: splitUnrepresentable } =
       splitMarketplaceTeamNames(upstreamTeamName);

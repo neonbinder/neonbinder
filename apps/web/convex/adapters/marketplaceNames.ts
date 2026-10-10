@@ -28,12 +28,15 @@
  *
  * ## What the splitter does, in order
  *
- * 1. Split on the separator, trim each part, drop empty parts (a trailing
- *    comma, a doubled separator).
+ * 1. Strip zero-width characters (U+200B–U+200D, U+FEFF), split on the
+ *    separator, collapse whitespace, trim each part, drop empty parts (a
+ *    trailing comma, a doubled separator).
  * 2. Re-attach a generational suffix. A part that is ONLY `Jr`/`Sr`/`II`/
  *    `III`/`IV` (period optional, any case) belongs to the name before it:
  *    "Ken Griffey, Jr., Mike Trout" is two names, the first "Ken Griffey Jr.".
- *    A suffix with no name before it is dropped; it names nobody.
+ *    A suffix with no name before it is dropped; it names nobody. A suffix
+ *    after a name that already ends in one is dropped too: "Ken Griffey Jr,
+ *    Jr." is "Ken Griffey Jr" (the first suffix wins).
  * 3. Dedupe case-insensitively, keeping the first spelling.
  * 4. Bound with `boundParsedNames`: an over-length name is dropped, and a list
  *    longer than the limit is refused whole.
@@ -60,6 +63,18 @@ export const TEAM_NAME_SEPARATOR = /,/;
  * NEO-333 stored-data report flags exactly what this splitter re-attaches.
  */
 export const GENERATIONAL_SUFFIX_ONLY = /^(?:jr|sr|ii|iii|iv)\.?$/i;
+
+/** Zero-width space, non-joiner, joiner and the BOM / zero-width no-break space. */
+const ZERO_WIDTH = /[\u200B-\u200D\uFEFF]/g;
+
+/**
+ * Remove zero-width characters from a marketplace value. Applied by the
+ * splitter, and by the BSC adapter to the raw team string it hands on for the
+ * whole-name match, so both forms of one value agree.
+ */
+export function stripZeroWidth(raw: string): string {
+  return raw.replace(ZERO_WIDTH, "");
+}
 
 /** What a split produced, plus whether anything was dropped or refused. */
 export type SplitMarketplaceNames = {
@@ -147,7 +162,11 @@ export function splitMarketplaceNames(
   limit: number,
   separator: RegExp,
 ): SplitMarketplaceNames {
-  const parts = raw
+  // Zero-width characters first: invisible, so "Mike Trout\u200B" and
+  // "Mike Trout" would otherwise be two names that read the same (trim does
+  // not remove U+200B), and a part of nothing but a zero-width space would
+  // survive the empty check.
+  const parts = stripZeroWidth(raw)
     .split(separator)
     .map((p) => p.replace(/\s+/g, " ").trim())
     .filter(Boolean);
@@ -156,9 +175,15 @@ export function splitMarketplaceNames(
   for (const part of parts) {
     if (GENERATIONAL_SUFFIX_ONLY.test(part)) {
       // A suffix with nothing before it names nobody: dropped.
-      if (joined.length > 0) {
-        joined[joined.length - 1] = `${joined[joined.length - 1]} ${part}`;
+      if (joined.length === 0) continue;
+      const previous = joined[joined.length - 1];
+      // A name carries one generational suffix. "Ken Griffey Jr, Jr." is the
+      // suffix written twice, not "Ken Griffey Jr Jr.": the first one stands.
+      const lastToken = previous.slice(previous.lastIndexOf(" ") + 1);
+      if (previous.includes(" ") && GENERATIONAL_SUFFIX_ONLY.test(lastToken)) {
+        continue;
       }
+      joined[joined.length - 1] = `${previous} ${part}`;
       continue;
     }
     joined.push(part);

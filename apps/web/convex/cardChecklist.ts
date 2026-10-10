@@ -444,8 +444,9 @@ export const applyBscTeamResolution = internalMutation({
     );
 
     // NEO-333: WHOLE NAME FIRST (Jason, 2026-10-10). The raw string as one
-    // team name or alias; exactly one hit settles the card and the split is
-    // never consulted. Skipped when the split is just the raw string again —
+    // team name or alias; exactly one hit settles the card, ANY hit means the
+    // split is never consulted, and only a whole string matching nothing
+    // falls through to it. Skipped when the split is just the raw string again —
     // the loop below asks the identical question.
     const splitIsJustRaw =
       teamNames.length === 1 && teamNames[0] === rawTeamName;
@@ -454,14 +455,15 @@ export const applyBscTeamResolution = internalMutation({
       !splitIsJustRaw &&
       rawTeamName.length <= MAX_BSC_TEAM_NAME_LENGTH
     ) {
-      const { teamId: wholeTeamId } = await resolveTeamForSetYear(
-        ctx,
-        sportId,
-        rawTeamName,
-        setYear,
-        // NEO-307: a SET year — a card can show a team's past.
-        { allowPastEra: true },
-      );
+      const { teamId: wholeTeamId, candidates: wholeCandidates } =
+        await resolveTeamForSetYear(
+          ctx,
+          sportId,
+          rawTeamName,
+          setYear,
+          // NEO-307: a SET year — a card can show a team's past.
+          { allowPastEra: true },
+        );
       if (wholeTeamId) {
         await ctx.db.patch(row._id, {
           teamOnCardIds: [wholeTeamId],
@@ -472,6 +474,19 @@ export const applyBscTeamResolution = internalMutation({
           lastUpdated: Date.now(),
         });
         return { applied: true, unmatched: false };
+      }
+      // The whole string names a team NB holds, but not one this card can
+      // link: several rows the set year cannot separate, or only a later era.
+      // It is still ONE team, so the split is never tried — cutting a known
+      // name at its comma could link two unrelated teams. Unmatched with the
+      // raw hint, the same landing as any unresolved name: the operator picks
+      // the era in the missing-team lane.
+      if (wholeCandidates.length > 0) {
+        await ctx.db.patch(row._id, {
+          teamCheckDoneAt: Date.now(),
+          bscTeamName: hint || undefined,
+        });
+        return { applied: false, unmatched: true };
       }
     }
 

@@ -476,12 +476,14 @@ async function writeCandidatePage(
  *
  * Whole-name first (Jason, 2026-10-10). A comma is not a reliable team
  * separator: real team names and aliases carry one ("Korea, South", "Scranton,
- * Wilkes-Barre RailRiders"). So when the raw string resolves to exactly one
- * existing team — by name or alias, through `resolveTeamForSetYear`, the same
- * resolution the review gate (`teams.findByNameAndSport`) and the commit
- * prelude use — the card carries that one string, and both later passes find
- * the same team by it. Otherwise the card carries the split parts, and any
- * part NB does not hold goes to review; the operator can then add an alias.
+ * Wilkes-Barre RailRiders"). So when the raw string matches ANY existing team
+ * row in the sport — by name or alias, through `resolveTeamForSetYear`, the
+ * same resolution the review gate (`teams.findByNameAndSport`) and the commit
+ * prelude use — the card carries that one string. Exactly one row: both later
+ * passes find it by that string. Several rows the year cannot separate: the
+ * gate asks the operator which era, as it does for any name. Only when the
+ * whole string matches NOTHING does the card carry the split parts; any part
+ * NB does not hold goes to review, and the operator can then add an alias.
  *
  * The match is only attempted when it could change the answer: a value with
  * no comma splits to itself, and resolving it here would be a second read for
@@ -507,12 +509,23 @@ async function chooseCandidateTeams(
   if (raw && !splitIsJustRaw && raw.length <= MAX_PLAYER_NAME_LENGTH) {
     const { sportId, setYear } = await scope();
     if (sportId) {
-      const { teamId } = await resolveTeamForSetYear(ctx, sportId, raw, setYear, {
-        // NEO-307: a SET year — a card can show a team's past. Must agree
-        // with the gate and the prelude, which pass the same option.
-        allowPastEra: true,
-      });
-      if (teamId) return [raw];
+      const { teamId, candidates } = await resolveTeamForSetYear(
+        ctx,
+        sportId,
+        raw,
+        setYear,
+        {
+          // NEO-307: a SET year — a card can show a team's past. Must agree
+          // with the gate and the prelude, which pass the same option.
+          allowPastEra: true,
+        },
+      );
+      // ANY row answering to the whole string makes it one team, even when
+      // the year cannot pick between several (or the only row is a later
+      // era). The card keeps the raw string so the gate asks ITS question —
+      // which era — instead of this cutting a known name at its comma and the
+      // wizard offering two teams nobody meant.
+      if (teamId || candidates.length > 0) return [raw];
     }
   }
   if (

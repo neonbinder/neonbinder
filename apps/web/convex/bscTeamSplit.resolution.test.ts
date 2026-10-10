@@ -245,21 +245,26 @@ describe("applyBscTeamResolution: whole string first (NEO-333)", () => {
     expect((await getCard(t, cardId))!.teamOnCardIds).toEqual([railRiders]);
   });
 
-  test("a whole string that names TWO teams (ambiguous) falls through to the split", async () => {
+  test("a whole string that names TWO teams (ambiguous) is still ONE team: unmatched with the raw hint, the split never tried", async () => {
     const t = harness();
     const { sportId, leafId } = await seedSet(t);
     // Two undated rows answer to the whole string: not "exactly one", so the
-    // whole-name step cannot settle the card.
+    // whole-name step cannot LINK the card — but the string is a known team,
+    // so cutting it at its comma would be wrong even though both parts are
+    // teams NB holds.
     await seedTeam(t, sportId, { name: "Korea, South" });
     await seedTeam(t, sportId, { name: "Korea, South", location: "X" , aliases: ["Korea, South"] });
-    const korea = await seedTeam(t, sportId, { name: "Korea" });
-    const south = await seedTeam(t, sportId, { name: "South" });
+    await seedTeam(t, sportId, { name: "Korea" });
+    await seedTeam(t, sportId, { name: "South" });
     const cardId = await seedCard(t, leafId);
 
     const result = await apply(t, cardId, "Korea, South", ["Korea", "South"]);
 
-    expect(result).toEqual({ applied: true, unmatched: false });
-    expect((await getCard(t, cardId))!.teamOnCardIds).toEqual([korea, south]);
+    expect(result).toEqual({ applied: false, unmatched: true });
+    const card = (await getCard(t, cardId))!;
+    expect(card.teamOnCardIds ?? []).toEqual([]);
+    expect(card.bscTeamName).toBe("Korea, South");
+    expect(card.teamCheckDoneAt).toBeDefined();
   });
 });
 
@@ -703,19 +708,13 @@ describe("resolveCandidateTeams: which team strings a candidate card carries (NE
   });
 
   /**
-   * ADVERSARIAL FINDING (reported to the coordinator, product code untouched).
-   *
    * When the whole string is a KNOWN team that two same-name rows share and
-   * the set's year cannot separate (`resolveTeamForSetYear` -> null), the
-   * candidate path falls through to the comma split, so the card carries
-   * "Scranton" and "Wilkes-Barre RailRiders" and the review wizard offers to
-   * create two teams NB does not mean. The apply path is safe (it leaves the
-   * card unmatched with the raw hint). Desired: the card keeps the raw string,
-   * so the gate's own ambiguity question (which era?) is the one asked.
-   * `test.fails` documents it without turning the suite red; flip to `test`
-   * when fixed.
+   * the set's year cannot separate (`resolveTeamForSetYear` -> null), the card
+   * keeps the raw string, so the gate's own ambiguity question (which era?) is
+   * the one asked — never "Scranton" + "Wilkes-Barre RailRiders" as two new
+   * teams. (Found by the adversarial pass; fixed in `chooseCandidateTeams`.)
    */
-  test.fails("a known team with two undecidable eras keeps the RAW string instead of being cut at its comma", async () => {
+  test("a known team with two undecidable eras keeps the RAW string instead of being cut at its comma", async () => {
     const t = harness();
     const { sportId, leafId } = await seedSet(t, { year: "1990" });
     await seedTeam(t, sportId, { name: RAIL, yearsActive: { from: 1980, to: 2000 } });
@@ -787,7 +786,7 @@ describe("resolveCandidateTeams: which team strings a candidate card carries (NE
     expect(out.teams).toEqual([CLE, WSH]);
   });
 
-  test("a future-era-only team does not make the raw string one team", async () => {
+  test("a future-era-only team still makes the raw string ONE team (the gate, not the split, decides)", async () => {
     const t = harness();
     const { sportId, leafId } = await seedSet(t, { year: "2024" });
     await seedTeam(t, sportId, { name: "Korea, South", yearsActive: { from: 2030 } });
@@ -795,7 +794,10 @@ describe("resolveCandidateTeams: which team strings a candidate card carries (NE
 
     const out = await resolve(t, { rawTeamName: "Korea, South", teamNames: ["Korea", "South"] });
 
-    expect(out.teams).toEqual(["Korea", "South"]);
+    // ANY row answering to the whole string means it names one team, even
+    // one this set's year cannot link; cutting it at its comma would send two
+    // made-up teams to review.
+    expect(out.teams).toEqual(["Korea, South"]);
   });
 
   test("a legacy entry with only a name-less shape (no raw, no parts) carries no teams", async () => {
