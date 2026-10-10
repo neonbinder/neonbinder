@@ -44,7 +44,7 @@ const DEBOUNCE_MS = 200;
 vi.mock("../../convex/_generated/api", () => ({
   api: {
     players: { search: "players.search", list: "players.list" },
-    teams: { search: "teams.search", list: "teams.list" },
+    teams: { search: "teams.search" },
     // NEO-254: leagues have no `search` — a sport's leagues fit on a screen, so
     // the component reads the whole list and filters client-side.
     leagues: { list: "leagues.list" },
@@ -142,7 +142,6 @@ describe("EntityLinkSearch — search source", () => {
     });
     // The 500-row list path is gone entirely — not merely unused.
     expect(queryCalls.some((c) => c.ref === "players.list")).toBe(false);
-    expect(queryCalls.some((c) => c.ref === "teams.list")).toBe(false);
   });
 
   it("queries teams.search for kind='team', and skips the player query", () => {

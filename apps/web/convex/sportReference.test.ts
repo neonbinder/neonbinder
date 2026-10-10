@@ -25,8 +25,8 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
-// NEO-236: `teams.list` returns raw rows, so a split team's `name` is the
-// nickname alone. Every assertion about a team NAME composes it.
+// NEO-236: `teams.pickerCandidates` returns raw rows, so a split team's
+// `name` is the nickname alone. Every assertion about a team NAME composes it.
 import { teamFullName } from "../lib/teams/team-name";
 import { Id } from "./_generated/dataModel";
 
@@ -165,7 +165,7 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
     expect(visible.map((p) => p.name)).toContain("Mike Trout");
   });
 
-  test("a team created by commitCardChecklist is returned by teams.list for the same sport node", async () => {
+  test("a team created by commitCardChecklist is returned by the team picker's browse for the same sport node", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, variantTypeId } = await seedTree(t);
@@ -187,10 +187,15 @@ describe("NEO-96 round trip: commit-created entities are visible to the pickers"
       cards: [card("2", [], ["Los Angeles Angels"])],
     });
 
-    const visible = await asAdmin.query(api.teams.list, { sportId, limit: 500 });
+    // NEO-331: `teams.list` is gone; the picker's own read is
+    // `teams.pickerCandidates`, and a blank query is its browse — the sport's
+    // teams by `by_sport_id`, exactly the read `list` made.
+    const visible = (
+      await asAdmin.query(api.teams.pickerCandidates, { query: "", sportId })
+    ).map((c) => c.team);
     // The reference round trip, unchanged in intent: what commit created is
-    // what the picker lists. Composed, because `list` returns raw rows and the
-    // row now stores ("Los Angeles", "Angels").
+    // what the picker lists. Composed, because the picker returns raw rows and
+    // the row now stores ("Los Angeles", "Angels").
     expect(visible.map((tm) => teamFullName(tm))).toContain("Los Angeles Angels");
     const angels = visible.find((tm) => teamFullName(tm) === "Los Angeles Angels");
     expect(angels!.location).toBe("Los Angeles");
@@ -404,7 +409,9 @@ describe("NEO-96 renameSelectorOption", () => {
 
     // The whole point of the reference model: the label moved, nothing else did.
     const players = await asAdmin.query(api.players.list, { sportId, limit: 500 });
-    const teams = await asAdmin.query(api.teams.list, { sportId, limit: 500 });
+    const teams = (
+      await asAdmin.query(api.teams.pickerCandidates, { query: "", sportId })
+    ).map((c) => c.team);
     expect(players.map((p) => p.name)).toContain("Mike Trout");
     expect(teams.map((tm) => teamFullName(tm))).toContain("Los Angeles Angels");
 

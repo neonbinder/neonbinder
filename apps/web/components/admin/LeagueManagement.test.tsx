@@ -147,8 +147,7 @@ const PCL = {
   lastUpdated: 1,
 };
 
-/** No level — the other half of the same omission, on another sport so the
- *  sport filter has something to filter to. */
+/** Complete, on another sport so the sport filter has something to filter to. */
 const NHL = {
   _id: "lg-nhl",
   _creationTime: 3,
@@ -156,6 +155,7 @@ const NHL = {
   abbreviation: "NHL",
   nameNormalized: "national hockey league",
   sportId: "sport-hockey",
+  level: "major",
   lastUpdated: 1,
 };
 
@@ -267,6 +267,13 @@ function selectAL() {
 }
 
 /** Open the add form and choose a sport, which the create button requires. */
+/** NEO-331: the Level control is a radiogroup of radios; "on" is aria-checked. */
+const levelGroup = () => screen.getByRole("radiogroup", { name: "Level" });
+const levelPill = (label: string) =>
+  within(levelGroup()).getByRole("radio", { name: label });
+const levelIsOn = (el: Element) => el.getAttribute("aria-checked") === "true";
+const pressLevel = (label: string) => fireEvent.click(levelPill(label));
+
 function openAddForm(container: HTMLElement) {
   fireEvent.click(screen.getByRole("button", { name: "Add league" }));
   fireEvent.change(container.querySelector("#new-league-sport")!, {
@@ -326,8 +333,9 @@ describe("LeagueManagement — the list", () => {
 
   it("counts the list and how much of it needs a human", async () => {
     render(<LeagueManagement />);
-    // PCL has no abbreviation, NHL has no level. AL is complete.
-    const counter = screen.getByText("3 of 3 leagues · 2 need attention");
+    // Only PCL needs attention (no abbreviation). Level is required, so it can no
+    // longer be the second reason.
+    const counter = screen.getByText("3 of 3 leagues · 1 need attention");
 
     // The VISIBLE counter is not the live region. It recomputes on every
     // keystroke, and a polite region queues each intermediate value instead of
@@ -341,7 +349,7 @@ describe("LeagueManagement — the list", () => {
     await waitFor(
       () =>
         expect(liveCounter().textContent).toBe(
-          "3 of 3 leagues · 2 need attention",
+          "3 of 3 leagues · 1 need attention",
         ),
       { timeout: 2000 },
     );
@@ -350,7 +358,7 @@ describe("LeagueManagement — the list", () => {
   it("announces the filtered count once, after the typing stops", async () => {
     render(<LeagueManagement />);
     await waitFor(
-      () => expect(liveCounter().textContent).toBe("3 of 3 leagues · 2 need attention"),
+      () => expect(liveCounter().textContent).toBe("3 of 3 leagues · 1 need attention"),
       { timeout: 2000 },
     );
 
@@ -359,13 +367,13 @@ describe("LeagueManagement — the list", () => {
       fireEvent.change(screen.getByLabelText("Filter leagues"), {
         target: { value },
       });
-      expect(liveCounter().textContent).toBe("3 of 3 leagues · 2 need attention");
+      expect(liveCounter().textContent).toBe("3 of 3 leagues · 1 need attention");
     }
 
     await waitFor(
       () =>
         expect(liveCounter().textContent).toBe(
-          "1 of 3 leagues · 2 need attention",
+          "1 of 3 leagues · 1 need attention",
         ),
       { timeout: 2000 },
     );
@@ -392,7 +400,7 @@ describe("LeagueManagement — the list", () => {
     // Read straight after the change, with no wait: the visible counter is
     // synchronous precisely so a sighted operator watches the number fall as
     // they type. The announced copy is the one that waits.
-    expect(visibleCounter().textContent).toBe("1 of 3 leagues · 2 need attention");
+    expect(visibleCounter().textContent).toBe("1 of 3 leagues · 1 need attention");
   });
 
   it("passes the sport filter to the list query", () => {
@@ -417,7 +425,7 @@ describe("LeagueManagement — the list", () => {
     ).toBeTruthy();
   });
 
-  it("says what is missing in words, not only in a glyph", () => {
+  it("says what is missing in words, not only in a glyph (the abbreviation; level can no longer be missing)", () => {
     management = { leagues: [PCL, NHL], totalCount: 2, truncated: false };
     render(<LeagueManagement />);
 
@@ -435,13 +443,12 @@ describe("LeagueManagement — the list", () => {
     // The level it DOES have is printed as a word, not as the stored value.
     expect(pcl.textContent).toContain("Minor");
 
+    // Level is required (NEO-331): every row prints one, and there is no
+    // "not set" marker left to announce.
     const nhl = screen.getByRole("button", { name: /National Hockey League/ });
-    expect(within(nhl).getByText("Level not set").className).toContain(
-      "sr-only",
-    );
-    expect(within(nhl).getByTitle("Level not set")).toBeTruthy();
-    expect(within(nhl).getByText("?").getAttribute("aria-hidden")).toBe("true");
+    expect(nhl.textContent).toContain("Major");
     expect(nhl.textContent).toContain("NHL");
+    expect(within(nhl).queryByText("Level not set")).toBeNull();
   });
 
   it("marks the open row as current", () => {
@@ -546,12 +553,14 @@ describe("LeagueManagement — the add form", () => {
       ).toBeTruthy(),
     );
 
+    pressLevel("Major");
     fireEvent.click(
       screen.getByLabelText("Create league American League anyway"),
     );
     await waitFor(() =>
       expect(mockCreateByAdmin).toHaveBeenCalledWith({
         name: "American League",
+        level: "major",
         sportId: "sport-baseball",
       }),
     );
@@ -566,11 +575,7 @@ describe("LeagueManagement — the add form", () => {
     fireEvent.change(screen.getByLabelText("Abbreviation"), {
       target: { value: " AL " },
     });
-    fireEvent.click(
-      within(screen.getByRole("group", { name: "Level" })).getByRole("button", {
-        name: "Major",
-      }),
-    );
+    pressLevel("Major");
 
     fireEvent.click(screen.getByLabelText("Create league American League"));
 
@@ -596,13 +601,16 @@ describe("LeagueManagement — the add form", () => {
     fireEvent.change(screen.getByLabelText("New league name"), {
       target: { value: "American League" },
     });
+    pressLevel("Major");
     fireEvent.click(screen.getByLabelText("Create league American League"));
 
-    // Not `abbreviation: ""` and not `level: null` — an omitted optional arg is
-    // the only honest way to say "the operator did not tell us".
+    // Not `abbreviation: ""` — an omitted optional arg is the only honest way
+    // to say "the operator did not tell us". The level is NOT optional
+    // (NEO-331), so it is always sent.
     await waitFor(() =>
       expect(mockCreateByAdmin).toHaveBeenCalledWith({
         name: "American League",
+        level: "major",
         sportId: "sport-baseball",
       }),
     );
@@ -615,6 +623,7 @@ describe("LeagueManagement — the add form", () => {
     fireEvent.change(screen.getByLabelText("New league name"), {
       target: { value: "American League" },
     });
+    pressLevel("Major");
     fireEvent.click(screen.getByLabelText("Create league American League"));
 
     expect(
@@ -642,6 +651,7 @@ describe("LeagueManagement — the add form", () => {
 
     // Idle: the name says which league it will create — unchanged, and the
     // string every E2E flow taps.
+    pressLevel("Major");
     const create = screen.getByLabelText("Create league American League");
     expect(create.textContent).toBe("Create league");
 
@@ -679,6 +689,7 @@ describe("LeagueManagement — the add form", () => {
       "Create league American League anyway",
     );
     expect(anyway.textContent).toBe("Create anyway");
+    pressLevel("Major");
     fireEvent.click(anyway);
 
     await waitFor(() => expect(screen.getByLabelText("Adding league")).toBeTruthy());
@@ -703,6 +714,7 @@ describe("LeagueManagement — the add form", () => {
     fireEvent.change(screen.getByLabelText("New league name"), {
       target: { value: "American League" },
     });
+    pressLevel("Major");
     fireEvent.click(screen.getByLabelText("Create league American League"));
 
     const line = await screen.findByText("Added American League.");
@@ -722,6 +734,7 @@ describe("LeagueManagement — the add form", () => {
     fireEvent.change(screen.getByLabelText("New league name"), {
       target: { value: "Pacific Coast League" },
     });
+    pressLevel("Minor");
     fireEvent.click(
       screen.getByLabelText("Create league Pacific Coast League"),
     );
@@ -743,32 +756,25 @@ describe("LeagueManagement — the add form", () => {
 });
 
 describe("LeagueManagement — the level group", () => {
-  it("presses exactly the level the row carries", () => {
+  const selected = () =>
+    Array.from(levelGroup().querySelectorAll("[role='radio']"))
+      .filter(levelIsOn)
+      .map((el) => el.textContent);
+
+  it("selects exactly the level the row carries", () => {
     render(<LeagueManagement />);
     selectAL();
-
-    const group = screen.getByRole("group", { name: "Level" });
-    const pressed = within(group)
-      .getAllByRole("button")
-      .filter((b) => b.getAttribute("aria-pressed") === "true")
-      .map((b) => b.textContent);
-    expect(pressed).toEqual(["Major"]);
+    expect(selected()).toEqual(["Major"]);
   });
 
-  it("presses nothing at all when the level is not set", () => {
+  it("always opens with a level selected, because a stored league always has one", () => {
     management = { leagues: [NHL], totalCount: 1, truncated: false };
     render(<LeagueManagement />);
     fireEvent.click(screen.getByRole("button", { name: /National Hockey/ }));
-
-    const group = screen.getByRole("group", { name: "Level" });
-    expect(
-      within(group)
-        .getAllByRole("button")
-        .every((b) => b.getAttribute("aria-pressed") === "false"),
-    ).toBe(true);
+    expect(selected()).toEqual(["Major"]);
   });
 
-  it("marks the pressed level with weight as well as colour", () => {
+  it("marks the selected level with weight as well as colour", () => {
     // Teal-on-teal-tint is otherwise the ONLY difference between pressed and
     // not (SC 1.4.1). The label text is untouched — the cue is the weight, not
     // a glyph, so neither the accessible name nor a Maestro `tapOn: "Major"`
@@ -776,36 +782,43 @@ describe("LeagueManagement — the level group", () => {
     render(<LeagueManagement />);
     selectAL();
 
-    const group = screen.getByRole("group", { name: "Level" });
-    const major = within(group).getByRole("button", { name: "Major" });
-    const minor = within(group).getByRole("button", { name: "Minor" });
+    const major = levelPill("Major");
+    const minor = levelPill("Minor");
 
-    expect(major.getAttribute("aria-pressed")).toBe("true");
+    expect(levelIsOn(major)).toBe(true);
     expect(major.className).toContain("font-semibold");
-    expect(minor.getAttribute("aria-pressed")).toBe("false");
+    expect(levelIsOn(minor)).toBe(false);
     expect(minor.className).not.toContain("font-semibold");
     expect(major.textContent).toBe("Major");
   });
 
-  it("clears the level when the pressed button is pressed again", async () => {
-    // Level is OPTIONAL, and "not set" is a state this screen exists to fix —
-    // so it has to stay reachable. A radio group could not get back to it.
+  it("keeps the level when the selected one is pressed again, and Save stays inert", () => {
+    // NEO-331: level is required, so "no level" is not a state to get back to.
     render(<LeagueManagement />);
     selectAL();
 
-    const group = screen.getByRole("group", { name: "Level" });
-    fireEvent.click(within(group).getByRole("button", { name: "Major" }));
+    pressLevel("Major");
+
+    expect(levelIsOn(levelPill("Major"))).toBe(true);
     expect(
-      within(group).getByRole("button", { name: "Major" }).getAttribute(
-        "aria-pressed",
-      ),
-    ).toBe("false");
+      screen.getByRole("button", { name: "Save" }).hasAttribute("disabled"),
+    ).toBe(true);
+    expect(mockSaveLeagueFields).not.toHaveBeenCalled();
+  });
+
+  it("moves the selection to another level and saves exactly that", async () => {
+    render(<LeagueManagement />);
+    selectAL();
+
+    pressLevel("Minor");
+    expect(levelIsOn(levelPill("Minor"))).toBe(true);
+    expect(levelIsOn(levelPill("Major"))).toBe(false);
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() =>
       expect(mockSaveLeagueFields).toHaveBeenCalledWith({
         id: "lg-al",
-        level: null,
+        level: "minor",
       }),
     );
   });
@@ -1155,7 +1168,7 @@ describe("LeagueManagement — the detail panel", () => {
       target: { value: "NHL (edited)" },
     });
 
-    LEAGUES_BY_ID["lg-nhl"] = { ...NHL, level: "major", lastUpdated: 2 };
+    LEAGUES_BY_ID["lg-nhl"] = { ...NHL, level: "minor", lastUpdated: 2 };
     rerender(<LeagueManagement />);
 
     expect(
@@ -1170,11 +1183,7 @@ describe("LeagueManagement — the detail panel", () => {
     expect(
       (screen.getByLabelText("League name") as HTMLInputElement).value,
     ).toBe("National Hockey League");
-    expect(
-      within(screen.getByRole("group", { name: "Level" }))
-        .getByRole("button", { name: "Major" })
-        .getAttribute("aria-pressed"),
-    ).toBe("true");
+    expect(levelIsOn(levelPill("Minor"))).toBe(true);
     expect(screen.queryByText(/updated elsewhere/)).toBeNull();
 
     LEAGUES_BY_ID["lg-nhl"] = NHL;
@@ -1244,6 +1253,7 @@ describe("LeagueManagement — focus follows the panel", () => {
     fireEvent.change(screen.getByLabelText("New league name"), {
       target: { value: "American League" },
     });
+    pressLevel("Major");
     fireEvent.click(screen.getByLabelText("Create league American League"));
 
     const heading = await screen.findByRole("heading", {
@@ -1405,6 +1415,7 @@ describe("LeagueManagement — the ?league deep link", () => {
     fireEvent.change(screen.getByLabelText("New league name"), {
       target: { value: "American League" },
     });
+    pressLevel("Major");
     fireEvent.click(
       screen.getByRole("button", { name: "Create league American League" }),
     );

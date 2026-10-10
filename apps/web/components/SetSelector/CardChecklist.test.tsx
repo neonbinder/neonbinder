@@ -88,7 +88,7 @@ vi.mock("../../convex/_generated/api", () => ({
     // opens. Routed through the same string-reference mock as everything else.
     teams: {
       getManyByIds: "teams.getManyByIds",
-      list: "teams.list",
+      pickerCandidates: "teams.pickerCandidates",
       findOrCreate: "teams.findOrCreate",
     },
     // NEO-221: UnreviewedNameFixer mounts the REAL PlayerPicker, which needs
@@ -236,7 +236,7 @@ const state: {
   liveCandidates: unknown;
   /**
    * NEO-208: the `teams` table, for the REAL `TeamPicker` now living in the
-   * quick-add form. Serves both `teams.list` (the typeahead's candidate pool)
+   * quick-add form. Serves both `teams.pickerCandidates` (the typeahead's candidate pool)
    * and `teams.getManyByIds` (the chip labels) — the mocked `useQuery` ignores
    * arguments, and returning the same rows for both is exactly right here:
    * every id the picker can hold came from this pool.
@@ -276,8 +276,11 @@ const state: {
   skippedNames: [],
 };
 
+const pickerArgs: unknown[] = [];
+
 vi.mock("convex/react", () => ({
-  useQuery: (ref: string) => {
+  useQuery: (ref: string, args: unknown) => {
+    if (ref === "teams.pickerCandidates") pickerArgs.push(args);
     if (ref === "getCardChecklist") return state.cards;
     if (ref === "getSelectorOptionById") return state.variantRow;
     if (ref === "getAncestorChain") return state.ancestorChain;
@@ -286,7 +289,11 @@ vi.mock("convex/react", () => ({
     // NEO-102: the walker's fixer reads suggestions per card; [] keeps it
     // resolved-but-empty, which is the "no career history" shape.
     if (ref === "cardChecklist.suggestedTeamsForCard") return [];
-    if (ref === "teams.getManyByIds" || ref === "teams.list") return state.teams;
+    if (ref === "teams.getManyByIds") return state.teams;
+    // NEO-331: the picker's candidate pool arrives ranked, as `{ team, tier }`.
+    if (ref === "teams.pickerCandidates") {
+      return state.teams.map((team) => ({ team, tier: 1 }));
+    }
     if (ref === "players.getManyByIds" || ref === "players.list") {
       return state.players;
     }
@@ -1798,6 +1805,15 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     state.liveCandidates = null;
     state.teams = [YANKEES, METS];
     mockAddCustomCard.mockResolvedValue("new-card-1");
+  });
+
+  it("NEO-331: the quick-add picker ranks by THIS checklist's row (contextOptionId = variantId)", () => {
+    pickerArgs.length = 0;
+    renderChecklist();
+    openAddForm();
+
+    expect(pickerArgs.length).toBeGreaterThan(0);
+    expect(pickerArgs.at(-1)).toMatchObject({ contextOptionId: VARIANT_ID });
   });
 
   it("renders a TeamPicker, not a free-text Team box", () => {

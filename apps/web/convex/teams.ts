@@ -4,7 +4,12 @@ import type { PaginationResult } from "convex/server";
 import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
+import {
+  getCurrentUserId,
+  getCurrentUserIdentity,
+  requireAdmin,
+  requireSignedIn,
+} from "./auth";
 import {
   // NEO-331: automatic paths link an existing league; they never create one.
   findLeagueByName,
@@ -78,8 +83,9 @@ const teamDocValidator = v.object({
   league: v.optional(v.string()),
   // NEO-254: the franchise thread, when an operator has put this row on one.
   // Listed here because this validator is STRICT — Convex checks it against
-  // the real document, so a schema field missing from it makes `teams.list`
-  // throw for every screen, not just for a test.
+  // the real document, so a schema field missing from it makes every query
+  // returning team rows (`teams.search`, `teams.pickerCandidates`, …) throw
+  // for every screen, not just for a test.
   franchiseId: v.optional(v.id("franchises")),
   // NEO-236: the place part of the franchise name — "San Diego" in "San Diego
   // Padres". Location, not city: it is wherever the team is FROM, so a bay
@@ -870,7 +876,7 @@ export const findOrCreate = mutation({
     // NEO-208 security condition: `sportId` is a bare `v.id("selectorOptions")`
     // — the validator proves it is an id in that table, not that it points at
     // a SPORT. A team hung off, say, a variantType row is unreachable by every
-    // query that matters (`teams.list` and `findByNameAndSport` both key on
+    // query that matters (`teams.pickerCandidates` and `findByNameAndSport` key on
     // the sport row id, and `findSportForSelectorOption` only ever yields a
     // `level === "sport"` row), so it would be an orphan with a league
     // attached — the same class of unfindable row the old `sport ?? ""`
@@ -1042,25 +1048,6 @@ export const findOrCreate = mutation({
      */
 
     return id;
-  },
-});
-
-export const list = query({
-  args: {
-    sportId: v.optional(v.id("selectorOptions")),
-    limit: v.optional(v.number()),
-  },
-  returns: v.array(teamDocValidator),
-  handler: async (ctx, args) => {
-    await requireSignedIn(ctx);
-    const limit = args.limit ?? 100;
-    if (args.sportId) {
-      return await ctx.db
-        .query("teams")
-        .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
-        .take(limit);
-    }
-    return await ctx.db.query("teams").take(limit);
   },
 });
 
@@ -2104,7 +2091,8 @@ async function pickerContext(
  * team reaches the pool only through the sport leg. Measure before widening.
  *
  * Signed-in, `[]` when signed out — the same gate and reasoning as
- * `teams.search`.
+ * `teams.search`. `contextOptionId` is honoured for ADMINS only; a signed-in
+ * non-admin gets the context-free order (see the handler).
  */
 export const pickerCandidates = query({
   args: {
@@ -2120,12 +2108,21 @@ export const pickerCandidates = query({
     }),
   ),
   handler: async (ctx, args) => {
-    if (!(await getCurrentUserId(ctx))) return [];
+    const identity = await getCurrentUserIdentity(ctx);
+    if (!identity) return [];
     const sportId = args.sportId;
 
+    // NEO-331 security condition: the context row is a `selectorOptions` row,
+    // and every read of that table is admin-only (sets are operator data until
+    // they are published). This query is merely signed-in, so honouring the
+    // context for anyone would turn it into an oracle on an admin-gated row:
+    // the tier each team lands in, and the order they come back in, say which
+    // league the row's `features.league` names and which year it sits under.
+    // A non-admin's context is therefore IGNORED, not refused — the picker
+    // still works, context-free, every row at tier 4.
     const { leagueId, year } = await pickerContext(
       ctx,
-      args.contextOptionId,
+      identity.role === "admin" ? args.contextOptionId : undefined,
       sportId,
     );
 

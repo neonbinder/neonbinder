@@ -19,7 +19,7 @@
  * ever touches the form to make something happen to the dialog.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createRef } from "react";
 import { ConvexError } from "convex/values";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -86,6 +86,15 @@ beforeEach(() => {
   nearMatches = undefined;
   mockCreateByAdmin.mockResolvedValue({ id: "lg-npb", created: true });
 });
+
+/** NEO-331: a level is required, so every create taps one first. */
+function pressLevel(label: string) {
+  fireEvent.click(
+    within(screen.getByRole("radiogroup", { name: "Level" })).getByRole("radio", {
+      name: label,
+    }),
+  );
+}
 
 describe("AddLeagueDialog — how it is announced", () => {
   it("is a modal dialog named by its own heading", () => {
@@ -216,6 +225,7 @@ describe("AddLeagueDialog — the ways out", () => {
     fireEvent.change(nameField(), {
       target: { value: "Nippon Professional Baseball" },
     });
+    pressLevel("Major");
     fireEvent.click(
       screen.getByLabelText("Create league Nippon Professional Baseball"),
     );
@@ -236,6 +246,7 @@ describe("AddLeagueDialog — finishing", () => {
     fireEvent.change(nameField(), {
       target: { value: "Nippon Professional Baseball" },
     });
+    pressLevel("Major");
     fireEvent.click(
       screen.getByLabelText("Create league Nippon Professional Baseball"),
     );
@@ -287,6 +298,7 @@ describe("AddLeagueDialog — finishing", () => {
     fireEvent.change(nameField(), {
       target: { value: "Nippon Professional Baseball" },
     });
+    pressLevel("Major");
     fireEvent.click(
       screen.getByLabelText("Create league Nippon Professional Baseball"),
     );

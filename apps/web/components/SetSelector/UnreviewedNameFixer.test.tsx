@@ -34,7 +34,7 @@ vi.mock("../../convex/_generated/api", () => ({
     },
     teams: {
       getManyByIds: "teams.getManyByIds",
-      list: "teams.list",
+      pickerCandidates: "teams.pickerCandidates",
       findOrCreate: "teams.findOrCreate",
     },
   },
@@ -47,12 +47,19 @@ const state: {
   teams: Array<{ _id: string; name: string }>;
 } = { players: [], teams: [] };
 
+const pickerArgs: unknown[] = [];
+
 vi.mock("convex/react", () => ({
-  useQuery: (ref: string) => {
+  useQuery: (ref: string, args: unknown) => {
+    if (ref === "teams.pickerCandidates") pickerArgs.push(args);
     if (ref === "players.getManyByIds" || ref === "players.list") {
       return state.players;
     }
-    if (ref === "teams.getManyByIds" || ref === "teams.list") return state.teams;
+    if (ref === "teams.getManyByIds") return state.teams;
+    // NEO-331: the picker's candidate pool arrives ranked, as `{ team, tier }`.
+    if (ref === "teams.pickerCandidates") {
+      return state.teams.map((team) => ({ team, tier: 1 }));
+    }
     return undefined;
   },
   useMutation: (ref: string) => {
@@ -88,9 +95,12 @@ function baseRow(overrides: Partial<CardChecklistRow> = {}): CardChecklistRow {
 const onSaved = vi.fn();
 const onSkip = vi.fn();
 
-function renderFixer(row: CardChecklistRow = baseRow()) {
+function renderFixer(
+  row: CardChecklistRow = baseRow(),
+  contextOptionId?: Id<"selectorOptions">,
+) {
   return render(
-    <AttentionSportContext.Provider value={{ sportId: SPORT_ID }}>
+    <AttentionSportContext.Provider value={{ sportId: SPORT_ID, contextOptionId }}>
       <UnreviewedNameFixer
         row={row}
         // The component derives the names it renders from the ROW, not from
@@ -403,5 +413,25 @@ describe("UnreviewedNameFixer — when the write fails", () => {
       "Couldn't save those links. Try again.",
     );
     expect(onSaved).not.toHaveBeenCalled();
+  });
+});
+
+describe("UnreviewedNameFixer — NEO-331 the set context reaches its team picker", () => {
+  beforeEach(() => {
+    pickerArgs.length = 0;
+  });
+
+  it("asks pickerCandidates with the attention context's contextOptionId", () => {
+    renderFixer(baseRow(), "variant-1" as unknown as Id<"selectorOptions">);
+    expect(pickerArgs.length).toBeGreaterThan(0);
+    expect(pickerArgs.at(-1)).toMatchObject({
+      sportId: SPORT_ID,
+      contextOptionId: "variant-1",
+    });
+  });
+
+  it("sends none when the context carries none", () => {
+    renderFixer();
+    expect((pickerArgs.at(-1) as { contextOptionId?: string }).contextOptionId).toBeUndefined();
   });
 });

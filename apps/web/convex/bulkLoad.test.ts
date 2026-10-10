@@ -1149,3 +1149,72 @@ describe("NEO-307: the loader never creates a team under another team's alias", 
     expect(written.results[0]).toMatchObject({ status: "created" });
   });
 });
+
+describe("NEO-331: a team never creates its league (find-only)", () => {
+  test("upsertTeams naming a league nobody loaded refuses the chunk, names the league, and writes nothing", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedLeague(t, sportId, "NCAA");
+
+    await expect(
+      t.mutation(internal.bulkLoad.upsertTeams, {
+        confirm: CONFIRM,
+        sport: "Baseball",
+        teams: [
+          // The first row is fine; the second names a league that run never
+          // loaded. A thrown mutation writes nothing, so the first must not land.
+          { key: "ok", location: "LSU", name: "Tigers", league: "NCAA" },
+          { key: "bad", location: "Sydney", name: "Blue Sox", league: "Australian Baseball League" },
+        ],
+      }),
+    ).rejects.toThrow(/No league "Australian Baseball League".*upsertLeagues first/s);
+
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
+    expect(
+      (await t.run(async (ctx) => ctx.db.query("leagues").collect())).map((l) => l.name),
+    ).toEqual(["NCAA"]);
+  });
+
+  test("the dry run reports the same row without throwing and without creating a league", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    await seedSport(t);
+
+    const res = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      dryRun: true,
+      teams: [{ key: "bad", location: "Sydney", name: "Blue Sox", league: "Australian Baseball League" }],
+    });
+
+    expect(res.results[0].status).toBe("would-create");
+    expect(await t.run(async (ctx) => ctx.db.query("leagues").collect())).toHaveLength(0);
+  });
+
+  test("a league named by one of its ALIASES is found, not refused", async () => {
+    armed();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const abl = await t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Australian Baseball League",
+        nameNormalized: "australian baseball league",
+        sportId,
+        level: "international",
+        aliases: ["ABL"],
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
+
+    const res = await t.mutation(internal.bulkLoad.upsertTeams, {
+      confirm: CONFIRM,
+      sport: "Baseball",
+      teams: [{ key: "k", location: "Sydney", name: "Blue Sox", league: "ABL" }],
+    });
+
+    expect(res.results[0].status).toBe("created");
+    const team = (await t.run(async (ctx) => ctx.db.query("teams").collect()))[0];
+    expect(team.leagueId).toBe(abl);
+  });
+});

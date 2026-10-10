@@ -385,6 +385,31 @@ describe("NEO-254: the New League step's decisions", () => {
     ).rejects.toThrow(/cannot end before it starts/);
   });
 
+  test("NEO-331: a createLeague answer with no level is REFUSED, and nothing is recorded", async () => {
+    // The stored-draft validator keeps `level` optional (rows written before
+    // this shipped must still read), so the mutation is the gate. Refused at
+    // the step, not accepted and then dropped at commit.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const league = await insertRow(t, {
+      sportId,
+      kind: "league",
+      name: "National Hockey League",
+      status: "ready",
+    });
+
+    await expect(
+      t.withIdentity(ADMIN_IDENTITY).mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: league,
+        action: "create",
+        createLeague: { name: "National Hockey League", abbreviation: "NHL" },
+      }),
+    ).rejects.toThrow(/Pick a level/);
+
+    const row = await t.run(async (ctx) => ctx.db.get(league));
+    expect(row!.decision).toBeUndefined();
+  });
+
   test("a malformed Wikidata id is DROPPED, not stored and not thrown on", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);

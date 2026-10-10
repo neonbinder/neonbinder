@@ -40,7 +40,7 @@ import NewTeamForm, {
   newTeamPrefill,
   type NewTeamDraft,
 } from "./NewTeamForm";
-import type { LeagueLevel } from "../admin/AddLeagueForm";
+import { focusLevelChoice, type LeagueLevel } from "../admin/AddLeagueForm";
 import NewLeagueForm, {
   leagueDraftError,
   newLeaguePrefill,
@@ -2304,9 +2304,24 @@ export default function EntityReviewWizard({
    * don't need more words"). So it holds the buttons without adding a line to
    * the footer, which is why it is not folded into `createBlocked`.
    */
-  const createHeld =
-    createBlocked !== null ||
-    (current?.kind === "league" && leagueCreate.level === null);
+  const levelOnlyHold =
+    createBlocked === null &&
+    current?.kind === "league" &&
+    leagueCreate.level === null;
+  const createHeld = createBlocked !== null || levelOnlyHold;
+
+  /**
+   * NEO-331 — what a press on a held create does. With a footer line
+   * (`createBlocked`), nothing: the line is already the explanation. Held only
+   * for the silent level, it puts focus on the level group — the checked
+   * radio, or the first — so the press lands the operator on the one answer
+   * missing instead of doing nothing at all. No alert, no live text.
+   */
+  const pressHeldCreate = () => {
+    if (levelOnlyHold) {
+      focusLevelChoice(document.getElementById(LEAGUE_LEVEL_FIELD_ID));
+    }
+  };
 
   /**
    * The create decision this row would record, built once for both the primary
@@ -2713,7 +2728,10 @@ export default function EntityReviewWizard({
               );
               return;
             }
-            if (createHeld) return;
+            if (createHeld) {
+              pressHeldCreate();
+              return;
+            }
             void handleCreate(current._id, buildCreatePayload());
           }}
         >
@@ -2741,7 +2759,10 @@ export default function EntityReviewWizard({
             aria-describedby={createBlocked ? createBlockedId : undefined}
             onClick={() => {
               if (busy) return;
-              if (createHeld) return;
+              if (createHeld) {
+                pressHeldCreate();
+                return;
+              }
               void handleCreate(current._id, buildCreatePayload());
             }}
             className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"

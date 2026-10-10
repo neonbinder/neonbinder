@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import NewLeagueForm, {
   leagueDetailSummary,
   leagueDraftError,
+  leagueDraftReady,
   newLeaguePrefill,
   parseAliases,
   type NewLeagueDraft,
@@ -69,6 +70,48 @@ describe("newLeaguePrefill", () => {
       ...EMPTY,
       name: "World Hockey Association",
     });
+  });
+});
+
+describe("leagueDraftReady — NEO-331: valid AND a level picked", () => {
+  const maxYear = 2027;
+
+  it("is not ready without a level, however complete the rest is", () => {
+    expect(leagueDraftError(NHL, maxYear)).toBeNull();
+    expect(leagueDraftReady(NHL, maxYear)).toBe(false);
+  });
+
+  it("is ready once a level is picked", () => {
+    expect(leagueDraftReady({ ...NHL, level: "major" }, maxYear)).toBe(true);
+  });
+
+  it("is not ready with a level but an invalid draft", () => {
+    expect(leagueDraftReady({ ...EMPTY, level: "major" }, maxYear)).toBe(false);
+    expect(
+      leagueDraftReady({ ...NHL, level: "major", fromYear: "1700" }, maxYear),
+    ).toBe(false);
+  });
+
+  it("every level counts, including 'other'", () => {
+    for (const level of [
+      "major",
+      "minor",
+      "college",
+      "international",
+      "independent",
+      "other",
+    ] as const) {
+      expect(leagueDraftReady({ ...NHL, level }, maxYear)).toBe(true);
+    }
+  });
+
+  it("the prefill never picks a level for the operator", () => {
+    expect(
+      leagueDraftReady(
+        newLeaguePrefill({ name: "National Hockey League", enrichment: { abbreviation: "NHL" } }),
+        maxYear,
+      ),
+    ).toBe(false);
   });
 });
 
@@ -160,8 +203,8 @@ describe("NewLeagueForm — the two tiers", () => {
       "value",
       "National Hockey League",
     );
-    expect(screen.getByRole("group", { name: "Level" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Major" })).toBeTruthy();
+    expect(screen.getByRole("radiogroup", { name: "Level" })).toBeTruthy();
+    expect(screen.getByRole("radio", { name: "Major" })).toBeTruthy();
   });
 
   it("starts COLLAPSED when the lookup pre-filled the details, and names them", () => {

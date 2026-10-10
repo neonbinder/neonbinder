@@ -746,7 +746,7 @@ describe("no team-creation path enqueues enrichment (NEO-254)", () => {
   test("a sportId that is not a SPORT row is refused, so no orphan team is created", async () => {
     // `v.id("selectorOptions")` proves the id is in that table, not that it
     // points at a sport. A team hung off a variantType row is unreachable by
-    // every query that matters (`teams.list` and `findByNameAndSport` key on
+    // every query that matters (`teams.search` and `findByNameAndSport` key on
     // the sport row id) — the same unfindable-row class the pre-NEO-96
     // `sport ?? ""` fallback produced.
     const t = convexTest(schema, modules);
@@ -880,7 +880,7 @@ describe("no team-creation path enqueues enrichment (NEO-254)", () => {
     const teamsSrc = readFileSync(join(__dirname, "teams.ts"), "utf8");
     const findOrCreate = teamsSrc.slice(
       teamsSrc.indexOf("export const findOrCreate"),
-      teamsSrc.indexOf("export const list"),
+      teamsSrc.indexOf("export const get = query"),
     );
     expect(findOrCreate).not.toContain("internal.wikidataPool.enqueueEnrichment");
 

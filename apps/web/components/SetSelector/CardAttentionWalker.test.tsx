@@ -34,7 +34,7 @@ vi.mock("../../convex/_generated/api", () => ({
     },
     selectorOptions: { updateCard: "selectorOptions.updateCard" },
     players: { getManyByIds: "players.getManyByIds" },
-    teams: { getManyByIds: "teams.getManyByIds", list: "teams.list" },
+    teams: { getManyByIds: "teams.getManyByIds", pickerCandidates: "teams.pickerCandidates" },
   },
 }));
 
@@ -71,11 +71,13 @@ vi.mock("./TeamPicker", () => ({
   default: ({
     value,
     onChange,
+    contextOptionId,
   }: {
     value: string[];
     onChange: (next: string[]) => void;
+    contextOptionId?: string;
   }) => (
-    <div>
+    <div data-context-option-id={contextOptionId ?? ""}>
       <span data-testid="picker-value">{value.join(",")}</span>
       <button type="button" onClick={() => onChange([...value, `extra-${value.length}`])}>
         Stub add team
@@ -1049,5 +1051,23 @@ describe("CardAttentionWalker — keyboard-only", () => {
     fireEvent.keyDown(dialog, { key: "Tab" });
 
     expect(document.activeElement).toBe(focusable[0]);
+  });
+});
+
+describe("CardAttentionWalker — NEO-331 the set context reaches the team picker", () => {
+  it("hands the checklist's row to the fixer's picker as contextOptionId", () => {
+    renderWalker([needsTeamRow()], {
+      contextOptionId: "variant-1" as unknown as Id<"selectorOptions">,
+    });
+    expect(
+      document.querySelector("[data-context-option-id]")?.getAttribute("data-context-option-id"),
+    ).toBe("variant-1");
+  });
+
+  it("hands it nothing when the walker was given nothing", () => {
+    renderWalker([needsTeamRow()]);
+    expect(
+      document.querySelector("[data-context-option-id]")?.getAttribute("data-context-option-id"),
+    ).toBe("");
   });
 });

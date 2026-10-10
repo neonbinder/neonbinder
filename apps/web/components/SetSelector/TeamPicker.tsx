@@ -207,13 +207,49 @@ export default function TeamPicker({
     contextOptionId,
   });
   /**
+   * The last answer, kept on screen while the next one loads.
+   *
+   * `useQuery` re-keys on every keystroke (the query is an arg), so it answers
+   * `undefined` until the server replies — and the popover flashed "Loading…"
+   * over its rows on each character typed. Holding the previous rows is safe
+   * because the list below filters them by the CURRENT query client-side, so a
+   * stale pool can only show fewer rows, never wrong ones, until the new
+   * ranking replaces it.
+   *
+   * Held per sport and set, not across them: rows from the sport the operator
+   * just switched away from are wrong rows, not stale ones, so a switch shows
+   * "Loading…" as before. State adjusted during render, not a ref read there
+   * (`react-hooks/refs`) and not an effect (a frame of the flash would remain).
+   */
+  const rankKey = `${activeSportId ?? ""}|${contextOptionId ?? ""}`;
+  const [heldRanked, setHeldRanked] = useState<{
+    key: string;
+    rows: NonNullable<typeof ranked>;
+  } | null>(null);
+  // Compared by the ids in order, not by identity: the held copy is only
+  // read while a new answer is loading, so a row whose fields changed but
+  // whose place did not needs no update — and an identity check would set
+  // state on every render under any caller (a test's mock, say) that hands
+  // back a fresh array each time, which React stops as an infinite loop.
+  if (
+    ranked !== undefined &&
+    (heldRanked === null ||
+      heldRanked.key !== rankKey ||
+      heldRanked.rows.length !== ranked.length ||
+      ranked.some((r, i) => r.team._id !== heldRanked.rows[i].team._id))
+  ) {
+    setHeldRanked({ key: rankKey, rows: ranked });
+  }
+  const shownRanked =
+    ranked ?? (heldRanked?.key === rankKey ? heldRanked.rows : undefined);
+  /**
    * One pool for everything downstream — the option rows, the exact-match
    * hint, the create offer. They must all see the same rows, or the create
    * offer starts contradicting the list directly above it.
    */
   const candidates = useMemo(
-    () => ranked?.map((r) => r.team),
-    [ranked],
+    () => shownRanked?.map((r) => r.team),
+    [shownRanked],
   );
 
   const [popoverOpen, setPopoverOpen] = useState(false);

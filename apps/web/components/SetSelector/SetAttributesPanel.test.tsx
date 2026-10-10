@@ -228,7 +228,9 @@ vi.mock("./TeamPicker", () => ({
     disabled,
     labels,
     ariaDescribedBy,
+    contextOptionId,
   }: {
+    contextOptionId?: string;
     value: string[];
     onChange: (next: string[]) => void;
     sportId?: string;
@@ -236,7 +238,11 @@ vi.mock("./TeamPicker", () => ({
     labels: { root: string; trigger: string; search: string; results: string };
     ariaDescribedBy?: string;
   }) => (
-    <div aria-label={labels.root} data-sport-id={sportId ?? ""}>
+    <div
+      aria-label={labels.root}
+      data-sport-id={sportId ?? ""}
+      data-context-option-id={contextOptionId ?? ""}
+    >
       <span data-testid="team-picker-value">{value.join(",")}</span>
       {/* Mirrors the real trigger: visible text is `+ {labels.trigger}` and the
           hint id lands on it. A pick adds whichever team `pickNext` names. */}
@@ -1860,6 +1866,17 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("NEO-331: orders the picker's candidates by THIS set — contextOptionId is the panel's own row", () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    renderPanel();
+
+    expect(
+      within(teamGroup())
+        .getByLabelText(SET_TEAM_PICKER_LABELS.root)
+        .getAttribute("data-context-option-id"),
+    ).toBe(SELECTOR_OPTION_ID);
   });
 
   it("renders the row at setName, labelled Team, ahead of every feature row, with the picker scoped to the sport ROW id", () => {
