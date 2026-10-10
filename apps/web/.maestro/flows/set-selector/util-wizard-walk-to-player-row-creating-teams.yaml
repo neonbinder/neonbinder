@@ -33,7 +33,9 @@ tags:
 # ANSWERED AS CREATES, deliberately — the opposite of the sibling util. The one
 # caller of this variant makes a SKIP of its own, so draining with skips too
 # would leave its decision indistinguishable in the history. One tap on the
-# step's primary action accepts the pre-filled Location, Name and League —
+# step's primary action accepts the pre-filled Location, Name and League (a
+# New League step first gets its required level, "Other", since NEO-331 — see
+# `util-wizard-answer-step-as-new.yaml`) —
 # exactly the idiom setup.yaml and the 1996 Score flow already use — and leaves
 # every drained decision reading "Added as new", so a single "Skipped" can only
 # be the caller's. Nothing is committed: the caller cancels and discards.
@@ -90,14 +92,16 @@ tags:
       # and "created nothing" is exactly what the post-condition catches — the
       # team row would still be undecided, so no player row would be presented
       # and the wait would fail at 30s.
+      #
+      # NEO-331 — a league step's primary is held until a level is pressed, so
+      # the answer is the shared util: it reads the step's kind off this same
+      # button, presses "Other" on a league step, then taps (all optional, for
+      # the race above; the wait below still adjudicates).
       - runFlow:
           when:
             visible:
               id: "^Add as New (Team|League)$"
-          commands:
-            - tapOn:
-                id: "^Add as New (Team|League)$"
-                optional: true
+          file: util-wizard-answer-step-as-new.yaml
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a person"
@@ -162,14 +166,14 @@ tags:
       # and "created nothing" is exactly what the post-condition catches — the
       # team row would still be undecided, so no player row would be presented
       # and the wait would fail at 30s.
+      #
+      # NEO-331 — same shared util as pass 1 (a league step needs a level
+      # pressed before its held primary will answer).
       - runFlow:
           when:
             visible:
               id: "^Add as New (Team|League)$"
-          commands:
-            - tapOn:
-                id: "^Add as New (Team|League)$"
-                optional: true
+          file: util-wizard-answer-step-as-new.yaml
 - extendedWaitUntil:
     visible:
       id: "Skip .* not a person"

@@ -335,6 +335,13 @@ tags:
 - extendedWaitUntil:
     visible: "New League: Lg${output.ATTEMPT_TOKEN}"
     timeout: 7000
+# NEO-331 — level is required and nothing is pre-pressed, so "Add as New
+# League" is held until one is. The pills sit in the step's first rows (name,
+# then Level), and the body is pinned to its top by the drag above, so the
+# pill is in the visible slice. Matched by its visible text, a full match:
+# nothing else in the wizard reads exactly "Other". The batch is discarded,
+# so which level is immaterial; "Other" claims nothing.
+- tapOn: "Other"
 # By id, full-match: cannot reach the demoted "Add as New League anyway" link.
 - tapOn:
     id: "Add as New League"

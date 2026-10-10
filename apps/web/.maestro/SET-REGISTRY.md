@@ -1527,6 +1527,7 @@ would put the wrong question on screen.
 | `stt-` | `set-team-carries-down-to-cards.yaml` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, NOT Baseball: the New Team dialog's `League` combobox (NEO-307) then lists only leagues this worker minted, so its typed filters match exactly what the flow expects. It mints ONE league, `STL<token>L`, on STA's dialog and picks it back on STB's (see the minted-names table). Per-attempt because the cascade confirm's body is an EXACT card count. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows and its three teams stand. |
 | `tlf-` | `checklist-title-length-limits-and-fixer.yaml` (also `-${ATTEMPT_ID}`) |
 | `tp-` | `team-picker.yaml` |
+| `tpr-` | `team-picker-ranks-by-set-context.yaml` (NEO-331) — under the REAL `Baseball` › 2024 › `Topps`: the picker ranks by the set's League feature, which is derived ONLY at the sport level for the four stick-and-ball sports (Baseball → "MLB"), so a synthetic sport would leave nothing to rank by. `Insert` › `Base`, whose checklist row is the picker's context. **Writes no card**: the whole flow runs in the quick-add form's TeamPicker, whose chips are local state, and cancels the form. Mints four teams and one league (see the team-names table); the set and its rows stand. Per-worker only. |
 | `tpc-` | `team-picker-create-custom-card.yaml` |
 | `WOSet3-` | `new-chain-autopopulates-features.yaml` (under synthetic `E2E Test Sport N`) |
 | `xb-` | `all-brands-view-lists-every-set.yaml` — its OWN sport `xb-sport-<worker>`, brand rows `Topps` / `Panini` under it in 2026 (hand-made, no ids), and one set under each: `xb-a-<worker>` (Topps) / `xb-b-<worker>` (Panini). Per-worker only (no count is asserted). **Never under `E2E Test Sport <worker>`** — it adds a brand row, see the fold note below. |
@@ -1747,6 +1748,15 @@ presents, reads `Lg<token> (new)` back on the team, and discards the batch — s
 the step is asserted live without a new real set and without writing a
 `leagues` row.
 
+**NEO-331 — a league step needs a LEVEL, and none is pre-pressed.** `Add as
+New League` (and the picker form's `Add league`, and League Management's
+`Create league …`) is held until one of the six level pills is pressed. Every
+drain answers a league step through `set-selector/util-wizard-answer-step-as-new.yaml`,
+which reads the step's kind off the footer button and presses `Other` — the
+level the step pre-pressed before NEO-331, so a drained league carries what it
+always did. A flow whose assertions depend on a level presses it itself
+(`team-picker-ranks-by-set-context.yaml`'s `Minor`).
+
 **Do not answer these with a seed.** `e2e-baseline.sh` says it outright —
 NEO-214 removed the seed-teams fixture — and the standing rule is that E2E
 fixtures come from the UI. Creating a real set's worth of teams through Team
@@ -1832,6 +1842,8 @@ whole thing; never assume which letter the worker half starts with.
 | `Ali` | `set-selector/checklist-wizard-link-team-saves-alias.yaml` | the team a checklist club is LINKED to; carries the Location `Loc<token>` (typed into the DIALOG, never into a picker), so the composed `Loc<token> Ali<token>` is what the link option, the decision line and Team Management print. The link SEARCH types the single token `Ali<token>`. Its alias (the club's marketplace spelling) is removed again before the flow ends |
 | `MintedTeam` | `checklist-wizard-career-team-commits.yaml` | |
 | `TPT` | `team-picker.yaml` | |
+| `TPR` | `set-selector/team-picker-ranks-by-set-context.yaml` | four teams `TPR<token>QZ` / `QY` / `QX` / `QW` (NEO-331), alphabetical order the REVERSE of their tier order: Z in Major League Baseball from 1958, Y in the minor league `TPRLg` below from 2000, X in Major League Baseball 1900–1957, W in no league from 1958. The flow types the shared prefix `TPR<token>Q`, which ENDS IN A LETTER so no other attempt's longer token can prefix-match it and interleave its rows (a digit sorts before "Z"). `TPR` and `TPT` diverge at their third character |
+| `TPRLg` | `set-selector/team-picker-ranks-by-set-context.yaml` | a LEAGUE, named `TPRLg<token>M`, level **Minor** (load-bearing: it is what puts `TPR<token>QY` in tier 2), created from Y's New Team dialog (`Create “TPRLg<token>M”` → `Minor` → `Add league`) in **Baseball**. Trailing letter for the `STL<token>L` reason. No flow deletes it, so one row per attempt stands in Baseball |
 | `ProbeTeam` / `TempTeam` | `checklist-wizard-career-team-entry.yaml` | never persisted — the flow discards its batch |
 | `STL` | `set-selector/set-team-carries-down-to-cards.yaml` | a LEAGUE, not a team, named `STL<token>L`: created from STA's New Team dialog (`Create “STL<token>L”` → `Add league`) under `E2E Test Sport <w>`, then picked as an existing league on STB's by typing `<token>L`. The trailing `L` is load-bearing: the create option appears only when the typed text is a substring of NO league, the token's random tail varies in length, so a bare `STL<token>` can sit inside an older attempt's name — a letter after the digits makes it contained in none. No flow deletes it, so one row per attempt stands in that worker's sport; nothing else types into that sport's League combobox except `No lea` |
 | `Lg` | `checklist-wizard-career-team-entry.yaml` | a LEAGUE staged on ProbeTeam's wizard step and picked as `Lg<token> (new)` on TempTeam's — never persisted, the batch is discarded |
