@@ -120,16 +120,26 @@ export const FIELD_BOX_HEIGHT = "min-h-[2.625rem]";
 // ---------------------------------------------------------------------------
 
 /**
- * The level, as six toggles.
+ * The level, as six toggles — a SINGLE-SELECT that cannot be cleared.
  *
- * `aria-pressed` rather than a radio group: level is OPTIONAL, and a radio
- * group with nothing checked has no way back to nothing once something is
- * checked. Pressing the pressed button clears it, which is the affordance a
- * toggle already promises — and "not set" is a state this screen exists to fix,
- * so it must stay reachable.
+ * NEO-331: level is required (Jason, 2026-10-10: "force a choice"). A new
+ * league opens with nothing pressed, so the operator has to make the call
+ * rather than inherit a default nobody looked at; once one is pressed, pressing
+ * it again does nothing, because "no level" is no longer a state a league can
+ * be in. Pressing another moves the selection.
  *
- * Shared by the add form and the detail panel so the two can never offer
- * different levels or different wording.
+ * Still `aria-pressed` buttons rather than a radiogroup, and that is about
+ * continuity, not semantics alone: the labels are byte-identical to what every
+ * flow and test already taps (`tapOn: "Major"`), and the pressed state reads
+ * the same on all four surfaces this group appears on.
+ *
+ * No "required" marker and no hint line: the house convention marks only
+ * optional fields ("(optional)"), and a required one is signalled by its
+ * surface's primary staying disabled until it is answered (Jason, 2026-10-10:
+ * "we don't need more words").
+ *
+ * Shared by the add form, the detail panel and the New League form so they
+ * can never offer different levels or different wording.
  */
 export function LevelGroup({
   value,
@@ -137,14 +147,18 @@ export function LevelGroup({
   idPrefix,
 }: {
   value: LeagueLevel | null;
-  onChange: (next: LeagueLevel | null) => void;
+  onChange: (next: LeagueLevel) => void;
   /** Only for keys; the group is named by `aria-label`, not by an id. */
   idPrefix: string;
 }) {
   return (
     <div>
       <span className={LABEL_CLASS}>Level</span>
-      <div role="group" aria-label="Level" className="flex flex-wrap gap-1.5">
+      <div
+        role="group"
+        aria-label="Level"
+        className="flex flex-wrap gap-1.5"
+      >
         {LEVELS.map((level) => {
           const pressed = value === level.value;
           return (
@@ -152,7 +166,9 @@ export function LevelGroup({
               key={`${idPrefix}-${level.value}`}
               type="button"
               aria-pressed={pressed}
-              onClick={() => onChange(pressed ? null : level.value)}
+              onClick={() => {
+                if (!pressed) onChange(level.value);
+              }}
               // min-h-8 clears WCAG 2.2 SC 2.5.8's 24px target floor with room
               // to spare — these sit close together, so the extra is what keeps
               // a mis-tap from setting the wrong level.
@@ -199,8 +215,6 @@ export interface AddLeagueFormProps {
    * THAT team's sport or it creates a league the team cannot point at.
    */
   lockSport?: boolean;
-  /** Level to open with. Unset by default — "not set" is a legitimate answer. */
-  defaultLevel?: LeagueLevel | null;
   /** Names the form for a dialog's `aria-labelledby`. */
   headingId?: string;
   /**
@@ -234,7 +248,6 @@ export function AddLeagueForm({
   sportId: fixedSportId,
   sportLabel,
   lockSport = false,
-  defaultLevel = null,
   headingId,
   initialFocus = "heading",
   onStatus,
@@ -246,7 +259,9 @@ export function AddLeagueForm({
 
   const [name, setName] = useState("");
   const [abbreviation, setAbbreviation] = useState("");
-  const [level, setLevel] = useState<LeagueLevel | null>(defaultLevel);
+  // NEO-331: nothing pressed for a new league — the operator chooses (Jason:
+  // "force a choice"); Create stays disabled until they do.
+  const [level, setLevel] = useState<LeagueLevel | null>(null);
   const [sportId, setSportId] = useState<string>(fixedSportId ?? "");
   const [debouncedName, setDebouncedName] = useState("");
   const [busy, setBusy] = useState(false);
@@ -299,17 +314,20 @@ export function AddLeagueForm({
   const panelMatches = exact
     ? (matches ?? []).filter((m) => m._id !== exact._id)
     : matches;
-  const canCreate = trimmed.length > 0 && sportId.length > 0 && !busy;
+  // NEO-331: a level is required, so Create waits for one. The `exact` path
+  // below is not a create and does not wait.
+  const canCreate =
+    trimmed.length > 0 && sportId.length > 0 && level !== null && !busy;
 
   const create = async () => {
-    if (!canCreate) return;
+    if (!canCreate || level === null) return;
     setBusy(true);
     onStatus(null);
     try {
       const result = await createByAdmin({
         name: trimmed,
         ...(trimmedAbbreviation ? { abbreviation: trimmedAbbreviation } : {}),
-        ...(level ? { level } : {}),
+        level,
         sportId: sportId as Id<"selectorOptions">,
       });
       onStatus(

@@ -12,7 +12,7 @@ import { Input } from "../primitives/Input";
 import { Autocomplete, focusWithoutOpening } from "../primitives/Autocomplete";
 import NeonButton from "../modules/NeonButton";
 import NewLeagueForm, {
-  leagueDraftError,
+  leagueDraftReady,
   newLeaguePrefill,
   type NewLeagueDraft,
 } from "./NewLeagueForm";
@@ -494,7 +494,8 @@ export default function NewTeamForm({
   /** PICKER — write the league the `NewLeagueForm` collected. */
   const submitNewLeague = async () => {
     if (leagueBusy || !onCreateLeague) return;
-    if (leagueDraftError(newLeagueDraft, new Date().getFullYear() + 1)) return;
+    // NEO-331: `Ready`, not `Error` — an unpicked level blocks the write too.
+    if (!leagueDraftReady(newLeagueDraft, new Date().getFullYear() + 1)) return;
     setLeagueBusy(true);
     try {
       const created = await onCreateLeague(newLeagueDraft);
@@ -587,7 +588,16 @@ export default function NewTeamForm({
       key: `create:${suggestion.key}`,
       label: `Create ${suggestion.name}`,
       haystack: [suggestion.name],
-      choose: () => pick({ leagueName: suggestion.name }),
+      // NEO-331: a league is never created from a name alone. The wizard
+      // stages the name and asks for the rest (level included) on its own New
+      // League step; the picker has no later step, so it opens the full
+      // `NewLeagueForm` here, exactly as a typed `Create “…”` does. Sending a
+      // bare `leagueName` from the picker would reach a server path that now
+      // only LINKS an existing league, and refuses a miss.
+      choose: () =>
+        onCreateLeague && !onStageLeague
+          ? void createTypedLeague(suggestion.name)
+          : pick({ leagueName: suggestion.name }),
     });
   }
   for (const [key, name] of stagedByKey) {
@@ -998,7 +1008,8 @@ export default function NewTeamForm({
               disabled={
                 disabled ||
                 leagueBusy ||
-                leagueDraftError(newLeagueDraft, new Date().getFullYear() + 1) !== null
+                // NEO-331: waits for a level as well as valid values.
+                !leagueDraftReady(newLeagueDraft, new Date().getFullYear() + 1)
               }
             >
               {leagueBusy ? "Adding…" : "Add league"}

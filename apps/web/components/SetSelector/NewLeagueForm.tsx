@@ -28,10 +28,10 @@
  * So the fields are in two tiers, and the boundary states something true rather
  * than merely saving space:
  *
- *   TIER 1, always visible — **League name** and **Level**. The name is the
- *   only required field, and level is the one fact that changes how the league
- *   behaves elsewhere (sorting, and what "major" means on a listing). One text
- *   box and one tap.
+ *   TIER 1, always visible — **League name** and **Level**. Both are
+ *   required (level since NEO-331), and level is the one fact that changes how
+ *   the league behaves elsewhere (the team picker's ranking, and what "major"
+ *   means on a listing). One text box and one tap.
  *
  *   TIER 2, behind one disclosure — abbreviation, years, aliases, Wikidata id.
  *   These are record-keeping the operator is INVITED to complete while they are
@@ -49,10 +49,11 @@
  *
  * Deliberately not a type-ahead like the New Team step's League field
  * (NEO-307): Level is a small FIXED set, not a table that grows, and it reuses
- * `LevelGroup` from the admin form verbatim. Level is OPTIONAL, and pressing
- * the pressed button clears it back to null — a radiogroup has no "none" state
- * without a synthetic extra radio. It also means the control an operator learns
- * here is byte-identical to the one on League Management, including its Maestro
+ * `LevelGroup` from the admin form verbatim. NEO-331 made level REQUIRED with
+ * no default (Jason, 2026-10-10: "force a choice"): the step opens with nothing
+ * pressed, the primary waits until one is, and a pressed level cannot be
+ * un-pressed. It also means the control an operator learns here is
+ * byte-identical to the one on League Management, including its Maestro
  * selectors (`tapOn: "Major"`). Consistency with the other place this exact
  * field is edited beats consistency with the League field on the team step.
  *
@@ -90,6 +91,7 @@ export const MIN_LEAGUE_YEAR = 1850;
 export type NewLeagueDraft = {
   name: string;
   abbreviation: string;
+  /** `null` until the operator presses one — NEO-331 never pre-picks it. */
   level: LeagueLevel | null;
   fromYear: string;
   toYear: string;
@@ -192,6 +194,23 @@ export function leagueDraftError(
     return "A Wikidata id looks like Q1215892 — the letter Q and digits.";
   }
   return null;
+}
+
+/**
+ * NEO-331 — whether the league can be CREATED: no `leagueDraftError`, and a
+ * level picked.
+ *
+ * A boolean, not a message, on purpose. An unpicked level surfaces no words at
+ * all — the house convention marks only optional fields, and a required one is
+ * signalled by the primary staying disabled until it is answered (Jason,
+ * 2026-10-10: "we don't need more words"). Every primary that writes a league
+ * gates on this, so none of them can send a create without a level.
+ */
+export function leagueDraftReady(
+  draft: NewLeagueDraft,
+  maxYear: number,
+): boolean {
+  return leagueDraftError(draft, maxYear) === null && draft.level !== null;
 }
 
 /**

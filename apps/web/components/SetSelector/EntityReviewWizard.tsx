@@ -1715,7 +1715,8 @@ export default function EntityReviewWizard({
       createLeague?: {
         name: string;
         abbreviation?: string;
-        level?: LeagueLevel;
+        // NEO-331 — required, as on every league create.
+        level: LeagueLevel;
         yearsActive?: { from: number; to?: number };
         aliases?: string[];
         wikidataId?: string;
@@ -2294,6 +2295,20 @@ export default function EntityReviewWizard({
   const blockingStep = createBlocked ? firstBlockingStep() : null;
 
   /**
+   * NEO-331 — whether the create controls are held, which is `createBlocked`
+   * plus one silent case: a league step with no level pressed yet.
+   *
+   * Silent on purpose. Level is required and never pre-picked, but the house
+   * convention marks only optional fields — a required one is signalled by the
+   * primary staying disabled until it is answered (Jason, 2026-10-10: "we
+   * don't need more words"). So it holds the buttons without adding a line to
+   * the footer, which is why it is not folded into `createBlocked`.
+   */
+  const createHeld =
+    createBlocked !== null ||
+    (current?.kind === "league" && leagueCreate.level === null);
+
+  /**
    * The create decision this row would record, built once for both the primary
    * button and the demoted "…anyway" link.
    *
@@ -2317,11 +2332,16 @@ export default function EntityReviewWizard({
       const aliases = parseAliases(leagueCreate.aliases);
       const abbreviation = leagueCreate.abbreviation.trim();
       const wikidataId = leagueCreate.wikidataId.trim();
+      // NEO-331: always sent. `createHeld` holds both create controls
+      // until a level is pressed, so this early return is unreachable — it
+      // is here to narrow the type, never to send a create without one.
+      const level = leagueCreate.level;
+      if (level === null) return {};
       return {
         createLeague: {
           name: leagueCreate.name.trim(),
+          level,
           ...(abbreviation ? { abbreviation } : {}),
-          ...(leagueCreate.level ? { level: leagueCreate.level } : {}),
           ...(from
             ? {
                 yearsActive: {
@@ -2672,7 +2692,7 @@ export default function EntityReviewWizard({
             !showExactHierarchy && hasCloseOnly ? { color: "#000000" } : undefined
           }
           aria-disabled={
-            busy || (createBlocked !== null && !(showExactHierarchy && exactMatch))
+            busy || (createHeld && !(showExactHierarchy && exactMatch))
               ? true
               : undefined
           }
@@ -2693,7 +2713,7 @@ export default function EntityReviewWizard({
               );
               return;
             }
-            if (createBlocked) return;
+            if (createHeld) return;
             void handleCreate(current._id, buildCreatePayload());
           }}
         >
@@ -2717,11 +2737,11 @@ export default function EntityReviewWizard({
         {showExactHierarchy && (
           <button
             type="button"
-            aria-disabled={busy || createBlocked !== null ? true : undefined}
+            aria-disabled={busy || createHeld ? true : undefined}
             aria-describedby={createBlocked ? createBlockedId : undefined}
             onClick={() => {
               if (busy) return;
-              if (createBlocked) return;
+              if (createHeld) return;
               void handleCreate(current._id, buildCreatePayload());
             }}
             className="py-2 -my-2 text-xs text-gray-400 hover:text-[#00D558] focus:text-[#00D558] focus:outline-none underline decoration-dotted aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"

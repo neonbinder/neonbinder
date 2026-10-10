@@ -142,24 +142,36 @@ export type AttentionFixerProps = {
 export type AttentionFixer = ComponentType<AttentionFixerProps>;
 
 /**
- * The set's sport, for fixers that need it.
+ * The set-level facts a fixer cannot derive from its row.
  *
  * `AttentionFixerProps` is a LOCKED contract and carries only the row — but a
- * `getCardChecklist` row does not know its sport (that is a property of the
- * set), and `TeamPicker` needs it both to filter its typeahead and to tag a
- * team it creates. Passing it out-of-band through context keeps the locked
- * props byte-identical while still giving every fixer, present and future,
- * access to the set-level facts it cannot derive from a row.
+ * `getCardChecklist` row does not know its sport or its set (those are
+ * properties of the checklist), and `TeamPicker` needs both: the sport to
+ * filter its typeahead and tag a team it creates, and (NEO-331) the set's
+ * selectorOptions row to order candidates by the set's league and year.
+ * Passing them out-of-band through context keeps the locked props
+ * byte-identical while still giving every fixer, present and future, access to
+ * the set-level facts it cannot derive from a row.
  *
- * `undefined` is a legal value: `TeamPicker` then lists the whole teams table
- * and disables creating rather than writing a team with no sport.
+ * Either may be `undefined`: with no sport `TeamPicker` lists the whole teams
+ * table and disables creating rather than writing a team with no sport; with
+ * no context option it orders by name.
  */
-export const AttentionSportContext = createContext<Id<"selectorOptions"> | undefined>(
-  undefined,
-);
+export type AttentionSetContext = {
+  /** NEO-96: the sport-level selectorOptions row id. */
+  sportId?: Id<"selectorOptions">;
+  /** NEO-331: the checklist's own selectorOptions row (the set worked on). */
+  contextOptionId?: Id<"selectorOptions">;
+};
+
+export const AttentionSportContext = createContext<AttentionSetContext>({});
 
 export function useAttentionSportId(): Id<"selectorOptions"> | undefined {
-  return useContext(AttentionSportContext);
+  return useContext(AttentionSportContext).sportId;
+}
+
+export function useAttentionContextOptionId(): Id<"selectorOptions"> | undefined {
+  return useContext(AttentionSportContext).contextOptionId;
 }
 
 /**

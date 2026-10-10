@@ -90,7 +90,7 @@ const onSkip = vi.fn();
 
 function renderFixer(row: CardChecklistRow = baseRow()) {
   return render(
-    <AttentionSportContext.Provider value={SPORT_ID}>
+    <AttentionSportContext.Provider value={{ sportId: SPORT_ID }}>
       <UnreviewedNameFixer
         row={row}
         // The component derives the names it renders from the ROW, not from

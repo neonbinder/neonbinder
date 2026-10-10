@@ -107,6 +107,7 @@ async function insertLeague(
 ): Promise<Id<"leagues">> {
   return t.run(async (ctx) =>
     ctx.db.insert("leagues", {
+      level: "other" as const,
       name,
       nameNormalized: normalizeLeagueName(name),
       sportId,
@@ -355,7 +356,7 @@ describe("NEO-254: the New League step's decisions", () => {
       asAdmin.mutation(api.entityReviewQueue.recordDecision, {
         reviewRowId: league,
         action: "create",
-        createLeague: { name: "x".repeat(121) },
+        createLeague: { name: "x".repeat(121), level: "major" },
       }),
     ).rejects.toThrow(/121 characters/);
 
@@ -363,7 +364,7 @@ describe("NEO-254: the New League step's decisions", () => {
       asAdmin.mutation(api.entityReviewQueue.recordDecision, {
         reviewRowId: league,
         action: "create",
-        createLeague: { name: "NHL", abbreviation: "x".repeat(17) },
+        createLeague: { name: "NHL", level: "major", abbreviation: "x".repeat(17) },
       }),
     ).rejects.toThrow(/17 characters/);
 
@@ -371,7 +372,7 @@ describe("NEO-254: the New League step's decisions", () => {
       asAdmin.mutation(api.entityReviewQueue.recordDecision, {
         reviewRowId: league,
         action: "create",
-        createLeague: { name: "NHL", yearsActive: { from: 1700 } },
+        createLeague: { name: "NHL", level: "major", yearsActive: { from: 1700 } },
       }),
     ).rejects.toThrow(/whole year between 1850/);
 
@@ -379,7 +380,7 @@ describe("NEO-254: the New League step's decisions", () => {
       asAdmin.mutation(api.entityReviewQueue.recordDecision, {
         reviewRowId: league,
         action: "create",
-        createLeague: { name: "NHL", yearsActive: { from: 2000, to: 1999 } },
+        createLeague: { name: "NHL", level: "major", yearsActive: { from: 2000, to: 1999 } },
       }),
     ).rejects.toThrow(/cannot end before it starts/);
   });
@@ -399,7 +400,7 @@ describe("NEO-254: the New League step's decisions", () => {
       {
         reviewRowId: league,
         action: "create",
-        createLeague: { name: "NHL", wikidataId: "javascript:alert(1)" },
+        createLeague: { name: "NHL", level: "major", wikidataId: "javascript:alert(1)" },
       },
     );
 
@@ -680,10 +681,14 @@ describe("NEO-254: the commit prelude creates a staged league once", () => {
      * Here the Canucks raised the step and skipped it, so they get no league.
      * The Flames named the same league explicitly on their OWN step, and that
      * answer stands.
+     *
+     * NEO-331: a named league is link-only at commit, so the league is seeded
+     * — the Flames' name links it; nothing mints it.
      */
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const variantTypeId = await seedSetUnder(t, sportId);
+    await insertLeague(t, sportId, "National Hockey League");
     await seedTwoTeamsOneLeague(
       t,
       sportId,
@@ -725,6 +730,8 @@ describe("NEO-254: the commit prelude creates a staged league once", () => {
     const sportId = await seedSport(t);
     const variantTypeId = await seedSetUnder(t, sportId);
     const ahl = await insertLeague(t, sportId, "American Hockey League");
+    // NEO-331: the typed name links an existing league; it no longer mints one.
+    await insertLeague(t, sportId, "World Hockey Association");
 
     const mk = async (
       kind: "team" | "league",
@@ -790,6 +797,7 @@ describe("NEO-254: the commit prelude creates a staged league once", () => {
     const variantTypeId = await seedSetUnder(t, sportId);
     const existing = await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
+        level: "major" as const,
         name: "National Hockey League",
         nameNormalized: normalizeLeagueName("National Hockey League"),
         sportId,
@@ -1456,7 +1464,7 @@ describe("NEO-254: a staged league step never waits on its lookup", () => {
       {
         reviewRowId: staged._id,
         action: "create",
-        createLeague: { name: "National Hockey League", abbreviation: "N.H.L." },
+        createLeague: { name: "National Hockey League", level: "major", abbreviation: "N.H.L." },
       },
     );
     await t.mutation(internal.entityReviewQueue.applyLookupResult, {

@@ -6,7 +6,11 @@ import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import TeamPicker from "./TeamPicker";
 import { MAX_CARD_TEAMS } from "./card-attention";
-import { useAttentionSportId, type AttentionFixerProps } from "./cardAttentionRegistry";
+import {
+  useAttentionContextOptionId,
+  useAttentionSportId,
+  type AttentionFixerProps,
+} from "./cardAttentionRegistry";
 
 /**
  * NEO-102 — the `missingTeam` attention fixer: "which team is on this card,
@@ -46,8 +50,10 @@ import { useAttentionSportId, type AttentionFixerProps } from "./cardAttentionRe
 
 export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) {
   // Out-of-band because the locked fixer contract passes only the row, and a
-  // card row does not know its set's sport. See AttentionSportContext.
+  // card row does not know its set's sport or its set. See
+  // AttentionSportContext.
   const sportId = useAttentionSportId();
+  const contextOptionId = useAttentionContextOptionId();
   const suggestions = useQuery(api.cardChecklist.suggestedTeamsForCard, {
     cardId: row._id,
   });
@@ -349,7 +355,13 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
             path through teams.findOrCreate — so a team no marketplace has ever
             heard of is one keystroke away and the operator is never blocked
             waiting for a sync to populate the table. */}
-        <TeamPicker value={chosen} onChange={applyTeams} sportId={sportId} disabled={busy} />
+        <TeamPicker
+          value={chosen}
+          onChange={applyTeams}
+          sportId={sportId}
+          contextOptionId={contextOptionId}
+          disabled={busy}
+        />
         {atCap && (
           <p id="attention-team-cap" role="status" className="text-xs text-[#00B7FF]">
             That is the limit of {MAX_CARD_TEAMS} teams on one card. Remove one to

@@ -95,3 +95,4 @@
 - [Vitest console hidden in passing tests](reference_vitest_console_hidden_in_passing_tests.md) — console.log from a passing test prints nothing; scratch probes log via appendFileSync
 - [Focus centres; scroll margins add](reference_focus_centres_and_scroll_margins_add.md) — Chrome focus() centres off-screen targets; scrollIntoView = 80px scroll-padding + scroll-mt; use preventScroll + own scroll
 - [Convex snapshot import keeps table numbers](reference_convex_snapshot_import_keeps_table_numbers.md) — ids encode table numbers (prod vs preview collide); bare ints import as int64, write floats as N.0
+- [Required-field flip breaks test fixtures](reference_required_field_flip_breaks_test_fixtures.md) — convex-test validates raw fixture inserts; grep insert("<table>") first; required args pre-empt auth-guard tests

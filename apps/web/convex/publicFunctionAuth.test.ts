@@ -517,6 +517,31 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
       await t.withIdentity(ADMIN).query(api.teams.search, { query: "Yankees" }),
     ).toEqual([]);
   });
+
+  test("teams.pickerCandidates is signed-in, not admin, and answers empty rather than throwing", async () => {
+    // NEO-331: the ranked twin of `teams.search`, behind the same softer gate
+    // for the same reason. Both modes are pinned — search and browse ("") —
+    // because browse reads by index rather than through the search index and
+    // is the one that would hand a signed-out caller the table.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Yankees",
+        nameNormalized: "yankees",
+        sportId,
+        lastUpdated: 1,
+      }),
+    );
+
+    expect(await t.query(api.teams.pickerCandidates, { query: "Yankees" })).toEqual([]);
+    expect(await t.query(api.teams.pickerCandidates, { query: "", sportId })).toEqual([]);
+    expect(
+      await t
+        .withIdentity(SIGNED_IN)
+        .query(api.teams.pickerCandidates, { query: "", sportId }),
+    ).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -530,11 +555,10 @@ describe("NEO-240: the League Management surface is admin-gated", () => {
    * every team in it points at — so "admin" is the intended gate for all
    * seven and signed-in is not enough.
    *
-   * `leagues.list` and `leagues.create` are NOT in this table and must not be
-   * added to it: `list` is deliberately the softer SIGNED-IN read (the
-   * spine-label designer's league filter is a collector screen) and is pinned
-   * as such below, and `create` is Team Management's inline add, already
-   * covered by convex/leagues.test.ts.
+   * `leagues.list` is NOT in this table and must not be added to it: it is
+   * deliberately the softer SIGNED-IN read (the spine-label designer's league
+   * filter is a collector screen) and is pinned as such below. (NEO-331
+   * deleted `leagues.create`; `createByAdmin` is the one league writer.)
    *
    * Called with arguments that are valid but inert — the gate runs before any
    * of them is used, so a refusal here cannot be argument validation wearing a
@@ -562,7 +586,7 @@ describe("NEO-240: the League Management surface is admin-gated", () => {
     [
       "leagues.createByAdmin",
       (t, sportId) =>
-        t.mutation(api.leagues.createByAdmin, { name: "Ghost League", sportId }),
+        t.mutation(api.leagues.createByAdmin, { name: "Ghost League", level: "other" as const, sportId }),
     ],
     [
       "leagues.saveLeagueFields",

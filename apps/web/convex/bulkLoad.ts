@@ -646,7 +646,9 @@ export const upsertLeagues = internalMutation({
       v.object({
         name: v.string(),
         abbreviation: v.optional(v.string()),
-        level: v.optional(levelValidator),
+        // NEO-331: required — a league row cannot exist without a level, and
+        // a curated dataset is exactly the caller that knows it.
+        level: levelValidator,
         yearsActive: v.optional(yearsValidator),
         aliases: v.optional(v.array(v.string())),
         wikidataId: v.optional(v.string()),
@@ -696,7 +698,7 @@ export const upsertLeagues = internalMutation({
         sportId,
         // See the header: no call in this file queues a Wikidata lookup.
         skipEnrichment: true,
-        ...(row.level ? { level: row.level as LeagueLevel } : {}),
+        level: row.level as LeagueLevel,
         ...(aliases.length > 0 ? { aliases } : {}),
         ...(row.yearsActive ? { yearsActive: row.yearsActive } : {}),
         ...(wikidataId ? { wikidataId } : {}),
@@ -899,20 +901,24 @@ async function loadTeams(
     if (!leagueCache.has(cacheKey)) {
       // A cache MISS is the only time this costs anything, and it happens once
       // or twice per chunk. `findLeagueByName` is a name read plus the alias
-      // leg's `by_sport_id` collect; `findOrCreateLeague` adds its insert.
+      // leg's `by_sport_id` collect; the sport default's create adds an insert.
       ops += 3;
       if (leagueName) {
         const name = boundedName(leagueName, "A league name", key);
-        const id = mutationCtx
-          ? await findOrCreateLeague(mutationCtx, {
-              name,
-              sportId,
-              // See the header: the helper's insert branch schedules a
-              // Wikidata lookup, and a bulk write must not queue pooled
-              // network work as a side effect.
-              skipEnrichment: true,
-            })
-          : ((await findLeagueByName(ctx, { name, sportId }))?._id ?? null);
+        // NEO-331: FIND-ONLY. A team row names its league by text, which says
+        // nothing about the league's level — and a league row now requires
+        // one. Leagues are loaded first, by `upsertLeagues`, from a dataset
+        // that carries its own level; a team naming a league that run did not
+        // load is a dataset error. The dry run reports it as `id: null`; the
+        // write run refuses the whole chunk (a thrown mutation writes
+        // nothing), naming the league so the operator can fix the dataset.
+        const id = (await findLeagueByName(ctx, { name, sportId }))?._id ?? null;
+        if (id === null && mutationCtx) {
+          throw new ConvexError(
+            `No league "${name}" in this sport on this deployment (team "${key}"). ` +
+              `Load it with upsertLeagues first — teams never create leagues.`,
+          );
+        }
         leagueCache.set(cacheKey, { name, id });
       } else {
         // The sport default: the same name `resolveDefaultLeagueId` would

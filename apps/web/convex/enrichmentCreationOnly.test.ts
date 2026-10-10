@@ -129,6 +129,7 @@ async function insertBareTeam(
 ) {
   return t.run(async (ctx) => {
     const leagueId = await ctx.db.insert("leagues", {
+      level: "major" as const,
       name: "Major League Baseball",
       nameNormalized: "baseball league major",
       sportId,
@@ -430,7 +431,7 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
 
     await t
       .withIdentity(ADMIN)
-      .mutation(api.leagues.createByAdmin, { name: "Texas League", sportId });
+      .mutation(api.leagues.createByAdmin, { name: "Texas League", level: "minor", sportId });
 
     expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
   });
@@ -444,6 +445,7 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
     const asAdmin = t.withIdentity(ADMIN);
     const first = await asAdmin.mutation(api.leagues.createByAdmin, {
       name: "Texas League",
+      level: "minor",
       sportId,
     });
     expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
@@ -452,6 +454,7 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
     // this proves the guard is the row lookup and not string equality.
     const second = await asAdmin.mutation(api.leagues.createByAdmin, {
       name: "  texas league ",
+      level: "minor",
       sportId,
     });
 

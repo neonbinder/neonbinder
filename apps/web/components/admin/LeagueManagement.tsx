@@ -79,7 +79,8 @@ export interface League {
   nameNormalized: string;
   sportId: Id<"selectorOptions">;
   lastUpdated: number;
-  level?: LeagueLevel;
+  /** NEO-331: required — every league carries one. */
+  level: LeagueLevel;
   yearsActive?: { from: number; to?: number };
   externalIds?: { wikidataId?: string };
   aliases?: string[];
@@ -159,13 +160,15 @@ function teamTextColor(
  * new state does not need a new query shape (TeamManagement's `attentionFor`,
  * same contract).
  *
- * Abbreviation outranks level because it is the one that shows up somewhere
- * else — `/admin/teams` prints `league.abbreviation ?? league.name` beside
- * every team, so a league with no short form makes that list unreadable.
+ * The abbreviation is what shows up somewhere else — `/admin/teams` prints
+ * `league.abbreviation ?? league.name` beside every team, so a league with no
+ * short form makes that list unreadable.
+ *
+ * NEO-331 removed the second state, "no level": level is required on every
+ * league now, so it can no longer be missing.
  */
-export function attentionFor(league: League): "abbreviation" | "level" | null {
+export function attentionFor(league: League): "abbreviation" | null {
   if (!league.abbreviation) return "abbreviation";
-  if (!league.level) return "level";
   return null;
 }
 
@@ -219,7 +222,7 @@ function rowSignature(row: League): string {
   return fieldSignature({
     name: row.name,
     abbreviation: row.abbreviation ?? "",
-    level: row.level ?? null,
+    level: row.level,
     fromYear: row.yearsActive?.from ? String(row.yearsActive.from) : "",
     toYear: row.yearsActive?.to ? String(row.yearsActive.to) : "",
     aliases: row.aliases ?? [],
@@ -248,7 +251,7 @@ function LeagueDetail({
   // reactive update landed mid-edit (NEO-39).
   const [name, setName] = useState(league.name);
   const [abbreviation, setAbbreviation] = useState(league.abbreviation ?? "");
-  const [level, setLevel] = useState<LeagueLevel | null>(league.level ?? null);
+  const [level, setLevel] = useState<LeagueLevel>(league.level);
   const [fromYear, setFromYear] = useState(
     league.yearsActive?.from ? String(league.yearsActive.from) : "",
   );
@@ -304,7 +307,7 @@ function LeagueDetail({
   const seedFrom = (row: League) => {
     setName(row.name);
     setAbbreviation(row.abbreviation ?? "");
-    setLevel(row.level ?? null);
+    setLevel(row.level);
     setFromYear(row.yearsActive?.from ? String(row.yearsActive.from) : "");
     setToYear(row.yearsActive?.to ? String(row.yearsActive.to) : "");
     setAliasText((row.aliases ?? []).join(", "));
@@ -400,7 +403,7 @@ function LeagueDetail({
   const nameChanged = trimmedName !== league.name;
   const abbreviationChanged =
     trimmedAbbreviation !== (league.abbreviation ?? "");
-  const levelChanged = level !== (league.level ?? null);
+  const levelChanged = level !== league.level;
   const yearsChanged =
     fromYear.trim() !==
       (league.yearsActive?.from ? String(league.yearsActive.from) : "") ||
@@ -656,6 +659,8 @@ function LeagueDetail({
             : "An end year cannot come before the start year."}
         </p>
 
+        {/* NEO-331: a stored league always has a level, so this opens with
+            it pressed and it cannot be cleared — only moved to another. */}
         <LevelGroup value={level} onChange={setLevel} idPrefix="detail" />
 
         {/* Aliases are the reason this screen exists as much as anything else:
@@ -1120,9 +1125,7 @@ export default function LeagueManagement() {
                 const isSelected = league._id === selectedId;
                 const sportLabel =
                   sportNameById.get(league.sportId as string) ?? "";
-                const levelLabel = league.level
-                  ? LEVEL_LABEL.get(league.level)
-                  : undefined;
+                const levelLabel = LEVEL_LABEL.get(league.level);
                 return (
                   <li key={league._id}>
                     <button
@@ -1182,19 +1185,11 @@ export default function LeagueManagement() {
                             <span className="sr-only">No abbreviation yet</span>
                           </span>
                         )}
-                        {levelLabel ? (
-                          <span className="min-w-0 truncate border-l border-slate-700 pl-2">
-                            {levelLabel}
-                          </span>
-                        ) : (
-                          <span
-                            className="shrink-0 border-l border-slate-700 pl-2 text-neon-orange"
-                            title="Level not set"
-                          >
-                            <span aria-hidden="true">?</span>
-                            <span className="sr-only">Level not set</span>
-                          </span>
-                        )}
+                        {/* NEO-331: level is required, so there is no
+                            "Level not set" glyph any more. */}
+                        <span className="min-w-0 truncate border-l border-slate-700 pl-2">
+                          {levelLabel}
+                        </span>
                       </span>
                     </button>
                   </li>

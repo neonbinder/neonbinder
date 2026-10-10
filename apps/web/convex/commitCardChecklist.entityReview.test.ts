@@ -461,6 +461,17 @@ describe("commitCardChecklist: 'create' decision seeds a new row from the batch'
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    // NEO-331: the enrichment's league NAME links an existing league; it no
+    // longer creates one (a league requires a level). Seed it.
+    await t.run(async (ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Major League Baseball",
+        nameNormalized: "major league baseball",
+        sportId,
+        level: "major",
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
 
     await insertReviewRow(t, {
       selectorOptionId: variantTypeId,

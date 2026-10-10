@@ -616,6 +616,7 @@ describe("deleteSelectorOption — refusals", () => {
         lastUpdated: SENTINEL_LAST_UPDATED,
       });
       await ctx.db.insert("leagues", {
+        level: "other" as const,
         name: "Major League Pickleball",
         nameNormalized: "major league pickleball",
         sportId,

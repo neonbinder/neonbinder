@@ -164,6 +164,29 @@ async function allTeams(t: ReturnType<typeof convexTest>) {
   return t.run(async (ctx) => ctx.db.query("teams").collect());
 }
 
+/**
+ * NEO-331: a league NAME on a decision (the operator's `leagueName`, the
+ * enrichment's suggestion) is LINK-ONLY at commit — it never mints a league,
+ * because a league requires a level. Tests whose point is the PRECEDENCE
+ * between names seed the league so the name has something to link.
+ */
+async function seedLeagueNamed(
+  t: ReturnType<typeof convexTest>,
+  sportId: Id<"selectorOptions">,
+  name: string,
+  level: "major" | "other" = "other",
+): Promise<Id<"leagues">> {
+  return t.run(async (ctx) =>
+    ctx.db.insert("leagues", {
+      name,
+      nameNormalized: name.toLowerCase(),
+      sportId,
+      level,
+      lastUpdated: Date.now(),
+    }),
+  );
+}
+
 async function leagueNameOf(
   t: ReturnType<typeof convexTest>,
   leagueId: Id<"leagues"> | undefined,
@@ -201,6 +224,7 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
     // step's list, so the decision carries its id.
     const ablId = await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
+        level: "other" as const,
         name: "Australian Baseball League",
         nameNormalized: "australian baseball league",
         sportId,
@@ -273,9 +297,14 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
     // THE POINT OF THE TICKET: neither club is filed under Major League
     // Baseball, which is what the sport default would have given them.
     expect(byName.get("Blue Sox")!.leagueId).toBe(ablId);
-    expect(await leagueNameOf(t, byName.get("Beavers")!.leagueId)).toBe(
-      "NCAA Division I baseball",
-    );
+    // NEO-331: a league NAME we hold no row for is link-only — it used to
+    // mint "NCAA Division I baseball" here. Now the team lands with NO league
+    // (still not MLB: a named league counts as answered), and nothing is
+    // minted without the level only a New League step supplies.
+    expect(byName.get("Beavers")!.leagueId).toBeUndefined();
+    expect(
+      (await t.run(async (ctx) => ctx.db.query("leagues").collect())).map((l) => l.name),
+    ).toEqual(["Australian Baseball League"]);
 
     const player = await playerNamed(t, "Travis Bazzana");
     expect(player).not.toBeNull();
@@ -555,6 +584,7 @@ describe("commit prelude: staged career-team rows become teams BEFORE the player
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedTree(t);
+    await seedLeagueNamed(t, sportId, "Australian Baseball League");
 
     const playerRowId = await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
@@ -880,6 +910,9 @@ describe("commit prelude: a pre-NEO-236 decision carrying createTeams is unchang
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedTree(t);
+    // NEO-331: the enrichment's league suggestion links an existing row; it no
+    // longer creates one.
+    await seedLeagueNamed(t, sportId, "Major League Baseball", "major");
 
     await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
@@ -949,6 +982,7 @@ describe("commit prelude: a stored league that stopped being usable is DROPPED, 
 
     const goneLeagueId = await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
+        level: "other" as const,
         name: "Gone League",
         nameNormalized: "gone league",
         sportId,
@@ -956,6 +990,9 @@ describe("commit prelude: a stored league that stopped being usable is DROPPED, 
       }),
     );
     await t.run(async (ctx) => ctx.db.delete(goneLeagueId));
+    // NEO-331: the typed name links an existing league; seed it so the
+    // fall-through has a row to land on.
+    await seedLeagueNamed(t, sportId, "Australian Baseball League");
 
     const playerRowId = await insertReviewRow(t, {
       selectorOptionId: variantTypeId,
@@ -1011,6 +1048,7 @@ describe("commit prelude: a stored league that stopped being usable is DROPPED, 
     );
     const foreignLeagueId = await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
+        level: "major" as const,
         name: "National Football League",
         nameNormalized: "national football league",
         sportId: otherSportId,

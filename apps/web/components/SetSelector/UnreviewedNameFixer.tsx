@@ -7,7 +7,11 @@ import NeonButton from "../modules/NeonButton";
 import PlayerPicker from "./PlayerPicker";
 import TeamPicker from "./TeamPicker";
 import { MAX_CARD_TEAMS } from "./card-attention";
-import { useAttentionSportId, type AttentionFixerProps } from "./cardAttentionRegistry";
+import {
+  useAttentionContextOptionId,
+  useAttentionSportId,
+  type AttentionFixerProps,
+} from "./cardAttentionRegistry";
 
 /**
  * NEO-221 (D12) — the `unreviewedName` attention fixer: "this card carries a
@@ -52,8 +56,10 @@ import { useAttentionSportId, type AttentionFixerProps } from "./cardAttentionRe
  */
 export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProps) {
   // Out-of-band because the locked fixer contract passes only the row, and a
-  // card row does not know its set's sport. See AttentionSportContext.
+  // card row does not know its set's sport or its set. See
+  // AttentionSportContext.
   const sportId = useAttentionSportId();
+  const contextOptionId = useAttentionContextOptionId();
   const updateCard = useMutation(api.selectorOptions.updateCard);
 
   /**
@@ -318,6 +324,7 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
           value={teamIds}
           onChange={applyTeams}
           sportId={sportId}
+          contextOptionId={contextOptionId}
           disabled={busy}
         />
         {atCap && (

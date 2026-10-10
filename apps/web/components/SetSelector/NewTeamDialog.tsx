@@ -406,13 +406,22 @@ export default function NewTeamDialog({
               }}
               leagueSuggestion={leagueSuggestion}
               onCreateLeague={async (leagueDraft) => {
+                // NEO-331: level is required. `NewTeamForm` never calls this
+                // without one (its "Add league" waits on `leagueDraftReady`).
+                // The throw narrows the type; if a future caller forgets, it
+                // lands in that catch, which shows its own generic copy —
+                // this message is never displayed.
+                const level = leagueDraft.level;
+                if (level === null) {
+                  throw new Error("NewTeamDialog: league create without a level");
+                }
                 const { id } = await createLeague({
                   name: leagueDraft.name.trim(),
                   sportId,
+                  level,
                   ...(leagueDraft.abbreviation.trim()
                     ? { abbreviation: leagueDraft.abbreviation.trim() }
                     : {}),
-                  ...(leagueDraft.level ? { level: leagueDraft.level } : {}),
                   ...(leagueDraft.fromYear.trim()
                     ? {
                         yearsActive: {

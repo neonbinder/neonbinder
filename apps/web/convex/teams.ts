@@ -6,7 +6,8 @@ import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
 import {
-  findOrCreateLeague,
+  // NEO-331: automatic paths link an existing league; they never create one.
+  findLeagueByName,
   resolveDefaultLeagueId,
   // NEO-236: the operator's own league choice, which outranks the sport default.
   resolveOperatorLeagueId,
@@ -39,6 +40,8 @@ import {
 import { readManyByIds } from "./lib/batchIdReads";
 import { eraLabel, teamOptionLabel } from "../lib/teams/team-era";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
+// NEO-331: the picker's set-context tiers — pure, shared with tests.
+import { rankTeamsForContext } from "../lib/teams/team-rank";
 
 /**
  * The dedup key on `teams.nameNormalized`.
@@ -786,10 +789,11 @@ export const findOrCreate = mutation({
      * NEO-236 — the league the operator chose in the New Team dialog, if any.
      *
      * At most one of the two is meaningful: `leagueId` picks a row that exists,
-     * `leagueName` accepts a suggestion for one that does not yet (created
-     * through `findOrCreateLeague`, so it dedupes by name-or-alias like every
-     * other league writer). Both optional, because the pickers that create a
-     * team without ever showing a league still exist and still work.
+     * `leagueName` names one by name or alias. NEO-331: `leagueName` is
+     * LINK-ONLY — it resolves an existing league and is refused when none
+     * answers, because a league now needs a level only the New League form
+     * asks for. Both optional, because the pickers that create a team without
+     * ever showing a league still exist and still work.
      *
      * When either is given it WINS: the sport default is never applied over an
      * operator's answer. That is the defect this argument exists to close — a
@@ -1199,11 +1203,18 @@ export const applyEnrichmentInternal = internalMutation({
     // Only ever fills a GAP: a league an operator assigned by hand in Team
     // Management outranks whatever a source guessed, so enrichment must not
     // overwrite it.
+    //
+    // NEO-331: LINK ONLY, never create. A league row now carries a required
+    // `level`, and background enrichment cannot know one — a source's label
+    // says nothing about where the league sits in the pyramid. So an existing
+    // league (by name or alias) is attached, and a miss leaves the team
+    // without one for an operator to assign; it never mints a guessed row.
     if (args.league !== undefined && !existing.leagueId) {
-      patch.leagueId = await findOrCreateLeague(ctx, {
+      const found = await findLeagueByName(ctx, {
         name: args.league,
         sportId: existing.sportId,
       });
+      if (found) patch.leagueId = found._id;
     }
     // NEO-203: fill-a-gap ONLY, on every field — same rule the `leagueId`
     // branch above already followed, now applied to the three that did not.
@@ -1413,12 +1424,17 @@ export const convertLegacyLeagueInternal = internalMutation({
     const team = await ctx.db.get(args.id);
     if (!team?.league || team.leagueId) return null;
 
-    const leagueId = await findOrCreateLeague(ctx, {
+    // NEO-331: find-only. A legacy string carries no level, and a league row
+    // now requires one, so this links an existing league (by name or alias)
+    // and otherwise leaves the row exactly as it was — legacy string intact,
+    // so the fact is not lost and an operator can still resolve it by hand.
+    const found = await findLeagueByName(ctx, {
       name: team.league,
       sportId: team.sportId,
     });
+    if (!found) return null;
     await ctx.db.patch(args.id, {
-      leagueId,
+      leagueId: found._id,
       // Clear the string as it converts, so a row never carries two answers to
       // the same question.
       league: undefined,
@@ -1980,6 +1996,258 @@ export const search = query({
       merged.push(hit);
     }
     return merged.slice(0, limit);
+  },
+});
+
+/**
+ * NEO-331 — candidate-pool sizes for `pickerCandidates`.
+ *
+ * Search: the league leg reads wider than the sport leg because it is the one
+ * that guarantees the set's own league is in the pool before ranking — a
+ * shared prefix across a college preload can push every MLB club out of a
+ * 25-row sport-wide window. Browse: the same 500 ceiling `teamsIn` uses per
+ * league, applied to the league leg and the sport leg each.
+ */
+const PICKER_LEAGUE_LEG_TAKE = 64;
+const PICKER_SPORT_LEG_TAKE = 25;
+const PICKER_ALIAS_LEG_TAKE = 25;
+const PICKER_SEARCH_MAX_LIMIT = 25;
+const PICKER_BROWSE_TAKE = 500;
+const PICKER_BROWSE_DEFAULT_LIMIT = 100;
+const PICKER_BROWSE_MAX_LIMIT = 100;
+/**
+ * How far up from the context row to look for its year. The hierarchy is six
+ * levels (sport → year → manufacturer → setName → variantType → variant), so
+ * six steps reach the year from anywhere a picker is mounted.
+ */
+const PICKER_YEAR_WALK_DEPTH = 6;
+
+/**
+ * A leading four-digit year out of a year/season value ("2023-24" → 2023).
+ * The same reading `features/deriveCardFeatures.parseYear` gives a season,
+ * restated rather than imported because that one is module-private.
+ */
+function parsePickerYear(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const match = raw.match(/\d{4}/);
+  if (!match) return undefined;
+  const year = Number.parseInt(match[0], 10);
+  return year > 1000 && year < 3000 ? year : undefined;
+}
+
+/**
+ * NEO-331 — the set context a picker ranks by: the league named on the
+ * context row's `features.league`, resolved by name OR alias within the
+ * SEARCHED sport ("MLB" is an alias of Major League Baseball), and the year
+ * of the nearest `year`-level ancestor (the row itself included).
+ *
+ * Resolved in the searched sport on purpose: a picker switched to another
+ * sport (a football player's guest card in a baseball set) finds no league of
+ * that name there, so tiers 1 and 3 empty out rather than ranking by a league
+ * from the wrong sport. Nothing about the context is stored — the free-text
+ * feature stays the one source, so an operator editing it re-ranks at once.
+ */
+async function pickerContext(
+  ctx: QueryCtx,
+  contextOptionId: Id<"selectorOptions"> | undefined,
+  sportId: Id<"selectorOptions"> | undefined,
+): Promise<{ leagueId?: Id<"leagues">; year?: number }> {
+  if (!contextOptionId) return {};
+  const row = await ctx.db.get(contextOptionId);
+  if (!row) return {};
+
+  let year: number | undefined;
+  let node: Doc<"selectorOptions"> | null = row;
+  for (let depth = 0; node && depth <= PICKER_YEAR_WALK_DEPTH; depth++) {
+    if (node.level === "year") {
+      year = parsePickerYear(node.value);
+      break;
+    }
+    node = node.parentId ? await ctx.db.get(node.parentId) : null;
+  }
+
+  const leagueName = row.features?.league?.trim();
+  const league =
+    leagueName && sportId
+      ? await findLeagueByName(ctx, { name: leagueName, sportId })
+      : null;
+
+  return {
+    ...(league ? { leagueId: league._id } : {}),
+    ...(year !== undefined ? { year } : {}),
+  };
+}
+
+/**
+ * NEO-331 — the team picker's candidates, ranked by the set being worked on.
+ *
+ * `teams.search` answers "which teams match this text"; this answers "which
+ * of them does THIS card most likely show", and returns them in final order
+ * with the tier each landed in (see `lib/teams/team-rank.ts` for the tiers and
+ * why an undated team is never "active"). `teams.search` is untouched — the
+ * entity-link and match screens rank for dedup, where the set year is the
+ * wrong signal.
+ *
+ * Search (`query` non-empty), three legs merged and deduped before ranking:
+ *   A. the set's league, through `search_name` filtered by sport AND league
+ *      (wider window — it is what guarantees L's teams are in the pool);
+ *   B. the sport, through `search_name` filtered by sport;
+ *   C. the exact-alias leg `teams.search` has (NEO-284).
+ * Each search leg retries with the NEO-322 alternate reading when the joined
+ * one finds nothing, exactly as `teams.search` does.
+ *
+ * Browse (`query` blank): the set's league by `by_league_id` plus the sport by
+ * `by_sport_id`, merged and ranked with the same tiers, so the popover opens
+ * on the teams this card most likely shows.
+ *
+ * Tier 2 (minor leagues active in Y) is not window-guaranteed: a minor-league
+ * team reaches the pool only through the sport leg. Measure before widening.
+ *
+ * Signed-in, `[]` when signed out — the same gate and reasoning as
+ * `teams.search`.
+ */
+export const pickerCandidates = query({
+  args: {
+    query: v.string(),
+    sportId: v.optional(v.id("selectorOptions")),
+    contextOptionId: v.optional(v.id("selectorOptions")),
+    limit: v.optional(v.number()),
+  },
+  returns: v.array(
+    v.object({
+      team: teamDocValidator,
+      tier: v.union(v.literal(1), v.literal(2), v.literal(3), v.literal(4)),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    if (!(await getCurrentUserId(ctx))) return [];
+    const sportId = args.sportId;
+
+    const { leagueId, year } = await pickerContext(
+      ctx,
+      args.contextOptionId,
+      sportId,
+    );
+
+    // The sport's leagues, ONCE, for tier 2's level check — never a
+    // `db.get` per candidate. Leagues are tens of rows per sport.
+    const levelById = new Map<string, string>();
+    if (sportId) {
+      const leagues = await ctx.db
+        .query("leagues")
+        .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+        .collect();
+      for (const league of leagues) levelById.set(league._id, league.level);
+    }
+    const rankContext = {
+      ...(leagueId ? { leagueId } : {}),
+      ...(year !== undefined ? { year } : {}),
+      levelById,
+    };
+
+    const pool = new Map<Id<"teams">, Doc<"teams">>();
+    const add = (team: Doc<"teams">) => {
+      // A row in another sport is never a candidate, whichever leg found it.
+      if (sportId && team.sportId !== sportId) return;
+      if (!pool.has(team._id)) pool.set(team._id, team);
+    };
+
+    // ── Browse ────────────────────────────────────────────────────────────
+    if (!args.query.trim()) {
+      // Floored and capped, for the reason `teams.search` gives: `.take()`
+      // rejects a negative, and a thrown query unmounts the picker.
+      const limit = Math.max(
+        1,
+        Math.min(args.limit ?? PICKER_BROWSE_DEFAULT_LIMIT, PICKER_BROWSE_MAX_LIMIT),
+      );
+      if (leagueId) {
+        const inLeague = await ctx.db
+          .query("teams")
+          .withIndex("by_league_id", (q) => q.eq("leagueId", leagueId))
+          .take(PICKER_BROWSE_TAKE);
+        inLeague.forEach(add);
+      }
+      const inSport = sportId
+        ? await ctx.db
+            .query("teams")
+            .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+            .take(PICKER_BROWSE_TAKE)
+        : await ctx.db.query("teams").take(PICKER_BROWSE_TAKE);
+      inSport.forEach(add);
+      return rankTeamsForContext([...pool.values()], rankContext, "").slice(
+        0,
+        limit,
+      );
+    }
+
+    // ── Search ────────────────────────────────────────────────────────────
+    // Normalised exactly as `teams.search` normalises: source order, never
+    // token-sorted, because the backend prefix-matches only the final term.
+    const [reading, ...alternates] = entityNameQueryReadings(args.query);
+    const term = reading.join(" ");
+    if (!term) return [];
+    const limit = Math.max(
+      1,
+      Math.min(args.limit ?? PICKER_SEARCH_MAX_LIMIT, PICKER_SEARCH_MAX_LIMIT),
+    );
+
+    const searchLeg = async (
+      take: number,
+      filterLeagueId: Id<"leagues"> | undefined,
+    ): Promise<Doc<"teams">[]> => {
+      const run = (text: string) =>
+        ctx.db
+          .query("teams")
+          .withSearchIndex("search_name", (q) => {
+            const search = q.search("nameNormalized", text);
+            if (!sportId) return search;
+            const bySport = search.eq("sportId", sportId);
+            return filterLeagueId ? bySport.eq("leagueId", filterLeagueId) : bySport;
+          })
+          .take(take);
+      let hits = await run(term);
+      // NEO-322 — the keystroke after a run of initials; see `teams.search`.
+      if (hits.length === 0 && alternates.length > 0) {
+        hits = await run(alternates[0].join(" "));
+      }
+      return hits;
+    };
+
+    // Leg A — only when the league resolved, which needs a sport.
+    if (leagueId && sportId) {
+      (await searchLeg(PICKER_LEAGUE_LEG_TAKE, leagueId)).forEach(add);
+    }
+    // Leg B.
+    (await searchLeg(PICKER_SPORT_LEG_TAKE, undefined)).forEach(add);
+
+    // Leg C — the exact alias, as `teams.search` reads it (NEO-284).
+    const aliasHitIds = new Set<string>();
+    const aliasKey = normalizeTeamName(args.query);
+    if (aliasKey) {
+      const aliasRows = await ctx.db
+        .query("teamAliases")
+        .withIndex("by_alias_normalized_and_sport_id", (q) => {
+          const byKey = q.eq("aliasNormalized", aliasKey);
+          return sportId ? byKey.eq("sportId", sportId) : byKey;
+        })
+        .take(PICKER_ALIAS_LEG_TAKE);
+      for (const row of aliasRows) {
+        if (aliasHitIds.has(row.teamId)) continue;
+        const team = await ctx.db.get(row.teamId);
+        // Stale residue (team gone, or moved sport) is skipped, as
+        // `findTeamsByAlias` skips it.
+        if (!team || team.sportId !== row.sportId) continue;
+        aliasHitIds.add(team._id);
+        add(team);
+      }
+    }
+
+    return rankTeamsForContext(
+      [...pool.values()],
+      rankContext,
+      args.query,
+      aliasHitIds,
+    ).slice(0, limit);
   },
 });
 

@@ -139,6 +139,18 @@ async function insertTeam(
       },
       lastUpdated: 1_700_000_000_000,
     });
+    // NEO-331: enrichment LINKS a league by name or alias; it never creates
+    // one (a league requires a level a source cannot supply). Seed the two
+    // leagues these cases' sources name, so the link has a row to land on.
+    for (const leagueName of ["Major League Baseball", "National League"]) {
+      await ctx.db.insert("leagues", {
+        name: leagueName,
+        nameNormalized: leagueName.toLowerCase(),
+        sportId,
+        level: "major",
+        lastUpdated: 1_700_000_000_000,
+      });
+    }
     return ctx.db.insert("teams", {
       name,
       nameNormalized: normalizeTeamName(name),

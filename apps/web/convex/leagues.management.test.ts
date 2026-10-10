@@ -107,7 +107,7 @@ async function insertLeague(
       nameNormalized: normalizeLeagueName(opts.name),
       sportId: opts.sportId,
       ...(opts.abbreviation ? { abbreviation: opts.abbreviation } : {}),
-      ...(opts.level ? { level: opts.level } : {}),
+      level: opts.level ?? "other",
       ...(opts.aliases ? { aliases: opts.aliases } : {}),
       ...(opts.wikidataId ? { externalIds: { wikidataId: opts.wikidataId } } : {}),
       ...(opts.yearsActive ? { yearsActive: opts.yearsActive } : {}),
@@ -183,7 +183,7 @@ describe("NEO-240: findOrCreateLeague matches on aliases, not just the name", ()
 
     const result = await t
       .withIdentity(ADMIN)
-      .mutation(api.leagues.createByAdmin, { name: "MLB", sportId });
+      .mutation(api.leagues.createByAdmin, { level: "other" as const, name: "MLB", sportId });
 
     expect(result.created).toBe(false);
     expect(result.id).toBe(defaultRow._id);
@@ -211,7 +211,7 @@ describe("NEO-240: findOrCreateLeague matches on aliases, not just the name", ()
 
     const result = await t
       .withIdentity(ADMIN)
-      .mutation(api.leagues.createByAdmin, { name: "  american league  ", sportId });
+      .mutation(api.leagues.createByAdmin, { level: "other" as const, name: "  american league  ", sportId });
 
     expect(result).toEqual({ id: mlb, created: false });
     expect(await allLeagues(t)).toHaveLength(1);
@@ -231,7 +231,7 @@ describe("NEO-240: findOrCreateLeague matches on aliases, not just the name", ()
 
     const result = await t
       .withIdentity(ADMIN)
-      .mutation(api.leagues.createByAdmin, { name: "MLB", sportId: basketball });
+      .mutation(api.leagues.createByAdmin, { level: "other" as const, name: "MLB", sportId: basketball });
     await drainScheduled(t);
 
     expect(result.created).toBe(true);
@@ -262,10 +262,13 @@ describe("NEO-240: findOrCreateLeague matches on aliases, not just the name", ()
     expect(row!.level).toBe("minor");
   });
 
-  test("a found row DOES gain a level the first writer did not know", async () => {
+  test("NEO-331: a found row keeps its own level — there is no gap to fill", async () => {
+    // Was "a found row DOES gain a level the first writer did not know". Level
+    // is required now, so every row already has one, and the operator's own
+    // classification outranks the level a later caller brings.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    const id = await insertLeague(t, { name: "Texas League", sportId });
+    const id = await insertLeague(t, { name: "Texas League", sportId, level: "other" });
 
     await t.withIdentity(ADMIN).mutation(api.leagues.createByAdmin, {
       name: "Texas League",
@@ -273,7 +276,7 @@ describe("NEO-240: findOrCreateLeague matches on aliases, not just the name", ()
       sportId,
     });
 
-    expect((await t.run(async (ctx) => ctx.db.get(id)))!.level).toBe("minor");
+    expect((await t.run(async (ctx) => ctx.db.get(id)))!.level).toBe("other");
   });
 });
 
@@ -331,7 +334,7 @@ describe("NEO-240: the creation-only enrichment hook", () => {
 
     await t
       .withIdentity(ADMIN)
-      .mutation(api.leagues.createByAdmin, { name: "Eastern League", sportId });
+      .mutation(api.leagues.createByAdmin, { level: "other" as const, name: "Eastern League", sportId });
 
     const scheduled = await t.run(async (ctx) =>
       ctx.db.system.query("_scheduled_functions").collect(),
@@ -350,10 +353,12 @@ describe("NEO-240: the creation-only enrichment hook", () => {
     const asAdmin = t.withIdentity(ADMIN);
 
     await asAdmin.mutation(api.leagues.createByAdmin, {
+      level: "other" as const,
       name: "Eastern League",
       sportId,
     });
     await asAdmin.mutation(api.leagues.createByAdmin, {
+      level: "other" as const,
       name: "  eastern league ",
       sportId,
     });
@@ -379,11 +384,11 @@ describe("leagues.createByAdmin", () => {
 
     const first = await t
       .withIdentity(ADMIN)
-      .mutation(api.leagues.createByAdmin, { name: "Texas League", sportId });
+      .mutation(api.leagues.createByAdmin, { level: "other" as const, name: "Texas League", sportId });
     await drainScheduled(t);
     const second = await t
       .withIdentity(ADMIN)
-      .mutation(api.leagues.createByAdmin, { name: "  texas league ", sportId });
+      .mutation(api.leagues.createByAdmin, { level: "other" as const, name: "  texas league ", sportId });
 
     expect(first.created).toBe(true);
     expect(second.created).toBe(false);
@@ -414,7 +419,7 @@ describe("leagues.createByAdmin", () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await expect(
-      t.withIdentity(ADMIN).mutation(api.leagues.createByAdmin, { name: "   ", sportId }),
+      t.withIdentity(ADMIN).mutation(api.leagues.createByAdmin, { level: "other" as const, name: "   ", sportId }),
     ).rejects.toThrow(/league name is required/i);
   });
 
@@ -423,7 +428,7 @@ describe("leagues.createByAdmin", () => {
     const sportId = await seedSport(t);
     const name = "L".repeat(121);
     await expect(
-      t.withIdentity(ADMIN).mutation(api.leagues.createByAdmin, { name, sportId }),
+      t.withIdentity(ADMIN).mutation(api.leagues.createByAdmin, { level: "other" as const, name, sportId }),
     ).rejects.toThrow(/121 characters; the limit is 120/);
   });
 
@@ -432,6 +437,7 @@ describe("leagues.createByAdmin", () => {
     const sportId = await seedSport(t);
     await expect(
       t.withIdentity(ADMIN).mutation(api.leagues.createByAdmin, {
+        level: "other" as const,
         name: "Some League",
         abbreviation: "A".repeat(17),
         sportId,
@@ -447,6 +453,7 @@ describe("leagues.createByAdmin", () => {
     const notASport = await seedNonSportOption(t);
     await expect(
       t.withIdentity(ADMIN).mutation(api.leagues.createByAdmin, {
+        level: "other" as const,
         name: "Orphan League",
         sportId: notASport,
       }),
@@ -460,7 +467,7 @@ describe("leagues.createByAdmin", () => {
     await expect(
       t
         .withIdentity(MEMBER)
-        .mutation(api.leagues.createByAdmin, { name: "Ghost League", sportId }),
+        .mutation(api.leagues.createByAdmin, { level: "other" as const, name: "Ghost League", sportId }),
     ).rejects.toThrow(/admin access required/i);
     expect(await allLeagues(t)).toHaveLength(0);
   });
@@ -475,7 +482,6 @@ describe("leagues.listForManagement", () => {
     // Inserted in a deliberately scrambled order so the assertion is about the
     // sort and not about insertion order.
     await insertLeague(t, { name: "Zed Other League", sportId, level: "other" });
-    await insertLeague(t, { name: "Unclassified League", sportId });
     await insertLeague(t, { name: "Atlantic League", sportId, level: "independent" });
     await insertLeague(t, { name: "Nippon Professional Baseball", sportId, level: "international" });
     await insertLeague(t, { name: "SEC", sportId, level: "college" });
@@ -484,11 +490,11 @@ describe("leagues.listForManagement", () => {
     await insertLeague(t, { name: "Major League Baseball", sportId, level: "major" });
   }
 
-  test("orders by the professional pyramid, then by name, with unset LAST", async () => {
+  test("orders by the professional pyramid, then by name", async () => {
     // The level order is a property of the taxonomy, not of the strings: sorted
     // alphabetically these would read college, independent, international,
-    // major, minor — which looks like an ordering and is not one. Unset sorts
-    // last because it is the operator's to-do pile, and no backfill was run.
+    // major, minor — which looks like an ordering and is not one. (NEO-331:
+    // the NEO-240 "unset sorts LAST" case is gone — level is required.)
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await seedLevels(t, sportId);
@@ -503,9 +509,8 @@ describe("leagues.listForManagement", () => {
       "Nippon Professional Baseball",
       "Atlantic League",
       "Zed Other League",
-      "Unclassified League",
     ]);
-    expect(result.totalCount).toBe(8);
+    expect(result.totalCount).toBe(7);
     // Present for shape parity with players/teams; leagues are a small enough
     // set that the query collects them all.
     expect(result.truncated).toBe(false);
@@ -763,13 +768,15 @@ describe("leagues.saveLeagueFields", () => {
   });
 
   test("every optional field is clearable with null, and an empty abbreviation clears too", async () => {
+    // NEO-331: `level` is no longer among them — it is required, so it can be
+    // changed but never cleared, and the validator refuses `null`.
     const t = convexTest(schema, modules);
     const { id } = await seedEditable(t);
+    const levelBefore = (await t.run(async (ctx) => ctx.db.get(id)))!.level;
 
     await t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, {
       id,
       abbreviation: null,
-      level: null,
       yearsActive: null,
       wikidataId: null,
       aliases: [],
@@ -777,7 +784,7 @@ describe("leagues.saveLeagueFields", () => {
 
     const row = await t.run(async (ctx) => ctx.db.get(id));
     expect(row!.abbreviation).toBeUndefined();
-    expect(row!.level).toBeUndefined();
+    expect(row!.level).toBe(levelBefore);
     expect(row!.yearsActive).toBeUndefined();
     // The whole container goes, so a cleared row is indistinguishable from one
     // that never carried an id.
@@ -1068,7 +1075,7 @@ describe("leagues.saveLeagueFields", () => {
     await t.run(async (ctx) => ctx.db.delete(id));
 
     await expect(
-      t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, level: null }),
+      t.withIdentity(ADMIN).mutation(api.leagues.saveLeagueFields, { id, level: "minor" }),
     ).rejects.toThrow(/league not found/i);
   });
 });
