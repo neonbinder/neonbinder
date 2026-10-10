@@ -13,7 +13,7 @@
  * The pure decisions are in teams-on-cards.test.tsx; this file is the wiring.
  */
 
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -32,11 +32,17 @@ type SuggestionArgs = {
 };
 let serverAnswer: (player: { playerId?: string; name?: string }) => unknown;
 let suggestionCalls: SuggestionArgs[];
+/** Every getBatch subscription the wizard asked for (not skipped). */
+let batchReads: number;
+const mockCancelBatch = vi.fn(() => Promise.resolve(null));
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
-    if (ref === "entityReviewQueue.getBatch") return currentRows;
+    if (ref === "entityReviewQueue.getBatch") {
+      batchReads += 1;
+      return currentRows;
+    }
     return undefined;
   },
   useQueries: (queries: Record<string, { query: string; args: SuggestionArgs }>) => {
@@ -48,7 +54,10 @@ vi.mock("convex/react", () => ({
     }
     return out;
   },
-  useMutation: () => vi.fn(() => Promise.resolve(undefined)),
+  useMutation: (ref: string) =>
+    ref === "entityReviewQueue.cancelBatch"
+      ? mockCancelBatch
+      : vi.fn(() => Promise.resolve(undefined)),
   useAction: () => vi.fn(() => Promise.resolve(undefined)),
 }));
 
@@ -57,6 +66,7 @@ vi.mock("./EntityLinkSearch", () => ({ default: () => null }));
 import EntityReviewWizard from "./EntityReviewWizard";
 
 const CONFIRM_SAVE_NAME = "Confirm & Save (Enter) — commit this review";
+const CANCEL_NAME = "Cancel (Esc) — leave without committing";
 const REDS = "team_reds" as Id<"teams">;
 const YANKEES = "team_yankees" as Id<"teams">;
 
@@ -105,6 +115,8 @@ const lastAnswers = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls.at(-1)?.[0];
 beforeEach(() => {
   rowId = 0;
   suggestionCalls = [];
+  batchReads = 0;
+  mockCancelBatch.mockClear();
   serverAnswer = () => ({ playerId: null, answer: null, candidates: [] });
   // One created player whose only career team is a team staged in this batch.
   currentRows = [
@@ -268,6 +280,81 @@ describe("TeamsOnCardsSection in the wizard's final step", () => {
     expect(screen.getByText("All reviewed — save 1 card?")).toBeTruthy();
     expect(screen.queryByText(/no team yet/)).toBeNull();
     expect(screen.queryAllByRole("radiogroup")).toEqual([]);
+  });
+});
+
+/**
+ * NEO-335 — no names to review, but cards that would save with no team: the
+ * wizard opens straight onto its final step and reads no batch.
+ */
+describe("EntityReviewWizard teams-only", () => {
+  function renderTeamsOnly(previewCards: Card[], batchId = "") {
+    const onConfirm = vi.fn();
+    const onCancel = vi.fn();
+    const onTeamAnswersChange = vi.fn();
+    render(
+      <EntityReviewWizard
+        isOpen
+        teamsOnly
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId={batchId}
+        summary={{ cardCount: previewCards.length, deleteCount: 0, reviewDecisionCount: 0 }}
+        onConfirm={onConfirm}
+        onCancel={onCancel}
+        previewCards={previewCards}
+        onTeamAnswersChange={onTeamAnswersChange}
+      />,
+    );
+    return { onConfirm, onCancel, onTeamAnswersChange };
+  }
+
+  it("opens on the final step with the section, reads no batch, and says nothing about names", () => {
+    serverAnswer = () => ({
+      playerId: "p",
+      answer: { tier: "sameNode", teams: [{ teamId: REDS, name: "Cincinnati Reds" }] },
+      candidates: [],
+    });
+    const { onConfirm, onTeamAnswersChange } = renderTeamsOnly([
+      { cardNumber: "1", cardName: "Base", players: ["Johnny Bench"] },
+      { cardNumber: "2", cardName: "Base", players: ["Pete Rose"], teams: ["Reds"] },
+    ]);
+    expect(batchReads).toBe(0);
+    expect(screen.getByText("All reviewed — save 2 cards?")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "1 card has no team yet" })).toBeTruthy();
+    expect(screen.queryByText(/reviewed$/)).toBeNull();
+    expect(screen.queryByText(/0 of 0/)).toBeNull();
+    expect(lastAnswers(onTeamAnswersChange)).toEqual([{ teamIds: [REDS] }, undefined]);
+
+    const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
+    expect(document.activeElement).toBe(confirm);
+    fireEvent.click(confirm);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("Cancel with no batch closes without asking the server", async () => {
+    const { onCancel } = renderTeamsOnly([
+      { cardNumber: "1", cardName: "Base", players: ["Johnny Bench"] },
+    ]);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: CANCEL_NAME }));
+    });
+    expect(mockCancelBatch).not.toHaveBeenCalled();
+    expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("Cancel with a batch left open still discards it", async () => {
+    const { onCancel } = renderTeamsOnly(
+      [{ cardNumber: "1", cardName: "Base", players: ["Johnny Bench"] }],
+      "batch-open",
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: CANCEL_NAME }));
+    });
+    expect(mockCancelBatch).toHaveBeenCalledWith({
+      selectorOptionId: "selopt-1",
+      batchId: "batch-open",
+    });
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 });
 

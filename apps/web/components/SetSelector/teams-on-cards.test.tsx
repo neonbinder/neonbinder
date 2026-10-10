@@ -99,6 +99,24 @@ describe("teamlessCardIndexes — who is in the section", () => {
     );
   });
 
+  test("a position that re-syncs a stored row with a team is settled — never asked", () => {
+    const cards = [card("1", ["A"]), card("2", ["B"])];
+    expect(teamlessCardIndexes(cards, [], new Set([0]))).toEqual([1]);
+    expect(evidenceRequests(cards, [], new Set([0]))).toEqual([
+      { key: "name:b", name: "B" },
+    ]);
+    const groups = buildTeamsGroups({
+      cards,
+      rows: [],
+      serverEvidence: new Map(),
+      setYear: undefined,
+      linkedTeamNameById: new Map(),
+      currentYear: 2026,
+      settled: new Set([0]),
+    });
+    expect(groups.map((g) => g.cards.map((c) => c.index))).toEqual([[1]]);
+  });
+
   test("membership ignores the section's own answers", () => {
     // An answer rides beside the cards, never on them, so this stays true
     // after the operator answers — the line does not vanish.

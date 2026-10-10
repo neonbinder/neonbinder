@@ -24,13 +24,7 @@ import type { PairingCard } from "./CardPairingModal";
  * teamless card as checked instead of asking BSC again after save; see
  * `previewCardFields.teamLookup` in convex/selectorOptions.ts.
  */
-export type TeamLookup = "answered" | "failed";
-
-/**
- * A `PairingCard` as this mapping builds it: the dialog's card plus the
- * lookup outcome, which rides through the dialog untouched to the commit.
- */
-export type CandidatePairingCard = PairingCard & { teamLookup?: TeamLookup };
+export type TeamLookup = NonNullable<PairingCard["teamLookup"]>;
 
 /**
  * The half of `checklistCandidates.getReadyCandidates`' card shape this
@@ -77,7 +71,7 @@ export type ReadyCandidate = {
  */
 export function candidateToPairingCard(
   c: ReadyCandidate,
-): CandidatePairingCard {
+): PairingCard {
   return {
     cardNumber: c.cardNumber,
     cardName: c.cardName,
@@ -122,7 +116,7 @@ export function candidateToPairingCard(
  */
 export function candidatesToPairingCards(
   candidates: readonly ReadyCandidate[],
-): CandidatePairingCard[] {
+): PairingCard[] {
   return candidates.map((c) => {
     const card = candidateToPairingCard(c);
     delete card.nameConflict;

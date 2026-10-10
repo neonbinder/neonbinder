@@ -14,6 +14,7 @@ import EntityReviewWizard from "./EntityReviewWizard";
 // NEO-335: the final step's team answers, put on the cards at commit.
 import {
   sameTeamAnswers,
+  teamlessCardIndexes,
   withTeamAnswer,
   type TeamAnswer,
 } from "./teams-on-cards";
@@ -78,12 +79,6 @@ type CardChecklistProps = {
     bsc: Record<string, string>;
     sportlots: Record<string, string>;
   };
-  /**
-   * NEO-306 — the SET this checklist sits under, handed down by the cascade
-   * that holds the selection. Its only reader was the set-wide Fill teams
-   * control, retired in NEO-335; nothing in this component reads it now.
-   */
-  setId?: Id<"selectorOptions">;
   /**
    * NEO-312 — where this checklist sits in the source → parallel pair, as the
    * cascade (which holds both selections) knows it. An insert builds its
@@ -184,6 +179,16 @@ type FetchPreview = {
    * answers are never stored anywhere else.
    */
   teamAnswers?: Array<TeamAnswer | undefined>;
+  /**
+   * NEO-335 — no names to review, but some cards would save with no team, so
+   * the wizard opens straight onto its final step for them (`teamsOnly`).
+   */
+  teamsOnly?: boolean;
+  /**
+   * NEO-335 — positions in `cards` that re-sync a stored row which already
+   * carries a team (or a "no team" answer); see `resolveAndCommit`.
+   */
+  storedTeamIndexes?: number[];
 };
 
 /** The confirmed cards, waiting on the content-diff review. */
@@ -351,6 +356,23 @@ export default function CardChecklist({
   const cards = useQuery(api.selectorOptions.getCardChecklist, {
     selectorOptionId: variantId,
   });
+  /**
+   * NEO-335 — stored rows that already have a team, or an operator's "no
+   * team": a re-sync keeps either, so the card matching one is not asked
+   * about in the wizard's teams section.
+   */
+  const storedTeamedCardIds = useMemo(
+    () =>
+      new Set<string>(
+        (cards ?? [])
+          .filter(
+            (row) =>
+              (row.teamOnCardIds?.length ?? 0) > 0 || row.teamNoneConfirmedAt !== undefined,
+          )
+          .map((row) => row._id),
+      ),
+    [cards],
+  );
   // Names the set in the pairing dialog's header. That dialog is modal and can
   // be hundreds of rows long — without this it says only "Match Cards" and an
   // operator who steps away has no way to tell which set they came back to.
@@ -481,15 +503,6 @@ export default function CardChecklist({
     text: string;
     tone: "status" | "error";
     /**
-     * NEO-102: which notice this is, structurally — NOT inferred from the
-     * text. Only the post-commit success notice ("Saved N cards." and its
-     * NEO-203 note variants) carries `"committed"`. Its one reader was the
-     * banner's attention call-to-action, retired in NEO-335 for the header's
-     * "N need you" pill, so nothing reads it today. Leave this undefined for
-     * every other notice.
-     */
-    kind?: "committed";
-    /**
      * NEO-312: a parallel-row build's result, so the notice can offer the
      * same "which cards" lists the run's ledger does. Carried ON the notice,
      * so any later notice replaces it along with the text it belonged to.
@@ -503,14 +516,6 @@ export default function CardChecklist({
     },
     [],
   );
-  /**
-   * The one setter that marks a notice as the result of a successful commit.
-   * Kept separate from `setSyncMessage` so reaching it means a commit
-   * actually landed.
-   */
-  const setCommittedMessage = useCallback((text: string) => {
-    setSyncNotice({ text, tone: "status", kind: "committed" });
-  }, []);
   const [showAddForm, setShowAddForm] = useState(false);
   // NEO-36: the add-card form's TEXT fields are UNCONTROLLED (refs, read at
   // submit) rather than controlled React state. CardChecklist re-renders on
@@ -1276,8 +1281,11 @@ export default function CardChecklist({
       // Nothing incoming means nothing to diff, and — critically — it must NOT
       // be read as "upstream removed every card": the custom-subtree path
       // reaches here with an empty set by design.
+      // NEO-335: kept for `resolveAndCommit`, which reads which incoming cards
+      // re-sync a stored row (`existingId`) to tell whether they can save teamless.
+      let diff: SyncDiff | undefined;
       if (result.cards.length > 0) {
-        const diff = await convex.query(
+        diff = await convex.query(
           api.selectorOptions.diffChecklistAgainstExisting,
           {
             selectorOptionId: variantId,
@@ -1306,7 +1314,7 @@ export default function CardChecklist({
           return;
         }
       }
-      await resolveAndCommit(sportId, result.cards, NO_SYNC_DECISIONS);
+      await resolveAndCommit(sportId, result.cards, NO_SYNC_DECISIONS, diff);
     } catch (error) {
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -1332,6 +1340,8 @@ export default function CardChecklist({
     sportId: Id<"selectorOptions">,
     cards: PairingCard[],
     review: SyncReviewResult,
+    /** NEO-335 — the content diff these cards were reviewed against, if any. */
+    diff?: SyncDiff,
   ) => {
     const heldBack = new Set(review.heldBackIndices);
     const kept = cards
@@ -1342,9 +1352,20 @@ export default function CardChecklist({
       sportId,
       cards: kept.map(({ card }) => card),
     });
+    // NEO-335 — kept positions whose card re-syncs a stored row that already
+    // carries a team (or an operator's "no team"). The commit keeps a stored
+    // row's team, so these cannot save teamless and are never asked about.
+    const existingIdByIndex = new Map(
+      (diff?.cards ?? []).flatMap((c) => (c.existingId ? [[c.index, c.existingId] as const] : [])),
+    );
+    const storedTeamIndexes = kept.flatMap(({ index }, position) => {
+      const existingId = existingIdByIndex.get(index);
+      return existingId && storedTeamedCardIds.has(existingId) ? [position] : [];
+    });
     const preview: FetchPreview = {
       sportId,
       batchId,
+      storedTeamIndexes,
       cards: kept.map(({ card }) => card),
       decisions: kept.map(({ index }) => ({
         applyFields: review.applyFieldsByIndex[index],
@@ -1354,7 +1375,20 @@ export default function CardChecklist({
       unknownPlayers,
       unknownTeams,
     };
-    if (unknownPlayers.length === 0 && unknownTeams.length === 0) {
+    // NEO-335 — no names to review is no longer "nothing to ask": a card that
+    // would save with no team gets the wizard's final step, which is the one
+    // place its team can be answered before the save. SportLots-only syncs of
+    // known players land here, and they are most of the teamless cards there
+    // are. With every card teamed (or the node's set-level team covering the
+    // new ones) nothing changes: commit straight away, no dialog. Every name
+    // resolved without review on this path, so the cards are judged against
+    // no review rows — the same call the section itself makes.
+    const noNames = unknownPlayers.length === 0 && unknownTeams.length === 0;
+    const askTeams =
+      noNames &&
+      (variantRow?.teamIds?.length ?? 0) === 0 &&
+      teamlessCardIndexes(preview.cards, [], new Set(storedTeamIndexes)).length > 0;
+    if (noNames && !askTeams) {
       // No wizard on this path — nothing to hold the preview for, and nothing
       // to render `commitError`. `runCommit` has already put the failure in the
       // sync banner (`Commit failed: …`), which is the only place an operator
@@ -1363,6 +1397,11 @@ export default function CardChecklist({
         setPairingPhase("closed");
         setCommitError(null);
       }
+    } else if (askTeams) {
+      // Stash preview; the wizard opens on its final step. The banner keeps
+      // whatever the run already said ("Kept all N cards from …") — the
+      // dialog itself says what is being asked.
+      setPendingPreview({ ...preview, teamsOnly: true });
     } else {
       // Stash preview; the review wizard handles the rest.
       setPendingPreview(preview);
@@ -1379,11 +1418,11 @@ export default function CardChecklist({
 
   const handleSyncReviewDone = async (review: SyncReviewResult) => {
     if (!pendingReview) return;
-    const { sportId, cards } = pendingReview;
+    const { sportId, cards, diff } = pendingReview;
     setPendingReview(null);
     setCommitting(true);
     try {
-      await resolveAndCommit(sportId, cards, review);
+      await resolveAndCommit(sportId, cards, review, diff);
     } catch (error) {
       setSyncMessage(
         `Error: ${error instanceof Error ? error.message : "Unknown error"}`,
@@ -1513,7 +1552,7 @@ export default function CardChecklist({
           : `Saved ${result.count} cards.`,
         ...notes,
       ].join(" ");
-      setCommittedMessage(committedText);
+      setSyncMessage(committedText);
       // NEO-312 (J1): an insert's checklist is its parallels' checklist too,
       // so saving it builds them — one at a time, in the panel under this
       // notice, stoppable between parallels. Not awaited: the commit has
@@ -1526,9 +1565,7 @@ export default function CardChecklist({
           .start({ id: variantId, value: variantRow?.value ?? "" }, convex)
           .then((failure) => {
             if (failure) {
-              setCommittedMessage(
-                `${committedText} ${planFailedText(failure)}`,
-              );
+              setSyncMessage(`${committedText} ${planFailedText(failure)}`);
             }
           });
       }
@@ -1762,17 +1799,16 @@ export default function CardChecklist({
     }: ParallelBuildReport) => {
       // The build may land after the operator has moved to another checklist
       // (this component is reused across the move). The notice names the
-      // parallel either way; only the parallel's OWN checklist gets the
-      // committed kind — the attention call-to-action counts the cards on
-      // screen — and the focus park.
+      // parallel either way; only the parallel's OWN checklist reads a
+      // landed build as routine status, and gets the focus park.
       const here = currentVariantIdRef.current === parallelId;
       const parallelResult =
         committed && result ? { result, sourceValue } : undefined;
-      setSyncNotice(
-        committed && here
-          ? { text, tone: "status", kind: "committed", parallelResult }
-          : { text, tone, parallelResult },
-      );
+      setSyncNotice({
+        text,
+        tone: committed && here ? "status" : tone,
+        parallelResult,
+      });
       setNoticeDetailOpen(false);
       if (here) parallelParkRef.current = true;
     },
@@ -2777,11 +2813,15 @@ export default function CardChecklist({
         />
       )}
 
-      {pendingPreview?.batchId && wizardSummary && (
+      {(pendingPreview?.batchId || pendingPreview?.teamsOnly) && wizardSummary && (
         <EntityReviewWizard
           isOpen={pendingPreview !== null}
           selectorOptionId={variantId}
-          batchId={pendingPreview.batchId}
+          batchId={pendingPreview.batchId ?? ""}
+          // NEO-335: no names to review — open on the final step for the
+          // cards that would save with no team.
+          teamsOnly={pendingPreview.teamsOnly}
+          cardsWithStoredTeam={pendingPreview.storedTeamIndexes}
           // NEO-221 (D6): the whole account of what Confirm is about to do,
           // not just the card count. See `wizardSummary`.
           summary={wizardSummary}

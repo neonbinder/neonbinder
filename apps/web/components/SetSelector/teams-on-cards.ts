@@ -238,14 +238,24 @@ function cardPlayers(card: PreviewCardForTeams, view: NamesView): CardPlayer[] {
   return out;
 }
 
-/** The preview positions that will save with no team. */
+/**
+ * The preview positions that will save with no team.
+ *
+ * `settled` names positions whose card re-syncs an EXISTING row that already
+ * carries a team (or an operator's "no team"): the commit keeps a stored
+ * row's team, so those cards will not save teamless whatever they print, and
+ * asking about them again on every re-sync would be asking an answered
+ * question.
+ */
 export function teamlessCardIndexes(
   cards: readonly PreviewCardForTeams[],
   rows: readonly TeamsReviewRow[],
+  settled?: ReadonlySet<number>,
 ): number[] {
   const view = namesView(rows);
   const out: number[] = [];
   cards.forEach((card, index) => {
+    if (settled?.has(index)) return;
     if (!cardTeamStrings(card).some((t) => teamStringResolves(t, view))) out.push(index);
   });
   return out;
@@ -258,10 +268,11 @@ export function teamlessCardIndexes(
 export function evidenceRequests(
   cards: readonly PreviewCardForTeams[],
   rows: readonly TeamsReviewRow[],
+  settled?: ReadonlySet<number>,
 ): EvidenceRequest[] {
   const view = namesView(rows);
   const out = new Map<string, EvidenceRequest>();
-  for (const index of teamlessCardIndexes(cards, rows)) {
+  for (const index of teamlessCardIndexes(cards, rows, settled)) {
     for (const player of cardPlayers(cards[index], view)) {
       if (player.kind === "server" && !out.has(player.request.key)) {
         out.set(player.request.key, player.request);
@@ -378,10 +389,13 @@ export function buildTeamsGroups(input: {
   /** Linked team id → its full name, for a link decision's chip. */
   linkedTeamNameById: ReadonlyMap<string, string>;
   currentYear: number;
+  /** Positions whose stored row already has a team — see `teamlessCardIndexes`. */
+  settled?: ReadonlySet<number>;
 }): TeamsGroup[] {
-  const { cards, rows, serverEvidence, setYear, linkedTeamNameById, currentYear } = input;
+  const { cards, rows, serverEvidence, setYear, linkedTeamNameById, currentYear, settled } =
+    input;
   const view = namesView(rows);
-  const members = new Set(teamlessCardIndexes(cards, rows));
+  const members = new Set(teamlessCardIndexes(cards, rows, settled));
 
   // Batch evidence: per player set, the distinct resolving team sets printed
   // on the cards that are NOT in the section.

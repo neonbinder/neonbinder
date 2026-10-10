@@ -123,6 +123,7 @@ export default function TeamsOnCardsSection({
   onChoose,
   onAnswersChange,
   inheritsSetTeam = false,
+  settledIndexes,
   disabled = false,
 }: {
   /** The node the cards will be saved under — the server reads the set from it. */
@@ -146,19 +147,29 @@ export default function TeamsOnCardsSection({
    * matches them, and an existing row is the rarer case.)
    */
   inheritsSetTeam?: boolean;
+  /**
+   * Preview positions that re-sync an existing row which already carries a
+   * team (or a "no team" answer). The commit keeps a stored row's team, so
+   * these never save teamless and are not asked about.
+   */
+  settledIndexes?: readonly number[];
   /** A commit is in flight; the choices hold still. */
   disabled?: boolean;
 }) {
   const headingId = useId();
   const fieldClass = useFieldTestClass();
+  const settled = useMemo(
+    () => (settledIndexes && settledIndexes.length > 0 ? new Set(settledIndexes) : undefined),
+    [settledIndexes],
+  );
 
   const requests = useMemo(
     () =>
-      (inheritsSetTeam ? [] : evidenceRequests(cards, rows)).slice(
+      (inheritsSetTeam ? [] : evidenceRequests(cards, rows, settled)).slice(
         0,
         TEAMS_SECTION_PLAYERS_PER_REQUEST * TEAMS_SECTION_MAX_REQUESTS,
       ),
-    [cards, rows, inheritsSetTeam],
+    [cards, rows, inheritsSetTeam, settled],
   );
   const queries = useMemo(() => {
     const out: Record<
@@ -212,14 +223,15 @@ export default function TeamsOnCardsSection({
       inheritsSetTeam
         ? []
         : buildTeamsGroups({
-        cards,
-        rows,
-        serverEvidence,
-        setYear,
-        linkedTeamNameById,
-        currentYear: new Date().getFullYear(),
-      }),
-    [cards, rows, serverEvidence, setYear, linkedTeamNameById, inheritsSetTeam],
+            cards,
+            rows,
+            serverEvidence,
+            setYear,
+            linkedTeamNameById,
+            currentYear: new Date().getFullYear(),
+            settled,
+          }),
+    [cards, rows, serverEvidence, setYear, linkedTeamNameById, inheritsSetTeam, settled],
   );
 
   const answers = useMemo(

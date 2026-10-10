@@ -4,6 +4,7 @@ import { inertBackground } from "../../lib/dom/inert-background";
 import { focusWithoutOpening } from "../primitives/Autocomplete";
 import { Theme } from "@radix-ui/themes";
 import { useAction, useMutation, useQuery } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
@@ -335,6 +336,12 @@ const CANCEL_REVIEW_LABEL = "Cancel (Esc) — leave without committing";
 const BULK_CREATE_LABEL = "Add remaining players as new";
 const BULK_SKIP_LABEL = "Skip remaining names";
 
+/**
+ * NEO-335 — the batch a teams-only review stands on: no names at all. One
+ * module-level array so every render hands the hooks below the same object.
+ */
+const NO_BATCH_ROWS: FunctionReturnType<typeof api.entityReviewQueue.getBatch> = [];
+
 /** What the final step is about to write, as counted by the PARENT. */
 export type EntityReviewSummary = {
   /** Cards this fetch will save once committed. */
@@ -359,6 +366,8 @@ export default function EntityReviewWizard({
   previewCards,
   onTeamAnswersChange,
   cardsInheritSetTeam,
+  cardsWithStoredTeam,
+  teamsOnly = false,
 }: {
   isOpen: boolean;
   selectorOptionId: Id<"selectorOptions">;
@@ -406,11 +415,26 @@ export default function EntityReviewWizard({
    * commit gives every new card that has none; the section then asks nothing.
    */
   cardsInheritSetTeam?: boolean;
+  /**
+   * NEO-335 — positions in `previewCards` that re-sync an existing row which
+   * already carries a team; the commit keeps it, so they are not asked about.
+   */
+  cardsWithStoredTeam?: readonly number[];
+  /**
+   * NEO-335 — there are no names to review, only cards that would save with
+   * no team. The wizard opens straight onto its final step ("All reviewed —
+   * save N cards?", the team section, Confirm & Save) and reads no batch:
+   * every name on the cards already resolved. `batchId` may be empty; when it
+   * is not (a batch left open by "Back to matching"), Cancel still discards it.
+   * Absent, the wizard is exactly what it was.
+   */
+  teamsOnly?: boolean;
 }) {
-  const rows = useQuery(
+  const batchRows = useQuery(
     api.entityReviewQueue.getBatch,
-    isOpen ? { selectorOptionId, batchId } : "skip",
+    isOpen && !teamsOnly ? { selectorOptionId, batchId } : "skip",
   );
+  const rows = teamsOnly ? NO_BATCH_ROWS : batchRows;
   const recordDecision = useMutation(api.entityReviewQueue.recordDecision);
   const clearDecision = useMutation(api.entityReviewQueue.clearDecision);
   const cancelBatch = useMutation(api.entityReviewQueue.cancelBatch);
@@ -766,7 +790,8 @@ export default function EntityReviewWizard({
   );
   /** The row is decided AND still on screen — the read-only review panel. */
   const reviewingDecided = current?.decision != null;
-  const allDecided = total > 0 && decided === total;
+  // NEO-335: a teams-only review has nothing to decide — it IS the final step.
+  const allDecided = teamsOnly || (total > 0 && decided === total);
 
   // ------------------------------------------------------------------------
   // Reads. All unconditional hooks, above the `isOpen` early return.
@@ -1947,7 +1972,8 @@ export default function EntityReviewWizard({
     setCancelling(true);
     setCancelError(null);
     try {
-      await cancelBatch({ selectorOptionId, batchId });
+      // NEO-335: a teams-only review may stand on no batch at all.
+      if (batchId) await cancelBatch({ selectorOptionId, batchId });
       // Set before `onCancel` so the now-empty batch does not flash "expired"
       // in the frame between the rows going and the parent closing the dialog.
       setClosing(true);
@@ -2872,8 +2898,13 @@ export default function EntityReviewWizard({
               Confirm New Players &amp; Teams
             </h2>
             <p className="text-xs text-gray-400 mt-0.5" role="status" aria-live="polite">
-              {decided} of {total} reviewed
-              {stillLookingUp > 0 ? ` · ${stillLookingUp} still being looked up` : ""}
+              {/* NEO-335: no names in a teams-only review, so no count of them. */}
+              {teamsOnly ? null : (
+                <>
+                  {decided} of {total} reviewed
+                  {stillLookingUp > 0 ? ` · ${stillLookingUp} still being looked up` : ""}
+                </>
+              )}
             </p>
           </div>
 
@@ -4031,6 +4062,7 @@ export default function EntityReviewWizard({
                     }
                     onAnswersChange={onTeamAnswersChange}
                     inheritsSetTeam={cardsInheritSetTeam}
+                    settledIndexes={cardsWithStoredTeam}
                     disabled={saving}
                   />
                 )}
