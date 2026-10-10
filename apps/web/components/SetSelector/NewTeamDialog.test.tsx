@@ -370,23 +370,51 @@ describe("NewTeamDialog — creating", () => {
     expect("leagueName" in args).toBe(false);
   });
 
-  it("sends a league the sport does not hold yet as leagueName", async () => {
+  // NEO-331: a league is never created from a name alone, so a suggestion the
+  // sport does not hold yet no longer rides to the server as `leagueName` (a
+  // path that now only LINKS an existing league and refuses a miss). It opens
+  // the New League form pre-filled, waits for a level, and the team is filed
+  // under the league that form created.
+  it("opens the New League form for a league the sport does not hold yet, and files the team under what it creates", async () => {
     currentLeagues = [{ _id: lid("l1"), name: "MLB" }];
+    mockCreateLeague.mockResolvedValue({ id: lid("l-abl"), created: true });
+    mockFindOrCreate.mockResolvedValue(tid("team-sox"));
     renderDialog({
       initialName: "Sydney Blue Sox",
       leagueSuggestion: "Australian Baseball League",
     });
 
     pickLeague("Create Australian Baseball League");
-    fireEvent.click(screen.getByRole("button", { name: "Create team Sydney Blue Sox" }));
 
-    await waitFor(() => {
-      expect(mockFindOrCreate).toHaveBeenCalledWith({
-        name: "Sydney Blue Sox",
+    expect(
+      (screen.getByLabelText("New league name") as HTMLInputElement).value,
+    ).toBe("Australian Baseball League");
+    // Nothing is written until the operator answers the level.
+    expect(mockCreateLeague).not.toHaveBeenCalled();
+    expect(mockFindOrCreate).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      within(screen.getByRole("radiogroup", { name: "Level" })).getByRole("radio", { name: "International" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add league" }));
+    await waitFor(() =>
+      expect(mockCreateLeague).toHaveBeenCalledWith({
+        name: "Australian Baseball League",
         sportId: SPORT_ID,
-        leagueName: "Australian Baseball League",
-      });
-    });
+        level: "international",
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.queryByLabelText("New league name")).toBeNull(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create team Sydney Blue Sox" }),
+    );
+    await waitFor(() => expect(mockFindOrCreate).toHaveBeenCalledTimes(1));
+    const args = mockFindOrCreate.mock.calls[0][0];
+    expect(args.leagueId).toBe(lid("l-abl"));
+    expect("leagueName" in args).toBe(false);
   });
 
   it("never sends both league answers at once", async () => {
@@ -1005,6 +1033,8 @@ describe("NewTeamDialog — after Add league, Create team records THAT league", 
     fireEvent.focus(league);
     fireEvent.change(league, { target: { value: typed } });
     fireEvent.mouseDown(screen.getByRole("option", { name: `Create “${typed}”` }));
+    // NEO-331: a level is required before the league can be added.
+    fireEvent.click(within(screen.getByRole("radiogroup", { name: "Level" })).getByRole("radio", { name: "Minor" }));
     fireEvent.click(screen.getByRole("button", { name: "Add league" }));
     await waitFor(() => expect(screen.queryByLabelText("New league name")).toBeNull());
   }

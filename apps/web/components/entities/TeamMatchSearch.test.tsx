@@ -318,8 +318,6 @@ describe("TeamMatchSearch", () => {
       .filter((c) => c.ref === "teams.search" && c.args !== "skip")
       .map((c) => c.args);
     expect(sent.at(-1)).toEqual({ query: "Dodgers", sportId: SPORT_ID, limit: 25 });
-    // Never an unfiltered bulk read.
-    expect(queryCalls.some((c) => c.ref === "teams.list")).toBe(false);
   });
 
   it("finds the existing Brooklyn Dodgers the near matches missed, and a click picks it", () => {

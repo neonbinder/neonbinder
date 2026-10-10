@@ -58,10 +58,13 @@ vi.mock("convex/react", () => ({
 
 /** The picker owns its own test file — see the note above. */
 vi.mock("./TeamPicker", () => ({
-  default: () => <div data-testid="team-picker-stub" />,
+  default: ({ contextOptionId }: { contextOptionId?: string }) => (
+    <div data-testid="team-picker-stub" data-context-option-id={contextOptionId ?? ""} />
+  ),
 }));
 
 import MissingTeamFixer from "./MissingTeamFixer";
+import { AttentionSportContext } from "./cardAttentionRegistry";
 
 const CARD_ID = "card-1" as unknown as Id<"cardChecklist">;
 
@@ -205,5 +208,41 @@ describe("MissingTeamFixer — the marketplace hint (NEO-236)", () => {
     expect(hint.getAttribute("title")).toBeNull();
     // And it did not become one of the acceptable suggestion chips.
     expect(container.querySelectorAll("button[aria-pressed]")).toHaveLength(0);
+  });
+});
+
+describe("MissingTeamFixer — NEO-331 the set context reaches its picker", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    suggestions = [];
+    teamRows = undefined;
+  });
+
+  it("reads contextOptionId off the attention context", () => {
+    render(
+      <AttentionSportContext.Provider
+        value={{
+          sportId: "sport-1" as unknown as Id<"selectorOptions">,
+          contextOptionId: "variant-1" as unknown as Id<"selectorOptions">,
+        }}
+      >
+        <MissingTeamFixer
+          row={{ _id: CARD_ID, cardNumber: "327", cardName: "Fernando Tatis Jr." }}
+          items={[]}
+          onSaved={vi.fn()}
+          onSkip={vi.fn()}
+        />
+      </AttentionSportContext.Provider>,
+    );
+    expect(
+      screen.getByTestId("team-picker-stub").getAttribute("data-context-option-id"),
+    ).toBe("variant-1");
+  });
+
+  it("passes none outside a provider", () => {
+    renderFixer();
+    expect(
+      screen.getByTestId("team-picker-stub").getAttribute("data-context-option-id"),
+    ).toBe("");
   });
 });

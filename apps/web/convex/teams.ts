@@ -4,9 +4,17 @@ import type { PaginationResult } from "convex/server";
 import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { getCurrentUserId, requireAdmin, requireSignedIn } from "./auth";
 import {
-  findOrCreateLeague,
+  getCurrentUserId,
+  getCurrentUserIdentity,
+  requireAdmin,
+  requireSignedIn,
+} from "./auth";
+import {
+  // NEO-331: automatic paths link an existing league; they never create one.
+  findLeagueByName,
+  // NEO-331: the picker's abbreviation fallback compares on the same reading.
+  normalizeLeagueName,
   resolveDefaultLeagueId,
   // NEO-236: the operator's own league choice, which outranks the sport default.
   resolveOperatorLeagueId,
@@ -39,6 +47,10 @@ import {
 import { readManyByIds } from "./lib/batchIdReads";
 import { eraLabel, teamOptionLabel } from "../lib/teams/team-era";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
+// NEO-331: the picker's set-context tiers — pure, shared with tests.
+import { rankTeamsForContext } from "../lib/teams/team-rank";
+// NEO-331: the substring test TeamPicker filtered with before the server ranked.
+import { nameMatchesQuery } from "../lib/entities/name-search";
 
 /**
  * The dedup key on `teams.nameNormalized`.
@@ -75,8 +87,9 @@ const teamDocValidator = v.object({
   league: v.optional(v.string()),
   // NEO-254: the franchise thread, when an operator has put this row on one.
   // Listed here because this validator is STRICT — Convex checks it against
-  // the real document, so a schema field missing from it makes `teams.list`
-  // throw for every screen, not just for a test.
+  // the real document, so a schema field missing from it makes every query
+  // returning team rows (`teams.search`, `teams.pickerCandidates`, …) throw
+  // for every screen, not just for a test.
   franchiseId: v.optional(v.id("franchises")),
   // NEO-236: the place part of the franchise name — "San Diego" in "San Diego
   // Padres". Location, not city: it is wherever the team is FROM, so a bay
@@ -786,10 +799,11 @@ export const findOrCreate = mutation({
      * NEO-236 — the league the operator chose in the New Team dialog, if any.
      *
      * At most one of the two is meaningful: `leagueId` picks a row that exists,
-     * `leagueName` accepts a suggestion for one that does not yet (created
-     * through `findOrCreateLeague`, so it dedupes by name-or-alias like every
-     * other league writer). Both optional, because the pickers that create a
-     * team without ever showing a league still exist and still work.
+     * `leagueName` names one by name or alias. NEO-331: `leagueName` is
+     * LINK-ONLY — it resolves an existing league and is refused when none
+     * answers, because a league now needs a level only the New League form
+     * asks for. Both optional, because the pickers that create a team without
+     * ever showing a league still exist and still work.
      *
      * When either is given it WINS: the sport default is never applied over an
      * operator's answer. That is the defect this argument exists to close — a
@@ -866,7 +880,7 @@ export const findOrCreate = mutation({
     // NEO-208 security condition: `sportId` is a bare `v.id("selectorOptions")`
     // — the validator proves it is an id in that table, not that it points at
     // a SPORT. A team hung off, say, a variantType row is unreachable by every
-    // query that matters (`teams.list` and `findByNameAndSport` both key on
+    // query that matters (`teams.pickerCandidates` and `findByNameAndSport` key on
     // the sport row id, and `findSportForSelectorOption` only ever yields a
     // `level === "sport"` row), so it would be an orphan with a league
     // attached — the same class of unfindable row the old `sport ?? ""`
@@ -1041,25 +1055,6 @@ export const findOrCreate = mutation({
   },
 });
 
-export const list = query({
-  args: {
-    sportId: v.optional(v.id("selectorOptions")),
-    limit: v.optional(v.number()),
-  },
-  returns: v.array(teamDocValidator),
-  handler: async (ctx, args) => {
-    await requireSignedIn(ctx);
-    const limit = args.limit ?? 100;
-    if (args.sportId) {
-      return await ctx.db
-        .query("teams")
-        .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
-        .take(limit);
-    }
-    return await ctx.db.query("teams").take(limit);
-  },
-});
-
 export const get = query({
   args: { id: v.id("teams") },
   returns: v.union(teamDocValidator, v.null()),
@@ -1199,11 +1194,18 @@ export const applyEnrichmentInternal = internalMutation({
     // Only ever fills a GAP: a league an operator assigned by hand in Team
     // Management outranks whatever a source guessed, so enrichment must not
     // overwrite it.
+    //
+    // NEO-331: LINK ONLY, never create. A league row now carries a required
+    // `level`, and background enrichment cannot know one — a source's label
+    // says nothing about where the league sits in the pyramid. So an existing
+    // league (by name or alias) is attached, and a miss leaves the team
+    // without one for an operator to assign; it never mints a guessed row.
     if (args.league !== undefined && !existing.leagueId) {
-      patch.leagueId = await findOrCreateLeague(ctx, {
+      const found = await findLeagueByName(ctx, {
         name: args.league,
         sportId: existing.sportId,
       });
+      if (found) patch.leagueId = found._id;
     }
     // NEO-203: fill-a-gap ONLY, on every field — same rule the `leagueId`
     // branch above already followed, now applied to the three that did not.
@@ -1413,12 +1415,17 @@ export const convertLegacyLeagueInternal = internalMutation({
     const team = await ctx.db.get(args.id);
     if (!team?.league || team.leagueId) return null;
 
-    const leagueId = await findOrCreateLeague(ctx, {
+    // NEO-331: find-only. A legacy string carries no level, and a league row
+    // now requires one, so this links an existing league (by name or alias)
+    // and otherwise leaves the row exactly as it was — legacy string intact,
+    // so the fact is not lost and an operator can still resolve it by hand.
+    const found = await findLeagueByName(ctx, {
       name: team.league,
       sportId: team.sportId,
     });
+    if (!found) return null;
     await ctx.db.patch(args.id, {
-      leagueId,
+      leagueId: found._id,
       // Clear the string as it converts, so a row never carries two answers to
       // the same question.
       league: undefined,
@@ -1980,6 +1987,369 @@ export const search = query({
       merged.push(hit);
     }
     return merged.slice(0, limit);
+  },
+});
+
+/**
+ * NEO-331 — candidate-pool sizes for `pickerCandidates`.
+ *
+ * The league leg (search and browse alike) reads the set's league by
+ * `by_league_id` — the league's own teams, up to the same 500 ceiling
+ * `teamsIn` uses per league. It is what guarantees the set's league is in the
+ * pool before ranking: a shared prefix across a college preload can push every
+ * MLB club out of the sport leg's 25-row search window. Browse applies the
+ * same 500 to the sport leg.
+ */
+const PICKER_LEAGUE_LEG_TAKE = 500;
+const PICKER_SPORT_LEG_TAKE = 25;
+const PICKER_ALIAS_LEG_TAKE = 25;
+const PICKER_SEARCH_MAX_LIMIT = 25;
+const PICKER_BROWSE_TAKE = 500;
+const PICKER_BROWSE_DEFAULT_LIMIT = 100;
+const PICKER_BROWSE_MAX_LIMIT = 100;
+/**
+ * A caller's `limit`, floored at 1 and capped at `max`; anything that is not a
+ * finite number (absent, NaN, ±Infinity) takes `fallback`.
+ *
+ * `v.number()` admits NaN, and `Math.max(1, Math.min(NaN, max))` is NaN, so a
+ * bare clamp turned a NaN limit into `.slice(0, NaN)` — an empty list, read by
+ * the picker as "no teams".
+ */
+function clampPickerLimit(
+  raw: number | undefined,
+  fallback: number,
+  max: number,
+): number {
+  const n = raw !== undefined && Number.isFinite(raw) ? raw : fallback;
+  return Math.max(1, Math.min(n, max));
+}
+/**
+ * How far up from the context row to look for its year. The hierarchy is six
+ * levels (sport → year → manufacturer → setName → variantType → variant), so
+ * six steps reach the year from anywhere a picker is mounted.
+ */
+const PICKER_YEAR_WALK_DEPTH = 6;
+
+/**
+ * A leading four-digit year out of a year/season value ("2023-24" → 2023).
+ * The same reading `features/deriveCardFeatures.parseYear` gives a season,
+ * restated rather than imported because that one is module-private.
+ */
+function parsePickerYear(raw: string | undefined): number | undefined {
+  if (!raw) return undefined;
+  const match = raw.match(/\d{4}/);
+  if (!match) return undefined;
+  const year = Number.parseInt(match[0], 10);
+  return year > 1000 && year < 3000 ? year : undefined;
+}
+
+/**
+ * NEO-331 — the set context a picker ranks by: the league named on the
+ * context row's `features.league`, resolved by name OR alias within the
+ * SEARCHED sport ("MLB" is an alias of Major League Baseball) — falling back
+ * to an exactly-one `abbreviation` match (see below) — and the year of the
+ * nearest `year`-level ancestor (the row itself included).
+ *
+ * Resolved in the searched sport on purpose: a picker switched to another
+ * sport (a football player's guest card in a baseball set) finds no league of
+ * that name there, so tiers 1 and 3 empty out rather than ranking by a league
+ * from the wrong sport. Nothing about the context is stored — the free-text
+ * feature stays the one source, so an operator editing it re-ranks at once.
+ */
+async function pickerContext(
+  ctx: QueryCtx,
+  contextOptionId: Id<"selectorOptions"> | undefined,
+  sportId: Id<"selectorOptions"> | undefined,
+  sportLeagues: ReadonlyArray<Doc<"leagues">>,
+): Promise<{ leagueId?: Id<"leagues">; year?: number }> {
+  if (!contextOptionId) return {};
+  const row = await ctx.db.get(contextOptionId);
+  if (!row) return {};
+
+  let year: number | undefined;
+  let node: Doc<"selectorOptions"> | null = row;
+  for (let depth = 0; node && depth <= PICKER_YEAR_WALK_DEPTH; depth++) {
+    if (node.level === "year") {
+      year = parsePickerYear(node.value);
+      break;
+    }
+    node = node.parentId ? await ctx.db.get(node.parentId) : null;
+  }
+
+  const leagueName = row.features?.league?.trim();
+  const league =
+    leagueName && sportId
+      ? ((await findLeagueByName(ctx, { name: leagueName, sportId })) ??
+        leagueByUniqueAbbreviation(sportLeagues, leagueName))
+      : null;
+
+  return {
+    ...(league ? { leagueId: league._id } : {}),
+    ...(year !== undefined ? { year } : {}),
+  };
+}
+
+/**
+ * NEO-331 — the picker's fallback when `findLeagueByName` misses: the ONE
+ * league of the sport whose `abbreviation` reads the same as `name`.
+ *
+ * `features.league` carries the sport's short form ("MLB", from
+ * SPORT_TO_LEAGUE), and a league minted through the wizard's New League step
+ * stores that short form as `abbreviation` with no alias — so on fresh data
+ * the name/alias lookup finds nothing and the set's league silently drops out
+ * of the ranking. This is read-only and scoped to the picker on purpose:
+ * `findLeagueByName` is what writers dedupe through, and widening it to
+ * abbreviations would change which row a writer links or mints.
+ *
+ * Exactly one match or nothing. Abbreviations are not unique (two leagues may
+ * both say "IL"), and taking the first of several would rank by a league the
+ * operator never named — so a tie gives no league, and tiers 1 and 3 stay
+ * empty rather than guessed.
+ */
+function leagueByUniqueAbbreviation(
+  sportLeagues: ReadonlyArray<Doc<"leagues">>,
+  name: string,
+): Doc<"leagues"> | null {
+  const wanted = normalizeLeagueName(name);
+  if (!wanted) return null;
+  const matches = sportLeagues.filter(
+    (league) =>
+      league.abbreviation !== undefined &&
+      normalizeLeagueName(league.abbreviation) === wanted,
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+/**
+ * NEO-331 — does a pooled picker row match what the operator typed?
+ *
+ * Either reading is enough:
+ *
+ *   - `nameMatchesQuery` on the composed full name — the substring test
+ *     TeamPicker applied client-side before the server ranked, so "Pirates"
+ *     and "burgh Pir" keep matching exactly as they did;
+ *   - every token of one of the query's readings is a prefix of some token of
+ *     the row's `nameNormalized` — the search index's own terms, with
+ *     ALL-terms where the index is any-term. This is what lets "St Louis" find
+ *     "St. Louis Cardinals" (the substring test keeps the dot) and what keeps
+ *     the NEO-322 alternate reading ("ny m" for "N Y M") meaningful.
+ *
+ * Neither admits "Pittsburgh Crawfords" for Pittsburgh Pirates: "crawfords"
+ * is in neither the name nor a prefix of any of its tokens.
+ */
+function pickerRowMatchesQuery(
+  team: Doc<"teams">,
+  query: string,
+  readings: ReadonlyArray<ReadonlyArray<string>>,
+): boolean {
+  if (nameMatchesQuery(teamFullName(team), query)) return true;
+  const keyTokens = team.nameNormalized.split(" ").filter(Boolean);
+  return readings.some(
+    (reading) =>
+      reading.length > 0 &&
+      reading.every((token) => keyTokens.some((key) => key.startsWith(token))),
+  );
+}
+
+/**
+ * NEO-331 — the team picker's candidates, ranked by the set being worked on.
+ *
+ * `teams.search` answers "which teams match this text"; this answers "which
+ * of them does THIS card most likely show", and returns them in final order
+ * with the tier each landed in (see `lib/teams/team-rank.ts` for the tiers and
+ * why an undated team is never "active"). `teams.search` is untouched — the
+ * entity-link and match screens rank for dedup, where the set year is the
+ * wrong signal.
+ *
+ * Search (`query` non-empty), three legs merged and deduped before ranking:
+ *   A. the set's league, read by `by_league_id` (the league's teams, up to
+ *      `PICKER_LEAGUE_LEG_TAKE`) — it is what guarantees L's teams are in the
+ *      pool;
+ *   B. the sport, through `search_name` filtered by sport, retrying with the
+ *      NEO-322 alternate reading when the joined one finds nothing, exactly as
+ *      `teams.search` does;
+ *   C. the exact-alias leg `teams.search` has (NEO-284).
+ * Then every pooled row must match the typed text (`pickerRowMatchesQuery`)
+ * unless it is an exact-alias hit — see the note at that filter.
+ *
+ * ONE search per index per query, never two with the same text. Leg A was
+ * once a second `search_name` read with the same text and an extra `leagueId`
+ * filter; Convex then invalidated the subscribed answer only for inserts
+ * matching the NARROWER filter, so a team created outside the set's league
+ * never reached a picker whose query was already typed (measured on a PR
+ * preview: stale for minutes). convex-test does not model subscriptions, so
+ * no test here can catch a regression — keep leg A on a plain index range.
+ *
+ * Browse (`query` blank): the set's league by `by_league_id` plus the sport by
+ * `by_sport_id`, merged and ranked with the same tiers, so the popover opens
+ * on the teams this card most likely shows.
+ *
+ * Tier 2 (minor leagues active in Y) is not window-guaranteed: a minor-league
+ * team reaches the pool only through the sport leg. Measure before widening.
+ *
+ * Signed-in, `[]` when signed out — the same gate and reasoning as
+ * `teams.search`. `contextOptionId` is honoured for ADMINS only; a signed-in
+ * non-admin gets the context-free order (see the handler).
+ */
+export const pickerCandidates = query({
+  args: {
+    query: v.string(),
+    sportId: v.optional(v.id("selectorOptions")),
+    contextOptionId: v.optional(v.id("selectorOptions")),
+    limit: v.optional(v.number()),
+  },
+  returns: v.array(
+    v.object({
+      team: teamDocValidator,
+      tier: v.union(v.literal(1), v.literal(2), v.literal(3), v.literal(4)),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const identity = await getCurrentUserIdentity(ctx);
+    if (!identity) return [];
+    const sportId = args.sportId;
+
+    // NEO-331 security condition: the context row is a `selectorOptions` row,
+    // and every read of that table is admin-only (sets are operator data until
+    // they are published). This query is merely signed-in, so honouring the
+    // context for anyone would turn it into an oracle on an admin-gated row:
+    // the tier each team lands in, and the order they come back in, say which
+    // league the row's `features.league` names and which year it sits under.
+    // A non-admin's context is therefore IGNORED, not refused — the picker
+    // still works, context-free, every row at tier 4.
+    // The sport's leagues, ONCE: tier 2's level check (never a `db.get` per
+    // candidate) and the context's abbreviation fallback both read them.
+    // Leagues are tens of rows per sport.
+    const sportLeagues = sportId
+      ? await ctx.db
+          .query("leagues")
+          .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+          .collect()
+      : [];
+    const levelById = new Map<string, string>();
+    for (const league of sportLeagues) levelById.set(league._id, league.level);
+
+    const { leagueId, year } = await pickerContext(
+      ctx,
+      identity.role === "admin" ? args.contextOptionId : undefined,
+      sportId,
+      sportLeagues,
+    );
+    const rankContext = {
+      ...(leagueId ? { leagueId } : {}),
+      ...(year !== undefined ? { year } : {}),
+      levelById,
+    };
+
+    const pool = new Map<Id<"teams">, Doc<"teams">>();
+    const add = (team: Doc<"teams">) => {
+      // A row in another sport is never a candidate, whichever leg found it.
+      if (sportId && team.sportId !== sportId) return;
+      if (!pool.has(team._id)) pool.set(team._id, team);
+    };
+    // The set's league, by plain index range — never a search (see above).
+    const leagueLeg = (id: Id<"leagues">) =>
+      ctx.db
+        .query("teams")
+        .withIndex("by_league_id", (q) => q.eq("leagueId", id))
+        .take(PICKER_LEAGUE_LEG_TAKE);
+
+    // ── Browse ────────────────────────────────────────────────────────────
+    if (!args.query.trim()) {
+      // Floored and capped, for the reason `teams.search` gives: `.take()`
+      // rejects a negative, and a thrown query unmounts the picker.
+      const limit = clampPickerLimit(
+        args.limit,
+        PICKER_BROWSE_DEFAULT_LIMIT,
+        PICKER_BROWSE_MAX_LIMIT,
+      );
+      if (leagueId) (await leagueLeg(leagueId)).forEach(add);
+      const inSport = sportId
+        ? await ctx.db
+            .query("teams")
+            .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+            .take(PICKER_BROWSE_TAKE)
+        : await ctx.db.query("teams").take(PICKER_BROWSE_TAKE);
+      inSport.forEach(add);
+      return rankTeamsForContext([...pool.values()], rankContext, "").slice(
+        0,
+        limit,
+      );
+    }
+
+    // ── Search ────────────────────────────────────────────────────────────
+    // Normalised exactly as `teams.search` normalises: source order, never
+    // token-sorted, because the backend prefix-matches only the final term.
+    const [reading, ...alternates] = entityNameQueryReadings(args.query);
+    const term = reading.join(" ");
+    if (!term) return [];
+    const limit = clampPickerLimit(
+      args.limit,
+      PICKER_SEARCH_MAX_LIMIT,
+      PICKER_SEARCH_MAX_LIMIT,
+    );
+
+    // Leg A — only when the league resolved, which needs a sport. A plain
+    // index range, name-matched below with every other leg's rows.
+    if (leagueId) (await leagueLeg(leagueId)).forEach(add);
+
+    // Leg B — the ONLY search read in this query (see the note above).
+    const runSearch = (text: string) =>
+      ctx.db
+        .query("teams")
+        .withSearchIndex("search_name", (q) => {
+          const search = q.search("nameNormalized", text);
+          return sportId ? search.eq("sportId", sportId) : search;
+        })
+        .take(PICKER_SPORT_LEG_TAKE);
+    let sportHits = await runSearch(term);
+    // NEO-322 — the keystroke after a run of initials; see `teams.search`.
+    if (sportHits.length === 0 && alternates.length > 0) {
+      sportHits = await runSearch(alternates[0].join(" "));
+    }
+    sportHits.forEach(add);
+
+    // Leg C — the exact alias, as `teams.search` reads it (NEO-284).
+    const aliasHitIds = new Set<string>();
+    const aliasKey = normalizeTeamName(args.query);
+    if (aliasKey) {
+      const aliasRows = await ctx.db
+        .query("teamAliases")
+        .withIndex("by_alias_normalized_and_sport_id", (q) => {
+          const byKey = q.eq("aliasNormalized", aliasKey);
+          return sportId ? byKey.eq("sportId", sportId) : byKey;
+        })
+        .take(PICKER_ALIAS_LEG_TAKE);
+      for (const row of aliasRows) {
+        if (aliasHitIds.has(row.teamId)) continue;
+        const team = await ctx.db.get(row.teamId);
+        // Stale residue (team gone, or moved sport) is skipped, as
+        // `findTeamsByAlias` skips it.
+        if (!team || team.sportId !== row.sportId) continue;
+        aliasHitIds.add(team._id);
+        add(team);
+      }
+    }
+
+    // Every row must match what was typed. The search is any-term, so
+    // "Pittsburgh Crawfords" scores Pittsburgh Pirates on "pittsburgh" alone,
+    // and leg A is the whole league, unfiltered. TeamPicker shows the current
+    // answer as-is (it has to, or an alias hit whose name lacks the text would
+    // vanish), so a partial match left in here reaches the list, hides "No
+    // matches.", and can rank first under Enter. An exact-alias hit is kept
+    // whatever its name: the operator typed a name the team answers to.
+    const matched = [...pool.values()].filter(
+      (team) =>
+        aliasHitIds.has(team._id) ||
+        pickerRowMatchesQuery(team, args.query, [reading, ...alternates]),
+    );
+
+    return rankTeamsForContext(
+      matched,
+      rankContext,
+      args.query,
+      aliasHitIds,
+    ).slice(0, limit);
   },
 });
 

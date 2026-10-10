@@ -43,3 +43,4 @@
 - [League combobox name collision NEO-307](league-combobox-name-collision-neo307.md) — NewTeamForm's League field went from a radiogroup to Autocomplete, named exactly "League" (E2E contract); two mounted instances (wizard step + TeamPicker's NewTeamDialog) can coexist unmarked-inert
 - [Chunked save partial refusal NEO-308](chunked-save-partial-refusal-neo308.md) — RESET-then-re-INIT after a mid-loop chunk refusal: focus-park extended correctly, overlayRef outline-none focus target reused a third time, momentary empty-list render
 - [Combobox drill focus NEO-224](combobox-drill-focus-neo224.md) — same-row re-pick drops focus to body; label-only role=status is silent; highlight ring contrast measured
+- [Required pill group, no words NEO-331](required-pill-group-no-words-neo331.md) — radiogroup+aria-required and focus-the-field on a held primary, zero new copy

@@ -124,6 +124,7 @@ async function seedStale(t: T) {
       aliasNormalized: "a m",
     });
     const league = await ctx.db.insert("leagues", {
+      level: "other" as const,
       name: "N. H. L.",
       nameNormalized: "n h l",
       sportId: baseball,
@@ -439,8 +440,8 @@ describe("rekeyEntityNames: an armed run", () => {
     const t = convexTest(schema, modules);
     const sport = await insertSelector(t, "sport", "Hockey");
     const [a, b] = await t.run(async (ctx) => [
-      await ctx.db.insert("leagues", { name: "N. H. L.", nameNormalized: "n h l", sportId: sport, lastUpdated: NOW }),
-      await ctx.db.insert("leagues", { name: "N H L", nameNormalized: "n h l", sportId: sport, lastUpdated: NOW }),
+      await ctx.db.insert("leagues", { level: "other" as const, name: "N. H. L.", nameNormalized: "n h l", sportId: sport, lastUpdated: NOW }),
+      await ctx.db.insert("leagues", { level: "other" as const, name: "N H L", nameNormalized: "n h l", sportId: sport, lastUpdated: NOW }),
     ]);
 
     const report = await armedRun(t);
@@ -487,6 +488,7 @@ describe("rekeyEntityNames: an armed run", () => {
     await t.run(async (ctx) => {
       for (const name of ["Pacific Coast League", "Pacific Coast League"]) {
         await ctx.db.insert("leagues", {
+          level: "other" as const,
           name,
           nameNormalized: normalizeOrderedEntityName(name),
           sportId: sport,

@@ -1,0 +1,432 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Team picker ranks by the set's league and year — active league teams, then active minor-league teams, then the league's other eras, then the rest (NEO-331)"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE (NEO-331): on a card in a set, the TeamPicker orders its
+# candidates by the SET — the set's League feature resolved to a league row,
+# and the set's year — not by the alphabet. Four tiers
+# (`lib/teams/team-rank.ts`, served by `teams.pickerCandidates`):
+#   1. in the set's league AND active in the set's year
+#   2. in a league whose level is "minor" AND active in the set's year
+#   3. in the set's league but NOT active that year (closed era or undated)
+#   4. everything else
+# Within a tier: prefix match first, then A–Z.
+#
+# THE FIXTURE IS FOUR TEAMS WHOSE ALPHABETICAL ORDER IS THE REVERSE OF THEIR
+# TIER ORDER, so a list that fell back to name order would come out exactly
+# upside down. All four share one prefix, `TPR<token>Q`, and differ in their
+# last letter:
+#   TPR<token>QZ — MLB (left unanswered, so the sport default "Major League
+#                  Baseball"), active from 1958          → tier 1
+#   TPR<token>QY — a NEW league created inline from the League combobox, level
+#                  "Minor", active from 2000              → tier 2
+#   TPR<token>QX — MLB, 1900–1957 (closed before 2024)    → tier 3
+#   TPR<token>QW — "No league", active from 1958          → tier 4
+# The set is Baseball › 2024 › Topps › tpr-<worker>: its League feature is the
+# "MLB" Baseball's write-once snapshot copies down to every row beneath it, and
+# its year is 2024.
+#
+# R2 — HARD ASSERTIONS, no silent fall-through:
+#   - ROUND 1: typing the shared prefix lists all four, and Y sits below Z, X
+#     below Y, W below X (the whole tier order in one read); Enter then takes
+#     the HEAD — the highlighted first row — and the chip that appears is Z's.
+#   - ROUNDS 2–4: a picked team drops out of the list, so the same prefix plus
+#     Enter takes Y, then X, then W — each head proving the next tier.
+#   - Y can only be tier 2 if its league's level is "Minor", so its head in
+#     round 2 is also the end-to-end proof that the level pressed in the
+#     league form was stored (NEO-331 made it required, nothing pre-pressed).
+#   - Every option is matched with its ERA (`Add <name> · <from>–<to|present>`),
+#     so each round also reads back the years the dialog wrote.
+#   Diagnosis, before anything else: if round 1 comes out Y, W, X, Z, the set's
+#   "MLB" did not resolve to a league row (tiers 1 and 3 empty; Y alone in
+#   tier 2; the rest A–Z in tier 4) — read the Baseball leagues' names and
+#   aliases, not the ranking. If it comes out W, X, Y, Z, nothing ranked at all.
+#
+# R3 — DEDUP: team-picker.yaml proves the picker's chips, create, remove and
+#   persistence; team-picker-create-custom-card.yaml the create path on a card;
+#   set-team-carries-down-to-cards.yaml the League combobox's create / existing
+#   / No league answers. No flow asserts candidate ORDER. Browse order (nothing
+#   typed) is covered by convex-test only: its pool is the whole sport, shared
+#   with every concurrent worker.
+#
+# R7 / R7a — WRITES NOTHING TO ANY CARD. Everything happens in the quick-add
+#   form's TeamPicker (`contextOptionId={variantId}`, the same context the card
+#   drawer passes), whose chips are local form state, and the form is CANCELLED
+#   at the end. The set is a per-worker hand-made set, `tpr-<worker>` (registered
+#   in SET-REGISTRY.md), under the real Baseball › 2024 › Topps ancestors —
+#   real because the League feature is derived ONLY at the sport level for the
+#   four stick-and-ball sports, so a synthetic sport would carry no league to
+#   rank by. The four teams and the one league are global rows that nothing can
+#   delete (README "Minted names"): per-attempt single tokens, registered.
+#
+# MINTED NAMES (README "Minted names are single tokens"; SET-REGISTRY "Team
+#   names"): `TPR<token>Q?` and the league `TPRLg<token>M`. The shared prefix
+#   ENDS IN A LETTER on purpose. The token's random tail varies in length, so a
+#   bare `TPR<token>` query could prefix-match an older attempt's
+#   `TPR<token-and-more-digits>…` rows in the same run and interleave them with
+#   these four (a digit sorts before "Z"); a letter after the digits is
+#   contained in no other attempt's name. The league name ends in a letter for
+#   the same reason (its Create option appears only when the typed text is a
+#   substring of no league).
+#
+# R5 — every wait is 7000: every step waits on our own UI or our own server.
+# R9 — the drill goes through util-drill-to-custom.yaml.
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# The blessed single-token idiom, then the shared prefix built on it.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+- evalScript: '${output.P = "TPR" + output.ATTEMPT_TOKEN + "Q"}'
+
+# ============================================================
+# STEP 1 — drill to the per-worker hand-made set (R9)
+# Baseball › 2024 › Topps › tpr-<worker> › Insert › Base. The `Base` insert
+# row is the checklist's selectorOptions row, i.e. the picker's context: its
+# features were copied down from Baseball (league "MLB") at creation, and its
+# year ancestor is 2024.
+# ============================================================
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "tpr-${WORKER_INDEX || 0}"
+      VARIANT_TYPE: "Insert"
+      VARIANT: "Base"
+
+- scrollUntilVisible:
+    element:
+      id: "Open add card form"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Open add card form"
+- extendedWaitUntil:
+    visible:
+      id: "Card name"
+    timeout: 7000
+
+# R8 — the form opens with its picker below the 629px fold (memory: NEO-208
+# fold trap); centring the trigger puts Card name above it and Cancel below it
+# in one viewport.
+- scrollUntilVisible:
+    element:
+      id: "Add team"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add team"
+
+# ============================================================
+# STEP 2 — the four teams, each through the New Team dialog
+# The popover's create row (`New team <typed>`) opens the dialog; the dialog's
+# `Create team <full name>` writes the row and hands it to this picker as a
+# chip. Location stays blank, so the full name is exactly the typed name.
+# ============================================================
+
+# ── Z: MLB, active from 1958 → tier 1 ───────────────────────────────────────
+- tapOn:
+    id: "Search teams"
+- inputText: "${output.P}Z"
+- tapOn:
+    id: "New team ${output.P}Z"
+- extendedWaitUntil:
+    visible:
+      id: "New team name"
+      text: "${output.P}Z"
+    timeout: 7000
+- tapOn:
+    id: "New team active from \\(optional\\)"
+- inputText: "1958"
+# League left UNANSWERED: `teams.findOrCreate` files an unanswered team under
+# the sport's configured default league, Major League Baseball (alias "MLB"
+# when that path creates it) — the league every 2024 Baseball set names.
+- tapOn:
+    id: "Create team ${output.P}Z"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team ${output.P}Z"
+    timeout: 7000
+
+# ── Y: a NEW minor league, active from 2000 → tier 2 ────────────────────────
+# The create closed the dialog; whether the popover survived it is not this
+# flow's question, so re-open it from the trigger — which ALWAYS opens, never
+# toggles (TeamPicker) — re-centred because the new chip reflowed the row (R8).
+- scrollUntilVisible:
+    element:
+      id: "Add team"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: "${output.P}Y"
+- tapOn:
+    id: "New team ${output.P}Y"
+- extendedWaitUntil:
+    visible:
+      id: "New team name"
+      text: "${output.P}Y"
+    timeout: 7000
+- tapOn:
+    id: "New team active from \\(optional\\)"
+- inputText: "2000"
+# League (NEO-307 combobox, accessible name exactly "League"): a typed name no
+# league answers to offers `Create “<typed>”` (curly quotes matched with "."),
+# which in the DIALOG opens the league form pre-filled with it.
+- tapOn:
+    id: "League"
+- inputText: "TPRLg${output.ATTEMPT_TOKEN}M"
+- tapOn: "Create .TPRLg${output.ATTEMPT_TOKEN}M."
+- extendedWaitUntil:
+    visible:
+      id: "New league name"
+      text: "TPRLg${output.ATTEMPT_TOKEN}M"
+    timeout: 7000
+# NEO-331 — the level is required and nothing is pre-pressed; "Add league" is
+# held until one is. "Minor" is LOAD-BEARING here: it is what puts Y in tier 2.
+# Matched by visible text (a full match; the level pill is the only node on
+# screen reading exactly "Minor"). It sits between the name field and the
+# form's actions row, which the form scrolls into view when it opens.
+- tapOn: "Minor"
+- tapOn: "Add league"
+# Decisive read-back: picking the create option clears the typed text, so the
+# league's name in the box can only be the created row as the team's answer.
+- extendedWaitUntil:
+    visible:
+      id: "League"
+      text: "TPRLg${output.ATTEMPT_TOKEN}M"
+    timeout: 7000
+- tapOn:
+    id: "Create team ${output.P}Y"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team ${output.P}Y"
+    timeout: 7000
+
+# ── X: MLB, 1900–1957 → tier 3 (the set's league, not active in 2024) ───────
+# Re-open the popover from the trigger, as for Y.
+- scrollUntilVisible:
+    element:
+      id: "Add team"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: "${output.P}X"
+- tapOn:
+    id: "New team ${output.P}X"
+- extendedWaitUntil:
+    visible:
+      id: "New team name"
+      text: "${output.P}X"
+    timeout: 7000
+- tapOn:
+    id: "New team active from \\(optional\\)"
+- inputText: "1900"
+- tapOn:
+    id: "New team active to"
+- inputText: "1957"
+# League unanswered → Major League Baseball, as Z.
+- tapOn:
+    id: "Create team ${output.P}X"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team ${output.P}X"
+    timeout: 7000
+
+# ── W: No league, active from 1958 → tier 4 ─────────────────────────────────
+# Re-open the popover from the trigger, as for Y.
+- scrollUntilVisible:
+    element:
+      id: "Add team"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add team"
+- tapOn:
+    id: "Search teams"
+- inputText: "${output.P}W"
+- tapOn:
+    id: "New team ${output.P}W"
+- extendedWaitUntil:
+    visible:
+      id: "New team name"
+      text: "${output.P}W"
+    timeout: 7000
+- tapOn:
+    id: "New team active from \\(optional\\)"
+- inputText: "1958"
+# "No lea" — a strict substring, so the input's own text cannot answer the tap
+# (set-team-carries-down-to-cards.yaml); the read-back is decisive.
+- tapOn:
+    id: "League"
+- inputText: "No lea"
+- tapOn: "No league"
+- extendedWaitUntil:
+    visible:
+      id: "League"
+      text: "No league"
+    timeout: 7000
+- tapOn:
+    id: "Create team ${output.P}W"
+- extendedWaitUntil:
+    visible:
+      id: "Remove team ${output.P}W"
+    timeout: 7000
+
+# ============================================================
+# STEP 3 — unstage the four chips
+# Each create handed its team to this picker, and a picked team is excluded
+# from the candidates. The chips are the quick-add form's LOCAL state, so
+# removing them writes nothing. Card name (in the form, outside the picker)
+# closes the popover first, so it cannot cover the chip row. No asserts here:
+# a chip left behind keeps its team out of the list, and round 1 fails on it.
+# ============================================================
+- tapOn:
+    id: "Card name"
+- tapOn:
+    id: "Remove team ${output.P}Z"
+- tapOn:
+    id: "Remove team ${output.P}Y"
+- tapOn:
+    id: "Remove team ${output.P}X"
+- tapOn:
+    id: "Remove team ${output.P}W"
+
+# ============================================================
+# STEP 4 — ROUND 1: the whole tier order, then Enter takes the head
+# ============================================================
+# R8 — the chips are gone, so the trigger moved; re-centre it before tapping.
+- scrollUntilVisible:
+    element:
+      id: "Add team"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add team"
+# Tapping the box parks the pointer ON the box, never over an option row, so
+# no row can take the highlight by hover: Enter must take row 0.
+- tapOn:
+    id: "Search teams"
+- inputText: "${output.P}"
+# Gate on W, the LAST team created. Until the server answers this query the
+# popover may show the previous answer filtered by the typed text (TeamPicker
+# holds it to avoid a "Loading…" flash), and that answer can be cut short by a
+# window. Any window containing W — the newest row — contains all four, and
+# with all four present the order is fixed by tier alone.
+- extendedWaitUntil:
+    visible:
+      id: "Add ${output.P}W . 1958.present"
+    timeout: 7000
+# The order, as three relations (`below:` compares top edges; the popover is
+# one column). Alphabetical would be W, X, Y, Z — each of these fails on it.
+- assertVisible:
+    id: "Add ${output.P}Y . 2000.present"
+    below:
+      id: "Add ${output.P}Z . 1958.present"
+- assertVisible:
+    id: "Add ${output.P}X . 1900.1957"
+    below:
+      id: "Add ${output.P}Y . 2000.present"
+- assertVisible:
+    id: "Add ${output.P}W . 1958.present"
+    below:
+      id: "Add ${output.P}X . 1900.1957"
+# Enter on the search box takes the highlighted row, which a query change
+# resets to row 0 (TeamPicker's keyboard contract). The chip names the head.
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Remove team ${output.P}Z"
+    timeout: 7000
+
+# ============================================================
+# STEP 5 — ROUNDS 2–4: a picked team drops out; the next tier leads
+# The pick cleared the box and kept the popover open; tapping the box again
+# re-parks the pointer on it (the chip row may have reflowed under it).
+# ============================================================
+
+# ROUND 2 — Y leads: the minor league's team outranks the set league's
+# closed-era team and the league-less one.
+- tapOn:
+    id: "Search teams"
+- inputText: "${output.P}"
+- extendedWaitUntil:
+    visible:
+      id: "Add ${output.P}W . 1958.present"
+    timeout: 7000
+- assertVisible:
+    id: "Add ${output.P}X . 1900.1957"
+    below:
+      id: "Add ${output.P}Y . 2000.present"
+- assertVisible:
+    id: "Add ${output.P}W . 1958.present"
+    below:
+      id: "Add ${output.P}X . 1900.1957"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Remove team ${output.P}Y"
+    timeout: 7000
+
+# ROUND 3 — X leads: the set's league in another era outranks no league.
+- tapOn:
+    id: "Search teams"
+- inputText: "${output.P}"
+- extendedWaitUntil:
+    visible:
+      id: "Add ${output.P}W . 1958.present"
+    timeout: 7000
+- assertVisible:
+    id: "Add ${output.P}W . 1958.present"
+    below:
+      id: "Add ${output.P}X . 1900.1957"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Remove team ${output.P}X"
+    timeout: 7000
+
+# ROUND 4 — W, the one left.
+- tapOn:
+    id: "Search teams"
+- inputText: "${output.P}"
+- extendedWaitUntil:
+    visible:
+      id: "Add ${output.P}W . 1958.present"
+    timeout: 7000
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Remove team ${output.P}W"
+    timeout: 7000
+
+# ============================================================
+# CLEANUP — cancel the form: no card is written (R7)
+# Card name closes the popover (never Escape); the reappearing "Add Card"
+# button is the positive proof the form closed without a submit.
+# ============================================================
+- tapOn:
+    id: "Card name"
+- scrollUntilVisible:
+    element:
+      id: "Cancel new card"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Cancel new card"
+- extendedWaitUntil:
+    visible:
+      id: "Open add card form"
+    timeout: 7000

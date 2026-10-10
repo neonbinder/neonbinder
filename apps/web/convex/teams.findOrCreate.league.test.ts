@@ -101,6 +101,7 @@ async function seedLeague(
 ): Promise<Id<"leagues">> {
   return t.run(async (ctx) =>
     ctx.db.insert("leagues", {
+      level: "other" as const,
       name,
       nameNormalized: name.toLowerCase(),
       sportId,
@@ -168,32 +169,26 @@ describe("teams.findOrCreate: the operator's League beats the sport default", ()
     expect(await allLeagues(t)).toEqual([]);
   });
 
-  test("a leagueName we hold no row for creates the league ONCE and reuses it the second time", async () => {
+  test("NEO-331: a leagueName we hold no row for is REFUSED — no team, no league, no sport default", async () => {
+    // Was "creates the league ONCE and reuses it". A league row now requires
+    // a level, which only the New League form asks for, so `leagueName` is
+    // link-only. Returning "not chosen" on a miss would hand the team to the
+    // sport default (MLB) — the NEO-236 defect — so the miss is refused and
+    // the operator adds the league first.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN);
     const sportId = await seedBaseball(t);
 
-    const beavers = await asAdmin.mutation(api.teams.findOrCreate, {
-      location: "Oregon State",
-      name: "Beavers",
-      sportId,
-      leagueName: "NCAA Division I baseball",
-    });
-    const ducks = await asAdmin.mutation(api.teams.findOrCreate, {
-      location: "Oregon",
-      name: "Ducks",
-      sportId,
-      leagueName: "NCAA Division I baseball",
-    });
-    await drainScheduled(t);
-
-    const first = await leagueOf(t, beavers);
-    const second = await leagueOf(t, ducks);
-    expect(first.name).toBe("NCAA Division I baseball");
-    // One league row, shared — `findOrCreateLeague` dedupes by name-or-alias
-    // for every writer, this one included.
-    expect(second.id).toBe(first.id);
-    expect(await allLeagues(t)).toHaveLength(1);
+    await expect(
+      asAdmin.mutation(api.teams.findOrCreate, {
+        location: "Oregon State",
+        name: "Beavers",
+        sportId,
+        leagueName: "NCAA Division I baseball",
+      }),
+    ).rejects.toThrow(/isn't in NeonBinder yet/);
+    expect(await allLeagues(t)).toEqual([]);
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toEqual([]);
   });
 
   test("a leagueName that answers to an existing league dedupes onto it rather than creating a twin", async () => {

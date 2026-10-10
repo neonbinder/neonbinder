@@ -235,6 +235,9 @@ import {
   teamRowFields,
 } from "./lib/teamRow";
 import {
+  // NEO-331: names resolve link-only; only a New League answer (which carries
+  // its level) and the sport default create.
+  findLeagueByName,
   findOrCreateLeague,
   normalizeLeagueName,
   resolveDefaultLeagueId,
@@ -15254,10 +15257,15 @@ export const commitCardChecklistPrelude = internalMutation({
      *     the sport's top flight.
      *  2. **The enrichment's league name**, when the step was never answered
      *     (a pre-NEO-236 decision, or a row decided in bulk before this
-     *     shipped). Resolved through `findOrCreateLeague` so two spellings of
-     *     one league cannot become two rows.
+     *     shipped).
      *  3. Otherwise nothing here, and `createTeamFromOperatorInput` falls back
      *     to the sport default exactly as it always did.
+     *
+     * NEO-331: names (the operator's `leagueName`, the enrichment's label) are
+     * LINK-ONLY. They resolve to this batch's New League answer, else to an
+     * existing league by name or alias, else to no league at all — never to a
+     * minted row (a league requires a level only the New League step asks
+     * for), and never to the sport default (a named league is an answer).
      *
      * `enrichment.location` is deliberately NOT written: the operator saw it
      * (the step pre-fills Location from it) and either kept it, changed it or
@@ -15284,12 +15292,23 @@ export const commitCardChecklistPrelude = internalMutation({
       if (create.leagueId === null) return true;
       if (create.leagueId !== undefined) {
         const league = await ctx.db.get(create.leagueId);
-        return !!league && league.sportId === sportId;
+        if (league && league.sportId === sportId) return true;
+        // A dangling or cross-sport id is not an answer — fall through to the
+        // name and the suggestion, which `reviewedTeamFields` falls to as well.
       }
+      // NEO-331 — a NAMED league is an answer, whether or not it resolves.
+      // Names are link-only now, so a miss leaves the team with no league;
+      // reporting "not answered" there would let the sport default file it
+      // under the top flight — the NEO-236 defect by another door.
+      if (create.leagueName?.trim()) return true;
       // NEO-254 — a skipped league STEP is an answer too, even though the team
       // row itself carries no `leagueId`. Asked only once the explicit fields
       // have had their turn; see `leagueStepSkipped`.
-      return leagueStepSkipped(create, teamRowId);
+      if (leagueStepSkipped(create, teamRowId)) return true;
+      // NEO-331 — so is the enrichment's suggestion, for the same reason as a
+      // typed name: it either linked an existing league or leaves the team
+      // blank, and the sport default must not overrule either.
+      return !!suggestion?.trim();
     };
 
     /**
@@ -15381,7 +15400,7 @@ export const commitCardChecklistPrelude = internalMutation({
         stagedLeagueIdByName.has(stagedLeagueKey(sportId, create.leagueName))
       ) {
         // NEO-254 — the league this batch just created (or linked) for exactly
-        // this name. Consulted BEFORE `findOrCreateLeague` below so the whole
+        // this name. Consulted BEFORE the name lookup below so the whole
         // record the operator entered on the New League step is what the team
         // lands on, rather than a second lookup by name that would find the
         // same row anyway but would also be the path that used to mint a
@@ -15395,10 +15414,19 @@ export const commitCardChecklistPrelude = internalMutation({
         // deliberately — the other way round, an operator who replaced the
         // suggested league with a name of their own would silently get the
         // suggestion back, which is the very defect this ticket closes.
-        leagueId = await findOrCreateLeague(ctx, {
-          name: create.leagueName.trim(),
-          sportId: sportId,
-        });
+        //
+        // NEO-331: LINK-ONLY. A league row requires a level, which only the
+        // New League step asks for — and that step's answer was consulted in
+        // the branch above. So here the name resolves to an existing league
+        // by name or alias, or to nothing: the team lands with NO league, and
+        // `leagueAnswered` counts the name as an answer so the sport default
+        // cannot file it under the top flight instead.
+        leagueId = (
+          await findLeagueByName(ctx, {
+            name: create.leagueName.trim(),
+            sportId: sportId,
+          })
+        )?._id;
       } else if (
         enrichment?.league &&
         stagedLeagueIdByName.has(stagedLeagueKey(sportId, enrichment.league))
@@ -15421,10 +15449,16 @@ export const commitCardChecklistPrelude = internalMutation({
          */
         leagueId = undefined;
       } else if (enrichment?.league) {
-        leagueId = await findOrCreateLeague(ctx, {
-          name: enrichment.league,
-          sportId: sportId,
-        });
+        // NEO-331: LINK-ONLY, for the reason the `leagueName` branch gives. A
+        // Wikidata P118 label we hold no row for leaves the team blank rather
+        // than minting a level-less league — and `leagueAnswered` treats the
+        // suggestion as an answer, so the sport default stays out too.
+        leagueId = (
+          await findLeagueByName(ctx, {
+            name: enrichment.league,
+            sportId: sportId,
+          })
+        )?._id;
       }
       return {
         ...(leagueId ? { leagueId } : {}),
@@ -15584,16 +15618,26 @@ export const commitCardChecklistPrelude = internalMutation({
        * only (that helper deliberately never widens an existing row's aliases
        * — see its note) which is the right rule here too: this operator's
        * spelling should not silently change what an existing league answers to.
+       *
+       * NEO-331 — a league row requires a level, and `recordDecision` now
+       * refuses a New League answer without one. A draft recorded BEFORE that
+       * (an in-flight queue row) can still lack it: that one may only LINK an
+       * existing league by name or alias, and on a miss it is dropped like an
+       * unfilled step — never inserted with a guessed level.
        */
-      const leagueId = await findOrCreateLeague(ctx, {
-        name: createLeague.name,
-        sportId: row.sportId,
-        ...(createLeague.abbreviation ? { abbreviation: createLeague.abbreviation } : {}),
-        ...(createLeague.level ? { level: createLeague.level } : {}),
-        ...(createLeague.yearsActive ? { yearsActive: createLeague.yearsActive } : {}),
-        ...(createLeague.aliases?.length ? { aliases: createLeague.aliases } : {}),
-        ...(createLeague.wikidataId ? { wikidataId: createLeague.wikidataId } : {}),
-      });
+      const createLevel = createLeague.level;
+      const leagueId = createLevel
+        ? await findOrCreateLeague(ctx, {
+            name: createLeague.name,
+            sportId: row.sportId,
+            level: createLevel,
+            ...(createLeague.abbreviation ? { abbreviation: createLeague.abbreviation } : {}),
+            ...(createLeague.yearsActive ? { yearsActive: createLeague.yearsActive } : {}),
+            ...(createLeague.aliases?.length ? { aliases: createLeague.aliases } : {}),
+            ...(createLeague.wikidataId ? { wikidataId: createLeague.wikidataId } : {}),
+          })
+        : (await findLeagueByName(ctx, { name: createLeague.name, sportId: row.sportId }))?._id;
+      if (!leagueId) continue;
       // `leagueKey` IS the label the step was raised for, and that is what a
       // team row's `leagueName`/`enrichment.league` carries. When the operator
       // RENAMED the league on the step, register the typed name too, so a team

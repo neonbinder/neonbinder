@@ -43,7 +43,7 @@
  * test sets. Nothing else in this component touches Convex.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -159,6 +159,21 @@ const leagueField = () =>
 function openLeagueList(): void {
   fireEvent.focus(leagueField());
 }
+/** NEO-331: the New League form's level pills, by group label and text. */
+function pressLeagueLevel(label: string) {
+  fireEvent.click(
+    within(screen.getByRole("radiogroup", { name: "Level" })).getByRole("radio", {
+      name: label,
+    }),
+  );
+}
+
+/** Whether "Add league" is held — by `aria-disabled`, so it keeps its Tab stop. */
+function addLeagueHeld(): boolean {
+  const button = screen.getByRole("button", { name: "Add league" });
+  return button.getAttribute("aria-disabled") === "true";
+}
+
 function typeLeague(text: string): void {
   openLeagueList();
   fireEvent.change(leagueField(), { target: { value: text } });
@@ -1189,12 +1204,14 @@ describe("NewTeamForm — Create “<typed>”", () => {
     fireEvent.change(screen.getByLabelText("New league abbreviation"), {
       target: { value: "USHL" },
     });
+    pressLeagueLevel("Minor");
     fireEvent.click(screen.getByRole("button", { name: "Add league" }));
 
     await waitFor(() => expect(onCreateLeague).toHaveBeenCalled());
     expect(onCreateLeague.mock.calls[0][0]).toMatchObject({
       name: "United States Hockey League",
       abbreviation: "USHL",
+      level: "minor",
     });
     await waitFor(() =>
       expect(onChange).toHaveBeenCalledWith({
@@ -1288,13 +1305,83 @@ describe("NewTeamForm — Create “<typed>”", () => {
       name: "Add abbreviation, years and aliases",
     });
     expect(disclosure.getAttribute("aria-expanded")).toBe("false");
-    // Add league is usable straight away: the name is the only required field.
-    expect(
-      (screen.getByRole("button", { name: "Add league" }) as HTMLButtonElement).disabled,
-    ).toBe(false);
+    // Add league waits for a level (NEO-331) and nothing else: the name is
+    // prefilled, so pressing one is the whole of what is left to answer.
+    expect(addLeagueHeld()).toBe(true);
+    pressLeagueLevel("Minor");
+    expect(addLeagueHeld()).toBe(false);
 
     fireEvent.click(disclosure);
     expect(screen.getByLabelText("New league abbreviation")).toBeTruthy();
+  });
+
+  it("PICKER: never writes a league until a level is pressed", async () => {
+    const onCreateLeague = vi.fn().mockResolvedValue({ id: "lg-9", name: "WHA" });
+    currentLeagues = [];
+    renderForm({ onCreateLeague });
+    typeLeague("WHA");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Add league" }));
+    expect(onCreateLeague).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("New league name")).toBeTruthy();
+
+    pressLeagueLevel("Minor");
+    fireEvent.click(screen.getByRole("button", { name: "Add league" }));
+    await waitFor(() => expect(onCreateLeague).toHaveBeenCalledTimes(1));
+  });
+
+  it("PICKER: a held 'Add league' press with only the level missing focuses the level group", () => {
+    const onCreateLeague = vi.fn();
+    currentLeagues = [];
+    renderForm({ onCreateLeague });
+    typeLeague("WHA");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
+
+    const add = screen.getByRole("button", { name: "Add league" });
+    expect((add as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(add);
+
+    expect(document.activeElement).toBe(
+      within(screen.getByRole("radiogroup", { name: "Level" })).getAllByRole("radio")[0],
+    );
+    expect(onCreateLeague).not.toHaveBeenCalled();
+  });
+
+  it("PICKER: a held 'Add league' press with the NAME missing does not steal focus into the level group", () => {
+    const onCreateLeague = vi.fn();
+    currentLeagues = [];
+    renderForm({ onCreateLeague });
+    typeLeague("WHA");
+    fireEvent.mouseDown(screen.getByRole("option", { name: "Create “WHA”" }));
+    pressLeagueLevel("Minor");
+    fireEvent.change(screen.getByLabelText("New league name"), { target: { value: "" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add league" }));
+
+    expect(document.activeElement?.getAttribute("role")).not.toBe("radio");
+    expect(onCreateLeague).not.toHaveBeenCalled();
+  });
+
+  it("PICKER: a league suggestion opens the New League form instead of selecting a bare name", () => {
+    // A bare `leagueName` would reach a server path that only LINKS an
+    // existing league and refuses a miss.
+    const onChange = vi.fn();
+    currentLeagues = [];
+    renderForm({
+      onCreateLeague: vi.fn(),
+      onChangeSpy: onChange,
+      leagueSuggestion: "Australian Baseball League",
+    });
+    fireEvent.focus(leagueField());
+    fireEvent.mouseDown(
+      screen.getByRole("option", { name: "Create Australian Baseball League" }),
+    );
+
+    expect(
+      (screen.getByLabelText("New league name") as HTMLInputElement).value,
+    ).toBe("Australian Baseball League");
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it("PICKER: Escape closes the form and hands focus back to the League field", () => {

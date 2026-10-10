@@ -1221,6 +1221,7 @@ describe("recordAllRemainingAsCreate: the bulk never answers the League question
     const sportId = await seedSport(t);
     await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
+        level: "other" as const,
         name: "Australian Baseball League",
         nameNormalized: "australian baseball league",
         sportId,
@@ -1478,6 +1479,7 @@ describe("security review 1: recordDecision refuses a league it cannot stand beh
     const rowId = await insertRow(t, { sportId, kind: "team", name: "Sydney Blue Sox", status: "ready" });
     const leagueId = await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
+        level: "other" as const,
         name: "Australian Baseball League",
         nameNormalized: "australian baseball league",
         sportId,
@@ -1501,6 +1503,7 @@ describe("security review 1: recordDecision refuses a league it cannot stand beh
     const rowId = await insertRow(t, { sportId, kind: "team", name: "Sydney Blue Sox", status: "ready" });
     const leagueId = await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
+        level: "other" as const,
         name: "Gone",
         nameNormalized: "gone",
         sportId,
@@ -1533,6 +1536,7 @@ describe("security review 1: recordDecision refuses a league it cannot stand beh
     const rowId = await insertRow(t, { sportId, kind: "team", name: "Sydney Blue Sox", status: "ready" });
     const leagueId = await t.run(async (ctx) =>
       ctx.db.insert("leagues", {
+        level: "major" as const,
         name: "National Football League",
         nameNormalized: "national football league",
         sportId: otherSportId,

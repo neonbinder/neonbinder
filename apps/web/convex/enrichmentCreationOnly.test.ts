@@ -129,6 +129,7 @@ async function insertBareTeam(
 ) {
   return t.run(async (ctx) => {
     const leagueId = await ctx.db.insert("leagues", {
+      level: "major" as const,
       name: "Major League Baseball",
       nameNormalized: "baseball league major",
       sportId,
@@ -430,7 +431,7 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
 
     await t
       .withIdentity(ADMIN)
-      .mutation(api.leagues.createByAdmin, { name: "Texas League", sportId });
+      .mutation(api.leagues.createByAdmin, { name: "Texas League", level: "minor", sportId });
 
     expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
   });
@@ -444,6 +445,7 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
     const asAdmin = t.withIdentity(ADMIN);
     const first = await asAdmin.mutation(api.leagues.createByAdmin, {
       name: "Texas League",
+      level: "minor",
       sportId,
     });
     expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
@@ -452,6 +454,7 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
     // this proves the guard is the row lookup and not string equality.
     const second = await asAdmin.mutation(api.leagues.createByAdmin, {
       name: "  texas league ",
+      level: "minor",
       sportId,
     });
 
@@ -743,7 +746,7 @@ describe("no team-creation path enqueues enrichment (NEO-254)", () => {
   test("a sportId that is not a SPORT row is refused, so no orphan team is created", async () => {
     // `v.id("selectorOptions")` proves the id is in that table, not that it
     // points at a sport. A team hung off a variantType row is unreachable by
-    // every query that matters (`teams.list` and `findByNameAndSport` key on
+    // every query that matters (`teams.search` and `findByNameAndSport` key on
     // the sport row id) — the same unfindable-row class the pre-NEO-96
     // `sport ?? ""` fallback produced.
     const t = convexTest(schema, modules);
@@ -877,7 +880,7 @@ describe("no team-creation path enqueues enrichment (NEO-254)", () => {
     const teamsSrc = readFileSync(join(__dirname, "teams.ts"), "utf8");
     const findOrCreate = teamsSrc.slice(
       teamsSrc.indexOf("export const findOrCreate"),
-      teamsSrc.indexOf("export const list"),
+      teamsSrc.indexOf("export const get = query"),
     );
     expect(findOrCreate).not.toContain("internal.wikidataPool.enqueueEnrichment");
 

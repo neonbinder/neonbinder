@@ -167,7 +167,6 @@ describe("NEO-154: taxonomy reads and writes require a signed-in caller", () => 
 
   test.each([
     ["players.list", (t: ReturnType<typeof convexTest>) => t.query(api.players.list, {})],
-    ["teams.list", (t: ReturnType<typeof convexTest>) => t.query(api.teams.list, {})],
     ["teams.getManyByIds", (t: ReturnType<typeof convexTest>) => t.query(api.teams.getManyByIds, { ids: [] })],
     // NEO-235. Signed-in, like the `players.get` it wraps — it is a read of one
     // row of signed-in-readable reference data, by an id that came out of a URL.
@@ -178,6 +177,15 @@ describe("NEO-154: taxonomy reads and writes require a signed-in caller", () => 
   ])("%s rejects an anonymous caller", async (_name, call) => {
     const t = convexTest(schema, modules);
     await expect(call(t)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test("teams.list stays deleted", async () => {
+    // NEO-331: a signed-in `take()` sized by whatever `limit` the caller sent,
+    // over the whole table when no sport was given, with no client caller left
+    // once the team picker moved to `teams.pickerCandidates`. Deleted rather than guarded; pinned so a later
+    // copy-from-neighbour does not quietly bring the bulk read back.
+    const teamsModule = await import("./teams");
+    expect("list" in teamsModule).toBe(false);
   });
 
   test("players.findByNameAndSport and teams.findByNameAndSport reject anonymously", async () => {
@@ -517,6 +525,123 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
       await t.withIdentity(ADMIN).query(api.teams.search, { query: "Yankees" }),
     ).toEqual([]);
   });
+
+  test("teams.pickerCandidates is signed-in, not admin, and answers empty rather than throwing", async () => {
+    // NEO-331: the ranked twin of `teams.search`, behind the same softer gate
+    // for the same reason. Both modes are pinned — search and browse ("") —
+    // because browse reads by index rather than through the search index and
+    // is the one that would hand a signed-out caller the table.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Yankees",
+        nameNormalized: "yankees",
+        sportId,
+        lastUpdated: 1,
+      }),
+    );
+
+    expect(await t.query(api.teams.pickerCandidates, { query: "Yankees" })).toEqual([]);
+    expect(await t.query(api.teams.pickerCandidates, { query: "", sportId })).toEqual([]);
+    expect(
+      await t
+        .withIdentity(SIGNED_IN)
+        .query(api.teams.pickerCandidates, { query: "", sportId }),
+    ).toHaveLength(1);
+  });
+
+  test("teams.pickerCandidates honours contextOptionId for an admin only", async () => {
+    // NEO-331 security condition. The context is a `selectorOptions` row and
+    // every read of that table is admin-gated, but this query is signed-in.
+    // If a non-admin's context were honoured, the tier on each team and the
+    // order they come back in would say which league the row names and which
+    // year it sits under — an oracle on an admin-only row. So a non-admin's
+    // context is IGNORED (every row tier 4, A–Z), never refused, and an admin
+    // with the very same arguments gets the tiers.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const { setId, padresId, pilotsId, aardvarksId } = await t.run(async (ctx) => {
+      const mlbId = await ctx.db.insert("leagues", {
+        name: "Major League Baseball",
+        nameNormalized: "major league baseball",
+        sportId,
+        level: "major",
+        lastUpdated: 1,
+      });
+      const yearId = await ctx.db.insert("selectorOptions", {
+        level: "year",
+        value: "2024",
+        parentId: sportId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1,
+      });
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Series One",
+        parentId: yearId,
+        platformData: {},
+        children: [],
+        features: { league: "Major League Baseball" },
+        lastUpdated: 1,
+      });
+      // Tier 1 for an admin: in the set's league, active in 2024.
+      const padresId = await ctx.db.insert("teams", {
+        name: "Padres",
+        nameNormalized: "padres",
+        sportId,
+        leagueId: mlbId,
+        yearsActive: { from: 1969 },
+        lastUpdated: 1,
+      });
+      // Tier 3 for an admin: in the set's league, closed era.
+      const pilotsId = await ctx.db.insert("teams", {
+        name: "Pilots",
+        nameNormalized: "pilots",
+        sportId,
+        leagueId: mlbId,
+        yearsActive: { from: 1969, to: 1969 },
+        lastUpdated: 1,
+      });
+      // Tier 4 for everyone: no league. A–Z first, so a context-free order
+      // and the tiered order cannot coincide.
+      const aardvarksId = await ctx.db.insert("teams", {
+        name: "Aardvarks",
+        nameNormalized: "aardvarks",
+        sportId,
+        lastUpdated: 1,
+      });
+      return { setId, padresId, pilotsId, aardvarksId };
+    });
+
+    const args = { query: "", sportId, contextOptionId: setId };
+    const shape = (rows: { team: { _id: Id<"teams"> }; tier: number }[]) =>
+      rows.map((r) => [r.team._id, r.tier]);
+
+    const asUser = await t.withIdentity(SIGNED_IN).query(api.teams.pickerCandidates, args);
+    expect(shape(asUser)).toEqual([
+      [aardvarksId, 4],
+      [padresId, 4],
+      [pilotsId, 4],
+    ]);
+    // Search mode reads the same context, so it is gated the same way.
+    const userSearch = await t
+      .withIdentity(SIGNED_IN)
+      .query(api.teams.pickerCandidates, { ...args, query: "Padres" });
+    expect(shape(userSearch)).toEqual([[padresId, 4]]);
+
+    const asAdmin = await t.withIdentity(ADMIN).query(api.teams.pickerCandidates, args);
+    expect(shape(asAdmin)).toEqual([
+      [padresId, 1],
+      [pilotsId, 3],
+      [aardvarksId, 4],
+    ]);
+    const adminSearch = await t
+      .withIdentity(ADMIN)
+      .query(api.teams.pickerCandidates, { ...args, query: "Padres" });
+    expect(shape(adminSearch)).toEqual([[padresId, 1]]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -530,11 +655,10 @@ describe("NEO-240: the League Management surface is admin-gated", () => {
    * every team in it points at — so "admin" is the intended gate for all
    * seven and signed-in is not enough.
    *
-   * `leagues.list` and `leagues.create` are NOT in this table and must not be
-   * added to it: `list` is deliberately the softer SIGNED-IN read (the
-   * spine-label designer's league filter is a collector screen) and is pinned
-   * as such below, and `create` is Team Management's inline add, already
-   * covered by convex/leagues.test.ts.
+   * `leagues.list` is NOT in this table and must not be added to it: it is
+   * deliberately the softer SIGNED-IN read (the spine-label designer's league
+   * filter is a collector screen) and is pinned as such below. (NEO-331
+   * deleted `leagues.create`; `createByAdmin` is the one league writer.)
    *
    * Called with arguments that are valid but inert — the gate runs before any
    * of them is used, so a refusal here cannot be argument validation wearing a
@@ -562,7 +686,7 @@ describe("NEO-240: the League Management surface is admin-gated", () => {
     [
       "leagues.createByAdmin",
       (t, sportId) =>
-        t.mutation(api.leagues.createByAdmin, { name: "Ghost League", sportId }),
+        t.mutation(api.leagues.createByAdmin, { name: "Ghost League", level: "other" as const, sportId }),
     ],
     [
       "leagues.saveLeagueFields",

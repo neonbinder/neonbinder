@@ -43,7 +43,7 @@ const SPORT_ID = "selopt-sport-1" as unknown as Id<"selectorOptions">;
 const DEBOUNCE_MS = 200;
 
 vi.mock("../../convex/_generated/api", () => ({
-  api: { teams: { search: "teams.search", list: "teams.list" } },
+  api: { teams: { search: "teams.search" } },
 }));
 
 let currentTeams: unknown;
@@ -169,13 +169,12 @@ describe("CareerTeamEntry — adding", () => {
 // ---------------------------------------------------------------------------
 
 describe("CareerTeamEntry — search source", () => {
-  it("queries teams.search (never teams.list) with the typed name and sport", () => {
+  it("queries teams.search with the typed name and sport", () => {
     renderEntry();
     typeName("Blue");
 
     const lastSearch = queryCalls.filter((c) => c.ref === "teams.search").pop();
     expect(lastSearch?.args).toEqual({ query: "Blue", sportId: SPORT_ID });
-    expect(queryCalls.some((c) => c.ref === "teams.list")).toBe(false);
   });
 
   it("skips the query while the field is blank", () => {

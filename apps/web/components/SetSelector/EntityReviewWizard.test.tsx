@@ -7359,6 +7359,15 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
     expect(scrollBox!.contains(primary)).toBe(false);
   });
 
+  /** NEO-331: the level pills, by group label and text (role-agnostic). */
+  function pressWizardLevel(label: string) {
+    fireEvent.click(
+      within(screen.getByRole("radiogroup", { name: "Level" })).getByRole("radio", {
+        name: label,
+      }),
+    );
+  }
+
   function seedLookingUpLeague(status: "pending" | "ready") {
     const team = makeRow({
       _id: "row-team" as unknown as Id<"entityReviewQueue">,
@@ -7401,18 +7410,28 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
     expect(screen.queryByText("No Wikidata match found.")).toBeNull();
     // The batch really is still looking things up — this league included…
     expect(footerStatusText()).toBe("3 still looking up — wait or skip");
-    // …and the step does not care.
+    // …and the lookup does not hold the step. What holds it is the level
+    // (NEO-331): required, never pre-picked, and silent about it — the footer
+    // line above is unchanged, no extra sentence appears.
     const primary = screen.getByRole("button", { name: "Add as New League" });
-    expect(primary.getAttribute("aria-disabled")).toBeNull();
-    expect((primary as HTMLButtonElement).disabled).toBe(false);
+    expect(primary.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(primary);
+    expect(mockRecordDecision).not.toHaveBeenCalled();
+    expect(footerStatusText()).toBe("3 still looking up — wait or skip");
+    // The held press points at the one thing missing: focus is on the level.
+    expect(document.activeElement).toBe(
+      within(screen.getByRole("radiogroup", { name: "Level" })).getAllByRole("radio")[0],
+    );
 
+    pressWizardLevel("Major");
+    expect(primary.getAttribute("aria-disabled")).toBeNull();
     fireEvent.click(primary);
     await waitFor(() => {
       expect(mockRecordDecision).toHaveBeenCalledWith(
         expect.objectContaining({
           reviewRowId: league._id,
           action: "create",
-          createLeague: { name: "National Hockey League" },
+          createLeague: { name: "National Hockey League", level: "major" },
         }),
       );
     });
@@ -7425,6 +7444,8 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
 
     expect(footerStatusText()).toBe("2 still looking up — wait or skip");
     const primary = screen.getByRole("button", { name: "Add as New League" });
+    expect(primary.getAttribute("aria-disabled")).toBe("true");
+    pressWizardLevel("Minor");
     expect(primary.getAttribute("aria-disabled")).toBeNull();
     fireEvent.click(primary);
     await waitFor(() => {
@@ -7432,7 +7453,7 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
         expect.objectContaining({
           reviewRowId: league._id,
           action: "create",
-          createLeague: { name: "National Hockey League" },
+          createLeague: { name: "National Hockey League", level: "minor" },
         }),
       );
     });

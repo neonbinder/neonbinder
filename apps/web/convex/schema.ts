@@ -1452,21 +1452,23 @@ export default defineSchema({
     // Management sees "Major League Baseball" and "International League" as
     // peers, with nothing on the row saying which one a card set is about.
     //
-    // Optional because it is not knowable for every row: no backfill was run
-    // (NEO-240 decision), so every pre-existing league carries no level, and an
-    // operator-added league only has one once someone says so. Unset sorts LAST
-    // in `listForManagement`, not first — an unclassified row is the one the
-    // operator has work to do on, and burying it at the top would hide the
-    // classified majority.
-    level: v.optional(
-      v.union(
-        v.literal("major"),
-        v.literal("minor"),
-        v.literal("college"),
-        v.literal("international"),
-        v.literal("independent"),
-        v.literal("other"),
-      ),
+    // NEO-331: REQUIRED. Optional in NEO-240 because no backfill was run;
+    // the unleveled rows were classified by hand before this flipped, and every
+    // writer now supplies one. An operator creating a league picks a level (the
+    // forms force the choice), a bulk-load dataset carries its own, and the
+    // sport's configured default league is "major" by definition. Automatic
+    // paths (enrichment, a legacy league string, Wikidata P118) no longer
+    // create leagues at all — they link an existing row or leave the team
+    // without one — so nothing is left that could insert a row without knowing
+    // its level. The team picker's tier 2 ("minor league, active in the set's
+    // year") reads this, which is why an unknown level stopped being tolerable.
+    level: v.union(
+      v.literal("major"),
+      v.literal("minor"),
+      v.literal("college"),
+      v.literal("international"),
+      v.literal("independent"),
+      v.literal("other"),
     ),
     // NEO-240: the league's own lifespan, mirroring `teams.yearsActive`.
     //
@@ -2247,9 +2249,10 @@ export default defineSchema({
           //   - absent     — not answered, so the prelude's own fallbacks
           //                  (the enrichment's P118 label, then the sport
           //                  default) still apply, exactly as before.
-          // `leagueName` is the "create the league too" answer: a suggestion
-          // we hold no row for yet, resolved through `findOrCreateLeague` so
-          // it dedupes by name-or-alias like every other league writer.
+          // `leagueName` names a league rather than picking one. NEO-331:
+          // LINK-ONLY at commit — the batch's own New League step, else an
+          // existing row by name or alias; a miss leaves the team with no
+          // league (never the sport default, never a minted level-less row).
           leagueId: v.optional(v.union(v.id("leagues"), v.null())),
           leagueName: v.optional(v.string()),
           /**

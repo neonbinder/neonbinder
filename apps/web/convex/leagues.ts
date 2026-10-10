@@ -85,7 +85,8 @@ export const leagueDocValidator = v.object({
   abbreviation: v.optional(v.string()),
   nameNormalized: v.string(),
   sportId: v.id("selectorOptions"),
-  level: v.optional(leagueLevelValidator),
+  // NEO-331: required, with the schema — see `leagues.level` there.
+  level: leagueLevelValidator,
   yearsActive: v.optional(leagueYearsActiveValidator),
   externalIds: v.optional(v.object({ wikidataId: v.optional(v.string()) })),
   aliases: v.optional(v.array(v.string())),
@@ -208,7 +209,15 @@ export async function findOrCreateLeague(
     name: string;
     abbreviation?: string;
     sportId: Id<"selectorOptions">;
-    level?: LeagueLevel;
+    /**
+     * NEO-331 — REQUIRED. The row's `level` is a required column, so a caller
+     * that cannot say where the league sits in the pyramid has no business
+     * creating one: it should link an existing row through
+     * `findLeagueByName` instead. The callers that may create are the ones
+     * that know: an operator's form, a bulk-load dataset, and the sport's
+     * configured default (by definition "major").
+     */
+    level: LeagueLevel;
     /**
      * NEO-254 — insert the row WITHOUT queueing its Wikidata lookup.
      *
@@ -260,9 +269,12 @@ export async function findOrCreateLeague(
     // `teams.applyEnrichmentInternal` (NEO-203). Aliases are deliberately NOT
     // merged here — silently widening what an existing row answers to is an
     // operator decision, and `saveLeagueFields` is where it is made.
+    //
+    // NEO-331: `level` is not gap-filled any more because there is no gap — it
+    // is required on every row, and the operator's own classification
+    // outranks the level a later caller brings.
     const patch: {
       abbreviation?: string;
-      level?: LeagueLevel;
       yearsActive?: { from: number; to?: number };
       externalIds?: { wikidataId?: string };
       lastUpdated: number;
@@ -270,10 +282,6 @@ export async function findOrCreateLeague(
     let changed = false;
     if (args.abbreviation && !existing.abbreviation) {
       patch.abbreviation = args.abbreviation;
-      changed = true;
-    }
-    if (args.level && !existing.level) {
-      patch.level = args.level;
       changed = true;
     }
     // NEO-254: same gap-fill rule, same reason. A league the operator answered
@@ -295,7 +303,7 @@ export async function findOrCreateLeague(
     abbreviation: args.abbreviation,
     nameNormalized,
     sportId: args.sportId,
-    ...(args.level ? { level: args.level } : {}),
+    level: args.level,
     ...(args.aliases && args.aliases.length > 0 ? { aliases: args.aliases } : {}),
     ...(args.yearsActive ? { yearsActive: args.yearsActive } : {}),
     ...(args.wikidataId ? { externalIds: { wikidataId: args.wikidataId } } : {}),
@@ -328,10 +336,15 @@ export async function findOrCreateLeague(
  *    SPORT before it is trusted: the validator proves the id is in `leagues`,
  *    not that it belongs to this team's sport, and a cross-sport league on a
  *    team is a row no per-sport query can explain.
- *  - `leagueName` — the operator accepted a suggestion for a league we do not
- *    hold yet (a Wikidata P118 label, typically). `findOrCreateLeague` applies
- *    the same name-or-alias dedup every other writer does, so "ABL" lands on
- *    the Australian Baseball League if we already know it under that name.
+ *  - `leagueName` — a league named rather than picked (a Wikidata P118
+ *    label, typically). NEO-331: LINK-ONLY. Resolved by name or alias through
+ *    `findLeagueByName`, so "ABL" lands on the Australian Baseball League if
+ *    we know it under that name — and REFUSED when nothing answers. A league
+ *    now requires a level, which only the New League form asks for, so this
+ *    path cannot create one; and returning undefined on a miss would hand the
+ *    team to the sport default, filing a club side under MLB with nobody
+ *    having said so (the NEO-236 defect). A thrown refusal is the honest
+ *    answer: the operator adds the league, then picks it.
  *
  * Returning undefined means "the operator did not choose" — NOT "no league".
  * The caller decides what that means for it; `teams.findOrCreate` falls back to
@@ -363,13 +376,20 @@ export async function resolveOperatorLeagueId(
   }
   const typed = args.leagueName?.trim();
   if (!typed) return undefined;
-  // Same bounds as every other operator-typed league name — this one arrives
-  // from a "Create league X" button whose X is a Wikidata label, so it is text
-  // nobody on our side vetted.
-  return await findOrCreateLeague(ctx, {
+  // Same bounds as every other operator-typed league name — this one may be a
+  // Wikidata label, so it is text nobody on our side vetted.
+  const found = await findLeagueByName(ctx, {
     name: requireValidLeagueName(typed),
     sportId: args.sportId,
   });
+  if (!found) {
+    // The name is NOT echoed: it is unvetted text, and this message reaches
+    // Sentry and the browser console through Convex's error path.
+    throw new ConvexError(
+      "That league isn't in NeonBinder yet. Add it as a new league first, then pick it.",
+    );
+  }
+  return found._id;
 }
 
 /**
@@ -481,50 +501,6 @@ export const list = query({
   },
 });
 
-/**
- * Add a league by hand, from the Team Management dropdown.
- *
- * Idempotent by (name, sport) — re-adding an existing league returns it rather
- * than creating a duplicate, which is what makes the inline "add new league"
- * path safe to use without first checking the list.
- *
- * ## NEO-240 security review: this is no longer a thin wrapper
- *
- * Two things changed under it. `findOrCreateLeague` now schedules a Wikidata
- * lookup on its insert branch, so what lands here goes OUTBOUND as well as
- * into a row; and an abbreviation arg (Team Management's inline add supplied
- * one until NEO-240's AddLeagueDialog moved that path to `createByAdmin`; this
- * function has no client caller today but stays for other callers) was
- * accepted with no bound at all. So it applies exactly
- * the bounds `createByAdmin` does, through the same two helpers rather than a
- * second copy of them — two admissions gates for one table that can drift
- * apart is how the unbounded one gets found by an attacker instead of a diff.
- *
- * The return shape stays a bare `v.id("leagues")`: Team Management depends on
- * it, and `createByAdmin` is where the richer `{ id, created }` answer lives.
- */
-export const create = mutation({
-  args: {
-    name: v.string(),
-    abbreviation: v.optional(v.string()),
-    sportId: v.id("selectorOptions"),
-  },
-  returns: v.id("leagues"),
-  handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-    // `ConvexError`, not a bare `Error`: a deployed Convex backend replaces a
-    // plain error's message with "Server Error", so the operator standing in
-    // front of the inline add would be told nothing about what they typed.
-    const name = requireValidLeagueName(args.name);
-    return await findOrCreateLeague(ctx, {
-      name,
-      abbreviation: requireValidLeagueAbbreviation(args.abbreviation),
-      sportId: args.sportId,
-    });
-  },
-});
-
-
 // ===========================================================================
 // NEO-240 — League Management (/admin/leagues)
 //
@@ -536,10 +512,12 @@ export const create = mutation({
 // data — the page turns it into a link to the colliding league), lengths
 // REFUSED rather than truncated, and optional-and-clearable field semantics.
 //
-// `list` and `create` above are deliberately left alone. Team Management and
-// the spine-label designer call them, `list` is signed-in rather than admin on
-// purpose, and widening either one to serve this page would have dragged that
-// decision along with it.
+// `list` above is deliberately left alone. Team Management and the
+// spine-label designer call it, it is signed-in rather than admin on purpose,
+// and widening it to serve this page would have dragged that decision along
+// with it. (NEO-331 deleted its old sibling `create`, a level-less
+// find-or-create with no client caller left; `createByAdmin` is the one
+// operator path that adds a league.)
 // ===========================================================================
 
 /**
@@ -593,13 +571,10 @@ const LEAGUE_NEAR_MATCH_LIMIT = 5;
 const LEAGUE_TEAMS_CAP = 500;
 
 /**
- * Sort order for `listForManagement`: the professional pyramid, top down, with
- * UNSET LAST.
+ * Sort order for `listForManagement`: the professional pyramid, top down.
  *
- * Unset is last rather than first because an unclassified league is the row
- * the operator still has work to do on, and no backfill was run (NEO-240), so
- * on day one that is most of them. Putting them on top would bury every league
- * that is already correct under the queue of ones that are not.
+ * NEO-331: there is no "unset" rank any more — `level` is required on every
+ * row, so the NEO-240 "unclassified sorts last" branch has nothing to sort.
  */
 const LEAGUE_LEVEL_ORDER: Record<LeagueLevel, number> = {
   major: 0,
@@ -610,8 +585,8 @@ const LEAGUE_LEVEL_ORDER: Record<LeagueLevel, number> = {
   other: 5,
 };
 
-function leagueLevelRank(level: LeagueLevel | undefined): number {
-  return level === undefined ? LEAGUE_LEVELS.length : LEAGUE_LEVEL_ORDER[level];
+function leagueLevelRank(level: LeagueLevel): number {
+  return LEAGUE_LEVEL_ORDER[level];
 }
 
 /**
@@ -697,10 +672,10 @@ export function validateLeagueYears(years: { from: number; to?: number }): void 
  * same intent, and the editor should not have to send a different value
  * depending on which one happened.
  *
- * Shared by `create`, `createByAdmin` and `saveLeagueFields` rather than
- * re-typed at each. NEO-240's security review found `create` — the path Team
- * Management's inline add uses — carrying no bound at all while its two
- * siblings did, which is the failure mode a copied check has.
+ * Shared by `createByAdmin` and `saveLeagueFields` rather than re-typed at
+ * each. NEO-240's security review found the since-deleted `create` carrying no
+ * bound at all while its siblings did, which is the failure mode a copied
+ * check has.
  */
 export function requireValidLeagueAbbreviation(
   raw: string | undefined | null,
@@ -908,11 +883,13 @@ export const nearMatches = query({
  * NEO-240: admin quick-add for a league, the counterpart of
  * `players.createByAdmin`.
  *
- * Separate from `create` above rather than a widening of it, because `create`
- * is Team Management's inline "add new league" and returns a bare id — a shape
- * its caller depends on, and one that cannot answer the question this page
- * asks. `created` is what lets the page say "already here" and jump to the
- * existing row instead of claiming a creation it did not make.
+ * `created` is what lets the page say "already here" and jump to the existing
+ * row instead of claiming a creation it did not make.
+ *
+ * NEO-331: `level` is REQUIRED — the forms force the operator to pick one, and
+ * a league row cannot exist without it. On an existing-row hit the operator's
+ * level is NOT applied: the row's own classification stands, exactly as the
+ * other gap-filled fields do.
  *
  * `created: false` on an ALIAS hit as much as on a name hit: typing "MLB" when
  * Major League Baseball already exists found a league, and reporting that
@@ -922,7 +899,7 @@ export const createByAdmin = mutation({
   args: {
     name: v.string(),
     abbreviation: v.optional(v.string()),
-    level: v.optional(leagueLevelValidator),
+    level: leagueLevelValidator,
     sportId: v.id("selectorOptions"),
     /**
      * NEO-254 — the rest of the record, when the caller collected it.
@@ -1021,9 +998,11 @@ export const createByAdmin = mutation({
  * ## Field semantics
  *
  * Omitting a field leaves it alone; `null` clears it. "" and "unset" are
- * different states and only one of them is a valid abbreviation, level or
- * span, so the clear has to be explicit. `aliases` is the exception and takes
- * no `null`: it is replaced wholesale, and `[]` is already the empty answer.
+ * different states and only one of them is a valid abbreviation or span, so
+ * the clear has to be explicit. `aliases` is the exception and takes no
+ * `null`: it is replaced wholesale, and `[]` is already the empty answer.
+ * `level` is the other: NEO-331 made it required, so it can be changed but
+ * never cleared, and `null` is not accepted.
  *
  * `name` changes rewrite `nameNormalized` too, or the row becomes invisible to
  * every lookup that resolves a league name back onto it — silently, and only
@@ -1040,7 +1019,7 @@ export const saveLeagueFields = mutation({
     id: v.id("leagues"),
     name: v.optional(v.string()),
     abbreviation: v.optional(v.union(v.string(), v.null())),
-    level: v.optional(v.union(leagueLevelValidator, v.null())),
+    level: v.optional(leagueLevelValidator),
     yearsActive: v.optional(v.union(leagueYearsActiveValidator, v.null())),
     /** Replaced wholesale. `[]` clears the list; there is no `null` form. */
     aliases: v.optional(v.array(v.string())),
@@ -1132,7 +1111,7 @@ export const saveLeagueFields = mutation({
     }
 
     if (args.level !== undefined) {
-      patch.level = args.level ?? undefined;
+      patch.level = args.level;
     }
 
     if (args.yearsActive !== undefined) {

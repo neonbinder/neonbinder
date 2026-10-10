@@ -11,8 +11,10 @@ import {
 import { Input } from "../primitives/Input";
 import { Autocomplete, focusWithoutOpening } from "../primitives/Autocomplete";
 import NeonButton from "../modules/NeonButton";
+import { focusLevelChoice } from "../admin/AddLeagueForm";
 import NewLeagueForm, {
   leagueDraftError,
+  leagueDraftReady,
   newLeaguePrefill,
   type NewLeagueDraft,
 } from "./NewLeagueForm";
@@ -494,7 +496,8 @@ export default function NewTeamForm({
   /** PICKER — write the league the `NewLeagueForm` collected. */
   const submitNewLeague = async () => {
     if (leagueBusy || !onCreateLeague) return;
-    if (leagueDraftError(newLeagueDraft, new Date().getFullYear() + 1)) return;
+    // NEO-331: `Ready`, not `Error` — an unpicked level blocks the write too.
+    if (!leagueDraftReady(newLeagueDraft, new Date().getFullYear() + 1)) return;
     setLeagueBusy(true);
     try {
       const created = await onCreateLeague(newLeagueDraft);
@@ -587,7 +590,16 @@ export default function NewTeamForm({
       key: `create:${suggestion.key}`,
       label: `Create ${suggestion.name}`,
       haystack: [suggestion.name],
-      choose: () => pick({ leagueName: suggestion.name }),
+      // NEO-331: a league is never created from a name alone. The wizard
+      // stages the name and asks for the rest (level included) on its own New
+      // League step; the picker has no later step, so it opens the full
+      // `NewLeagueForm` here, exactly as a typed `Create “…”` does. Sending a
+      // bare `leagueName` from the picker would reach a server path that now
+      // only LINKS an existing league, and refuses a miss.
+      choose: () =>
+        onCreateLeague && !onStageLeague
+          ? void createTypedLeague(suggestion.name)
+          : pick({ leagueName: suggestion.name }),
     });
   }
   for (const [key, name] of stagedByKey) {
@@ -992,13 +1004,34 @@ export default function NewTeamForm({
               scroll it into view. A data attribute, never an id — an id
               would be nothing a user can see, and no flow targets it. */}
           <div data-new-league-actions="" className="flex items-center gap-2">
+            {/*
+              NEO-331: held until the draft is ready (valid values AND a
+              level). Held is `aria-disabled`, not native `disabled`, so the
+              button keeps its Tab stop and a press can do something useful:
+              with only the level missing it moves focus onto the level group,
+              which is the silent required field's whole explanation. Native
+              `disabled` stays for the busy states, as before.
+            */}
             <NeonButton
               type="button"
-              onClick={() => void submitNewLeague()}
-              disabled={
-                disabled ||
-                leagueBusy ||
-                leagueDraftError(newLeagueDraft, new Date().getFullYear() + 1) !== null
+              onClick={() => {
+                const maxYear = new Date().getFullYear() + 1;
+                if (!leagueDraftReady(newLeagueDraft, maxYear)) {
+                  if (
+                    leagueDraftError(newLeagueDraft, maxYear) === null &&
+                    newLeagueDraft.level === null
+                  ) {
+                    focusLevelChoice(document.getElementById(newLeagueFormId));
+                  }
+                  return;
+                }
+                void submitNewLeague();
+              }}
+              disabled={disabled || leagueBusy}
+              aria-disabled={
+                !leagueDraftReady(newLeagueDraft, new Date().getFullYear() + 1)
+                  ? true
+                  : undefined
               }
             >
               {leagueBusy ? "Adding…" : "Add league"}
