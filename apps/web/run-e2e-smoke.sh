@@ -470,30 +470,61 @@ fi
 # both go through, so they can't drift.
 #
 # NEO-330 — with NB_REFERENCE_BUNDLE set (a local path to a reference-seed
-# bundle zip; CI downloads it and exports this), the slot becomes two steps:
-# a reset that leaves the eight reference-seed tables alone, then the bundle's
-# `convex import --replace`, which IS the clear for those eight and loads
-# prod's reference catalogue in one atomic replace. Both steps target
-# CONVEX_NAME explicitly, so they can never disagree about the deployment.
-# Either failing fails the run: a reset with no import after it leaves the
-# previous run's reference rows behind, which is not a baseline. Unset, the
-# slot is the full reset exactly as before.
+# bundle zip; CI downloads it and exports this), the slot becomes three steps:
+# a structural check of the bundle, a reset that leaves the eight
+# reference-seed tables alone, then the bundle's `convex import --replace`,
+# which IS the clear for those eight and loads prod's reference catalogue in
+# one atomic replace. Any step failing fails the run: a bad bundle stops
+# before the reset touches anything, and a reset with no import after it
+# leaves the previous run's reference rows behind, which is not a baseline.
+# Unset, the slot is the full reset exactly as before.
 #
 # NB_REFERENCE_SEED_SUMMARY (CI only): a file path. When set, each step's
-# wall-clock seconds are appended as `label: value` lines, which the workflow
-# copies verbatim into the step summary. Numbers only — never a row, a
-# bundle path or a deployment name.
+# wall-clock seconds, the bundle's generatedAt and its per-table row counts
+# are appended as `label: value` lines, which the workflow copies verbatim
+# into the step summary. Numbers, table names and the date only — never a
+# row, a bundle path or a deployment name.
 reference_seed_summary() {
   if [ -n "${NB_REFERENCE_SEED_SUMMARY:-}" ]; then
     printf '%s: %s\n' "$1" "$2" >> "$NB_REFERENCE_SEED_SUMMARY"
   fi
 }
 
+# Prints `bundle generatedAt: <ISO date>` and `<table> rows: <n>` lines from
+# the bundle's manifest.json — the structured JSON, not the CLI's log text, so
+# a change to the log wording cannot break it. Every value is validated
+# (ISO timestamp, letters-only table name, safe integer) and anything else is
+# dropped, so nothing but a date, table names and numbers can reach the
+# summary. Best-effort: it prints nothing rather than failing the run. Only
+# called after `cli.mjs check` passed, and that check already proves the
+# manifest's counts agree with the rows.
+reference_seed_manifest_lines() {
+  unzip -p "$1" manifest.json 2>/dev/null | node -e '
+    let raw = "";
+    process.stdin.on("data", (c) => (raw += c));
+    process.stdin.on("end", () => {
+      let m;
+      try { m = JSON.parse(raw); } catch { return; }
+      const out = [];
+      if (typeof m.generatedAt === "string" &&
+          /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/.test(m.generatedAt)) {
+        out.push(`bundle generatedAt: ${m.generatedAt}`);
+      }
+      for (const [t, n] of Object.entries(m.counts ?? {})) {
+        if (/^[A-Za-z]+$/.test(t) && Number.isSafeInteger(n) && n >= 0) {
+          out.push(`${t} rows: ${n}`);
+        }
+      }
+      if (out.length) process.stdout.write(out.join("\n") + "\n");
+    });
+  ' 2>/dev/null || true
+}
+
 if [ "$SELECT_MODE" = "setup" ]; then
   if [ -n "${NB_REFERENCE_BUNDLE:-}" ]; then
     echo "── setup track: reference seed before setup.yaml (NEO-330) ──"
-    # Check everything BEFORE the reset, so a missing bundle or target fails
-    # with the deployment untouched.
+    # Check everything BEFORE the reset, so a missing or bad bundle, or a
+    # missing target, fails with the deployment untouched.
     if [ ! -f "$NB_REFERENCE_BUNDLE" ]; then
       echo "✗ NB_REFERENCE_BUNDLE is set but is not a file — refusing to reset without a bundle to load after it." >&2
       exit 1
@@ -502,9 +533,26 @@ if [ "$SELECT_MODE" = "setup" ]; then
       echo "✗ NB_REFERENCE_BUNDLE is set but CONVEX_NAME is not — the reference-seed load needs an explicit deployment. Set CONVEX_NAME to the target deployment." >&2
       exit 1
     fi
+    if ! node scripts/reference-seed/cli.mjs check "$NB_REFERENCE_BUNDLE"; then
+      echo "✗ reference seed: the bundle fails its check — nothing was reset. Rebuild the bundle." >&2
+      exit 1
+    fi
+    ref_manifest_lines="$(reference_seed_manifest_lines "$NB_REFERENCE_BUNDLE")"
+
+    # ONE target for both steps: the reset and the load each take
+    # `--deployment "$CONVEX_NAME"` explicitly, read once here. Neither is
+    # left to resolve its own default (.env.local, a deploy key), so the
+    # deployment the reset empties is provably the one the import fills —
+    # and the RESET consent e2e-baseline.sh asks for, against the name it
+    # prints, covers the import announced below as well.
+    ref_target="$CONVEX_NAME"
+    echo "   Next: reset ${ref_target} (everything except the reference catalogue), then"
+    echo "   import the reference catalogue, which replaces selectorOptions, leagues,"
+    echo "   franchises, teams, teamAliases, players, playerAliases and playerSports"
+    echo "   on ${ref_target}. Confirming the reset below confirms both."
 
     ref_t0=$(date +%s)
-    if ! ./e2e-baseline.sh reset --except-reference-seed --deployment "$CONVEX_NAME"; then
+    if ! ./e2e-baseline.sh reset --except-reference-seed --deployment "$ref_target"; then
       echo "✗ reference seed: reset (except reference-seed tables) failed — see above." >&2
       exit 1
     fi
@@ -514,13 +562,22 @@ if [ "$SELECT_MODE" = "setup" ]; then
 
     ref_t1=$(date +%s)
     if ! node scripts/reference-seed/cli.mjs load "$NB_REFERENCE_BUNDLE" \
-        --deployment "$CONVEX_NAME" --sports import --yes; then
+        --deployment "$ref_target" --sports import --yes; then
       echo "✗ reference seed: bundle load failed — see above. The deployment has been reset but holds no reference catalogue; do not run flows against it." >&2
       exit 1
     fi
     ref_import_s=$(( $(date +%s) - ref_t1 ))
     echo "⏱ reference seed: import took ${ref_import_s}s"
     reference_seed_summary "import seconds" "$ref_import_s"
+    if [ -n "${NB_REFERENCE_SEED_SUMMARY:-}" ] && [ -n "$ref_manifest_lines" ]; then
+      printf '%s\n' "$ref_manifest_lines" >> "$NB_REFERENCE_SEED_SUMMARY"
+    fi
+
+    # CI only: the bundle holds prod catalogue rows, so it does not outlive
+    # the step that needed it on a runner. A developer's local copy stays.
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+      rm -f "$NB_REFERENCE_BUNDLE"
+    fi
   else
     echo "── setup track: scripted reset before setup.yaml ──"
     ./e2e-baseline.sh reset
