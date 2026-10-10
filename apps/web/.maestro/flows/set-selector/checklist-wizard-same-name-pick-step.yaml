@@ -274,13 +274,16 @@ tags:
 - assertVisible:
     id: "Skip Shuya Yamada — not a person"
 
-# The counter as the pick step found it. Only the "N of M" part is kept: the
-# header appends " · K still being looked up" while any lookup runs, and
-# Create new starts one for this row.
-- copyTextFrom:
-    text: "[0-9]+ of [0-9]+ reviewed.*"
-- evalScript: '${output.REVIEWED = maestro.copiedText.split(" reviewed")[0]}'
-- evalScript: '${output.REVIEWED_AFTER_LINK = (parseInt(output.REVIEWED.split(" of ")[0], 10) + 1) + " of " + output.REVIEWED.split(" of ")[1]}'
+# ── THE COUNTER: ONLY THE DECIDED NUMBER IS EVER ASSERTED ──────────────────
+# The header reads "<decided> of <total> reviewed[ · K still being looked up]".
+# Nothing is decided until STEP 4, so <decided> is 0 here and 0 again after
+# Back to the list (R2(a) already read it), and 1 after the link. <total> is
+# NOT this flow's to pin: it GROWS while the batch's lookups land, because a
+# settled player's Wikidata career teams are staged as New Team rows. CI run
+# 38068520584 copied "0 of 221" here and read "0 of 229" ten seconds later on
+# a screen that was otherwise exactly right. So every counter read below is
+# "<decided> of [0-9]+ reviewed.*" — a full-match regex, so "0 of" cannot
+# match "10 of" — and the total and the lookup tail are left free.
 
 # ============================================================
 # STEP 2 — R2(c): CREATE NEW OPENS THE NEW PLAYER STEP, WITHOUT THE LIST
@@ -321,9 +324,9 @@ tags:
 # The footer's live region says where the operator is (a11y S3).
 - assertVisible:
     text: "Back at the list\\. 2 on file\\."
-# Nothing was recorded: the counter is where the pick step left it.
+# Nothing was recorded: still none decided (the total is free, see STEP 1).
 - assertVisible:
-    text: "${output.REVIEWED} reviewed.*"
+    text: "0 of [0-9]+ reviewed.*"
 
 # ============================================================
 # STEP 4 — R2(e): TAKE ONE, AND THE READ-BACK SAYS WHICH
@@ -331,9 +334,10 @@ tags:
 
 - tapOn:
     id: "Link to Shuya Yamada, b\\. 1852"
+# Exactly one decision: the link (the total is free, see STEP 1).
 - extendedWaitUntil:
     visible:
-      text: "${output.REVIEWED_AFTER_LINK} reviewed.*"
+      text: "1 of [0-9]+ reviewed.*"
     timeout: 7000
 - assertNotVisible:
     text: "Which Shuya Yamada is this\\?"

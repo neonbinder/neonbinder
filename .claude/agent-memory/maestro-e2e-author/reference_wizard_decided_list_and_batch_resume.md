@@ -1,6 +1,6 @@
 ---
 name: wizard-decided-list-and-batch-resume
-description: "Two entity-review wizard traps proved by CI run 34072730449: the `Decided (N)` list falls out of Maestro's hierarchy on a tall step (assert the header count instead), and a review batch outlives its flow so a red flow cascades onto every sibling sharing the set."
+description: "Entity-review wizard counter/batch traps: never pin the header TOTAL (it grows as lookups stage career teams); and two proved by CI run 34072730449: the `Decided (N)` list falls out of Maestro's hierarchy on a tall step (assert the header count instead), and a review batch outlives its flow so a red flow cascades onto every sibling sharing the set."
 metadata:
   type: reference
 ---
@@ -25,6 +25,15 @@ So this is not a simple fold rule — it depends on how tall the body above it i
 **Assert the header instead: `"<n> of [0-9]+ reviewed.*"`.** It is the wizard's
 own progress numerator, sits at the top of the dialog, is always rendered, and
 carries the exact count — so it is not a weaker claim than `Decided (n)`.
+
+## Never pin the TOTAL — it grows while the review is open
+
+`<n> of <M> reviewed`: only `<n>` is the flow's to assert. `<M>` grows while
+lookups land, because a settled player's Wikidata career teams are staged as new
+New Team rows. NEO-332 (CI run 38068520584): a flow copied `0 of 221` and read
+`0 of 229` ten seconds later on an otherwise-correct screen. Assert
+`"<n> of [0-9]+ reviewed.*"` (full-match, so `0 of` never matches `10 of`); if a
+value must be captured, keep only `match(/^[0-9]+/)`.
 
 ## The teams-first walk breaks every hard-coded decision COUNT
 
