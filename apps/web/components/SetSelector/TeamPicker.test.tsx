@@ -65,9 +65,11 @@ vi.mock("../../convex/_generated/api", () => ({
     teams: {
       getManyByIds: "teams.getManyByIds",
       // NEO-331: ONE server query finds and ranks, typed or not. The fixture
-      // answers it with `{ team, tier }` pairs built from `currentCandidates`;
-      // finding and ordering are the server's job (`teams.pickerCandidates.test.ts`),
-      // and these tests are about what the picker does with the rows it is handed.
+      // answers it with `{ team, tier }` pairs built from `currentCandidates`,
+      // matched by name the way the server matches (plus `currentAliasHits`,
+      // the exact-alias leg); the real finding and ordering are tested in
+      // `teams.pickerCandidates.test.ts`, and these tests are about what the
+      // picker does with the rows it is handed.
       pickerCandidates: "teams.pickerCandidates",
       findOrCreate: "teams.findOrCreate",
     },
@@ -85,6 +87,9 @@ vi.mock("../../convex/_generated/api", () => ({
 let queryCalls: Array<{ ref: string; args: unknown }> = [];
 let currentSelectedRows: unknown;
 let currentCandidates: unknown;
+// NEO-331: the server's exact-alias leg, keyed by the query sent. A row here
+// comes back for that query although its full name does not contain the text.
+let currentAliasHits: Record<string, unknown[]> = {};
 let currentLeagues: unknown;
 // NEO-313: backs SportTagById and the popover's SportSwitch. Most tests never
 // open the switch's list, so an empty pool by default is enough — the
@@ -101,9 +106,20 @@ vi.mock("convex/react", () => ({
     queryCalls.push({ ref, args });
     if (ref === "teams.getManyByIds") return currentSelectedRows;
     if (ref === "teams.pickerCandidates") {
-      return Array.isArray(currentCandidates)
-        ? currentCandidates.map((team) => ({ team, tier: 1 }))
+      if (!Array.isArray(currentCandidates)) return currentCandidates;
+      // The server answers a typed query with its matches only — the picker
+      // trusts that answer and does not re-filter it, so the fixture must not
+      // hand back rows the server would never return.
+      const q = (args as { query: string }).query;
+      const byName = q
+        ? currentCandidates.filter((team) =>
+            nameMatchesQuery(teamFullName(team as TeamRow), q),
+          )
         : currentCandidates;
+      const byAlias = (currentAliasHits[q] ?? []).filter(
+        (team) => !byName.includes(team),
+      );
+      return [...byName, ...byAlias].map((team) => ({ team, tier: 1 }));
     }
     if (ref === "leagues.list") return currentLeagues;
     if (ref === "selectorOptions.getSelectorOptions") return currentSports;
@@ -121,6 +137,10 @@ vi.mock("convex/react", () => ({
 
 import TeamPicker from "./TeamPicker";
 import type { Id } from "../../convex/_generated/dataModel";
+import { nameMatchesQuery } from "../../lib/entities/name-search";
+import { teamFullName } from "../../lib/teams/team-name";
+
+type TeamRow = Parameters<typeof teamFullName>[0];
 
 // NEO-96: pickers take the sport-level selectorOptions ROW ID now, not a
 // display string. These stand in for a seeded sport row.
@@ -185,6 +205,7 @@ describe("TeamPicker", () => {
     vi.clearAllMocks();
     currentSelectedRows = [];
     currentCandidates = [];
+    currentAliasHits = {};
     currentLeagues = [];
     currentSports = [];
     queryCalls = [];
@@ -299,12 +320,12 @@ describe("TeamPicker", () => {
   });
 
   // NEO-331: the ORDER belongs to the server (tier, alias, prefix, A-Z). The
-  // picker may drop rows that do not contain the typed text, but it must never
-  // re-sort the survivors: a client alphabet would undo the tiers.
+  // picker must never re-sort what it is handed: a client alphabet would undo
+  // the tiers.
   it("renders server order unchanged after filtering", () => {
     currentCandidates = [
       makeTeam("t1", "Zebra Newcastle"), // tier-1 head, though Z sorts last
-      makeTeam("t2", "Unrelated Club"), // dropped by the filter
+      makeTeam("t2", "Unrelated Club"), // not a match, so the server omits it
       makeTeam("t3", "Brand Newington Athletics"),
       makeTeam("t4", "Newt City Miners"),
       makeTeam("t5", "New York Yankees"),
@@ -343,6 +364,52 @@ describe("TeamPicker", () => {
     expect(screen.getByLabelText("Add Yankees")).toBeTruthy();
     // Filtered by the CURRENT text: a stale pool shows fewer rows, never wrong ones.
     expect(screen.queryByLabelText("Add Yellow Jackets")).toBeNull();
+    expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
+  // NEO-331: the server matched the typed query, and part of that match is
+  // the exact-alias leg (NEO-284). An alias hit's full name need not contain
+  // the text — "Aardvarks" finds "Zzz Club" — so a client name filter over
+  // the current answer dropped exactly the row the operator was looking for.
+  it("renders a row the server found by alias although its name lacks the typed text", () => {
+    const zzz = makeTeam("t9", "Zzz Club");
+    currentCandidates = [zzz, makeTeam("t1", "Yankees")];
+    currentAliasHits = { Aardvarks: [zzz] };
+    renderPicker();
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Aardvarks" },
+    });
+
+    expect(screen.getByLabelText("Add Zzz Club")).toBeTruthy();
+    expect(screen.queryByLabelText("Add Yankees")).toBeNull();
+    expect(screen.queryByText("No matches.")).toBeNull();
+    // The alias hit is a different full name, so it is not "already here":
+    // Create stays on offer and names no existing row.
+    expect(createRow()).not.toBeNull();
+    expect(createRow()!.textContent).not.toContain("Already here:");
+  });
+
+  it("still name-filters HELD alias rows while the next keystroke loads", () => {
+    const zzz = makeTeam("t9", "Zzz Club");
+    currentCandidates = [zzz];
+    currentAliasHits = { Aardvarks: [zzz] };
+    renderPicker();
+    openPopover();
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Aardvarks" },
+    });
+    expect(screen.getByLabelText("Add Zzz Club")).toBeTruthy();
+
+    currentCandidates = undefined; // "Aardvarksx" has not answered yet
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Aardvarksx" },
+    });
+
+    // A held row from an earlier query is only shown if it matches the text
+    // by name — fewer rows while loading, never wrong ones.
+    expect(screen.queryByLabelText("Add Zzz Club")).toBeNull();
     expect(screen.queryByText("Loading…")).toBeNull();
   });
 
@@ -1056,6 +1123,7 @@ describe("TeamPicker — cross-sport search switch (NEO-313)", () => {
     vi.clearAllMocks();
     currentSelectedRows = [];
     currentCandidates = [];
+    currentAliasHits = {};
     currentLeagues = [];
     currentSports = [
       { _id: SPORT_ID, value: "Baseball" },
@@ -1176,6 +1244,7 @@ describe("TeamPicker — finding past the list window", () => {
     vi.clearAllMocks();
     currentSelectedRows = [];
     currentCandidates = [];
+    currentAliasHits = {};
     currentLeagues = [];
     currentSports = [];
     queryCalls = [];

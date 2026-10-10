@@ -2003,6 +2003,22 @@ const PICKER_BROWSE_TAKE = 500;
 const PICKER_BROWSE_DEFAULT_LIMIT = 100;
 const PICKER_BROWSE_MAX_LIMIT = 100;
 /**
+ * A caller's `limit`, floored at 1 and capped at `max`; anything that is not a
+ * finite number (absent, NaN, ±Infinity) takes `fallback`.
+ *
+ * `v.number()` admits NaN, and `Math.max(1, Math.min(NaN, max))` is NaN, so a
+ * bare clamp turned a NaN limit into `.slice(0, NaN)` — an empty list, read by
+ * the picker as "no teams".
+ */
+function clampPickerLimit(
+  raw: number | undefined,
+  fallback: number,
+  max: number,
+): number {
+  const n = raw !== undefined && Number.isFinite(raw) ? raw : fallback;
+  return Math.max(1, Math.min(n, max));
+}
+/**
  * How far up from the context row to look for its year. The hierarchy is six
  * levels (sport → year → manufacturer → setName → variantType → variant), so
  * six steps reach the year from anywhere a picker is mounted.
@@ -2153,9 +2169,10 @@ export const pickerCandidates = query({
     if (!args.query.trim()) {
       // Floored and capped, for the reason `teams.search` gives: `.take()`
       // rejects a negative, and a thrown query unmounts the picker.
-      const limit = Math.max(
-        1,
-        Math.min(args.limit ?? PICKER_BROWSE_DEFAULT_LIMIT, PICKER_BROWSE_MAX_LIMIT),
+      const limit = clampPickerLimit(
+        args.limit,
+        PICKER_BROWSE_DEFAULT_LIMIT,
+        PICKER_BROWSE_MAX_LIMIT,
       );
       if (leagueId) {
         const inLeague = await ctx.db
@@ -2183,9 +2200,10 @@ export const pickerCandidates = query({
     const [reading, ...alternates] = entityNameQueryReadings(args.query);
     const term = reading.join(" ");
     if (!term) return [];
-    const limit = Math.max(
-      1,
-      Math.min(args.limit ?? PICKER_SEARCH_MAX_LIMIT, PICKER_SEARCH_MAX_LIMIT),
+    const limit = clampPickerLimit(
+      args.limit,
+      PICKER_SEARCH_MAX_LIMIT,
+      PICKER_SEARCH_MAX_LIMIT,
     );
 
     const searchLeg = async (

@@ -411,7 +411,7 @@ describe("teams.pickerCandidates — browse", () => {
     ["inside the cap", 3, 3],
     ["zero", 0, 1],
     ["negative", -5, 1],
-  ])("limit %s returns %i rows at most", async (_label, limit, expected) => {
+  ])("limit %s (%s) returns %i rows at most", async (_label, limit, expected) => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t);
     for (let i = 0; i < 120; i++) {
@@ -695,7 +695,7 @@ describe("teams.pickerCandidates — limit clamp", () => {
     ["1e9", 1e9, 25],
     ["Infinity", Infinity, 25],
     ["3", 3, 3],
-  ])("search: limit %s returns %i row(s)", async (_l, limit, expected) => {
+  ])("search: limit %s (%s) returns %i row(s)", async (_l, limit, expected) => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t);
     await seedMany(t, baseball, 30);
@@ -710,7 +710,7 @@ describe("teams.pickerCandidates — limit clamp", () => {
     ["0", 0, 1],
     ["1e9", 1e9, 100],
     ["Infinity", Infinity, 100],
-  ])("browse: limit %s returns %i row(s)", async (_l, limit, expected) => {
+  ])("browse: limit %s (%s) returns %i row(s)", async (_l, limit, expected) => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t);
     await seedMany(t, baseball, 120);
@@ -720,23 +720,25 @@ describe("teams.pickerCandidates — limit clamp", () => {
     expect(rows).toHaveLength(expected);
   });
 
-  // KNOWN GAP, pinned rather than hidden: `v.number()` admits NaN, and
-  // Math.max(1, Math.min(n, cap)) of NaN is NaN, so `.slice(0, NaN)` is `[]`.
-  // The picker never sends NaN (25 or undefined), so nothing user-facing hits
-  // it; but the clamp does not do what its comment says. When the query
-  // coerces NaN to the default, flip these two to expect the default size.
-  test("NaN limit currently returns NOTHING in search mode (gap, see comment)", async () => {
+  // `v.number()` admits NaN, and a bare Math.max(1, Math.min(n, cap)) of NaN
+  // is NaN, so `.slice(0, NaN)` answered `[]`. A non-finite limit now takes
+  // the default size.
+  test("NaN limit takes the search default (25)", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t);
-    await seedMany(t, baseball, 5);
-    expect(await pick(t, { query: "Club", sportId: baseball, limit: NaN })).toEqual([]);
+    await seedMany(t, baseball, 30);
+    expect(
+      await pick(t, { query: "Club", sportId: baseball, limit: NaN }),
+    ).toHaveLength(25);
   });
 
-  test("NaN limit currently returns NOTHING in browse mode (gap, see comment)", async () => {
+  test("NaN limit takes the browse default (100)", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t);
-    await seedMany(t, baseball, 5);
-    expect(await pick(t, { query: "", sportId: baseball, limit: NaN })).toEqual([]);
+    await seedMany(t, baseball, 120);
+    expect(
+      await pick(t, { query: "", sportId: baseball, limit: NaN }),
+    ).toHaveLength(100);
   });
 });
 

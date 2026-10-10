@@ -212,9 +212,9 @@ export default function TeamPicker({
    * `useQuery` re-keys on every keystroke (the query is an arg), so it answers
    * `undefined` until the server replies — and the popover flashed "Loading…"
    * over its rows on each character typed. Holding the previous rows is safe
-   * because the list below filters them by the CURRENT query client-side, so a
-   * stale pool can only show fewer rows, never wrong ones, until the new
-   * ranking replaces it.
+   * because the list below filters HELD rows by the CURRENT query client-side
+   * (`showingHeld`), so a stale pool can only show fewer rows, never wrong
+   * ones, until the new ranking replaces it.
    *
    * Held per sport and set, not across them: rows from the sport the operator
    * just switched away from are wrong rows, not stale ones, so a switch shows
@@ -242,6 +242,14 @@ export default function TeamPicker({
   }
   const shownRanked =
     ranked ?? (heldRanked?.key === rankKey ? heldRanked.rows : undefined);
+  /**
+   * The rows on screen are an EARLIER query's answer, held while this one
+   * loads. Only those are name-filtered below: the current query's own answer
+   * is the server's match already, and it includes rows found by an exact
+   * alias (NEO-284) whose full name does not contain the typed text — a
+   * client name filter over it would drop exactly those.
+   */
+  const showingHeld = ranked === undefined && shownRanked !== undefined;
   /**
    * One pool for everything downstream — the option rows, the exact-match
    * hint, the create offer. They must all see the same rows, or the create
@@ -389,12 +397,17 @@ export default function TeamPicker({
     //
     // NEO-331: order-preserving. The server already ranked these (tier, then
     // prefix, then A–Z); `filter` keeps that order and `slice` takes its head.
+    //
+    // The name filter runs over HELD rows only (see `showingHeld`). The
+    // current query's own answer is trusted as the server matched it — an
+    // alias hit ("Aardvarks" on "Zzz Club") does not contain the typed text,
+    // and it is the row the operator is looking for.
     const filtered = candidates
       .filter((c) => !selectedSet.has(c._id as unknown as string))
-      .filter((c) => nameMatchesQuery(teamFullName(c), q))
+      .filter((c) => !showingHeld || nameMatchesQuery(teamFullName(c), q))
       .slice(0, 8);
     return filtered;
-  }, [candidates, query, value]);
+  }, [candidates, query, value, showingHeld]);
 
   // An exact match already exists — no "create" offer, it'd just be a
   // confusing duplicate-name affordance.

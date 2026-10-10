@@ -955,6 +955,47 @@ describe("commit prelude: a pre-NEO-236 decision carrying createTeams is unchang
     // for exactly the collectors who type the city.
     expect(card!.listingTitle).toContain("San Diego Padres");
   });
+
+  test("an enrichment league that matches NO league leaves the team blank — the sport default does not step in", async () => {
+    // NEO-331: the suggestion is link-only. A Wikidata P118 label NB holds no
+    // row for mints nothing (a league needs a level only the New League step
+    // asks for), and it still counts as an answer in `leagueAnswered`, so the
+    // sport's configured default (MLB, seeded here so it HAS a row to win
+    // with) must not file the team under the top flight instead.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedTree(t);
+    const mlbId = await seedLeagueNamed(t, sportId, "Major League Baseball", "major");
+
+    await insertReviewRow(t, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      kind: "team",
+      name: "Sacramento Solons",
+      // No league half on the decision: the suggestion is all there is.
+      decision: {
+        action: "create",
+        create: { location: "Sacramento", name: "Solons" },
+      },
+      enrichment: { league: "Pacific Coast League", location: "Sacramento" },
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: variantTypeId,
+      sportId,
+      cards: [makeCard({ cardName: "Solons Team Card", teams: ["Sacramento Solons"] })],
+      batchId: BATCH,
+    });
+
+    const teams = await allTeams(t);
+    expect(teams).toHaveLength(1);
+    expect(teams[0].name).toBe("Solons");
+    expect(teams[0].leagueId).toBeUndefined();
+    expect(teams[0].leagueId).not.toBe(mlbId);
+    // And the suggestion minted nothing.
+    const leagues = await t.run(async (ctx) => ctx.db.query("leagues").collect());
+    expect(leagues.map((l) => l.name)).toEqual(["Major League Baseball"]);
+  });
 });
 
 // ===========================================================================

@@ -41,7 +41,7 @@
  * settles and then settle it afterward to prove the late result is dropped.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -1595,6 +1595,43 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
     expect(screen.getByRole("heading", { level: 3 }).textContent).toBe(
       "#1 AL Leaders ERA LL",
     );
+  });
+
+  /**
+   * NEO-331 — both surfaces that hold a TeamPicker for a card on this
+   * checklist hand it THIS checklist's row as `contextOptionId`, so the
+   * candidates rank by the set's league and year. Pinned through the args the
+   * picker's `teams.pickerCandidates` query is called with: with the quick-add
+   * form closed, the opened surface's picker is the only one mounted.
+   */
+  it("NEO-331: the card detail panel's TeamPicker ranks by THIS checklist's row (contextOptionId = variantId)", () => {
+    renderChecklist();
+    pickerArgs.length = 0;
+
+    fireEvent.click(screen.getByLabelText(/^Edit card .*Tarik Skubal/));
+
+    expect(screen.getAllByLabelText("Add team")).toHaveLength(1);
+    expect(pickerArgs.length).toBeGreaterThan(0);
+    for (const args of pickerArgs) {
+      expect(args).toMatchObject({ contextOptionId: VARIANT_ID });
+    }
+  });
+
+  it("NEO-331: the attention walker's TeamPicker ranks by THIS checklist's row (contextOptionId = variantId)", async () => {
+    renderChecklist();
+    pickerArgs.length = 0;
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /Fix cards needing attention one at a time/ }),
+    );
+    const dialog = await screen.findByRole("dialog");
+
+    // The flagged card has no team, so the walker opens on the team fixer.
+    expect(within(dialog).getAllByLabelText("Add team")).toHaveLength(1);
+    expect(pickerArgs.length).toBeGreaterThan(0);
+    for (const args of pickerArgs) {
+      expect(args).toMatchObject({ contextOptionId: VARIANT_ID });
+    }
   });
 
   it("does not open the walker on its own", () => {
