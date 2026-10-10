@@ -136,3 +136,4 @@ Non-markdown helpers: `tools/`
 - [Branch on copied button text](patterns_branch_on_copied_button_text.md) — vary a drain by step kind: copyTextFrom the guarded button + `when: true:` script; never a 2nd visibility guard
 - [NEO-331 team picker ranking](reference_neo331_team_picker_ranking.md) — 4 tiers by set league+year; zero-write proof; level pills required; no sport default, pick MLB (seed-owned row); held rows never say "No matches."
 - [Same-text search legs go stale](patterns_convex_same_text_search_legs_go_stale.md) — two search_name reads, same text, in one query: other-filter inserts never invalidate; prove via HTTP API + ws frames
+- [Unstyled launch = failed stylesheet](patterns_unstyled_launch_is_a_failed_stylesheet.md) — raw-HTML failure PNG, x=8 nodes, modal in flow at page bottom; `Search sports...` bounds fingerprint; full rerun
