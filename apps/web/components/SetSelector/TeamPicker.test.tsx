@@ -420,6 +420,89 @@ describe("TeamPicker", () => {
     expect(screen.getByText("Loading…")).toBeTruthy();
   });
 
+  // NEO-331: held rows filtered to nothing mean "not answered yet", never "no
+  // such team". Showing "No matches." there, and letting Enter open the create
+  // path, opened New Team for a team NB already had whenever an operator typed
+  // its name and pressed Enter before the server answered.
+  describe("while the rows on screen are HELD from an earlier query", () => {
+    it("says nothing rather than 'No matches.' until the current answer lands", () => {
+      currentCandidates = [makeTeam("t1", "Yankees")];
+      const { rerender, onChange } = renderPicker();
+      openPopover();
+
+      currentCandidates = undefined; // "Zzz Unknown" has not answered yet
+      fireEvent.change(screen.getByLabelText("Search teams"), {
+        target: { value: "Zzz Unknown" },
+      });
+      expect(screen.queryByLabelText("Add Yankees")).toBeNull();
+      expect(screen.queryByText("No matches.")).toBeNull();
+      expect(screen.queryByText("Loading…")).toBeNull();
+
+      currentCandidates = [makeTeam("t1", "Yankees")]; // the answer: no match
+      rerender(<TeamPicker value={[]} onChange={onChange} sportId={SPORT_ID} />);
+
+      expect(screen.getByText("No matches.")).toBeTruthy();
+    });
+
+    it("Enter on the create row does not open New Team; the landed answer's match takes the next Enter", () => {
+      currentCandidates = [makeTeam("t1", "Yankees")];
+      const { rerender, onChange } = renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      const input = screen.getByLabelText("Search teams");
+      currentCandidates = undefined; // the server has not answered "Savannah Bananas"
+      fireEvent.change(input, { target: { value: "Savannah Bananas" } });
+      // Nothing held matches, so the only row — and the highlighted one — is
+      // the create row.
+      expect(
+        screen.getByLabelText("New team Savannah Bananas").getAttribute("aria-current"),
+      ).toBe("true");
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(mockFindOrCreate).not.toHaveBeenCalled();
+
+      // The answer lands: the team exists, outside the browse window.
+      currentCandidates = [makeTeam("t1", "Yankees"), makeTeam("t7", "Savannah Bananas")];
+      rerender(<TeamPicker value={[]} onChange={onChange} sportId={SPORT_ID} />);
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      expect(onChange).toHaveBeenCalledWith([tid("t7")]);
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("once the answer lands with no match, Enter on the create row opens New Team", () => {
+      currentCandidates = [makeTeam("t1", "Yankees")];
+      const { rerender, onChange } = renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      const input = screen.getByLabelText("Search teams");
+      currentCandidates = undefined;
+      fireEvent.change(input, { target: { value: "Savannah Bananas" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      currentCandidates = [makeTeam("t1", "Yankees")];
+      rerender(<TeamPicker value={[]} onChange={onChange} sportId={SPORT_ID} />);
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      expect(screen.getByRole("dialog")).toBeTruthy();
+    });
+
+    it("a highlighted held MATCH still takes Enter", () => {
+      currentCandidates = [makeTeam("t1", "Yankees"), makeTeam("t2", "Yellow Jackets")];
+      const { onChange } = renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      const input = screen.getByLabelText("Search teams");
+      currentCandidates = undefined; // "Yank" has not answered yet
+      fireEvent.change(input, { target: { value: "Yank" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      expect(onChange).toHaveBeenCalledWith([tid("t1")]);
+    });
+  });
+
   it("clicking a candidate adds its id via onChange and clears the query", () => {
     currentCandidates = [makeTeam("t1", "New York Yankees")];
     const { onChange } = renderPicker({ value: [] });

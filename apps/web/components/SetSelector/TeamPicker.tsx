@@ -95,9 +95,11 @@ export const DEFAULT_TEAM_PICKER_LABELS: TeamPickerLabels = {
  * Keyboard contract (per `feedback_keyboard_navigation`):
  *   Tab/Shift+Tab — cycle chips, × buttons, "+ Add" trigger, popover input
  *   Enter on input — select highlighted match, or OPEN the new-team dialog
- *     when the create row is highlighted and no exact match exists. Enter
- *     inside that dialog is what creates: two presses rather than one, and
- *     the second one is where the League is answered.
+ *     when the create row is highlighted. Enter inside that dialog is what
+ *     creates: two presses rather than one, and the second one is where the
+ *     League is answered. While the rows are HELD from an earlier query
+ *     (`showingHeld`), Enter on the create row does nothing — the server has
+ *     not said yet whether the team exists.
  *   ↑/↓ on input — move highlight
  *   Esc on input — close popover without selecting
  *   Backspace on empty input — remove last chip
@@ -655,10 +657,20 @@ export default function TeamPicker({
                   if (highlightIdx < matches.length) {
                     const pick = matches[highlightIdx];
                     if (pick) addChip(pick._id);
-                  } else if (showCreateOption) {
+                  } else if (showCreateOption && !showingHeld) {
                     // NEO-236: Enter on the create row OPENS the dialog rather
                     // than writing. The team still needs a League answered, and
                     // there is nowhere in this popover to answer it.
+                    //
+                    // NEO-331: not while the rows are HELD. They are an earlier
+                    // query's answer, name-filtered, so an empty list there
+                    // means "not answered yet", not "no such team" — and an
+                    // operator who types an existing team's name and presses
+                    // Enter fast would open New Team for a team NB already
+                    // has. The press is dropped rather than queued: once the
+                    // answer lands, the row they wanted is highlighted, or the
+                    // next Enter opens the dialog. A highlighted real match
+                    // above still takes Enter, held or not.
                     openNewTeam();
                   }
                 } else if (
@@ -684,11 +696,23 @@ export default function TeamPicker({
                 Loading…
               </div>
             )}
-            {candidates && matches.length === 0 && query.trim().length > 0 && (
-              <div className="text-xs text-gray-600 dark:text-gray-400 px-2 py-1">
-                No matches.
-              </div>
-            )}
+            {/* NEO-331: "No matches." is a verdict, so only the CURRENT
+                query's answer may give it. Held rows filtered to nothing say
+                only that the answer is still on its way — and a "No matches."
+                there invited the Enter that opened New Team for a team that
+                exists. The line's height is kept with an empty, hidden twin so
+                the create row below does not jump under the pointer on every
+                keystroke of a new name. */}
+            {candidates && matches.length === 0 && query.trim().length > 0 &&
+              (showingHeld ? (
+                <div aria-hidden="true" className="text-xs px-2 py-1">
+                  {"\u00a0"}
+                </div>
+              ) : (
+                <div className="text-xs text-gray-600 dark:text-gray-400 px-2 py-1">
+                  No matches.
+                </div>
+              ))}
             {candidates && matches.length === 0 && query.trim().length === 0 && (
               <div className="text-xs text-gray-600 dark:text-gray-400 px-2 py-1">
                 Start typing a team name…

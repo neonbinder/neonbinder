@@ -13,6 +13,8 @@ import {
 import {
   // NEO-331: automatic paths link an existing league; they never create one.
   findLeagueByName,
+  // NEO-331: the picker's abbreviation fallback compares on the same reading.
+  normalizeLeagueName,
   resolveDefaultLeagueId,
   // NEO-236: the operator's own league choice, which outranks the sport default.
   resolveOperatorLeagueId,
@@ -2041,8 +2043,9 @@ function parsePickerYear(raw: string | undefined): number | undefined {
 /**
  * NEO-331 — the set context a picker ranks by: the league named on the
  * context row's `features.league`, resolved by name OR alias within the
- * SEARCHED sport ("MLB" is an alias of Major League Baseball), and the year
- * of the nearest `year`-level ancestor (the row itself included).
+ * SEARCHED sport ("MLB" is an alias of Major League Baseball) — falling back
+ * to an exactly-one `abbreviation` match (see below) — and the year of the
+ * nearest `year`-level ancestor (the row itself included).
  *
  * Resolved in the searched sport on purpose: a picker switched to another
  * sport (a football player's guest card in a baseball set) finds no league of
@@ -2054,6 +2057,7 @@ async function pickerContext(
   ctx: QueryCtx,
   contextOptionId: Id<"selectorOptions"> | undefined,
   sportId: Id<"selectorOptions"> | undefined,
+  sportLeagues: ReadonlyArray<Doc<"leagues">>,
 ): Promise<{ leagueId?: Id<"leagues">; year?: number }> {
   if (!contextOptionId) return {};
   const row = await ctx.db.get(contextOptionId);
@@ -2072,13 +2076,45 @@ async function pickerContext(
   const leagueName = row.features?.league?.trim();
   const league =
     leagueName && sportId
-      ? await findLeagueByName(ctx, { name: leagueName, sportId })
+      ? ((await findLeagueByName(ctx, { name: leagueName, sportId })) ??
+        leagueByUniqueAbbreviation(sportLeagues, leagueName))
       : null;
 
   return {
     ...(league ? { leagueId: league._id } : {}),
     ...(year !== undefined ? { year } : {}),
   };
+}
+
+/**
+ * NEO-331 — the picker's fallback when `findLeagueByName` misses: the ONE
+ * league of the sport whose `abbreviation` reads the same as `name`.
+ *
+ * `features.league` carries the sport's short form ("MLB", from
+ * SPORT_TO_LEAGUE), and a league minted through the wizard's New League step
+ * stores that short form as `abbreviation` with no alias — so on fresh data
+ * the name/alias lookup finds nothing and the set's league silently drops out
+ * of the ranking. This is read-only and scoped to the picker on purpose:
+ * `findLeagueByName` is what writers dedupe through, and widening it to
+ * abbreviations would change which row a writer links or mints.
+ *
+ * Exactly one match or nothing. Abbreviations are not unique (two leagues may
+ * both say "IL"), and taking the first of several would rank by a league the
+ * operator never named — so a tie gives no league, and tiers 1 and 3 stay
+ * empty rather than guessed.
+ */
+function leagueByUniqueAbbreviation(
+  sportLeagues: ReadonlyArray<Doc<"leagues">>,
+  name: string,
+): Doc<"leagues"> | null {
+  const wanted = normalizeLeagueName(name);
+  if (!wanted) return null;
+  const matches = sportLeagues.filter(
+    (league) =>
+      league.abbreviation !== undefined &&
+      normalizeLeagueName(league.abbreviation) === wanted,
+  );
+  return matches.length === 1 ? matches[0] : null;
 }
 
 /**
@@ -2136,22 +2172,24 @@ export const pickerCandidates = query({
     // league the row's `features.league` names and which year it sits under.
     // A non-admin's context is therefore IGNORED, not refused — the picker
     // still works, context-free, every row at tier 4.
+    // The sport's leagues, ONCE: tier 2's level check (never a `db.get` per
+    // candidate) and the context's abbreviation fallback both read them.
+    // Leagues are tens of rows per sport.
+    const sportLeagues = sportId
+      ? await ctx.db
+          .query("leagues")
+          .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+          .collect()
+      : [];
+    const levelById = new Map<string, string>();
+    for (const league of sportLeagues) levelById.set(league._id, league.level);
+
     const { leagueId, year } = await pickerContext(
       ctx,
       identity.role === "admin" ? args.contextOptionId : undefined,
       sportId,
+      sportLeagues,
     );
-
-    // The sport's leagues, ONCE, for tier 2's level check — never a
-    // `db.get` per candidate. Leagues are tens of rows per sport.
-    const levelById = new Map<string, string>();
-    if (sportId) {
-      const leagues = await ctx.db
-        .query("leagues")
-        .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
-        .collect();
-      for (const league of leagues) levelById.set(league._id, league.level);
-    }
     const rankContext = {
       ...(leagueId ? { leagueId } : {}),
       ...(year !== undefined ? { year } : {}),

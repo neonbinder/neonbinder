@@ -65,6 +65,7 @@ async function seedLeague(
   name: string,
   level: Level,
   aliases?: string[],
+  abbreviation?: string,
 ): Promise<Id<"leagues">> {
   return t.run(async (ctx) =>
     ctx.db.insert("leagues", {
@@ -73,6 +74,7 @@ async function seedLeague(
       sportId,
       level,
       ...(aliases ? { aliases } : {}),
+      ...(abbreviation ? { abbreviation } : {}),
       lastUpdated: 1,
     }),
   );
@@ -284,6 +286,97 @@ describe("teams.pickerCandidates — the set context", () => {
     const { setId } = await seedSet(t, baseball, "2024", "MLB");
 
     const rows = await pick(t, { query: "RK", contextOptionId: setId });
+
+    expect(summary(rows)).toEqual(["RK Mlb:4"]);
+  });
+});
+
+describe("teams.pickerCandidates — the abbreviation fallback", () => {
+  // Fresh data: the wizard's New League step stores the sport's short form as
+  // `abbreviation` and seeds no alias, so the name/alias lookup misses "MLB".
+  test("a league whose ABBREVIATION is 'MLB' (no alias) resolves the set's league", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major", undefined, "MLB");
+    const aaa = await seedLeague(t, baseball, "International League", "minor");
+    await seedTeam(t, baseball, "RK Z", { leagueId: mlb, yearsActive: { from: 1958 } });
+    await seedTeam(t, baseball, "RK Y", { leagueId: aaa, yearsActive: { from: 2000 } });
+    await seedTeam(t, baseball, "RK X", { leagueId: mlb, yearsActive: { from: 1900, to: 1957 } });
+    await seedTeam(t, baseball, "RK W", { yearsActive: { from: 1958 } });
+    const { setId } = await seedSet(t, baseball, "2024", "mlb");
+
+    const rows = await pick(t, { query: "RK", sportId: baseball, contextOptionId: setId });
+
+    expect(summary(rows)).toEqual(["RK Z:1", "RK Y:2", "RK X:3", "RK W:4"]);
+  });
+
+  test("the abbreviation fallback serves browse too", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major", undefined, "MLB");
+    await seedTeam(t, baseball, "AA Other", { yearsActive: { from: 1958 } });
+    await seedTeam(t, baseball, "ZZ Club", { leagueId: mlb, yearsActive: { from: 1958 } });
+    const { setId } = await seedSet(t, baseball, "2024", "MLB");
+
+    const rows = await pick(t, { query: "", sportId: baseball, contextOptionId: setId });
+
+    expect(summary(rows)).toEqual(["ZZ Club:1", "AA Other:4"]);
+  });
+
+  test("two leagues sharing the abbreviation give no league: no tier 1 or 3, never the first", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major", undefined, "MLB");
+    const other = await seedLeague(t, baseball, "Minor League Baseball", "major", undefined, "MLB");
+    await seedTeam(t, baseball, "RK Mlb", { leagueId: mlb, yearsActive: { from: 1958 } });
+    await seedTeam(t, baseball, "RK MlbOld", { leagueId: mlb, yearsActive: { from: 1900, to: 1957 } });
+    await seedTeam(t, baseball, "RK Other", { leagueId: other, yearsActive: { from: 1958 } });
+    const { setId } = await seedSet(t, baseball, "2024", "MLB");
+
+    const rows = await pick(t, { query: "RK", sportId: baseball, contextOptionId: setId });
+
+    expect(summary(rows)).toEqual(["RK Mlb:4", "RK MlbOld:4", "RK Other:4"]);
+  });
+
+  test("a name or alias match wins over another league's abbreviation", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    // Seeded first, so a lookup that took abbreviations first-come would land here.
+    const byAbbr = await seedLeague(t, baseball, "Mexican League", "major", undefined, "MLB");
+    const byAlias = await seedLeague(t, baseball, "Major League Baseball", "major", ["MLB"]);
+    await seedTeam(t, baseball, "RK Alias", { leagueId: byAlias, yearsActive: { from: 1958 } });
+    await seedTeam(t, baseball, "RK Abbr", { leagueId: byAbbr, yearsActive: { from: 1958 } });
+    const { setId } = await seedSet(t, baseball, "2024", "MLB");
+
+    const rows = await pick(t, { query: "RK", sportId: baseball, contextOptionId: setId });
+
+    expect(summary(rows)).toEqual(["RK Alias:1", "RK Abbr:4"]);
+  });
+
+  test("a league NAMED like another's abbreviation wins over that abbreviation", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    const byAbbr = await seedLeague(t, baseball, "Major League Baseball", "major", undefined, "XL");
+    const byName = await seedLeague(t, baseball, "XL", "major");
+    await seedTeam(t, baseball, "RK Named", { leagueId: byName, yearsActive: { from: 1958 } });
+    await seedTeam(t, baseball, "RK Abbr", { leagueId: byAbbr, yearsActive: { from: 1958 } });
+    const { setId } = await seedSet(t, baseball, "2024", "XL");
+
+    const rows = await pick(t, { query: "RK", sportId: baseball, contextOptionId: setId });
+
+    expect(summary(rows)).toEqual(["RK Named:1", "RK Abbr:4"]);
+  });
+
+  test("another sport's league with the abbreviation is never consulted", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    const football = await seedSport(t, "Football", "FB");
+    await seedLeague(t, football, "Made-up League Ball", "major", undefined, "MLB");
+    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major");
+    await seedTeam(t, baseball, "RK Mlb", { leagueId: mlb, yearsActive: { from: 1958 } });
+    const { setId } = await seedSet(t, baseball, "2024", "MLB");
+
+    const rows = await pick(t, { query: "RK", sportId: baseball, contextOptionId: setId });
 
     expect(summary(rows)).toEqual(["RK Mlb:4"]);
   });
