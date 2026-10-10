@@ -78,3 +78,8 @@ ds-bundle/
 .design-sync/learnings/
 .design-sync/node_modules
 .vitest-results.json
+
+# NEO-330 reference-seed bundles and exports hold prod catalogue rows; they
+# live in a private bucket and are never committed.
+/scripts/reference-seed/**/*.zip
+/scripts/reference-seed/**/*.jsonl

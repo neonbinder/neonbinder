@@ -209,6 +209,15 @@ jobs:
     if: always() && needs.setup.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # NEO-330: id-token:write lets this job mint a WIF token to read the private
+    # reference-seed bundle. A job-level block REPLACES the workflow-level one,
+    # so the existing grants are repeated. Callers must grant id-token:write too
+    # (a called workflow cannot exceed its caller): see pr-pipeline.yml `e2e:`.
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -336,6 +345,45 @@ jobs:
             echo "- Convex preview \`NEONBINDER_ENRICHMENT_FIXTURES\` = \`${got}\`";
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # NEO-330 (D3/D7): the seed loads a private reference-seed bundle from a
+      # DEV-project bucket. Fail loudly when any input is missing (fork PRs get
+      # no secrets): never skip silently, a skipped load would seed nothing.
+      - name: Require reference-seed inputs
+        env:
+          REFERENCE_SEED_URI: ${{ vars.NEONBINDER_REFERENCE_SEED_URI }}
+          WIF_PROVIDER: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          WIF_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+        run: |
+          if [ -z "${REFERENCE_SEED_URI:-}" ]; then
+            echo "::error::Repo variable NEONBINDER_REFERENCE_SEED_URI is not set. The E2E seed needs the reference-seed bundle location."
+            exit 1
+          fi
+          if [ -z "${WIF_PROVIDER:-}" ] || [ -z "${WIF_SERVICE_ACCOUNT:-}" ]; then
+            echo "::error::GCP_WIF_PROVIDER_DEV / GCP_SERVICE_ACCOUNT_DEPLOYER_DEV are not available to this run (fork PR or missing secrets). The E2E seed cannot fetch the reference-seed bundle."
+            exit 1
+          fi
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Download reference-seed bundle
+        env:
+          REFERENCE_SEED_URI: ${{ vars.NEONBINDER_REFERENCE_SEED_URI }}
+        run: |
+          start=$(date +%s)
+          gcloud storage cp "$REFERENCE_SEED_URI" "$RUNNER_TEMP/reference-bundle.zip"
+          secs=$(( $(date +%s) - start ))
+          echo "NB_REFERENCE_BUNDLE=$RUNNER_TEMP/reference-bundle.zip" >> "$GITHUB_ENV"
+          echo "NB_REFERENCE_SEED_SUMMARY=$RUNNER_TEMP/reference-seed-summary.txt" >> "$GITHUB_ENV"
+          {
+            echo "### Reference seed (NEO-330)"
+            echo "- Bundle download: ${secs}s"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Seed global baseline (scripted reset, then setup track worker 0)
         env:
           APP_URL: http://localhost:3000
@@ -378,7 +426,18 @@ jobs:
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
+          seed_start=$(date +%s)
           npm run test:e2e -- setup
+          # Step wall-clock (reset + import + setup flow) for the summary. The
+          # harness may also write plain "label: value" lines (counts and sport
+          # names only) to $NB_REFERENCE_SEED_SUMMARY; they are appended
+          # verbatim when present, nothing is parsed from its log output.
+          {
+            echo "- Seed step wall-clock: $(( $(date +%s) - seed_start ))s"
+            if [ -s "${NB_REFERENCE_SEED_SUMMARY:-}" ]; then
+              sed 's/^/- /' "$NB_REFERENCE_SEED_SUMMARY"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # NEO-289: report how much of the seed's name set the fixture recording
       # actually covered, without blocking the run on it. `continue-on-error`

@@ -468,9 +468,63 @@ fi
 # CI-vs-interactive confirmation gate are all e2e-baseline.sh's own job — see
 # that script. Runs in CI and locally alike; this is the single entry point
 # both go through, so they can't drift.
+#
+# NEO-330 — with NB_REFERENCE_BUNDLE set (a local path to a reference-seed
+# bundle zip; CI downloads it and exports this), the slot becomes two steps:
+# a reset that leaves the eight reference-seed tables alone, then the bundle's
+# `convex import --replace`, which IS the clear for those eight and loads
+# prod's reference catalogue in one atomic replace. Both steps target
+# CONVEX_NAME explicitly, so they can never disagree about the deployment.
+# Either failing fails the run: a reset with no import after it leaves the
+# previous run's reference rows behind, which is not a baseline. Unset, the
+# slot is the full reset exactly as before.
+#
+# NB_REFERENCE_SEED_SUMMARY (CI only): a file path. When set, each step's
+# wall-clock seconds are appended as `label: value` lines, which the workflow
+# copies verbatim into the step summary. Numbers only — never a row, a
+# bundle path or a deployment name.
+reference_seed_summary() {
+  if [ -n "${NB_REFERENCE_SEED_SUMMARY:-}" ]; then
+    printf '%s: %s\n' "$1" "$2" >> "$NB_REFERENCE_SEED_SUMMARY"
+  fi
+}
+
 if [ "$SELECT_MODE" = "setup" ]; then
-  echo "── setup track: scripted reset before setup.yaml ──"
-  ./e2e-baseline.sh reset
+  if [ -n "${NB_REFERENCE_BUNDLE:-}" ]; then
+    echo "── setup track: reference seed before setup.yaml (NEO-330) ──"
+    # Check everything BEFORE the reset, so a missing bundle or target fails
+    # with the deployment untouched.
+    if [ ! -f "$NB_REFERENCE_BUNDLE" ]; then
+      echo "✗ NB_REFERENCE_BUNDLE is set but is not a file — refusing to reset without a bundle to load after it." >&2
+      exit 1
+    fi
+    if [ -z "${CONVEX_NAME:-}" ]; then
+      echo "✗ NB_REFERENCE_BUNDLE is set but CONVEX_NAME is not — the reference-seed load needs an explicit deployment. Set CONVEX_NAME to the target deployment." >&2
+      exit 1
+    fi
+
+    ref_t0=$(date +%s)
+    if ! ./e2e-baseline.sh reset --except-reference-seed --deployment "$CONVEX_NAME"; then
+      echo "✗ reference seed: reset (except reference-seed tables) failed — see above." >&2
+      exit 1
+    fi
+    ref_reset_s=$(( $(date +%s) - ref_t0 ))
+    echo "⏱ reference seed: reset took ${ref_reset_s}s"
+    reference_seed_summary "reset seconds" "$ref_reset_s"
+
+    ref_t1=$(date +%s)
+    if ! node scripts/reference-seed/cli.mjs load "$NB_REFERENCE_BUNDLE" \
+        --deployment "$CONVEX_NAME" --sports import --yes; then
+      echo "✗ reference seed: bundle load failed — see above. The deployment has been reset but holds no reference catalogue; do not run flows against it." >&2
+      exit 1
+    fi
+    ref_import_s=$(( $(date +%s) - ref_t1 ))
+    echo "⏱ reference seed: import took ${ref_import_s}s"
+    reference_seed_summary "import seconds" "$ref_import_s"
+  else
+    echo "── setup track: scripted reset before setup.yaml ──"
+    ./e2e-baseline.sh reset
+  fi
 fi
 
 # ─── Worker runner ──────────────────────────────────────────────────────────
