@@ -8156,7 +8156,7 @@ type SetBuilderResetScope = "all" | "exceptReferenceSeed";
  * replaces, which `scope: "exceptReferenceSeed"` leaves for it. Keep in step
  * with the bundle's table list in `scripts/reference-seed/`.
  */
-const REFERENCE_SEED_TABLES: ReadonlySet<keyof SetBuilderResetResult> =
+export const REFERENCE_SEED_TABLES: ReadonlySet<keyof SetBuilderResetResult> =
   new Set<keyof SetBuilderResetResult>([
     "selectorOptionsDeleted",
     "leaguesDeleted",

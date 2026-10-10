@@ -859,3 +859,209 @@ describe("NEO-313: the reset also drains cardPlayerLinks and playerSports", () =
     expect(after).toEqual({ cardPlayerLinks: 0, playerSports: 0 });
   });
 });
+
+/**
+ * NEO-330 — `scope: "exceptReferenceSeed"`.
+ *
+ * The E2E seed follows this reset with a `convex import --replace` of the
+ * eight reference tables (selectorOptions, leagues, franchises, teams,
+ * teamAliases, players, playerAliases, playerSports), which IS their clear.
+ * So the scoped reset must leave those eight alone and still drain every table
+ * that points INTO them; a dependant left behind would hold ids of rows the
+ * import is about to replace.
+ */
+describe("NEO-330: scope exceptReferenceSeed", () => {
+  const REFERENCE = [
+    "selectorOptions",
+    "leagues",
+    "franchises",
+    "teams",
+    "teamAliases",
+    "players",
+    "playerAliases",
+    "playerSports",
+  ] as const;
+  const DEPENDANTS = [
+    "slSetReviews",
+    "cardPlayerLinks",
+    "cardChecklist",
+    "cardCrossListings",
+    "entityReviewQueue",
+    "checklistCandidates",
+  ] as const;
+
+  const runScoped = (
+    t: ReturnType<typeof convexTest>,
+    scope: "all" | "exceptReferenceSeed",
+  ) =>
+    t.action(internal.selectorOptions.resetSetBuilderDataFromCli, {
+      confirm: "RESET" as const,
+      scope,
+    });
+
+  /** Existing seed, plus the reference tables it leaves empty and cardPlayerLinks. */
+  async function seedAll(t: ReturnType<typeof convexTest>) {
+    const { sportId } = await seedEveryDrainedTable(t);
+    await t.run(async (ctx) => {
+      const team = (await ctx.db.query("teams").first())!;
+      const player = (await ctx.db.query("players").first())!;
+      const card = (await ctx.db.query("cardChecklist").first())!;
+      await ctx.db.insert("teamAliases", {
+        teamId: team._id,
+        sportId,
+        aliasNormalized: "bombers",
+      });
+      await ctx.db.insert("playerAliases", {
+        playerId: player._id,
+        sportId,
+        aliasNormalized: "a",
+      });
+      await ctx.db.insert("playerSports", {
+        playerId: player._id,
+        sportId,
+        nameNormalized: player.nameNormalized,
+      });
+      await ctx.db.insert("cardPlayerLinks", {
+        cardChecklistId: card._id,
+        playerId: player._id,
+        sportId,
+      });
+    });
+  }
+
+  /** Every row id per table, so "untouched" means the same documents, not the same count. */
+  const idsOf = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => {
+      const out: Record<string, string[]> = {};
+      for (const table of [...REFERENCE, ...DEPENDANTS]) {
+        out[table] = (await ctx.db.query(table).collect())
+          .map((r) => r._id as string)
+          .sort();
+      }
+      return out;
+    });
+
+  test("leaves all eight reference tables' rows untouched and drains every dependant", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedAll(t);
+    const before = await idsOf(t);
+    for (const table of REFERENCE) expect(before[table].length).toBeGreaterThan(0);
+    for (const table of DEPENDANTS) expect(before[table].length).toBeGreaterThan(0);
+
+    const result = await runScoped(t, "exceptReferenceSeed");
+
+    expect(result.complete).toBe(true);
+    const after = await idsOf(t);
+    for (const table of REFERENCE) expect(after[table]).toEqual(before[table]);
+    for (const table of DEPENDANTS) expect(after[table]).toEqual([]);
+  });
+
+  test("reports 0 for each skipped table and the real count for each drained one", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedAll(t);
+
+    expect(await runScoped(t, "exceptReferenceSeed")).toEqual({
+      slSetReviewsDeleted: 2,
+      selectorOptionsDeleted: 0,
+      cardPlayerLinksDeleted: 1,
+      cardChecklistDeleted: 5,
+      crossListingsDeleted: 6,
+      entityReviewQueueDeleted: 7,
+      checklistCandidatesDeleted: 8,
+      playerSportsDeleted: 0,
+      playersDeleted: 0,
+      playerAliasesDeleted: 0,
+      teamsDeleted: 0,
+      teamAliasesDeleted: 0,
+      franchisesDeleted: 0,
+      leaguesDeleted: 0,
+      complete: true,
+    });
+  });
+
+  test("a second scoped run is a no-op that still completes", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedAll(t);
+    await runScoped(t, "exceptReferenceSeed");
+    const afterFirst = await idsOf(t);
+
+    const second = await runScoped(t, "exceptReferenceSeed");
+
+    expect(second.complete).toBe(true);
+    expect(second.cardChecklistDeleted).toBe(0);
+    expect(await idsOf(t)).toEqual(afterFirst);
+  });
+
+  test("under a zero budget it still resumes to complete without touching the reference tables", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    vi.stubEnv("RESET_TIME_BUDGET_MS", "0");
+    const t = convexTest(schema, modules);
+    await seedAll(t);
+    const before = await idsOf(t);
+
+    let complete = false;
+    let passes = 0;
+    while (!complete && passes < 20) {
+      passes += 1;
+      complete = (await runScoped(t, "exceptReferenceSeed")).complete;
+    }
+
+    expect(complete).toBe(true);
+    const after = await idsOf(t);
+    for (const table of REFERENCE) expect(after[table]).toEqual(before[table]);
+    for (const table of DEPENDANTS) expect(after[table]).toEqual([]);
+  });
+
+  test("the scoped run reports complete once the dependants are gone, not after visiting skipped tables", async () => {
+    // moreWork is measured over the filtered steps: with a zero budget the
+    // pass that empties the last drained dependant must return complete:true.
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    vi.stubEnv("RESET_TIME_BUDGET_MS", "0");
+    const t = convexTest(schema, modules);
+    await seedAll(t);
+
+    const results = [];
+    for (let i = 0; i < 20; i += 1) {
+      const r = await runScoped(t, "exceptReferenceSeed");
+      results.push(r);
+      if (r.complete) break;
+    }
+
+    expect(results.at(-1)!.complete).toBe(true);
+    // 6 dependants hold rows, so it takes at most 6 passes, never the 14 the
+    // unscoped reset needs; a loop still counting skipped tables would not
+    // finish early here.
+    expect(results.length).toBeLessThanOrEqual(DEPENDANTS.length);
+  });
+
+  test("scope \"all\" drains every table, exactly like omitting scope", async () => {
+    vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
+    const t = convexTest(schema, modules);
+    await seedAll(t);
+
+    const result = await runScoped(t, "all");
+
+    expect(result.complete).toBe(true);
+    expect(result.selectorOptionsDeleted).toBe(3);
+    expect(result.teamAliasesDeleted).toBe(1);
+    expect(result.playerAliasesDeleted).toBe(1);
+    expect(result.playerSportsDeleted).toBe(1);
+    const after = await idsOf(t);
+    for (const table of [...REFERENCE, ...DEPENDANTS]) expect(after[table]).toEqual([]);
+  });
+
+  test("an unarmed deployment still refuses the scoped reset and deletes nothing", async () => {
+    const t = convexTest(schema, modules);
+    await seedAll(t);
+    const before = await idsOf(t);
+
+    await expect(runScoped(t, "exceptReferenceSeed")).rejects.toThrow(
+      /ALLOW_RESET_SET_BUILDER_DATA/,
+    );
+
+    expect(await idsOf(t)).toEqual(before);
+  });
+});
