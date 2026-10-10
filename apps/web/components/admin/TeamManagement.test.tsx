@@ -52,6 +52,10 @@ vi.mock("../../convex/_generated/api", () => ({
   api: {
     teams: {
       listForManagement: "teams.listForManagement",
+      // NEO-330 — the typed filter's server answer, and the open team read by
+      // id (a `?team=` link, a search result, or the NAME_TAKEN alert's row).
+      searchForManagement: "teams.searchForManagement",
+      getByIdParam: "teams.getByIdParam",
       saveTeamFields: "teams.saveTeamFields",
       enrichFromWikidata: "teams.enrichFromWikidata",
       // NEO-284 — "who else in this sport already answers to one of these
@@ -84,6 +88,15 @@ vi.mock("../../convex/_generated/api", () => ({
  * empty array) the same, rendering nothing.
  */
 let sharedAliases: unknown;
+
+/**
+ * NEO-330 — what `teams.searchForManagement` answers. `undefined` (still
+ * loading) unless a test sets it, which is the state every pre-NEO-330 test
+ * runs in: the screen filters the loaded window until the server answers.
+ */
+let searchAnswer: unknown;
+/** Every argument set `teams.searchForManagement` was subscribed with. */
+let searchCalls: unknown[];
 
 const SPORTS = [
   { _id: "sport-baseball", _creationTime: 0, level: "sport", value: "Baseball" },
@@ -120,6 +133,13 @@ const FRANCHISES = [
  * for them.
  */
 let currentTeams: Array<Record<string, unknown>>;
+/**
+ * NEO-330 — teams the deployment HAS but `listForManagement`'s capped window
+ * does not return: reachable only by `getByIdParam` and the server search.
+ */
+let offWindowTeams: Array<Record<string, unknown>>;
+/** NEO-330 — `listForManagement`'s `truncated` flag. */
+let listTruncated: boolean;
 
 const TEAMS = [
   {
@@ -239,7 +259,17 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
     if (ref === "teams.listForManagement") {
-      return { teams: currentTeams, truncated: false };
+      return { teams: currentTeams, truncated: listTruncated };
+    }
+    if (ref === "teams.searchForManagement") {
+      searchCalls.push(args);
+      return searchAnswer;
+    }
+    if (ref === "teams.getByIdParam") {
+      const id = (args as { id: string }).id;
+      return (
+        [...currentTeams, ...offWindowTeams].find((t) => t._id === id) ?? null
+      );
     }
     if (ref === "leagues.list") return LEAGUES;
     if (ref === "franchises.list") {
@@ -259,7 +289,11 @@ vi.mock("convex/react", () => ({
   useAction: () => vi.fn(),
 }));
 
-import TeamManagement from "./TeamManagement";
+import TeamManagement, {
+  resolveSelectedTeam,
+  teamCounterAnnouncement,
+  teamCounterSentence,
+} from "./TeamManagement";
 
 // The URL is the thing under test in half of these, so it is rendered.
 function LocationProbe() {
@@ -276,6 +310,19 @@ function renderAt(entry: string) {
 }
 
 const row = (name: string) => screen.getByRole("button", { name: new RegExp(name) });
+
+/**
+ * NEO-330 — the VISIBLE counter. The sr-only status line can say the very same
+ * sentence ("5 teams"), so the counter is the one counter-shaped line that is
+ * not the status region.
+ */
+const counter = () => {
+  const lines = screen
+    .getAllByText(/^[\d,]+\+? (teams?|match(es)?)( · [\d,]+ need attention)?$/)
+    .filter((el) => !el.classList.contains("sr-only"));
+  expect(lines).toHaveLength(1);
+  return lines[0];
+};
 
 /** A select by id — "League" labels two of them, so a label lookup is ambiguous. */
 const select = (id: string) =>
@@ -295,7 +342,11 @@ beforeEach(() => {
     .mockResolvedValue({ id: "f-new", created: true });
   franchiseRows = FRANCHISES;
   currentTeams = TEAMS;
+  offWindowTeams = [];
+  listTruncated = false;
   sharedAliases = undefined;
+  searchAnswer = undefined;
+  searchCalls = [];
 });
 
 /**
@@ -463,8 +514,12 @@ describe("TeamManagement — team aliases (NEO-284)", () => {
    * sentence, never one per keystroke.
    */
   describe("the shared-alias note", () => {
+    // Scoped to the detail panel: NEO-330 gave the screen's counter a status
+    // region of its own, outside the panel.
+    const panel = () =>
+      screen.getByRole("button", { name: "Save" }).closest("div.rounded-lg")! as HTMLElement;
     const status = () =>
-      screen.getByRole("status", { name: "" }) as HTMLElement;
+      within(panel()).getByRole("status", { name: "" }) as HTMLElement;
     const hit = (alias: string, name: string) => ({ alias, name });
     const sentence = (name: string, alias: string) =>
       `${name} also answers to “${alias}”. Cards will ask which one when the years don't decide.`;
@@ -479,7 +534,7 @@ describe("TeamManagement — team aliases (NEO-284)", () => {
     it("the live region is mounted from the first render, empty, and the visible note is not itself a live region", () => {
       renderAt("/admin/teams?team=t-yankees");
       // Exactly one status region in the panel, present before any note.
-      const regions = screen.getAllByRole("status");
+      const regions = within(panel()).getAllByRole("status");
       expect(regions).toHaveLength(1);
       expect(regions[0].textContent).toBe("");
 
@@ -490,7 +545,7 @@ describe("TeamManagement — team aliases (NEO-284)", () => {
       expect(visible.getAttribute("role")).toBeNull();
       expect(visible.getAttribute("aria-live")).toBeNull();
       // Synchronous for the eyes, silent for the ear until it settles.
-      expect(screen.getAllByRole("status")).toHaveLength(1);
+      expect(within(panel()).getAllByRole("status")).toHaveLength(1);
       expect(status().textContent).toBe("");
     });
 
@@ -1623,5 +1678,394 @@ describe("TeamManagement — a row's era", () => {
       "Winnipeg Jets · 1972–1996",
       "Winnipeg Jets · 2011–present",
     ]);
+  });
+});
+
+/**
+ * NEO-330 — every team reachable, not just the ones in the window.
+ *
+ * `listForManagement` returns a capped window (2000 rows, newest first) of a
+ * table several times that size. The screen used to filter that window in the
+ * browser and look `?team=` ids up in it, so a team outside it could never be
+ * found or opened. These pin the three ways out of the window: a typed filter
+ * answered by the server, a link read by id, and a search result opened by
+ * click — plus the counter that says which of the two lists it is counting.
+ */
+describe("TeamManagement — teams outside the list's window (NEO-330)", () => {
+  /** A team the deployment has and the capped window does not return. */
+  const EXPOS = {
+    _id: "t-expos",
+    _creationTime: 0,
+    name: "Expos",
+    location: "Montreal",
+    nameNormalized: "expos montreal",
+    sportId: "sport-baseball",
+    colors: { primary: "#003087" },
+  };
+
+
+  it("asks the server once two characters are typed, and lists its answer", async () => {
+    offWindowTeams = [EXPOS];
+    searchAnswer = { teams: [EXPOS], truncated: false };
+    renderAt("/admin/teams");
+
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "Expos" },
+    });
+
+    // The window has no Expos; only the server's answer can put the row here.
+    expect(await screen.findByRole("button", { name: "Montreal Expos" })).toBeTruthy();
+    expect(searchCalls).toContainEqual({ query: "Expos" });
+    expect(counter().textContent).toBe("1 match");
+  });
+
+  it("keeps filtering the loaded list until the server has answered the text in the box", () => {
+    // `searchAnswer` stays undefined: the debounce has not fired, or the round
+    // trip is in flight. The list must not blank to "No teams match".
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "seattle" },
+    });
+
+    expect(row("Seattle Mariners")).toBeTruthy();
+    expect(screen.queryByText("No teams match that filter.")).toBeNull();
+    // Attention is counted over the matches the number names, and the
+    // Mariners have their colours — so no suffix.
+    expect(counter().textContent).toBe("1 match");
+  });
+
+  it("does not ask the server for a single character", async () => {
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "s" },
+    });
+    // Past the debounce, and still nothing subscribed.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(searchCalls).toEqual([]);
+  });
+
+  it("sends the league filter with the search, so the limit is not spent on other leagues", async () => {
+    searchAnswer = { teams: [], truncated: false };
+    renderAt("/admin/teams?league=l-mlb");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "new" },
+    });
+    await waitFor(() =>
+      expect(searchCalls).toContainEqual({ query: "new", leagueId: "l-mlb" }),
+    );
+  });
+
+  it("opens a search result that is outside the window", async () => {
+    offWindowTeams = [EXPOS];
+    searchAnswer = { teams: [EXPOS], truncated: false };
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "Expos" },
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Montreal Expos" }));
+
+    expect(screen.getByLabelText("Name")).toHaveProperty("value", "Expos");
+    expect(screen.getByLabelText("Location")).toHaveProperty("value", "Montreal");
+    expect(screen.getByTestId("search").textContent).toBe("?team=t-expos");
+  });
+
+  it("follows a ?team link to a team outside the window and opens its panel", () => {
+    offWindowTeams = [EXPOS];
+    renderAt("/admin/teams?team=t-expos");
+
+    // No row to highlight — the window does not hold it — but the panel opens.
+    expect(screen.getByLabelText("Name")).toHaveProperty("value", "Expos");
+    expect(screen.getByLabelText("Location")).toHaveProperty("value", "Montreal");
+  });
+
+  it("gives a bare count on a truncated window — no 'of N', no truncation note", () => {
+    listTruncated = true;
+    renderAt("/admin/teams");
+    // Three fixtures have no colours.
+    expect(counter().textContent).toBe("5 teams · 3 need attention");
+    // The "type to search" hint lives in the filter's placeholder.
+    expect(
+      screen.getByLabelText("Filter teams").getAttribute("placeholder"),
+    ).toBe("Start typing a team name…");
+  });
+
+  it("counts attention over the rows the number names, not the whole window", () => {
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "new york" },
+    });
+    // The Yankees have colours, the New York Giants do not: one of the two
+    // matches, not the three uncoloured teams in the window.
+    expect(counter().textContent).toBe("2 matches · 1 need attention");
+  });
+
+  it("says when the server's matches ran past its limit", async () => {
+    searchAnswer = { teams: [EXPOS], truncated: true };
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "ex" },
+    });
+    await waitFor(() =>
+      expect(counter().textContent).toBe("1+ matches"),
+    );
+  });
+
+  it("counts attention over the matches, not the window, once the server answers", async () => {
+    const UNCOLOURED = { ...EXPOS, _id: "t-expos-2", colors: undefined, yearsActive: { from: 1969 } };
+    searchAnswer = { teams: [EXPOS, UNCOLOURED], truncated: false };
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "expos" },
+    });
+    await waitFor(() =>
+      expect(counter().textContent).toBe("2 matches · 1 need attention"),
+    );
+  });
+});
+
+/**
+ * NEO-330 audit — what the counter says to a screen reader, what the list says
+ * while a search is in flight, the counter's own line, and the panel not
+ * blinking on a followed link.
+ */
+describe("TeamManagement — the counter, announced and held still (NEO-330)", () => {
+  const EXPOS = {
+    _id: "t-expos",
+    _creationTime: 0,
+    name: "Expos",
+    location: "Montreal",
+    nameNormalized: "expos montreal",
+    sportId: "sport-baseball",
+    colors: { primary: "#003087" },
+  };
+
+  const status = () => {
+    const regions = screen
+      .getAllByRole("status")
+      .filter((el) => el.classList.contains("sr-only"));
+    expect(regions).toHaveLength(1);
+    return regions[0];
+  };
+
+  it("is a status region from the first render, and the visible counter is not live", () => {
+    renderAt("/admin/teams");
+    // Mounted with the screen, holding a settled sentence — no need-attention.
+    expect(status().textContent).toBe("5 teams");
+    expect(counter().getAttribute("role")).toBeNull();
+    expect(counter().getAttribute("aria-live")).toBeNull();
+  });
+
+  it("holds the last settled sentence while the server works, then says its answer", async () => {
+    searchAnswer = { teams: [EXPOS], truncated: false };
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "expos" },
+    });
+    // Before the debounce: the interim browser-side count is NOT announced.
+    expect(status().textContent).toBe("5 teams");
+    await waitFor(() => expect(status().textContent).toBe("1 match"));
+  });
+
+  it("announces a truncated answer as 'N+ matches'", async () => {
+    searchAnswer = { teams: [EXPOS], truncated: true };
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "ex" },
+    });
+    await waitFor(() =>
+      expect(status().textContent).toBe("1+ matches"),
+    );
+  });
+
+  it("says Searching… — not 'No teams match' — until the server answers an empty window", async () => {
+    searchAnswer = { teams: [], truncated: false };
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "zzzznotateam" },
+    });
+    // Nothing in the window matches and the server has not been asked yet.
+    expect(screen.getByText("Searching…")).toBeTruthy();
+    expect(screen.queryByText("No teams match that filter.")).toBeNull();
+
+    // The server's answer is the one that may say "none".
+    expect(await screen.findByText("No teams match that filter.")).toBeTruthy();
+    expect(screen.queryByText("Searching…")).toBeNull();
+    expect(status().textContent).toBe("0 matches");
+    expect(counter().textContent).toBe("0 matches");
+  });
+
+  it("does not say Searching… below two characters", () => {
+    renderAt("/admin/teams");
+    fireEvent.change(screen.getByLabelText("Filter teams"), {
+      target: { value: "z" },
+    });
+    expect(screen.getByText("No teams match that filter.")).toBeTruthy();
+    expect(screen.queryByText("Searching…")).toBeNull();
+  });
+
+  it("gives the counter a line of its own, so its length cannot re-wrap the fields", () => {
+    // `basis-full` in the wrapping filter row is the whole fix; pinned because
+    // happy-dom has no layout to measure the shift with.
+    renderAt("/admin/teams");
+    expect(counter().classList.contains("basis-full")).toBe(true);
+    expect(counter().className).not.toMatch(/min-w-/);
+  });
+});
+
+describe("teamCounterSentence (NEO-330)", () => {
+  it("is a bare count of teams with nothing typed", () => {
+    expect(teamCounterSentence({ typed: "", matched: 2000, serverTruncated: false })).toBe(
+      "2,000 teams",
+    );
+    expect(teamCounterSentence({ typed: "", matched: 1, serverTruncated: false })).toBe(
+      "1 team",
+    );
+    expect(teamCounterSentence({ typed: "", matched: 0, serverTruncated: false })).toBe(
+      "0 teams",
+    );
+  });
+
+  it("counts matches once anything is typed, local or server", () => {
+    expect(teamCounterSentence({ typed: "s", matched: 12, serverTruncated: false })).toBe(
+      "12 matches",
+    );
+    expect(teamCounterSentence({ typed: "ex", matched: 1, serverTruncated: false })).toBe(
+      "1 match",
+    );
+    expect(teamCounterSentence({ typed: "ex", matched: 0, serverTruncated: false })).toBe(
+      "0 matches",
+    );
+    expect(
+      teamCounterSentence({ typed: "new", matched: 1234, serverTruncated: false }),
+    ).toBe("1,234 matches");
+  });
+
+  it("says N+ when the server's answer hit its limit", () => {
+    expect(teamCounterSentence({ typed: "new", matched: 50, serverTruncated: true })).toBe(
+      "50+ matches",
+    );
+  });
+});
+
+describe("teamCounterAnnouncement (NEO-330)", () => {
+  const base = {
+    typed: "",
+    matched: 5,
+    answered: false,
+    serverTruncated: false,
+  };
+
+  it("says nothing new while a typed filter waits on the server", () => {
+    expect(teamCounterAnnouncement({ ...base, typed: "ex" })).toBeNull();
+  });
+
+  it("speaks the list below two characters", () => {
+    expect(teamCounterAnnouncement(base)).toBe("5 teams");
+    expect(teamCounterAnnouncement({ ...base, matched: 2000 })).toBe("2,000 teams");
+    expect(teamCounterAnnouncement({ ...base, typed: "s", matched: 1 })).toBe("1 match");
+    expect(teamCounterAnnouncement({ ...base, typed: "s", matched: 0 })).toBe("0 matches");
+  });
+
+  it("speaks the server's answer from two characters", () => {
+    const answered = { ...base, typed: "ex", answered: true };
+    expect(teamCounterAnnouncement({ ...answered, matched: 12 })).toBe("12 matches");
+    expect(teamCounterAnnouncement({ ...answered, matched: 0 })).toBe("0 matches");
+    expect(
+      teamCounterAnnouncement({ ...answered, matched: 50, serverTruncated: true }),
+    ).toBe("50+ matches");
+  });
+
+  it("never carries an 'of N', a truncation note or the attention count", () => {
+    const samples = [
+      teamCounterAnnouncement(base),
+      teamCounterAnnouncement({ ...base, matched: 2000 }),
+      teamCounterAnnouncement({ ...base, typed: "s", matched: 3 }),
+      teamCounterAnnouncement({ ...base, typed: "ex", answered: true, matched: 3 }),
+      teamCounterAnnouncement({ ...base, typed: "ex", answered: true, matched: 0 }),
+      teamCounterAnnouncement({
+        ...base,
+        typed: "ex",
+        answered: true,
+        matched: 50,
+        serverTruncated: true,
+      }),
+    ];
+    for (const sample of samples) {
+      expect(sample).not.toBeNull();
+      expect(sample).not.toMatch(/of /);
+      expect(sample).not.toMatch(/truncated|type to search|keep typing/);
+      expect(sample).not.toMatch(/need attention/);
+      expect(sample).not.toBe("No teams match that filter.");
+    }
+  });
+});
+
+describe("resolveSelectedTeam (NEO-330)", () => {
+  const team = (id: string) => ({ _id: id }) as unknown as Parameters<
+    typeof resolveSelectedTeam
+  >[0]["selectedOnScreen"] & object;
+
+  it("is nothing when nothing is selected", () => {
+    expect(
+      resolveSelectedTeam({
+        selectedId: null,
+        selectedById: undefined,
+        selectedOnScreen: null,
+        linkedTeam: team("t-1"),
+      }),
+    ).toBeNull();
+  });
+
+  it("trusts the by-id read once it answers, including a team that is gone", () => {
+    const fresh = team("t-1");
+    expect(
+      resolveSelectedTeam({
+        selectedId: "t-1" as never,
+        selectedById: fresh,
+        selectedOnScreen: team("t-1"),
+        linkedTeam: undefined,
+      }),
+    ).toBe(fresh);
+    expect(
+      resolveSelectedTeam({
+        selectedId: "t-1" as never,
+        selectedById: null,
+        selectedOnScreen: team("t-1"),
+        linkedTeam: undefined,
+      }),
+    ).toBeNull();
+  });
+
+  it("stands in the linked team while the by-id read is cold, so a link does not flash", () => {
+    const linked = team("t-expos");
+    expect(
+      resolveSelectedTeam({
+        selectedId: "t-expos" as never,
+        selectedById: undefined,
+        selectedOnScreen: null,
+        linkedTeam: linked,
+      }),
+    ).toBe(linked);
+    // …but only when it IS the selected team.
+    expect(
+      resolveSelectedTeam({
+        selectedId: "t-other" as never,
+        selectedById: undefined,
+        selectedOnScreen: null,
+        linkedTeam: linked,
+      }),
+    ).toBeNull();
+  });
+
+  it("prefers the row on screen to the linked one while both stand in", () => {
+    const onScreen = team("t-1");
+    expect(
+      resolveSelectedTeam({
+        selectedId: "t-1" as never,
+        selectedById: undefined,
+        selectedOnScreen: onScreen,
+        linkedTeam: team("t-1"),
+      }),
+    ).toBe(onScreen);
   });
 });

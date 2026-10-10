@@ -144,7 +144,7 @@ tags:
 # The card-number input is autofocused — type straight into it.
 - inputText: "701-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Attn Alpha ${ATTEMPT_ID}"
+- inputText: "AttnAlpha${output.ATTEMPT_TOKEN}"
 
 # Submit sits at the bottom of the add-card form; centerElement drives it to
 # mid-viewport so Maestro's own scroll-before-tap has content to scroll to
@@ -196,7 +196,7 @@ tags:
     timeout: 7000
 - inputText: "702-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Attn Bravo ${ATTEMPT_ID}"
+- inputText: "AttnBravo${output.ATTEMPT_TOKEN}"
 - scrollUntilVisible:
     element:
       id: "Submit new card"
@@ -249,7 +249,7 @@ tags:
     timeout: 7000
 - inputText: "703-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Attn Charlie ${ATTEMPT_ID}"
+- inputText: "AttnCharlie${output.ATTEMPT_TOKEN}"
 
 # The picker, driven by the same four handles as the drawer's (team-picker.yaml
 # owns the component's own behaviour; this is the quick-add form's use of it).
@@ -549,14 +549,14 @@ tags:
     id: "Show only cards needing attention"
 
 - extendedWaitUntil:
-    notVisible: "Attn Bravo ${ATTEMPT_ID}"
+    notVisible: "AttnBravo${output.ATTEMPT_TOKEN}"
     timeout: 7000
-- assertVisible: "Attn Alpha ${ATTEMPT_ID}"
+- assertVisible: "AttnAlpha${output.ATTEMPT_TOKEN}"
 # The born-linked card is filtered out too — it was never in the flagged set.
-- assertNotVisible: "Attn Charlie ${ATTEMPT_ID}"
+- assertNotVisible: "AttnCharlie${output.ATTEMPT_TOKEN}"
 
 - tapOn:
     id: "Show only cards needing attention \\(on\\)"
 - extendedWaitUntil:
-    visible: "Attn Bravo ${ATTEMPT_ID}"
+    visible: "AttnBravo${output.ATTEMPT_TOKEN}"
     timeout: 7000

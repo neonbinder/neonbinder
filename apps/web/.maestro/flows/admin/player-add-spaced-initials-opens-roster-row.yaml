@@ -1,53 +1,57 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
-name: "Player Management — typing spaced initials finds the roster player written without the spaces"
+name: "Player Management — initials typed without the spaces find the roster player written with them"
 tags:
   - admin
 ---
 # R1 — ONE FEATURE (NEO-322): the shared entity-name key
 # (`lib/entities/normalize-name.ts`) joins a run of adjacent single-letter
-# tokens, so "J. T. Realmuto" keys the same as "J.T. Realmuto" / "JT
+# tokens, so "J.T. Realmuto" keys the same as "J. T. Realmuto" / "JT
 # Realmuto". On /admin/players that is visible as the add form recognising the
-# roster player: typing the spaced spelling promotes the primary button to
+# roster player: typing the unspaced spelling promotes the primary button to
 # "Open <roster name>" and demotes creation to "Create anyway", and Open lands
 # on the existing row. Before NEO-322 the two spellings keyed as
-# "j realmuto t" and "jt realmuto" (the token sort scattered the initials), the
+# "jt realmuto" and "j realmuto t" (the token sort scattered the initials), the
 # match came back only as `close`, and the form offered to create a duplicate
 # person — the production bug ("C.J. Kayfus" vs "C. J. Kayfus").
 #
-# ⚠️ DATA DEPENDENCY — THE ROSTER ROW. J.T. Realmuto is #261 of 2024 Topps
-#   Chrome Base, and is therefore in the roster `setup.yaml` commits every run
-#   (SET-REGISTRY.md → 2024 Topps Chrome; ~494 Base / Future Stars / Gold Wave
-#   players). Same dependency, same shape, as checklist-wizard-link-commits'
-#   "Shohei Ohtani". The committed spelling is the one the marketplace sent at
-#   creation; the enrichment recording (convex/adapters/__fixtures__/
-#   enrichment-lookups.json) records it as "J.T. Realmuto". STEP 1 asserts the
-#   row exists AND that its initials carry no space between them — the only
-#   spelling for which this flow exercises the join at all (a roster row
-#   already spelled "J. T. Realmuto" would match on the OLD key too and the
-#   flow would prove nothing). If he is ever absent, or respelled, STEP 1 fails
-#   by name; the fix is to swap the literals for another seeded player whose
-#   name has unspaced initials (the recording also holds "CJ Abrams",
-#   "JJ Bleday", "MJ Melendez", "J.P. Crawford" — check the one you pick is in
-#   2024 Topps Chrome first).
+# ⚠️ DATA DEPENDENCY — THE ROSTER ROW COMES FROM THE REFERENCE CATALOGUE
+#   (NEO-330). Every CI preview starts each run holding prod's reference
+#   catalogue (README → Companion rules), and its J.T. Realmuto row is spelled
+#   "J. T. Realmuto" — WITH a space between the initials (the bulk-loaded
+#   spelling; key "jt realmuto"). The seed's 2024 Topps Chrome commit (#261,
+#   which BSC spells "J.T. Realmuto") keys to the same thing and ADOPTS that
+#   row rather than minting a second one, so the spaced spelling is the only
+#   Realmuto on the preview. This flow used to type the spaced spelling at a
+#   setup-committed unspaced row; the catalogue turned the fixture round, so it
+#   now types the UNSPACED spelling at the spaced row. The proof is symmetric:
+#   under the old key the two spellings still differ ("jt realmuto" typed vs
+#   "j realmuto t" stored), so only the join makes them an exact match. STEP 1
+#   asserts the row exists AND that its initials are spaced — the only spelling
+#   for which typing "J.T." exercises the join at all (a row spelled "J.T."
+#   would match on the OLD key too and the flow would prove nothing). If the
+#   catalogue ever respells or drops him, STEP 1 fails by name; the fix is to
+#   swap the literals for another catalogue player whose initials are written
+#   with a space ("A. J. …", "C. J. …" are the common shape) — check the bundle,
+#   not a guess.
 #
 # R2 — the flow cannot go green without the feature:
-#   (a) `Create player J. T. Realmuto anyway` is the demoted control's own
+#   (a) `Create player J.T. Realmuto anyway` is the demoted control's own
 #       accessible name and it renders ONLY when `players.nearMatches` returned
 #       a `confidence: "exact"` row — i.e. when the normalised keys are equal.
-#       Without the join the roster row is at best `close` (origin/main keys
-#       the two spellings "j realmuto t" and "jt realmuto"): it can show up as
-#       an "Open J.T. Realmuto" button in the near-match PANEL, the primary
-#       stays "Create player", and this flow fails at STEP 3 by that control's
-#       name.
+#       Without the join the roster row is at best `close` (the pre-NEO-322 key
+#       gives the two spellings "jt realmuto" and "j realmuto t"): it can show
+#       up as an "Open J. T. Realmuto" button in the near-match PANEL, the
+#       primary stays "Create player", and this flow fails at STEP 3 by that
+#       control's name.
 #       (That panel button is why "Open …" alone is NOT the feature assert —
 #       it exists in both worlds. The demoted control does not.)
-#   (b) the primary's create label `Create player J. T. Realmuto` is gone
+#   (b) the primary's create label `Create player J.T. Realmuto` is gone
 #       (`id:` is a FULL match, so the `… anyway` label cannot satisfy it);
 #       asserted only after (a) proved the page is live (memory:
 #       negative-asserts-pass-on-a-dead-page).
-#   (c) Open lands on the ROSTER row: its detail panel reads back the unspaced
-#       spelling and Sport: Baseball — never the typed "J. T." spelling, which
+#   (c) Open lands on the ROSTER row: its detail panel reads back the spaced
+#       spelling and Sport: Baseball — never the typed "J.T." spelling, which
 #       no row carries.
 #   No `when:` branches and no conditional runFlow anywhere.
 #
@@ -80,21 +84,21 @@ tags:
 # answers (player-management-add-and-career-history explains why the heading
 # actively misleads here).
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 # ============================================================
-# STEP 1 — PRECONDITION (R2): the roster row exists, spelled without spaces
+# STEP 1 — PRECONDITION (R2): the roster row exists, spelled WITH a space
 # between its initials.
 # ============================================================
 # Past two characters the filter switches to the server search, which spans
 # every sport while the picker reads "All sports". The matcher is a full match
 # on the row's name span, so it cannot be satisfied by the filter box's own
-# value ("Realmuto" — no initials) and it REFUSES a "J. T." spelling.
+# value ("Realmuto" — no initials) and it REFUSES the unspaced "J.T." spelling.
 - tapOn: "Filter players"
 - inputText: "Realmuto"
 - extendedWaitUntil:
-    visible: "J\\.?T\\.? Realmuto"
+    visible: "J\\. T\\. Realmuto"
     timeout: 7000
 
 # ============================================================
@@ -137,9 +141,9 @@ tags:
     visible: "Add a player"
     timeout: 7000
 
-# The SPACED spelling — the one no row carries.
+# The UNSPACED spelling — the one no row carries.
 - tapOn: "New player name"
-- inputText: "J. T. Realmuto"
+- inputText: "J.T. Realmuto"
 
 # ============================================================
 # STEP 3 — THE FEATURE (R2 a/b): the form recognises the roster player
@@ -156,22 +160,22 @@ tags:
 # Fails HERE, by this name, when the keys do not match.
 - scrollUntilVisible:
     element:
-      id: "Create player J\\. T\\. Realmuto anyway"
+      id: "Create player J\\.T\\. Realmuto anyway"
     centerElement: true
     timeout: 7000
 # The primary is the roster row: its visible text IS its accessible name (no
 # aria-label override in the exact state).
 - extendedWaitUntil:
-    visible: "Open J\\.?T\\.? Realmuto"
+    visible: "Open J\\. T\\. Realmuto"
     timeout: 7000
 # …and creation is no longer the primary action.
 - assertNotVisible:
-    id: "Create player J\\. T\\. Realmuto"
+    id: "Create player J\\.T\\. Realmuto"
 
 # ============================================================
 # STEP 4 — R2(c): Open lands on the existing roster row
 # ============================================================
-- tapOn: "Open J\\.?T\\.? Realmuto"
+- tapOn: "Open J\\. T\\. Realmuto"
 
 # NO SCROLL after the tap (NEO-319). An Open from the add form holds the form
 # busy until the roster row has loaded, then the detail panel replaces it in
@@ -181,16 +185,16 @@ tags:
 # the panel's top above the viewport; this flow needed a mount gate and an UP
 # scroll.)
 #
-# The roster spelling, in the panel HEADING — the unspaced initials prove this
-# is the synced row, not one the typed "J. T." spelling could have produced.
+# The roster spelling, in the panel HEADING — the spaced initials prove this
+# is the catalogue row, not one the typed "J.T." spelling could have produced.
 # The heading and only the heading: `above:` is a top-edge test and the
 # heading sits above the panel's `Player name` label (the panel's box, which
 # reads the same name as its value, sits below it); the busy form has no such
-# label and its box holds the SPACED spelling, which `J\.?T\.?` refuses; the
+# label and its box holds the UNSPACED spelling, which `J\. T\.` refuses; the
 # filter's "Realmutozzzz" keeps the name off every master row.
 - extendedWaitUntil:
     visible:
-      text: "J\\.?T\\.? Realmuto"
+      text: "J\\. T\\. Realmuto"
       above:
         text: "Player name"
     timeout: 7000

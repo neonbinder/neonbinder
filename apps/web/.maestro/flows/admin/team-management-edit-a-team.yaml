@@ -70,7 +70,7 @@ tags:
 # Wait for the COUNTER, not the "Player Management" heading — the heading paints
 # while the list is still loading, and the filter would swallow keystrokes then.
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 # ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
@@ -277,7 +277,7 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 
 # No tapOn before typing: the filter takes focus on arrival (NEO-156), and the
@@ -286,10 +286,11 @@ tags:
 # by a concurrent worker's get-or-create.
 - inputText: "TMT${output.ATTEMPT_TOKEN}"
 
-# The list narrows to the one team. Composed with the count so this cannot pass
-# against an unfiltered list that merely happens to contain it.
+# The list narrows to the one team: "1 match" (NEO-330) is the filtered
+# counter, so this cannot pass against an unfiltered list ("{N} teams") that
+# merely happens to contain it.
 - extendedWaitUntil:
-    visible: "1 of .* teams.*"
+    visible: "1 match( . [0-9,]+ need attention)?"
     timeout: 15000
 
 # Tap the ROW, anchored below the counter. maestro-web reports an input's
@@ -297,11 +298,13 @@ tags:
 # the box itself answers to that string too — and it sits above the list, so an
 # unanchored tap could land in the filter instead of selecting the team. The
 # counter renders between the two, so "below the counter" is the row and only
-# the row.
+# the row. (The hidden sr-only status line that repeats "1 match" sits at the
+# filter row's bottom edge, also between the two — README → Companion rules,
+# reference catalogue item 3 — so `below:` holds whichever match it takes.)
 - tapOn:
     text: "TMT${output.ATTEMPT_TOKEN}"
     below:
-      text: "1 of .* teams.*"
+      text: "1 match( . [0-9,]+ need attention)?"
 
 # ── THE DETAIL PANEL, AND IT IS SHOWING THIS ROW'S REAL STATE ──────────────
 # The panel's fields sit below the filter row, past the fold on the 1024x629
@@ -443,18 +446,18 @@ tags:
 # database holds it". Re-select and read both fields back.
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 # Same filter and same counter-anchored row tap as on the way in — see the
 # comments above for why neither can be shortened.
 - inputText: "TMT${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
-    visible: "1 of .* teams.*"
+    visible: "1 match( . [0-9,]+ need attention)?"
     timeout: 15000
 - tapOn:
     text: "TMT${output.ATTEMPT_TOKEN}"
     below:
-      text: "1 of .* teams.*"
+      text: "1 match( . [0-9,]+ need attention)?"
 # ONE SCROLL, THEN EVERY READ-BACK IN ONE VIEWPORT.
 #
 # The "Location" label is the anchor because it is the only node on this screen
@@ -513,7 +516,7 @@ tags:
 - assertVisible:
     text: "TMT${output.ATTEMPT_TOKEN}"
     below:
-      text: "1 of .* teams.*"
+      text: "1 match( . [0-9,]+ need attention)?"
     above:
       text: "Location"
 
@@ -555,7 +558,7 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/players
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 30000
 
 # Filter to this attempt's player, then wait for THE ROW — never for the count.

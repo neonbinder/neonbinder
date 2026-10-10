@@ -130,7 +130,7 @@ tags:
     timeout: 15000
 - inputText: "801-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Walker Alpha ${ATTEMPT_ID}"
+- inputText: "WalkerAlpha${output.ATTEMPT_TOKEN}"
 # centerElement so Maestro's own scroll-before-tap has content to scroll to —
 # without it the CDP scroll returns nothing and the tap dies with
 # "null cannot be cast to non-null type kotlin.Int".
@@ -169,7 +169,7 @@ tags:
     timeout: 7000
 - inputText: "802-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Walker Bravo ${ATTEMPT_ID}"
+- inputText: "WalkerBravo${output.ATTEMPT_TOKEN}"
 - scrollUntilVisible:
     element:
       id: "Submit new card"
@@ -442,10 +442,10 @@ tags:
 
 - scrollUntilVisible:
     element:
-      text: "Walker Bravo ${ATTEMPT_ID}"
+      text: "WalkerBravo${output.ATTEMPT_TOKEN}"
     centerElement: true
     timeout: 7000
-- assertVisible: "Walker Alpha ${ATTEMPT_ID}"
+- assertVisible: "WalkerAlpha${output.ATTEMPT_TOKEN}"
 - assertNotVisible:
     id: "Card 802-${ATTEMPT_ID}(, .*)? needs attention: no team on this card yet"
 - assertNotVisible:

@@ -60,6 +60,10 @@ tags:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
+# Minted names are single search tokens (README → Companion rules): the
+# ATTEMPT_ID with its hyphens stripped, folded into one word.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
 # ============================================================
 # Step 2 — PUT A CARD IN ITS HOME SET
 # ============================================================
@@ -70,7 +74,7 @@ tags:
       VARIANT_TYPE: "Insert"
       INSERT_NAME: "Base"
       CARD_NUMBER: "957-${ATTEMPT_ID}"
-      PLAYER_NAME: "Cross Unlink ${ATTEMPT_ID}"
+      PLAYER_NAME: "CrossUnlink${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # Step 3 — OPEN THE GUEST CHECKLIST AND BORROW THE CARD
@@ -179,7 +183,7 @@ tags:
     visibilityPercentage: 50
     waitToSettleTimeoutMs: 1000
     timeout: 7000
-- assertVisible: "Cross Unlink ${ATTEMPT_ID}"
+- assertVisible: "CrossUnlink${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # CLEANUP (R7) — remove this attempt's card from its home set so the set stays

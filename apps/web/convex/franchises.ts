@@ -55,14 +55,24 @@ export const MAX_FRANCHISE_NAME_LENGTH = 120;
 /**
  * Hard ceilings on what one query returns.
  *
- * `FRANCHISE_LIST_CAP` bounds the franchise list itself; `FRANCHISE_TEAM_SCAN`
- * bounds the single by-sport team scan the list tallies its counts from. Both
- * are reported as `truncated` rather than silently applied, for the reason
- * `teams.listForManagement` gives: a list that quietly stops reads as "that is
- * all of them", which is the kind of wrong an operator cannot see.
+ * `FRANCHISE_LIST_CAP` bounds the franchise list itself; `FRANCHISE_COUNT_CAP`
+ * bounds each franchise's team count (one `by_franchise_id` read per listed
+ * franchise). Both are reported as `truncated` rather than silently applied,
+ * for the reason `teams.listForManagement` gives: a list that quietly stops
+ * reads as "that is all of them", which is the kind of wrong an operator
+ * cannot see.
+ *
+ * NEO-330 — the count cap replaced a single team scan capped at 2000 rows.
+ * Unscoped, that scan read an unordered window of the whole `teams` table, so
+ * past 2000 teams (prod is ~10.5k) a franchise's count depended on whether its
+ * teams happened to fall inside the window. Worst case per call is now
+ * `FRANCHISE_LIST_CAP * (FRANCHISE_COUNT_CAP + 1)` = 10,500 team reads plus the
+ * 501 franchise rows, inside Convex's per-query document limit; the real cost
+ * is one index seek per franchise plus the teams actually linked (a thread is a
+ * handful of rows), so ~1–2k reads for a 500-row listing.
  */
 const FRANCHISE_LIST_CAP = 500;
-const FRANCHISE_TEAM_SCAN = 2000;
+const FRANCHISE_COUNT_CAP = 20;
 
 /**
  * How many teams one franchise view renders. A franchise is a handful of
@@ -226,16 +236,17 @@ export function orderFranchiseTeams<
  *
  * ## The counts are OPT-IN, and that is not a micro-optimisation
  *
- * `withTeamCounts` costs a scan of every team in scope — up to
- * `FRANCHISE_TEAM_SCAN` rows — because a count per franchise is otherwise a
- * `by_franchise_id` query per franchise, which is five hundred reads to render
- * a sidebar. One tallied scan beats that, but it is still a scan, and the
- * NEO-254 preload is about to make `teams` large.
+ * `withTeamCounts` costs one `by_franchise_id` read per listed franchise —
+ * up to five hundred index seeks to render a sidebar. NEO-330 moved it there
+ * from a single tallied team scan: that scan was capped at 2000 rows of an
+ * unordered (unscoped) window, so once `teams` outgrew it the counts were
+ * simply wrong. Per-franchise reads are exact up to `FRANCHISE_COUNT_CAP`,
+ * whatever the size of `teams`.
  *
  * Team Management reads this list only to fill a dropdown with NAMES, and it
  * is a screen an operator sits on while every keystroke re-renders. Making it
- * pay for counts it never shows would put a two-thousand-row read behind that.
- * So the counts are asked for by the one screen that renders them.
+ * pay for counts it never shows would put five hundred reads behind that. So
+ * the counts are asked for by the one screen that renders them.
  */
 export const list = query({
   args: {
@@ -303,30 +314,33 @@ export const list = query({
     const truncatedList = rows.length > FRANCHISE_LIST_CAP;
     const franchiseRows = rows.slice(0, FRANCHISE_LIST_CAP);
 
-    const teamRows = !args.withTeamCounts
-      ? []
-      : sportId
-        ? await ctx.db
-            .query("teams")
-            .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
-            .take(FRANCHISE_TEAM_SCAN + 1)
-        : await ctx.db.query("teams").take(FRANCHISE_TEAM_SCAN + 1);
-
-    const truncatedTeams = teamRows.length > FRANCHISE_TEAM_SCAN;
-    const counts = new Map<string, number>();
-    for (const team of teamRows.slice(0, FRANCHISE_TEAM_SCAN)) {
-      if (!team.franchiseId) continue;
-      counts.set(team.franchiseId, (counts.get(team.franchiseId) ?? 0) + 1);
-    }
+    // NEO-330 — counted per franchise through `by_franchise_id`, so a count
+    // is exact whatever the size of `teams` (see `FRANCHISE_COUNT_CAP`). The
+    // reads are independent, so they go out together.
+    const counts = !args.withTeamCounts
+      ? franchiseRows.map(() => 0)
+      : await Promise.all(
+          franchiseRows.map(async (row) => {
+            const linked = await ctx.db
+              .query("teams")
+              .withIndex("by_franchise_id", (q) => q.eq("franchiseId", row._id))
+              .take(FRANCHISE_COUNT_CAP + 1);
+            return linked.length;
+          }),
+        );
+    const truncatedCounts = counts.some((n) => n > FRANCHISE_COUNT_CAP);
 
     return {
       franchises: franchiseRows
-        .map((row) => ({ ...row, teamCount: counts.get(row._id) ?? 0 }))
+        .map((row, i) => ({
+          ...row,
+          teamCount: Math.min(counts[i], FRANCHISE_COUNT_CAP),
+        }))
         .sort((a, b) => a.name.localeCompare(b.name)),
       // Either cap being hit means the page is showing an incomplete answer —
       // a missing franchise, or a count that is short. One flag, because the
-      // operator's remedy for both is the same: narrow by sport.
-      truncated: truncatedList || truncatedTeams,
+      // page has one place to say so.
+      truncated: truncatedList || truncatedCounts,
     };
   },
 });

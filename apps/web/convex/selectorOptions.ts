@@ -8137,6 +8137,37 @@ type SetBuilderResetResult = {
   complete: boolean;
 };
 
+/**
+ * NEO-330 — what one reset call drains.
+ *
+ * - `"all"` (the default): every table below, exactly as before NEO-330.
+ * - `"exceptReferenceSeed"`: every table EXCEPT the eight the reference-seed
+ *   bundle carries (`REFERENCE_SEED_TABLES`). The E2E seed follows it with a
+ *   `convex import --replace` of that bundle, which IS the clear for those
+ *   eight — one atomic replace instead of ~270 500-row batches over a
+ *   prod-sized catalogue (docs/operations/neo330-reference-seed.md). Never
+ *   use it on its own: the reference rows it leaves behind are only correct
+ *   because the import replaces them next.
+ */
+type SetBuilderResetScope = "all" | "exceptReferenceSeed";
+
+/**
+ * NEO-330 — the result keys of the eight tables the reference-seed import
+ * replaces, which `scope: "exceptReferenceSeed"` leaves for it. Keep in step
+ * with the bundle's table list in `scripts/reference-seed/`.
+ */
+export const REFERENCE_SEED_TABLES: ReadonlySet<keyof SetBuilderResetResult> =
+  new Set<keyof SetBuilderResetResult>([
+    "selectorOptionsDeleted",
+    "leaguesDeleted",
+    "franchisesDeleted",
+    "teamsDeleted",
+    "teamAliasesDeleted",
+    "playersDeleted",
+    "playerAliasesDeleted",
+    "playerSportsDeleted",
+  ]);
+
 type ResetBatchRef = FunctionReference<
   "mutation",
   "internal",
@@ -8163,9 +8194,15 @@ type ResetBatchRef = FunctionReference<
  * line of every batch mutation this loops. Reaching a table with the
  * deployment unarmed is not possible through either door, and the budget
  * check runs only after a batch, so it can never pre-empt the arming check.
+ *
+ * NEO-330 — `scope: "exceptReferenceSeed"` skips the eight tables the
+ * reference-seed import replaces wholesale (`REFERENCE_SEED_TABLES`), and
+ * reports `0` for each. Everything that points INTO them is still drained,
+ * in the same order, so the import lands on tables nothing references.
  */
 async function runSetBuilderReset(
   ctx: ActionCtx,
+  scope: SetBuilderResetScope = "all",
 ): Promise<SetBuilderResetResult> {
   const startedAt = Date.now();
   const budgetMs = resetTimeBudgetMs();
@@ -8188,8 +8225,13 @@ async function runSetBuilderReset(
   };
 
   // Table order is load-bearing — do not reorder. Each entry is the count it
-  // feeds and the batch mutation that drains it.
-  const steps: Array<[keyof typeof counts, ResetBatchRef]> = [
+  // feeds and the batch mutation that drains it. NEO-330: the
+  // `"exceptReferenceSeed"` scope drops entries from this list but never
+  // reorders the rest, so every ordering note below still holds for the
+  // tables it does drain — and every table that points INTO the skipped
+  // eight (slSetReviews, cardPlayerLinks, cardChecklist, cardCrossListings,
+  // entityReviewQueue, checklistCandidates) is among them.
+  const allSteps: Array<[keyof typeof counts, ResetBatchRef]> = [
     // NEO-306 — FIRST: a review doc points at a year and a brand row, so it
     // drains before the table it references. A handful of docs at most.
     ["slSetReviewsDeleted", internal.selectorOptions.resetSlSetReviewsBatch],
@@ -8283,6 +8325,13 @@ async function runSetBuilderReset(
     ["leaguesDeleted", internal.selectorOptions.resetLeaguesBatch],
   ];
 
+  // NEO-330 — filter BEFORE the loop, so `moreWork` below measures the tables
+  // this call will actually visit, not ones it skips.
+  const steps =
+    scope === "exceptReferenceSeed"
+      ? allSteps.filter(([key]) => !REFERENCE_SEED_TABLES.has(key))
+      : allSteps;
+
   for (let i = 0; i < steps.length; i += 1) {
     const [key, batch] = steps[i];
     let hasMore = true;
@@ -8366,9 +8415,11 @@ function assertResetArmed(): void {
 
 /**
  * The ONLY entry point to the Set Builder reset (NEO-214). Wipes
- * `selectorOptions`, `cardChecklist`, `cardCrossListings`,
- * `entityReviewQueue`, `checklistCandidates`, `players`, `playerAliases`,
- * `teams`, `teamAliases`, `franchises` and `leagues`.
+ * `slSetReviews`, `selectorOptions`, `cardPlayerLinks`, `cardChecklist`,
+ * `cardCrossListings`, `entityReviewQueue`, `checklistCandidates`,
+ * `playerSports`, `players`, `playerAliases`, `teams`, `teamAliases`,
+ * `franchises` and `leagues`. With `scope: "exceptReferenceSeed"` (NEO-330)
+ * it skips the eight reference-seed tables among those and wipes the rest.
  *
  * Runbook: `docs/operations/neo214-set-builder-admin-scripts.md`. Take a
  * **Backup Now** first (NEO-190 §3) and run it with the app CLOSED — resetting
@@ -8387,6 +8438,11 @@ function assertResetArmed(): void {
  *   # production, only after arming (see below)
  *   npx convex run selectorOptions:resetSetBuilderDataFromCli \
  *     '{"confirm":"RESET"}' --prod
+ *
+ *   # NEO-330: everything EXCEPT the reference-seed tables, immediately
+ *   # before a reference-seed import (the E2E seed's path)
+ *   npx convex run selectorOptions:resetSetBuilderDataFromCli \
+ *     '{"confirm":"RESET","scope":"exceptReferenceSeed"}' --deployment <name>
  *
  * Each call works for at most `RESET_TIME_BUDGET_MS` (2.5 min by default,
  * inside the CLI's ~5-minute wait) and returns `complete: false` if rows
@@ -8421,6 +8477,15 @@ export const resetSetBuilderDataFromCli = internalAction({
     // `convex run` is one tab-completion away from a neighbouring function
     // name and this is unrecoverable, so make the intent explicit.
     confirm: v.literal("RESET"),
+    // NEO-330 — omitted means "all", which is the pre-NEO-330 behaviour.
+    // "exceptReferenceSeed" leaves selectorOptions, leagues, franchises,
+    // teams, teamAliases, players, playerAliases and playerSports for the
+    // reference-seed import's `--replace` to clear; it is only ever run
+    // immediately before that import (`e2e-baseline.sh reset
+    // --except-reference-seed`).
+    scope: v.optional(
+      v.union(v.literal("all"), v.literal("exceptReferenceSeed")),
+    ),
   },
   returns: v.object({
     // NEO-306 — pending SportLots set reviews, drained first.
@@ -8452,13 +8517,13 @@ export const resetSetBuilderDataFromCli = internalAction({
     // delete. Run again until it is `true`; `e2e-baseline.sh reset` does.
     complete: v.boolean(),
   }),
-  handler: async (ctx): Promise<SetBuilderResetResult> => {
+  handler: async (ctx, args): Promise<SetBuilderResetResult> => {
     // Fail here rather than partway through the loop, so an unarmed run costs
     // nothing. Each batch re-asserts it independently.
     assertResetArmed();
     // No identity check here or in the batch mutations below — reaching an
     // internalAction at all required the deployment's admin credential.
-    return await runSetBuilderReset(ctx);
+    return await runSetBuilderReset(ctx, args.scope ?? "all");
   },
 });
 

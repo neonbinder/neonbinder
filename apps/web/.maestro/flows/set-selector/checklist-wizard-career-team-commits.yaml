@@ -21,7 +21,7 @@ tags:
 #         history reads "Added as new";
 #     (d) the commit lands ("Saved N cards");
 #     (e) THE POINT: `/admin/teams` now holds a team by the staged name, and the
-#         list narrows to exactly "1 of N teams" for it. Since NEO-236 that row
+#         list narrows to exactly "1 match" for it. Since NEO-236 that row
 #         is written from the team's OWN New Team step rather than from the
 #         player's decision, so this also proves that step's answer survived the
 #         commit. Nothing else in this flow creates a team, and the name is
@@ -277,13 +277,13 @@ tags:
 
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 - inputText: "MintedTeam${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
-    visible: "1 of .* teams.*"
+    visible: "1 match( . [0-9,]+ need attention)?"
     timeout: 15000
 - assertVisible:
     text: "MintedTeam${output.ATTEMPT_TOKEN}"
     below:
-      text: "1 of .* teams.*"
+      text: "1 match( . [0-9,]+ need attention)?"

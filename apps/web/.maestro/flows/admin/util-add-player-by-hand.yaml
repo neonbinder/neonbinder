@@ -22,7 +22,7 @@ tags:
 #
 # CALLER CONTRACT
 #   The caller is ON /admin/players with the list loaded — its gate is the
-#   counter (".*of .* players.*"), never the heading (the heading paints before
+#   counter ("[0-9,]+ players?"), never the heading (the heading paints before
 #   the list, see the career-history flow). The list's sport picker reads
 #   "All sports" and no player is open.
 #

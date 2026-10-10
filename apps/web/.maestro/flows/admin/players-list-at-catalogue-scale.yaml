@@ -1,0 +1,85 @@
+# R1 — Single feature: at production scale the two big admin master lists stop
+# at their read cap. /admin/players lists at most 500 rows
+# (`PLAYER_MANAGEMENT_CAP`, convex/players.ts) and /admin/teams at most 2000
+# (`TEAM_MANAGEMENT_CAP`, convex/teams.ts). NEO-330 dropped the "N of M ·
+# list truncated, type to search" wording: the unfiltered counter now reads
+# "{N} players" / "{N} teams" (en-US thousands separator, so "2,000 teams").
+# The proof of scale is therefore that the UNFILTERED counter sits exactly AT
+# the cap — "500 players" and "2,000 teams" — on a preview holding far more
+# rows than either cap. A list that read past its cap, or stopped short of it,
+# fails.
+#
+# WHY THIS CAN BE PROVED AT ALL (NEO-330). Every CI preview starts each run
+# holding prod's reference catalogue — ~113k players and ~10.5k teams, loaded
+# before setup.yaml (README → Companion rules). No flow could mint that many
+# rows, and none should; the catalogue is what puts both lists past their caps.
+# Until the catalogue load lands in CI this flow is RED by design: a preview
+# carrying only the run's own rows has far fewer than 2000 teams.
+#
+# SELF-CONTAINED (R3/R4): the entry URL is the whole setup — Clerk sign-in
+# redirecting to /admin/players. No in-body login, no credential step, no
+# dependency on another flow having run.
+#
+# R2 — the flow cannot go green without the feature. Each assertion is the
+# counter's FULL text, anchored at both ends (Maestro full-matches `text:`):
+# the count must be the cap itself, with its separator, then the noun. The
+# Teams counter may carry a " · N need attention" suffix (catalogue teams
+# without colours); its count is data, not feature, so it is the one optional
+# part of the match. The middot is matched with `.`. The counter is ONE <p>
+# whose pieces are adjacent JSX text expressions, so maestro-web reads it as
+# one string (memory: maestro-web-getnodetext). Team Management also renders
+# a hidden sr-only role=status line carrying the same sentence WITHOUT the
+# attention suffix; the patterns here never end in "." and the visible counter
+# precedes that line in the DOM, so an unindexed selector resolves to the
+# visible counter first (Maestro takes the first hierarchy match).
+#
+# R3 — no other flow asserts the cap. team-management-filter gates on the
+# Teams counter loosely ("[0-9,]+ teams?…") and asserts filtering; this flow
+# owns the cap.
+#
+# R5 — the post-launch gate is 45 s (README → "Launching a flow"); the reload
+# gate on /admin/teams is the same 30 s full-page `openLink` return
+# team-management-edit-a-team and league-management-add-and-edit use (a reload
+# repeats the Clerk session handshake before the page can query). Everything
+# in-app is 7000 and stated.
+#
+# R7 / R7a — READ-ONLY. Nothing is typed, created, edited or deleted; the
+# catalogue is never written. No set is touched, so this flow owns no
+# SET-REGISTRY.md entry. No minted name, so no ATTEMPT_TOKEN.
+#
+# R8 — no scroll: both counters sit in the filter row at the top of the page.
+#
+# `id:` is not used; every target is visible text.
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
+name: "Admin lists at catalogue scale — Players and Teams stop at their cap"
+tags:
+  - admin
+---
+- launchApp
+
+# Gate on the COUNTER, not the "Player Management" heading: the heading paints
+# while the list query is in flight, the counter only once it has answered.
+- extendedWaitUntil:
+    visible: "[0-9,]+ players?"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — Players: the unfiltered list sits at the 500 cap
+# ============================================================
+# Nothing typed and "All sports" picked, so this is `listForManagement`'s
+# unfiltered read: the cap is the only thing bounding it.
+- extendedWaitUntil:
+    visible: "500 players"
+    timeout: 7000
+
+# ============================================================
+# STEP 2 — Teams: the unfiltered list sits at the 2,000 cap
+# ============================================================
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
+    timeout: 30000
+- extendedWaitUntil:
+    visible: "2,000 teams( . [0-9,]+ need attention)?"
+    timeout: 7000

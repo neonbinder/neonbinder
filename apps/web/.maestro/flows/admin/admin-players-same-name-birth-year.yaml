@@ -30,7 +30,7 @@ tags:
 #         exists only when an exact match came back, so waiting for it also
 #         proves the first row persisted;
 #     (e) "Create anyway" with NO year ADOPTS: the page says the player already
-#         exists and the list still reads "1 matches";
+#         exists and the list still reads "1 match";
 #     (f) "Create anyway" with a year nobody carries FORKS: "Added <name>." and
 #         the list grows to "2 matches" holding BOTH "b. 1960" and "b. 1975" —
 #         which is the state the review wizard's "Same name, different people"
@@ -127,7 +127,7 @@ tags:
 # the heading is actively misleading. The counter renders when the query
 # resolves.
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 # ⚠️ READ `ATTEMPT_ID`, NOT `output.ATTEMPT_ID` — both runners inject it with
@@ -355,12 +355,12 @@ tags:
 - eraseText: 20
 - inputText: "Samename${output.TOKEN}"
 - extendedWaitUntil:
-    visible: "1 matches"
+    visible: "1 match"
     timeout: 7000
 - assertVisible:
     text: ".*b. 1960.*"
     below:
-      text: "1 matches"
+      text: "1 match"
 
 # ============================================================
 # STEP 5 — R2(d)+(e): THE SAME NAME AGAIN, WITH NO BIRTH YEAR → ADOPT
@@ -419,7 +419,7 @@ tags:
 # bar (~y=160), with the sticky notice above it — so the notice needs no help.
 # But that position leaves the filter row at ~y=10-74, UNDER the 79px sticky
 # app bar and a few pixels from the top edge, and the two assertions after the
-# message read "1 matches" — the counter in that filter row — so it is brought
+# message read "1 match" — the counter in that filter row — so it is brought
 # to the centre first. One UP swipe from the reveal lands the page at scroll 0
 # (filter label at y≈293). Positioning only; a create that was refused still
 # fails on the assertion below with the refusal on screen.
@@ -435,11 +435,11 @@ tags:
 
 # Nothing was added. The list is still the one row, still carrying the year it
 # was created with — so the adopt neither inserted nor overwrote.
-- assertVisible: "1 matches"
+- assertVisible: "1 match"
 - assertVisible:
     text: ".*b. 1960.*"
     below:
-      text: "1 matches"
+      text: "1 match"
 
 # ============================================================
 # STEP 6 — R2(f): THE FEATURE — A YEAR NOBODY CARRIES FORKS A SECOND PERSON

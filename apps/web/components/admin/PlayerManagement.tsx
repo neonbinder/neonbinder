@@ -100,6 +100,46 @@ type Status = { text: string; isError: boolean } | null;
  */
 const SEARCH_MIN_CHARS = 2;
 
+/**
+ * NEO-330 — how many players `players.search` is asked for. Passed explicitly
+ * rather than left to the server's default, so the counter's "10+ matches" is
+ * a claim about what this screen asked for: a full answer means more may
+ * match. Must stay at or under `SEARCH_MAX_LIMIT` in convex/players.ts, which
+ * clamps anything larger.
+ */
+const PLAYER_SEARCH_LIMIT = 10;
+
+/** Counts print with thousands separators: "2,000 players". */
+function formatCount(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/**
+ * NEO-330 — the counter's sentence: bare counts, the Team Management shape.
+ * "2,000 players" browsing, "12 matches" with anything in the filter box, and
+ * "10+ matches" when the search answered with as many rows as it was asked
+ * for. The "type to search" hint that used to ride here is the filter's
+ * placeholder.
+ */
+export function playerCounterSentence({
+  typed,
+  matched,
+  capped,
+}: {
+  /** The filter box's text, trimmed. */
+  typed: string;
+  /** Rows the master list shows. */
+  matched: number;
+  /** The search answered with a full `PLAYER_SEARCH_LIMIT` rows. */
+  capped: boolean;
+}): string {
+  if (typed.length === 0) {
+    return `${formatCount(matched)} ${matched === 1 ? "player" : "players"}`;
+  }
+  if (capped) return `${formatCount(PLAYER_SEARCH_LIMIT)}+ matches`;
+  return `${formatCount(matched)} ${matched === 1 ? "match" : "matches"}`;
+}
+
 /** See PlayerAutocomplete: one Convex subscription per distinct arg set, so an
  *  undebounced field opens one per keystroke. */
 const SEARCH_DEBOUNCE_MS = 200;
@@ -2169,7 +2209,11 @@ export default function PlayerManagement() {
   const results = useQuery(
     api.players.search,
     searchTerm.length >= SEARCH_MIN_CHARS
-      ? { query: searchTerm, ...(sportId ? { sportId } : {}) }
+      ? {
+          query: searchTerm,
+          ...(sportId ? { sportId } : {}),
+          limit: PLAYER_SEARCH_LIMIT,
+        }
       : "skip",
   );
 
@@ -2462,14 +2506,15 @@ export default function PlayerManagement() {
     setAdding(false);
   };
 
-  const counter = searching
-    ? results === undefined
-      ? ""
-      : `${visible.length} matches`
-    : management
-      ? `${visible.length} of ${management.totalCount} players${
-          management.truncated ? " · list truncated, type to search" : ""
-        }`
+  // Empty while the answer it would count is still loading: the search's
+  // from two characters, the list's below that.
+  const counter =
+    (searching ? results !== undefined : management !== undefined)
+      ? playerCounterSentence({
+          typed: filter.trim(),
+          matched: visible.length,
+          capped: searching && visible.length >= PLAYER_SEARCH_LIMIT,
+        })
       : "";
 
   return (
@@ -2521,8 +2566,10 @@ export default function PlayerManagement() {
         </div>
         {/* NEO-212 (a11y): the counter is the only feedback that a filter or
             a sport change did anything — silent for a screen-reader user until
-            it was a live region. Text format unchanged: the E2E flow waits on
-            "0 matches". */}
+            it was a live region. NEO-330: bare counts — "2,000 players",
+            "12 matches", "10+ matches", "0 matches" (the E2E flows wait on
+            these). No suffix ever rides here, so the live region and the
+            visible text are one element. */}
         {/* NEO-235: centred against the field boxes rather than nudged up with
             a `pb-2`, so it stays put when the row wraps. */}
         {/* `min-w-[13rem]`: this node is empty until the counts resolve, and an

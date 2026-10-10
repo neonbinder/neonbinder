@@ -65,7 +65,8 @@ tags:
 #   * `leagues` is a GLOBAL table — the page says so itself ("Leagues are
 #     globally shared rows — every collector sees the same league data") — so
 #     this flow never edits a league it did not make. It CREATES its own, named
-#     "LG-<worker>-<attempt>", unique per worker AND per attempt, so eight
+#     "Lg<token>" (one search token carrying the worker AND the attempt — README
+#     → Companion rules, "Minted names are single tokens"), so eight
 #     concurrent runners plus a retry can never land on the same row. Per-attempt
 #     is mechanical as well as polite: the "Create league <name>" button renders
 #     only while no league of that name exists, so a leftover row from a prior
@@ -110,13 +111,18 @@ tags:
     timeout: 45000
 
 # The runner injects ATTEMPT_ID ("r<runner>-a<attempt>-<random>", or
-# "w<worker>-a<attempt>-<random>" from the smoke script).
+# "w<worker>-a<attempt>-<random>" from the smoke script). Every name this flow
+# mints is ONE token built from it with the hyphens stripped (the blessed idiom,
+# README → Companion rules): a hyphenated "LG-0-r1-a1-123" is five search terms,
+# and a reference catalogue of real leagues sits on every CI preview (NEO-330).
 #
 # Length matters here in a way it does not on the Players screen: the
-# abbreviation below is "L<ATTEMPT_ID>" and `createByAdmin` REFUSES an
-# abbreviation over 16 characters (MAX_LEAGUE_ABBREVIATION_LENGTH). The longest
-# id either runner can mint is "r7-a3-32767" — 11 characters, 12 with the L —
-# so it clears the cap with room to spare.
+# abbreviation below is "L<token>" and `createByAdmin` REFUSES an abbreviation
+# over 16 characters (MAX_LEAGUE_ABBREVIATION_LENGTH). The longest id either
+# runner can mint is "r7-a3-32767" — 9 characters once stripped, 10 with the L;
+# the standalone `Date.now()` fallback is 13 digits, 14 with the L — so it clears
+# the cap with room to spare.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
 
 # ── EMPTY THE LIST FIRST ────────────────────────────────────────────────────
 # Not decoration, and not an assertion about filtering for its own sake. This is
@@ -178,12 +184,12 @@ tags:
     timeout: 7000
 
 - tapOn: "New league name"
-- inputText: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "Lg${output.ATTEMPT_TOKEN}"
 
 # The abbreviation is not decoration either — it is the field the last step of
 # this flow reads back on a different screen.
 - tapOn: "Abbreviation"
-- inputText: "L${ATTEMPT_ID}"
+- inputText: "L${output.ATTEMPT_TOKEN}"
 
 # The level, set on the add form's own group. Six plain buttons rather than a
 # picker, so none of the native-<select> awkwardness above applies — "Minor" is
@@ -225,11 +231,11 @@ tags:
 # costs ~2.1 s. 7000 DEPENDS on that spacer; delete it and this step reds.
 - scrollUntilVisible:
     element:
-      id: "Create league LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      id: "Create league Lg${output.ATTEMPT_TOKEN}"
     centerElement: true
     timeout: 7000
 - tapOn:
-    id: "Create league LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Create league Lg${output.ATTEMPT_TOKEN}"
 
 # "Added <name>." is said ONLY for a row that was INSERTED — `createByAdmin`
 # asks whether the row existed before it writes, and the screen says "That
@@ -251,7 +257,7 @@ tags:
 # (R6) — it fails loudly if the line never appears.
 - scrollUntilVisible:
     element:
-      text: ".*Added LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+      text: ".*Added Lg${output.ATTEMPT_TOKEN}.*"
     direction: UP
     timeout: 7000
 
@@ -285,7 +291,7 @@ tags:
 #
 # TWO aliases, not one, and that is what makes the reload assertion airtight
 # rather than merely suggestive. The Aliases box holds the whole comma string
-# ("Alias-…, Second-…") and Maestro reports an input's value as its text, while
+# ("Alias<token>, Second<token>") and Maestro reports an input's value as its text, while
 # each chip holds ONE alias. Maestro text matching is fully anchored, so the
 # single-alias strings asserted after the reload CANNOT be answered by the box —
 # only by a chip. A screen that stored the typed string as one long alias, or
@@ -296,7 +302,7 @@ tags:
     centerElement: true
     timeout: 7000
 - tapOn: "Aliases"
-- inputText: "Alias-${ATTEMPT_ID}, Second-${ATTEMPT_ID}"
+- inputText: "Alias${output.ATTEMPT_TOKEN}, Second${output.ATTEMPT_TOKEN}"
 
 # R8 case 1 -> R5's 7000. MEASURED over 4 green CI runs (n=3): `Element
 # bounds` frozen at y=552 through `Scrolling try count: 0`..`5`, completing on
@@ -322,7 +328,7 @@ tags:
 # (NEO-212 found this on the Players screen). Save was just centred, so the line
 # is on screen: a plain wait, no scroll.
 - extendedWaitUntil:
-    visible: ".*Saved LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}.*"
+    visible: ".*Saved Lg${output.ATTEMPT_TOKEN}.*"
     timeout: 7000
 
 # ── IT PERSISTED ────────────────────────────────────────────────────────────
@@ -338,7 +344,7 @@ tags:
     timeout: 30000
 
 - tapOn: "Filter leagues"
-- inputText: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+- inputText: "Lg${output.ATTEMPT_TOKEN}"
 
 # Exactly one league answers to this run's name. The counter is the assertion
 # that the filter ran and found precisely our row — fully anchored, so "1 of …"
@@ -354,7 +360,7 @@ tags:
 # The level, chosen on the add form before the row existed.
 - assertVisible: "Minor"
 # The abbreviation, typed on the add form beside it.
-- assertVisible: "L${ATTEMPT_ID}"
+- assertVisible: "L${output.ATTEMPT_TOKEN}"
 
 # Open the row. Targeted by `id:` rather than by text because the filter box now
 # holds this exact name and Maestro reports an input's value as its text — the
@@ -363,11 +369,11 @@ tags:
 # selector resolves to the row and only the row.
 - scrollUntilVisible:
     element:
-      id: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+      id: "Lg${output.ATTEMPT_TOKEN}"
     centerElement: true
     timeout: 7000
 - tapOn:
-    id: "LG-${WORKER_INDEX || 0}-${ATTEMPT_ID}"
+    id: "Lg${output.ATTEMPT_TOKEN}"
 
 # The aliases came back AS PARSED ALIASES, not as a string in a box. The Aliases
 # input above these chips holds the WHOLE comma string, and Maestro matching is
@@ -381,10 +387,10 @@ tags:
 # on screen by construction.
 - scrollUntilVisible:
     element:
-      text: "Alias-${ATTEMPT_ID}"
+      text: "Alias${output.ATTEMPT_TOKEN}"
     centerElement: true
     timeout: 7000
-- assertVisible: "Second-${ATTEMPT_ID}"
+- assertVisible: "Second${output.ATTEMPT_TOKEN}"
 
 # GO BACK UP TO THE YEARS ROW — the alias chips are not next to it.
 #
@@ -462,7 +468,7 @@ tags:
 # classifying because the teams screen leans on it.
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 
 # Open the League picker. The tap is load-bearing, not navigation: a native
@@ -475,4 +481,4 @@ tags:
 # appear on this screen is beside a team that plays in this league, and this
 # league has none (the panel said "No teams yet." a moment ago). So the option
 # in the open picker is the only node that can answer here.
-- assertVisible: "L${ATTEMPT_ID}"
+- assertVisible: "L${output.ATTEMPT_TOKEN}"

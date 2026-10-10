@@ -39,6 +39,10 @@ import {
 import { readManyByIds } from "./lib/batchIdReads";
 import { eraLabel, teamOptionLabel } from "../lib/teams/team-era";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
+// NEO-330: the one definition of "this team matches what was typed", shared
+// with Team Management's own one-character filter.
+import { teamFilterReadings, teamMatchesFilter } from "../lib/teams/team-filter";
+import { clampSearchQuery } from "./lib/searchQueryClamp";
 
 /**
  * The dedup key on `teams.nameNormalized`.
@@ -1070,6 +1074,32 @@ export const get = query({
 });
 
 /**
+ * NEO-330 — one team by an id that came out of a URL, the twin of
+ * `players.getByIdParam`.
+ *
+ * Team Management follows `/admin/teams?team=<id>` and opens the panel for the
+ * team it names. It used to look the id up in its own list, which holds at
+ * most `TEAM_MANAGEMENT_CAP` rows, so a link to any team outside that window
+ * was silently ignored. This reads the row itself.
+ *
+ * `v.string()` rather than `v.id("teams")`, for the reason the players twin
+ * gives: anybody can retype a URL, and an id that does not parse would make
+ * `get` a THROWN query inside `useQuery`, which unmounts the screen into the
+ * error boundary. Here a malformed, stale or foreign id is simply `null`.
+ * Signed-in, like `get`: a team is signed-in-readable reference data.
+ */
+export const getByIdParam = query({
+  args: { id: v.string() },
+  returns: v.union(teamDocValidator, v.null()),
+  handler: async (ctx, args) => {
+    await requireSignedIn(ctx);
+    const id = ctx.db.normalizeId("teams", args.id);
+    if (id === null) return null;
+    return await ctx.db.get(id);
+  },
+});
+
+/**
  * Batch lookup for resolving a list of teamIds back to display rows.
  * Used by the CardChecklistItem display row + TeamPicker chip view to
  * render the names without N round-trips. Missing IDs are silently
@@ -1743,7 +1773,7 @@ const TEAM_MANAGEMENT_CAP = 2000;
  * NEO-156: teams for a picker, for any signed-in user.
  *
  * The spine-label designer needs to offer teams to a COLLECTOR, and
- * `listForManagement` above is admin-only. Same rows, different audience —
+ * `listForManagement` below is admin-only. Same rows, different audience —
  * teams are globally-shared reference data with no user content on them, so
  * the only thing being gated is cost.
  *
@@ -1752,8 +1782,10 @@ const TEAM_MANAGEMENT_CAP = 2000;
  * team is free read amplification for anyone who wants it. Returns empty
  * rather than throwing, so a signed-out render is a quiet no-op.
  *
- * Filtering is the client's job, as on the admin screen — right at today's
- * scale, and the explicit cap is what stops that being silently wrong later.
+ * NEO-330 — this is the "one character typed" list and nothing more. From two
+ * characters the picker asks `teams.search`, so a team past the cap is found
+ * by name; the window here is NEWEST first for the reason
+ * `listForManagement` gives below.
  */
 export const listForPicker = query({
   args: { sportId: v.optional(v.id("selectorOptions")) },
@@ -1765,8 +1797,9 @@ export const listForPicker = query({
       ? await ctx.db
           .query("teams")
           .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
+          .order("desc")
           .take(TEAM_MANAGEMENT_CAP)
-      : await ctx.db.query("teams").take(TEAM_MANAGEMENT_CAP);
+      : await ctx.db.query("teams").order("desc").take(TEAM_MANAGEMENT_CAP);
 
     // NEO-236: sorted by the FULL name, which is what a picker renders. Sorting
     // on `name` alone would file the Padres under P and the Giants under G,
@@ -1786,11 +1819,21 @@ export const listForPicker = query({
  * from `colorCandidates` and `colors` — the same two facts, without the server
  * deciding in advance which of them the operator is allowed to see.
  *
- * Filtering and sorting are the client's job. That is right at today's scale
- * (58 prod teams) and wrong past a few thousand, at which point this becomes a
- * paginated search — hence the explicit cap rather than an unbounded
- * `.collect()` that would one day exceed Convex's read limit and fail as an
- * error rather than a slow query.
+ * NEO-330 — this is the "nothing typed yet" view, and only that, the same
+ * split `players.listForManagement` has always had. The cap stopped being a
+ * distant worry once the reference catalogue landed (several times the cap): the screen
+ * filtered this window in the browser, so every team past it could never be
+ * found or opened. From two typed characters the screen now asks
+ * `searchForManagement` (the `search_name` index) instead, and a `?team=` link
+ * resolves through `getByIdParam` whether or not the row is in this window.
+ *
+ * NEWEST first, as `franchises.list` does since NEO-254, and for the same
+ * reason: `.take()` walks insertion order, so the window used to hold the
+ * OLDEST teams and the one an operator created a second ago was the one it
+ * left out. Sport-scoped reads go newest first too — `by_sport_id` orders by
+ * `_creationTime` within a sport, and one sport alone can pass the cap. The
+ * rows are still sorted by NAME for display below; the order only decides
+ * which rows survive the cap.
  */
 
 export const listForManagement = query({
@@ -1807,8 +1850,12 @@ export const listForManagement = query({
       ? await ctx.db
           .query("teams")
           .withIndex("by_sport_id", (q) => q.eq("sportId", args.sportId!))
+          .order("desc")
           .take(TEAM_MANAGEMENT_CAP + 1)
-      : await ctx.db.query("teams").take(TEAM_MANAGEMENT_CAP + 1);
+      : await ctx.db
+          .query("teams")
+          .order("desc")
+          .take(TEAM_MANAGEMENT_CAP + 1);
 
     const truncated = rows.length > TEAM_MANAGEMENT_CAP;
     const teams = rows.slice(0, TEAM_MANAGEMENT_CAP);
@@ -1907,7 +1954,11 @@ export const search = query({
     //
     // NEO-322 — `entityNameQueryReadings(...)[0]` IS `nameTokens`; the second
     // reading exists only for text ending in a run of initials (below).
-    const [reading, ...alternates] = entityNameQueryReadings(args.query);
+    //
+    // NEO-330 — every reading below comes from the CLAMPED text: the raw
+    // argument is whatever a client sends (see `clampSearchQuery`).
+    const typed = clampSearchQuery(args.query);
+    const [reading, ...alternates] = entityNameQueryReadings(typed);
     const term = reading.join(" ");
     if (!term) return [];
 
@@ -1951,7 +2002,7 @@ export const search = query({
      * is the order `nearMatches` already ranks in. Without a sport the read
      * is on the index's leading field alone, so it stays one read either way.
      */
-    const aliasKey = normalizeTeamName(args.query);
+    const aliasKey = normalizeTeamName(typed);
     if (!aliasKey) return hits;
     const aliasRows = await ctx.db
       .query("teamAliases")
@@ -1980,6 +2031,131 @@ export const search = query({
       merged.push(hit);
     }
     return merged.slice(0, limit);
+  },
+});
+
+/**
+ * NEO-330 — how many teams one typed Team Management filter answers with.
+ *
+ * Twice `TEAM_SEARCH_MAX_LIMIT`, because this is a list an operator scans
+ * rather than a typeahead they pick from, and a name like "Giants" is shared by
+ * a few dozen rows across five sports and their minor leagues. Past it the
+ * screen shows "N+ matches" — see `truncated` below.
+ */
+const TEAM_MANAGEMENT_SEARCH_LIMIT = 50;
+
+/**
+ * NEO-330 — how many `search_name` hits one filter reads before applying the
+ * every-word rule (`teamMatchesFilter`).
+ *
+ * The index is OR over the typed words, so "new york yankees" hits every team
+ * with "new" or "york" in its name; the rule then keeps the rows that carry all
+ * three. BM25 ranks rows matching more of the words first, so the rows the rule
+ * keeps sit at the top of the hit list and this is headroom rather than a page
+ * boundary. Bounded because it runs on every debounced keystroke: 256 document
+ * reads is comfortable for one query and far below the index's own 1024.
+ */
+const TEAM_MANAGEMENT_SEARCH_SCAN = 256;
+
+/**
+ * NEO-330 — Team Management's typed filter, answered by the server.
+ *
+ * The screen's list (`listForManagement`) is a capped window; filtering it in
+ * the browser answered "no such team" for every team outside it. From two
+ * typed characters the screen asks this instead, so the whole table is
+ * reachable by name — the split `players.listForManagement` /
+ * `players.search` has always had.
+ *
+ * A row is returned when EVERY typed word starts one of its name's words, or
+ * one of an alias's (`teamMatchesFilter`, which the screen's own one-character
+ * filter uses too, so the two never disagree about a row). The search index
+ * alone is OR over the words and would answer "pittsburgh crawfords" with
+ * every Pittsburgh team. An exact alias ("LSU") is found through
+ * `teamAliases` as `search` finds it, and listed first.
+ *
+ * The league filter is applied HERE, before the limit, rather than by the
+ * screen afterwards: filtered after the fact, "new" under MLB could come back
+ * as fifty New-something teams from other leagues and no Yankees. `"none"` is
+ * the screen's own "teams with no league" value.
+ *
+ * `truncated` says more rows matched than were returned, so the screen can
+ * show "N+ matches" instead of implying the list is complete. Admin-gated, like
+ * the list it stands in for.
+ */
+export const searchForManagement = query({
+  args: {
+    query: v.string(),
+    leagueId: v.optional(v.union(v.id("leagues"), v.literal("none"))),
+  },
+  returns: v.object({
+    teams: v.array(teamDocValidator),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+
+    // Bounded before anything reads it — see `clampSearchQuery`.
+    const typed = clampSearchQuery(args.query);
+    const readings = teamFilterReadings(typed);
+    if (readings.length === 0) return { teams: [], truncated: false };
+
+    const inLeague = (team: Doc<"teams">) =>
+      args.leagueId === undefined
+        ? true
+        : args.leagueId === "none"
+          ? !team.leagueId
+          : team.leagueId === args.leagueId;
+
+    const seen = new Set<string>();
+    const matched: Doc<"teams">[] = [];
+    const keep = (team: Doc<"teams">) => {
+      if (seen.has(team._id) || !inLeague(team)) return;
+      seen.add(team._id);
+      matched.push(team);
+    };
+
+    // The exact-alias leg, first — the order `search` ranks in. Read one past
+    // the limit so a query answered by aliases alone can still say truncated.
+    const aliasKey = normalizeTeamName(typed);
+    if (aliasKey) {
+      const aliasRows = await ctx.db
+        .query("teamAliases")
+        .withIndex("by_alias_normalized_and_sport_id", (q) =>
+          q.eq("aliasNormalized", aliasKey),
+        )
+        .take(TEAM_MANAGEMENT_SEARCH_LIMIT + 1);
+      for (const row of aliasRows) {
+        const team = await ctx.db.get(row.teamId);
+        // Stale side rows (team gone, or moved sport) are skipped, as
+        // `findTeamsByAlias` skips them.
+        if (!team || team.sportId !== row.sportId) continue;
+        keep(team);
+      }
+    }
+
+    // One search per reading, in order, and the second only if the first kept
+    // nothing: "N. C. S" joins to "ncs", which starts no word in "nc state",
+    // and is re-asked as "nc s" (NEO-322, as in `search`).
+    let keptByName = 0;
+    for (const reading of readings) {
+      if (keptByName > 0) break;
+      const hits = await ctx.db
+        .query("teams")
+        .withSearchIndex("search_name", (q) =>
+          q.search("nameNormalized", reading.join(" ")),
+        )
+        .take(TEAM_MANAGEMENT_SEARCH_SCAN);
+      for (const team of hits) {
+        if (!teamMatchesFilter(team, readings)) continue;
+        const before = matched.length;
+        keep(team);
+        keptByName += matched.length - before;
+      }
+    }
+
+    const teams = matched.slice(0, TEAM_MANAGEMENT_SEARCH_LIMIT);
+    teams.sort((a, b) => teamFullName(a).localeCompare(teamFullName(b)));
+    return { teams, truncated: matched.length > TEAM_MANAGEMENT_SEARCH_LIMIT };
   },
 });
 
