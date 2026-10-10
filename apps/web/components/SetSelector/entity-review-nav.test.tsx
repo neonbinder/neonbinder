@@ -24,6 +24,7 @@ import {
   countBulkCreatable,
   countDecided,
   countPendingUndecided,
+  isAmbiguousPlayerRow,
   describeDecision,
   isPresentable,
   nextUndecided,
@@ -1098,5 +1099,92 @@ describe("resolveNav — an implicitly pinned player yields to a pending league"
     ];
     const nav = { rowId: "p1", explicit: true };
     expect(resolveNav(rows, nav)).toBe(nav);
+  });
+});
+
+describe("NEO-332: isAmbiguousPlayerRow", () => {
+  const two = [{ playerId: "a" }, { playerId: "b" }];
+
+  it("is true for a row with two stored same-name candidates", () => {
+    expect(
+      isAmbiguousPlayerRow({
+        ...player("p1"),
+        enrichment: { existingCandidates: two },
+      }),
+    ).toBe(true);
+  });
+
+  it("is false for one candidate, none, an empty list, or no enrichment", () => {
+    expect(
+      isAmbiguousPlayerRow({
+        ...player("p1"),
+        enrichment: { existingCandidates: [{ playerId: "a" }] },
+      }),
+    ).toBe(false);
+    expect(
+      isAmbiguousPlayerRow({ ...player("p1"), enrichment: { existingCandidates: [] } }),
+    ).toBe(false);
+    expect(isAmbiguousPlayerRow({ ...player("p1"), enrichment: {} })).toBe(false);
+    expect(isAmbiguousPlayerRow({ ...player("p1"), enrichment: null })).toBe(false);
+    expect(isAmbiguousPlayerRow(player("p1"))).toBe(false);
+  });
+});
+
+describe("NEO-332: countBulkCreatable leaves the same-name picks out", () => {
+  const ambiguous: NavRow = {
+    ...player("amb"),
+    enrichment: { existingCandidates: [{ playerId: "a" }, { playerId: "b" }] },
+  };
+
+  it("does not count an undecided ambiguous player", () => {
+    expect(countBulkCreatable([ambiguous, player("p2")])).toBe(1);
+  });
+
+  it("counts zero when the only undecided player is ambiguous", () => {
+    expect(countBulkCreatable([ambiguous])).toBe(0);
+  });
+
+  it("still counts a player with exactly one stored candidate", () => {
+    expect(
+      countBulkCreatable([
+        { ...player("one"), enrichment: { existingCandidates: [{ playerId: "a" }] } },
+      ]),
+    ).toBe(1);
+  });
+});
+
+describe("NEO-332: describeDecision names WHICH same-name player a link went to", () => {
+  const link = { action: "link" as const, linkedPlayerId: "p1" };
+
+  it("appends the candidate's distinguishing line after the name", () => {
+    expect(describeDecision(link, "Shuya Yamada", "Shuya Yamada", "b. 1852")).toBe(
+      "Linked to Shuya Yamada, b. 1852",
+    );
+    expect(
+      describeDecision(link, "Bob Allen", "Bob Allen", "also known as Robert Allen · b. 1937"),
+    ).toBe("Linked to Bob Allen, also known as Robert Allen · b. 1937");
+  });
+
+  it("reads an ordinary link exactly as before when there is no detail", () => {
+    expect(describeDecision(link, "Mike Trout", "Mike Trout")).toBe("Linked to Mike Trout");
+    expect(describeDecision(link, "Mike Trout", "Mike Trout", null)).toBe(
+      "Linked to Mike Trout",
+    );
+  });
+
+  it("drops the detail when there is no name for it to qualify", () => {
+    expect(describeDecision(link, null, "Shuya Yamada", "b. 1852")).toBe(
+      "Linked to an existing record",
+    );
+  });
+
+  it("never produces the live control's 'Link to {name}, {detail}' accessible name", () => {
+    const text = describeDecision(link, "Shuya Yamada", "Shuya Yamada", "b. 1852");
+    expect(text).not.toMatch(/^Link to /);
+  });
+
+  it("does not touch create or skip", () => {
+    expect(describeDecision({ action: "create" }, "X", "X", "b. 1852")).toBe("Added as new");
+    expect(describeDecision({ action: "skip" }, "X", "X", "b. 1852")).toBe("Skipped");
   });
 });

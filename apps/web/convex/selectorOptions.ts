@@ -1350,10 +1350,20 @@ async function resolveUnknownsAndStartBatch(
 ): Promise<{
   unknownPlayers: string[];
   unknownTeams: string[];
+  ambiguousPlayers: string[];
   batchId?: string;
 }> {
   const unknownPlayers: string[] = [];
   const unknownTeams: string[] = [];
+  /**
+   * NEO-332 — the unknown player names that are NOT new: two or more players
+   * are already on file under the name and the card's year (and team) left
+   * more than one standing. A SUBSET of `unknownPlayers`, which still carries
+   * every one of them to the batch exactly as before; this list only lets the
+   * sync banner stop counting them as "new players", because the operator's
+   * job for these is to pick one from the roster, not to create anyone.
+   */
+  const ambiguousPlayers: string[] = [];
   /**
    * NEO-296 — the unknown player names this gate proved match NOTHING.
    *
@@ -1528,6 +1538,10 @@ async function resolveUnknownsAndStartBatch(
       // lookup. `matchCount` is the count BEFORE any year narrowing, so zero
       // here means zero rows of that name exist, full stop.
       if (resolved.matchCount === 0) playersWithNoExistingMatch.push(name);
+      // NEO-332 — and whether it matched SEVERAL. Same pre-narrowing count:
+      // two or more rows of that name, and no single one survived the card's
+      // year and team. Reported, never acted on — matching is unchanged.
+      if (resolved.matchCount >= 2) ambiguousPlayers.push(name);
     } else if (resolved.narrowedByCardYear) {
       /*
        * NEO-254 — an auto-link the OPERATOR never saw.
@@ -1623,7 +1637,7 @@ async function resolveUnknownsAndStartBatch(
     });
   }
 
-  return { unknownPlayers, unknownTeams, batchId };
+  return { unknownPlayers, unknownTeams, ambiguousPlayers, batchId };
 }
 
 /**
@@ -14051,6 +14065,11 @@ export const resolveChecklistEntities = action({
   returns: v.object({
     unknownPlayers: v.array(v.string()),
     unknownTeams: v.array(v.string()),
+    // NEO-332 — the subset of `unknownPlayers` that already has two or more
+    // same-name players on file, so the client can say "to pick from the
+    // roster" instead of "new players". Optional so the wire change is purely
+    // additive; this action always sends it (empty when there are none).
+    ambiguousPlayers: v.optional(v.array(v.string())),
     // Present whenever there are unknowns — the review wizard subscribes to
     // this batch via entityReviewQueue.
     //
@@ -14065,6 +14084,7 @@ export const resolveChecklistEntities = action({
   handler: async (ctx, args): Promise<{
     unknownPlayers: string[];
     unknownTeams: string[];
+    ambiguousPlayers?: string[];
     batchId?: string;
   }> => {
     await requireAdmin(ctx);

@@ -2685,8 +2685,12 @@ describe("NEO-254: resolveChecklistEntities enqueues an ambiguous name for revie
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].name).toBe("Bob Allen");
-    // Still `pending` — no lookup has run — and already knows it is a choice.
-    expect(rows[0].status).toBe("pending");
+    // NEO-332 — settled with no lookup: a same-name choice is not looked up
+    // until the operator presses Create new (`requestPlayerLookup`), so it
+    // never holds the wizard's "still looking up". It already knows it is a
+    // choice.
+    expect(rows[0].status).toBe("ready");
+    expect(rows[0].enrichment?.wikidataId).toBeUndefined();
     expect(rows[0].enrichment?.existingCandidates).toHaveLength(2);
     expect(
       rows[0].enrichment?.existingCandidates?.map((c) => c.birthYear).sort(),
@@ -2733,6 +2737,113 @@ describe("NEO-254: resolveChecklistEntities enqueues an ambiguous name for revie
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].enrichment).toBeUndefined();
+  });
+});
+
+describe("NEO-332: resolveChecklistEntities reports the names that are a pick, not a create", () => {
+  async function resolveFor(
+    t: ReturnType<typeof convexTest>,
+    variantTypeId: Id<"selectorOptions">,
+    sportId: Id<"selectorOptions">,
+    names: string[],
+  ) {
+    return t.withIdentity(ADMIN_IDENTITY).action(
+      api.selectorOptions.resolveChecklistEntities,
+      {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "1", players: names })],
+      },
+    );
+  }
+
+  test("two same-name rows, un-narrowed: in BOTH unknownPlayers and ambiguousPlayers, and the batch still starts", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1867 });
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob", { birthYear: 1937 });
+
+    const resolved = await resolveFor(t, variantTypeId, sportId, ["Bob Allen"]);
+
+    expect(resolved.unknownPlayers).toEqual(["Bob Allen"]);
+    expect(resolved.ambiguousPlayers).toEqual(["Bob Allen"]);
+    expect(resolved.batchId).toBeDefined();
+    const rows = await t.run(async (ctx) =>
+      ctx.db.query("entityReviewQueue").collect(),
+    );
+    expect(rows.map((r) => r.name)).toEqual(["Bob Allen"]);
+  });
+
+  test("a brand-new name is unknown but not ambiguous", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    const resolved = await resolveFor(t, variantTypeId, sportId, ["Daulton Varsho"]);
+
+    expect(resolved.unknownPlayers).toEqual(["Daulton Varsho"]);
+    expect(resolved.ambiguousPlayers).toEqual([]);
+  });
+
+  test("exactly one existing row is neither unknown nor ambiguous", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertBarePlayer(t, sportId, "Tony Gwynn", "gwynn tony");
+
+    const resolved = await resolveFor(t, variantTypeId, sportId, ["Tony Gwynn"]);
+
+    expect(resolved.unknownPlayers).toEqual([]);
+    expect(resolved.ambiguousPlayers).toEqual([]);
+  });
+
+  test("two rows narrowed to one by the card's year are resolved, so not ambiguous", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    const team = await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        location: "Chicago",
+        name: "Cubs",
+        nameNormalized: "chicago cubs",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    // The set is a 2024 set: one Bob Allen played in 2024, the other in 1890.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("players", {
+        name: "Bob Allen",
+        nameNormalized: "allen bob",
+        sportId,
+        teamYears: [{ teamId: team, fromYear: 2020, toYear: 2026 }],
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.insert("players", {
+        name: "Bob Allen",
+        nameNormalized: "allen bob",
+        sportId,
+        teamYears: [{ teamId: team, fromYear: 1890, toYear: 1894 }],
+        lastUpdated: Date.now(),
+      });
+    });
+
+    const resolved = await resolveFor(t, variantTypeId, sportId, ["Bob Allen"]);
+
+    expect(resolved.unknownPlayers).toEqual([]);
+    expect(resolved.ambiguousPlayers).toEqual([]);
+  });
+
+  test("only the ambiguous name is listed when a card carries an ambiguous and a new one", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob");
+    await insertBarePlayer(t, sportId, "Bob Allen", "allen bob");
+
+    const resolved = await resolveFor(t, variantTypeId, sportId, [
+      "Bob Allen",
+      "Daulton Varsho",
+    ]);
+
+    expect([...resolved.unknownPlayers].sort()).toEqual(["Bob Allen", "Daulton Varsho"]);
+    expect(resolved.ambiguousPlayers).toEqual(["Bob Allen"]);
   });
 });
 

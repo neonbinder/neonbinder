@@ -950,6 +950,58 @@ async function initialEnrichmentFor(
 }
 
 /**
+ * NEO-332 — does this enrichment make the row a CHOICE between players we
+ * already hold?
+ *
+ * `buildExistingPlayerCandidates` returns [] unless two or more rows answer to
+ * the name AND the card-year narrowing could not pick one, so any stored
+ * candidate means exactly that. The same reading as the wizard's pick-step
+ * predicate (`sameNameCandidates.length > 0`), so the server and the client
+ * cannot disagree about which rows wait for the operator.
+ */
+function isSameNameChoice(
+  enrichment: Doc<"entityReviewQueue">["enrichment"] | undefined,
+): boolean {
+  return (enrichment?.existingCandidates?.length ?? 0) > 0;
+}
+
+/**
+ * NEO-332 — a same-name player row whose Wikidata lookup has not been asked
+ * for yet.
+ *
+ * Jason, 2026-10-10: "we shouldn't even be querying wikidata at all in this
+ * scenerio because there is no new player to query the data for." Two or more
+ * players on file under the name means the operator's first question is WHICH
+ * of them this card is. A lookup would describe a NEW person, and would stage
+ * New Team steps for that person's career — ahead of a pick step whose usual
+ * answer is "one of the people we already have", which needs none of it. So
+ * the row is inserted settled (`ready`, carrying only its candidates), no
+ * lookup is enqueued, and the lookup starts only when the operator presses
+ * Create new (`requestPlayerLookup`).
+ *
+ * Derived from the row rather than stored, so no schema field is needed:
+ *
+ *   - `ready`, because every other road out of `pending` ends elsewhere. A
+ *     lookup that answers writes a player result, and `PlayerLookupResult`
+ *     always carries `wikidataId`; one that finds nothing, throws, is
+ *     backstopped or is swept writes `error`. So a `ready` player row with
+ *     candidates and NO `wikidataId` was never looked up at all.
+ *   - `pending` is a lookup in flight (asked for, or enqueued before this
+ *     shipped), and `error` / `wikidataId` are a lookup that already ran.
+ *     None of those wait for anything.
+ */
+export function playerLookupAwaitsCreateNew(
+  row: Pick<Doc<"entityReviewQueue">, "kind" | "status" | "enrichment">,
+): boolean {
+  return (
+    row.kind === "player" &&
+    row.status === "ready" &&
+    isSameNameChoice(row.enrichment) &&
+    row.enrichment?.wikidataId === undefined
+  );
+}
+
+/**
  * NEO-294 — what ONE `startBatch` transaction may spend, counted in Convex
  * system operations.
  *
@@ -1421,23 +1473,26 @@ export const startBatch = internalMutation({
           (skipLookup ? 0 : REVIEW_NAME_LOOKUP_OPS.BASE) +
           (enrichment ? REVIEW_NAME_LOOKUP_OPS.EXTRA : 0) +
           1;
-        addedIds.push(
-          await ctx.db.insert("entityReviewQueue", {
-            selectorOptionId: args.selectorOptionId,
-            batchId,
-            createdByUserId: args.createdByUserId,
-            kind,
-            name,
-            // NEO-236: `key` IS that normalization — computed by `keyFor`
-            // above with the kind prefix, which is stored as a separate
-            // column. Slicing it keeps the two provably identical rather than
-            // normalizing twice and hoping.
-            nameNormalized: key.slice(kind.length + 1),
-            sportId: args.sportId,
-            status: "pending",
-            ...(enrichment ? { enrichment } : {}),
-          }),
-        );
+        // NEO-332 — a same-name choice is born settled and is NOT enqueued;
+        // see `playerLookupAwaitsCreateNew`. Same insert, so the charge above
+        // is unchanged.
+        const awaitsChoice = kind === "player" && isSameNameChoice(enrichment);
+        const addedId = await ctx.db.insert("entityReviewQueue", {
+          selectorOptionId: args.selectorOptionId,
+          batchId,
+          createdByUserId: args.createdByUserId,
+          kind,
+          name,
+          // NEO-236: `key` IS that normalization — computed by `keyFor`
+          // above with the kind prefix, which is stored as a separate
+          // column. Slicing it keeps the two provably identical rather than
+          // normalizing twice and hoping.
+          nameNormalized: key.slice(kind.length + 1),
+          sportId: args.sportId,
+          status: awaitsChoice ? "ready" : "pending",
+          ...(enrichment ? { enrichment } : {}),
+        });
+        if (!awaitsChoice) addedIds.push(addedId);
       }
       if (addedIds.length > 0) {
         // Only the ADDED rows. A resume must never re-enqueue a lookup that
@@ -1481,20 +1536,26 @@ export const startBatch = internalMutation({
         (skipLookup ? 0 : REVIEW_NAME_LOOKUP_OPS.BASE) +
         (enrichment ? REVIEW_NAME_LOOKUP_OPS.EXTRA : 0) +
         1;
-      ids.push(
-        await ctx.db.insert("entityReviewQueue", {
-          selectorOptionId: args.selectorOptionId,
-          batchId,
-          createdByUserId: args.createdByUserId,
-          kind: "player",
-          name,
-          // NEO-236 — see the field's note in schema.ts.
-          nameNormalized: normalizePlayerName(name),
-          sportId: args.sportId,
-          status: "pending",
-          ...(enrichment ? { enrichment } : {}),
-        }),
-      );
+      // NEO-332 — two or more players on file under this name: the operator
+      // picks one first, and the lookup waits for Create new. Inserted
+      // settled and left out of the enqueue; see
+      // `playerLookupAwaitsCreateNew`. Same one insert, so the charge above
+      // is unchanged — and when EVERY name is a choice, the pool enqueue
+      // below is not scheduled at all.
+      const awaitsChoice = isSameNameChoice(enrichment);
+      const insertedId = await ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: args.selectorOptionId,
+        batchId,
+        createdByUserId: args.createdByUserId,
+        kind: "player",
+        name,
+        // NEO-236 — see the field's note in schema.ts.
+        nameNormalized: normalizePlayerName(name),
+        sportId: args.sportId,
+        status: awaitsChoice ? "ready" : "pending",
+        ...(enrichment ? { enrichment } : {}),
+      });
+      if (!awaitsChoice) ids.push(insertedId);
     }
     for (const name of args.teamNames) {
       // NEO-294 — a team row is one insert and no name lookup, so it is
@@ -1850,6 +1911,16 @@ async function stageCareerTeamRowsImpl(
   // A team row has no career teams of its own, and a staged row must never
   // stage further rows — that is the recursion this guard forecloses.
   if (playerRow.kind !== "player") return [];
+  /*
+   * NEO-332 — a same-name choice the operator has not answered stages
+   * nothing. Career teams belong to a NEW person, and until the operator
+   * presses Create new (`requestPlayerLookup`) there is none: the usual
+   * answer is a player we already hold, who needs no New Team steps at all.
+   * Such a row has no `careerTeams` to stage from anyway (its lookup has not
+   * run); this keeps hand-typed extras and every future caller out too.
+   * Reads nothing, so it adds nothing to any caller's read set.
+   */
+  if (playerLookupAwaitsCreateNew(playerRow)) return [];
 
   type Proposal = {
     name: string;
@@ -2152,6 +2223,21 @@ export const stageCareerTeamRows = mutation({
     const row = await ctx.db.get(args.reviewRowId);
     if (!row) throw new Error("Review row not found");
     assertOwnsRow(row, callerId);
+    /*
+     * NEO-332 — nothing is staged for a same-name choice until Create new
+     * (see `stageCareerTeamRowsImpl`). The belt-and-braces call carries no
+     * names and simply gets 0. One that DOES carry hand-typed names would be
+     * dropped, and a typed stint dropped without a word is the NEO-248
+     * defect — so it is refused instead. Only a client that skipped
+     * `requestPlayerLookup` can get here, so the message is for the log, not
+     * for an operator.
+     */
+    if (
+      playerLookupAwaitsCreateNew(row) &&
+      ((args.careerTeamNames?.length ?? 0) > 0 || (args.careerTeams?.length ?? 0) > 0)
+    ) {
+      throw new Error("Request this row's lookup (Create new) before staging career teams");
+    }
     // Defense in depth, exactly as `recordDecision` does it: these years reach
     // `players.teamYears` by way of the chip the wizard rebuilds from them, so
     // nonsense is refused at the boundary rather than stored.
@@ -2680,6 +2766,8 @@ export const recordDecision = mutation({
         // NEO-221: proof of life for the abandoned-batch sweep.
         lastTouchedAt: Date.now(),
       });
+      // NEO-332 — "not a person" makes no new player either.
+      await releaseStepsOfAnsweredChoice(ctx, row);
       return null;
     }
 
@@ -2888,6 +2976,9 @@ export const recordDecision = mutation({
         },
         lastTouchedAt: Date.now(),
       });
+      // NEO-332 — the operator picked someone we already hold, so the New
+      // Team steps a Create-new lookup staged for a new person go.
+      await releaseStepsOfAnsweredChoice(ctx, row);
     } else if (row.kind === "league") {
       // NEO-254 — link a staged league step to a league we already hold. Same
       // two checks the team arm makes, and for the same reasons: a row deleted
@@ -2997,6 +3088,10 @@ export const clearDecision = mutation({
       lastTouchedAt: Date.now(),
     });
 
+    // NEO-332: a same-name choice whose lookup was never asked for is
+    // `ready`, not `pending`, so un-deciding it enqueues nothing — it goes
+    // back to the pick step, and only Create new (`requestPlayerLookup`)
+    // starts its lookup.
     if (row.status === "pending") {
       await ctx.scheduler.runAfter(
         0,
@@ -3004,6 +3099,87 @@ export const clearDecision = mutation({
         { rowIds: [args.reviewRowId] },
       );
     }
+    return null;
+  },
+});
+
+/**
+ * NEO-332 — the operator pressed **Create new** on a same-name pick step:
+ * start the lookup that was held back for it.
+ *
+ * A row two or more players already answer to is inserted settled and is NOT
+ * looked up (`playerLookupAwaitsCreateNew`; Jason, 2026-10-10: "we shouldn't
+ * even be querying wikidata at all in this scenerio because there is no new
+ * player to query the data for"). Create new is the moment there IS a new
+ * player, so this puts the row back on `pending` and schedules the same pool
+ * enqueue `startBatch` makes for any unknown name. From there it is an
+ * ordinary lookup: `applyLookupResult` settles it, refreshes the candidates,
+ * and stages the career teams as New Team steps.
+ *
+ * A LOOKUP for a throwaway review row, not entity enrichment: nothing here
+ * touches `players`/`teams`, so the creation-only rule on
+ * `wikidataPool.enqueueEnrichment` does not apply (the `clearDecision` note).
+ *
+ * ## Idempotent
+ *
+ * Only a row still waiting is enqueued. A second press, or a press after the
+ * lookup has run (`pending` in flight; `ready` with a Wikidata answer;
+ * `error`), enqueues nothing, so the pool is asked about a row at most once
+ * per Create new — and a row with no stored marker (the wizard's live
+ * same-name fallback) has already had its lookup and is never re-asked.
+ *
+ * What a repeat call DOES do is re-stage the career teams already on the row,
+ * which costs no network and inserts only steps that are missing. That covers
+ * one path: Create new → the steps are staged → "Back to the list" → link,
+ * which releases them (`releaseStepsOfAnsweredChoice`) → Change decision →
+ * Create new again. The lookup ran the first time, so without this the New
+ * Player step would come back with every chip reading "needs a team
+ * decision" and nowhere staged to answer it.
+ *
+ * ## Refused
+ *
+ * Admin-gated and ownership-checked like every mutation in this file. A
+ * non-player row, a decided row (undo the decision first — the client clears
+ * it before re-presenting the pick step) and a missing row are refused; each
+ * is a client bug, so the messages are for the log rather than the operator.
+ */
+export const requestPlayerLookup = mutation({
+  args: { reviewRowId: v.id("entityReviewQueue") },
+  returns: v.null(),
+  handler: async (ctx, args): Promise<null> => {
+    const callerId = await requireAdmin(ctx);
+    const row = await ctx.db.get(args.reviewRowId);
+    if (!row) throw new Error("Review row not found");
+    assertOwnsRow(row, callerId);
+    if (row.kind !== "player") {
+      throw new Error("Only a player row has a lookup to request");
+    }
+    if (row.decision) {
+      throw new Error("Undo this row's decision before requesting its lookup");
+    }
+
+    if (!playerLookupAwaitsCreateNew(row)) {
+      // Already asked. Re-stage what the finished lookup proposed — a no-op
+      // unless a link released those steps; see the doc above. A lookup still
+      // in flight has no `careerTeams` yet and stages when it lands.
+      if (row.status !== "pending") await stageCareerTeamRowsImpl(ctx, row);
+      return null;
+    }
+
+    await ctx.db.patch(row._id, {
+      status: "pending",
+      // NEO-221: operator activity, like every other decision gesture.
+      lastTouchedAt: Date.now(),
+    });
+    await ctx.scheduler.runAfter(
+      0,
+      internal.wikidataPool.enqueueEntityReviewLookups,
+      { rowIds: [row._id] },
+    );
+    // Ids only — never the name (observability.ts).
+    console.log(
+      JSON.stringify({ msg: "entity_review_player_lookup_requested", rowId: row._id }),
+    );
     return null;
   },
 });
@@ -3080,6 +3256,271 @@ function teamNeedsLeague(
 }
 
 /**
+ * NEO-313 / NEO-332 — what `releaseStagedSteps` did, for the caller's log line.
+ */
+type StagedStepRelease = {
+  teamsDeleted: number;
+  teamsHandedOver: number;
+  leaguesDeleted: number;
+  leaguesHandedOver: number;
+  decidedDeleted: number;
+  scanTruncated: boolean;
+};
+
+/**
+ * NEO-313 / NEO-332 — let go of the steps this row staged: hand each one to
+ * another row of the batch that still needs it, and delete the rest.
+ *
+ * Extracted from `switchRowSport` (NEO-313), whose doc carries the reasoning
+ * for the hand-over and for the batch read below. Two callers now:
+ *
+ *   - `switchRowSport`, with `keepDecided: false` — the steps were raised in
+ *     the OLD sport, so an answer to one is an answer about the wrong sport
+ *     and goes with it. Behaviour unchanged by the extraction.
+ *   - `recordDecision`, with `keepDecided: true`, when a same-name player row
+ *     is LINKED or SKIPPED (NEO-332). The operator pressed Create new, the
+ *     lookup staged New Team steps for the new person's career, and then they
+ *     went "Back to the list" and picked someone we already hold (or said it
+ *     is not a person). No new player is being made, so an UNDECIDED step is
+ *     a question about nothing — and left behind it is walked as a New Team
+ *     step nobody needs, and blocks "all reviewed". A DECIDED step is kept,
+ *     exactly as reconciliation keeps one (`startBatch`): the operator ruled
+ *     on it, and the commit prelude still honours that ruling.
+ *
+ * Leagues follow their team: one under a team that is kept (decided, or
+ * handed over) stays with it; one under a released team is offered to the
+ * batch's other teams and otherwise deleted — again sparing a decided one
+ * when `keepDecided` says so.
+ *
+ * ## Why a batch read is acceptable HERE
+ *
+ * Everywhere else staging refuses to read the batch — "a collect of the batch
+ * is the NEO-189 optimistic-concurrency storm", because those paths run
+ * five-wide under the lookup pool. These callers do not: each is one operator
+ * pressing one button on one row, and nothing hot writes alongside it except
+ * that row's own lookups. So the heir scan reads the batch's player rows (and,
+ * only when a league needs a new parent, its team rows) through the
+ * `by_batch_and_kind_and_name` three-field prefix, capped at
+ * `SWITCH_SPORT_HEIR_SCAN_LIMIT` per kind to stay near the ~900-operation
+ * transaction budget, and skipped entirely when there is nothing to hand over.
+ * Past the cap the unscanned rows cannot inherit and their steps are deleted;
+ * the caller's log records that it happened.
+ */
+async function releaseStagedSteps(
+  ctx: MutationCtx,
+  row: Doc<"entityReviewQueue">,
+  opts: { keepDecided: boolean },
+): Promise<StagedStepRelease> {
+  // The steps this row raised — and the league steps those raised in turn.
+  // Bounded by the staging caps (64 career teams per player, 4 leagues per
+  // team).
+  const staged =
+    row.kind === "player"
+      ? await ctx.db
+          .query("entityReviewQueue")
+          .withIndex("by_source_player", (q) => q.eq("source.playerRowId", row._id))
+          .collect()
+      : [];
+  const stagedLeagues: Doc<"entityReviewQueue">[] = [];
+  for (const teamRowId of [row._id, ...staged.map((r) => r._id)]) {
+    const leagues = await ctx.db
+      .query("entityReviewQueue")
+      .withIndex("by_source_team", (q) => q.eq("source.teamRowId", teamRowId))
+      .collect();
+    stagedLeagues.push(...leagues);
+  }
+  const teamChildren = staged.filter((child) => child.batchId === row.batchId);
+  const leagueChildren = stagedLeagues.filter(
+    (child) => child.batchId === row.batchId,
+  );
+  /** NEO-332 — a decided step is the operator's answer; see the doc above. */
+  const releasable = (child: Doc<"entityReviewQueue">) =>
+    !(opts.keepDecided && child.decision !== undefined);
+  const releasedTeams = teamChildren.filter(releasable);
+
+  /*
+   * ── A step another row of the batch still needs is HANDED OVER, not lost ─
+   *
+   * Staging dedupes a team step by name across the whole batch and a league
+   * step likewise, so a step carries only the FIRST row that raised it. When
+   * that row is this one, deleting the step would take it — answer and all —
+   * away from every other row that needed the same name, and the wizard's
+   * re-stage only covers some of those rows. So before deleting, each child
+   * is offered to the rest of the batch, using the SAME "needs" predicate
+   * staging uses (`playerNeedsCareerTeam`, `teamNeedsLeague`): the first row
+   * that needs it becomes its `source` parent and the child is kept with its
+   * decision intact. Only a child no other row needs is deleted.
+   */
+  const heirScan = async (kind: "player" | "team") => {
+    const page = await ctx.db
+      .query("entityReviewQueue")
+      .withIndex("by_batch_and_kind_and_name", (q) =>
+        q
+          .eq("selectorOptionId", row.selectorOptionId)
+          .eq("batchId", row.batchId)
+          .eq("kind", kind),
+      )
+      .take(SWITCH_SPORT_HEIR_SCAN_LIMIT + 1);
+    return {
+      rows: page.slice(0, SWITCH_SPORT_HEIR_SCAN_LIMIT),
+      truncated: page.length > SWITCH_SPORT_HEIR_SCAN_LIMIT,
+    };
+  };
+
+  let scanTruncated = false;
+  let decidedDeleted = 0;
+  let teamsDeleted = 0;
+  let teamsHandedOver = 0;
+  let leaguesDeleted = 0;
+  let leaguesHandedOver = 0;
+
+  // A team step that is not released (NEO-332: decided, under `keepDecided`)
+  // stays where it is, and so do its leagues.
+  const keptTeamIds = new Set<Id<"entityReviewQueue">>(
+    teamChildren.filter((child) => !releasable(child)).map((child) => child._id),
+  );
+  const deletedTeamIds = new Set<Id<"entityReviewQueue">>();
+  if (releasedTeams.length > 0) {
+    const players = await heirScan("player");
+    scanTruncated ||= players.truncated;
+    for (const child of releasedTeams) {
+      let handedOver = false;
+      for (const heir of players.rows) {
+        if (heir._id === row._id) continue;
+        const need = playerNeedsCareerTeam(heir, child);
+        if (!need) continue;
+        // The years on `manualStint` were typed for THIS row's stint; they
+        // never travel to another player's (the NEO-248 attribution rule).
+        const wikidataId =
+          need.wikidataId ??
+          (child.source?.kind === "careerTeamOf" ? child.source.wikidataId : undefined);
+        await ctx.db.patch(child._id, {
+          source: {
+            kind: "careerTeamOf",
+            playerRowId: heir._id,
+            ...(wikidataId ? { wikidataId } : {}),
+          },
+        });
+        handedOver = true;
+        break;
+      }
+      if (handedOver) {
+        keptTeamIds.add(child._id);
+        teamsHandedOver++;
+      } else {
+        deletedTeamIds.add(child._id);
+      }
+    }
+  }
+
+  // A league under a team that was kept simply stays with it. Every other
+  // league lost its parent (this row, or a team step being deleted).
+  const orphanLeagues = leagueChildren.filter(
+    (league) =>
+      !(league.source?.kind === "leagueOf" && keptTeamIds.has(league.source.teamRowId)) &&
+      releasable(league),
+  );
+  const leaguesToDelete: Array<Doc<"entityReviewQueue">> = [];
+  if (orphanLeagues.length > 0) {
+    const teams = await heirScan("team");
+    scanTruncated ||= teams.truncated;
+    for (const league of orphanLeagues) {
+      let handedOver = false;
+      for (const heir of teams.rows) {
+        if (heir._id === row._id || deletedTeamIds.has(heir._id)) continue;
+        const need = teamNeedsLeague(heir, league);
+        if (!need) continue;
+        const wikidataId =
+          need.wikidataId ??
+          (league.source?.kind === "leagueOf" ? league.source.wikidataId : undefined);
+        await ctx.db.patch(league._id, {
+          source: {
+            kind: "leagueOf",
+            teamRowId: heir._id,
+            ...(wikidataId ? { wikidataId } : {}),
+          },
+        });
+        handedOver = true;
+        break;
+      }
+      if (handedOver) leaguesHandedOver++;
+      else leaguesToDelete.push(league);
+    }
+  }
+
+  // No decision points at a review-row id, so deleting these leagues and
+  // teams together leaves nothing dangling. Leagues first: a deleted team's
+  // leagues are either handed over above or in this list (or, under
+  // `keepDecided`, decided and kept where they are).
+  for (const league of leaguesToDelete) {
+    if (league.decision) decidedDeleted++;
+    leaguesDeleted++;
+    await ctx.db.delete(league._id);
+  }
+  for (const child of releasedTeams) {
+    if (!deletedTeamIds.has(child._id)) continue;
+    if (child.decision) decidedDeleted++;
+    teamsDeleted++;
+    await ctx.db.delete(child._id);
+  }
+
+  return {
+    teamsDeleted,
+    teamsHandedOver,
+    leaguesDeleted,
+    leaguesHandedOver,
+    decidedDeleted,
+    scanTruncated,
+  };
+}
+
+/**
+ * NEO-332 — a same-name player row was just LINKED or SKIPPED: let go of the
+ * undecided steps staged for it.
+ *
+ * Such a row stages nothing until the operator presses Create new
+ * (`playerLookupAwaitsCreateNew`), so steps hang off it only when they did,
+ * the lookup landed and staged the new person's career teams, and they then
+ * went "Back to the list" and answered the pick step after all. Reconciliation
+ * would never clear those: its orphan rule (`startBatch`, NEO-236 finding 4)
+ * keys on the PLAYER row surviving, and a linked player survives. Without
+ * this they are walked as New Team steps nobody needs.
+ *
+ * Decided steps stay (see `releaseStagedSteps`). Scoped to rows that carry
+ * the stored same-name marker: those are the only rows whose staged steps can
+ * pre-date the operator's answer in this way. Another row's steps are walked
+ * BEFORE that row is presented (`waitingOnStagedTeams`), so by the time it is
+ * linked they are normally already answered.
+ *
+ * `row` is the pre-decision document; only its id, kind, batch and
+ * enrichment are read.
+ */
+async function releaseStepsOfAnsweredChoice(
+  ctx: MutationCtx,
+  row: Doc<"entityReviewQueue">,
+): Promise<void> {
+  if (row.kind !== "player" || !isSameNameChoice(row.enrichment)) return;
+  const released = await releaseStagedSteps(ctx, row, { keepDecided: true });
+  if (
+    released.teamsDeleted +
+      released.teamsHandedOver +
+      released.leaguesDeleted +
+      released.leaguesHandedOver ===
+    0
+  ) {
+    return;
+  }
+  // Ids and counts only — never the name (observability.ts).
+  console.log(
+    JSON.stringify({
+      msg: "entity_review_choice_steps_released",
+      rowId: row._id,
+      ...released,
+    }),
+  );
+}
+
+/**
  * NEO-313 — answer this row in another sport: the operator's explicit
  * cross-sport override.
  *
@@ -3113,7 +3554,10 @@ function teamNeedsLeague(
  *     is handed over — its `source` re-pointed at the first other row that
  *     needs it, decision intact (see `playerNeedsCareerTeam`,
  *     `teamNeedsLeague`).
- *   - The Wikidata lookup is re-enqueued, under the new sport.
+ *   - The Wikidata lookup is re-enqueued, under the new sport — unless the
+ *     name is a same-name choice there (NEO-332), in which case the row
+ *     settles with its candidates and waits for Create new, exactly as it
+ *     would have at insert. See `playerLookupAwaitsCreateNew`.
  *
  * Refused on a decided row (undo the decision first — it was made about the
  * old sport), on a league row and on any staged row (those follow the row
@@ -3150,163 +3594,17 @@ export const switchRowSport = mutation({
     }
     if (row.sportId === args.sportId) return null;
 
-    // The steps this row raised, in the old sport — and the league steps
-    // those raised in turn. Bounded by the staging caps (64 career teams per
-    // player, 4 leagues per team).
-    const staged =
-      row.kind === "player"
-        ? await ctx.db
-            .query("entityReviewQueue")
-            .withIndex("by_source_player", (q) => q.eq("source.playerRowId", row._id))
-            .collect()
-        : [];
-    const stagedLeagues: Doc<"entityReviewQueue">[] = [];
-    for (const teamRowId of [row._id, ...staged.map((r) => r._id)]) {
-      const leagues = await ctx.db
-        .query("entityReviewQueue")
-        .withIndex("by_source_team", (q) => q.eq("source.teamRowId", teamRowId))
-        .collect();
-      stagedLeagues.push(...leagues);
-    }
-    const teamChildren = staged.filter((child) => child.batchId === row.batchId);
-    const leagueChildren = stagedLeagues.filter(
-      (child) => child.batchId === row.batchId,
-    );
-
-    /*
-     * ── A step another row of the batch still needs is HANDED OVER, not lost ─
-     *
-     * Staging dedupes a team step by name across the whole batch and a league
-     * step likewise, so a step carries only the FIRST row that raised it. When
-     * that row is this one, deleting the step would take it — answer and all —
-     * away from every other row that needed the same name, and the wizard's
-     * re-stage only covers some of those rows. So before deleting, each child
-     * is offered to the rest of the batch, using the SAME "needs" predicate
-     * staging uses (`playerNeedsCareerTeam`, `teamNeedsLeague`): the first row
-     * that needs it becomes its `source` parent and the child is kept with its
-     * decision intact. Only a child no other row needs is deleted.
-     *
-     * ## Why a batch read is acceptable HERE
-     *
-     * Everywhere else staging refuses to read the batch — "a collect of the
-     * batch is the NEO-189 optimistic-concurrency storm", because those paths
-     * run five-wide under the lookup pool. This one does not: it is one
-     * operator pressing one button on one row, rarely, and nothing hot writes
-     * alongside it except that row's own lookups. So it reads the batch's
-     * player rows (and, only when a league needs a new parent, its team rows)
-     * through the `by_batch_and_kind_and_name` three-field prefix, capped at
-     * `SWITCH_SPORT_HEIR_SCAN_LIMIT` per kind to stay near the ~900-operation
-     * transaction budget, and skipped entirely when there is nothing to hand
-     * over. Past the cap the unscanned rows cannot inherit and their steps are
-     * deleted as before; the log records that it happened.
-     */
-    const heirScan = async (kind: "player" | "team") => {
-      const page = await ctx.db
-        .query("entityReviewQueue")
-        .withIndex("by_batch_and_kind_and_name", (q) =>
-          q
-            .eq("selectorOptionId", row.selectorOptionId)
-            .eq("batchId", row.batchId)
-            .eq("kind", kind),
-        )
-        .take(SWITCH_SPORT_HEIR_SCAN_LIMIT + 1);
-      return {
-        rows: page.slice(0, SWITCH_SPORT_HEIR_SCAN_LIMIT),
-        truncated: page.length > SWITCH_SPORT_HEIR_SCAN_LIMIT,
-      };
-    };
-
-    let scanTruncated = false;
-    let decidedDeleted = 0;
-    let teamsDeleted = 0;
-    let teamsHandedOver = 0;
-    let leaguesDeleted = 0;
-    let leaguesHandedOver = 0;
-
-    const keptTeamIds = new Set<Id<"entityReviewQueue">>();
-    const deletedTeamIds = new Set<Id<"entityReviewQueue">>();
-    if (teamChildren.length > 0) {
-      const players = await heirScan("player");
-      scanTruncated ||= players.truncated;
-      for (const child of teamChildren) {
-        let handedOver = false;
-        for (const heir of players.rows) {
-          if (heir._id === row._id) continue;
-          const need = playerNeedsCareerTeam(heir, child);
-          if (!need) continue;
-          // The years on `manualStint` were typed for THIS row's stint; they
-          // never travel to another player's (the NEO-248 attribution rule).
-          const wikidataId =
-            need.wikidataId ??
-            (child.source?.kind === "careerTeamOf" ? child.source.wikidataId : undefined);
-          await ctx.db.patch(child._id, {
-            source: {
-              kind: "careerTeamOf",
-              playerRowId: heir._id,
-              ...(wikidataId ? { wikidataId } : {}),
-            },
-          });
-          handedOver = true;
-          break;
-        }
-        if (handedOver) {
-          keptTeamIds.add(child._id);
-          teamsHandedOver++;
-        } else {
-          deletedTeamIds.add(child._id);
-        }
-      }
-    }
-
-    // A league under a team that was handed over simply stays with it. Every
-    // other league lost its parent (this row, or a team step being deleted).
-    const orphanLeagues = leagueChildren.filter(
-      (league) =>
-        !(league.source?.kind === "leagueOf" && keptTeamIds.has(league.source.teamRowId)),
-    );
-    const leaguesToDelete: Array<Doc<"entityReviewQueue">> = [];
-    if (orphanLeagues.length > 0) {
-      const teams = await heirScan("team");
-      scanTruncated ||= teams.truncated;
-      for (const league of orphanLeagues) {
-        let handedOver = false;
-        for (const heir of teams.rows) {
-          if (heir._id === row._id || deletedTeamIds.has(heir._id)) continue;
-          const need = teamNeedsLeague(heir, league);
-          if (!need) continue;
-          const wikidataId =
-            need.wikidataId ??
-            (league.source?.kind === "leagueOf" ? league.source.wikidataId : undefined);
-          await ctx.db.patch(league._id, {
-            source: {
-              kind: "leagueOf",
-              teamRowId: heir._id,
-              ...(wikidataId ? { wikidataId } : {}),
-            },
-          });
-          handedOver = true;
-          break;
-        }
-        if (handedOver) leaguesHandedOver++;
-        else leaguesToDelete.push(league);
-      }
-    }
-
-    // Answered or not — an answer here is about the OLD sport, and nobody else
-    // in the batch needs it. No decision points at a review-row id, so deleting
-    // these leagues and teams together leaves nothing dangling. Leagues first:
-    // a deleted team's leagues are either handed over above or in this list.
-    for (const league of leaguesToDelete) {
-      if (league.decision) decidedDeleted++;
-      leaguesDeleted++;
-      await ctx.db.delete(league._id);
-    }
-    for (const child of teamChildren) {
-      if (!deletedTeamIds.has(child._id)) continue;
-      if (child.decision) decidedDeleted++;
-      teamsDeleted++;
-      await ctx.db.delete(child._id);
-    }
+    // Answered or not — the steps were raised in the OLD sport, so an answer
+    // to one is about the wrong sport. Handed over where another row of the
+    // batch still needs it; see `releaseStagedSteps`.
+    const {
+      teamsDeleted,
+      teamsHandedOver,
+      leaguesDeleted,
+      leaguesHandedOver,
+      decidedDeleted,
+      scanTruncated,
+    } = await releaseStagedSteps(ctx, row, { keepDecided: false });
 
     // What NB alone can say about this name in the NEW sport — the marker
     // `startBatch` writes at insert, for the same reason: a row whose lookup
@@ -3318,17 +3616,23 @@ export const switchRowSport = mutation({
       args.sportId,
       await findSetYearForSelectorOption(ctx, row.selectorOptionId),
     );
+    // NEO-332 — a name that is a same-name CHOICE in the new sport waits for
+    // the operator exactly as one does at insert (`startBatch`): settled with
+    // its candidates, no lookup until Create new (`requestPlayerLookup`).
+    const lookupDeferred = row.kind === "player" && isSameNameChoice(enrichment);
     await ctx.db.patch(row._id, {
       sportId: args.sportId,
-      status: "pending",
+      status: lookupDeferred ? "ready" : "pending",
       enrichment,
       lastTouchedAt: Date.now(),
     });
     // A LOOKUP for a throwaway review row, not entity enrichment — the same
     // enqueue `clearDecision` and `startBatch` make.
-    await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueEntityReviewLookups, {
-      rowIds: [row._id],
-    });
+    if (!lookupDeferred) {
+      await ctx.scheduler.runAfter(0, internal.wikidataPool.enqueueEntityReviewLookups, {
+        rowIds: [row._id],
+      });
+    }
     // Ids only — never the name (observability.ts).
     console.log(
       JSON.stringify({
@@ -3337,6 +3641,7 @@ export const switchRowSport = mutation({
         kind: row.kind,
         fromSportId: row.sportId,
         toSportId: args.sportId,
+        lookupDeferred,
         teamsDeleted,
         teamsHandedOver,
         leaguesDeleted,
