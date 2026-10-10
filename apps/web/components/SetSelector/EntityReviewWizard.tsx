@@ -239,6 +239,17 @@ const NO_ALIAS_HOLDERS: ReadonlyArray<never> = [];
 const DECIDED_LIST_INLINE_MAX = 5;
 
 /**
+ * NEO-332 — how long after "Create new" a click on the same footer slot, now
+ * "Add as New Player", is treated as the second half of a double-click and
+ * ignored. 500 ms is the common OS double-click interval; the extra 100 covers
+ * a slow second press without being long enough for a deliberate click on the
+ * new step (the operator has to read it first). Measured between the two
+ * clicks' own `event.timeStamp`s — one clock, and no clock read in the
+ * component. Exported for the test.
+ */
+export const CREATE_NEW_DOUBLE_CLICK_MS = 600;
+
+/**
  * Bounds on the armed "keep adding as lookups finish" loop (NEO-221 security
  * review). See the effect for why each exists.
  *
@@ -989,6 +1000,19 @@ export default function EntityReviewWizard({
   const createNewChosen = current ? createNewByRow[current._id] !== undefined : false;
   const pickStep = sameNameCandidates.length > 0 && !createNewChosen;
   const createNewStep = sameNameCandidates.length > 0 && createNewChosen;
+  /**
+   * NEO-332 — has the live same-name check answered for the player on screen?
+   * Stored candidates settle it without the query; otherwise `nearMatches`
+   * must have loaded before "this is not a pick step" can be believed. Read
+   * by the staging pass, which must not run under a pick step.
+   */
+  const sameNameEvidenceLoaded =
+    storedSameNameCandidates.length > 0 || playerNearMatches !== undefined;
+  /**
+   * NEO-332 — when "Create new" was pressed, per row, for the double-click
+   * guard on the footer primary. See `CREATE_NEW_DOUBLE_CLICK_MS`.
+   */
+  const createNewPressedAtRef = useRef<Record<string, number>>({});
 
   /** Rows already decided "link" — their TARGET's canonical name is what the
    *  batch will actually use, so both the staging list and the decided list
@@ -1488,6 +1512,25 @@ export default function EntityReviewWizard({
     if (!current || current.kind !== "player") return;
     if (current.decision) return;
     if ((current.enrichment?.careerTeams?.length ?? 0) === 0) return;
+    /*
+     * NEO-332 — never while the row is on its PICK step.
+     *
+     * Career teams are what a NEW player brings with him, and the pick step
+     * has not created anyone yet: staging here would put New Team steps in
+     * front of "Which {name} is this?" for an operator about to link one of
+     * ours. It happens for real on a row whose lookup has already run —
+     * Create new → Back to the list → link (which releases the steps) →
+     * Change decision — and on the live-fallback rows, which always had
+     * their lookup. So wait for the pick step to be answered: "Create new"
+     * clears `pickStep`, this re-runs, and staging proceeds as for any
+     * unknown player; a link or skip decides the row and it never runs.
+     *
+     * And wait for `nearMatches` too. With no stored candidates, the live
+     * fallback is what makes a row a pick step, and until that query answers
+     * `pickStep` is false for a row that is about to become one. One query
+     * round trip is the whole cost, on a pass that is belt-and-braces anyway.
+     */
+    if (pickStep || !sameNameEvidenceLoaded) return;
     if (stagedPlayersRef.current.has(current._id)) return;
     stagedPlayersRef.current.add(current._id);
     void stageCareerTeams({ reviewRowId: current._id })
@@ -1510,7 +1553,7 @@ export default function EntityReviewWizard({
     // whose identity stability is the hook's business, would re-run this on
     // every render.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current]);
+  }, [current, pickStep, sameNameEvidenceLoaded]);
 
   // Closing the "Link to Existing" search whenever the presented row changes
   // so it doesn't stay open for the wrong row. Keyed on the row id, so it no
@@ -2068,7 +2111,15 @@ export default function EntityReviewWizard({
    * unknown player. A failure leaves the step as it is — Add as New Player
    * still works without the lookup — so it is logged, not shown.
    */
-  const enterCreateNew = (rowId: Id<"entityReviewQueue">) => {
+  const enterCreateNew = (rowId: Id<"entityReviewQueue">, pressedAt: number) => {
+    // FIRST, before anything that can render: the staging pass re-runs once
+    // `pickStep` clears, and every staging call — that one, and the named
+    // ones the New Player step's chips make — must follow the lookup request
+    // the server keys its staging on.
+    void requestPlayerLookup({ reviewRowId: rowId }).catch((error: unknown) => {
+      console.warn("Failed to request the player lookup:", error);
+    });
+    createNewPressedAtRef.current[rowId] = pressedAt;
     // a11y S4 — the focus move is armed only when the flag is really added.
     // A repeat press would otherwise leave "heading" waiting in the ref for
     // the NEXT unrelated `createNewByRow` change to act on.
@@ -2077,9 +2128,6 @@ export default function EntityReviewWizard({
       setCreateNewByRow((prev) => ({ ...prev, [rowId]: true }));
     }
     setPickNotice(null);
-    void requestPlayerLookup({ reviewRowId: rowId }).catch((error: unknown) => {
-      console.warn("Failed to request the player lookup:", error);
-    });
   };
 
   /**
@@ -3004,10 +3052,10 @@ export default function EntityReviewWizard({
                 ? exactMatchLinkLabel
                 : `Add as New ${kindLabel(current.kind)}`
           }
-          onClick={() => {
+          onClick={(e) => {
             if (busy) return;
             if (pickStep) {
-              enterCreateNew(current._id);
+              enterCreateNew(current._id, e.timeStamp);
               return;
             }
             if (showExactHierarchy && exactMatch) {
@@ -3020,6 +3068,17 @@ export default function EntityReviewWizard({
               return;
             }
             if (createBlocked) return;
+            // NEO-332 — the second half of a double-click on "Create new"
+            // lands on this same element, relabelled "Add as New Player".
+            // Moving focus to the heading stops a second Enter, not a second
+            // click; this stops the click.
+            if (
+              createNewStep &&
+              e.timeStamp - (createNewPressedAtRef.current[current._id] ?? -Infinity) <
+                CREATE_NEW_DOUBLE_CLICK_MS
+            ) {
+              return;
+            }
             void handleCreate(current._id, buildCreatePayload());
           }}
         >

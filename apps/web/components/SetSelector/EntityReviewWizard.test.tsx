@@ -257,7 +257,10 @@ vi.mock("./EntityLinkSearch", () => ({
 // Component under test — imported after mocks
 // ---------------------------------------------------------------------------
 
-import EntityReviewWizard, { BULK_MAX_PAGES } from "./EntityReviewWizard";
+import EntityReviewWizard, {
+  BULK_MAX_PAGES,
+  CREATE_NEW_DOUBLE_CLICK_MS,
+} from "./EntityReviewWizard";
 // NEO-307 (a11y audit) — rendered over the wizard to prove only one "League"
 // combobox is ever live. Not mocked: its hold on the background is the point.
 import NewTeamDialog from "./NewTeamDialog";
@@ -7910,6 +7913,18 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
   const pickHeading = () => screen.queryByRole("heading", { name: "Which Bob Allen is this?" });
   const clickCreateNew = () =>
     fireEvent.click(screen.getByRole("button", { name: "Create new" }));
+  /**
+   * A click that arrives as a deliberate press on the opened step: its
+   * `timeStamp` is past the double-click window "Create new" opens. The
+   * window is measured between the two clicks' own event timestamps.
+   */
+  const clickAt = (el: HTMLElement, timeStamp: number) => {
+    const event = createEvent.click(el);
+    Object.defineProperty(event, "timeStamp", { value: timeStamp });
+    fireEvent(el, event);
+  };
+  const clickAfterReading = (el: HTMLElement) =>
+    clickAt(el, performance.now() + CREATE_NEW_DOUBLE_CLICK_MS + 1_000);
   const SET_SPORT_ID = "selopt-sport-1" as unknown as Id<"selectorOptions">;
   const OTHER_SPORT_ID = "selopt-sport-9" as unknown as Id<"selectorOptions">;
 
@@ -7965,7 +7980,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
     renderWizard();
 
     clickCreateNew();
-    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    clickAfterReading(screen.getByRole("button", { name: "Add as New Player" }));
 
     await waitFor(() =>
       expect(mockRecordDecision).toHaveBeenCalledWith(
@@ -8035,7 +8050,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
     currentRows = [rowA, rowB];
     const { rerender } = renderWizard();
     clickCreateNew();
-    fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+    clickAfterReading(screen.getByRole("button", { name: "Add as New Player" }));
     await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
 
     currentRows = [{ ...rowA, decision: { action: "create" } }, rowB];
@@ -8249,7 +8264,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       );
       const add = screen.getByRole("button", { name: "Add as New Player" });
       expect(add.getAttribute("aria-disabled")).toBeNull();
-      fireEvent.click(add);
+      clickAfterReading(add);
       await waitFor(() =>
         expect(mockRecordDecision).toHaveBeenCalledWith(
           expect.objectContaining({ action: "create" }),
@@ -8318,6 +8333,140 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       expect(
         screen.queryByText("Still looking up details. Add it now, or wait and they'll fill in."),
       ).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The client half of the backend contract: no career-team staging under a
+  // pick step, and the lookup request goes out before any staging does.
+  // -------------------------------------------------------------------------
+  describe("career-team staging waits for the pick step to be answered", () => {
+    const careerTeams = [{ name: "Phillies", fromYear: 1890, toYear: 1894 }];
+
+    it("does not stage on the pick step of a row whose lookup has already run", () => {
+      // Create new → Back → link → Change decision leaves exactly this row:
+      // a pick step with the finished lookup's career teams still on it.
+      currentRows = [
+        ambiguousRow({ enrichment: { existingCandidates: CANDIDATES, careerTeams } }),
+      ];
+      renderWizard();
+
+      expect(pickHeading()).toBeTruthy();
+      expect(mockStageCareerTeamRows).not.toHaveBeenCalled();
+    });
+
+    it("stages once Create new is pressed, after the lookup request", async () => {
+      const row = ambiguousRow({ enrichment: { existingCandidates: CANDIDATES, careerTeams } });
+      currentRows = [row];
+      renderWizard();
+
+      clickCreateNew();
+
+      await waitFor(() =>
+        expect(mockStageCareerTeamRows).toHaveBeenCalledWith({ reviewRowId: row._id }),
+      );
+      expect(mockRequestPlayerLookup).toHaveBeenCalledWith({ reviewRowId: row._id });
+      expect(mockRequestPlayerLookup.mock.invocationCallOrder[0]).toBeLessThan(
+        mockStageCareerTeamRows.mock.invocationCallOrder[0],
+      );
+    });
+
+    it("never stages for a row linked from its pick step", async () => {
+      currentRows = [
+        ambiguousRow({ enrichment: { existingCandidates: CANDIDATES, careerTeams } }),
+        makeRow({ name: "Other Guy" }),
+      ];
+      renderWizard();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+      );
+      await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+
+      expect(mockStageCareerTeamRows).not.toHaveBeenCalled();
+    });
+
+    it("waits for the live same-name check before staging a row with no stored candidates", () => {
+      const row = makeRow({ name: "Bob Allen", enrichment: { careerTeams } });
+      currentRows = [row];
+      currentNearMatches = undefined;
+      const { rerender } = renderWizard();
+      expect(mockStageCareerTeamRows).not.toHaveBeenCalled();
+
+      // The fallback answers with two of ours: a pick step, so still nothing.
+      currentNearMatches = [
+        { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+        { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+      ];
+      rerenderWizard(rerender);
+      expect(pickHeading()).toBeTruthy();
+      expect(mockStageCareerTeamRows).not.toHaveBeenCalled();
+    });
+
+    it("stages an ordinary player as soon as the live check says there is no one to pick", async () => {
+      const row = makeRow({ name: "Daulton Varsho", enrichment: { careerTeams } });
+      currentRows = [row];
+      currentNearMatches = undefined;
+      const { rerender } = renderWizard();
+      expect(mockStageCareerTeamRows).not.toHaveBeenCalled();
+
+      currentNearMatches = [];
+      rerenderWizard(rerender);
+
+      await waitFor(() =>
+        expect(mockStageCareerTeamRows).toHaveBeenCalledWith({ reviewRowId: row._id }),
+      );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // A double-click on "Create new" must not also create the player: its
+  // second click lands on the same element, relabelled "Add as New Player".
+  // -------------------------------------------------------------------------
+  describe("the double-click guard on the relabelled primary", () => {
+    it("ignores the second half of a double-click, then creates on a deliberate press", async () => {
+      currentRows = [ambiguousRow()];
+      renderWizard();
+      const primary = screen.getByRole("button", { name: "Create new" });
+
+      fireEvent.click(primary);
+      fireEvent.click(primary);
+
+      expect(primary.textContent).toBe("Add as New Player");
+      expect(mockRecordDecision).not.toHaveBeenCalled();
+
+      clickAfterReading(primary);
+      await waitFor(() =>
+        expect(mockRecordDecision).toHaveBeenCalledWith(
+          expect.objectContaining({ action: "create" }),
+        ),
+      );
+    });
+
+    it("measures the window between the two clicks' own timestamps", async () => {
+      currentRows = [ambiguousRow()];
+      renderWizard();
+      const primary = screen.getByRole("button", { name: "Create new" });
+
+      clickAt(primary, 10_000);
+      clickAt(primary, 10_000 + CREATE_NEW_DOUBLE_CLICK_MS - 1);
+      expect(mockRecordDecision).not.toHaveBeenCalled();
+
+      clickAt(primary, 10_000 + CREATE_NEW_DOUBLE_CLICK_MS);
+      await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+    });
+
+    it("leaves an ordinary New Player step alone", async () => {
+      currentRows = [makeRow({ name: "Daulton Varsho" })];
+      renderWizard();
+
+      fireEvent.click(screen.getByRole("button", { name: "Add as New Player" }));
+
+      await waitFor(() =>
+        expect(mockRecordDecision).toHaveBeenCalledWith(
+          expect.objectContaining({ action: "create" }),
+        ),
+      );
     });
   });
 
@@ -8467,7 +8616,7 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
       const add = screen.getByRole("button", { name: "Add as New Player" });
       act(() => add.focus());
 
-      fireEvent.click(add);
+      clickAfterReading(add);
       await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
 
       // The mock batch never records the decision, so the row reopens on its
