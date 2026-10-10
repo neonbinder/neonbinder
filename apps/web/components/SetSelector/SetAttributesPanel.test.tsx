@@ -1069,6 +1069,15 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-334)", () =
       expect(tag.getAttribute("title")).toBe(
         "Titled Base, so this type holds the set's base checklist.",
       );
+      // The explanation is in the DOM, not only the hover-only title, and the
+      // tag stays out of the tab order.
+      expect(tag.textContent).toBe(
+        "Base set, titled Base, so this type holds the set's base checklist",
+      );
+      expect(tag.querySelector(".sr-only")?.textContent).toBe(
+        ", titled Base, so this type holds the set's base checklist",
+      );
+      expect(tag.hasAttribute("tabindex")).toBe(false);
       expect(screen.queryByLabelText(/as the base set/)).toBeNull();
       expect(screen.queryByText("Mark as base set")).toBeNull();
       expect(screen.queryByText(/Clear base set/)).toBeNull();

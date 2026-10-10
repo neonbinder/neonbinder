@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useRef, useState } from "react";
+import { ReactNode, useEffect, useId, useRef, useState } from "react";
 import { useAction, useConvex, useMutation, useQuery } from "convex/react";
 import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
@@ -326,6 +326,10 @@ export default function EntityColumn({
   // it type into the first matching input on the page (NEO-39). Same fix as the
   // mb-search-<col> class on the column search input in EntitySelector.
   const fieldClass = useFieldTestClass();
+  // NEO-334 (a11y) — the custom form's refusal line, named by the field it is
+  // about. One id: the form's stages render one at a time, and only the input
+  // stage has a field to describe.
+  const customErrorId = useId();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   // NEO-219: the confirm's primary button. Focused DIRECTLY in an effect (not
@@ -1216,7 +1220,14 @@ export default function EntityColumn({
             bare
             type="text"
             value={customValue}
-            onChange={(e) => setCustomValue(e.target.value)}
+            onChange={(e) => {
+              setCustomValue(e.target.value);
+              // The refusal was about what WAS typed; once the operator edits,
+              // it no longer describes the field.
+              if (customError) setCustomError(null);
+            }}
+            aria-invalid={customError ? true : undefined}
+            aria-describedby={customError ? customErrorId : undefined}
             onKeyDown={(e) => {
               if (e.key === "Enter") handleCustomSubmit();
             }}
@@ -1240,6 +1251,7 @@ export default function EntityColumn({
           )}
           {customError && (
             <div
+              id={customErrorId}
               role="alert"
               className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
             >
@@ -1288,6 +1300,7 @@ export default function EntityColumn({
           )}
           {customError && (
             <div
+              id={customErrorId}
               role="alert"
               className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
             >
@@ -1344,6 +1357,7 @@ export default function EntityColumn({
           </p>
           {customError && (
             <div
+              id={customErrorId}
               role="alert"
               className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
             >

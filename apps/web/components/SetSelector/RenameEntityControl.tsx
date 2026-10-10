@@ -215,6 +215,12 @@ export default function RenameEntityControl({
           aria-label={`Edit name for ${currentValue}`}
           aria-invalid={error ? true : undefined}
           aria-describedby={error ? errorId : undefined}
+          // A refusal describes the name that was refused; once the operator
+          // edits, it no longer does. (Uncontrolled field — this reads nothing,
+          // it only clears.) A blur-commit that is refused keeps the editor
+          // OPEN in this error state on purpose: closing it would hide the
+          // reason and drop what they typed.
+          onChange={() => error && setError(null)}
           className={`${fieldClass("rename")} w-32 px-2 py-1 text-sm aria-disabled:opacity-50 aria-disabled:cursor-not-allowed`}
           onKeyDown={(e) => {
             // Stop the row's own handlers from seeing these — the row is a

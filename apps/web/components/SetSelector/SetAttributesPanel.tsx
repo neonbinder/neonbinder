@@ -932,6 +932,12 @@ function BaseSetTag() {
       title="Titled Base, so this type holds the set's base checklist."
     >
       Base set
+      {/* The explanation lives in the DOM too: `title` is hover-only and not
+          reliably announced. The tag stays non-focusable — it is a fact, not
+          a control. */}
+      <span className="sr-only">
+        , titled Base, so this type holds the set&apos;s base checklist
+      </span>
     </span>
   );
 }

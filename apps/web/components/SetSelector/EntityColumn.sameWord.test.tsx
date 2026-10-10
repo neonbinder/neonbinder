@@ -109,6 +109,25 @@ describe("EntityColumn — '+ Custom' at the variant type: one word, one row (NE
     },
   );
 
+  it("the field names its refusal (aria-describedby + aria-invalid), and editing clears both", async () => {
+    await submitCustomValue("variantType", "Promos");
+
+    const alert = await screen.findByRole("alert");
+    const input = screen.getByPlaceholderText("Enter custom value...");
+    expect(alert.id).not.toBe("");
+    expect(input.getAttribute("aria-describedby")).toBe(alert.id);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+
+    await act(async () => {
+      fireEvent.change(input, { target: { value: "Promotion" } });
+    });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(input.getAttribute("aria-describedby")).toBeNull();
+    expect(input.getAttribute("aria-invalid")).toBeNull();
+    expect(mockAddCustom).not.toHaveBeenCalled();
+  });
+
   it("the exact title (any case) is still a navigation to the existing row, not a refusal", async () => {
     const onSelectExisting = vi.fn();
 

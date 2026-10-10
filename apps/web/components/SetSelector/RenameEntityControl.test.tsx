@@ -185,6 +185,35 @@ describe("RenameEntityControl", () => {
       expect(alert.textContent).not.toBe(SENTENCE);
     });
 
+    it("editing the field clears the refusal and the invalid state, without calling the server", async () => {
+      const { input } = await refuse({ code: "VARIANT_TYPE_RENAME_REFUSED", message: SENTENCE });
+      expect(mockRename).toHaveBeenCalledTimes(1);
+
+      fireEvent.change(input, { target: { value: "Inserts & Autos" } });
+
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(input.getAttribute("aria-invalid")).toBeNull();
+      expect(input.getAttribute("aria-describedby")).toBeNull();
+      expect(mockRename).toHaveBeenCalledTimes(1);
+    });
+
+    it("a refusal on BLUR keeps the editor open in its error state", async () => {
+      mockRename.mockRejectedValueOnce(
+        refusalOf({ code: "VARIANT_TYPE_RENAME_REFUSED", message: SENTENCE }),
+      );
+      renderControl("Inserts");
+      fireEvent.click(screen.getByLabelText("Rename Inserts"));
+      const input = screen.getByLabelText("Edit name for Inserts");
+      fireEvent.change(input, { target: { value: "Promo" } });
+      fireEvent.blur(input);
+
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toBe(SENTENCE);
+      const stillOpen = screen.getByLabelText("Edit name for Inserts");
+      expect(stillOpen.getAttribute("aria-describedby")).toBe(alert.id);
+      expect(screen.queryByLabelText("Rename Inserts")).toBeNull();
+    });
+
     it("no alert and no describedby before anything is refused, and Escape clears a refusal", async () => {
       const { input } = await refuse({ code: "VARIANT_TYPE_RENAME_REFUSED", message: SENTENCE });
 
