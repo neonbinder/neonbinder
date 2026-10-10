@@ -2,12 +2,13 @@
  * NEO-334 — the set builder's last column, Sub-Variants (level `parallel`,
  * "Sync Sub-Variants" / "+ Custom"), exists ONLY when the selected variant
  * type is an Insert type. Never under Base, a Parallel type, a Promo type, or
- * a type with no role (Jason, 2026-10-10).
+ * a type with no kind (Jason, 2026-10-10).
  *
- * The gate is the variant type's NB role (`metadata.variantRole === "insert"`,
- * read through `variantTypeRole`), never its name: a roleless row NAMED
- * "Insert" gets no column. "Group Parallels" lands rows as sub-variants, so it
- * follows the same gate.
+ * The gate is the variant type's TITLE (NEO-334: "Insert" or "Inserts",
+ * read through `variantTypeKind`), never a flag: a type titled "Insert Set"
+ * gets no column, and neither does a type titled "Gold" that still carries a
+ * stray `variantRole: "insert"`. "Group Parallels" lands rows as
+ * sub-variants, so it follows the same gate.
  *
  * A `parallel` id left in the drill under a type that is not an Insert type
  * (a stale link) must not leave the page half-built: the checklist falls back
@@ -25,31 +26,43 @@ import { describe, expect, it, vi } from "vitest";
 const INSERT_TYPE = {
   _id: "vt-insert",
   value: "Insert",
-  metadata: { variantRole: "insert" },
+  platformData: {},
+};
+/** A hand-made plural title is the same kind. */
+const INSERTS_TYPE = {
+  _id: "vt-inserts",
+  value: "Inserts",
   platformData: {},
 };
 const PARALLEL_TYPE = {
   _id: "vt-parallel",
   value: "Parallel",
-  metadata: { variantRole: "parallel" },
   platformData: {},
 };
-/** No role at all, an operator's own name. */
+/** No kind at all, an operator's own name. */
 const PROMO_TYPE = {
   _id: "vt-promo",
   value: "Promo",
-  metadata: {},
   platformData: {},
 };
-/** NAMED "Insert" with no role recorded: a label is just a label. */
-const LOOKALIKE_INSERT = {
-  _id: "vt-lookalike",
-  value: "Insert",
+/** CONTAINS the word Insert: exact word only, so it has no kind. */
+const INSERT_SET_TYPE = {
+  _id: "vt-insert-set",
+  value: "Insert Set",
+  platformData: {},
+};
+/** A stray retired flag changes nothing: the title is Gold. */
+const FLAGGED_GOLD = {
+  _id: "vt-flagged",
+  value: "Gold",
+  metadata: { variantRole: "insert" },
   platformData: {},
 };
 
 const ROWS: Record<string, unknown> = Object.fromEntries(
-  [INSERT_TYPE, PARALLEL_TYPE, PROMO_TYPE, LOOKALIKE_INSERT].map((r) => [r._id, r]),
+  [INSERT_TYPE, INSERTS_TYPE, PARALLEL_TYPE, PROMO_TYPE, INSERT_SET_TYPE, FLAGGED_GOLD].map(
+    (r) => [r._id, r],
+  ),
 );
 
 vi.mock("../../convex/_generated/api", () => ({
@@ -207,10 +220,19 @@ describe("SetSelector — the Sub-Variants column only under an Insert type (NEO
     expect(groupParallels()).toBeTruthy();
   });
 
+  it("opens under a hand-made type titled Inserts too", () => {
+    renderAt(DRILLED_TO_A_SET);
+    pickTypeAndInsert("vt-inserts");
+
+    expect(subVariantColumn()).toBeTruthy();
+    expect(groupParallels()).toBeTruthy();
+  });
+
   for (const [label, typeId] of [
     ["a Parallel type", "vt-parallel"],
-    ["a type with no role", "vt-promo"],
-    ["a roleless type named \"Insert\" (the role decides, never the name)", "vt-lookalike"],
+    ["a type with no kind", "vt-promo"],
+    ["a type titled \"Insert Set\" (the exact word decides)", "vt-insert-set"],
+    ["a type titled Gold that still carries variantRole insert (the title decides, never a flag)", "vt-flagged"],
   ] as const) {
     it(`does not open under ${label}: the insert is the end of the cascade`, () => {
       renderAt(DRILLED_TO_A_SET);

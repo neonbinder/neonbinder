@@ -1,315 +1,376 @@
 /**
- * NEO-291 / NEO-306 — `variantTypeRole` / `bscVariantEvidence` /
- * `conferredVariantRole` / `derivedVariantFlags` / `withVariantFlags`.
+ * NEO-334 — a variant type's TITLE is its kind.
  *
- * These are the pure rules that replaced the Insert/Parallel checkboxes: what
- * NB role a variant-type row plays, and what flags a fresh row beneath it is
- * born with. Since NEO-306 the role is an NB FLAG (`metadata.isBase`, then
- * `metadata.variantRole`) and the BSC slot is read only at write time, by
- * `bscVariantEvidence` through `conferredVariantRole`. See the file-level
- * comment in convex/variantRole.ts for the fuller "why".
+ * `variantTypeKindFromTitle` / `variantTypeKind` / `sameTitleWord` /
+ * `derivedVariantFlags` / `subVariantsAllowedUnder` / `variantTypeRenameOutcome`
+ * are the pure rules. There is no flag to read: a stray `metadata.isBase` or
+ * `metadata.variantRole` on a row is IGNORED (the follow-up PR removes the
+ * fields; `stripRoleFlags` clears stored rows). See the header of
+ * convex/variantRole.ts for the fuller "why".
  */
 
 import { describe, expect, test } from "vitest";
 import {
-  bscVariantEvidence,
-  conferredVariantRole,
+  VARIANT_TYPE_RENAME_MESSAGES,
+  VARIANT_TYPE_RENAME_REFUSED,
   derivedVariantFlags,
+  sameTitleWord,
+  sameWordSiblingMessage,
   subVariantsAllowedUnder,
-  variantTypeRole,
-  withVariantFlags,
-  type VariantEvidenceRow,
+  variantTypeKind,
+  variantTypeKindFromTitle,
+  variantTypeRenameOutcome,
+  type VariantTypeRenameFacts,
 } from "./variantRole";
 
-/** A variant-type row's slots. `bsc` slot → id; `facets` slot → tag (omit for untagged). */
-function slots(
-  bsc: Record<string, string>,
-  facets?: Record<string, "setName" | "variantName" | "variant">,
-): VariantEvidenceRow {
-  return {
-    platformData: { bsc },
-    platformFacets: facets ? { bsc: facets } : undefined,
-  };
-}
-
 // ===========================================================================
-// variantTypeRole — flags only (NEO-306)
+// variantTypeKindFromTitle — the exact word, nothing else
 // ===========================================================================
 
-describe("variantTypeRole", () => {
-  test("null/undefined row is undefined", () => {
-    expect(variantTypeRole(null)).toBeUndefined();
-    expect(variantTypeRole(undefined)).toBeUndefined();
+describe("variantTypeKindFromTitle", () => {
+  test.each([
+    ["Base", "base"],
+    ["Bases", "base"],
+    ["base", "base"],
+    ["BASE", "base"],
+    ["Insert", "insert"],
+    ["Inserts", "insert"],
+    ["INSERTS", "insert"],
+    ["Parallel", "parallel"],
+    ["Parallels", "parallel"],
+    ["pArAlLeLs", "parallel"],
+  ] as const)("%j is the %s kind", (title, kind) => {
+    expect(variantTypeKindFromTitle(title)).toBe(kind);
   });
 
-  test("metadata.isBase wins outright, over a variantRole too", () => {
-    expect(
-      variantTypeRole({ metadata: { isBase: true, variantRole: "insert" } }),
-    ).toBe("base");
+  test.each([
+    ["  Insert  ", "insert"],
+    ["\tBase\n", "base"],
+    ["Inserts ", "insert"],
+  ] as const)("surrounding whitespace is trimmed: %j", (title, kind) => {
+    expect(variantTypeKindFromTitle(title)).toBe(kind);
   });
 
-  test("metadata.variantRole is the role", () => {
-    expect(variantTypeRole({ metadata: { variantRole: "insert" } })).toBe("insert");
-    expect(variantTypeRole({ metadata: { variantRole: "parallel" } })).toBe(
-      "parallel",
-    );
+  test("a title that is the word plus anything else has no kind", () => {
+    for (const title of [
+      "Insert Set",
+      "Inserts & Autographs",
+      "Base Set",
+      "Base Parallels",
+      "Parallel Inserts",
+      "Rookie Base",
+      "Autograph Inserts",
+      "Bases and Inserts",
+    ]) {
+      expect(variantTypeKindFromTitle(title), title).toBeUndefined();
+    }
   });
 
-  test("a tagged BSC slot with no flag is NOT read at runtime — no role", () => {
-    // The shape every pre-NEO-306 row has until a sync or the backfill
-    // confers the flag. Reading the slot here would key NB behaviour on a
-    // marketplace id (invariant 4); the answer is fail-closed.
-    expect(
-      variantTypeRole({ ...slots({ b0: "insert" }, { b0: "variant" }), metadata: undefined }),
-    ).toBeUndefined();
-    expect(
-      variantTypeRole({ ...slots({ b0: "parallel" }, { b0: "variant" }), metadata: undefined }),
-    ).toBeUndefined();
+  test("another title carrying a kind word as a substring has no kind", () => {
+    for (const title of ["Basement", "Reinserts", "Nonparallel", "Baseball"]) {
+      expect(variantTypeKindFromTitle(title), title).toBeUndefined();
+    }
   });
 
-  test("the flag wins over a slot that says otherwise", () => {
-    expect(
-      variantTypeRole({
-        ...slots({ b0: "insert" }, { b0: "variant" }),
-        metadata: { variantRole: "parallel" },
-      }),
-    ).toBe("parallel");
+  test("a plain title (Promo, Gold) has no kind", () => {
+    expect(variantTypeKindFromTitle("Promo")).toBeUndefined();
+    expect(variantTypeKindFromTitle("Gold")).toBeUndefined();
   });
 
-  test("no metadata is no role", () => {
-    expect(variantTypeRole({})).toBeUndefined();
-    expect(variantTypeRole({ metadata: {} })).toBeUndefined();
+  test("an empty, blank or missing title has no kind", () => {
+    expect(variantTypeKindFromTitle(undefined)).toBeUndefined();
+    expect(variantTypeKindFromTitle("")).toBeUndefined();
+    expect(variantTypeKindFromTitle("   ")).toBeUndefined();
+  });
+
+  test("inner whitespace is collapsed before comparing, so a split word is not the word", () => {
+    expect(variantTypeKindFromTitle("In sert")).toBeUndefined();
+    expect(variantTypeKindFromTitle("Insert  Set")).toBeUndefined();
+  });
+
+  test("object-prototype names are not kinds", () => {
+    for (const title of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+      expect(variantTypeKindFromTitle(title), title).toBeUndefined();
+    }
+  });
+});
+
+describe("variantTypeKind", () => {
+  test("null and undefined rows have no kind", () => {
+    expect(variantTypeKind(null)).toBeUndefined();
+    expect(variantTypeKind(undefined)).toBeUndefined();
+    expect(variantTypeKind({})).toBeUndefined();
+  });
+
+  test("reads the row's value", () => {
+    expect(variantTypeKind({ value: "Inserts" })).toBe("insert");
+    expect(variantTypeKind({ value: "Base" })).toBe("base");
+  });
+
+  test("a stray role flag on a row is ignored: the title decides", () => {
+    // Rows still carry the retired fields until the strip migration runs.
+    const gold = { value: "Gold", metadata: { variantRole: "insert", isBase: true } };
+    expect(variantTypeKind(gold)).toBeUndefined();
+    const insert = { value: "Insert", metadata: { variantRole: "parallel" } };
+    expect(variantTypeKind(insert)).toBe("insert");
   });
 });
 
 // ===========================================================================
-// bscVariantEvidence — write time only
+// sameTitleWord
 // ===========================================================================
 
-describe("bscVariantEvidence", () => {
-  test("null/undefined row is undefined", () => {
-    expect(bscVariantEvidence(null)).toBeUndefined();
-    expect(bscVariantEvidence(undefined)).toBeUndefined();
+describe("sameTitleWord", () => {
+  test.each([
+    ["Promo", "Promos"],
+    ["Promos", "Promo"],
+    ["Insert", "Inserts"],
+    ["Rated Rookie", "Rated Rookies"],
+    ["  promo ", "PROMOS"],
+    ["Rated   Rookie", "rated rookie"],
+    ["Gold", "gold"],
+  ])("%j and %j are the same word", (a, b) => {
+    expect(sameTitleWord(a, b)).toBe(true);
   });
 
-  test("a `variant`-tagged slot whose id carries the insert token reads as insert", () => {
-    expect(bscVariantEvidence(slots({ b0: "insert" }, { b0: "variant" }))).toBe(
-      "insert",
-    );
+  test.each([
+    ["Promo", "Promotion"],
+    ["Gold", "Silver"],
+    ["Insert", "Insert Set"],
+    ["Promo", "Promoss"],
+    ["Base", "Basement"],
+  ])("%j and %j are different words", (a, b) => {
+    expect(sameTitleWord(a, b)).toBe(false);
   });
 
-  test("Insert-Cards (mixed case, hyphenated) still reads as insert", () => {
-    expect(
-      bscVariantEvidence(slots({ b0: "Insert-Cards" }, { b0: "variant" })),
-    ).toBe("insert");
+  test("blank titles only match each other", () => {
+    expect(sameTitleWord("", "  ")).toBe(true);
+    expect(sameTitleWord("", "s")).toBe(false);
+    expect(sameTitleWord("s", "")).toBe(false);
   });
+});
 
-  test("a `variant`-tagged slot whose id carries the parallel token reads as parallel", () => {
-    expect(
-      bscVariantEvidence(slots({ b0: "parallel" }, { b0: "variant" })),
-    ).toBe("parallel");
-  });
-
-  test("an id carrying BOTH the insert and parallel tokens is ambiguous", () => {
-    expect(
-      bscVariantEvidence(slots({ b0: "base-parallel-insert" }, { b0: "variant" })),
-    ).toBe("ambiguous");
-    expect(
-      bscVariantEvidence(slots({ b0: "insert-parallel" }, { b0: "variant" })),
-    ).toBe("ambiguous");
-  });
-
-  test("`base-parallel` reads as parallel — base is not this function's question", () => {
-    expect(
-      bscVariantEvidence(slots({ b0: "base-parallel" }, { b0: "variant" })),
-    ).toBe("parallel");
-  });
-
-  test("BSC's `base` and `promo` ids name neither role", () => {
-    expect(bscVariantEvidence(slots({ b0: "base" }, { b0: "variant" }))).toBeUndefined();
-    expect(bscVariantEvidence(slots({ b0: "promo" }, { b0: "variant" }))).toBeUndefined();
-  });
-
-  test("an untagged slot is no evidence, whatever the id says", () => {
-    expect(bscVariantEvidence(slots({ b0: "insert" }))).toBeUndefined();
-  });
-
-  test("a row with no BSC ids at all is no evidence", () => {
-    expect(bscVariantEvidence(slots({}))).toBeUndefined();
-  });
-
-  test("a `setName`-tagged extra slot is ignored, not read as the role", () => {
-    expect(
-      bscVariantEvidence(
-        slots(
-          { b0: "insert", b1: "topps-series-1" },
-          { b0: "variant", b1: "setName" },
-        ),
-      ),
-    ).toBe("insert");
-  });
-
-  test("two disagreeing `variant`-tagged slots are ambiguous", () => {
-    expect(
-      bscVariantEvidence(
-        slots({ b0: "insert", b1: "parallel" }, { b0: "variant", b1: "variant" }),
-      ),
-    ).toBe("ambiguous");
-  });
-
-  test("two AGREEING `variant`-tagged slots still resolve", () => {
-    expect(
-      bscVariantEvidence(
-        slots(
-          { b0: "insert-set-a", b1: "insert-set-b" },
-          { b0: "variant", b1: "variant" },
-        ),
-      ),
-    ).toBe("insert");
+describe("sameWordSiblingMessage", () => {
+  test("names the existing row", () => {
+    expect(sameWordSiblingMessage("Promos")).toContain('"Promos"');
   });
 });
 
 // ===========================================================================
-// conferredVariantRole — the adds-only guard every writer shares
-// ===========================================================================
-
-describe("conferredVariantRole", () => {
-  const insertSlot = slots({ b0: "insert" }, { b0: "variant" });
-
-  test("an unflagged row with single evidence gets the role", () => {
-    expect(conferredVariantRole(undefined, insertSlot)).toBe("insert");
-    expect(
-      conferredVariantRole({}, slots({ b0: "parallel" }, { b0: "variant" })),
-    ).toBe("parallel");
-  });
-
-  test("never over a role already there — even a different one", () => {
-    expect(
-      conferredVariantRole({ variantRole: "parallel" }, insertSlot),
-    ).toBeUndefined();
-    expect(conferredVariantRole({ variantRole: "insert" }, insertSlot)).toBeUndefined();
-  });
-
-  test("never on the Base", () => {
-    expect(conferredVariantRole({ isBase: true }, insertSlot)).toBeUndefined();
-  });
-
-  test("ambiguous or absent evidence confers nothing", () => {
-    expect(
-      conferredVariantRole(
-        undefined,
-        slots({ b0: "insert-parallel" }, { b0: "variant" }),
-      ),
-    ).toBeUndefined();
-    expect(conferredVariantRole(undefined, slots({ b0: "insert" }))).toBeUndefined();
-    expect(conferredVariantRole(undefined, null)).toBeUndefined();
-  });
-});
-
-// ===========================================================================
-// derivedVariantFlags
+// derivedVariantFlags — transient, read from the parent's TITLE
 // ===========================================================================
 
 describe("derivedVariantFlags", () => {
   test("a parallel-level row is always a parallel, whatever the parent", () => {
-    expect(derivedVariantFlags("parallel", undefined)).toEqual({
+    expect(derivedVariantFlags("parallel", undefined)).toEqual({ isParallel: true });
+    expect(derivedVariantFlags("parallel", { value: "Inserts" })).toEqual({
       isParallel: true,
     });
-    expect(
-      derivedVariantFlags("parallel", { metadata: { variantRole: "insert" } }),
-    ).toEqual({ isParallel: true });
   });
 
-  test("an insert-level row under an insert-role parent is an insert", () => {
-    expect(
-      derivedVariantFlags("insert", { metadata: { variantRole: "insert" } }),
-    ).toEqual({ isInsert: true });
+  test("an insert-level row under an Insert-titled parent is an insert", () => {
+    expect(derivedVariantFlags("insert", { value: "Inserts" })).toEqual({
+      isInsert: true,
+    });
   });
 
-  test("an insert-level row under a parallel-role parent is a parallel (a parallel of the base set)", () => {
-    expect(
-      derivedVariantFlags("insert", { metadata: { variantRole: "parallel" } }),
-    ).toEqual({ isParallel: true });
+  test("an insert-level row under a Parallel-titled parent is a parallel", () => {
+    expect(derivedVariantFlags("insert", { value: "Parallels" })).toEqual({
+      isParallel: true,
+    });
   });
 
-  test("an insert-level row under a base-role parent gets no flag", () => {
-    expect(
-      derivedVariantFlags("insert", { metadata: { isBase: true } }),
-    ).toBeUndefined();
+  test("an insert-level row under the Base gets no flag", () => {
+    expect(derivedVariantFlags("insert", { value: "Base" })).toBeUndefined();
   });
 
-  test("an insert-level row under an unflagged parent gets no flag, whatever its BSC slot says", () => {
+  test("an insert-level row under a plain-titled or missing parent gets no flag", () => {
+    expect(derivedVariantFlags("insert", { value: "Promo" })).toBeUndefined();
+    expect(derivedVariantFlags("insert", { value: "Insert Set" })).toBeUndefined();
+    expect(derivedVariantFlags("insert", undefined)).toBeUndefined();
+  });
+
+  test("a stray flag on a plain-titled parent is ignored", () => {
     expect(
       derivedVariantFlags("insert", {
-        ...slots({ b0: "insert" }, { b0: "variant" }),
-        metadata: undefined,
-      }),
+        value: "Gold",
+        metadata: { variantRole: "insert" },
+      } as { value: string }),
     ).toBeUndefined();
-    expect(derivedVariantFlags("insert", undefined)).toBeUndefined();
   });
 
   test("any other level gets no flag", () => {
     for (const level of ["sport", "year", "manufacturer", "setName", "variantType"]) {
-      expect(
-        derivedVariantFlags(level, { metadata: { variantRole: "insert" } }),
-      ).toBeUndefined();
+      expect(derivedVariantFlags(level, { value: "Inserts" }), level).toBeUndefined();
     }
   });
 });
 
 // ===========================================================================
-// withVariantFlags
+// subVariantsAllowedUnder
 // ===========================================================================
 
-describe("withVariantFlags", () => {
-  test("replaces both flags on a row that had the opposite pair", () => {
-    expect(
-      withVariantFlags({ isInsert: true, isParallel: false }, { isParallel: true }),
-    ).toEqual({ isParallel: true });
-  });
-
-  test("keeps every other metadata key untouched", () => {
-    expect(
-      withVariantFlags(
-        { cardNumberPrefix: "DK-", isInsert: true },
-        { isParallel: true },
-      ),
-    ).toEqual({ cardNumberPrefix: "DK-", isParallel: true });
-  });
-
-  test("undefined flags clears both without touching other keys", () => {
-    expect(
-      withVariantFlags({ cardNumberPrefix: "DK-", isInsert: true }, undefined),
-    ).toEqual({ cardNumberPrefix: "DK-" });
-  });
-
-  test("returns undefined when nothing is left", () => {
-    expect(withVariantFlags(undefined, undefined)).toBeUndefined();
-    expect(withVariantFlags({ isInsert: true }, undefined)).toBeUndefined();
-  });
-
-  test("undefined metadata plus flags produces just the flags", () => {
-    expect(withVariantFlags(undefined, { isInsert: true })).toEqual({
-      isInsert: true,
-    });
-  });
-});
-
 describe("subVariantsAllowedUnder (NEO-334)", () => {
-  test("an Insert type admits sub-variants", () => {
-    expect(subVariantsAllowedUnder({ metadata: { variantRole: "insert" } })).toBe(true);
+  test("an Insert-titled type admits sub-variants, plural or singular", () => {
+    expect(subVariantsAllowedUnder({ value: "Inserts" })).toBe(true);
+    expect(subVariantsAllowedUnder({ value: "insert" })).toBe(true);
   });
 
-  test("a Parallel type, the Base and a type with no role do not", () => {
-    expect(subVariantsAllowedUnder({ metadata: { variantRole: "parallel" } })).toBe(false);
-    expect(subVariantsAllowedUnder({ metadata: { isBase: true } })).toBe(false);
-    // isBase wins over a stray role, as it does in variantTypeRole.
-    expect(
-      subVariantsAllowedUnder({ metadata: { isBase: true, variantRole: "insert" } }),
-    ).toBe(false);
-    expect(subVariantsAllowedUnder({ metadata: {} })).toBe(false);
+  test("a Parallel type, the Base and every other title do not", () => {
+    expect(subVariantsAllowedUnder({ value: "Parallels" })).toBe(false);
+    expect(subVariantsAllowedUnder({ value: "Base" })).toBe(false);
+    expect(subVariantsAllowedUnder({ value: "Promo" })).toBe(false);
+    expect(subVariantsAllowedUnder({ value: "Insert Set" })).toBe(false);
     expect(subVariantsAllowedUnder({})).toBe(false);
     expect(subVariantsAllowedUnder(null)).toBe(false);
     expect(subVariantsAllowedUnder(undefined)).toBe(false);
+  });
+
+  test("a flag cannot admit sub-variants under a type not titled Insert", () => {
+    expect(
+      subVariantsAllowedUnder({
+        value: "Gold",
+        metadata: { variantRole: "insert" },
+      } as { value: string }),
+    ).toBe(false);
+  });
+});
+
+// ===========================================================================
+// variantTypeRenameOutcome — every branch, and the order
+// ===========================================================================
+
+const EMPTY: VariantTypeRenameFacts = {
+  hasRowsBeneath: false,
+  subVariants: 0,
+  cards: 0,
+  siblingBase: false,
+};
+const ROWS: VariantTypeRenameFacts = { ...EMPTY, hasRowsBeneath: true };
+
+function refusal(
+  current: string,
+  next: string,
+  facts: VariantTypeRenameFacts,
+): string | null {
+  const out = variantTypeRenameOutcome(current, next, facts);
+  if (out.ok) return null;
+  expect(out.code).toBe(VARIANT_TYPE_RENAME_REFUSED);
+  return out.message;
+}
+
+describe("variantTypeRenameOutcome", () => {
+  test("a rename that keeps the kind is allowed even with rows beneath", () => {
+    expect(
+      variantTypeRenameOutcome("Inserts", "Insert", { ...ROWS, subVariants: 4 }),
+    ).toEqual({ ok: true });
+    expect(
+      variantTypeRenameOutcome("Base", "Bases", { ...ROWS, cards: 90 }),
+    ).toEqual({ ok: true });
+  });
+
+  test("a no-kind title becoming another no-kind title is allowed with rows beneath", () => {
+    expect(variantTypeRenameOutcome("Promo", "Gold", { ...ROWS, cards: 5 })).toEqual({
+      ok: true,
+    });
+  });
+
+  test("an EMPTY type may change kind freely", () => {
+    expect(variantTypeRenameOutcome("Promo", "Inserts", EMPTY)).toEqual({ ok: true });
+    expect(variantTypeRenameOutcome("Inserts", "Promo", EMPTY)).toEqual({ ok: true });
+    expect(variantTypeRenameOutcome("Promo", "Parallels", EMPTY)).toEqual({ ok: true });
+  });
+
+  test("Insert -> other with sub-variants is refused with the Jason-approved sentence", () => {
+    expect(refusal("Inserts", "Promo", { ...ROWS, subVariants: 2 })).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.insertHasSubVariants,
+    );
+    expect(VARIANT_TYPE_RENAME_MESSAGES.insertHasSubVariants).toBe(
+      "Not so fast — some inserts under this type still have sub-variants, and sub-variants only live under an Insert type. Move them out first, then rename.",
+    );
+  });
+
+  test("Insert -> other with inserts but no sub-variants gets the general kind-change sentence", () => {
+    expect(refusal("Inserts", "Promo", ROWS)).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.kindChangeWithRows,
+    );
+  });
+
+  test("any type with rows beneath renamed Base is refused", () => {
+    expect(refusal("Promo", "Base", ROWS)).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.toBaseWithRows,
+    );
+    expect(refusal("Parallels", "Bases", { ...ROWS, cards: 1 })).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.toBaseWithRows,
+    );
+  });
+
+  test("the Base renamed to another kind with cards off it is refused", () => {
+    expect(refusal("Base", "Promo", { ...ROWS, cards: 100 })).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.baseHasCards,
+    );
+    expect(refusal("Base", "Inserts", { ...EMPTY, cards: 1 })).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.baseHasCards,
+    );
+  });
+
+  test("the Base with inserts beneath but no cards gets the general sentence", () => {
+    expect(refusal("Base", "Promo", ROWS)).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.kindChangeWithRows,
+    );
+  });
+
+  test("Parallel -> Insert and none -> Parallel with rows get the general sentence", () => {
+    expect(refusal("Parallels", "Inserts", ROWS)).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.kindChangeWithRows,
+    );
+    expect(refusal("Promo", "Parallels", ROWS)).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.kindChangeWithRows,
+    );
+  });
+
+  test("a second Base is refused whatever else is true, even for an empty type", () => {
+    const facts = { ...EMPTY, siblingBase: true };
+    expect(refusal("Promo", "Base", facts)).toBe(VARIANT_TYPE_RENAME_MESSAGES.secondBase);
+    expect(refusal("Promo", "Bases", facts)).toBe(VARIANT_TYPE_RENAME_MESSAGES.secondBase);
+    expect(VARIANT_TYPE_RENAME_MESSAGES.secondBase).toBe("This set already has a Base.");
+  });
+
+  test("the second-Base refusal outranks the rows-beneath sentences", () => {
+    expect(refusal("Promo", "Base", { ...ROWS, siblingBase: true })).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.secondBase,
+    );
+  });
+
+  test("a sibling Base does not matter to a title that is not Base", () => {
+    expect(
+      variantTypeRenameOutcome("Promo", "Gold", { ...EMPTY, siblingBase: true }),
+    ).toEqual({ ok: true });
+    expect(
+      variantTypeRenameOutcome("Promo", "Inserts", { ...EMPTY, siblingBase: true }),
+    ).toEqual({ ok: true });
+  });
+
+  test("the sub-variant sentence outranks the to-Base sentence", () => {
+    // An Insert type with sub-variants renamed Base: the sub-variants are the
+    // more specific reason.
+    expect(refusal("Inserts", "Base", { ...ROWS, subVariants: 1 })).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.insertHasSubVariants,
+    );
+  });
+
+  test("the to-Base sentence outranks the Base-has-cards one (only reachable from a non-Base)", () => {
+    expect(refusal("Promo", "Base", { ...ROWS, cards: 3 })).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.toBaseWithRows,
+    );
+  });
+
+  test("cards or sub-variants alone count as rows beneath", () => {
+    expect(refusal("Promo", "Parallels", { ...EMPTY, cards: 1 })).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.kindChangeWithRows,
+    );
+    expect(refusal("Inserts", "Promo", { ...EMPTY, subVariants: 1 })).toBe(
+      VARIANT_TYPE_RENAME_MESSAGES.insertHasSubVariants,
+    );
   });
 });

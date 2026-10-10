@@ -76,9 +76,6 @@ vi.mock("../../convex/_generated/api", () => ({
       getSelectorOptionHoldings: "getSelectorOptionHoldings",
       deleteSelectorOption: "deleteSelectorOption",
       renameSelectorOption: "renameSelectorOption",
-      setBaseVariantType: "setBaseVariantType",
-      // NEO-306 — "Mark as base set" is offered only while this answers null.
-      getBaseVariantBySet: "getBaseVariantBySet",
       // NEO-291
       setSelectorOptionCardNumberPrefix: "setSelectorOptionCardNumberPrefix",
       // NEO-277
@@ -130,7 +127,6 @@ vi.mock("../../convex/_generated/api", () => ({
 }));
 
 const mockSetSelectorOptionFeature = vi.fn();
-const mockSetBaseVariantType = vi.fn();
 const mockDeleteSelectorOption = vi.fn();
 /** NEO-291 */
 const mockSetSelectorOptionCardNumberPrefix = vi.fn();
@@ -151,8 +147,6 @@ let currentRow: unknown;
 let currentChain: unknown;
 /** `getSelectorOptionHoldings` — undefined means "still counting". */
 let currentHoldings: unknown;
-/** NEO-306: `getBaseVariantBySet` — null (the set has no base) unless a test says. */
-let currentSetBase: unknown = null;
 /**
  * NEO-277: `teams.getManyByIds` — the collapsed bar's livery and the Team
  * row's own read of its stored team (for "Keep {team}" and the clear confirm).
@@ -175,7 +169,6 @@ vi.mock("convex/react", () => ({
     if (query === "getSelectorOptionById") return currentRow;
     if (query === "getAncestorChain") return currentChain;
     if (query === "getSelectorOptionHoldings") return currentHoldings;
-    if (query === "getBaseVariantBySet") return currentSetBase;
     if (query === "teams.getManyByIds") return currentTeamRows;
     if (query === "brandView.getBrandsForYearOfSet") return currentYearBrands;
     // NEO-305 — both answers "yes"; the panel decides by LEVEL which one
@@ -190,7 +183,6 @@ vi.mock("convex/react", () => ({
     if (mutation === "setSelectorOptionFeature")
       return mockSetSelectorOptionFeature;
     if (mutation === "deleteSelectorOption") return mockDeleteSelectorOption;
-    if (mutation === "setBaseVariantType") return mockSetBaseVariantType;
     if (mutation === "setSelectorOptionCardNumberPrefix")
       return mockSetSelectorOptionCardNumberPrefix;
     if (mutation === "setSelectorOptionTeams") return mockSetSelectorOptionTeams;
@@ -1039,153 +1031,137 @@ describe("SetAttributesPanel — failure toasts", () => {
 });
 
 /**
- * NEO-239 — the base role, now that name matching is gone.
+ * NEO-239 / NEO-334 — the base variant type.
  *
- * Base used to be whichever variant type happened to be called "Base", which
- * is how a hand-built set got one: by the operator typing the right word.
- * Detection reads `metadata.isBase` now, so hand entry needs a way to SET it —
- * this is that control.
- *
- * NEO-306 — the role and the row are one thing (Jason, 2026-09-27). The
- * control only GRANTS, and only while the set has no base
- * (`getBaseVariantBySet` answers null). There is no transfer and no clear: a
- * set loses its base by deleting the row, through the row's ordinary delete
- * control, which refuses while anything hangs off it.
+ * A variant type's TITLE is its kind (Jason, 2026-10-10): the type titled
+ * "Base" (or "Bases") IS the set's Base. There is no "Mark as base set"
+ * control and no mutation behind one; a type becomes the Base by being
+ * renamed "Base" with the pencil, and the server refuses that while rows sit
+ * beneath it. What the panel keeps for the Base is a static tag beside the
+ * title and the delete confirm's sentence.
  */
-describe("SetAttributesPanel — the base variant type (NEO-239, NEO-306)", () => {
+describe("SetAttributesPanel — the base variant type (NEO-239, NEO-334)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockSetBaseVariantType.mockResolvedValue({ baseId: SELECTOR_OPTION_ID });
     mockDeleteSelectorOption.mockResolvedValue({ deleted: true });
-    currentSetBase = null;
     currentHoldings = { holds: [], protected: false };
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
-    currentSetBase = null;
   });
 
-  const baseRow = () =>
-    makeRow({
-      level: "variantType",
-      value: "Insert",
-      metadata: { isBase: true },
-    });
+  const baseRow = (value = "Base") =>
+    makeRow({ level: "variantType", value });
 
-  it("calls setBaseVariantType for the selected variant type", async () => {
-    currentRow = makeRow({ level: "variantType", value: "Insert" });
-    currentChain = makeChain("Baseball");
+  it.each(["Base", "Bases", "BASE"])(
+    "shows a static 'Base set' tag on a variant type titled %j, and no role action at all",
+    (title) => {
+      currentRow = baseRow(title);
+      currentChain = makeChain("Baseball");
 
-    renderPanel();
+      renderPanel();
 
-    fireEvent.click(screen.getByLabelText("Mark Insert as the base set"));
+      const tag = screen.getByText("Base set");
+      expect(tag).toBeTruthy();
+      // A fact about the row, not a control.
+      expect(tag.closest("button")).toBeNull();
+      expect(tag.getAttribute("title")).toBe(
+        "Titled Base, so this type holds the set's base checklist.",
+      );
+      expect(screen.queryByLabelText(/as the base set/)).toBeNull();
+      expect(screen.queryByText("Mark as base set")).toBeNull();
+      expect(screen.queryByText(/Clear base set/)).toBeNull();
+      // Exactly ONE delete on the row: the ordinary one.
+      expect(screen.getAllByLabelText(`Delete ${title}`)).toHaveLength(1);
+    },
+  );
 
-    await waitFor(() => {
-      expect(mockSetBaseVariantType).toHaveBeenCalledWith({
-        variantTypeId: SELECTOR_OPTION_ID,
-      });
-    });
-    // Same verb as the control, so the operator can tell the tap landed.
-    const toast = await screen.findByRole("status");
-    expect(toast.textContent).toBe("Marked Insert as the base set");
+  it.each([
+    ["Insert", undefined],
+    ["Base Set", undefined],
+    ["Promo", undefined],
+    // A stray retired flag changes nothing: the title decides.
+    ["Gold", { isBase: true }],
+  ] as const)(
+    "shows no 'Base set' tag and offers no way to mark %j as the base",
+    (title, metadata) => {
+      currentRow = makeRow({ level: "variantType", value: title, metadata });
+      currentChain = makeChain("Baseball");
+
+      renderPanel();
+
+      expect(screen.queryByText("Base set")).toBeNull();
+      expect(screen.queryByLabelText(`Mark ${title} as the base set`)).toBeNull();
+      expect(screen.queryByText("Mark as base set")).toBeNull();
+      // The way to make it the Base is the pencil.
+      expect(screen.getByLabelText(`Rename ${title}`)).toBeTruthy();
+    },
+  );
+
+  it("does not show the tag at any other level, even for a row titled Base", () => {
+    for (const level of ["sport", "year", "manufacturer", "setName", "insert", "parallel"]) {
+      currentRow = makeRow({ level, value: "Base" });
+      currentChain = makeChain("Baseball");
+      const { unmount } = renderPanel();
+      expect(screen.queryByText("Base set"), level).toBeNull();
+      unmount();
+    }
   });
 
-  it("NEO-306: is NOT offered when the set already has a base — there is no transfer", () => {
-    currentRow = makeRow({ level: "variantType", value: "Insert" });
+  it("the tag follows a rename: retitling the Base takes it away, titling a type Base gives it", () => {
+    currentRow = makeRow({ level: "variantType", value: "Promo" });
     currentChain = makeChain("Baseball");
-    currentSetBase = { value: "Base", platformData: {} };
+    const { rerender } = renderPanel();
+    expect(screen.queryByText("Base set")).toBeNull();
 
-    renderPanel();
+    currentRow = baseRow();
+    rerender(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed={false}
+      />,
+    );
+    expect(screen.getByText("Base set")).toBeTruthy();
 
-    expect(screen.queryByLabelText("Mark Insert as the base set")).toBeNull();
-    expect(screen.queryByText("Mark as base set")).toBeNull();
-    // Nothing else stands in for it either: this row is an ordinary type.
+    currentRow = makeRow({ level: "variantType", value: "Promo" });
+    rerender(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed={false}
+      />,
+    );
     expect(screen.queryByText("Base set")).toBeNull();
   });
 
-  it("NEO-306: is NOT offered while the set's base is still being looked up", () => {
-    // A beat of "Mark as base set" on a set that has a base would be a button
-    // the server refuses.
-    currentRow = makeRow({ level: "variantType", value: "Insert" });
-    currentChain = makeChain("Baseball");
-    currentSetBase = undefined;
-
-    renderPanel();
-
-    expect(screen.queryByLabelText("Mark Insert as the base set")).toBeNull();
-  });
-
-  it("NEO-306: shows the server's refusal when the set got a base in another tab", async () => {
-    mockSetBaseVariantType.mockRejectedValueOnce(
-      new ConvexError(
-        "Base is already this set's base set. A set has one — delete Base first to mark another.",
-      ),
-    );
-    currentRow = makeRow({ level: "variantType", value: "Insert" });
-    currentChain = makeChain("Baseball");
-
-    renderPanel();
-
-    fireEvent.click(screen.getByLabelText("Mark Insert as the base set"));
-
-    const toast = await screen.findByRole("status");
-    expect(toast.textContent).toBe(
-      "Base is already this set's base set. A set has one — delete Base first to mark another.",
-    );
-  });
-
-  it("says nothing changed when the mutation fails, and leaks no thrown text", async () => {
-    // A Convex/adapter error can carry a marketplace URL or a credential hint,
-    // and the operator's actual question on a failure is whether their data
-    // survived it.
-    mockSetBaseVariantType.mockRejectedValueOnce(
-      new Error("[Request ID: abc] Server Error"),
-    );
-    currentRow = makeRow({ level: "variantType", value: "Insert" });
-    currentChain = makeChain("Baseball");
-
-    renderPanel();
-
-    fireEvent.click(screen.getByLabelText("Mark Insert as the base set"));
-
-    const toast = await screen.findByRole("status");
-    expect(toast.textContent).toBe("Couldn't set the base set. Nothing changed.");
-    expect(toast.textContent).not.toContain("Request ID");
-  });
-
-  it("shows a static 'Base set' indicator on the base row, and no role action at all", () => {
-    // `metadata.isBase` is the ONLY input. The row is called "Insert" here on
-    // purpose: if the indicator ever went back to reading the display value,
-    // this row would lose its badge and the test would say so.
+  it("keeps the tag visible while the panel is COLLAPSED", () => {
     currentRow = baseRow();
     currentChain = makeChain("Baseball");
 
-    renderPanel();
+    render(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed
+      />,
+    );
 
     expect(screen.getByText("Base set")).toBeTruthy();
-    expect(screen.queryByLabelText("Mark Insert as the base set")).toBeNull();
-    // NEO-306: the retired clear is gone, not renamed beside the delete.
-    expect(screen.queryByLabelText("Clear base set from Insert")).toBeNull();
-    expect(screen.queryByText(/Clear base set/)).toBeNull();
-    // Exactly ONE delete on the row: the ordinary one.
-    expect(screen.getAllByLabelText("Delete Insert")).toHaveLength(1);
   });
 
-  it("NEO-306: deleting an EMPTY base confirms what it means for the set, Cancel first", async () => {
+  it("deleting an EMPTY base confirms what it means for the set, Cancel first", async () => {
     currentRow = baseRow();
     currentChain = makeChain("Baseball");
     const onDeleted = vi.fn();
 
     renderPanel(onDeleted);
 
-    fireEvent.click(screen.getByLabelText("Delete Insert"));
+    fireEvent.click(screen.getByLabelText("Delete Base"));
 
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByText('Delete base set "Insert"?')).toBeTruthy();
+    expect(within(dialog).getByText('Delete base set "Base"?')).toBeTruthy();
     expect(
       within(dialog).getByText(
-        "Nothing is below it. This cannot be undone. The set will have no base set until you mark one.",
+        "Nothing is below it. This cannot be undone. The set will have no base set until you rename a type to Base.",
       ),
     ).toBeTruthy();
     // The ConfirmDialog house contract: the reflexive Enter is the safe one.
@@ -1203,15 +1179,12 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-306)", () =
       });
     });
     await waitFor(() => expect(onDeleted).toHaveBeenCalledWith("variantType"));
-    // The role is never touched on its own: the row goes, or nothing does.
-    expect(mockSetBaseVariantType).not.toHaveBeenCalled();
   });
 
-  it("NEO-306: a linked base says the next sync may bring it back", () => {
+  it("a linked base says the next sync may bring it back", () => {
     currentRow = makeRow({
       level: "variantType",
       value: "Base",
-      metadata: { isBase: true },
       platformData: { sportlots: { s0: "884412" } },
     });
     currentChain = makeChain("Baseball");
@@ -1221,12 +1194,12 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-306)", () =
 
     expect(
       within(screen.getByRole("dialog")).getByText(
-        "Nothing is below it. This cannot be undone. The set will have no base set until you mark one. It is linked to SportLots; the next sync may add it back.",
+        "Nothing is below it. This cannot be undone. The set will have no base set until you rename a type to Base. It is linked to SportLots; the next sync may add it back.",
       ),
     ).toBeTruthy();
   });
 
-  it("NEO-306: a base holding cards is REFUSED, with the house reason, and no dialog opens", () => {
+  it("a base holding cards is REFUSED, with the house reason, and no dialog opens", () => {
     currentRow = baseRow();
     currentChain = makeChain("Baseball");
     currentHoldings = {
@@ -1236,7 +1209,7 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-306)", () =
 
     renderPanel();
 
-    const trash = screen.getByLabelText("Delete Insert");
+    const trash = screen.getByLabelText("Delete Base");
     expect(trash.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(trash);
 
@@ -1245,10 +1218,9 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-306)", () =
       screen.getByText("Holds 120 cards — delete what is below it first"),
     ).toBeTruthy();
     expect(mockDeleteSelectorOption).not.toHaveBeenCalled();
-    expect(mockSetBaseVariantType).not.toHaveBeenCalled();
   });
 
-  it("an ordinary variant type keeps the ordinary delete confirm", () => {
+  it("an ordinary variant type keeps the ordinary delete confirm, with no base sentence", () => {
     currentRow = makeRow({ level: "variantType", value: "Inserts" });
     currentChain = makeChain("Baseball");
 
@@ -1260,103 +1232,7 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-306)", () =
     expect(
       within(dialog).getByText("Nothing is below it. This cannot be undone."),
     ).toBeTruthy();
-  });
-
-  it("moves focus to the 'Base set' tag when marking swaps the control away", async () => {
-    // The acting button unmounts the moment the role lands, and with nothing to
-    // move focus onto the browser drops it to <body> — a keyboard operator is
-    // returned to the top of the document mid-task.
-    currentRow = makeRow({ level: "variantType", value: "Insert" });
-    currentChain = makeChain("Baseball");
-    const { rerender } = renderPanel();
-
-    fireEvent.click(screen.getByLabelText("Mark Insert as the base set"));
-    await waitFor(() => expect(mockSetBaseVariantType).toHaveBeenCalled());
-
-    currentRow = baseRow();
-    rerender(
-      <SetAttributesPanel
-        selectorOptionId={SELECTOR_OPTION_ID}
-        defaultCollapsed={false}
-      />,
-    );
-
-    await waitFor(() =>
-      expect(document.activeElement).toBe(screen.getByText("Base set")),
-    );
-  });
-
-  it("does NOT steal focus when the role changes without this operator acting", () => {
-    // The role arrives from the server, so it can flip while nobody is touching
-    // this panel — another tab, or a parallel worker. Pulling focus out of
-    // whatever the operator is typing in would be focus theft.
-    currentRow = makeRow({ level: "variantType", value: "Insert" });
-    currentChain = makeChain("Baseball");
-    const { rerender } = renderPanel();
-
-    const elsewhere = screen.getByLabelText("Rename Insert");
-    elsewhere.focus();
-    expect(document.activeElement).toBe(elsewhere);
-
-    currentRow = baseRow();
-    rerender(
-      <SetAttributesPanel
-        selectorOptionId={SELECTOR_OPTION_ID}
-        defaultCollapsed={false}
-      />,
-    );
-
-    expect(screen.getByText("Base set")).toBeTruthy();
-    expect(document.activeElement).toBe(elsewhere);
-    expect(mockSetBaseVariantType).not.toHaveBeenCalled();
-  });
-
-  it("offers the action on a variant type that is NOT the base, of a set with none", () => {
-    // A row carrying metadata that says nothing about the role is not the
-    // base, and can become it. Named "Base" on purpose: the name is not read.
-    currentRow = makeRow({
-      level: "variantType",
-      value: "Base",
-      metadata: { isInsert: true },
-    });
-    currentChain = makeChain("Baseball");
-
-    renderPanel();
-
-    expect(screen.getByLabelText("Mark Base as the base set")).toBeTruthy();
-    expect(screen.queryByText("Base set")).toBeNull();
-  });
-
-  it("does not offer the role at any other level", () => {
-    // Only a variant type can be a set's base.
-    for (const level of ["sport", "year", "manufacturer", "setName", "insert", "parallel"]) {
-      currentRow = makeRow({ level, value: "Topps" });
-      currentChain = makeChain("Baseball");
-      const { unmount } = renderPanel();
-      expect(screen.queryByLabelText("Mark Topps as the base set")).toBeNull();
-      expect(screen.queryByText("Base set")).toBeNull();
-      unmount();
-    }
-  });
-
-  it("keeps the confirmation visible while the panel is COLLAPSED", async () => {
-    // The control lives in the header, so it is reachable collapsed — which is
-    // how an operator building a set by hand will meet it.
-    currentRow = makeRow({ level: "variantType", value: "Insert" });
-    currentChain = makeChain("Baseball");
-
-    render(
-      <SetAttributesPanel
-        selectorOptionId={SELECTOR_OPTION_ID}
-        defaultCollapsed
-      />,
-    );
-
-    fireEvent.click(screen.getByLabelText("Mark Insert as the base set"));
-
-    expect(
-      await screen.findByText("Marked Insert as the base set"),
-    ).toBeTruthy();
+    expect(within(dialog).queryByText(/rename a type to Base/)).toBeNull();
   });
 });
 
@@ -1392,11 +1268,10 @@ describe("SetAttributesPanel — Card prefix row (NEO-291)", () => {
     },
   );
 
-  it("renders at variantType when the row is the base set", () => {
+  it("renders at variantType when the row is the base set (titled Base)", () => {
     currentRow = makeRow({
       level: "variantType",
       value: "Base",
-      metadata: { isBase: true },
     });
     currentChain = makeChain("Baseball");
     renderPanel();
@@ -1407,7 +1282,17 @@ describe("SetAttributesPanel — Card prefix row (NEO-291)", () => {
     currentRow = makeRow({
       level: "variantType",
       value: "Insert",
-      metadata: { isInsert: true },
+    });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(screen.queryByLabelText("Set feature Card prefix")).toBeNull();
+  });
+
+  it("is absent at a variantType carrying a stray isBase flag under another title: the title decides", () => {
+    currentRow = makeRow({
+      level: "variantType",
+      value: "Gold",
+      metadata: { isBase: true },
     });
     currentChain = makeChain("Baseball");
     renderPanel();

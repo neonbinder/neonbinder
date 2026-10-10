@@ -1215,7 +1215,6 @@ describe("NEO-305: the set ⇄ parallel doors are admin-gated", () => {
         parentId: flagshipId,
         platformData: { bsc: { b0: "parallel" } },
         platformFacets: { bsc: { b0: "variant" } },
-        metadata: { variantRole: "parallel" },
       });
       const parallelId = await insert({
         level: "insert",
@@ -1224,7 +1223,6 @@ describe("NEO-305: the set ⇄ parallel doors are admin-gated", () => {
         platformData: { sportlots: { s0: "SL-GOLD" } },
         platformLabels: { sportlots: { s0: "Bowman Gold" } },
         platformSlotSeq: { sportlots: 1 },
-        metadata: { isParallel: true },
       });
       await ctx.db.patch(parallelTypeId, { children: [parallelId] });
       await ctx.db.patch(flagshipId, { children: [parallelTypeId] });
@@ -1237,7 +1235,6 @@ describe("NEO-305: the set ⇄ parallel doors are admin-gated", () => {
         level: "variantType",
         value: "Base",
         parentId: setId,
-        metadata: { isBase: true },
         platformData: { sportlots: { s0: "SL-BLUE" } },
         platformLabels: { sportlots: { s0: "Bowman Blue" } },
         platformSlotSeq: { sportlots: 1 },
@@ -1398,13 +1395,11 @@ describe("NEO-306: the Make insert of… door is admin-gated", () => {
         level: "variantType",
         value: "Parallel",
         parentId: setId,
-        metadata: { variantRole: "parallel" },
       });
       const insertTypeId = await insert({
         level: "variantType",
         value: "Insert",
         parentId: setId,
-        metadata: { variantRole: "insert" },
       });
       const insertId = await insert({
         level: "insert",
@@ -1541,7 +1536,6 @@ describe("NEO-306: the SportLots-only review is admin-gated", () => {
         level: "variantType",
         value: "Parallel",
         parentId: setId,
-        metadata: { variantRole: "parallel" },
       });
       await ctx.db.patch(setId, { children: [parallelTypeId] });
       await ctx.db.patch(brandId, { children: [setId] });
@@ -1657,7 +1651,6 @@ describe("NEO-308: applyParallelGroupings (the Group Parallels save) is admin-ga
         level: "variantType",
         value: "Inserts",
         platformData: {},
-        metadata: { variantRole: "insert" },
         children: [],
         lastUpdated: 1_700_000_000_000,
       }),
@@ -1845,7 +1838,6 @@ describe("NEO-325: the Base match probe is admin-gated, its adapter halves inter
         platformData: {},
         children: [],
         lastUpdated: 1_700_000_000_000,
-        metadata: { variantRole: "insert" },
       }),
     );
   }

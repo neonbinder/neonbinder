@@ -6,10 +6,11 @@
  * Same mocking style as `parallelChecklistBuild.test.ts`: both marketplace
  * adapters are replaced wholesale with test-controlled actions.
  *
- * Tree: sport → year → setName(Topps Chrome) ─┬─ variantType "Base" (isBase)
+ * Tree: sport → year → setName(Topps Chrome) ─┬─ variantType "Base"
  *                                             └─ variantType "Parallel"
- *                                                (variantRole "parallel")
  *                                                 └─ insert "Gold Wave"
+ *
+ * NEO-334: a variant type's title is its kind, so no flag appears below.
  */
 
 import { convexTest } from "convex-test";
@@ -148,7 +149,6 @@ async function seedSet(
             parentId: setName,
             platformData: { bsc: { b0: "base" } },
             platformFacets: { bsc: { b0: "variant" } },
-            metadata: { isBase: true },
             features: { cardType: "Base", parallelName: "Base" },
             children: [],
             lastUpdated: SENTINEL,
@@ -162,7 +162,6 @@ async function seedSet(
       // its own source.
       platformData: { bsc: { b0: "parallel" } },
       platformFacets: { bsc: { b0: "variant" } },
-      metadata: { variantRole: "parallel" },
       children: [],
       lastUpdated: SENTINEL,
       ...opts.parallelType,
@@ -173,7 +172,6 @@ async function seedSet(
       parentId: parallelType,
       platformData: { bsc: { b0: "gold-wave" }, sportlots: { s0: "SL-GOLD" } },
       platformFacets: { bsc: { b0: "variantName" } },
-      metadata: { isParallel: true },
       features: { cardType: "Parallel", parallelName: "Base" },
       children: [],
       lastUpdated: SENTINEL,
@@ -208,24 +206,33 @@ const cardsOn = (t: T, selectorOptionId: Id<"selectorOptions">) =>
       .collect(),
   );
 
-describe("pickBaseVariantType — the NB flag, never the name", () => {
-  test("exactly one isBase row is the Base, whatever it is called", () => {
-    const rows = [
-      { value: "Base", metadata: {} },
-      { value: "Flagship", metadata: { isBase: true } },
-    ];
+describe("pickBaseVariantType — the title is the kind", () => {
+  test("exactly one row titled Base (or Bases) is the Base", () => {
+    const rows = [{ value: "Flagship" }, { value: "Base" }];
     expect(pickBaseVariantType(rows)).toEqual({ base: rows[1] });
+    const plural = [{ value: "Promo" }, { value: "  bases " }];
+    expect(pickBaseVariantType(plural)).toEqual({ base: plural[1] });
   });
   test("none → no Base yet; two → more than one", () => {
-    expect(pickBaseVariantType([{ metadata: {} }])).toEqual({ blockedReason: BLOCKED_NO_BASE });
+    expect(pickBaseVariantType([{ value: "Flagship" }])).toEqual({
+      blockedReason: BLOCKED_NO_BASE,
+    });
+    expect(pickBaseVariantType([{ value: "Base" }, { value: "Bases" }])).toEqual({
+      blockedReason: BLOCKED_MANY_BASES,
+    });
+  });
+  test("a title that only contains Base is no Base, and a stray isBase flag makes none", () => {
     expect(
-      pickBaseVariantType([{ metadata: { isBase: true } }, { metadata: { isBase: true } }]),
-    ).toEqual({ blockedReason: BLOCKED_MANY_BASES });
+      pickBaseVariantType([
+        { value: "Base Set" },
+        { value: "Gold", metadata: { isBase: true } },
+      ]),
+    ).toEqual({ blockedReason: BLOCKED_NO_BASE });
   });
 });
 
 describe("snapshotForCopies — risk 2, a legacy cardType: Insert", () => {
-  const parallelRole = { metadata: { variantRole: "parallel" as const } };
+  const parallelRole = { value: "Parallels" };
   test("a base parallel born 'Insert' copies as 'Parallel'", () => {
     const out = snapshotForCopies(
       { level: "insert", value: "Gold Wave", features: { cardType: "Insert", era: "Modern" } },
@@ -233,8 +240,8 @@ describe("snapshotForCopies — risk 2, a legacy cardType: Insert", () => {
     );
     expect(out).toEqual({ cardType: "Parallel", era: "Modern" });
   });
-  test("a real insert (insert-role parent) keeps 'Insert'; absent stays absent", () => {
-    const insertRole = { metadata: { variantRole: "insert" as const } };
+  test("a real insert (parent titled Inserts) keeps 'Insert'; absent stays absent", () => {
+    const insertRole = { value: "Inserts" };
     expect(
       snapshotForCopies({ level: "insert", value: "Anime", features: { cardType: "Insert" } }, insertRole),
     ).toEqual({ cardType: "Insert" });
@@ -287,20 +294,29 @@ describe("getParallelsForBuild — standing on the Parallel variant type", () =>
     expect(result.parallels).toHaveLength(1);
   });
 
-  test("the Base is found by its flag after both rows are renamed", async () => {
+  test("the Base is found by its title, plural included", async () => {
     const t = convexTest(schema, modules);
-    const { base, parallelType } = await seedSet(t, {
-      base: { value: "Flagship" },
-      parallelType: { value: "Base" },
-    });
+    const { base, parallelType } = await seedSet(t, { base: { value: "Bases" } });
     const result = await t
       .withIdentity(ADMIN)
       .query(api.parallelChecklistBuild.getParallelsForBuild, { sourceId: parallelType });
     expect(result.source?.id).toBe(base);
-    expect(result.source?.value).toBe("Flagship");
+    expect(result.source?.value).toBe("Bases");
   });
 
-  test("a variant type with no parallel role answers an empty list", async () => {
+  test("a Base retitled away from the word is no Base: no source, and a stray isBase flag does not help", async () => {
+    const t = convexTest(schema, modules);
+    const { parallelType } = await seedSet(t, {
+      base: { value: "Flagship", metadata: { isBase: true } },
+    });
+    const result = await t
+      .withIdentity(ADMIN)
+      .query(api.parallelChecklistBuild.getParallelsForBuild, { sourceId: parallelType });
+    expect(result.source).toBeUndefined();
+    expect(result.sourceBlocked).toBe(BLOCKED_NO_BASE);
+  });
+
+  test("a variant type that is not titled Parallel answers an empty list", async () => {
     const t = convexTest(schema, modules);
     const { base } = await seedSet(t);
     const result = await t
@@ -314,10 +330,10 @@ describe("buildParallelChecklist — a base parallel", () => {
   test("copies the Base's cards, re-linked to the parallel's own cards, prefix from the Base's chain", async () => {
     const t = convexTest(schema, modules);
     const { base, gold } = await seedSet(t, {
-      base: { metadata: { isBase: true, cardNumberPrefix: "B-" } },
+      base: { metadata: { cardNumberPrefix: "B-" } },
       // A prefix on the Parallel type must NOT be read as the Base's.
-      parallelType: { metadata: { variantRole: "parallel", cardNumberPrefix: "P-" } },
-      gold: { metadata: { isParallel: true, cardNumberPrefix: "G-" } },
+      parallelType: { metadata: { cardNumberPrefix: "P-" } },
+      gold: { metadata: { cardNumberPrefix: "G-" } },
     });
     const sourceCard = await addCard(t, base!, {
       cardNumber: "B-7",
@@ -387,10 +403,9 @@ describe("buildParallelChecklist — a base parallel", () => {
     await t.run((ctx) =>
       ctx.db.insert("selectorOptions", {
         level: "variantType",
-        value: "Base Two",
+        value: "Bases",
         parentId: setName,
         platformData: {},
-        metadata: { isBase: true },
         children: [],
         lastUpdated: SENTINEL,
       }),
@@ -466,15 +481,18 @@ describe("buildParallelChecklist — a base parallel", () => {
     expect(slState.calls).toHaveLength(0);
   });
 
-  test("an insert under an insert-role (or role-less) type is not a parallel", async () => {
-    const t = convexTest(schema, modules);
-    const { gold } = await seedSet(t, { parallelType: { metadata: { variantRole: "insert" } } });
-    await expect(
-      t
-        .withIdentity(ADMIN)
-        .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: gold }),
-    ).rejects.toThrow(/isn't a parallel/);
-  });
+  test.each(["Inserts", "Promo", "Parallel Set"])(
+    "an insert under a type titled %j is not a parallel",
+    async (title) => {
+      const t = convexTest(schema, modules);
+      const { gold } = await seedSet(t, { parallelType: { value: title } });
+      await expect(
+        t
+          .withIdentity(ADMIN)
+          .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: gold }),
+      ).rejects.toThrow(/isn't a parallel/);
+    },
+  );
 });
 
 describe("insertParallelCardsPage — the source guard", () => {

@@ -941,7 +941,6 @@ describe("NEO-312 — getParallelsForBuild and buildParallelChecklist require an
         value: "Base",
         parentId: setName,
         platformData: { bsc: { b0: "base" } },
-        metadata: { isBase: true },
         children: [],
         lastUpdated: Date.now(),
       });
@@ -951,7 +950,6 @@ describe("NEO-312 — getParallelsForBuild and buildParallelChecklist require an
         parentId: setName,
         platformData: { bsc: { b0: "parallel" } },
         platformFacets: { bsc: { b0: "variant" } },
-        metadata: { variantRole: "parallel" },
         children: [],
         lastUpdated: Date.now(),
       });
@@ -961,7 +959,6 @@ describe("NEO-312 — getParallelsForBuild and buildParallelChecklist require an
         parentId: parallelTypeId,
         platformData: { bsc: { b0: "gold-wave" } },
         platformFacets: { bsc: { b0: "variantName" } },
-        metadata: { isParallel: true },
         children: [],
         lastUpdated: Date.now(),
       });

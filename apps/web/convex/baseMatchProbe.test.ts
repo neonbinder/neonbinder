@@ -11,8 +11,9 @@
  * at the `./credentials` module boundary, with a counter, because "one read per
  * batch" is a contract, not an accident.
  *
- * Fixture names ("Flagship", "Gold") are deliberately not "Base": the probe
- * finds the Base by NB's `isBase` flag and the parallel type by NB's role.
+ * A variant type's TITLE is its kind (NEO-334): the probe finds the Base as
+ * the type titled "Base"/"Bases" and the parallel type as the one titled
+ * "Parallel"/"Parallels". No flag is stored beside a title.
  */
 
 import { convexTest } from "convex-test";
@@ -108,12 +109,14 @@ function loggedText(): string {
 type T = ReturnType<typeof convexTest>;
 type Ins = (f: Record<string, unknown>) => Promise<Id<"selectorOptions">>;
 
-/** The tree: sport > year > brand > set > { Base (isBase), Parallel type }. */
+/** The tree: sport > year > brand > set > { Base, Parallel type }. */
 async function seedTree(
   t: T,
   opts: {
     setPrefix?: string;
     basePrefix?: string;
+    baseTitle?: string;
+    parallelTitle?: string;
     parallelMeta?: Record<string, unknown>;
     parallelSlots?: boolean;
   } = {},
@@ -138,15 +141,15 @@ async function seedTree(
     });
     const base = await ins({
       level: "variantType",
-      value: "Flagship",
+      value: opts.baseTitle ?? "Base",
       parentId: set,
-      metadata: { isBase: true, ...(opts.basePrefix ? { cardNumberPrefix: opts.basePrefix } : {}) },
+      ...(opts.basePrefix ? { metadata: { cardNumberPrefix: opts.basePrefix } } : {}),
     });
     const parallel = await ins({
       level: "variantType",
-      value: "Gold",
+      value: opts.parallelTitle ?? "Parallel",
       parentId: set,
-      metadata: { variantRole: "parallel", ...opts.parallelMeta },
+      ...(opts.parallelMeta ? { metadata: opts.parallelMeta } : {}),
       ...(opts.parallelSlots === false
         ? {}
         : {
@@ -239,22 +242,35 @@ describe("getBaseSignatureForVariantType: not a parallel type", () => {
     expect(await sig(t, set)).toEqual({ status: "notParallelType" });
   });
 
-  test("an insert-role variant type answers notParallelType", async () => {
+  test.each(["Inserts", "Promo", "Parallel Set"])(
+    "a variant type titled %j answers notParallelType",
+    async (title) => {
+      const t = convexTest(schema, modules);
+      const { parallel } = await seedTree(t, { parallelTitle: title });
+
+      expect(await sig(t, parallel)).toEqual({ status: "notParallelType" });
+    },
+  );
+
+  test("a stray variantRole parallel flag on another title answers notParallelType", async () => {
     const t = convexTest(schema, modules);
-    const { parallel } = await seedTree(t, { parallelMeta: { variantRole: "insert" } });
+    const { parallel } = await seedTree(t, {
+      parallelTitle: "Gold",
+      parallelMeta: { variantRole: "parallel" },
+    });
 
     expect(await sig(t, parallel)).toEqual({ status: "notParallelType" });
   });
 
-  test("a variant type with no role answers notParallelType", async () => {
+  test("a type titled Parallels is a parallel type", async () => {
     const t = convexTest(schema, modules);
-    const { parallel } = await seedTree(t);
-    await t.run(async (ctx) => ctx.db.patch(parallel, { metadata: {} }));
+    const { base, parallel } = await seedTree(t, { parallelTitle: "Parallels" });
+    await addCards(t, base, [{ cardNumber: "1", sortOrder: 1 }]);
 
-    expect(await sig(t, parallel)).toEqual({ status: "notParallelType" });
+    expect((await sig(t, parallel)).status).toBe("ok");
   });
 
-  test("the isBase row itself answers notParallelType", async () => {
+  test("the Base row itself answers notParallelType", async () => {
     const t = convexTest(schema, modules);
     const { base } = await seedTree(t);
 
@@ -268,37 +284,35 @@ describe("getBaseSignatureForVariantType: which Base", () => {
     const orphan = await t.run(async (ctx) =>
       ctx.db.insert("selectorOptions", {
         level: "variantType",
-        value: "Orphan",
+        value: "Parallel",
         platformData: {},
         children: [],
         lastUpdated: 1,
-        metadata: { variantRole: "parallel" },
       } as never),
     );
 
     expect(await sig(t, orphan)).toEqual({ status: "noBase" });
   });
 
-  test("a set whose variant types carry no isBase flag answers noBase", async () => {
+  test("a set with no variant type titled Base answers noBase, whatever flag a row carries", async () => {
     const t = convexTest(schema, modules);
-    const { base, parallel } = await seedTree(t);
-    await t.run(async (ctx) => ctx.db.patch(base, { metadata: {} }));
+    const { base, parallel } = await seedTree(t, { baseTitle: "Flagship" });
+    await t.run(async (ctx) => ctx.db.patch(base, { metadata: { isBase: true } }));
 
     expect(await sig(t, parallel)).toEqual({ status: "noBase" });
   });
 
-  test("two isBase siblings answer manyBases", async () => {
+  test("two siblings titled Base answer manyBases", async () => {
     const t = convexTest(schema, modules);
     const { set, parallel } = await seedTree(t);
     await t.run(async (ctx) =>
       ctx.db.insert("selectorOptions", {
         level: "variantType",
-        value: "Second",
+        value: "Bases",
         parentId: set,
         platformData: {},
         children: [],
         lastUpdated: 1,
-        metadata: { isBase: true },
       } as never),
     );
 
@@ -495,14 +509,14 @@ describe("getBaseSignatureForVariantType: an ok signature", () => {
 
   test("baseName is the Base row's own value and baseId its id", async () => {
     const t = convexTest(schema, modules);
-    const { base, parallel } = await seedTree(t);
+    const { base, parallel } = await seedTree(t, { baseTitle: "Bases" });
     await addCards(t, base, [{ cardNumber: "1", sortOrder: 1 }]);
 
     const out = await sig(t, parallel);
 
     if (out.status !== "ok") throw new Error(`expected ok, got ${out.status}`);
     expect(out.baseId).toBe(base);
-    expect(out.baseName).toBe("Flagship");
+    expect(out.baseName).toBe("Bases");
   });
 
   test("no prefix anywhere leaves numbers untouched and omits cardNumberPrefix", async () => {

@@ -61,7 +61,7 @@ async function seedChain(t: T) {
   const year = await row(t, "year", "1990", sport);
   const brand = await row(t, "manufacturer", "Topps", year);
   const set = await row(t, "setName", "Topps Flagship", brand);
-  const type = await row(t, "variantType", "Insert", set, { variantRole: "insert" });
+  const type = await row(t, "variantType", "Insert", set);
   const insert = await row(t, "insert", "All-Stars", type);
   const parallel = await row(t, "parallel", "Gold", insert);
   return { sport, year, brand, set, type, insert, parallel };
@@ -205,7 +205,7 @@ describe("resolveDrillPath", () => {
   test("stops at a Base variant type even when a deeper id follows it", async () => {
     const t = convexTest(schema, modules);
     const c = await seedChain(t);
-    const base = await row(t, "variantType", "Base", c.set, { isBase: true });
+    const base = await row(t, "variantType", "Base", c.set);
     // A well-formed child of Base: would be valid on its own, but the
     // cascade shows no column beneath Base.
     const underBase = await row(t, "insert", "Stray", base);
@@ -215,16 +215,27 @@ describe("resolveDrillPath", () => {
     expect(idsOf(path)).toEqual([c.sport, c.year, c.brand, c.set, base]);
   });
 
-  test("a variant type that is merely named Base is not terminal", async () => {
+  test("a type titled Bases is terminal too: the title is the kind, singular or plural", async () => {
     const t = convexTest(schema, modules);
     const c = await seedChain(t);
-    // No isBase flag: the role is an NB flag, never the display name.
-    const lookalike = await row(t, "variantType", "Base", c.set);
-    const child = await row(t, "insert", "Child", lookalike);
+    const base = await row(t, "variantType", "Bases", c.set);
+    const underBase = await row(t, "insert", "Stray", base);
 
     expect(
-      idsOf(await resolve(t, [c.sport, c.year, c.brand, c.set, lookalike, child])),
-    ).toEqual([c.sport, c.year, c.brand, c.set, lookalike, child]);
+      idsOf(await resolve(t, [c.sport, c.year, c.brand, c.set, base, underBase])),
+    ).toEqual([c.sport, c.year, c.brand, c.set, base]);
+  });
+
+  test("a type that merely carries an isBase flag, under another title, is not terminal", async () => {
+    const t = convexTest(schema, modules);
+    const c = await seedChain(t);
+    // The flag is retired: only the title says Base.
+    const flagged = await row(t, "variantType", "Gold", c.set, { isBase: true });
+    const child = await row(t, "insert", "Child", flagged);
+
+    expect(
+      idsOf(await resolve(t, [c.sport, c.year, c.brand, c.set, flagged, child])),
+    ).toEqual([c.sport, c.year, c.brand, c.set, flagged, child]);
   });
 
   test("reads only the first seven ids and ignores the rest", async () => {
@@ -258,14 +269,15 @@ describe("resolveDrillPath — sub-variants only under an Insert type (NEO-334)"
     expect(idsOf(await resolve(t, ids))).toEqual(ids);
   });
 
-  for (const [label, metadata] of [
-    ["a Parallel type", { variantRole: "parallel" as const }],
-    ["a type with no role", undefined],
+  for (const [label, title] of [
+    ["a Parallel type", "Parallels"],
+    ["a type with no kind", "Promo"],
+    ["a type whose title only contains Insert", "Insert Set"],
   ] as const) {
     test(`under ${label} the path stops at the insert and the parallel is dropped`, async () => {
       const t = convexTest(schema, modules);
       const c = await seedChain(t);
-      const type = await row(t, "variantType", "Parallel", c.set, metadata);
+      const type = await row(t, "variantType", title, c.set);
       const insert = await row(t, "insert", "Gold", type);
       // A stale link: no such row can be created today, but a URL can name one.
       const parallel = await row(t, "parallel", "Gold /50", insert);
@@ -276,15 +288,26 @@ describe("resolveDrillPath — sub-variants only under an Insert type (NEO-334)"
     });
   }
 
-  test("the role decides, never the name: a roleless type called \"Insert\" stops at the insert", async () => {
+  test("the title decides, never a flag: a type titled Gold carrying variantRole insert stops at the insert", async () => {
     const t = convexTest(schema, modules);
     const c = await seedChain(t);
-    const lookalike = await row(t, "variantType", "Insert", c.set);
+    const lookalike = await row(t, "variantType", "Gold", c.set, { variantRole: "insert" });
     const insert = await row(t, "insert", "All-Stars", lookalike);
     const parallel = await row(t, "parallel", "Gold", insert);
 
     expect(
       idsOf(await resolve(t, [c.sport, c.year, c.brand, c.set, lookalike, insert, parallel])),
     ).toEqual([c.sport, c.year, c.brand, c.set, lookalike, insert]);
+  });
+
+  test("a hand-made type titled Inserts opens the sub-variant column", async () => {
+    const t = convexTest(schema, modules);
+    const c = await seedChain(t);
+    const type = await row(t, "variantType", "Inserts", c.set);
+    const insert = await row(t, "insert", "All-Stars", type);
+    const parallel = await row(t, "parallel", "Gold", insert);
+    const ids = [c.sport, c.year, c.brand, c.set, type, insert, parallel];
+
+    expect(idsOf(await resolve(t, ids))).toEqual(ids);
   });
 });

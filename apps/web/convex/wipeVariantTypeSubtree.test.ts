@@ -120,11 +120,9 @@ async function seed(t: T): Promise<Fixture> {
       platformData: { bsc: { b0: "acme-inserts" }, sportlots: { s0: "901" } },
       platformLabels: { bsc: { b0: "Inserts" }, sportlots: { s0: "Acme Inserts" } },
       platformSlotSeq: { bsc: 1, sportlots: 1 },
-      metadata: { isInsert: true },
     });
     const baseVt = await row("variantType", "Base", set, {
       platformData: { bsc: { b0: "acme-base" } },
-      metadata: { isBase: true },
     });
 
     // ── the subtree ────────────────────────────────────────────────────────

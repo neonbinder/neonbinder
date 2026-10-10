@@ -1,15 +1,12 @@
 /**
- * NEO-239 — the variantType column sync, end to end, on the path the setup
- * flow actually walks.
+ * NEO-239 / NEO-334 — the variantType column sync, end to end, on the path the
+ * setup flow actually walks.
  *
- * CI caught what a unit test could not: `.maestro/flows/setup.yaml` synced
- * 2024 Topps Chrome's variant types on an empty preview, the Base / Insert /
- * Parallel rows appeared, and tapping "Base" never produced the Base mapping
- * form — because `metadata.isBase` had not landed on the freshly inserted row
- * and `modules/SetSelector.tsx` gates that form on the ROLE, not on the name.
+ * Since NEO-334 a variant type's TITLE is its kind: the sync writes the
+ * `variant` tag on the BSC slot and nothing else about the kind, and the
+ * Base mapping form is gated on `variantTypeKind(row) === "base"`.
  *
- * The tests that existed called `storeSelectorOptions` directly with
- * hand-written options. This file drives the whole chain the column uses:
+ * This file drives the whole chain the column uses:
  *
  *   ResilientEntityColumn(useEnsureSync, level="variantType")
  *     → ensureSelectorOptions
@@ -20,9 +17,8 @@
  * and asserts on the ROWS, which is the only place the FE looks.
  *
  * The fixture is BSC's real response shape for the `variant` aggregation —
- * `{ label, slug, count }` — because the whole class of bug here is a
- * derivation that reads the wrong one of those two fields, or matches a
- * literal against a casing or a slug form that BSC does not actually emit.
+ * `{ label, slug, count }`: `label` becomes the row's title at creation,
+ * `slug` lands in the BSC slot and is never read for the kind.
  */
 
 import { convexTest } from "convex-test";
@@ -32,6 +28,7 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { resolveBscFacetFilters } from "./bscFacets";
 import { slotLabel } from "./platformSlots";
+import { variantTypeKind } from "./variantRole";
 
 const modules = (
   import.meta as unknown as {
@@ -192,8 +189,8 @@ async function variantTypeRows(
   );
 }
 
-describe("Sync Variant Types — the Base row gets the role and the tag", () => {
-  test("THE CI FAILURE: a fresh sync leaves Base able to open the Base mapping form", async () => {
+describe("Sync Variant Types — the title is the kind, the slot gets the tag (NEO-334)", () => {
+  test("a fresh sync creates Base / Insert / Parallel rows tagged `variant`, writing no role flag", async () => {
     const t = convexTest(schema, modules);
     const setId = await seedSetRow(t);
     stubBscVariants([
@@ -206,63 +203,40 @@ describe("Sync Variant Types — the Base row gets the role and the tag", () => 
     expect(res.ran).toBe(true);
 
     const rows = await variantTypeRows(t, setId);
-    expect(rows.map((r) => r.value).sort()).toEqual([
-      "Base",
-      "Insert",
-      "Parallel",
-    ]);
+    expect(rows.map((r) => r.value).sort()).toEqual(["Base", "Insert", "Parallel"]);
 
-    const base = rows.find((r) => r.value === "Base")!;
-    // The role. `modules/SetSelector.tsx` gates the Base mapping form on this
-    // and nothing else, so without it the setup flow's tap on "Base" produces
-    // no "Select Base Set" / "Re-map Base" control at all.
-    expect(base.metadata?.isBase).toBe(true);
-    // The tag. Without it the BSC side of every checklist under this row is
-    // unresolvable and the Fetch step that follows returns SportLots only.
-    expect(base.platformFacets?.bsc).toEqual({ b0: "variant" });
-
-    // …and the role is EXCLUSIVE. Two base rows would make
-    // `getBaseVariantBySet` answer by document order.
-    for (const other of rows.filter((r) => r.value !== "Base")) {
-      expect(other.metadata?.isBase).toBeUndefined();
-      // The tag, though, belongs on every one of them: it is what the id IS.
-      expect(other.platformFacets?.bsc).toEqual({ b0: "variant" });
+    // The tag belongs on every one of them: it is what the id IS. Without it
+    // the BSC side of every checklist under the row is unresolvable.
+    for (const row of rows) {
+      expect(row.platformFacets?.bsc).toEqual({ b0: "variant" });
+      // NEO-334: the title is the kind, so nothing is stored beside it.
+      expect(row.metadata?.isBase).toBeUndefined();
+      expect(row.metadata?.variantRole).toBeUndefined();
     }
+    // …and the kinds come from the titles, exactly one Base.
+    expect(rows.map((r) => [r.value, variantTypeKind(r)]).sort()).toEqual([
+      ["Base", "base"],
+      ["Insert", "insert"],
+      ["Parallel", "parallel"],
+    ]);
+    expect(rows.filter((r) => variantTypeKind(r) === "base")).toHaveLength(1);
   });
 
-  test("the role is read off BSC's SLUG, whatever BSC calls the label", async () => {
-    // Marketplace id compared to marketplace id, once at creation — which the
-    // invariant allows. What it forbids is deriving the role from the NB
-    // DISPLAY VALUE, so an operator (or BSC) renaming the label must not move
-    // the role.
+  test("the kind follows BSC's LABEL (the stored title), never its slug", async () => {
+    // The row is created from the label; after that the title is NB's. A slug
+    // that says base under a label that is not the word is no Base.
     const t = convexTest(schema, modules);
     const setId = await seedSetRow(t);
     stubBscVariants([
       { label: "Base Set Cards", slug: "base" },
-      { label: "Insert", slug: "insert" },
+      { label: "Base", slug: "insert" },
     ]);
 
     await syncVariantTypes(t, setId);
 
     const rows = await variantTypeRows(t, setId);
-    const base = rows.find((r) => r.value === "Base Set Cards")!;
-    expect(base.metadata?.isBase).toBe(true);
-    expect(rows.find((r) => r.value === "Insert")!.metadata?.isBase).toBeUndefined();
-  });
-
-  test("a label reading 'Base' with a slug that is NOT base gets no role", async () => {
-    // The other half of the same statement. If this ever needs to change, the
-    // fix is an operator pressing `setBaseVariantType`, not a name check
-    // creeping back in.
-    const t = convexTest(schema, modules);
-    const setId = await seedSetRow(t);
-    stubBscVariants([{ label: "Base", slug: "insert" }]);
-
-    await syncVariantTypes(t, setId);
-
-    const rows = await variantTypeRows(t, setId);
-    expect(rows[0].value).toBe("Base");
-    expect(rows[0].metadata?.isBase).toBeUndefined();
+    expect(variantTypeKind(rows.find((r) => r.value === "Base Set Cards"))).toBeUndefined();
+    expect(variantTypeKind(rows.find((r) => r.value === "Base"))).toBe("base");
   });
 
   test.each([
@@ -272,15 +246,8 @@ describe("Sync Variant Types — the Base row gets the role and the tag", () => 
     ["hyphenated", "base-set"],
     ["prefixed with the set", "2024-topps-chrome-base"],
   ])(
-    "BSC emitting the base variant as %s still yields the role",
+    "BSC emitting the base variant's slug as %s changes neither the kind nor the flags",
     async (_shape, slug) => {
-      // We have no recorded sample of BSC's variant slug, and the codebase's
-      // only prior evidence was an assumption (`variantType.toLowerCase()`)
-      // that NEO-239 deleted for being one. The derivation therefore has to
-      // recognise the base variant across the forms BSC plausibly emits rather
-      // than pin one literal — a wrong guess here is silent, and the symptom
-      // (a Base row that cannot open its own mapping form) shows up two screens
-      // later.
       const t = convexTest(schema, modules);
       const setId = await seedSetRow(t);
       stubBscVariants([
@@ -291,19 +258,15 @@ describe("Sync Variant Types — the Base row gets the role and the tag", () => 
       await syncVariantTypes(t, setId);
 
       const rows = await variantTypeRows(t, setId);
-      expect(rows.find((r) => r.value === "Base")!.metadata?.isBase).toBe(true);
-      expect(
-        rows.find((r) => r.value === "Insert")!.metadata?.isBase,
-      ).toBeUndefined();
+      const base = rows.find((r) => r.value === "Base")!;
+      expect(variantTypeKind(base)).toBe("base");
+      expect(base.metadata).toBeUndefined();
+      expect(base.platformFacets?.bsc).toEqual({ b0: "variant" });
+      expect(variantTypeKind(rows.find((r) => r.value === "Insert"))).toBe("insert");
     },
   );
 
-  test("TWO base-ish ids in one batch confer the role on NEITHER", async () => {
-    // A token match cannot rank `base` against `base-parallel`, so it does not
-    // try. Fail-closed is the right side to err on: a missing role is one
-    // click of `setBaseVariantType` away, while two rival base rows make
-    // `getBaseVariantBySet` answer by document order — a bug that reads as
-    // "the Base mapping form sometimes edits the wrong row".
+  test("`Base` and `Base Parallel` in one batch: only the title that is the word is the Base", async () => {
     const t = convexTest(schema, modules);
     const setId = await seedSetRow(t);
     stubBscVariants([
@@ -315,22 +278,22 @@ describe("Sync Variant Types — the Base row gets the role and the tag", () => 
 
     const rows = await variantTypeRows(t, setId);
     expect(rows).toHaveLength(2);
-    expect(rows.every((r) => r.metadata?.isBase === undefined)).toBe(true);
-    // The facet tag is unaffected — that is a fact about each id, not a choice
-    // between them.
+    expect(rows.filter((r) => variantTypeKind(r) === "base").map((r) => r.value)).toEqual([
+      "Base",
+    ]);
+    expect(rows.every((r) => r.metadata === undefined)).toBe(true);
     expect(rows.every((r) => r.platformFacets?.bsc !== undefined)).toBe(true);
   });
 
-  test("a set whose base an OPERATOR chose is not re-derived by a later sync", async () => {
+  test("a later sync does not add a second Base beside the one the set has", async () => {
     const t = convexTest(schema, modules);
     const setId = await seedSetRow(t);
-    const operatorChoice = await t.run(async (ctx) =>
+    const existing = await t.run(async (ctx) =>
       ctx.db.insert("selectorOptions", {
         level: "variantType",
-        value: "Insert",
-        platformData: { bsc: { b0: "insert" } },
+        value: "Base",
+        platformData: { bsc: { b0: "base" } },
         platformFacets: { bsc: { b0: "variant" } },
-        metadata: { isBase: true }, // set through setBaseVariantType
         primaryPlatformId: { bsc: "b0" },
         platformSlotSeq: { bsc: 1 },
         parentId: setId,
@@ -346,20 +309,15 @@ describe("Sync Variant Types — the Base row gets the role and the tag", () => 
     await syncVariantTypes(t, setId, { force: true });
 
     const rows = await variantTypeRows(t, setId);
-    // The operator's row keeps the role…
-    expect(
-      (await t.run(async (ctx) => ctx.db.get(operatorChoice)))?.metadata?.isBase,
-    ).toBe(true);
-    // …and the newly-inserted "Base" row does NOT take it, which would have
-    // left the set with two.
-    expect(rows.find((r) => r.value === "Base")?.metadata?.isBase).toBeUndefined();
+    expect(rows.map((r) => r.value).sort()).toEqual(["Base", "Insert"]);
+    expect(rows.find((r) => r.value === "Base")!._id).toBe(existing);
+    expect(rows.filter((r) => variantTypeKind(r) === "base")).toHaveLength(1);
   });
 
-  test("a re-sync of an existing untagged Base row backfills both, and is then a no-op", async () => {
-    // Every dev and prod variantType row predates this ticket. The column sync
-    // is what most of them will meet first, so it has to heal them — and then
-    // stop writing, or NEO-85's no-churn guarantee is gone and every column
-    // reflows on every sync.
+  test("a re-sync of an existing untagged Base row backfills the tag only, and is then a no-op", async () => {
+    // Every dev and prod variantType row predates the tag. The column sync is
+    // what most of them meet first, so it heals them — and then stops
+    // writing, or NEO-85's no-churn guarantee is gone.
     const t = convexTest(schema, modules);
     const setId = await seedSetRow(t);
     const existing = await t.run(async (ctx) =>
@@ -378,8 +336,8 @@ describe("Sync Variant Types — the Base row gets the role and the tag", () => 
 
     await syncVariantTypes(t, setId, { force: true });
     const healed = await t.run(async (ctx) => ctx.db.get(existing));
-    expect(healed?.metadata?.isBase).toBe(true);
     expect(healed?.platformFacets?.bsc).toEqual({ b0: "variant" });
+    expect(healed?.metadata).toBeUndefined();
 
     // Second run: nothing left to write.
     const stamp = healed?.lastUpdated;
@@ -606,7 +564,6 @@ describe("Base mapping writes setName alongside variant, never over it", () => {
         level: "variantType",
         value: "Base",
         platformData: { bsc: { b0: "base" } },
-        metadata: { isBase: true },
         primaryPlatformId: { bsc: "b0" },
         platformSlotSeq: { bsc: 1 },
         parentId: setId,
@@ -653,7 +610,6 @@ describe("Base mapping writes setName alongside variant, never over it", () => {
         level: "variantType",
         value: "Base",
         platformData: { bsc: { b0: "base" } },
-        metadata: { isBase: true },
         primaryPlatformId: { bsc: "b0" },
         platformSlotSeq: { bsc: 1 },
         parentId: setId,
