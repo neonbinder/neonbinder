@@ -10,3 +10,4 @@
 - [Multi-landing dialog copy follows the landing](multi_landing_dialog_copy_follows_the_landing.md) — title/confirm/aria per landing, conditional "link moves", count labels, n=0 grammar
 - [Rebuild/copy features checklist](rebuild-and-copy-features-checklist.md) — SKU churn, hand-edit loss, parallel vs card facts, printing plates, unlinked parallels, counts without names
 - [Twin-names copy review](twin-names-copy-review.md) — fix verbs = control labels; a bare #id is not a tell; series as hint, never prefill
+- [Team pre-fill set-year traps](team-prefill-set-year-traps.md) — season≠set year, one-team-career vs college draft cards, org not affiliate, legends, split groups, multi-team, team cards
