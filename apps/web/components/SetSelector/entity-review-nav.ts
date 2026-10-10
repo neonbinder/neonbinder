@@ -165,8 +165,17 @@ function waitingOnStagedLeagues(
   row: NavRow,
   rows: readonly NavRow[],
 ): boolean {
-  if (row.kind !== "team") return false;
-  return rows.some(
+  return stagedLeagueBlockers(row, rows).length > 0;
+}
+
+/** The undecided league steps a TEAM row waits on — see above. NEO-330 W6
+ *  needs the rows themselves, not just "are there any", to walk to one. */
+function stagedLeagueBlockers<T extends NavRow>(
+  row: NavRow,
+  rows: readonly T[],
+): T[] {
+  if (row.kind !== "team") return [];
+  return rows.filter(
     (other) =>
       other.kind === "league" &&
       !other.decision &&
@@ -179,7 +188,16 @@ function waitingOnStagedTeams(
   row: NavRow,
   rows: readonly NavRow[],
 ): boolean {
-  if (row.kind !== "player") return false;
+  return stagedTeamBlockers(row, rows).length > 0;
+}
+
+/** The undecided team rows a PLAYER row waits on — the rule is documented on
+ *  `waitingOnStagedTeams`, which is this list being non-empty. */
+function stagedTeamBlockers<T extends NavRow>(
+  row: NavRow,
+  rows: readonly T[],
+): T[] {
+  if (row.kind !== "player") return [];
 
   /*
    * TWO ways a staged step can belong to this player, and the second is the
@@ -207,7 +225,7 @@ function waitingOnStagedTeams(
       .filter(Boolean),
   );
 
-  return rows.some((other) => {
+  return rows.filter((other) => {
     // ANY team row, not just a staged one: a checklist team row named for one
     // of this player's clubs answers that chip exactly as a staged row does.
     // Where the row came from decides what its step says, never whether it
@@ -231,8 +249,94 @@ function waitingOnStagedTeams(
  * (every row settled, or the batch is empty).
  *
  * `explicit` — true when the operator navigated here on purpose. See the header.
+ *
+ * `returnTo` — NEO-330 W6, the rows to come BACK to, innermost last.
+ *
+ * Jason, 2026-10-10, on the E2E author's repro: on "Dan Brown" the operator
+ * typed "1995 Memphis RiverKings CHL"; the wizard staged a New Team step for
+ * it and walked there, which is right — and after that step was answered it
+ * showed "Scott Brower", the first undecided row in batch order. Dan Brown's
+ * new career team was kept, just off-screen on a row the operator had left
+ * mid-thought. "Return to A": the walk comes back to the row whose step it
+ * was, so the operator sees the team land on the player they were editing.
+ *
+ * A stack rather than one slot because the detour nests: a team the operator
+ * is answering can stage its own New League step, and the natural unwinding is
+ * league → back to the team → back to the player. Each entry is popped once it
+ * is returned to, decided, or gone; an empty stack is today's walk exactly.
+ *
+ * `returned` — this row is on screen BECAUSE the walk came back to it. It then
+ * holds against the teams-first yield exactly as a row with edits does: the
+ * operator was in the middle of it, and bouncing them onto an unrelated team
+ * the moment they arrive back would undo the return.
+ *
+ * Both optional and absent when empty, so every existing `{ rowId, explicit }`
+ * literal — in the wizard and in the tests — means what it always meant.
+ *
+ * Client state only: wizard answers are never stored (NEO-313), and a return
+ * target is less than an answer.
  */
-export type NavState = { rowId: string | null; explicit: boolean };
+export type NavState = {
+  rowId: string | null;
+  explicit: boolean;
+  returnTo?: readonly string[];
+  returned?: boolean;
+};
+
+/**
+ * The return stack an operator gesture from the presented row should carry
+ * when it takes them to one of that row's own steps ("Decide team" on a career
+ * chip). Appends the presented row unless it is already the innermost entry.
+ */
+export function returnStackFrom(nav: NavState): readonly string[] {
+  const stack = nav.returnTo ?? [];
+  if (nav.rowId === null || stack[stack.length - 1] === nav.rowId) return stack;
+  return [...stack, nav.rowId];
+}
+
+/** Build a NavState, leaving the NEO-330 fields out entirely when empty. */
+function navOf(
+  rowId: string | null,
+  explicit: boolean,
+  returnTo: readonly string[] = [],
+  returned = false,
+): NavState {
+  const next: NavState = { rowId, explicit };
+  if (returnTo.length > 0) next.returnTo = returnTo;
+  if (returned) next.returned = true;
+  return next;
+}
+
+function sameNav(a: NavState, b: NavState): boolean {
+  const ar = a.returnTo ?? [];
+  const br = b.returnTo ?? [];
+  return (
+    a.rowId === b.rowId &&
+    a.explicit === b.explicit &&
+    !!a.returned === !!b.returned &&
+    ar.length === br.length &&
+    ar.every((id, i) => id === br[i])
+  );
+}
+
+/**
+ * NEO-330 W6 — the next step that unblocks `origin`, if one can be answered
+ * now: a league one of its blocking teams waits on first (leagues before
+ * teams, as in `nextUndecided`), then a blocking team. Null while every one of
+ * them is still being looked up.
+ */
+function nextOwnStep<T extends NavRow>(origin: T, rows: readonly T[]): T | null {
+  const teams = stagedTeamBlockers(origin, rows);
+  const leagueOwners = origin.kind === "team" ? [origin] : teams;
+  for (const owner of leagueOwners) {
+    const league = stagedLeagueBlockers(owner, rows).find(isPresentable);
+    if (league) return league;
+  }
+  return (
+    teams.find((t) => isPresentable(t) && !waitingOnStagedLeagues(t, rows)) ??
+    null
+  );
+}
 
 /**
  * The first row that is ready to be reviewed: settled (its lookup finished, or
@@ -450,6 +554,10 @@ export function summarizeDecisions(rows: readonly NavRow[]): {
  *  - the wizard walked here (`explicit === false`) and the row has since been
  *    decided — by this operator, or by a bulk action.
  *
+ * WHERE it advances to is `nextUndecided`, unless `nav.returnTo` names a row
+ * still waiting to be come back to (NEO-330 W6): then that row's own staged
+ * steps, and then the row itself.
+ *
  * An explicitly-presented row is never moved off by a decision landing on it.
  * That is the read-only "Decided: …" panel: the operator asked to see this row,
  * so they keep seeing it until they ask for something else.
@@ -508,6 +616,9 @@ export function resolveNav<T extends NavRow>(
          */
         (presented.kind === "player" &&
           !opts.pinnedRowHasEdits &&
+          // NEO-330 W6 — nor once the walk has brought the operator BACK to
+          // this row: they were mid-way through it. See `NavState.returned`.
+          !nav.returned &&
           hasSettledUndecidedTeam(rows)) ||
         // NEO-236 — an implicit pin YIELDS to steps staged under it.
         //
@@ -529,11 +640,71 @@ export function resolveNav<T extends NavRow>(
           waitingOnStagedLeagues(presented, rows))));
   if (!stale) return nav;
 
+  /*
+   * ── NEO-330 W6: come back to the row whose step this was ────────────────
+   *
+   * Leaving an implicitly-presented row because steps were staged UNDER it
+   * (its own career team, a team's own league) after the operator had started
+   * on it: remember it, so the walk returns once those steps are answered.
+   * "Started" is the same `pinnedRowHasEdits` the teams-first guard reads —
+   * typing a career team or a league is itself an edit, so the typed path
+   * always qualifies. A row the operator never touched whose own lookup staged
+   * steps under it is left to the walk exactly as before.
+   */
+  let stack = nav.returnTo ?? [];
+  if (
+    presented !== null &&
+    !nav.explicit &&
+    !presented.decision &&
+    (opts.pinnedRowHasEdits || nav.returned) &&
+    (waitingOnStagedTeams(presented, rows) ||
+      waitingOnStagedLeagues(presented, rows)) &&
+    stack[stack.length - 1] !== presented._id
+  ) {
+    stack = [...stack, presented._id];
+  }
+
+  // Unwind: the innermost origin that still needs its operator.
+  while (stack.length > 0) {
+    const originId = stack[stack.length - 1];
+    const origin = rows.find((r) => r._id === originId);
+    // Decided meanwhile (bulk, or the operator went round by another route),
+    // or gone from the batch: nothing to come back to — today's walk.
+    if (!origin || origin.decision) {
+      stack = stack.slice(0, -1);
+      continue;
+    }
+    if (
+      !waitingOnStagedTeams(origin, rows) &&
+      !waitingOnStagedLeagues(origin, rows)
+    ) {
+      return settle(nav, navOf(origin._id, false, stack.slice(0, -1), true));
+    }
+    // Still waiting on its own steps: answer those first, origin kept.
+    const step = nextOwnStep(origin, rows);
+    if (step) return settle(nav, navOf(step._id, false, stack));
+    /*
+     * Every one of them is still being looked up. Hand over to the plain walk
+     * but KEEP the stack, rather than hold at nothing: in a big batch the
+     * staged row can queue behind dozens of lookups in the 5-wide pool, and an
+     * operator parked on "Looking up…" for that long has nothing to do. The
+     * walk's own teams-first yield brings an untouched row back here the
+     * moment the step settles; a row the operator does start on is finished
+     * first, and the step and then the origin follow it.
+     */
+    break;
+  }
+
   const nextId = nextUndecided(rows)?._id ?? null;
-  // Already sitting on the right answer implicitly — returning a fresh object
-  // here would re-render forever for no change.
-  if (nextId === nav.rowId && !nav.explicit) return nav;
-  return { rowId: nextId, explicit: false };
+  return settle(nav, navOf(nextId, false, stack));
+}
+
+/**
+ * Return `nav` itself when `next` says the same thing — the wizard's effect
+ * bails on identity, so a fresh object for no change would re-render forever.
+ */
+function settle(nav: NavState, next: NavState): NavState {
+  return sameNav(nav, next) ? nav : next;
 }
 
 /**

@@ -57,6 +57,7 @@ import {
   countUndecided,
   describeDecision,
   resolveNav,
+  returnStackFrom,
   summarizeDecisions,
   type NavState,
 } from "./entity-review-nav";
@@ -568,8 +569,15 @@ export default function EntityReviewWizard({
    * Pressing `Decide team` now STAGES the step and then pins it. The row does
    * not exist when the mutation returns, so the normalized label is parked here
    * and an effect claims the row when the reactive batch brings it in.
+   *
+   * NEO-330 W6 — parked WITH the return stack the claim should carry, taken
+   * when the button was pressed: the player it was pressed on is where the
+   * walk comes back to once the step is answered.
    */
-  const awaitingStageRef = useRef<string | null>(null);
+  const awaitingStageRef = useRef<{
+    key: string;
+    returnTo: readonly string[];
+  } | null>(null);
   const decidingRef = useRef<Id<"entityReviewQueue"> | null>(null);
   /** A rejected per-row decide, shown inline under the row it belongs to. */
   const [rowError, setRowError] = useState<{
@@ -1258,11 +1266,15 @@ export default function EntityReviewWizard({
     const waiting = awaitingStageRef.current;
     if (!waiting || !rows) return;
     const staged = rows.find(
-      (r) => r.kind === "team" && normalizeEntityName(r.name) === waiting,
+      (r) => r.kind === "team" && normalizeEntityName(r.name) === waiting.key,
     );
     if (!staged) return;
     awaitingStageRef.current = null;
-    const next: NavState = { rowId: staged._id, explicit: true };
+    const next: NavState = {
+      rowId: staged._id,
+      explicit: true,
+      ...(waiting.returnTo.length > 0 ? { returnTo: waiting.returnTo } : {}),
+    };
     navRef.current = next;
     // No `set-state-in-effect` disable needed here, unlike the nav effect
     // above: this one is guarded by a ref that is cleared before the set, so
@@ -1301,8 +1313,14 @@ export default function EntityReviewWizard({
         if (added === 0) return;
         // The same two lines `resumeWalking` runs — written out because that
         // helper is declared below this effect, and reaching forward to it is
-        // the shape the lint rule (rightly) rejects.
-        const next: NavState = { rowId: null, explicit: false };
+        // the shape the lint rule (rightly) rejects. Like it, this keeps any
+        // NEO-330 return stack: handing the walk back is not abandoning it.
+        const returnTo = navRef.current.returnTo;
+        const next: NavState = {
+          rowId: null,
+          explicit: false,
+          ...(returnTo?.length ? { returnTo } : {}),
+        };
         navRef.current = next;
         setNav(next);
       })
@@ -1829,13 +1847,25 @@ export default function EntityReviewWizard({
    * update has not landed yet. This is the mirror doing its job, not a
    * workaround.
    */
-  const handleChangeDecision = (rowId: Id<"entityReviewQueue">) => {
+  const handleChangeDecision = (
+    rowId: Id<"entityReviewQueue">,
+    /**
+     * NEO-330 W6 — where the walk comes back to once this row is answered.
+     * Empty (the default) for every gesture that goes somewhere else on
+     * purpose: the decided list's "Change" abandons any detour in progress.
+     */
+    returnTo: readonly string[] = [],
+  ) => {
     // `decide` refuses while another write is in flight, and it refuses AFTER
     // this function has already moved `nav`. Moving first would pin the row
     // showing the decision the clear was meant to remove, with no clear ever
     // issued and nothing on screen saying so. Check the same guard first.
     if (decidingRef.current !== null) return;
-    const next: NavState = { rowId, explicit: true };
+    const next: NavState = {
+      rowId,
+      explicit: true,
+      ...(returnTo.length > 0 ? { returnTo } : {}),
+    };
     navRef.current = next;
     setNav(next);
     void decide(rowId, () => clearDecision({ reviewRowId: rowId }), "drop");
@@ -1852,14 +1882,21 @@ export default function EntityReviewWizard({
    * first is what they asked for by pressing a control called "Decide team":
    * the step comes up live, with its Location, Name and League ready to fill
    * in. That is the same gesture as the decided list's "Change".
+   *
+   * NEO-330 W6 — and once that step is answered the walk comes BACK to the
+   * row the button was pressed on, so the operator sees the team land on the
+   * player they were working on rather than whatever row is first in batch
+   * order. `resolveNav` unwinds the stack; it falls back to the plain walk if
+   * the player was decided meanwhile.
    */
   const goToTeamStep = (rowId: Id<"entityReviewQueue">) => {
+    const returnTo = returnStackFrom(navRef.current);
     const row = rows?.find((r) => r._id === rowId);
     if (row?.decision) {
-      handleChangeDecision(rowId);
+      handleChangeDecision(rowId, returnTo);
       return;
     }
-    presentDecided(rowId);
+    presentDecided(rowId, returnTo);
   };
 
   /**
@@ -1872,7 +1909,10 @@ export default function EntityReviewWizard({
     playerRowId: Id<"entityReviewQueue">,
     label: string,
   ) => {
-    awaitingStageRef.current = normalizeEntityName(label);
+    awaitingStageRef.current = {
+      key: normalizeEntityName(label),
+      returnTo: returnStackFrom(navRef.current),
+    };
     void stageCareerTeams({
       reviewRowId: playerRowId,
       careerTeamNames: [label],
@@ -1884,16 +1924,39 @@ export default function EntityReviewWizard({
     });
   };
 
-  /** Present a decided row read-only, without touching it. */
-  const presentDecided = (rowId: Id<"entityReviewQueue">) => {
-    const next: NavState = { rowId, explicit: true };
+  /**
+   * Present a decided row read-only, without touching it.
+   *
+   * `returnTo` — NEO-330 W6, see `handleChangeDecision`. Back and "Back to
+   * review" leave it empty: going somewhere on purpose ends the detour.
+   */
+  const presentDecided = (
+    rowId: Id<"entityReviewQueue">,
+    returnTo: readonly string[] = [],
+  ) => {
+    const next: NavState = {
+      rowId,
+      explicit: true,
+      ...(returnTo.length > 0 ? { returnTo } : {}),
+    };
     navRef.current = next;
     setNav(next);
   };
 
-  /** Hand the wizard back its own rule: walk to the next undecided row. */
+  /**
+   * Hand the wizard back its own rule: walk to the next undecided row.
+   *
+   * NEO-330 W6 — KEEPS the return stack. This is what runs after a step the
+   * operator reached by "Decide team" is answered (see `decide`), and handing
+   * the walk back is exactly when it should come back to their player.
+   */
   const resumeWalking = () => {
-    const next: NavState = { rowId: null, explicit: false };
+    const returnTo = navRef.current.returnTo;
+    const next: NavState = {
+      rowId: null,
+      explicit: false,
+      ...(returnTo?.length ? { returnTo } : {}),
+    };
     navRef.current = next;
     setNav(next);
   };
@@ -3395,7 +3458,12 @@ export default function EntityReviewWizard({
                         aria-disabled={busy}
                         onClick={() => {
                           if (busy) return;
-                          handleChangeDecision(current._id);
+                          // NEO-330 W6 — reopening the row on screen is not a
+                          // detour elsewhere, so any return stack survives it.
+                          handleChangeDecision(
+                            current._id,
+                            navRef.current.returnTo,
+                          );
                         }}
                       >
                         Change decision

@@ -7866,3 +7866,148 @@ describe("EntityReviewWizard — NEO-307 a New Team name another team holds as a
     ).toBeNull();
   });
 });
+
+// ===========================================================================
+// NEO-330 W6 — back to the player whose New Team step it was
+//
+// The E2E author's repro: on "Dan Brown" the operator typed "1995 Memphis
+// RiverKings CHL". The wizard staged a New Team step and walked there — and
+// once it was answered showed "Scott Brower", the first undecided row in batch
+// order. Dan Brown's new team was kept, just off-screen. Jason, 2026-10-10:
+// return to Dan Brown.
+// ===========================================================================
+
+describe("EntityReviewWizard — NEO-330 W6: returns to the player after its team step", () => {
+  const BROWN = "row-brown" as unknown as Id<"entityReviewQueue">;
+  const brower = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: "row-brower" as unknown as Id<"entityReviewQueue">,
+      kind: "player",
+      name: "Scott Brower",
+      status: "ready",
+      enrichment: { careerTeams: [] },
+      ...over,
+    });
+  const brown = (over: Partial<Row> = {}) =>
+    makeRow({
+      _id: BROWN,
+      kind: "player",
+      name: "Dan Brown",
+      status: "ready",
+      enrichment: { careerTeams: [] },
+      ...over,
+    });
+  const riverKings = (over: Partial<Row> = {}) =>
+    makeCareerTeamRow(BROWN, "1995 Memphis RiverKings CHL", {
+      _id: "row-rk" as unknown as Id<"entityReviewQueue">,
+      source: {
+        kind: "careerTeamOf",
+        playerRowId: "row-brown",
+        manualStint: { fromYear: 1995 },
+      },
+      ...over,
+    });
+  const heading = (name: string) =>
+    screen.queryByRole("heading", { level: 3, name });
+
+  /** Dan Brown on screen, with Scott Brower still looking up ahead of him —
+   *  the walk steps over a pending row, which is how the repro reached Brown
+   *  while Brower sat earlier in batch order. */
+  function typeOnBrown() {
+    currentRows = [brower({ status: "pending" }), brown()];
+    const utils = renderWizard();
+    expect(heading("Dan Brown")).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText("Career team name"), {
+      target: { value: "1995 Memphis RiverKings CHL" },
+    });
+    fireEvent.change(screen.getByLabelText("From year"), {
+      target: { value: "1995" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+
+    // The step lands, and Brower's lookup with it.
+    currentRows = [brower(), riverKings(), brown()];
+    rerenderWizard(utils.rerender);
+    expect(heading("New Team: 1995 Memphis RiverKings CHL")).toBeTruthy();
+    return utils;
+  }
+
+  it("comes back to Dan Brown, not Scott Brower, once the typed team is answered", () => {
+    const { rerender } = typeOnBrown();
+
+    currentRows = [
+      brower(),
+      riverKings({
+        decision: { action: "create", create: { location: "Memphis", name: "RiverKings" } },
+      }),
+      brown(),
+    ];
+    rerenderWizard(rerender);
+
+    expect(heading("Dan Brown")).toBeTruthy();
+    expect(heading("Scott Brower")).toBeNull();
+    // The team the operator typed is on the player they were editing.
+    expect(
+      within(screen.getByRole("list", { name: "Staged career teams" })).getByText(
+        /1995 Memphis RiverKings CHL/,
+      ),
+    ).toBeTruthy();
+  });
+
+  it("comes back after a skip too", () => {
+    const { rerender } = typeOnBrown();
+    currentRows = [brower(), riverKings({ decision: { action: "skip" } }), brown()];
+    rerenderWizard(rerender);
+    expect(heading("Dan Brown")).toBeTruthy();
+  });
+
+  it("walks on as before if Dan Brown was decided meanwhile", () => {
+    const { rerender } = typeOnBrown();
+    currentRows = [
+      brower(),
+      riverKings({ decision: { action: "create", create: { name: "RiverKings" } } }),
+      brown({ decision: { action: "create" } }),
+    ];
+    rerenderWizard(rerender);
+    expect(heading("Scott Brower")).toBeTruthy();
+  });
+
+  it("returns after a step reached by 'Decide team' and answered there", async () => {
+    // No step in the batch for this label, so Decide team stages one and pins
+    // it — the explicit path, which `decide` hands back to the walk.
+    const withChip = (over: Partial<Row> = {}) =>
+      brown({
+        enrichment: { careerTeams: [{ name: "Quebec Remparts", fromYear: 1969 }] },
+        ...over,
+      });
+    currentRows = [brower({ status: "pending" }), withChip()];
+    currentResolvedNames = [{ name: "Quebec Remparts" }];
+    const { rerender } = renderWizard();
+    expect(heading("Dan Brown")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Decide team Quebec Remparts" })[0],
+    );
+    await waitFor(() => expect(mockStageCareerTeamRows).toHaveBeenCalled());
+
+    const remparts = makeCareerTeamRow(BROWN, "Quebec Remparts", {
+      _id: "row-remparts" as unknown as Id<"entityReviewQueue">,
+    });
+    currentRows = [brower(), remparts, withChip()];
+    rerenderWizard(rerender);
+    await waitFor(() => expect(heading("New Team: Quebec Remparts")).toBeTruthy());
+
+    fireEvent.click(screen.getByRole("button", { name: "Add as New Team" }));
+    await waitFor(() => expect(mockRecordDecision).toHaveBeenCalled());
+
+    currentRows = [
+      brower(),
+      { ...remparts, decision: { action: "create", create: { name: "Quebec Remparts" } } },
+      withChip(),
+    ];
+    rerenderWizard(rerender);
+    await waitFor(() => expect(heading("Dan Brown")).toBeTruthy());
+    expect(heading("Scott Brower")).toBeNull();
+  });
+});
