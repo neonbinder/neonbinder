@@ -29,6 +29,13 @@ Baseball/Basketball/Football/Hockey carry `sportConfig.wikidata`/`espn`;
 every other sport gets no enrichment, so a live-Wikidata fixture must be one
 of those four. The enrichment recording is Baseball-only (every key `|Q5369|`).
 
+**1995 minor-league hockey (re-measured 2026-10-10, wizard fixtures):** Tulsa
+Oilers / Memphis RiverKings / San Antonio Iguanas / Fort Worth Fire CHL each
+stage 15–16 players and 0 teams (BSC tags no team on these team sets — even
+absent clubs never stage). Some players DO hit Wikidata (career clubs staged,
+tall "Also on Wikidata" bodies). Live-proof person: Vladislav Tretiak (Hockey,
+absent; NHL-only catalogue).
+
 **Retro-card trap:** `resolveTeamForSetYear` prefers an IN-era row, so a 2024
 retro card naming "Kansas City Monarchs" links to the 2021– independent club,
 not the 1920–48 one. A same-name modern club silently wins.

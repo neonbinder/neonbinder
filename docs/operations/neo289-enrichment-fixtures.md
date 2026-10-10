@@ -154,10 +154,12 @@ Then:
 
 One flow deliberately proves the live lane still works end to end, using a
 player who is real but is **not** in the recording: `.maestro/flows/admin/
-player-live-wikidata-enrichment.yaml` adds **Harmon Killebrew** (Baseball) through
+player-live-wikidata-enrichment.yaml` adds **Vladislav Tretiak** (Hockey) through
 `/admin/players` and asserts the resulting `Wikidata Q[0-9]+` link in the
-detail header. Harmon Killebrew is deliberately not a Topps Chrome subject, so this
-flow always makes a real Wikidata round-trip regardless of the fixture
-switch. A red run here during a live Wikidata outage is expected — rerun
-rather than treating it as a product bug (same as any other flow that
+detail header. The recording is Baseball-only and Tretiak never played in the
+NHL, so he is in neither the recording nor the NEO-330 reference catalogue, and
+this flow always makes a real Wikidata round-trip regardless of the fixture
+switch. (Harmon Killebrew held this slot until NEO-330: the catalogue holds
+him.) A red run here during a live Wikidata outage is expected — rerun rather
+than treating it as a product bug (same as any other flow that
 depends on a live third party).

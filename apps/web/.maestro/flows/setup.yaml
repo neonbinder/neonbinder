@@ -72,12 +72,16 @@ tags:
 #     Bowman"). Provisioned here because the review is one brand-wide write
 #     neither flow may race the other for (NEO-312).                         [this flow]
 #
-# NOT provisioned here, deliberately: the three COMMITTING entity-review
-# fixtures (Topps Chicago Cubs / Baltimore Orioles / Brooklyn Collection).
-# Provisioning them cost ~2 minutes of SERIAL seed time and pushed this flow
-# past the 600s wall (run 34048184342). Each is owned by exactly one flow, and
-# util-fetch-real-set-checklist-to-wizard already handles the cold first-time
-# path — so each flow provisions its own set, in parallel, on its own runner.
+# NOT provisioned here, deliberately: the entity-review fixtures each wizard
+# flow owns (since NEO-330 the Hockey 1995 minor-league sets — Tulsa Oilers /
+# Memphis RiverKings / San Antonio Iguanas / Fort Worth Fire CHL — and the
+# Hockey 1995 columns above them). Provisioning the old ones cost ~2 minutes of
+# SERIAL seed time and pushed this flow past the 600s wall (run 34048184342).
+# Each set is owned by exactly one flow, and the fetch utils handle the cold
+# first-time path, so each flow provisions its own set, in parallel, on its own
+# runner. Several runners syncing the shared Hockey 1995 columns at once double
+# a round-trip and never a row (measured, SET-REGISTRY.md → "The 1995
+# minor-league hockey wizard fixtures"), so those are not pre-synced either.
 #
 # NOT pre-synced (sync lazily if you need them): any other year / manufacturer /
 # set (e.g. Topps Update, Topps Pro Debut, Topps Wonderland), any other sport,

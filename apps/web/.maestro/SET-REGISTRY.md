@@ -87,9 +87,10 @@ BuySportsCards alone for the whole run:
 | Baseball → 2024 → Topps → Topps Chrome | `Base` (full checklist), `Insert` → "Future Stars" (~20 cards), `Parallel` → "Gold Wave Refractors" (300 cards, BUILT FROM BASE since NEO-321 — copies of Base's cards linked to Gold Wave's own BSC + SportLots cards) | `flows/setup.yaml`; **sole writer** of the cards of the base parallel its run builds before Stop (the first buildable row under `Parallel`, in the type's child order — measured: `Sepia Refractors`): `flows/set-selector/base-parallels-build-from-section.yaml` (NEO-321) — see "2024 Topps Chrome › Parallel — the base-parallel build". Approved: Jason, 2026-10-04 |
 | Baseball → 2024 → Topps → Topps Big League | `Base` — variant types synced and Base MAPPED, checklist deliberately EMPTY (NEO-248 wizard fixture) | `flows/setup.yaml` |
 | Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `flows/set-selector/base-mapping-cancel-recovers.yaml` — **sole writer**, and it writes nothing |
-| Baseball → 2024 → Topps → Topps Chicago Cubs | `Base` — variant types synced, Base MAPPED on BOTH sides, checklist deliberately EMPTY | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-skip-commits-and-unskip.yaml` |
-| Baseball → 2024 → Topps → Topps Baltimore Orioles | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-career-team-commits.yaml` |
-| Baseball → 2024 → Topps → Topps Brooklyn Collection | `Base` — same shape | `flows/setup.yaml` (structure); **sole writer** `checklist-wizard-link-commits.yaml` — since NEO-313 it also moves ONE review row to Football and links it to the minted football player `Gw<token>` (ticket decision 8: this fixture, no new real set); the committed card then links a player of another sport, which nothing else reads |
+| Hockey → 1995 → Unknown (via the All Brands view) → Tulsa Oilers CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only, every name SKIPPED (NOT pre-synced) | `flows/set-selector/checklist-wizard-skip-commits-and-unskip.yaml` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (19 review rows once three players' Wikidata career clubs are staged) — see "The 1995 minor-league hockey wizard fixtures" |
+| Hockey → 1995 → Unknown (via the All Brands view) → Memphis RiverKings CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only; ONE player created with ONE hand-staged career team, the rest SKIPPED (NOT pre-synced) | `flows/set-selector/checklist-wizard-career-team-commits.yaml` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **15 unknown players, 0 teams** (15 rows settled) |
+| Hockey → 1995 → Unknown (via the All Brands view) → San Antonio Iguanas CHL | `Base` — 18 cards, fetched and COMMITTED in-flow, BSC only; one row LINKED to the catalogue's Wayne Gretzky, one moved to Football and linked to the minted `Gw<token>`, the rest SKIPPED (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-commits.yaml` — **sole writer**. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (16 rows settled) |
+| Hockey → 1995 → Unknown (via the All Brands view) → Fort Worth Fire CHL | `Base` — 18 cards fetched in-flow, BSC only, and DISCARDED (Cancel → Discard; nothing saved) (NOT pre-synced) | `flows/set-selector/checklist-wizard-skip-not-a-person.yaml` — **sole reader**, writes nothing. ✅ **Approved by Jason 2026-10-10** (NEO-330). Measured: **16 unknown players, 0 teams** (16 rows settled) |
 | Baseball → 2024 → Topps → Topps Heritage | `Base` — SportLots base mapping CONFIRMED in-flow (NOT pre-synced) | `flows/set-selector/sets-base.yaml` — **sole writer** of that mapping. ✅ **RATIFIED 2026-09-09** (NEO-260) — it was already in use and had never been listed |
 | Baseball → 1996 → Score → Score | `Insert` (reconciled in-flow, NOT pre-synced) | `flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml` — **sole writer** |
 | Hockey → 2024 → Topps → Topps NHL Sticker Collection | none — the flow never goes below `Variant Types` (NOT pre-synced) | `flows/set-selector/set-rename-survives-resync-and-suggests-bsc-name.yaml` — **sole writer** |
@@ -550,17 +551,21 @@ names a marketplace fetch returned that NeonBinder does not already hold, and
 only **BSC** returns names at all — so the fixture has to be a real,
 BSC-listed set, synced through the real hierarchy. It is
 `Baseball → 2024 → Topps → Topps Big League → Base`; read its section below
-before touching any of these four.
+before touching any of these three.
 
 | flow | what it owns |
 |---|---|
 | `checklist-wizard-back-to-matching-resumes-decisions` | "Back to matching" parks the review; re-confirming resumes the SAME batch with its decisions |
-| `checklist-wizard-skip-not-a-person` | the per-row skip, and "Skip Remaining" deciding every row that is left, lookups included |
 | `checklist-wizard-link-to-existing-player` | "Link to Existing" resolves onto a roster player instead of minting a duplicate |
 | `checklist-wizard-career-team-entry` | the inline career-team mini-form on a player row, and the decision it feeds |
 
-all sharing `util-fetch-real-set-checklist-to-wizard.yaml`, and all four
-READ-ONLY (Cancel → Discard).
+all sharing `util-fetch-real-set-checklist-to-wizard.yaml`, and all three
+READ-ONLY (Cancel → Discard). A fourth, `checklist-wizard-skip-not-a-person`
+(the per-row skip, and "Skip remaining names" deciding every row that is left,
+lookups included), read this set until NEO-330: with the reference catalogue
+loaded, Big League stages too few names for its footer skip, so it moved to
+its own BSC-only set, Fort Worth Fire CHL (Jason, 2026-10-10; see "The 1995
+minor-league hockey wizard fixtures"). It is still read-only.
 
 Three SIBLING flows cover the **commit** side — what a decision is worth once it
 is saved — and each gets its own real set so it can write without racing
@@ -568,20 +573,101 @@ anything:
 
 | flow | fixture |
 |---|---|
-| `checklist-wizard-skip-commits-and-unskip` | Topps Chicago Cubs |
-| `checklist-wizard-career-team-commits` | Topps Baltimore Orioles |
-| `checklist-wizard-link-commits` | Topps Brooklyn Collection |
-| `checklist-wizard-link-team-saves-alias` | Topps MLB at Rickwood Field Negro Leagues Collection (NEO-284, one-sided — see its own section) |
+| `checklist-wizard-skip-commits-and-unskip` | Hockey 1995 Tulsa Oilers CHL (NEO-330; Topps Chicago Cubs before) |
+| `checklist-wizard-career-team-commits` | Hockey 1995 Memphis RiverKings CHL (NEO-330; Topps Baltimore Orioles before) |
+| `checklist-wizard-link-commits` | Hockey 1995 San Antonio Iguanas CHL (NEO-330; Topps Brooklyn Collection before) |
+| `checklist-wizard-link-team-saves-alias` | Topps MLB at Rickwood Field Negro Leagues Collection (NEO-284, one-sided — see its own section; its re-fixture is pending Jason's choice of set, NEO-330) |
 
-See "The three COMMITTING entity-review fixtures" below, and "The TEAM-link
-alias fixture" after the one-marketplace section.
+See "The 1995 minor-league hockey wizard fixtures" below (and, for the history,
+"The three COMMITTING entity-review fixtures"), and "The TEAM-link alias
+fixture" after the one-marketplace section.
 
 **They no longer own a custom-set prefix.** `wbr-`, `skp-`, `lce-` and `cte-`
 are retired along with `fcd-` and `kod-`: these flows create nothing. The
 discard confirm and the Enter commit live in STEP 6 of
 `inserts-1996-score-one-nb-set-two-bsc-sources.yaml`.
 
-### The three COMMITTING entity-review fixtures — one set per flow (NEO-248) ✅ APPROVED
+### The 1995 minor-league hockey wizard fixtures — one set per flow (NEO-330) ✅ APPROVED by Jason 2026-10-10
+
+Every CI preview now loads prod's reference catalogue (README → "A reference
+catalogue is on every CI preview"), and the wizard stages only names the
+deployment does not know. The three MLB team sets below and Topps Big League
+no longer stage enough: CI run 38063558063 committed Cubs and Orioles straight
+through with no wizard, Brooklyn's walk ran out of player rows, and
+`checklist-wizard-skip-not-a-person` found nothing left for its footer skip.
+Jason moved four flows onto four of the 1995 minor-league hockey spares listed
+under the one-marketplace fixture. Each set is BSC-only and filed under the
+year's `Unknown` row; Hockey's catalogue players are NHL-only, so their
+rosters stay unknown.
+
+| flow | fixture | role | cards | measured unknowns (at open → settled) |
+|---|---|---|---|---|
+| `checklist-wizard-skip-commits-and-unskip` | Hockey → 1995 → Unknown → **Tulsa Oilers CHL** | sole writer (commits; every name skipped) | 18 | **16 players, 0 teams** → 19 rows (three Wikidata career clubs staged, e.g. `New Team: Columbus Chill`) |
+| `checklist-wizard-career-team-commits` | Hockey → 1995 → Unknown → **Memphis RiverKings CHL** | sole writer (commits; one player + one hand-staged team) | 18 | **15 players, 0 teams** → 15 |
+| `checklist-wizard-link-commits` | Hockey → 1995 → Unknown → **San Antonio Iguanas CHL** | sole writer (commits; two links) | 18 | **16 players, 0 teams** → 16 |
+| `checklist-wizard-skip-not-a-person` | Hockey → 1995 → Unknown → **Fort Worth Fire CHL** | sole READER (Cancel → Discard) | 18 | **16 players, 0 teams** → 16 |
+
+**How measured.** A throwaway probe per set (never committed) on PR #314's
+preview, 2026-10-10, with the catalogue loaded and SportLots live: drill
+Hockey → 1995 → the All Brands view, pick the set, cancel the base picker,
+fetch on BSC, read the wizard (`Kept all N cards from BSC … N new players + M
+new teams need confirmation`, the header, `Add remaining players as new (P)` and
+`Skip remaining names (R)` once every lookup had settled), then Cancel —
+nothing saved. Each probe left only the set's synced `Base` variant type
+behind. Re-measure after every catalogue refresh: a bundle that gains these
+rosters drains the fixtures.
+
+**The path.** All four reach the wizard through
+`util-fetch-one-marketplace-set-checklist-to-wizard.yaml` (extracted from
+`checklist-wizard-link-team-saves-alias`'s inline path): the cold drill util
+with `MANUFACTURER: "All Brands"`, the set picked from the view, the base
+picker CANCELLED (BSC answers; SportLots' 1995 catalogue is offered and
+declined), the fetch takes the NEO-255 solo path ("Kept all 18 cards from
+BSC") and opens the review with no pairing session behind it. Because the Base
+stays unmapped on SportLots, every later drill would auto-open the picker
+again; none happens, since each flow is its set's only visitor.
+
+**Link target.** `checklist-wizard-link-commits` links one row to **Wayne
+Gretzky**, a reference-catalogue Hockey player. Verified read-only on the
+preview: exactly one `players` row "Wayne Gretzky" (`gretzky wayne`) under
+Hockey; the search for "Gretzky" also returns Brent Gretzky, a different
+accessible name.
+
+**Shared columns, concurrent first syncs — measured, nothing added to the
+seed.** These four flows and `checklist-one-marketplace-skips-match-dialog`
+all drill Hockey → 1995 → the All Brands view, cold, on parallel runners, and
+`ensureSelectorOptions` has no in-flight guard (a column that opens empty
+fires it; the action skips only when the column is already populated). Fired
+FIVE `ensureSelectorOptions` calls at once, as five different E2E admin
+accounts, on a cold Hockey year of the same preview (1994, which no flow
+uses), first at the manufacturer level and then at the year-wide Sets level
+the view opens: all ten ran (`ran: true, reason: synced`), each Sets sync took
+~11s instead of ~6s, and the result held **no duplicate manufacturer row, one
+`Unknown` row, no duplicate set (by name under a parent, by name across the
+year, or by BSC or SportLots id) and no leftover sync-status row**. Every
+store is an id-keyed mutation, so concurrent writers serialise on Convex's
+transactions. The cost of a race is a doubled marketplace round-trip, never
+a doubled row, so the columns are not pre-synced in `setup.yaml` (whose time
+every PR pays), and each flow keeps paying its own cold drill.
+
+**Drain and re-runs.** The three writers commit, so after one run their sets
+hold cards and re-sync instead (no review): a local re-run fails at the util's
+`No cards in this checklist yet.` precondition until the preview is
+re-seeded. The reader discards, so it can re-run; a red attempt leaves its
+review batch, which the next fetch by the same account RESUMES (`N of M
+reviewed`), so discard it before re-running locally. CI does not retry flows
+(`MAESTRO_FLOW_RETRIES` defaults to 1) and reseeds every run.
+
+**Remaining spares** (same shape, untouched): `Dayton Bombers ECHL`, `Dunkin
+Donuts Portland Pirates AHL`, `Halifax Mooseheads QMJHL`. Swapping one in needs
+Jason's approval and a probe like the one above.
+
+### The three COMMITTING entity-review fixtures — one set per flow (NEO-248) — RETIRED by NEO-330
+
+> **History.** These three sets are no longer used by any flow: NEO-330 moved
+> their flows onto the 1995 minor-league hockey sets above, because the
+> reference catalogue knows their rosters. Kept for the measurements and the
+> two-sided mapping rule, which still governs `util-fetch-real-set-checklist-to-wizard`.
 
 The four `checklist-wizard-*` flows on Topps Big League are read-only: they
 prove the wizard's decisions and always exit through Cancel → Discard. Three
@@ -1043,8 +1129,10 @@ silently disagree — but they must be changed together.
 Same shape, same ancestors, all verified present in the 134-set column and all
 regex-safe: `Dayton Bombers ECHL` (**32 cards — already committed on PR #242's
 preview by the pilot probe, so it is spent there**), `Dunkin Donuts Portland
-Pirates AHL`, `Tulsa Oilers CHL`, `Memphis RiverKings CHL`,
-`San Antonio Iguanas CHL`, `Fort Worth Fire CHL`, `Halifax Mooseheads QMJHL`.
+Pirates AHL`, `Halifax Mooseheads QMJHL`. (`Tulsa Oilers CHL`, `Memphis
+RiverKings CHL`, `San Antonio Iguanas CHL` and `Fort Worth Fire CHL` were
+spares too; since NEO-330 each is a wizard flow's own fixture — see "The 1995
+minor-league hockey wizard fixtures".)
 Swapping is a one-line edit to `output.SET` in the flow's STEP 0 plus the two
 name literals in this section. Avoid names carrying regex metacharacters or a
 `/` (`Electrolarm/Z-104 …`, `Kellogg´s …`).

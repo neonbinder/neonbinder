@@ -1250,14 +1250,19 @@ What that changes for flows:
   or a repeat with `query.wikidata.org` healthy, is a product finding.
 - **The live-proof name must also be absent from the reference catalogue
   (NEO-330).** The catalogue is loaded onto the preview after the reset, so
-  "the reset clears players" no longer makes a name new. Harmon Killebrew is
-  in the catalogue, so while the flow still names him its add form offers
-  `Open Harmon Killebrew` and the flow fails on `Create player Harmon
-  Killebrew` by name. A replacement has to pass three checks: the bundle,
-  the recording and the committed checklists.
+  "the reset clears players" no longer makes a name new. The flow's name is
+  **Vladislav Tretiak** (Hockey, Q316864; Jason's pick, 2026-10-10): the
+  catalogue's Hockey players are NHL-only and he never played in the NHL.
+  Harmon Killebrew, the earlier pick, is in the catalogue, so his add form
+  offered `Open Harmon Killebrew` and the flow failed on `Create player …` by
+  name. Any replacement has to pass four checks: the bundle (read-only
+  `--inline-query` on the preview's `players` and `playerAliases`), the
+  recording, the committed checklists, and exactly one `Q5` binding for the
+  adapter's `findPlayerQid` SPARQL with the sport's QID and no `LIMIT`. Only
+  the four sports that carry `sportConfig.wikidata` can host it.
 - **Do not add the live-proof name to the recording.** The capture reads the
   deployment's `players` rows, so a capture taken after the suite has run
-  would sweep it in; `convex/adapters/enrichmentFixtureFile.test.ts` refuses
+  would sweep it in; `convex/enrichmentFixtureFile.test.ts` refuses
   a recording that contains it.
 
 Running the live proof locally, against a PR preview (never shared dev — the

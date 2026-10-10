@@ -18,8 +18,11 @@ unknown card name). Check the candidate against each of those checklists (TCDB
 run — so on any run where that flow lands first, `/admin/players`' near-match
 panel finds the row, the primary button reads `Open Tony Gwynn` with NO
 aria-label, `id: "Create player Tony Gwynn"` matches nothing, and the flow
-reds by name. Replaced with "Harmon Killebrew" (retired 1975; in none of the
-committed sets; resolves on Wikidata under the adapter's exact SPARQL).
+reds by name. Replaced with "Harmon Killebrew" — then NEO-330's reference
+catalogue (every prod player) held HIM, so it is now "Vladislav Tretiak"
+(Hockey; never in the NHL-only catalogue). Fourth check since NEO-330: the
+preview's `players` + `playerAliases` read-only, and one `Q5` binding for the
+adapter SPARQL with `LIMIT` removed.
 
 **How to apply:** the committed-checklist set today is 2024 Topps Chrome
 (seed), 2024 Topps Cubs / Orioles / Brooklyn Collection, Rickwood Field Negro

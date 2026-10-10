@@ -16,8 +16,9 @@ tags:
 #     (b) "Skip remaining names" decides EVERY row in one go, lookups included — the
 #         wizard's own "All reviewed — save N cards?" and the appearance of
 #         "Confirm & Save" (which renders only once `allDecided`) both say so;
-#     (c) every one of those decisions is a SKIP, not a create — the history
-#         reads "Skipped" and never "Added as new". This is the assertion that
+#     (c) every one of those decisions is a SKIP, not a create — the
+#         all-decided summary lists "Skipped as not a name" and no "New players
+#         and teams" or "Linked to existing" line. This is the assertion that
 #         catches a mis-landed tap, which is how CI runs 34050688656 and
 #         34054011591 were failing;
 #     (d) the commit lands ("Saved N cards") having created NO player and NO
@@ -30,9 +31,15 @@ tags:
 #         back at the next sync rather than being gone for good.
 #
 # ── THE FIXTURE, AND WHY THIS FLOW MAY COMMIT ───────────────────────────────
-#   `Baseball → 2024 → Topps → Topps Chicago Cubs → Base`.
-#   Measured on PR #235's preview, 2026-09-06: 17 cards matched on both
-#   marketplaces → **11 unknown names, all players, 0 teams**; wizard opens.
+#   `Hockey → 1995 → Unknown (via the All Brands view) → Tulsa Oilers CHL →
+#   Base`, BSC only. Approved by Jason 2026-10-10 (NEO-330), replacing Topps
+#   Chicago Cubs: the reference catalogue every CI preview now loads knows every
+#   Cubs player, so that fetch committed straight through with no wizard (CI run
+#   38063558063). MEASURED on PR #314's preview, 2026-10-10: 18 cards, "Kept
+#   all 18 cards from BSC" → **16 unknown names, all players, 0 teams**; once
+#   the Wikidata lookups settle the batch holds **19** rows — three players'
+#   career clubs (e.g. "New Team: Columbus Chill") are staged as their own
+#   steps. `Skip remaining names` decides those too.
 #
 #   THIS FLOW IS THE SOLE WRITER OF THIS SET. Nothing else reads or writes it,
 #   so committing cannot disturb anything: there is no reader to race, and no
@@ -41,19 +48,25 @@ tags:
 #   two flows (`run-e2e-queue.sh` filters only `util`/`wip`/`setup`; the
 #   `isolated` and `serial-marketplace` lanes exist only in the LOCAL
 #   `run-e2e-smoke.sh`), so "one set, one writer" is the only isolation that
-#   actually holds.
+#   actually holds. The columns ABOVE the set (Hockey's Years, 1995's
+#   Manufacturers and its year-wide Sets) are shared with the other 1995 flows
+#   and may be synced by several runners at once; SET-REGISTRY.md records what
+#   that does (measured: doubled round-trips, no doubled rows).
 #
-#   IT DOES DRAIN ITS OWN FIXTURE, and that is accepted: committing makes these
-#   13 players known, so a SECOND run against the same un-reseeded deployment
-#   would open the wizard on nothing. CI reseeds the preview every run, so the
-#   drain never outlives one run. A local re-run needs a fresh seed.
+#   IT DOES DRAIN ITS OWN FIXTURE, and that is accepted: after the commit the
+#   set holds cards, so a SECOND run against the same un-reseeded deployment
+#   fails at the util's "No cards in this checklist yet." precondition (a
+#   committed set re-syncs instead, and a re-sync raises no review). Every
+#   decision is a skip, so no player is minted. CI reseeds the preview every
+#   run, so the drain never outlives one run. A local re-run needs a fresh seed.
 #
-#   NO KIND GUARD NEEDED, twice over: the skip control exists on both kinds
-#   ("Skip {name} — not a {person|team}"), and this fixture surfaces no unknown
-#   teams at all.
+#   NO KIND GUARD NEEDED: the skip control exists on both kinds ("Skip {name} —
+#   not a {person|team}"), and the bulk skip decides team steps, league steps
+#   and players alike.
 #
 # R3 — DEDUP: the skip CONTROL is checklist-wizard-skip-not-a-person (read-only,
-#   on the shared Big League fixture). This flow adds only the commit side.
+#   on its own 1995 hockey set). This flow adds only the commit side. The fetch
+#   is `util-fetch-one-marketplace-set-checklist-to-wizard` (the BSC-only path).
 
 # ============================================================
 # LAUNCH + SIGN IN
@@ -66,14 +79,14 @@ tags:
 
 # ============================================================
 # SETUP — this flow's OWN real set, real fetch, wizard open
-# Mapped on both marketplaces, so every card auto-matches and the unmatched
-# columns are omitted entirely — nothing to keep before confirming.
+# BSC only: the util cancels the base picker, so the fetch keeps every card
+# ("Kept all N cards from BSC") and opens the review with nothing to pair.
 # ============================================================
 
 - runFlow:
-    file: util-fetch-real-set-checklist-to-wizard.yaml
+    file: util-fetch-one-marketplace-set-checklist-to-wizard.yaml
     env:
-      SET: "Topps Chicago Cubs"
+      SET: "Tulsa Oilers CHL"
 
 # ============================================================
 # STEP 1 — R2(a)
@@ -115,7 +128,7 @@ tags:
 # (checklist-wizard-skip-not-a-person asserts both its accessible name and its
 # visible wording, and taps it). This flow exists for the COMMIT and what it
 # leaves behind, and it still proves the decisions were SKIPS rather than
-# creates — see the "Skipped" assertion below, which is precisely what would
+# creates — see the summary assertions below, which are precisely what would
 # have caught the bulk-add misfire on sight.
 #
 # 120s: the bulk skip covers rows whose live Wikidata lookup has not landed yet.
@@ -131,14 +144,20 @@ tags:
 - assertVisible:
     text: "All reviewed . save [0-9]+ cards\\?"
 
-# ...and every decision is a SKIP. `describeDecision` writes exactly one of
-# "Skipped", "Added as new" or "Linked to …", so this distinguishes all three —
-# and it is the assertion that fails loudly if a tap ever lands on
-# "Add All Remaining as New" again.
+# ...and every decision is a SKIP. Read off the all-decided SUMMARY at the top
+# of the body (`summaryRows`), not the Decided list: that list collapses past
+# five entries and sits below the summary, off screen on this 19-row batch
+# (README → "Asserting inside a dialog"). The summary lists only non-zero
+# outcomes besides "Cards to save", so "Skipped as not a name" present with
+# "New players and teams" and "Linked to existing" absent says no row was
+# created or linked — the assertion that fails loudly if a tap ever lands on
+# "Add remaining players as new" again.
 - assertVisible:
-    text: "Skipped"
+    text: "Skipped as not a name"
 - assertNotVisible:
-    text: "Added as new"
+    text: "New players and teams"
+- assertNotVisible:
+    text: "Linked to existing"
 
 # ============================================================
 # STEP 4 — R2(d): COMMIT
@@ -148,7 +167,7 @@ tags:
 #
 # 60s, not the 7s default: `commitCardChecklist` writes every kept card and
 # re-resolves the batch on the way through. MEASURE IT on the first green run
-# and trim — 17 cards should be quick.
+# and trim — 18 cards should be quick.
 # ============================================================
 
 - tapOn:

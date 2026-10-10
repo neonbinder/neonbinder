@@ -135,3 +135,5 @@ Non-markdown helpers: `tools/`
 - [sr-only in an unpositioned scroller](patterns_sr_only_in_unpositioned_scroller.md) — span stays at its scrollTop-0 spot, pruned past y=629; compare a known sr-only node to its parent
 - [Same-name player panel](reference_same_name_player_panel.md) — bulk skips these rows; drain must link via `childOf` list + `index: 0`; heading `Same name, different people`
 - [Catalogue-seeded wizard staging](reference_catalogue_seeded_wizard_staging.md) — catalogue = prod snapshot; what still stages; coverage map; read-only `--inline-query` name check
+- [Wizard returns to batch-order player after a staged team](reference_wizard_returns_to_batch_order_player_after_staged_team.md) — not the staging player; career-team chip assert depends on it (NEO-330 finding)
+- [Wizard decisions: header delta + all-decided summary](patterns_wizard_decisions_read_from_header_and_summary.md) — Decided list is body/off-screen; count via `K of M reviewed`, kind via summary rows

@@ -56,22 +56,30 @@ tags:
 #   itself stays with the entity-review unit files.
 #
 # ── THE FIXTURE ─────────────────────────────────────────────────────────────
-#   `Baseball → 2024 → Topps → Topps Baltimore Orioles → Base`.
-#   Measured on PR #235's preview, 2026-09-06: 17 cards matched on both
-#   marketplaces → **8 unknown names, ALL PLAYERS, 0 teams**; wizard opens.
+#   `Hockey → 1995 → Unknown (via the All Brands view) → Memphis RiverKings CHL
+#   → Base`, BSC only. Approved by Jason 2026-10-10 (NEO-330), replacing Topps
+#   Baltimore Orioles: the reference catalogue every CI preview now loads knows
+#   every Orioles player, so that fetch committed straight through with no
+#   wizard (CI run 38063558063). MEASURED on PR #314's preview, 2026-10-10: 18
+#   cards, "Kept all 18 cards from BSC" → **15 unknown names, ALL PLAYERS, 0
+#   teams**, and still 15 rows once every Wikidata lookup had settled — no
+#   career club was staged as a step of its own.
 #
-#   ALL-PLAYER ON PURPOSE, and that is why this flow needs NO KIND GUARD. It
-#   acts on controls only a player row renders, and this fixture cannot present
-#   a team row because it surfaces no unknown teams at all. The earlier design
-#   used a basketball set and carried a guard to survive a 20:1 player/team mix;
-#   an all-player fixture removes the branch instead of hedging it.
+#   ALL-PLAYER, and that is why this flow needs NO KIND GUARD. It acts on
+#   controls only a player row renders, and this fixture surfaces no unknown
+#   teams. A team or league step a lookup might stage on another day is
+#   answered by `util-wizard-walk-to-player-row` before this flow touches the
+#   player row, so the guard stays unnecessary either way.
 #
 #   THIS FLOW IS THE SOLE WRITER OF THIS SET. Nothing else reads or writes it,
 #   so committing races nothing. CI cannot serialize two flows
 #   (`run-e2e-queue.sh` filters only `util`/`wip`/`setup`; the lanes live only
 #   in the LOCAL `run-e2e-smoke.sh`), so "one set, one writer" is the only
-#   isolation that holds. It drains its OWN fixture within a run — accepted,
-#   because CI reseeds the preview every run.
+#   isolation that holds. The columns above the set are shared with the other
+#   1995 hockey flows (SET-REGISTRY.md: concurrent first syncs double the
+#   round-trip, never the rows). It drains its OWN fixture within a run —
+#   accepted, because CI reseeds the preview every run; a local re-run fails at
+#   the util's "No cards in this checklist yet." precondition until re-seeded.
 #
 #   ⚠️ THIS FLOW CREATES ONE PLAYER AND ONE TEAM, deliberately, and they are
 #   global. The player is one of this set's own unknowns, which no other flow
@@ -125,14 +133,14 @@ tags:
 
 # ============================================================
 # SETUP — this flow's OWN real set, real fetch, wizard open
-# Mapped on both marketplaces, so every card auto-matches and the unmatched
-# columns are omitted entirely — nothing to keep before confirming.
+# BSC only: the util cancels the base picker, so the fetch keeps every card
+# ("Kept all N cards from BSC") and opens the review with nothing to pair.
 # ============================================================
 
 - runFlow:
-    file: util-fetch-real-set-checklist-to-wizard.yaml
+    file: util-fetch-one-marketplace-set-checklist-to-wizard.yaml
     env:
-      SET: "Topps Baltimore Orioles"
+      SET: "Memphis RiverKings CHL"
 
 - assertVisible:
     text: "0 of [0-9]+ reviewed.*"
@@ -143,9 +151,9 @@ tags:
 # comes back, so everything below reads an empty row without this. 30s: that is
 # a live external round-trip.
 #
-# NO KIND GUARD — this fixture surfaces 0 unknown teams (measured), so the
-# presented row is always a player and there is no branch to hedge. That also
-# removes the ~7s poll the guarded version spent doing nothing.
+# NO KIND GUARD — this fixture surfaces 0 unknown teams (measured), and the
+# walk below answers any staged step first, so the row it stops on is always a
+# player and there is no branch to hedge.
 # ============================================================
 
 # NEO-236 — the wizard does not open on a player row, and the first player it
@@ -270,9 +278,9 @@ tags:
 # count assertion is what proves the keystrokes landed. Composed with the count
 # so it cannot pass against an unfiltered list that merely contains the name.
 #
-# The staged team is a BASEBALL team now (the fixture's sport), which changes
-# nothing here: `resolveTeamIdByName` get-or-creates by name and this one is
-# unique to the worker and attempt.
+# The staged team is a HOCKEY team (the fixture's sport), which changes nothing
+# here: `resolveTeamIdByName` get-or-creates by name and this one is unique to
+# the worker and attempt, and the Teams list is not narrowed by sport.
 # ============================================================
 
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
