@@ -362,6 +362,11 @@ jobs:
             echo "::error::GCP_WIF_PROVIDER_DEV / GCP_SERVICE_ACCOUNT_DEPLOYER_DEV are not available to this run (fork PR or missing secrets). The E2E seed cannot fetch the reference-seed bundle."
             exit 1
           fi
+          # vars.* are not masked and gcloud echoes the URI: mask the whole URI
+          # and the bucket name so neither reaches the public log.
+          echo "::add-mask::${REFERENCE_SEED_URI}"
+          bucket="${REFERENCE_SEED_URI#gs://}"
+          echo "::add-mask::${bucket%%/*}"
 
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
@@ -375,8 +380,22 @@ jobs:
           REFERENCE_SEED_URI: ${{ vars.NEONBINDER_REFERENCE_SEED_URI }}
         run: |
           start=$(date +%s)
-          gcloud storage cp "$REFERENCE_SEED_URI" "$RUNNER_TEMP/reference-bundle.zip"
+          gcloud storage cp --no-user-output-enabled "$REFERENCE_SEED_URI" "$RUNNER_TEMP/reference-bundle.zip"
           secs=$(( $(date +%s) - start ))
+          # Drop the GCP credentials so later steps (npx installs, PR scripts)
+          # cannot use them: revoke gcloud's stored account, delete the WIF
+          # credential file, and blank every variable the pinned auth action
+          # exports (CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE,
+          # GOOGLE_APPLICATION_CREDENTIALS, GOOGLE_GHA_CREDS_PATH and the
+          # project vars) plus the account setup-gcloud may set.
+          gcloud auth revoke --all --quiet || true
+          rm -f "${GOOGLE_GHA_CREDS_PATH:-}"
+          rm -rf "${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}"
+          for v in CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE GOOGLE_APPLICATION_CREDENTIALS \
+                   GOOGLE_GHA_CREDS_PATH CLOUDSDK_CORE_ACCOUNT CLOUDSDK_CORE_PROJECT \
+                   CLOUDSDK_PROJECT GCLOUD_PROJECT GCP_PROJECT GOOGLE_CLOUD_PROJECT; do
+            echo "$v=" >> "$GITHUB_ENV"
+          done
           echo "NB_REFERENCE_BUNDLE=$RUNNER_TEMP/reference-bundle.zip" >> "$GITHUB_ENV"
           echo "NB_REFERENCE_SEED_SUMMARY=$RUNNER_TEMP/reference-seed-summary.txt" >> "$GITHUB_ENV"
           {
