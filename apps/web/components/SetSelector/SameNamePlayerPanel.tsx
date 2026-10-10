@@ -1,5 +1,6 @@
 /**
- * NEO-254 — "Same name, different people."
+ * NEO-254 — the NB players already filed under one checklist name.
+ * NEO-332 — and, since then, the body of the wizard's PICK step.
  *
  * ## Why this is not `NearMatchPanel`
  *
@@ -17,19 +18,26 @@
  * that do: a birth year, and a line of career. Without those the operator is
  * choosing between two identical strings, which is not a choice.
  *
- * It sits ABOVE the Wikidata result in the wizard, and that order is the
- * argument: when the same name belongs to two people we already know, "which
- * of ours is this?" comes before "what does Wikidata think?".
+ * ## NEO-332 — a step of its own, not a panel above the create form
+ *
+ * It used to sit inside the New Player step, headed "Same name, different
+ * people", with "Add as New Player" as the footer's primary. Jason,
+ * 2026-10-10: a same-name row gets a PICK step — the candidates, "Create
+ * new", and "Skip — not a person" — and "Create new" opens the New Player
+ * step WITHOUT this list. So the panel no longer frames itself: the step's
+ * heading ("Which {name} is this?", in the wizard) asks the question, and
+ * this renders the one sentence under it and the rows to answer it with.
  *
  * ## The visual grammar
  *
  * A solid neon-blue left rule and a blue tint — the app's reference/link
  * accent, the same one `NearMatchPanel` wears, and deliberately NOT green.
- * Green is the create action, and a panel of link buttons painted in the
- * create colour would compete with "Add as New Player" for the eye at exactly
- * the moment the operator is deciding between the two. The dashed-rule
- * counterpart in `UndatedCareerTeams` is the same grammar for something we do
- * NOT have — solid means "this is a row"; dashed means "this is a lead".
+ * Green is the create action. On the pick step there is no green at all:
+ * "Create new" is the secondary button, because creating a third player under
+ * a name two players already hold is the exception the step exists to make
+ * deliberate. The dashed-rule counterpart in `UndatedCareerTeams` is the same
+ * grammar for something we do NOT have — solid means "this is a row"; dashed
+ * means "this is a lead".
  */
 
 /** One NB row already filed under this name — the server shape, verbatim. */
@@ -127,6 +135,22 @@ export function candidateLinkLabel(
       : `Link to ${candidate.name}, option ${index + 1} of ${total}`;
 }
 
+/**
+ * NEO-332 — the sentence under the pick step's heading. Exported for the test
+ * and kept as ONE string, so the E2E driver (which matches a node's direct
+ * text) reads the whole line. Copy approved by Jason, 2026-10-10.
+ *
+ * The capped variant names the way out — the full search, one link away in
+ * the footer — because a silently truncated list is worse than no list: the
+ * operator reads eight names, concludes none is the man on the card, and
+ * creates a ninth.
+ */
+export function pickStepIntro(count: number, scanCapped: boolean): string {
+  return scanCapped
+    ? `More than ${count} answer to that name — here are the first ${count}. Can't see them? Link to Existing searches them all.`
+    : `We've got ${count} on file under that name. Pick the one on this card.`;
+}
+
 export default function SameNamePlayerPanel({
   candidates,
   scanCapped,
@@ -137,7 +161,7 @@ export default function SameNamePlayerPanel({
   candidates: ReadonlyArray<SameNameCandidate>;
   /**
    * The server stopped counting at its scan cap, so this list is "at least
-   * this many" rather than "this many". See the note on the line it renders.
+   * this many" rather than "this many". See `pickStepIntro`.
    */
   scanCapped?: boolean;
   /** True while another decision is in flight. See the wizard's `busy`. */
@@ -148,35 +172,12 @@ export default function SameNamePlayerPanel({
 
   return (
     <div className="mt-2 rounded-md border border-[#00B7FF]/40 border-l-4 border-l-[#00B7FF] bg-[#00B7FF]/5 p-3 space-y-2">
-      <div>
-        <p className="text-sm font-semibold text-[#00B7FF]">
-          Same name, different people
-        </p>
-        {/* States the situation and both ways out, in that order. The second
-            way out is the button below this panel, so it is described rather
-            than repeated as a control here. */}
-        <p className="text-xs text-gray-400">
-          {scanCapped
-            ? `More than ${candidates.length} players are already filed under this name.`
-            : `${candidates.length} players are already filed under this name.`}{" "}
-          Pick the one on this card, or add a new player below.
-        </p>
-      </div>
-      {/*
-        NEO-254 — the list is not the whole list.
-
-        A silently truncated candidate list is worse than no list: the operator
-        reads eight names, concludes none of them is the man on the card, and
-        creates a ninth — which is precisely the duplicate this panel exists to
-        prevent, arriving with the panel's own blessing. So the truncation is
-        stated, and the way out (the full search, one control below) is named.
-      */}
-      {scanCapped && (
-        <p className="text-xs text-gray-400">
-          Only the first {candidates.length} are shown — use Link to Existing to
-          search them all.
-        </p>
-      )}
+      {/* NEO-332 — the step's own heading asks the question; this is the one
+          line that says how many and what to do. text-sm, not the old
+          text-xs caption: it is the instruction for the whole step now. */}
+      <p className="text-sm text-gray-300">
+        {pickStepIntro(candidates.length, scanCapped ?? false)}
+      </p>
       <ul className="space-y-1" aria-label="Players already filed under this name">
         {candidates.map((candidate, index) => {
           const detail = candidateDetail(candidate);
