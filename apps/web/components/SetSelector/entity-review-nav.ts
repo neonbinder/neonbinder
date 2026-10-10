@@ -109,6 +109,11 @@ export type NavRow = {
  * create leaves it alone server-side (`decideAllRemaining` skips an ambiguous
  * name), so the count on the bulk button must leave it out too — otherwise
  * the label promises to add a row the button will never touch.
+ *
+ * The wizard's pick step reads its stored candidates through THIS predicate
+ * too, so the step and the count share one threshold (two or more) and
+ * cannot disagree about a row. Its live `nearMatches` fallback is separate
+ * and uses the same number: more than one exact row.
  */
 export function isAmbiguousPlayerRow(row: NavRow): boolean {
   return (row.enrichment?.existingCandidates?.length ?? 0) >= 2;
@@ -582,17 +587,29 @@ export function resolveNav<T extends NavRow>(
  * one side effect of the decision the operator cannot otherwise see until the
  * batch commits. `rememberedName` is the ROW's name (the checklist string),
  * never the target's; a link with the box unticked reads exactly as before.
+ *
+ * NEO-332: a link to one of several players filed under the same name says
+ * WHICH one — "Linked to Shuya Yamada, b. 1852" — with `linkedDetail`, the
+ * same distinguishing line the pick step showed on the row the operator
+ * chose (`candidateDetail`: alias, birth year, career). Without it the
+ * decided list reads "Linked to Shuya Yamada" for either man, which is the
+ * one thing the pick step exists to settle. Ordinary links pass nothing and
+ * read exactly as before. Dropped with the name: a detail with no name to
+ * qualify ("Linked to an existing record, b. 1852") says nothing useful.
  */
 export function describeDecision(
   decision: NavDecision | null | undefined,
   linkedName?: string | null,
   rememberedName?: string | null,
+  linkedDetail?: string | null,
 ): string {
   if (!decision) return "Not yet decided";
   if (decision.action === "create") return "Added as new";
   if (decision.action === "skip") return "Skipped";
   const linked = linkedName
-    ? `Linked to ${linkedName}`
+    ? linkedDetail
+      ? `Linked to ${linkedName}, ${linkedDetail}`
+      : `Linked to ${linkedName}`
     : "Linked to an existing record";
   const remembered =
     decision.saveAsAlias && decision.linkedTeamId && rememberedName?.trim();

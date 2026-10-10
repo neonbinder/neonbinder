@@ -2685,8 +2685,12 @@ describe("NEO-254: resolveChecklistEntities enqueues an ambiguous name for revie
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].name).toBe("Bob Allen");
-    // Still `pending` — no lookup has run — and already knows it is a choice.
-    expect(rows[0].status).toBe("pending");
+    // NEO-332 — settled with no lookup: a same-name choice is not looked up
+    // until the operator presses Create new (`requestPlayerLookup`), so it
+    // never holds the wizard's "still looking up". It already knows it is a
+    // choice.
+    expect(rows[0].status).toBe("ready");
+    expect(rows[0].enrichment?.wikidataId).toBeUndefined();
     expect(rows[0].enrichment?.existingCandidates).toHaveLength(2);
     expect(
       rows[0].enrichment?.existingCandidates?.map((c) => c.birthYear).sort(),

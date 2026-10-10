@@ -1152,3 +1152,39 @@ describe("NEO-332: countBulkCreatable leaves the same-name picks out", () => {
     ).toBe(1);
   });
 });
+
+describe("NEO-332: describeDecision names WHICH same-name player a link went to", () => {
+  const link = { action: "link" as const, linkedPlayerId: "p1" };
+
+  it("appends the candidate's distinguishing line after the name", () => {
+    expect(describeDecision(link, "Shuya Yamada", "Shuya Yamada", "b. 1852")).toBe(
+      "Linked to Shuya Yamada, b. 1852",
+    );
+    expect(
+      describeDecision(link, "Bob Allen", "Bob Allen", "also known as Robert Allen · b. 1937"),
+    ).toBe("Linked to Bob Allen, also known as Robert Allen · b. 1937");
+  });
+
+  it("reads an ordinary link exactly as before when there is no detail", () => {
+    expect(describeDecision(link, "Mike Trout", "Mike Trout")).toBe("Linked to Mike Trout");
+    expect(describeDecision(link, "Mike Trout", "Mike Trout", null)).toBe(
+      "Linked to Mike Trout",
+    );
+  });
+
+  it("drops the detail when there is no name for it to qualify", () => {
+    expect(describeDecision(link, null, "Shuya Yamada", "b. 1852")).toBe(
+      "Linked to an existing record",
+    );
+  });
+
+  it("never produces the live control's 'Link to {name}, {detail}' accessible name", () => {
+    const text = describeDecision(link, "Shuya Yamada", "Shuya Yamada", "b. 1852");
+    expect(text).not.toMatch(/^Link to /);
+  });
+
+  it("does not touch create or skip", () => {
+    expect(describeDecision({ action: "create" }, "X", "X", "b. 1852")).toBe("Added as new");
+    expect(describeDecision({ action: "skip" }, "X", "X", "b. 1852")).toBe("Skipped");
+  });
+});

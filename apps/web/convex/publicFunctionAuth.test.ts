@@ -403,6 +403,29 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
         return t.mutation(api.entityReviewQueue.switchRowSport, { rowId, sportId });
       },
     ],
+    // NEO-332. Create new on a same-name pick step: flips the row to
+    // `pending` and enqueues a pooled Wikidata lookup (and can re-stage
+    // career-team steps). Ungated, a caller could spend the deployment-wide
+    // 5-wide lane at will. Same table, same batch, same gate as
+    // `recordDecision`. The id is read after the gate, so the refusal is the
+    // gate and not a missing-row error.
+    [
+      "entityReviewQueue.requestPlayerLookup",
+      async (t, sportId) => {
+        const reviewRowId = await t.run(async (ctx) =>
+          ctx.db.insert("entityReviewQueue", {
+            selectorOptionId: sportId,
+            batchId: "batch-1",
+            createdByUserId: "somebody",
+            kind: "player" as const,
+            name: "Bob Allen",
+            sportId,
+            status: "ready" as const,
+          }),
+        );
+        return t.mutation(api.entityReviewQueue.requestPlayerLookup, { reviewRowId });
+      },
+    ],
     // NEO-313. Writes a player's additional sports — globally-shared
     // reference data, and it re-derives the alias index. Admin, like
     // `savePlayerFields` beside it.

@@ -28,6 +28,15 @@
  * heading ("Which {name} is this?", in the wizard) asks the question, and
  * this renders the one sentence under it and the rows to answer it with.
  *
+ * These rows are the step's ONLY evidence. Jason, 2026-10-10: no Wikidata
+ * lookup runs for an ambiguous name until "Create new" — there is no new
+ * player to look up — so the wizard shows no Wikidata links or description
+ * beside this list. What tells two of ours apart is what we hold about them.
+ *
+ * `candidateDetail` is also the wizard's read-back once a row is linked from
+ * here — "Linked to Bob Allen, b. 1937" in the decided list — so the line the
+ * operator chose by is the line that confirms the choice.
+ *
  * ## The visual grammar
  *
  * A solid neon-blue left rule and a blue tint — the app's reference/link

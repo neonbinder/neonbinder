@@ -47,7 +47,10 @@ import NewLeagueForm, {
   parseAliases,
   type NewLeagueDraft,
 } from "./NewLeagueForm";
-import SameNamePlayerPanel from "./SameNamePlayerPanel";
+import SameNamePlayerPanel, {
+  candidateDetail,
+  type SameNameCandidate,
+} from "./SameNamePlayerPanel";
 import UndatedCareerTeams from "./UndatedCareerTeams";
 import { deriveStagedTeamNames } from "./entity-review-staging";
 import {
@@ -56,6 +59,7 @@ import {
   countPendingUndecided,
   countUndecided,
   describeDecision,
+  isAmbiguousPlayerRow,
   resolveNav,
   summarizeDecisions,
   type NavState,
@@ -410,6 +414,15 @@ export default function EntityReviewWizard({
   );
   // NEO-313 — the operator's per-name sport override. See `handleSwitchSport`.
   const switchRowSport = useMutation(api.entityReviewQueue.switchRowSport);
+  /*
+   * NEO-332 — the Wikidata lookup for a same-name row, asked for only when
+   * the operator presses "Create new". Jason, 2026-10-10: "we shouldn't even
+   * be querying wikidata at all in this scenerio because there is no new
+   * player to query the data for." So an ambiguous row arrives `ready` with
+   * no lookup, and a link to one of ours never runs one. Idempotent
+   * server-side. See `enterCreateNew`.
+   */
+  const requestPlayerLookup = useMutation(api.entityReviewQueue.requestPlayerLookup);
 
   const [linkingOpen, setLinkingOpen] = useState(false);
   /**
@@ -521,14 +534,46 @@ export default function EntityReviewWizard({
    * other row and a return here finds the step where it was left.
    */
   const [createNewByRow, setCreateNewByRow] = useState<Record<string, true>>({});
-  /** NEO-332 — drop one row's `createNewByRow` flag; a no-op when unset. */
-  const clearCreateNew = (rowId: string) =>
+  /**
+   * NEO-332 — the same-name candidate each row was linked to from its pick
+   * step, so the decided list can say WHICH one ("Linked to Bob Allen,
+   * b. 1937"). A stored list answers that by itself (`sameNameLinkDetailFor`
+   * reads it first); this covers a row whose candidates came from the live
+   * fallback, which is gone once the row is decided. Session-only, like
+   * every other wizard answer — the link decision is the durable part.
+   */
+  const [pickedSameNameByRow, setPickedSameNameByRow] = useState<
+    Record<string, SameNameCandidate>
+  >({});
+  /**
+   * NEO-332 (a11y S3 / S5) — one line for the footer's live region about
+   * ARRIVING at a pick step: "Back at the list. 2 on file." after "Back to the
+   * list", or "Found players already on file under this name." when the live
+   * fallback turns an open New Player step into a pick step.
+   *
+   * Keyed by row and shown only while that row is on its pick step, so it
+   * cannot follow the operator onto another name or into "Create new". Not
+   * a toast and not a second live region: the footer's one region already
+   * says what the wizard is doing, and an arrival is the same kind of news.
+   */
+  const [pickNotice, setPickNotice] = useState<{
+    rowId: string;
+    text: string;
+  } | null>(null);
+  /**
+   * NEO-332 — drop one row's `createNewByRow` flag; a no-op when unset. Also
+   * drops that row's `pickNotice`, so a row reopened later never arrives with
+   * the last visit's "Back at the list" line.
+   */
+  const clearCreateNew = (rowId: string) => {
     setCreateNewByRow((prev) => {
       if (!(rowId in prev)) return prev;
       const next = { ...prev };
       delete next[rowId];
       return next;
     });
+    setPickNotice((prev) => (prev?.rowId === rowId ? null : prev));
+  };
   /**
    * NEO-332 — where focus goes once a pick ↔ create-new switch has rendered.
    * Both controls that cause it unmount or relabel in the same commit, so the
@@ -540,6 +585,19 @@ export default function EntityReviewWizard({
   const stepHeadingRef = useRef<HTMLHeadingElement>(null);
   /** The footer's primary slot — "Create new" on the pick step. */
   const primaryDecisionRef = useRef<HTMLButtonElement>(null);
+  /** NEO-332 (a11y S5) — the fixed footer, to tell "focus is on a decision
+   *  control" (leave it alone) from "focus was in the body that just changed". */
+  const footerRef = useRef<HTMLDivElement>(null);
+  /**
+   * NEO-332 (a11y S5) — what the last render said about the row on screen:
+   * which row, and whether it had same-name candidates. A flip from "none" to
+   * "some" on the SAME row is the live fallback landing under an open New
+   * Player step; a row change is not a flip.
+   */
+  const candidatesSeenRef = useRef<{ rowId: string | null; has: boolean }>({
+    rowId: null,
+    has: false,
+  });
   /**
    * NEO-313 — the row whose sport switch is in flight. Holds the switch
    * disabled (and the row's decisions busy) for the round trip, so a decision
@@ -834,6 +892,103 @@ export default function EntityReviewWizard({
   // wants, which is deliberately structural.
   const nearMatches: NearMatch[] | undefined =
     current?.kind === "player" ? playerNearMatches : teamNearMatches;
+
+  // NEO-332 — above the early return with what reads it: the a11y focus
+  // effects (S1 / S5) need `pickStep` and `sameNameCandidates`.
+  const exactRows = (nearMatches ?? []).filter((m) => m.confidence === "exact");
+  const exactMatch = exactRows[0] ?? null;
+  /**
+   * NEO-254 — the NB rows already filed under this exact name.
+   *
+   * Normally the server's own list (`players.buildExistingPlayerCandidates`,
+   * attached when the row is enqueued and refreshed when its lookup lands),
+   * which carries the birth year and career line that make the choice
+   * possible. Present only when there are TWO OR MORE, so this is empty for
+   * every ordinary name and the panel never renders.
+   *
+   * Not shown on a decided row: the read-only panel states the outcome, and a
+   * list of link buttons under it would offer to re-decide something that
+   * already has a "Change decision" control.
+   *
+   * ## The fallback, and why it is not "no panel"
+   *
+   * The stored list is missing on a row the completion backstop or the
+   * stale-row sweep settled without ever reading `players`, and on any row
+   * queued before this shipped. `nearMatches` still sees the truth — it reads
+   * the exact key live — so when it returns more than one exact row, those
+   * rows ARE the candidates and are used as such, minus the detail the server
+   * would have supplied.
+   *
+   * Falling back to nothing was the tempting option and it is wrong twice
+   * over. `NearMatchPanel` would render the list instead, and it labels an
+   * exact row `Link to {name} — same name` — so two rows sharing a name get
+   * two controls with byte-identical accessible names, on the one screen where
+   * telling them apart is the entire task. `SameNamePlayerPanel` already
+   * solves that (it folds a position into the label when a row has no
+   * distinguishing fact), so the degraded path gets the component built for
+   * the job rather than the one that cannot express it.
+   */
+  // NEO-332 — TWO or more, through the same predicate the bulk count uses
+  // (`isAmbiguousPlayerRow`). The server never stores a list of one, but the
+  // step and the count must not be able to disagree about a row if it ever
+  // did: a stored list of one opened the pick step here while the bulk
+  // button still counted the row as creatable. The live fallback below keeps
+  // its own "more than one exact" rule, which is the same threshold.
+  const storedSameNameCandidates =
+    current && !reviewingDecided && current.kind === "player" && isAmbiguousPlayerRow(current)
+      ? (current.enrichment?.existingCandidates ?? [])
+      : [];
+  const sameNameCandidates =
+    storedSameNameCandidates.length > 0
+      ? storedSameNameCandidates
+      : current && !reviewingDecided && current.kind === "player" && exactRows.length > 1
+        ? exactRows.map((m) => ({
+            playerId: m._id,
+            name: m.name,
+            // NEO-332 — `nearMatches` returns the birth year and the alias
+            // that answered, so both ride through: on the pick step they are
+            // what tells the rows apart. No career line: that is only on the
+            // stored list. With nothing at all the panel says "Nothing on
+            // file yet", which is honest about what we can see from here.
+            ...(m.birthYear !== undefined ? { birthYear: m.birthYear } : {}),
+            ...(m.matchedAlias !== undefined ? { matchedAlias: m.matchedAlias } : {}),
+            careerSummary: "",
+          }))
+        : [];
+  /**
+   * NEO-254 — did the server stop counting?
+   *
+   * `buildExistingPlayerCandidates` reads at most `PLAYER_AMBIGUITY_SCAN_LIMIT`
+   * rows, so a stored list exactly that long means "at least this many", not
+   * "this many". Saying so matters: a panel that silently shows eight of
+   * eleven "John Smith"s invites the operator to conclude none of them is
+   * right and create a twelfth, which is the failure this whole panel exists
+   * to stop.
+   *
+   * Only ever true of the STORED list. The fallback above is bounded by
+   * `players.nearMatches`' own limit, which is a different number and a
+   * different question, and claiming the scan cap for it would be a guess.
+   */
+  const sameNameScanCapped =
+    storedSameNameCandidates.length >= PLAYER_AMBIGUITY_SCAN_LIMIT;
+  /**
+   * NEO-332 — the PICK step, and the New Player step it can open.
+   *
+   * Jason, 2026-10-10: a player row with players already filed under its name
+   * asks "Which {name} is this?" first — the candidates, "Create new", and
+   * "Skip — not a person" — instead of opening on "Add as New Player" with the
+   * candidates in a panel above it. "Create new" sets `createNewByRow`, which
+   * opens today's New Player step without the list and with "Back to the
+   * list" in place of Back.
+   *
+   * Same evidence the panel always used: the stored candidates, or the live
+   * `nearMatches` fallback. That fallback can land while the row is on screen
+   * and turn the New Player step into the pick step; the footer's primary is
+   * one element in both, so a focused operator keeps their place.
+   */
+  const createNewChosen = current ? createNewByRow[current._id] !== undefined : false;
+  const pickStep = sameNameCandidates.length > 0 && !createNewChosen;
+  const createNewStep = sameNameCandidates.length > 0 && createNewChosen;
 
   /** Rows already decided "link" — their TARGET's canonical name is what the
    *  batch will actually use, so both the staging list and the decided list
@@ -1904,19 +2059,47 @@ export default function EntityReviewWizard({
     void decide(rowId, () => clearDecision({ reviewRowId: rowId }), "drop");
   };
 
-  /** NEO-332 — "Create new" on the pick step: open the New Player step. */
+  /**
+   * NEO-332 — "Create new" on the pick step: open the New Player step, and
+   * only now ask Wikidata about this name.
+   *
+   * The lookup is fire-and-forget. The row goes back to "still looking up"
+   * while it runs, and its career teams stage when it lands exactly as for any
+   * unknown player. A failure leaves the step as it is — Add as New Player
+   * still works without the lookup — so it is logged, not shown.
+   */
   const enterCreateNew = (rowId: Id<"entityReviewQueue">) => {
-    pendingStepFocusRef.current = "heading";
-    setCreateNewByRow((prev) => (prev[rowId] ? prev : { ...prev, [rowId]: true }));
+    // a11y S4 — the focus move is armed only when the flag is really added.
+    // A repeat press would otherwise leave "heading" waiting in the ref for
+    // the NEXT unrelated `createNewByRow` change to act on.
+    if (createNewByRow[rowId] === undefined) {
+      pendingStepFocusRef.current = "heading";
+      setCreateNewByRow((prev) => ({ ...prev, [rowId]: true }));
+    }
+    setPickNotice(null);
+    void requestPlayerLookup({ reviewRowId: rowId }).catch((error: unknown) => {
+      console.warn("Failed to request the player lookup:", error);
+    });
   };
 
   /**
    * NEO-332 — "Back to the list", and Escape, from the New Player step a pick
    * step opened. Creates nothing and records nothing: it only drops the flag.
+   *
+   * Focus returns to "Create new" (the control that opened the step being
+   * left), and the footer's live region says where the operator is and how
+   * many there are to choose from (a11y S3) — the list itself is above the
+   * focused control, so without the line a screen-reader operator hears only
+   * "Create new, button" and has to go looking for what changed.
    */
   const leaveCreateNew = (rowId: Id<"entityReviewQueue">) => {
+    if (createNewByRow[rowId] === undefined) return;
     pendingStepFocusRef.current = "primary";
     clearCreateNew(rowId);
+    const count = sameNameScanCapped
+      ? `More than ${sameNameCandidates.length}`
+      : `${sameNameCandidates.length}`;
+    setPickNotice({ rowId, text: `Back at the list. ${count} on file.` });
   };
 
   /**
@@ -2129,6 +2312,64 @@ export default function EntityReviewWizard({
       }
     };
   }, [wizardMounted]);
+
+  /*
+   * NEO-332 (a11y S1) — a new row on screen and focus nowhere: park it on the
+   * step heading.
+   *
+   * Picking a candidate decides the row and the walk moves on, so the button
+   * that was pressed unmounts and the browser drops focus to <body> — outside
+   * an `aria-modal` dialog, where the next Tab starts from the top of a page
+   * that is inert. The heading is the one thing every step has, and it names
+   * the step being arrived at ("Which Bob Allen is this?", "New Team: …").
+   *
+   * Only when focus is really lost. A control that kept it (the footer's
+   * primary, which is one element across steps) stays put, and a dialog
+   * stacked over this one (the discard confirm, a New Team dialog) keeps its
+   * own. Declared AFTER the open effect above on purpose: that one reads the
+   * opener from `document.activeElement` and parks focus on the root, and
+   * this must not move focus before it has read where to return to.
+   */
+  const presentedRowId = current?._id ?? null;
+  useEffect(() => {
+    if (!presentedRowId) return;
+    const root = dialogRootRef.current;
+    if (!root) return;
+    const active = document.activeElement as HTMLElement | null;
+    const lost =
+      !active ||
+      active === document.body ||
+      !active.isConnected ||
+      (!root.contains(active) && !active.closest('[role="dialog"], [role="alertdialog"]'));
+    if (lost) stepHeadingRef.current?.focus();
+  }, [presentedRowId]);
+
+  /*
+   * NEO-332 (a11y S5) — the live fallback turned the open New Player step into
+   * the pick step.
+   *
+   * With no stored candidates the step opens as New Player, and only when
+   * `players.nearMatches` answers with two exact rows does it become "Which
+   * {name} is this?". That swap unmounts the New Player form, so focus in it
+   * is dropped. Park it on the heading — unless it is on a footer control,
+   * which survives the swap — and say what happened in the footer's live
+   * region, because nothing the operator did caused it.
+   */
+  const hasSameNameCandidates = sameNameCandidates.length > 0;
+  useEffect(() => {
+    const prev = candidatesSeenRef.current;
+    candidatesSeenRef.current = { rowId: presentedRowId, has: hasSameNameCandidates };
+    if (!presentedRowId || prev.rowId !== presentedRowId) return;
+    if (prev.has || !hasSameNameCandidates || !pickStep) return;
+    const active = document.activeElement;
+    if (!(active && footerRef.current?.contains(active))) {
+      stepHeadingRef.current?.focus();
+    }
+    setPickNotice({
+      rowId: presentedRowId,
+      text: "Found players already on file under this name.",
+    });
+  }, [presentedRowId, hasSameNameCandidates, pickStep]);
 
   if (!isOpen || rows === undefined) return null;
 
@@ -2465,8 +2706,6 @@ export default function EntityReviewWizard({
     );
   })();
 
-  const exactRows = (nearMatches ?? []).filter((m) => m.confidence === "exact");
-  const exactMatch = exactRows[0] ?? null;
   /**
    * NEO-307 — the footer primary's words when it links to the lone exact
    * match, era included for a team: "Link to Brooklyn Dodgers · 1911–1957".
@@ -2485,92 +2724,6 @@ export default function EntityReviewWizard({
       }`
     : "";
 
-  /**
-   * NEO-254 — the NB rows already filed under this exact name.
-   *
-   * Normally the server's own list (`players.buildExistingPlayerCandidates`,
-   * attached when the row is enqueued and refreshed when its lookup lands),
-   * which carries the birth year and career line that make the choice
-   * possible. Present only when there are TWO OR MORE, so this is empty for
-   * every ordinary name and the panel never renders.
-   *
-   * Not shown on a decided row: the read-only panel states the outcome, and a
-   * list of link buttons under it would offer to re-decide something that
-   * already has a "Change decision" control.
-   *
-   * ## The fallback, and why it is not "no panel"
-   *
-   * The stored list is missing on a row the completion backstop or the
-   * stale-row sweep settled without ever reading `players`, and on any row
-   * queued before this shipped. `nearMatches` still sees the truth — it reads
-   * the exact key live — so when it returns more than one exact row, those
-   * rows ARE the candidates and are used as such, minus the detail the server
-   * would have supplied.
-   *
-   * Falling back to nothing was the tempting option and it is wrong twice
-   * over. `NearMatchPanel` would render the list instead, and it labels an
-   * exact row `Link to {name} — same name` — so two rows sharing a name get
-   * two controls with byte-identical accessible names, on the one screen where
-   * telling them apart is the entire task. `SameNamePlayerPanel` already
-   * solves that (it folds a position into the label when a row has no
-   * distinguishing fact), so the degraded path gets the component built for
-   * the job rather than the one that cannot express it.
-   */
-  const storedSameNameCandidates =
-    current && !reviewingDecided && current.kind === "player"
-      ? (current.enrichment?.existingCandidates ?? [])
-      : [];
-  const sameNameCandidates =
-    storedSameNameCandidates.length > 0
-      ? storedSameNameCandidates
-      : current && !reviewingDecided && current.kind === "player" && exactRows.length > 1
-        ? exactRows.map((m) => ({
-            playerId: m._id,
-            name: m.name,
-            // NEO-332 — `nearMatches` returns the birth year and the alias
-            // that answered, so both ride through: on the pick step they are
-            // what tells the rows apart. No career line: that is only on the
-            // stored list. With nothing at all the panel says "Nothing on
-            // file yet", which is honest about what we can see from here.
-            ...(m.birthYear !== undefined ? { birthYear: m.birthYear } : {}),
-            ...(m.matchedAlias !== undefined ? { matchedAlias: m.matchedAlias } : {}),
-            careerSummary: "",
-          }))
-        : [];
-  /**
-   * NEO-254 — did the server stop counting?
-   *
-   * `buildExistingPlayerCandidates` reads at most `PLAYER_AMBIGUITY_SCAN_LIMIT`
-   * rows, so a stored list exactly that long means "at least this many", not
-   * "this many". Saying so matters: a panel that silently shows eight of
-   * eleven "John Smith"s invites the operator to conclude none of them is
-   * right and create a twelfth, which is the failure this whole panel exists
-   * to stop.
-   *
-   * Only ever true of the STORED list. The fallback above is bounded by
-   * `players.nearMatches`' own limit, which is a different number and a
-   * different question, and claiming the scan cap for it would be a guess.
-   */
-  const sameNameScanCapped =
-    storedSameNameCandidates.length >= PLAYER_AMBIGUITY_SCAN_LIMIT;
-  /**
-   * NEO-332 — the PICK step, and the New Player step it can open.
-   *
-   * Jason, 2026-10-10: a player row with players already filed under its name
-   * asks "Which {name} is this?" first — the candidates, "Create new", and
-   * "Skip — not a person" — instead of opening on "Add as New Player" with the
-   * candidates in a panel above it. "Create new" sets `createNewByRow`, which
-   * opens today's New Player step without the list and with "Back to the
-   * list" in place of Back.
-   *
-   * Same evidence the panel always used: the stored candidates, or the live
-   * `nearMatches` fallback. That fallback can land while the row is on screen
-   * and turn the New Player step into the pick step; the footer's primary is
-   * one element in both, so a focused operator keeps their place.
-   */
-  const createNewChosen = current ? createNewByRow[current._id] !== undefined : false;
-  const pickStep = sameNameCandidates.length > 0 && !createNewChosen;
-  const createNewStep = sameNameCandidates.length > 0 && createNewChosen;
   /**
    * NEO-254 — never promote one of several same-name rows to the primary
    * action.
@@ -2597,8 +2750,14 @@ export default function EntityReviewWizard({
    * does or does not say. Either condition alone is enough to demote the
    * primary; both have to pass to promote it.
    */
+  /*
+   * NEO-332 (item 4) — the New Player step "Create new" opens always reads
+   * "Add as New Player": it is only reachable with same-name candidates on
+   * file, which is exactly what holds this false, so the primary is never
+   * relabelled "Link to {name}" there however many exact rows `nearMatches`
+   * returns. Pinned by the wizard's NEO-332 tests.
+   */
   const showExactHierarchy = sameNameCandidates.length === 0 && exactRows.length === 1;
-  const hasCloseOnly = !showExactHierarchy && (nearMatches?.length ?? 0) > 0;
   /**
    * What the panel is left to show once the primary action has been promoted.
    * The promoted row is filtered out by `_id`, so no two controls ever share
@@ -2626,6 +2785,15 @@ export default function EntityReviewWizard({
     const owned = new Set(sameNameCandidates.map((c) => c.playerId as string));
     return base.filter((m) => !owned.has(m._id));
   })();
+  /*
+   * Creating is demoted to the secondary style while a CLOSE match is on
+   * screen. Read off `panelMatches`, not the raw `nearMatches`: on the New
+   * Player step a pick step opened, the same-name rows are still in the raw
+   * answer, and counting them painted "Add as New Player" grey for matches the
+   * operator had just looked at and turned down. For every other row the two
+   * lists are the same whenever this is read (`showExactHierarchy` false).
+   */
+  const hasCloseOnly = !showExactHierarchy && (panelMatches?.length ?? 0) > 0;
   const remaining = total - decided;
   /**
    * NEO-236 — the two bulk buttons act on DIFFERENT sets, so they count
@@ -2660,10 +2828,42 @@ export default function EntityReviewWizard({
     return null;
   })();
 
-  const linkedNameFor = (decision: (typeof rows)[number]["decision"]) => {
+  const linkedNameFor = (row: (typeof rows)[number]) => {
+    const decision = row.decision;
     if (decision?.action !== "link") return null;
     const id = decision.linkedPlayerId ?? decision.linkedTeamId;
-    return id ? (linkedNameById.get(id) ?? null) : null;
+    if (!id) return null;
+    // NEO-332 — a same-name pick names its candidate while the canonical
+    // name is still loading, rather than "Linked to an existing record".
+    return linkedNameById.get(id) ?? sameNameLinkFor(row)?.name ?? null;
+  };
+
+  /**
+   * NEO-332 — the candidate a same-name row was linked to, or null for any
+   * other row (an ordinary link, a team, a create, a skip).
+   *
+   * The stored list first: it is on the row for as long as the batch lives,
+   * whoever decided it and from wherever. Then this session's own pick from
+   * the live fallback. A link made through "Link to Existing…" to a player
+   * who happens to be on the stored list is still that player, so it reads
+   * the same way — the detail describes the target, not the route.
+   */
+  const sameNameLinkFor = (row: (typeof rows)[number]): SameNameCandidate | null => {
+    const decision = row.decision;
+    if (row.kind !== "player" || decision?.action !== "link") return null;
+    const playerId = decision.linkedPlayerId;
+    if (!playerId) return null;
+    const stored = isAmbiguousPlayerRow(row)
+      ? (row.enrichment?.existingCandidates ?? []).find((c) => c.playerId === playerId)
+      : undefined;
+    if (stored) return stored;
+    const picked = pickedSameNameByRow[row._id];
+    return picked?.playerId === playerId ? picked : null;
+  };
+  /** NEO-332 — the read-back's distinguishing line for a same-name link. */
+  const sameNameLinkDetailFor = (row: (typeof rows)[number]) => {
+    const candidate = sameNameLinkFor(row);
+    return candidate ? candidateDetail(candidate) : null;
   };
 
   /**
@@ -2692,6 +2892,16 @@ export default function EntityReviewWizard({
       : pendingUndecided > 0
         ? `${pendingUndecided} still looking up — wait or skip`
         : null;
+  /**
+   * NEO-332 (a11y S3 / S5) — what the live region actually says: an arrival at
+   * the pick step outranks the standing status for as long as the operator is
+   * on that step, then the status comes back. `footerStatus` alone still
+   * decides whether "Stop" shows — the notice is news, not a running walk.
+   */
+  const footerLine: string | null =
+    !expired && pickNotice && current && pickNotice.rowId === current._id && pickStep
+      ? pickNotice.text
+      : footerStatus;
 
   const summaryRows: Array<[string, number]> = [
     ["Cards to save", summary.cardCount],
@@ -3063,9 +3273,22 @@ export default function EntityReviewWizard({
                       ref={stepHeadingRef}
                       // NEO-332 — focusable from script only: "Create new"
                       // lands here, so the step change is announced by name.
+                      // a11y N1: and visibly so, for a keyboard operator only
+                      // (`focus-visible`). One hairline in the link blue, not
+                      // the 2px ring of a control: it is a heading, and must
+                      // not read as something to press. 70% blue on gray-900
+                      // is ~4.3:1, over SC 1.4.11's 3:1.
                       tabIndex={-1}
-                      className="text-sm font-semibold text-gray-200 focus:outline-none"
+                      className="rounded-sm text-sm font-semibold text-gray-200 focus:outline-none focus-visible:ring-1 focus-visible:ring-[#00B7FF]/70 focus-visible:ring-offset-2 focus-visible:ring-offset-gray-900"
                     >
+                      {/* NEO-332 (a11y S2) — the New Player step a pick step
+                          opened shows the bare name, so it is announced as
+                          one: the heading Create new lands on would otherwise
+                          say "Bob Allen" and nothing about what is being asked.
+                          sr-only, so the visible text — and the E2E driver's
+                          match on it, which reads a node's direct text — stay
+                          the bare name. */}
+                      {createNewStep && <span className="sr-only">New Player: </span>}
                       {/* NEO-236, Jason's own words for this step: "1. New
                           Team: Sydney Blue Sox". The raw name, because that is
                           the thing being answered — the composed result is
@@ -3169,16 +3392,14 @@ export default function EntityReviewWizard({
                     </p>
                   )}
 
-                  {/* NEO-254 — FIRST, above everything Wikidata said.
+                  {/* NEO-254 — when two NB rows already carry this name, the
+                      operator's question is "which of ours is this?", and no
+                      amount of Wikidata detail answers it: both rows are ours,
+                      both are real, and the lookup only ever describes one
+                      person.
 
-                      When two NB rows already carry this name, the operator's
-                      question is "which of ours is this?", and no amount of
-                      Wikidata detail answers it: both rows are ours, both are
-                      real, and the lookup only ever describes one person. So
-                      the choice between them leads, and the source record
-                      below becomes the tiebreaker rather than the subject.
-
-                      NEO-332: only on the pick step. "Create new" means the
+                      NEO-332: only on the pick step, and with no Wikidata
+                      beside it at all (see the links below). "Create new" means the
                       operator has read this list and the man is not on it, so
                       the New Player step does not repeat it. Hidden while the
                       link search is open, which lists `Link to …` buttons of
@@ -3190,6 +3411,15 @@ export default function EntityReviewWizard({
                       disabled={busy}
                       onPick={(playerId) => {
                         if (busy) return;
+                        const picked = sameNameCandidates.find(
+                          (c) => c.playerId === playerId,
+                        );
+                        if (picked) {
+                          setPickedSameNameByRow((prev) => ({
+                            ...prev,
+                            [current._id]: picked,
+                          }));
+                        }
                         void handleLink(
                           current._id,
                           "player",
@@ -3202,8 +3432,19 @@ export default function EntityReviewWizard({
 
                   {/* NEO-212: the operator's escape hatch when the enrichment
                       below is not enough to tell two people apart — the source
-                      record itself, one click away. */}
-                  {current.enrichment &&
+                      record itself, one click away.
+
+                      NEO-332: never on the pick step, and neither is the
+                      description line below. Jason, 2026-10-10: an ambiguous
+                      name gets no Wikidata lookup until "Create new" — there
+                      is no new player to look up — so the pick step is ours
+                      alone: the players on file and what tells them apart.
+                      A row queued before that change may still carry a
+                      lookup; it is not shown here either, because a
+                      description of one person beside a list of two reads as
+                      a verdict on which of ours it is. */}
+                  {!pickStep &&
+                    current.enrichment &&
                     (current.enrichment.wikidataId || current.enrichment.enwikiTitle) && (
                       <p className="mt-1 flex flex-wrap items-center gap-3 text-xs">
                         {current.enrichment.wikidataId &&
@@ -3243,7 +3484,8 @@ export default function EntityReviewWizard({
                   {/* The one line that most often settles "is this the same
                       Mike Smith?": Wikidata's own short description and a birth
                       year. */}
-                  {current.enrichment &&
+                  {!pickStep &&
+                    current.enrichment &&
                     (current.enrichment.description || current.enrichment.birthYear) && (
                       <p className="mt-1 text-sm text-gray-300">
                         {[
@@ -3262,14 +3504,22 @@ export default function EntityReviewWizard({
                       anyone, so it leaves them for the step that is. */}
                   {!pickStep && (
                     <div className="mt-2 text-sm text-gray-400 space-y-1">
-                      {current.kind === "league" && current.status === "pending" ? (
+                      {current.status === "pending" &&
+                      (current.kind === "league" || createNewStep) ? (
                         /* NEO-307 — a New League step is presented while its
                            lookup is still out (`isPresentable` in
                            entity-review-nav). Say so, and say it does not have
                            to be waited for: Wikidata only prefills the details
                            below, and it streams them into the form if it lands
                            first. Not "No Wikidata match found." — that would be
-                           a claim about a lookup that has not answered. */
+                           a claim about a lookup that has not answered.
+
+                           NEO-332: and the New Player step "Create new" opened
+                           on a same-name row, whose lookup is only asked for
+                           at that press (`enterCreateNew`). The row is already
+                           on screen when it goes back to pending, so it says
+                           the same thing; the career teams stage when the
+                           answer lands, as for any unknown player. */
                         <p role="status" className="italic">
                           Still looking up details. Add it now, or wait and
                           they&apos;ll fill in.
@@ -3549,8 +3799,9 @@ export default function EntityReviewWizard({
                       <span className="text-gray-100">
                         {describeDecision(
                           current.decision,
-                          linkedNameFor(current.decision),
+                          linkedNameFor(current),
                           current.name,
+                          sameNameLinkDetailFor(current),
                         )}
                       </span>
                     </p>
@@ -4213,8 +4464,9 @@ export default function EntityReviewWizard({
                       <span className="text-gray-400">
                         {describeDecision(
                           row.decision,
-                          linkedNameFor(row.decision),
+                          linkedNameFor(row),
                           row.name,
+                          sameNameLinkDetailFor(row),
                         )}
                       </span>
                       <button
@@ -4261,7 +4513,10 @@ export default function EntityReviewWizard({
             which is rendered ALWAYS — empty or not — with its height reserved,
             and row 1 is `whitespace-nowrap`. Neither row can push the other.
           */}
-          <div className="px-6 py-4 border-t border-gray-700 shrink-0 space-y-2">
+          <div
+            ref={footerRef}
+            className="px-6 py-4 border-t border-gray-700 shrink-0 space-y-2"
+          >
             {/*
               ROW 1 — actions. The right group never yields (`shrink-0`); the
               left group is `min-w-0 overflow-hidden` so a genuine overflow
@@ -4506,7 +4761,7 @@ export default function EntityReviewWizard({
                 role="status"
                 aria-live="polite"
               >
-                {footerStatus}
+                {footerLine}
               </p>
               {footerStatus !== null && autoAddPending && (
                 // a11y (2.5.8): p-2 -m-2 grows the target past 24px without

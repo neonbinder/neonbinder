@@ -118,6 +118,8 @@ vi.mock("../../convex/_generated/api", () => ({
       stageLeagueRows: "entityReviewQueue.stageLeagueRows",
       // NEO-313: the operator's per-name sport override.
       switchRowSport: "entityReviewQueue.switchRowSport",
+      // NEO-332: a same-name row's Wikidata lookup, asked for on "Create new".
+      requestPlayerLookup: "entityReviewQueue.requestPlayerLookup",
     },
     // NEO-313: the row header's SportSwitch reads the sport list to render
     // its option list, same as the pickers.
@@ -183,6 +185,10 @@ let currentLeagues: unknown;
 let currentSports: unknown = [];
 /** NEO-313 — the operator's per-name sport override. */
 const mockSwitchRowSport = vi.fn(() => Promise.resolve(null));
+/** NEO-332 — the deferred lookup "Create new" asks for. Fire-and-forget. */
+const mockRequestPlayerLookup = vi.fn((_args: { reviewRowId: string }) =>
+  Promise.resolve(null as unknown),
+);
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
@@ -209,6 +215,8 @@ vi.mock("convex/react", () => ({
       return mockClearCareerTeamStint;
     if (ref === "entityReviewQueue.stageLeagueRows") return mockStageLeagueRows;
     if (ref === "entityReviewQueue.switchRowSport") return mockSwitchRowSport;
+    if (ref === "entityReviewQueue.requestPlayerLookup")
+      return mockRequestPlayerLookup;
     // Every other mutation still has to look like one: the component `await`s
     // what `useMutation` hands back.
     return vi.fn(() => Promise.resolve(undefined));
@@ -491,6 +499,7 @@ beforeEach(() => {
   mockClearCareerTeamStint.mockResolvedValue(null);
   mockStageLeagueRows.mockResolvedValue(undefined);
   mockSwitchRowSport.mockResolvedValue(null);
+  mockRequestPlayerLookup.mockResolvedValue(null);
   currentRows = [];
   currentAliasHolders = undefined;
   currentLeagues = [];
@@ -7943,9 +7952,10 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
 
     clickCreateNew();
 
+    // a11y S2 — the heading is announced as the step it is.
     await waitFor(() =>
       expect(document.activeElement).toBe(
-        screen.getByRole("heading", { name: "Bob Allen" }),
+        screen.getByRole("heading", { name: "New Player: Bob Allen" }),
       ),
     );
   });
@@ -8188,6 +8198,506 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
 
       expect(pickHeading()).toBeNull();
       expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Round 3 (Jason, 2026-10-10): no Wikidata for an ambiguous name until
+  // "Create new" — "there is no new player to query the data for".
+  // -------------------------------------------------------------------------
+  describe("round 3: the lookup waits for Create new", () => {
+    it("Create new asks for this row's lookup and records nothing", async () => {
+      const row = ambiguousRow();
+      currentRows = [row];
+      renderWizard();
+      expect(mockRequestPlayerLookup).not.toHaveBeenCalled();
+
+      clickCreateNew();
+
+      await waitFor(() =>
+        expect(mockRequestPlayerLookup).toHaveBeenCalledWith({ reviewRowId: row._id }),
+      );
+      expect(mockRequestPlayerLookup).toHaveBeenCalledTimes(1);
+      expect(mockRecordDecision).not.toHaveBeenCalled();
+    });
+
+    it("linking a candidate or skipping never asks for a lookup", async () => {
+      currentRows = [ambiguousRow()];
+      renderWizard();
+
+      fireEvent.click(
+        screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+      );
+      await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+      fireEvent.click(screen.getByRole("button", { name: "Skip Bob Allen — not a person" }));
+      await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(2));
+
+      expect(mockRequestPlayerLookup).not.toHaveBeenCalled();
+    });
+
+    it("a refused lookup request is logged, and Add as New Player still works", async () => {
+      const failure = new Error("lookup refused");
+      mockRequestPlayerLookup.mockRejectedValueOnce(failure);
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      currentRows = [ambiguousRow()];
+      renderWizard();
+
+      clickCreateNew();
+
+      await waitFor(() =>
+        expect(warn).toHaveBeenCalledWith("Failed to request the player lookup:", failure),
+      );
+      const add = screen.getByRole("button", { name: "Add as New Player" });
+      expect(add.getAttribute("aria-disabled")).toBeNull();
+      fireEvent.click(add);
+      await waitFor(() =>
+        expect(mockRecordDecision).toHaveBeenCalledWith(
+          expect.objectContaining({ action: "create" }),
+        ),
+      );
+    });
+
+    it("the pick step shows no Wikidata links or description, even on a row that carries a lookup", () => {
+      // A row queued before the change can still hold an old lookup.
+      currentRows = [
+        ambiguousRow({
+          enrichment: {
+            existingCandidates: CANDIDATES,
+            wikidataId: "Q42",
+            enwikiTitle: "Bob_Allen",
+            description: "American baseball outfielder",
+            birthYear: 1937,
+          },
+        }),
+      ];
+      renderWizard();
+
+      expect(pickHeading()).toBeTruthy();
+      expect(screen.queryByText(/Wikidata Q42/)).toBeNull();
+      expect(screen.queryByRole("link", { name: /Wikipedia/ })).toBeNull();
+      expect(screen.queryByText(/American baseball outfielder/)).toBeNull();
+
+      // The New Player step is where a lookup belongs, so it shows there.
+      clickCreateNew();
+      expect(screen.getByRole("link", { name: /Wikidata Q42/ })).toBeTruthy();
+      expect(screen.getByText("American baseball outfielder · b. 1937")).toBeTruthy();
+    });
+
+    it("the New Player step says it is still looking up while the lookup runs, then stages career teams when it lands", async () => {
+      const row = ambiguousRow();
+      currentRows = [row];
+      const { rerender } = renderWizard();
+      clickCreateNew();
+
+      // The server puts the row back to pending for the lookup it was asked for.
+      currentRows = [{ ...row, status: "pending" }];
+      rerenderWizard(rerender);
+      expect(
+        screen.getByText("Still looking up details. Add it now, or wait and they'll fill in."),
+      ).toBeTruthy();
+      expect(screen.queryByText("No career-team history found.")).toBeNull();
+      // Still the New Player step, not the pick step.
+      expect(pickHeading()).toBeNull();
+      expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+
+      currentRows = [
+        {
+          ...row,
+          status: "ready",
+          enrichment: {
+            existingCandidates: CANDIDATES,
+            careerTeams: [{ name: "Phillies", fromYear: 2001, toYear: 2004 }],
+          },
+        },
+      ];
+      rerenderWizard(rerender);
+
+      await waitFor(() =>
+        expect(mockStageCareerTeamRows).toHaveBeenCalledWith({ reviewRowId: row._id }),
+      );
+      expect(
+        screen.queryByText("Still looking up details. Add it now, or wait and they'll fill in."),
+      ).toBeNull();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // a11y audit, round 3 — S1 to S5 and N1.
+  // -------------------------------------------------------------------------
+  describe("round 3 a11y", () => {
+    it("S1: a pick that moves the walk on parks focus on the next step's heading", async () => {
+      const rowA = ambiguousRow();
+      const rowB = makeRow({ name: "Other Guy" });
+      currentRows = [rowA, rowB];
+      const { rerender } = renderWizard();
+      const pick = screen.getByRole("button", {
+        name: "Link to Bob Allen, b. 1937 · Padres 1961–present",
+      });
+      act(() => pick.focus());
+      fireEvent.click(pick);
+      await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+
+      currentRows = [
+        { ...rowA, decision: { action: "link", linkedPlayerId: "player-young" } },
+        rowB,
+      ];
+      rerenderWizard(rerender);
+
+      await waitFor(() =>
+        expect(document.activeElement).toBe(
+          screen.getByRole("heading", { name: "Other Guy" }),
+        ),
+      );
+    });
+
+    it("S1: a control that kept focus across the row change keeps it", async () => {
+      const rowA = ambiguousRow();
+      const rowB = makeRow({ name: "Other Guy" });
+      currentRows = [rowA, rowB];
+      const { rerender } = renderWizard();
+      const skipAll = screen.getByRole("button", { name: /^Skip remaining names/ });
+      act(() => skipAll.focus());
+
+      currentRows = [{ ...rowA, decision: { action: "skip" } }, rowB];
+      rerenderWizard(rerender);
+
+      expect(screen.getByRole("heading", { name: "Other Guy" })).toBeTruthy();
+      expect(document.activeElement).toBe(skipAll);
+    });
+
+    it("S2: the opened step's heading is announced as New Player; its visible text is still the bare name", () => {
+      currentRows = [ambiguousRow()];
+      renderWizard();
+      clickCreateNew();
+
+      const heading = screen.getByRole("heading", { name: "New Player: Bob Allen" });
+      const prefix = heading.querySelector(".sr-only");
+      expect(prefix?.textContent).toBe("New Player: ");
+      // The E2E driver matches a node's DIRECT text, so that must not change.
+      const directText = Array.from(heading.childNodes)
+        .filter((n) => n.nodeType === Node.TEXT_NODE)
+        .map((n) => n.textContent)
+        .join("");
+      expect(directText).toBe("Bob Allen");
+    });
+
+    it("S2: the prefix is only on that step — not the pick step, not an ordinary New Player step", () => {
+      currentRows = [ambiguousRow()];
+      renderWizard();
+      expect(pickHeading()?.querySelector(".sr-only")).toBeNull();
+    });
+
+    it("S2: an ordinary player step's heading is unchanged", () => {
+      currentRows = [makeRow({ name: "Daulton Varsho" })];
+      renderWizard();
+      const heading = screen.getByRole("heading", { name: "Daulton Varsho" });
+      expect(heading.querySelector(".sr-only")).toBeNull();
+    });
+
+    it("S3: Back to the list says where the operator is, with focus staying on Create new", async () => {
+      currentRows = [ambiguousRow()];
+      renderWizard();
+      clickCreateNew();
+
+      fireEvent.click(screen.getByRole("button", { name: "Back to the list" }));
+
+      expect(footerStatusText()).toBe("Back at the list. 2 on file.");
+      await waitFor(() =>
+        expect(document.activeElement).toBe(
+          screen.getByRole("button", { name: "Create new" }),
+        ),
+      );
+
+      // The line is about arriving at the list; leaving it again drops it.
+      clickCreateNew();
+      expect(footerStatusText()).toBe("");
+    });
+
+    it("S3: the line says 'More than' when the stored list hit the scan cap", () => {
+      currentRows = [
+        makeRow({
+          name: "John Smith",
+          enrichment: {
+            existingCandidates: Array.from({ length: 8 }, (_, i) => ({
+              playerId: `p${i}`,
+              name: "John Smith",
+              birthYear: 1900 + i,
+              careerSummary: "",
+            })),
+          },
+        }),
+      ];
+      renderWizard();
+      clickCreateNew();
+      fireEvent.click(screen.getByRole("button", { name: "Back to the list" }));
+
+      expect(footerStatusText()).toBe("Back at the list. More than 8 on file.");
+    });
+
+    it("S3: the line does not follow the row once it is decided", async () => {
+      const rowA = ambiguousRow();
+      const rowB = makeRow({ name: "Other Guy" });
+      currentRows = [rowA, rowB];
+      const { rerender } = renderWizard();
+      clickCreateNew();
+      fireEvent.click(screen.getByRole("button", { name: "Back to the list" }));
+      expect(footerStatusText()).toBe("Back at the list. 2 on file.");
+
+      fireEvent.click(screen.getByRole("button", { name: "Skip Bob Allen — not a person" }));
+      await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+      currentRows = [{ ...rowA, decision: { action: "skip" } }, rowB];
+      rerenderWizard(rerender);
+
+      expect(screen.getByRole("heading", { name: "Other Guy" })).toBeTruthy();
+      expect(footerStatusText()).toBe("");
+    });
+
+    it("S4: once a step switch has settled, a later flag change does not move focus", async () => {
+      // "Add as New Player" decides the row, which drops its Create-new flag —
+      // a `createNewByRow` change with no step switch asked for. Nothing may
+      // be waiting in the focus ref to act on it.
+      currentRows = [ambiguousRow()];
+      renderWizard();
+      clickCreateNew();
+      await waitFor(() =>
+        expect(document.activeElement).toBe(
+          screen.getByRole("heading", { name: "New Player: Bob Allen" }),
+        ),
+      );
+      const add = screen.getByRole("button", { name: "Add as New Player" });
+      act(() => add.focus());
+
+      fireEvent.click(add);
+      await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+
+      // The mock batch never records the decision, so the row reopens on its
+      // pick step — on the same footer element, which kept focus.
+      expect(screen.getByRole("button", { name: "Create new" })).toBe(add);
+      expect(document.activeElement).toBe(add);
+    });
+
+    describe("S5: the live fallback turns an open New Player step into the pick step", () => {
+      const twoExact = [
+        { _id: "player-old", name: "Bob Allen", confidence: "exact", birthYear: 1867 },
+        { _id: "player-young", name: "Bob Allen", confidence: "exact", birthYear: 1937 },
+      ];
+
+      it("parks focus on the heading and says what happened", async () => {
+        currentRows = [makeRow({ name: "Bob Allen", status: "error" })];
+        currentNearMatches = [];
+        const { rerender } = renderWizard();
+        act(() => screen.getByRole("button", { name: /^Copy name/ }).focus());
+
+        currentNearMatches = twoExact;
+        rerenderWizard(rerender);
+
+        expect(pickHeading()).toBeTruthy();
+        await waitFor(() => expect(document.activeElement).toBe(pickHeading()));
+        expect(footerStatusText()).toBe("Found players already on file under this name.");
+      });
+
+      it("leaves focus on a footer control, which survives the swap", () => {
+        currentRows = [makeRow({ name: "Bob Allen", status: "error" })];
+        currentNearMatches = [];
+        const { rerender } = renderWizard();
+        const primary = screen.getByRole("button", { name: "Add as New Player" });
+        act(() => primary.focus());
+
+        currentNearMatches = twoExact;
+        rerenderWizard(rerender);
+
+        expect(screen.getByRole("button", { name: "Create new" })).toBe(primary);
+        expect(document.activeElement).toBe(primary);
+        expect(footerStatusText()).toBe("Found players already on file under this name.");
+      });
+
+      it("says nothing when a row ARRIVES with its candidates — that is not a flip", () => {
+        const rowA = makeRow({ name: "First Guy" });
+        const rowB = ambiguousRow();
+        currentRows = [rowA, rowB];
+        const { rerender } = renderWizard();
+
+        currentRows = [{ ...rowA, decision: { action: "skip" } }, rowB];
+        rerenderWizard(rerender);
+
+        expect(pickHeading()).toBeTruthy();
+        expect(footerStatusText()).toBe("");
+      });
+    });
+
+    it("N1: the heading shows a focus ring for a keyboard operator only", () => {
+      currentRows = [ambiguousRow()];
+      renderWizard();
+      const cls = pickHeading()!.className;
+      expect(cls).toContain("focus:outline-none");
+      expect(cls).toContain("focus-visible:ring-1");
+      expect(cls).toContain("focus-visible:ring-[#00B7FF]/70");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // E2E author's request: a same-name link reads back WHICH player.
+  // -------------------------------------------------------------------------
+  describe("a same-name link reads back with its detail", () => {
+    const youngLink = { action: "link" as const, linkedPlayerId: "player-young" };
+    const decidedList = () => screen.getByRole("list", { name: "Decided names" });
+
+    it("the decided list names the candidate's distinguishing line", () => {
+      currentLinkedPlayers = [{ _id: "player-young", name: "Bob Allen" }];
+      currentRows = [ambiguousRow({ decision: youngLink }), makeRow({ name: "Other Guy" })];
+      renderWizard();
+
+      expect(decidedList().textContent).toContain(
+        "Linked to Bob Allen, b. 1937 · Padres 1961–present",
+      );
+    });
+
+    it("names the candidate while the linked player's own name is still loading", () => {
+      currentLinkedPlayers = undefined;
+      currentRows = [ambiguousRow({ decision: youngLink }), makeRow({ name: "Other Guy" })];
+      renderWizard();
+
+      expect(decidedList().textContent).toContain(
+        "Linked to Bob Allen, b. 1937 · Padres 1961–present",
+      );
+    });
+
+    it("the read-only decided panel says the same", async () => {
+      currentLinkedPlayers = [{ _id: "player-young", name: "Bob Allen" }];
+      const rowA = ambiguousRow();
+      const rowB = makeRow({ name: "Other Guy" });
+      currentRows = [rowA, rowB];
+      const { rerender } = renderWizard();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+      );
+      await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+      currentRows = [{ ...rowA, decision: youngLink }, rowB];
+      rerenderWizard(rerender);
+
+      fireEvent.click(screen.getByLabelText("Back to previous decision"));
+
+      expect(screen.getByText(/^Already decided:/).textContent).toBe(
+        "Already decided: Linked to Bob Allen, b. 1937 · Padres 1961–present",
+      );
+    });
+
+    it("a pick from the live fallback reads back the detail it was picked by", async () => {
+      const row = makeRow({ name: "Bob Allen", status: "error" });
+      const other = makeRow({ name: "Other Guy" });
+      currentRows = [row, other];
+      currentNearMatches = [
+        { _id: "player-old", name: "Bob Allen", confidence: "exact", birthYear: 1867 },
+        { _id: "player-young", name: "Bob Allen", confidence: "exact", birthYear: 1937 },
+      ];
+      const { rerender } = renderWizard();
+      fireEvent.click(screen.getByRole("button", { name: "Link to Bob Allen, b. 1937" }));
+      await waitFor(() => expect(mockRecordDecision).toHaveBeenCalledTimes(1));
+
+      currentLinkedPlayers = [{ _id: "player-young", name: "Bob Allen" }];
+      currentNearMatches = [];
+      currentRows = [{ ...row, decision: youngLink }, other];
+      rerenderWizard(rerender);
+
+      expect(decidedList().textContent).toContain("Linked to Bob Allen, b. 1937");
+    });
+
+    it("an ordinary link is unchanged", () => {
+      currentLinkedPlayers = [{ _id: "player-1", name: "Mike Trout" }];
+      currentRows = [
+        makeRow({
+          name: "Mike Trout",
+          decision: { action: "link", linkedPlayerId: "player-1" },
+        }),
+        makeRow({ name: "Other Guy" }),
+      ];
+      renderWizard();
+
+      const text = decidedList().textContent ?? "";
+      expect(text).toContain("Linked to Mike Trout");
+      expect(text).not.toContain("Linked to Mike Trout,");
+    });
+
+    it("a link to someone NOT on the row's list reads as an ordinary link", () => {
+      currentLinkedPlayers = [{ _id: "player-third", name: "Robert Allen" }];
+      currentRows = [
+        ambiguousRow({ decision: { action: "link", linkedPlayerId: "player-third" } }),
+        makeRow({ name: "Other Guy" }),
+      ];
+      renderWizard();
+
+      const text = decidedList().textContent ?? "";
+      expect(text).toContain("Linked to Robert Allen");
+      expect(text).not.toContain("Linked to Robert Allen,");
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Item 4 — the opened step's primary is always "Add as New Player".
+  // -------------------------------------------------------------------------
+  describe("the New Player step Create new opens", () => {
+    const GREEN = "#00D558";
+    const BLUE = "#00C2FF";
+
+    it("keeps Add as New Player as the primary however many exact rows nearMatches returns", () => {
+      currentRows = [ambiguousRow()];
+      currentNearMatches = [
+        { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+        { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+      ];
+      renderWizard();
+      clickCreateNew();
+
+      const add = screen.getByRole("button", { name: "Add as New Player" });
+      expect(add.textContent).toBe("Add as New Player");
+      expect(screen.queryByRole("button", { name: "Link to Bob Allen" })).toBeNull();
+      // The same-name rows were just turned down, so they do not demote it.
+      expect((add as HTMLElement).style.backgroundColor).toBe(GREEN);
+    });
+
+    it("is still demoted by a genuinely different close match", () => {
+      currentRows = [ambiguousRow()];
+      currentNearMatches = [
+        { _id: "player-old", name: "Bob Allen", confidence: "exact" },
+        { _id: "player-young", name: "Bob Allen", confidence: "exact" },
+        { _id: "player-other", name: "Bobby Allen", confidence: "close" },
+      ];
+      renderWizard();
+      clickCreateNew();
+
+      const add = screen.getByRole("button", { name: "Add as New Player" });
+      expect((add as HTMLElement).style.backgroundColor).toBe(BLUE);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Item 5 — one threshold: the step and the bulk count agree on every row.
+  // -------------------------------------------------------------------------
+  describe("one ambiguity threshold", () => {
+    it("a stored list of ONE is not a pick step, and the bulk create counts the row", () => {
+      currentRows = [
+        makeRow({
+          name: "Bob Allen",
+          enrichment: { existingCandidates: [CANDIDATES[0]] },
+        }),
+      ];
+      renderWizard();
+
+      expect(pickHeading()).toBeNull();
+      expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: "Add remaining players as new (1)" }),
+      ).toBeTruthy();
+    });
+
+    it("a stored list of two is a pick step, and the bulk create leaves the row out", () => {
+      currentRows = [ambiguousRow()];
+      renderWizard();
+
+      expect(pickHeading()).toBeTruthy();
+      expect(
+        screen.getByRole("button", { name: "Add remaining players as new (0)" }),
+      ).toBeTruthy();
     });
   });
 
