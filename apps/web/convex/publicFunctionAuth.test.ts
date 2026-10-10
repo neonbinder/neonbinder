@@ -175,6 +175,9 @@ describe("NEO-154: taxonomy reads and writes require a signed-in caller", () => 
     // `v.string()` precisely so a malformed id is a `null` rather than a throw,
     // so the throw asserted here can only be the identity gate.
     ["players.getByIdParam", (t: ReturnType<typeof convexTest>) => t.query(api.players.getByIdParam, { id: "not-an-id" })],
+    // NEO-330. Its twin, for Team Management's `?team=` link: signed-in like the
+    // `teams.get` it wraps, and called with a non-id for the same reason.
+    ["teams.getByIdParam", (t: ReturnType<typeof convexTest>) => t.query(api.teams.getByIdParam, { id: "not-an-id" })],
   ])("%s rejects an anonymous caller", async (_name, call) => {
     const t = convexTest(schema, modules);
     await expect(call(t)).rejects.toThrow(/Not authenticated/);
@@ -252,6 +255,10 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // NEO-307. The reverse-order twin of `aliasesInUse`: which OTHER team holds
     // a New Team step's name as an alias. Same editors, same gate.
     ["teams.nameHeldAsAliasBy", (t, sportId) => t.query(api.teams.nameHeldAsAliasBy, { sportId, name: "Brooklyn Dodgers" })],
+    // NEO-330. Team Management's typed filter, answered from the whole table
+    // instead of the capped list. It stands in for `teams.listForManagement`,
+    // so it carries that list's gate.
+    ["teams.searchForManagement", (t) => t.query(api.teams.searchForManagement, { query: "Yankees" })],
     // NEO-301: both bulk fast paths are public ACTIONS now (a query picks the
     // page, an internal mutation writes it), and the admin gate runs in the
     // action before either half is reached. The create twin was never pinned

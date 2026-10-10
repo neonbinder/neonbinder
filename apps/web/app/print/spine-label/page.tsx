@@ -80,6 +80,20 @@ const FALLBACK_TEXT = "#ffffff";
 const TEAM_PICKER_RESULTS = 12;
 
 /**
+ * NEO-330 — from this many typed characters the picker asks `teams.search`
+ * (every team, by the search index) instead of filtering `listForPicker`'s
+ * capped window. The number Team Management and Player Management use.
+ */
+const TEAM_SEARCH_MIN_CHARS = 2;
+
+/** `teams.search`'s own ceiling. Asked for in full so the league filter,
+ *  applied after it, still has `TEAM_PICKER_RESULTS` rows to choose from. */
+const TEAM_SEARCH_LIMIT = 25;
+
+/** One Convex subscription per distinct arg set, so the query is debounced. */
+const TEAM_SEARCH_DEBOUNCE_MS = 200;
+
+/**
  * Fetch a font and return it as a `data:` URI for the print document.
  *
  * Returns undefined for the system stack (nothing to embed) and, deliberately,
@@ -136,6 +150,14 @@ export default function SpineLabelPage() {
   // Free-form team picker: its own query text and league filter, independent of
   // the player's career teams above.
   const [teamQuery, setTeamQuery] = useState("");
+  const [debouncedTeamQuery, setDebouncedTeamQuery] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(
+      () => setDebouncedTeamQuery(teamQuery),
+      TEAM_SEARCH_DEBOUNCE_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [teamQuery]);
   const [leagueFilter, setLeagueFilter] = useState<string>("all");
   const [name, setName] = useState("");
   const [selectedTeamId, setSelectedTeamId] = useState<Id<"teams"> | null>(null);
@@ -159,10 +181,24 @@ export default function SpineLabelPage() {
     teamIds.length > 0 ? { ids: teamIds } : "skip",
   );
 
-  // Every team we know, for the free-form picker. Filtered on the client the
-  // same way Team Management does it — right at today's scale, and the query's
-  // own cap is what keeps that honest as the table grows.
+  // The newest teams, for the free-form picker's one-character case. The
+  // query is capped, so from two characters the picker asks the search index
+  // instead (NEO-330): a team outside the window is found by name all the same.
   const allTeams = useQuery(api.teams.listForPicker, {});
+  const teamSearchTerm = debouncedTeamQuery.trim();
+  const teamSearch = useQuery(
+    api.teams.search,
+    teamSearchTerm.length >= TEAM_SEARCH_MIN_CHARS
+      ? { query: teamSearchTerm, limit: TEAM_SEARCH_LIMIT }
+      : "skip",
+  );
+  // The server's answer only while it answers the text in the box NOW; until
+  // then the window is filtered as before, so the list never blanks mid-word.
+  const searchedTeams =
+    teamQuery.trim().length >= TEAM_SEARCH_MIN_CHARS &&
+    teamSearchTerm === teamQuery.trim()
+      ? teamSearch
+      : undefined;
   const allLeagues = useQuery(api.leagues.list, {});
   const leagueList = useMemo(() => allLeagues ?? [], [allLeagues]);
 
@@ -173,13 +209,19 @@ export default function SpineLabelPage() {
   const teamMatches = useMemo(() => {
     const needle = teamQuery.trim().toLowerCase();
     if (!needle) return [];
+    const inLeague = (t: { leagueId?: string }) =>
+      leagueFilter === "all" || t.leagueId === leagueFilter;
+    // The search index already matched the name — on the composed full name
+    // (`nameNormalized`) and on an exact alias — and ranked the answer.
+    if (searchedTeams) {
+      return searchedTeams.filter(inLeague).slice(0, TEAM_PICKER_RESULTS);
+    }
     return (allTeams ?? [])
-      .filter((t) => {
-        if (leagueFilter !== "all" && t.leagueId !== leagueFilter) return false;
-        return teamFullName(t).toLowerCase().includes(needle);
-      })
+      .filter(
+        (t) => inLeague(t) && teamFullName(t).toLowerCase().includes(needle),
+      )
       .slice(0, TEAM_PICKER_RESULTS);
-  }, [allTeams, teamQuery, leagueFilter]);
+  }, [allTeams, searchedTeams, teamQuery, leagueFilter]);
 
   /**
    * Apply a picked team's colors.

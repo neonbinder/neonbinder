@@ -96,3 +96,4 @@
 - [Focus centres; scroll margins add](reference_focus_centres_and_scroll_margins_add.md) — Chrome focus() centres off-screen targets; scrollIntoView = 80px scroll-padding + scroll-mt; use preventScroll + own scroll
 - [Convex snapshot import keeps table numbers](reference_convex_snapshot_import_keeps_table_numbers.md) — ids encode table numbers (prod vs preview collide); bare ints import as int64, write floats as N.0
 - [Agent Bash skips load-nvmrc](reference_agent_bash_skips_load_nvmrc.md) — `node` is the nvm default in agent Bash; prepend ~/.nvm/versions/node/v<.nvmrc>/bin to PATH per gate command
+- [Capped master list needs search and by-id](reference_capped_master_list_needs_search_and_by_id.md) — `.take(CAP)` + client filter hides rows past the cap; newest-first window, server search from 2 chars, by-id panel, every-word pass

@@ -19,7 +19,7 @@
  * fixture, which is how the career-team branch is reached at all.
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -28,6 +28,8 @@ vi.mock("@/convex/_generated/api", () => ({
     teams: {
       getManyByIds: "teams.getManyByIds",
       listForPicker: "teams.listForPicker",
+      // NEO-330 — the picker's two-characters-and-up path.
+      search: "teams.search",
     },
     leagues: { list: "leagues.list" },
   },
@@ -43,6 +45,9 @@ type TeamRow = {
 
 let careerTeams: TeamRow[];
 let allTeams: TeamRow[];
+/** NEO-330 — `teams.search`'s answer; `undefined` (in flight) by default. */
+let searchedTeams: TeamRow[] | undefined;
+let searchCalls: unknown[];
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
@@ -50,6 +55,11 @@ vi.mock("convex/react", () => ({
       return args === "skip" ? undefined : careerTeams;
     }
     if (ref === "teams.listForPicker") return allTeams;
+    if (ref === "teams.search") {
+      if (args === "skip") return undefined;
+      searchCalls.push(args);
+      return searchedTeams;
+    }
     if (ref === "leagues.list") return [];
     return undefined;
   },
@@ -84,6 +94,8 @@ describe("SpineLabelPage — NEO-236 team names", () => {
     vi.clearAllMocks();
     careerTeams = [];
     allTeams = [];
+    searchedTeams = undefined;
+    searchCalls = [];
   });
 
   it("labels a career-team chip with the composed full name", () => {
@@ -143,5 +155,62 @@ describe("SpineLabelPage — NEO-236 team names", () => {
     fireEvent.mouseDown(screen.getByText("San Diego Padres"));
 
     expect(input.value).toBe("San Diego Padres");
+  });
+});
+
+/**
+ * NEO-330 — `listForPicker` is a capped window, so a team outside it could
+ * never be offered. From two typed characters the picker asks `teams.search`,
+ * which reaches every team.
+ */
+describe("SpineLabelPage — the team picker reaches every team (NEO-330)", () => {
+  beforeEach(() => {
+    careerTeams = [];
+    allTeams = [];
+    searchedTeams = undefined;
+    searchCalls = [];
+  });
+
+  it("offers a team the window does not hold, once the search answers", async () => {
+    searchedTeams = [{ _id: "team-9", name: "Expos", location: "Montreal" }];
+    render(<SpineLabelPage />);
+
+    fireEvent.change(screen.getByLabelText("Find a team"), {
+      target: { value: "Expos" },
+    });
+
+    expect(await screen.findByText("Montreal Expos")).toBeTruthy();
+    expect(searchCalls).toContainEqual({ query: "Expos", limit: 25 });
+  });
+
+  it("applies the league filter to the search's answer", async () => {
+    searchedTeams = [
+      { _id: "team-9", name: "Expos", location: "Montreal", leagueId: "l-nl" },
+      { _id: "team-8", name: "Royals", location: "Montreal", leagueId: "l-il" },
+    ];
+    render(<SpineLabelPage />);
+    // No league options are mocked, so the select is driven to a value the
+    // page treats as a filter all the same.
+    const leagueSelect = screen.getByLabelText("League") as HTMLSelectElement;
+    const option = document.createElement("option");
+    option.value = "l-nl";
+    leagueSelect.appendChild(option);
+    fireEvent.change(leagueSelect, { target: { value: "l-nl" } });
+
+    fireEvent.change(screen.getByLabelText("Find a team"), {
+      target: { value: "Montreal" },
+    });
+
+    expect(await screen.findByText("Montreal Expos")).toBeTruthy();
+    expect(screen.queryByText("Montreal Royals")).toBeNull();
+  });
+
+  it("does not search on a single character", async () => {
+    render(<SpineLabelPage />);
+    fireEvent.change(screen.getByLabelText("Find a team"), {
+      target: { value: "m" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await waitFor(() => expect(searchCalls).toEqual([]));
   });
 });

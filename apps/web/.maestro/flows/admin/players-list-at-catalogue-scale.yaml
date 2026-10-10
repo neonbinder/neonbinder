@@ -3,7 +3,7 @@
 # (`PLAYER_MANAGEMENT_CAP`, convex/players.ts) and its counter reads
 # "500 of 500 players · list truncated, type to search"; /admin/teams lists at
 # most 2000 (`TEAM_MANAGEMENT_CAP`, convex/teams.ts) and its counter ends
-# "· list truncated". A list that quietly stopped at the cap would read as "that
+# "· list truncated, type to search". A list that quietly stopped at the cap would read as "that
 # is every player", which is the kind of wrong an operator cannot see.
 #
 # WHY THIS CAN BE PROVED AT ALL (NEO-330). Every CI preview starts each run
@@ -76,5 +76,5 @@ tags:
     visible: ".*of .* teams.*"
     timeout: 30000
 - extendedWaitUntil:
-    visible: "2000 of 2000 teams( . [0-9]+ need attention)? . list truncated"
+    visible: "2000 of 2000 teams( . [0-9]+ need attention)? . list truncated, type to search"
     timeout: 7000
