@@ -849,7 +849,8 @@ describe("the card-linking paths narrow by the set's year", () => {
 
     const result = await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
       cardChecklistId: cardId,
-      teamName: JETS,
+      rawTeamName: JETS,
+      teamNames: [JETS],
     });
 
     expect(result).toEqual({ applied: true, unmatched: false });

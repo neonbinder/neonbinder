@@ -311,7 +311,7 @@ describe("applyBscTeamResolution", () => {
 
     const result = await t.mutation(
       internal.cardChecklist.applyBscTeamResolution,
-      { cardChecklistId: cardId, teamName: "New York Yankees" },
+      { cardChecklistId: cardId, rawTeamName: "New York Yankees", teamNames: ["New York Yankees"] },
     );
     // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
     // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
@@ -371,7 +371,7 @@ describe("applyBscTeamResolution", () => {
 
     await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
       cardChecklistId: cardId,
-      teamName: "New York Yankees",
+      rawTeamName: "New York Yankees", teamNames: ["New York Yankees"],
     });
 
     expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toEqual([]);
@@ -403,7 +403,7 @@ describe("applyBscTeamResolution", () => {
 
     const result = await t.mutation(
       internal.cardChecklist.applyBscTeamResolution,
-      { cardChecklistId: cardId, teamName: "New York Yankees" },
+      { cardChecklistId: cardId, rawTeamName: "New York Yankees", teamNames: ["New York Yankees"] },
     );
     // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
     // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
@@ -433,7 +433,7 @@ describe("applyBscTeamResolution", () => {
     // First pass: no such team yet, so the string is parked as a hint.
     await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
       cardChecklistId: cardId,
-      teamName: "New York Yankees",
+      rawTeamName: "New York Yankees", teamNames: ["New York Yankees"],
     });
     expect((await getCard(t, cardId))!.bscTeamName).toBe("New York Yankees");
 
@@ -454,7 +454,7 @@ describe("applyBscTeamResolution", () => {
     );
     await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
       cardChecklistId: cardId,
-      teamName: "New York Yankees",
+      rawTeamName: "New York Yankees", teamNames: ["New York Yankees"],
     });
 
     const card = await getCard(t, cardId);
@@ -472,7 +472,7 @@ describe("applyBscTeamResolution", () => {
 
     await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
       cardChecklistId: cardId,
-      teamName: "Y".repeat(500),
+      rawTeamName: "Y".repeat(500), teamNames: ["Y".repeat(500)],
     });
 
     const card = await getCard(t, cardId);
@@ -486,7 +486,7 @@ describe("applyBscTeamResolution", () => {
 
     const result = await t.mutation(
       internal.cardChecklist.applyBscTeamResolution,
-      { cardChecklistId: cardId, teamName: "" },
+      { cardChecklistId: cardId, rawTeamName: "", teamNames: [] },
     );
     // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
     // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
@@ -511,7 +511,7 @@ describe("applyBscTeamResolution", () => {
 
     const result = await t.mutation(
       internal.cardChecklist.applyBscTeamResolution,
-      { cardChecklistId: cardId, teamName: "   " },
+      { cardChecklistId: cardId, rawTeamName: "   ", teamNames: ["   "] },
     );
     // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
     // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
@@ -549,7 +549,7 @@ describe("applyBscTeamResolution", () => {
 
     const result = await t.mutation(
       internal.cardChecklist.applyBscTeamResolution,
-      { cardChecklistId: cardId, teamName: "Some Other Team" },
+      { cardChecklistId: cardId, rawTeamName: "Some Other Team", teamNames: ["Some Other Team"] },
     );
     // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
     // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
@@ -588,7 +588,7 @@ describe("applyBscTeamResolution", () => {
 
     const result = await t.mutation(
       internal.cardChecklist.applyBscTeamResolution,
-      { cardChecklistId: cardId, teamName: "Some Other Team" },
+      { cardChecklistId: cardId, rawTeamName: "Some Other Team", teamNames: ["Some Other Team"] },
     );
     // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
     // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
@@ -621,7 +621,7 @@ describe("applyBscTeamResolution", () => {
 
     const result = await t.mutation(
       internal.cardChecklist.applyBscTeamResolution,
-      { cardChecklistId: cardId, teamName: "Some Team" },
+      { cardChecklistId: cardId, rawTeamName: "Some Team", teamNames: ["Some Team"] },
     );
     // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
     // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
@@ -647,7 +647,7 @@ describe("applyBscTeamResolution", () => {
 
     const result = await t.mutation(
       internal.cardChecklist.applyBscTeamResolution,
-      { cardChecklistId: cardId, teamName: "Some Team" },
+      { cardChecklistId: cardId, rawTeamName: "Some Team", teamNames: ["Some Team"] },
     );
     // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
     // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
@@ -852,7 +852,7 @@ describe("NEO-102: teamNoneConfirmedAt suppresses BSC team enrichment", () => {
     // confirmed, and BSC has since answered with a real team.
     const result = await t.mutation(
       internal.cardChecklist.applyBscTeamResolution,
-      { cardChecklistId: cardId, teamName: "New York Yankees" },
+      { cardChecklistId: cardId, rawTeamName: "New York Yankees", teamNames: ["New York Yankees"] },
     );
     // NEO-220: creating a team here runs `resolveDefaultLeagueId` →
     // `findOrCreateLeague`, which schedules a Wikidata enrichment (NEO-240).
@@ -889,7 +889,7 @@ describe("NEO-102: teamNoneConfirmedAt suppresses BSC team enrichment", () => {
 
     await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
       cardChecklistId: cardId,
-      teamName: "New York Yankees",
+      rawTeamName: "New York Yankees", teamNames: ["New York Yankees"],
     });
 
     const card = await getCard(t, cardId);

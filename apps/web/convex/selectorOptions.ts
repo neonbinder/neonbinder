@@ -13934,22 +13934,35 @@ export const fetchCardChecklist = action({
         const TEAM_LOOKUP_CHUNK = 50;
         for (let i = 0; i < needsTeamLookup.length; i += TEAM_LOOKUP_CHUNK) {
           const chunk = needsTeamLookup.slice(i, i + TEAM_LOOKUP_CHUNK);
-          const teamNames: Record<string, string> = await ctx.runAction(
+          // NEO-333: each ref maps to BSC's raw team value AND its comma
+          // split. Which one the card carries is decided in
+          // `resolveCandidateTeams`, which has the database: the whole string
+          // when it names exactly one existing team ("Korea, South"), else the
+          // parts ("Cleveland Guardians, Washington Nationals" is two teams).
+          // The candidate row that mutation writes is the only copy the modal
+          // and the commit read; nothing below this loop reads `c.teams`.
+          const teamsByRef: Record<
+            string,
+            { rawTeamName: string; teamNames: string[] }
+          > = await ctx.runAction(
             internal.adapters.buysportscards.fetchBscCardTeamNames,
             { bscCardIds: chunk.map((c) => c.platformData.bsc!.ref) },
           );
-          for (const c of chunk) {
-            const name = teamNames[c.platformData.bsc!.ref];
-            if (name) c.teams = [name];
-          }
           await ctx.runMutation(
             internal.checklistCandidates.resolveCandidateTeams,
             {
               batchId: candidateBatchId,
-              resolved: chunk.map((c) => ({
-                bscRef: c.platformData.bsc!.ref,
-                teamName: teamNames[c.platformData.bsc!.ref],
-              })),
+              resolved: chunk.map((c) => {
+                const bscRef = c.platformData.bsc!.ref;
+                const found = teamsByRef[bscRef];
+                return found
+                  ? {
+                      bscRef,
+                      rawTeamName: found.rawTeamName,
+                      teamNames: found.teamNames,
+                    }
+                  : { bscRef };
+              }),
             },
           );
         }
