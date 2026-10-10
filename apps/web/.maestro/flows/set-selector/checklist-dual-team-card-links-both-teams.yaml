@@ -1,0 +1,592 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Checklist — a BSC dual-team card links both of its teams, never one combined team (NEO-333)"
+tags:
+  - set-selector
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE FEATURE: A BSC TEAM VALUE THAT NAMES TWO CLUBS BECOMES TWO TEAMS.
+# BuySportsCards' per-card team lookup answers a two-player card with ONE
+# string, e.g. "Boston Red Sox, Detroit Tigers". NEO-333 splits it on the
+# comma (unless the WHOLE string matches an existing team or alias, even
+# ambiguously — then it stays one), so a checklist fetch links the card to
+# BOTH clubs and never asks the operator to create a team named after the
+# pair. Proved on live data, through the operator's own path (Sync card
+# checklist → Confirm New Players & Teams → Confirm & Save):
+#
+#   (a) STEP 5 — while the wizard is drained, no team step is ever about a
+#       comma-joined name: every `New Team:` / `New League:` step presented
+#       is checked BEFORE it is answered, on its pinned footer control (whose
+#       accessible name carries the row's name) and on its heading.
+#   (b) STEP 6 — after the save, the dual card's row reads both clubs as
+#       resolved teams (`teamFullName` of each linked row, joined ", "), with
+#       no "(unconfirmed)" tail.
+#   (c) STEP 7 — Team Management holds exactly ONE team whose name contains
+#       "Boston Red Sox". That is what makes (b) unambiguous: a row reading
+#       "Boston Red Sox, Detroit Tigers" could also be ONE combined team
+#       linked once (memory: multi-team-row-needs-a-team-count), and (c)
+#       rules that team out wherever it might have been minted.
+#
+# THE `name:` STAYS UNDER ~200 BYTES (memory: flow-name-is-a-directory-name).
+#
+# ── THE FIXTURE (SET-REGISTRY.md → "Baseball → 2025 — the NEO-333 dual-team
+#    fixture") ───────────────────────────────────────────────────────────────
+#   Baseball → 2025 → Bowman › Bowman Draft › Insert › `Prospect Dual
+#   Autographs`. Published checklists list 14 cards, each signed by two
+#   draftees, 10 of them from two organisations. The owner's own example pair
+#   (Bazzana / Willits, Guardians / Nationals) is its PDA-BW. The owner chose
+#   an UNCONTESTED set over 2026 Bowman's Draft Pick Pairings Autographs
+#   (NEO-333, option B): that insert exists only in 2026 Bowman, whose insert
+#   level `bowman-insert-grouping-builds-parallels` owns.
+#
+#   TARGET CARD for (b)/(c): PDA-WW, Kyson Witherspoon (Boston Red Sox) /
+#   Malachi Witherspoon (Detroit Tigers). Chosen because
+#    * it is the LAST row in natural card-number order (`compareCardNumbers`),
+#      and the checklist's react-virtuoso list opens at its END
+#      (`initialTopMostItemIndex`) and renders only its ~440px window — so
+#      the last row is the one row guaranteed to be in the DOM;
+#    * both clubs are current names the seed's 2024 Topps Chrome commit
+#      creates, so with the fix neither half raises a team step;
+#    * no other card in the set carries either club, so the pair names the
+#      card on its own.
+#   ⚠️ NOT YET VERIFIED AGAINST BSC: the set name (`Bowman Draft`), the
+#   insert's variantName (`Prospect Dual Autographs`), and PDA-WW's BSC team
+#   value. They come from the published checklist; BSC's data needs a seller
+#   token or the private shop endpoints, which this flow's author could not
+#   use. The first run reads them, and fails by name at the step that
+#   disagrees.
+#
+# ── WHICH PLAYERS AND TEAMS ARE NEW ON A FRESH PREVIEW ──────────────────────
+#   Players: every name on the set (~21 distinct draftees). The seed creates
+#   only 2024 Topps Chrome's roster, so all are unknown, all reach the
+#   wizard, and all are SKIPPED here (STEP 5) — this flow mints no player.
+#   Teams: the seed's commit creates every MLB club (SET-REGISTRY.md, the
+#   Rickwood note: "team sets of MLB clubs have 0 unknown teams"), so each
+#   half of a dual value resolves. A team step that does appear — a spelling
+#   the seed lacks (BSC's "Athletics" vs "Oakland Athletics" on PDA-DM), or a
+#   career team staged off a player's Wikidata history — is checked for a
+#   comma and SKIPPED. This flow mints no team, which is what lets (c) count
+#   to exactly one.
+#
+# ── WRITES (R7, R7a) ────────────────────────────────────────────────────────
+#   SOLE WRITER OF BASEBALL → 2025. No other flow opens the year. The cold
+#   drill syncs its Manufacturers and the year-wide Sets (BSC files every
+#   2025 set under the brands; SportLots answers for Bowman and leaves a
+#   review pill nobody saves); selecting `Bowman Draft` syncs its Variant
+#   Types; the Insert reconcile (STEP 2) saves every Ready set it holds,
+#   including the target insert. Then this insert's checklist is committed;
+#   the wizard's skips leave per-set `entityReviewSkips`. No player, team or
+#   league row is created; nothing is renamed, moved or deleted. Not
+#   self-cleaning: the scripted reset at the head of every run is its cleanup.
+#   FRESH-ONLY — a re-run on the same preview finds the Insert column already
+#   saved (no reconcile) and the checklist committed, and fails at STEP 2's
+#   reconcile gate, by name. Re-seed first.
+#
+# ── NEO-287: BOTH MODES, HARD ASSERTS IN EACH (R2) ──────────────────────────
+#   Paused, nothing is asked of SportLots: the cold util hand-makes `Bowman`,
+#   the Insert column fills straight from BSC with no reconcile, the fetch
+#   takes the one-marketplace path, and STEPS 4–7 run the same.
+#
+# ── R5 ──────────────────────────────────────────────────────────────────────
+#   7000 for every NB read and write. Longer only for live external
+#   round-trips, each named at its site: the cold drill's own ceilings
+#   (util-drill-to-cold-real-set), the set's cold Variant Types (60000), the
+#   cold Insert fetch (240000), the checklist fetch (120000), the wizard
+#   opening behind it (60000), and the wizard's Wikidata lookups settling
+#   (180000, util-wizard-walk-to-player-row's).
+#
+# ── HANDLES (visible text and accessible names; never a DOM id) ─────────────
+#   columns    `Sets` (listbox), `Search sets`, `Variant Types`, `Insert`,
+#              `Inserts` (listbox), `Search inserts`, row text
+#   reconcile  `Reconcile Inserts`, `Filter NeonBinder sets`, `Filter BSC
+#              items`, `NeonBinder set name for <set>`, `Make its own set:
+#              <item>`, `Keep all <n>, BSC set(s)`, `Save N sets`
+#   checklist  `Sync card checklist`, `No cards in this checklist yet.`,
+#              `Match Cards — <row>`, `Confirm card matches`, `Kept all N
+#              cards from BSC`, `Saved N cards`; a row's sub-line is ONE text
+#              node, `<teams> · <print run> · <auto>` (CardChecklistItem
+#              `subParts.join(" · ")`)
+#   wizard     `Confirm New Players & Teams`, `N still looking up — wait or
+#              skip`, `Skip <name> — not a person|not a team`, `Skip <name> —
+#              this team has no league`, `New Team: <name>` / `New League:
+#              <name>` (h3), `Skip remaining names (N)`, `Confirm & Save`
+#   teams      `Filter teams`, `N of M teams` (TeamManagement.tsx; a
+#              case-insensitive SUBSTRING match on the full name and aliases)
+#
+# ── R3 ──────────────────────────────────────────────────────────────────────
+#   No other flow proves a multi-team BSC value. `checklist-bsc-team-
+#   enrichment` reads ONE club off a single-player 2024 Topps Chrome card,
+#   read-only. The reconcile handling follows `bowman-insert-grouping-builds-
+#   parallels` STEP 2 and the set pick `checklist-one-marketplace-skips-match-
+#   dialog` STEP 2. The team-step drain is util-wizard-walk-to-player-row's
+#   loop plus one addition that IS this flow's claim — the per-step comma
+#   check — so it is written inline rather than called.
+# ════════════════════════════════════════════════════════════════════════════
+
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+
+# ============================================================
+# LAUNCH + SIGN IN (R4)
+# ============================================================
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — COLD DRILL TO Baseball / 2025 / Bowman, THEN PICK `Bowman Draft`
+# (R9). No flow has opened 2025, so every column arrives empty and syncs
+# itself: util-drill-to-cold-real-set pays those waits (its own R5
+# marketplace ceilings) and, under the pause, makes the `Bowman` row by hand.
+# It stops one level short on purpose; the set pick is this flow's, exactly
+# as checklist-one-marketplace-skips-match-dialog STEP 2 makes it.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-cold-real-set.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2025"
+      MANUFACTURER: "Bowman"
+
+# The column's LISTBOX renders only once it holds a row; the util already
+# waited out the Sets sync, so this is a Convex read (the 15000 the sibling
+# flow gives the same gate after the same util).
+- extendedWaitUntil:
+    visible:
+      id: "Sets"
+    timeout: 15000
+- scrollUntilVisible:
+    element:
+      text: ".*Search sets.*"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search sets.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Bowman Draft"
+# Result-keyed retry (NEO-85 coordinate staleness, the sibling's shape):
+# re-fire the row tap once iff the next column never appears. `text:` is a
+# full match, so "Bowman Draft" cannot pick a longer sibling's row.
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: "Bowman Draft"
+          below:
+            id: "Search sets"
+          retryTapIfNoChange: true
+      - extendedWaitUntil:
+          visible: "Variant Types"
+          timeout: 20000
+# Selecting the set fires its COLD variant-type sync (BSC + SportLots): 60000,
+# the drill utils' variant-type contract (R5 marketplace exception).
+- extendedWaitUntil:
+    visible: "Insert"
+    timeout: 60000
+
+# ============================================================
+# STEP 2 — MAKE THE INSERT AN NB SET: THE INSERTS RECONCILE (sole writer)
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Insert"
+
+# LIVE — the column is EMPTY on a fresh preview, so selecting the type fires
+# its own two-sided sync, which opens the reconcile. REQUIRED, not optional
+# (inserts-1996-score STEP 1 has the history): if it does not open, the year
+# is dirty and the flow fails here, by name. 240000: a COLD insert-level BSC
+# + SportLots fetch, the ceiling setup.yaml and inserts-1996-score give it
+# (R5 marketplace exception).
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible: "Reconcile Inserts"
+          timeout: 240000
+
+      # NARROW BOTH LISTS TO THE INSERT — the dialog body is its own
+      # overflow-y-auto scroller that Maestro cannot drive, and the filters
+      # are what put the row and its column header inside the body's band.
+      # The Save still writes EVERY Ready set; the filter narrows the view,
+      # not the write.
+      - tapOn:
+          id: "Filter NeonBinder sets"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Prospect Dual Autographs"
+      - tapOn:
+          id: "Filter BSC items"
+          waitToSettleTimeoutMs: 250
+      - inputText: "Prospect Dual Autographs"
+
+      # TWO LEGITIMATE SHAPES, named by this gate so the branch after it can
+      # only choose between them (R2): Ready already (the matcher paired it
+      # with a SportLots set) or Pending (BSC only). `id:` is a full match;
+      # `$` states the anchor so a longer BSC parallel name cannot answer.
+      - extendedWaitUntil:
+          visible:
+            id: "NeonBinder set name for Prospect Dual Autographs$|Make its own set: Prospect Dual Autographs$"
+          timeout: 7000
+
+      # PENDING → "Keep all" on the FILTERED BSC column, which makes every
+      # item it shows its own set: the insert, plus any of its parallels BSC
+      # lists at insert level under the same words (harmless — they are
+      # sets in a year this flow owns, and nothing groups them). Chosen over
+      # the row's own `Make its own set` button because the button sits on
+      # the row's right edge, deep in the body where the footer clips it
+      # (the Bowman inserts flow needs three measured swipes to reach it);
+      # "Keep all" is in the column HEADER, which run 271 put at y=376-392
+      # under ONE Ready row — and the filtered Ready list holds none of this
+      # insert's family in the Pending shape. The hard assert after the
+      # branch is what proves the press landed (R2).
+      - runFlow:
+          when:
+            visible:
+              id: "Make its own set: Prospect Dual Autographs$"
+          commands:
+            - tapOn:
+                id: "Keep all [1-9][0-9]*, BSC sets?"
+            # PIN THE BODY BACK TO ITS TOP: the Keep all handler focuses the
+            # BSC filter, which scrolls the body, and a Ready row pushed above
+            # the WINDOW's top edge is pruned from the hierarchy (the Bowman
+            # inserts flow, CI 35603675951). Two touch swipes DOWN starting at
+            # x=3%, inside the body's padding and off every dnd-kit handle; a
+            # swipe past the top is a no-op.
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+            - swipe:
+                start: "3%, 30%"
+                end: "3%, 80%"
+      - extendedWaitUntil:
+          visible:
+            id: "NeonBinder set name for Prospect Dual Autographs$"
+          timeout: 7000
+
+      # SAVE. R8 case 2, MEASURED on this footer by inserts-1996-score (CI
+      # 34349299679 + 34361627641): bounds unmoved across all six tries —
+      # ReconciliationModal's footer sits outside its only scroller — so no
+      # centring. The save is our own write: 7000 (R5).
+      - scrollUntilVisible:
+          element:
+            text: ".*Save [0-9]+ sets.*"
+          timeout: 7000
+      - tapOn:
+          text: ".*Save [0-9]+ sets.*"
+      - extendedWaitUntil:
+          notVisible: "Reconcile Inserts"
+          timeout: 7000
+
+      # RE-DRILL — saving leaves the columns row at the horizontal offset the
+      # dialog was opened from, and Maestro has no horizontal scroll
+      # (inserts-1996-score STEP 2). Every level is warm now, so the warm util
+      # (no CREATE_MANUFACTURER: the cold util made any row it needed).
+      - runFlow:
+          file: util-drill-to-2024-topps-chrome.yaml
+          env:
+            SPORT: "Baseball"
+            YEAR: "2025"
+            MANUFACTURER: "Bowman"
+            SET: "Bowman Draft"
+      - scrollUntilVisible:
+          element:
+            text: "Insert"
+          centerElement: true
+          timeout: 7000
+      - tapOn: "Insert"
+
+# PAUSED — one marketplace, nothing to reconcile: the column fills straight
+# from BSC and the dialog never opens. Its LISTBOX (`Inserts`) renders only
+# once it holds a row (NEO-224; the search box proves nothing). 240000, the
+# same cold BSC fetch.
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            id: "Inserts"
+          timeout: 240000
+      - assertNotVisible: "Reconcile Inserts"
+
+# ============================================================
+# STEP 3 — SELECT THE INSERT
+# Type first, then gate on the filtered row (memory: search-box-is-not-a-
+# content-signal). `below:` because once typed, the box's VALUE is the same
+# string the exact row pattern matches (README → getNodeText). The column is
+# saved, so the search is a Convex read: 7000.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: ".*Search inserts.*"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: "Prospect Dual Autographs"
+- extendedWaitUntil:
+    visible:
+      text: "^Prospect Dual Autographs$"
+      below:
+        id: "Search inserts"
+    timeout: 7000
+- tapOn:
+    text: "^Prospect Dual Autographs$"
+    below:
+      id: "Search inserts"
+
+# ============================================================
+# STEP 4 — FETCH FROM MARKETPLACES ON THE INSERT
+# The checklist renders below MultiSourcePanel and SetAttributesPanel
+# (SetSelector.tsx DOM order) and the row was just tapped in the columns row,
+# so DOWN. Centred for the tap (R8); it depends on the NEO-260 scroll spacer
+# (src/layouts/binder-layout.tsx), as the same step in the Bowman inserts
+# flow (STEP 6) does. The empty-checklist assert makes the saved cards below
+# THIS fetch's.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    direction: DOWN
+    centerElement: true
+    timeout: 7000
+- assertVisible: "No cards in this checklist yet."
+- tapOn:
+    id: "Sync card checklist"
+
+# TWO LEGITIMATE SHAPES (the Bowman inserts flow's STEP 6): a SportLots set
+# paired with the insert opens "Match Cards"; one source takes the NEO-255
+# one-marketplace path ("Kept all N cards from BSC"). A fetch that lost the
+# BSC side matches neither and fails here. BSC's per-card team lookup
+# (NEO-195, `fetchCardChecklist` step 4 — the code NEO-333 changed) runs
+# INSIDE this fetch. Live BSC (+ SportLots) round-trip: 120000 (R5).
+- extendedWaitUntil:
+    visible:
+      text: "Match Cards.*|.*Kept all [0-9]+ cards? from BSC.*"
+    timeout: 120000
+
+# NEO-287 — paused, nothing was asked of SportLots, so the pairing dialog is
+# the bug (R2: the paused branch asserts its own shape).
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertNotVisible: "Match Cards.*"
+
+# The pairing dialog OPENING is not the fetch FINISHING (NEO-195, streaming):
+# Confirm reads "Loading…" and is inert until the action resolves, so its
+# settled text is the sync point (120000, the same live fetch). The teams the
+# fetch resolved ride Confirm into the batch (CardPairingModal's ABSORB fix).
+- runFlow:
+    when:
+      visible: "Match Cards.*"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: "^Confirm$"
+          timeout: 120000
+      - assertVisible:
+          text: ".*Match Cards — Prospect Dual Autographs"
+      - tapOn:
+          id: "Confirm card matches"
+      # An NB write: the 7000 bar (R5; measured 1.06s on the same dialog,
+      # SET-REGISTRY.md → 2026 Bowman).
+      - extendedWaitUntil:
+          notVisible: "Match Cards.*"
+          timeout: 7000
+
+# ============================================================
+# STEP 5 — CLAIM (a): DRAIN THE WIZARD; NO TEAM STEP IS A COMMA-JOINED NAME
+#
+# The wizard MUST open: every player on this set is unknown on a fresh
+# preview (header note). Required rather than either/or with "Saved N cards",
+# because a fetch that committed straight through would leave (a) unexercised
+# (R2). 60000: it opens behind the live lookups the batch queues (R5, the
+# Bowman inserts flow's STEP 7 ceiling).
+# ============================================================
+
+- extendedWaitUntil:
+    visible: "Confirm New Players & Teams"
+    timeout: 60000
+
+# WAIT OUT THE LOOKUPS FIRST. Team rows go through the same Wikidata pool as
+# players (`startBatch` inserts them `status: "pending"`), and the wizard
+# presents a team only once it has SETTLED (entity-review-nav.ts
+# `nextUndecided`, teams before players). Draining before the batch settles
+# would let a still-pending combined row be skipped wholesale, unseen, by
+# the "Skip remaining names" below — and (a) would pass without looking.
+# "N still looking up — wait or skip" is the wizard's own footer status and
+# is absent exactly when no undecided row is pending; the title above renders
+# only once the rows have loaded (`rows === undefined` returns null), so this
+# negative cannot pass on a half-mounted wizard. R5 marketplace-class
+# exception, the ceiling util-wizard-walk-to-player-row gives it: a live
+# Wikidata round-trip per unknown name (~21 here, none in the committed
+# recording), five-wide over a pool every runner shares. It returns the
+# moment the queue drains.
+- extendedWaitUntil:
+    notVisible: ".*still looking up.*"
+    timeout: 180000
+
+# R2 PRECONDITION: the settled wizard is presenting a row — a team, a league
+# or a player — so the loop below cannot exit on a blank or wedged dialog.
+- extendedWaitUntil:
+    visible:
+      id: "Skip .* — (not a person|not a team|this team has no league)"
+    timeout: 7000
+
+# THE DRAIN, util-wizard-walk-to-player-row's step 2 plus this flow's check.
+# Every settled undecided TEAM (and the LEAGUE step staged ahead of a team that
+# needs one) is presented before any player, so "a player is presented" is the
+# product saying the team queue is empty — the loop's exit.
+#
+# Each presented team or league step is CHECKED, then SKIPPED:
+#  * the check is POSITIVE, on the pinned footer control (README → "Asserting
+#    inside a dialog": header and footer only). Its accessible name is
+#    `Skip <row name> — not a team` (`— this team has no league` on a league
+#    step), the same `current.name` the heading prints, so `[^,]+` is the
+#    claim "this step's name has no comma". The alternation's player branch
+#    is there for the TOCTOU the util documents: the previous iteration's
+#    skip can land after this iteration's guard read, and the wizard is then
+#    already on the player. A comma-joined team step matches neither branch,
+#    and the wait fails naming the selector — that is the regression this
+#    flow exists to catch (before NEO-333 the wizard presented exactly
+#    `New Team: Cleveland Guardians, Washington Nationals`).
+#  * the heading negative is the same claim read off the body's h3. It rides
+#    on the positive above, so it cannot pass on a dead page (memory:
+#    negative-asserts-pass-on-a-dead-page).
+#  * SKIP, never "Add as New Team": this flow mints no team, which is what
+#    lets STEP 7 count to exactly one. A skipped spelling the seed lacks (or a
+#    staged career team) only leaves THAT club off its card; the card (b)
+#    reads needs no team step at all, and fails there if it did.
+#  * `optional: true` on the tap is the util's documented TOCTOU tolerance
+#    (the control vanishing between guard and tap means the row was
+#    answered); R2 is held by the hard post-condition after the loop.
+- repeat:
+    times: 40
+    while:
+      notVisible:
+        id: "Skip .* — not a person"
+    commands:
+      - runFlow:
+          when:
+            visible:
+              id: "Skip .* — (not a team|this team has no league)"
+          commands:
+            - extendedWaitUntil:
+                visible:
+                  id: "Skip [^,]+ — (not a team|this team has no league)|Skip .* — not a person"
+                timeout: 7000
+            - assertNotVisible:
+                text: "New (Team|League): .*,.*"
+            - tapOn:
+                id: "Skip .* — (not a team|this team has no league)"
+                optional: true
+# POST-CONDITION (R2): a player is presented, so every team step was answered.
+# A Convex-free re-render after the last skip's write: the 7000 bar.
+- extendedWaitUntil:
+    visible:
+      id: "Skip .* — not a person"
+    timeout: 7000
+
+# THE PLAYERS ARE NOT WHAT THIS FLOW IS ABOUT — skip them all in one press
+# (the Bowman inserts flow's STEP 7). Landing on the first player can stage
+# its Wikidata career teams a few seconds later (memory: neo236-wizard-teams-
+# first-walk); those are Wikidata labels, not BSC values, so they are skipped
+# with the players rather than checked. That is why the press is retried
+# once: a late staged row leaves one row undecided after the first press.
+# Skip remaining is an NB write: 7000 (R5).
+- retry:
+    maxRetries: 1
+    commands:
+      - tapOn:
+          text: ".*Skip remaining names \\([0-9]+\\).*"
+      - extendedWaitUntil:
+          visible:
+            text: ".*Confirm & Save.*"
+          timeout: 7000
+- tapOn:
+    text: ".*Confirm & Save.*"
+
+# The commit — an NB write, the 7000 bar (R5; measured 0.36s for a commit of
+# the same shape on 2026 Bowman's Anime insert).
+- extendedWaitUntil:
+    visible:
+      text: ".*Saved [1-9][0-9]* cards?.*"
+    timeout: 7000
+
+# ============================================================
+# STEP 6 — CLAIM (b): PDA-WW'S ROW READS BOTH CLUBS, RESOLVED
+#
+# The checklist rows render from `getCardChecklist` after the commit, so this
+# is a read-back of what was stored, not an echo of the wizard's draft
+# (memory: draft-echo-is-not-a-read-back). The sub-line is ONE text node:
+# the linked teams' `teamFullName`s joined ", ", then " · /N", " · <x> auto".
+# A FULL match, so:
+#  * an unresolved name — `<name> (unconfirmed)` — cannot answer;
+#  * a card that linked only one of the clubs cannot answer;
+#  * either order is accepted: BSC's order is kept for display, but the row
+#    reads its team rows through a query, and the claim is "both", not "in
+#    BSC's order".
+# No other card in the set carries either club, so the pair IS PDA-WW.
+# The `Saved N cards` notice sits in the checklist header and the rows below
+# it, so DOWN. Nothing is tapped, so no centring (R8), and the scroll is the
+# assertion (R6). PDA-WW is the list's last row, which the list opens on.
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      text: "(Boston Red Sox, Detroit Tigers|Detroit Tigers, Boston Red Sox)( · .*)?"
+    direction: DOWN
+    timeout: 7000
+
+# ============================================================
+# STEP 7 — CLAIM (c): NO COMBINED TEAM EXISTS
+#
+# Exactly one team on the deployment has "Boston Red Sox" in its full name or
+# an alias: the seed's club. A team minted from the joined value — by the
+# wizard, the commit or the background enrichment pass — would contain it
+# too, whichever half came first, and make this "2 of". TeamManagement's
+# filter is a client-side SUBSTRING match on the composed full name and the
+# aliases (TeamManagement.tsx `visible`), and the counter counts the rows it
+# keeps, so "1 of" is the positive and the negative in one read. Scoped to
+# this club rather than to a bare "," across every team: a global comma check
+# would fail on any other flow's comma-bearing team (career teams staged from
+# Wikidata, real names like "Korea, South"), which is not this flow's claim.
+#
+# A reload separates the database from the session, and lands on the screen
+# that owns teams. 30000 on the page gate: openLink is a full reload, the
+# in-app-return ceiling profile/credentials-lifecycle and
+# checklist-wizard-link-team-saves-alias give the same screen.
+# ============================================================
+
+- openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
+- extendedWaitUntil:
+    visible: ".*of .* teams.*"
+    timeout: 30000
+- tapOn: "Filter teams"
+- inputText: "Boston Red Sox"
+# Client-side filter over an already-loaded list: the 7000 bar. Full match, so
+# "11 of …" cannot answer "1 of".
+- extendedWaitUntil:
+    visible: "1 of .* teams.*"
+    timeout: 7000
+# And the one row is the club: the master list prints the SHORT name on its
+# first line, anchored under the counter so the filter box (whose VALUE is
+# the typed string) cannot answer. The seed's New Team step stores "Boston"
+# as the Location only when ESPN's location whole-word-prefixes the name
+# (memory: neo236-wizard-teams-first-walk), so the short name is "Red Sox"
+# or, with a blank Location, the whole "Boston Red Sox" — both accepted.
+- assertVisible:
+    text: "(Boston )?Red Sox"
+    below:
+      text: "1 of .* teams.*"
