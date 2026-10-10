@@ -84,7 +84,7 @@ tags:
 # answers (player-management-add-and-career-history explains why the heading
 # actively misleads here).
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 # ============================================================

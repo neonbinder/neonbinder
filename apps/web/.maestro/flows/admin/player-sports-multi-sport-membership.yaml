@@ -62,7 +62,7 @@ tags:
 
 - launchApp
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 - evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
@@ -104,7 +104,7 @@ tags:
 # ============================================================
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/players
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 20000
 # Narrow to him FIRST: every row prints its sport, and with the whole list on
 # screen "Baseball" would not be the picker's option alone. His row prints
@@ -112,7 +112,7 @@ tags:
 - tapOn: "Filter players"
 - inputText: "Gm${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
-    visible: ".*matches.*"
+    visible: "[0-9,+]+ match(es)?"
     timeout: 7000
 - tapOn: "All sports"
 - tapOn: "Baseball"
@@ -122,12 +122,12 @@ tags:
     visible:
       text: "Also: Baseball"
       below:
-        text: ".*matches.*"
+        text: "[0-9,+]+ match(es)?"
     timeout: 7000
 - assertVisible:
     text: "Gm${output.ATTEMPT_TOKEN}"
     below:
-      text: ".*matches.*"
+      text: "[0-9,+]+ match(es)?"
 
 # ============================================================
 # STEP 3 — R2(c): a baseball card's picker finds him on its default path
@@ -207,18 +207,18 @@ tags:
 # ============================================================
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/players
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 20000
 - tapOn: "Filter players"
 - inputText: "Gm${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
-    visible: ".*matches.*"
+    visible: "[0-9,+]+ match(es)?"
     timeout: 7000
 # Below the counter: the filter box reports this same name as its text.
 - tapOn:
     text: "Gm${output.ATTEMPT_TOKEN}"
     below:
-      text: ".*matches.*"
+      text: "[0-9,+]+ match(es)?"
 - scrollUntilVisible:
     element:
       id: "Remove sport Baseball"

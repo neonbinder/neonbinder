@@ -115,7 +115,7 @@ tags:
 # arrived. The counter renders only once the query resolves, which is also when
 # the filter takes focus.
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 # ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
@@ -154,7 +154,7 @@ tags:
 - inputText: "zzzznotaplayer"
 - assertVisible: "No players match that filter."
 # The counter agreeing at zero is the other half — past two characters this
-# screen switches to server search and the counter recomposes as "{n} matches",
+# screen switches to server search and the counter recomposes as "{n} matches" ("1 match"),
 # so a leading 0 here can only mean the search ran and found nothing.
 - assertVisible: "0 matches"
 
@@ -596,13 +596,13 @@ tags:
 # team-management-edit-a-team — a full SPA reload and re-auth, not a UI wait.
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/players
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 30000
 
 - tapOn: "Filter players"
 - inputText: "PM${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
-    visible: ".*matches.*"
+    visible: "[0-9,+]+ match(es)?"
     timeout: 7000
 
 # The list itself reports the career history it just read back. NEO-235 replaced
@@ -627,7 +627,7 @@ tags:
 - assertVisible:
     text: ".*PMT${output.ATTEMPT_TOKEN}.*"
     below:
-      text: ".*matches.*"
+      text: "[0-9,+]+ match(es)?"
 
 # Open the row. Anchored below the counter because maestro reports an input's
 # current value as its text, so the filter box — which now holds this exact name
@@ -636,7 +636,7 @@ tags:
 - tapOn:
     text: "PM${output.ATTEMPT_TOKEN}"
     below:
-      text: ".*matches.*"
+      text: "[0-9,+]+ match(es)?"
 
 # Bring the saved career history into view. The scroll IS the check that the
 # earlier stint came back (R6 — no redundant assertVisible of it here)...

@@ -11,7 +11,7 @@
 # R2 — this cannot go green without the feature working. "zzzznotateam" is typed
 # into the filter and then asserted to BE in the filter, so a field that dropped
 # the keystrokes fails here rather than silently proceeding; the empty state and
-# the "0 of N" counter then both have to agree that the filter was applied.
+# the "0 matches" counter then both have to agree that the filter was applied.
 #
 # R7/R7a — read-only. Nothing is saved: we never tap "Save", and we never tap
 # "Discover" (it fires a live outbound fetch of teamcolorcodes.com's ~1.5MB
@@ -62,9 +62,10 @@ tags:
 
 # Step 2: wait for the team list to finish loading. Until it does, the screen
 # renders only "Loading teams…" and the filter is not on the page at all. The
-# "N of M teams" counter belongs to the loaded screen alone, so it is the honest
-# signal that loading finished. 7s default (R5): an ordinary Convex read.
-- assertVisible: ".*of .* teams.*"
+# unfiltered "{N} teams" counter (NEO-330: en-US separator, "1 team", plus
+# " · K need attention" when K > 0 — data, so optional here) belongs to the
+# loaded screen alone, so it is the honest signal that loading finished.
+- assertVisible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
 
 # Step 3: the master-detail shell, with nothing selected yet — the DETAIL half
 # present and waiting. (Note this is a different sentence, on the other side of
@@ -88,12 +89,14 @@ tags:
 - assertVisible: "zzzznotateam"
 
 # Step 5: the list narrowed to nothing and says so, instead of showing a blank
-# box. The counter agreeing at zero is the other half: it is composed as
-# "<visible> of <total> teams", so a leading 0 can only mean the filter was
-# applied. (Maestro text matching is fully anchored, so "0 of …" cannot be
-# satisfied by "10 of …".)
+# box. The counter agreeing at zero is the other half: with a filter typed it
+# reads "{N} matches" (NEO-330), so "0 matches" can only mean the filter was
+# applied — unfiltered it would read "{N} teams". (Maestro text matching is
+# fully anchored, so "0 matches" cannot be satisfied by "10 matches".) The
+# hidden sr-only status line carries the same sentence; the visible counter
+# precedes it in the DOM, so an unindexed selector resolves to the visible one.
 - assertVisible: "No teams match that filter."
-- assertVisible: "0 of .* teams.*"
+- assertVisible: "0 matches( . [0-9,]+ need attention)?"
 
 # Step 6: filtering did not disturb the detail side — still nothing selected,
 # still inviting a pick. A regression that auto-selected the first row, or that

@@ -168,7 +168,7 @@ tags:
 # ============================================================
 - launchApp
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 - evalScript: '${output.TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
@@ -761,19 +761,19 @@ tags:
 # holds it", and lands on the screen the alias is FOR.
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 - tapOn: "Filter teams"
 - inputText: "Ali${output.TOKEN}"
 - extendedWaitUntil:
-    visible: "1 of .* teams.*"
+    visible: "1 match( . [0-9,]+ need attention)?"
     timeout: 7000
 # The master row PRINTS the short name and is anchored below the counter so
 # the filter box — whose VALUE maestro reads as the same text — cannot answer.
 - tapOn:
     text: "Ali${output.TOKEN}"
     below:
-      text: "1 of .* teams.*"
+      text: "1 match( . [0-9,]+ need attention)?"
 
 # The "Also known as" box is seeded from the stored row and the chip list
 # under it renders only when that parses to at least one alias. Centred on
@@ -822,17 +822,17 @@ tags:
 
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 - tapOn: "Filter teams"
 - inputText: "Ali${output.TOKEN}"
 - extendedWaitUntil:
-    visible: "1 of .* teams.*"
+    visible: "1 match( . [0-9,]+ need attention)?"
     timeout: 7000
 - tapOn:
     text: "Ali${output.TOKEN}"
     below:
-      text: "1 of .* teams.*"
+      text: "1 match( . [0-9,]+ need attention)?"
 - scrollUntilVisible:
     element:
       text: "Also known as"
@@ -856,10 +856,10 @@ tags:
 # matching the filter.
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 - tapOn: "Filter teams"
 - inputText: "Pittsburgh Crawfords"
 - extendedWaitUntil:
-    visible: "1 of .* teams.*"
+    visible: "1 match( . [0-9,]+ need attention)?"
     timeout: 7000

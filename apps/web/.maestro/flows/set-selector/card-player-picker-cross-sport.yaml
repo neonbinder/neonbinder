@@ -67,7 +67,7 @@ tags:
 # The list COUNTER, not the heading: it renders only once the list query
 # answers (see player-management-add-and-career-history).
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 - evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
@@ -227,7 +227,7 @@ tags:
 # ============================================================
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/players
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 20000
 
 # (d) FIRST, while no player panel is open: an open panel prints "Football"
@@ -236,7 +236,7 @@ tags:
 - tapOn: "Filter players"
 - inputText: "Gp${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
-    visible: ".*matches.*"
+    visible: "[0-9,+]+ match(es)?"
     timeout: 7000
 # Only his row is listed, and it prints "Football" — so "Baseball" is the
 # picker's option alone (memory: native-select-option-taps).
@@ -253,7 +253,7 @@ tags:
     visible:
       text: "Gp${output.ATTEMPT_TOKEN}"
       below:
-        text: ".*matches.*"
+        text: "[0-9,+]+ match(es)?"
     timeout: 7000
 
 # (c) Open him. Below the counter: the filter box reports its value (this
@@ -261,7 +261,7 @@ tags:
 - tapOn:
     text: "Gp${output.ATTEMPT_TOKEN}"
     below:
-      text: ".*matches.*"
+      text: "[0-9,+]+ match(es)?"
 # The Cards list is the panel's last section, under Save. The scroll is its
 # own assertion that a card links him (R6): with none the panel says "No cards
 # link to … yet." and renders no list.

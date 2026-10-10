@@ -1,10 +1,13 @@
 # R1 — Single feature: at production scale the two big admin master lists stop
-# at their read cap and SAY so. /admin/players lists at most 500 rows
-# (`PLAYER_MANAGEMENT_CAP`, convex/players.ts) and its counter reads
-# "500 of 500 players · list truncated, type to search"; /admin/teams lists at
-# most 2000 (`TEAM_MANAGEMENT_CAP`, convex/teams.ts) and its counter ends
-# "· list truncated, type to search". A list that quietly stopped at the cap would read as "that
-# is every player", which is the kind of wrong an operator cannot see.
+# at their read cap. /admin/players lists at most 500 rows
+# (`PLAYER_MANAGEMENT_CAP`, convex/players.ts) and /admin/teams at most 2000
+# (`TEAM_MANAGEMENT_CAP`, convex/teams.ts). NEO-330 dropped the "N of M ·
+# list truncated, type to search" wording: the unfiltered counter now reads
+# "{N} players" / "{N} teams" (en-US thousands separator, so "2,000 teams").
+# The proof of scale is therefore that the UNFILTERED counter sits exactly AT
+# the cap — "500 players" and "2,000 teams" — on a preview holding far more
+# rows than either cap. A list that read past its cap, or stopped short of it,
+# fails.
 #
 # WHY THIS CAN BE PROVED AT ALL (NEO-330). Every CI preview starts each run
 # holding prod's reference catalogue — ~113k players and ~10.5k teams, loaded
@@ -18,18 +21,20 @@
 # dependency on another flow having run.
 #
 # R2 — the flow cannot go green without the feature. Each assertion is the
-# counter's FULL text, anchored at both ends: the shown count, the total, the
-# noun and the truncation clause all have to be there, in that order, and the
-# counts are the caps themselves, so a list that read one row past the cap (or
-# stopped short of it and still claimed truncation) fails. The Teams counter
-# may carry a "· N need attention" clause between the noun and the truncation
-# clause (catalogue teams without colours); its count is data, not feature, so
-# it is the one optional part of the match. The counter is ONE <p> whose
-# pieces are adjacent JSX text expressions, so maestro-web reads it as one
-# string (memory: maestro-web-getnodetext). The middot is matched with `.`.
+# counter's FULL text, anchored at both ends (Maestro full-matches `text:`):
+# the count must be the cap itself, with its separator, then the noun. The
+# Teams counter may carry a " · N need attention" suffix (catalogue teams
+# without colours); its count is data, not feature, so it is the one optional
+# part of the match. The middot is matched with `.`. The counter is ONE <p>
+# whose pieces are adjacent JSX text expressions, so maestro-web reads it as
+# one string (memory: maestro-web-getnodetext). Team Management also renders
+# a hidden sr-only role=status line carrying the same sentence WITHOUT the
+# attention suffix; the patterns here never end in "." and the visible counter
+# precedes that line in the DOM, so an unindexed selector resolves to the
+# visible counter first (Maestro takes the first hierarchy match).
 #
-# R3 — no other flow asserts truncation. team-management-filter gates on the
-# Teams counter loosely (".*of .* teams.*") and asserts filtering; this flow
+# R3 — no other flow asserts the cap. team-management-filter gates on the
+# Teams counter loosely ("[0-9,]+ teams?…") and asserts filtering; this flow
 # owns the cap.
 #
 # R5 — the post-launch gate is 45 s (README → "Launching a flow"); the reload
@@ -47,7 +52,7 @@
 # `id:` is not used; every target is visible text.
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/admin/players&worker=${WORKER_INDEX || "0"}
-name: "Admin lists at catalogue scale — Players and Teams stop at their cap and say the list is truncated"
+name: "Admin lists at catalogue scale — Players and Teams stop at their cap"
 tags:
   - admin
 ---
@@ -56,25 +61,25 @@ tags:
 # Gate on the COUNTER, not the "Player Management" heading: the heading paints
 # while the list query is in flight, the counter only once it has answered.
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 # ============================================================
-# STEP 1 — Players: 500 shown, and the screen says the list is truncated
+# STEP 1 — Players: the unfiltered list sits at the 500 cap
 # ============================================================
 # Nothing typed and "All sports" picked, so this is `listForManagement`'s
 # unfiltered read: the cap is the only thing bounding it.
 - extendedWaitUntil:
-    visible: "500 of 500 players . list truncated, type to search"
+    visible: "500 players"
     timeout: 7000
 
 # ============================================================
-# STEP 2 — Teams: 2000 shown, and the screen says the list is truncated
+# STEP 2 — Teams: the unfiltered list sits at the 2,000 cap
 # ============================================================
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 - extendedWaitUntil:
-    visible: "2000 of 2000 teams( . [0-9]+ need attention)? . list truncated, type to search"
+    visible: "2,000 teams( . [0-9,]+ need attention)?"
     timeout: 7000

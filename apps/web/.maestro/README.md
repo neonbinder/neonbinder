@@ -693,13 +693,23 @@ listed here so a flow author meets them in one place.
      never reaches a search (the spine label's name, a card's name) is
      unaffected.
   3. **Lists are long.** `/admin/players` lists 500 rows and `/admin/teams`
-     2000, and both say `list truncated` (the
-     `admin/players-list-at-catalogue-scale` flow proves it). Never scroll a
+     2000, and with nothing typed each counter sits at its cap, `500 players`
+     and `2,000 teams` (the `admin/players-list-at-catalogue-scale` flow
+     proves it). Never scroll a
      master list looking for a row, never assume one fits on screen, and never
      assert a bare count. Filter to a minted single token, then target that
      row by its name (`id:` on the row's `title`). If a screen cannot surface a
      row you just minted by filtering for it, that is a product bug to report,
-     never a flow workaround.
+     never a flow workaround. The counters read `{N} players` / `{N} teams`
+     unfiltered and `{N} matches` (`1 match`, `50+ matches`) filtered; Team
+     Management's adds ` · K need attention` when K > 0, and an sr-only
+     `role="status"` line beside it repeats the sentence WITHOUT that suffix.
+     So write every Teams counter pattern with the suffix optional
+     (`"1 match( . [0-9,]+ need attention)?"`): the visible counter then
+     always matches whenever the hidden line does, and it comes first in the
+     DOM, so an unindexed selector resolves to it. As a `below:` anchor
+     either match works: the sr-only line's static position is the filter
+     row's bottom edge (`items-end`), under the filter box like the counter.
   4. **Local runs do not have it unless you load it.** CI downloads the bundle;
      a local `test:e2e -- setup` loads it only when `NB_REFERENCE_BUNDLE`
      (a local bundle path) and `CONVEX_NAME` (the target preview) are set.

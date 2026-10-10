@@ -468,7 +468,7 @@ tags:
 # classifying because the teams screen leans on it.
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 
 # Open the League picker. The tap is load-bearing, not navigation: a native

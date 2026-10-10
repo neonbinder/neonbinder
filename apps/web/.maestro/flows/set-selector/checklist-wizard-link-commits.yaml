@@ -107,7 +107,7 @@ tags:
 # the list COUNTER, which renders only once the list query answers (the
 # heading paints first — see player-management-add-and-career-history).
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 # ============================================================
@@ -341,19 +341,19 @@ tags:
 # heading, for the reason at the top of this file.
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/players
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 20000
 - tapOn: "Filter players"
 - inputText: "Gw${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
-    visible: ".*matches.*"
+    visible: "[0-9,+]+ match(es)?"
     timeout: 7000
 # Below the counter: the filter box reports its VALUE as its text, and it holds
 # this same name (see player-management-add-and-career-history).
 - tapOn:
     text: "Gw${output.ATTEMPT_TOKEN}"
     below:
-      text: ".*matches.*"
+      text: "[0-9,+]+ match(es)?"
 
 # The Cards list is the LAST section of the detail panel, under Save, so it is
 # below the fold. The scroll is its own assertion that the list rendered at

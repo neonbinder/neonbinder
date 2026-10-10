@@ -143,7 +143,7 @@ tags:
 # still loading and the filter box exists during loading, so the counter is
 # the first thing that proves the query resolved (sibling flows, same gate).
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 # ── EMPTY THE LIST, THEN PICK THE SPORT ─────────────────────────────────────
