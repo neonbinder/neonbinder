@@ -93,8 +93,8 @@ describe("parseArgs", () => {
     expect(() => parseArgs(argv)).toThrow(RefusedError);
   });
 
-  test("--prod in command position is not a command at all (usage error, never runs)", () => {
-    expect(() => parseArgs(["--prod"])).toThrow(UsageError);
+  test("--prod in command position is refused like any other --prod (never runs)", () => {
+    expect(() => parseArgs(["--prod"])).toThrow(RefusedError);
   });
 
   test("rejects unknown commands, unknown flags and flags a command does not take", () => {

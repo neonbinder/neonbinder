@@ -41,6 +41,7 @@ import {
   JsonlWriter,
   makeTempDir,
   tablesJsonl,
+  hollowBundleProblems,
   fmt,
 } from "./lib.mjs";
 
@@ -67,12 +68,12 @@ export async function buildBundle(exportZip, outZip, { log = console.log } = {})
   // Convex importer makes) for any table it does not list.
   const sourceNumbers = await readTableNumbers(exportZip, entries);
   if (sourceNumbers.size === 0) warnings.push("export has no _tables/documents.jsonl; table numbers inferred from _id");
-  for (const t of BUNDLE_TABLES) {
-    const e = `${t}/documents.jsonl`;
-    if (!entries.has(e)) {
-      if (t === SPORT_TABLE) throw new Error(`export has no ${e}; cannot carry the sport rows`);
-      warnings.push(`export has no ${e}; ${t} will be written empty`);
-    }
+  // A full snapshot export always has every schema table, empty or not. A
+  // missing one means a partial or wrong export, and a bundle built from it
+  // would seed an incomplete catalogue, so refuse rather than warn.
+  const missing = BUNDLE_TABLES.filter((t) => !entries.has(`${t}/documents.jsonl`));
+  if (missing.length) {
+    throw new Error(`export has no ${missing.map((t) => `${t}/documents.jsonl`).join(", ")}; take a full export (npx convex export --prod) and build again`);
   }
   for (const t of BUNDLE_TABLES) {
     if (sourceNumbers.has(t) || !entries.has(`${t}/documents.jsonl`)) continue;
@@ -203,6 +204,11 @@ export async function buildBundle(exportZip, outZip, { log = console.log } = {})
       // failure from a reference to a deleted row.
       if (target === SPORT_TABLE) bump(nonSportRefs, key);
       else bump(dangling, key);
+    }
+
+    // `load` refuses a bundle under its floors; say so now, at refresh time.
+    for (const h of hollowBundleProblems(counts, counts, "import")) {
+      if (h.includes(" (manifest)")) warnings.push(`load will refuse this bundle: ${h.replace(" (manifest)", "")}`);
     }
 
     for (const t of BUNDLE_TABLES) {

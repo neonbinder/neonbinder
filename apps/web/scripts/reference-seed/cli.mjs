@@ -52,6 +52,8 @@ import {
   deploymentNameProblem,
   deployKeyProblem,
   effectiveDeployKey,
+  redactConvexOutput,
+  hollowBundleProblems,
   requireZipTools,
   listZip,
   zipLines,
@@ -74,8 +76,31 @@ export const USAGE = `usage:
 export class UsageError extends Error {}
 export class RefusedError extends Error {}
 
-/** Tables a reset leaves behind that an import-mode load would orphan. */
-const SELECTOR_DEPENDANT_TABLES = ["cardChecklist"];
+/**
+ * Tables outside the eight that hold selectorOptions ids, from
+ * apps/web/convex/schema.ts. `--sports import` replaces the WHOLE
+ * selectorOptions table, so a row in any of these would point at a year,
+ * brand or set that no longer exists.
+ *
+ * SELECTOR_DEPENDANT_TABLES are the ones the scripted reset
+ * (`resetSetBuilderDataFromCli`, either scope) drains: any rows left in them
+ * mean the reset did not run, and an import-mode load refuses.
+ *
+ * SELECTOR_DEPENDANT_UNDRAINED_TABLES also hold selectorOptions ids but no
+ * reset drains them (transient sync notices and per-set "not a person"
+ * skips). Their rows outlive every reset already, so they are reported, not
+ * refused; refusing would fail every CI run.
+ */
+export const SELECTOR_DEPENDANT_TABLES = [
+  "slSetReviews",
+  "cardPlayerLinks",
+  "cardChecklist",
+  "cardCrossListings",
+  "entityReviewQueue",
+  "checklistCandidates",
+];
+export const SELECTOR_DEPENDANT_UNDRAINED_TABLES = ["selectorSyncStatus", "entityReviewSkips"];
+const COUNTED_DEPENDANT_TABLES = [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES];
 
 // ── Args ────────────────────────────────────────────────────────────────────
 
@@ -88,6 +113,9 @@ const SELECTOR_DEPENDANT_TABLES = ["cardChecklist"];
  * @throws {UsageError|RefusedError}
  */
 export function parseArgs(argv) {
+  if (argv.some((a) => a === "--prod" || a.startsWith("--prod="))) {
+    throw new RefusedError("--prod is never allowed; this tool cannot target production");
+  }
   const [cmd, ...rest] = argv;
   const positional = [];
   const flags = { deployment: undefined, sports: undefined, dryRun: false, yes: false };
@@ -140,19 +168,26 @@ export function parseArgs(argv) {
 
 // ── Convex CLI ──────────────────────────────────────────────────────────────
 
-function convex(args, env, { inherit = false } = {}) {
+/**
+ * Runs the pinned Convex CLI with stdout and stderr CAPTURED, never inherited:
+ * an import that fails schema validation prints the offending document, and
+ * export/run errors can quote row data too. Callers print only counts and
+ * `failure(r)`, which goes through redactConvexOutput.
+ */
+function convex(args, env) {
   const r = spawnSync("npx", ["--yes", CONVEX_CLI, ...args], {
     cwd: WEB_DIR,
     env,
     encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    stdio: inherit ? ["ignore", "inherit", "inherit"] : ["ignore", "pipe", "pipe"],
+    maxBuffer: 256 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
   });
   if (r.error) throw new Error(`npx ${CONVEX_CLI}: ${r.error.message}`);
   return r;
 }
 
-const lastLine = (r) => `${r.stderr ?? ""}`.trim().split("\n").slice(-1)[0] ?? "";
+/** "exit N: <first error line, row data removed>" */
+const failure = (r) => `exit ${r.status}: ${redactConvexOutput(r.stdout, r.stderr)}`;
 
 function dashboardName(args, env) {
   const r = convex(["dashboard", ...args, "--no-open"], env);
@@ -161,10 +196,10 @@ function dashboardName(args, env) {
 }
 
 /**
- * Every guard that does not need a write. Throws RefusedError. Returns a
- * function to call again right before the write.
+ * The guards that need no Convex call. Throws RefusedError. Returns the
+ * deploy key in effect (never printed).
  */
-function guardTarget(deployment, env, log) {
+function guardTargetStatic(deployment, env) {
   const nameProblem = deploymentNameProblem(deployment);
   if (nameProblem) throw new RefusedError(nameProblem);
   if (env.CONVEX_SELF_HOSTED_URL || env.CONVEX_SELF_HOSTED_ADMIN_KEY) {
@@ -173,7 +208,14 @@ function guardTarget(deployment, env, log) {
   const key = effectiveDeployKey(env, WEB_DIR);
   const keyProblem = deployKeyProblem(key, deployment);
   if (keyProblem) throw new RefusedError(keyProblem);
+  return key;
+}
 
+/**
+ * The production probe (only when no deploy key is set). Runs it once and
+ * returns it, to call again right before the write.
+ */
+function guardTargetProbe(deployment, env, key, log) {
   const probe = () => {
     if (key) return; // a dev/preview key cannot reach production; the probe would fail under it anyway
     const prodName = dashboardName(["--prod"], env);
@@ -212,7 +254,7 @@ async function withTargetExport(deployment, env, label, readExport) {
   try {
     const zip = path.join(dir, "target.zip");
     const r = convex(["export", "--deployment", deployment, "--path", zip], env);
-    if (r.status !== 0) throw new Error(`export of ${deployment} failed: ${lastLine(r)}`);
+    if (r.status !== 0) throw new Error(`export of ${deployment} failed (${failure(r)})`);
     return await readExport(zip, listZip(zip));
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -239,11 +281,17 @@ function writeImportZip(files) {
   return { dir, zip };
 }
 
-function importZip(deployment, zip, env) {
-  const r = convex(["import", "--deployment", deployment, "--replace", "-y", zip], env, { inherit: true });
+/**
+ * `convex import --replace`. Prints only the per-table row counts it sent;
+ * the CLI's own output stays captured (see convex()).
+ */
+function importZip(deployment, zip, env, sentCounts, log) {
+  const r = convex(["import", "--deployment", deployment, "--replace", "-y", zip], env);
   if (r.status !== 0) {
-    throw new Error(`import failed (exit ${r.status}); Convex imports atomically, so a rejected import left the target unchanged`);
+    throw new Error(`import failed (${failure(r)}); Convex imports atomically, so a rejected import left the target unchanged`);
   }
+  log("imported (rows sent, per table):");
+  for (const [t, n] of Object.entries(sentCounts)) log(`  ${t.padEnd(16)} ${fmt(n).padStart(9)}`);
 }
 
 function printCheck(result, log) {
@@ -268,8 +316,9 @@ async function cmdLoad({ bundle, deployment, sports, dryRun, yes }, { env, log }
   requireZipTools();
   statSync(bundle);
   if (!dryRun) requireConfirmable(yes);
-  const recheck = guardTarget(deployment, env, log);
+  const key = guardTargetStatic(deployment, env);
 
+  // The bundle is judged before any Convex call.
   const bundleFiles = readZipText(bundle);
   const bundleCheck = checkFiles(bundleFiles);
   if (!bundleCheck.ok) {
@@ -277,27 +326,39 @@ async function cmdLoad({ bundle, deployment, sports, dryRun, yes }, { env, log }
     throw new RefusedError("the bundle fails its own check; rebuild it");
   }
   const parsed = parseBundle(bundleFiles);
+  const hollow = hollowBundleProblems(
+    parsed.manifest.counts,
+    Object.fromEntries(Object.entries(parsed.tables).map(([t, rows]) => [t, rows.length])),
+    sports,
+  );
+  if (hollow.length) {
+    for (const h of hollow) log(`  too few rows: ${h}`);
+    throw new RefusedError("the bundle is too hollow to seed a catalogue; rebuild it from a full prod export");
+  }
   log(`bundle: ${path.basename(bundle)} (generated ${parsed.manifest.generatedAt}); sports mode: ${sports}`);
+  const recheck = guardTargetProbe(deployment, env, key, log);
 
   const pre = await withTargetExport(deployment, env, "pre", async (zip, entries) => {
     const tableNumbers = await readTableNumbers(zip, entries);
     const counts = {};
-    for (const t of [...BUNDLE_TABLES, ...SELECTOR_DEPENDANT_TABLES]) counts[t] = await countLines(zip, entries, t);
+    for (const t of [...BUNDLE_TABLES, ...COUNTED_DEPENDANT_TABLES]) counts[t] = await countLines(zip, entries, t);
     return { tableNumbers, counts };
   });
 
   let targetSports;
   if (sports === "remap") {
     const r = convex(["run", "--deployment", deployment, "splitTeamLocations:listSportsForSplit", "{}", "--typecheck", "disable", "--codegen", "disable"], env);
-    if (r.status !== 0) throw new Error(`listSportsForSplit failed: ${lastLine(r)}`);
+    if (r.status !== 0) throw new Error(`listSportsForSplit failed (${failure(r)})`);
     targetSports = JSON.parse(r.stdout);
   } else {
-    for (const t of SELECTOR_DEPENDANT_TABLES) {
-      if (pre.counts[t] > 0) {
-        throw new RefusedError(
-          `${deployment} holds ${fmt(pre.counts[t])} ${t} rows; --sports import replaces the whole ${SPORT_TABLE} table and would orphan them. Run the reset first (e2e-baseline.sh reset), or use --sports remap.`,
-        );
-      }
+    const blocking = SELECTOR_DEPENDANT_TABLES.filter((t) => pre.counts[t] > 0);
+    if (blocking.length) {
+      throw new RefusedError(
+        `${deployment} holds rows in ${blocking.map((t) => `${t} (${fmt(pre.counts[t])})`).join(", ")}; --sports import replaces the whole ${SPORT_TABLE} table and would orphan them. Run the reset first (e2e-baseline.sh reset), or use --sports remap.`,
+      );
+    }
+    for (const t of SELECTOR_DEPENDANT_UNDRAINED_TABLES) {
+      if (pre.counts[t] > 0) log(`note: ${fmt(pre.counts[t])} ${t} rows will point at replaced ${SPORT_TABLE} rows (no reset drains this table)`);
     }
   }
 
@@ -356,7 +417,7 @@ async function cmdLoad({ bundle, deployment, sports, dryRun, yes }, { env, log }
   const written = writeImportZip(files);
   try {
     log("\nimporting…");
-    importZip(deployment, written.zip, env);
+    importZip(deployment, written.zip, env, expected, log);
   } finally {
     rmSync(written.dir, { recursive: true, force: true });
   }
@@ -405,17 +466,17 @@ async function cmdLoad({ bundle, deployment, sports, dryRun, yes }, { env, log }
 async function cmdClear({ deployment, yes }, { env, log }) {
   requireZipTools();
   requireConfirmable(yes);
-  const recheck = guardTarget(deployment, env, log);
+  const recheck = guardTargetProbe(deployment, env, guardTargetStatic(deployment, env), log);
   const pre = await withTargetExport(deployment, env, "pre", async (zip, entries) => {
     const tableNumbers = await readTableNumbers(zip, entries);
     const counts = {};
-    for (const t of [...BUNDLE_TABLES, ...SELECTOR_DEPENDANT_TABLES]) counts[t] = await countLines(zip, entries, t);
+    for (const t of [...BUNDLE_TABLES, ...COUNTED_DEPENDANT_TABLES]) counts[t] = await countLines(zip, entries, t);
     return { tableNumbers, counts };
   });
   const files = emptyImportFiles(pre.tableNumbers);
   log("\nrows to remove:");
   for (const t of BUNDLE_TABLES) log(`  ${t.padEnd(16)} ${fmt(pre.counts[t]).padStart(9)}`);
-  for (const t of SELECTOR_DEPENDANT_TABLES) {
+  for (const t of COUNTED_DEPENDANT_TABLES) {
     if (pre.counts[t] > 0) log(`note: ${fmt(pre.counts[t])} ${t} rows stay and will point at removed rows until the next reset`);
   }
   await confirm(deployment, `empties ${BUNDLE_TABLES.join(", ")} (every selectorOptions row, not only sports)`, { yes, log });
@@ -423,7 +484,7 @@ async function cmdClear({ deployment, yes }, { env, log }) {
   const written = writeImportZip(files);
   try {
     log("\nclearing…");
-    importZip(deployment, written.zip, env);
+    importZip(deployment, written.zip, env, Object.fromEntries(BUNDLE_TABLES.map((t) => [t, 0])), log);
   } finally {
     rmSync(written.dir, { recursive: true, force: true });
   }

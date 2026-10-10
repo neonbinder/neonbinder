@@ -81,8 +81,13 @@ node scripts/reference-seed/cli.mjs clear --deployment <name> [--yes]
 **`--sports import`** is the CI mode. The bundle's sport rows are imported
 as rows of their own, with their marketplace ids, and they replace the
 target's **entire** `selectorOptions` table: years, brands and sets too, not
-just sports. The load refuses if the target holds any `cardChecklist` rows,
-because the reset is supposed to have drained them first.
+just sports. The load refuses if the target holds rows in any table the
+reset drains that points into `selectorOptions` (`slSetReviews`,
+`cardPlayerLinks`, `cardChecklist`, `cardCrossListings`,
+`entityReviewQueue`, `checklistCandidates`), because those rows mean the
+reset did not run. `selectorSyncStatus` and `entityReviewSkips` also point
+into `selectorOptions`, but no reset drains them, so the load only reports
+their counts.
 
 **`--sports remap`** is the developer mode. `selectorOptions` is left alone.
 Each bundle sport is matched by exact name to the one sport row with that
@@ -92,6 +97,14 @@ needs its sport rows first, and opening the Set Selector once creates them.
 
 **`clear`** empties all eight tables, `selectorOptions` included, with one
 atomic import of empty tables. It needs no deployed code (see §6).
+
+`load` refuses a hollow bundle before it contacts Convex. Each of the seven
+reference tables needs at least one row, there must be at least
+`MIN_BUNDLE_PLAYERS` (1,000) players and `MIN_BUNDLE_TEAMS` (100) teams,
+and import mode needs at least one sport row. Both the manifest counts and
+the rows themselves must clear these floors. `build` warns when a bundle
+would fall short, and it refuses outright when the export is missing any of
+the eight tables.
 
 `load` prints its plan before writing anything: the sport mapping, table
 numbers, rows in versus rows kept, repairs and re-encodes. It then runs the
@@ -118,6 +131,14 @@ These run on `load` and `clear` before any write:
   the command is refused before it contacts Convex.
 
 Exit codes: `0` ok, `1` failed, `2` usage, `3` refused.
+
+### Convex output stays out of the log
+
+CI logs are public. A rejected import prints the document that failed
+validation, so every `convex` call here captures its output instead of
+passing it through. On success you see only the scripts' own counts. On
+failure you see the exit code and the first error line, cut off at
+`Object:`, `Validator:` or `Value:`, with nothing from later lines.
 
 ## 4. How CI uses it
 

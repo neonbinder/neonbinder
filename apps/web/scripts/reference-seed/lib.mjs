@@ -390,15 +390,25 @@ export function deployKeyProblem(key, deployment) {
 }
 
 /**
- * The CONVEX_DEPLOY_KEY the Convex CLI would use from `webDir`: the
- * environment first, else a CONVEX_DEPLOY_KEY= line in .env.local (the CLI
- * dotenv-loads that file itself). Read for the guard only; never printed.
+ * The CONVEX_DEPLOY_KEY the Convex CLI would use from `webDir`. The CLI
+ * dotenv-loads `.env.local` and then `.env` (deploymentSelection.js:
+ * `dotenv.config({ path: ".env.local" }); dotenv.config();`), and dotenv
+ * never overrides a variable already set, so the precedence is: the
+ * environment, then `.env.local`, then `.env`. Read for the guard only;
+ * never printed.
  */
 export function effectiveDeployKey(env = process.env, webDir = WEB_DIR) {
   if (env.CONVEX_DEPLOY_KEY) return env.CONVEX_DEPLOY_KEY;
-  const f = path.join(webDir, ".env.local");
-  if (!existsSync(f)) return "";
-  for (const line of readFileSync(f, "utf8").split("\n")) {
+  for (const name of [".env.local", ".env"]) {
+    const key = deployKeyFromFile(path.join(webDir, name));
+    if (key) return key;
+  }
+  return "";
+}
+
+function deployKeyFromFile(file) {
+  if (!existsSync(file)) return "";
+  for (const line of readFileSync(file, "utf8").split("\n")) {
     const m = /^CONVEX_DEPLOY_KEY=(.*)$/.exec(line);
     if (m) {
       return m[1]
@@ -409,6 +419,100 @@ export function effectiveDeployKey(env = process.env, webDir = WEB_DIR) {
     }
   }
   return "";
+}
+
+// ── Convex CLI output, safe for a public CI log ─────────────────────────────
+
+/**
+ * Markers after which a Convex CLI error line quotes document data: a
+ * schema-validation rejection prints the offending row ("Object: {...}"),
+ * the validator it failed, and sometimes the bad value.
+ */
+export const CONVEX_OUTPUT_REDACT_MARKERS = ["Object:", "Validator:", "Value:"];
+
+/** Longest error line ever echoed, after redaction. */
+export const CONVEX_OUTPUT_MAX_LINE = 300;
+
+/**
+ * One line summarising a failed Convex CLI call, with any row data removed.
+ * Drops everything from the first redaction marker on (per stream), then
+ * takes the first remaining line naming an error or failure, else the first
+ * other error-looking line, else the last line (stderr before stdout), and
+ * caps its length. Pure.
+ */
+export function redactConvexOutput(stdout = "", stderr = "") {
+  // Within each stream, everything from the first marker on is dropped,
+  // including later lines: a quoted document can span several lines, and any
+  // of them could happen to contain a word like "fail".
+  const safeLines = (text) => {
+    const out = [];
+    for (const raw of `${text}`.split("\n")) {
+      let line = raw;
+      let cut = -1;
+      for (const marker of CONVEX_OUTPUT_REDACT_MARKERS) {
+        const i = line.indexOf(marker);
+        if (i !== -1 && (cut === -1 || i < cut)) cut = i;
+      }
+      if (cut !== -1) line = line.slice(0, cut);
+      if (line.trim()) out.push(line.trim());
+      if (cut !== -1) break;
+    }
+    return out;
+  };
+  const lines = [...safeLines(stderr), ...safeLines(stdout)];
+  if (lines.length === 0) return `${stdout}${stderr}`.trim() ? "(error text withheld: it quoted document data)" : "(no output)";
+  let pick =
+    lines.find((l) => /error|fail/i.test(l)) ??
+    lines.find((l) => /✖|invalid|cannot|could not|not found|unauthori[sz]ed|forbidden/i.test(l)) ??
+    lines[lines.length - 1];
+  if (pick.length > CONVEX_OUTPUT_MAX_LINE) pick = `${pick.slice(0, CONVEX_OUTPUT_MAX_LINE)}…`;
+  return pick;
+}
+
+// ── Bundle floors ───────────────────────────────────────────────────────────
+//
+// A bundle can be structurally sound and still hollow: an export taken from
+// the wrong deployment, or cut short, passes `check` and would seed a preview
+// with nothing, so every flow would then run against an empty catalogue that
+// looks like a passing seed. `load` refuses a bundle under these floors.
+// Production holds about 100k players and several thousand teams; the floors
+// sit far below that so a real refresh never trips them, and far above
+// anything a dev or preview deployment accumulates by hand.
+
+/** Fewest players a loadable bundle may carry. */
+export const MIN_BUNDLE_PLAYERS = 1000;
+
+/** Fewest teams a loadable bundle may carry. */
+export const MIN_BUNDLE_TEAMS = 100;
+
+/**
+ * Reasons a bundle is too hollow to load, from its manifest counts and its
+ * actual rows (both must clear every floor). Every one of the seven
+ * reference tables needs at least one row; import mode also needs at least
+ * one sport row. Pure.
+ *
+ * @param {Record<string,number>|undefined} manifestCounts manifest.counts
+ * @param {Record<string,number>} rowCounts rows actually in the bundle, per table
+ * @param {"import"|"remap"} mode
+ * @returns {string[]} empty when the bundle may be loaded
+ */
+export function hollowBundleProblems(manifestCounts, rowCounts, mode) {
+  const problems = [];
+  const sources = [
+    ["manifest", manifestCounts ?? {}],
+    ["rows", rowCounts ?? {}],
+  ];
+  const floor = (t, min, why) => {
+    for (const [label, counts] of sources) {
+      const n = counts[t] ?? 0;
+      if (n < min) problems.push(`${t}: ${n} (${label}), needs at least ${min}${why}`);
+    }
+  };
+  for (const t of TABLES) floor(t, 1, "");
+  floor("players", MIN_BUNDLE_PLAYERS, " (MIN_BUNDLE_PLAYERS)");
+  floor("teams", MIN_BUNDLE_TEAMS, " (MIN_BUNDLE_TEAMS)");
+  if (mode === "import") floor(SPORT_TABLE, 1, " (import mode replaces selectorOptions with these)");
+  return [...new Set(problems)];
 }
 
 // ── ZIP I/O via the zip/unzip binaries on PATH ──────────────────────────────
