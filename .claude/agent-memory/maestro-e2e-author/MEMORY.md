@@ -134,3 +134,4 @@ Non-markdown helpers: `tools/`
 - [Heading-only selector via `above:` a field label](patterns_heading_only_via_above_field_label.md) — name in h3 AND input values: anchor `above: "<label>"`; leftOf/rightOf are left-edge only
 - [sr-only in an unpositioned scroller](patterns_sr_only_in_unpositioned_scroller.md) — span stays at its scrollTop-0 spot, pruned past y=629; compare a known sr-only node to its parent
 - [Same-name player panel](reference_same_name_player_panel.md) — bulk skips these rows; drain must link via `childOf` list + `index: 0`; heading `Same name, different people`
+- [Catalogue-seeded wizard staging](reference_catalogue_seeded_wizard_staging.md) — catalogue = prod snapshot; what still stages; coverage map; read-only `--inline-query` name check
