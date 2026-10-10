@@ -365,8 +365,7 @@ export default function EntityReviewWizard({
   onDismissCommitError,
   previewCards,
   onTeamAnswersChange,
-  cardsInheritSetTeam,
-  cardsWithStoredTeam,
+  cardsWithSettledTeam,
   teamsOnly = false,
 }: {
   isOpen: boolean;
@@ -411,15 +410,14 @@ export default function EntityReviewWizard({
    */
   onTeamAnswersChange?: (answers: Array<TeamAnswer | undefined>) => void;
   /**
-   * NEO-335 — the node being saved under carries a set-level team, which the
-   * commit gives every new card that has none; the section then asks nothing.
+   * NEO-335 — positions in `previewCards` whose team is already settled and
+   * so are not asked about: a re-synced existing row that carries a team (or
+   * a "no team", or a pending team name), which the commit keeps; and, under
+   * a node with a set-level team, a card that will be a NEW row, which the
+   * commit gives that team. The parent decides — it holds the diff that
+   * knows which incoming card is which.
    */
-  cardsInheritSetTeam?: boolean;
-  /**
-   * NEO-335 — positions in `previewCards` that re-sync an existing row which
-   * already carries a team; the commit keeps it, so they are not asked about.
-   */
-  cardsWithStoredTeam?: readonly number[];
+  cardsWithSettledTeam?: readonly number[];
   /**
    * NEO-335 — there are no names to review, only cards that would save with
    * no team. The wizard opens straight onto its final step ("All reviewed —
@@ -697,6 +695,14 @@ export default function EntityReviewWizard({
    * way every other answer in this wizard does. Absent = the line's default.
    */
   const [teamChoices, setTeamChoices] = useState<Record<string, GroupChoice>>({});
+  /**
+   * NEO-335 (a11y) — the teams section's heading id, and whether the section
+   * is on screen. Confirm & Save is DESCRIBED by that heading while it is, so
+   * an operator who reaches the button (it is autofocused) hears "K cards have
+   * no team yet" without focus ever being moved to tell them.
+   */
+  const teamsHeadingId = useId();
+  const [teamsSectionShown, setTeamsSectionShown] = useState(false);
 
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
   /**
@@ -4061,9 +4067,10 @@ export default function EntityReviewWizard({
                       setTeamChoices((prev) => ({ ...prev, [groupKey]: choice }))
                     }
                     onAnswersChange={onTeamAnswersChange}
-                    inheritsSetTeam={cardsInheritSetTeam}
-                    settledIndexes={cardsWithStoredTeam}
+                    settledIndexes={cardsWithSettledTeam}
                     disabled={saving}
+                    headingId={teamsHeadingId}
+                    onShownChange={setTeamsSectionShown}
                   />
                 )}
               </div>
@@ -4255,6 +4262,9 @@ export default function EntityReviewWizard({
                        */
                       className={footerFieldClass("btn-confirm-save")}
                       aria-label={saving ? CONFIRM_SAVING_LABEL : CONFIRM_SAVE_LABEL}
+                      // NEO-335 — the name stays exactly as flows match it;
+                      // the teams section's heading is the description.
+                      aria-describedby={teamsSectionShown ? teamsHeadingId : undefined}
                       /*
                        * NEO-294 — `aria-disabled`, not native `disabled`.
                        *

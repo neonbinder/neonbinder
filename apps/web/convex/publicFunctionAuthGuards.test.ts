@@ -606,6 +606,50 @@ describe("NEO-212 — admin-gated reads still omit their audit fields", () => {
   });
 });
 
+/**
+ * NEO-335 — `cardChecklist.teamSuggestionsForPreview` is an admin read over
+ * players' careers. `publicFunctionAuth.test.ts` pins its gate; this pins the
+ * other half: what an admin is answered carries the team, never the player
+ * row's audit column or its raw career.
+ */
+describe("NEO-335 — the wizard's team suggestions are an admin read with no audit field", () => {
+  test("teamSuggestionsForPreview answers an admin without shipping the player row's createdByUserId", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const { teamId, playerId } = await t.run(async (ctx) => {
+      const teamId = await ctx.db.insert("teams", {
+        name: "Cincinnati Reds",
+        nameNormalized: "cincinnati reds",
+        sportId,
+        lastUpdated: Date.now(),
+      });
+      const playerId = await ctx.db.insert("players", {
+        name: "Johnny Bench",
+        nameNormalized: "bench johnny",
+        sportId,
+        teamYears: [{ teamId, fromYear: 1967, toYear: 1983 }],
+        createdByUserId: "clerk_some_operator",
+        lastUpdated: Date.now(),
+      });
+      return { teamId, playerId };
+    });
+
+    const result = await t
+      .withIdentity(ADMIN)
+      .query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: sportId,
+        players: [{ playerId }],
+      });
+
+    // Not vacuous: the read really answered with the player's team.
+    expect(result.players[0].answer?.teams.map((x) => x.teamId)).toEqual([teamId]);
+    const wire = JSON.stringify(result);
+    expect(wire).not.toContain("createdByUserId");
+    expect(wire).not.toContain("clerk_some_operator");
+    expect(wire).not.toContain("teamYears");
+  });
+});
+
 // ---------------------------------------------------------------------------
 // NEO-240 — the League Management surface
 // ---------------------------------------------------------------------------

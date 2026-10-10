@@ -640,8 +640,10 @@ export const confirmCardNoTeam = mutation({
  * showed zero chips for a card whose answer was one lookup away. The career
  * is then offered whole, still deduped by team and attributed to the first
  * player naming it. Still suggestions: a chip the operator judges, never a
- * fill. The set-level "Fill teams" (`convex/teamFill.ts`) is where a
- * one-team career becomes a write, and only after a preview.
+ * fill. NEO-335: before save, the entity review wizard's "K cards have no
+ * team yet" section (`teamSuggestionsForPreview`) is where a one-team career
+ * becomes a PRE-FILLED answer — still the operator's, written only by their
+ * Confirm & Save.
  *
  * ## Deduped by teamId
  *

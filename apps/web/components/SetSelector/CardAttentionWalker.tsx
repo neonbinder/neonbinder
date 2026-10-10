@@ -459,7 +459,9 @@ export default function CardAttentionWalker({
                 {unfixableReason(primaryItem)}
               </p>
             ) : (
-              <p className="text-sm text-gray-200">
+              // role="status": the walk ending is news — the fixer that had
+              // focus just left — and this is the line that says how it ended.
+              <p className="text-sm text-gray-200" role="status">
                 {walkDoneLine(awaitingLookup)}
               </p>
             )}

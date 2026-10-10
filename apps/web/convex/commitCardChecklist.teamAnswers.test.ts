@@ -126,6 +126,7 @@ function card(opts: {
   teams?: string[];
   teamLookup?: "answered" | "failed";
   teamIds?: Array<Id<"teams">>;
+  teamsAnswered?: true;
   teamNone?: true;
   applyFields?: string[];
   baseVersion?: number;
@@ -141,6 +142,7 @@ function card(opts: {
     platformData,
     ...(opts.teamLookup ? { teamLookup: opts.teamLookup } : {}),
     ...(opts.teamIds ? { teamIds: opts.teamIds } : {}),
+    ...(opts.teamsAnswered ? { teamsAnswered: opts.teamsAnswered } : {}),
     ...(opts.teamNone ? { teamNone: opts.teamNone } : {}),
     ...(opts.applyFields ? { applyFields: opts.applyFields } : {}),
     ...(opts.baseVersion !== undefined ? { baseVersion: opts.baseVersion } : {}),
@@ -378,8 +380,9 @@ describe("commitCardChecklist — operator-chosen teamIds (NEO-335)", () => {
     });
 
     const rows = await rowsByNumber(t, leafId);
-    // Printed name first, then the operator's pick; each id once.
-    expect(rows.get("1")!.teamOnCardIds).toEqual([reds, royals]);
+    // The operator's picks first (in their order), then the printed names —
+    // so the per-card cap can never cut a pick; each id once.
+    expect(rows.get("1")!.teamOnCardIds).toEqual([royals, reds]);
     expect(rows.get("2")!.teamOnCardIds).toEqual([royals]);
     // The listing title names the picked team like any other.
     expect(rows.get("2")!.listingTitle).toContain("Kansas City Royals");
@@ -653,7 +656,25 @@ describe("commitCardChecklist — re-sync of existing rows, same rule (NEO-335)"
     await settle(t);
   });
 
-  test("picked teamIds FILL an existing row that has no team, and retire a stale \"no team\" ruling", async () => {
+  test("picked teamIds FILL an existing row that has no team", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await firstSync(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", bscRef: "B1", teamIds: [reds] })],
+    });
+
+    expect((await rowsByNumber(t, leafId)).get("1")!.teamOnCardIds).toEqual([reds]);
+    await settle(t);
+  });
+
+  test("picked teamIds never fill a row an operator ruled teamless: the ruling stands", async () => {
+    // The ruling is an answer to this exact question, made on the row; a pick
+    // in a later wizard was made without it on screen. Undoing it is the
+    // fixer's job, where the ruling is what the operator is looking at.
     const t = convexTest(schema, modules);
     const { sportId, leafId, rowId } = await firstSync(t);
     const reds = await seedTeam(t, sportId, "Cincinnati Reds");
@@ -668,9 +689,9 @@ describe("commitCardChecklist — re-sync of existing rows, same rule (NEO-335)"
     });
 
     const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.teamOnCardIds).toEqual([reds]);
-    expect(row.teamNoneConfirmedAt).toBeUndefined();
-    expect(row.teamNoneConfirmedByUserId).toBeUndefined();
+    expect(row.teamOnCardIds ?? []).toEqual([]);
+    expect(row.teamNoneConfirmedAt).toBe(1234);
+    expect(row.teamNoneConfirmedByUserId).toBe("someone_else");
     await settle(t);
   });
 
@@ -1024,6 +1045,162 @@ describe("commitCardChecklist — adversarial edges on re-sync (NEO-335)", () =>
     const row = (await rowsByNumber(t, leafId)).get("1")!;
     expect(row.teamOnCardIds).toEqual([reds]);
     expect(await queueEntriesFor(t, rowId)).toBe(queuedBefore);
+    await settle(t);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Audit fixes (NEO-335): answered team NAMES, and picks ahead of the cap
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("commitCardChecklist — an answered team NAME fills an existing teamless row (NEO-335)", () => {
+  async function firstSync(t: T) {
+    const { sportId, leafId } = await seedTree(t);
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", bscRef: "B1" })],
+    });
+    await settle(t);
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamOnCardIds ?? []).toEqual([]);
+    return { sportId, leafId, rowId: row._id };
+  }
+
+  test("a sibling's printed team, answered: the existing row takes it without applyFields", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await firstSync(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        card({ cardNumber: "1", bscRef: "B1", teams: ["Cincinnati Reds"], teamsAnswered: true }),
+      ],
+    });
+
+    expect((await rowsByNumber(t, leafId)).get("1")!.teamOnCardIds).toEqual([reds]);
+    await settle(t);
+  });
+
+  test("the same string NOT answered is marketplace content: no applyFields, no write", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await firstSync(t);
+    await seedTeam(t, sportId, "Cincinnati Reds");
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", bscRef: "B1", teams: ["Cincinnati Reds"] })],
+    });
+
+    expect((await rowsByNumber(t, leafId)).get("1")!.teamOnCardIds ?? []).toEqual([]);
+    await settle(t);
+  });
+
+  test("a team staged as New Team in this review is created by the prelude and fills the existing row", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await firstSync(t);
+    const batchId = "batch-staged-team";
+    await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: leafId,
+        batchId,
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "team",
+        name: "Gotham Knights",
+        sportId,
+        status: "ready",
+        decision: { action: "create", create: { location: "Gotham", name: "Knights" } },
+      }),
+    );
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      batchId,
+      cards: [
+        card({ cardNumber: "1", bscRef: "B1", teams: ["Gotham Knights"], teamsAnswered: true }),
+      ],
+    });
+
+    const created = await t.run(async (ctx) =>
+      ctx.db
+        .query("teams")
+        .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+        .collect(),
+    );
+    expect(created).toHaveLength(1);
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamOnCardIds).toEqual([created[0]._id]);
+    expect(row.pendingTeamNames ?? []).toEqual([]);
+    await settle(t);
+  });
+
+  test("an answered name never overwrites a team the existing row already has", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId, rowId } = await firstSync(t);
+    const reds = await seedTeam(t, sportId, "Cincinnati Reds");
+    await seedTeam(t, sportId, "Kansas City Royals");
+    await t.run(async (ctx) => ctx.db.patch(rowId, { teamOnCardIds: [reds] }));
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        card({ cardNumber: "1", bscRef: "B1", teams: ["Kansas City Royals"], teamsAnswered: true }),
+      ],
+    });
+
+    expect((await rowsByNumber(t, leafId)).get("1")!.teamOnCardIds).toEqual([reds]);
+    await settle(t);
+  });
+
+  test("an answered name never fills a row an operator ruled teamless", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId, rowId } = await firstSync(t);
+    await seedTeam(t, sportId, "Cincinnati Reds");
+    await t.run(async (ctx) =>
+      ctx.db.patch(rowId, { teamNoneConfirmedAt: 1234, teamNoneConfirmedByUserId: "someone_else" }),
+    );
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        card({ cardNumber: "1", bscRef: "B1", teams: ["Cincinnati Reds"], teamsAnswered: true }),
+      ],
+    });
+
+    const row = (await rowsByNumber(t, leafId)).get("1")!;
+    expect(row.teamOnCardIds ?? []).toEqual([]);
+    expect(row.teamNoneConfirmedAt).toBe(1234);
+    await settle(t);
+  });
+});
+
+describe("commitCardChecklist — a pick is never the one the per-card cap cuts (NEO-335)", () => {
+  test("a full card of printed teams plus one pick keeps the pick", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const printed: string[] = [];
+    for (let i = 0; i < MAX_CARD_TEAMS; i++) {
+      const name = `Printed Team ${i}`;
+      await seedTeam(t, sportId, name);
+      printed.push(name);
+    }
+    const pick = await seedTeam(t, sportId, "Picked Team");
+
+    await t.withIdentity(ADMIN_IDENTITY).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card({ cardNumber: "1", teams: printed, teamIds: [pick] })],
+    });
+
+    const ids = (await rowsByNumber(t, leafId)).get("1")!.teamOnCardIds ?? [];
+    expect(ids).toHaveLength(MAX_CARD_TEAMS);
+    expect(ids[0]).toBe(pick);
     await settle(t);
   });
 });

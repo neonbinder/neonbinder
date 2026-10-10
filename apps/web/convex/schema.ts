@@ -1026,11 +1026,12 @@ export default defineSchema({
     // anywhere on either path carries a timestamp, because a forgeable one is
     // operator-review suppression the client can mint for itself. CLEARED the
     // moment a non-empty `teamOnCardIds` is actually written in the same
-    // transaction (`updateCard`, the commit's reviewed content patch, or the
-    // commit filling a teamless row with the operator's picked teams), so it
-    // can never contradict the teams on the row. Never touched by a
-    // linkage-only re-sync, and never set by marketplace data alone — only by
-    // that explicit operator answer, and never over an existing confirmation.
+    // transaction (`updateCard`, or the commit's reviewed content patch), so
+    // it can never contradict the teams on the row. A team the operator picked
+    // in the wizard before save does NOT clear it: the commit never fills a
+    // row an operator already ruled teamless. Never touched by a linkage-only
+    // re-sync, and never set by marketplace data alone — only by that
+    // explicit operator answer, and never over an existing confirmation.
     teamNoneConfirmedAt: v.optional(v.number()),
     // The Clerk subject of the operator who confirmed it — same shape and
     // purpose as `players.createdByUserId` and

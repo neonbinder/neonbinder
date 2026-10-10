@@ -1073,9 +1073,9 @@ describe("CardAttentionWalker — the done line (NEO-335)", () => {
 
   it("says plain All clear when nothing is waiting", () => {
     renderWalker([]);
-    expect(
-      screen.getByText("All clear — nothing on this checklist needs attention."),
-    ).toBeTruthy();
+    const line = screen.getByText("All clear — nothing on this checklist needs attention.");
+    // A status line, so the walk ending is announced, not just drawn.
+    expect(line.getAttribute("role")).toBe("status");
   });
 
   it("says how many are still being looked up, and never walks them", () => {

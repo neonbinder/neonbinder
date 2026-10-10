@@ -1563,6 +1563,10 @@ describe("NEO-325 internal queries stay internal", () => {
   test.each([
     ["selectorOptions.ts", "heldIdsForTwinNotice"],
     ["setReconciliation.ts", "baseSlIdsBesideVariantType"],
+    // NEO-335 — reads caller-supplied team ids and answers each team's name
+    // with no `requireAdmin`; only `commitCardChecklist`, behind its own
+    // gate, may call it.
+    ["selectorOptions.ts", "validateOperatorTeamIds"],
   ])("%s :: %s is declared internalQuery (it trusts its arguments)", (file, fn) => {
     const src = readFileSync(join(__dirname, file), "utf8");
     expect(src).toContain(`export const ${fn} = internalQuery({`);

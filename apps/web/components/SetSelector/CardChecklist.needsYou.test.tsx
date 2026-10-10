@@ -15,7 +15,7 @@
  * stubbed so the mocked Convex surface stays small.
  */
 
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -149,6 +149,10 @@ function ui(parallelRun?: ParallelBuildRunner) {
 const pill = (name: string | RegExp = /^\d+ needs? you$/) =>
   screen.getByRole("button", { name });
 const queryPill = () => screen.queryByRole("button", { name: /^\d+ needs? you$/ });
+/** The header's "N cards need you" live region — mounted even when empty. */
+const attentionStatus = () =>
+  document.querySelector<HTMLElement>('[role="status"][data-attention-status]');
+const announcedStatus = () => attentionStatus()?.textContent ?? null;
 
 describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
   beforeEach(() => {
@@ -219,19 +223,106 @@ describe("CardChecklist — the one 'N need you' control (NEO-335)", () => {
   });
 
   it("follows the live rows: the count drops as cards are answered, and the row leaves at zero", () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(ui());
+      expect(pill("4 need you")).toBeTruthy();
+
+      state.cards = [settled(1), teamless(2), settled(3), settled(4), settled(5)];
+      rerender(ui());
+      // The pill is immediate; the announcement waits for the count to settle.
+      expect(pill("1 needs you")).toBeTruthy();
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+      expect(announcedStatus()).toBe("1 card needs you on this checklist");
+
+      state.cards = [settled(1), settled(2)];
+      rerender(ui());
+      expect(queryPill()).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("parks focus on the Sync button when the pill leaves while focused, instead of dropping it to body", () => {
     const { rerender } = render(ui());
-    expect(pill("4 need you")).toBeTruthy();
+    const button = pill("4 need you");
+    act(() => button.focus());
+    expect(document.activeElement).toBe(button);
 
-    state.cards = [settled(1), teamless(2), settled(3), settled(4), settled(5)];
-    rerender(ui());
-    expect(pill("1 needs you")).toBeTruthy();
-    expect(
-      screen.getAllByRole("status").some((el) => el.textContent === "1 card needs you on this checklist"),
-    ).toBe(true);
-
+    // The last cards are answered elsewhere (a background lookup) while the
+    // operator is standing on the pill.
     state.cards = [settled(1), settled(2)];
     rerender(ui());
     expect(queryPill()).toBeNull();
+    expect(document.activeElement).toBe(screen.getByLabelText("Sync card checklist"));
+  });
+
+  it("leaves focus alone when the pill leaves while focus is elsewhere", () => {
+    const { rerender } = render(ui());
+    const sync = screen.getByLabelText("Sync card checklist") as HTMLElement;
+    act(() => sync.blur());
+    expect(document.activeElement).toBe(document.body);
+    state.cards = [settled(1), settled(2)];
+    rerender(ui());
+    expect(document.activeElement).toBe(document.body);
+  });
+
+  it("announces a burst of changes ONCE, with where the count landed", () => {
+    vi.useFakeTimers();
+    try {
+      const { rerender } = render(ui());
+      expect(announcedStatus()).toBe("4 cards need you on this checklist");
+
+      // Three fixes inside the debounce window.
+      state.cards = [settled(1), teamless(2), teamless(3), teamless(4), settled(5)];
+      rerender(ui());
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
+      state.cards = [settled(1), teamless(2), teamless(3), settled(4), settled(5)];
+      rerender(ui());
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
+      state.cards = [settled(1), teamless(2), settled(3), settled(4), settled(5)];
+      rerender(ui());
+      // None of the intermediate counts was ever put in the region.
+      expect(announcedStatus()).toBe("4 cards need you on this checklist");
+      act(() => {
+        vi.advanceTimersByTime(1499);
+      });
+      expect(announcedStatus()).toBe("4 cards need you on this checklist");
+      act(() => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(announcedStatus()).toBe("1 card needs you on this checklist");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the live region mounted, empty, when nothing needs a person — so the first count after a save is read", () => {
+    vi.useFakeTimers();
+    try {
+      state.cards = [settled(1), settled(2)];
+      const { rerender } = render(ui());
+      const region = attentionStatus();
+      expect(region).not.toBeNull();
+      expect(region!.textContent).toBe("");
+
+      state.cards = [settled(1), teamless(2)];
+      rerender(ui());
+      act(() => {
+        vi.advanceTimersByTime(1500);
+      });
+      // The SAME element, now carrying the count.
+      expect(attentionStatus()).toBe(region);
+      expect(region!.textContent).toBe("1 card needs you on this checklist");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not open the walker on its own — not on mount, not when rows change", () => {

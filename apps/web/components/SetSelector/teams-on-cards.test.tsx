@@ -353,11 +353,16 @@ describe("choices and answers", () => {
     expect(withTeamAnswer(original, { teams: ["Reds"], teamIds: [REDS] })).toMatchObject({
       teams: ["Reds"],
       teamIds: [REDS],
+      // The replacement is the operator's answer, so the commit may fill an
+      // existing teamless row with it (it never does with printed strings).
+      teamsAnswered: true,
     });
-    expect(withTeamAnswer(original, { teamNone: true })).toMatchObject({
-      teams: ["Team Card"],
-      teamNone: true,
-    });
+    const none = withTeamAnswer(original, { teamNone: true });
+    expect(none).toMatchObject({ teams: ["Team Card"], teamNone: true });
+    // The printed strings were NOT answered: no marker.
+    expect(none).not.toHaveProperty("teamsAnswered");
+    // An id-only answer leaves the printed strings unmarked too.
+    expect(withTeamAnswer(original, { teamIds: [REDS] })).not.toHaveProperty("teamsAnswered");
   });
 });
 

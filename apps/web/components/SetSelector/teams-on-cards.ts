@@ -545,16 +545,22 @@ export function optionLabel(option: TeamOption): string {
  * `teams` REPLACES the card's printed team strings: every one of them failed
  * to resolve (that is how the card got into the section), and the commit
  * resolves the replacement exactly as it resolves any printed team.
+ *
+ * `teamsAnswered` marks that replacement as the OPERATOR's answer rather than
+ * what the card printed. The commit needs to know: a printed team string on
+ * a re-synced, already-stored row is marketplace content and is written only
+ * through the content review (`applyFields`), while an answered one fills
+ * that row's empty team the way a picked `teamIds` does.
  */
 export function withTeamAnswer<T extends PreviewCardForTeams>(
   card: T,
   answer: TeamAnswer | undefined,
-): T & TeamAnswer {
+): T & TeamAnswer & { teamsAnswered?: true } {
   if (!answer) return card;
   return {
     ...card,
     ...(answer.teamIds?.length ? { teamIds: answer.teamIds } : {}),
-    ...(answer.teams?.length ? { teams: answer.teams } : {}),
+    ...(answer.teams?.length ? { teams: answer.teams, teamsAnswered: true as const } : {}),
     ...(answer.teamNone ? { teamNone: true as const } : {}),
   };
 }

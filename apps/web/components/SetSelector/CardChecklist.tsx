@@ -45,6 +45,7 @@ import { attachedSidesOf } from "../../convex/marketplaceResolvability";
 import { pausedSyncMessage } from "../../convex/selectorSyncStore";
 import { isKnownSite, sidesOfSites } from "../../convex/lib/marketplacePause";
 import { usePausedPlatforms } from "@/src/hooks/usePausedPlatforms";
+import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
 import { SIDE_LABEL, type SyncSide } from "./selector-sync-feedback";
 import {
   candidateToPairingCard,
@@ -146,6 +147,8 @@ type FetchPreview = {
      * because this is the commit's wire shape.
      */
     teamIds?: Array<Id<"teams">>;
+    /** NEO-335 — `teams` holds the operator's answer, not the printed strings. */
+    teamsAnswered?: true;
     teamNone?: true;
     // NEO-137: WIRE shape from fetchCardChecklist — ref plus the marketplace
     // SET it came from. commitCardChecklist resolves setId to a slot on this
@@ -185,10 +188,13 @@ type FetchPreview = {
    */
   teamsOnly?: boolean;
   /**
-   * NEO-335 — positions in `cards` that re-sync a stored row which already
-   * carries a team (or a "no team" answer); see `resolveAndCommit`.
+   * NEO-335 — positions in `cards` whose team is already settled, so the
+   * wizard does not ask about them: a re-synced stored row that carries a
+   * team, an operator's "no team", or a team name still pending review; and,
+   * under a node with a set-level team, a card that will be a NEW row (the
+   * commit gives it that team). See `resolveAndCommit`.
    */
-  storedTeamIndexes?: number[];
+  settledTeamIndexes?: number[];
 };
 
 /** The confirmed cards, waiting on the content-diff review. */
@@ -341,6 +347,13 @@ const QUICK_ADD_PLAYER_LABELS: PlayerPickerLabels = {
  * NEO-335 — the header pill's text, which is also its accessible name.
  * "N need you": the operator is the one the cards are waiting on.
  */
+/**
+ * NEO-335 (a11y) — how long the attention count must hold still before the
+ * live region says it. Long enough to swallow a save's or a fix run's burst,
+ * short enough that the announcement still lands with the change.
+ */
+const ATTENTION_ANNOUNCE_DEBOUNCE_MS = 1500;
+
 function needsYouLabel(count: number): string {
   return count === 1 ? "1 needs you" : `${count} need you`;
 }
@@ -357,9 +370,13 @@ export default function CardChecklist({
     selectorOptionId: variantId,
   });
   /**
-   * NEO-335 — stored rows that already have a team, or an operator's "no
-   * team": a re-sync keeps either, so the card matching one is not asked
-   * about in the wizard's teams section.
+   * NEO-335 — stored rows whose team is already answered for: a team, an
+   * operator's "no team", or a team NAME still pending review. A re-sync
+   * keeps all three, so the card matching one is not asked about in the
+   * wizard's teams section. A pending name is a team, waiting: attention
+   * counts the row as teamed, the commit never stamps "no team" over it, and
+   * the attention walker's unreviewed-name step is where it is answered —
+   * asking here would put a question whose likeliest answer the save ignores.
    */
   const storedTeamedCardIds = useMemo(
     () =>
@@ -367,7 +384,9 @@ export default function CardChecklist({
         (cards ?? [])
           .filter(
             (row) =>
-              (row.teamOnCardIds?.length ?? 0) > 0 || row.teamNoneConfirmedAt !== undefined,
+              (row.teamOnCardIds?.length ?? 0) > 0 ||
+              row.teamNoneConfirmedAt !== undefined ||
+              (row.pendingTeamNames?.length ?? 0) > 0,
           )
           .map((row) => row._id),
       ),
@@ -1352,20 +1371,31 @@ export default function CardChecklist({
       sportId,
       cards: kept.map(({ card }) => card),
     });
-    // NEO-335 — kept positions whose card re-syncs a stored row that already
-    // carries a team (or an operator's "no team"). The commit keeps a stored
-    // row's team, so these cannot save teamless and are never asked about.
+    // NEO-335 — kept positions whose team is already settled, so the wizard
+    // never asks about them:
+    //  - a card that re-syncs a stored row which already carries a team (or
+    //    an operator's "no team", or a pending team name). The commit keeps a
+    //    stored row's answer, so these cannot save teamless.
+    //  - under a node with a set-level team (NEO-277), a card that will be a
+    //    NEW row: the commit gives it that team. Only new rows — the commit
+    //    never defaults a set team onto an EXISTING row, so a re-synced
+    //    teamless row under such a node is still asked about, or it would
+    //    save teamless without the question ever being put.
+    // The diff is what knows which is which (`existingId`); it runs whenever
+    // there are cards, so with no diff there is nothing to place.
     const existingIdByIndex = new Map(
       (diff?.cards ?? []).flatMap((c) => (c.existingId ? [[c.index, c.existingId] as const] : [])),
     );
-    const storedTeamIndexes = kept.flatMap(({ index }, position) => {
+    const setTeamCoversNewRows = (variantRow?.teamIds?.length ?? 0) > 0;
+    const settledTeamIndexes = kept.flatMap(({ index }, position) => {
       const existingId = existingIdByIndex.get(index);
-      return existingId && storedTeamedCardIds.has(existingId) ? [position] : [];
+      if (existingId) return storedTeamedCardIds.has(existingId) ? [position] : [];
+      return diff && setTeamCoversNewRows ? [position] : [];
     });
     const preview: FetchPreview = {
       sportId,
       batchId,
-      storedTeamIndexes,
+      settledTeamIndexes,
       cards: kept.map(({ card }) => card),
       decisions: kept.map(({ index }) => ({
         applyFields: review.applyFieldsByIndex[index],
@@ -1379,15 +1409,15 @@ export default function CardChecklist({
     // would save with no team gets the wizard's final step, which is the one
     // place its team can be answered before the save. SportLots-only syncs of
     // known players land here, and they are most of the teamless cards there
-    // are. With every card teamed (or the node's set-level team covering the
-    // new ones) nothing changes: commit straight away, no dialog. Every name
-    // resolved without review on this path, so the cards are judged against
-    // no review rows — the same call the section itself makes.
+    // are. With every card teamed or settled (the node's set-level team
+    // covers the NEW ones, see `settledTeamIndexes`) nothing changes: commit
+    // straight away, no dialog. Every name resolved without review on this
+    // path, so the cards are judged against no review rows — the same call
+    // the section itself makes.
     const noNames = unknownPlayers.length === 0 && unknownTeams.length === 0;
     const askTeams =
       noNames &&
-      (variantRow?.teamIds?.length ?? 0) === 0 &&
-      teamlessCardIndexes(preview.cards, [], new Set(storedTeamIndexes)).length > 0;
+      teamlessCardIndexes(preview.cards, [], new Set(settledTeamIndexes)).length > 0;
     if (noNames && !askTeams) {
       // No wizard on this path — nothing to hold the preview for, and nothing
       // to render `commitError`. `runCommit` has already put the failure in the
@@ -1770,6 +1800,17 @@ export default function CardChecklist({
     () => (cards ?? []).filter((c) => needsAttention(c)).length,
     [cards],
   );
+  /**
+   * NEO-335 (a11y) — the count the live region says, held until it has stood
+   * still for a moment. A save, or a walker fixing cards back to back, moves
+   * the count several times in a second; announcing each step would queue a
+   * string of numbers the operator has to sit through. One announcement of
+   * where it landed is the news.
+   */
+  const announcedAttentionCount = useDebouncedValue(
+    attentionCount,
+    ATTENTION_ANNOUNCE_DEBOUNCE_MS,
+  );
 
   // NEO-312 — see `parallelParkRef`. Re-checked whenever the card list or the
   // notice moves, which is when the pressed button can disappear.
@@ -1863,6 +1904,34 @@ export default function CardChecklist({
   const closeAttentionWalker = useCallback(() => {
     setWalkerOpenedByHand(false);
   }, []);
+
+  /**
+   * a11y (NEO-335) — the "N need you" pill leaves the page the moment the
+   * count reaches zero, and nothing says the operator was not standing on it
+   * (a background team lookup can answer the last card while they are). A
+   * removed focused element drops focus to <body>, and the next Tab starts
+   * from the top of the page.
+   *
+   * So the pill's ref CLEANUP — which React 19 runs while the button is still
+   * in the document — notes whether it had focus, and the effect below parks
+   * focus on the notice line (or the Sync button), the same targets and the
+   * same "only if focus really fell to body" guard as `parallelParkRef`.
+   */
+  const needsYouParkRef = useRef(false);
+  const needsYouRef = useCallback((node: HTMLButtonElement | null) => {
+    if (!node) return;
+    return () => {
+      if (document.activeElement === node) needsYouParkRef.current = true;
+    };
+  }, []);
+  const needsYouShown = attentionCount > 0;
+  useEffect(() => {
+    if (needsYouShown || !needsYouParkRef.current) return;
+    needsYouParkRef.current = false;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    (syncNoticeRef.current ?? syncButtonRef.current)?.focus();
+  }, [needsYouShown]);
 
   const sortedCards = useMemo(() => {
     if (!cards) return [];
@@ -2579,8 +2648,10 @@ export default function CardChecklist({
             anything on its own (see `walkerOpenedByHand`).
 
             Name: the visible text IS the accessible name (SetRowActionButton
-            takes no aria-label), so SC 2.5.3 holds by construction and a
-            flow's `text:` and `id:` finds agree. While a build holds this
+            takes no aria-label), so SC 2.5.3 holds by construction. No DOM
+            `id`, deliberately: maestro-web's resource-id is `node.id ||
+            ariaLabel`, so an id would shadow the name and a flow's `id:` find
+            could never match "N need you". Flows find it by `text:`. While a build holds this
             checklist it is aria-disabled and described by the line that says
             why, like every other held control. */}
         {attentionCount > 0 && (
@@ -2591,8 +2662,8 @@ export default function CardChecklist({
               Attention
             </span>
             <SetRowActionButton
+              ref={needsYouRef}
               tone="attention"
-              id="checklist-needs-you"
               onActivate={openAttentionWalker}
               disabled={editsHeld}
               aria-describedby={editsHeld ? heldDescribedBy : undefined}
@@ -2600,24 +2671,33 @@ export default function CardChecklist({
             >
               {needsYouLabel(attentionCount)}
             </SetRowActionButton>
-            {/*
-              The pill's text changes silently — a screen reader is never told
-              that the count went from 5 to 4 when a card is fixed. This is the
-              live region that says it, visually hidden because the pill
-              already carries the number on screen.
-
-              role="status" with no explicit aria-live, per
-              accessibility-auditor/live-region-role-pattern.md: the role
-              already implies a polite live region, and this line never
-              switches to role="alert".
-            */}
-            <p className="sr-only" role="status">
-              {attentionCount}{" "}
-              {attentionCount === 1 ? "card needs" : "cards need"} you on this
-              checklist
-            </p>
           </div>
         )}
+        {/*
+          The pill's text changes silently — a screen reader is never told
+          that the count went from 5 to 4 when a card is fixed. This is the
+          live region that says it, visually hidden because the pill already
+          carries the number on screen.
+
+          ALWAYS mounted, outside the pill's row: a live region announces
+          changes to a region that already exists, so one mounted in the same
+          render as its first text (the row appearing after a save) is often
+          not read at all. Empty at zero — the row leaving is not news a
+          screen reader needs read out. The text is debounced
+          (`announcedAttentionCount`) so a burst of changes is said once.
+
+          role="status" with no explicit aria-live, per
+          accessibility-auditor/live-region-role-pattern.md: the role already
+          implies a polite live region, and this line never switches to
+          role="alert".
+        */}
+        <p className="sr-only" role="status" data-attention-status="">
+          {announcedAttentionCount > 0
+            ? `${announcedAttentionCount} ${
+                announcedAttentionCount === 1 ? "card needs" : "cards need"
+              } you on this checklist`
+            : ""}
+        </p>
 
         {sortedCards.length === 0 ? (
           <div className="text-center py-6">
@@ -2821,7 +2901,7 @@ export default function CardChecklist({
           // NEO-335: no names to review — open on the final step for the
           // cards that would save with no team.
           teamsOnly={pendingPreview.teamsOnly}
-          cardsWithStoredTeam={pendingPreview.storedTeamIndexes}
+          cardsWithSettledTeam={pendingPreview.settledTeamIndexes}
           // NEO-221 (D6): the whole account of what Confirm is about to do,
           // not just the card count. See `wizardSummary`.
           summary={wizardSummary}
@@ -2835,7 +2915,6 @@ export default function CardChecklist({
           // NEO-335: "K cards have no team yet" on the final step.
           previewCards={pendingPreview.cards}
           onTeamAnswersChange={handleTeamAnswers}
-          cardsInheritSetTeam={(variantRow?.teamIds?.length ?? 0) > 0}
           /**
            * NEO-221 (D9) — BACK, not abort.
            *

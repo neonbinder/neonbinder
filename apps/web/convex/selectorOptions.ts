@@ -12939,6 +12939,14 @@ const previewCardFields = {
   // card's `teams` NAMES resolve to, deduped, and held to `MAX_CARD_TEAMS`.
   // Count-bounded by `assertCardBatchWithinLimits`.
   teamIds: v.optional(v.array(v.id("teams"))),
+  // `teamsAnswered` — this card's `teams` STRINGS are the operator's answer
+  // in the wizard (a team staged in this review, or a sibling card's printed
+  // team), not what the card printed. The commit resolves them exactly as it
+  // resolves any printed team, and then treats the ids they resolve to like
+  // `teamIds`: an operator decision that may FILL an existing teamless row
+  // without `applyFields`. Absent — every card that was not answered — the
+  // strings are marketplace content and keep the `applyFields` rule.
+  teamsAnswered: v.optional(v.literal(true)),
   // `teamNone` — the operator answered "No team on this card". Server-stamped
   // at commit exactly as `cardChecklist.confirmCardNoTeam` stamps it (now +
   // the committing admin), together with `teamCheckDoneAt`. Teams win: a card
@@ -16867,6 +16875,13 @@ function settleCardTeamAnswer(a: {
   if (!a.hasBscRef || a.teamCheckDone) return { fields: {}, enqueue: false };
   if (a.teamLookup === "answered") {
     const hint = a.hasPendingTeam ? "" : (a.bscTeamHint ?? "").trim();
+    // The cap below cannot bite on today's only caller: the action takes the
+    // hint from a card team string `assertCardBatchWithinLimits` already held
+    // to MAX_PLAYER_NAME_LENGTH, which is the same 120. Kept on purpose, as
+    // the house does for every internal arg that lands in a stored field
+    // (`boundPendingNames`): this function is the WRITER, the two constants
+    // live in different modules, and moving either must not let an
+    // over-long `bscTeamName` through.
     return {
       fields: {
         teamCheckDoneAt: a.now,
@@ -16932,9 +16947,11 @@ const commitChunkCardValidator = v.object({
   baseVersion: v.optional(v.number()),
   // ── NEO-335: the card's team as the operator answered it before save ─────
   //
-  // `operatorTeamIds` — the subset of the preview card's `teamIds` that the
-  // action validated (exist, same sport) before any phase wrote. Already
-  // unioned into `teamOnCardIds` above for an INSERT; carried separately so
+  // `operatorTeamIds` — the operator's answer as NB team ids: the subset of
+  // the preview card's `teamIds` that the action validated (exist, same
+  // sport) before any phase wrote, plus — on a `teamsAnswered` card — the ids
+  // its answered team names resolved to. Already unioned (first, ahead of
+  // the cap) into `teamOnCardIds` above for an INSERT; carried separately so
   // the UPDATE branch can fill an existing row that has no team without
   // treating marketplace content as accepted.
   operatorTeamIds: v.optional(v.array(v.id("teams"))),
@@ -17244,8 +17261,11 @@ export const commitCardChecklistChunk = internalMutation({
         // this phase runs) never touches the flag, and a sync whose card
         // carries no teams never touches it either — an empty upstream answer
         // is not evidence against a human's answer, it is what produced the
-        // question. Nothing in the commit path ever SETS the flag; that is
-        // `cardChecklist.confirmCardNoTeam`'s job alone.
+        // question. NEO-335: the commit path SETS the flag in exactly one
+        // place — an operator's pre-save "No team on this card"
+        // (`settleCardTeamAnswer`), stamped as the committing admin and never
+        // over an existing ruling — and an operator's pre-save team pick
+        // never retires it (see `operatorFill` below).
         const teamIdsWritten = Array.isArray(contentPatch.teamOnCardIds)
           ? (contentPatch.teamOnCardIds as Array<Id<"teams">>)
           : undefined;
@@ -17258,18 +17278,30 @@ export const commitCardChecklistChunk = internalMutation({
         // need `applyFields` — but they only ever FILL: a row that will carry
         // a team after this patch (its own, or an accepted change) keeps it,
         // and nothing here overwrites one NB team with another.
+        //
+        // Nor do they fill a row an operator already RULED teamless
+        // (`teamNoneConfirmedAt`). That ruling is an answer to this exact
+        // question, made on the row itself; a pick in a later wizard was made
+        // without it on screen (the section does not ask about a ruled row),
+        // so it is not evidence against it. Undoing a ruling is the fixer's
+        // job (`MissingTeamFixer`), where the ruling is what the operator is
+        // looking at.
         const teamIdsBeforeFill =
           teamIdsWritten !== undefined ? teamIdsWritten : existing.teamOnCardIds;
         const operatorFill =
+          existing.teamNoneConfirmedAt === undefined &&
           (teamIdsBeforeFill?.length ?? 0) === 0 &&
           (card.operatorTeamIds?.length ?? 0) > 0
             ? card.operatorTeamIds
             : undefined;
 
+        // Only an ACCEPTED content change retires the ruling — see the
+        // NEO-102 note above. `operatorFill` cannot: it never runs on a ruled
+        // row.
         const retireNoneConfirmed =
           existing.teamNoneConfirmedAt !== undefined &&
-          ((teamIdsWritten !== undefined && teamIdsWritten.length > 0) ||
-            operatorFill !== undefined);
+          teamIdsWritten !== undefined &&
+          teamIdsWritten.length > 0;
 
         // ── NEO-221: this row's unreviewed-name stamp ─────────────────────
         //
@@ -20161,18 +20193,34 @@ export const commitCardChecklist = action({
         const id = teamIdByName.get(t.trim());
         if (id) teamOnCardIds.push(id);
       }
-      // NEO-335 — the teams the operator picked for this card, validated
-      // above. Unioned AFTER the printed names, so the title still names
-      // teams the way the card does, then deduped and held to the per-card
-      // cap. A card with no pick takes none of this, so its ids are exactly
-      // what they were before the field existed.
-      const operatorTeamIds = (c.teamIds ?? []).filter((id) =>
-        operatorTeamNameById.has(id),
+      // NEO-335 — the operator's answer for this card, as NB team ids:
+      //  - `teamIds` they picked, validated above (a vanished team dropped);
+      //  - and, when `teamsAnswered`, whatever the card's team STRINGS just
+      //    resolved to — those strings ARE the answer (a team staged in this
+      //    review and created by the prelude, or a sibling's printed team),
+      //    resolved by the same `teamIdByName` every printed team goes
+      //    through. A card that was not answered contributes nothing here:
+      //    its strings are marketplace content and stay under `applyFields`.
+      // Kept apart from `teamOnCardIds` so the chunk can FILL an existing
+      // teamless row with them (`operatorTeamIds`), which it never does with
+      // marketplace content.
+      let operatorTeamIds: Array<Id<"teams">> = Array.from(
+        new Set([
+          ...(c.teamIds ?? []).filter((id) => operatorTeamNameById.has(id)),
+          ...(c.teamsAnswered === true ? teamOnCardIds : []),
+        ]),
       );
       if (operatorTeamIds.length > 0) {
+        // Operator picks FIRST, then the printed names, then the cap — so a
+        // pick is never the one the per-card cap cuts. Deduped; a card with
+        // no answer takes none of this, so its ids are exactly what they
+        // were before the field existed.
         teamOnCardIds = Array.from(
-          new Set([...teamOnCardIds, ...operatorTeamIds]),
+          new Set([...operatorTeamIds, ...teamOnCardIds]),
         ).slice(0, MAX_CARD_TEAMS);
+        // And only the picks that survived the cap travel on as picks.
+        const kept = new Set<string>(teamOnCardIds);
+        operatorTeamIds = operatorTeamIds.filter((id) => kept.has(id));
       }
       // NEO-221 — this card's share of the commit's unreviewed names. Deduped
       // because one card can list the same name twice (a two-player card whose

@@ -171,14 +171,14 @@ vi.mock("./EntityReviewWizard", () => ({
     teamsOnly,
     previewCards,
     onTeamAnswersChange,
-    cardsWithStoredTeam,
+    cardsWithSettledTeam,
   }: {
     // NEO-335 — the final step's teams section, reduced to what the parent
     // owns: whether the wizard opened teams-only, and the answer channel.
     teamsOnly?: boolean;
     previewCards?: unknown[];
     onTeamAnswersChange?: (answers: Array<{ teamNone?: true } | undefined>) => void;
-    cardsWithStoredTeam?: number[];
+    cardsWithSettledTeam?: number[];
     summary: {
       cardCount: number;
       deleteCount: number;
@@ -218,8 +218,8 @@ vi.mock("./EntityReviewWizard", () => ({
           Answer only the second card
         </button>
       )}
-      {cardsWithStoredTeam && (
-        <p>{`Stored-team positions: [${cardsWithStoredTeam.join(",")}]`}</p>
+      {cardsWithSettledTeam && (
+        <p>{`Settled-team positions: [${cardsWithSettledTeam.join(",")}]`}</p>
       )}
       <button type="button" onClick={onConfirm}>
         Confirm entity review
@@ -1012,11 +1012,57 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       const { rerender } = renderChecklist();
       await syncTeamless(rerender);
       await screen.findByText("Wizard opened teams-only");
-      expect(screen.getByText("Stored-team positions: [1]")).toBeTruthy();
+      expect(screen.getByText("Settled-team positions: [1]")).toBeTruthy();
     });
 
     it("commits straight through when the node's set-level team covers the new cards", async () => {
       state.variantRow = { value: "Test Set", teamIds: ["team-set"] };
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    });
+
+    it("under a set-level team, still asks about a re-synced EXISTING teamless row (the commit only defaults new rows)", async () => {
+      state.variantRow = { value: "Test Set", teamIds: ["team-set"] };
+      // Card 1 re-syncs a stored row with no team; card 2 is a new row.
+      state.cards = [
+        settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
+      ];
+      mockDiffChecklist.mockResolvedValue({
+        ...emptyDiff,
+        cards: [
+          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
+          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "new", fields: [] },
+        ],
+      });
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+      // Only the new row is settled by the set's team; the existing one is asked.
+      expect(screen.getByText("Settled-team positions: [1]")).toBeTruthy();
+    });
+
+    it("a re-synced row carrying only a pending team name is settled, not asked about", async () => {
+      // A pending name already counts as a team for attention; the walker's
+      // unreviewed-name step answers it, and a "no team" here would be ignored.
+      state.cards = [
+        settledCard({ _id: "row-1", cardNumber: "1" }),
+        settledCard({
+          _id: "row-2",
+          cardNumber: "2",
+          teamOnCardIds: undefined,
+          pendingTeamNames: ["Gotham Knights"],
+        }),
+      ];
+      mockDiffChecklist.mockResolvedValue({
+        ...emptyDiff,
+        cards: [
+          { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
+          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "identical", existingId: "row-2", fields: [] },
+        ],
+      });
       const { rerender } = renderChecklist();
       await syncTeamless(rerender);
       await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());

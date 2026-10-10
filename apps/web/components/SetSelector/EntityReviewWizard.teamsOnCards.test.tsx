@@ -32,6 +32,8 @@ type SuggestionArgs = {
 };
 let serverAnswer: (player: { playerId?: string; name?: string }) => unknown;
 let suggestionCalls: SuggestionArgs[];
+/** While true, every suggestion query is still loading (answers undefined). */
+let suggestionsPending: boolean;
 /** Every getBatch subscription the wizard asked for (not skipped). */
 let batchReads: number;
 const mockCancelBatch = vi.fn(() => Promise.resolve(null));
@@ -50,7 +52,9 @@ vi.mock("convex/react", () => ({
     for (const [key, { query, args }] of Object.entries(queries)) {
       expect(query).toBe("cardChecklist.teamSuggestionsForPreview");
       suggestionCalls.push(args);
-      out[key] = { setYear: 1985, players: args.players.map((p) => serverAnswer(p)) };
+      out[key] = suggestionsPending
+        ? undefined
+        : { setYear: 1985, players: args.players.map((p) => serverAnswer(p)) };
     }
     return out;
   },
@@ -115,6 +119,7 @@ const lastAnswers = (fn: ReturnType<typeof vi.fn>) => fn.mock.calls.at(-1)?.[0];
 beforeEach(() => {
   rowId = 0;
   suggestionCalls = [];
+  suggestionsPending = false;
   batchReads = 0;
   mockCancelBatch.mockClear();
   serverAnswer = () => ({ playerId: null, answer: null, candidates: [] });
@@ -147,9 +152,9 @@ describe("TeamsOnCardsSection in the wizard's final step", () => {
     expect(suggestionCalls).toEqual([]);
   });
 
-  it("is absent when the node's set-level team covers every new card", () => {
+  it("is absent when the parent marks every teamless card settled (a set-level team covering a new card)", () => {
     renderWizard([{ cardNumber: "1", cardName: "Card", players: ["Johnny Bench"] }], {
-      cardsInheritSetTeam: true,
+      cardsWithSettledTeam: [0],
     });
     expect(screen.queryByText(/no team yet/)).toBeNull();
     expect(suggestionCalls).toEqual([]);
@@ -264,6 +269,87 @@ describe("TeamsOnCardsSection in the wizard's final step", () => {
     expect(none.getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(none);
     expect(onTeamAnswersChange.mock.calls.length).toBe(before);
+  });
+
+  it("says loading ONCE for the section, marks the waiting line busy, then says suggestions arrived", () => {
+    suggestionsPending = true;
+    const cards = [
+      { cardNumber: "1", cardName: "Base", players: ["Johnny Bench"] },
+      { cardNumber: "2", cardName: "Base", players: ["Pete Rose"] },
+    ];
+    const { rerender } = renderWizard(cards);
+    const statuses = () =>
+      screen.getAllByRole("status").map((el) => el.textContent ?? "");
+    // One line for the section — never one per player set.
+    expect(statuses().filter((t) => t === "Checking teams…")).toHaveLength(1);
+    expect(
+      screen.getByRole("radiogroup", { name: "Team for Johnny Bench" }).getAttribute("aria-busy"),
+    ).toBe("true");
+
+    suggestionsPending = false;
+    rerender(
+      <EntityReviewWizard
+        isOpen
+        selectorOptionId={"selopt-1" as unknown as Id<"selectorOptions">}
+        batchId="batch-1"
+        summary={{ cardCount: 2, deleteCount: 0, reviewDecisionCount: 0 }}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+        previewCards={cards}
+        onTeamAnswersChange={vi.fn()}
+      />,
+    );
+    expect(statuses()).toContain("Teams suggested");
+    expect(statuses()).not.toContain("Checking teams…");
+    expect(
+      screen.getByRole("radiogroup", { name: "Team for Johnny Bench" }).getAttribute("aria-busy"),
+    ).toBeNull();
+  });
+
+  it("says nothing about loading when no server suggestion was needed", () => {
+    renderWizard([{ cardNumber: "1", cardName: "Rookie Card", players: ["Rookie Guy"] }]);
+    const statuses = screen.getAllByRole("status").map((el) => el.textContent ?? "");
+    expect(statuses).not.toContain("Checking teams…");
+    expect(statuses).not.toContain("Teams suggested");
+  });
+
+  it("Confirm & Save is described by the section heading, its name unchanged", () => {
+    renderWizard([{ cardNumber: "1", cardName: "Rookie Card", players: ["Rookie Guy"] }]);
+    const heading = screen.getByRole("heading", { name: "1 card has no team yet" });
+    const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
+    expect(heading.id).not.toBe("");
+    expect(confirm.getAttribute("aria-describedby")).toBe(heading.id);
+  });
+
+  it("Confirm & Save carries no description when the section is not shown", () => {
+    renderWizard([
+      { cardNumber: "1", cardName: "Rookie Card", players: ["Rookie Guy"], teams: ["Reds"] },
+    ]);
+    const confirm = screen.getByRole("button", { name: CONFIRM_SAVE_NAME });
+    expect(confirm.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("the heading is not itself a live region; its text is", () => {
+    renderWizard([{ cardNumber: "1", cardName: "Rookie Card", players: ["Rookie Guy"] }]);
+    const heading = screen.getByRole("heading", { name: "1 card has no team yet" });
+    expect(heading.getAttribute("aria-live")).toBeNull();
+    expect(heading.querySelector('[aria-live="polite"]')?.textContent).toBe(
+      "1 card has no team yet",
+    );
+  });
+
+  it("a long owner line wraps rather than truncating behind a mouse-only title", () => {
+    renderWizard([
+      {
+        cardNumber: "1",
+        cardName: "Father and Son",
+        players: ["Ken Griffey Jr.", "Ken Griffey Sr."],
+      },
+    ]);
+    const owner = screen.getByText("Ken Griffey Jr. & Ken Griffey Sr.");
+    expect(owner.className).toContain("break-words");
+    expect(owner.className).not.toContain("truncate");
+    expect(owner.getAttribute("title")).toBeNull();
   });
 
   it("without preview cards the final step is exactly as before", () => {

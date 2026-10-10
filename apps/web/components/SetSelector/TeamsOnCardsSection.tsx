@@ -54,8 +54,8 @@ import {
  * Focus is never taken: Confirm & Save keeps the autofocus it has always had.
  */
 
-/** The chip ground, for the livery contrast check. Tailwind gray-800. */
-const CHIP_GROUND = "#1f2937";
+/** The chip ground, for the livery contrast check. Tailwind v4 gray-800. */
+const CHIP_GROUND = "#1e2939";
 /** WCAG 2.2 SC 1.4.3 for text this size. */
 const LIVERY_MIN_CONTRAST = 4.5;
 
@@ -84,6 +84,9 @@ function swatchColor(colors: TeamRef["colors"]): string | null {
 
 const NONE_LABEL = "No team on this card";
 const LATER_LABEL = "Leave for later";
+/** The section's one status line while suggestions load, then once they have. Draft copy. */
+const CHECKING_LABEL = "Checking teams…";
+const SUGGESTED_LABEL = "Teams suggested";
 
 type Choice = { id: string; choice: GroupChoice; option?: TeamOption; label: string };
 
@@ -122,9 +125,10 @@ export default function TeamsOnCardsSection({
   choices,
   onChoose,
   onAnswersChange,
-  inheritsSetTeam = false,
   settledIndexes,
   disabled = false,
+  headingId: headingIdProp,
+  onShownChange,
 }: {
   /** The node the cards will be saved under — the server reads the set from it. */
   selectorOptionId: Id<"selectorOptions">;
@@ -140,23 +144,27 @@ export default function TeamsOnCardsSection({
   /** Every card's answer, positionally aligned with `cards`. */
   onAnswersChange: (answers: Array<TeamAnswer | undefined>) => void;
   /**
-   * The node carries a set-level team (NEO-277), which the commit gives every
-   * NEW card that arrives without one. Nothing here would save teamless, so
-   * there is nothing to ask. (A re-synced EXISTING row keeps its own stored
-   * team instead; the browser cannot tell the two apart before the commit
-   * matches them, and an existing row is the rarer case.)
-   */
-  inheritsSetTeam?: boolean;
-  /**
-   * Preview positions that re-sync an existing row which already carries a
-   * team (or a "no team" answer). The commit keeps a stored row's team, so
-   * these never save teamless and are not asked about.
+   * Preview positions whose team is already settled, so they are not asked
+   * about: a re-synced existing row that carries a team (or a "no team"
+   * answer, or a pending team name), which the commit keeps; and, under a
+   * node with a set-level team (NEO-277), a card that will be a NEW row,
+   * which the commit gives that team. The parent decides which is which —
+   * it holds the diff that matched each card to a stored row.
    */
   settledIndexes?: readonly number[];
   /** A commit is in flight; the choices hold still. */
   disabled?: boolean;
+  /**
+   * The heading's id, when the host wants to point at it — the wizard's
+   * Confirm & Save is described by it, so a screen-reader user on the button
+   * hears that some cards will save with no team. Generated when absent.
+   */
+  headingId?: string;
+  /** Told whether the section is on screen (any card is asked about). */
+  onShownChange?: (shown: boolean) => void;
 }) {
-  const headingId = useId();
+  const ownHeadingId = useId();
+  const headingId = headingIdProp ?? ownHeadingId;
   const fieldClass = useFieldTestClass();
   const settled = useMemo(
     () => (settledIndexes && settledIndexes.length > 0 ? new Set(settledIndexes) : undefined),
@@ -165,11 +173,11 @@ export default function TeamsOnCardsSection({
 
   const requests = useMemo(
     () =>
-      (inheritsSetTeam ? [] : evidenceRequests(cards, rows, settled)).slice(
+      evidenceRequests(cards, rows, settled).slice(
         0,
         TEAMS_SECTION_PLAYERS_PER_REQUEST * TEAMS_SECTION_MAX_REQUESTS,
       ),
-    [cards, rows, inheritsSetTeam, settled],
+    [cards, rows, settled],
   );
   const queries = useMemo(() => {
     const out: Record<
@@ -220,18 +228,16 @@ export default function TeamsOnCardsSection({
 
   const groups = useMemo(
     () =>
-      inheritsSetTeam
-        ? []
-        : buildTeamsGroups({
-            cards,
-            rows,
-            serverEvidence,
-            setYear,
-            linkedTeamNameById,
-            currentYear: new Date().getFullYear(),
-            settled,
-          }),
-    [cards, rows, serverEvidence, setYear, linkedTeamNameById, inheritsSetTeam, settled],
+      buildTeamsGroups({
+        cards,
+        rows,
+        serverEvidence,
+        setYear,
+        linkedTeamNameById,
+        currentYear: new Date().getFullYear(),
+        settled,
+      }),
+    [cards, rows, serverEvidence, setYear, linkedTeamNameById, settled],
   );
 
   const answers = useMemo(
@@ -245,22 +251,38 @@ export default function TeamsOnCardsSection({
     onAnswersChange(answers);
   }, [answers, onAnswersChange]);
 
-  if (groups.length === 0) return null;
+  const shown = groups.length > 0;
+  useEffect(() => {
+    onShownChange?.(shown);
+  }, [shown, onShownChange]);
+  useEffect(() => () => onShownChange?.(false), [onShownChange]);
+
+  if (!shown) return null;
   const teamlessCount = groups.reduce((n, g) => n + g.cards.length, 0);
+  // ONE status for the whole section, never one per line: a line per player
+  // set can be dozens, and a screen reader reading "checking" for each is
+  // noise. Empty when nothing was asked of the server (every answer came from
+  // the batch itself), so there is nothing to report.
+  const anyLoading = groups.some((g) => g.loading);
+  const loadStatus = anyLoading ? CHECKING_LABEL : requests.length > 0 ? SUGGESTED_LABEL : "";
 
   return (
     <section aria-labelledby={headingId} className="border-t border-gray-800 pt-3">
-      {/* Polite, so a count that moves (the operator went back and changed a
-          Names decision) is said without interrupting. Copy: Jason-approved
+      {/* The live region is the heading's TEXT, not the heading: a live
+          heading has its role and level re-read with every change. Polite, so
+          a count that moves (the operator went back and changed a Names
+          decision) is said without interrupting. Copy: Jason-approved
           "K cards have no team yet". */}
-      <h3
-        id={headingId}
-        aria-live="polite"
-        className="text-sm font-normal text-gray-200"
-      >
-        <span className="tabular-nums">{teamlessCount}</span>{" "}
-        {teamlessCount === 1 ? "card has" : "cards have"} no team yet
+      <h3 id={headingId} className="text-sm font-normal text-gray-200">
+        <span aria-live="polite">
+          <span className="tabular-nums">{teamlessCount}</span>{" "}
+          {teamlessCount === 1 ? "card has" : "cards have"} no team yet
+        </span>
       </h3>
+      {/* role="status" implies polite; no explicit aria-live (house pattern). */}
+      <p role="status" className="sr-only">
+        {loadStatus}
+      </p>
       <ul className="mt-1 divide-y divide-gray-800">
         {groups.map((group, groupIndex) => (
           <TeamsLine
@@ -328,22 +350,26 @@ function TeamsLine({
   return (
     <li className="py-2 sm:grid sm:grid-cols-[minmax(0,11rem)_auto_minmax(0,1fr)] sm:items-start sm:gap-x-2">
       <div className="min-w-0">
-        <p className="truncate text-sm text-gray-100" title={owner}>
+        {/* Wraps rather than truncating: a title tooltip is mouse-only, and
+            "Ken Griffey Jr. & Ken Griffey Sr." cut short is the one part an
+            operator needed. */}
+        <p className="break-words text-sm text-gray-100">
           {group.players.length > 0 ? group.players.join(" & ") : first.cardName}
         </p>
         {group.cards.length === 1 ? (
-          <p className="truncate text-xs text-gray-400">
+          <p className="break-words text-xs text-gray-400">
             #{first.cardNumber}
             {group.players.length > 0 ? ` · ${first.cardName}` : ""}
           </p>
         ) : (
           <details className="text-xs text-gray-400">
-            <summary className="cursor-pointer rounded hover:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]">
+            {/* py-1 -my-1: a 24px target (SC 2.5.8) without moving the line. */}
+            <summary className="-my-1 cursor-pointer rounded py-1 hover:text-gray-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]">
               <span className="tabular-nums">{group.cards.length}</span> cards
             </summary>
             <ul aria-label={`Cards for ${owner}`} className="mt-1 space-y-0.5 pl-3">
               {group.cards.map((card) => (
-                <li key={card.index} className="truncate">
+                <li key={card.index} className="break-words">
                   #{card.cardNumber} · {card.cardName}
                 </li>
               ))}
@@ -360,6 +386,9 @@ function TeamsLine({
         ref={groupRef}
         role="radiogroup"
         aria-label={`Team for ${owner}`}
+        // Its suggestion is still on the way: the choices may change under
+        // the operator. The section's one status line says so in words.
+        aria-busy={group.loading || undefined}
         onKeyDown={onKeyDown}
         className="mt-1.5 flex flex-wrap gap-1.5 sm:mt-0"
       >
@@ -381,15 +410,15 @@ function TeamsLine({
               // py-1 on text-xs keeps every chip at WCAG 2.5.8's 24px floor.
               className={[
                 radioClass(index),
-                "inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
+                "inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border px-2.5 py-1 text-left text-xs",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF] focus-visible:ring-offset-1 focus-visible:ring-offset-gray-900",
                 isTeam
                   ? checked
                     ? "border-[#00D558] bg-[#00D558]/10 text-gray-100"
-                    : "border-gray-700 bg-gray-800 text-gray-200 hover:border-gray-500"
+                    : "border-gray-500 bg-gray-800 text-gray-200 hover:border-gray-400"
                   : checked
                     ? "border-gray-300 text-gray-100"
-                    : "border-dashed border-gray-700 text-gray-400 hover:border-gray-500 hover:text-gray-300",
+                    : "border-dashed border-gray-500 text-gray-400 hover:border-gray-400 hover:text-gray-300",
                 disabled ? "cursor-not-allowed opacity-60" : "",
               ].join(" ")}
             >
@@ -400,7 +429,11 @@ function TeamsLine({
                   ✓
                 </span>
               )}
-              {item.option ? <TeamOptionLabel option={item.option} /> : <span>{item.label}</span>}
+              {item.option ? (
+                <TeamOptionLabel option={item.option} />
+              ) : (
+                <span className="min-w-0 break-words">{item.label}</span>
+              )}
             </button>
           );
         })}
@@ -421,7 +454,7 @@ function TeamOptionLabel({ option }: { option: TeamOption }) {
           style={{ backgroundColor: swatch }}
         />
       )}
-      <span className="truncate">
+      <span className="min-w-0 break-words">
         {option.refs.map((ref, i) => {
           const color = liveryTextColor(ref.colors);
           return (
