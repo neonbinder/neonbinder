@@ -1,6 +1,6 @@
 ---
 name: neo331-team-picker-ranking
-description: NEO-331 — TeamPicker orders candidates by the set's League feature + year (4 tiers); how team-picker-ranks-by-set-context proves it with zero card writes; league level now required everywhere (pills unselected, primaries held); the "MLB" resolution trap (name/alias only, never abbreviation) and the held-rows "No matches." trap
+description: NEO-331 — TeamPicker orders candidates by the set's League feature + year (4 tiers); how team-picker-ranks-by-set-context proves it with zero card writes; league level now required everywhere (pills unselected, primaries held); no sport default (pick MLB explicitly — the seed owns the row); the held-rows "No matches." trap
 metadata:
   type: reference
 ---
@@ -35,13 +35,17 @@ picker form's `Add league` and League Management's `Create league …` are
 text: `tapOn: "Minor"`. Drains use `set-selector/util-wizard-answer-step-as-new.yaml`
 ([[branch-on-copied-button-text]]).
 
-**Trap 1 — "MLB" may not resolve.** `findLeagueByName` matches a league's NAME
-or ALIASES, never its abbreviation. The sport-default path
-(`resolveDefaultLeagueId`) seeds alias "MLB" only when it INSERTS the row; a
-"Major League Baseball" created first by a wizard New League step (the seed's
-drain does this) carries "MLB" as abbreviation only, and the default path then
-finds it by name and adds no alias. Symptom: ranking flow round 1 reads
-Y, W, X, Z (tiers 1/3 empty). Check the league row before blaming the ranking.
+**Trap 1 — no sport default; "MLB" by abbreviation.** Since ae04f64 an
+unanswered League leaves a team league-less (dialog, wizard commit, bulk
+load), so a flow that wants MLB PICKS it: `id: "League"` → type
+`Major League Baseb` → tap `Major League Baseball` → read back
+`id: League, text: Major League Baseball`. The row is the SEED's: setup's Base
+wizard drain stages a New League step from the committed enrichment recording
+(P118 label, abbreviation "MLB"), presses Other, Confirm & Save writes it
+(`enrichLeague` in convex-logs right after Confirm & Save). No alias "MLB", so
+`pickerContext` reaches it via the unique-abbreviation fallback (10c466b); a
+second league abbreviated MLB makes the fallback return nothing. Symptom of a
+miss: ranking round 1 reads Y, W, X, Z (tiers 1/3 empty).
 
 **Trap 2 — held rows.** TeamPicker keeps the previous answer on screen while
 a new query loads (no "Loading…" flash). Since 10c466b held rows render an

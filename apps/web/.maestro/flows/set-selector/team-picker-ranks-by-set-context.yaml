@@ -18,15 +18,32 @@ tags:
 # TIER ORDER, so a list that fell back to name order would come out exactly
 # upside down. All four share one prefix, `TPR<token>Q`, and differ in their
 # last letter:
-#   TPR<token>QZ — MLB (left unanswered, so the sport default "Major League
-#                  Baseball"), active from 1958          → tier 1
+#   TPR<token>QZ — "Major League Baseball", PICKED in the League combobox,
+#                  active from 1958                       → tier 1
 #   TPR<token>QY — a NEW league created inline from the League combobox, level
 #                  "Minor", active from 2000              → tier 2
-#   TPR<token>QX — MLB, 1900–1957 (closed before 2024)    → tier 3
+#   TPR<token>QX — "Major League Baseball", picked, 1900–1957 (closed before
+#                  2024)                                  → tier 3
 #   TPR<token>QW — "No league", active from 1958          → tier 4
 # The set is Baseball › 2024 › Topps › tpr-<worker>: its League feature is the
 # "MLB" Baseball's write-once snapshot copies down to every row beneath it, and
 # its year is 2024.
+#
+# WHERE "MAJOR LEAGUE BASEBALL" COMES FROM — THE SEED, NOT THIS FLOW. Since
+# NEO-331 an unanswered League leaves a team league-less (no sport default),
+# so Z and X pick the league explicitly, as an EXISTING row: type-ahead, then
+# the plain-name option, never a `Create “…”`. On a fresh preview that row is
+# written by setup.yaml's Base wizard drain: a player's lookup names
+# Wikidata's P118 "Major League Baseball" (committed enrichment recording,
+# abbreviation "MLB"), the wizard stages a New League step for it, the drain
+# presses "Other" and adds it, and Confirm & Save creates the row (measured on
+# the seed of a green PR run: the league lookup at the drain's first league
+# step, `enrichLeague` for it seconds after Confirm & Save). The set's "MLB"
+# reaches that row by name or alias, else by its unique abbreviation
+# (`pickerContext` in convex/teams.ts). If the seed
+# ever stops creating it, the combobox offers `Create “Major League Baseb”`
+# instead of the row and the plain-name tap fails by name — this flow must not
+# create it (its level and abbreviation are the seed's, shared by every flow).
 #
 # R2 — HARD ASSERTIONS, no silent fall-through:
 #   - ROUND 1: typing the shared prefix lists all four, and Y sits below Z, X
@@ -41,8 +58,10 @@ tags:
 #     so each round also reads back the years the dialog wrote.
 #   Diagnosis, before anything else: if round 1 comes out Y, W, X, Z, the set's
 #   "MLB" did not resolve to a league row (tiers 1 and 3 empty; Y alone in
-#   tier 2; the rest A–Z in tier 4) — read the Baseball leagues' names and
-#   aliases, not the ranking. If it comes out W, X, Y, Z, nothing ranked at all.
+#   tier 2; the rest A–Z in tier 4) — read the Baseball leagues' names,
+#   aliases and abbreviations (a SECOND league abbreviated "MLB" makes the
+#   abbreviation fallback refuse to guess), not the ranking. If it comes out
+#   W, X, Y, Z, nothing ranked at all.
 #
 # R3 — DEDUP: team-picker.yaml proves the picker's chips, create, remove and
 #   persistence; team-picker-create-custom-card.yaml the create path on a card;
@@ -145,9 +164,21 @@ tags:
 - tapOn:
     id: "New team active from \\(optional\\)"
 - inputText: "1958"
-# League left UNANSWERED: `teams.findOrCreate` files an unanswered team under
-# the sport's configured default league, Major League Baseball (alias "MLB"
-# when that path creates it) — the league every 2024 Baseball set names.
+# League (NEO-307 combobox) — pick the EXISTING "Major League Baseball", the
+# league every 2024 Baseball set names (see the header for who creates it).
+# "Major League Baseb" is a strict substring, so the input's own text cannot
+# answer the full-match tap; a matching row means no `Create “…”` is offered,
+# so the plain-name option can only be the stored league. The read-back is
+# decisive: the box reads the picked name at rest, not the typing.
+- tapOn:
+    id: "League"
+- inputText: "Major League Baseb"
+- tapOn: "Major League Baseball"
+- extendedWaitUntil:
+    visible:
+      id: "League"
+      text: "Major League Baseball"
+    timeout: 7000
 - tapOn:
     id: "Create team ${output.P}Z"
 - extendedWaitUntil:
@@ -237,7 +268,16 @@ tags:
 - tapOn:
     id: "New team active to"
 - inputText: "1957"
-# League unanswered → Major League Baseball, as Z.
+# League — the existing "Major League Baseball", picked exactly as for Z.
+- tapOn:
+    id: "League"
+- inputText: "Major League Baseb"
+- tapOn: "Major League Baseball"
+- extendedWaitUntil:
+    visible:
+      id: "League"
+      text: "Major League Baseball"
+    timeout: 7000
 - tapOn:
     id: "Create team ${output.P}X"
 - extendedWaitUntil:
