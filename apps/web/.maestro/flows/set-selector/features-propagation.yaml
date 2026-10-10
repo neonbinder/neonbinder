@@ -99,6 +99,10 @@ tags:
     visible: ".*Build set parameters using marketplace APIs.*"
     timeout: 45000
 
+# Minted names are single search tokens (README → Companion rules): the
+# ATTEMPT_ID with its hyphens stripped, folded into one word.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
 # ============================================================
 # STEP 0 — DRILL TO PER-WORKER CUSTOM SET under Baseball/2024/Topps
 # Returns at the Variant Types column. Idempotent on revisit.
@@ -339,7 +343,7 @@ tags:
     timeout: 15000
 - inputText: "992-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Propagation Test Player ${ATTEMPT_ID}"
+- inputText: "PropagationPlayer${output.ATTEMPT_TOKEN}"
 # Scroll the "Submit new card" button into center before tapping — it sits in
 # y=610-642 — below the fold on the 1024×629 CI viewport; centerElement
 # lands it near y≈315 so its own scroll-before-tap CDP call has content to
@@ -355,7 +359,7 @@ tags:
 # Virtuoso renders rows near the viewport; scroll to materialize the new card.
 - scrollUntilVisible:
     element:
-      text: "Propagation Test Player ${ATTEMPT_ID}"
+      text: "PropagationPlayer${output.ATTEMPT_TOKEN}"
     centerElement: true
     timeout: 7000
 
@@ -425,7 +429,7 @@ tags:
 # After the edit form closes, Virtuoso may reset scroll to top of visible range.
 - scrollUntilVisible:
     element:
-      text: "Propagation Test Player ${ATTEMPT_ID}"
+      text: "PropagationPlayer${output.ATTEMPT_TOKEN}"
     centerElement: true
     timeout: 7000
 
@@ -584,7 +588,7 @@ tags:
 # Re-materialize the card row (Virtuoso may reset scroll on form close).
 - scrollUntilVisible:
     element:
-      text: "Propagation Test Player ${ATTEMPT_ID}"
+      text: "PropagationPlayer${output.ATTEMPT_TOKEN}"
     centerElement: true
     timeout: 7000
 
@@ -603,4 +607,4 @@ tags:
 - assertVisible: "Confirm?"
 - tapOn:
     id: "Confirm delete card 992-${ATTEMPT_ID}(, .*)?"
-- assertNotVisible: "Propagation Test Player ${ATTEMPT_ID}"
+- assertNotVisible: "PropagationPlayer${output.ATTEMPT_TOKEN}"

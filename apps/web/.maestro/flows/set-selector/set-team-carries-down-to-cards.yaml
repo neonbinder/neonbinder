@@ -342,7 +342,7 @@ tags:
 # Card number is autofocused; the name box's placeholder is "Player name".
 - inputText: "771-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Set Team Alpha ${ATTEMPT_ID}"
+- inputText: "SetTeamAlpha${output.ATTEMPT_TOKEN}"
 # Submit sits at the bottom of the form, under the fold at 1024×629; centring
 # gives Maestro's own scroll-before-tap content to scroll to (R8).
 - scrollUntilVisible:
@@ -399,7 +399,7 @@ tags:
     timeout: 7000
 - inputText: "772-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Set Team Bravo ${ATTEMPT_ID}"
+- inputText: "SetTeamBravo${output.ATTEMPT_TOKEN}"
 - scrollUntilVisible:
     element:
       id: "Submit new card"
@@ -727,7 +727,7 @@ tags:
 - assertVisible: "Confirm?"
 - tapOn:
     id: "Confirm delete card 771-${ATTEMPT_ID}(, .*)?"
-- assertNotVisible: "Set Team Alpha ${ATTEMPT_ID}"
+- assertNotVisible: "SetTeamAlpha${output.ATTEMPT_TOKEN}"
 
 - scrollUntilVisible:
     element:
@@ -740,7 +740,7 @@ tags:
 - assertVisible: "Confirm?"
 - tapOn:
     id: "Confirm delete card 772-${ATTEMPT_ID}(, .*)?"
-- assertNotVisible: "Set Team Bravo ${ATTEMPT_ID}"
+- assertNotVisible: "SetTeamBravo${output.ATTEMPT_TOKEN}"
 # A positive after the negatives (a dead page passes every notVisible): the
 # checklist is back to its empty state.
 - extendedWaitUntil:

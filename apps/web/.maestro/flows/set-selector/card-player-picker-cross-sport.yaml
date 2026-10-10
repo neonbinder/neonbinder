@@ -108,7 +108,7 @@ tags:
 # The number box has autoFocus (util-add-custom-card STEP 6).
 - inputText: "315-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Guest Card ${ATTEMPT_ID}"
+- inputText: "GuestCard${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # STEP 3 — R2(a)+(b): the default search, then the switch

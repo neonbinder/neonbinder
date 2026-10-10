@@ -155,7 +155,7 @@ tags:
     timeout: 7000
 - inputText: "316-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Two Sport Card ${ATTEMPT_ID}"
+- inputText: "TwoSportCard${output.ATTEMPT_TOKEN}"
 - scrollUntilVisible:
     element:
       id: "Add a player to the new card"

@@ -198,7 +198,7 @@ tags:
 # Card number is autofocused; the name box's placeholder is "Player name".
 - inputText: "781-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Fill Alpha ${ATTEMPT_ID}"
+- inputText: "FillAlpha${output.ATTEMPT_TOKEN}"
 
 # THE QUICK-ADD PLAYER PICKER. Its four container names are the quick-add
 # form's own (QUICK_ADD_PLAYER_LABELS, CardChecklist.tsx) — reworded so they
@@ -369,7 +369,7 @@ tags:
     timeout: 7000
 - inputText: "782-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Fill Bravo ${ATTEMPT_ID}"
+- inputText: "FillBravo${output.ATTEMPT_TOKEN}"
 
 - scrollUntilVisible:
     element:
@@ -604,7 +604,7 @@ tags:
 - assertVisible: "Confirm?"
 - tapOn:
     id: "Confirm delete card 781-${ATTEMPT_ID}(, .*)?"
-- assertNotVisible: "Fill Alpha ${ATTEMPT_ID}"
+- assertNotVisible: "FillAlpha${output.ATTEMPT_TOKEN}"
 
 - scrollUntilVisible:
     element:
@@ -617,7 +617,7 @@ tags:
 - assertVisible: "Confirm?"
 - tapOn:
     id: "Confirm delete card 782-${ATTEMPT_ID}(, .*)?"
-- assertNotVisible: "Fill Bravo ${ATTEMPT_ID}"
+- assertNotVisible: "FillBravo${output.ATTEMPT_TOKEN}"
 # A positive after the negatives (a dead page passes every notVisible): the
 # checklist is back to its empty state.
 - extendedWaitUntil:

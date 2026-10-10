@@ -230,9 +230,12 @@ two buckets.
    script calls — there is no public reset any more) or use unique values per
    run (`${TEST_USERNAME}` is timestamp-based per CI run).
 
-   Note what that wipe means for `teams` and `players`: they are **empty at the
-   start of every run**, and no flow seeds a shared fixture into them (NEO-214
-   deleted the "Seed Test Teams" button and the mutation behind it). A flow that
+   Note what that means for `teams` and `players`. Since NEO-330 they are **not
+   empty** at the start of a CI run: they hold prod's reference catalogue,
+   loaded right after the reset (see "A reference catalogue is on every CI
+   preview" under Companion rules). What they never hold is a row any flow can
+   claim as its own fixture, and no flow seeds a shared one (NEO-214 deleted the
+   "Seed Test Teams" button and the mutation behind it). A flow that
    needs a team or a player creates its own, named per **worker and attempt**,
    through the product's own screens — `/admin/players` for a player and its
    career stints, TeamPicker's "+ New team" row and the New Team dialog it
@@ -244,6 +247,21 @@ two buckets.
    picker offers "+ New team <name>" only while no team of that name exists, so a
    name a previous attempt left behind renders "Add <name>" instead and the
    create step reaches for a control that is not there.
+
+4b. **The PR's preview will not deploy after a schema change to a reference
+   table (NEO-330).** Previews persist across pushes, and the catalogue rows
+   loaded by the previous run are still in them. Remove or retype a field on
+   `leagues`, `franchises`, `teams`, `teamAliases`, `players`,
+   `playerAliases`, `playerSports` or `selectorOptions`, and the next push's
+   `convex deploy` (inside `web-preview`) fails schema validation against those
+   rows, so E2E never starts. A rerun cannot fix it, and neither can the reset,
+   which runs on code that never deployed. Empty the tables with
+   `npm run reference-seed:clear -- --deployment <the PR's preview>` (one
+   atomic import; it needs no deployed code), then do a full rerun of the
+   pipeline. The next seed loads the catalogue again. Adding a REQUIRED field to
+   one of those tables is a different problem: the bundle cannot satisfy it, and
+   the reference-seed schema unit test fails before you push. Those tables take
+   optional fields only. Runbook: `docs/operations/neo330-reference-seed.md`.
 5. **Intentional platform divergence.** If you've ruled out 1–4, you're
    probably looking at a real Mac↔Linux Chrome difference — that's the
    coverage we want. Reproduce by reading the bounds out of the CI
@@ -641,7 +659,55 @@ listed here so a flow author meets them in one place.
   is indifferent to that, but anything that RECONSTRUCTS a prefix from
   `${WORKER_INDEX}` matches nothing in CI — so never rebuild the token by hand. (`output.ATTEMPT_TOKEN` is a value the
   flow sets itself, which is fine; the banned one is `output.ATTEMPT_ID`, a
-  binding the runner never populates.)
+  binding the runner never populates.) Prefix it with a word, not words:
+  `WalkerAlpha${output.ATTEMPT_TOKEN}`, never `Walker Alpha ${ATTEMPT_ID}`.
+  Every word in a minted name is a search term that real rows share (next
+  bullet).
+- **A reference catalogue is on every CI preview, so a fixture set must be one
+  the catalogue does not know, and real names collide (NEO-330).** Every CI
+  run loads prod's reference catalogue onto the PR's preview right after the
+  reset and before `setup.yaml`: all leagues, franchises, teams, team aliases,
+  players, player aliases and player sports, plus the sport rows — about 113k
+  players and 10.5k teams, including the Lahman, Negro Leagues and nflverse
+  loads. The reset leaves those tables alone and the bundle's
+  `convex import --replace` is their clear (`run-e2e-smoke.sh`, with
+  `NB_REFERENCE_BUNDLE` set). Flows still make their own fixtures through the
+  UI; the catalogue is the backdrop they make them against. It is never
+  trimmed to suit a flow, so a flow that breaks against it is fixed in the
+  flow or, when the screen cannot cope, in the product. Four consequences:
+  1. **The wizard only opens for names the catalogue does not know.**
+     "Confirm New Players & Teams" stages a player or team only when no row of
+     that name exists. A set whose roster is all real, well-known players
+     commits straight through with no wizard, so any flow that drives the
+     wizard needs a fixture set the catalogue does not cover. Choosing one is
+     a real-set decision (`SET-REGISTRY.md`, owner approval).
+  2. **A real name always has company.** Type a real person or club into a
+     picker, a filter or the add form and the catalogue answers: search rows
+     crowd the popover, the add form demotes `Create player X` to `Open X`,
+     and the team typeahead lists `Add X` rows above its `+ New team` row. A flow that
+     needs a real row reads the catalogue's own spelling (for example
+     `player-add-spaced-initials-opens-roster-row`, whose roster row is the
+     catalogue's `J. T. Realmuto`) and never creates one. A flow that must
+     CREATE a real name needs one the catalogue lacks; check the bundle
+     before choosing it, as well as the committed checklists. Free text that
+     never reaches a search (the spine label's name, a card's name) is
+     unaffected.
+  3. **Lists are long.** `/admin/players` lists 500 rows and `/admin/teams`
+     2000, and both say `list truncated` (the
+     `admin/players-list-at-catalogue-scale` flow proves it). Never scroll a
+     master list looking for a row, never assume one fits on screen, and never
+     assert a bare count. Filter to a minted single token, then target that
+     row by its name (`id:` on the row's `title`). If a screen cannot surface a
+     row you just minted by filtering for it, that is a product bug to report,
+     never a flow workaround.
+  4. **Local runs do not have it unless you load it.** CI downloads the bundle;
+     a local `test:e2e -- setup` loads it only when `NB_REFERENCE_BUNDLE`
+     (a local bundle path) and `CONVEX_NAME` (the target preview) are set.
+     Without it the catalogue-dependent flows fail locally for want of data,
+     not because of a bug. `npm run reference-seed:load` puts it on a dev
+     deployment (it remaps sports by name and asks you to retype the
+     deployment, since dev is shared). Runbook:
+     `docs/operations/neo330-reference-seed.md`.
 - **`pressKey` needs a unique, user-visible handle** on its target — an
   accessible name, never a DOM `id` (own section below).
 - **Prefer `openLink` over tapping a link** to reach a page (own section).
@@ -951,8 +1017,11 @@ The **setup track** is the seeding infrastructure: the scripted
 drill to 2024 Topps Chrome + Variant Types sync. `run-e2e-smoke.sh` excludes
 `setup`-tagged flows from every mode except `test:e2e -- setup`, so the seed
 runs once, deliberately, and never as one thread among many (NEO-46). Note that
-neither step seeds a team or a player: those tables stay empty until a flow
-makes its own per-worker rows (see troubleshooting item 4 above).
+neither step seeds a team or a player a flow may claim: a flow makes its own
+per-worker rows (see troubleshooting item 4 above). With `NB_REFERENCE_BUNDLE`
+set (CI always sets it), the reset skips the reference tables and the bundle's
+import replaces them; see "A reference catalogue is on every CI preview" under
+Companion rules.
 
 Nothing schedules around the seed: run `test:e2e -- setup` first, then run
 whatever flows you want.
@@ -1169,6 +1238,13 @@ What that changes for flows:
   `wikidata_lookup_unavailable` (kind, row id and reason, never a name).
   Then re-run per "Re-running a red E2E (NEO-187)". A red with no such lines,
   or a repeat with `query.wikidata.org` healthy, is a product finding.
+- **The live-proof name must also be absent from the reference catalogue
+  (NEO-330).** The catalogue is loaded onto the preview after the reset, so
+  "the reset clears players" no longer makes a name new. Harmon Killebrew is
+  in the catalogue, so while the flow still names him its add form offers
+  `Open Harmon Killebrew` and the flow fails on `Create player Harmon
+  Killebrew` by name. A replacement has to pass three checks: the bundle,
+  the recording and the committed checklists.
 - **Do not add the live-proof name to the recording.** The capture reads the
   deployment's `players` rows, so a capture taken after the suite has run
   would sweep it in; `convex/adapters/enrichmentFixtureFile.test.ts` refuses
