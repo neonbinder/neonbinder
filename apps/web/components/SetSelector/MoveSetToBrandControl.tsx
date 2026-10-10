@@ -137,8 +137,8 @@ export default function MoveSetToBrandControl({
   /**
    * Armed when this control's own transition is what unmounts the focused
    * element, so the restore below never steals focus from something else that
-   * happened to re-render the panel (`BaseRoleControl`'s `actedRef`, same
-   * reasoning).
+   * happened to re-render the panel (same reasoning as
+   * `RenameEntityControl`'s `wasEditingRef`).
    */
   const restoreFocusRef = useRef(false);
   /**

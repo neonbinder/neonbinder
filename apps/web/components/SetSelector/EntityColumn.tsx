@@ -26,7 +26,12 @@ import {
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { checkCustomSelectorValue } from "../../convex/selectorSyncMatch";
-import { SUB_VARIANT_INSERT_ONLY } from "../../convex/variantRole";
+import {
+  sameTitleWord,
+  sameWordSiblingMessage,
+  SUB_VARIANT_INSERT_ONLY,
+  VARIANT_TYPE_RENAME_REFUSED,
+} from "../../convex/variantRole";
 import { siblingTwinSuffixes } from "./marketplace-item-label";
 
 type Level =
@@ -98,21 +103,31 @@ function customRefusal(
   if (typeof e !== "object" || e === null) return null;
   const data = (e as { data?: unknown }).data;
   if (typeof data !== "object" || data === null) return null;
-  const { code, reason, matches, total } = data as {
+  const { code, reason, message, matches, total } = data as {
     code?: unknown;
     reason?: unknown;
+    message?: unknown;
     matches?: unknown;
     total?: unknown;
   };
-  // NEO-334: a sub-variant refused outside an Insert type reads like an
-  // invalid value — one inline sentence under the field, the server's own.
-  if (code === "CUSTOM_VALUE_INVALID" || code === SUB_VARIANT_INSERT_ONLY) {
+  // NEO-334: a sub-variant refused outside an Insert type, and a variant type
+  // the set cannot take (a second "Base", or "Promos" beside "Promo"), read
+  // like an invalid value — one inline sentence under the field, the
+  // server's own. The rename family carries its sentence as `message`.
+  if (
+    code === "CUSTOM_VALUE_INVALID" ||
+    code === SUB_VARIANT_INSERT_ONLY ||
+    code === VARIANT_TYPE_RENAME_REFUSED
+  ) {
+    const sentence =
+      typeof reason === "string" && reason.length > 0
+        ? reason
+        : typeof message === "string" && message.length > 0
+          ? message
+          : null;
     return {
       code: "CUSTOM_VALUE_INVALID",
-      reason:
-        typeof reason === "string" && reason.length > 0
-          ? reason
-          : "That value isn't allowed here.",
+      reason: sentence ?? "That value isn't allowed here.",
     };
   }
   if (code === "CUSTOM_EXISTS_ELSEWHERE") {
@@ -971,6 +986,21 @@ export default function EntityColumn({
         matches: sharedMatchesOf(sameNamed),
         total: sameNamed.length,
       });
+      return;
+    }
+    // NEO-334 — singular and plural are one word for a variant type's title
+    // (Jason, 2026-10-10): "Promos" beside "Promo", "Inserts" beside
+    // "Insert". Variant types only; every other level keeps its exact-name
+    // rule above. The server refuses it too, so it is said here first, in the
+    // server's own sentence, without a round-trip. Not a navigation like the
+    // exact match above: the operator typed a different spelling, and the
+    // list beside the field already shows the row to pick.
+    const sameWord =
+      level === "variantType"
+        ? (items ?? []).find((o) => sameTitleWord(o.value, trimmed))
+        : undefined;
+    if (sameWord) {
+      setCustomError(sameWordSiblingMessage(sameWord.value));
       return;
     }
 

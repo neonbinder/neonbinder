@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { PencilSquareIcon } from "@heroicons/react/24/outline";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { useFieldTestClass } from "../../src/hooks/useFieldTestClass";
 import { Input } from "../primitives/Input";
+import { VARIANT_TYPE_RENAME_REFUSED } from "../../convex/variantRole";
 
 /**
  * NEO-96: inline rename for a single `selectorOptions` row's display value.
@@ -68,30 +69,35 @@ import { Input } from "../primitives/Input";
  * role="alert" rather than being swallowed.
  *
  * ── EVERY ROW IS RENAMEABLE (NEO-239) ───────────────────────────────────────
- * `variantType` rows used to be refused a rename, because two things read their
- * DISPLAY VALUE as code: Base detection matched the literal "base", and the BSC
- * checklist fetch re-derived its `variant` facet from the value. Both now read
- * ids and NB role flags instead — Base is `metadata.isBase`, and the `variant`
- * facet comes off the row's tagged BSC slot — so the value is a label again, at
- * every level. Nothing user-facing may key on a marketplace value or feed an NB
- * display value back into a marketplace query; a rename gate built on that
- * coupling had to go with it.
+ * `variantType` rows used to be refused a rename outright, because the BSC
+ * checklist fetch re-derived its `variant` facet from the value. That facet now
+ * comes off the row's tagged BSC slot, so no marketplace query reads a title.
+ *
+ * ── A VARIANT TYPE'S TITLE IS ITS KIND (NEO-334) ────────────────────────────
+ * Jason, 2026-10-10: the type titled "Base" is the set's Base, "Insert(s)" is
+ * an Insert type, "Parallel(s)" a Parallel type (`variantTypeKind`). So a
+ * rename of a variant type can change what it is, and the server refuses that
+ * while rows sit beneath it, as well as a second "Base" and a title whose
+ * singular or plural a sibling already holds. Each refusal is a sentence
+ * written for the operator; it renders on its own line under the panel header
+ * (`order-last basis-full` in the header's wrapping row), because those
+ * sentences are too long for the slot beside the field.
  */
 
 /**
  * The server's refusal payload for a rename it would not accept. Matched
  * structurally rather than with `instanceof ConvexError` so a mocked/rethrown
  * error in a test, or a version skew in the convex client, still surfaces the
- * server's own words. Kept as a defensive read after NEO-239 removed the only
- * refusal that used it: an old bundle talking to a new server, or a future
- * refusal, should still say why rather than failing silently.
+ * server's own words. NEO-334 brought the code back: a variant type whose
+ * rename would change its kind with rows beneath it, a second "Base", or a
+ * same-word sibling ("Promos" beside "Promo").
  */
 function refusalMessage(e: unknown): string | null {
   if (typeof e !== "object" || e === null) return null;
   const data = (e as { data?: unknown }).data;
   if (typeof data !== "object" || data === null) return null;
   const { code, message } = data as { code?: unknown; message?: unknown };
-  if (code !== "VARIANT_TYPE_RENAME_REFUSED") return null;
+  if (code !== VARIANT_TYPE_RENAME_REFUSED) return null;
   return typeof message === "string" && message.length > 0
     ? message
     : "This name can't be changed.";
@@ -107,6 +113,7 @@ export default function RenameEntityControl({
 }) {
   const rename = useMutation(api.selectorOptions.renameSelectorOption);
   const fieldClass = useFieldTestClass();
+  const errorId = useId();
 
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -150,8 +157,9 @@ export default function RenameEntityControl({
     } catch (e) {
       // Surface it: a sibling-name collision is the expected failure here and
       // the user needs to see why their rename didn't take. A variantType
-      // refusal (NEO-211) arrives as a structured ConvexError whose own message
-      // explains WHY the value is load-bearing — render that, not a generic.
+      // refusal (NEO-334) arrives as a structured ConvexError whose own
+      // message explains why the title is load-bearing — render that, not a
+      // generic.
       setError(refusalMessage(e) ?? (e instanceof Error ? e.message : "Rename failed"));
     } finally {
       setSaving(false);
@@ -185,41 +193,53 @@ export default function RenameEntityControl({
     );
   }
 
+  // A fragment, not one wrapper: the refusal is a SIBLING of the field in the
+  // panel header's wrapping flex row, so `basis-full` gives it a line of its
+  // own and `order-last` puts that line under the whole header row (after
+  // the Base tag and the delete) rather than splitting the row in two.
   return (
-    <div className="shrink-0 flex items-center gap-1">
-      <Input
-        bare
-        ref={inputRef}
-        placeholder={currentValue}
-        // readOnly + aria-disabled, not disabled: this field's own onKeyDown
-        // triggers commit() directly (Enter), which sets `saving` true
-        // synchronously — a native `disabled` on the still-focused input
-        // would force-blur it to <body> for the duration of the rename
-        // round-trip. readOnly blocks edits without removing focusability;
-        // aria-disabled still announces the busy state.
-        readOnly={saving}
-        aria-disabled={saving || undefined}
-        aria-label={`Edit name for ${currentValue}`}
-        className={`${fieldClass("rename")} w-32 px-2 py-1 text-sm aria-disabled:opacity-50 aria-disabled:cursor-not-allowed`}
-        onKeyDown={(e) => {
-          // Stop the row's own handlers from seeing these — the row is a
-          // sibling button and Enter would otherwise also select it.
-          e.stopPropagation();
-          if (e.key === "Enter") {
-            e.preventDefault();
-            void commit();
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            cancel();
-          }
-        }}
-        onBlur={() => void commit()}
-      />
+    <>
+      <div className="shrink-0 flex items-center gap-1">
+        <Input
+          bare
+          ref={inputRef}
+          placeholder={currentValue}
+          // readOnly + aria-disabled, not disabled: this field's own onKeyDown
+          // triggers commit() directly (Enter), which sets `saving` true
+          // synchronously — a native `disabled` on the still-focused input
+          // would force-blur it to <body> for the duration of the rename
+          // round-trip. readOnly blocks edits without removing focusability;
+          // aria-disabled still announces the busy state.
+          readOnly={saving}
+          aria-disabled={saving || undefined}
+          aria-label={`Edit name for ${currentValue}`}
+          aria-invalid={error ? true : undefined}
+          aria-describedby={error ? errorId : undefined}
+          className={`${fieldClass("rename")} w-32 px-2 py-1 text-sm aria-disabled:opacity-50 aria-disabled:cursor-not-allowed`}
+          onKeyDown={(e) => {
+            // Stop the row's own handlers from seeing these — the row is a
+            // sibling button and Enter would otherwise also select it.
+            e.stopPropagation();
+            if (e.key === "Enter") {
+              e.preventDefault();
+              void commit();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              cancel();
+            }
+          }}
+          onBlur={() => void commit()}
+        />
+      </div>
       {error && (
-        <span role="alert" className="text-xs text-[#FF2EB3] max-w-40">
+        <p
+          id={errorId}
+          role="alert"
+          className="order-last basis-full max-w-prose text-xs leading-snug text-[#FF2EB3]"
+        >
           {error}
-        </span>
+        </p>
       )}
-    </div>
+    </>
   );
 }

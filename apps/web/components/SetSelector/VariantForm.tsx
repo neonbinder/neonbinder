@@ -4,7 +4,7 @@ import { api } from "../../convex/_generated/api";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
 import { primarySlot, slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
-import { variantTypeRole } from "../../convex/variantRole";
+import { variantTypeKind } from "../../convex/variantRole";
 import ReconciliationModal, { type ReconciledResult, type MatchedPair, type PlatformItem, type SlCandidateGroup } from "./ReconciliationModal";
 import SyncDoneNotice from "./SyncDoneNotice";
 import {
@@ -147,10 +147,10 @@ export default function VariantForm({
   // NEO-325 (Jason, 2026-10-09) — the Reconcile dialog checks every pending
   // set against the saved Base, for the PARALLEL variant type only: a
   // parallel is the Base's checklist in another colour, an insert is not.
-  // Decided by NB's role flag on the chain's own row (`variantTypeRole`),
-  // never by the row's name. Parallels of an insert (ParallelForm) are out
-  // of scope.
-  const checksAgainstBase = variantTypeRole(variantTypeRow) === "parallel";
+  // Decided by the chain's own row's kind (`variantTypeKind`, NEO-334: a
+  // variant type's title IS its kind). Parallels of an insert (ParallelForm)
+  // are out of scope.
+  const checksAgainstBase = variantTypeKind(variantTypeRow) === "parallel";
   // Pluralized variantType label ("Insert" → "Inserts") for headings and
   // the reconciliation modal title. Falls back to "Variants" until the
   // ancestor chain resolves.

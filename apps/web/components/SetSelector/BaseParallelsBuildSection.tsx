@@ -22,8 +22,9 @@ import ParallelBuildPanel, {
 /**
  * NEO-321 — build the base set's parallels in one go.
  *
- * Shown by the set builder when the selected variant type's NB role is
- * `parallel` (`variantTypeRole`, never the row's name), and kept on screen
+ * Shown by the set builder when the selected variant type's kind is
+ * `parallel` (`variantTypeKind`, NEO-334: a variant type's title IS its
+ * kind, exactly "Parallel" or "Parallels"), and kept on screen
  * while one of the parallels under it is open. Every row under that type is
  * a parallel of the base set, so its cards are a copy of the Base checklist's
  * NB cards, each re-linked to the parallel's own marketplace card — the

@@ -23,12 +23,13 @@
  * fine on their own: below a broken link there is no parent to hang them on.
  * The client rewrites the URL to that prefix and says it did.
  *
- * Base is terminal (NEO-239: an NB role flag, never the name). The cascade
+ * Base is terminal (NEO-334: the variant type titled "Base", its kind read by
+ * `variantTypeKind`). The cascade
  * shows no Variants column beneath it, so a path that carries anything past a
  * Base variant type stops at the Base.
  *
  * NEO-334 — the same, one level down: the Sub-Variants column exists only
- * under an Insert type (`subVariantsAllowedUnder`, the NB role again), so
+ * under an Insert type (`subVariantsAllowedUnder`, the title's kind again), so
  * under any other variant type the insert is the end of the path and a
  * `parallel` id after it is dropped like any other bad link.
  *
@@ -39,7 +40,7 @@ import { query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import { selectorOptionLevelValidator } from "./schema";
-import { subVariantsAllowedUnder, variantTypeRole } from "./variantRole";
+import { subVariantsAllowedUnder, variantTypeKind } from "./variantRole";
 
 /**
  * The cascade's levels, root first. Position n of the `ids` argument is a
@@ -101,7 +102,7 @@ export const resolveDrillPath = query({
       // A sport has no parent; every deeper row hangs off the one before it.
       if ((row.parentId ?? null) !== parentId) break;
       path.push({ _id: row._id, level });
-      if (level === "variantType" && variantTypeRole(row) === "base") break;
+      if (level === "variantType" && variantTypeKind(row) === "base") break;
       if (level === "variantType") subVariantsOpen = subVariantsAllowedUnder(row);
       if (level === "insert" && !subVariantsOpen) break;
       parentId = row._id;

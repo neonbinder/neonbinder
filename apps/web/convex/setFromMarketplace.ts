@@ -37,8 +37,8 @@ import { unionChildren } from "./selectorSyncStore";
  *    where `BaseSetPicker` would put it, so the checklist fetch, the attach
  *    pane and the source chips all find it without a second concept. It gets
  *    its SportLots slot through `initialSlots` (slot key `s0`, label = the
- *    marketplace's label), `metadata.isBase: true` (the NB flag, derived once
- *    at creation — never re-read from the value "Base"), features from the
+ *    marketplace's label), the title "Base" (which IS its kind, NEO-334:
+ *    `variantTypeKind`; no flag is written beside it), features from the
  *    set plus `deriveOwnLevelFeatures("variantType", "Base")`, and the same
  *    `teamIds`. **No** `platformFacets` (there is no BSC id to facet) and
  *    **no** `primaryPlatformId` (one slot; the lowest-numbered slot is
@@ -436,7 +436,6 @@ export async function insertSetWithBaseFromSl(
     parentId: setId,
     children: [],
     ...audit,
-    metadata: { isBase: true },
     ...(Object.keys(baseFeatures).length > 0 ? { features: baseFeatures } : {}),
     ...(brandTeamIds ? { teamIds: [...brandTeamIds] } : {}),
     lastUpdated: now,
