@@ -17,7 +17,8 @@ tags:
 #   (a) STEP 5 — while the wizard is drained, no team step is ever about a
 #       comma-joined name: every `New Team:` / `New League:` step presented
 #       is checked BEFORE it is answered, on its pinned footer control (whose
-#       accessible name carries the row's name) and on its heading.
+#       accessible name carries the row's name) and on its heading. Neither
+#       seeded half of PDA-WW's value may be a step either.
 #   (b) STEP 6 — after the save, the dual card's row reads both clubs as
 #       resolved teams (`teamFullName` of each linked row, joined ", "), with
 #       no "(unconfirmed)" tail.
@@ -461,6 +462,23 @@ tags:
 #    and the wait fails naming the selector — that is the regression this
 #    flow exists to catch (before NEO-333 the wizard presented exactly
 #    `New Team: Cleveland Guardians, Washington Nationals`).
+#  * the same check refuses a step for either HALF of PDA-WW's value. Both
+#    clubs are seeded current teams, so the split parts must each resolve
+#    (`chooseCandidateTeams` → the review gate) and raise nothing. A step named
+#    `Boston Red Sox` or `Detroit Tigers` means the split happened but a part
+#    failed to resolve, and the card would then commit with that club missing.
+#    `(?!…)` is a lookahead in the driver's Java regex (the alias flow uses
+#    one too). A staged Wikidata stint at either club resolves to the seeded
+#    current row, so it raises no step either.
+#  * WHY THESE CHECKS NOW SEE BSC's VALUES (NEO-333 fence). Before the fence,
+#    the one-marketplace path snapshotted the candidates before the fetch's
+#    team lookup reached the client. The wizard then saw NO BSC team name, so
+#    (a) passed vacuously, and the commit saved cards with no team for the
+#    background BSC queue to link seconds later. CI run 38068514601 attempt 2
+#    caught that as (b) reading the row about 8s after `Saved`.
+#    `fetchCardChecklist` now returns a fence, and the client waits for it on
+#    both paths before the candidates go anywhere. So every BSC team value
+#    the gate cannot resolve is a step here, and only those.
 #  * the heading negative is the same claim read off the body's h3. It rides
 #    on the positive above, so it cannot pass on a dead page (memory:
 #    negative-asserts-pass-on-a-dead-page).
@@ -484,10 +502,10 @@ tags:
           commands:
             - extendedWaitUntil:
                 visible:
-                  id: "Skip [^,]+ — (not a team|this team has no league)|Skip .* — not a person"
+                  id: "Skip (?!Boston Red Sox —|Detroit Tigers —)[^,]+ — (not a team|this team has no league)|Skip .* — not a person"
                 timeout: 7000
             - assertNotVisible:
-                text: "New (Team|League): .*,.*"
+                text: "New (Team|League): .*,.*|New Team: (Boston Red Sox|Detroit Tigers)"
             - tapOn:
                 id: "Skip .* — (not a team|this team has no league)"
                 optional: true
@@ -538,6 +556,13 @@ tags:
 #    reads its team rows through a query, and the claim is "both", not "in
 #    BSC's order".
 # No other card in the set carries either club, so the pair IS PDA-WW.
+# The links are written BY THE SAVE (the NEO-333 fence: the candidates carry
+# the fetch's teams into the commit), so the row is final the moment `Saved`
+# renders and the 7000 bar is the whole budget. Before the fence they came
+# from the background BSC queue, one card at a time, and this read missed by
+# about 1s (CI 38068514601 attempt 2). If it ever reds again with the row
+# fully on screen in the failure dump, that is the same lateness and a
+# product finding, not a timeout to raise.
 # The `Saved N cards` notice sits in the checklist header and the rows below
 # it, so DOWN. Nothing is tapped, so no centring (R8), and the scroll is the
 # assertion (R6). PDA-WW is the list's last row, which the list opens on.
