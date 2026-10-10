@@ -89,14 +89,6 @@ vi.mock("../../convex/_generated/api", () => ({
     teams: {
       getManyByIds: "teams.getManyByIds",
     },
-    // NEO-279 — Fill teams used to mount in the header and read these at
-    // render. NEO-306 moved it to the checklist; kept so a regression that
-    // re-mounts it here renders (and fails the "left the panel" pin) rather
-    // than crashing on a missing reference.
-    teamFill: {
-      previewTeamFill: "teamFill.previewTeamFill",
-      applyTeamFill: "teamFill.applyTeamFill",
-    },
     // NEO-237 — the Brand row's save and the via-All-Brands toggle's write,
     // bound at render on every level.
     brandView: {
@@ -202,7 +194,7 @@ vi.mock("convex/react", () => ({
     return vi.fn();
   },
   useConvex: () => ({ query: mockConvexQuery }),
-  // NEO-279 — inert here; see the `teamFill` note on the api mock above.
+  // Inert here: nothing this file exercises calls an action.
   useAction: () => vi.fn(),
 }));
 
@@ -275,7 +267,6 @@ import SetAttributesPanel, {
   teamSavedToast,
 } from "./SetAttributesPanel";
 import { DEFAULT_TEAM_PICKER_LABELS } from "./TeamPicker";
-import { fillTeamsLabel, FILL_TEAMS_LIST_LABEL } from "./FillTeamsControl";
 import { SET_ROW_ACTION_TONE_CLASSES } from "./SetRowActionButton";
 
 /** The set row's picker trigger — see SET_TEAM_PICKER_LABELS. */
@@ -2683,29 +2674,17 @@ describe("teamCascadeConfirmCopy / teamClearConfirmCopy / teamSavedToast (NEO-27
 });
 
 /**
- * NEO-306 — Fill teams LEFT the panel for the card checklist's header
- * ("N cards need a team", beside the attention chip — pinned in
- * CardChecklist.fillTeams.test.tsx). What this pins is that nothing of it is
- * left behind here, at any level, and that the one set-row control it used to
- * sit beside still renders exactly once across a selection move (the NEO-279
- * duplicate-key incident, CI run 34930152576).
+ * NEO-279 — the set actions render exactly once across a selection move (the
+ * duplicate-key incident, CI run 34930152576). The set-wide Fill teams control
+ * that first exposed it was retired in NEO-335; the shape still has to stay
+ * clean for the actions that remain.
  */
-describe("SetAttributesPanel — Fill teams is not a panel control any more (NEO-306)", () => {
+describe("SetAttributesPanel — set actions across a selection move (NEO-279)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     currentChain = makeChain("Baseball");
     currentHoldings = { holds: [], protected: false };
   });
-
-  it.each(["sport", "year", "manufacturer", "setName", "variantType", "insert", "parallel"])(
-    "renders no Fill button at %s",
-    (level) => {
-      currentRow = makeRow({ level });
-      renderPanel();
-      expect(screen.queryByRole("button", { name: /\bneeds? a team$/ })).toBeNull();
-      expect(document.getElementById("fill-teams")).toBeNull();
-    },
-  );
 
   it("renders exactly ONE of each set action after the selection moves to another set row", () => {
     // CI run 34930152576: two siblings with one key is undefined for React
@@ -2736,22 +2715,6 @@ describe("SetAttributesPanel — Fill teams is not a panel control any more (NEO
       ),
     ).toBe(false);
     consoleError.mockRestore();
-  });
-
-  it("names its trigger and its ledger distinctly from BOTH team pickers on the page — no shared substring in either direction", () => {
-    // The checklist it moved to sits under this panel: the panel's set team
-    // picker and the checklist's quick-add picker (the defaults) share the
-    // page with it, and Maestro's `id:` is a regex find over names.
-    for (const own of [fillTeamsLabel(1), fillTeamsLabel(12), FILL_TEAMS_LIST_LABEL]) {
-      for (const labels of [SET_TEAM_PICKER_LABELS, DEFAULT_TEAM_PICKER_LABELS]) {
-        for (const key of ["root", "trigger", "search", "results"] as const) {
-          const picker = labels[key];
-          expect(own).not.toBe(picker);
-          expect(own.includes(picker)).toBe(false);
-          expect(picker.includes(own)).toBe(false);
-        }
-      }
-    }
   });
 });
 

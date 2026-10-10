@@ -72,10 +72,18 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
         return { success: true, cards: mockState.bscCards };
       },
     }),
+    // NEO-335: one entry per requested id; an empty list reads as every
+    // lookup failed, which the caller treats exactly as "no team" before.
     fetchBscCardTeamNames: internalAction({
       args: { bscCardIds: v.array(v.string()) },
-      returns: v.record(v.string(), v.string()),
-      handler: async (): Promise<Record<string, string>> => ({}),
+      returns: v.array(
+        v.object({
+          bscCardId: v.string(),
+          teamName: v.string(),
+          success: v.boolean(),
+        }),
+      ),
+      handler: async () => [],
     }),
   };
 });

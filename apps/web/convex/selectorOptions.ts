@@ -40,7 +40,7 @@ import {
 } from "./features/generateListing";
 import { LISTING_TITLE_MAX } from "./features/listingLimits";
 import { generateSku } from "./sku";
-import { insertCardRow } from "./cardRowCreate";
+import { insertCardRow, type CarriedCardFields } from "./cardRowCreate";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import {
   cardNumberStem,
@@ -181,7 +181,12 @@ import {
   platformServesLevel,
   platformsServingLevel,
 } from "./platformLevels";
-import { findSportForSelectorOption } from "./cardChecklist";
+import {
+  findSportForSelectorOption,
+  MAX_BSC_TEAM_NAME_LENGTH,
+} from "./cardChecklist";
+// NEO-335 — type only: the per-card answer of the fetch-time BSC team lookup.
+import type { BscCardTeamLookup } from "./adapters/buysportscards";
 // NEO-254: the set's year — the evidence that turns "two same-name players"
 // back into one. See convex/lib/selectorAncestry.ts.
 import {
@@ -3479,6 +3484,9 @@ type CardNameBearing = {
   teams?: string[];
   team?: string;
   playersConflict?: { bsc: string[]; sportlots: string[] };
+  // NEO-335 — operator-chosen NB team ids. Only the COUNT is bounded here;
+  // the ids themselves are validated against the table by the commit.
+  teamIds?: ReadonlyArray<unknown>;
 };
 
 /**
@@ -3542,6 +3550,14 @@ function assertCardBatchWithinLimits(
     if (teams.length > MAX_CARD_TEAMS) {
       throw new Error(
         `${fnName}: ${where} carries ${teams.length} teams, above the ${MAX_CARD_TEAMS}-team limit`,
+      );
+    }
+    // NEO-335 — the operator's picked team ids, on the same per-card cap the
+    // write path holds `teamOnCardIds` to.
+    const teamIds = card.teamIds ?? [];
+    if (teamIds.length > MAX_CARD_TEAMS) {
+      throw new Error(
+        `${fnName}: ${where} carries ${teamIds.length} chosen teams, above the ${MAX_CARD_TEAMS}-team limit`,
       );
     }
     for (const name of teams) {
@@ -12901,6 +12917,34 @@ const previewCardFields = {
     }),
   ),
   unmatched: v.optional(v.union(v.literal("bsc"), v.literal("sl"))),
+  // ── NEO-335: the card's team, answered before save ────────────────────────
+  //
+  // All three OPTIONAL, so an SPA bundle loaded before this deploy posts a
+  // payload that still validates and commits exactly as it always did.
+  //
+  // `teamLookup` — how the fetch-time BSC team lookup for this card ended
+  // (`checklistCandidates.teamLookup`, carried by `candidateToPairingCard`).
+  // "answered" means BSC replied, with a team or with none on file; the commit
+  // stamps such a card's `teamCheckDoneAt` instead of queueing it to ask BSC
+  // the same question again after save. "failed" or ABSENT (an older client,
+  // or a card whose team came from the bulk parse) keeps the old behaviour:
+  // a teamless BSC card is queued for the background lookup. It is a hint
+  // about OUR call, never a value from the marketplace, and it decides only
+  // whether that call is repeated.
+  teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+  // `teamIds` — NB teams the operator picked for this card in the wizard.
+  // A client-chosen id, so the commit re-validates every one before any write
+  // (`validateOperatorTeamIds`): another sport's team refuses the commit, a
+  // team deleted since it was picked is dropped. Unioned with whatever the
+  // card's `teams` NAMES resolve to, deduped, and held to `MAX_CARD_TEAMS`.
+  // Count-bounded by `assertCardBatchWithinLimits`.
+  teamIds: v.optional(v.array(v.id("teams"))),
+  // `teamNone` — the operator answered "No team on this card". Server-stamped
+  // at commit exactly as `cardChecklist.confirmCardNoTeam` stamps it (now +
+  // the committing admin), together with `teamCheckDoneAt`. Teams win: a card
+  // that ends the commit with any team — from `teamIds`, from a `teams` name
+  // that resolved, or a name still pending review — ignores it.
+  teamNone: v.optional(v.literal(true)),
 };
 
 const previewCardValidator = v.object(previewCardFields);
@@ -13934,23 +13978,30 @@ export const fetchCardChecklist = action({
         const TEAM_LOOKUP_CHUNK = 50;
         for (let i = 0; i < needsTeamLookup.length; i += TEAM_LOOKUP_CHUNK) {
           const chunk = needsTeamLookup.slice(i, i + TEAM_LOOKUP_CHUNK);
-          const teamNames: Record<string, string> = await ctx.runAction(
+          const lookups: BscCardTeamLookup[] = await ctx.runAction(
             internal.adapters.buysportscards.fetchBscCardTeamNames,
             { bscCardIds: chunk.map((c) => c.platformData.bsc!.ref) },
           );
-          for (const c of chunk) {
-            const name = teamNames[c.platformData.bsc!.ref];
-            if (name) c.teams = [name];
-          }
+          // NEO-335 — keyed by the card's OWN ref, inside the adapter
+          // boundary: this routes BSC's answer back to the card it was asked
+          // about and nothing else. A ref the adapter did not answer for is
+          // treated as a failed lookup, never as "BSC has no team".
+          const lookupByRef = new Map(lookups.map((l) => [l.bscCardId, l]));
+          const resolved = chunk.map((c) => {
+            const ref = c.platformData.bsc!.ref;
+            const lookup = lookupByRef.get(ref);
+            const answered = lookup?.success === true;
+            const teamName = answered && lookup.teamName ? lookup.teamName : undefined;
+            if (teamName) c.teams = [teamName];
+            return {
+              bscRef: ref,
+              ...(teamName ? { teamName } : {}),
+              teamLookup: answered ? ("answered" as const) : ("failed" as const),
+            };
+          });
           await ctx.runMutation(
             internal.checklistCandidates.resolveCandidateTeams,
-            {
-              batchId: candidateBatchId,
-              resolved: chunk.map((c) => ({
-                bscRef: c.platformData.bsc!.ref,
-                teamName: teamNames[c.platformData.bsc!.ref],
-              })),
-            },
+            { batchId: candidateBatchId, resolved },
           );
         }
       }
@@ -16759,6 +16810,74 @@ type CommitPrelude = {
  * Nothing here is re-derived per chunk, which is the point: a chunk is a dumb
  * writer, so two chunks of the same commit cannot disagree about anything.
  */
+/**
+ * NEO-335 — what one card's team ANSWER writes at commit, and whether the card
+ * still needs the background BSC lookup.
+ *
+ * One function for both branches of `commitCardChecklistChunk`, so an insert
+ * and a re-synced row cannot disagree about what an answer means.
+ *
+ * In order, and only for a card that ends the write with NO team:
+ *
+ *  1. "No team on this card" — the operator's pre-save answer. Stamped exactly
+ *     as `cardChecklist.confirmCardNoTeam` stamps it (now, and the committing
+ *     admin), plus `teamCheckDoneAt`, because the lookup has nothing left to
+ *     find for a card a human settled. Never when a team NAME is still pending
+ *     review (that is a team, waiting), never without the operator id, and
+ *     never over an existing confirmation.
+ *  2. BSC ANSWERED at fetch — `teamCheckDoneAt` is stamped, and when the
+ *     card's team string reached commit unresolved and not pending (the
+ *     operator skipped it) it is kept as `bscTeamName`, capped, the hint the
+ *     missing-team fixer shows. This is `applyBscTeamResolution`'s unmatched
+ *     branch, applied at save instead of 300 ms-per-card later. With a pending
+ *     name the stamp still lands — the lookup has been and gone — but no hint:
+ *     the pending name already carries the string.
+ *  3. Otherwise — a FAILED lookup, or none recorded (an older client, a team
+ *     from the bulk parse) — a card with a BSC ref is queued for the
+ *     background lookup, as it always was.
+ *
+ * `teamLookup` decides only whether NB repeats its own call to BSC. It is
+ * never a marketplace value, and nothing here reads one to decide anything.
+ */
+function settleCardTeamAnswer(a: {
+  hasTeam: boolean;
+  hasPendingTeam: boolean;
+  hasBscRef: boolean;
+  /** The row already carries (and keeps) an operator's "no team" ruling. */
+  noneConfirmed: boolean;
+  /** The row already carries `teamCheckDoneAt`. */
+  teamCheckDone: boolean;
+  teamNone: boolean;
+  teamLookup?: "answered" | "failed";
+  bscTeamHint?: string;
+  operatorUserId?: string;
+  now: number;
+}): { fields: CarriedCardFields; enqueue: boolean } {
+  if (a.hasTeam || a.noneConfirmed) return { fields: {}, enqueue: false };
+  if (a.teamNone && !a.hasPendingTeam && a.operatorUserId) {
+    return {
+      fields: {
+        teamNoneConfirmedAt: a.now,
+        teamNoneConfirmedByUserId: a.operatorUserId,
+        ...(a.teamCheckDone ? {} : { teamCheckDoneAt: a.now }),
+      },
+      enqueue: false,
+    };
+  }
+  if (!a.hasBscRef || a.teamCheckDone) return { fields: {}, enqueue: false };
+  if (a.teamLookup === "answered") {
+    const hint = a.hasPendingTeam ? "" : (a.bscTeamHint ?? "").trim();
+    return {
+      fields: {
+        teamCheckDoneAt: a.now,
+        ...(hint ? { bscTeamName: hint.slice(0, MAX_BSC_TEAM_NAME_LENGTH) } : {}),
+      },
+      enqueue: false,
+    };
+  }
+  return { fields: {}, enqueue: true };
+}
+
 const commitChunkCardValidator = v.object({
   cardNumber: v.string(),
   cardName: v.string(),
@@ -16811,6 +16930,23 @@ const commitChunkCardValidator = v.object({
   // the card is reported. Required whenever `applyFields` is non-empty: an
   // unverifiable decision is treated the same as no decision.
   baseVersion: v.optional(v.number()),
+  // ── NEO-335: the card's team as the operator answered it before save ─────
+  //
+  // `operatorTeamIds` — the subset of the preview card's `teamIds` that the
+  // action validated (exist, same sport) before any phase wrote. Already
+  // unioned into `teamOnCardIds` above for an INSERT; carried separately so
+  // the UPDATE branch can fill an existing row that has no team without
+  // treating marketplace content as accepted.
+  operatorTeamIds: v.optional(v.array(v.id("teams"))),
+  // How the fetch-time BSC lookup ended. See `previewCardFields.teamLookup`.
+  teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
+  // The operator answered "No team on this card". Set by the action only when
+  // the card resolved to no team and no pending team name — teams win.
+  teamNone: v.optional(v.literal(true)),
+  // The card's team string that resolved to nothing and was not left pending
+  // (the operator skipped it). Stored as `bscTeamName`, the hint the
+  // missing-team fixer shows, on an answered card. Capped in the handler.
+  bscTeamHint: v.optional(v.string()),
 });
 
 /**
@@ -16899,6 +17035,12 @@ export const commitCardChecklistChunk = internalMutation({
     resolvedTeamNames: v.optional(v.array(v.string())),
     skippedPlayerNames: v.optional(v.array(v.string())),
     skippedTeamNames: v.optional(v.array(v.string())),
+    // NEO-335 — the committing admin, from the action's `requireAdmin`. Stamped
+    // as `teamNoneConfirmedByUserId` on a card the operator answered "No team
+    // on this card" for, exactly as `cardChecklist.confirmCardNoTeam` stamps
+    // it. Absent means no such answer is honoured: the flag is never written
+    // without the operator it belongs to.
+    operatorUserId: v.optional(v.string()),
   },
   returns: v.object({
     storedIds: v.array(v.id("cardChecklist")),
@@ -17107,10 +17249,27 @@ export const commitCardChecklistChunk = internalMutation({
         const teamIdsWritten = Array.isArray(contentPatch.teamOnCardIds)
           ? (contentPatch.teamOnCardIds as Array<Id<"teams">>)
           : undefined;
+
+        // ── NEO-335: the operator's own team pick fills an EMPTY row ────────
+        //
+        // `operatorTeamIds` are NB teams the operator chose for this card in
+        // the wizard, validated by the action before any phase wrote. They
+        // are an operator decision, not marketplace content, so they do not
+        // need `applyFields` — but they only ever FILL: a row that will carry
+        // a team after this patch (its own, or an accepted change) keeps it,
+        // and nothing here overwrites one NB team with another.
+        const teamIdsBeforeFill =
+          teamIdsWritten !== undefined ? teamIdsWritten : existing.teamOnCardIds;
+        const operatorFill =
+          (teamIdsBeforeFill?.length ?? 0) === 0 &&
+          (card.operatorTeamIds?.length ?? 0) > 0
+            ? card.operatorTeamIds
+            : undefined;
+
         const retireNoneConfirmed =
           existing.teamNoneConfirmedAt !== undefined &&
-          teamIdsWritten !== undefined &&
-          teamIdsWritten.length > 0;
+          ((teamIdsWritten !== undefined && teamIdsWritten.length > 0) ||
+            operatorFill !== undefined);
 
         // ── NEO-221: this row's unreviewed-name stamp ─────────────────────
         //
@@ -17218,8 +17377,40 @@ export const commitCardChecklistChunk = internalMutation({
         droppedPendingNameCount +=
           nextPendingPlayers.dropped + nextPendingTeams.dropped;
 
+        // Enrichment keys off what the row will actually HAVE after this
+        // patch, not off what the marketplace sent: when content was not
+        // applied, the stored teams are still the row's answer.
+        const effectiveTeamIds = operatorFill ?? teamIdsBeforeFill;
+        // NEO-102: and never re-derive a team for a card an operator settled
+        // as teamless. Read off what the row will HAVE after this patch, like
+        // `effectiveTeamIds` above — a commit that just retired the flag
+        // (because it wrote real teams) is not suppressed by it, and one that
+        // left it standing is.
+        const noneConfirmedAfter = retireNoneConfirmed
+          ? undefined
+          : existing.teamNoneConfirmedAt;
+        const pendingTeamsAfter = nextPendingTeams.changed
+          ? nextPendingTeams.next
+          : existing.pendingTeamNames;
+        const teamAnswer = settleCardTeamAnswer({
+          hasTeam: (effectiveTeamIds?.length ?? 0) > 0,
+          hasPendingTeam: (pendingTeamsAfter?.length ?? 0) > 0,
+          hasBscRef: !!mergedPlatformData.bsc,
+          noneConfirmed: !!noneConfirmedAfter,
+          teamCheckDone: !!existing.teamCheckDoneAt,
+          teamNone: card.teamNone === true,
+          teamLookup: card.teamLookup,
+          bscTeamHint: card.bscTeamHint,
+          operatorUserId: args.operatorUserId,
+          now: Date.now(),
+        });
+
         await ctx.db.patch(existing._id, {
           ...contentPatch,
+          ...(operatorFill ? { teamOnCardIds: operatorFill } : {}),
+          // NEO-335 — the stamps the operator's pre-save answer (or BSC's
+          // fetch-time answer) earned. Empty on every card that has a team.
+          ...teamAnswer.fields,
           // Patching `undefined` is how Convex deletes a field. Spread only
           // when it applies, so an untouched row's patch is byte-identical to
           // what it was before this feature existed.
@@ -17259,29 +17450,7 @@ export const commitCardChecklistChunk = internalMutation({
             await cardSport(),
           );
         }
-        // Enrichment keys off what the row will actually HAVE after this
-        // patch, not off what the marketplace sent: when content was not
-        // applied, the stored teams are still the row's answer.
-        const effectiveTeamIds =
-          contentPatch.teamOnCardIds !== undefined
-            ? card.teamOnCardIds
-            : existing.teamOnCardIds;
-        // NEO-102: and never re-derive a team for a card an operator settled
-        // as teamless. Read off what the row will HAVE after this patch, like
-        // `effectiveTeamIds` above — a commit that just retired the flag
-        // (because it wrote real teams) is not suppressed by it, and one that
-        // left it standing is.
-        const noneConfirmedAfter = retireNoneConfirmed
-          ? undefined
-          : existing.teamNoneConfirmedAt;
-        if (
-          mergedPlatformData.bsc &&
-          (!effectiveTeamIds || effectiveTeamIds.length === 0) &&
-          !existing.teamCheckDoneAt &&
-          !noneConfirmedAfter
-        ) {
-          bscTeamEnrichmentIds.push(existing._id);
-        }
+        if (teamAnswer.enqueue) bscTeamEnrichmentIds.push(existing._id);
       } else {
         // NEO-246 — see the note beside where these are spread in
         // `buildCardRowForInsert`. The payload's lists are already trimmed,
@@ -17322,6 +17491,21 @@ export const commitCardChecklistChunk = internalMutation({
         const insertTeamNames = bornTeams.defaulted
           ? leafTeamNames
           : card.teamNames;
+        // NEO-335 — the operator's pre-save answer, or BSC's fetch-time one.
+        // Decided after the leaf default, so a card that inherits the set's
+        // team is a card WITH a team: teams win over "No team on this card".
+        const insertTeamAnswer = settleCardTeamAnswer({
+          hasTeam: (insertTeamOnCardIds?.length ?? 0) > 0,
+          hasPendingTeam: insertPendingTeamNames.length > 0,
+          hasBscRef: !!card.platformData?.bsc,
+          noneConfirmed: false,
+          teamCheckDone: false,
+          teamNone: card.teamNone === true,
+          teamLookup: card.teamLookup,
+          bscTeamHint: card.bscTeamHint,
+          operatorUserId: args.operatorUserId,
+          now: Date.now(),
+        });
 
         // NEO-312 — the row itself (features, Signed By, the write-once
         // listing title and description, the SKU) is built by the helper the
@@ -17351,6 +17535,11 @@ export const commitCardChecklistChunk = internalMutation({
             // card.
             playerNames: card.playerNames,
             teamNames: insertTeamNames,
+            // NEO-335 — written with the row rather than patched after it, so
+            // an answered card costs this chunk no extra operation.
+            ...(Object.keys(insertTeamAnswer.fields).length > 0
+              ? { carried: insertTeamAnswer.fields }
+              : {}),
           },
           {
             sportSkuCode: args.sportSkuCode,
@@ -17364,12 +17553,7 @@ export const commitCardChecklistChunk = internalMutation({
           { sport: cardSport },
         );
         storedIds.push(newCardId);
-        if (
-          card.platformData?.bsc &&
-          (!insertTeamOnCardIds || insertTeamOnCardIds.length === 0)
-        ) {
-          bscTeamEnrichmentIds.push(newCardId);
-        }
+        if (insertTeamAnswer.enqueue) bscTeamEnrichmentIds.push(newCardId);
       }
     }
 
@@ -19461,6 +19645,69 @@ export const auditChecklistDataForResync = internalQuery({
  * running. Those belong in finalize, which is one transaction and therefore
  * still atomic in itself.
  */
+/**
+ * NEO-335 — how many distinct operator-chosen team ids one validation read
+ * covers. A read per id; well under a query's budget, and a real commit names
+ * a handful of distinct teams, so one page is the normal case.
+ */
+const OPERATOR_TEAM_IDS_PER_PAGE = 500;
+
+/**
+ * NEO-335 — check the NB team ids an operator picked in the wizard before the
+ * commit writes anything.
+ *
+ * `teamIds` on a preview card is a CLIENT-chosen id, so it is re-read here:
+ *
+ *  - a team that no longer exists (deleted between the pick and the save) is
+ *    DROPPED and counted: the card simply stays teamless, which the
+ *    missing-team lane already handles, and one stale pick must not cost the
+ *    operator a 900-card review;
+ *  - a team from ANOTHER SPORT is counted as foreign, and the action REFUSES
+ *    the commit — the house rule `entityReviewQueue`'s link step applies
+ *    ("Linked team's sport … doesn't match"). That is not a stale render but a
+ *    client offering a choice it was never shown;
+ *  - with no sport resolvable for the row nothing can be verified, so every id
+ *    is reported foreign — fail closed, never written unverified.
+ *
+ * The sport is walked from the row server-side, never taken from the action's
+ * `sportId` argument, which is itself client-supplied.
+ */
+export const validateOperatorTeamIds = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    teamIds: v.array(v.id("teams")),
+  },
+  returns: v.object({
+    teams: v.array(v.object({ id: v.id("teams"), name: v.string() })),
+    missing: v.number(),
+    foreignSport: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    if (args.teamIds.length > OPERATOR_TEAM_IDS_PER_PAGE) {
+      throw new Error(
+        `validateOperatorTeamIds: ${args.teamIds.length} ids exceeds the ${OPERATOR_TEAM_IDS_PER_PAGE}-id page`,
+      );
+    }
+    const sportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    const teams: Array<{ id: Id<"teams">; name: string }> = [];
+    let missing = 0;
+    let foreignSport = 0;
+    for (const id of new Set(args.teamIds)) {
+      const team = await ctx.db.get(id);
+      if (!team) {
+        missing++;
+        continue;
+      }
+      if (!sportId || team.sportId !== sportId) {
+        foreignSport++;
+        continue;
+      }
+      teams.push({ id, name: teamFullName(team) });
+    }
+    return { teams, missing, foreignSport };
+  },
+});
+
 export const commitCardChecklist = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -19539,7 +19786,9 @@ export const commitCardChecklist = action({
   }> => {
     // Enforced HERE, before any phase runs, so a non-admin call writes
     // nothing at all — the phases below re-check, but this is the boundary.
-    await requireAdmin(ctx);
+    // NEO-335: the id is kept — it is who a "No team on this card" answer is
+    // stamped as, the same audit column `confirmCardNoTeam` writes.
+    const operatorUserId = await requireAdmin(ctx);
     // Still the cap on the TOTAL commit, not on a chunk. Chunking raises the
     // per-transaction ceiling, not the per-commit one: the prelude is still
     // O(distinct names) in a single transaction.
@@ -19572,6 +19821,48 @@ export const commitCardChecklist = action({
       throw new ConvexError(
         `commitCardChecklist: ${operatorDeleteIds.length} operatorDeleteIds exceeds the ${MAX_OPERATOR_DELETE_IDS} limit for a single commit`,
       );
+    }
+
+    // NEO-335 — the operator's picked team ids, validated before ANY phase
+    // writes, so a refusal costs nothing. See `validateOperatorTeamIds`.
+    const operatorTeamNameById = new Map<string, string>();
+    {
+      const distinct = Array.from(
+        new Set(args.cards.flatMap((c) => c.teamIds ?? [])),
+      );
+      let missing = 0;
+      let foreignSport = 0;
+      for (let i = 0; i < distinct.length; i += OPERATOR_TEAM_IDS_PER_PAGE) {
+        const page: {
+          teams: Array<{ id: Id<"teams">; name: string }>;
+          missing: number;
+          foreignSport: number;
+        } = await ctx.runQuery(
+          internal.selectorOptions.validateOperatorTeamIds,
+          {
+            selectorOptionId: args.selectorOptionId,
+            teamIds: distinct.slice(i, i + OPERATOR_TEAM_IDS_PER_PAGE),
+          },
+        );
+        for (const t of page.teams) operatorTeamNameById.set(t.id, t.name);
+        missing += page.missing;
+        foreignSport += page.foreignSport;
+      }
+      if (foreignSport > 0) {
+        throw new ConvexError(
+          `commitCardChecklist: ${foreignSport} chosen team(s) belong to another sport or could not be checked against this set's sport. Pick the teams again and save.`,
+        );
+      }
+      if (missing > 0) {
+        // Counts only. The cards keep no team from a pick that vanished.
+        console.warn(
+          JSON.stringify({
+            msg: "commit_operator_team_ids_missing",
+            selectorOptionId: args.selectorOptionId,
+            missing,
+          }),
+        );
+      }
     }
 
     // Run one phase: retry an optimistic-concurrency conflict a bounded number
@@ -19864,11 +20155,24 @@ export const commitCardChecklist = action({
           playerLinks.push({ playerId: id, nameOnCard });
         }
       }
-      const teamOnCardIds: Array<Id<"teams">> = [];
+      let teamOnCardIds: Array<Id<"teams">> = [];
       const teamSources = c.teams?.length ? c.teams : c.team ? [c.team] : [];
       for (const t of teamSources) {
         const id = teamIdByName.get(t.trim());
         if (id) teamOnCardIds.push(id);
+      }
+      // NEO-335 — the teams the operator picked for this card, validated
+      // above. Unioned AFTER the printed names, so the title still names
+      // teams the way the card does, then deduped and held to the per-card
+      // cap. A card with no pick takes none of this, so its ids are exactly
+      // what they were before the field existed.
+      const operatorTeamIds = (c.teamIds ?? []).filter((id) =>
+        operatorTeamNameById.has(id),
+      );
+      if (operatorTeamIds.length > 0) {
+        teamOnCardIds = Array.from(
+          new Set([...teamOnCardIds, ...operatorTeamIds]),
+        ).slice(0, MAX_CARD_TEAMS);
       }
       // NEO-221 — this card's share of the commit's unreviewed names. Deduped
       // because one card can list the same name twice (a two-player card whose
@@ -19906,6 +20210,23 @@ export const commitCardChecklist = action({
       // What the operator is actually told about — see `stampedUnreviewedNames`.
       for (const n of pendingPlayerNames) stampedUnreviewedNames.add(n);
       for (const n of pendingTeamNames) stampedUnreviewedNames.add(n);
+      // NEO-335 — the card's team string that reached commit resolving to
+      // nothing and pending nothing: the operator skipped it. Only offered to
+      // the chunk as a HINT for an answered card with no team (see
+      // `settleCardTeamAnswer`); it is never a team and never matched on.
+      const bscTeamHint =
+        c.teamLookup === "answered" &&
+        teamOnCardIds.length === 0 &&
+        pendingTeamNames.length === 0
+          ? teamSources.map((t) => t.trim()).find(Boolean)
+          : undefined;
+      // "No team on this card" — teams win. A card carrying any team id or a
+      // pending team name drops the answer here; the chunk drops it again if
+      // the leaf's set-level team fills the card on insert.
+      const teamNone =
+        c.teamNone === true &&
+        teamOnCardIds.length === 0 &&
+        pendingTeamNames.length === 0;
       // Reconciliation markers live in `attributes` so they are visible on the
       // card itself, not only in a log. NEO-203 adds `ref-collision`: this
       // card resolved to a row another incoming card had already claimed, so
@@ -19945,7 +20266,11 @@ export const commitCardChecklist = action({
           // NEO-101: in the same stored order as `teamOnCardIds`, so the title
           // names teams the way the card does.
           teamNames: teamOnCardIds
-            .map((id) => teamNameById.get(id as string))
+            .map(
+              (id) =>
+                teamNameById.get(id as string) ??
+                operatorTeamNameById.get(id as string),
+            )
             .filter((n): n is string => n !== undefined),
           // NEO-221 — absent rather than empty, so the chunk's insert branch
           // omits the field entirely on the common fully-reviewed commit.
@@ -19960,6 +20285,12 @@ export const commitCardChecklist = action({
           // nothing here is trusted, it is only proposed.
           applyFields: c.applyFields,
           baseVersion: c.baseVersion,
+          // NEO-335 — see `commitChunkCardValidator`. Spread only when present
+          // so a card nobody answered is byte-identical to before.
+          ...(operatorTeamIds.length > 0 ? { operatorTeamIds } : {}),
+          ...(c.teamLookup ? { teamLookup: c.teamLookup } : {}),
+          ...(teamNone ? { teamNone: true as const } : {}),
+          ...(bscTeamHint ? { bscTeamHint } : {}),
         },
       };
     });
@@ -20011,6 +20342,8 @@ export const commitCardChecklist = action({
             resolvedTeamNames: Array.from(teamIdByName.keys()),
             skippedPlayerNames: prelude.skippedPlayerNames,
             skippedTeamNames: prelude.skippedTeamNames,
+            // NEO-335 — who a "No team on this card" answer is stamped as.
+            operatorUserId,
           }),
       );
       // The chunk returns one stored id per card it was given, in order.

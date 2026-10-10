@@ -18,6 +18,21 @@
 import type { PairingCard } from "./CardPairingModal";
 
 /**
+ * NEO-335 — how the fetch-time BSC team lookup for a card ended:
+ * "answered" (BSC replied, with a team or with none on file) or "failed" (the
+ * call failed). Absent when no lookup ran. The commit stamps an answered
+ * teamless card as checked instead of asking BSC again after save; see
+ * `previewCardFields.teamLookup` in convex/selectorOptions.ts.
+ */
+export type TeamLookup = "answered" | "failed";
+
+/**
+ * A `PairingCard` as this mapping builds it: the dialog's card plus the
+ * lookup outcome, which rides through the dialog untouched to the commit.
+ */
+export type CandidatePairingCard = PairingCard & { teamLookup?: TeamLookup };
+
+/**
  * The half of `checklistCandidates.getReadyCandidates`' card shape this
  * mapping reads.
  *
@@ -48,6 +63,7 @@ export type ReadyCandidate = {
     preferred?: "bsc" | "sportlots";
   };
   bucket: "matched" | "bscOnly" | "slOnly";
+  teamLookup?: TeamLookup;
 };
 
 /**
@@ -59,7 +75,9 @@ export type ReadyCandidate = {
  * `commitCardChecklist` writes its `unmatched-<side>` attribute from, so the
  * badge on a kept single is decided here.
  */
-export function candidateToPairingCard(c: ReadyCandidate): PairingCard {
+export function candidateToPairingCard(
+  c: ReadyCandidate,
+): CandidatePairingCard {
   return {
     cardNumber: c.cardNumber,
     cardName: c.cardName,
@@ -83,6 +101,9 @@ export function candidateToPairingCard(c: ReadyCandidate): PairingCard {
     playersConflict: c.playersConflict,
     unmatched:
       c.bucket === "bscOnly" ? "sl" : c.bucket === "slOnly" ? "bsc" : undefined,
+    // NEO-335: spread only when present, so a card with no lookup is
+    // byte-identical to what this mapping built before the field existed.
+    ...(c.teamLookup ? { teamLookup: c.teamLookup } : {}),
   };
 }
 
@@ -101,7 +122,7 @@ export function candidateToPairingCard(c: ReadyCandidate): PairingCard {
  */
 export function candidatesToPairingCards(
   candidates: readonly ReadyCandidate[],
-): PairingCard[] {
+): CandidatePairingCard[] {
   return candidates.map((c) => {
     const card = candidateToPairingCard(c);
     delete card.nameConflict;

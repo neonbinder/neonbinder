@@ -1975,8 +1975,9 @@ export const probeBscChecklistBatch = internalAction({
  * error) — distinct from `success: true, teamName: ""`, which means BSC
  * answered but genuinely has no team on file (an insert/subset card).
  * Callers that need retry semantics (resolveBscCardTeam) care about this
- * distinction; `fetchBscCardTeamNames` (the synchronous batch path) treats
- * both the same — it just won't populate a team either way. Shared by both.
+ * distinction, and since NEO-335 so does `fetchBscCardTeamNames` (the
+ * synchronous batch path): it hands the flag back per card, so the commit can
+ * tell an answered blank from a failed call. Shared by both.
  */
 async function fetchBscCardTeamNameRaw(
   bscCardId: string,
@@ -2044,6 +2045,29 @@ export const resolveBscCardTeam = internalAction({
 });
 
 /**
+ * NEO-335 — one card's answer from the batch lookup below.
+ *
+ * `success` is `fetchBscCardTeamNameRaw`'s own flag, carried through rather
+ * than collapsed: `success: true, teamName: ""` means BSC ANSWERED and has no
+ * team on file (an insert, a checklist card), while `success: false` means
+ * the call itself failed and nothing is known. The commit treats the two
+ * differently — an answered card is done (its `teamCheckDoneAt` is stamped at
+ * save), a failed one is queued for the background retry — so folding them
+ * together is what used to re-ask BSC about every blank card after save.
+ */
+export type BscCardTeamLookup = {
+  bscCardId: string;
+  teamName: string;
+  success: boolean;
+};
+
+const bscCardTeamLookupValidator = v.object({
+  bscCardId: v.string(),
+  teamName: v.string(),
+  success: v.boolean(),
+});
+
+/**
  * NEO-90: resolve teams for a batch of BSC card ids concurrently, with a
  * bounded fan-out — called synchronously from `fetchCardChecklist` so team
  * names surface in the SAME confirm dialog as new players, instead of
@@ -2051,25 +2075,42 @@ export const resolveBscCardTeam = internalAction({
  * `BSC_TEAM_LOOKUP_CONCURRENCY` and awaits each chunk before starting the
  * next (matches the existing `MAX_SL_FAN_OUT` bounded-fan-out precedent in
  * selectorOptions.ts — no concurrency-limiting utility exists elsewhere in
- * this codebase to reuse). Returns only the ids that resolved to a
- * non-empty team name; a card whose lookup failed or had no team on file
- * (e.g. an insert/subset card) is simply absent from the result — the
- * caller treats that the same as "no team" either way.
+ * this codebase to reuse).
+ *
+ * NEO-335: returns ONE entry per requested id, in request order, each with
+ * the lookup's `success` flag — see `BscCardTeamLookup`. It used to return
+ * only the ids that resolved to a non-empty name, which made "BSC has no team
+ * for this card" indistinguishable from "we could not reach BSC".
  */
 export const fetchBscCardTeamNames = internalAction({
   args: { bscCardIds: v.array(v.string()) },
-  returns: v.record(v.string(), v.string()),
-  handler: async (_ctx, args): Promise<Record<string, string>> => {
-    const result: Record<string, string> = {};
+  returns: v.array(bscCardTeamLookupValidator),
+  handler: async (_ctx, args): Promise<BscCardTeamLookup[]> => {
+    const result: BscCardTeamLookup[] = [];
+    const startedAt = Date.now();
     for (let i = 0; i < args.bscCardIds.length; i += BSC_TEAM_LOOKUP_CONCURRENCY) {
       const chunk = args.bscCardIds.slice(i, i + BSC_TEAM_LOOKUP_CONCURRENCY);
       const results = await Promise.all(
         chunk.map((bscCardId) => fetchBscCardTeamNameRaw(bscCardId)),
       );
       chunk.forEach((bscCardId, idx) => {
-        const { teamName } = results[idx];
-        if (teamName) result[bscCardId] = teamName;
+        const { teamName, success } = results[idx];
+        result.push({ bscCardId, teamName: success ? teamName : "", success });
       });
+    }
+    const failed = result.filter((r) => !r.success).length;
+    if (failed > 0) {
+      // Platform, operation, counts and timing only — never a card's text.
+      console.warn(
+        JSON.stringify({
+          msg: "bsc_card_team_lookup_failures",
+          platform: "bsc",
+          operation: "fetchBscCardTeamNames",
+          requested: args.bscCardIds.length,
+          failed,
+          ms: Date.now() - startedAt,
+        }),
+      );
     }
     return result;
   },

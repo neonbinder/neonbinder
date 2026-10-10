@@ -138,6 +138,76 @@ describe("candidates are visible immediately; teams fill in behind them", () => 
     expect(res.cards[0].teamResolved).toBe(true);
   });
 
+  test("NEO-335: each card records whether BSC ANSWERED or the call FAILED", async () => {
+    // Both release the row; only `teamLookup` keeps the two apart, and it is
+    // what the commit reads to decide whether to ask BSC again after save.
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [cand("1", "b1"), cand("2", "b2"), cand("3", "b3"), cand("4", "b4")]);
+
+    await t.mutation(internal.checklistCandidates.resolveCandidateTeams, {
+      batchId: "batch-1",
+      resolved: [
+        { bscRef: "b1", teamName: "Phillies", teamLookup: "answered" },
+        { bscRef: "b2", teamLookup: "answered" },
+        { bscRef: "b3", teamLookup: "failed" },
+        // An older caller: no outcome, so nothing is recorded.
+        { bscRef: "b4" },
+      ],
+    });
+
+    const res = await readAs(t, ADMIN, id);
+    const by = new Map(res.cards.map((c) => [c.cardNumber, c]));
+    expect(by.get("1")).toMatchObject({ teams: ["Phillies"], teamLookup: "answered", teamResolved: true });
+    expect(by.get("2")!.teams).toBeUndefined();
+    expect(by.get("2")).toMatchObject({ teamLookup: "answered", teamResolved: true });
+    expect(by.get("3")!.teams).toBeUndefined();
+    expect(by.get("3")).toMatchObject({ teamLookup: "failed", teamResolved: true });
+    expect(by.get("4")!.teamLookup).toBeUndefined();
+    expect(by.get("4")!.teamResolved).toBe(true);
+  });
+
+  test("NEO-335: a retried ref keeps its lookup outcome", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    await startBatch(t, id, [cand("1", "b1")]);
+
+    // "b2" has no row on the first pass; the retry (forced here) must carry
+    // the same outcome the first pass was handed.
+    await t.mutation(internal.checklistCandidates.resolveCandidateTeams, {
+      batchId: "batch-1",
+      resolved: [{ bscRef: "b2", teamLookup: "failed" }],
+    });
+    await t.mutation(internal.checklistCandidates.startCandidateBatch, {
+      selectorOptionId: id,
+      batchId: "batch-1",
+      userId: ADMIN.subject,
+      candidates: [cand("1", "b1"), cand("2", "b2")],
+      readyImmediately: false,
+      from: 1,
+    });
+    const scheduled = await t.run(async (ctx) =>
+      (
+        ctx as unknown as {
+          db: {
+            system: {
+              query: (n: string) => {
+                collect: () => Promise<Array<{ name: string; args: unknown[] }>>;
+              };
+            };
+          };
+        }
+      ).db.system.query("_scheduled_functions").collect(),
+    );
+    const retry = scheduled.find(
+      (r) => r.name === "checklistCandidates:resolveCandidateTeams",
+    );
+    expect(retry?.args[0]).toMatchObject({
+      resolved: [{ bscRef: "b2", teamLookup: "failed" }],
+      retry: true,
+    });
+  });
+
   test("a fetch needing no lookups is reviewable immediately", async () => {
     const t = convexTest(schema, modules);
     const id = await seedRow(t);

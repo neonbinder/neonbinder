@@ -61,6 +61,15 @@ const bucketValidator = v.union(
 );
 
 /**
+ * NEO-335 — how a card's fetch-time BSC team lookup ended. See the field's
+ * note on `checklistCandidates` in schema.ts.
+ */
+const teamLookupValidator = v.union(
+  v.literal("answered"),
+  v.literal("failed"),
+);
+
+/**
  * NEO-251 — both marketplaces' player lists for one card, plus an optional
  * hint.
  *
@@ -498,8 +507,18 @@ export const resolveCandidateTeams = internalMutation({
   args: {
     batchId: v.string(),
     // bsc ref → team name. A ref present with no name resolved to "no team".
+    //
+    // NEO-335 — `teamLookup` says whether that "no team" was BSC's ANSWER or a
+    // call that failed, and is recorded on the row so it can ride to the commit
+    // (see the schema note). Optional so a caller that predates it is
+    // unchanged: absent records nothing, and the commit then queues the card
+    // for the background lookup exactly as it always did.
     resolved: v.array(
-      v.object({ bscRef: v.string(), teamName: v.optional(v.string()) }),
+      v.object({
+        bscRef: v.string(),
+        teamName: v.optional(v.string()),
+        teamLookup: v.optional(teamLookupValidator),
+      }),
     ),
     // NEO-294 — set on the one retry, so a miss cannot reschedule forever.
     retry: v.optional(v.boolean()),
@@ -525,17 +544,28 @@ export const resolveCandidateTeams = internalMutation({
 
     const touchedStems = new Set<string>();
     /** NEO-294 — refs with no row yet; see the retry note above. */
-    const missed: Array<{ bscRef: string; teamName?: string }> = [];
+    const missed: Array<{
+      bscRef: string;
+      teamName?: string;
+      teamLookup?: "answered" | "failed";
+    }> = [];
     let patched = 0;
-    for (const { bscRef, teamName } of args.resolved) {
+    for (const entry of args.resolved) {
+      const { bscRef, teamName, teamLookup } = entry;
       const row = byBscRef.get(bscRef);
       if (!row) {
-        missed.push(teamName === undefined ? { bscRef } : { bscRef, teamName });
+        // The entry as it arrived, so the retry carries the same answer.
+        missed.push(entry);
         continue;
       }
       await ctx.db.patch(row._id, {
         // An empty result is an answer, not a failure — see the note above.
+        // A FAILED lookup never carries a name (the adapter blanks it), so
+        // this cannot attach a team the call did not return.
         ...(teamName ? { teams: [teamName] } : {}),
+        // NEO-335 — the row is `ready` either way (a failed lookup must not
+        // strand its stem), so `teamLookup` is what keeps the two apart.
+        ...(teamLookup ? { teamLookup } : {}),
         status: "ready",
         lastUpdated: Date.now(),
       });
@@ -648,6 +678,10 @@ export const getReadyCandidates = query({
         confidence: v.optional(v.number()),
         stem: v.string(),
         teamResolved: v.boolean(),
+        // NEO-335 — see the schema note. Carried onto the preview card by
+        // `candidateToPairingCard`, so the commit can tell an answered blank
+        // from a failed lookup.
+        teamLookup: v.optional(teamLookupValidator),
       }),
     ),
   }),
@@ -699,6 +733,7 @@ export const getReadyCandidates = query({
         // Lets the row show "resolving team…" rather than an empty cell that
         // looks like "this card has no team".
         teamResolved: r.status === "ready",
+        teamLookup: r.teamLookup,
       }));
 
     return {

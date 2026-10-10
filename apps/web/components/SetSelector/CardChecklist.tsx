@@ -11,6 +11,12 @@ import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 import EntityReviewWizard from "./EntityReviewWizard";
+// NEO-335: the final step's team answers, put on the cards at commit.
+import {
+  sameTeamAnswers,
+  withTeamAnswer,
+  type TeamAnswer,
+} from "./teams-on-cards";
 import CardPairingModal, {
   type PairingCard,
   type PairingConflicts,
@@ -29,8 +35,8 @@ import ChecklistSourceFilter, {
 import CrossListingImportModal from "./CrossListingImportModal";
 import CardAttentionWalker from "./CardAttentionWalker";
 import SkippedNamesPanel from "./SkippedNamesPanel";
-import { deriveCardAttention, needsAttention } from "./card-attention";
-import FillTeamsControl from "./FillTeamsControl";
+import { needsAttention } from "./card-attention";
+import SetRowActionButton from "./SetRowActionButton";
 import { Input } from "../primitives/Input";
 import TeamPicker from "./TeamPicker";
 import PlayerPicker, { type PlayerPickerLabels } from "./PlayerPicker";
@@ -73,11 +79,9 @@ type CardChecklistProps = {
     sportlots: Record<string, string>;
   };
   /**
-   * NEO-306 — the SET this checklist sits under. "N cards need a team" is a
-   * whole-set operation (the server refuses any other node), and the
-   * checklist is attached to a Base, insert or parallel row, so the owner —
-   * which holds the cascade's selection — hands the set id down. Without it
-   * the Fill control is not offered.
+   * NEO-306 — the SET this checklist sits under, handed down by the cascade
+   * that holds the selection. Its only reader was the set-wide Fill teams
+   * control, retired in NEO-335; nothing in this component reads it now.
    */
   setId?: Id<"selectorOptions">;
   /**
@@ -134,6 +138,20 @@ type FetchPreview = {
     printRun?: number;
     autographType?: string;
     cardVariation?: string;
+    /**
+     * NEO-335 — BSC's fetch-time team lookup outcome, carried from the pairing
+     * so the commit can tell "BSC answered: no team" from "never asked".
+     */
+    teamLookup?: "answered" | "failed";
+    /**
+     * NEO-335 — the operator's answer from the wizard's "K cards have no team
+     * yet". Never set on `cards` while the preview is held — they ride in
+     * `teamAnswers` below and `runCommit` puts them on (`withTeamAnswer`), so
+     * the section can keep telling which cards arrived teamless. Typed here
+     * because this is the commit's wire shape.
+     */
+    teamIds?: Array<Id<"teams">>;
+    teamNone?: true;
     // NEO-137: WIRE shape from fetchCardChecklist — ref plus the marketplace
     // SET it came from. commitCardChecklist resolves setId to a slot on this
     // card's parent row.
@@ -159,6 +177,13 @@ type FetchPreview = {
   operatorDeleteIds: Array<Id<"cardChecklist">>;
   unknownPlayers: string[];
   unknownTeams: string[];
+  /**
+   * NEO-335 — the wizard's team answers, POSITIONALLY ALIGNED with `cards`
+   * (undefined = none). Client state only, the same way `decisions` is: zipped
+   * onto the cards by `runCommit` and forgotten with the preview. Wizard
+   * answers are never stored anywhere else.
+   */
+  teamAnswers?: Array<TeamAnswer | undefined>;
 };
 
 /** The confirmed cards, waiting on the content-diff review. */
@@ -307,11 +332,18 @@ const QUICK_ADD_PLAYER_LABELS: PlayerPickerLabels = {
   results: "Player results for the new card",
 };
 
+/**
+ * NEO-335 — the header pill's text, which is also its accessible name.
+ * "N need you": the operator is the one the cards are waiting on.
+ */
+function needsYouLabel(count: number): string {
+  return count === 1 ? "1 needs you" : `${count} need you`;
+}
+
 export default function CardChecklist({
   variantId,
   sourceChips,
   sourceLabelMaps,
-  setId,
   parallelBuild,
   parallelRun: hostedParallelRun,
   parallelPanelElsewhere = false,
@@ -451,12 +483,9 @@ export default function CardChecklist({
     /**
      * NEO-102: which notice this is, structurally — NOT inferred from the
      * text. Only the post-commit success notice ("Saved N cards." and its
-     * NEO-203 note variants) carries `"committed"`, and only that notice
-     * grows the attention call-to-action below. An earlier cut keyed the CTA
-     * off `tone === "status"`, which is every routine notice there is: after
-     * the operator cancelled the entity-review wizard on a set holding a
-     * teamless custom card, "Fetch cancelled — no cards saved." grew a CTA
-     * offering to fix cards that were never saved. Leave this undefined for
+     * NEO-203 note variants) carries `"committed"`. Its one reader was the
+     * banner's attention call-to-action, retired in NEO-335 for the header's
+     * "N need you" pill, so nothing reads it today. Leave this undefined for
      * every other notice.
      */
     kind?: "committed";
@@ -476,8 +505,8 @@ export default function CardChecklist({
   );
   /**
    * The one setter that marks a notice as the result of a successful commit.
-   * Kept separate from `setSyncMessage` so no future call site can opt into
-   * the CTA by accident — reaching it means a commit actually landed.
+   * Kept separate from `setSyncMessage` so reaching it means a commit
+   * actually landed.
    */
   const setCommittedMessage = useCallback((text: string) => {
     setSyncNotice({ text, tone: "status", kind: "committed" });
@@ -687,9 +716,9 @@ export default function CardChecklist({
    */
   const soloFetchRef = useRef<HTMLDivElement>(null);
   /**
-   * a11y (NEO-306) — the notice line, as a focus park: a fill that empties
-   * the missing-team lane unmounts the button that was pressed, and the
-   * notice is where its result is said. See `fillParkRef`.
+   * a11y (NEO-306) — the notice line, as a focus park: a result that unmounts
+   * the button that was pressed leaves focus on `<body>`, and the notice is
+   * where that result is said. See `parallelParkRef`.
    */
   const syncNoticeRef = useRef<HTMLDivElement>(null);
   /**
@@ -700,7 +729,7 @@ export default function CardChecklist({
    * rebuild that copies nothing does the reverse. The cards land on the
    * subscription some time after the action resolves, so this waits for the
    * drop rather than guessing when it happens, then parks on the notice that
-   * just said the result — the fill-teams park's shape. Disarmed the moment
+   * just said the result — a `tabIndex={-1}` focus park. Disarmed the moment
    * focus is somewhere other than the button that was pressed.
    */
   const parallelParkRef = useRef(false);
@@ -719,11 +748,10 @@ export default function CardChecklist({
   /**
    * NEO-102 — the "needs attention" pass.
    *
-   * `attentionOnly` filters the grid down to the flagged rows (same Chip
-   * pattern as the cross-release toggle). `walkerOpenedByHand` is the ONLY
-   * thing that opens the walker: the operator pressed one of its two
-   * buttons (the header row's "Fix them one at a time", or the post-commit
-   * banner's inline call-to-action).
+   * `walkerOpenedByHand` is the ONLY thing that opens the walker: the
+   * operator pressed its one control, the header's amber "N need you" pill
+   * (NEO-335 retired the grid filter chip, the "Fix them one at a time" link
+   * and the post-commit banner's call-to-action in its favour).
    *
    * Nothing opens the walker on its own. An earlier revision armed it on a
    * commit and let a derived `walkerOpen` pop the modal the moment the
@@ -732,12 +760,10 @@ export default function CardChecklist({
    * (it needed an `activeElement` guard just to avoid stealing focus mid
    * keystroke), and it broke every flow that commits and then touches the
    * grid, because the modal's `fixed inset-0` overlay swallowed the next
-   * click. The count is instead advertised REACTIVELY — the banner CTA and
-   * the header chip both read `attentionCount` off the live subscription, so
-   * rows the BSC pass flags seconds after the commit still get announced,
-   * without taking the screen.
+   * click. The count is instead advertised REACTIVELY — the header pill reads
+   * `attentionCount` off the live subscription, so rows flagged after the
+   * commit still get announced, without taking the screen.
    */
-  const [attentionOnly, setAttentionOnly] = useState(false);
   const [walkerOpenedByHand, setWalkerOpenedByHand] = useState(false);
   const [showCrossListingModal, setShowCrossListingModal] = useState(false);
 
@@ -1391,15 +1417,19 @@ export default function CardChecklist({
         // fields is sent byte-identical to how it was sent before this feature
         // existed, which is what keeps the unreviewed path fail-closed on both
         // ends of the wire.
+        //
+        // NEO-335: and the wizard's team answer, on the same terms — only on a
+        // card the operator (or a pre-fill they saw) answered.
         cards: preview.cards.map((card, i) => {
           const decision = preview.decisions[i];
-          return decision?.applyFields?.length
+          const reviewed = decision?.applyFields?.length
             ? {
                 ...card,
                 applyFields: decision.applyFields,
                 baseVersion: decision.baseVersion,
               }
             : card;
+          return withTeamAnswer(reviewed, preview.teamAnswers?.[i]);
         }),
         batchId: preview.batchId,
         ...(preview.operatorDeleteIds.length > 0
@@ -1502,13 +1532,9 @@ export default function CardChecklist({
             }
           });
       }
-      // NEO-102: the commit itself never knows whether a card has a team — the
-      // BSC team pass runs after it, and a BSC-linked card is not even flagged
-      // until that pass has been and gone. So no COUNT is decided here — only
-      // that this notice is the one allowed to carry the call-to-action
-      // (`setCommittedMessage`). The banner grows it for as long as
-      // `attentionCount > 0`, which the live subscription keeps current —
-      // including for rows flagged well after this handler returned.
+      // NEO-335: no attention count is decided here either — what still needs
+      // the operator after the save is read live from the checklist by the
+      // header's own control, not handed over by this handler.
       //
       // NEO-221 (D9): the pairing session is spent — its cards are now NB
       // rows. Closing the phase is what finally unmounts `CardPairingModal`
@@ -1549,6 +1575,22 @@ export default function CardChecklist({
    * gives it something to say. The batch is untouched server-side, so pressing
    * Retry re-sends exactly the same commit.
    */
+  /**
+   * NEO-335 — the wizard's team answers, held on the preview until commit.
+   * Returns the same preview when nothing changed, so a re-report does not
+   * re-render the wizard.
+   */
+  const handleTeamAnswers = useCallback(
+    (answers: Array<TeamAnswer | undefined>) => {
+      setPendingPreview((prev) =>
+        prev && !sameTeamAnswers(prev.teamAnswers ?? [], answers)
+          ? { ...prev, teamAnswers: answers }
+          : prev,
+      );
+    },
+    [],
+  );
+
   const handleWizardConfirm = async () => {
     if (!pendingPreview) return;
     const committed = await runCommit(pendingPreview);
@@ -1692,58 +1734,6 @@ export default function CardChecklist({
     [cards],
   );
 
-  /**
-   * NEO-306 — the N in "N cards need a team": cards on THIS checklist whose
-   * attention items include `missingTeam`. The same live derivation as
-   * `attentionCount` above, so filling a card drops it without anything
-   * having to invalidate it. The preview then says how many the set's own
-   * evidence can fill, counted over the whole set — possibly fewer.
-   */
-  const missingTeamCount = useMemo(
-    () =>
-      (cards ?? []).filter((c) =>
-        deriveCardAttention(c).some((item) => item.kind === "missingTeam"),
-      ).length,
-    [cards],
-  );
-  /**
-   * True while the Fill control is checking, asking or filling. The fill is
-   * what empties the missing-team lane — and often the whole attention row —
-   * so the row stays mounted for this window rather than tearing the open
-   * dialog out from under "Filling…".
-   */
-  const [fillActive, setFillActive] = useState(false);
-  const fillTriggerRef = useRef<HTMLButtonElement | null>(null);
-  /**
-   * a11y (WCAG 2.4.3) — armed when a fill window closes. A fill that empties
-   * the lane unmounts the trigger the dialog just handed focus back to, and
-   * the browser drops it to `<body>`. Once the trigger is gone, focus is
-   * parked on the notice line that just said "Filled teams on N cards" — the
-   * result of what the operator pressed, and where the next thing to read is
-   * (the soloFetch park's shape: a `tabIndex={-1}` region, named by its own
-   * text). With no notice showing, the Sync button is the fallback. Only if
-   * focus really was dropped: anywhere else, the operator put it there.
-   * Disarmed as soon as the trigger survives without focus.
-   */
-  const fillParkRef = useRef(false);
-  const handleFillActiveChange = useCallback((active: boolean) => {
-    setFillActive(active);
-    if (!active) fillParkRef.current = true;
-  }, []);
-  useEffect(() => {
-    if (fillActive || !fillParkRef.current) return;
-    const trigger = fillTriggerRef.current;
-    if (trigger) {
-      // Still on screen: nothing to park yet. Keep watching only while focus
-      // is on it — it may still go when the count lands.
-      if (document.activeElement !== trigger) fillParkRef.current = false;
-      return;
-    }
-    fillParkRef.current = false;
-    if (document.activeElement !== document.body) return;
-    (syncNoticeRef.current ?? syncButtonRef.current)?.focus();
-  }, [fillActive, missingTeamCount]);
-
   // NEO-312 — see `parallelParkRef`. Re-checked whenever the card list or the
   // notice moves, which is when the pressed button can disappear.
   const cardCount = cards?.length ?? 0;
@@ -1823,9 +1813,9 @@ export default function CardChecklist({
   /**
    * NEO-102 — the single entry point into the walker.
    *
-   * Both buttons that offer it (the header row's "Fix them one at a time" and
-   * the post-commit banner's inline CTA) call this, so there is exactly one
-   * way the dialog can come up and it is always a deliberate press.
+   * The header's "N need you" pill is the one control that calls this
+   * (NEO-335), so there is exactly one way the dialog can come up and it is
+   * always a deliberate press.
    */
   const openAttentionWalker = useCallback(() => {
     // NEO-312: the walker edits cards a build is about to replace.
@@ -1855,15 +1845,10 @@ export default function CardChecklist({
           return false;
         }
         if (hideCrossListed && c.isCrossListed) return false;
-        // NEO-102: same shape as the two filters above — one predicate, no
-        // separate list. A variation whose parent is filtered out still
-        // renders at top level, which is what keeps a flagged variation
-        // reachable while this filter is on.
-        if (attentionOnly && !needsAttention(c)) return false;
         return true;
       })
       .sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber));
-  }, [cards, sourceFilter, hideCrossListed, attentionOnly]);
+  }, [cards, sourceFilter, hideCrossListed]);
 
   // NEO-189 — variations hang off their parent instead of sitting flat in the
   // scroll.
@@ -2495,53 +2480,6 @@ export default function CardChecklist({
                   )}
                 </>
               )}
-            {/* NEO-102 — the post-commit call-to-action, in place of the
-                walker opening itself.
-
-                Rendered inline in this banner because this is where the
-                operator is already looking the instant a commit lands, and
-                ONLY on the notice `runCommit` marks `kind: "committed"` —
-                never on tone alone. Tone is far too broad: "Fetch cancelled —
-                no cards saved." is also a `status` notice, and a set holding
-                a teamless custom card turned that into an offer to fix cards
-                the operator had just declined to save. The tone still matters
-                for the live region itself: the count is REACTIVE (the
-                background BSC team pass keeps flagging rows for seconds
-                after the commit), and `aria-atomic` means every change
-                re-announces the whole region — polite in a role="status", but
-                assertively interrupting in the role="alert" a failure banner
-                becomes, which is a second reason the CTA never appears on
-                one.
-
-                a11y: a real <button> inside the existing live region, so it
-                is in the tab order and announced with the region it belongs
-                to. Its visible text IS its accessible name — no aria-label —
-                which keeps it distinct from the header row's button and
-                satisfies 2.5.3 trivially. The header row's own sr-only
-                role="status" line still carries the count when no banner is
-                showing, which is most of the time.
-
-                a11y (1.4.3 / 1.4.11): deliberately NOT the header button's
-                `hover:text-[#00D558] focus:outline-none` treatment. Neon
-                green measures 1.65:1 against this banner's `bg-blue-100`
-                light background, so recolouring the text on hover/focus
-                would drop it below 4.5:1, and suppressing the outline on top
-                of that would leave no focus indicator at all. Hover changes
-                only the underline STYLE (no colour change, so contrast is
-                unchanged), and the UA focus ring is left in place. */}
-            {syncNotice.kind === "committed" && attentionCount > 0 && (
-              <>
-                {" "}
-                <button
-                  type="button"
-                  onClick={openAttentionWalker}
-                  className="rounded-sm font-semibold underline decoration-dotted hover:decoration-solid aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
-                  {...heldProps}
-                >
-                  {`${attentionCount} need attention — Fix them one at a time`}
-                </button>
-              </>
-            )}
           </div>
         )}
 
@@ -2591,72 +2529,46 @@ export default function CardChecklist({
           </div>
         )}
 
-        {/* NEO-102 — the set-level attention row. Only rendered when there is
-            something to say (or the filter is on and has emptied the grid, so
-            the operator always has the control that got them there).
+        {/* NEO-335 — the set-level attention row: ONE control, the amber
+            "N need you" pill, which opens the walker. It replaced the filter
+            chip, the set-wide Fill teams pill and the "Fix them one at a time"
+            link: the walker already orders what is left (missing teams, then
+            names, then titles), so three ways in, one of which only looked,
+            were three things to read where one does the job. The badge on
+            each row still says which cards are flagged.
 
-            Two controls, deliberately, because they answer two questions: the
-            Chip filters the grid to the flagged rows ("which ones?"), and the
-            link opens the walker ("fix them"). Overloading one control would
-            make it impossible to look at the list without being put into a
-            modal. */}
-        {(attentionCount > 0 || attentionOnly || fillActive) && (
+            Rendered only while something needs a person, off the live
+            subscription — so cards flagged after a save still show up here,
+            and the row leaves when the last one is answered. It never opens
+            anything on its own (see `walkerOpenedByHand`).
+
+            Name: the visible text IS the accessible name (SetRowActionButton
+            takes no aria-label), so SC 2.5.3 holds by construction and a
+            flow's `text:` and `id:` finds agree. While a build holds this
+            checklist it is aria-disabled and described by the line that says
+            why, like every other held control. */}
+        {attentionCount > 0 && (
           <div className="flex items-center gap-2 flex-wrap mb-3">
-            {/* a11y (1.4.3): text-gray-400 with no dark: variant measures
-                2.60:1 against this container's light-mode bg-white (needs
-                4.5:1). text-gray-500 dark:text-gray-400 is the pairing this
-                same file already uses for secondary text that must survive
-                both themes (see the `lastSynced` line above) — 4.84:1 light /
-                6.82:1 dark, both pass. The sibling "Cross-release" label a few
-                lines up has the identical (unfixed) defect; out of scope here
-                since it predates this commit — flagged in the audit report. */}
+            {/* a11y (1.4.3): text-gray-500 dark:text-gray-400 — 4.84:1 light /
+                6.82:1 dark against this card's surface. */}
             <span className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wide w-24 shrink-0">
               Attention
             </span>
-            <Chip
-              label={`${attentionCount} need attention`}
-              ariaLabel={`Show only cards needing attention${attentionOnly ? " (on)" : ""}`}
-              title="Cards with a question nobody has answered yet — start with no team on the card"
-              active={attentionOnly}
-              onClick={() => setAttentionOnly((v) => !v)}
-            />
-            {/* NEO-306 — "N cards need a team", directly beside the chip
-                whose lane it clears: the one amber, prominent control in this
-                row, because it is the one that fixes many cards at once. It
-                renders nothing at N = 0 unless a fill it started is still
-                open (see `fillActive`). Keyed on the set so a dialog opened
-                for one set can never ask about the next — the checklist does
-                not remount when the selection moves. Its results land in the
-                notice line above, where every other checklist result reads. */}
-            {setId && (
-              <FillTeamsControl
-                key={`fill-teams-${setId}`}
-                setId={setId}
-                missingCount={missingTeamCount}
-                showToast={setSyncMessage}
-                onActiveChange={handleFillActiveChange}
-                triggerRef={fillTriggerRef}
-              />
-            )}
-            {attentionCount > 0 && (
-              <button
-                type="button"
-                onClick={openAttentionWalker}
-                aria-label={`Fix cards needing attention one at a time (${attentionCount})`}
-                {...heldProps}
-                // a11y (1.4.3): same gray-400-with-no-dark:-variant fix as the
-                // label above.
-                className="text-xs text-gray-500 dark:text-gray-400 underline decoration-dotted hover:text-[#00D558] focus:text-[#00D558] focus:outline-none"
-              >
-                Fix them one at a time
-              </button>
-            )}
+            <SetRowActionButton
+              tone="attention"
+              id="checklist-needs-you"
+              onActivate={openAttentionWalker}
+              disabled={editsHeld}
+              aria-describedby={editsHeld ? heldDescribedBy : undefined}
+              aria-haspopup="dialog"
+            >
+              {needsYouLabel(attentionCount)}
+            </SetRowActionButton>
             {/*
-              The chip's own label changes silently — a screen reader is never
-              told that the count went from 5 to 4 when a card is fixed. This
-              is the live region that says it. Visually hidden because the chip
-              beside it already carries the number on screen; saying it twice
-              would be clutter, and saying it nowhere would be a regression.
+              The pill's text changes silently — a screen reader is never told
+              that the count went from 5 to 4 when a card is fixed. This is the
+              live region that says it, visually hidden because the pill
+              already carries the number on screen.
 
               role="status" with no explicit aria-live, per
               accessibility-auditor/live-region-role-pattern.md: the role
@@ -2665,8 +2577,8 @@ export default function CardChecklist({
             */}
             <p className="sr-only" role="status">
               {attentionCount}{" "}
-              {attentionCount === 1 ? "card needs" : "cards need"} attention on
-              this checklist
+              {attentionCount === 1 ? "card needs" : "cards need"} you on this
+              checklist
             </p>
           </div>
         )}
@@ -2774,8 +2686,8 @@ export default function CardChecklist({
         />
       )}
 
-      {/* NEO-102 — the attention pass. Opened only by hand (header row or the
-          post-commit banner's CTA), and kept mounted only while open; it
+      {/* NEO-102 — the attention pass. Opened only by hand (the header's
+          "N need you" pill), and kept mounted only while open; it
           takes the FULL row list and derives its own queue, so rows arriving
           from the background BSC pass join it without the walker losing the
           card on screen. */}
@@ -2785,7 +2697,7 @@ export default function CardChecklist({
           cards={cards}
           sportId={ancestorSportId}
           // a11y: the durable restore target, because the control that opened
-          // this may not survive the sitting — both entry points unmount at
+          // this may not survive the sitting — the pill unmounts at
           // `attentionCount === 0`, which is exactly the state the walker is
           // in when the operator closes it from the all-clear step. Restoring
           // to the walker's own activeElement-at-mount capture would then be
@@ -2880,6 +2792,10 @@ export default function CardChecklist({
           // and throwing the review away.
           commitError={commitError}
           onDismissCommitError={() => setCommitError(null)}
+          // NEO-335: "K cards have no team yet" on the final step.
+          previewCards={pendingPreview.cards}
+          onTeamAnswersChange={handleTeamAnswers}
+          cardsInheritSetTeam={(variantRow?.teamIds?.length ?? 0) > 0}
           /**
            * NEO-221 (D9) — BACK, not abort.
            *

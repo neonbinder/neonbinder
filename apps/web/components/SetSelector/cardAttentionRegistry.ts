@@ -204,6 +204,62 @@ export function pickAttentionFixer(items: AttentionItem[]): {
   return { item: items[0], Fixer: undefined };
 }
 
+/**
+ * NEO-335 — the order the walker asks its questions in: every card missing a
+ * team first, then names not yet linked, then titles. Within a group, by card
+ * number.
+ *
+ * A card is ranked by the question the walker will actually PUT to it — the
+ * item `pickAttentionFixer` chose — not by the earliest kind it happens to
+ * carry. Ranking on anything else would file a card under one heading and
+ * then show it under another. (A card with an over-long title AND an unlinked
+ * name presents its title, because `deriveCardAttention` lists the name last,
+ * so it walks with the titles.)
+ *
+ * A `Record` over every kind, so adding a kind to `AttentionItem` without
+ * deciding where it walks is a type error rather than a silent "last".
+ * The three title kinds share a rank: they are one fixer and one question.
+ */
+const WALK_RANK: Record<AttentionItem["kind"], number> = {
+  missingTeam: 0,
+  unreviewedName: 1,
+  titleOverLimit: 2,
+  titleTruncated: 2,
+  aspectValueOverLimit: 2,
+};
+
+/** After every ranked kind: a card whose kinds this bundle has no fixer for. */
+const UNRANKED = 3;
+
+/** Where a card with these attention items falls in the walk. Lower walks first. */
+export function attentionWalkRank(items: AttentionItem[]): number {
+  const { item, Fixer } = pickAttentionFixer(items);
+  if (!item || !Fixer) return UNRANKED;
+  return WALK_RANK[item.kind as AttentionItem["kind"]] ?? UNRANKED;
+}
+
+/**
+ * NEO-335 — a card still waiting on the automatic BSC team lookup: linked to
+ * BSC, no team on it, nobody has said it has none, and the lookup has not
+ * stamped `teamCheckDoneAt` (it failed at fetch and is queued for a retry).
+ *
+ * These are exactly the cards `deriveCardAttention` holds back from
+ * `missingTeam` while they wait (its clause 3), so they are not in the walk.
+ * The walker counts them only to say, once the walk is done, that more may
+ * yet arrive. Never a reason to badge or ask: the lookup answers most of them.
+ *
+ * Reads only the presence of the BSC ref, the same as the rule it mirrors.
+ */
+export function isAwaitingTeamLookup(row: CardChecklistRow): boolean {
+  return (
+    !!row.platformData?.bsc?.ref &&
+    !row.teamCheckDoneAt &&
+    !row.teamNoneConfirmedAt &&
+    (row.teamOnCardIds?.length ?? 0) === 0 &&
+    (row.pendingTeamNames?.length ?? 0) === 0
+  );
+}
+
 /** Reason text for a card whose kinds this bundle has no fixer for. */
 export function unfixableReason(item: { kind: string } | undefined): string {
   if (!item) return "Nothing to fix on this card.";

@@ -72,6 +72,10 @@ const mockState = vi.hoisted(() => ({
   bscCards: [] as BscCard[],
   slCards: [] as SlCard[],
   teamNamesResult: {} as Record<string, string>,
+  // NEO-335 — ids whose lookup FAILS (the call itself, not "no team").
+  failedIds: [] as string[],
+  // NEO-335 — ids the stub leaves out of its answer entirely.
+  omittedIds: [] as string[],
   teamLookupCalls: [] as string[][],
 }));
 
@@ -102,12 +106,31 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
         cards: mockState.bscCards,
       }),
     }),
+    // NEO-335: one entry per requested id with the lookup's own success
+    // flag. An id absent from `teamNamesResult` ANSWERED with no team; an id
+    // in `failedIds` failed.
     fetchBscCardTeamNames: internalAction({
       args: { bscCardIds: v.array(v.string()) },
-      returns: v.record(v.string(), v.string()),
-      handler: async (_ctx, args): Promise<Record<string, string>> => {
+      returns: v.array(
+        v.object({
+          bscCardId: v.string(),
+          teamName: v.string(),
+          success: v.boolean(),
+        }),
+      ),
+      handler: async (_ctx, args) => {
         mockState.teamLookupCalls.push(args.bscCardIds);
-        return mockState.teamNamesResult;
+        return args.bscCardIds
+          .filter((bscCardId) => !mockState.omittedIds.includes(bscCardId))
+          .map((bscCardId) =>
+          mockState.failedIds.includes(bscCardId)
+            ? { bscCardId, teamName: "", success: false }
+            : {
+                bscCardId,
+                teamName: mockState.teamNamesResult[bscCardId] ?? "",
+                success: true,
+              },
+        );
       },
     }),
   };
@@ -279,6 +302,8 @@ beforeEach(() => {
   mockState.bscCards = [];
   mockState.slCards = [];
   mockState.teamNamesResult = {};
+  mockState.failedIds = [];
+  mockState.omittedIds = [];
   mockState.teamLookupCalls = [];
 });
 
@@ -420,5 +445,65 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
     const { bscOnly, slOnly } = await buckets(t, variantTypeId);
     expect(bscOnly).toHaveLength(1);
     expect(slOnly).toHaveLength(1);
+  });
+  test("NEO-335: each candidate records how its lookup ended — answered with a team, answered blank, failed", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await seedTree(t);
+
+    mockState.bscCards = [
+      { cardNumber: "50", cardName: "Elly De La Cruz", players: ["Elly De La Cruz"], platformRef: "bsc-50" },
+      { cardNumber: "51", cardName: "League Leaders", players: ["A", "B"], platformRef: "bsc-51" },
+      { cardNumber: "52", cardName: "Bobby Witt Jr.", players: ["Bobby Witt Jr."], platformRef: "bsc-52" },
+      // Team from the bulk parse: no lookup, so no outcome recorded at all.
+      { cardNumber: "53", cardName: "Royals", teams: ["Kansas City Royals"], players: ["Royals"], platformRef: "bsc-53" },
+    ];
+    mockState.teamNamesResult = { "bsc-50": "Cincinnati Reds" };
+    mockState.failedIds = ["bsc-52"];
+
+    const result = await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    expect(result.success).toBe(true);
+    expect(mockState.teamLookupCalls).toEqual([["bsc-50", "bsc-51", "bsc-52"]]);
+
+    const { bscOnly } = await buckets(t, variantTypeId);
+    const byNumber = new Map(bscOnly.map((c) => [c.cardNumber, c]));
+    expect(byNumber.get("50")).toMatchObject({
+      teams: ["Cincinnati Reds"],
+      teamLookup: "answered",
+      teamResolved: true,
+    });
+    // BSC answered and has no team on file: an ANSWER, not a failure.
+    expect(byNumber.get("51")!.teams).toBeUndefined();
+    expect(byNumber.get("51")!.teamLookup).toBe("answered");
+    expect(byNumber.get("51")!.teamResolved).toBe(true);
+    // The call failed: still released (a failed lookup must not strand its
+    // stem), but recorded as failed so the commit queues the retry.
+    expect(byNumber.get("52")!.teams).toBeUndefined();
+    expect(byNumber.get("52")!.teamLookup).toBe("failed");
+    expect(byNumber.get("52")!.teamResolved).toBe(true);
+    expect(byNumber.get("53")!.teamLookup).toBeUndefined();
+  });
+
+  test("NEO-335: a ref the adapter did not answer for at all is recorded as failed, never as \"no team\"", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await seedTree(t);
+
+    mockState.bscCards = [
+      { cardNumber: "60", cardName: "Someone", players: ["Someone"], platformRef: "bsc-60" },
+    ];
+    // The adapter returns an entry for nobody: a missing answer is not an
+    // answer, so the commit must still queue the retry.
+    mockState.omittedIds = ["bsc-60"];
+
+    await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const { bscOnly } = await buckets(t, variantTypeId);
+    expect(bscOnly).toHaveLength(1);
+    expect(bscOnly[0].teams).toBeUndefined();
+    expect(bscOnly[0].teamLookup).toBe("failed");
   });
 });

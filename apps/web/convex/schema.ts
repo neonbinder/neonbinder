@@ -1018,14 +1018,19 @@ export default defineSchema({
     // alone cannot distinguish "no team on this card" from "nobody has looked
     // yet", and these two fields are exactly the missing bits.
     //
-    // Set ONLY by an operator action (`cardChecklist.confirmCardNoTeam`), and
-    // server-stamped — no client-supplied argument anywhere on this path
-    // carries a timestamp, because a forgeable one is operator-review
-    // suppression the client can mint for itself. CLEARED the moment a
-    // non-empty `teamOnCardIds` is actually written in the same transaction
-    // (`updateCard`, or the commit's reviewed content patch), so it can never
-    // contradict the teams on the row. Never touched by a linkage-only
-    // re-sync, and never set or cleared by a sync that carries no teams.
+    // Set ONLY by an operator action: `cardChecklist.confirmCardNoTeam`, or
+    // (NEO-335) the operator answering "No team on this card" in the wizard
+    // before save, which `commitCardChecklist` writes for a card that ends the
+    // commit with no team. Always server-stamped — the time is the server's
+    // and the user id is `requireAdmin`'s; no client-supplied argument
+    // anywhere on either path carries a timestamp, because a forgeable one is
+    // operator-review suppression the client can mint for itself. CLEARED the
+    // moment a non-empty `teamOnCardIds` is actually written in the same
+    // transaction (`updateCard`, the commit's reviewed content patch, or the
+    // commit filling a teamless row with the operator's picked teams), so it
+    // can never contradict the teams on the row. Never touched by a
+    // linkage-only re-sync, and never set by marketplace data alone — only by
+    // that explicit operator answer, and never over an existing confirmation.
     teamNoneConfirmedAt: v.optional(v.number()),
     // The Clerk subject of the operator who confirmed it — same shape and
     // purpose as `players.createdByUserId` and
@@ -2624,6 +2629,15 @@ export default defineSchema({
     // appears underneath it afterwards.
     stem: v.string(),
     status: v.union(v.literal("pending"), v.literal("ready")),
+    // NEO-335 — how this card's fetch-time BSC team lookup ended, written by
+    // `resolveCandidateTeams` beside `status: "ready"`. "answered": BSC
+    // replied (with a team, or with none on file). "failed": the call itself
+    // failed. Absent: no lookup ran (the team came from the bulk parse, or the
+    // card has no BSC ref). Rides to the client on the preview card so the
+    // commit can stamp an answered card's `teamCheckDoneAt` instead of
+    // re-asking BSC after save. Optional and additive; the table is drained at
+    // commit, so no backfill.
+    teamLookup: v.optional(v.union(v.literal("answered"), v.literal("failed"))),
     lastUpdated: v.number(),
   })
     .index("by_batch", ["batchId"])

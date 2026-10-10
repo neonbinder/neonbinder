@@ -7,6 +7,8 @@ import NeonButton from "../modules/NeonButton";
 import { deriveCardAttention } from "./card-attention";
 import {
   AttentionSportContext,
+  attentionWalkRank,
+  isAwaitingTeamLookup,
   pickAttentionFixer,
   unfixableReason,
   type CardChecklistRow,
@@ -25,6 +27,21 @@ export {
 } from "./cardAttentionRegistry";
 
 /**
+ * NEO-335 — the line the walker ends on. "All clear" when nothing is left; when
+ * cards are still waiting on the automatic team lookup (see
+ * `isAwaitingTeamLookup`), it says so, because those can still join the walk
+ * after the operator has finished it.
+ */
+export function walkDoneLine(awaitingLookup: number): string {
+  if (awaitingLookup <= 0) {
+    return "All clear — nothing on this checklist needs attention.";
+  }
+  return awaitingLookup === 1
+    ? "All clear for now — 1 more card is still being checked for a team."
+    : `All clear for now — ${awaitingLookup} more cards are still being checked for a team.`;
+}
+
+/**
  * NEO-102 — walk the cards that need attention, one at a time, after the
  * commit rather than during it.
  *
@@ -40,11 +57,16 @@ export {
  *
  * "After the commit" is about when the question becomes ANSWERABLE, not about
  * this dialog appearing on its own — it never does. `CardChecklist` mounts it
- * only when the operator presses one of its two buttons: the header row's
- * "Fix them one at a time", or the post-commit banner's inline CTA. An
- * earlier revision opened it automatically inside a grace window after a
- * commit; that put a `fixed inset-0` overlay over whatever the operator did
- * next, and it is gone.
+ * only when the operator presses its one control, the amber "N need you" pill
+ * in the checklist header (NEO-335). An earlier revision opened it
+ * automatically inside a grace window after a commit; that put a
+ * `fixed inset-0` overlay over whatever the operator did next, and it is gone.
+ *
+ * ## The order (NEO-335)
+ *
+ * Missing teams first, then names not yet linked, then titles; by card number
+ * within each (`attentionWalkRank`). A team is the question most cards share
+ * and the one an operator answers fastest, so it goes first.
  *
  * ## The queue is derived, not held
  *
@@ -104,11 +126,10 @@ export default function CardAttentionWalker({
   onClose: () => void;
   /**
    * a11y: a durable control to restore focus to on close. The walker is only
-   * ever opened by hand, but neither of its two triggers survives the sitting
-   * — both the header row's button and the post-commit banner's CTA are
-   * rendered only while `attentionCount > 0`, so answering the last card
-   * unmounts the very element the walker's own activeElement-at-mount capture
-   * would restore to. The parent passes something that is always mounted
+   * ever opened by hand, but its trigger does not survive the sitting — the
+   * header's "N need you" pill is rendered only while `attentionCount > 0`,
+   * so answering the last card unmounts the very element the walker's own
+   * activeElement-at-mount capture would restore to. The parent passes something that is always mounted
    * instead — same reasoning as SyncReviewModal's prop of the same name.
    */
   restoreFocusRef?: RefObject<HTMLElement | null>;
@@ -131,11 +152,26 @@ export default function CardAttentionWalker({
   const closeBtnRef = useRef<HTMLButtonElement | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
 
+  // NEO-335: walk order, then card number — see `attentionWalkRank`. The rank
+  // is computed once per card rather than inside the comparator.
   const attentionCards = useMemo(
     () =>
       cards
-        .filter((c) => deriveCardAttention(c).length > 0)
-        .sort((a, b) => compareCardNumbers(a.cardNumber, b.cardNumber)),
+        .map((card) => ({ card, items: deriveCardAttention(card) }))
+        .filter(({ items }) => items.length > 0)
+        .map(({ card, items }) => ({ card, rank: attentionWalkRank(items) }))
+        .sort(
+          (a, b) =>
+            a.rank - b.rank ||
+            compareCardNumbers(a.card.cardNumber, b.card.cardNumber),
+        )
+        .map(({ card }) => card),
+    [cards],
+  );
+
+  /** Cards the automatic team lookup has yet to answer; for the done line only. */
+  const awaitingLookup = useMemo(
+    () => cards.filter(isAwaitingTeamLookup).length,
     [cards],
   );
 
@@ -162,10 +198,11 @@ export default function CardAttentionWalker({
    * either, because a card only ever leaves the queue as the result of
    * something the operator did.
    */
-  const [pinnedId, setPinnedId] = useState<string | null>(() => {
-    const first = cards.find((c) => deriveCardAttention(c).length > 0);
-    return first ? (first._id as string) : null;
-  });
+  // Seeded from the ORDERED list, so the walk opens on the card it says comes
+  // first rather than on whichever flagged row the subscription listed first.
+  const [pinnedId, setPinnedId] = useState<string | null>(
+    () => (attentionCards[0]?._id as string | undefined) ?? null,
+  );
 
   const current =
     remaining.find((c) => (c._id as string) === pinnedId) ?? remaining[0] ?? null;
@@ -423,7 +460,7 @@ export default function CardAttentionWalker({
               </p>
             ) : (
               <p className="text-sm text-gray-200">
-                All clear — nothing on this checklist needs attention.
+                {walkDoneLine(awaitingLookup)}
               </p>
             )}
           </div>

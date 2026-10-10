@@ -133,3 +133,26 @@ describe("candidatesToPairingCards", () => {
     expect(candidatesToPairingCards([])).toEqual([]);
   });
 });
+
+describe("NEO-335 — the fetch-time team lookup outcome rides to the commit", () => {
+  test("an answered or failed lookup is carried onto the card", () => {
+    expect(candidateToPairingCard({ ...FULL, teamLookup: "answered" }).teamLookup).toBe(
+      "answered",
+    );
+    expect(candidateToPairingCard({ ...FULL, teamLookup: "failed" }).teamLookup).toBe(
+      "failed",
+    );
+  });
+
+  test("no lookup leaves no key at all, so the card is byte-identical to before", () => {
+    const card = candidateToPairingCard(FULL);
+    expect("teamLookup" in card).toBe(false);
+  });
+
+  test("the committable form keeps it — only the two disagreements are dropped", () => {
+    const [card] = candidatesToPairingCards([
+      { ...FULL, bucket: "bscOnly", teamLookup: "answered" },
+    ]);
+    expect(card.teamLookup).toBe("answered");
+  });
+});

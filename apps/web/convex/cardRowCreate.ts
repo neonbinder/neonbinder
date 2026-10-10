@@ -51,8 +51,11 @@ export type CardRowSetContext = {
 
 /**
  * NB-owned fields a COPY carries verbatim from the card it copies (NEO-312).
- * The commit never passes these: a card born from a marketplace sync has no
- * team check, no operator ruling and no variation link yet.
+ * The commit passes only the team bookkeeping, and only when the card earned
+ * it before save (NEO-335, `settleCardTeamAnswer` in selectorOptions.ts):
+ * `teamCheckDoneAt` (+ `bscTeamName`) for a card whose fetch-time BSC lookup
+ * answered, or `teamNoneConfirmedAt` / `teamNoneConfirmedByUserId` for an
+ * operator's "No team on this card". It never passes a variation link.
  */
 export type CarriedCardFields = Partial<
   Pick<

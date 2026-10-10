@@ -41,7 +41,7 @@
  * settles and then settle it afterward to prove the late result is dropped.
  */
 
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -1521,7 +1521,7 @@ async function cancelEntityReviewPath() {
   return rendered;
 }
 
-describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
+describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N need you' control)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.cards = [attentionCard(), settledCard()];
@@ -1530,12 +1530,15 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
     state.liveCandidates = null;
   });
 
+  /** The header's one attention control; its visible text is its name. */
+  const needsYou = (name: string | RegExp = /^\d+ needs? you$/) =>
+    screen.getByRole("button", { name });
+  const queryNeedsYou = () => screen.queryByRole("button", { name: /^\d+ needs? you$/ });
+
   it("counts the flagged rows and marks only those rows in the grid", () => {
     renderChecklist();
 
-    expect(
-      screen.getByRole("button", { name: /Show only cards needing attention/ }).textContent,
-    ).toContain("1 need attention");
+    expect(needsYou("1 needs you")).toBeTruthy();
     expect(screen.getAllByLabelText(/needs attention/)).toHaveLength(1);
     // NEO-272: the mark names the row's identity — number AND card name — so
     // twenty-five same-numbered rows no longer all announce the same sentence.
@@ -1544,44 +1547,38 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
     ).toBeTruthy();
   });
 
-  it("announces the count in a live region, since the chip's own label changes silently", () => {
+  it("announces the count in a live region, since the pill's own text changes silently", () => {
     renderChecklist();
 
     const announced = screen
       .getAllByRole("status")
       .map((el) => el.textContent ?? "")
       .join(" | ");
-    expect(announced).toContain("1 card needs attention on this checklist");
+    expect(announced).toContain("1 card needs you on this checklist");
   });
 
   it("hides the row entirely when nothing needs attention", () => {
     state.cards = [settledCard()];
     renderChecklist();
 
-    expect(screen.queryByText(/need attention/)).toBeNull();
+    expect(queryNeedsYou()).toBeNull();
+    expect(screen.queryByText(/needs? you/)).toBeNull();
   });
 
-  it("toggling the chip filters the grid down to the flagged rows", () => {
+  it("offers no grid filter any more — every row stays listed", () => {
     renderChecklist();
 
-    expect(screen.getByText("Tarik Skubal")).toBeTruthy();
-
-    const chip = screen.getByRole("button", { name: /Show only cards needing attention/ });
-    fireEvent.click(chip);
-
-    expect(screen.getByText("AL Leaders ERA LL")).toBeTruthy();
-    expect(screen.queryByText("Tarik Skubal")).toBeNull();
     expect(
-      screen.getByRole("button", { name: /Show only cards needing attention \(on\)/ }),
-    ).toBeTruthy();
+      screen.queryByRole("button", { name: /Show only cards needing attention/ }),
+    ).toBeNull();
+    expect(screen.getByText("AL Leaders ERA LL")).toBeTruthy();
+    expect(screen.getByText("Tarik Skubal")).toBeTruthy();
   });
 
   it("opens the walker from the header, any time", async () => {
     renderChecklist();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /Fix cards needing attention one at a time/ }),
-    );
+    fireEvent.click(needsYou());
 
     const dialog = await screen.findByRole("dialog");
     expect(dialog.textContent).toContain("Cards Needing Attention");
@@ -1605,9 +1602,7 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
   it("opened BY HAND, stays open and shows All clear once the last flagged row is fixed elsewhere", () => {
     const { rerender } = renderChecklist();
 
-    fireEvent.click(
-      screen.getByRole("button", { name: /Fix cards needing attention one at a time/ }),
-    );
+    fireEvent.click(needsYou());
     expect(screen.getByRole("dialog")).toBeTruthy();
 
     // The BSC pass (or another tab) answers the one flagged card — nothing
@@ -1632,49 +1627,39 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
    * checklist-fetch-wizard-add-career-team) commit a custom set whose one
    * card has no team, so it was flagged immediately and the walker's
    * `fixed inset-0` overlay swallowed the flow's next tap on the grid. The
-   * commit now says what needs attention and offers the walker; it does not
-   * take the screen.
+   * commit says what it saved; the header pill offers the walker.
+   *
+   * NEO-335: the banner no longer carries its own "K need attention — Fix
+   * them one at a time" button. The header pill is the one way in.
    */
-  it("after a commit, does NOT open the walker — it offers it in the banner instead", async () => {
+  it("after a commit, does NOT open the walker, and the banner offers no button — the header pill carries the count", async () => {
     await commitZeroCandidatePath();
 
-    expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
+    const banner = screen.getByText(/Saved 2 cards\./);
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(
-      screen.getByRole("button", { name: /Fix them one at a time/ }),
-    ).toBeTruthy();
+    expect(within(banner).queryByRole("button")).toBeNull();
+    expect(screen.queryByRole("button", { name: /one at a time/ })).toBeNull();
+    expect(needsYou("1 needs you")).toBeTruthy();
   });
 
-  it("the banner CTA carries the live count", async () => {
+  it("the header pill carries the live count after a commit", async () => {
     state.cards = [attentionCard(), attentionCard({ _id: "card-c", cardNumber: "3" })];
     await commitZeroCandidatePath();
 
-    expect(
-      screen.getByRole("button", { name: "2 need attention — Fix them one at a time" }),
-    ).toBeTruthy();
+    expect(needsYou("2 need you")).toBeTruthy();
   });
 
-  it("clicking the banner CTA opens the walker", async () => {
-    await commitZeroCandidatePath();
-
-    fireEvent.click(screen.getByRole("button", { name: /Fix them one at a time/ }));
-
-    const dialog = await screen.findByRole("dialog");
-    expect(dialog.textContent).toContain("Cards Needing Attention");
-  });
-
-  it("the banner CTA is absent when the commit flagged nothing", async () => {
+  it("after a commit that flagged nothing, the banner is there and the pill is not", async () => {
     state.cards = [settledCard()];
     await commitZeroCandidatePath();
 
-    // The banner itself is there — only the call-to-action half is not.
     expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
+    expect(queryNeedsYou()).toBeNull();
   });
 
-  it("the banner CTA disappears once the count reaches zero", async () => {
+  it("the pill leaves once the count reaches zero, and the banner stays", async () => {
     const { rerender } = await commitZeroCandidatePath();
-    expect(screen.getByRole("button", { name: /Fix them one at a time/ })).toBeTruthy();
+    expect(needsYou()).toBeTruthy();
 
     // The BSC pass (or another tab) answers the one flagged card.
     state.cards = [settledCard()];
@@ -1686,46 +1671,28 @@ describe("CardChecklist — NEO-102 attention count, filter and walker", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
+    expect(queryNeedsYou()).toBeNull();
     expect(screen.getByText(/Saved 2 cards\./)).toBeTruthy();
   });
 
   /**
-   * CI round 2 regression (flow `checklist-fetch-cancel-dialog`). The CTA was
-   * keyed off `syncNotice.tone === "status"` — which is EVERY routine notice,
-   * not just a commit. On a custom set holding a teamless card the cancel
-   * banner read "Fetch cancelled — no cards saved. 1 need attention — Fix them
-   * one at a time", offering to fix cards the operator had just declined to
-   * save, and breaking the flow's exact-text assertion on that element.
-   *
-   * The rule is structural, not textual: only the notice `runCommit` marks
-   * `kind: "committed"` carries the CTA.
+   * CI round 2 regression (flow `checklist-fetch-cancel-dialog`): the cancel
+   * banner once grew an attention CTA, offering to fix cards the operator
+   * had just declined to save, and broke the flow's exact-text assertion on
+   * that element. NEO-335 retired the banner CTA altogether; this keeps the
+   * exact text pinned so it cannot come back on any notice.
    */
-  it("leaves the cancelled-review banner exactly as written, with no attention CTA", async () => {
+  it("leaves the cancelled-review banner exactly as written", async () => {
     await cancelEntityReviewPath();
-    // Precondition: there IS something needing attention, so a tone-keyed CTA
-    // would have appeared here.
-    expect(
-      screen.getByRole("button", { name: /Show only cards needing attention/ }).textContent,
-    ).toContain("1 need attention");
+    // Precondition: there IS something needing attention.
+    expect(needsYou("1 needs you")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel entity review" }));
 
-    // Exact match: `getByText` compares the element's whole text content, so a
-    // CTA appended inside the banner would fail this outright.
+    // Exact match: `getByText` compares the element's whole text content, so
+    // anything appended inside the banner would fail this outright.
     expect(screen.getByText("Fetch cancelled — no cards saved.")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
     expect(mockCommitChecklist).not.toHaveBeenCalled();
-  });
-
-  it("does not offer the CTA on the pre-commit 'needs confirmation' notice either", async () => {
-    await cancelEntityReviewPath();
-
-    // The wizard is open and nothing has been committed yet.
-    expect(
-      screen.getByText("1 new players + 0 new teams need confirmation"),
-    ).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Fix them one at a time/ })).toBeNull();
   });
 });
 
@@ -3193,14 +3160,7 @@ describe("CardChecklist — NEO-221 D12: names nobody reviewed", () => {
 
     renderChecklist();
 
-    expect(
-      screen.getByRole("button", { name: /Show only cards needing attention/ })
-        .textContent,
-    ).toContain("1 need attention");
-
-    fireEvent.click(
-      screen.getByRole("button", { name: /Fix cards needing attention one at a time/ }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "1 needs you" }));
 
     // The unreviewed name is shown — an operator cannot link a misspelling
     // they cannot see. Scoped to the fixer's own list: the grid row behind the

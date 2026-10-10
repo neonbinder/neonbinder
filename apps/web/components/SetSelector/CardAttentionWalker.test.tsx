@@ -84,11 +84,19 @@ vi.mock("./TeamPicker", () => ({
   ),
 }));
 
-import CardAttentionWalker from "./CardAttentionWalker";
+/**
+ * NEO-335 — `UnreviewedNameFixer` mounts a PlayerPicker; only the walk ORDER
+ * test below renders that fixer, and it reads the heading, not the picker.
+ */
+vi.mock("./PlayerPicker", () => ({ default: () => null }));
+
+import CardAttentionWalker, { walkDoneLine } from "./CardAttentionWalker";
 import { LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 import { deriveCardAttention, needsAttention } from "./card-attention";
 import {
   attentionFixers,
+  attentionWalkRank,
+  isAwaitingTeamLookup,
   pickAttentionFixer,
   unfixableReason,
   type CardChecklistRow,
@@ -922,6 +930,179 @@ describe("CardAttentionWalker — deferring", () => {
     expect(screen.getByText(/All clear/)).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Skip card/ })).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("dialog")));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-335 — walk order and the done line
+// ---------------------------------------------------------------------------
+
+describe("attentionWalkRank (NEO-335)", () => {
+  it("ranks missing team, then unlinked names, then every title kind, then what this bundle cannot fix", () => {
+    const team = attentionWalkRank([{ kind: "missingTeam" }]);
+    const name = attentionWalkRank([{ kind: "unreviewedName", names: ["X"] }]);
+    const titles = (
+      [
+        { kind: "titleOverLimit", length: 94 },
+        { kind: "titleTruncated" },
+        { kind: "aspectValueOverLimit", field: "cardVariation", length: 70 },
+      ] as AttentionItem[]
+    ).map((item) => attentionWalkRank([item]));
+    const unknown = attentionWalkRank([
+      { kind: "somethingFromTheFuture" },
+    ] as unknown as AttentionItem[]);
+
+    expect(team).toBeLessThan(name);
+    for (const title of titles) {
+      expect(name).toBeLessThan(title);
+      expect(title).toBe(titles[0]);
+      expect(title).toBeLessThan(unknown);
+    }
+  });
+
+  it("ranks a card by the question it will be ASKED, not the earliest kind it carries", () => {
+    // `deriveCardAttention` lists an unlinked name after a title, so this card
+    // presents TitleFixer — and must walk with the titles, not the names.
+    const items = deriveCardAttention({
+      teamOnCardIds: ["team-1" as unknown as Id<"teams">],
+      listingTitle: "x".repeat(94),
+      pendingPlayerNames: ["Somebody"],
+      platformData: {},
+    });
+    expect(items.map((i) => i.kind)).toEqual(["titleOverLimit", "unreviewedName"]);
+    expect(attentionWalkRank(items)).toBe(
+      attentionWalkRank([{ kind: "titleOverLimit", length: 94 }]),
+    );
+  });
+});
+
+describe("CardAttentionWalker — walk order (NEO-335)", () => {
+  /** Lowest card numbers on the kinds that walk LAST, so number order alone would get it wrong. */
+  const titleRow = needsTeamRow({
+    _id: "card-t" as unknown as Id<"cardChecklist">,
+    cardNumber: "1",
+    cardName: "Title Card",
+    teamOnCardIds: ["team-1" as unknown as Id<"teams">],
+    listingTitle: "x".repeat(94),
+  });
+  const nameRow = needsTeamRow({
+    _id: "card-n" as unknown as Id<"cardChecklist">,
+    cardNumber: "2",
+    cardName: "Name Card",
+    pendingPlayerNames: ["Somebody"],
+  });
+  const teamRow10 = needsTeamRow({
+    _id: "card-10" as unknown as Id<"cardChecklist">,
+    cardNumber: "10",
+    cardName: "Team Card Ten",
+  });
+  const teamRow3 = needsTeamRow({
+    _id: "card-3" as unknown as Id<"cardChecklist">,
+    cardNumber: "3",
+    cardName: "Team Card Three",
+  });
+
+  const heading = () => screen.getByRole("heading", { level: 3 }).textContent;
+  const skip = () => fireEvent.click(screen.getByRole("button", { name: /^Skip card .* for now$/ }));
+
+  it("asks every missing team first (by number), then unlinked names, then titles", () => {
+    // Handed over in an order that matches neither rule.
+    renderWalker([titleRow, teamRow10, nameRow, teamRow3]);
+
+    expect(heading()).toBe("#3 Team Card Three");
+    skip();
+    expect(heading()).toBe("#10 Team Card Ten");
+    skip();
+    expect(heading()).toBe("#2 Name Card");
+    skip();
+    expect(heading()).toBe("#1 Title Card");
+    skip();
+    expect(screen.getByText(/All clear/)).toBeTruthy();
+  });
+
+  it("a missing-team card arriving mid-walk joins its group without moving the card on screen", () => {
+    const { rerender, onClose } = renderWalker([nameRow, titleRow]);
+    expect(heading()).toBe("#2 Name Card");
+
+    rerender(
+      <CardAttentionWalker
+        isOpen
+        cards={[nameRow, titleRow, teamRow3]}
+        sportId={"sport-1" as unknown as Id<"selectorOptions">}
+        onClose={onClose}
+      />,
+    );
+    // Pinned: still the card being read.
+    expect(heading()).toBe("#2 Name Card");
+  });
+});
+
+describe("CardAttentionWalker — the done line (NEO-335)", () => {
+  const awaiting = (n: number): CardChecklistRow =>
+    needsTeamRow({
+      _id: `card-wait-${n}` as unknown as Id<"cardChecklist">,
+      cardNumber: String(100 + n),
+      cardName: `Waiting ${n}`,
+      teamCheckDoneAt: undefined,
+    });
+
+  it("isAwaitingTeamLookup: BSC-linked, teamless, unanswered and not yet looked up — nothing else", () => {
+    expect(isAwaitingTeamLookup(awaiting(1))).toBe(true);
+    // Looked up already (the walk asks it instead).
+    expect(isAwaitingTeamLookup(needsTeamRow())).toBe(false);
+    // No BSC ref: no lookup to wait for.
+    expect(isAwaitingTeamLookup({ ...awaiting(1), platformData: { sportlots: { ref: "sl-1" } } })).toBe(false);
+    // Has a team, or a typed team name.
+    expect(
+      isAwaitingTeamLookup({ ...awaiting(1), teamOnCardIds: ["team-1" as unknown as Id<"teams">] }),
+    ).toBe(false);
+    expect(isAwaitingTeamLookup({ ...awaiting(1), pendingTeamNames: ["Reds"] })).toBe(false);
+    // An operator said it has none.
+    expect(isAwaitingTeamLookup({ ...awaiting(1), teamNoneConfirmedAt: 5 })).toBe(false);
+  });
+
+  it("walkDoneLine: All clear, or All clear for now with the count still being looked up", () => {
+    expect(walkDoneLine(0)).toBe("All clear — nothing on this checklist needs attention.");
+    expect(walkDoneLine(1)).toBe(
+      "All clear for now — 1 more card is still being checked for a team.",
+    );
+    expect(walkDoneLine(4)).toBe(
+      "All clear for now — 4 more cards are still being checked for a team.",
+    );
+  });
+
+  it("says plain All clear when nothing is waiting", () => {
+    renderWalker([]);
+    expect(
+      screen.getByText("All clear — nothing on this checklist needs attention."),
+    ).toBeTruthy();
+  });
+
+  it("says how many are still being looked up, and never walks them", () => {
+    renderWalker([awaiting(1), awaiting(2)]);
+    // Nothing to ask: both are waiting on the lookup, not on a person.
+    expect(screen.queryByRole("heading", { level: 3 })).toBeNull();
+    expect(
+      screen.getByText("All clear for now — 2 more cards are still being checked for a team."),
+    ).toBeTruthy();
+  });
+
+  it("the count follows the live rows as lookups land", () => {
+    const { rerender, onClose } = renderWalker([awaiting(1), awaiting(2)]);
+    rerender(
+      <CardAttentionWalker
+        isOpen
+        cards={[
+          awaiting(1),
+          { ...awaiting(2), teamOnCardIds: ["team-1" as unknown as Id<"teams">], teamCheckDoneAt: 9 },
+        ]}
+        sportId={"sport-1" as unknown as Id<"selectorOptions">}
+        onClose={onClose}
+      />,
+    );
+    expect(
+      screen.getByText("All clear for now — 1 more card is still being checked for a team."),
+    ).toBeTruthy();
   });
 });
 

@@ -50,6 +50,13 @@ import NewLeagueForm, {
 import SameNamePlayerPanel from "./SameNamePlayerPanel";
 import UndatedCareerTeams from "./UndatedCareerTeams";
 import { deriveStagedTeamNames } from "./entity-review-staging";
+// NEO-335: "K cards have no team yet", on the final step.
+import TeamsOnCardsSection from "./TeamsOnCardsSection";
+import type {
+  GroupChoice,
+  PreviewCardForTeams,
+  TeamAnswer,
+} from "./teams-on-cards";
 import {
   countBulkCreatable,
   countPendingBulkCreatable,
@@ -349,6 +356,9 @@ export default function EntityReviewWizard({
   saving,
   commitError,
   onDismissCommitError,
+  previewCards,
+  onTeamAnswersChange,
+  cardsInheritSetTeam,
 }: {
   isOpen: boolean;
   selectorOptionId: Id<"selectorOptions">;
@@ -379,6 +389,23 @@ export default function EntityReviewWizard({
   commitError?: string | null;
   /** Dismiss `commitError` and return to reviewing. */
   onDismissCommitError?: () => void;
+  /**
+   * NEO-335 — the confirmed cards this review will save, in preview order.
+   * With `onTeamAnswersChange`, turns on the final step's "K cards have no
+   * team yet" section; without them the final step is exactly as before.
+   */
+  previewCards?: readonly PreviewCardForTeams[];
+  /**
+   * NEO-335 — every card's team answer, positionally aligned with
+   * `previewCards` (undefined = none). The parent holds them in client state
+   * and puts them on the cards at commit; they are never stored anywhere else.
+   */
+  onTeamAnswersChange?: (answers: Array<TeamAnswer | undefined>) => void;
+  /**
+   * NEO-335 — the node being saved under carries a set-level team, which the
+   * commit gives every new card that has none; the section then asks nothing.
+   */
+  cardsInheritSetTeam?: boolean;
 }) {
   const rows = useQuery(
     api.entityReviewQueue.getBatch,
@@ -638,6 +665,14 @@ export default function EntityReviewWizard({
 
   /** Overrides the >5 collapse of the decided list once the operator toggles it. */
   const [decidedListOpen, setDecidedListOpen] = useState<boolean | null>(null);
+
+  /**
+   * NEO-335 — the operator's picks in "K cards have no team yet", by line.
+   * Held here rather than in the section because the section unmounts when
+   * the operator steps back into the review, and a pick must survive that the
+   * way every other answer in this wizard does. Absent = the line's default.
+   */
+  const [teamChoices, setTeamChoices] = useState<Record<string, GroupChoice>>({});
 
   const confirmButtonRef = useRef<HTMLButtonElement>(null);
   /**
@@ -3974,6 +4009,30 @@ export default function EntityReviewWizard({
                       )}
                     </div>
                   </div>
+                )}
+                {/*
+                  NEO-335 — the cards this save will leave teamless, below
+                  everything above (whose strings E2E flows assert byte for
+                  byte). Never gates Confirm & Save: a line left for later
+                  saves teamless, as every card did before this existed.
+                  Mounted whenever the parent supplies the cards, even with
+                  nothing to show, so a stale answer is cleared — see the
+                  component's note.
+                */}
+                {previewCards && onTeamAnswersChange && rows && (
+                  <TeamsOnCardsSection
+                    selectorOptionId={selectorOptionId}
+                    cards={previewCards}
+                    rows={rows}
+                    linkedTeamNameById={linkedNameById}
+                    choices={teamChoices}
+                    onChoose={(groupKey, choice) =>
+                      setTeamChoices((prev) => ({ ...prev, [groupKey]: choice }))
+                    }
+                    onAnswersChange={onTeamAnswersChange}
+                    inheritsSetTeam={cardsInheritSetTeam}
+                    disabled={saving}
+                  />
                 )}
               </div>
             ) : (

@@ -37,6 +37,18 @@ import { requireAdmin } from "./auth";
 import { resolveTeamForSetYear } from "./lib/teamRow";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { teamFullName } from "../lib/teams/team-name";
+// NEO-335: the wizard's pre-save team suggestions (`teamSuggestionsForPreview`).
+import { ConvexError } from "convex/values";
+import { sameNamePlayers } from "./players";
+// Called inside the handler only; `cardPlayerLinks.ts` imports this module
+// back (for `findSportForSelectorOption`), which is safe for the same reason.
+import { recentCardIdsForPlayer } from "./cardPlayerLinks";
+import { normalizeEntityName } from "../lib/entities/normalize-name";
+import {
+  suggestTeamsForPlayer,
+  type SuggestionCard,
+  type TeamSuggestionTier,
+} from "./lib/teamFill";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -304,8 +316,11 @@ export const getForBscTeamCheck = internalQuery({
  * was long helps nobody. Duplicated rather than imported to keep this module
  * off `teams.ts`'s import graph, which is what let the NEO-236 rewrite take
  * the team lookup out of here cleanly.
+ *
+ * NEO-335: exported so the commit, which now stamps the same hint for a card
+ * whose fetch-time lookup answered, caps it at the same length.
  */
-const MAX_BSC_TEAM_NAME_LENGTH = 120;
+export const MAX_BSC_TEAM_NAME_LENGTH = 120;
 
 export const applyBscTeamResolution = internalMutation({
   args: {
@@ -716,5 +731,303 @@ export const suggestedTeamsForCard = query({
     // Nothing covers the set year: the retired-player case (see "when it lets
     // go" above). Offer the career rather than an empty fixer.
     return collect(wholeCareer);
+  },
+});
+
+// ===========================================================================
+// NEO-335 — team suggestions for the cards a sync is ABOUT to save
+// ===========================================================================
+
+/**
+ * The most players one `teamSuggestionsForPreview` call answers for.
+ *
+ * Over-length is REFUSED, not truncated — a short answer would read as "no
+ * evidence" for the players it dropped. The wizard asks in slices of this size
+ * (one subscription per slice), so it never trips this; a direct call that
+ * does gets a count, never the names.
+ */
+export const TEAM_SUGGESTION_MAX_PLAYERS = 32;
+
+/**
+ * How many of one player's card links a call reads, newest first.
+ *
+ * The stored tiers want the player's cards under at most three nodes of ONE
+ * set, but `cardPlayerLinks` can only be asked "this player's cards in this
+ * sport", which for a star is every set he appears in. Newest first, because
+ * the set being synced — and its base, synced just before it — are the
+ * player's most recent cards far more often than not. A player whose evidence
+ * sits past this window simply falls through to the career tiers: the bound
+ * can cost a suggestion, never produce a wrong one.
+ *
+ * Per call: 32 players × (24 links + 24 cards + the player + the name lookup)
+ * is ~1,700 reads plus the teams it names — inside a query's comfortable
+ * budget with the ancestor walk to spare.
+ */
+export const TEAM_SUGGESTION_LINKS_PER_PLAYER = 24;
+
+/** How many unselected candidates one player may offer. */
+export const TEAM_SUGGESTION_MAX_CANDIDATES = 6;
+
+/** A name past this is not a player name; it is not looked up at all. */
+const TEAM_SUGGESTION_MAX_NAME_LENGTH = 200;
+
+/** How many of the set's children are read to find its base checklist. */
+const TEAM_SUGGESTION_SET_CHILD_SCAN = 64;
+
+const teamSuggestionTierValidator = v.union(
+  v.literal("sameNode"),
+  v.literal("parallelOf"),
+  v.literal("baseSet"),
+  v.literal("oneTeamCareer"),
+  v.literal("oneStintInYear"),
+);
+
+const suggestedTeamValidator = v.object({
+  teamId: v.id("teams"),
+  /** NEO-236: the FULL name — "Padres" does not say which Padres. */
+  name: v.string(),
+  /** The team's livery, for the chip. Absent for teams ESPN does not carry. */
+  colors: v.optional(
+    v.object({
+      primary: v.optional(v.string()),
+      secondary: v.optional(v.string()),
+    }),
+  ),
+});
+
+type SuggestedTeam = {
+  teamId: Id<"teams">;
+  name: string;
+  colors?: { primary?: string; secondary?: string };
+};
+
+type PlayerSuggestionResult = {
+  playerId: Id<"players"> | null;
+  answer: { tier: TeamSuggestionTier; teams: Array<SuggestedTeam> } | null;
+  candidates: Array<SuggestedTeam>;
+};
+
+/**
+ * NEO-335 — per-player team evidence for the entity review wizard's final
+ * step, BEFORE the cards are saved.
+ *
+ * The wizard holds the confirmed cards in client state; some will save with
+ * no team (SportLots never emits one, a BSC blank, a name skipped as "not a
+ * team"). For the players on those cards, this answers "is there exactly one
+ * team?" from what NB already holds:
+ *
+ *  - stored rows — the player's own cards under the node being synced, the
+ *    node it copies (a parallel), and the set's base checklist;
+ *  - the player row — a one-team career, or one stint covering the set year.
+ *
+ * The tiers, and why an ambiguous stored tier stops the search, are
+ * `lib/teamFill.ts`'s. Batch evidence (another card in the same preview) and
+ * players CREATED in this wizard are answered in the browser — neither has a
+ * row to read yet.
+ *
+ * Each entry names a player by `playerId` (linked in the wizard) or by `name`
+ * (a checklist name that resolved without review). A name is resolved the
+ * commit's way for an exactly-one match — `sameNamePlayers` in the set's
+ * sport — and anything else is no evidence, never a guess at which of two
+ * same-name players is meant. Results come back in input order.
+ *
+ * Suggestions only: nothing here writes, and nothing reads a marketplace
+ * value or name — every key is an NB id or an NB role (`metadata.isBase`).
+ */
+export const teamSuggestionsForPreview = query({
+  args: {
+    /** The node the incoming cards will be saved under. */
+    selectorOptionId: v.id("selectorOptions"),
+    players: v.array(
+      v.object({
+        playerId: v.optional(v.id("players")),
+        name: v.optional(v.string()),
+      }),
+    ),
+  },
+  returns: v.object({
+    /** The year the career tiers compared against, so the browser's own
+     *  career answer (players created in the wizard) uses the same one. */
+    setYear: v.union(v.number(), v.null()),
+    players: v.array(
+      v.object({
+        playerId: v.union(v.id("players"), v.null()),
+        answer: v.union(
+          v.null(),
+          v.object({
+            tier: teamSuggestionTierValidator,
+            teams: v.array(suggestedTeamValidator),
+          }),
+        ),
+        candidates: v.array(suggestedTeamValidator),
+      }),
+    ),
+  }),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    if (args.players.length > TEAM_SUGGESTION_MAX_PLAYERS) {
+      throw new ConvexError(
+        `Too many players to suggest teams for at once (${args.players.length}; max ${TEAM_SUGGESTION_MAX_PLAYERS}).`,
+      );
+    }
+
+    const empty = (): PlayerSuggestionResult => ({
+      playerId: null,
+      answer: null,
+      candidates: [],
+    });
+
+    const node = await ctx.db.get(args.selectorOptionId);
+    if (!node) return { setYear: null, players: args.players.map(empty) };
+
+    // One walk up the chain for the two facts it holds: the sport (the card
+    // links are filed under the CARD's sport) and the setName row whose
+    // children hold the base checklist.
+    let sportId: Id<"selectorOptions"> | undefined;
+    let setNameNode: Doc<"selectorOptions"> | null = null;
+    {
+      let cursor: Doc<"selectorOptions"> | null = node;
+      let depth = 0;
+      while (cursor && depth < 16) {
+        if (cursor.level === "setName" && !setNameNode) setNameNode = cursor;
+        if (cursor.level === "sport") {
+          sportId = cursor._id;
+          break;
+        }
+        cursor = cursor.parentId ? await ctx.db.get(cursor.parentId) : null;
+        depth += 1;
+      }
+    }
+    const setYear = await findSetYearForSelectorOption(ctx, node._id);
+
+    const parallelOfNodeId =
+      node.level === "parallel" && node.parentId ? node.parentId : null;
+
+    // The base checklist, by its NB flag — never by the word "Base". Exactly
+    // one flagged variantType, or the tier is skipped.
+    let baseNodeId: Id<"selectorOptions"> | null = null;
+    if (setNameNode) {
+      const flagged: Array<Id<"selectorOptions">> = [];
+      for (const childId of (setNameNode.children ?? []).slice(
+        0,
+        TEAM_SUGGESTION_SET_CHILD_SCAN,
+      )) {
+        const child = await ctx.db.get(childId);
+        if (child?.level === "variantType" && child.metadata?.isBase === true) {
+          flagged.push(child._id);
+        }
+      }
+      if (flagged.length === 1) baseNodeId = flagged[0];
+    }
+
+    const relevantNodes = new Set<string>(
+      [node._id, parallelOfNodeId, baseNodeId].filter(
+        (id): id is Id<"selectorOptions"> => id !== null,
+      ),
+    );
+    const currentYear = new Date().getFullYear();
+
+    const teamCache = new Map<string, SuggestedTeam | null>();
+    const readTeam = async (teamId: Id<"teams">): Promise<SuggestedTeam | null> => {
+      if (!teamCache.has(teamId)) {
+        const team = await ctx.db.get(teamId);
+        // Same sport only: the commit refuses a whole save that names another
+        // sport's team (`validateOperatorTeamIds`), so a cross-sport career
+        // stint is not something to offer. A dangling id is dropped too.
+        teamCache.set(
+          teamId,
+          team && team.sportId === sportId
+            ? {
+                teamId,
+                name: teamFullName(team),
+                ...(team.colors ? { colors: team.colors } : {}),
+              }
+            : null,
+        );
+      }
+      return teamCache.get(teamId) ?? null;
+    };
+
+    const byPlayerId = new Map<string, PlayerSuggestionResult>();
+    const answerFor = async (
+      playerId: Id<"players">,
+      preloaded?: Doc<"players">,
+    ): Promise<PlayerSuggestionResult> => {
+      const cached = byPlayerId.get(playerId);
+      if (cached) return cached;
+
+      const player = preloaded ?? (await ctx.db.get(playerId)) ?? undefined;
+      const cards: Array<SuggestionCard> = [];
+      if (sportId) {
+        const cardIds = await recentCardIdsForPlayer(
+          ctx,
+          playerId,
+          sportId,
+          TEAM_SUGGESTION_LINKS_PER_PLAYER,
+        );
+        for (const cardId of cardIds) {
+          const card = await ctx.db.get(cardId);
+          if (card && relevantNodes.has(card.selectorOptionId)) cards.push(card);
+        }
+      }
+
+      const suggestion = suggestTeamsForPlayer({
+        playerId,
+        player,
+        cards,
+        nodeId: node._id,
+        parallelOfNodeId,
+        baseNodeId,
+        year: setYear,
+        currentYear,
+        maxCandidates: TEAM_SUGGESTION_MAX_CANDIDATES,
+      });
+
+      let answer: PlayerSuggestionResult["answer"] = null;
+      const candidates: Array<SuggestedTeam> = [];
+      if (suggestion.answer) {
+        const teams: Array<SuggestedTeam> = [];
+        for (const teamId of suggestion.answer.teamIds) {
+          const team = await readTeam(teamId);
+          if (team) teams.push(team);
+        }
+        // A dangling team in the answer makes it no longer the whole answer;
+        // offer what is left to pick from instead of a partial pre-fill.
+        if (teams.length === suggestion.answer.teamIds.length) {
+          answer = { tier: suggestion.answer.tier, teams };
+        } else {
+          candidates.push(...teams);
+        }
+      }
+      for (const teamId of suggestion.candidates) {
+        const team = await readTeam(teamId);
+        if (team) candidates.push(team);
+      }
+      const result: PlayerSuggestionResult = { playerId, answer, candidates };
+      byPlayerId.set(playerId, result);
+      return result;
+    };
+
+    const players: Array<PlayerSuggestionResult> = [];
+    for (const entry of args.players) {
+      if (entry.playerId) {
+        players.push(await answerFor(entry.playerId));
+        continue;
+      }
+      const trimmed = entry.name?.trim() ?? "";
+      if (!sportId || !trimmed || trimmed.length > TEAM_SUGGESTION_MAX_NAME_LENGTH) {
+        players.push(empty());
+        continue;
+      }
+      const normalized = normalizeEntityName(trimmed);
+      const matches = normalized ? await sameNamePlayers(ctx, normalized, sportId) : [];
+      // Exactly one, or no evidence: two same-name players is a question for
+      // the operator, and this query does not get to answer it.
+      players.push(
+        matches.length === 1 ? await answerFor(matches[0]._id, matches[0]) : empty(),
+      );
+    }
+
+    return { setYear: setYear ?? null, players };
   },
 });
