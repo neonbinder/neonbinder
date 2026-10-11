@@ -35,10 +35,9 @@ import type { Target } from "./client/target";
 // ---------------------------------------------------------------------------
 
 /**
- * TODO(NEO-339 B1/B2): replace with `import type { SetBuildSpec } from
- * "./spec/schema"` once spec/schema.ts lands. Until then the service receives
- * the spec as parsed JSON and validates it itself with the zod schema; the
- * MCP layer only reads `scope` (via `specScope`) to pre-check the phrase.
+ * The spec as it arrives: decoded JSON, not yet validated. The service parses
+ * it with `parseSpec` (spec/schema.ts); the MCP layer only reads `scope` (via
+ * `specScope`) to pre-check the phrase.
  */
 export type SetBuildSpecInput = unknown;
 
@@ -136,22 +135,10 @@ export interface RowRef {
   name: string;
 }
 
-/** `{ name, decision }` — mirrors spec `Named`. Keep in step with spec/schema.ts. */
-export interface NamedDecision {
-  name: string;
-  decision: "create" | "skip" | { link: string };
-}
-
-/** Mirrors spec `TeamDecision`. */
-export interface TeamDecision extends NamedDecision {
-  location?: string;
-  league?: string;
-}
-
-/** Mirrors spec `SlDecision`. */
-export type SlDecision =
-  | { slId: string; placement: "own-set" }
-  | { slId: string; set: string; variantType: string; name?: string };
+// The answer shapes are the spec's own (spec/schema.ts), so a `decide` call and
+// a spec's review section cannot drift apart.
+export type { NamedDecision, TeamDecision, SlDecision } from "./spec/schema";
+import type { NamedDecision, TeamDecision, SlDecision } from "./spec/schema";
 
 /** What `decide` takes: answers to one checklist's entity review (an apply stop). */
 export interface ReviewDecisions {

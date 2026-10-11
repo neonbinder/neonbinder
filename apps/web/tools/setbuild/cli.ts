@@ -20,6 +20,7 @@ import {
 } from "./client/connect";
 import { makeClient } from "./client/convex-client";
 import { mcpSmokeCommand } from "./mcp-smoke";
+import { RUNNER_COMMANDS } from "./runner/cli-commands";
 
 export interface CliIO {
   stdout: (line: string) => void;
@@ -146,12 +147,13 @@ const whoamiCommand: CommandSpec = {
 // ---------------------------------------------------------------------------
 
 /**
- * Every command. Planned additions (NEO-339 plan §4): inspect, plan, apply,
- * decisions-template, schema (runner), mcp-smoke (MCP).
+ * Every command: whoami (here), mcp-smoke (MCP), and the runner's inspect,
+ * plan, apply, decisions-template and schema (runner/cli-commands.ts).
  */
 export const COMMANDS: Record<string, CommandSpec> = {
   whoami: whoamiCommand,
   "mcp-smoke": mcpSmokeCommand,
+  ...RUNNER_COMMANDS,
 };
 
 function usage(): string {

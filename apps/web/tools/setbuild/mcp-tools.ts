@@ -32,6 +32,7 @@ import { isAbsolute, resolve as resolvePath } from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+import { NamedDecisionSchema, SlDecisionSchema, TeamDecisionSchema } from "./spec/schema";
 import { redact } from "./auth/token-source";
 import { secretValues } from "./client/connect";
 import { assertConfirm, ConfirmMismatch, type Target } from "./client/target";
@@ -187,28 +188,11 @@ const confirm = z
     "The confirm phrase, exactly: BUILD <convex host> <scope>. Copy it from nb_plan (or from this tool's error when it is missing); never compose it.",
   );
 
-const namedDecision = z
-  .object({
-    name: z.string().min(1),
-    decision: z.union([z.literal("create"), z.literal("skip"), z.object({ link: z.string().min(1) }).strict()]),
-  })
-  .strict();
-const teamDecision = namedDecision
-  .extend({ location: z.string().optional(), league: z.string().optional() })
-  .strict();
-
-// TODO(NEO-339): swap for the zod schemas in spec/schema.ts once it exports them.
-const slDecision = z.union([
-  z.object({ slId: z.string().min(1), placement: z.literal("own-set") }).strict(),
-  z
-    .object({
-      slId: z.string().min(1),
-      set: z.string().min(1),
-      variantType: z.string().min(1),
-      name: z.string().min(1).optional(),
-    })
-    .strict(),
-]);
+// The answer shapes are the spec's own zod schemas, so an MCP answer and a
+// spec's review section are validated by one definition.
+const namedDecision = NamedDecisionSchema;
+const teamDecision = TeamDecisionSchema;
+const slDecision = SlDecisionSchema;
 
 // ---------------------------------------------------------------------------
 // Spec loading
@@ -413,8 +397,8 @@ export function registerWriteTools(
       description:
         "WRITES. Applies SportLots set-review decisions at a brand-year (see nb_review_items). Each row is " +
         'named by its SportLots id: {"slId", "placement": "own-set"} makes it its own set; {"slId", "set", ' +
-        '"variantType", "name"?} places it under an existing NB set. Rows not listed stay waiting; nothing is ' +
-        "applied by position. confirm is BUILD <convex host> <sport>/<year>/<manufacturer>; a call without it " +
+        '"variantType", "name"?} places it under an existing NB set. Every row in the review must be answered: ' +
+        "if any row is unanswered or unknown, nothing is saved and the open rows come back. Nothing is applied by position. confirm is BUILD <convex host> <sport>/<year>/<manufacturer>; a call without it " +
         "returns the exact phrase to show the operator.",
       inputSchema: {
         path: brandYearPathSchema,
