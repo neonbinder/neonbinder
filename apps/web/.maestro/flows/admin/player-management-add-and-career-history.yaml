@@ -22,7 +22,7 @@ tags:
 # by hand, so this duplicates no existing flow.
 #
 # IT LEANS ON NO FIXTURE AT ALL (NEO-214). It used to record its stints against
-# "New York Yankees", a team setup.yaml seeded by clicking a "Seed Test Teams"
+# "New York Yankees", a team the old seed flow (setup.yaml) seeded by clicking a "Seed Test Teams"
 # button. That button, and the mutation behind it, are gone — a global seed is
 # not something the product should carry — so `teams` is empty until a flow puts
 # something in it. This flow therefore creates the team it needs the way an

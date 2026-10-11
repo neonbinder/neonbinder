@@ -20,8 +20,9 @@ tags:
 #   fires when the user taps the row directly — which drives the drill forward.
 #
 # PRECONDITION:
-#   setup.yaml (the worker-bootstrap flow) runs first via the test:e2e:pick
-#   prerequisite closure. It seeds BSC + SL credentials and pre-syncs Baseball
+#   The scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md) has run
+#   (`npm run test:e2e -- setup`), and the worker bootstrap has saved this
+#   worker's BSC + SL credentials. The seed pre-syncs Baseball
 #   into the Sports column so it is available as synced data by the time this
 #   flow starts. The work-queue (NEO-49) replaced the old requires:/provides:
 #   dep-graph and the cascade/ directory is gone.
@@ -41,7 +42,7 @@ tags:
 
 # ============================================================
 # WAIT FOR SPORTS COLUMN IDLE
-# Baseball is the established idle signal — setup.yaml seeded it and it
+# Baseball is the established idle signal — the seed synced it and it
 # appears in the Sports column once the auto-sync settles. Using it as
 # the idle guard means this flow works even if the column is still
 # syncing when launchApp fires.

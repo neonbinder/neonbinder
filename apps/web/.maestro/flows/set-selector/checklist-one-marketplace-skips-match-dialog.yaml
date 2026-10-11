@@ -164,7 +164,8 @@ tags:
 # ── R3 — NO OTHER FLOW TESTS THIS ───────────────────────────────────────────
 #   Every other flow that reaches the pairing dialog is on a TWO-sided set and
 #   proves the opposite half of the same rule, unchanged by this ticket:
-#   `checklist-pairing-dialog-cancel` (Future Stars), `setup.yaml`,
+#   `checklist-pairing-dialog-cancel` (Future Stars),
+#   `topps-chrome-insert-keep-all-no-wizard` (once the retired `setup.yaml`),
 #   `util-fetch-real-set-checklist-to-wizard` (Topps Big League),
 #   `inserts-1996-score-one-nb-set-two-bsc-sources`. None of them is modified.
 #
@@ -213,7 +214,7 @@ tags:
 # ============================================================
 # STEP 1 — DRILL TO Hockey › <YEAR> › the "All Brands" VIEW
 #
-# setup.yaml provisions Baseball only, so this whole hierarchy is COLD and the
+# The scripted seed (`npm run setbuild`) provisions Baseball only, so this whole hierarchy is COLD and the
 # cold util owns every marketplace-length wait in it. "All Brands" is the
 # util's cue for the PINNED VIEW (its NEO-237 block), so its return contract
 # here is "the view is open and the Sets column has finished the YEAR-WIDE
@@ -411,7 +412,7 @@ tags:
 # STEP 4 — SYNC. THIS MUST NOT OPEN THE DIALOG.
 #
 # The checklist renders BELOW the columns container, under the 1024x629 fold,
-# so it is reached the way setup.yaml reaches it: scroll to the Base-mapping
+# so it is reached the way the retired seed flow reached it: scroll to the Base-mapping
 # button (the settle anchor — here "Map Base Set", proof the row stayed
 # unmapped), then centre "Add Card" (same flex row as the Cards header) before
 # asserting and tapping.

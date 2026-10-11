@@ -37,12 +37,13 @@ tags:
 #
 # ── WHY THIS FLOW IS READ-ONLY (and therefore allowed on a REAL set) ──
 #   .maestro/SET-REGISTRY.md: real marketplace sets are READ-ONLY for every flow
-#   except setup.yaml, because the queue drains across 8 parallel runners and any
+#   except a set's registered sole writer (the seed is a script that runs
+#   before the queue), because the queue drains across 8 parallel runners and any
 #   write is visible to whoever else is mid-flow.
 #
 #   This flow only ever CANCELS. CardPairingModal writes nothing until Confirm —
 #   commitCardChecklist is not reached on the cancel path — so no card, player or
-#   team is created and the shared set is left exactly as setup.yaml provisioned
+#   team is created and the shared set is left exactly as the seed provisioned
 #   it. That is what makes exercising it here legitimate.
 #
 #   A per-worker HAND-MADE set cannot cover this: it carries no marketplace ids
@@ -53,7 +54,8 @@ tags:
 #   data.
 #
 #   NO NEW REAL SET IS SYNCED. This uses "Insert → Future Stars" from the
-#   existing 2024 Topps Chrome anchor that setup.yaml already provisions.
+#   existing 2024 Topps Chrome anchor that the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md)
+#   already provisions.
 #   Adding a real set requires explicit owner approval every time — the 1996
 #   Score map-out named in NEO-137's Phase 5 needs that approval and is NOT
 #   added here.
@@ -99,7 +101,7 @@ tags:
 - runFlow:
     file: util-drill-to-2024-topps-chrome.yaml
 
-# Mirrors setup.yaml's proven Insert drill exactly (R9 — do not hand-roll a
+# Mirrors the retired seed flow's proven Insert drill exactly (R9 — do not hand-roll a
 # variant of it). Two things make the naive version wrong:
 #   1. Tapping "Insert" reveals the INSERTS COLUMN — wait on "Inserts", the
 #      column header, not on a row inside it.
@@ -117,7 +119,7 @@ tags:
     visible: "Inserts"
     timeout: 20000
 
-# The inserts are already reconciled by setup.yaml, so the search input is the
+# The inserts are already reconciled by the seed, so the search input is the
 # expected state here; the Reconcile modal should not appear.
 - extendedWaitUntil:
     visible: ".*Search inserts.*"
@@ -166,11 +168,11 @@ tags:
       - tapOn:
           id: "Sync card checklist"
 
-      # 90s matches setup.yaml's own ceiling for a real-set Insert fetch (BSC + SL
+      # 90s matches the retired seed flow's ceiling for a real-set Insert fetch (BSC + SL
       # round-trip). The dialog heading proves the fetch returned CANDIDATES rather
       # than committing straight to cards.
       #
-      # setup.yaml already populated this checklist, so the previously-committed
+      # The seed already committed this checklist, so the previously-committed
       # pairings replay into the matched bucket (sticky re-sync) — which is itself
       # worth seeing exercised against live marketplace data.
       - extendedWaitUntil:
@@ -308,7 +310,7 @@ tags:
             text: "^Confirm$"
           timeout: 90000
 
-      # Baseline. setup.yaml provisions all 20 Future Stars cards with both a BSC and
+      # Baseline. The seed provisions all 20 Future Stars cards with both a BSC and
       # a SportLots ref, so every one auto-matches and the columns are empty.
       - assertVisible:
           text: ".*Matched [(]20[)].*"

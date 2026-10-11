@@ -14,8 +14,8 @@ tags:
 #   proves Signed By changed as a direct result.
 #
 # WHY THE REAL Topps Chrome BASE SET (and not a per-worker custom set):
-#   The auto-fill reads card.playerIds[]. setup.yaml pre-syncs the 2024 Topps
-#   Chrome Base checklist AND confirms its EntityReviewWizard, so every Base
+#   The auto-fill reads card.playerIds[]. The scripted seed pre-syncs the 2024
+#   Topps Chrome Base checklist AND answers its entity review, so every Base
 #   card already carries real playerIds — the precondition this flow needs,
 #   already paid for by the seed. The obvious custom-set alternative does not
 #   supply it: `util-add-custom-card` leaves the quick-add form's Players field
@@ -97,7 +97,7 @@ tags:
 # FLOW:
 #   0. Drill to real 2024 Topps Chrome Base.
 #   0b. Assert the Base checklist is already populated WITH playerIds. That is
-#       the setup track's job; NEO-260 deleted the self-fetch fallback that used
+#       the seed's job; NEO-260 deleted the self-fetch fallback that used
 #       to rebuild the shared checklist here (see Step 0b for why).
 #   1-2. Open a real Base card's detail drawer (card #300 — Julio Rodriguez, a
 #        stable single-player card).
@@ -146,9 +146,9 @@ tags:
 # ============================================================
 # STEP 0b — PRECONDITION: THE BASE CHECKLIST IS ALREADY POPULATED
 #
-# flows/setup.yaml is this flow's documented precondition (util-drill-to-base-
-# variant's caller notes say so too): the setup track fetches the 2024 Topps
-# Chrome Base checklist and confirms its EntityReviewWizard, so every Base card
+# the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md) is this flow's
+# documented precondition: it fetches the 2024 Topps Chrome Base checklist
+# and answers its entity review, so every Base card
 # carries the playerIds the auto-fill under test reads.
 #
 # THIS WAS A `when: visible "No cards in this checklist yet."` FALLBACK that
@@ -172,7 +172,7 @@ tags:
 # `.*Fetch from Marketplaces.*|Refresh` — this narrows it to the branch this
 # flow requires.
 #
-# The local-run consequence is the intended one: run the setup track before
+# The local-run consequence is the intended one: run the seed (`npm run test:e2e -- setup`) before
 # picking this flow. NOTE it carries no `requires:` tag, so `test:e2e:pick`
 # will NOT pull the seed in for you — seed explicitly. Do NOT re-add a
 # self-heal branch to paper over an unseeded run.

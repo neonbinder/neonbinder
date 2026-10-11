@@ -10,7 +10,7 @@ tags:
 # (filtering, empty state); this one covers the detail side.
 #
 # WHY IT STARTS ON /admin/players (NEO-214). This flow used to edit "New York
-# Yankees", a team that setup.yaml seeded globally by clicking a "Seed Test
+# Yankees", a team that the old seed flow (setup.yaml) seeded globally by clicking a "Seed Test
 # Teams" button. The button and the mutation behind it are gone, so `teams` is
 # empty until something puts a row in it — and Team Management itself has no
 # "add a team" control, by design: teams are born from the product's team

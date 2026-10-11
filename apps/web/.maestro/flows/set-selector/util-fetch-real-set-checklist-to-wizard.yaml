@@ -29,7 +29,7 @@ tags:
 #      marketplace hierarchy, and "Base" is not something an insert set has.
 #
 # So the fixture is a real set that appears via `Sync Sets`, whose variant
-# types sync normally, and whose Base is mapped by `setup.yaml`.
+# types sync normally, and whose Base is mapped by the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md).
 #
 # ── EVERY CALLER IS READ-ONLY. THIS IS LOAD-BEARING. ────────────────────────
 # Each caller must leave through Cancel → Discard. Nothing may commit, and
@@ -71,7 +71,8 @@ tags:
 # ============================================================================
 
 # ── DRILL + BASE (R9) ───────────────────────────────────────────────────────
-# The Base mapping is provisioned by setup.yaml, so on a seeded deployment the
+# The Base mapping is provisioned by the seed for Topps Big League (the
+# commit flows' sets map it here, cold, on first use), so on a seeded deployment the
 # util's `Select Base Set` branch is skipped and this is a pure read.
 - runFlow:
     file: util-drill-to-base-variant.yaml

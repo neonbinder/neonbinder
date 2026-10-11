@@ -1395,10 +1395,11 @@ export default function CardChecklist({
       // guarantee the client reflects every write that preceded it on the
       // server — which includes all of the action's internal commit
       // mutations. So awaiting the discard first restores, for free, the
-      // repaint guarantee the mutation used to give us. .maestro/flows/
-      // setup.yaml waits for "Saved N cards" and then immediately asserts a
-      // "#NNN" card row is visible; painting the message any earlier races
-      // that assertion against the `getCardChecklist` subscription.
+      // repaint guarantee the mutation used to give us. A Maestro flow that
+      // waits for "Saved N cards" and then immediately asserts a "#NNN" card
+      // row is visible (the retired setup.yaml did; NEO-339 moved the seed to
+      // `npm run setbuild`) would otherwise race that assertion against the
+      // `getCardChecklist` subscription.
       let discardError: unknown;
       try {
         await discardCandidates({ selectorOptionId: variantId });

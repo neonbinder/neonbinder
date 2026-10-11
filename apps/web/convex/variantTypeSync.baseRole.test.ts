@@ -1,8 +1,11 @@
 /**
- * NEO-239 — the variantType column sync, end to end, on the path the setup
- * flow actually walks.
+ * NEO-239 — the variantType column sync, end to end, on the path the E2E
+ * seed walks (the same public functions, whether the retired setup flow drove
+ * them through the UI or the scripted seed — `npm run setbuild`,
+ * docs/operations/neo339-setbuild.md — drives them directly).
  *
- * CI caught what a unit test could not: `.maestro/flows/setup.yaml` synced
+ * CI caught what a unit test could not: `.maestro/flows/setup.yaml` (retired by
+ * NEO-339) synced
  * 2024 Topps Chrome's variant types on an empty preview, the Base / Insert /
  * Parallel rows appeared, and tapping "Base" never produced the Base mapping
  * form — because `metadata.isBase` had not landed on the freshly inserted row

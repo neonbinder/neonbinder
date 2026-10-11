@@ -125,7 +125,7 @@ tags:
 #
 # Real-synced sports (Baseball, Football, etc.) appear after the
 # Sports auto-sync completes. "Baseball" is the cascade idle signal —
-# setup.yaml seeds it, so its appearance confirms sync done.
+# the scripted seed syncs it, so its appearance confirms sync done.
 # For custom synthetic sports (e.g. "E2E Test Sport 0") the value
 # will not be in the list until we add it.
 #

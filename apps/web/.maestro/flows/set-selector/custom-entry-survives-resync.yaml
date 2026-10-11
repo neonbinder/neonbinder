@@ -236,7 +236,7 @@ tags:
       # idle buttons (EntityColumn). "Sync Sports" was centred before the tap,
       # so the notice — just above it — is on screen or a little above the
       # top edge; a bare assertVisible cannot recover the latter (PR #265 CI
-      # run 1, setup.yaml, same surface). UP is the direction that reaches it;
+      # run 1, the retired seed flow, same surface). UP is the direction that reaches it;
       # scrollUntilVisible swipes only if it is not already in view.
       - scrollUntilVisible:
           element:

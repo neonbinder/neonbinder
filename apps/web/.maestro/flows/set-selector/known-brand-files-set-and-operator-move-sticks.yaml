@@ -203,7 +203,7 @@ tags:
 # remainder under `Unknown` itself. Everything below reads the result of that
 # one sync. The util owns every marketplace-length wait in it.
 #
-# Baseball's Sports and Years columns are already warm (the setup track syncs
+# Baseball's Sports and Years columns are already warm (the scripted seed syncs
 # them), so the cold part of this drill is the Manufacturers column for 1990
 # and the year-wide Sets sync under the view.
 # ============================================================

@@ -39,7 +39,7 @@ tags:
 #
 #   THE TEAM IS THIS FLOW'S OWN (NEO-214):
 #     It used to pick "New York Yankees" and "New York Mets" out of a global
-#     fixture that setup.yaml seeded by clicking a "Seed Test Teams" button.
+#     fixture that the old seed flow (setup.yaml) seeded by clicking a "Seed Test Teams" button.
 #     That button and the mutation behind it are gone, so `teams` is empty until
 #     a flow fills it — and this flow, being a test OF the team picker, is
 #     exactly the right place to create one. It uses a single team named

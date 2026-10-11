@@ -66,7 +66,7 @@ tags:
 #   No cards are fetched (no checklist, no players, no teams). Nothing is
 #   detached or deleted. NOT self-cleaning: cleanup is the run-start reset
 #   every real-set sole writer relies on (`e2e-baseline.sh reset` before
-#   `setup.yaml`): a fresh preview has no Topps › Insert rows, so the dialog
+#   the scripted seed, `npm run setbuild`): a fresh preview has no Topps › Insert rows, so the dialog
 #   below is REQUIRED; on a dirty deployment the flow fails at that gate, by
 #   name, instead of asserting on rows it never built (the 1996 Score
 #   precedent).

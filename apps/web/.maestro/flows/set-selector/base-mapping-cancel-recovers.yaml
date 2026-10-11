@@ -35,7 +35,7 @@ tags:
 #   with live SportLots base options (a synthetic custom subtree has no SL data,
 #   so the picker would never open — auto-take BSC fallback instead). We use
 #   Topps 206 — a real set that NO other flow touches:
-#     - setup.yaml maps 2024 Topps CHROME (mapped → auto-open won't fire)
+#     - the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md) maps 2024 Topps CHROME (mapped → auto-open won't fire)
 #     - sets-base.yaml CONFIRMS 2024 Topps HERITAGE (mapped globally → same)
 #   and we NEVER click Confirm, so platformData.sportlots is never written —
 #   Topps 206's Base stays unmapped (its natural pre-sync state). Nothing is
@@ -72,7 +72,7 @@ tags:
 #
 # ⚠️ THIS FLOW NEEDS A SET WHOSE BASE IS **UNMAPPED**, and that is the whole
 # reason it moved off `Topps Big League` (NEO-248). Big League is now the
-# entity-review wizard fixture, and `setup.yaml` MAPS its Base in the seed job
+# entity-review wizard fixture, and the seed MAPS its Base
 # so the four `checklist-wizard-*` flows do not race each other to create that
 # mapping. A mapped Base renders `Re-map Base` instead of auto-opening the
 # picker, so this flow's very first assertion fails — which is exactly how CI

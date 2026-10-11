@@ -7,7 +7,7 @@ tags:
 ---
 # NEO-6 phase 1 smoke test.
 #
-# Precondition: flows/setup.yaml has run.
+# Precondition: the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md) has run.
 # That means Baseball → 2024 → Topps → Topps Chrome hierarchy is
 # pre-populated and BSC/SL credentials are saved.
 #

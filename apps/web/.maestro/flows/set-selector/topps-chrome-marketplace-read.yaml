@@ -13,7 +13,7 @@ tags:
 #   is gone; the queue is dynamic, not phased).
 #
 # WHAT THIS VERIFIES:
-#   1. BSC/SportLots sync (run by the setup track) persisted feature data on the
+#   1. BSC/SportLots sync (run by the scripted seed) persisted feature data on the
 #      real Topps Chrome set — the League feature row is rendered.
 #   2. The panel heading, breadcrumb, and at least one populated metadata field
 #      are present — the panel renders correctly with real marketplace data.
@@ -25,7 +25,7 @@ tags:
 # with no fan-out preview). That assertion is dropped below; the League feature
 # row + metadata section remain the proof that marketplace data is readable.
 #
-# PREREQUISITE (implicit): the setup track must have run at least once on this
+# PREREQUISITE (implicit): the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md) must have run at least once on this
 # Convex deployment so Topps Chrome is in selectorOptions. On a brand-new
 # deployment the flow will fail clearly ("Topps Chrome" not visible in Sets).
 #

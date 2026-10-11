@@ -215,8 +215,8 @@ tags:
 - extendedWaitUntil:
     visible: "New Team: MintedTeam${output.ATTEMPT_TOKEN}"
     timeout: 7000
-# One tap accepts the pre-filled Location, Name and League — what setup.yaml
-# and the 1996 Score flow do. Safe to match by text: the button only relabels
+# One tap accepts the pre-filled Location, Name and League — what the retired
+# seed flow and the 1996 Score flow do. Safe to match by text: the button only relabels
 # itself to "Link to <name>" on an exact hierarchy match, and this name is
 # per-worker unique, so it can have none.
 - tapOn: "Add as New Team"

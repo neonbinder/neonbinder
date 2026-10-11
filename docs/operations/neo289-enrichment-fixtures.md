@@ -144,7 +144,9 @@ Then:
 ## 5. When to re-capture
 
 - The seed's fixture set changes (a different set, brand, or card range gets
-  added to `setup.yaml`'s Base/Future Stars/Gold Wave coverage).
+  added to the scripted seed's spec, `.maestro/seed/baseline.spec.json` —
+  `npm run setbuild`, docs/operations/neo339-setbuild.md; before NEO-339 this
+  was `setup.yaml`'s Base/Future Stars/Gold Wave coverage).
 - The coverage warning (§3) shows a growing `missing` list.
 - An operator spots a wrong entity in a recorded answer (e.g. during the
   live-proof flow below, or from a §4 review) — re-capture that name's

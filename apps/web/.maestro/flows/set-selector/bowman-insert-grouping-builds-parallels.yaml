@@ -31,7 +31,9 @@ tags:
 # `bowman-sportlots-links-move-between-set-parallel-insert` were one flow
 # (`flagship-colour-is-a-parallel-both-ways`) until it reached 570 s of the
 # 600 s kill (CI run 36524859308). Its STEP 1 — Sync Sets and the SportLots
-# review — is now provisioned by `setup.yaml`; STEPS 2–9 are here; STEPS
+# review — is now provisioned by the seed (`npm run setbuild`,
+# docs/operations/neo339-setbuild.md); its UI is proved on 2025 Bowman by
+# `bowman-2025-sportlots-review-save`. STEPS 2–9 are here; STEPS
 # 10–14 are the sibling's. The numbers are kept so a CI history, the
 # registry and the sibling read across without a lookup table.
 #
@@ -40,7 +42,7 @@ tags:
 # ("—" and "…" are 3 each; CI run 36164550212 lost a flow to that).
 #
 # ── THE FIXTURE (SET-REGISTRY.md → "2026 Bowman") ───────────────────────────
-#   `setup.yaml` syncs Bowman's sets and saves its SportLots review before
+#   The scripted seed syncs Bowman's sets and saves its SportLots review before
 #   any flow runs: Bowman's Variant Types (`Insert`, `Parallel`) are synced,
 #   `All-America Game Autos` is filed under Bowman › Insert and every other
 #   SportLots-only name under Bowman › Parallel. BSC lists `Anime` and its
@@ -61,7 +63,7 @@ tags:
 #   save time (convex/selectorOptions.ts:7384-7392). So the sibling's
 #   `Red Ink` under `All-America Game Autos` survives this flow's saves
 #   whichever lands first, and nothing this flow asserts reads a row the
-#   sibling writes. Fresh-only: `setup.yaml`'s reset removes it all at the
+#   sibling writes. Fresh-only: the run-start reset removes it all at the
 #   head of every run.
 #
 # ── NEO-287: BOTH MODES, HARD ASSERTS IN EACH (R2) ──────────────────────────
@@ -138,8 +140,8 @@ tags:
 
 # ============================================================
 # DRILL TO Baseball / 2026 / Bowman / Bowman (R9)
-# Every level is warm: `setup.yaml` synced Bowman's Variant Types (live,
-# inside its SportLots review; paused, with its own drill to this set) and,
+# Every level is warm: the seed synced Bowman's Variant Types (live and
+# paused) and,
 # paused, made the hand-made `Bowman` manufacturer row. So this drill passes
 # no `CREATE_MANUFACTURER`: setup is that row's sole writer, and two flows
 # running the util's guarded create at once could mint it twice.
@@ -155,7 +157,8 @@ tags:
 
 # ============================================================
 # STEP 2 — THE INSERTS RECONCILE: MAKE THE TWO ANIME ROWS EXIST
-# 240s is the ceiling `inserts-1996-score-…` and setup.yaml use for a COLD
+# 240s is the ceiling `inserts-1996-score-…` uses (and the retired seed flow
+# used) for a COLD
 # insert-level BSC + SL fetch (R5 marketplace exception); BSC's side of this
 # type has never been synced.
 # ============================================================
@@ -448,7 +451,7 @@ tags:
           timeout: 7000
       - tapOn: "Insert"
 
-# PAUSED — no review ran (setup.yaml), so the column is EMPTY and syncs itself;
+# PAUSED — no review ran (the seed skips it), so the column is EMPTY and syncs itself;
 # with one marketplace there is nothing to reconcile: the column fills
 # straight from BSC, every Anime row a BSC-badged insert, and the dialog
 # never opens (inserts-1996-score's paused tail, PR #265). R5 marketplace

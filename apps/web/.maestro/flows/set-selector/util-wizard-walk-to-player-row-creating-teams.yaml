@@ -34,7 +34,7 @@ tags:
 # caller of this variant makes a SKIP of its own, so draining with skips too
 # would leave its decision indistinguishable in the history. One tap on the
 # step's primary action accepts the pre-filled Location, Name and League —
-# exactly the idiom setup.yaml and the 1996 Score flow already use — and leaves
+# exactly the idiom the 1996 Score flow (and once the retired seed flow) uses — and leaves
 # every drained decision reading "Added as new", so a single "Skipped" can only
 # be the caller's. Nothing is committed: the caller cancels and discards.
 #

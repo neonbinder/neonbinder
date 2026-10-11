@@ -5,8 +5,8 @@ tags:
   - set-selector
 ---
 # Independent BaseSetPicker test (was cascade/sets-base). Uses 2024 Topps HERITAGE
-# — a DIFFERENT set from the setup track's Topps Chrome — so it exercises the
-# BaseSetPicker on a set whose base mapping is NOT pre-confirmed by setup.
+# — a DIFFERENT set from the seed's Topps Chrome — so it exercises the
+# BaseSetPicker on a set whose base mapping is NOT pre-confirmed by the seed.
 # (Heritage is a clean single-base set: one 1–500 base, no Series-1/2/Update
 # split, so SportLots returns one unambiguous "likely match". Flagship "Topps"
 # was rejected for exactly that split; "Topps Fire" doesn't exist in 2024.)

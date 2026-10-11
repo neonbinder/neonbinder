@@ -24,7 +24,8 @@ tags:
 #   guard below, which can legitimately put one extra decision on the books.
 #
 # ⚠️ DATA DEPENDENCY — THE LINK TARGET.
-#   `players` is empty at the head of every run and `setup.yaml` fills it by
+#   `players` is empty at the head of every run and the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md)
+#   fills it by
 #   committing the whole 2024 Topps Chrome checklist, so the Baseball roster
 #   this search reaches IS that set's players (~494 measured). **Shohei Ohtani**
 #   is card #1 of 2024 Topps Chrome and is the target here.

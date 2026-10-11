@@ -51,8 +51,9 @@ export default function AdminSectionLayout() {
   // the headless E2E viewport is 1024x629 — the first version carried an h1, a
   // section subtitle, the nav, a page h2 AND a page subtitle, which pushed the
   // Sports column below the fold. "Baseball" rendered but was never VISIBLE, so
-  // setup.yaml failed and took the whole E2E suite with it. Every header line
-  // here costs the tool underneath it.
+  // the seed flow (setup.yaml, retired by NEO-339) failed and took the whole
+  // E2E suite with it; every flow drilling the cascade has the same need.
+  // Every header line here costs the tool underneath it.
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">Admin</h1>

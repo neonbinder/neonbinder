@@ -5,7 +5,8 @@ tags:
 ---
 # THE COLD TWIN OF util-drill-to-2024-topps-chrome.
 #
-# That util drills the hierarchy setup.yaml has ALREADY synced, so every one of
+# That util drills the hierarchy the scripted seed (`npm run setbuild`) has
+# ALREADY synced, so every one of
 # its waits is short on purpose — a slow column there is a bug and should fail
 # fast rather than sit for a minute. This util is for the opposite case: a
 # hierarchy no flow has ever opened, where each column arrives EMPTY, fires
@@ -119,7 +120,7 @@ tags:
     timeout: 20000
 
 # ── SPORT ─────────────────────────────────────────────────────────────────────
-# Sports are seeded by the setup track, so this level is WARM even here — the
+# Sports are synced by the seed, so this level is WARM even here — the
 # cold part of this drill starts one level down. Every marketplace sport plus
 # the suite's synthetic ones is far more than 8 entries, so the input is always
 # rendered.
@@ -153,7 +154,7 @@ tags:
 # First live fetch of this drill: the Years column for a sport nobody has opened
 # is empty, so it calls ensureSelectorOptions and waits on BSC + SportLots.
 # 150s is the R5 marketplace exception; it also absorbs the Convex action cold
-# start, which setup.yaml's own first fetch budgets 90s for.
+# start, which the retired seed flow's first fetch budgeted 90s for.
 - runFlow:
     when:
       visible: "Syncing Year Options"

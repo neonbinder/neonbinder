@@ -98,7 +98,7 @@ tags:
 #   Collection → Base`. Measured on PR #262's preview, 2026-09-16: BSC lists
 #   4 cards (RW-1 Satchel Paige … RW-4 Willie Mays) on Negro League clubs, so
 #   every team on it is unknown to a deployment whose only teams are the MLB
-#   clubs `setup.yaml`'s Topps Chrome commit created. 8 unknown names: 4
+#   clubs the seed's Topps Chrome commit created. 8 unknown names: 4
 #   players, the clubs, and one staged league ("Negro league baseball", raised
 #   by the first club's Wikidata lookup and asked once for the batch).
 #

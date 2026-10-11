@@ -7947,7 +7947,8 @@ export const setVariantTypePlatformData = mutation({
     // NEO-137: the incoming ids must be resolved to SLOTS. Spreading them
     // straight over `row.platformData` used to produce a mixed object
     // ({ bsc: { b0: "x" }, sportlots: "884412" }) that the schema rejects —
-    // which broke the Base Set picker, and with it setup.yaml.
+    // which broke the Base Set picker, and with it the E2E seed (then
+    // setup.yaml; since NEO-339 the scripted seed, `npm run setbuild`).
     let working: {
       platformData: typeof row.platformData;
       platformLabels: typeof row.platformLabels;
@@ -14123,7 +14124,8 @@ export const resolveChecklistEntities = action({
  * NEO-189 — how many cards one `commitCardChecklistChunk` transaction upserts.
  *
  * Measured, not guessed. The single-mutation version of this commit passed at
- * 335 cards (the E2E `setup.yaml` save — and already sat near its 120s wait)
+ * 335 cards (the E2E seed's Base save, then `setup.yaml`, since NEO-339 the
+ * scripted seed `npm run setbuild` — and already sat near its 120s wait)
  * and FAILED at 712 with Convex's `Your request timed out performing too many
  * system operations.` (PR #205 preview, request af06962bc3db7994). Each card
  * costs ~5-6 database operations in the chunk below, so 150 cards is ~900

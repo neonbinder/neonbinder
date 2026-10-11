@@ -16,7 +16,8 @@ tags:
 # person — the production bug ("C.J. Kayfus" vs "C. J. Kayfus").
 #
 # ⚠️ DATA DEPENDENCY — THE ROSTER ROW. J.T. Realmuto is #261 of 2024 Topps
-#   Chrome Base, and is therefore in the roster `setup.yaml` commits every run
+#   Chrome Base, and is therefore in the roster the seed commits every run —
+#   the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md)
 #   (SET-REGISTRY.md → 2024 Topps Chrome; ~494 Base / Future Stars / Gold Wave
 #   players). Same dependency, same shape, as checklist-wizard-link-commits'
 #   "Shohei Ohtani". The committed spelling is the one the marketplace sent at

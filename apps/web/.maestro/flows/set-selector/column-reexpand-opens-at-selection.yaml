@@ -114,7 +114,7 @@ tags:
     timeout: 45000
 
 # ── STEP 1 — the Sports column is loaded and long enough to have a search box
-# (>8 rows). Warm on every run: setup.yaml synced the sports.
+# (>8 rows). Warm on every run: the scripted seed synced the sports.
 - extendedWaitUntil:
     visible:
       id: "Search sports"

@@ -54,7 +54,7 @@ tags:
 #   * "Re-map Base" is on the page: the Base is mapped, so no base-set picker
 #     auto-opened (an open dialog makes D3 stand down and would own the Enter);
 #   * the checklist's sync button reads "Refresh", not "Fetch from
-#     Marketplaces": the checklist has cards (setup.yaml commits all 335 of
+#     Marketplaces": the checklist has cards (the scripted seed commits all 335 of
 #     2024 Topps Chrome Base, and no other flow writes them — SET-REGISTRY.md),
 #     and it is the same subscription D3 reads, so its target is decided;
 #   * "Edit attributes" is showing: the panel is collapsed, so "Hide
@@ -69,7 +69,7 @@ tags:
 #
 # R2 — every step ends in a hard positive. R4 — enters through the sign-in
 # redirect. R5 — every in-app wait is 7000 (the post-launch gate is the
-# sanctioned 45000); every row here is warm (setup.yaml provisions the whole
+# sanctioned 45000); every row here is warm (the seed provisions the whole
 # path), so no marketplace is waited on. R7/R7a — read-only on 2024 Topps
 # Chrome (SET-REGISTRY.md → "Read-only consumers"): picking rows writes
 # nothing, the drill stops at Base, and the D3 Enter only expands a panel.

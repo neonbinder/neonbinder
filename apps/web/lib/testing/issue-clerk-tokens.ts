@@ -48,8 +48,8 @@ export interface IssueEnv {
 // Backoff schedule (ms) between successive attempts. Index N is the wait
 // before attempt N+2 (no wait before attempt 1). Total sleep budget across
 // a single call ≈ 2.3 s before jitter; add per-attempt fetch round-trips
-// for the real wall-clock — well within setup.yaml's 60 s
-// extendedWaitUntil window.
+// for the real wall-clock — well within the 45 s post-launch heading gate
+// every Maestro flow waits behind (README → "Launching a flow").
 const BACKOFF_MS = [200, 600, 1500];
 
 // Status codes that indicate a transient Clerk failure worth retrying.

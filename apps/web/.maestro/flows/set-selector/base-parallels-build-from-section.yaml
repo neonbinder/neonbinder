@@ -32,7 +32,7 @@ tags:
 # assert then fails by name.
 #
 # WHAT THIS FLOW DOES NOT RE-PROVE (R3): the per-row `Build from Base` button
-# (setup.yaml's Gold Wave step builds through it, and its SportLots
+# (`gold-wave-build-from-base-row` builds through it, and its SportLots
 # pagination guard reads the copies); an insert's automatic build after a
 # save (`bowman-insert-grouping-builds-parallels`). The section's disabled
 # states, the no-confirm path (K = 0) and Stop's own wording are unit-tested
@@ -42,9 +42,12 @@ tags:
 # it; Linux refuses a path component over 255 bytes).
 #
 # ── THE FIXTURE AND THE WRITE SET (R7a, SET-REGISTRY.md → this flow) ────────
-#   setup.yaml syncs Topps Chrome's Variant Types, saves the `Parallel`
+#   The scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md) syncs Topps Chrome's
+#   Variant Types, saves the `Parallel`
 #   reconcile (every parallel of the base set as an insert-level row under
-#   it) and builds ONE of them, `Gold Wave Refractors`, from Base. So on
+#   it) and builds ONE of them from Base — never `Gold Wave Refractors`
+#   (`gold-wave-build-from-base-row` builds that one) and never the first
+#   buildable row, which this flow builds. So on
 #   every run K >= 1 and the confirm is the path, not a branch (R2): the flow
 #   asserts it hard.
 #
@@ -58,8 +61,8 @@ tags:
 #   ledger at run time and never assumes it — the claim is about whichever
 #   parallel the run built, and a reordered reconcile must not fail it. Every
 #   row under Topps Chrome › Parallel is safe to write: no queue flow reads a
-#   base parallel's cards (Gold Wave's are read only by setup.yaml, which runs
-#   alone before the queue). The run touches no Base card (Base is the
+#   base parallel's cards except `gold-wave-build-from-base-row`, which reads
+#   Gold Wave's — a row this flow builds only if Stop never lands). The run touches no Base card (Base is the
 #   SOURCE: read, never written) and mints no player, team or row.
 #
 #   If Stop never lands, the run walks on through the parallels — Gold Wave
@@ -206,12 +209,12 @@ tags:
 # cannot answer.
 #
 # 7000 — R5's bar, with NO exception (was 90000, an unmeasured ceiling
-# borrowed from setup.yaml's fetch). This waits on the rest of the build in
+# borrowed from the retired seed flow's fetch). This waits on the rest of the build in
 # flight: the live `fetchBscChecklist` + paged `fetchSportLotsChecklist`, the
 # link pass and the 300-card copy. MEASURED (CI 37179999943) 5.07 s for the
 # whole build, of which 2.07 s was left when this step began (Stop tapped
-# 05:59:13.19, heading seen 05:59:15.26); setup.yaml's Gold Wave build of the
-# same set took 4.81 s. The step starts ~3 s into the build (two taps), so
+# 05:59:13.19, heading seen 05:59:15.26); the Gold Wave build of the
+# same set took 4.81 s (now `gold-wave-build-from-base-row`). The step starts ~3 s into the build (two taps), so
 # 7000 here admits a whole build of ~10 s, twice the measurement, without
 # leaving the bar — no marketplace exception, so no sign-off. A build that
 # needs more is a product finding: the operator pressed Stop and is waiting
@@ -234,8 +237,8 @@ tags:
 # its reason on screen. Exactly one line can match (`stopped after 1`).
 #
 # THE COUNT STAYS OPEN, ON PURPOSE, though it is measured (300 copied, 35
-# left off, the same split as setup.yaml's Gold Wave build, which pins its
-# 300). Unlike the seed, this build runs mid-queue: `signed-by-autofills-
+# left off, the same split as the Gold Wave build). This build runs
+# mid-queue: `signed-by-autofills-
 # from-players` edits Base card #300 concurrently, and a copy taken while
 # that edit lands is skipped ("1 skipped — Base changed them mid-build"),
 # so a pinned 300 would go red on a correct build (SET-REGISTRY.md, the
@@ -278,7 +281,7 @@ tags:
 # The run is client-side and ends with the page (`useHostedParallelBuildRun`;
 # it has stopped, so nothing is left behind and no `beforeunload` prompt is
 # armed), so re-entering the set builder draws the section with its sleeve
-# strip only — the layout setup.yaml's Gold Wave pick crosses to the same
+# strip only — the layout `gold-wave-build-from-base-row`'s pick crosses to the same
 # header in one swipe plus one centring swipe (3.9 s). R9: the same warm
 # drill as STEP 1 (~32 s measured). It also replaces the UP scroll back to
 # the columns row, whose distance the ledger's focus park (STEP 3) made
@@ -294,12 +297,12 @@ tags:
 - tapOn: "Parallel"
 
 # Open the built parallel through the Parallels column's search box (the
-# column holds dozens of rows; setup.yaml's Gold Wave pick does the same).
+# column holds dozens of rows; `gold-wave-build-from-base-row` does the same).
 # The column mounts on its own Convex read: the 7000 bar, as a gate, because
 # a centred scroll that swipes before the column exists would move the page
 # under it. Then centred for the tap (R8): the box sits at the TOP of the
 # columns row, level with the `Parallel` row just tapped (MEASURED y=176 at
-# try 0 after the identical steps in setup.yaml), so if it is ever off
+# try 0 after the identical steps in the retired seed flow), so if it is ever off
 # screen it is ABOVE — UP (R5 direction).
 - extendedWaitUntil:
     visible: ".*Search parallels.*"

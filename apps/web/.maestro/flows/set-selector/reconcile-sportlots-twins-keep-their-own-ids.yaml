@@ -86,7 +86,7 @@ tags:
 #   Proving the link AFTER a save (the saved row's Attach sets pane no longer
 #   offers the attached twin's `id:`) needs a write to a real set, which only
 #   that set's sole writer may make, and the obvious writer here
-#   (`setup.yaml`'s Topps Chrome `Parallel` reconcile) would file "Chrome
+#   (the seed's Topps Chrome `Parallel` reconcile) would file "Chrome
 #   Update Sapphire" as a parallel of Topps Chrome and move the 41 that
 #   `base-parallels-build-from-section` pins. So the after-save proof lives in
 #   its own sole-writer flow on a different real set,
@@ -134,7 +134,7 @@ tags:
 #   7000 on every step but these, each a LIVE marketplace round-trip (R5's
 #   marketplace exception), named at its site:
 #     - the wait for the dialog after `Sync Parallels` — BSC + SportLots'
-#       lists (setup.yaml measures this column's fetches at ~2s);
+#       lists (the retired seed flow measured this column's fetches at ~2s);
 #     - the Base check's verdicts (STEP 2b, STEP 3) — each is a SportLots
 #       probe of real sets: a first-page read (32 ids a call, 8 at a time on
 #       the server) and, for a set whose first card agrees, a COUNT walk of

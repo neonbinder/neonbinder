@@ -17,7 +17,7 @@ tags:
 #      it no longer writes what SportLots alone lists: every such name waits
 #      in that BRAND's review (the "N SportLots sets to sort" pill on a
 #      brand's own Sets column — never on this view, which spans every
-#      brand; `setup.yaml` drives it for 2026 Bowman). What
+#      brand; `bowman-2025-sportlots-review-save` drives it for 2025 Bowman). What
 #      STEP 2 proves is that the phase RAN: the column's done state carries
 #      no "SportLots skipped" notice, the one thing the sync says about the
 #      SportLots side here. Nothing this flow reads depends on a SportLots-
@@ -235,8 +235,8 @@ tags:
 #
 # ── WHAT IT DOES NOT PROVE ────────────────────────────────────────────
 # What the phase classified. That belongs to the brand's review, which is
-# proved on 2026 Bowman (`setup.yaml`, its 2026 Bowman step — the merged
-# flagship flow's STEP 1, NEO-312);
+# proved on 2025 Bowman (`bowman-2025-sportlots-review-save`, NEO-339 — once
+# the retired seed flow's 2026 Bowman step, NEO-312);
 # on THIS fixture none of `SPx`'s SportLots entries would even reach one —
 # `routeSlSets` hides every SportLots entry a set NB already has equals or
 # word-boundary-prefixes, and BSC's set named exactly `SPx` covers them all.
@@ -302,7 +302,7 @@ tags:
       # scroll above stops the moment the button is FULLY visible, which
       # leaves it near the bottom edge with the whole slot above it inside
       # the viewport, and the button itself is the positive it is paired
-      # with. (Order matters for exactly that reason: `setup.yaml` runs the
+      # with. (Order matters for exactly that reason: the retired seed flow ran the
       # same live-absent/paused-present idiom on the paused sentence and had
       # to scroll to the notice first — at y≈620 it was UNDER the 625px fold
       # and a bare assert read it as absent, PR #265 run 1. Here the scroll

@@ -456,7 +456,8 @@ describe("setVariantTypePlatformData", () => {
    * REGRESSION (NEO-137): this handler used to spread the incoming WIRE ids
    * straight over `row.platformData`, producing a mixed object like
    * `{ bsc: { b0: "x" }, sportlots: "884412" }` that the schema rejects. The
-   * mutation threw, the Base Set picker never closed, and setup.yaml failed
+   * mutation threw, the Base Set picker never closed, and the seed flow
+   * (setup.yaml, retired by NEO-339) failed
    * with `"Select Base Set" is not visible` — taking the entire E2E lane down
    * with it, since every other flow depends on the seed.
    *

@@ -26,7 +26,7 @@ tags:
 #     the ONE exception below, which exists only while SportLots is paused.
 #   - Use util-drill-to-custom.yaml for flows that need create-or-select logic.
 #
-# PROVEN PATTERN: mirrors setup.yaml lines ~132-209 exactly — select-only,
+# PROVEN PATTERN: mirrors the retired seed flow's drill — select-only,
 # no notVisible guards, no create branches.
 #
 # ── NEO-287: THE MANUFACTURER LEVEL WHILE SPORTLOTS IS ON PAUSE ─────────────
@@ -37,7 +37,8 @@ tags:
 # (`-e PAUSED_PLATFORMS`, decided once by util-paused-platforms), a fresh
 # Manufacturers column syncs to NOTHING: it ends "done" carrying the paused
 # notice and holds only the rows an operator has added by hand. The seed adds
-# `Topps` under Baseball → 2024 that way (setup.yaml), which is the product's
+# `Topps` under Baseball → 2024 the same way (the scripted seed's
+# `manufacturer.whenMissing: "create"`, the server path behind "+ Custom"), which is the product's
 # own path — a row is a row whether or not it carries marketplace ids
 # (invariant 6) — and the BSC set list then files "Topps …" sets under it.
 #
@@ -56,7 +57,7 @@ tags:
 #      and the branch then adds the row through the column's own "+ Custom"
 #      form (`Add custom Manufacturers` → `Create manufacturer`) before
 #      tapping it. Only a path's SOLE WRITER may pass it (SET-REGISTRY.md),
-#      exactly as only setup.yaml adds `Topps`: the row is global, and the
+#      exactly as only the seed adds `Topps`: the row is global, and the
 #      create is guarded so a local re-run finds the row instead of minting a
 #      second one.
 # The LIVE branch is the search-select step, unchanged.
@@ -68,14 +69,14 @@ tags:
     timeout: 20000
 
 # ── SPORT ─────────────────────────────────────────────────────────────────────
-# Baseball is seeded by setup.yaml and appears immediately, first in the list —
+# Baseball is synced by the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md) and appears immediately, first in the list —
 # so this level taps the row without filtering (the column's search box, where
 # the cascade parks focus since NEO-224, is simply not used here). Scroll +
 # center before tapping (centering rule).
 # waitToSettleTimeoutMs: 0 — the subsequent extendedWaitUntil re-syncs; the
 # settle dead-wait is redundant here.
 # R5 — every gate in this util states 7000 (a bare wait is 17000 by omission).
-# Each waits on a column mounting or a read of rows setup.yaml has already
+# Each waits on a column mounting or a read of rows the seed has already
 # synced; none waits on a marketplace round-trip. In the retries a miss now
 # re-fires the tap after 7s rather than 17s.
 - extendedWaitUntil:

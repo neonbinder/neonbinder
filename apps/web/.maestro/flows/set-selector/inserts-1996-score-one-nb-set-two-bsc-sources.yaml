@@ -110,7 +110,7 @@ tags:
 # ============================================================
 # STEP 1 — ENTER THE Insert VARIANT TYPE
 # Selecting it kicks the cross-platform auto-sync, which surfaces the
-# reconcile dialog. 240s matches setup.yaml's sanctioned ceiling for a COLD
+# reconcile dialog. 240s matches the retired seed flow's ceiling for a COLD
 # insert-level BSC + SL fetch — this set has never been synced.
 # ============================================================
 
@@ -130,7 +130,7 @@ tags:
     when:
       true: "${!output.SL_PAUSED}"
     commands:
-      # REQUIRED, not optional. setup.yaml performs a global Set Builder reset before
+      # REQUIRED, not optional. The run-start reset (`e2e-baseline.sh reset`) wipes the Set Builder before
       # any flow runs, so 1996 Score is always absent when this flow starts and
       # selecting Insert always opens the reconcile dialog.
       #
@@ -475,7 +475,7 @@ tags:
       # STEP 6 — SAVE THROUGH THE ENTITY WIZARD
       #
       # 220 fresh cards surface hundreds of unknown players; the bulk-confirm footer
-      # button is the sanctioned path (setup.yaml documents why per-item draining is
+      # button is the sanctioned path (the retired seed flow documented why per-item draining is
       # not viable — each item is gated by the 3s/item Wikidata queue).
       #
       # ONLY A GENUINE MARKETPLACE FETCH PRODUCES AN UNKNOWN NAME. Six flows used to
@@ -502,8 +502,8 @@ tags:
       # This used to be an either/or gate (".*Confirm New Players.*|.*Saved N cards.*")
       # feeding a `when: visible: "Confirm New Players & Teams"` block — so a run in
       # which the wizard never appeared skipped every assertion below it and went
-      # GREEN having tested nothing (R2). It cannot legitimately not appear: setup.yaml
-      # resets the set-builder tables at the head of every run, so these 220 cards are
+      # GREEN having tested nothing (R2). It cannot legitimately not appear: the run-start
+      # reset wipes the set-builder tables at the head of every run, so these 220 cards are
       # always fresh and their 1996 player names are always absent from `players`. A
       # fetch that went straight to "Saved 220 cards" would mean unknown names had been
       # created without review — the exact defect the wizard exists to prevent — and
@@ -619,7 +619,8 @@ tags:
       # do. Keyed on the terminal state rather than on a step being visible:
       # players and their staged teams drain at the same time, so a loop keyed
       # on "New Team:" would exit the first time it caught the batch between
-      # lookups. See setup.yaml for the long version.
+      # lookups. (The long version lived in the retired setup.yaml; SET-REGISTRY.md
+      # → "NEO-236" keeps the essentials.)
       #
       # THIS TAP IS SAFE AGAIN, AND THE DETOUR IS WORTH RECORDING.
       # In CI run 34007264279 this same tap died with "null cannot be cast to

@@ -72,7 +72,7 @@ tags:
 # STEP 1 — DRILL TO Hockey / 2024 / Topps
 #
 # R9: the drill lives in a util. On a fresh deployment this hierarchy has never
-# been synced (setup.yaml provisions Baseball only), so it uses the COLD util,
+# been synced (the scripted seed provisions Baseball only), so it uses the COLD util,
 # which owns the marketplace-length waits and the "wait out the Syncing panel"
 # rule for every level it walks.
 # ============================================================
@@ -102,7 +102,7 @@ tags:
 #                                    rename and STEP 6's accept left behind. One
 #                                    regex covers both, so a local re-run repairs
 #                                    itself instead of failing at the drill.
-#                                    (CI never sees this: setup.yaml resets the
+#                                    (CI never sees this: the run-start reset wipes the
 #                                    set-builder tables at the head of every run,
 #                                    so the set is always re-synced from BSC.)
 #

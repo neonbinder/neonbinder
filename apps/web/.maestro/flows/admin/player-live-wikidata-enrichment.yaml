@@ -15,7 +15,8 @@ tags:
 # WHY THIS FLOW EXISTS. NEO-289 answers the seed set's names (2024 Topps
 # Chrome, Baseball) from a committed recording on dev and PR previews
 # (`NEONBINDER_ENRICHMENT_FIXTURES=1`, `convex/adapters/enrichmentFixtures.ts`),
-# so `setup.yaml`'s wizard drain no longer proves that the live lane works —
+# so the seed's Base review — the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md);
+# before NEO-339 `setup.yaml`'s wizard drain — no longer proves that the live lane works —
 # a hit never touches the network. This flow is the ONE live round-trip the
 # suite keeps: a name that is deliberately NOT in the recording, looked up for
 # real. A miss in the fixture falls through to the live adapter, which is the

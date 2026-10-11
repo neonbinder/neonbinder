@@ -61,7 +61,8 @@ tags:
 #
 #   IT HAS TO BE BASEBALL, and this is not a preference. `EntityLinkSearch`
 #   queries `players.search({ query, sportId })` — scoped to the row's SPORT —
-#   and the only players `setup.yaml` ever creates are the ~494 from 2024 Topps
+#   and the only players the seed (`npm run setbuild`) ever creates are the
+#   ~494 from 2024 Topps
 #   Chrome, all baseball. A basketball or football fixture has an EMPTY roster
 #   and nothing to link to. All three committing fixtures are baseball for other
 #   reasons too (one sport keeps the seed cheap), but for THIS flow it is a hard
@@ -77,7 +78,7 @@ tags:
 #   run — accepted, because CI reseeds the preview every run.
 #
 # ⚠️ DATA DEPENDENCY — THE LINK TARGET. Shohei Ohtani is card #1 of 2024 Topps
-#   Chrome and is therefore in the roster `setup.yaml` commits. If he is ever
+#   Chrome and is therefore in the roster the seed commits. If he is ever
 #   absent this fails at STEP 3 with a readable message; the fix is to change
 #   the two literals to another player setup provisions. He is deliberately not
 #   a player this flow creates — the Ohtani half proves a link onto the SEEDED

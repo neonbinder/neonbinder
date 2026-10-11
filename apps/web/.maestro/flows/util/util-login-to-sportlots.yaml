@@ -25,7 +25,7 @@ tags:
 # branches on `output.SL_PAUSED` (computed by util-paused-platforms, R3): the
 # LIVE branch is the warm-up below, unchanged; the PAUSED branch proves the
 # panel says so — the paused card is up and the live test control is gone —
-# so every consumer (worker-bootstrap, setup.yaml) inherits the right
+# so every consumer (worker-bootstrap, credentials flows) inherits the right
 # behaviour without a change of its own. Both branches end in hard asserts
 # (R2): a runner told "paused" against a live deployment (or the reverse)
 # fails here, by name, rather than somewhere downstream.

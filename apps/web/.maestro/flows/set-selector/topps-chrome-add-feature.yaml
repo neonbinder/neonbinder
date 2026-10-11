@@ -53,8 +53,8 @@ tags:
 #   a >7s save is a product finding, not a pad to inflate.
 #
 # PREREQUISITE (implicit): Topps Chrome with variant types and card checklist
-# rows must already exist in the shared Convex deployment (seeded by the cascade
-# setup track), same as topps-chrome-marketplace-read.yaml.
+# rows must already exist in the shared Convex deployment (seeded by the scripted
+# seed, `npm run setbuild`), same as topps-chrome-marketplace-read.yaml.
 
 - launchApp
 - extendedWaitUntil:

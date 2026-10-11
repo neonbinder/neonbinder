@@ -35,7 +35,7 @@ tags:
 # both the binder nav tab and the section h1. The section
 # subtitle that used to serve here was deleted: it was one of five header lines
 # stacked above the Set Builder cascade, and on the 1024x629 headless viewport
-# that pushed the Sports column below the fold and broke setup.yaml. Anchoring
+# that pushed the Sports column below the fold and broke the seed flow (setup.yaml, retired by NEO-339). Anchoring
 # on chrome makes a flow hostage to how tall the chrome is; a card's own
 # sentence is content, and content is what this flow is actually about.
 - launchApp

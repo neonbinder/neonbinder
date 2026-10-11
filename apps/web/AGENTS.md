@@ -1545,7 +1545,7 @@ NeonBinder blends a **90s hobby-shop neon aesthetic** with **modern minimalism**
 
 **Write every flow self-contained.** It creates and uses its own per-worker data, or it reads the seeded baseline without mutating it. There is no way to say "run me after that other flow" — CI's work queue (`run-e2e-queue.sh`, NEO-49) hands flows to a homogeneous runner pool in no particular order, and the local runner distributes them across workers. A flow that only passes when some other flow ran first is a broken flow.
 
-The one ordering that exists is the seed: `run-e2e-smoke.sh setup` runs `e2e-baseline.sh reset` then `flows/setup.yaml`, and it is the only entry point that runs a `setup`-tagged flow. CI does it in the pre-matrix `seed` job; locally you run `npm run test:e2e -- setup` yourself.
+The one ordering that exists is the seed: `run-e2e-smoke.sh setup` runs `e2e-baseline.sh reset` then the scripted seed (`npm run setbuild`, `docs/operations/neo339-setbuild.md`) — a bulk load, not a flow; NEO-339 retired `flows/setup.yaml`. CI does it in the pre-matrix `seed` job; locally you run `npm run test:e2e -- setup` yourself.
 
 > NEO-260 deleted the `requires:` / `provides:` dependency graph that used to live in `run-e2e-smoke.sh`. No flow had carried one since NEO-49 replaced the model with the work queue. Don't add those tags to a new flow — nothing reads them.
 

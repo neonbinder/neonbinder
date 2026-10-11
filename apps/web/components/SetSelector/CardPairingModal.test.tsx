@@ -220,10 +220,11 @@ describe("CardPairingModal", () => {
   });
 
   /**
-   * setup.yaml depends on this: a real set that simply is not on the other
-   * marketplace produces an entire column of legitimate unmatched cards, and
-   * without "Keep all" the discard-by-default rule would silently narrow the
-   * provisioned checklist and break its strict card counts.
+   * `topps-chrome-insert-keep-all-no-wizard.yaml` proves this live (the
+   * retired setup.yaml used to rely on it; NEO-339): a real set that simply is
+   * not on the other marketplace produces an entire column of legitimate
+   * unmatched cards, and without "Keep all" the discard-by-default rule would
+   * silently narrow the checklist and break its strict card counts.
    */
   test("Keep all saves every card in a column", async () => {
     const { onConfirm } = renderModal({

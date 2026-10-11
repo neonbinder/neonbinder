@@ -14,7 +14,7 @@ tags:
 # WHY IT STARTS ON /admin/players (NEO-214). The fixture this flow needs —
 # ONE player with TWO stints of deliberately different length at TWO teams with
 # deliberately different colours — used to be seeded globally by a "Seed Test
-# Teams" button setup.yaml clicked. That button and the mutation behind it are
+# Teams" button the old seed flow (setup.yaml) clicked. That button and the mutation behind it are
 # gone, so `players` and `teams` are empty until a flow fills them. The fixture
 # is therefore built here, through the product's own admin screens, in the order
 # the product requires:

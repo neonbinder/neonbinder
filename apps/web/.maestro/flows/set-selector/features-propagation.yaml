@@ -68,7 +68,7 @@ tags:
 #
 # DRILL DELEGATION (R9): every drill goes through util-drill-to-custom.yaml
 # (idempotent — handles fp-{N} already existing on revisit) and returns at the
-# Variant Types column. Baseball/2024/Topps are pre-seeded by cascade setup.yaml.
+# Variant Types column. Baseball/2024/Topps are pre-seeded by the scripted seed.
 #
 # CARD CHECKLIST PATH: custom sets reach CardChecklist via Set → Insert (VT) →
 # custom insert entry: fp-{N} → Insert → fp-insert-{N} → CardChecklist. Mirrors
@@ -88,7 +88,7 @@ tags:
 #           "CooTest-CARD" (NOT "CooTest-SET2") — no cascade.
 #   Cleanup: delete the test card.
 #
-# PREREQUISITE: cascade setup.yaml must have run so Baseball, 2024, and Topps
+# PREREQUISITE: the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md) must have run so Baseball, 2024, and Topps
 # exist in the shared Convex DB.
 
 - launchApp

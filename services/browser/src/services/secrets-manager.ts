@@ -118,7 +118,8 @@ const KEY_PATTERN = /^[a-z0-9]+-credentials-[a-zA-Z0-9_-]+$/;
  * (`buysportscards-credentials-user_3DPlQ…` was at 203 enabled versions) that
  * meant ~202 serialised `destroySecretVersion` round trips inside the
  * user-facing write, and the BSC login write-back went from 0.6s to **42s** —
- * enough to fail the E2E `setup.yaml` BSC-auth step on PR #126. This project
+ * enough to fail the E2E seed flow's BSC-auth step (`setup.yaml`, since retired
+ * by NEO-339) on PR #126. This project
  * treats any response over 7s as a real bug, so the prune must be bounded, not
  * merely "eventually fast".
  *

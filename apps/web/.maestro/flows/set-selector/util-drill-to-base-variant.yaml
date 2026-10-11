@@ -13,11 +13,10 @@ tags:
 #   - NO Level 6 Variants column (Base is a terminal variant type)
 #
 # CALLER NOTES:
-#   - Assumes `setup.yaml` (the setup track) has populated the shared
-#     hierarchy and saved BSC/SL credentials for the running worker's user.
-#     setup.yaml only saves credentials for the worker that ran it (level 0
-#     picks one worker), so callers running on other workers must save
-#     credentials themselves before invoking this util.
+#   - Assumes the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md) has populated the
+#     shared hierarchy. Credentials are NOT the seed's: each runner's Phase-0
+#     worker bootstrap saves its own worker's BSC/SL credentials, and a caller
+#     on a deployment without them must run that bootstrap first.
 #   - Does NOT reset cardChecklist; if your test premise requires an empty
 #     checklist, reset state explicitly.
 #
@@ -37,8 +36,8 @@ tags:
 #   - Caller must have called launchApp and waited for sign-in redirect.
 #   - Credentials are already seeded server-side by worker-bootstrap; no
 #     credential env vars need to be passed.
-#   - This util does NOT reset the DB or save credentials — `setup.yaml` and
-#     `worker-bootstrap` do that. Don't rely on this util for either.
+#   - This util does NOT reset the DB or save credentials — the run-start
+#     reset and `worker-bootstrap` do that. Don't rely on this util for either.
 #
 # ── NEO-287: THE PICKER WHILE SPORTLOTS IS ON PAUSE ─────────────────────────
 # With the operator's pause on (`-e PAUSED_PLATFORMS`, decided once by
@@ -70,7 +69,7 @@ tags:
 # DRILL TO 2024 TOPPS CHROME + SYNC VARIANT TYPES
 # util-drill-to-2024-topps-chrome (now a thin wrapper over util-drill-to-custom)
 # handles navigation + levels 1–5, leaving Base visible in the list. DB reset and
-# credentials come from setup.yaml / worker-bootstrap — NOT from the drill util.
+# credentials come from the scripted reset / worker-bootstrap — NOT from the drill util.
 # ============================================================
 
 # NEO-248 — explicit env passthrough so this util is not pinned to Topps
@@ -134,7 +133,7 @@ tags:
 # Wait for whichever of the two Base-mapping surfaces this row lands on:
 #   Path A — no mapping yet: BaseSetPicker ("Select Base Set") opens and STAYS
 #     open until a set is picked and confirmed.
-#   Path B — already mapped (a set the setup track or an earlier run provisioned):
+#   Path B — already mapped (a set the seed or an earlier run provisioned):
 #     no picker at all, just the "Re-map Base" button.
 # NEO-219 deleted the third path this comment used to describe — the picker
 # closing itself and writing a BSC fallback nobody saw. There is no auto-close

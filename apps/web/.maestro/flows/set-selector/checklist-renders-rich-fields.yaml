@@ -7,7 +7,7 @@ tags:
 # Rendering test: confirms that a populated CardChecklist draws rich structured
 # fields on each card row — card numbers, platform badges, and rookie badges.
 #
-# DEPENDS ON: setup.yaml having pre-synced the 2024 Topps Chrome Base checklist
+# DEPENDS ON: the scripted seed (`npm run setbuild`, docs/operations/neo339-setbuild.md) having pre-synced the 2024 Topps Chrome Base checklist
 # (~335 cards) for this worker. If the checklist is empty this flow fails loudly —
 # correct behavior; the fix is to ensure setup ran, not to paper over it.
 #
@@ -37,14 +37,15 @@ tags:
 # here: the tail rows carry no SportLots ref at all, so NO form of the badge
 # renders on them. The coverage gap is the blocker, not the selector.)
 #
-# The SL-coverage guard therefore lives in setup.yaml on the PARALLEL checklist
+# The SL-coverage guard therefore lives in `gold-wave-build-from-base-row` on the
+# PARALLEL checklist
 # ("Gold Wave Refractors"), which measured 300 cards with 300 SportLots refs —
 # 100% coverage, so the badge is present at the virtuoso's landing position,
 # AND >100 cards, so a regression to single-page fetching would strip SL from
 # the tail and fail there. Asserting it on Base would prove nothing extra.
 # (Since NEO-321 Gold Wave is BUILT from Base rather than fetched; each copy's
 # SportLots link still comes from the build's own paged SportLots fetch of
-# Gold Wave, so the guard reads the same thing. See setup.yaml.)
+# Gold Wave, so the guard reads the same thing. See that flow.)
 #
 # Print-run ("/N") belongs to parallel variant types, not Base; not asserted.
 #
@@ -91,7 +92,8 @@ tags:
 - assertVisible: "BSC"
 
 # The "SL" badge is deliberately NOT asserted here — see the header note. The
-# SL-coverage guard lives on the Parallel checklist in setup.yaml instead,
+# SL-coverage guard lives on the Parallel checklist in
+# `gold-wave-build-from-base-row` instead,
 # where coverage is 100%.
 #
 # NEO-287 — no paused branch, on purpose. Everything this flow reads is
@@ -100,7 +102,7 @@ tags:
 # the Base list, whose rows carry no SportLots ref even live (BSC lists more
 # cards than SportLots for this set) — so neither mode has a distinguishing
 # fact here. The paused seed's per-card evidence ("BSC only", no "SL") is
-# asserted in setup.yaml where coverage is total.
+# asserted in `gold-wave-build-from-base-row` where coverage is total.
 
 # ============================================================
 # VERIFY RC BADGE — scroll through the list to find a rookie card.

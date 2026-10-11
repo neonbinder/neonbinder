@@ -439,7 +439,7 @@ Maestro flows live in `apps/web/.maestro/flows/`, mirroring app routes.
 ```bash
 cd apps/web
 APP_URL=http://localhost:3000 npm run test:e2e
-npm run test:e2e -- setup         # seed first: e2e-baseline.sh reset + flows/setup.yaml
+npm run test:e2e -- setup         # seed first: e2e-baseline.sh reset + the scripted seed (npm run setbuild, docs/operations/neo339-setbuild.md)
 npm run test:e2e:pick -- <flow>   # then run a subset (name / list / regex / tag)
 ```
 

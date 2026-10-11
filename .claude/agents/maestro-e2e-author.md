@@ -58,7 +58,10 @@ reference them.
 ## Where things are
 
 Flows live in `apps/web/.maestro/flows/<area>/` (list the directory rather
-than assuming its shape) plus `flows/setup.yaml`, the setup track. `util/`
+than assuming its shape). There is no seed flow: since NEO-339 the shared
+baseline is the scripted seed (`npm run setbuild`,
+`docs/operations/neo339-setbuild.md`), and `SET-REGISTRY.md` says what it
+holds. `util/`
 holds sub-flows excluded from the run by tag. `config.yaml` sets the base
 URL from `APP_URL` and excludes `util` and `wip`. The drill utils named in
 R9 own all set-builder navigation. `flow-timings.tsv` feeds scheduling and

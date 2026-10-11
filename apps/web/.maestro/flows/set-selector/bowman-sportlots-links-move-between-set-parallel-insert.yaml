@@ -27,7 +27,9 @@ tags:
 # `bowman-insert-grouping-builds-parallels` were one flow
 # (`flagship-colour-is-a-parallel-both-ways`) until it reached 570 s of the
 # 600 s kill (CI run 36524859308). Its STEP 1 — Sync Sets and the SportLots
-# review (claim 1) — is now provisioned and asserted by `setup.yaml`; STEPS
+# review (claim 1) — is now provisioned by the seed (`npm run setbuild`,
+# docs/operations/neo339-setbuild.md) and its UI proved on 2025 Bowman by
+# `bowman-2025-sportlots-review-save`; STEPS
 # 2–9 (claims 2–4) are the sibling's; STEPS 10–14 are here, and STEPS 15–16
 # (claim 9) were added after the split.
 #
@@ -59,7 +61,7 @@ tags:
 # directory after it, and Linux refuses a path component over 255 BYTES.
 #
 # ── THE FIXTURE (SET-REGISTRY.md → "2026 Bowman") ───────────────────────────
-#   `setup.yaml` syncs Bowman's sets and saves its SportLots review before
+#   The scripted seed syncs Bowman's sets and saves its SportLots review before
 #   any flow runs: every SportLots-only name (the colours, `All-America Game
 #   Autos Red Ink`, …) filed under Bowman › Parallel, `All-America Game
 #   Autos` under Bowman › Insert, `Bowman Sterling` its own set. Bowman's
@@ -75,7 +77,7 @@ tags:
 #   this flow is reshape STEP 14's `Where it goes` list (the inserts under
 #   Bowman › Insert, a reactive query — components/SetSelector/
 #   MakeInsertControl.tsx:230) while the dialog is open, so the pick there
-#   is result-keyed and retried once (STEP 14). Fresh-only: `setup.yaml`'s
+#   is result-keyed and retried once (STEP 14). Fresh-only: the run-start
 #   reset removes it all at the head of every run.
 #
 # ── NEO-287: BOTH MODES, HARD ASSERTS IN EACH (R2) ──────────────────────────
@@ -130,7 +132,7 @@ tags:
 
 # ============================================================
 # THE FIXTURE'S NAMES (MEASURED 2026-09-25 on PR #288's preview; see
-# setup.yaml → "2026 BOWMAN" for the review they come from)
+# SET-REGISTRY.md → "2026 Bowman" for the review they come from)
 #
 #   BRAND          the brand and its flagship set
 #   COLOUR         a SportLots colour BSC also lists as a Bowman parallel
@@ -169,8 +171,8 @@ tags:
 # STEP 10 — CLAIM 5: BOWMAN › PARALLEL PAIRS BSC'S BLUE WITH THE FILED ROW
 #
 # R9 — pick the Bowman set through the warm util (it selects the set and
-# waits out its Variant Types — `setup.yaml` synced them), then open
-# `Parallel`. No `CREATE_MANUFACTURER`: setup made the paused-mode `Bowman`
+# waits out its Variant Types — the seed synced them), then open
+# `Parallel`. No `CREATE_MANUFACTURER`: the seed made the paused-mode `Bowman`
 # manufacturer row and is its sole writer; two flows running the util's
 # guarded create at once could mint it twice.
 # ============================================================
