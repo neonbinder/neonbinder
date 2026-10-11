@@ -58,8 +58,9 @@ permissions:
 #
 #   setup  → resolve the PR's Vercel preview URL AND the preview Convex .convex.site
 #            URL (where the queue's HTTP endpoints live).
-#   seed   → seed the shared per-PR Convex preview's global baseline ONCE (setup
-#            track, worker 0), THEN enqueue the runnable flow list into the queue.
+#   seed   → seed the shared per-PR Convex preview's global baseline ONCE (NEO-339:
+#            scripted reset + the setbuild API tool, no Maestro), THEN enqueue the
+#            runnable flow list into the queue.
 #   runner → strategy.matrix.runner: identical runners, each bootstraps its account
 #            (runner N → TEST_EMAIL_N) then loops claim→run→report until the queue
 #            drains. A flow failure is recorded in the queue, not the job exit code.
@@ -176,8 +177,8 @@ jobs:
           echo "convex_site=$site" >> "$GITHUB_OUTPUT"
           # Same slug pr-pipeline.yml's "Resolve Convex preview deployment
           # name" step derives (NEO-214) — the `--deployment` selector the
-          # `seed` job's scripted reset (e2e-baseline.sh, via
-          # `run-e2e-smoke.sh setup`) passes as $CONVEX_NAME. Assert its shape
+          # `seed` job's scripted reset (e2e-baseline.sh) and
+          # its setbuild --convex-url pass as $CONVEX_NAME. Assert its shape
           # before writing it out: CONVEX_PREVIEW_DEPLOY_KEY is TEAM+PROJECT
           # scoped (not deployment-scoped), so a malformed/empty slug here
           # wouldn't fail closed on its own — the key would still authenticate
@@ -197,14 +198,19 @@ jobs:
       run:
         working-directory: apps/web
     # Seed the shared per-PR Convex preview's global baseline ONCE, before the
-    # matrix fans out. Runs the setup track (setup → insert → parallel) as worker
-    # 0 at parallelism 1; `run-e2e-smoke.sh setup` is the only entry point that
-    # runs setup-tagged flows. Because resetMyTestState (the per-shard Phase-0
-    # bootstrap) is auth-scoped per user, it never wipes this global baseline.
+    # matrix fans out (NEO-339). No Maestro here any more: the scripted reset
+    # (`e2e-baseline.sh reset`) empties the deployment, then the setbuild tool
+    # (`npm run setbuild`, apps/web/tools/setbuild) drives the SAME public admin
+    # Convex functions the Set Builder UI calls, as a real admin, from the
+    # declarative spec .maestro/seed/baseline.spec.json. `mcp-smoke` then proves
+    # the MCP server end to end by building the one seeded parallel.
+    # Because resetMyTestState (the per-shard Phase-0 bootstrap) is auth-scoped
+    # per user, it never wipes this global baseline.
     # By the time this runs, NEONBINDER_BROWSER_URL on the Convex preview already
     # points at the PR's own browser preview (when services/browser changed): the
     # top-level pr-pipeline.yml sets it and only THEN invokes this workflow, so
     # seeding marketplace creds here hits the PR's browser service, not dev.
+    # Runbook: docs/operations/neo339-setbuild.md.
     needs: setup
     if: always() && needs.setup.result == 'success'
     runs-on: ubuntu-latest
@@ -212,10 +218,18 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: ./apps/web/.github/actions/maestro-runner
+      # setbuild is a Node tool (tsx), so the seed job needs Node and the
+      # installed workspace instead of the Maestro/Chrome/Java runner prep.
+      # Same setup-node shape pr-pipeline.yml uses: action inputs resolve from
+      # the workspace root, so they keep their `apps/web/` prefixes.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          preview-url: ${{ needs.setup.outputs.url }}
-          bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
 
       # NEO-301: capture this PR preview's Convex logs for the seed job's own
       # lifetime. Preview log HISTORY is only ~15 minutes, and every attempt to
@@ -251,8 +265,8 @@ jobs:
 
       # NEO-287: mirror the `vars.NEONBINDER_PAUSED_PLATFORMS` repo variable onto
       # THIS PR's Convex preview before seeding, so the preview env and the
-      # Maestro `-e PAUSED_PLATFORMS` variable agree by construction. Without
-      # this, a branch-reused preview keeps whatever the dashboard default was
+      # setbuild `--paused-platforms` and the flows' `-e PAUSED_PLATFORMS` agree by
+      # construction. Without this, a branch-reused preview keeps whatever the dashboard default was
       # last set to (NEO-184) — the exact drift that made per-run wiring
       # necessary for NEONBINDER_BROWSER_URL too. An empty variable means
       # nothing is paused: remove the var rather than set it to "", tolerating
@@ -336,49 +350,153 @@ jobs:
             echo "- Convex preview \`NEONBINDER_ENRICHMENT_FIXTURES\` = \`${got}\`";
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Seed global baseline (scripted reset, then setup track worker 0)
+      # NEO-339: reset, then build the baseline through the set-building API.
+      #
+      # Credentials. `setbuild --auth testing` signs in as the worker-0 test
+      # admin exactly as /testing/sign-in does, so it needs two values the SPA
+      # build gets from Vercel env: TESTING_ENDPOINT_SECRET (the x-testing-auth
+      # shared secret) and VITE_CLERK_PUBLISHABLE_KEY (to derive the Clerk FAPI
+      # origin). Source, in order:
+      #   1. `vercel pull` (the same VERCEL_* secrets web-preview uses). Those
+      #      vars are stored Encrypted, and a CLI token that cannot decrypt
+      #      them gets the KEYS with EMPTY values, so this can legitimately
+      #      return blanks. Only key presence and value length are logged.
+      #   2. The PR preview's own served JS bundle: the SPA bakes
+      #      VITE_TESTING_ENDPOINT_SECRET in and sends it from /testing/sign-in,
+      #      which is precisely how the old Maestro seed authenticated. Needs no
+      #      new secret. PREVIEWS ONLY; production never serves the testing
+      #      endpoint and this job only ever sees a preview URL.
+      # The secret is masked before first use and exported to THIS step only,
+      # never to $GITHUB_ENV or a later step. The publishable key is public by
+      # design (it ships in every page) so it is logged by length only, unmasked.
+      #
+      # The Convex target is the deployment this job already resolved and
+      # shape-checked in the `setup` job ($CONVEX_NAME), never a value read back
+      # from the preview, and the confirm phrase binds the write to that host.
+      - name: Seed baseline (reset, then setbuild apply + MCP smoke)
         env:
-          APP_URL: http://localhost:3000
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-          # NEO-214: `run-e2e-smoke.sh setup` runs the scripted
-          # `e2e-baseline.sh reset` itself (single writer, single entry point
-          # shared with local use) before launching setup.yaml, which then
-          # does Base + Insert + Parallel in one in-place pass (NEO-62).
-          # e2e-baseline.sh needs a PREVIEW deploy key + the deployment slug
-          # to reach THIS PR's Convex preview rather than the CLI's local
+          # NEO-214: e2e-baseline.sh needs a PREVIEW deploy key + the deployment
+          # slug to reach THIS PR's Convex preview rather than the CLI's local
           # default. CONVEX_PREVIEW_DEPLOY_KEY is TEAM+PROJECT scoped, not
           # deployment-scoped (a wrong CONVEX_NAME would reach ANOTHER PR's
-          # preview in this project, not dev/prod — previews are a separate
-          # deployment class from either) — hence the shape assertion on
-          # `name` in the `setup` job above. Also note: once --deployment is
-          # passed, the CLI selects the target BY THAT NAME directly and
-          # never consults the key for target selection at all — the key
-          # only authenticates the call, so a right key + wrong name is
-          # exactly the "reach another PR's preview" failure mode, not a
-          # fail-closed one.
+          # preview in this project, not dev/prod), hence the shape assertion on
+          # `name` in the `setup` job above. Once --deployment is passed the CLI
+          # selects the target BY THAT NAME and never consults the key for
+          # selection, so a right key + wrong name is the failure to guard.
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-          # Forced serial in the scheduler too (SELECT_MODE setup); pinned
-          # here for clarity. No SHARD_* → single-shard, worker 0.
-          MAESTRO_PARALLELISM: "1"
-          # Skip Phase-0 worker-bootstrap (NEO-62): the setup flow's own url chain
-          # (/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials)
-          # already signs in + per-user resets + seeds creds + warms BSC/SL for
-          # worker 0, so a separate bootstrap is pure duplication (~66s). Runner
-          # jobs still bootstrap (they don't set this).
-          MAESTRO_SKIP_BOOTSTRAP: "1"
-          # NEO-236: the setup flow answers one New Team step per team the
-          # first sync stages from the players' Wikidata careers (~380 steps at
-          # ~1s each on the Base sync alone), so setup takes ~13 min, not ~6.
-          # The default 600s flow timeout killed it mid-way on CI run 7.
-          MAESTRO_FLOW_TIMEOUT_SEC: "1500"
-          REPORT_DIR: maestro-report
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
         run: |
+          set -euo pipefail
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          npm run test:e2e -- setup
+          started=$SECONDS
+          creds_dir="$(mktemp -d)"; chmod 700 "$creds_dir"
+          trap 'rm -rf "$creds_dir" "$GITHUB_WORKSPACE/.vercel"' EXIT
+
+          # Read KEY from a dotenv file; strip one layer of quotes. Empty if absent.
+          env_value() {
+            local v
+            v="$(grep -E "^$2=" "$1" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+            v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+            printf '%s' "$v"
+          }
+          report() {  # name value -> presence + length only
+            if [ -n "$2" ]; then echo "  $1: present (length ${#2})"; else echo "  $1: EMPTY"; fi
+          }
+
+          secret=""; pk=""
+          # 1. vercel pull. Runs from the repo root (the Vercel project's Root
+          #    Directory is apps/web and the CLI composes it onto the cwd).
+          if [ -n "${VERCEL_TOKEN:-}" ] && [ -n "${VERCEL_ORG_ID:-}" ] && [ -n "${VERCEL_PROJECT_ID:-}" ]; then
+            echo "Trying vercel pull (preview, branch $HEAD_REF)"
+            if (cd "$GITHUB_WORKSPACE" && npx --yes vercel@48.2.0 pull --yes --environment=preview \
+                  --git-branch="$HEAD_REF" --token="$VERCEL_TOKEN" > "$creds_dir/vercel-pull.log" 2>&1); then
+              envfile="$GITHUB_WORKSPACE/.vercel/.env.preview.local"
+              secret="$(env_value "$envfile" TESTING_ENDPOINT_SECRET)"
+              pk="$(env_value "$envfile" VITE_CLERK_PUBLISHABLE_KEY)"
+              echo "vercel pull result:"
+              report TESTING_ENDPOINT_SECRET "$secret"
+              report VITE_CLERK_PUBLISHABLE_KEY "$pk"
+            else
+              echo "::warning::vercel pull failed (see below); falling back to the preview bundle."
+              tail -n 5 "$creds_dir/vercel-pull.log" | sed 's/^/  /'
+            fi
+          else
+            echo "VERCEL_TOKEN / VERCEL_ORG_ID / VERCEL_PROJECT_ID not all set; skipping vercel pull."
+          fi
+          [ -n "$secret" ] && echo "::add-mask::$secret"
+
+          # 2. Fallback: the values the preview itself serves.
+          if [ -z "$secret" ] || [ -z "$pk" ]; then
+            echo "Falling back to the PR preview's served bundle"
+            if node "$GITHUB_WORKSPACE/.github/scripts/preview-testing-creds.mjs" "$PREVIEW_URL" "$creds_dir"; then :; else
+              echo "::warning::preview bundle did not yield both values."
+            fi
+            if [ -z "$secret" ] && [ -s "$creds_dir/testing-secret" ]; then
+              secret="$(cat "$creds_dir/testing-secret")"
+              echo "::add-mask::$secret"
+            fi
+            if [ -z "$pk" ] && [ -s "$creds_dir/publishable-key" ]; then
+              pk="$(cat "$creds_dir/publishable-key")"
+            fi
+          fi
+          if [ -z "$secret" ] || [ -z "$pk" ]; then
+            echo "::error::Could not obtain TESTING_ENDPOINT_SECRET / VITE_CLERK_PUBLISHABLE_KEY from vercel pull or the preview bundle."
+            exit 1
+          fi
+          export TESTING_ENDPOINT_SECRET="$secret"
+          export VITE_CLERK_PUBLISHABLE_KEY="$pk"
+
+          convex_url="https://${CONVEX_NAME}.convex.cloud"
+          # The confirm phrase is "BUILD <convex host> <spec scope>". The scope
+          # is read from the spec so a renamed scope fails here with a clear
+          # message rather than as an opaque "wrong phrase".
+          scope_of() { jq -r '.scope // "e2e-baseline"' "$1"; }
+          base_scope="$(scope_of .maestro/seed/baseline.spec.json)"
+          par_scope="$(scope_of .maestro/seed/parallel.spec.json)"
+
+          echo "── scripted reset ($CONVEX_NAME) ──"
+          ./e2e-baseline.sh reset
+
+          echo "── setbuild apply (baseline) ──"
+          npm run setbuild -- apply \
+            --spec .maestro/seed/baseline.spec.json \
+            --auth testing \
+            --app-url "$PREVIEW_URL" \
+            --convex-url "$convex_url" \
+            --worker 0 \
+            --paused-platforms "${PAUSED_PLATFORMS:-}" \
+            --confirm "BUILD ${CONVEX_NAME}.convex.cloud ${base_scope}" \
+            --report setbuild-seed-report.json
+
+          echo "── setbuild mcp-smoke ──"
+          npm run setbuild -- mcp-smoke \
+            --spec .maestro/seed/parallel.spec.json \
+            --expect .maestro/seed/mcp-smoke.expect.json \
+            --auth testing \
+            --app-url "$PREVIEW_URL" \
+            --convex-url "$convex_url" \
+            --worker 0 \
+            --confirm "BUILD ${CONVEX_NAME}.convex.cloud ${par_scope}" \
+            --json > setbuild-mcp-smoke-report.json
+
+          duration=$((SECONDS - started))
+          {
+            echo "### Seed (setbuild, NEO-339)"
+            echo "- duration: \`${duration}s\`"
+            echo "- baseline spec scope: \`${base_scope}\`"
+            echo "- apply counts: \`$(jq -c '.counts // .summary // {}' setbuild-seed-report.json 2>/dev/null || echo '?')\`"
+            echo "- mcp-smoke: \`$(jq -r '"ok=\(.ok), checks=\(.checks | length), failed=\([.checks[] | select(.ok | not)] | length)"' setbuild-mcp-smoke-report.json 2>/dev/null || echo '?')\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # NEO-289: report how much of the seed's name set the fixture recording
       # actually covered, without blocking the run on it. `continue-on-error`
@@ -460,7 +578,7 @@ jobs:
 
       - name: Enqueue flows into the work-queue
         # After the baseline exists, populate the shared queue with the runnable
-        # flow list (non-util/wip/setup). Idempotent per runId. The homogeneous
+        # flow list (non-util/wip). Idempotent per runId. The homogeneous
         # runner pool then drains it. Just curl + find + python3 — no Maestro/Chrome.
         env:
           CONVEX_SITE_URL: ${{ needs.setup.outputs.convex_site }}
@@ -521,15 +639,18 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # NEO-339: the setbuild run report (counts, open decisions as fill-in
+      # templates, timings). It holds no secrets: the tool redacts them and
+      # reports only ids and counts. Uploaded on failure too: a red seed's
+      # open-decision template is the thing you fix the spec from.
       - name: Upload seed report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: maestro-report-seed
+          name: setbuild-seed
           path: |
-            apps/web/maestro-report/
-            !apps/web/maestro-report/**/commands-*.json
-            !apps/web/maestro-report/maestro-home/**
+            apps/web/setbuild-seed-report.json
+            apps/web/setbuild-mcp-smoke-report.json
           if-no-files-found: ignore
           retention-days: 14
 

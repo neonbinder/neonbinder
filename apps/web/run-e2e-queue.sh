@@ -40,7 +40,8 @@ queue_status() { _q status "{\"runId\":\"${E2E_RUN_ID}\"}"; }
 # ── ENQUEUE mode: enumerate runnable flows and seed the queue ────────────────
 if [ "$MODE" = "enqueue" ]; then
   # Same selection as the suite: every *.yaml under .maestro/flows except util /
-  # wip / setup (setup is the pre-matrix seed, never queued as a worker flow).
+  # wip. (The `setup` tag is retired — the seed is the setbuild tool, NEO-339;
+  # the exclusion below is kept as a guard so a stray setup-tagged flow is never queued.)
   flow_has_tag() {
     awk -v want="$2" '
       /^---$/ { exit }

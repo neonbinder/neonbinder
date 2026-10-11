@@ -2,11 +2,12 @@
 # Runs E2E flows across N parallel workers.
 #
 # This is the LOCAL runner. CI drives the suite through run-e2e-queue.sh
-# (NEO-49's work queue) — the one thing CI does use this script for is the
-# pre-matrix `setup` seed (`npm run test:e2e -- setup`).
+# (NEO-49's work queue) and does not call this script at all: its pre-matrix
+# seed is the setbuild tool (NEO-339), run directly by e2e.yml's `seed` job.
 #
 # Ordering model: there is none beyond the seed. Run `test:e2e -- setup` to
-# seed the deployment, then run whatever flows you want. Flows are otherwise
+# seed the deployment (scripted reset + `npm run setbuild -- apply`, see
+# ./e2e-seed.sh), then run whatever flows you want. Flows are otherwise
 # self-contained and parallel-safe. (NEO-260 deleted the `requires:`/`provides:`
 # dependency graph that used to live here — no flow had carried one since
 # NEO-49 replaced the model with the work queue.)
@@ -65,6 +66,25 @@ if [ -f .env.test ]; then
       export "$key=$value"
     fi
   done < .env.test
+fi
+
+# ─── `setup`: seed the deployment, no Maestro involved (NEO-339) ─────────────
+# Scripted reset (e2e-baseline.sh), then `npm run setbuild -- apply` of the
+# baseline spec through the harness's OWN deployment, signing in via the local
+# Vite at $APP_URL. There is no setup.yaml flow or `setup` tag any more. This
+# runs before the Chrome-for-Testing / Maestro prerequisites below because it
+# needs neither. When no harness is up, the target falls back to the
+# deployment VITE_CONVEX_URL names (exported, or in .env.local); e2e-seed.sh
+# refuses anything it cannot derive a slug for, and e2e-baseline.sh refuses prod.
+if [ "${1:-}" = "setup" ]; then
+  if [ ! -f .e2e-local/env ] && [ -z "${CONVEX_SITE_URL:-}" ]; then
+    _cloud="${VITE_CONVEX_URL:-}"
+    if [ -z "$_cloud" ] && [ -f .env.local ]; then
+      _cloud="$(grep -E '^VITE_CONVEX_URL=' .env.local | head -1 | sed -E 's/^VITE_CONVEX_URL=//; s/^["'\'']//; s/["'\'']$//')"
+    fi
+    [ -n "$_cloud" ] && export CONVEX_SITE_URL="${_cloud/.convex.cloud/.convex.site}"
+  fi
+  exec ./e2e-seed.sh
 fi
 
 MAESTRO="$HOME/.maestro/bin/maestro"
@@ -241,7 +261,6 @@ SELECT_MODE="all"      # all | tag | name | grep
 PATTERNS=()            # name substrings (OR) or a single regex
 case "$SELECTOR" in
   "")      SELECT_MODE="all" ;;
-  setup)   SELECT_MODE="setup" ;;   # pre-matrix seed: the global setup track only
   tag:*)   SELECT_MODE="tag";  TAG="${SELECTOR#tag:}" ;;
   name:*)  SELECT_MODE="name"; IFS=',' read -ra PATTERNS <<< "${SELECTOR#name:}" ;;
   grep:*)  SELECT_MODE="grep"; PATTERNS=("${SELECTOR#grep:}") ;;
@@ -256,14 +275,12 @@ case "$SELECT_MODE" in
     while IFS= read -r f; do
       flow_has_tag "$f" util && continue
       flow_has_tag "$f" wip && continue
-      flow_has_tag "$f" setup && continue   # NEO-46: setup runs in the pre-matrix CI job, never as a thread
       SELECTED_FLOWS+=("$f")
     done < <(find .maestro/flows/ -name "*.yaml" | sort)
     ;;
   tag)
     while IFS= read -r f; do
       flow_has_tag "$f" util && continue
-      flow_has_tag "$f" setup && continue   # NEO-46: setup is seeded pre-matrix, not run as a thread
       SELECTED_FLOWS+=("$f")
     done < <(grep -rlE "^[[:space:]]*-[[:space:]]+${TAG}$" .maestro/flows/ --include="*.yaml" | sort)
     ;;
@@ -280,50 +297,22 @@ case "$SELECT_MODE" in
     while IFS= read -r f; do
       flow_has_tag "$f" util && continue
       flow_has_tag "$f" wip && continue
-      flow_has_tag "$f" setup && continue   # NEO-46: setup runs pre-matrix, not as a thread
       SELECTED_FLOWS+=("$f")
     done < <(find .maestro/flows/ -name "*.yaml" | grep -iE "${PATTERNS[0]}" | sort)
     ;;
-  setup)
-    # NEO-46 pre-matrix seed: this is the ONLY entry point that runs the
-    # setup-tagged flows (every other mode excludes them — they are seeded once,
-    # before the shard matrix fans out, never as a thread). The CI `seed` job
-    # invokes this against the shared per-PR Convex preview so the global
-    # baseline (selectorOptions / cardChecklist / players / teams) is present
-    # before any shard's flows run.
-    # NEO-62 (Lever 1): collapsed from 3 flows to 1. setup.yaml now handles
-    # Base + Insert + Parallel in a single browser context — no restarts,
-    # no re-drills, no re-logins.
-    for f in \
-      .maestro/flows/setup.yaml; do
-      [ -f "$f" ] && SELECTED_FLOWS+=("$f")
-    done
-    ;;
 esac
-
-# The setup track is a single-writer seed (global reset → base → insert →
-# parallel, all in one browser context). Force serial worker-0 regardless of
-# caller parallelism.
-if [ "$SELECT_MODE" = "setup" ]; then
-  PARALLELISM=1
-fi
 
 if [ ${#SELECTED_FLOWS[@]} -eq 0 ]; then
   echo "No flows matched selector \"${SELECTOR}\" in .maestro/flows/"
   exit 0
 fi
 
-# Final SMOKE_FLOWS = sorted-unique selected set — EXCEPT the setup track
-# (NEO-62: now a single setup.yaml), which bypasses sort -u so it stays first.
+# Final SMOKE_FLOWS = sorted-unique selected set.
 SMOKE_FLOWS=()
-if [ "$SELECT_MODE" = "setup" ]; then
-  SMOKE_FLOWS=("${SELECTED_FLOWS[@]}")
-else
-  while IFS= read -r f; do
-    [ -z "$f" ] && continue
-    SMOKE_FLOWS+=("$f")
-  done < <(printf '%s\n' "${SELECTED_FLOWS[@]}" | sort -u)
-fi
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  SMOKE_FLOWS+=("$f")
+done < <(printf '%s\n' "${SELECTED_FLOWS[@]}" | sort -u)
 
 # ─── Tag parsing & categorization ───────────────────────────────────────────
 
@@ -423,7 +412,6 @@ fi
 # ─── Plan summary ───────────────────────────────────────────────────────────
 case "$SELECT_MODE" in
   all)   sel_label="all flows" ;;
-  setup) sel_label="setup track (pre-matrix seed)" ;;
   tag)   sel_label="tag \"$TAG\"" ;;
   name)  sel_label="name ~ ${PATTERNS[*]}" ;;
   grep)  sel_label="grep /${PATTERNS[0]}/" ;;
@@ -456,21 +444,6 @@ echo ""
 if [ -n "${MAESTRO_PLAN_ONLY:-}" ]; then
   echo "MAESTRO_PLAN_ONLY set — exiting before execution."
   exit 0
-fi
-
-# ─── Scripted reset ahead of the setup track (NEO-214) ──────────────────────
-# setup.yaml no longer clicks "Reset Set Builder Data" itself — the Admin
-# Tools panel is gone. This is the ONLY place in the setup path that resets:
-# `e2e-baseline.sh reset` runs once here, before setup.yaml's own flow (which
-# does the Sports sync that creates the Baseball row setup.yaml depends on),
-# then setup.yaml runs against the freshly-emptied deployment exactly as
-# before. CONVEX_NAME (CI) / --deployment / the .env.local default and the
-# CI-vs-interactive confirmation gate are all e2e-baseline.sh's own job — see
-# that script. Runs in CI and locally alike; this is the single entry point
-# both go through, so they can't drift.
-if [ "$SELECT_MODE" = "setup" ]; then
-  echo "── setup track: scripted reset before setup.yaml ──"
-  ./e2e-baseline.sh reset
 fi
 
 # ─── Worker runner ──────────────────────────────────────────────────────────
@@ -530,11 +503,6 @@ run_flow_on_worker() {
   # Never raise the default to get a red suite green — fix the flow.
   # Timeout codes still never retry: those mean a slow/hung product path.
   #
-  # This also covers CI's pre-matrix `setup` track (e2e.yml runs
-  # `npm run test:e2e -- setup`, which routes setup.yaml through this same
-  # function). That is intentional: a setup failure is a config/secrets/env
-  # problem — exactly the class a silent re-run hides. Verified inert at the
-  # time of the change: the last 3 green pipelines logged zero retry lines.
   local exit_code=0
   local attempt=1
   local max_attempts="${MAESTRO_FLOW_RETRIES:-1}"
@@ -547,7 +515,7 @@ run_flow_on_worker() {
     # cardChecklist table reference ${ATTEMPT_ID} in their card
     # numbers + player names so attempt 2 doesn't collide with the
     # rows attempt 1 left behind (the scripted `e2e-baseline.sh reset`
-    # only runs once per CI run, ahead of setup.yaml, not between
+    # only runs once per CI run, ahead of the setbuild seed, not between
     # in-run retries).
     local attempt_id="w${global_worker}-a${attempt}-${RANDOM}"
     local attempt_args=("${worker_args[@]}" -e "ATTEMPT_ID=$attempt_id")
@@ -612,8 +580,8 @@ run_serial_lane() {
 # Why this is required: each Maestro worker drives a distinct Clerk test
 # user (TEST_EMAIL_${WORKER_INDEX}). Marketplace adapter calls (BSC / SL)
 # fetch session tokens from Secret Manager keyed by the Clerk user ID.
-# Without per-worker bootstrap, only the worker that ran setup.yaml had
-# its credentials saved; other workers' adapter calls hit NOT_FOUND, both
+# Without per-worker bootstrap, only the worker the setbuild seed signed in as
+# (worker 0) had its credentials saved; other workers' adapter calls hit NOT_FOUND, both
 # options arrays return empty, the ReconciliationModal silently never
 # opens, and tests time out.
 # EVERY worker on EVERY shard warms its own BSC + SL marketplace token ONCE here
