@@ -221,7 +221,7 @@ jobs:
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           WORKER_INDEX: "0"
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-          PW_REPORT_DIR: playwright/.report
+          PW_REPORT_DIR: playwright/report
         run: npx playwright test --project=setup
 
       - name: Upload seed report
@@ -229,7 +229,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pw-report-seed
-          path: apps/web/playwright/.report/
+          # Not under a dot-directory: upload-artifact skips hidden paths by
+          # default, which is why run 1 uploaded nothing. report/ holds the blob,
+          # results.json and junit.xml; results/ holds failure screenshots.
+          path: |
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
           if-no-files-found: ignore
           retention-days: 14
 
@@ -278,7 +283,7 @@ jobs:
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           WORKER_INDEX: ${{ matrix.worker }}
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-          PW_REPORT_DIR: playwright/.report
+          PW_REPORT_DIR: playwright/report
         # A red test must not stop the report upload; the report job reads the
         # verdict from the merged results.
         run: |
@@ -295,7 +300,12 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pw-report-shard-${{ matrix.shard }}
-          path: apps/web/playwright/.report/
+          # Not under a dot-directory: upload-artifact skips hidden paths by
+          # default, which is why run 1 uploaded nothing. report/ holds the blob,
+          # results.json and junit.xml; results/ holds failure screenshots.
+          path: |
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
           if-no-files-found: ignore
           retention-days: 14
 

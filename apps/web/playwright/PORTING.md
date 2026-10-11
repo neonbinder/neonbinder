@@ -83,8 +83,17 @@ Decompiled from the pinned Maestro 2.8.0:
 - `id:` is the accessible name in this suite (aria-label). `m.id()` resolves via
   getByLabel / getByTitle. If the flow's `id:` targets a real DOM `id`
   attribute (check the component), it cannot be ported: `test.fixme`.
-- Every driver locator is filtered to visible elements and takes the first
-  match, as Maestro does.
+- Every driver locator is filtered to visible elements; among several matches
+  the DEEPEST wins (Maestro's deepestMatchingElement), so a labelled wrapper
+  never beats the input inside it.
+- A bare-string selector also matches an input's VALUE, a native select's
+  selected option label, and (as a last resort) text Maestro calls visible but
+  Playwright does not (inside a collapsed `<details>`, display:none).
+- `tapOn` waits for the DOM to settle afterwards (500 ms quiet, 3 s cap), as
+  Maestro does after every tap/input; a target that is covered or disabled is
+  still tapped (force), as Maestro taps coordinates. Tapping an option label
+  while a native select is focused selects it (Maestro's `tapOn: "<select
+  label>"` then `tapOn: "<option>"`).
 
 Regex escaping: a YAML double-quoted `"BSC only \\([0-9]+\\)"` is the TS string
 `"BSC only \\([0-9]+\\)"` (identical). A YAML single-quoted `'\('` becomes

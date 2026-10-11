@@ -32,6 +32,9 @@ import type { FlowEnv } from "./env";
  */
 export const DEFAULT_TIMEOUT = Number(process.env.PW_UNSTATED_TIMEOUT ?? 7_000);
 const POLL_MS = 100;
+/** Post-action settle (Maestro's waitForAppToSettle analogue). */
+const SETTLE_QUIET_MS = 500;
+const SETTLE_CAP_MS = 3_000;
 
 /**
  * A selector Playwright has no single locator for, resolved by polling a probe:
@@ -101,6 +104,9 @@ export class Maestro {
       .getByText(re)
       .or(p.getByPlaceholder(re))
       .or(p.getByRole("textbox", { name: re }))
+      // maestro-web reads a <select>'s text as its selected option label(s),
+      // so a native select showing "Baseball" matches text "Baseball".
+      .or(p.getByRole("combobox").filter({ has: p.getByRole("option", { name: re, selected: true }) }))
       .filter({ visible: true });
   }
 
@@ -208,6 +214,7 @@ export class Maestro {
 
   /** Resolve a selector to one visible Locator, waiting up to `timeout`. */
   async resolve(sel: Sel, timeout = DEFAULT_TIMEOUT): Promise<Locator> {
+    if (typeof sel === "string") sel = this.textOrValue(sel);
     if (isRelational(sel)) {
       const deadline = Date.now() + timeout;
       for (;;) {
@@ -221,7 +228,7 @@ export class Maestro {
     }
     const loc = this.loc(sel).first();
     await expect(loc, `visible: ${describe(sel)}`).toBeVisible({ timeout });
-    return loc;
+    return this.deepest(this.loc(sel));
   }
 
   /** `extendedWaitUntil: { visible: X, timeout }` / `assertVisible: X`. */
@@ -236,6 +243,7 @@ export class Maestro {
 
   /** `extendedWaitUntil: { notVisible: X, timeout }` / `assertNotVisible: X`. */
   async waitNotVisible(sel: Sel, timeout = DEFAULT_TIMEOUT): Promise<void> {
+    if (typeof sel === "string") sel = this.textOrValue(sel);
     if (isRelational(sel)) {
       const deadline = Date.now() + timeout;
       for (;;) {
@@ -280,12 +288,31 @@ export class Maestro {
 
   // ── actions ────────────────────────────────────────────────────────────
 
-  /** `tapOn`. `retryTapIfNoChange` / `waitToSettleTimeoutMs` have no equivalent and are dropped. */
+  /**
+   * `tapOn`: wait for the target, click, then wait for the DOM to settle as
+   * Maestro does after every tap. `retryTapIfNoChange` / `waitToSettleTimeoutMs`
+   * are dropped.
+   */
   async tapOn(sel: Sel, opts: TapOptions = {}): Promise<void> {
     const timeout = opts.timeout ?? DEFAULT_TIMEOUT;
+    if (typeof sel === "string" && (await this.selectFocusedOption(sel))) return;
     try {
       const loc = await this.resolve(sel, timeout);
-      await loc.click({ timeout });
+      // Maestro taps the element's centre coordinates: no enabled / stable /
+      // not-covered checks. `force` is that: a disabled control is tapped
+      // (and ignores it), a covered one passes the tap to whatever is on top.
+      // A normal click when the target is actionable; otherwise force it.
+      const actionable = await loc
+        .click({ trial: true, timeout: 500 })
+        .then(() => true)
+        .catch(() => false);
+      if (actionable) {
+        await loc.click({ timeout });
+      } else {
+        await loc.scrollIntoViewIfNeeded({ timeout }).catch(() => {});
+        await loc.click({ timeout, force: true });
+      }
+      await this.settle();
     } catch (e) {
       if (!opts.optional) throw e;
       console.warn(`[optional tapOn skipped] ${describe(sel)}: ${(e as Error).message.split("\n")[0]}`);
@@ -299,16 +326,19 @@ export class Maestro {
     const px = (v: string, total: number) =>
       v.endsWith("%") ? (parseFloat(v) / 100) * total : parseFloat(v);
     await this.page.mouse.click(px(xs, vp.width), px(ys, vp.height));
+    await this.settle();
   }
 
   /** `inputText` — types into whatever is focused, exactly like Maestro. */
   async inputText(text: string): Promise<void> {
     await this.page.keyboard.type(text);
+    await this.settle();
   }
 
   /** `eraseText: N` — N backspaces at the focus (Maestro's default is 50). */
   async eraseText(chars = 50): Promise<void> {
     for (let i = 0; i < chars; i++) await this.page.keyboard.press("Backspace");
+    await this.settle();
   }
 
   /** `pressKey` — Maestro key names (Enter, Backspace, Tab, Escape, ...). */
@@ -325,6 +355,7 @@ export class Maestro {
       "remote dpad down": "ArrowDown",
     };
     await this.page.keyboard.press(map[key.toLowerCase()] ?? key);
+    await this.settle();
   }
 
   /**
@@ -377,11 +408,23 @@ export class Maestro {
   /** `copyTextFrom` — returns the text instead of stashing it in `maestro.copiedText`. */
   async copyTextFrom(sel: Sel, timeout = DEFAULT_TIMEOUT): Promise<string> {
     const loc = await this.resolve(sel, timeout);
-    return loc.evaluate((el) =>
-      el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement
-        ? el.value || el.placeholder || el.getAttribute("aria-label") || ""
-        : ((el as HTMLElement).innerText ?? el.textContent ?? "").trim(),
-    );
+    // maestro-web's node text: an input's value || placeholder || aria-label,
+    // a select's selected labels, otherwise the element's OWN text nodes (not
+    // its children's — so a "✓" in a child span is not copied). Falls back to
+    // innerText only when the element has no own text at all.
+    return loc.evaluate((el) => {
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+        return el.value || el.placeholder || el.getAttribute("aria-label") || "";
+      }
+      if (el instanceof HTMLSelectElement) {
+        return Array.from(el.selectedOptions).map((o) => o.text).join(", ");
+      }
+      const own = Array.from(el.childNodes)
+        .filter((n) => n.nodeType === Node.TEXT_NODE)
+        .map((n) => (n.textContent ?? "").replace("\n", "").replace("\t", ""))
+        .join("");
+      return own.trim() ? own : ((el as HTMLElement).innerText ?? el.textContent ?? "").trim();
+    });
   }
 
   /** `retry: { maxRetries: N, commands: [...] }`. */
@@ -398,15 +441,162 @@ export class Maestro {
 
   // ── internals ──────────────────────────────────────────────────────────
 
+  /**
+   * maestro-web lists a native <select>'s options only while the select is
+   * focused, and tapping one selects it. Playwright cannot click a native
+   * option, so: if the focused element is a select with an option whose label
+   * full-matches `pattern`, select that option.
+   */
+  private async selectFocusedOption(pattern: string): Promise<boolean> {
+    const re = mrx(pattern);
+    const p = this.page;
+    const selects = p
+      .getByRole("combobox")
+      .or(p.getByRole("listbox"))
+      .filter({ has: p.getByRole("option", { name: re }) })
+      .filter({ visible: true });
+    const n = await selects.count().catch(() => 0);
+    for (let i = 0; i < n; i++) {
+      const s = selects.nth(i);
+      const label = await s
+        .evaluate(
+          (el, src) => {
+            if (!(el instanceof HTMLSelectElement) || el !== document.activeElement) return null;
+            const rx = new RegExp(src.source, src.flags);
+            const o = Array.from(el.options).find((opt) => rx.test(opt.label));
+            return o ? o.label : null;
+          },
+          { source: re.source, flags: re.flags },
+        )
+        .catch(() => null);
+      if (label !== null) {
+        await s.selectOption({ label });
+        await this.settle();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Visible form fields whose current value full-matches `pattern`. */
+  private async valueMatches(pattern: string): Promise<Locator[]> {
+    const re = mrx(pattern);
+    const p = this.page;
+    const fields = p
+      .getByRole("textbox")
+      .or(p.getByRole("searchbox"))
+      .or(p.getByRole("combobox"))
+      .or(p.getByRole("spinbutton"))
+      .filter({ visible: true });
+    const out: Locator[] = [];
+    const n = await fields.count().catch(() => 0);
+    for (let i = 0; i < n; i++) {
+      const v = await fields.nth(i).inputValue({ timeout: 500 }).catch(() => null);
+      if (v && re.test(v)) out.push(fields.nth(i));
+    }
+    return out;
+  }
+
+  /**
+   * maestro-web calls an element visible when its raw getBoundingClientRect
+   * centre lies in the viewport; it never checks CSS visibility. So text inside
+   * a collapsed <details> (Chrome lays it out with content-visibility: hidden)
+   * or a display:none subtree (a zero rect at the origin) counts as visible.
+   * Playwright's visibility rejects both; this is the fallback that accepts
+   * what Maestro accepts.
+   */
+  private async maestroOnlyVisible(pattern: string): Promise<Locator | null> {
+    const all = this.page.getByText(mrx(pattern));
+    const n = Math.min(await all.count().catch(() => 0), 20);
+    for (let i = 0; i < n; i++) {
+      const c = all.nth(i);
+      const inView = await c
+        .evaluate((el) => {
+          const r = el.getBoundingClientRect();
+          const cx = r.x + r.width / 2;
+          const cy = r.y + r.height / 2;
+          return cx >= 0 && cy >= 0 && cx <= window.innerWidth && cy <= window.innerHeight;
+        })
+        .catch(() => false);
+      if (inView) return c;
+    }
+    return null;
+  }
+
+  /**
+   * A bare-string selector as Maestro sees it: an element's text (m.text), or,
+   * failing that, an input whose VALUE matches (maestro-web's input text is
+   * value || placeholder || aria-label).
+   */
+  private textOrValue(pattern: string): Relational {
+    return {
+      kind: "relational",
+      description: JSON.stringify(pattern),
+      probe: async () => {
+        const t = this.text(pattern).first();
+        if (await t.isVisible().catch(() => false)) return this.deepest(this.text(pattern));
+        const v = await this.valueMatches(pattern);
+        if (v[0]) return v[0];
+        return this.maestroOnlyVisible(pattern);
+      },
+    };
+  }
+
+  /**
+   * Maestro waits for the screen to settle after every tap / input. Mirror it:
+   * return once the DOM has been quiet for SETTLE_QUIET_MS (cap SETTLE_CAP_MS).
+   */
+  private async settle(): Promise<void> {
+    await this.page
+      .evaluate(
+        ({ quiet, cap }) =>
+          new Promise<void>((resolve) => {
+            let timer: ReturnType<typeof setTimeout>;
+            const finish = () => {
+              obs.disconnect();
+              clearTimeout(timer);
+              resolve();
+            };
+            const obs = new MutationObserver(() => {
+              clearTimeout(timer);
+              timer = setTimeout(finish, quiet);
+            });
+            obs.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+            timer = setTimeout(finish, quiet);
+            setTimeout(finish, cap);
+          }),
+        { quiet: SETTLE_QUIET_MS, cap: SETTLE_CAP_MS },
+      )
+      .catch(() => {
+        /* navigation tore the context down: settled by definition */
+      });
+  }
+
   private loc(sel: string | Locator): Locator {
     return typeof sel === "string" ? this.text(sel) : sel;
   }
 
   /** One non-waiting visibility probe. */
   private async probe(sel: Sel): Promise<Locator | null> {
+    if (typeof sel === "string") sel = this.textOrValue(sel);
     if (isRelational(sel)) return sel.probe();
     const loc = this.loc(sel).first();
-    return (await loc.isVisible().catch(() => false)) ? loc : null;
+    return (await loc.isVisible().catch(() => false)) ? this.deepest(this.loc(sel)) : null;
+  }
+
+  /**
+   * Maestro keeps the DEEPEST match (Filters.deepestMatchingElement): when a
+   * labelled wrapper and the input inside it share an accessible name, the
+   * input wins. Returns the first match that contains no other match.
+   */
+  private async deepest(all: Locator): Promise<Locator> {
+    const idx = await all
+      .evaluateAll((els) => {
+        const i = els.findIndex((el) => !els.some((other) => other !== el && el.contains(other)));
+        return i < 0 ? 0 : i;
+      })
+      .catch(() => 0);
+    return all.nth(idx);
   }
 
   private relational(
@@ -427,16 +617,19 @@ export class Maestro {
         const aBox = await a.boundingBox().catch(() => null);
         if (!aBox) return null;
         if (isRelational(target)) return target.probe();
-        const candidates = this.loc(target);
-        const n = await candidates.count();
-        let best: { i: number; d: number } | null = null;
-        for (let i = 0; i < n; i++) {
-          const box = await candidates.nth(i).boundingBox().catch(() => null);
+        const candidates: Locator[] = [];
+        const texts = this.loc(target);
+        const n = await texts.count();
+        for (let i = 0; i < n; i++) candidates.push(texts.nth(i));
+        if (typeof target === "string") candidates.push(...(await this.valueMatches(target)));
+        let best: { loc: Locator; d: number } | null = null;
+        for (const c of candidates) {
+          const box = await c.boundingBox().catch(() => null);
           if (!box) continue;
           const d = distance(box, aBox);
-          if (d !== null && (best === null || d < best.d)) best = { i, d };
+          if (d !== null && (best === null || d < best.d)) best = { loc: c, d };
         }
-        return best ? candidates.nth(best.i) : null;
+        return best ? best.loc : null;
       },
     };
   }

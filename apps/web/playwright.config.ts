@@ -21,7 +21,7 @@ import { defineConfig } from "@playwright/test";
 
 const CI = !!process.env.CI;
 const APP_URL = (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
-const REPORT_DIR = process.env.PW_REPORT_DIR ?? "playwright/.report";
+const REPORT_DIR = process.env.PW_REPORT_DIR ?? "playwright/report";
 
 // Unstated-timeout budget (see DEFAULT_TIMEOUT in playwright/support/maestro.ts).
 const STEP_TIMEOUT = Number(process.env.PW_UNSTATED_TIMEOUT ?? 7_000);
@@ -31,7 +31,7 @@ const BOOTSTRAP = /tests[\\/]profile[\\/]worker-bootstrap\.spec\.ts$/;
 
 export default defineConfig({
   testDir: "./playwright/tests",
-  outputDir: "./playwright/.results",
+  outputDir: "./playwright/results",
   // Shard by TEST, not by file (one spec per flow, so the same thing here).
   fullyParallel: true,
   workers: 1,
