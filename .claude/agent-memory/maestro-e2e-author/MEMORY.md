@@ -134,3 +134,4 @@ Non-markdown helpers: `tools/`
 - [Heading-only selector via `above:` a field label](patterns_heading_only_via_above_field_label.md) — name in h3 AND input values: anchor `above: "<label>"`; leftOf/rightOf are left-edge only
 - [sr-only in an unpositioned scroller](patterns_sr_only_in_unpositioned_scroller.md) — span stays at its scrollTop-0 spot, pruned past y=629; compare a known sr-only node to its parent
 - [Pairing dialog columns need Matched collapsed](patterns_pairing_dialog_columns_need_matched_collapsed.md) — Matched opens expanded if the first stream had no unmatched; collapse before Keep all; prove by footer arithmetic
+- [One 7s scroll reaches ~900px](patterns_one_7s_scroll_reaches_about_900px.md) — reads at try 0 + after 2 swipes only; 3 swipes + 3 not-founds = travel, not late arrival; CDP-measure, add an anchor

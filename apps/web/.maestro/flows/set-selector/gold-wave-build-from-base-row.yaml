@@ -133,15 +133,36 @@ tags:
 # STEP 2 — THE ROW'S SLOT IS THE BUILD; IT BUILDS WITH NO DIALOG (e)
 # ============================================================
 
+# THE WAY DOWN IS TWO STEPS, MEASURED. From the columns row, where the row
+# was picked (page near the top), the button is ~1,250px down: below the
+# `Parallels of Base` section (sleeve strip only — no ledger before a run),
+# the Multi-source panel and the attributes panel (CDP probe of the seeded
+# PR preview, 2026-10-11: `Search parallels` at document y=369, `Attributes
+# for …` 985, `Build from Base` 1252, document 1582). One 7000 scroll cannot
+# cross that: the first local run read the hierarchy at try 0 and after two
+# ~2.3 s swipes, found the button only after the third, and its timeout was
+# spent before the next read. So the attributes panel's header is the first
+# stop — the same step every attributes-panel header takes, measured at one
+# swipe plus one centring swipe (`base-parallels-build-from-section` STEP 4)
+# — and it also proves the pick landed on Gold Wave. DOWN, centred (R8 case
+# 1); it is not tapped, so 10% visibility is enough to stop on.
+- scrollUntilVisible:
+    element:
+      text: ".*Attributes for Gold Wave Refractors.*"
+    centerElement: true
+    visibilityPercentage: 10
+    waitToSettleTimeoutMs: 1000
+    timeout: 7000
+
 # THE BUTTON. On an empty base-parallel row the checklist's primary action is
 # `buildButtonLabel(source, false)` = "Build from Base", rendered only once
 # the server has named the source (`getParallelsForBuild`), so this scroll is
 # also the wait for that query (our own read: the 7000 bar). Anchored full
 # match: the `Parallels of Base` section above carries "Build N parallels
 # from Base", which must never answer here (it would build EVERY parallel).
-# The section has no ledger before a run, so the row's checklist is one
-# swipe down; DOWN, centred for the tap (R8 case 1 — the NEO-260 spacer
-# under the page is the headroom).
+# With the attributes header centred the button is ~270px below it, at the
+# bottom edge of the viewport; DOWN, centred for the tap (R8 case 1 — the
+# NEO-260 spacer under the page is the headroom).
 - scrollUntilVisible:
     element:
       text: "^Build from Base$"
