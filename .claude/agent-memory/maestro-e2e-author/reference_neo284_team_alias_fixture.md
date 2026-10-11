@@ -11,7 +11,9 @@ metadata:
 Winter League* → Base, BSC only, via
 `util-fetch-one-marketplace-set-checklist-to-wizard`. 200 players + 8 clubs
 unknown; 211 rows settle (a staged league + 2 staged career teams) after
-~144 s of live lookups. The walk reads every team/league heading and acts on
+~144 s of LIVE lookups; all 211 are now in the NEO-289 recording, so the
+settle time must be re-measured from CI (see
+[[record-a-fixture-sets-lookups]]). The walk reads every team/league heading and acts on
 two checklist clubs BY NAME (Navegantes → alias link; Tigres → past-era link
 to the catalogue's single `Pittsburgh Crawfords`, remember-box UNTICKED so no
 alias lands on a shared catalogue row), skipping the rest — `runFlow when:

@@ -138,3 +138,5 @@ Non-markdown helpers: `tools/`
 - [Wizard returns to the staging player after its team step](reference_wizard_returns_to_batch_order_player_after_staged_team.md) — NEO-330: league → team → A; chip assert proves the return; batch order only after A is decided
 - [Wizard decisions: header delta + all-decided summary](patterns_wizard_decisions_read_from_header_and_summary.md) — Decided list is body/off-screen; count via `K of M reviewed`, kind via summary rows
 - [Committed checklist opens mid-list](patterns_committed_checklist_opens_mid_list.md) — list mounts on the commit's first batch; re-enter the set and assert a card at the END
+- [Scroll pass cost is driver overhead](patterns_scroll_pass_cost_is_driver_overhead.md) — ~2s/312px pass on ANY page (executeJS sleeps 100ms); page size is ~+5%; count swipes before blaming the app
+- [Record a fixture set's lookups](patterns_record_a_fixture_sets_lookups.md) — captureFromCli refuses on a catalogue preview; tsx the `*Live` bodies, names from `entityReviewSkips`, prove 100% hit offline; auto-link vs operator via `pickTeamForYear`

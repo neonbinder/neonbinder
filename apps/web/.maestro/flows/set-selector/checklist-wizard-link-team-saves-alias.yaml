@@ -246,11 +246,16 @@ tags:
 # Wait the batch's lookups out, so every step the walk below reads is settled
 # and nothing that settles later can out-rank the row under test (NEO-236/254
 # nav rules: leagues before teams before players). R5 external round-trip:
-# one live Wikidata lookup per unknown name, through the deployment-wide pool.
-# MEASURED on PR #314's preview, 2026-10-10: 208 rows settled in ~144s with
-# no other runner using the pool. ⚠️ In CI the pool is shared with every
-# runner's wizard flows; a red HERE with lookups still pending is that queue,
-# read it from the convex-logs artifact before touching this number.
+# one Wikidata lookup per unknown name, through the deployment-wide pool.
+# MEASURED on PR #314's preview, 2026-10-10, LIVE: 208 rows settled in ~144s
+# with no other runner using the pool. Since then the NEO-289 recording
+# answers every lookup this batch makes (200 players, 8 clubs, the 2 staged
+# career teams, the staged league: 211 of 211 hit, checked offline against
+# the committed file), so no call leaves the deployment. That settle time is
+# NOT YET MEASURED: this ceiling is the live-lane value, kept until the first
+# CI run with the recording deployed gives one to tighten to (R5). Recorded
+# rows still queue FIFO behind other runners' live lookups in the same pool;
+# read the convex-logs artifact before touching this number.
 - extendedWaitUntil:
     notVisible: ".*still looking up.*"
     timeout: 180000
