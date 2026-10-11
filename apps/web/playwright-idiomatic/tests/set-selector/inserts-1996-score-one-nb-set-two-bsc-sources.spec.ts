@@ -184,7 +184,7 @@ test(
     await keep("SportLots").click();
     await expect(nameCheck.getByText("0 to take · 2 to keep")).toBeVisible();
     await nameCheck.getByRole("button", { name: "Apply decisions" }).click();
-    await expect(nameCheck.getByText("2 declined")).toBeVisible();
+    await expect(page.getByText("2 declined")).toBeVisible();
 
     await expect(columnOption(page, "Inserts", renamed)).toBeVisible();
     await columnOption(page, "Inserts", renamed).click();
