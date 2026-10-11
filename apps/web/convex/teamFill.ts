@@ -64,6 +64,7 @@ import { selectorOptionLevelValidator } from "./schema";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
 import { teamFullName } from "../lib/teams/team-name";
+import { findTeamsByFullName } from "./lib/teamRow";
 import {
   isTeamFillCandidate,
   planTeamFill,
@@ -121,6 +122,14 @@ export const TEAM_FILL_SUBTREE_TOO_LARGE =
   `This set has more than ${TEAM_FILL_MAX_SUBTREE_NODES} rows beneath it — ` +
   `too many to fill teams across in one go.`;
 
+/**
+ * NEO-330 — distinct `bscTeamName` strings `readTeamFillBscTeamNames` resolves
+ * per call. One `findTeamsByFullName` is at most ~18 operations with the
+ * default window (see its note), so 40 names is ~720 — inside the ~900 this
+ * codebase treats as comfortable. A set's unresolved BSC names are a handful.
+ */
+export const TEAM_FILL_BSC_NAME_CHUNK = 40;
+
 /** How many cards one `applyTeamFillChunk` writes: one read + one patch each. */
 export const TEAM_FILL_APPLY_CHUNK = 100;
 
@@ -153,6 +162,8 @@ const projectedCardValidator = v.object({
   teamNoneConfirmedAt: v.optional(v.number()),
   teamCheckDoneAt: v.optional(v.number()),
   hasBscRef: v.boolean(),
+  /** NEO-330: BSC's unsettled team name — a check on a fill, never evidence. */
+  bscTeamName: v.optional(v.string()),
 });
 
 type ProjectedCard = {
@@ -165,6 +176,7 @@ type ProjectedCard = {
   teamNoneConfirmedAt?: number;
   teamCheckDoneAt?: number;
   hasBscRef: boolean;
+  bscTeamName?: string;
 };
 
 type SubtreeNode = {
@@ -402,6 +414,7 @@ function projectCard(card: Doc<"cardChecklist">): ProjectedCard {
       : {}),
     ...(card.teamCheckDoneAt !== undefined ? { teamCheckDoneAt: card.teamCheckDoneAt } : {}),
     hasBscRef: !!card.platformData?.bsc?.ref,
+    ...(card.bscTeamName !== undefined ? { bscTeamName: card.bscTeamName } : {}),
   };
 }
 
@@ -474,6 +487,35 @@ export const readTeamFillTeams = internalQuery({
   },
 });
 
+/**
+ * NEO-330 — the NB rows each BSC team name could mean, in the set's sport, so
+ * the planner can tell a fill BSC agrees with from one it contradicts.
+ *
+ * The same identity lookup (`findTeamsByFullName`, default window) the
+ * pickers and `erasByNameAndSport` use, so "BSC's name" means the same rows
+ * here as in the missing-team fixer. It lists, never picks: the planner only
+ * asks whether a fill's team is AMONG them. A name with no row comes back
+ * with an empty list, which the planner reads as "cannot vouch".
+ */
+export const readTeamFillBscTeamNames = internalQuery({
+  args: {
+    sportId: v.id("selectorOptions"),
+    names: v.array(v.string()),
+  },
+  returns: v.array(v.object({ name: v.string(), teamIds: v.array(v.id("teams")) })),
+  handler: async (ctx, args) => {
+    if (args.names.length > TEAM_FILL_BSC_NAME_CHUNK) {
+      throw new Error(`Resolve BSC team names in chunks of ${TEAM_FILL_BSC_NAME_CHUNK} or fewer.`);
+    }
+    const out: Array<{ name: string; teamIds: Array<Id<"teams">> }> = [];
+    for (const name of new Set(args.names)) {
+      const rows = await findTeamsByFullName(ctx, args.sportId, name);
+      out.push({ name, teamIds: rows.map((row) => row._id) });
+    }
+    return out;
+  },
+});
+
 type ComputedPlan = {
   plan: TeamFillPlan;
   setYear: number | null;
@@ -481,6 +523,7 @@ type ComputedPlan = {
   playersById: Map<string, PlayerRow>;
   teamsById: Map<string, TeamRow>;
   nameByNodeId: Map<string, string>;
+  cardsById: Map<string, TeamFillCard>;
 };
 
 function chunk<T>(items: ReadonlyArray<T>, size: number): Array<Array<T>> {
@@ -603,6 +646,26 @@ async function computeTeamFillPlan(
     for (const row of rows) playersById.set(row._id, row);
   }
 
+  // NEO-330: BSC's unsettled names on the candidates, resolved to the NB rows
+  // they could mean. A set with no sport resolves nothing, and every such
+  // card's fill becomes a conflict — nothing here can vouch for it.
+  const bscTeamIdsByName = new Map<string, Set<string>>();
+  const bscNames = new Set<string>();
+  for (const card of cards) {
+    if (!isTeamFillCandidate(card)) continue;
+    const name = card.bscTeamName?.trim() ?? "";
+    if (name !== "") bscNames.add(name);
+  }
+  if (subtree.sportId !== null) {
+    for (const names of chunk([...bscNames], TEAM_FILL_BSC_NAME_CHUNK)) {
+      const rows: Array<{ name: string; teamIds: Array<Id<"teams">> }> = await ctx.runQuery(
+        internal.teamFill.readTeamFillBscTeamNames,
+        { sportId: subtree.sportId, names },
+      );
+      for (const row of rows) bscTeamIdsByName.set(row.name, new Set<string>(row.teamIds));
+    }
+  }
+
   const currentYear = new Date().getFullYear();
   const firstPass = planTeamFill({
     cards,
@@ -611,10 +674,14 @@ async function computeTeamFillPlan(
     nodesById,
     baseNodeId,
     currentYear,
+    bscTeamIdsByName,
   });
 
+  // The teams the plan would write, AND the ones a conflict would have — the
+  // preview names both sides of a disagreement.
   const teamIds = new Set<Id<"teams">>();
   for (const fill of firstPass.fills) for (const id of fill.teamIds) teamIds.add(id);
+  for (const conflict of firstPass.conflicts) for (const id of conflict.teamIds) teamIds.add(id);
   const teamsById = new Map<string, TeamRow>();
   for (const ids of chunk([...teamIds], 200)) {
     const rows: Array<TeamRow> = await ctx.runQuery(internal.teamFill.readTeamFillTeams, {
@@ -636,6 +703,7 @@ async function computeTeamFillPlan(
     nodesById,
     baseNodeId,
     currentYear,
+    bscTeamIdsByName,
   });
   return {
     plan,
@@ -644,6 +712,7 @@ async function computeTeamFillPlan(
     playersById,
     teamsById,
     nameByNodeId,
+    cardsById: new Map(cards.map((card) => [card._id as string, card])),
   };
 }
 
@@ -660,6 +729,29 @@ const previewGroupValidator = v.object({
   nodeCount: v.number(),
   cardCount: v.number(),
 });
+
+/**
+ * NEO-330 — one card Fill left alone because BSC names a different team.
+ * `cardNumber` with `nodeName`, because a card number is not unique even in a
+ * set (product invariant 7) and the operator has to find the card.
+ */
+const previewConflictValidator = v.object({
+  cardNumber: v.string(),
+  nodeName: v.string(),
+  playerNames: v.array(v.string()),
+  /** What Fill would have written. */
+  teamNames: v.array(v.string()),
+  /** What BSC says, as BSC said it (already capped at storage). */
+  bscTeamName: v.string(),
+});
+
+type PreviewConflict = {
+  cardNumber: string;
+  nodeName: string;
+  playerNames: Array<string>;
+  teamNames: Array<string>;
+  bscTeamName: string;
+};
 
 type PreviewResult = {
   candidates: number;
@@ -678,6 +770,8 @@ type PreviewResult = {
     cardCount: number;
   }>;
   groupsTotal: number;
+  conflicts: number;
+  conflictCards: Array<PreviewConflict>;
 };
 
 /**
@@ -698,10 +792,14 @@ export const previewTeamFill = action({
     setYear: v.union(v.number(), v.null()),
     groups: v.array(previewGroupValidator),
     groupsTotal: v.number(),
+    /** NEO-330: cards left alone because BSC names a different team. */
+    conflicts: v.number(),
+    /** The first `TEAM_FILL_CONFLICT_CAP` of them (the planner's cap), per card. */
+    conflictCards: v.array(previewConflictValidator),
   }),
   handler: async (ctx, args): Promise<PreviewResult> => {
     await requireAdmin(ctx);
-    const { plan, setYear, playersById, teamsById, nameByNodeId } =
+    const { plan, setYear, playersById, teamsById, nameByNodeId, cardsById } =
       await computeTeamFillPlan(ctx, args.selectorOptionId);
     return {
       candidates: plan.candidates,
@@ -731,6 +829,21 @@ export const previewTeamFill = action({
         cardCount: group.cardCount,
       })),
       groupsTotal: plan.groupsTotal,
+      conflicts: plan.conflictsTotal,
+      conflictCards: plan.conflicts.map((conflict) => {
+        const card = cardsById.get(conflict.cardId);
+        return {
+          cardNumber: card?.cardNumber ?? "",
+          nodeName: (card && nameByNodeId.get(card.selectorOptionId)) ?? "",
+          playerNames: [...new Set<Id<"players">>(card?.playerIds ?? [])]
+            .map((id) => playersById.get(id)?.name)
+            .filter((name): name is string => name !== undefined),
+          teamNames: conflict.teamIds
+            .map((id) => teamsById.get(id)?.name)
+            .filter((name): name is string => name !== undefined),
+          bscTeamName: conflict.bscTeamName,
+        };
+      }),
     };
   },
 });

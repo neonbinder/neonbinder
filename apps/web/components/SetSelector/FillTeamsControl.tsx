@@ -64,6 +64,16 @@ import SetRowActionButton from "./SetRowActionButton";
  * node, then the card a parallel copies. The top of the list is where a
  * second look pays.
  *
+ * ## When BSC names a different team (NEO-330)
+ *
+ * A card whose `bscTeamName` contradicts the team a rule would give it is not
+ * filled. The server reports it as a conflict instead, and the dialog says so
+ * in the description ("2 cards left alone — BSC lists a different team.") and
+ * lists each one under the ledger: card number, node, player, what BSC lists
+ * and what this set says. Those cards stay in the missing-team lane, where
+ * the fixer offers BSC's eras beside the career — the operator decides there.
+ * A preview that can fill nothing but has conflicts says so in the toast.
+ *
  * Copy helpers are exported and pure so the pluralisation and the joined
  * sentence can be pinned in a test without a Convex client in the way — the
  * same split `SetAttributesPanel` makes for its Team confirm.
@@ -92,6 +102,18 @@ export type TeamFillGroup = {
   cardCount: number;
 };
 
+/** NEO-330: a card left alone because BSC names a different team. */
+export type TeamFillConflictCard = {
+  cardNumber: string;
+  /** The node the card sits under — a card number alone is not unique. */
+  nodeName: string;
+  playerNames: string[];
+  /** What Fill would have written. */
+  teamNames: string[];
+  /** What BSC lists. Untrusted marketplace text: rendered plain, never a link. */
+  bscTeamName: string;
+};
+
 export type TeamFillPreview = {
   candidates: number;
   fillable: number;
@@ -101,6 +123,10 @@ export type TeamFillPreview = {
   /** At most 200, riskiest first, then `cardCount` descending. */
   groups: TeamFillGroup[];
   groupsTotal: number;
+  /** NEO-330: cards left alone because BSC disagrees; not in `remaining`. */
+  conflicts: number;
+  /** The first 50 of them. */
+  conflictCards: TeamFillConflictCard[];
 };
 
 export type TeamFillResult = {
@@ -123,6 +149,9 @@ export const FILL_TEAMS_CHECKING_LABEL = "Checking…";
 
 /** Accessible name of the dialog's scrollable list. */
 export const FILL_TEAMS_LIST_LABEL = "Who gets which team";
+
+/** NEO-330: the heading over the cards Fill left alone. */
+export const FILL_TEAMS_CONFLICTS_HEADING = "Left alone — BSC lists a different team";
 
 /** The trigger's tooltip: what pressing it does, and that nothing changes unseen. */
 export const FILL_TEAMS_TOOLTIP =
@@ -202,6 +231,36 @@ export function fillGroupLine(
 }
 
 /**
+ * NEO-330 — one left-alone card, as the pieces the ledger sets:
+ *
+ *   card: "#34 Jimmie Foxx"   where: "3X MVP"
+ *   claim: "BSC lists Philadelphia Athletics; this set says Boston Red Sox"
+ *
+ * The node is named because card numbers are not unique even within a set
+ * (product invariant 7) — "#34" alone does not find the card.
+ */
+export function fillConflictLine(conflict: TeamFillConflictCard): {
+  card: string;
+  where: string;
+  claim: string;
+  line: string;
+} {
+  const players = conflict.playerNames.join(" & ");
+  const card = players ? `#${conflict.cardNumber} ${players}` : `#${conflict.cardNumber}`;
+  const ours = conflict.teamNames.join(" / ");
+  const claim = ours
+    ? `BSC lists ${conflict.bscTeamName}; this set says ${ours}`
+    : `BSC lists ${conflict.bscTeamName}`;
+  const where = conflict.nodeName;
+  return { card, where, claim, line: [card, where, claim].filter(Boolean).join(" · ") };
+}
+
+/** "2 cards left alone — BSC lists a different team." */
+function leftAlone(conflicts: number): string {
+  return `${plural(conflicts, "card", "cards")} left alone — BSC lists a different team.`;
+}
+
+/**
  * The confirm's title and body.
  *
  *   title: "Fill teams on 14 cards?"
@@ -230,6 +289,7 @@ export function fillConfirmCopy(preview: TeamFillPreview): {
   }
   const sentences: string[] = [];
   if (parts.length > 0) sentences.push(`${parts.join(", ")}.`);
+  if (preview.conflicts > 0) sentences.push(leftAlone(preview.conflicts));
   if (preview.remaining > 0) sentences.push(stillNeedYourCall(preview.remaining));
   return {
     title: `Fill teams on ${plural(preview.fillable, "card", "cards")}?`,
@@ -246,12 +306,16 @@ function stillNeedYourCall(remaining: number): string {
  * Said when the preview finds nothing to do; no dialog follows it. Two
  * different facts, told apart: every card is teamed (nothing left at all), or
  * some are not and no rule can honestly answer them (they are the operator's).
+ * NEO-330: cards a rule could have filled but BSC contradicts are the
+ * operator's too, and the toast says how many of them BSC is the reason for.
  */
-export function nothingToFillToast(remaining: number): string {
-  if (remaining === 0) return "Nothing to fill — every card here has its team.";
-  return `Nothing to fill — the ${remaining} still without a team ${
-    remaining === 1 ? "needs" : "need"
-  } your call.`;
+export function nothingToFillToast(remaining: number, conflicts = 0): string {
+  const open = remaining + conflicts;
+  if (open === 0) return "Nothing to fill — every card here has its team.";
+  const base = `Nothing to fill — the ${open} still without a team ${
+    open === 1 ? "needs" : "need"
+  } your call`;
+  return conflicts > 0 ? `${base} (BSC disagrees on ${conflicts}).` : `${base}.`;
 }
 
 /**
@@ -355,7 +419,7 @@ export default function FillTeamsControl({
     try {
       const result = await previewTeamFill({ selectorOptionId: setId });
       if (result.fillable === 0) {
-        showToast(nothingToFillToast(result.remaining));
+        showToast(nothingToFillToast(result.remaining, result.conflicts));
         return;
       }
       setError(null);
@@ -470,6 +534,36 @@ export default function FillTeamsControl({
               <li className="py-1.5 text-gray-400 italic">…and {overflow} more</li>
             )}
           </ul>
+          {/* NEO-330 — the cards BSC contradicts, under their own heading so
+              nobody reads them as fills. Same three weights as the ledger;
+              BSC's string is plain text, never a link or a title. */}
+          {preview.conflictCards.length > 0 && (
+            <div className="border-t border-slate-500 px-3 pt-2 pb-1.5 text-xs">
+              <p id="fill-teams-conflicts" className="font-semibold text-gray-200">
+                {FILL_TEAMS_CONFLICTS_HEADING}
+              </p>
+              <ul aria-labelledby="fill-teams-conflicts" className="divide-y divide-slate-600">
+                {preview.conflictCards.map((conflict, i) => {
+                  const row = fillConflictLine(conflict);
+                  return (
+                    <li
+                      key={`${conflict.cardNumber}|${conflict.nodeName}|${i}`}
+                      className="flex flex-wrap items-baseline gap-x-1.5 py-1.5"
+                    >
+                      <span className="text-gray-100">{row.card}</span>
+                      {row.where && <span className="text-gray-400">· {row.where}</span>}
+                      <span className="text-gray-300">· {row.claim}</span>
+                    </li>
+                  );
+                })}
+                {preview.conflicts > preview.conflictCards.length && (
+                  <li className="py-1.5 text-gray-400 italic">
+                    …and {preview.conflicts - preview.conflictCards.length} more
+                  </li>
+                )}
+              </ul>
+            </div>
+          )}
         </ConfirmDialog>
       )}
     </>

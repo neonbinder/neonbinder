@@ -34,9 +34,10 @@ import { internal } from "./_generated/api";
 import { requireAdmin } from "./auth";
 // NEO-236: these two paths LOOK UP a team and link it; neither may create one.
 // See `convex/lib/teamRow.ts` and the notes on each handler below.
-import { resolveTeamForSetYear } from "./lib/teamRow";
+import { findTeamsByFullName, resolveTeamForSetYear } from "./lib/teamRow";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { teamFullName } from "../lib/teams/team-name";
+import { teamOptionLabel } from "../lib/teams/team-era";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -635,19 +636,51 @@ export const confirmCardNoTeam = mutation({
  * `playerName` is there so the operator can see WHY a team is being suggested,
  * which is the difference between a suggestion they can judge and a guess.
  *
- * Bounded: one read per distinct `playerId` on the card plus one per distinct
- * team those players name. A dangling player or team link is skipped rather
- * than surfaced as a blank chip.
+ * ## `inSetYear` — what the fixer may preselect (NEO-330)
+ *
+ * The career fallback above is a list of everywhere the player ever played,
+ * and it used to arrive preselected with focus on Save: one Enter wrote Jimmie
+ * Foxx's whole career (Athletics, Red Sox, Cubs, Phillies) onto a single-team
+ * 2025 retro card. Only a stint that COVERS the set year is evidence for the
+ * card; a fallback chip is a list to choose from. So each suggestion says
+ * which it is, and `MissingTeamFixer` preselects only `inSetYear: true`. With
+ * no resolvable year nothing is in the set year, so nothing is preselected.
+ *
+ * ## `label` — the era, when the name alone does not say which team
+ *
+ * There are four Philadelphia Athletics rows. A chip reading "Philadelphia
+ * Athletics" does not say which franchise the operator is about to write, so
+ * when the team's sport holds more than one row under its full name the label
+ * carries the era — `teamOptionLabel`, the same "Name · 1901–1954" every
+ * other team picker shows. A unique name stays bare: "San Diego Padres ·
+ * 1969–present" on every chip is noise.
+ *
+ * Bounded: one read per distinct `playerId` on the card, plus per distinct
+ * team those players name one read and one identity lookup counted to two
+ * (`findTeamsByFullName`'s `limit`, at most four operations). A dangling
+ * player or team link is skipped rather than surfaced as a blank chip.
  */
 export const suggestedTeamsForCard = query({
   args: { cardId: v.id("cardChecklist") },
   returns: v.array(
     v.object({
       teamId: v.id("teams"),
+      /** The team's full name ("San Diego Padres"). */
       name: v.string(),
+      /**
+       * What a chip shows: the full name, plus the era when the sport holds
+       * several rows under that name ("Philadelphia Athletics · 1901–1954").
+       */
+      label: v.string(),
       source: v.literal("career"),
       /** Which player on the card this team came from. */
       playerName: v.string(),
+      /**
+       * NEO-330: a stint covering the set year produced this. False for the
+       * whole-career fallback and for a set with no resolvable year — the
+       * fixer preselects only `true`.
+       */
+      inSetYear: v.boolean(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -677,13 +710,16 @@ export const suggestedTeamsForCard = query({
     type Suggestion = {
       teamId: Id<"teams">;
       name: string;
+      label: string;
       source: "career";
       playerName: string;
+      inSetYear: boolean;
     };
-    const teamNameById = new Map<string, string | null>();
+    const teamTextById = new Map<string, { name: string; label: string } | null>();
 
     const collect = async (
       inYear: (fromYear: number, toYear?: number) => boolean,
+      inSetYear: boolean,
     ): Promise<Array<Suggestion>> => {
       const out: Array<Suggestion> = [];
       const seenTeamIds = new Set<string>();
@@ -691,30 +727,50 @@ export const suggestedTeamsForCard = query({
         for (const entry of player.teamYears ?? []) {
           if (!inYear(entry.fromYear, entry.toYear)) continue;
           if (seenTeamIds.has(entry.teamId)) continue;
-          if (!teamNameById.has(entry.teamId)) {
+          if (!teamTextById.has(entry.teamId)) {
             const team = await ctx.db.get(entry.teamId);
-            // NEO-236: the FULL name. This chip is a suggestion an operator
-            // judges at a glance, and "Padres" does not say which Padres.
-            teamNameById.set(entry.teamId, team ? teamFullName(team) : null);
+            if (!team) {
+              teamTextById.set(entry.teamId, null);
+            } else {
+              // NEO-236: the FULL name. This chip is a suggestion an operator
+              // judges at a glance, and "Padres" does not say which Padres.
+              const name = teamFullName(team);
+              // NEO-330: counted to two, never listed — the label only needs
+              // to know whether this name is shared.
+              const sameName = await findTeamsByFullName(ctx, team.sportId, name, 2);
+              teamTextById.set(entry.teamId, {
+                name,
+                label: sameName.length > 1 ? teamOptionLabel(name, team.yearsActive) : name,
+              });
+            }
           }
-          const name = teamNameById.get(entry.teamId);
-          if (!name) continue; // never suggest a blank chip
+          const text = teamTextById.get(entry.teamId);
+          if (!text || !text.name) continue; // never suggest a blank chip
           seenTeamIds.add(entry.teamId);
-          out.push({ teamId: entry.teamId, name, source: "career", playerName: player.name });
+          out.push({
+            teamId: entry.teamId,
+            name: text.name,
+            label: text.label,
+            source: "career",
+            playerName: player.name,
+            inSetYear,
+          });
         }
       }
       return out;
     };
 
     const wholeCareer = () => true;
-    if (year === undefined) return collect(wholeCareer);
+    if (year === undefined) return collect(wholeCareer, false);
 
     const filtered = await collect(
       (fromYear, toYear) => fromYear <= year && year <= (toYear ?? thisYear),
+      true,
     );
     if (filtered.length > 0) return filtered;
     // Nothing covers the set year: the retired-player case (see "when it lets
-    // go" above). Offer the career rather than an empty fixer.
-    return collect(wholeCareer);
+    // go" above). Offer the career rather than an empty fixer — as choices,
+    // never as an answer (`inSetYear: false`).
+    return collect(wholeCareer, false);
   },
 });

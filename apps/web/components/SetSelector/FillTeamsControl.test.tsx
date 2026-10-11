@@ -35,15 +35,18 @@ vi.mock("convex/react", () => ({
 import FillTeamsControl, {
   CHECK_FAILED_FALLBACK,
   fillConfirmCopy,
+  fillConflictLine,
   fillGroupLine,
   fillResultToast,
   fillRuleLabel,
   fillTeamsLabel,
   FILL_FAILED_FALLBACK,
   FILL_TEAMS_CHECKING_LABEL,
+  FILL_TEAMS_CONFLICTS_HEADING,
   FILL_TEAMS_LIST_LABEL,
   FILL_TEAMS_TOOLTIP,
   nothingToFillToast,
+  type TeamFillConflictCard,
   type TeamFillGroup,
   type TeamFillPreview,
   type TeamFillResult,
@@ -78,6 +81,8 @@ function makePreview(overrides: Partial<TeamFillPreview> = {}): TeamFillPreview 
       },
     ],
     groupsTotal: 1,
+    conflicts: 0,
+    conflictCards: [],
     ...overrides,
   };
 }
@@ -339,6 +344,59 @@ describe("nothingToFillToast", () => {
   });
 });
 
+/**
+ * NEO-330 — the Jimmie Foxx shape: #34/#35 carry no team and BSC's
+ * "Philadelphia Athletics"; a rule would copy the Red Sox off #36. Fill leaves
+ * them alone and says so, per card.
+ */
+const FOXX_34: TeamFillConflictCard = {
+  cardNumber: "34",
+  nodeName: "3X MVP",
+  playerNames: ["Jimmie Foxx"],
+  teamNames: ["Boston Red Sox"],
+  bscTeamName: "Philadelphia Athletics",
+};
+
+describe("NEO-330 — cards BSC disagrees on", () => {
+  it("fillConflictLine names the card, where it is, and both sides", () => {
+    expect(fillConflictLine(FOXX_34)).toEqual({
+      card: "#34 Jimmie Foxx",
+      where: "3X MVP",
+      claim: "BSC lists Philadelphia Athletics; this set says Boston Red Sox",
+      line: "#34 Jimmie Foxx · 3X MVP · BSC lists Philadelphia Athletics; this set says Boston Red Sox",
+    });
+  });
+
+  it("fillConflictLine degrades without players, node or our side", () => {
+    expect(
+      fillConflictLine({ ...FOXX_34, playerNames: [], nodeName: "", teamNames: [] }).line,
+    ).toBe("#34 · BSC lists Philadelphia Athletics");
+  });
+
+  it("fillConfirmCopy says how many were left alone, before the your-call sentence", () => {
+    expect(
+      fillConfirmCopy(makePreview({ conflicts: 2, remaining: 1 })).description,
+    ).toBe(
+      "11 from the same player's other cards here, 2 from the only team on file, 1 from the only team that year. 2 cards left alone — BSC lists a different team. 1 still needs your call.",
+    );
+    expect(fillConfirmCopy(makePreview({ conflicts: 1 })).description).toContain(
+      "1 card left alone — BSC lists a different team.",
+    );
+  });
+
+  it("nothingToFillToast counts BSC's cards as the operator's, and says BSC is why", () => {
+    expect(nothingToFillToast(0, 2)).toBe(
+      "Nothing to fill — the 2 still without a team need your call (BSC disagrees on 2).",
+    );
+    expect(nothingToFillToast(1, 1)).toBe(
+      "Nothing to fill — the 2 still without a team need your call (BSC disagrees on 1).",
+    );
+    expect(nothingToFillToast(0, 1)).toBe(
+      "Nothing to fill — the 1 still without a team needs your call (BSC disagrees on 1).",
+    );
+  });
+});
+
 describe("fillResultToast", () => {
   it("says only the applied count when nothing was skipped", () => {
     const result: TeamFillResult = {
@@ -559,6 +617,60 @@ describe("FillTeamsControl", () => {
       expect(showToast).toHaveBeenCalledWith("Nothing to fill — every card here has its team."),
     );
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("NEO-330: zero fillable with only BSC conflicts toasts the reason and opens no dialog", async () => {
+    mockPreview.mockResolvedValue(
+      makePreview({
+        fillable: 0,
+        candidates: 2,
+        remaining: 0,
+        groups: [],
+        groupsTotal: 0,
+        conflicts: 2,
+        conflictCards: [FOXX_34, { ...FOXX_34, cardNumber: "35" }],
+      }),
+    );
+    const showToast = vi.fn();
+    renderControl(showToast);
+
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
+    await waitFor(() =>
+      expect(showToast).toHaveBeenCalledWith(
+        "Nothing to fill — the 2 still without a team need your call (BSC disagrees on 2).",
+      ),
+    );
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("NEO-330: lists the cards BSC disagrees on under their own labelled heading, apart from the fills", async () => {
+    mockPreview.mockResolvedValue(
+      makePreview({ conflicts: 3, conflictCards: [FOXX_34, { ...FOXX_34, cardNumber: "35" }] }),
+    );
+    renderControl();
+
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
+    const dialog = await screen.findByRole("dialog");
+    // The count is the server's total, not the length of the capped list.
+    expect(dialog.textContent).toContain("3 cards left alone — BSC lists a different team.");
+    const list = screen.getByRole("list", { name: FILL_TEAMS_CONFLICTS_HEADING });
+    expect(Array.from(list.querySelectorAll("li")).map((li) => li.textContent)).toEqual([
+      "#34 Jimmie Foxx· 3X MVP· BSC lists Philadelphia Athletics; this set says Boston Red Sox",
+      "#35 Jimmie Foxx· 3X MVP· BSC lists Philadelphia Athletics; this set says Boston Red Sox",
+      "…and 1 more",
+    ]);
+    // The marketplace string is text, never a link or a tooltip.
+    expect(list.querySelector("a")).toBeNull();
+    expect(list.querySelector("[title]")).toBeNull();
+  });
+
+  it("NEO-330: no conflict section when BSC agrees with every fill", async () => {
+    mockPreview.mockResolvedValue(makePreview());
+    renderControl();
+
+    fireEvent.click(screen.getByRole("button", { name: LABEL }));
+    await screen.findByRole("dialog");
+    expect(screen.queryByText(FILL_TEAMS_CONFLICTS_HEADING)).toBeNull();
   });
 
   it("opens the dialog with the preview's title, body and ledger rows", async () => {

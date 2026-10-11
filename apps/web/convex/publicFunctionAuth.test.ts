@@ -920,6 +920,8 @@ describe("NEO-279: Fill teams is admin-gated, and its reads/writes are internal"
     ["readTeamFillNodes", "internalQuery"],
     ["readTeamFillPlayers", "internalQuery"],
     ["readTeamFillTeams", "internalQuery"],
+    // NEO-330 — resolves BSC's team names so a fill BSC contradicts is held back.
+    ["readTeamFillBscTeamNames", "internalQuery"],
     ["applyTeamFillChunk", "internalMutation"],
   ])("%s is declared %s, not the public form", (fn, keyword) => {
     const src = readFileSync(join(__dirname, "teamFill.ts"), "utf8");

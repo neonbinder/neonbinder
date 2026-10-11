@@ -163,6 +163,39 @@ async function insertPlayer(
   );
 }
 
+/**
+ * NEO-330 — the four Philadelphia Athletics eras a real catalogue holds,
+ * split Location + Name the way NEO-236 stores them. `al` is the 1901–1954
+ * American League club Jimmie Foxx played for.
+ */
+async function insertAthleticsEras(
+  t: ReturnType<typeof convexTest>,
+  sportId: Id<"selectorOptions">,
+): Promise<{
+  na: Id<"teams">;
+  nl: Id<"teams">;
+  aa: Id<"teams">;
+  al: Id<"teams">;
+}> {
+  return t.run(async (ctx) => {
+    const era = (from: number, to: number) =>
+      ctx.db.insert("teams", {
+        name: "Athletics",
+        location: "Philadelphia",
+        nameNormalized: normalizeTeamName("Philadelphia Athletics"),
+        sportId,
+        yearsActive: { from, to },
+        lastUpdated: Date.now(),
+      });
+    return {
+      na: await era(1871, 1875),
+      nl: await era(1876, 1876),
+      aa: await era(1882, 1890),
+      al: await era(1901, 1954),
+    };
+  });
+}
+
 // ===========================================================================
 // confirmCardNoTeam
 // ===========================================================================
@@ -677,8 +710,10 @@ describe("suggestedTeamsForCard", () => {
       {
         teamId: angels,
         name: "Los Angeles Angels",
+        label: "Los Angeles Angels",
         source: "career",
         playerName: "Mike Trout",
+        inSetYear: true,
       },
     ]);
   });
@@ -710,14 +745,18 @@ describe("suggestedTeamsForCard", () => {
       {
         teamId: braves,
         name: "Atlanta Braves",
+        label: "Atlanta Braves",
         source: "career",
         playerName: "Chris Sale",
+        inSetYear: true,
       },
       {
         teamId: mets,
         name: "New York Mets",
+        label: "New York Mets",
         source: "career",
         playerName: "Sean Manaea",
+        inSetYear: true,
       },
     ]);
   });
@@ -766,6 +805,9 @@ describe("suggestedTeamsForCard", () => {
       "Montreal Expos",
       "Washington Nationals",
     ]);
+    // NEO-330: with no year, nothing is IN the set year — so the fixer
+    // preselects none of them.
+    expect(suggestions.every((s) => !s.inSetYear)).toBe(true);
   });
 
   test("returns nothing for a card with no players, and skips dangling links", async () => {
@@ -819,8 +861,10 @@ describe("suggestedTeamsForCard", () => {
       {
         teamId: dbacks,
         name: "Arizona Diamondbacks",
+        label: "Arizona Diamondbacks",
         source: "career",
         playerName: "Corbin Carroll",
+        inSetYear: true,
       },
     ]);
   });
@@ -860,8 +904,10 @@ describe("suggestedTeamsForCard", () => {
       {
         teamId: dodgers,
         name: "Brooklyn Dodgers",
+        label: "Brooklyn Dodgers",
         source: "career",
         playerName: "Old Timer",
+        inSetYear: false,
       },
     ]);
   });
@@ -891,8 +937,72 @@ describe("suggestedTeamsForCard", () => {
       {
         teamId: mariners,
         name: "Seattle Mariners",
+        label: "Seattle Mariners",
         source: "career",
         playerName: "Long Career Guy",
+        inSetYear: true,
+      },
+    ]);
+  });
+
+  /**
+   * NEO-330 — the Jimmie Foxx shape, from the 2025 Topps Welcome to the Club
+   * diagnosis: the catalogue holds four "Philadelphia Athletics" rows, none
+   * covering 2025, and Foxx has no 2025 stint. The career fallback used to
+   * arrive preselected and one Enter wrote all four teams; now every chip says
+   * it is NOT a set-year stint, and the Athletics chip says which Athletics.
+   */
+  test("the Foxx shape: a career fallback is never in the set year, and a shared name carries its era", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t, { season: "2025" });
+    const athletics = await insertAthleticsEras(t, sportId);
+    const redSox = await insertTeam(t, sportId, "Boston Red Sox");
+    const cubs = await insertTeam(t, sportId, "Chicago Cubs");
+    const phillies = await insertTeam(t, sportId, "Philadelphia Phillies");
+    const foxx = await insertPlayer(t, sportId, "Jimmie Foxx", [
+      { teamId: athletics.al, fromYear: 1925, toYear: 1935 },
+      { teamId: redSox, fromYear: 1936, toYear: 1942 },
+      { teamId: cubs, fromYear: 1942, toYear: 1944 },
+      { teamId: phillies, fromYear: 1945, toYear: 1945 },
+    ]);
+    const cardId = await insertCard(t, leafId, { cardNumber: "34", playerIds: [foxx] });
+
+    const suggestions = await asAdmin.query(api.cardChecklist.suggestedTeamsForCard, {
+      cardId,
+    });
+    expect(suggestions.map((s) => [s.teamId, s.label, s.inSetYear])).toEqual([
+      [athletics.al, "Philadelphia Athletics · 1901–1954", false],
+      [redSox, "Boston Red Sox", false],
+      [cubs, "Chicago Cubs", false],
+      [phillies, "Philadelphia Phillies", false],
+    ]);
+    // `name` stays the bare full name — composed ONCE from Location + Name,
+    // never "Philadelphia Philadelphia Athletics".
+    expect(suggestions[0].name).toBe("Philadelphia Athletics");
+  });
+
+  test("a set-year stint at a shared name is in the set year and still era-labelled", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t, { season: "1930" });
+    const athletics = await insertAthleticsEras(t, sportId);
+    const foxx = await insertPlayer(t, sportId, "Jimmie Foxx", [
+      { teamId: athletics.al, fromYear: 1925, toYear: 1935 },
+    ]);
+    const cardId = await insertCard(t, leafId, { cardNumber: "1", playerIds: [foxx] });
+
+    const suggestions = await asAdmin.query(api.cardChecklist.suggestedTeamsForCard, {
+      cardId,
+    });
+    expect(suggestions).toEqual([
+      {
+        teamId: athletics.al,
+        name: "Philadelphia Athletics",
+        label: "Philadelphia Athletics · 1901–1954",
+        source: "career",
+        playerName: "Jimmie Foxx",
+        inSetYear: true,
       },
     ]);
   });

@@ -26,6 +26,7 @@ import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
 import {
   TEAM_FILL_APPLY_CHUNK,
+  TEAM_FILL_BSC_NAME_CHUNK,
   TEAM_FILL_DRIFT_MESSAGE,
   TEAM_FILL_ID_CHUNK,
   TEAM_FILL_NODE_CHUNK,
@@ -616,7 +617,10 @@ describe("applyTeamFill", () => {
       cardNumber: "1",
       playerIds: [tatis],
       teamCheckDoneAt: 1_690_000_000_000,
-      bscTeamName: "Marketplace says: Padres",
+      // NEO-330: BSC's name AGREES with the fill (it resolves to the Padres
+      // row), so the fill goes ahead and the hint is cleared. A name that
+      // disagrees is a conflict instead — see the NEO-330 block below.
+      bscTeamName: "San Diego Padres",
     });
 
     const before = Date.now();
@@ -1176,5 +1180,164 @@ describe("applyTeamFillChunk", () => {
       fills: [{ cardId, teamIds: [] }],
     });
     expect(result).toEqual({ applied: 0, skipped: 1 });
+  });
+});
+
+// ===========================================================================
+// NEO-330 — Fill teams never silently contradicts BSC's team name
+// ===========================================================================
+
+/**
+ * The Jimmie Foxx shape from the NEO-330 diagnosis (2025 Topps Welcome to the
+ * Club: 3X MVP). Four "Philadelphia Athletics" rows, none covering 2025; #36
+ * carries the Red Sox; #34 and #35 carry no team and BSC's "Philadelphia
+ * Athletics". Tier 1 would copy the Red Sox across — the preview now reports
+ * them as conflicts and the apply leaves them for the operator.
+ */
+describe("Fill teams and BSC's team name (NEO-330)", () => {
+  async function insertAthleticsEras(t: T, sportId: Id<"selectorOptions">) {
+    return t.run(async (ctx) => {
+      const ids: Array<Id<"teams">> = [];
+      for (const [from, to] of [
+        [1871, 1875],
+        [1876, 1876],
+        [1882, 1890],
+        [1901, 1954],
+      ]) {
+        ids.push(
+          await ctx.db.insert("teams", {
+            name: "Athletics",
+            location: "Philadelphia",
+            nameNormalized: normalizeTeamName("Philadelphia Athletics"),
+            sportId,
+            yearsActive: { from, to },
+            lastUpdated: Date.now(),
+          }),
+        );
+      }
+      return ids;
+    });
+  }
+
+  async function seedFoxx(t: T) {
+    const tree = await seedTree(t, { season: "2025" });
+    const athletics = await insertAthleticsEras(t, tree.sportId);
+    const redSox = await insertTeam(t, tree.sportId, "Boston Red Sox");
+    const cubs = await insertTeam(t, tree.sportId, "Chicago Cubs");
+    const foxx = await insertPlayer(t, tree.sportId, "Jimmie Foxx", [
+      { teamId: athletics[3], fromYear: 1925, toYear: 1935 },
+      { teamId: redSox, fromYear: 1936, toYear: 1942 },
+      { teamId: cubs, fromYear: 1942, toYear: 1944 },
+    ]);
+    await insertCard(t, tree.insertId, { cardNumber: "36", playerIds: [foxx], teamOnCardIds: [redSox] });
+    const c34 = await insertCard(t, tree.insertId, {
+      cardNumber: "34",
+      playerIds: [foxx],
+      teamCheckDoneAt: 1_690_000_000_000,
+      bscTeamName: "Philadelphia Athletics",
+    });
+    const c35 = await insertCard(t, tree.insertId, {
+      cardNumber: "35",
+      playerIds: [foxx],
+      teamCheckDoneAt: 1_690_000_000_000,
+      bscTeamName: "Philadelphia Athletics",
+    });
+    return { ...tree, athletics, redSox, foxx, c34, c35 };
+  }
+
+  test("the preview reports each contradicted card, with both sides, and fills none of them", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { setNameId } = await seedFoxx(t);
+
+    const preview = await asAdmin.action(api.teamFill.previewTeamFill, {
+      selectorOptionId: setNameId,
+    });
+    expect(preview.fillable).toBe(0);
+    expect(preview.candidates).toBe(2);
+    expect(preview.remaining).toBe(0);
+    expect(preview.conflicts).toBe(2);
+    expect(preview.groups).toEqual([]);
+    expect(preview.conflictCards).toEqual([
+      {
+        cardNumber: "34",
+        nodeName: "Stars",
+        playerNames: ["Jimmie Foxx"],
+        teamNames: ["Boston Red Sox"],
+        bscTeamName: "Philadelphia Athletics",
+      },
+      {
+        cardNumber: "35",
+        nodeName: "Stars",
+        playerNames: ["Jimmie Foxx"],
+        teamNames: ["Boston Red Sox"],
+        bscTeamName: "Philadelphia Athletics",
+      },
+    ]);
+  });
+
+  test("the apply writes nothing to a contradicted card, and keeps BSC's name on it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { setNameId, c34, c35 } = await seedFoxx(t);
+
+    const result = await asAdmin.action(api.teamFill.applyTeamFill, {
+      selectorOptionId: setNameId,
+      expectedFillable: 0,
+    });
+    expect(result.applied).toBe(0);
+    for (const id of [c34, c35]) {
+      const row = await getCard(t, id);
+      expect(row!.teamOnCardIds).toBeUndefined();
+      expect(row!.bscTeamName).toBe("Philadelphia Athletics");
+    }
+  });
+
+  test("evidence naming one of BSC's eras agrees, and fills", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const tree = await seedTree(t, { season: "2025" });
+    const athletics = await insertAthleticsEras(t, tree.sportId);
+    const foxx = await insertPlayer(t, tree.sportId, "Jimmie Foxx", []);
+    await insertCard(t, tree.insertId, { cardNumber: "36", playerIds: [foxx], teamOnCardIds: [athletics[3]] });
+    const target = await insertCard(t, tree.insertId, {
+      cardNumber: "34",
+      playerIds: [foxx],
+      teamCheckDoneAt: 1_690_000_000_000,
+      bscTeamName: "Philadelphia Athletics",
+    });
+
+    const preview = await asAdmin.action(api.teamFill.previewTeamFill, {
+      selectorOptionId: tree.setNameId,
+    });
+    expect(preview.fillable).toBe(1);
+    expect(preview.conflicts).toBe(0);
+    const result = await asAdmin.action(api.teamFill.applyTeamFill, {
+      selectorOptionId: tree.setNameId,
+      expectedFillable: 1,
+    });
+    expect(result.applied).toBe(1);
+    expect((await getCard(t, target))!.teamOnCardIds).toEqual([athletics[3]]);
+  });
+
+  test("readTeamFillBscTeamNames lists every era under a name, nothing for an unknown one, and refuses an oversized call", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedTree(t);
+    const athletics = await insertAthleticsEras(t, sportId);
+
+    const rows = await t.query(internal.teamFill.readTeamFillBscTeamNames, {
+      sportId,
+      names: ["Philadelphia Athletics", "Nobody We Hold"],
+    });
+    expect(rows).toHaveLength(2);
+    expect([...rows[0].teamIds].sort()).toEqual([...athletics].sort());
+    expect(rows[1]).toEqual({ name: "Nobody We Hold", teamIds: [] });
+
+    await expect(
+      t.query(internal.teamFill.readTeamFillBscTeamNames, {
+        sportId,
+        names: Array.from({ length: TEAM_FILL_BSC_NAME_CHUNK + 1 }, (_, i) => `Team ${i}`),
+      }),
+    ).rejects.toThrow(new RegExp(`chunks of ${TEAM_FILL_BSC_NAME_CHUNK}`));
   });
 });

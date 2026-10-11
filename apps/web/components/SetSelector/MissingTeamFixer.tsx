@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
-import { teamFullName } from "../../lib/teams/team-name";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import TeamPicker from "./TeamPicker";
@@ -32,17 +31,78 @@ import { useAttentionSportId, type AttentionFixerProps } from "./cardAttentionRe
  *   TEXT — never anchors — and no marketplace ref appears anywhere, body or
  *   `title`: a SportLots ref *is* a seller-typed description, so it is
  *   untrusted content as well as noise.
- * - **Suggestions are preselected, and say whose career they came from.**
- *   The predecessor of this feature was a bare per-card text prompt, and an
- *   operator once typed "Unknonw" into it. A League Leaders card's three
- *   players hand us three teams; Enter should accept them, and toggling is
- *   for the exception. The provenance is on the chip because a suggestion
+ * - **Set-year suggestions are preselected, and say whose career they came
+ *   from.** The predecessor of this feature was a bare per-card text prompt,
+ *   and an operator once typed "Unknonw" into it. A League Leaders card's
+ *   three players hand us three teams; Enter should accept them, and toggling
+ *   is for the exception. The provenance is on the chip because a suggestion
  *   from Mike Trout's career is only as good as Mike Trout being on the card.
+ * - **A career fallback is never preselected (NEO-330).** When no stint
+ *   covers the set year the server offers the whole career, and that is a
+ *   list to choose from, not an answer: Jimmie Foxx on a 2025 retro card
+ *   arrived with Athletics, Red Sox, Cubs and Phillies all preselected and
+ *   focus on Save, so one Enter wrote four teams onto a one-team card. Only an
+ *   `inSetYear` suggestion is preselected now, and focus lands on Save only
+ *   when something is.
+ * - **The marketplace's claim is offered as NB's rows, era by era (NEO-330).**
+ *   When BSC named a team the background lookup could not settle — usually a
+ *   name we hold in several eras, none covering the set year — the rows under
+ *   that name are shown as chips, era-labelled and NOT preselected, under a
+ *   line that says BSC is the one claiming it. The operator picks the era in
+ *   one click. BSC's string only finds the candidates (`teams.erasByNameAndSport`,
+ *   the same identity lookup every picker uses); the chip writes an NB row id.
+ *   A set-year stint that BSC contradicts is a disagreement (product invariant
+ *   7): nothing is preselected and the line says so, rather than either side
+ *   winning silently.
  * - **Colour carries role, not decoration.** Green is a chosen/confirmed
  *   team, blue (#00B7FF) is provenance and the "no team" affirmative, and
  *   pink never appears here — that is Cancel's colour, and recording "no
  *   team" is an answer, not an abandonment.
  */
+
+/** One acceptable team chip — from a career, from the marketplace's claim, or both. */
+type TeamChip = {
+  teamId: Id<"teams">;
+  /** The visible text: the full name, with the era where the name is shared. */
+  label: string;
+  /** Players on this card whose career names the team. Empty when none does. */
+  playerNames: string[];
+  /** A stint covering the set year produced it — the only kind ever preselected. */
+  inSetYear: boolean;
+};
+
+/** "Jimmie Foxx" / "Bench and Rose" — the provenance a chip carries. */
+function careerOf(playerNames: string[]): string {
+  return `${playerNames.join(" and ")}'s career`;
+}
+
+/**
+ * The line over BSC's chips. Exported for the copy test.
+ *
+ *   agreed   — a set-year stint is one of BSC's rows, so it is preselected
+ *   several  — the name is held in several eras: pick the one on the card
+ *   one      — one row: offered, not assumed (the background lookup already
+ *              links a lone row whose era fits, so reaching here means it
+ *              did not)
+ */
+export function marketplaceHeading(bscName: string, rowCount: number, agreed: boolean): string {
+  if (agreed) return `BSC lists “${bscName}” and career history agrees — Enter accepts it`;
+  if (rowCount > 1) {
+    return `BSC lists “${bscName}” — ${rowCount} teams by that name, pick the one on the card`;
+  }
+  return `BSC lists “${bscName}” — pick it if it’s the team on the card`;
+}
+
+/** The line over the career chips. Exported for the copy test. */
+export function careerHeading(inSetYear: boolean, bscDisagrees: boolean): string {
+  if (!inSetYear) {
+    return "From career history, but none from this card’s year — pick the one on the card";
+  }
+  if (bscDisagrees) {
+    return "From career history, but BSC lists a different team — pick the one on the card";
+  }
+  return "Suggested from career history — Enter accepts these";
+}
 
 export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) {
   // Out-of-band because the locked fixer contract passes only the row, and a
@@ -56,97 +116,145 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
     row.playerIds && row.playerIds.length > 0 ? { ids: row.playerIds } : "skip",
   );
   /**
-   * NEO-236 — the suggestion rows carry a denormalised `name` and nothing
-   * else, so the location half of a split team's name has to come from the
-   * team rows themselves. Read here rather than added to
-   * `suggestedTeamsForCard`'s payload so this fixer owns its own display
-   * contract; the ids are the ones the picker below is already resolving, so
-   * Convex serves both from one subscription whenever nothing has been
-   * toggled yet.
+   * NEO-330 — the marketplace's claim, as the NB rows it could mean.
+   *
+   * `erasByNameAndSport` is the "what are my options" lookup the pickers and
+   * the review wizard use: every row this sport holds under the name, oldest
+   * era first, each already labelled "Name · 1901–1954". BSC's string does
+   * the finding and nothing else. With no sport (the context is unset) there
+   * is nothing to look up in, and the plain "Marketplace says" line below
+   * stands in.
    */
-  const suggestedTeamIds = useMemo(
-    () => [...new Set((suggestions ?? []).map((s) => s.teamId))],
-    [suggestions],
+  const bscName = row.bscTeamName?.trim() ?? "";
+  const bscEras = useQuery(
+    api.teams.erasByNameAndSport,
+    bscName !== "" && sportId !== undefined ? { name: bscName, sportId } : "skip",
   );
-  const suggestedTeamRows = useQuery(
-    api.teams.getManyByIds,
-    suggestedTeamIds.length > 0 ? { ids: suggestedTeamIds } : "skip",
-  );
-  const locationByTeamId = useMemo(() => {
-    const map = new Map<string, string | undefined>();
-    for (const team of suggestedTeamRows ?? []) {
-      map.set(team._id as unknown as string, team.location);
-    }
-    return map;
-  }, [suggestedTeamRows]);
+  const bscLookedUp = bscName !== "" && sportId !== undefined;
+  const bscSettled = !bscLookedUp || bscEras !== undefined;
   const updateCard = useMutation(api.selectorOptions.updateCard);
   const confirmCardNoTeam = useMutation(api.cardChecklist.confirmCardNoTeam);
 
-  // `null` = the suggestion query has not resolved, so nothing is preselected
-  // yet. Distinct from `[]`, which means the operator cleared it.
+  // `null` = the suggestion queries have not resolved, so nothing is
+  // preselected yet. Distinct from `[]`, which means nothing was preselected
+  // or the operator cleared it.
   const [teamIds, setTeamIds] = useState<Array<Id<"teams">> | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const saveBtnRef = useRef<HTMLButtonElement>(null);
+  const optionsRef = useRef<HTMLDivElement>(null);
   const pickerRegionRef = useRef<HTMLDivElement>(null);
 
   /**
    * One chip per TEAM, not per suggestion. Two players on a League Leaders
    * card can share a team, and two identical chips would look like a bug and
-   * double-count against the cap.
+   * double-count against the cap. The label is the server's — the full name,
+   * era-labelled when the sport holds that name more than once.
    */
-  const chips = useMemo(() => {
-    const byTeam = new Map<
-      string,
-      { teamId: Id<"teams">; name: string; playerNames: string[] }
-    >();
+  const careerByTeam = useMemo(() => {
+    const byTeam = new Map<string, TeamChip>();
     for (const s of suggestions ?? []) {
       const existing = byTeam.get(s.teamId as string);
       if (existing) {
         if (!existing.playerNames.includes(s.playerName)) {
           existing.playerNames.push(s.playerName);
         }
+        existing.inSetYear = existing.inSetYear || s.inSetYear;
       } else {
         byTeam.set(s.teamId as string, {
           teamId: s.teamId,
-          // The FULL name, composed the moment the team row arrives. Until it
-          // does, the suggestion's own `name` stands in — for an unsplit row
-          // that IS the full name, so the common case never flickers.
-          name: teamFullName({
-            name: s.name,
-            location: locationByTeamId.get(s.teamId as string),
-          }),
+          label: s.label,
           playerNames: [s.playerName],
+          inSetYear: s.inSetYear,
         });
       }
     }
-    return [...byTeam.values()];
-  }, [suggestions, locationByTeamId]);
+    return byTeam;
+  }, [suggestions]);
+
+  /**
+   * The rows BSC's name could mean. A row that is ALSO in a player's career
+   * carries that provenance here and is not repeated in the career list — one
+   * chip per team, and the fact that Foxx played for the 1901–1954 Athletics
+   * is exactly what tells the operator which of the four eras the card means.
+   */
+  const marketplaceChips = useMemo<TeamChip[]>(
+    () =>
+      (bscLookedUp ? (bscEras ?? []) : []).map((era) => {
+        const career = careerByTeam.get(era._id as string);
+        return {
+          teamId: era._id,
+          label: era.label,
+          playerNames: career?.playerNames ?? [],
+          inSetYear: career?.inSetYear ?? false,
+        };
+      }),
+    [bscLookedUp, bscEras, careerByTeam],
+  );
+  const marketplaceIds = useMemo(
+    () => new Set<string>(marketplaceChips.map((chip) => chip.teamId as string)),
+    [marketplaceChips],
+  );
+  const careerChips = useMemo(
+    () => [...careerByTeam.values()].filter((chip) => !marketplaceIds.has(chip.teamId as string)),
+    [careerByTeam, marketplaceIds],
+  );
+
+  /**
+   * What may be preselected: set-year stints only, and only when BSC does not
+   * contradict them. A card with a BSC name and a set-year stint at a team
+   * that is not among that name's rows has two sources saying two things —
+   * product invariant 7: surface it, never settle it. Nothing is preselected
+   * and the career line says BSC disagrees. A BSC name we could not look up
+   * (no sport) cannot vouch for anything, so it counts as disagreeing: the
+   * cost is one click, the alternative is a silent write.
+   */
+  const setYearTeamIds = useMemo(
+    () => [...careerByTeam.values()].filter((chip) => chip.inSetYear).map((chip) => chip.teamId),
+    [careerByTeam],
+  );
+  const bscDisagrees =
+    bscName !== "" && setYearTeamIds.some((id) => !marketplaceIds.has(id as string));
+  const preselect = useMemo(
+    () => (bscDisagrees ? [] : setYearTeamIds.slice(0, MAX_CARD_TEAMS)),
+    [bscDisagrees, setYearTeamIds],
+  );
+  const ready = suggestions !== undefined && bscSettled;
 
   useEffect(() => {
-    if (teamIds !== null || suggestions === undefined) return;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- preselects the suggested teams the moment the suggestion query resolves; the query is async, so this cannot be an initial-state value
-    setTeamIds(chips.slice(0, MAX_CARD_TEAMS).map((c) => c.teamId));
-  }, [suggestions, teamIds, chips]);
+    if (teamIds !== null || !ready) return;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- preselects once the suggestion queries resolve; they are async, so this cannot be an initial-state value
+    setTeamIds(preselect);
+  }, [ready, teamIds, preselect]);
 
-  // Initial focus follows what the copy promises (NEO-282). With suggestion
-  // chips on screen there is something preselected to save, and the panel
-  // says "Enter accepts these" — so focus lands on "Save & Next (Enter)" and
-  // the operator's first Enter saves. It used to land on the first chip,
-  // where Enter is native button activation and TOGGLED the chip OFF: the
-  // opposite of the promise, one keystroke in. With no chips there is nothing
-  // chosen, Save is aria-disabled, and parking focus on an inert control would
-  // be worse — so focus goes to the picker's own trigger, the first thing the
-  // operator has to use. The walker remounts this component per card, so this
-  // IS "focus on every advance" — focus is never left on a control belonging
-  // to the card just answered (the NEO-189 stranding finding).
+  // Initial focus follows what the copy promises (NEO-282, NEO-330). With a
+  // set-year team preselected the panel says "Enter accepts", so focus lands
+  // on "Save & Next (Enter)" and the first Enter saves. With chips on screen
+  // and NOTHING preselected — a career fallback, or BSC's eras — Save is
+  // aria-disabled and would write nothing anyway; focus goes to the first
+  // chip, where Enter or Space picks it (the eras come first, so that is
+  // usually the era BSC named). With no chips at all it goes to the picker's
+  // trigger. The walker remounts this component per card, so this IS "focus
+  // on every advance" — focus is never left on a control belonging to the
+  // card just answered (the NEO-189 stranding finding). Keyed on the target,
+  // not on live selection, so toggling a chip never moves focus.
+  const chipCount = marketplaceChips.length + careerChips.length;
+  const focusTarget: "save" | "chip" | "picker" = !ready
+    ? "picker"
+    : preselect.length > 0
+      ? "save"
+      : chipCount > 0
+        ? "chip"
+        : "picker";
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
-      if (chips.length > 0 && saveBtnRef.current) saveBtnRef.current.focus();
-      else pickerRegionRef.current?.querySelector("button")?.focus();
+      if (focusTarget === "save" && saveBtnRef.current) saveBtnRef.current.focus();
+      else if (focusTarget === "chip" && optionsRef.current?.querySelector("button")) {
+        optionsRef.current.querySelector("button")?.focus();
+      } else pickerRegionRef.current?.querySelector("button")?.focus();
     });
     return () => cancelAnimationFrame(raf);
-  }, [chips.length]);
+  }, [focusTarget]);
 
   // Memoized so the identity is stable per `teamIds` — `chosenSet` and
   // `playerLine` both depend on it, and a fresh [] every render would rebuild
@@ -175,6 +283,42 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
     } else {
       applyTeams([...chosen, teamId]);
     }
+  };
+
+  /**
+   * One toggle chip, career or marketplace. `aria-pressed` carries the state;
+   * aria-disabled, not disabled, at the cap — the chip has to stay reachable,
+   * or the notice explaining why it is inert is unreachable by keyboard (the
+   * NEO-189 finding). A screen-reader user landing on a blocked chip (Tab, not
+   * having heard the role=status cap notice) is tied to that notice the same
+   * way `attention-team-hint` ties to Save.
+   */
+  const renderChip = (chip: TeamChip, opts: { ariaLabel?: string; suffix?: string }) => {
+    const on = chosenSet.has(chip.teamId as string);
+    const blocked = !on && atCap;
+    return (
+      <li key={chip.teamId as string}>
+        <button
+          type="button"
+          aria-pressed={on}
+          aria-disabled={blocked || undefined}
+          aria-describedby={blocked ? "attention-team-cap" : undefined}
+          aria-label={opts.ariaLabel}
+          onClick={() => {
+            if (blocked) return;
+            toggleChip(chip.teamId);
+          }}
+          className={`rounded-full border px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#00B7FF] ${
+            on
+              ? "border-[#00D558] bg-[#00D558]/20 text-[#00D558]"
+              : "border-gray-700 bg-gray-800 text-gray-200 hover:border-[#00B7FF] hover:text-[#00B7FF]"
+          } ${blocked ? "opacity-40" : ""}`}
+        >
+          {chip.label}
+          {opts.suffix && <span className="text-[#00B7FF]">{opts.suffix}</span>}
+        </button>
+      </li>
+    );
   };
 
   const playerLine = useMemo(() => {
@@ -241,7 +385,8 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
         // because TeamPicker's typeahead owns its own Enter (select, or create
         // a team that matched nothing); BUTTON because Enter on a focused
         // button already activates it natively. Focus starts on "Save & Next"
-        // itself whenever there are chips (NEO-282), so without this guard
+        // itself whenever a set-year team is preselected (NEO-282, NEO-330),
+        // and on the first chip when nothing is, so without this guard
         // one Enter would reach `save` twice — from here on keydown, then
         // from the button's own click (the `busy` gate would swallow the
         // second, but one keystroke should mean one path) — and Enter on a
@@ -268,57 +413,55 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
         </p>
       </div>
 
-      {chips.length > 0 && (
-        <div className="space-y-1">
-          <p id="attention-team-suggestions" className="text-xs text-[#00B7FF]">
-            Suggested from career history — Enter accepts these
-          </p>
-          <ul
-            className="flex flex-wrap gap-1.5"
-            aria-labelledby="attention-team-suggestions"
-          >
-            {chips.map((chip) => {
-              const on = chosenSet.has(chip.teamId as string);
-              const blocked = !on && atCap;
-              return (
-                <li key={chip.teamId as string}>
-                  <button
-                    type="button"
-                    aria-pressed={on}
-                    // aria-disabled, not disabled: at the cap the chip has to
-                    // stay reachable, or the notice explaining why it is inert
-                    // is unreachable by keyboard (the NEO-189 finding).
-                    aria-disabled={blocked || undefined}
-                    // a11y (audit fix): a screen-reader user landing directly
-                    // on a blocked chip (Tab, not having heard the role=status
-                    // cap notice announce) got no explanation at all — only a
-                    // sighted user reading the paragraph below the picker knew
-                    // why it wouldn't toggle. Ties the chip to that notice the
-                    // same way `attention-team-hint` already ties to Save.
-                    aria-describedby={blocked ? "attention-team-cap" : undefined}
-                    aria-label={`${chip.name} (from ${chip.playerNames.join(" and ")}'s career)`}
-                    onClick={() => {
-                      if (blocked) return;
-                      toggleChip(chip.teamId);
-                    }}
-                    className={`rounded-full border px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-[#00B7FF] ${
-                      on
-                        ? "border-[#00D558] bg-[#00D558]/20 text-[#00D558]"
-                        : "border-gray-700 bg-gray-800 text-gray-200 hover:border-[#00B7FF] hover:text-[#00B7FF]"
-                    } ${blocked ? "opacity-40" : ""}`}
-                  >
-                    {chip.name}
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      )}
+      {/* `empty:hidden` so a card with no chips at all does not leave a
+          blank gap in the panel's vertical rhythm. */}
+      <div className="space-y-3 empty:hidden" ref={optionsRef}>
+        {marketplaceChips.length > 0 && (
+          <div className="space-y-1">
+            {/* NEO-330 — BSC's claim, as NB's rows. Blue is provenance in this
+                panel, and the line names who is claiming it; the chips are
+                never preselected unless a set-year stint agrees. BSC's string
+                is plain text, never an anchor or a `title` (untrusted content
+                on an admin screen, the same rule as the card name). */}
+            <p id="attention-team-marketplace" className="text-xs text-[#00B7FF]">
+              {marketplaceHeading(bscName, marketplaceChips.length, marketplaceChips.some((chip) => preselect.includes(chip.teamId)))}
+            </p>
+            <ul className="flex flex-wrap gap-1.5" aria-labelledby="attention-team-marketplace">
+              {marketplaceChips.map((chip) =>
+                renderChip(chip, {
+                  // No aria-label: the visible text, era and provenance
+                  // included, IS the name, and the list's label says BSC.
+                  suffix: chip.playerNames.length > 0 ? ` (${careerOf(chip.playerNames)})` : undefined,
+                }),
+              )}
+            </ul>
+          </div>
+        )}
+
+        {careerChips.length > 0 && (
+          <div className="space-y-1">
+            <p id="attention-team-suggestions" className="text-xs text-[#00B7FF]">
+              {careerHeading(careerChips.some((chip) => chip.inSetYear), bscDisagrees)}
+            </p>
+            <ul
+              className="flex flex-wrap gap-1.5"
+              aria-labelledby="attention-team-suggestions"
+            >
+              {careerChips.map((chip) =>
+                renderChip(chip, {
+                  ariaLabel: `${chip.label} (from ${careerOf(chip.playerNames)})`,
+                }),
+              )}
+            </ul>
+          </div>
+        )}
+      </div>
 
       <div className="space-y-1" ref={pickerRegionRef}>
         {/*
-          NEO-236 — the marketplace's own answer, above the picker.
+          NEO-236 — the marketplace's own answer, above the picker, when it
+          names no team we hold (NEO-330: when it names one or more, the chips
+          above offer them instead).
 
           The BSC per-card lookup used to CREATE a team from whatever string it
           got back. It links-or-leaves now, because creation takes a reviewed
@@ -328,18 +471,18 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
           discarded it on the way to not trusting it.
 
           Framed as "Marketplace says", not "Team", and rendered muted rather
-          than as a chip: the suggestion chips above are ACCEPTABLE with a
-          keystroke, and this deliberately is not. It is the marketplace's
-          claim, presented for a human to read and split into Location + Name
-          themselves — never something a click could turn into a team row, which
-          is precisely the shortcut NEO-236 removed.
+          than as a chip: there is no NB row behind it to accept. It is the
+          marketplace's claim, presented for a human to read and split into
+          Location + Name themselves — never something a click could turn into
+          a team row, which is precisely the shortcut NEO-236 removed.
 
           Plain text, never an anchor and never a `title`: a marketplace string
           is untrusted content reaching an admin screen, the same rule the card
-          number and name follow in this panel.
+          number and name follow in this panel. Held back while the era lookup
+          is in flight, so it does not flash up and then turn into chips.
         */}
-        {row.bscTeamName && (
-          <p className="text-xs text-gray-500">
+        {bscName !== "" && bscSettled && marketplaceChips.length === 0 && (
+          <p className="text-xs text-gray-400">
             Marketplace says:{" "}
             <span className="text-gray-300">{row.bscTeamName}</span>
           </p>

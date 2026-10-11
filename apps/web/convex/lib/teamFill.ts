@@ -68,6 +68,30 @@
  * A single-player card is the degenerate case and resolves exactly as one
  * answer would.
  *
+ * ## A marketplace that names a different team (NEO-330)
+ *
+ * None of the tiers read `bscTeamName` — they are NB evidence, and that is
+ * right. But a card can carry BSC's claim AND have a tier answer it with a
+ * different team: Jimmie Foxx #34/#35 on a 2025 retro insert, BSC saying
+ * "Philadelphia Athletics", while tier 1 copies the Red Sox off his #36. A
+ * fill there would contradict the marketplace without anyone seeing it, and
+ * product invariant 7 says a disagreement is surfaced, never settled.
+ *
+ * So after a tier decides, a card carrying `bscTeamName` is checked against
+ * the NB rows that name resolves to (`bscTeamIdsByName`, resolved by the
+ * caller through the same identity lookup every picker uses). The fill stands
+ * when ANY of its teams is one of those rows — a combo card filled with each
+ * player's team agrees with a BSC name for any one of them. Otherwise the
+ * card is NOT filled and is reported in `conflicts` instead, with the team
+ * the tier would have written, so the preview can say "BSC lists X, this set
+ * says Y" per card and the operator answers it in the attention walker.
+ *
+ * The marketplace name decides nothing here except "a human looks at this
+ * one": it never chooses a team, never writes one, and a card BSC agrees with
+ * is filled exactly as before. A name the caller could not resolve to any
+ * row (or a call with no map at all) cannot vouch for the fill, so it counts
+ * as a disagreement — the safe direction is one more card for a human.
+ *
  * ## What is deliberately NOT evidence
  *
  * Another insert's cards. "Brett Favre could be a Jet in one insert and a
@@ -138,6 +162,11 @@ export type TeamFillCard = {
   /** Projected form of `!!platformData.bsc?.ref`. Wins over `platformData` when set. */
   hasBscRef?: boolean;
   platformData?: { bsc?: { ref?: string } | undefined };
+  /**
+   * NEO-330: the team name BSC returned that the background lookup could not
+   * settle. Never evidence for a fill — only a check on one (see the header).
+   */
+  bscTeamName?: string;
 };
 
 export type TeamFillPlayer = {
@@ -160,6 +189,22 @@ export type TeamFillDecision = {
   mixed: boolean;
 };
 
+/**
+ * NEO-330: a card a tier could fill, left alone because BSC names a team the
+ * fill does not include. `teamIds` is what the tier would have written.
+ */
+export type TeamFillConflict = {
+  cardId: Id<"cardChecklist">;
+  teamIds: Array<Id<"teams">>;
+  rule: TeamFillRule;
+  scope: TeamFillScope;
+  /** The card's `bscTeamName`, trimmed. */
+  bscTeamName: string;
+};
+
+/** How many conflicts a plan lists; `conflictsTotal` carries the full count. */
+export const TEAM_FILL_CONFLICT_CAP = 50;
+
 export type TeamFillGroup = {
   /** `playerKey(playerIds)` — sorted, deduped, "|"-joined. */
   playerKey: string;
@@ -180,6 +225,13 @@ export type TeamFillPlan = {
   byRule: Record<TeamFillRule, number>;
   /** Candidates no tier could answer, plus fills dropped by `teamIdsThatExist`. */
   remaining: number;
+  /**
+   * NEO-330: candidates a tier answered but BSC contradicts — not filled, not
+   * in `remaining`. `candidates === fills.length + remaining + conflictsTotal`.
+   * At most `TEAM_FILL_CONFLICT_CAP`, in the order the cards were read.
+   */
+  conflicts: Array<TeamFillConflict>;
+  conflictsTotal: number;
   /**
    * Distinct (rule, scope, mixed, players, teams) groups, riskiest first:
    * career (B, C), then the base set, then the same node, then the card a
@@ -479,9 +531,23 @@ export function planTeamFill(input: {
   /** The variantType node flagged `metadata.isBase`, or null when the set has none. */
   baseNodeId: Id<"selectorOptions"> | null;
   currentYear: number;
+  /**
+   * NEO-330: each distinct trimmed `bscTeamName` → the ids of the NB rows it
+   * names in the set's sport. A card whose name is missing here cannot be
+   * vouched for, so its fill becomes a conflict (see the header).
+   */
+  bscTeamIdsByName?: ReadonlyMap<string, ReadonlySet<string>>;
 }): TeamFillPlan {
-  const { cards, playersById, teamIdsThatExist, yearByNodeId, nodesById, baseNodeId, currentYear } =
-    input;
+  const {
+    cards,
+    playersById,
+    teamIdsThatExist,
+    yearByNodeId,
+    nodesById,
+    baseNodeId,
+    currentYear,
+    bscTeamIdsByName,
+  } = input;
   const evidence = buildEvidence(cards, baseNodeId);
 
   const fills: Array<TeamFillDecision> = [];
@@ -496,6 +562,8 @@ export function planTeamFill(input: {
   const groupCounts = new Map<string, GroupAccumulator>();
   let candidates = 0;
   let remaining = 0;
+  const conflicts: Array<TeamFillConflict> = [];
+  let conflictsTotal = 0;
 
   for (const card of cards) {
     if (!isTeamFillCandidate(card)) continue;
@@ -523,6 +591,23 @@ export function planTeamFill(input: {
     if (teamIdsThatExist && !decision.teamIds.every((id) => teamIdsThatExist.has(id))) {
       remaining += 1;
       continue;
+    }
+    const bscTeamName = card.bscTeamName?.trim() ?? "";
+    if (bscTeamName !== "") {
+      const named = bscTeamIdsByName?.get(bscTeamName);
+      if (!named || !decision.teamIds.some((id) => named.has(id))) {
+        conflictsTotal += 1;
+        if (conflicts.length < TEAM_FILL_CONFLICT_CAP) {
+          conflicts.push({
+            cardId: card._id,
+            teamIds: decision.teamIds,
+            rule: decision.rule,
+            scope: decision.scope,
+            bscTeamName,
+          });
+        }
+        continue;
+      }
     }
 
     fills.push({ cardId: card._id, ...decision });
@@ -569,5 +654,7 @@ export function planTeamFill(input: {
     groups: allGroups.slice(0, TEAM_FILL_GROUP_CAP),
     groupsTotal: allGroups.length,
     candidates,
+    conflicts,
+    conflictsTotal,
   };
 }
