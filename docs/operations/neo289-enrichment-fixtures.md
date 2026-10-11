@@ -97,34 +97,67 @@ npx convex run \
 Coverage is read-only and internal, so it takes only the `confirm` literal —
 no deployment env var to arm.
 
-It writes `covered` / `missing` to the job's step summary and, if `missing`
-is non-empty, emits exactly one `::warning::` listing the missing names. The
-step is `continue-on-error: true` and also tolerates the function not
-existing yet on a preview whose Convex-side change hasn't landed (a first
-run before the adapter code merges) — either way it **never fails the job**.
-A growing `missing` list across runs is the operator signal that the fixture
-set has gone stale (a card in the seeded sets that the recording doesn't
-cover); it is not a CI gate because the seed already falls back to a live
-lookup for anything uncovered, so the suite stays correct either way — just
-slower.
+### Which names it checks
+
+Only the names a run on that deployment actually looked up, not every row
+the deployment holds. Since NEO-330 every CI preview carries the reference
+catalogue, and almost none of those rows is ever looked up, so "every row"
+would bury the real gaps under catalogue names. The names come from three
+places a lookup leaves a trace (the header of
+`apps/web/convex/enrichmentFixtures.ts` has the detail):
+
+- `players`, `teams` and `leagues` rows of the sport **created since the
+  run's boundary**: a row the review wizard creates was looked up when it
+  was staged, and a player or league created on an admin page is looked up
+  at creation;
+- `entityReviewQueue` rows still open (the commit deletes its own batch);
+- `entityReviewSkips` rows whose set is in the sport: a skipped name was
+  looked up but never becomes a row.
+
+The **boundary** is the `_creationTime` of the oldest `year` row, because a
+name reaches the wizard only through a set, and the seed's catalogue load
+leaves `selectorOptions` holding sport rows only. Catalogue rows keep their
+source `_creationTime`, so all of them are older than that. Pass
+`"since": <ms since the epoch>` to set the boundary yourself. Do that on a
+deployment whose year rows are older than its catalogue load (a developer
+deployment loaded with `--sports remap`).
+
+One gap is known: a staged name the operator **linked** to an existing row
+leaves no row of its own, so it is not checked. §4a adds those by hand.
+
+### What it returns
+
+`covered`, `missing` (`"<kind>: <name>"` per name the committed recording
+lacks), `total`, the boundary it used (`since`, `sinceSource`: `arg`,
+`firstYearRow` or `none`), and `truncated` / `truncatedSources`. Every source
+is an index range from the boundary capped at 2,000 rows, so a read never
+scales with the catalogue. If a source hits the cap, the report still
+returns. `covered`/`missing` then cover only the rows read, `truncated` is
+`true`, and `truncatedSources` names the cut sources. The report never
+throws on truncation, so it cannot fail the job.
+
+The workflow writes `covered` / `missing` to the job's step summary, with
+the raw report (including `truncated` and the boundary) in a collapsed
+block. If `missing` is non-empty it emits exactly one `::warning::` listing
+the missing names. The step is `continue-on-error: true` and also tolerates
+the function not existing yet on a preview whose Convex side hasn't landed,
+so it **never fails the job**. A non-empty `missing` list, or one that grows
+across runs, is the operator signal that the recording has gone stale: a
+name a run asked about that the recording would send live. It is not a CI
+gate, because an uncovered name still falls back to a live lookup and the
+suite stays correct, only slower.
+
+The step runs right after the seed, so it sees the seed's lookups. It does
+not see lookups the runner jobs' flows make later in the same run.
 
 ## 4. Capture procedure
 
-> ⚠️ **This procedure cannot run on a catalogue-loaded deployment, and since
-> NEO-330 every CI preview is one.** `listCaptureNames` reads every player,
-> team and league row of the sport and refuses past 5,000 rows in any table
-> (`MAX_ROWS_PER_TABLE` in `apps/web/convex/enrichmentFixtures.ts`); the
-> reference catalogue holds far more Baseball players than that, so
-> `captureFromCli` throws before it looks anything up. It still works on a
-> deployment that holds only the seed. To add one set's lookups on a
-> catalogue-loaded preview, use §4a instead.
-
-Capture reads the *current* `players` / `teams` / `leagues` rows for the
-sport off a deployment that has just run a seed — those rows' names are what
-the seed confirmed, so no separate name list is maintained. Each team/league
-row's `externalIds.wikidataId` is passed through as `knownQid`. Run it
-against a PR's own just-seeded preview (never against dev mid-session, and
-never against prod):
+Capture looks up, live, the same names the coverage report checks (§3):
+the ones a run on that deployment looked up. It works on a catalogue-loaded
+preview, because catalogue rows are outside the boundary. Run it against a
+PR's own just-seeded (or just-run) preview, never against dev mid-session
+and never against prod. Each team/league row's `externalIds.wikidataId`, and
+each staged row's Wikidata id, is passed through as `knownQid`.
 
 ```bash
 # Arm on the DEPLOYMENT (a shell env var never reaches the Convex runtime):
@@ -142,27 +175,43 @@ literal (the `bulkLoad.ts`/NEO-214 shape), and `--identity` cannot reach an
 internal function in the first place. Disarm afterwards; never leave the flag
 set on a deployment.
 
+Capture **refuses** when the name list is truncated (more than 2,000 rows in
+one source since the boundary). The error names the source and the boundary.
+Past that size the list is no longer one run's names. Pass `"since"` set to
+the start of the run you mean to capture. `offset`/`limit` page a long list,
+and `since` is accepted alongside them.
+
 Then:
 
-1. **Review the diff** against the committed
-   `apps/web/convex/adapters/__fixtures__/enrichment-lookups.json` before
-   committing. Player search is `LIMIT 1` over an unordered join
-   (`wikidata.ts:571-583`), so a capture freezes *an* answer for an ambiguous
-   name — that's the intended behaviour, but it means a new or changed entry
-   is worth a human glance, not a rubber stamp.
-2. **Watch for a transport failure recorded as a no-match.** The adapter
+1. **Merge, never overwrite.** `capture.json`'s `fixture.entries` hold one
+   run's names, and the committed
+   `apps/web/convex/adapters/__fixtures__/enrichment-lookups.json` holds every
+   recorded batch. Merge as §4a step 5 does, except that a re-capture
+   **replaces** the keys it captured (that is the point of re-capturing) and
+   leaves every other key alone. Writing `fixture` over the file would drop
+   every batch recorded on another run.
+2. **Review the diff** against the committed file before committing. Player
+   search is `LIMIT 1` over an unordered join (`wikidata.ts:571-583`), so a
+   capture freezes *an* answer for an ambiguous name. That's the intended
+   behaviour, but it means a new or changed entry is worth a human glance,
+   not a rubber stamp.
+3. **Watch for a transport failure recorded as a no-match.** The adapter
    marks a non-OK/timeout SPARQL response with a trace marker at capture
-   time and drops those entries rather than recording them as `null` — if a
-   capture run coincided with a live Wikidata outage, re-run capture instead
-   of trusting the diff.
-3. Commit the regenerated fixture file with the PR (or a follow-up PR) once
+   time and drops those entries rather than recording them as `null`; they
+   are listed in `skippedTransport`, and their committed entries (if any)
+   stay as they were after the merge. If a capture run coincided with a live
+   Wikidata outage, re-run capture instead of trusting the diff.
+4. Commit the merged fixture file with the PR (or a follow-up PR) once
    satisfied.
 
 ## 4a. Adding one set's lookups without `captureFromCli` (NEO-330)
 
 This is how the Venezuelan Winter League batch was recorded. It runs the
 same live lookup code the capture runs, from a laptop, and changes nothing on
-any deployment: no env var is armed and nothing is written.
+any deployment: no env var is armed and nothing is written. §4 now works on
+a catalogue-loaded preview too. Use this method when you would rather not
+arm a deployment, or when the batch's linked names matter: §4 cannot see
+those (§3).
 
 1. **Get the exact names the batch stages.** Run the flow that commits the
    set once on the PR's preview (an ordinary E2E run), then read the set's

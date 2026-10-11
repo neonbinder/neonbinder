@@ -524,7 +524,36 @@ async function seedSport(t: T, value = "Baseball", sportQid: string = SPORT_QID)
   );
 }
 
+/**
+ * A year row under the sport, then optionally a set under it. The OLDEST year
+ * row is `listLookedUpNames`' default boundary, so a test inserts this before
+ * the rows a "run" creates and after any "catalogue" rows.
+ */
+async function seedSet(t: T, sportId: Id<"selectorOptions">, value = "2024 Topps Chrome") {
+  return t.run(async (ctx) => {
+    const yearId = await ctx.db.insert("selectorOptions", {
+      level: "year",
+      value: "2024",
+      parentId: sportId,
+      platformData: {},
+      children: [],
+      lastUpdated: 1,
+    });
+    const setId = await ctx.db.insert("selectorOptions", {
+      level: "setName",
+      value,
+      parentId: yearId,
+      platformData: {},
+      children: [],
+      lastUpdated: 1,
+    });
+    return { yearId, setId };
+  });
+}
+
+/** The run's own names: a set is built first, then one row per kind. */
 async function seedNames(t: T, sportId: Id<"selectorOptions">) {
+  await seedSet(t, sportId);
   await t.run(async (ctx) => {
     await ctx.db.insert("players", {
       name: "Tony Gwynn",
@@ -569,7 +598,15 @@ describe("captureFromCli / coverageReportFromCli — the gate", () => {
     await seedSport(t);
     await expect(
       t.action(internal.enrichmentFixtures.coverageReportFromCli, { confirm: CONFIRM, sportQid: SPORT_QID }),
-    ).resolves.toEqual({ covered: 0, missing: [] });
+    ).resolves.toEqual({
+      covered: 0,
+      missing: [],
+      total: 0,
+      truncated: false,
+      truncatedSources: [],
+      since: null,
+      sinceSource: "none",
+    });
   });
 
   test("armed but wrong confirm literal still throws (the validator)", async () => {
@@ -640,7 +677,7 @@ async function seedQueueRow(
   });
 }
 
-describe("listCaptureNames — entity rows ∪ review-queue rows", () => {
+describe("listLookedUpNames — entity rows ∪ review-queue rows", () => {
   test("a queue-only deployment (the seed never reached Confirm & Save) still yields its names", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
@@ -651,7 +688,7 @@ describe("listCaptureNames — entity rows ∪ review-queue rows", () => {
     const other = await seedSport(t, "Football", "Q41323");
     await seedQueueRow(t, other, { kind: "player", name: "Jerry Rice" });
 
-    const listed = await t.query(internal.enrichmentFixtures.listCaptureNames, { sportId });
+    const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId });
     expect(listed.truncated).toBe(false);
     expect(listed.items).toEqual([
       { kind: "player", name: "Tony Gwynn" },
@@ -671,7 +708,7 @@ describe("listCaptureNames — entity rows ∪ review-queue rows", () => {
     await seedQueueRow(t, sportId, { kind: "player", name: "Tony Gwynn" });
     await seedQueueRow(t, sportId, { kind: "player", name: "Ken Caminiti" });
 
-    const listed = await t.query(internal.enrichmentFixtures.listCaptureNames, { sportId });
+    const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId });
     expect(listed.items).toEqual([
       { kind: "player", name: "Ken Caminiti" },
       { kind: "player", name: "Tony Gwynn" },
@@ -687,7 +724,7 @@ describe("listCaptureNames — entity rows ∪ review-queue rows", () => {
     await seedQueueRow(t, sportId, { kind: "team", name: "Enrichment Only", enrichmentQid: "Q3" });
     await seedQueueRow(t, sportId, { kind: "team", name: "Bad Id", sourceQid: "not-a-qid" });
 
-    const listed = await t.query(internal.enrichmentFixtures.listCaptureNames, { sportId });
+    const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId });
     expect(listed.items.filter((i) => i.kind === "team")).toEqual([
       { kind: "team", name: "Bad Id" },
       { kind: "team", name: "Both Ids", knownQid: "Q1" },
@@ -858,9 +895,13 @@ describe("coverageReportFromCli", () => {
     await seedNames(t, sportId);
 
     const out = await t.action(internal.enrichmentFixtures.coverageReportFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
-    expect(out).toEqual({
+    expect(out).toMatchObject({
       covered: 1,
       missing: ["team: San Diego Padres", "league: Major League Baseball"],
+      total: 3,
+      truncated: false,
+      truncatedSources: [],
+      sinceSource: "firstYearRow",
     });
     expect(fetch.calls()).toBe(0);
   });
@@ -878,5 +919,251 @@ describe("coverageReportFromCli", () => {
     const out = await t.action(internal.enrichmentFixtures.coverageReportFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
     expect(out.covered).toBe(1);
     expect(out.missing).toEqual(["player: Tony Gwynn", "league: Major League Baseball"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-330 — only the names a run looked up, on a catalogue-loaded deployment
+// ---------------------------------------------------------------------------
+
+/**
+ * Past the OLD per-table cap (5 000): the size that made the pre-NEO-330 list
+ * truncate and fill `missing` with catalogue names. Inserted BEFORE any year
+ * row, as the reference-seed load does (its rows keep their source
+ * `_creationTime`s, all older than anything the run builds).
+ */
+const CATALOGUE_PLAYERS = 5_100;
+
+async function seedCatalogue(t: T, sportId: Id<"selectorOptions">, players = CATALOGUE_PLAYERS) {
+  await t.run(async (ctx) => {
+    for (let i = 0; i < players; i += 1) {
+      await ctx.db.insert("players", {
+        name: `Catalogue Player ${i}`,
+        nameNormalized: `catalogue player ${i}`,
+        sportId,
+        lastUpdated: 1,
+      });
+    }
+    for (let i = 0; i < 50; i += 1) {
+      await ctx.db.insert("teams", {
+        name: `Club ${i}`,
+        location: "Catalogue",
+        nameNormalized: normalizeTeamName(`Catalogue Club ${i}`),
+        sportId,
+        lastUpdated: 1,
+      });
+    }
+    await ctx.db.insert("leagues", {
+      name: "Catalogue League",
+      nameNormalized: "catalogue league",
+      sportId,
+      lastUpdated: 1,
+    });
+  });
+}
+
+async function seedSkip(
+  t: T,
+  setId: Id<"selectorOptions">,
+  row: { kind: "player" | "team"; name: string },
+) {
+  await t.run(async (ctx) => {
+    await ctx.db.insert("entityReviewSkips", {
+      selectorOptionId: setId,
+      kind: row.kind,
+      name: row.name,
+      nameNormalized: row.name.toLowerCase(),
+      skippedAt: 1,
+      skippedByUserId: "user_capture",
+    });
+  });
+}
+
+describe("listLookedUpNames — the run's names, never the catalogue's", () => {
+  test("catalogue-sized deployment: coverage reports only the run's names, untruncated, from a bounded read", async () => {
+    forbidFetch();
+    __setEnrichmentFixtureForTests(
+      fixtureWith({ [fixtureKey("player", SPORT_QID, "Tony Gwynn")]: { kind: "player", name: "Tony Gwynn", result: null } }),
+    );
+    // `documentsRead` turns the read RANGE into an assertion. The per-sport
+    // ranges from the boundary read the run's handful of rows plus a few
+    // ancestor/sport gets; a read of the sport's whole `players` index (what
+    // the pre-NEO-330 list did) scans 5 001 rows and throws here.
+    const t = convexTest({ schema, modules, transactionLimits: { documentsRead: 100 } });
+    const sportId = await seedSport(t);
+    await seedCatalogue(t, sportId);
+    // The run: builds a set, creates one row per kind, stages one name that
+    // is still in review, and skips one.
+    await seedNames(t, sportId);
+    const { setId } = await t.run(async (ctx) => {
+      const set = await ctx.db
+        .query("selectorOptions")
+        .withIndex("by_level", (q) => q.eq("level", "setName"))
+        .first();
+      return { setId: set!._id };
+    });
+    await seedQueueRow(t, sportId, { kind: "player", name: "Ken Caminiti" });
+    await seedSkip(t, setId, { kind: "player", name: "Skipped Prospect" });
+
+    const out = await t.action(internal.enrichmentFixtures.coverageReportFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
+    expect(out).toMatchObject({
+      covered: 1,
+      missing: [
+        "player: Ken Caminiti",
+        "player: Skipped Prospect",
+        "team: San Diego Padres",
+        "league: Major League Baseball",
+      ],
+      total: 5,
+      truncated: false,
+      truncatedSources: [],
+      sinceSource: "firstYearRow",
+    });
+    expect(out.missing.some((line) => line.includes("Catalogue"))).toBe(false);
+  });
+
+  test("a catalogue-sized range is CUT and says so: coverage reports it, capture refuses", async () => {
+    armed();
+    forbidFetch();
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    // Enough to pass MAX_ROWS_PER_SOURCE (2 000), and `since: 0` admits all of it.
+    await seedCatalogue(t, sportId, 2_100);
+    await seedNames(t, sportId);
+
+    const report = await t.action(internal.enrichmentFixtures.coverageReportFromCli, {
+      confirm: CONFIRM,
+      sportQid: SPORT_QID,
+      since: 0,
+    });
+    expect(report.truncated).toBe(true);
+    expect(report.truncatedSources).toEqual(["players"]);
+    expect(report.since).toBe(0);
+    expect(report.sinceSource).toBe("arg");
+    // What WAS read is still reported, capped at the source's ceiling.
+    expect(report.total).toBeGreaterThanOrEqual(2_000);
+
+    await expect(
+      t.action(internal.enrichmentFixtures.captureFromCli, { confirm: CONFIRM, sportQid: SPORT_QID, since: 0 }),
+    ).rejects.toThrow(/truncated \(players: more than 2000 rows since 0, boundary from arg\)/);
+  });
+
+  test("capture on a catalogue-loaded deployment looks up only the run's names", async () => {
+    armed();
+    const fetch = countingFetch(happyRoute);
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedCatalogue(t, sportId, 300);
+    await seedNames(t, sportId);
+
+    const out = await t.action(internal.enrichmentFixtures.captureFromCli, { confirm: CONFIRM, sportQid: SPORT_QID });
+    expect(out.total).toBe(3);
+    expect(out.sinceSource).toBe("firstYearRow");
+    expect(Object.keys(out.fixture.entries).sort()).toEqual([
+      fixtureKey("league", SPORT_QID, "Major League Baseball"),
+      fixtureKey("player", SPORT_QID, "Tony Gwynn"),
+      fixtureKey("team", SPORT_QID, "San Diego Padres"),
+    ]);
+    expect(fetch.calls.some((u) => decodeURIComponent(u).includes("Catalogue"))).toBe(false);
+  });
+
+  test("an explicit `since` overrides the year-row boundary", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await seedNames(t, sportId);
+    const since = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("players", {
+        name: "Later Player",
+        nameNormalized: "later player",
+        sportId,
+        lastUpdated: 1,
+      });
+      return (await ctx.db.get(id))!._creationTime;
+    });
+
+    const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId, since });
+    expect(listed.items).toEqual([{ kind: "player", name: "Later Player" }]);
+    expect(listed).toMatchObject({ since, sinceSource: "arg", truncated: false });
+
+    await expect(
+      t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId, since: -1 }),
+    ).rejects.toThrow(/non-negative/);
+  });
+
+  test("no year row ⇒ no boundary: entity rows are left out, staged names are still listed", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("players", { name: "Catalogue Only", nameNormalized: "catalogue only", sportId, lastUpdated: 1 });
+    });
+    await seedQueueRow(t, sportId, { kind: "player", name: "Tony Gwynn" });
+
+    const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId });
+    expect(listed).toMatchObject({ since: null, sinceSource: "none", truncated: false });
+    expect(listed.items).toEqual([{ kind: "player", name: "Tony Gwynn" }]);
+  });
+
+  test("skips: kept for a set under the sport, dropped for another sport's set and for one older than the boundary", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const other = await seedSport(t, "Football", "Q41323");
+    // The oldest year row is the boundary, so a set is built first.
+    const { setId } = await seedSet(t, sportId);
+    const { setId: otherSetId } = await seedSet(t, other, "1990 Pro Set");
+    await seedSkip(t, setId, { kind: "player", name: "Skipped Prospect" });
+    await seedSkip(t, setId, { kind: "team", name: "Skipped Club" });
+    await seedSkip(t, otherSetId, { kind: "player", name: "Jerry Rice" });
+    // An entity row and a skip of the same name: the entity row wins.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("players", { name: "Both Ways", nameNormalized: "both ways", sportId, lastUpdated: 1 });
+    });
+    await seedSkip(t, setId, { kind: "player", name: "both  ways" });
+
+    const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId });
+    expect(listed.items).toEqual([
+      { kind: "player", name: "Both Ways" },
+      { kind: "player", name: "Skipped Prospect" },
+      { kind: "team", name: "Skipped Club" },
+    ]);
+
+    // A skip recorded BEFORE the boundary (a previous run's, on a deployment
+    // whose skips survive) is out of range.
+    const later = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("players", { name: "After", nameNormalized: "after", sportId, lastUpdated: 1 });
+      return (await ctx.db.get(id))!._creationTime;
+    });
+    const scoped = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId, since: later });
+    expect(scoped.items).toEqual([{ kind: "player", name: "After" }]);
+  });
+
+  test("skips across more sets than MAX_SKIP_SETS are cut and reported", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const { yearId } = await seedSet(t, sportId);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 201; i += 1) {
+        const setId = await ctx.db.insert("selectorOptions", {
+          level: "setName",
+          value: `Set ${i}`,
+          parentId: yearId,
+          platformData: {},
+          children: [],
+          lastUpdated: 1,
+        });
+        await ctx.db.insert("entityReviewSkips", {
+          selectorOptionId: setId,
+          kind: "player",
+          name: `Skip ${i}`,
+          nameNormalized: `skip ${i}`,
+          skippedAt: 1,
+          skippedByUserId: "user_capture",
+        });
+      }
+    });
+
+    const listed = await t.query(internal.enrichmentFixtures.listLookedUpNames, { sportId });
+    expect(listed.truncated).toBe(true);
+    expect(listed.truncatedSources).toEqual(["entityReviewSkips (sets)"]);
+    expect(listed.items).toHaveLength(200);
   });
 });

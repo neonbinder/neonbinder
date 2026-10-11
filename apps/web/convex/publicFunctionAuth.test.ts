@@ -961,8 +961,8 @@ describe("NEO-287: the marketplace pause switch is readable by any signed-in use
 
 describe("NEO-289: the enrichment-fixture capture is internal and armed, never public", () => {
   /**
-   * `captureFromCli` runs the live Wikidata + ESPN lookups for every name on
-   * the deployment and `coverageReportFromCli` lists the deployment's names;
+   * `captureFromCli` runs the live Wikidata + ESPN lookups for every name the
+   * deployment's runs looked up and `coverageReportFromCli` lists those names;
    * both are `npx convex run` tools in the `resetSetBuilderDataFromCli` /
    * `bulkLoad` mould — reached WITHOUT `--identity`, so they carry no
    * `requireAdmin` and the declaration keyword plus the arming flag are the
@@ -978,7 +978,7 @@ describe("NEO-289: the enrichment-fixture capture is internal and armed, never p
     ["enrichmentFixtures.ts", "captureFromCli", "internalAction"],
     ["enrichmentFixtures.ts", "coverageReportFromCli", "internalAction"],
     ["enrichmentFixtures.ts", "resolveSportByQid", "internalQuery"],
-    ["enrichmentFixtures.ts", "listCaptureNames", "internalQuery"],
+    ["enrichmentFixtures.ts", "listLookedUpNames", "internalQuery"],
     ["adapters/wikidata.ts", "runCaptureLookups", "internalAction"],
   ])("%s :: %s is declared %s", (file, fn, keyword) => {
     const src = readFileSync(join(__dirname, file), "utf8");
