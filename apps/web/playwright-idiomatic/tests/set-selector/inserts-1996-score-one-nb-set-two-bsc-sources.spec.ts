@@ -153,9 +153,7 @@ test(
     // ── 6. Rename the NB set, re-sync the column: the name check offers suggestions ──
     await page.getByRole("button", { name: `Rename ${MERGED}` }).click();
     const edit = page.getByRole("textbox", { name: `Edit name for ${MERGED}` });
-    // The editor opens with the name selected; append, as Maestro's inputText does.
-    await edit.press("End");
-    await edit.pressSequentially(` NB211-${id}`);
+    await edit.fill(renamed);
     await edit.press("Enter");
     await expect(page.getByRole("heading", { name: `Attributes for ${renamed}` })).toBeVisible();
 
