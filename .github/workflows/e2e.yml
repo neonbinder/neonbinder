@@ -543,7 +543,7 @@ jobs:
     # suite scales by changing the matrix length alone — no SHARD_TOTAL re-tuning.
     # Each runner is its own VM = ONE maestro/Chrome (web can't parallelize within
     # a VM — that was the NEO-46 p=2 Chrome contention). runner N → global worker
-    # N → TEST_EMAIL_N (0..7 provisioned). Needs the preview URL (setup), the
+    # N → TEST_EMAIL_N (0..11 provisioned). Needs the preview URL (setup), the
     # seeded baseline AND the enqueued queue (seed).
     needs: [setup, seed]
     # `seed` runs with `if: always()` so it isn't skipped when an upstream
@@ -559,7 +559,7 @@ jobs:
       # the verdict, and we want every runner's report.
       fail-fast: false
       matrix:
-        runner: [0, 1, 2, 3, 4, 5, 6, 7]
+        runner: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
