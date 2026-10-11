@@ -228,7 +228,8 @@ export const soloProgressMessage = (
  * partial checklist over a real set. NEO-330: the same message covers a batch
  * whose rows all arrived but whose teams did not — committing it would hand
  * entity resolution a checklist with no teams on it, which is the same
- * partial checklist by another route.
+ * partial checklist by another route. It is also what the two-marketplace
+ * dialog shows when its Confirm gives up waiting for the same thing.
  */
 export const SOLO_STREAM_TIMEOUT_MESSAGE =
   "The fetched cards did not arrive — nothing was saved. Run the sync again.";
@@ -589,7 +590,8 @@ export default function CardChecklist({
    * state that used to hold a whole second copy of the fetch result — see the
    * note on `streamedPairing` below.
    *
-   * Distinct from `fetchInFlight`, which ends when the action resolves. This
+   * Distinct from `fetchInFlight`, which ends when the action resolves and
+   * its batch has fully reached the client (NEO-330). This
    * one outlives the fetch: the session stays alive until the operator
    * confirms and commits, or aborts.
    *
@@ -768,8 +770,10 @@ export default function CardChecklist({
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const newCardIdRef = useRef<Id<"cardChecklist"> | null>(null);
   const prevCardCountRef = useRef(0);
-  // NEO-195: true from the moment a sync starts until the action resolves.
-  // Distinct from `syncing`, which also covers the commit phase.
+  // NEO-195: true from the moment a sync starts until the action resolves —
+  // and, since NEO-330, until the batch it published has reached the client
+  // with every team in (`awaitStreamedBatch`). Distinct from `syncing`, which
+  // also covers the commit phase.
   const [fetchInFlight, setFetchInFlight] = useState(false);
   // NEO-195 — which sync run is current. Bumped whenever the operator cancels,
   // so a run whose result arrives afterwards knows it was abandoned.
@@ -898,6 +902,11 @@ export default function CardChecklist({
   /**
    * NEO-255 — block until the streamed batch this run published has reached
    * the client in full, teams included, or give up.
+   *
+   * NEO-330: both paths wait here. The auto-keep path waits before it commits;
+   * the two-marketplace path waits before it unlocks the dialog's Confirm (see
+   * the end of `handleSync`). The reasoning below is the auto-keep path's, and
+   * holds for Confirm unchanged.
    *
    * The auto-keep path commits cards the operator never sees, so it may only
    * commit a COMPLETE batch: `candidateCount` is the action's own count of
@@ -1196,6 +1205,39 @@ export default function CardChecklist({
         setPairingPhase("review");
       }
       setSyncMessage(result.message);
+      /**
+       * NEO-330 — the dialog's Confirm waits for the teams too.
+       *
+       * The same race the auto-keep path waits out above: this action resolves
+       * before the subscription shows its last team patch, and on a batch large
+       * enough to page `resolveCandidateTeams`' one delayed retry lands after
+       * it. Confirm is gated on `fetchInFlight` (`isStreaming` in the dialog),
+       * so ending the "fetch" here would let an operator confirm cards whose
+       * teams are still on their way — and entity resolution, the player
+       * gate's card-team tie-break included, would run without them.
+       *
+       * So `fetchInFlight` holds until `awaitStreamedBatch` sees this batch
+       * whole, every row `ready`; the `finally` below clears it. The dialog
+       * keeps saying what it already says while it waits ("teams are still
+       * resolving … (X of Y done). Confirm unlocks when the fetch finishes"),
+       * which is now exactly true. The operator can go on pairing throughout —
+       * only Confirm waits. Cancel supersedes the run, which ends the wait.
+       *
+       * Same budget and same outcome as the auto-keep path: if the teams never
+       * arrive, nothing is saved and the operator is told to run it again,
+       * rather than being handed a Confirm that commits without them.
+       */
+      const settled = await awaitStreamedBatch(
+        result.candidateCount,
+        previousBatchId,
+        abandoned,
+      );
+      if (abandoned()) return;
+      if (!settled) {
+        setSyncMessage(SOLO_STREAM_TIMEOUT_MESSAGE, "error");
+        abandonPairingSession();
+        return;
+      }
     } catch (error) {
       // Same abandonment rule as the resolved path: a cancelled run that
       // rejects afterwards must not overwrite "Sync cancelled — no cards
