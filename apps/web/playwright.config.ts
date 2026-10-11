@@ -37,7 +37,8 @@ export default defineConfig({
   workers: 1,
   retries: 0,
   forbidOnly: CI,
-  timeout: 600_000,
+  // Maestro has no per-flow cap; two flows wait up to 600s on one step.
+  timeout: 1_200_000,
   expect: { timeout: STEP_TIMEOUT },
   reporter: CI
     ? [

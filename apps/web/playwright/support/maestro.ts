@@ -49,11 +49,13 @@ export type Sel = string | Locator | Relational;
 
 /** Maestro pattern -> anchored, case-insensitive, dot-all RegExp. */
 export function mrx(pattern: string): RegExp {
+  // Maestro also accepts an element whose text equals the pattern literally
+  // (e.g. "Cancel (Esc)"), so match the regex OR the escaped literal.
+  const literal = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   try {
-    return new RegExp(`^(?:${pattern})$`, "is");
+    return new RegExp(`^(?:${pattern}|${literal})$`, "is");
   } catch {
     // Maestro's toRegexSafe falls back to a literal match on an invalid regex.
-    const literal = pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     return new RegExp(`^${literal}$`, "is");
   }
 }
