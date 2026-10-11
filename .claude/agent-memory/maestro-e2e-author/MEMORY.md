@@ -140,3 +140,4 @@ Non-markdown helpers: `tools/`
 - [Committed checklist opens mid-list](patterns_committed_checklist_opens_mid_list.md) — list mounts on the commit's first batch; re-enter the set and assert a card at the END
 - [Scroll pass cost is driver overhead](patterns_scroll_pass_cost_is_driver_overhead.md) — ~2s/312px pass on ANY page (executeJS sleeps 100ms); page size is ~+5%; count swipes before blaming the app
 - [Record a fixture set's lookups](patterns_record_a_fixture_sets_lookups.md) — captureFromCli refuses on a catalogue preview; tsx the `*Live` bodies, names from `entityReviewSkips`, prove 100% hit offline; auto-link vs operator via `pickTeamForYear`
+- [Insert fixture needs its column writer](patterns_insert_fixture_needs_its_column_writer.md) — insert rows exist only after a reconcile Save; differently named BSC/SL inserts wait in Pending; check the column sole writer first
