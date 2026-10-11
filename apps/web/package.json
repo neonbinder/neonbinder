@@ -41,7 +41,10 @@
     "postinstall": "husky install",
     "test:pw": "playwright test",
     "test:pw:list": "playwright test --list",
-    "test:pw:typecheck": "tsc -p playwright/tsconfig.json"
+    "test:pw:typecheck": "tsc -p playwright/tsconfig.json",
+    "test:pwi": "playwright test -c playwright-idiomatic.config.ts",
+    "test:pwi:list": "playwright test -c playwright-idiomatic.config.ts --list",
+    "test:pwi:typecheck": "tsc -p playwright-idiomatic/tsconfig.json"
   },
   "dependencies": {
     "@clerk/backend": "^3.18.1",
