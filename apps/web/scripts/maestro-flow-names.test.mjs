@@ -57,8 +57,10 @@ const FORBIDDEN = ['"', ":", "<", ">", "|", "*", "?", "\r", "\n"];
  * failure, and a guard that flags safe things gets suppressed rather than
  * heeded.
  *
- * `setup.yaml` IS checked: it is excluded from the work queue but runs in the
- * seed job, with debug output, so its name does become a path.
+ * (`setup.yaml`, the old seed flow, was checked here for the same reason —
+ * it ran in the seed job with debug output. NEO-339 retired it: the seed is
+ * now a server-side bulk load, not a flow, so every non-util flow left is a
+ * queue flow.)
  */
 function flowNames() {
   const files = globSync("**/*.yaml", { cwd: FLOWS_DIR });

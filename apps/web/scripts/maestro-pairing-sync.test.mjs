@@ -15,7 +15,8 @@
  *   2. **Assertions read a half-filled screen.** Row counts, "N cards will be
  *      saved", and whether a column is empty are all still changing.
  *
- * Both failures cost a CI round trip each on PR #205 — `setup.yaml` hit (1) and
+ * Both failures cost a CI round trip each on PR #205 — `setup.yaml` (the seed
+ * flow NEO-339 retired) hit (1) and
  * `inserts-1996-score-one-nb-set-two-bsc-sources.yaml` hit (2) — and neither is
  * visible to any local gate, because local E2E runs against a different backend
  * and these flows are slow enough that nobody runs them casually.

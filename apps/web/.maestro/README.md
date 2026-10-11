@@ -90,8 +90,8 @@ app bug never looks like that. Full write-up:
 | `npm run setup:e2e` | Install pinned Maestro + Java + Chrome for Testing (idempotent; safe to re-run) |
 | `npm run test:e2e:check` | Verify installed Maestro + Java + Chrome match the pins; print actionable next steps if not |
 | `npm run e2e:clean-chrome` | Kill Chrome/chromedriver processes a previous run left detached (never touches your real browser) |
-| `npm run test:e2e` | **The full suite** — every flow, no tag filter (minus `util`/`wip`/`setup`) |
-| `npm run test:e2e -- setup` | The seed track only (`flows/setup.yaml`) — the one entry point that runs it |
+| `npm run test:e2e` | **The full suite** — every flow, no tag filter (minus `util`/`wip`) |
+| `npm run test:e2e -- setup` | The seed only — `e2e-baseline.sh reset`, then the scripted bulk load (`npm run setbuild`, NEO-339; runbook `docs/operations/neo339-setbuild.md`). No flow runs |
 | `npm run test:e2e:smoke` | Smoke tag only — the fast subset |
 | `npm run test:e2e:pick -- <selector>` | Run just a piece of the suite (by name / list / regex / tag) — see below |
 | `npm run test:e2e:plan -- <selector>` | Dry-run: print exactly what `:pick` *would* run and exit |
@@ -128,7 +128,7 @@ npm run test:e2e:pick -- /parallel-grouping/        # run all parallel-grouping 
 run whatever you want as often as you want:
 
 ```bash
-npm run test:e2e -- setup    # runs e2e-baseline.sh reset + flows/setup.yaml
+npm run test:e2e -- setup    # e2e-baseline.sh reset + the setbuild bulk load (NEO-339)
 npm run test:e2e:pick -- name:<your-flow>
 ```
 
@@ -150,11 +150,14 @@ MAESTRO_SKIP_BOOTSTRAP=1 MAESTRO_PARALLELISM=1 \
   npm run test:e2e:pick -- name:set-attributes-edit
 ```
 
-> ⚠️ The setup track **wipes the target Convex deployment's set-builder
+> ⚠️ The seed **wipes the target Convex deployment's set-builder
 > tables**. Since NEO-214 that wipe is a scripted command
-> (`e2e-baseline.sh reset`, run by the smoke script's setup mode *before*
-> `setup.yaml`) rather than a button the flow clicks — the Admin Tools panel it
-> used to click is gone from `/admin/set-builder`. So point `VITE_CONVEX_URL` at
+> (`e2e-baseline.sh reset`, run by the smoke script's setup mode *before* the
+> bulk load) rather than a button a flow clicks — the Admin Tools panel it
+> used to click is gone from `/admin/set-builder`. Since NEO-339 the rebuild
+> after it is scripted too: `setbuild apply` drives the same Convex functions
+> the Set Builder UI calls, from `.maestro/seed/baseline.spec.json`, instead
+> of the retired `flows/setup.yaml`. So point `VITE_CONVEX_URL` at
 > a **disposable preview** (your PR's Convex preview), never shared `dev`. Only
 > `test:e2e -- setup` resets; a `:pick` re-run never does, so iteration loops
 > keep the baseline you seeded.
@@ -187,7 +190,7 @@ bug, not a flow bug:
 | Java major version | `.java-version` | `setup-maestro.sh`, CI's `actions/setup-java`, `test:e2e:check` |
 | Chrome build (local) | `.maestro/chrome-version` | `lib-e2e-chrome.sh` (hard gate in every local runner), `test:e2e:check` |
 | Worker parallelism | `MAESTRO_PARALLELISM=3` | CI workflow, `test:e2e:like-ci` |
-| Convex DB state at "setup-done" | scripted `e2e-baseline.sh reset`, then `setup.yaml` | `run-e2e-smoke.sh` setup mode |
+| Convex DB state at "setup-done" | scripted `e2e-baseline.sh reset`, then `setbuild apply` on `.maestro/seed/baseline.spec.json` (NEO-339) | `run-e2e-smoke.sh` setup mode |
 | Flow ordering | seed first, then anything | CI's NEO-49 work queue; locally, `test:e2e -- setup` then everything else |
 
 ## Troubleshooting: "passes locally, fails CI" (or vice versa)
@@ -223,8 +226,8 @@ two buckets.
    `./setup-maestro.sh`. The runners gate on this now, so it should only be
    reachable by overriding `SE_BROWSER_PATH` by hand.
 4. **Convex preview state leaks across CI runs.** Per-PR Convex previews
-   persist for the life of the PR. The scripted reset that runs before
-   `setup.yaml` wipes `selectorOptions`, `cardChecklist`, `players`, and
+   persist for the life of the PR. The scripted reset that runs before the
+   seed's bulk load wipes `selectorOptions`, `cardChecklist`, `players`, and
    `teams`. If a flow expects truly fresh state in some other table, either add
    it to `selectorOptions:resetSetBuilderDataFromCli` (the internal action the
    script calls — there is no public reset any more) or use unique values per
@@ -334,7 +337,7 @@ Public `home/*` flows enter signed out (`launchApp: { clearState: true }`);
 
 The only longer
 waits: a step that directly drives a live BSC/SportLots round-trip on data
-that is not pre-synced, the setup track's cold sync, and the post-`launchApp`
+that is not pre-synced, and the post-`launchApp`
 heading gate (see "Launching a flow" below). The same external-round-trip
 exception covers exactly one Wikidata wait in the suite — the live-proof step
 in `admin/player-live-wikidata-enrichment.yaml` (NEO-289, see "Enrichment
@@ -348,15 +351,22 @@ only a live marketplace round-trip earns a longer wait. Jason, 2026-09-25: "A
 real user will never wait 30 seconds." A save that misses 7000 is a product
 finding (make the save faster), never a bigger number.
 
-**`flows/setup.yaml` is exempt as a class, and that is not a loophole.** R5
-already names "the setup track's cold sync" as a sanctioned exception, and the
-seed is the one flow that reseeds from empty — so every step in it runs the COLD
-path, behind a live marketplace round-trip, on data no earlier flow has warmed.
-It is a data-loading track, not a user-facing interaction, so the 7s bar does
-not apply to it and its timeouts stay at their measured cold-path values.
+**The scripted seed is not a flow, so R5 does not reach it.** Since NEO-339 the
+baseline every flow reads is loaded by `setbuild apply` — a script that drives
+the same Convex functions the Set Builder UI calls, from
+`.maestro/seed/baseline.spec.json` — not by a Maestro flow, and its waits are
+the script's own (runbook: `docs/operations/neo339-setbuild.md`). Until then
+the seed was `flows/setup.yaml`, which R5 exempted as a class because every
+step in it ran the COLD path behind a live marketplace round-trip. That
+exemption retired with the file: every flow left, including the three that
+took over its UI behaviours (`topps-chrome-insert-keep-all-no-wizard`,
+`gold-wave-build-from-base-row`, `bowman-2025-sportlots-review-save`), is held
+to the 7s bar, and a long wait in one of them is R5's marketplace exception,
+recorded at the site, or nothing.
 
-NEO-260 learned this the hard way: the suite-wide 7000 sweep took the seed with
-it and the seed then failed at `.*Re-map Base.*` in CI runs 34394655674 and
+The history below is about that retired flow, and it is kept because what it
+taught applies to every flow. NEO-260 learned this the hard way: the
+suite-wide 7000 sweep took the seed with it and the seed then failed at `.*Re-map Base.*` in CI runs 34394655674 and
 34400136389. The sweep had measured that step at "worst 0.5-4s" from green runs
 where the mapping had **already** landed, i.e. it measured the warm branch and
 applied the number to the cold one. **Measuring a step tells you nothing until
@@ -375,11 +385,11 @@ read `Re-map Base`, and it was simply ABOVE the top of the viewport. The step
 scrolls DOWN, and `scrollUntilVisible` with `direction: DOWN` only ever travels
 away from an anchor that sits above the current position — so it burned all
 60s in 29 `ElementNotFound` retries on an element that was rendered the whole
-time. The seed's exemption and its 60000 stand; the *direction* was the bug, and
-that step now scrolls UP. See the next rule.
+time. The seed kept its exemption and its 60000; the *direction* was the bug,
+and that step scrolled UP from then on. See the next rule.
 
 **A `scrollUntilVisible` must never depend on the document bottoming out.** That
-seed step passed for months only because the page ran out of scroll before the
+seed step (in the retired `setup.yaml`) passed for months only because the page ran out of scroll before the
 anchor left the viewport — measured at y=4 in green run 34361627641, four pixels
 of slack that no flow states and nothing defends. NEO-260's 208px spacer gave
 every page exactly 208px more travel and the slack was gone. So: before you
@@ -476,8 +486,8 @@ time. Asserting a different element is fine.
 **R7 — No destructive data actions.** Never clear credentials without
 restoring them, never delete or overwrite shared data, never wipe. The
 global reset is not a flow step: since NEO-214 it is the scripted
-`e2e-baseline.sh reset` the smoke script runs before `setup.yaml`, and
-`setup.yaml` documents its removal. A flow that leaves a worker's state
+`e2e-baseline.sh reset` the smoke script runs before the seed's bulk load
+(NEO-339), and no flow may reintroduce it. A flow that leaves a worker's state
 degraded poisons every later flow that worker claims off the queue.
 
 **R7a — Sets that carry marketplace ids are read-only and sole-writer;
@@ -619,8 +629,12 @@ Each of these has its own section in this file or a memory entry; they are
 listed here so a flow author meets them in one place.
 
 - **Fixtures come from the UI.** A flow creates the data it needs through
-  the product (New Team dialog, set builder, checklist). The one scripted
-  exception is `/testing/seed-credentials` (see "Worker-state seeding").
+  the product (New Team dialog, set builder, checklist). Two things are
+  scripted: the shared baseline every flow reads — the seed's bulk load,
+  which drives the Set Builder's own Convex functions (NEO-339, see
+  "Worker-state seeding") — and `/testing/seed-credentials`. A flow never
+  scripts its own fixture, and a UI behaviour the seed used to exercise is a
+  flow's job, not the seed's.
 - **Minted names are single tokens** built with `${ATTEMPT_ID}`, never
   `output.ATTEMPT_ID` and never hyphenated: `teams.search` is a Convex SEARCH
   index matching TOKENS split at non-alphanumerics, so `TLF-9351` tokenises to
@@ -647,8 +661,9 @@ listed here so a flow author meets them in one place.
 - **Prefer `openLink` over tapping a link** to reach a page (own section).
 - **Gate flow launch on the destination heading** (own section).
 - **Tags** are `smoke` (the fast subset), a grouping tag such as
-  `set-selector` or `profile`, and the three the runner treats specially:
-  `util`, `wip` and `setup`. There is no smoke-plus-feature pair per flow.
+  `set-selector` or `profile`, and the ones the runner treats specially:
+  `util` and `wip` (the `setup` tag carried only `flows/setup.yaml`, retired
+  by NEO-339 — no flow may take it). There is no smoke-plus-feature pair per flow.
   **There is no `regression` tag** — it was deleted suite-wide in NEO-260
   because `smoke` and `regression` had drifted into disjoint sets with 38
   flows in neither, while `npm run test:e2e` already runs everything. The
@@ -858,7 +873,7 @@ Two corollaries worth knowing before you write the selector:
   carries no NB role) — EXCEPT under a variant type whose NB role is
   `parallel` (NEO-321): those rows are parallels of the BASE set, and their
   Sync slot is `Build from Base` / `Rebuild from Base` (Gold Wave in
-  `setup.yaml`; `Blue` under Bowman › `Parallel`). Selecting such a type also
+  `gold-wave-build-from-base-row`; `Blue` under Bowman › `Parallel`). Selecting such a type also
   mounts the `Parallels of Base` section between the columns row and the
   attributes panel — heading `Parallels of <Base>`, button `Build N parallels
   from <Base>`, a confirm `Replace the cards on K of N parallels with fresh
@@ -946,33 +961,36 @@ screenshot for `[testing] …` before suspecting anything else.
 
 ## Worker-state seeding
 
-The **setup track** is the seeding infrastructure: the scripted
-`e2e-baseline.sh reset` first, then `flows/setup.yaml` for credential save +
-drill to 2024 Topps Chrome + Variant Types sync. `run-e2e-smoke.sh` excludes
-`setup`-tagged flows from every mode except `test:e2e -- setup`, so the seed
-runs once, deliberately, and never as one thread among many (NEO-46). Note that
-neither step seeds a team or a player: those tables stay empty until a flow
-makes its own per-worker rows (see troubleshooting item 4 above).
+**The seed is a script, not a flow (NEO-339).** It is two scripted steps
+against the target deployment: `e2e-baseline.sh reset` (the set-builder
+wipe), then `npm run setbuild -- apply` on `.maestro/seed/baseline.spec.json`,
+a bulk load that drives the same public Convex functions the Set Builder UI
+calls, as a real admin, and asserts its own counts server-side. CI's `seed`
+job runs both before the queue starts; locally `npm run test:e2e -- setup`
+runs both. How to run, resume and read it — the confirm phrase, the auth
+source, the spec, the report — is the runbook,
+`docs/operations/neo339-setbuild.md`, and the tool's own
+`tools/setbuild/README.md`; this file does not repeat them.
+
+What the baseline holds, and which flow may write to which part of it, is
+`SET-REGISTRY.md` → "Real marketplace-backed sets". In short: the Sports,
+Years and Manufacturers syncs, 2024 Topps' Sets, 2024 Topps Chrome (Base
+mapped on both sides and committed, with the players, teams and leagues its
+review creates; Future Stars; the `Insert` and `Parallel` reconciles; one base
+parallel built from Base), Topps Big League's structure with an EMPTY
+checklist, and 2026 Bowman's Sets, SportLots review and Variant Types. Each
+runner's own worker credentials still come from its Phase-0 bootstrap.
+
+Before NEO-339 the seed was a Maestro flow, `flows/setup.yaml`. The UI
+behaviours it happened to exercise now have flows of their own
+(`topps-chrome-insert-keep-all-no-wizard`, `gold-wave-build-from-base-row`,
+`bowman-2025-sportlots-review-save`), and a UI behaviour is never put back
+into the seed: the seed proves the data is there, a flow proves the screen.
 
 Nothing schedules around the seed: run `test:e2e -- setup` first, then run
-whatever flows you want.
-
-If you need to manually seed a particular worker's state for a local
-repro, just run `setup.yaml` first:
-
-```bash
-PATH=$HOME/.maestro/bin:$PATH \
-  APP_URL=http://localhost:3000 \
-  WORKER_INDEX=0 \
-  TEST_USERNAME=neontester-$(date +%s) \
-  maestro test --platform web --config .maestro/config.yaml --headless \
-    .maestro/flows/setup.yaml
-```
-
-Then run the flow you're debugging. If you need a different worker's
-state (worker 2 has accumulated state from running parallel-safe flows),
-loop the bootstrap + setup + intermediate flows with that `WORKER_INDEX`.
-`run-e2e-smoke.sh` automates this when you pass `MAESTRO_PARALLELISM>1`.
+whatever flows you want. A flow that writes to a registered set is
+fresh-only per deployment, so re-seed (reset + bulk load) before re-running
+one locally.
 
 ### Seeding a fixture that no UI can create (`/testing/seed-credentials`)
 
@@ -1101,7 +1119,7 @@ column holds only the pinned "All Brands" view entry** on a fresh deployment
 is rendered in every mode — NEO-237; see `SET-REGISTRY.md` → "When SportLots
 is paused"), a **brand's Sets column ends "done" with "SportLots skipped:
 no SportLots ids on this path."** now that Sync Sets asks SportLots per brand
-(a notice, not an error — the seed's strict asserts key on failure copy), and
+(a notice, not an error), and
 a **BSC-only Base still reads as unmapped**, so its picker re-opens on every
 visit and the read-only drills leave it with Cancel → Close.
 
@@ -1141,15 +1159,16 @@ the adapter, never a stub of it.
 
 What that changes for flows:
 
-- **`setup.yaml` no longer proves the live lane.** Its wizard drain
-  (`.*Confirm & Save.*`, 240 s) is now an upper bound over a fixture-backed
-  hit: it returns in seconds when the recording covers the seed and only pays
-  for the network on the names it does not. The 240 s stays — it is the
-  setup track's sanctioned cold-path ceiling (R5) and the miss path is still
-  live — but a seed that needs it with the recording in place is a coverage
-  gap, not a slow Wikidata. `e2e.yml` prints the coverage report
-  (`enrichmentFixtures:coverageReportFromCli`) to the job summary as a
-  warning after the seed; read it before reading anything into a slow drain.
+- **The seed does not prove the live lane.** The bulk load's review of the
+  Topps Chrome Base names (NEO-339; before it, `setup.yaml`'s wizard drain)
+  is answered from the recording wherever it covers the seed and pays for the
+  network only on the names it does not. A seed that waits on lookups with
+  the recording in place is a coverage gap, not a slow Wikidata. `e2e.yml`
+  prints the coverage report (`enrichmentFixtures:coverageReportFromCli`) to
+  the job summary as a warning after the seed; read it before reading
+  anything into a slow seed. A name the recording misses can also surface a
+  career team the spec does not declare, which stops the bulk load at that
+  decision: the fix is a spec edit plus a recording capture.
 - **The live lane is proved by ONE flow:**
   `flows/admin/player-live-wikidata-enrichment.yaml`. It adds a real Hall
   of Famer by hand on `/admin/players` — a name deliberately absent from the

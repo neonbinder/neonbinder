@@ -1,0 +1,289 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "2024 Topps Chrome Insert — Keep all on both sides saves every one-sided card, and a known roster saves with no review (NEO-339)"
+tags:
+  - set-selector
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE FEATURE: FETCHING AN INSERT WHOSE NAMES NB ALREADY HOLDS COMMITS
+# EVERY CARD THE OPERATOR KEEPS, WITH NO ENTITY REVIEW. On live data, under
+# Baseball → 2024 → Topps → Topps Chrome › `Insert` › <the measured insert>:
+#
+#   (b) The Match Cards dialog lists cards only one marketplace has. `Keep
+#       all` on the BSC-only column and on the SportLots-only column moves
+#       every one of them onto the save list: both columns read `(0)` and the
+#       footer's count grows by exactly the two columns' counts.
+#   (c) Every player and team on those cards is already an NB row (the seed's
+#       Base commit created them), so Confirm saves straight through: no
+#       `Confirm New Players & Teams` review, and `Saved N cards.` with N the
+#       footer's own count.
+#
+# WHERE THIS CAME FROM (NEO-339). Both behaviours used to ride inside the
+# global seed, `flows/setup.yaml`, which was retired when the seed became a
+# server-side bulk load. (b) was its Base/Insert `when: visible "BSC only
+# (…)"` → `Keep all` branches, which never asserted that a column existed and
+# so could pass without pressing either button (R2 silent fall-through); here
+# both columns are HARD preconditions. (c) was its Future Stars "NO WIZARD ON
+# THIS FETCH, AND THAT IS THE CONTRACT" block. The bulk load commits Base and
+# Future Stars itself, so neither is exercised through the UI any more except
+# here.
+#
+# R3 — NOT RE-PROVED HERE: the dialog's cancel path, manual links and name
+# conflicts (`checklist-pairing-dialog-cancel`, read-only on Future Stars);
+# the one-marketplace path that skips the dialog
+# (`checklist-one-marketplace-skips-match-dialog`); a review that DOES open
+# (the `checklist-wizard-*` flows). The keep shelf's per-card controls are
+# unit-tested (`CardPairingModal.test.tsx`).
+#
+# ── THE FIXTURE AND THE WRITE SET (R7a, SET-REGISTRY.md → this flow) ────────
+#   The insert is a real Topps Chrome insert the seed's `Insert` reconcile
+#   saved as a row and left with an EMPTY checklist. This flow is the SOLE
+#   WRITER of that insert's cards; no other flow opens it. Committing it
+#   creates no player, team or league (that is claim c), so nothing it writes
+#   reaches another flow.
+#
+#   TODO(NEO-339 measure): the insert is not chosen yet. It is measured on a
+#   seeded PR preview and must satisfy ALL of:
+#     1. it is a row under Topps Chrome › `Insert` after the seed (the seed's
+#        Insert reconcile saves it), and its checklist is EMPTY after the seed
+#        (the bulk load commits Future Stars only — so not Future Stars, which
+#        `checklist-pairing-dialog-cancel` reads);
+#     2. every BSC card's player AND team is already an NB row after the seed
+#        (its roster sits inside the 335-card Base roster, and its clubs are
+#        MLB clubs the Base commit created) — otherwise the review opens and
+#        claim (c) fails by name;
+#     3. the fetch leaves AT LEAST ONE BSC-only card and AT LEAST ONE
+#        SportLots-only card in the dialog (both columns non-empty), so both
+#        `Keep all` buttons have work — otherwise claim (b) fails by name at
+#        its precondition;
+#     4. both marketplaces list it (BSC + SportLots ids on the row), so the
+#        dialog opens at all; under the pause it is BSC-only and the paused
+#        branch below runs instead;
+#     5. small: a few dozen cards keeps the live fetch inside the measured
+#        Future Stars envelope (~6 s to the first streamed candidates).
+#   Record the choice, its card counts and the measured column counts in
+#   SET-REGISTRY.md, and put the name in `output.INSERT` below. If no insert
+#   meets 2 AND 3 at once, stop and ask the owner.
+#
+#   Fresh-only per deployment: a re-run finds the checklist committed, its
+#   button reads `Refresh` and the `Fetch from Marketplaces` precondition in
+#   STEP 2 fails by name. CI reseeds every run; re-seed before a local re-run.
+#
+# ── LIVE / PAUSED (README → "Operator switches") ───────────────────────────
+#   Paused, SportLots is never asked, the insert is BSC-only, and a
+#   one-marketplace fetch takes the NEO-255 solo path: no dialog, every BSC
+#   card kept. Claim (b) has no paused surface; the paused branch proves (c)
+#   — the fetch saves with no review and no dialog.
+#
+# ── TIMEOUTS (R5) ───────────────────────────────────────────────────────────
+#   7000 on every in-app step. The two dialog waits after the fetch tap and
+#   the paused branch's save wait are R5's marketplace exception (a live BSC
+#   + SportLots round-trip on a checklist nothing pre-synced), recorded at
+#   each site.
+# ════════════════════════════════════════════════════════════════════════════
+
+# NEO-287 — decide the mode once (a pure script, no UI).
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+
+# TODO(NEO-339 measure) — the insert's exact NB name (see the header's five
+# criteria). The placeholder matches no row, so until it is measured the flow
+# fails by name at the filtered-row gate in STEP 1, never quietly.
+- evalScript: '${output.INSERT = "TODO-NEO339-measure-insert"}'
+# Escaped once for the full-match `text:` selectors (runtime names need regex
+# escaping); the raw form goes into the search box.
+- evalScript: '${output.INSERT_RE = output.INSERT.replace(/[\^\[\]()*+?.|]/g, function (c) { return "\\" + c; })}'
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — DRILL TO TOPPS CHROME › INSERT › THE INSERT
+# ============================================================
+
+# R9 — the warm drill. Returns with the Variant Types column on screen and
+# "Base" listed.
+- runFlow:
+    file: util-drill-to-2024-topps-chrome.yaml
+
+# "Insert" sits under "Base" in the same column: DOWN (the default), centred
+# for the tap (R8).
+- scrollUntilVisible:
+    element:
+      text: "Insert"
+    centerElement: true
+    timeout: 7000
+- tapOn: "Insert"
+
+# The Inserts column mounts on a Convex read of rows the seed saved (the 7000
+# bar). Its search box renders from the column's first frame (NEO-224), so it
+# is the place to type, not a content gate; the FILTERED ROW below is the
+# content gate. The column is populated, so it never auto-opens a reconcile
+# (an insert column auto-syncs only when EMPTY) — a dialog here means the
+# seed did not save the Insert rows, and the row gate fails by name.
+- extendedWaitUntil:
+    visible: ".*Search inserts.*"
+    timeout: 7000
+# 250ms settle so the box is focused before inputText fires.
+- tapOn:
+    text: ".*Search inserts.*"
+    waitToSettleTimeoutMs: 250
+- inputText: ${output.INSERT}
+- extendedWaitUntil:
+    visible:
+      text: "^${output.INSERT_RE}$"
+      below:
+        id: "Search inserts"
+    timeout: 7000
+- tapOn:
+    text: "^${output.INSERT_RE}$"
+    below:
+      id: "Search inserts"
+
+# ============================================================
+# STEP 2 — FETCH THE EMPTY CHECKLIST
+# ============================================================
+
+# The checklist's sync button, by its accessible name (one per page —
+# SetSelector.tsx). On an EMPTY checklist it is the primary call-to-action
+# under "No cards in this checklist yet.", the last control in the Cards
+# card: DOWN, centred for the tap (R8 case 1 — it centres because of the
+# NEO-260 208px spacer under every signed-in page; read the note in
+# `src/layouts/binder-layout.tsx` before changing it). The 7000 also covers
+# the checklist's own Convex read mounting the button.
+- scrollUntilVisible:
+    element:
+      id: "Sync card checklist"
+    centerElement: true
+    timeout: 7000
+# R2 precondition — the checklist is EMPTY, so this fetch is a FIRST fetch
+# (the label is "Refresh" once a checklist has cards: CardChecklist's
+# `fetchLabel`). Same node, both selectors.
+- assertVisible:
+    id: "Sync card checklist"
+    text: "Fetch from Marketplaces"
+- tapOn:
+    id: "Sync card checklist"
+
+# ============================================================
+# STEP 3 (LIVE) — KEEP ALL ON BOTH SIDES; THE FOOTER COUNTS THEM IN
+# ============================================================
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      # The dialog opens on the FIRST streamed candidates (NEO-195) and its
+      # header names the set. R5 marketplace exception: this waits on the
+      # live BSC + SportLots checklist fetch of a set nothing pre-synced —
+      # 90000 is the ceiling `checklist-pairing-dialog-cancel` carries for
+      # the same fetch on Future Stars (measured ~6 s to first candidates).
+      - extendedWaitUntil:
+          visible: "Match Cards — ${output.INSERT_RE}"
+          timeout: 90000
+      # Every count below needs the WHOLE fetch: while streaming, the
+      # footer's Confirm reads "Loading…" and only becomes "Confirm" once the
+      # action resolves. R5 marketplace exception, as above.
+      - extendedWaitUntil:
+          visible:
+            text: "^Confirm$"
+          timeout: 90000
+
+      # THE COLUMNS SIT BELOW THE MATCHED LIST, inside the dialog's own
+      # scroller, which no Maestro scroll can drive (README → "Asserting
+      # inside a dialog"). The matched list opens COLLAPSED when the dialog's
+      # first data had an unmatched card, which puts the columns at the top
+      # of the body; when the first streamed batch was all matched it opens
+      # EXPANDED and the columns can be pushed under the body's fold. So
+      # collapse it if it is open. The guard picks between two real outcomes
+      # of the stream's order, not a dead wait (R10); its toggle carries
+      # "Collapse matched cards…" only while expanded (CardPairingModal's
+      # aria-label), and it is sticky at the body's top, so it is on screen.
+      - runFlow:
+          when:
+            visible:
+              id: "Collapse matched cards.*"
+          commands:
+            - tapOn:
+                id: "Collapse matched cards.*"
+      - extendedWaitUntil:
+          visible:
+            id: "Expand matched cards.*"
+          timeout: 7000
+
+      # R2 PRECONDITIONS, HARD — both columns hold cards. These are what the
+      # retired seed only ever `when:`-guarded. A fixture that loses either
+      # side fails here, by name (the header's criterion 3).
+      - assertVisible: "BSC only \\([1-9][0-9]*\\)"
+      - assertVisible: "SportLots only \\([1-9][0-9]*\\)"
+      # The numbers, read off the screen (never pinned: they are the
+      # marketplaces' business), and the footer's count before the keeps.
+      # The footer sits outside the body's scroller, so it is always on
+      # screen.
+      - copyTextFrom:
+          text: "BSC only \\([1-9][0-9]*\\)"
+      - evalScript: '${output.BSC_N = Number(maestro.copiedText.replace(/[^0-9]/g, ""))}'
+      - copyTextFrom:
+          text: "SportLots only \\([1-9][0-9]*\\)"
+      - evalScript: '${output.SL_N = Number(maestro.copiedText.replace(/[^0-9]/g, ""))}'
+      - copyTextFrom:
+          text: "[0-9]+ cards? will be saved"
+      - evalScript: '${output.BEFORE_N = Number(maestro.copiedText.split(" ")[0])}'
+
+      # THE TWO KEEPS. Direct taps (R8 case 2): the buttons live in the
+      # dialog's body, which the window's scroll cannot move. Each is
+      # client-side reducer state, so its result is on screen at once.
+      - tapOn:
+          id: "Keep all BSC-only cards"
+      - extendedWaitUntil:
+          visible: "BSC only \\(0\\)"
+          timeout: 7000
+      - tapOn:
+          id: "Keep all SportLots-only cards"
+      - extendedWaitUntil:
+          visible: "SportLots only \\(0\\)"
+          timeout: 7000
+
+      # CLAIM (b): every one-sided card is on the save list — the footer
+      # (matched + kept) grew by exactly the two columns.
+      - copyTextFrom:
+          text: "[0-9]+ cards? will be saved"
+      - evalScript: '${output.SAVE_N = Number(maestro.copiedText.split(" ")[0])}'
+      - assertTrue: ${output.SAVE_N === output.BEFORE_N + output.BSC_N + output.SL_N}
+
+      - tapOn:
+          id: "Confirm card matches"
+
+      # CLAIM (c): no review — the save is the next thing on screen. The gate
+      # admits the review too, so a review that does open is caught HERE,
+      # under its own name, rather than as a missing "Saved" line. 7000: an
+      # NB write (resolve + commit, no marketplace), measured on 2026 Bowman
+      # at 1.06 s for the dialog to close and 0.36 s more for "Saved N
+      # cards" (SET-REGISTRY.md → 2026 Bowman).
+      - extendedWaitUntil:
+          visible:
+            text: "Saved [0-9]+ cards\\..*|.*Confirm New Players.*"
+          timeout: 7000
+      - assertNotVisible: "Confirm New Players & Teams"
+      # The save wrote exactly what the footer promised.
+      - assertVisible:
+          text: "Saved ${output.SAVE_N} cards\\..*"
+      - assertNotVisible: "Match Cards.*"
+
+# ============================================================
+# STEP 3 (PAUSED) — ONE MARKETPLACE: NO DIALOG, NO REVIEW
+# ============================================================
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      # NEO-255 solo path: every BSC card is kept and committed at once.
+      # R5 marketplace exception: the live BSC fetch (90000, as above). The
+      # alternation catches a review by name, as in the live branch.
+      - extendedWaitUntil:
+          visible:
+            text: "Saved [1-9][0-9]* cards\\..*|.*Confirm New Players.*"
+          timeout: 90000
+      - assertNotVisible: "Confirm New Players & Teams"
+      - assertNotVisible: "Match Cards.*"

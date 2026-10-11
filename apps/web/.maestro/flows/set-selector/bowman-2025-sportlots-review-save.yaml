@@ -1,0 +1,392 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "2025 Bowman — Sync Sets mints no SportLots-only set, and the brand's review files them as a set, an insert and parallels (NEO-339)"
+tags:
+  - set-selector
+---
+# ════════════════════════════════════════════════════════════════════════════
+# R1 — ONE FEATURE: A BRAND'S SPORTLOTS-ONLY SETS WAIT IN A REVIEW, AND THE
+# REVIEW FILES THEM (NEO-306). On live data, Baseball → 2025 → Bowman:
+#
+#   1. A cold `Sync Sets` asks SportLots (no skip sentence) and mints NO
+#      SportLots-only name as a set — the own-set label below is searched in
+#      the Sets column and is not there.
+#   2. The brand's pill `N SportLots sets to sort` opens the review. Every row
+#      is filed under Bowman › Parallel in bulk (picking the set syncs its
+#      Variant Types inside the dialog), one row under Bowman › Insert, and
+#      one row back to its own set.
+#   3. Save files exactly that — `Saved 1 set, N parallels, 1 insert.` — the
+#      pill is gone, and the own set is now a row of the Sets column.
+#
+# WHERE THIS CAME FROM (NEO-339). This was the retired seed's (`flows/
+# setup.yaml`) 2026 Bowman step — the merged flagship flow's claim 1 — ported
+# when the seed became a server-side bulk load. The bulk load still saves
+# 2026 Bowman's review (the two Bowman flows need it), but through the
+# server, so the review's UI needed a flow of its own and a brand-year no one
+# else touches: 2025 Bowman, approved by Jason 2026-10-11 (NEO-339).
+#
+# R3 — NOT RE-PROVED HERE: what the filed rows become later (Insert reconcile,
+# grouping, Promote, Make insert of… — the two 2026 Bowman flows); the
+# review's twin suffixes and name clashes (NEO-325 unit tests,
+# `SlSetReviewModal.test.tsx`).
+#
+# ── THE FIXTURE AND THE WRITE SET (R7a, SET-REGISTRY.md → 2025 Bowman) ──────
+#   Baseball → 2025 is this flow's alone: it pays the year's cold
+#   Manufacturers sync, Bowman's Sets sync (BSC's list is year-wide, so every
+#   2025 BSC set is filed under the year's brands) and the review save. No
+#   other flow drills 2025. Paused, the cold util hand-makes the `Bowman` row
+#   (its guarded create — this flow is that row's sole writer). Fresh-only:
+#   a re-run finds no pill and the own set already a row, and fails by name
+#   at the claim-1 search; CI reseeds every run.
+#
+#   TODO(NEO-339 measure) — none of 2025 Bowman's review rows has been read
+#   yet. The `evalScript` constants below are 2026 Bowman's shapes as
+#   placeholders. Measure on a seeded PR preview (open the pill, read the
+#   rows in the dialog's folded order; or `slSetReviews` for brand Bowman,
+#   year 2025) and fix each one:
+#     * OWN_LABEL — a SportLots-only review row that is a product of its own
+#       (2026: `Bowman Sterling`). Its default set name, OWN_SET (the label
+#       itself when it already starts with the brand — `candidateDefaultName`),
+#       must not be a substring of ANY 2025 BSC set filed under Bowman, or the
+#       claim-1 search finds that set instead of `No matches found`. ⚠️ 2025
+#       Bowman Sterling is a released product, so BSC may already list it —
+#       in which case SportLots' row is auto-matched, never reviewed, and
+#       another own-set label is needed.
+#     * INSERT_ROW — a review row that belongs under Bowman › Insert (2026:
+#       `All-America Game Autos`), and it must be the review's FIRST row in
+#       folded order with the filter empty: its tick is then at the top of the
+#       dialog's body, which no scroll can move (R8 case 2). If no insert-like
+#       row sorts first, change step 2b to filter by its name first.
+#     * the review must hold at least three rows (one own set, one insert, at
+#       least one parallel) and `Bowman`, `Insert` and `Parallel` must be in
+#       the dialog's set and type pickers (Bowman's variant types).
+#   NEO-339 decision: if the measured run exceeds ~480 s of the 600 s per-flow kill,
+#   drop step 2c (the own set) and its read-back, and change the tallies to
+#   `0 sets`.
+#
+# ── LIVE / PAUSED (README → "Operator switches") ───────────────────────────
+#   Paused, SportLots is never asked: the Sets column ends "done" with the
+#   skip sentence and there is no review and no pill. That is the paused
+#   branch's whole assertion.
+#
+# ── TIMEOUTS (R5) ───────────────────────────────────────────────────────────
+#   7000 on every in-app step, the review's SAVE included (an NB write; Jason,
+#   2026-09-25: no multi-transaction exception). Two marketplace waits carry
+#   R5's exception, recorded at each site: the end of the cold Sets sync and
+#   the in-dialog Variant Types sync.
+# ════════════════════════════════════════════════════════════════════════════
+
+# NEO-287 — decide the mode once (a pure script, no UI).
+- runFlow:
+    file: ../util/util-paused-platforms.yaml
+
+- evalScript: '${output.BRAND = "Bowman"}'
+- evalScript: '${output.YEAR = "2025"}'
+# TODO(NEO-339 measure) — see the header. 2026 Bowman's values, as placeholders.
+- evalScript: '${output.OWN_LABEL = "Bowman Sterling"}'
+- evalScript: '${output.OWN_SET = "Bowman Sterling"}'
+# Escaped once for the full-match `text:` selectors (runtime names need regex
+# escaping); the raw form goes into the search box.
+- evalScript: '${output.OWN_SET_RE = output.OWN_SET.replace(/[\^\[\]()*+?.|]/g, function (c) { return "\\" + c; })}'
+- evalScript: '${output.INSERT_ROW = "All-America Game Autos"}'
+- evalScript: '${output.TYPE_PARALLEL = "Parallel"}'
+- evalScript: '${output.TYPE_INSERT = "Insert"}'
+
+- launchApp
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+# ============================================================
+# STEP 1 — COLD SYNC SETS; NO SPORTLOTS-ONLY NAME IS A SET
+# ============================================================
+
+# R9 — the cold util: Baseball (warm, the seed's) → 2025 → Bowman, each cold
+# level waited out on its own R5 marketplace ceilings. It returns with
+# Bowman's Sets column open and its sync running or done. Paused it adds the
+# hand-made `Bowman` row first (header).
+- runFlow:
+    file: util-drill-to-cold-real-set.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: ${output.YEAR}
+      MANUFACTURER: ${output.BRAND}
+
+# THE SYNC IS OVER, on its one POSITIVE signal: the idle `Sync Sets` button,
+# which `EntityColumn` mounts only once the status row has left "syncing" (the
+# panel and the button share one slot). The util's own `"Syncing Sets" is not
+# visible` return gate can pass while the SportLots phase is still running —
+# the panel is pushed under the fold by the BSC rows landing above it — so
+# this is the gate, not that. The review is written at the END of the
+# SportLots phase, so nothing below means anything before it. DOWN: the
+# button sits under the column's list. R5 MARKETPLACE EXCEPTION: 150000 is
+# the cold util's own return-contract ceiling for this very sync (BSC's year
+# list + SportLots' brand set list), relocated to where it can be observed —
+# the same move the retired seed and `brand-via-all-brands-narrows-sportlots`
+# make. Measured on 2026 Bowman: the cold drill and this sync, 52.9 s
+# together (CI 36524859308).
+- scrollUntilVisible:
+    element:
+      text: "Sync Sets"
+    timeout: 150000
+
+# PAUSED — nothing was asked of SportLots, so there is no review to offer:
+# the skip sentence by name, and no pill (R2: the positive first). The
+# notice renders directly above the idle row the scroll just revealed.
+- runFlow:
+    when:
+      true: "${output.SL_PAUSED}"
+    commands:
+      - assertVisible: "SportLots skipped: no SportLots ids on this path."
+      - assertNotVisible:
+          text: "[0-9]+ SportLots sets? (to sort|left — save again)"
+
+# ── LIVE ─────────────────────────────────────────────────────────────────
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      # 1a — SportLots WAS asked: no skip sentence. Its slot is directly above
+      # the `Sync Sets` row just scrolled to, so this negative reads a place
+      # that is on screen (README → "Negative asserts pass on a dead page").
+      - assertNotVisible: "SportLots skipped: no SportLots ids on this path."
+
+      # 1b — CLAIM 1, by search rather than by a row's absence from a list
+      # whose length is SportLots' and BSC's business. The Sets column's
+      # search box is the column's first control, ABOVE the idle row the page
+      # was just scrolled to: UP, centred for the tap (R8). It is empty here,
+      # so its text is its placeholder and the text selector holds (once
+      # typed, it is addressed by `id:` — its accessible name).
+      - scrollUntilVisible:
+          element:
+            text: ".*Search sets.*"
+          direction: UP
+          centerElement: true
+          timeout: 7000
+      - tapOn:
+          text: ".*Search sets.*"
+          waitToSettleTimeoutMs: 250
+      - inputText: ${output.OWN_SET}
+      # The POSITIVE is EntitySelector's own empty-search line, which renders
+      # only once the filter has applied to a live, populated column — so the
+      # negative after it cannot pass on a dead page or an unfiltered list.
+      # The box's own VALUE is the same words, hence `below:` on the row.
+      - extendedWaitUntil:
+          visible:
+            text: "No matches found"
+            below:
+              id: "Search sets"
+          timeout: 7000
+      - assertNotVisible:
+          text: "${output.OWN_SET_RE}"
+          below:
+            id: "Search sets"
+
+# ============================================================
+# STEP 2 (LIVE) — THE REVIEW FILES EVERY ROW
+# ============================================================
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      # THE PILL. `SlSetReviewPill` renders in the idle row beside `Sync Sets`
+      # once `getSlSetReviewSummary` resolves to a positive count — one query
+      # after the button, hence a wait, on the 7000 bar. Its visible text is
+      # its accessible name; the count is SportLots' business, matched by
+      # shape. The filter typed above shrank the list, so the idle row is
+      # BELOW the box: DOWN, centred for the tap (R8 case 1, the NEO-260
+      # spacer's headroom).
+      - scrollUntilVisible:
+          element:
+            text: "[0-9]+ SportLots sets? to sort"
+          centerElement: true
+          timeout: 7000
+      - tapOn:
+          text: "[0-9]+ SportLots sets? to sort"
+      # The dialog's pinned header names the brand — the review is per brand.
+      - extendedWaitUntil:
+          visible: "Sort SportLots sets for ${output.BRAND}"
+          timeout: 7000
+
+      # Two things any row may carry, and why no tap below changes for them
+      # (NEO-325): a `Name for <label>` field on every line filed as its own
+      # set (every line until 2a files them), whose TEXT is its value — so
+      # never a full match for a picker name, `Its own set`, a type or a
+      # footer below; and ` (#<id>)` after a label SportLots lists twice in
+      # the brand. OWN_LABEL and INSERT_ROW are addressed by full-match names,
+      # so a twin of either fails those steps by name: the fixture moved.
+
+      # 2a — BULK: EVERY ROW → Bowman › Parallel. `Select all shown` is the
+      # tick in the table's sticky header row. The Apply button's count is
+      # the proof the tick took every row (it read `Apply to 0 selected`).
+      - tapOn:
+          id: "Select all shown"
+      - extendedWaitUntil:
+          visible: "Apply to [1-9][0-9]* selected"
+          timeout: 7000
+      # The bulk set picker, in the pinned header. Every picker's accessible
+      # name STARTS with its current choice and then says what it chooses
+      # (SC 2.5.3): matched on the fixed tail.
+      #
+      # THE OPEN LIST IS NOT ADDRESSABLE BY ITS NAME: it carries a React
+      # `useId` DOM id, which shadows its aria-label as Maestro's resource-id.
+      # So: gate on the list's own footer sentence, and take the option
+      # NEAREST BELOW the trigger (`below:` sorts by distance; the list hangs
+      # directly under its trigger, and the page's own `Bowman` rows sit
+      # ABOVE it, behind the dialog).
+      - tapOn:
+          id: ".*: set the selected rows belong to"
+      - extendedWaitUntil:
+          visible: "Missing a set\\? Only sets that can sync their variant types show here\\."
+          timeout: 7000
+      - tapOn:
+          text: "${output.BRAND}"
+          below:
+            id: ".*: set the selected rows belong to"
+      # PICKING THE SET RUNS ITS VARIANT TYPES SYNC, forced, once per dialog
+      # (`ensureSelectorOptions({level: "variantType", force: true})`), and
+      # the type picker is `inert` until it lands. R5 MARKETPLACE EXCEPTION:
+      # a live BSC + SportLots variant-type fetch; 60000 is
+      # `util-drill-to-2024-topps-chrome`'s own contract for the same cold
+      # fetch (measured 7.8 s on 2026 Bowman). The busy line is set in the
+      # pick's own click handler, so it is on screen when this wait starts;
+      # the negative is paired with hard positives right after it — the set
+      # trigger names Bowman, and the type list only opens once the sync has
+      # landed (an inert trigger ignores the tap).
+      - extendedWaitUntil:
+          notVisible: "Syncing ${output.BRAND}.s variant types…"
+          timeout: 60000
+      - assertVisible:
+          id: "${output.BRAND}: set the selected rows belong to"
+      - tapOn:
+          id: ".*: where the selected rows are filed"
+      - extendedWaitUntil:
+          visible:
+            text: "${output.TYPE_PARALLEL}"
+            below:
+              id: ".*: where the selected rows are filed"
+          timeout: 7000
+      - tapOn:
+          text: "${output.TYPE_PARALLEL}"
+          below:
+            id: ".*: where the selected rows are filed"
+      - extendedWaitUntil:
+          visible:
+            id: "${output.TYPE_PARALLEL}: where the selected rows are filed"
+          timeout: 7000
+      - tapOn:
+          text: "Apply to [1-9][0-9]* selected"
+      # Applying clears the selection: the count is back to zero.
+      - extendedWaitUntil:
+          visible: "Apply to 0 selected"
+          timeout: 7000
+
+      # 2b — ONE ROW → Bowman › Insert, through its row tick and the bulk
+      # bar. INSERT_ROW is the review's FIRST row in folded order (header,
+      # TODO measure), so with the filter empty its tick is at the top of the
+      # body (R8 case 2: the body is the dialog's own scroller). The bulk set
+      # is still Bowman (no second sync); only the type changes, and the
+      # list's `Insert` option is the nearest below the trigger.
+      - tapOn:
+          id: "Select ${output.INSERT_ROW}"
+      - extendedWaitUntil:
+          visible: "Apply to 1 selected"
+          timeout: 7000
+      - tapOn:
+          id: "${output.TYPE_PARALLEL}: where the selected rows are filed"
+      - extendedWaitUntil:
+          visible:
+            text: "${output.TYPE_INSERT}"
+            below:
+              id: "${output.TYPE_PARALLEL}: where the selected rows are filed"
+          timeout: 7000
+      - tapOn:
+          text: "${output.TYPE_INSERT}"
+          below:
+            id: "${output.TYPE_PARALLEL}: where the selected rows are filed"
+      - extendedWaitUntil:
+          visible:
+            id: "${output.TYPE_INSERT}: where the selected rows are filed"
+          timeout: 7000
+      - tapOn:
+          text: "Apply to 1 selected"
+      - extendedWaitUntil:
+          visible: "Apply to 0 selected"
+          timeout: 7000
+      # The row's own type picker now names its new choice (R2 — the apply
+      # reached that row, not just the counter).
+      - assertVisible:
+          id: "${output.TYPE_INSERT}: where ${output.INSERT_ROW} is filed"
+
+      # 2c — PER ROW: OWN_LABEL BACK TO ITS OWN SET, through its own "Belongs
+      # to" picker. The filter is in the pinned header and still empty, so
+      # typing needs no erase. Rows sort by folded label, so the bare label is
+      # the FIRST row the filter shows and its list opens at the top of the
+      # body (R8 case 2).
+      - tapOn:
+          id: "Find a SportLots set"
+      - inputText: ${output.OWN_LABEL}
+      # The row's picker names its current choice first: 2a's bulk mark put
+      # it under Bowman (the precondition, R2). Full match — `…: set
+      # <OWN_LABEL> Autos belongs to` does not answer.
+      - tapOn:
+          id: "${output.BRAND}: set ${output.OWN_LABEL} belongs to"
+      - extendedWaitUntil:
+          visible: "Missing a set\\? Only sets that can sync their variant types show here\\."
+          timeout: 7000
+      - tapOn:
+          text: "Its own set"
+          below:
+            id: "${output.BRAND}: set ${output.OWN_LABEL} belongs to"
+      - extendedWaitUntil:
+          visible:
+            id: "Its own set: set ${output.OWN_LABEL} belongs to"
+          timeout: 7000
+
+      # 2d — SAVE. The footer's tally is what Save will do over EVERY row (the
+      # filter narrows the view, not the save): exactly one set, one insert,
+      # every other row a parallel, joined by " · " with no closing period.
+      # Pinned footer, so on screen; the parallel count is matched by shape.
+      - assertVisible: "Save will file: 1 set · [0-9]+ parallels? · 1 insert"
+      # Footer confirm, direct tap (R8 case 2).
+      - tapOn:
+          text: "Save [0-9]+ SportLots sets?"
+      # The dialog closes and the column toasts the server's own counts
+      # (`slReviewSavedText`) — the same three numbers and NO "skipped" tail:
+      # this flow is 2025's only writer, so nothing can have linked a row
+      # between the sync and the save. R5 — an NB write, the 7000 bar
+      # (measured 0.71 s on 2026 Bowman). A save that misses it is a product
+      # finding, never a bigger number.
+      - extendedWaitUntil:
+          visible: "Saved 1 set, [0-9]+ parallels?, 1 insert\\."
+          timeout: 7000
+
+# ============================================================
+# STEP 3 (LIVE) — THE REVIEW IS GONE; THE OWN SET IS A ROW
+# ============================================================
+- runFlow:
+    when:
+      true: "${!output.SL_PAUSED}"
+    commands:
+      # The pill's slot is where the pill was centred: `Sync Sets` there, the
+      # pill gone — the review doc is deleted once every row is filed.
+      # Positive first (R2). Both of the pill's spellings
+      # (`slReviewPillText`): `to sort`, and `left — save again` after a save
+      # that stopped part-way.
+      - assertVisible: "Sync Sets"
+      - assertNotVisible:
+          text: "[0-9]+ SportLots sets? (to sort|left — save again)"
+      # THE SET THE REVIEW MADE. The Sets column's filter still holds
+      # OWN_SET from claim 1 (EntitySelector clears its filter only on a pick
+      # or Escape, and the dialog was a portal over it), so the new row
+      # appears under the box as soon as the column's read lands — the same
+      # search that found nothing before the save. The box is ABOVE the idle
+      # row the page is on: UP. Nothing is tapped, so no centring (R8).
+      # `below:` because the box's own value is the same words.
+      - scrollUntilVisible:
+          element:
+            text: "${output.OWN_SET_RE}"
+            below:
+              id: "Search sets"
+          direction: UP
+          timeout: 7000
