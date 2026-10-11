@@ -17,9 +17,11 @@
     "build:design-system": "vite build --config vite.lib.config.ts && tsc -p tsconfig.lib.json && mkdir -p .design-sync/.cache && printf 'import \"../../app/globals.css\";\\n' > .design-sync/.cache/css-entry.ts && vite build --config vite.lib.css.config.ts",
     "preview": "vite preview",
     "lint": "eslint .",
-    "typecheck": "tsc -p convex/tsconfig.json --noEmit",
+    "typecheck": "tsc -p convex/tsconfig.json --noEmit && tsc -p tools/setbuild/tsconfig.json --noEmit",
     "test:unit": "vitest run --reporter=default --reporter=json --outputFile=.vitest-results.json && node scripts/verify-test-completeness.mjs",
     "test:unit:watch": "vitest",
+    "setbuild": "tsx tools/setbuild/cli.ts",
+    "setbuild:mcp": "tsx tools/setbuild/mcp.ts",
     "link-deps": "./link-deps.sh",
     "builder": "npx builder.io@latest launch --app --serverUrl http://localhost:3000",
     "setup:e2e": "./setup-maestro.sh",
@@ -72,6 +74,7 @@
   "devDependencies": {
     "@edge-runtime/vm": "^5.0.0",
     "@eslint/eslintrc": "^3",
+    "@modelcontextprotocol/sdk": "1.30.1",
     "@tailwindcss/vite": "^4",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
@@ -92,10 +95,12 @@
     "husky": "^9.1.7",
     "localtunnel": "^2.0.2",
     "tailwindcss": "^4.1.11",
+    "tsx": "4.21.0",
     "typescript": "^6.0.3",
     "vite": "^8.3.0",
     "vite-plugin-mkcert": "^2.1.0",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.11",
+    "zod": "3.25.76"
   },
   "overrides": {
     "eslint-plugin-jsx-a11y": {

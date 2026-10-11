@@ -13,7 +13,6 @@ import NeonButton from "../modules/NeonButton";
 import EntityReviewWizard from "./EntityReviewWizard";
 import CardPairingModal, {
   type PairingCard,
-  type PairingConflicts,
   type PairingResult,
 } from "./CardPairingModal";
 import SyncReviewModal, {
@@ -43,6 +42,9 @@ import {
   candidateToPairingCard,
   candidatesToPairingCards,
 } from "./pairing-cards";
+// NEO-339: `withConflicts` lives beside the pairing reducer, shared with the
+// set-building tool.
+import { withConflicts } from "@/lib/set-build/pairing";
 import ParallelBuildPanel, {
   ParallelBuildButton,
   ParallelBuildPlaceholder,
@@ -239,32 +241,6 @@ const SOLO_STREAM_TIMEOUT_MS = 30_000;
  * NEO-203 — "the operator reviewed nothing", which is also what an unreviewed
  * commit sends. Applies no content, deletes nothing, holds nothing back.
  */
-/**
- * NEO-251 — the cards as the SYNC-REVIEW DIFF needs to see them: each one
- * carrying whatever the two marketplaces disagreed about on it.
- *
- * `CardPairingModal` deliberately hands back committable cards and a SEPARATE,
- * index-keyed record of the disagreements (see `PairingResult`), because a card
- * on its way to `commitCardChecklist` has one answer rather than an open
- * question — the commit throws on one that still carries `playersConflict`.
- * This is the one place the two are put back together, and the result is
- * handed to the diff query alone; nothing downstream of it sees the field.
- *
- * A card with no conflict is returned BY REFERENCE. On a 908-card set that is
- * every row but a handful, and this runs on the way into a query argument that
- * is about to be serialised.
- */
-function withConflicts(
-  cards: PairingCard[],
-  conflictsByIndex: Record<number, PairingConflicts>,
-): PairingCard[] {
-  return cards.map((card, index) => {
-    const conflicts = conflictsByIndex[index];
-    if (!conflicts) return card;
-    return { ...card, ...conflicts };
-  });
-}
-
 const NO_SYNC_DECISIONS: SyncReviewResult = {
   applyFieldsByIndex: {},
   baseVersionByIndex: {},

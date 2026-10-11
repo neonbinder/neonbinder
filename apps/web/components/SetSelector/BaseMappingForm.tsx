@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
-import { primarySlot, slotIds, slotLabel } from "../../convex/platformSlots";
+import { primarySlot, slotLabel } from "../../convex/platformSlots";
 import type { PlatformSide, SlotBearingRow } from "../../convex/platformSlots";
 import type { GenericId } from "convex/values";
 import NeonButton from "../modules/NeonButton";
@@ -9,6 +9,12 @@ import BaseSetPicker, { type BaseRemapNotice } from "./BaseSetPicker";
 import type { PlatformItem } from "./ReconciliationModal";
 import { blockedMessageFromErrors } from "./selector-sync-feedback";
 import { ATTACH_MORE_LABEL } from "./control-labels";
+// NEO-339: the set-listing candidate and the write live in
+// lib/set-build/base-candidates.ts, shared with the set-building tool.
+import {
+  baseSetListing,
+  buildBaseMappingPayload,
+} from "@/lib/set-build/base-candidates";
 
 type RawOptionsResult = {
   success: boolean;
@@ -194,16 +200,9 @@ export default function BaseMappingForm({
     (a) => a.level === "variantType",
   )?.value;
 
-  // The SET's own BSC slug. NEO-137: read through `slotIds` — `platformData.bsc`
-  // is a slot MAP, so the old typeof-string / Array.isArray narrowing was
-  // type-legal against a Record and silently always undefined.
-  const setListingSlug = setNameAncestor
-    ? slotIds(setNameAncestor, "bsc")[0]
-    : undefined;
-  const setListing: PlatformItem | undefined =
-    setListingSlug && setNameValue
-      ? { value: setNameValue, platformValue: setListingSlug }
-      : undefined;
+  // The SET's own BSC slug, as a candidate — `baseSetListing`
+  // (lib/set-build/base-candidates.ts).
+  const setListing: PlatformItem | undefined = baseSetListing(setNameAncestor);
 
   const currentLabel = (side: PlatformSide): string | undefined => {
     if (!variantTypeRow) return undefined;
@@ -237,39 +236,6 @@ export default function BaseMappingForm({
         currentBscLabel: currentLabel("bsc"),
       }
     : undefined;
-
-  const writePlatformData = async (
-    platformData: {
-      bsc?: string;
-      sportlots?: string;
-      sportlotsDisplay?: string;
-    },
-    /**
-     * BSC's own display name for the set that was picked — the BSC twin of
-     * `sportlotsDisplay`, stored as the setName slot's LABEL.
-     *
-     * Without it `slotLabel` fell back to the slug and the Multi-source panel
-     * read "topps topps": the slug rendered once as the chip's name and once as
-     * its id. Passed as `undefined` when there was nothing to pick from, which
-     * CLEARS a stale label rather than leaving the previous set's name over a
-     * new slug (NEO-239).
-     */
-    bscLabel?: string,
-  ) => {
-    await setPlatformData({
-      variantTypeId,
-      platformData,
-      ...(bscLabel ? { bscLabel } : {}),
-      // Sent whenever the row has loaded, in both modes. A version token can
-      // only ever REFUSE a write, so carrying one on a mapping that turns out
-      // to have had nothing at stake costs nothing — while omitting one on a
-      // row that quietly did (the BSC-only case above) is a silent re-point of
-      // every card in that slot.
-      ...(typeof variantTypeRow?.lastUpdated === "number"
-        ? { baseVersion: variantTypeRow.lastUpdated }
-        : {}),
-    });
-  };
 
   const doSync = async () => {
     if (!sportValue || !yearValue || !setNameValue) return;
@@ -351,27 +317,16 @@ export default function BaseMappingForm({
     sl?: PlatformItem;
     bsc?: PlatformItem;
   }) => {
-    // Exactly what was picked. No implicit set-slug substitution: the set
-    // listing is a candidate row in the dialog now, so if it is what should be
-    // linked, it was chosen.
-    const platformData: {
-      bsc?: string;
-      sportlots?: string;
-      sportlotsDisplay?: string;
-    } = {};
-    if (selected.sl) {
-      platformData.sportlots = selected.sl.platformValue;
-      platformData.sportlotsDisplay = selected.sl.value;
-    }
-    if (selected.bsc) {
-      platformData.bsc = selected.bsc.platformValue;
-    }
-    if (!platformData.sportlots && !platformData.bsc) return;
+    // Exactly what was picked — `buildBaseMappingPayload`
+    // (lib/set-build/base-candidates.ts), with the row's version token.
+    const payload = buildBaseMappingPayload(selected, {
+      variantTypeId,
+      lastUpdated: variantTypeRow?.lastUpdated,
+    });
+    if (!payload) return;
 
     try {
-      // `selected.bsc.value` is BSC's own name for the set the operator chose,
-      // which is the only place a real label for this slot can come from.
-      await writePlatformData(platformData, selected.bsc?.value);
+      await setPlatformData(payload);
     } catch (e) {
       if (errorCode(e) === "BASE_MAPPING_STALE") {
         // Re-open on the FRESH row: `variantTypeRow` is reactive, so the next

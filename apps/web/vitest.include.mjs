@@ -25,6 +25,8 @@ export const CONVEX_LIB_INCLUDE = [
   "convex/**/*.test.ts",
   "lib/**/*.test.ts",
   "scripts/**/*.test.mjs",
+  // NEO-339: the set-build CLI/MCP tool (Node only; stubbed fetch, no server).
+  "tools/**/*.test.ts",
 ];
 
 /**

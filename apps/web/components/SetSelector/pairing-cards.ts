@@ -15,7 +15,7 @@
  * the auto-keep path cannot silently build a thinner card than the dialog does.
  */
 
-import type { PairingCard } from "./CardPairingModal";
+import type { PairingCard } from "../../lib/set-build/pairing";
 
 /**
  * The half of `checklistCandidates.getReadyCandidates`' card shape this

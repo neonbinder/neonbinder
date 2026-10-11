@@ -2,7 +2,8 @@ import { useId, useMemo, useRef, useState, type ReactNode, type Ref } from "reac
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
-import { splitTeamName, teamFullName } from "../../lib/teams/team-name";
+import { teamFullName } from "../../lib/teams/team-name";
+import type { NewTeamDraft } from "@/lib/set-build/review";
 import { eraLabel } from "../../lib/teams/team-era";
 import {
   entityNameQueryReadings,
@@ -86,80 +87,9 @@ export type StageLeagueOutcome =
  * with the whole name in Name, and the operator splits it.
  */
 
-/** The answer this form collects. Empty strings, not undefined — these are
- *  controlled inputs, and a blank Location is a real answer. */
-export type NewTeamDraft = {
-  location: string;
-  name: string;
-  /**
-   * The league the operator picked, as one of three states that the server
-   * treats differently:
-   *   - a league id — this existing league;
-   *   - `null` — no league, said deliberately;
-   *   - `undefined` — not answered, so the server's own fallbacks apply.
-   * The form only ever produces the first two once it has rendered; `undefined`
-   * is the initial value a host may seed it with.
-   */
-  leagueId: Id<"leagues"> | null | undefined;
-  /**
-   * A league to CREATE, by name — the "we don't hold this one yet" answer. Set
-   * by picking the suggestion's "Create <name>", a league this batch staged, or
-   * a typed name the wizard staged; mutually exclusive with `leagueId`, which
-   * `pick` enforces by clearing it.
-   */
-  leagueName: string | undefined;
-  /**
-   * NEO-254 — the years this team played, when the operator knows them.
-   *
-   * Load-bearing for identity, not decoration. A sport can hold two teams under
-   * one name — the 1972-1996 Winnipeg Jets and the 2011- Jets — and the era is
-   * the only thing that tells them apart, so it is what decides whether
-   * creating finds the row we hold or makes a second one beside it.
-   *
-   * Optional, and stays optional: most teams are created without anybody
-   * knowing or caring, and an undated row is a normal row. It matters exactly
-   * when the name is already taken, which is when the form asks for it.
-   */
-  yearsActive?: { from: number; to?: number };
-  /**
-   * NEO-284 — other names this team answers to, comma-separated exactly as
-   * the League forms take theirs (`parseAliases` in `NewLeagueForm` turns it
-   * into the list). A string rather than a list because it is a box the
-   * operator is typing into; the host parses it once, at create.
-   *
-   * Empty string, not undefined: a controlled input, and "no aliases" is a
-   * real answer.
-   */
-  aliases: string;
-};
-
-/**
- * What the form shows before the operator touches anything.
- *
- * `location` splits off the front of `name` only when the enrichment supplied
- * one AND it is a whole-word prefix: "San Diego" off "San Diego Padres" splits,
- * "Anaheim" off "Los Angeles Angels" does not, and neither does "Sa".
- *
- * The league is left for {@link resolveLeagueSuggestion} to settle against the
- * sport's real rows, because "the lookup said Australian Baseball League" and
- * "we hold a row called that" are different facts and only the second one can
- * be pre-selected.
- */
-export function newTeamPrefill(input: {
-  name: string;
-  location?: string;
-}): NewTeamDraft {
-  const split = input.location
-    ? splitTeamName(input.name, input.location)
-    : null;
-  return {
-    location: split ? split.location : "",
-    name: split ? split.name : input.name.trim(),
-    leagueId: undefined,
-    leagueName: undefined,
-    aliases: "",
-  };
-}
+// NEO-339: the draft and its prefill live in lib/set-build/review.ts, shared
+// with the set-building tool. Re-exported so every existing import keeps working.
+export { newTeamPrefill, type NewTeamDraft } from "@/lib/set-build/review";
 
 /** `teamFullName` over a draft — the composed row, for every comparison.
  *  Never compose these two by hand. */

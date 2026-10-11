@@ -95,3 +95,4 @@
 - [Vitest console hidden in passing tests](reference_vitest_console_hidden_in_passing_tests.md) — console.log from a passing test prints nothing; scratch probes log via appendFileSync
 - [Focus centres; scroll margins add](reference_focus_centres_and_scroll_margins_add.md) — Chrome focus() centres off-screen targets; scrollIntoView = 80px scroll-padding + scroll-mt; use preventScroll + own scroll
 - [Convex snapshot import keeps table numbers](reference_convex_snapshot_import_keeps_table_numbers.md) — ids encode table numbers (prod vs preview collide); bare ints import as int64, write floats as N.0
+- [Clerk FAPI native mode from Node](reference_clerk_fapi_native_mode_from_node.md) — headless Clerk session: ticket redeem + template mint with _is_native=1, client JWT in Authorization both ways (NEO-339)

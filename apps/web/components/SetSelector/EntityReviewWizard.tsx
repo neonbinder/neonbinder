@@ -37,10 +37,8 @@ import CareerTeamEntry, { type CareerTeamDraft } from "./CareerTeamEntry";
 // NEO-236: the one form a team is created from, shared with NewTeamDialog.
 import NewTeamForm, {
   draftFullName,
-  newTeamPrefill,
   type NewTeamDraft,
 } from "./NewTeamForm";
-import type { LeagueLevel } from "../admin/AddLeagueForm";
 import NewLeagueForm, {
   leagueDraftError,
   newLeaguePrefill,
@@ -50,6 +48,14 @@ import NewLeagueForm, {
 import SameNamePlayerPanel from "./SameNamePlayerPanel";
 import UndatedCareerTeams from "./UndatedCareerTeams";
 import { deriveStagedTeamNames } from "./entity-review-staging";
+// NEO-339: what the wizard sends and stages, shared with the set-building tool.
+import {
+  buildCreateDecision,
+  buildLinkDecision,
+  planStaging,
+  teamCreatePrefill,
+  type CreateDecisionPayload,
+} from "@/lib/set-build/review";
 import {
   countBulkCreatable,
   countPendingBulkCreatable,
@@ -196,37 +202,9 @@ const PLAYER_ADD_SET_SPORT_FIELD_ID = "entity-review-player-add-set-sport";
 const LEAGUE_NAME_FIELD_ID = "entity-review-league-name";
 const LEAGUE_LEVEL_FIELD_ID = "entity-review-league-level";
 
-/**
- * NEO-236 — what the Location + Name pair shows for a team row before the
- * operator touches it.
- *
- * Location is pre-filled ONLY from an ESPN location the lookup actually
- * returned, and only when `splitTeamName` finds it as a whole-word prefix of
- * the reviewed name: "San Diego" off "San Diego Padres" splits, "Anaheim" off
- * "Los Angeles Angels" does not, and neither does "Sa". Everything else starts
- * with a blank Location and the whole reviewed name in Name — byte-for-byte
- * how these rows were created before the split existed, and the operator's cue
- * to split it themselves. A blank Location is the FINAL answer only for a name
- * that carries no place at all ("Athletics", "Orix Buffaloes"); a college
- * side's location is its school ("San Diego State" / "Aztecs").
- *
- * There is no first-token heuristic here and there must never be one: NB has
- * no code path that guesses a location without a source. The operator is the
- * fallback.
- *
- * Mirrored server-side by `prefilledTeamCreate` in convex/entityReviewQueue.ts,
- * which is what "Add All Remaining as New" writes for a team row — so
- * confirming one row and confirming the batch mean the same thing.
- */
-export function teamCreatePrefill(row: {
-  name: string;
-  enrichment?: { location?: string } | null;
-}): NewTeamDraft {
-  return newTeamPrefill({
-    name: row.name,
-    ...(row.enrichment?.location ? { location: row.enrichment.location } : {}),
-  });
-}
+// NEO-339: moved to lib/set-build/review.ts with the other decision builders;
+// re-exported so every existing import keeps working.
+export { teamCreatePrefill } from "@/lib/set-build/review";
 /** NEO-307 — the "no team holds this name as an alias" answer, one stable
  *  reference; see `nameAliasHolders`. */
 const NO_ALIAS_HOLDERS: ReadonlyArray<never> = [];
@@ -1291,12 +1269,14 @@ export default function EntityReviewWizard({
    * all read "needs a team decision".
    */
   useEffect(() => {
-    if (!current || current.kind !== "player") return;
-    if (current.decision) return;
-    if ((current.enrichment?.careerTeams?.length ?? 0) === 0) return;
-    if (stagedPlayersRef.current.has(current._id)) return;
+    if (!current) return;
+    // NEO-339: the rule lives in lib/set-build/review.ts (`planStaging`).
+    const [stage] = planStaging(current, {
+      alreadyStaged: stagedPlayersRef.current,
+    });
+    if (stage?.mutation !== "stageCareerTeamRows") return;
     stagedPlayersRef.current.add(current._id);
-    void stageCareerTeams({ reviewRowId: current._id })
+    void stageCareerTeams(stage.args)
       .then((added) => {
         if (added === 0) return;
         // The same two lines `resumeWalking` runs — written out because that
@@ -1695,53 +1675,16 @@ export default function EntityReviewWizard({
    *
    * `manualCareerTeams` carries FULL names, because that is what the prelude
    * looks up against `teams`.
+   *
+   * NEO-339: the arguments are built in lib/set-build/review.ts, shared with
+   * the set-building tool.
    */
   const handleCreate = async (
     reviewRowId: Id<"entityReviewQueue">,
-    payload: {
-      manualCareerTeams?: CareerTeamDraft[];
-      excludedCareerTeamNames?: string[];
-      create?: {
-        location?: string;
-        name: string;
-        leagueId?: Id<"leagues"> | null;
-        leagueName?: string;
-        // NEO-254 — see `teamCreateValidator`.
-        yearsActive?: { from: number; to?: number };
-        // NEO-284 — the other names, already parsed. See `NewTeamDraft`.
-        aliases?: string[];
-      };
-      // NEO-254 — league-kind only. See `NewLeagueForm`.
-      createLeague?: {
-        name: string;
-        abbreviation?: string;
-        level?: LeagueLevel;
-        yearsActive?: { from: number; to?: number };
-        aliases?: string[];
-        wikidataId?: string;
-      };
-      // NEO-313 — player rows only. See `addSetSportByRow`.
-      addSetSport?: boolean;
-    } = {},
+    payload: CreateDecisionPayload = {},
   ) =>
     decide(reviewRowId, () =>
-      recordDecision({
-        reviewRowId,
-        action: "create",
-        manualCareerTeams: payload.manualCareerTeams?.length
-          ? payload.manualCareerTeams.map((ct) => ({
-              name: teamFullName(ct),
-              fromYear: ct.fromYear,
-              ...(ct.toYear !== undefined ? { toYear: ct.toYear } : {}),
-            }))
-          : undefined,
-        excludedCareerTeamNames: payload.excludedCareerTeamNames?.length
-          ? payload.excludedCareerTeamNames
-          : undefined,
-        create: payload.create,
-        createLeague: payload.createLeague,
-        ...(payload.addSetSport ? { addSetSport: true } : {}),
-      }),
+      recordDecision(buildCreateDecision(reviewRowId, payload)),
     );
   const handleLink = async (
     reviewRowId: Id<"entityReviewQueue">,
@@ -1757,20 +1700,7 @@ export default function EntityReviewWizard({
     options: { saveAsAlias?: boolean; addSetSport?: boolean } = {},
   ) =>
     decide(reviewRowId, () =>
-      recordDecision({
-        reviewRowId,
-        action: "link",
-        linkedPlayerId: kind === "player" ? (linkedId as Id<"players">) : undefined,
-        linkedTeamId: kind === "team" ? (linkedId as Id<"teams">) : undefined,
-        // NEO-254 — every team in the batch that named this league then uses
-        // the linked row rather than creating anything.
-        linkedLeagueId: kind === "league" ? (linkedId as Id<"leagues">) : undefined,
-        ...(kind === "team" && options.saveAsAlias !== undefined
-          ? { saveAsAlias: options.saveAsAlias }
-          : {}),
-        // NEO-313 — only ever `true`, and only for a player.
-        ...(kind === "player" && options.addSetSport ? { addSetSport: true } : {}),
-      }),
+      recordDecision(buildLinkDecision(reviewRowId, kind, linkedId, options)),
     );
   const handleSkip = async (reviewRowId: Id<"entityReviewQueue">) =>
     decide(reviewRowId, () => recordDecision({ reviewRowId, action: "skip" }));
@@ -3646,11 +3576,12 @@ export default function EntityReviewWizard({
                                * the commit still resolves the name, it just
                                * does not get the fuller record.
                                */
-                              if (patch.leagueName?.trim()) {
-                                void stageLeagueRows({
-                                  reviewRowId: current._id,
-                                  leagueName: patch.leagueName,
-                                }).catch(() => {});
+                              for (const call of planStaging(current, {
+                                leagueName: patch.leagueName,
+                              })) {
+                                if (call.mutation === "stageLeagueRows") {
+                                  void stageLeagueRows(call.args).catch(() => {});
+                                }
                               }
                             }}
                             leagueSuggestion={current.enrichment?.league}
