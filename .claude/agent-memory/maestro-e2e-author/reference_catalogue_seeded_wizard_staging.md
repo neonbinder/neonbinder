@@ -63,8 +63,16 @@ offline before proposing. Defunct-club shape (Baseball catalogue): Brooklyn
 Dodgers, NY Giants, Boston/Milwaukee Braves, KC Athletics, Homestead Grays,
 Montreal Expos, California Angels = ONE dated row (auto past-era link);
 St. Louis Browns (2), Washington Senators (3), Philadelphia Athletics (4),
-St. Louis Stars (3), Detroit Stars (2) = operator step for any year after
+St. Louis Stars (3), Detroit Stars (2) = ambiguous for any year after
 their eras; Kansas City Monarchs = in-era 2021– trap.
+**"Ambiguous" did NOT mean a wizard step (measured 2026-10-11, 2025 Topps
+WttC 3X MVP, BSC-only fetch):** the fetch went straight to `Saved 36 cards.
+2 need attention`: Campanella's Brooklyn Dodgers linked (one row, past era),
+the two Phil. Athletics cards committed TEAMLESS with `bscTeamName` kept and
+`teamCheckDoneAt` stamped, surfacing as `2 cards need a team` (the attention
+chip / fixer), not as `New Team: …`. The team names never reached the
+review gate on that fetch. So a predicted team step must be PROBED; an
+offline `pickTeamForYear` run only says how a name resolves once it gets there.
 
 **Reading a wizard red:** a walk util that spins its 200-iteration repeat
 (~1.7s each, ~340s) and then fails on `Skip .* not a person` means the batch

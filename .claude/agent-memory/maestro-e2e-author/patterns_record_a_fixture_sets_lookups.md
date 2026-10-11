@@ -40,7 +40,10 @@ key/shape/sort and keeps the live-proof player out.
 `normalizeEntityName` of the composed name AND each alias, then run the real
 `pickTeamForYear(rows, setYear, { allowPastEra: true })` under tsx. One dated
 row ending before the set year = silent past-era link (no wizard step); two+
-rows with none covering the year = a team step; one of several covering it =
+rows with none covering the year = no auto-link (a team step ONLY if the
+name reaches the review gate; on a BSC-only fetch it can instead commit
+teamless as "needs a team", see [[catalogue-seeded-wizard-staging]]); one of
+several covering it =
 silent link to that era (the NEO-336 retro-card trap). BSC public shop facets
 give `teamName` per card. See [[catalogue-seeded-wizard-staging]],
 [[neo284-team-alias-fixture]].
