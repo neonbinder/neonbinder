@@ -98,3 +98,4 @@
 - [Clerk FAPI native mode from Node](reference_clerk_fapi_native_mode_from_node.md) — headless Clerk session: ticket redeem + template mint with _is_native=1, client JWT in Authorization both ways (NEO-339)
 - [MCP stdio server pitfalls](reference_mcp_stdio_server_pitfalls.md) — required zod args skip the handler; npm --silent + console reroute; `${VAR:-}` = ""; 60 s client timeout; stub-a-sibling boot hook
 - [Candidates ready never reaches total](reference_candidates_ready_never_reaches_total.md) — gate a checklist fetch on batch id moved + total === candidateCount, never ready === total
+- [Setbuild CLI tests past the gate](reference_setbuild_cli_tests_past_the_gate.md) — eager token mint trips the network guard; stub fetch with a 401 (5xx/throw retries with backoff); io.prompt = TTY

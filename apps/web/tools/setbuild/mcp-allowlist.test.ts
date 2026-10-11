@@ -11,9 +11,11 @@
  * - WRITE_TOOLS is exactly the set of registered tools that are not
  *   read-only, so a new write tool cannot slip past the first check.
  *
- * Out of scope here (NEO-339 J1, Jason's call): a `Bash(*)` allow rule lets
- * Bash run `npm run setbuild -- apply`; that path is gated by the confirm
- * phrase only.
+ * The CLI path (NEO-339 J1, option C) is closed in code, not here: a
+ * `Bash(*)` allow rule lets Bash run `npm run setbuild -- apply`, but with
+ * `--auth machine` (production) apply ignores --confirm and refuses without
+ * an interactive terminal (runner/cli-commands.ts, MACHINE_NEEDS_TTY). Testing
+ * auth, which cannot reach production, stays gated by the confirm phrase.
  */
 
 import { existsSync, readFileSync } from "node:fs";

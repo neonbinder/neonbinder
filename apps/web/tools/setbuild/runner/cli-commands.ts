@@ -1,19 +1,27 @@
 /**
  * NEO-339 — the runner's CLI commands: inspect, plan, apply,
- * decisions-template, schema. Registered in `cli.ts`'s `COMMANDS`.
+ * decisions-template, schema, confirm-phrase. Registered in `cli.ts`'s
+ * `COMMANDS`.
  *
  * Exit codes (beside cli.ts's 0 / 1 / 2): `apply` exits 3 when it stopped at a
  * decision the spec does not answer — the run is resumable, the template is
  * printed, and nothing is wrong with the tool.
+ *
+ * `apply` with `--auth machine` (production) never takes `--confirm`: the
+ * operator types the phrase at an interactive prompt, and without a terminal
+ * the command refuses. A script or an agent's shell therefore cannot write to
+ * production through the CLI; the MCP tools, which Claude Code asks the
+ * operator about on every call, are the only unattended path.
  */
 
 import { readFile } from "node:fs/promises";
-import { createInterface } from "node:readline/promises";
 import type { CommandContext, CommandSpec } from "../cli";
+import { scrub } from "../auth/token-source";
+import { secretValues } from "../client/connect";
 import { makeClient, type NbClient } from "../client/convex-client";
-import { confirmPhrase } from "../client/target";
-import { countOpenDecisions, specScope, type NodePath, type PlanReport } from "../service";
-import { specJsonSchema } from "../spec/schema";
+import { contentDigest, parseTarget } from "../client/target";
+import { countOpenDecisions, specConfirmPhrase, type NodePath, type PlanReport } from "../service";
+import { parseSpec, specJsonSchema } from "../spec/schema";
 import { applySpec, confirmedSpec, publicApplyReport } from "./apply";
 import { RunFailed } from "./engine";
 import { inspectPath } from "./inspect";
@@ -82,9 +90,22 @@ async function usageGuard(ctx: CommandContext, run: () => Promise<number>): Prom
   }
 }
 
-function printReport(ctx: CommandContext, r: PlanReport): void {
-  ctx.io.stdout(ctx.json ? reportJson(r).trimEnd() : reportMarkdown(r).trimEnd());
+/** The secret values to scrub from anything this command prints or writes. */
+function secretsOf(ctx: CommandContext): string[] {
+  return secretValues(ctx.io.env);
 }
+
+function printReport(ctx: CommandContext, r: PlanReport): void {
+  ctx.io.stdout(scrub(ctx.json ? reportJson(r).trimEnd() : reportMarkdown(r).trimEnd(), secretsOf(ctx)));
+}
+
+/** `--paused-platforms`, else env `PAUSED_PLATFORMS`. An explicit "" means nothing is paused. */
+function pausedPlatforms(ctx: CommandContext): string | undefined {
+  const flag = ctx.values["paused-platforms"];
+  return typeof flag === "string" ? flag : ctx.io.env.PAUSED_PLATFORMS;
+}
+
+const PAUSED_OPTION = { "paused-platforms": { type: "string" } } as const;
 
 // ---------------------------------------------------------------------------
 
@@ -119,47 +140,58 @@ export const inspectCommand: CommandSpec = {
 
 export const planCommand: CommandSpec = {
   summary: "Read-only: every step of a spec, what is done, and every decision it still has to make.",
-  usage: "setbuild plan --spec <file.json> [--report <out.json>] [--json] [connection flags]",
-  options: { spec: { type: "string" }, report: { type: "string" } },
+  usage:
+    "setbuild plan --spec <file.json> [--paused-platforms <keys>] [--report <out.json>] [--json] [connection flags]",
+  options: { spec: { type: "string" }, report: { type: "string" }, ...PAUSED_OPTION },
   run: (ctx) =>
     usageGuard(ctx, async () => {
       const spec = await readSpecFile(str(ctx.values.spec));
-      const report = await withClient(ctx, (client, conn) => planSpec(client, conn.target, spec));
+      const report = await withClient(ctx, (client, conn) =>
+        planSpec(client, conn.target, spec, { pausedPlatforms: pausedPlatforms(ctx) }),
+      );
       const out = str(ctx.values.report);
-      if (out) await writeReportFiles(out, report);
+      if (out) await writeReportFiles(out, report, secretsOf(ctx));
       printReport(ctx, report);
       return 0;
     }),
 };
 
-async function promptConfirm(ctx: CommandContext, expected: string): Promise<string | undefined> {
-  if (!process.stdin.isTTY) return undefined;
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  try {
-    ctx.io.stderr(`This run WRITES. Type the confirm phrase to go on:\n  ${expected}`);
-    return (await rl.question("> ")).trim();
-  } finally {
-    rl.close();
-  }
+/** Ask for the phrase at the terminal. Undefined when stdin is not interactive. */
+async function promptConfirm(ctx: CommandContext, expected: string, host: string): Promise<string | undefined> {
+  if (!ctx.io.prompt) return undefined;
+  ctx.io.stderr(`This run WRITES to ${host}. Type the confirm phrase to go on:\n  ${expected}`);
+  return (await ctx.io.prompt("> ")).trim();
 }
 
+/** The message `apply --auth machine` refuses with when there is no terminal to prompt on. */
+export const MACHINE_NEEDS_TTY =
+  "apply with --auth machine (production) runs only in an interactive terminal: it ignores --confirm and asks " +
+  "for the confirm phrase at a prompt. Production writes are run by the operator in a terminal, or through the " +
+  "MCP tools (nb_apply), which ask the operator on every call.";
+
 export const applyCommand: CommandSpec = {
-  summary: "WRITES: run a spec. Needs --confirm \"BUILD <convex host> <scope>\". Stops (exit 3) at the first unanswered decision.",
-  usage: 'setbuild apply --spec <file.json> --confirm "BUILD <host> <scope>" [--report <out.json>] [--json] [connection flags]',
-  options: { spec: { type: "string" }, confirm: { type: "string" }, report: { type: "string" } },
+  summary:
+    'WRITES: run a spec. Needs --confirm "BUILD <host> <scope> <digest>" (setbuild confirm-phrase prints it); with --auth machine, a terminal prompt instead. Stops (exit 3) at the first unanswered decision.',
+  usage:
+    'setbuild apply --spec <file.json> --confirm "BUILD <host> <scope> <digest>" [--paused-platforms <keys>] [--report <out.json>] [--json] [connection flags]',
+  options: { spec: { type: "string" }, confirm: { type: "string" }, report: { type: "string" }, ...PAUSED_OPTION },
   run: (ctx) =>
     usageGuard(ctx, async () => {
       const spec = await readSpecFile(str(ctx.values.spec));
       const conn = ctx.connect();
-      const scope = specScope(spec);
-      let confirm = str(ctx.values.confirm);
-      if (confirm === undefined && scope) confirm = await promptConfirm(ctx, confirmPhrase(conn.target, scope));
-      if (confirm === undefined) {
-        throw new UsageError(
-          scope
-            ? `apply writes; pass --confirm "${confirmPhrase(conn.target, scope)}".`
-            : "The spec declares no scope; run plan to see what is wrong with it.",
-        );
+      // Parsing is local; the phrase carries the parsed spec's digest.
+      const expected = specConfirmPhrase(conn.target, parseSpec(spec));
+      let confirm: string | undefined;
+      if (conn.auth === "machine") {
+        if (str(ctx.values.confirm) !== undefined) {
+          ctx.io.stderr("setbuild: --confirm is ignored with --auth machine; the phrase is typed at the prompt.");
+        }
+        if (!ctx.io.prompt) throw new UsageError(MACHINE_NEEDS_TTY);
+        confirm = await promptConfirm(ctx, expected, conn.target.host);
+      } else {
+        confirm = str(ctx.values.confirm);
+        if (confirm === undefined) confirm = await promptConfirm(ctx, expected, conn.target.host);
+        if (confirm === undefined) throw new UsageError(`apply writes; pass --confirm "${expected}".`);
       }
       const out = str(ctx.values.report);
       // The phrase is checked BEFORE the client exists: creating it starts the
@@ -167,8 +199,10 @@ export const applyCommand: CommandSpec = {
       confirmedSpec(conn.target, spec, confirm);
       const client = makeClient(conn.target, conn.tokens, { transport: conn.transport });
       try {
-        const report = publicApplyReport(await applySpec(client, conn.target, spec, confirm));
-        if (out) await writeReportFiles(out, report);
+        const report = publicApplyReport(
+          await applySpec(client, conn.target, spec, confirm, { pausedPlatforms: pausedPlatforms(ctx) }),
+        );
+        if (out) await writeReportFiles(out, report, secretsOf(ctx));
         printReport(ctx, report);
         if (report.stoppedAt) {
           if (!ctx.json && report.template) {
@@ -183,12 +217,16 @@ export const applyCommand: CommandSpec = {
           // The report so far, so the CI artifact shows how far the run got.
           const { sessions: _sessions, ...partial } = err.report as typeof err.report & { sessions?: unknown };
           void _sessions;
-          await writeReportFiles(out, {
-            ...partial,
-            counts: partial.counts ?? { built: 0, committed: 0, skipped: 0 },
-            durationMs: partial.durationMs ?? 0,
-            stoppedAt: { step: -1, reason: `failed: ${err.message}` },
-          });
+          await writeReportFiles(
+            out,
+            {
+              ...partial,
+              counts: partial.counts ?? { built: 0, committed: 0, skipped: 0 },
+              durationMs: partial.durationMs ?? 0,
+              stoppedAt: { step: -1, reason: `failed: ${err.message}` },
+            },
+            secretsOf(ctx),
+          );
         }
         throw err;
       } finally {
@@ -199,8 +237,9 @@ export const applyCommand: CommandSpec = {
 
 export const decisionsTemplateCommand: CommandSpec = {
   summary: "Print a spec with every open decision as a fill-in: from a plan (--spec) or from an apply report (--from-report).",
-  usage: "setbuild decisions-template (--spec <file.json> | --from-report <report.json>) [connection flags]",
-  options: { spec: { type: "string" }, "from-report": { type: "string" } },
+  usage:
+    "setbuild decisions-template (--spec <file.json> | --from-report <report.json>) [--paused-platforms <keys>] [connection flags]",
+  options: { spec: { type: "string" }, "from-report": { type: "string" }, ...PAUSED_OPTION },
   run: (ctx) =>
     usageGuard(ctx, async () => {
       const fromReport = str(ctx.values["from-report"]);
@@ -212,7 +251,9 @@ export const decisionsTemplateCommand: CommandSpec = {
         }
       } else {
         const spec = await readSpecFile(str(ctx.values.spec));
-        report = await withClient(ctx, (client, conn) => planSpec(client, conn.target, spec));
+        report = await withClient(ctx, (client, conn) =>
+          planSpec(client, conn.target, spec, { pausedPlatforms: pausedPlatforms(ctx) }),
+        );
       }
       const n = countOpenDecisions(report.openDecisions);
       if (n === 0 || !report.template) {
@@ -234,10 +275,33 @@ export const schemaCommand: CommandSpec = {
   },
 };
 
+export const confirmPhraseCommand: CommandSpec = {
+  summary: "Offline: print the confirm phrase apply / nb_apply need for a spec on a deployment. No network call.",
+  usage: "setbuild confirm-phrase --spec <file.json> --convex-url <url> [--json]",
+  options: { spec: { type: "string" } },
+  run: (ctx) =>
+    usageGuard(ctx, async () => {
+      const raw = await readSpecFile(str(ctx.values.spec));
+      const convexUrl = str(ctx.values["convex-url"]) ?? str(ctx.io.env.NB_SETBUILD_CONVEX_URL);
+      if (!convexUrl) throw new UsageError("Pass --convex-url <https://<deployment>.convex.cloud>.");
+      // parseTarget and parseSpec are pure; nothing here signs in or connects.
+      const target = parseTarget(convexUrl);
+      const spec = parseSpec(raw);
+      const phrase = specConfirmPhrase(target, spec);
+      ctx.io.stdout(
+        ctx.json
+          ? JSON.stringify({ phrase, host: target.host, scope: spec.scope, digest: contentDigest(spec) }, null, 2)
+          : phrase,
+      );
+      return 0;
+    }),
+};
+
 export const RUNNER_COMMANDS: Record<string, CommandSpec> = {
   inspect: inspectCommand,
   plan: planCommand,
   apply: applyCommand,
   "decisions-template": decisionsTemplateCommand,
   schema: schemaCommand,
+  "confirm-phrase": confirmPhraseCommand,
 };

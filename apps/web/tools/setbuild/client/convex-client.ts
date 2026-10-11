@@ -81,6 +81,20 @@ function truncate(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n)}…` : s;
 }
 
+/**
+ * Where the Convex clients write the server's function logs they forward
+ * (`[CONVEX A(…)] [LOG] …`). Their default is `console.log`, i.e. stdout,
+ * which mixed those lines into `apply --json` and any other machine-readable
+ * stdout. stderr keeps them visible to an operator and out of the output.
+ * Verbose client chatter is dropped.
+ */
+export const STDERR_LOGGER = {
+  logVerbose: (..._args: unknown[]) => {},
+  log: (...args: unknown[]) => console.error(...args),
+  warn: (...args: unknown[]) => console.error(...args),
+  error: (...args: unknown[]) => console.error(...args),
+};
+
 /** Errors Convex returns for a token it will not accept. */
 const AUTH_REJECTED_RE = /Unauthenticated|InvalidAuthHeader|Could not verify OIDC token|AuthTokenExpired|token.*expired/i;
 
@@ -100,7 +114,7 @@ export function makeClient(
   });
 
   if (transport === "http") {
-    const http = new ConvexHttpClient(target.convexUrl, { skipConvexDeploymentUrlCheck });
+    const http = new ConvexHttpClient(target.convexUrl, { skipConvexDeploymentUrlCheck, logger: STDERR_LOGGER });
 
     async function withAuth<T>(run: () => Promise<T>): Promise<T> {
       await firstToken;
@@ -143,6 +157,7 @@ export function makeClient(
   const ws = new ConvexClient(target.convexUrl, {
     unsavedChangesWarning: false,
     skipConvexDeploymentUrlCheck,
+    logger: STDERR_LOGGER,
   });
   ws.setAuth(
     async ({ forceRefreshToken }) => {

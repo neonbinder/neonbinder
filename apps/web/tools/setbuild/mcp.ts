@@ -7,7 +7,7 @@
  *
  *   NB_SETBUILD_CONVEX_URL, NB_SETBUILD_AUTH, NB_SETBUILD_APP_URL,
  *   NB_SETBUILD_WORKER, NB_SETBUILD_TRANSPORT, NB_SETBUILD_CONVEX_SITE_URL,
- *   VITE_CLERK_PUBLISHABLE_KEY,
+ *   VITE_CLERK_PUBLISHABLE_KEY, PAUSED_PLATFORMS,
  *   and the secrets NB_SETBUILD_API_KEY | TESTING_ENDPOINT_SECRET
  *   (+ VERCEL_AUTOMATION_BYPASS_SECRET).
  *   NB_SETBUILD_ENV_FILE optionally names a dotenv file loaded first.
@@ -28,7 +28,7 @@ import { pathToFileURL } from "node:url";
 import { parseEnv } from "node:util";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { redact } from "./auth/token-source";
+import { scrub } from "./auth/token-source";
 import { resolveConnection, secretValues, type Connection } from "./client/connect";
 import { makeClient, type NbClient } from "./client/convex-client";
 import type { Target } from "./client/target";
@@ -42,7 +42,8 @@ export const SERVER_VERSION = "0.1.0";
 const SERVER_INSTRUCTIONS =
   "Builds NeonBinder sets through the same admin functions the Set Builder UI calls. " +
   "Read tools (nb_inspect, nb_plan, nb_review_items) never write. Write tools (nb_apply, nb_decide, " +
-  "nb_build_parallel, nb_sl_review_apply) need confirm = BUILD <convex host> <scope>; take it from nb_plan " +
+  "nb_build_parallel, nb_sl_review_apply) need confirm = BUILD <convex host> <scope> <digest>, the digest " +
+  "binding it to the call's content; take it from nb_plan " +
   "or from the write tool's own error, and only after the operator has seen what will be written and where. " +
   "Never guess a decision: unknown or ambiguous names come back with candidates for the operator to choose.";
 
@@ -131,7 +132,11 @@ export function buildServer(env: NodeJS.ProcessEnv): { server: McpServer; close:
       },
       env,
     );
-    ({ service, close } = lazyService(conn, createSetBuildService));
+    // PAUSED_PLATFORMS is read from the same env the connection came from, as
+    // the CLI's --paused-platforms defaults to it.
+    ({ service, close } = lazyService(conn, (client, target) =>
+      createSetBuildService(client, target, { pausedPlatforms: env.PAUSED_PLATFORMS }),
+    ));
   } catch (err) {
     service = unavailableService(err);
   }
@@ -175,7 +180,7 @@ const invokedDirectly =
 if (invokedDirectly) {
   main().catch((err: unknown) => {
     const message = err instanceof Error ? err.message : String(err);
-    process.stderr.write(`nb-setbuild: ${redact(message, secretValues(process.env))}\n`);
+    process.stderr.write(`nb-setbuild: ${scrub(message, secretValues(process.env))}\n`);
     process.exitCode = 1;
   });
 }

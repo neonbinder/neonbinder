@@ -11,11 +11,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { parseTarget } from "./client/target";
 import { registerTools } from "./mcp-tools";
 import { inspectMismatches, runSmokeSequence, smokeExpectSchema, type SmokeExpect } from "./mcp-smoke";
-import type { InspectReport, InspectRow, OpenDecisions, SetBuildService } from "./service";
+import { specConfirmPhrase, type InspectReport, type InspectRow, type OpenDecisions, type SetBuildService } from "./service";
+import { parseSpec } from "./spec/schema";
 
 const TARGET = parseTarget("https://happy-otter-123.convex.cloud");
 const SCOPE = "Baseball/2024/Topps/Topps Chrome";
-const PHRASE = `BUILD happy-otter-123.convex.cloud ${SCOPE}`;
+const SMOKE_SPEC = { version: 1, scope: SCOPE, steps: [] };
+/** What `setbuild confirm-phrase` prints for the smoke spec, and what CI passes as --confirm. */
+const PHRASE = specConfirmPhrase(TARGET, parseSpec(SMOKE_SPEC));
 const CHROME = { sport: "Baseball", year: "2024", manufacturer: "Topps", set: "Topps Chrome" };
 const BIG_LEAGUE = { ...CHROME, set: "Big League" };
 
@@ -104,9 +107,14 @@ afterEach(async () => {
   while (open.length) await open.pop()!();
 });
 
-async function connect(service: unknown, spec = { version: 1, scope: SCOPE, steps: [] }) {
+async function connect(service: unknown, spec: unknown = SMOKE_SPEC) {
   const server = new McpServer({ name: "nb-setbuild", version: "0.0.0" });
-  registerTools(server, service as SetBuildService, { secrets: [], cwd: "/", readSpecFile: async () => JSON.stringify(spec) });
+  registerTools(server, service as SetBuildService, {
+    secrets: [],
+    cwd: "/",
+    readSpecFile: async () => JSON.stringify(spec),
+    resolveSpecPath: async (p) => p,
+  });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await server.connect(s);
   const client = new Client({ name: "smoke-test", version: "0.0.0" });
@@ -144,7 +152,27 @@ describe("runSmokeSequence", () => {
     const checks = await runSmokeSequence(await connect(service), {
       specPath: "/seed/parallel.spec.json",
       expect: EXPECT,
-      confirm: "BUILD prod-thing.convex.cloud Baseball/2024/Topps/Topps Chrome",
+      confirm: PHRASE.replace(TARGET.host, "prod-thing.convex.cloud"),
+    });
+    expect(checks.at(-1)).toMatchObject({ ok: false, label: "nb_plan" });
+    expect(service.write.apply).not.toHaveBeenCalled();
+  });
+
+  test("a phrase computed for another spec (same host and scope, other content) stops before applying", async () => {
+    const service = fakeService();
+    const edited = specConfirmPhrase(
+      TARGET,
+      parseSpec({
+        version: 1,
+        scope: SCOPE,
+        steps: [{ kind: "brand-year", path: { sport: "Baseball", year: "2025", manufacturer: "Bowman" }, syncSets: true }],
+      }),
+    );
+    expect(edited).not.toBe(PHRASE);
+    const checks = await runSmokeSequence(await connect(service), {
+      specPath: "/seed/parallel.spec.json",
+      expect: EXPECT,
+      confirm: edited,
     });
     expect(checks.at(-1)).toMatchObject({ ok: false, label: "nb_plan" });
     expect(service.write.apply).not.toHaveBeenCalled();

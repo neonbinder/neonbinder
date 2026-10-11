@@ -1,16 +1,23 @@
 import { describe, expect, test } from "vitest";
-import { ConfirmMismatch, confirmPhrase } from "../client/target";
-import { countOpenDecisions } from "../service";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ConfirmMismatch } from "../client/target";
+import { READ_TOOLS, registerTools } from "../mcp-tools";
+import { countOpenDecisions, decideConfirmPhrase, specConfirmPhrase } from "../service";
+import { parseSpec } from "../spec/schema";
 import { DECISION_PLACEHOLDER } from "../lib/review";
 import { applySpec } from "./apply";
 import { FAKE_TARGET, fakeClient, type FakeClient } from "./fake-client";
 import { planSpec } from "./plan";
-import { PlanWouldWrite, readOnlyClient } from "./read-only-client";
+import { PlanWouldWrite, queryOnlyClient, ReadOnlyViolation, readOnlyClient } from "./read-only-client";
 import { createSetBuildService } from "./service";
 
 const PATH = { sport: "Baseball", year: "2024", manufacturer: "Topps", set: "Topps Chrome" };
 const SCOPE = "Baseball/2024/Topps/Topps Chrome";
-const CONFIRM = confirmPhrase(FAKE_TARGET, SCOPE);
+/** The phrase `apply` needs for a spec: host, scope and the parsed spec's digest. */
+const confirmFor = (raw: unknown) => specConfirmPhrase(FAKE_TARGET, parseSpec(raw));
+const CONFIRM = confirmFor(spec());
 
 function spec(review: unknown = { players: [], teams: [], leagues: [] }) {
   return {
@@ -177,6 +184,35 @@ describe("apply — the confirm phrase comes before any network call", () => {
     expect(client.calls).toEqual([]);
   });
 
+  test("the phrase is bound to the spec's content: an edited spec needs a new phrase", async () => {
+    const edited = spec();
+    edited.steps[0].base.checklist.expectCards = 3;
+    expect(confirmFor(edited)).not.toBe(CONFIRM);
+    expect(confirmFor(edited).slice(0, -8)).toBe(CONFIRM.slice(0, -8));
+    const client = world(done());
+    await expect(applySpec(client, FAKE_TARGET, edited, CONFIRM)).rejects.toMatchObject({
+      name: "ConfirmMismatch",
+      expected: confirmFor(edited),
+    });
+    expect(client.calls).toEqual([]);
+    // Key order is not content: the same spec written in another order keeps its phrase.
+    const reordered = JSON.parse(JSON.stringify({ steps: spec().steps, scope: SCOPE, version: 1 }));
+    expect(confirmFor(reordered)).toBe(CONFIRM);
+  });
+
+  test("a decide phrase is bound to its answers", async () => {
+    const client = world(done());
+    const svc = createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" });
+    const create = { players: [{ name: "Shohei Ohtani", decision: "create" as const }] };
+    const skip = { players: [{ name: "Shohei Ohtani", decision: "skip" as const }] };
+    await expect(svc.write.decide(PATH, skip, decideConfirmPhrase(FAKE_TARGET, PATH, create))).rejects.toBeInstanceOf(
+      ConfirmMismatch,
+    );
+    // An apply phrase never confirms a decide on the same set.
+    await expect(svc.write.decide(PATH, create, CONFIRM)).rejects.toBeInstanceOf(ConfirmMismatch);
+    expect(client.calls).toEqual([]);
+  });
+
   test("the service's write methods refuse the same way", async () => {
     const client = world(done());
     const svc = createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" });
@@ -227,7 +263,8 @@ describe("apply — idempotent and resumable", () => {
     const items = await svc.read.reviewItems(PATH);
     expect(items.review.players.map((p) => p.name)).toEqual(["Shohei Ohtani"]);
 
-    const decided = await svc.write.decide(PATH, { players: [{ name: "Shohei Ohtani", decision: "create" }] }, CONFIRM);
+    const answers = { players: [{ name: "Shohei Ohtani", decision: "create" as const }] };
+    const decided = await svc.write.decide(PATH, answers, decideConfirmPhrase(FAKE_TARGET, PATH, answers));
     expect(decided.applied.players).toBe(1);
     expect(client.callsTo("entityReviewQueue:recordDecision").map((c) => c.args)).toEqual([
       { reviewRowId: "rv1", action: "create" },
@@ -244,13 +281,8 @@ describe("apply — idempotent and resumable", () => {
   test("a review answered in the spec is walked and committed in one run", async () => {
     const w: World = { ...done(), baseCards: 0, sepiaCards: 2, reviewRows: [ohtaniRow()] };
     const client = world(w);
-    const r = await applySpec(
-      client,
-      FAKE_TARGET,
-      spec({ players: [{ name: "Shohei Ohtani", decision: "create" }], teams: [], leagues: [] }),
-      CONFIRM,
-      { pausedPlatforms: "" },
-    );
+    const answered = spec({ players: [{ name: "Shohei Ohtani", decision: "create" }], teams: [], leagues: [] });
+    const r = await applySpec(client, FAKE_TARGET, answered, confirmFor(answered), { pausedPlatforms: "" });
     expect(r.stoppedAt).toBeUndefined();
     expect(r.counts).toMatchObject({ committed: 2, reviewed: 1 });
     expect(client.writes().map((c) => c.fn)).toEqual([
@@ -304,5 +336,86 @@ describe("readOnlyClient", () => {
       "action setReconciliation:fetchRawOptions",
       "query selectorOptions:getSelectorOptions",
     ]);
+  });
+});
+
+describe("MCP read tools — structurally read-only (security audit item 2)", () => {
+  /** A seeded world whose every mutation and action THROWS, recording the attempt. */
+  function throwingWorld(w: World) {
+    const inner = world(w);
+    const attempts: string[] = [];
+    const client: FakeClient = {
+      ...inner,
+      mutation: async (fn, args) => {
+        void args;
+        const { getFunctionName } = await import("convex/server");
+        attempts.push(`mutation ${getFunctionName(fn as never)}`);
+        throw new Error("this test's client refuses every mutation");
+      },
+      action: async (fn, args) => {
+        void args;
+        const { getFunctionName } = await import("convex/server");
+        attempts.push(`action ${getFunctionName(fn as never)}`);
+        throw new Error("this test's client refuses every action");
+      },
+    };
+    return { client, inner, attempts };
+  }
+
+  async function connect(client: FakeClient) {
+    const server = new McpServer({ name: "nb-setbuild-readonly-test", version: "0.0.0" });
+    registerTools(server, createSetBuildService(client, FAKE_TARGET, { pausedPlatforms: "" }), { secrets: [] });
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverSide);
+    const mcp = new Client({ name: "readonly-test", version: "0.0.0" });
+    await mcp.connect(clientSide);
+    return { mcp, close: async () => (await mcp.close(), await server.close()) };
+  }
+
+  test.each([
+    ["a finished set", done()],
+    ["an empty set", { ...done(), baseCards: 0, sepiaCards: 0 }],
+    ["an unsynced tree", { synced: false, baseCards: 0, sepiaCards: 0, reviewRows: [] }],
+  ])("every read tool answers on %s and attempts no mutation or action", async (_label, w) => {
+    const { client, attempts } = throwingWorld(w);
+    const { mcp, close } = await connect(client);
+    try {
+      const calls: Record<(typeof READ_TOOLS)[number], Record<string, unknown>> = {
+        nb_inspect: { path: PATH },
+        nb_plan: { spec: spec() },
+        nb_review_items: { path: PATH },
+      };
+      for (const tool of READ_TOOLS) {
+        const r = await mcp.callTool({ name: tool, arguments: calls[tool] });
+        const text = (r.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("");
+        expect(r.isError, `${tool}: ${text}`).not.toBe(true);
+      }
+      // The brand-year forms too (the world may not model every read they make;
+      // what matters here is that nothing but a query is attempted).
+      const brandYear = { sport: "Baseball", year: "2024", manufacturer: "Topps" };
+      await mcp.callTool({ name: "nb_inspect", arguments: { path: brandYear } });
+      await mcp.callTool({ name: "nb_review_items", arguments: { path: brandYear } });
+      expect(attempts).toEqual([]);
+      expect(client.calls.filter((c) => c.kind === "mutation" || c.kind === "action")).toEqual([]);
+    } finally {
+      await close();
+    }
+  });
+
+  test("queryOnlyClient refuses every mutation and action before it reaches the client", async () => {
+    const inner = fakeClient()
+      .on("selectorOptions:getSelectorOptions", [])
+      .on("setReconciliation:fetchRawOptions", { success: true });
+    const qo = queryOnlyClient(inner);
+    const { api } = await import("../../../convex/_generated/api");
+    await expect(
+      qo.mutation(api.entityReviewQueue.recordDecision, { reviewRowId: "x" as never, action: "skip" }),
+    ).rejects.toBeInstanceOf(ReadOnlyViolation);
+    // Even plan's one allowed marketplace read is refused here.
+    await expect(qo.action(api.setReconciliation.fetchRawOptions, { level: "insert" } as never)).rejects.toBeInstanceOf(
+      ReadOnlyViolation,
+    );
+    await qo.query(api.selectorOptions.getSelectorOptions, { level: "sport" });
+    expect(inner.calls.map((c) => `${c.kind} ${c.fn}`)).toEqual(["query selectorOptions:getSelectorOptions"]);
   });
 });

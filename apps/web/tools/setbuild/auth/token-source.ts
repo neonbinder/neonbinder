@@ -65,6 +65,19 @@ export function redact(text: string, secrets: Iterable<string | undefined | null
   return out;
 }
 
+/** Anything JWT-shaped: three base64url segments, the first a JSON header (`eyJ`). */
+const JWT_RE = /eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*/g;
+
+/**
+ * The one scrub for everything the tool emits — MCP results, report files,
+ * CLI errors: each secret value redacted (`redact`), then anything JWT-shaped
+ * replaced, so a session or template token that reached a message is never
+ * printed or written to disk.
+ */
+export function scrub(text: string, secrets: Iterable<string | undefined | null>): string {
+  return redact(text, secrets).replace(JWT_RE, "[redacted-token]");
+}
+
 export interface JwtClaims {
   sub?: string;
   exp?: number;

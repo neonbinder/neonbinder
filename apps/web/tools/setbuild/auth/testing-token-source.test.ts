@@ -16,6 +16,7 @@ function convexJwt(n = 1, overrides: Record<string, unknown> = {}): string {
   return fakeJwt({
     sub: "user_abc",
     aud: "convex",
+    iss: `https://${FAPI_HOST}`,
     role: "admin",
     exp: NOW / 1000 + 3600,
     iat: NOW / 1000,
@@ -32,7 +33,7 @@ const signInOk = () =>
     { authorization: CLIENT_JWT },
   );
 
-function source(fetchFn: typeof fetch, extra: { bypassSecret?: string } = {}) {
+function source(fetchFn: typeof fetch, extra: { bypassSecret?: string; appUrl?: string; publishableKey?: string } = {}) {
   return testingTokenSource({
     appUrl: "http://localhost:3005/some/path",
     testingSecret: SECRET,
@@ -57,11 +58,11 @@ describe("testingTokenSource", () => {
       "POST /v1/client/sign_ins": signInOk,
       "POST /v1/client/sessions/{sid}/tokens/convex": () => json({ object: "token", jwt: convexJwt(++minted) }),
     });
-    const token = await source(fetchFn, { bypassSecret: BYPASS }).getToken();
+    const token = await source(fetchFn, { bypassSecret: BYPASS, appUrl: "https://preview-abc.vercel.app/some/path" }).getToken();
 
     expect(decodeJwtClaims(token)).toMatchObject({ sub: "user_abc", aud: "convex", n: 1 });
     expect(calls.map((c) => `${c.method} ${c.url.host}${c.url.pathname}`)).toEqual([
-      "POST localhost:3005/api/auth/testing",
+      "POST preview-abc.vercel.app/api/auth/testing",
       `POST ${FAPI_HOST}/v1/client/sign_ins`,
       `POST ${FAPI_HOST}/v1/client/sessions/sess_one/tokens/convex`,
     ]);
@@ -299,6 +300,63 @@ describe("testingTokenSource", () => {
     expect((err as SetbuildAuthError).stage).toBe("fapi_sign_in_unreachable");
     expect((err as Error).message).not.toContain(TESTING_TOKEN);
     expect((err as Error).message).toContain("TypeError");
+  });
+
+  test("the Vercel bypass secret goes only to an https origin, never to plain-http localhost", async () => {
+    const { fetchFn, calls } = routedFetch({
+      "POST /api/auth/testing": endpointOk,
+      "POST /v1/client/sign_ins": signInOk,
+      "POST /v1/client/sessions/{sid}/tokens/convex": () => json({ jwt: convexJwt() }),
+    });
+    await source(fetchFn, { bypassSecret: BYPASS, appUrl: "http://localhost:3005" }).getToken();
+    expect(calls[0].url.protocol).toBe("http:");
+    expect(calls[0].headers["x-vercel-protection-bypass"]).toBeUndefined();
+    expect(everything(calls)).not.toContain(BYPASS);
+  });
+
+  test("the app URL must be https off loopback (the testing secret is sent to it)", () => {
+    const base = {
+      testingSecret: SECRET,
+      worker: 0,
+      publishableKey: publishableKeyFor(FAPI_HOST),
+      fetchFn: (async () => json({})) as typeof fetch,
+    };
+    for (const appUrl of ["http://preview-abc.vercel.app", "http://10.0.0.5:3000", "ftp://localhost:3000"]) {
+      expect(() => testingTokenSource({ ...base, appUrl }), appUrl).toThrow(/https/);
+    }
+    for (const appUrl of ["https://preview-abc.vercel.app", "http://localhost:3000", "http://127.0.0.1:3000", "http://[::1]:3000"]) {
+      expect(() => testingTokenSource({ ...base, appUrl }), appUrl).not.toThrow();
+    }
+  });
+
+  test("a production Clerk instance (pk_live_) is refused before any call", () => {
+    const { fetchFn, calls } = routedFetch({});
+    expect(() =>
+      testingTokenSource({
+        appUrl: "https://preview-abc.vercel.app",
+        testingSecret: SECRET,
+        worker: 0,
+        publishableKey: publishableKeyFor(FAPI_HOST).replace("pk_test_", "pk_live_"),
+        fetchFn,
+      }),
+    ).toThrow(/pk_live_/);
+    expect(calls).toEqual([]);
+  });
+
+  test.each([
+    ["another Clerk instance", { iss: "https://other-instance-9.clerk.accounts.dev" }],
+    ["no iss at all", { iss: undefined }],
+    ["an iss that is not a URL", { iss: "example-instance-12.clerk.accounts.dev" }],
+  ])("a token whose issuer is %s is refused", async (_label, overrides) => {
+    const { fetchFn } = routedFetch({
+      "POST /api/auth/testing": endpointOk,
+      "POST /v1/client/sign_ins": signInOk,
+      "POST /v1/client/sessions/{sid}/tokens/convex": () => json({ jwt: convexJwt(1, overrides) }),
+    });
+    const err = await source(fetchFn).getToken().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SetbuildAuthError);
+    expect((err as SetbuildAuthError).stage).toBe("jwt_issuer");
+    expect((err as Error).message).toContain(FAPI_HOST);
   });
 
   test("rejects a bad worker index and a missing secret up front", () => {

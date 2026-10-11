@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { publishableKeyFor } from "../auth/test-helpers";
 import { ConfigError, resolveConnection, secretValues } from "./connect";
+import { TargetError } from "./target";
 
 const CONVEX = "https://happy-otter-123.convex.cloud";
 const PK = publishableKeyFor("foo-bar-1.clerk.accounts.dev");
@@ -74,6 +75,64 @@ describe("resolveConnection", () => {
     expect(() => resolveConnection({ auth: "testing", convexUrl: CONVEX, transport: "grpc" }, env)).toThrow(
       /--transport/,
     );
+  });
+});
+
+describe("credential destinations (security audit item 1, 4)", () => {
+  const testingEnv = {
+    TESTING_ENDPOINT_SECRET: SECRET,
+    VITE_CLERK_PUBLISHABLE_KEY: PK,
+  };
+
+  test("machine auth refuses a site URL that is not the Convex URL's .convex.site twin", () => {
+    const env = { NB_SETBUILD_API_KEY: "ak_key_value_123" };
+    for (const convexSiteUrl of ["https://evil.example.com", "https://prod-deploy-1.convex.site", "http://happy-otter-123.convex.site"]) {
+      let caught: unknown;
+      try {
+        resolveConnection({ auth: "machine", convexUrl: CONVEX, convexSiteUrl }, env);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught, convexSiteUrl).toBeInstanceOf(TargetError);
+      expect((caught as Error).message).not.toContain("ak_key_value_123");
+    }
+    // The twin itself, and a local backend, still resolve.
+    expect(
+      resolveConnection({ auth: "machine", convexUrl: CONVEX, convexSiteUrl: "https://happy-otter-123.convex.site" }, env).tokens.describe(),
+    ).toContain("happy-otter-123.convex.site/machine/token");
+    expect(resolveConnection({ auth: "machine", convexUrl: "http://127.0.0.1:3210" }, env).target.convexSite).toBe(
+      "http://127.0.0.1:3211",
+    );
+  });
+
+  test("a custom Convex domain cannot carry machine auth (no twin to bind)", () => {
+    expect(() =>
+      resolveConnection(
+        { auth: "machine", convexUrl: "https://api.example.com", convexSiteUrl: "https://site.example.com" },
+        { NB_SETBUILD_API_KEY: "ak_key_value_123" },
+      ),
+    ).toThrow(TargetError);
+  });
+
+  test("testing auth refuses a plain-http app URL off loopback", () => {
+    expect(() =>
+      resolveConnection({ auth: "testing", convexUrl: CONVEX, appUrl: "http://preview.example.com" }, testingEnv),
+    ).toThrow(/https/);
+    expect(resolveConnection({ auth: "testing", convexUrl: CONVEX, appUrl: "https://preview.example.com" }, testingEnv).auth).toBe(
+      "testing",
+    );
+    expect(resolveConnection({ auth: "testing", convexUrl: CONVEX, appUrl: "http://127.0.0.1:3000" }, testingEnv).auth).toBe(
+      "testing",
+    );
+  });
+
+  test("testing auth refuses a production (pk_live_) Clerk key", () => {
+    expect(() =>
+      resolveConnection(
+        { auth: "testing", convexUrl: CONVEX, appUrl: "https://preview.example.com" },
+        { ...testingEnv, VITE_CLERK_PUBLISHABLE_KEY: PK.replace("pk_test_", "pk_live_") },
+      ),
+    ).toThrow(/pk_live_/);
   });
 });
 

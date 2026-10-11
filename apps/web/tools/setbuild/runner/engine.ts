@@ -17,10 +17,11 @@
  */
 
 import type { NbClient } from "../client/convex-client";
-import { confirmPhrase, type Target } from "../client/target";
+import type { Target } from "../client/target";
 import {
   formatPath,
   ResolveError,
+  specConfirmPhrase,
   type ApplyCounts,
   type OpenDecisions,
   type PlanReport,
@@ -148,6 +149,9 @@ export async function runSpec(
 ): Promise<RunResult> {
   const now = opts.now ?? Date.now;
   const started = now();
+  // Taken before the walk, from the spec exactly as parsed: the phrase binds
+  // what the operator approved, whatever the run later does with it.
+  const phrase = specConfirmPhrase(target, spec);
   const steps: PlanStep[] = [];
   const open = emptyOpenDecisions();
   const counts = emptyCounts();
@@ -257,7 +261,7 @@ export async function runSpec(
     return {
       target: { convexUrl: target.convexUrl, host: target.host },
       scope: spec.scope,
-      confirmPhrase: confirmPhrase(target, spec.scope),
+      confirmPhrase: phrase,
       steps,
       openDecisions: open,
       template: templateTouched ? template : null,

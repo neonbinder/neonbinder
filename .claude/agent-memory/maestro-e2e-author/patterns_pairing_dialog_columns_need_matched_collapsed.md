@@ -22,6 +22,8 @@ silently for exactly this reason.
 Prove Keep all by arithmetic, not by sight: `copyTextFrom` both column
 headings and the footer `N cards will be saved` before, then after the keeps
 `assertTrue` footer == before + bsc + sl (footer = matched + kept).
-Worked example: `topps-chrome-insert-keep-all-no-wizard.yaml`.
+No live flow uses this today: NEO-339 found every Topps Chrome insert pairs
+100%, so the keep-all flow became `topps-chrome-insert-known-roster-no-wizard`
+(no columns). Apply it the day a set with one-sided cards is approved.
 Related: [[pairing-sync-test]] (any flow mentioning "Match Cards" needs
 `^Confirm$` or a `maestro-lint: streaming-ok` reason).

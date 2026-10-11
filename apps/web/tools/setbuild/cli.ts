@@ -9,10 +9,11 @@
  * Exit codes: 0 ok, 1 the command failed, 2 usage error.
  */
 
+import { createInterface } from "node:readline/promises";
 import { pathToFileURL } from "node:url";
 import { parseArgs, type ParseArgsOptionsConfig } from "node:util";
 import { api } from "../../convex/_generated/api";
-import { decodeJwtClaims, redact } from "./auth/token-source";
+import { decodeJwtClaims, scrub } from "./auth/token-source";
 import {
   resolveConnection,
   secretValues,
@@ -26,6 +27,12 @@ export interface CliIO {
   stdout: (line: string) => void;
   stderr: (line: string) => void;
   env: NodeJS.ProcessEnv;
+  /**
+   * Ask the operator a question and return what they typed. Present ONLY when
+   * stdin is an interactive terminal; absent, a command that needs a person
+   * (`apply --auth machine`) refuses rather than reading a pipe.
+   */
+  prompt?: (question: string) => Promise<string>;
 }
 
 export type FlagValues = Record<string, string | boolean | string[] | boolean[] | undefined>;
@@ -148,7 +155,8 @@ const whoamiCommand: CommandSpec = {
 
 /**
  * Every command: whoami (here), mcp-smoke (MCP), and the runner's inspect,
- * plan, apply, decisions-template and schema (runner/cli-commands.ts).
+ * plan, apply, decisions-template, schema and confirm-phrase
+ * (runner/cli-commands.ts).
  */
 export const COMMANDS: Record<string, CommandSpec> = {
   whoami: whoamiCommand,
@@ -237,10 +245,11 @@ export async function main(argv: string[], io: CliIO): Promise<number> {
     return await command.run(ctx);
   } catch (err) {
     // Last line of defence: every module already keeps secrets out of its
-    // messages, and this strips any that slipped through anyway. No stack —
-    // a stack repeats the message and adds nothing an operator acts on.
+    // messages, and this strips any that slipped through anyway (secret env
+    // values and anything JWT-shaped — the scrub the MCP layer uses). No
+    // stack — a stack repeats the message and adds nothing an operator acts on.
     const message = err instanceof Error ? `${err.name === "Error" ? "" : `${err.name}: `}${err.message}` : String(err);
-    io.stderr(`setbuild ${name}: ${redact(message, secretValues(io.env))}`);
+    io.stderr(`setbuild ${name}: ${scrub(message, secretValues(io.env))}`);
     return 1;
   }
 }
@@ -248,17 +257,28 @@ export async function main(argv: string[], io: CliIO): Promise<number> {
 const invokedDirectly =
   process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
+/** A readline prompt on the terminal (question on stderr, so stdout stays the command's output). */
+async function terminalPrompt(question: string): Promise<string> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    return await rl.question(question);
+  } finally {
+    rl.close();
+  }
+}
+
 if (invokedDirectly) {
   main(process.argv.slice(2), {
     stdout: (line) => process.stdout.write(`${line}\n`),
     stderr: (line) => process.stderr.write(`${line}\n`),
     env: process.env,
+    ...(process.stdin.isTTY ? { prompt: terminalPrompt } : {}),
   }).then(
     (code) => {
       process.exitCode = code;
     },
     (err: unknown) => {
-      process.stderr.write(`setbuild: ${redact(String(err), secretValues(process.env))}\n`);
+      process.stderr.write(`setbuild: ${scrub(String(err), secretValues(process.env))}\n`);
       process.exitCode = 1;
     },
   );

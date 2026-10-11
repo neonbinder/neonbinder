@@ -10,15 +10,16 @@
  * alone, so a read tool has no reference through which it could write.
  *
  * Every `write` method MUST throw `ConfirmMismatch` (client/target.ts) before
- * any network call when `confirm` is not exactly
- * `confirmPhrase(target, scope)`, where `scope` is:
+ * any network call when `confirm` is not exactly the phrase below,
+ * `BUILD <host> <scope> <digest>`, where `digest` binds the phrase to the
+ * write's content (`contentDigest`: SHA-256 of canonical JSON, 8 hex chars):
  *
- * | method          | scope                                   |
- * |-----------------|-----------------------------------------|
- * | apply           | `spec.scope`                            |
- * | decide          | `formatPath(path)` (a set path)         |
- * | buildParallel   | `formatPath(path)` (a set path)         |
- * | slReviewApply   | `formatPath(path)` (a brand-year path)  |
+ * | method          | phrase helper                 | scope                    | digest over                  |
+ * |-----------------|-------------------------------|--------------------------|------------------------------|
+ * | apply           | `specConfirmPhrase`           | `spec.scope`             | the parsed spec              |
+ * | decide          | `decideConfirmPhrase`         | `formatPath(path)` (set) | path + row + the answers     |
+ * | buildParallel   | `buildParallelConfirmPhrase`  | `formatPath(path)` (set) | path + row name + rebuild    |
+ * | slReviewApply   | `slReviewConfirmPhrase`       | `formatPath(path)` (b-y) | path + the decisions         |
  *
  * The MCP layer checks the same phrase itself before calling (so a wrong
  * phrase costs zero service calls); the service's own check is the second
@@ -28,7 +29,7 @@
  * contract both sides must compute identically, and `countOpenDecisions`).
  */
 
-import type { Target } from "./client/target";
+import { confirmPhrase, contentDigest, type Target } from "./client/target";
 
 // ---------------------------------------------------------------------------
 // Spec placeholders
@@ -74,6 +75,48 @@ export function isSetPath(p: NodePath): p is SetPath {
 export function formatPath(p: NodePath): string {
   const parts = [p.sport, p.year, p.manufacturer, ...(isSetPath(p) ? [p.set] : [])];
   return parts.map((s) => String(s).trim()).join("/");
+}
+
+// ---------------------------------------------------------------------------
+// Confirm phrases
+// ---------------------------------------------------------------------------
+// One helper per write, used by both the MCP layer (its pre-check) and the
+// runner (its own check), so the two can never compute different phrases.
+// Each digest names the write it is for, so a phrase for one write never
+// confirms another write with the same arguments.
+
+/** `apply` / `nb_apply`: the spec's scope and the digest of the PARSED spec (`parseSpec`). */
+export function specConfirmPhrase(t: Target, spec: { scope: string }): string {
+  return confirmPhrase(t, spec.scope, contentDigest(spec));
+}
+
+/** `decide` / `nb_decide`. Absent answer lists count as empty. */
+export function decideConfirmPhrase(t: Target, path: SetPath, d: ReviewDecisions): string {
+  const scope = formatPath(path);
+  return confirmPhrase(
+    t,
+    scope,
+    contentDigest({
+      write: "decide",
+      path: scope,
+      row: d.row ?? null,
+      players: d.players ?? [],
+      teams: d.teams ?? [],
+      leagues: d.leagues ?? [],
+    }),
+  );
+}
+
+/** `buildParallel` / `nb_build_parallel`. */
+export function buildParallelConfirmPhrase(t: Target, path: SetPath, name: string, o: { rebuild?: boolean }): string {
+  const scope = formatPath(path);
+  return confirmPhrase(t, scope, contentDigest({ write: "buildParallel", path: scope, name, rebuild: o.rebuild === true }));
+}
+
+/** `slReviewApply` / `nb_sl_review_apply`. */
+export function slReviewConfirmPhrase(t: Target, path: BrandYearPath, decisions: SlDecision[]): string {
+  const scope = formatPath(path);
+  return confirmPhrase(t, scope, contentDigest({ write: "slReviewApply", path: scope, decisions }));
 }
 
 // ---------------------------------------------------------------------------

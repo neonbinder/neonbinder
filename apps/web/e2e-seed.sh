@@ -24,8 +24,10 @@
 # Auth: `--auth testing` against the local Vite at $APP_URL (default
 # http://localhost:3000). TESTING_ENDPOINT_SECRET and VITE_CLERK_PUBLISHABLE_KEY
 # are read from .env.local (--env-file; values already in your environment win)
-# and must be the ones the running Vite uses. The confirm phrase is built for
-# the harness's own deployment: the apply cannot land anywhere else.
+# and must be the ones the running Vite uses. The confirm phrase is computed
+# offline by `setbuild confirm-phrase` for the harness's own deployment and
+# this spec's content (BUILD <host> <scope> <digest>): the apply cannot land
+# anywhere else, nor run a spec other than the one the phrase was made for.
 #
 # Prereq: the harness must be up (./e2e-local-up.sh or `npm run e2e:local`) —
 # this reads .e2e-local/env that the harness writes. Without a harness, export
@@ -52,7 +54,11 @@ CONVEX_SLUG="${CONVEX_SITE_URL#https://}"; CONVEX_SLUG="${CONVEX_SLUG%.convex.si
 
 SPEC="${E2E_SEED_SPEC:-.maestro/seed/baseline.spec.json}"
 [ -f "$SPEC" ] || { echo "✗ spec not found: $SPEC" >&2; exit 1; }
-SCOPE="$(jq -r '.scope // "e2e-baseline"' "$SPEC" 2>/dev/null)" || SCOPE="e2e-baseline"
+CONVEX_URL="https://${CONVEX_SLUG}.convex.cloud"
+# Offline: parses the spec and hashes it; no network, no sign-in. A spec that
+# does not parse stops here, before the reset.
+PHRASE="$(npm run --silent setbuild -- confirm-phrase --spec "$SPEC" --convex-url "$CONVEX_URL")" \
+  || { echo "✗ could not compute the confirm phrase for $SPEC (see above)." >&2; exit 1; }
 APP_URL="${APP_URL:-http://localhost:3000}"
 ENV_FILE_ARGS=()
 [ -f .env.local ] && ENV_FILE_ARGS=(--env-file .env.local)
@@ -65,10 +71,10 @@ if npm run setbuild -- apply \
     --spec "$SPEC" \
     --auth testing \
     --app-url "$APP_URL" \
-    --convex-url "https://${CONVEX_SLUG}.convex.cloud" \
+    --convex-url "$CONVEX_URL" \
     --worker 0 \
     --paused-platforms "${PAUSED_PLATFORMS:-}" \
-    --confirm "BUILD ${CONVEX_SLUG}.convex.cloud ${SCOPE}" \
+    --confirm "$PHRASE" \
     --report setbuild-seed-report.json \
     ${ENV_FILE_ARGS[@]+"${ENV_FILE_ARGS[@]}"}; then
   echo "✅ canonical data seeded (report: setbuild-seed-report.json)."

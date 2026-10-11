@@ -416,9 +416,13 @@ jobs:
           secret=""; pk=""
           # 1. vercel pull. Runs from the repo root (the Vercel project's Root
           #    Directory is apps/web and the CLI composes it onto the cwd).
+          #    `env -u` strips the two secrets this step holds that the Vercel
+          #    CLI has no use for, so a third-party CLI (and anything it
+          #    spawns) never sees the Convex deploy key or the bypass secret.
           if [ -n "${VERCEL_TOKEN:-}" ] && [ -n "${VERCEL_ORG_ID:-}" ] && [ -n "${VERCEL_PROJECT_ID:-}" ]; then
             echo "Trying vercel pull (preview, branch $HEAD_REF)"
-            if (cd "$GITHUB_WORKSPACE" && npx --yes vercel@48.2.0 pull --yes --environment=preview \
+            if (cd "$GITHUB_WORKSPACE" && env -u CONVEX_DEPLOY_KEY -u VERCEL_AUTOMATION_BYPASS_SECRET \
+                  npx --yes vercel@48.2.0 pull --yes --environment=preview \
                   --git-branch="$HEAD_REF" --token="$VERCEL_TOKEN" > "$creds_dir/vercel-pull.log" 2>&1); then
               envfile="$GITHUB_WORKSPACE/.vercel/.env.preview.local"
               secret="$(env_value "$envfile" TESTING_ENDPOINT_SECRET)"
@@ -457,12 +461,17 @@ jobs:
           export VITE_CLERK_PUBLISHABLE_KEY="$pk"
 
           convex_url="https://${CONVEX_NAME}.convex.cloud"
-          # The confirm phrase is "BUILD <convex host> <spec scope>". The scope
-          # is read from the spec so a renamed scope fails here with a clear
-          # message rather than as an opaque "wrong phrase".
-          scope_of() { jq -r '.scope // "e2e-baseline"' "$1"; }
-          base_scope="$(scope_of .maestro/seed/baseline.spec.json)"
-          par_scope="$(scope_of .maestro/seed/parallel.spec.json)"
+          # The confirm phrase is "BUILD <convex host> <spec scope> <digest>",
+          # the digest binding it to the spec's content. `setbuild
+          # confirm-phrase` computes it offline (no network, no auth) with the
+          # same code apply and nb_plan use, so it is never built by hand. A
+          # spec that does not parse fails here, before the reset.
+          base_phrase="$(npm run --silent setbuild -- confirm-phrase \
+            --spec .maestro/seed/baseline.spec.json --convex-url "$convex_url")"
+          par_phrase="$(npm run --silent setbuild -- confirm-phrase \
+            --spec .maestro/seed/parallel.spec.json --convex-url "$convex_url")"
+          echo "baseline confirm phrase: $base_phrase"
+          echo "mcp-smoke confirm phrase: $par_phrase"
 
           echo "── scripted reset ($CONVEX_NAME) ──"
           ./e2e-baseline.sh reset
@@ -475,7 +484,7 @@ jobs:
             --convex-url "$convex_url" \
             --worker 0 \
             --paused-platforms "${PAUSED_PLATFORMS:-}" \
-            --confirm "BUILD ${CONVEX_NAME}.convex.cloud ${base_scope}" \
+            --confirm "$base_phrase" \
             --report setbuild-seed-report.json
 
           echo "── setbuild mcp-smoke ──"
@@ -486,14 +495,15 @@ jobs:
             --app-url "$PREVIEW_URL" \
             --convex-url "$convex_url" \
             --worker 0 \
-            --confirm "BUILD ${CONVEX_NAME}.convex.cloud ${par_scope}" \
+            --paused-platforms "${PAUSED_PLATFORMS:-}" \
+            --confirm "$par_phrase" \
             --json > setbuild-mcp-smoke-report.json
 
           duration=$((SECONDS - started))
           {
             echo "### Seed (setbuild, NEO-339)"
             echo "- duration: \`${duration}s\`"
-            echo "- baseline spec scope: \`${base_scope}\`"
+            echo "- baseline confirm phrase: \`${base_phrase}\`"
             echo "- apply counts: \`$(jq -c '.counts // .summary // {}' setbuild-seed-report.json 2>/dev/null || echo '?')\`"
             echo "- mcp-smoke: \`$(jq -r '"ok=\(.ok), checks=\(.checks | length), failed=\([.checks[] | select(.ok | not)] | length)"' setbuild-mcp-smoke-report.json 2>/dev/null || echo '?')\`"
           } >> "$GITHUB_STEP_SUMMARY"

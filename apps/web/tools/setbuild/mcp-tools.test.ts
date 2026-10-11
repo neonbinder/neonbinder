@@ -8,9 +8,28 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { fakeJwt } from "./auth/test-helpers";
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ConfirmMismatch, parseTarget } from "./client/target";
-import { READ_TOOLS, registerTools, WRITE_TOOLS, type RegisterToolsOptions } from "./mcp-tools";
-import { ResolveError, type OpenDecisions, type SetBuildService } from "./service";
+import {
+  containedSpecPath,
+  READ_TOOLS,
+  registerTools,
+  REPO_ROOT,
+  WRITE_TOOLS,
+  type RegisterToolsOptions,
+} from "./mcp-tools";
+import {
+  buildParallelConfirmPhrase,
+  decideConfirmPhrase,
+  ResolveError,
+  slReviewConfirmPhrase,
+  specConfirmPhrase,
+  type OpenDecisions,
+  type SetBuildService,
+} from "./service";
+import { parseSpec } from "./spec/schema";
 
 const TARGET = parseTarget("https://happy-otter-123.convex.cloud");
 const HOST = "happy-otter-123.convex.cloud";
@@ -21,10 +40,18 @@ const TOPPS_CHROME = { sport: "Baseball", year: "2024", manufacturer: "Topps", s
 const BOWMAN = { sport: "Baseball", year: "2025", manufacturer: "Bowman" };
 const SPEC = { version: 1, scope: "e2e-baseline", steps: [] };
 
+const DECIDE_ARGS = {
+  row: { type: "Insert", name: "Future Stars" },
+  players: [{ name: "Shohei Ohtani", decision: "create" as const }],
+};
+const SL_DECISIONS = [{ slId: "sl-123", placement: "own-set" as const }];
+
+/** Each write's phrase, from the same helpers the server and the runner use. */
 const PHRASE = {
-  apply: `BUILD ${HOST} e2e-baseline`,
-  set: `BUILD ${HOST} Baseball/2024/Topps/Topps Chrome`,
-  brandYear: `BUILD ${HOST} Baseball/2025/Bowman`,
+  apply: specConfirmPhrase(TARGET, parseSpec(SPEC)),
+  decide: decideConfirmPhrase(TARGET, TOPPS_CHROME, DECIDE_ARGS),
+  buildParallel: buildParallelConfirmPhrase(TARGET, TOPPS_CHROME, "Gold Wave Refractors", {}),
+  slReview: slReviewConfirmPhrase(TARGET, BOWMAN, SL_DECISIONS),
 };
 
 function noDecisions(): OpenDecisions {
@@ -61,9 +88,12 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
+/** Fake spec paths in these tests are taken as real and allowed. */
+const anyPath = async (p: string) => p;
+
 async function connect(service: SetBuildService, opts: RegisterToolsOptions = { secrets: [SECRET] }) {
   const server = new McpServer({ name: "nb-setbuild-test", version: "0.0.0" });
-  registerTools(server, service, opts);
+  registerTools(server, service, { resolveSpecPath: anyPath, ...opts });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   await server.connect(serverSide);
   const client = new Client({ name: "test-client", version: "0.0.0" });
@@ -86,18 +116,18 @@ async function callTool(client: Client, name: string, args: Record<string, unkno
 const WRITE_CALLS: Record<(typeof WRITE_TOOLS)[number], { args: Record<string, unknown>; phrase: string; spy: string }> = {
   nb_apply: { args: { spec: SPEC }, phrase: PHRASE.apply, spy: "apply" },
   nb_decide: {
-    args: {
-      path: TOPPS_CHROME,
-      row: { type: "Insert", name: "Future Stars" },
-      players: [{ name: "Shohei Ohtani", decision: "create" }],
-    },
-    phrase: PHRASE.set,
+    args: { path: TOPPS_CHROME, ...DECIDE_ARGS },
+    phrase: PHRASE.decide,
     spy: "decide",
   },
-  nb_build_parallel: { args: { path: TOPPS_CHROME, name: "Gold Wave Refractors" }, phrase: PHRASE.set, spy: "buildParallel" },
+  nb_build_parallel: {
+    args: { path: TOPPS_CHROME, name: "Gold Wave Refractors" },
+    phrase: PHRASE.buildParallel,
+    spy: "buildParallel",
+  },
   nb_sl_review_apply: {
-    args: { path: BOWMAN, decisions: [{ slId: "sl-123", placement: "own-set" }] },
-    phrase: PHRASE.brandYear,
+    args: { path: BOWMAN, decisions: SL_DECISIONS },
+    phrase: PHRASE.slReview,
     spy: "slReviewApply",
   },
 };
@@ -198,6 +228,60 @@ describe("read tools", () => {
   });
 });
 
+describe("specPath containment (security audit item 10)", () => {
+  async function tree() {
+    const base = await realpath(await mkdtemp(join(tmpdir(), "setbuild-specpath-")));
+    const root = join(base, "root");
+    const outside = join(base, "outside");
+    await mkdir(join(root, "seed"), { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(join(root, "seed", "ok.spec.json"), JSON.stringify(SPEC));
+    await writeFile(join(outside, "secret.json"), JSON.stringify(SPEC));
+    await symlink(join(outside, "secret.json"), join(root, "seed", "link.json"));
+    return { root, outside };
+  }
+
+  test("a file under a root resolves to its real path; outside, via a symlink, or via .. is refused", async () => {
+    const { root, outside } = await tree();
+    await expect(containedSpecPath(join(root, "seed", "ok.spec.json"), [root])).resolves.toBe(
+      join(root, "seed", "ok.spec.json"),
+    );
+    for (const p of [
+      join(outside, "secret.json"),
+      join(root, "seed", "link.json"),
+      join(root, "seed", "..", "..", "outside", "secret.json"),
+    ]) {
+      const err = await containedSpecPath(p, [root]).catch((e: unknown) => e);
+      expect(err, p).toBeInstanceOf(Error);
+      expect((err as Error).message, p).toMatch(/outside the repository/);
+      // The symlink's target is never named.
+      if (p.endsWith("link.json")) expect((err as Error).message).not.toContain("secret.json");
+    }
+    await expect(containedSpecPath(join(root, "missing.json"), [root])).rejects.toThrow(/No spec file/);
+    // No root at all (INIT_CWD unset) allows nothing.
+    await expect(containedSpecPath(join(root, "seed", "ok.spec.json"), [undefined])).rejects.toThrow(/outside/);
+  });
+
+  test("the default resolver allows the repo root and INIT_CWD, and nothing else", async () => {
+    const { root, outside } = await tree();
+    vi.stubEnv("INIT_CWD", root);
+    const f = fakeService();
+    // No resolveSpecPath or readSpecFile override: the server's own defaults.
+    const client = await connect(f.service, { secrets: [SECRET], cwd: root, resolveSpecPath: undefined });
+    expect((await callTool(client, "nb_plan", { specPath: "seed/ok.spec.json" })).isError).toBe(false);
+    const viaLink = await callTool(client, "nb_plan", { specPath: "seed/link.json" });
+    expect(viaLink.isError).toBe(true);
+    expect(viaLink.text).toMatch(/outside the repository/);
+    const abs = await callTool(client, "nb_plan", { specPath: join(outside, "secret.json") });
+    expect(abs.isError).toBe(true);
+    expect(f.read.plan).toHaveBeenCalledTimes(1);
+    // REPO_ROOT is the monorepo root: the app's own package.json sits under it.
+    await expect(containedSpecPath(join(REPO_ROOT, "apps", "web", "package.json"), [REPO_ROOT])).resolves.toMatch(
+      /apps[/\\]web[/\\]package\.json$/,
+    );
+  });
+});
+
 describe("write tools: the confirm phrase", () => {
   test.each(WRITE_TOOLS)("%s without confirm: isError naming the phrase, zero service calls", async (tool) => {
     const f = fakeService();
@@ -218,6 +302,8 @@ describe("write tools: the confirm phrase", () => {
       phrase.replace(HOST, "prod-deployment-1.convex.cloud"),
       phrase.toLowerCase(),
       `${phrase} `,
+      `${phrase.slice(0, -8)}00000000`,
+      phrase.slice(0, -9),
       "BUILD",
     ]) {
       const r = await callTool(client, tool, { ...args, confirm: wrong });
@@ -243,28 +329,53 @@ describe("write tools: the confirm phrase", () => {
   test("arguments reach the service as the contract types", async () => {
     const f = fakeService();
     const client = await connect(f.service);
-    await callTool(client, "nb_decide", {
-      ...WRITE_CALLS.nb_decide.args,
+    const decisions = {
+      ...DECIDE_ARGS,
       teams: [{ name: "Seattle Mariners", decision: { link: "Seattle Mariners" }, league: "MLB" }],
-      confirm: PHRASE.set,
-    });
-    expect(f.write.decide).toHaveBeenCalledWith(
-      TOPPS_CHROME,
-      {
-        row: { type: "Insert", name: "Future Stars" },
-        players: [{ name: "Shohei Ohtani", decision: "create" }],
-        teams: [{ name: "Seattle Mariners", decision: { link: "Seattle Mariners" }, league: "MLB" }],
-        leagues: undefined,
-      },
-      PHRASE.set,
-    );
+    };
+    const decidePhrase = decideConfirmPhrase(TARGET, TOPPS_CHROME, decisions);
+    const decided = await callTool(client, "nb_decide", { path: TOPPS_CHROME, ...decisions, confirm: decidePhrase });
+    expect(decided.isError, decided.text).toBe(false);
+    expect(f.write.decide).toHaveBeenCalledWith(TOPPS_CHROME, { ...decisions, leagues: undefined }, decidePhrase);
+    const rebuildPhrase = buildParallelConfirmPhrase(TARGET, TOPPS_CHROME, "Gold Wave Refractors", { rebuild: true });
     await callTool(client, "nb_build_parallel", {
       path: { ...TOPPS_CHROME, year: 2024 },
       name: "Gold Wave Refractors",
       rebuild: true,
-      confirm: PHRASE.set,
+      confirm: rebuildPhrase,
     });
-    expect(f.write.buildParallel).toHaveBeenCalledWith(TOPPS_CHROME, "Gold Wave Refractors", { rebuild: true }, PHRASE.set);
+    expect(f.write.buildParallel).toHaveBeenCalledWith(TOPPS_CHROME, "Gold Wave Refractors", { rebuild: true }, rebuildPhrase);
+  });
+
+  test("each phrase is bound to its call's content: other arguments need another phrase", async () => {
+    const f = fakeService();
+    const client = await connect(f.service);
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ["nb_apply", { spec: { ...SPEC, steps: [{ kind: "brand-year", path: BOWMAN, syncSets: true }] } }, PHRASE.apply],
+      ["nb_decide", { path: TOPPS_CHROME, ...DECIDE_ARGS, players: [{ name: "Shohei Ohtani", decision: "skip" }] }, PHRASE.decide],
+      ["nb_build_parallel", { path: TOPPS_CHROME, name: "Gold Wave Refractors", rebuild: true }, PHRASE.buildParallel],
+      ["nb_build_parallel", { path: TOPPS_CHROME, name: "Sepia Refractors" }, PHRASE.buildParallel],
+      ["nb_sl_review_apply", { path: BOWMAN, decisions: [{ slId: "sl-124", placement: "own-set" }] }, PHRASE.slReview],
+      // One write's phrase never confirms another write on the same scope.
+      ["nb_build_parallel", { path: TOPPS_CHROME, name: "Gold Wave Refractors" }, PHRASE.decide],
+    ];
+    for (const [tool, args, stale] of cases) {
+      const r = await callTool(client, tool, { ...args, confirm: stale });
+      expect(r.isError, `${tool} ${JSON.stringify(args)}`).toBe(true);
+      const body = r.json();
+      expect(body.error).toBe("confirm_mismatch");
+      expect(body.expected).not.toBe(stale);
+      expect(String(body.expected).slice(0, -8), "same host and scope, other digest").toBe(stale.slice(0, -8));
+    }
+    expect(f.totalCalls()).toBe(0);
+  });
+
+  test("key order in the spec is not content", async () => {
+    const f = fakeService();
+    const client = await connect(f.service);
+    const r = await callTool(client, "nb_apply", { spec: { steps: [], scope: "e2e-baseline", version: 1 }, confirm: PHRASE.apply });
+    expect(r.isError, r.text).toBe(false);
+    expect(f.write.apply).toHaveBeenCalledTimes(1);
   });
 
   test("nb_apply on a spec with no scope is refused before the service", async () => {
@@ -279,13 +390,17 @@ describe("write tools: the confirm phrase", () => {
   test("a phrase for one scope does not unlock another", async () => {
     const f = fakeService();
     const client = await connect(f.service);
+    const bigLeague = { ...TOPPS_CHROME, set: "Big League" };
     const r = await callTool(client, "nb_build_parallel", {
-      path: { ...TOPPS_CHROME, set: "Big League" },
-      name: "Gold",
-      confirm: PHRASE.set,
+      path: bigLeague,
+      name: "Gold Wave Refractors",
+      confirm: PHRASE.buildParallel,
     });
     expect(r.isError).toBe(true);
-    expect(r.json()).toMatchObject({ expected: `BUILD ${HOST} Baseball/2024/Topps/Big League` });
+    expect(r.json()).toMatchObject({
+      expected: buildParallelConfirmPhrase(TARGET, bigLeague, "Gold Wave Refractors", {}),
+    });
+    expect(String(r.json().expected)).toMatch(new RegExp(`^BUILD ${HOST} Baseball/2024/Topps/Big League [0-9a-f]{8}$`));
     expect(f.totalCalls()).toBe(0);
   });
 

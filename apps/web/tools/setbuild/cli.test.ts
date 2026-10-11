@@ -90,6 +90,22 @@ describe("main", () => {
   });
 });
 
+describe("main: JWT-shaped strings are scrubbed too (security audit item 3)", () => {
+  test("a token in a failing command's message never reaches stderr", async () => {
+    const jwt = fakeJwt({ sub: "user_abc", aud: "convex", exp: 1_900_000_000 });
+    COMMANDS.__boom = {
+      summary: "test only",
+      usage: "setbuild __boom",
+      run: async () => {
+        throw new Error(`upstream echoed Authorization: Bearer ${jwt} and key=ak_secret_value_1`);
+      },
+    };
+    const a = io({ NB_SETBUILD_API_KEY: "ak_secret_value_1" });
+    expect(await main(["__boom"], a)).toBe(1);
+    expect(a.err[0]).toBe("setbuild __boom: upstream echoed Authorization: Bearer [redacted-token] and key=[redacted]");
+  });
+});
+
 describe("whoami", () => {
   test("reports subject, role and a passing admin probe", async () => {
     fake.queryResult = { leagues: [], totalCount: 23, truncated: false };

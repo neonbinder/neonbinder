@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { makeFunctionReference } from "convex/server";
 import type { TokenSource } from "../auth/token-source";
-import { WaitTimeout, makeClient } from "./convex-client";
+import { STDERR_LOGGER, WaitTimeout, makeClient } from "./convex-client";
 import { parseTarget } from "./target";
 
 const fake = vi.hoisted(() => ({
@@ -16,6 +16,7 @@ const fake = vi.hoisted(() => ({
     tokens: [] as string[],
     failures: [] as Error[],
     calls: 0,
+    options: undefined as unknown,
   },
 }));
 
@@ -48,6 +49,9 @@ vi.mock("convex/browser", () => {
     }
   }
   class ConvexHttpClient {
+    constructor(_url: string, options: unknown) {
+      fake.http.options = options;
+    }
     setAuth(token: string) {
       fake.http.tokens.push(token);
     }
@@ -107,6 +111,30 @@ describe("makeClient (ws)", () => {
     expect(fake.ws.options).toMatchObject({ skipConvexDeploymentUrlCheck: false, unsavedChangesWarning: false });
     makeClient(parseTarget("http://127.0.0.1:3210"), tokens());
     expect(fake.ws.options).toMatchObject({ skipConvexDeploymentUrlCheck: true });
+  });
+
+  test("forwarded server logs go to stderr on both transports, never stdout (apply --json stays JSON)", () => {
+    makeClient(target, tokens());
+    expect(fake.ws.options).toMatchObject({ logger: STDERR_LOGGER });
+    makeClient(target, tokens(), { transport: "http" });
+    expect(fake.http.options).toMatchObject({ logger: STDERR_LOGGER });
+
+    const out = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      STDERR_LOGGER.log("[CONVEX A(x:y)] [LOG] 'line'");
+      STDERR_LOGGER.warn("w");
+      STDERR_LOGGER.error("e");
+      STDERR_LOGGER.logVerbose("v");
+      expect(err).toHaveBeenCalledTimes(3);
+      expect(log).not.toHaveBeenCalled();
+      expect(out).not.toHaveBeenCalled();
+    } finally {
+      out.mockRestore();
+      log.mockRestore();
+      err.mockRestore();
+    }
   });
 
   test("a failing first mint fails the call with the auth error, not 'Not authenticated'", async () => {

@@ -16,9 +16,18 @@
  * `maxChainAttempts` (3) per `getToken()`.
  *
  * Only works where the testing endpoint does: local Vite (dev middleware) and
- * Vercel preview/development deployments. Production 404s it by design.
+ * Vercel preview/development deployments. Production 404s it by design, and
+ * this source refuses production by construction too:
+ *
+ * - a `pk_live_` publishable key (a production Clerk instance) is refused
+ *   before any call;
+ * - every minted token's `iss` must be the FAPI host the `pk_test_` key
+ *   encodes, so a token from any other Clerk instance is never used;
+ * - the app URL must be https (plain http only on loopback), and the Vercel
+ *   bypass secret is sent only to an https origin.
  */
 
+import { isLocalHost } from "../client/target";
 import {
   CONVEX_JWT_TEMPLATE,
   fapiOriginFromPublishableKey,
@@ -63,6 +72,16 @@ export interface TestingTokenSourceOptions {
 /** Backoff before chain attempt 2, 3, … (ms). */
 const CHAIN_BACKOFF_MS = [500, 1500, 3000];
 
+/** The host of a JWT `iss` claim, or undefined when it is missing or not a URL. */
+function issuerHost(iss: unknown): string | undefined {
+  if (typeof iss !== "string") return undefined;
+  try {
+    return new URL(iss).host;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Mint statuses that mean "this session/client is no longer good". */
 const SESSION_GONE = new Set([401, 403, 404]);
 
@@ -73,14 +92,32 @@ export function testingTokenSource(o: TestingTokenSourceOptions): TokenSource {
   if (!o.testingSecret) {
     throw new SetbuildAuthError("config", "TESTING_ENDPOINT_SECRET is not set.");
   }
-  const appOrigin = (() => {
+  const appUrl = (() => {
     try {
-      return new URL(o.appUrl).origin;
+      return new URL(o.appUrl);
     } catch {
       throw new SetbuildAuthError("config", "The app URL is not a URL.");
     }
   })();
+  if (appUrl.protocol !== "https:" && !(appUrl.protocol === "http:" && isLocalHost(appUrl.hostname))) {
+    throw new SetbuildAuthError(
+      "config",
+      "The app URL must be https:// (plain http is allowed only for localhost): the testing secret is sent to it.",
+    );
+  }
+  const appOrigin = appUrl.origin;
+  // The Vercel bypass secret only ever means something to a Vercel deployment,
+  // which is https; it is never sent in the clear.
+  const sendBypass = !!o.bypassSecret && appUrl.protocol === "https:";
+  if (/^\s*pk_live_/.test(o.publishableKey)) {
+    throw new SetbuildAuthError(
+      "config",
+      "--auth testing refuses a production Clerk instance (pk_live_ publishable key). " +
+        "Testing sign-in is for previews and local runs; production uses --auth machine.",
+    );
+  }
   const fapiOrigin = fapiOriginFromPublishableKey(o.publishableKey);
+  const fapiHost = new URL(fapiOrigin).host;
   const fetchFn = o.fetchFn ?? defaultFetch();
   const sleep = o.sleep ?? defaultSleep;
   const maxAttempts = o.maxChainAttempts ?? 3;
@@ -111,7 +148,7 @@ export function testingTokenSource(o: TestingTokenSourceOptions): TokenSource {
       "content-type": "application/json",
       "x-testing-auth": o.testingSecret,
     };
-    if (o.bypassSecret) headers["x-vercel-protection-bypass"] = o.bypassSecret;
+    if (sendBypass) headers["x-vercel-protection-bypass"] = o.bypassSecret!;
     let res: Response;
     try {
       res = await fetchFn(`${appOrigin}/api/auth/testing`, {
@@ -175,6 +212,12 @@ export function testingTokenSource(o: TestingTokenSourceOptions): TokenSource {
     const jwt = await mintTemplateToken(fapi(session.testingToken), session, template);
     remember(session.clientJwt);
     const claims = decodeJwtClaims(jwt);
+    if (issuerHost(claims.iss) !== fapiHost) {
+      throw new SetbuildAuthError(
+        "jwt_issuer",
+        `The "${template}" token was not issued by ${fapiHost}, the Clerk instance the publishable key names; refusing it.`,
+      );
+    }
     if (!audienceIncludes(claims, "convex")) {
       throw new SetbuildAuthError(
         "jwt_audience",

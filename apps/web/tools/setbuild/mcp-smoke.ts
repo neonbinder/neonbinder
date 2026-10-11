@@ -7,13 +7,18 @@
  *   1. tools/list has all seven tools;
  *   2. nb_inspect for each `before` expectation;
  *   3. nb_plan on --spec: open decisions as expected, and its confirmPhrase is
- *      exactly --confirm (the smoke stops before writing otherwise);
+ *      exactly --confirm (the smoke stops before writing otherwise). CI
+ *      computes --confirm offline with `setbuild confirm-phrase`, so this
+ *      proves the server and the CLI bind the same host, scope and spec
+ *      digest;
  *   4. nb_apply with that phrase: no stop, and every expected count matches;
  *   5. nb_inspect for each `after` expectation.
  *
  * Exits 0 when every check passed, 1 on any mismatch. Prints one line per
  * check. The server's stderr is captured and shown (redacted) only on failure;
  * no token ever passes through this process — the server mints its own.
+ * `--paused-platforms` (default: env PAUSED_PLATFORMS) reaches the server as
+ * its PAUSED_PLATFORMS, exactly as `apply` reads it.
  *
  * Expectations file (--expect), e.g. for the seeded Topps Chrome:
  *
@@ -41,8 +46,9 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { z } from "zod";
 import type { CommandSpec } from "./cli";
+import { scrub } from "./auth/token-source";
 import { secretValues } from "./client/connect";
-import { READ_TOOLS, scrub, WRITE_TOOLS } from "./mcp-tools";
+import { READ_TOOLS, WRITE_TOOLS } from "./mcp-tools";
 import {
   countOpenDecisions,
   formatPath,
@@ -329,11 +335,12 @@ function abs(p: string): string {
 export const mcpSmokeCommand: CommandSpec = {
   summary: "Spawn the MCP server over stdio and run inspect → plan → apply → inspect against expectations.",
   usage:
-    'setbuild mcp-smoke --spec <spec.json> --expect <expectations.json> --confirm "BUILD <host> <scope>" [connection flags]',
+    'setbuild mcp-smoke --spec <spec.json> --expect <expectations.json> --confirm "BUILD <host> <scope> <digest>" [--paused-platforms <keys>] [connection flags]',
   options: {
     spec: { type: "string" },
     expect: { type: "string" },
     confirm: { type: "string" },
+    "paused-platforms": { type: "string" },
   },
   async run(ctx) {
     const specArg = typeof ctx.values.spec === "string" ? ctx.values.spec : undefined;
@@ -375,6 +382,9 @@ export const mcpSmokeCommand: CommandSpec = {
       NB_SETBUILD_WORKER: typeof ctx.values.worker === "string" ? ctx.values.worker : undefined,
       VITE_CLERK_PUBLISHABLE_KEY:
         typeof ctx.values["publishable-key"] === "string" ? ctx.values["publishable-key"] : undefined,
+      // Unset flag: the server inherits env PAUSED_PLATFORMS with the rest of the env.
+      PAUSED_PLATFORMS:
+        typeof ctx.values["paused-platforms"] === "string" ? ctx.values["paused-platforms"] : undefined,
     };
     const env: NodeJS.ProcessEnv = { ...ctx.io.env };
     for (const [k, v] of Object.entries(flagEnv)) if (v !== undefined) env[k] = v;

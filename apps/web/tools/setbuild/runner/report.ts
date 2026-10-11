@@ -2,12 +2,15 @@
  * NEO-339 — the plan/apply report as JSON (for CI and the MCP) and as
  * markdown (for a person, and the CI step summary).
  *
- * A report holds only what the runner put in it: names, NB ids, marketplace
- * ids, counts. No token, secret or environment value ever reaches it, so it is
- * safe to upload as an artifact.
+ * A report holds what the runner put in it: names, NB ids, marketplace ids,
+ * counts — and, on a stop or a failure, an upstream error message, which the
+ * tool does not control. So every byte written to disk goes through the same
+ * `scrub` the MCP layer uses (secret env values + anything JWT-shaped) before
+ * it is uploaded as a CI artifact.
  */
 
 import { writeFile } from "node:fs/promises";
+import { scrub } from "../auth/token-source";
 import { countOpenDecisions, type ApplyReport, type OpenDecisions, type PlanReport } from "../service";
 
 export function isApplyReport(r: PlanReport | ApplyReport): r is ApplyReport {
@@ -74,10 +77,18 @@ export function reportMarkdown(r: PlanReport | ApplyReport): string {
   return `${out.join("\n")}\n`;
 }
 
-/** Write `<path>` (JSON) and `<path minus .json>.md` (markdown). Returns the markdown path. */
-export async function writeReportFiles(path: string, r: PlanReport | ApplyReport): Promise<string> {
-  await writeFile(path, reportJson(r), "utf8");
+/**
+ * Write `<path>` (JSON) and `<path minus .json>.md` (markdown), both scrubbed
+ * of `secrets` and of anything JWT-shaped. Returns the markdown path.
+ */
+export async function writeReportFiles(
+  path: string,
+  r: PlanReport | ApplyReport,
+  secrets: Iterable<string | undefined | null>,
+): Promise<string> {
+  const keep = [...secrets];
+  await writeFile(path, scrub(reportJson(r), keep), "utf8");
   const md = path.replace(/\.json$/i, "") + ".md";
-  await writeFile(md, reportMarkdown(r), "utf8");
+  await writeFile(md, scrub(reportMarkdown(r), keep), "utf8");
   return md;
 }

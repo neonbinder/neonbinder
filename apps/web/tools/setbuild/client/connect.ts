@@ -17,13 +17,18 @@
  *
  * There is deliberately no fallback to `VITE_CONVEX_URL`: an `.env.local`
  * loaded for convenience must never pick the deployment a write lands on.
+ *
+ * Every credential goes only where the confirm phrase's host binds it:
+ * machine auth refuses a site URL that is not the Convex URL's `.convex.site`
+ * twin (`assertSiteIsTwin`), and testing auth refuses a plain-http app URL off
+ * loopback and a production (`pk_live_`) Clerk key (testing-token-source.ts).
  */
 
 import { machineTokenSource } from "../auth/machine-token-source";
 import { testingTokenSource } from "../auth/testing-token-source";
 import type { TokenSource } from "../auth/token-source";
 import type { Transport } from "./convex-client";
-import { parseTarget, type Target } from "./target";
+import { assertSiteIsTwin, parseTarget, type Target } from "./target";
 
 export type AuthMode = "machine" | "testing";
 
@@ -93,6 +98,7 @@ export function resolveConnection(
   if (authRaw === "machine") {
     const apiKey = env.NB_SETBUILD_API_KEY;
     if (!apiKey) throw new ConfigError("--auth machine needs NB_SETBUILD_API_KEY in the environment.");
+    assertSiteIsTwin(target);
     return {
       target,
       auth: "machine",

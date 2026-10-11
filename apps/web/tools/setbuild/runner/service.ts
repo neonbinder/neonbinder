@@ -2,10 +2,12 @@
  * NEO-339 — `createSetBuildService(client, target)`: the runner behind the
  * contract in `../service.ts`, for the CLI and the MCP server.
  *
- * - `read` only reads: `inspect` and `reviewItems` are queries, `plan` runs on
- *   `readOnlyClient`.
+ * - `read` only reads, by construction: `inspect` and `reviewItems` run on
+ *   `queryOnlyClient` (a mutation or action throws before it is sent), `plan`
+ *   on `readOnlyClient` (which lets through only the marketplace candidate
+ *   read).
  * - Every `write` method checks the confirm phrase FIRST, before any network
- *   call (`apply`: `spec.scope`; the rest: `formatPath(path)`).
+ *   call (the per-write phrase helpers in `../service.ts`).
  * - `decide` and `reviewItems` reach an entity review this service's own
  *   `apply` stopped at. There is no public way to find someone's open review
  *   batch except by re-running the checklist, so the batch is remembered here
@@ -16,8 +18,10 @@
  */
 
 import type { NbClient } from "../client/convex-client";
-import { assertConfirm, type Target } from "../client/target";
+import { assertPhrase, type Target } from "../client/target";
 import {
+  buildParallelConfirmPhrase,
+  decideConfirmPhrase,
   formatPath,
   isSetPath,
   ResolveError,
@@ -32,6 +36,7 @@ import {
   type SetPath,
   type SlDecision,
   type SlReviewApplyReport,
+  slReviewConfirmPhrase,
 } from "../service";
 import { childrenOf, resolveBrandYear, resolveSetPath } from "../spec/resolve";
 import { variantTypeRole } from "../../../convex/variantRole";
@@ -44,6 +49,7 @@ import { applySpec, publicApplyReport } from "./apply";
 import { emptyOpenDecisions, type RunOptions } from "./engine";
 import { inspectPath } from "./inspect";
 import { planSpec } from "./plan";
+import { queryOnlyClient } from "./read-only-client";
 
 /** A write that could not go on because it needs answers it was not given. */
 export class OpenDecisionsError extends Error {
@@ -69,6 +75,8 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
     pausedPlatforms: opts.pausedPlatforms ?? process.env.PAUSED_PLATFORMS,
     ...(opts.now ? { now: opts.now } : {}),
   });
+  /** What the read methods run on: queries only. */
+  const reads = queryOnlyClient(client);
   /** Open entity reviews this process's `apply` stopped at. */
   const sessions = new Map<string, ReviewSession & { path: string }>();
 
@@ -79,7 +87,7 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
   return {
     target,
     read: {
-      inspect: (path) => inspectPath(client, target, path),
+      inspect: (path) => inspectPath(reads, target, path),
       plan: (spec) => planSpec(client, target, spec, runOpts()),
       async reviewItems(path): Promise<ReviewItemsReport> {
         const pathText = formatPath(path);
@@ -88,19 +96,19 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
         if (isSetPath(path)) {
           for (const s of sessions.values()) {
             if (s.path !== pathText) continue;
-            const rows = await readReviewRows(client, s);
+            const rows = await readReviewRows(reads, s);
             if (rows.length === 0) {
               sessions.delete(sessionKey(s.path, s.row));
               continue;
             }
-            const open = await openItemsOf(client, rows, { at: s.at, row: s.row });
+            const open = await openItemsOf(reads, rows, { at: s.at, row: s.row });
             review.players.push(...open.players);
             review.teams.push(...open.teams);
             review.leagues.push(...open.leagues);
           }
         } else {
-          const brand = await resolveBrandYear(client, path);
-          const sl = await readSlReview(client, brand.manufacturerId);
+          const brand = await resolveBrandYear(reads, path);
+          const sl = await readSlReview(reads, brand.manufacturerId);
           if (sl) slReview.push(openSlRows(sl, sl.entries, "slReview", pathText));
         }
         return { path, pathText, review, slReview };
@@ -115,7 +123,7 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
 
       async decide(path: SetPath, decisions: ReviewDecisions, confirm): Promise<DecideReport> {
         const pathText = formatPath(path);
-        assertConfirm(target, pathText, confirm);
+        assertPhrase(decideConfirmPhrase(target, path, decisions), confirm);
         const row = decisions.row ?? null;
         const session = sessions.get(sessionKey(pathText, row));
         if (!session) {
@@ -140,7 +148,7 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
 
       async buildParallel(path: SetPath, name: string, o: { rebuild?: boolean }, confirm): Promise<BuildParallelReport> {
         const pathText = formatPath(path);
-        assertConfirm(target, pathText, confirm);
+        assertPhrase(buildParallelConfirmPhrase(target, path, name, o), confirm);
         const started = (opts.now ?? Date.now)();
         const set = await resolveSetPath(client, path);
         const types = (await childrenOf(client, "variantType", set.setId)).filter(
@@ -171,7 +179,7 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
 
       async slReviewApply(path: BrandYearPath, decisions: SlDecision[], confirm): Promise<SlReviewApplyReport> {
         const pathText = formatPath(path);
-        assertConfirm(target, pathText, confirm);
+        assertPhrase(slReviewConfirmPhrase(target, path, decisions), confirm);
         const paused = await checkPausedPlatforms(client, runOpts().pausedPlatforms);
         const brand = await resolveBrandYear(client, path);
         const r = await applySlReview(client, brand.manufacturerId, decisions, { paused, at: "decisions", path: pathText });

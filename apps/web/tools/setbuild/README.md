@@ -13,11 +13,18 @@ enrichment capture). This file is for people changing the tool.
 ```bash
 cd apps/web
 npm run setbuild -- help
-npm run setbuild -- whoami|inspect|plan|apply|mcp-smoke ...
+npm run setbuild -- whoami|inspect|plan|apply|decisions-template|schema|mcp-smoke ...
+npm run --silent setbuild -- confirm-phrase --spec <file.json> --convex-url <url>   # offline
 npm run setbuild:mcp          # MCP server over stdio (repo-root .mcp.json: nb-setbuild)
 ```
 
-Exit codes: 0 ok, 1 the command failed, 2 usage error.
+Exit codes: 0 ok, 1 the command failed, 2 usage error (including `apply
+--auth machine` without a terminal), 3 `apply` stopped at an open decision.
+
+`plan`, `apply` and `decisions-template` take `--paused-platforms <keys>`
+(default: env `PAUSED_PLATFORMS`; an explicit `""` means nothing is paused).
+`mcp-smoke` passes it to the server it spawns, and the MCP server reads
+`PAUSED_PLATFORMS` from its own environment.
 
 ## Connection (shared by the CLI and the MCP server)
 
@@ -29,13 +36,20 @@ Exit codes: 0 ok, 1 the command failed, 2 usage error.
 | `--worker` | `NB_SETBUILD_WORKER` | `testing`: per-worker test account (default 0). |
 | `--publishable-key` | `VITE_CLERK_PUBLISHABLE_KEY` | `testing`: derives the Clerk FAPI origin. |
 | `--transport ws\|http` | `NB_SETBUILD_TRANSPORT` | Default `ws` (`ConvexClient`); `http` is the fallback. |
-| `--convex-site-url` | `NB_SETBUILD_CONVEX_SITE_URL` | Only for a custom Convex domain. |
+| `--convex-site-url` | `NB_SETBUILD_CONVEX_SITE_URL` (MCP server) | Only for a custom Convex domain. With `--auth machine` it must be the `.convex.site` twin of `--convex-url` (loopback excepted), since the API key is posted there. |
 | `--env-file` | `NB_SETBUILD_ENV_FILE` | dotenv file loaded first (does not override the environment). |
 | `--json` | | Machine-readable output. |
 
 Secrets come from the environment only: `NB_SETBUILD_API_KEY` (machine),
 `TESTING_ENDPOINT_SECRET` and `VERCEL_AUTOMATION_BYPASS_SECRET` (testing). Every
-error path redacts them; never add a flag that accepts one.
+output path (MCP results, report files, CLI errors) goes through one `scrub`
+(`auth/token-source.ts`): the secret values plus anything JWT-shaped. Never add
+a flag that accepts a secret, and never print or write output that skips
+`scrub`.
+
+`--auth testing` refuses a `pk_live_` publishable key, an `http://` app URL off
+loopback, and any minted token whose `iss` is not the FAPI host the key names;
+the bypass header goes only to an https origin.
 
 ## Layout
 
@@ -52,9 +66,19 @@ mcp*.ts    the MCP server, its seven tools, and mcp-smoke
 ## Rules to keep
 
 - **Read and write are separate objects** in `service.ts`. Read tools hold no
-  reference to the write half.
-- **Writes check the confirm phrase twice**: in the MCP tool and in the service.
-  The CLI's `--confirm` / TTY prompt is the only lock on the CLI path.
+  reference to the write half, and `inspect` / `reviewItems` run on
+  `queryOnlyClient` (a mutation or action throws before it is sent); `plan`
+  runs on `readOnlyClient`, which also allows the marketplace candidate read.
+- **The confirm phrase is `BUILD <host> <scope> <digest>`**, the digest being
+  8 hex of SHA-256 over canonical JSON (`client/target.ts`) of the parsed spec
+  or the write's arguments. One helper per write in `service.ts`
+  (`specConfirmPhrase`, `decideConfirmPhrase`, …) is used by both the MCP tool
+  and the service, so the two cannot drift. Never compose a phrase elsewhere.
+- **Writes check the phrase twice**: in the MCP tool and in the service. On
+  the CLI, `--auth testing` takes `--confirm` (or a TTY prompt); `--auth
+  machine` ignores `--confirm` and requires the TTY prompt.
+- **A `specPath` must resolve inside the repo or `INIT_CWD`**
+  (`containedSpecPath`).
 - **No wildcards, no inference.** A decision is either in the spec or an open
   decision. Ties are never given to the first candidate.
 - **Idempotent and resumable.** Every step checks state before it writes.
@@ -75,7 +99,8 @@ value is a `${VAR}` reference.
 
 ## CI
 
-`e2e.yml` `seed` job: reset, `apply --spec .maestro/seed/baseline.spec.json`,
-`mcp-smoke --spec .maestro/seed/parallel.spec.json --expect
-.maestro/seed/mcp-smoke.expect.json`. The reports upload as the `setbuild-seed`
-artifact.
+`e2e.yml` `seed` job: compute both phrases with `confirm-phrase`, reset,
+`apply --spec .maestro/seed/baseline.spec.json`, `mcp-smoke --spec
+.maestro/seed/parallel.spec.json --expect .maestro/seed/mcp-smoke.expect.json`
+(its `--confirm` must equal `nb_plan`'s phrase). `e2e-seed.sh` computes its
+phrase the same way. The reports upload as the `setbuild-seed` artifact.

@@ -1,24 +1,23 @@
 /**
- * NEO-339 — `apply`: run a spec, writing. The confirm phrase is checked
- * before anything touches the network (the spec is parsed locally first, so a
- * bad spec also costs nothing). Stops at the first decision the spec does not
- * answer and returns it with a fill-in template; a re-run resumes.
+ * NEO-339 — `apply`: run a spec, writing. The spec is parsed and the confirm
+ * phrase checked before anything touches the network; the phrase carries the
+ * parsed spec's digest, so it confirms this spec and no edited copy of it.
+ * Stops at the first decision the spec does not answer and returns it with a
+ * fill-in template; a re-run resumes.
  */
 
 import type { NbClient } from "../client/convex-client";
-import { assertConfirm, type Target } from "../client/target";
-import { specScope, type ApplyReport } from "../service";
+import { assertPhrase, type Target } from "../client/target";
+import { specConfirmPhrase, type ApplyReport } from "../service";
 import { parseSpec } from "../spec/schema";
 import { runSpec, type RunOptions, type RunResult } from "./engine";
 
 export type ApplyResult = ApplyReport & Pick<RunResult, "sessions">;
 
-/** Check the phrase against the raw spec's scope, then parse. No network. */
+/** Parse the spec, then check the phrase against it. No network. */
 export function confirmedSpec(target: Target, raw: unknown, confirm: string | undefined) {
-  const declared = specScope(raw);
-  if (declared) assertConfirm(target, declared, confirm);
   const spec = parseSpec(raw);
-  assertConfirm(target, spec.scope, confirm);
+  assertPhrase(specConfirmPhrase(target, spec), confirm);
   return spec;
 }
 

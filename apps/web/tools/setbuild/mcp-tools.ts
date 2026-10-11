@@ -17,28 +17,40 @@
  *
  * 1. The read tools are registered with `service.read` ONLY (see
  *    `registerReadTools`); they hold no reference to `write`.
- * 2. Every write tool checks the target-bound confirm phrase HERE, before the
- *    service is touched: a missing or wrong phrase returns `isError` naming
- *    the expected phrase and makes zero service calls. The service checks it
- *    again (the CLI's only lock).
+ * 2. Every write tool checks the confirm phrase HERE, before the service is
+ *    touched: a missing or wrong phrase returns `isError` naming the expected
+ *    phrase and makes zero service calls. The phrase binds the target host AND
+ *    the write's content (`BUILD <host> <scope> <digest>`, the per-write
+ *    helpers in service.ts), so a phrase the operator saw for one spec or one
+ *    set of answers never confirms another. The service checks it again (the
+ *    CLI's only lock).
  * 3. The write tools are on no permission allowlist (mcp-allowlist.test.ts),
  *    so Claude Code asks the operator for every write call.
- * 4. Every result and error passes through `scrub`: the secret env values and
+ * 4. Every result and error passes through `scrub` (auth/token-source.ts,
+ *    shared with the CLI and the report files): the secret env values and
  *    anything JWT-shaped are redacted, and stack frames never leave.
+ * 5. A `specPath` is resolved to its real path and must sit inside the
+ *    repository or the directory the server was launched from (`INIT_CWD`):
+ *    a symlink or `..` cannot point the server at an arbitrary file.
  */
 
-import { readFile, stat } from "node:fs/promises";
-import { isAbsolute, resolve as resolvePath } from "node:path";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { dirname, isAbsolute, relative, resolve as resolvePath } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { NamedDecisionSchema, SlDecisionSchema, TeamDecisionSchema } from "./spec/schema";
-import { redact } from "./auth/token-source";
+import { scrub } from "./auth/token-source";
 import { secretValues } from "./client/connect";
-import { assertConfirm, ConfirmMismatch, type Target } from "./client/target";
+import { assertPhrase, ConfirmMismatch, type Target } from "./client/target";
+import { parseSpec } from "./spec/schema";
 import {
-  formatPath,
+  buildParallelConfirmPhrase,
+  decideConfirmPhrase,
   ResolveError,
+  slReviewConfirmPhrase,
+  specConfirmPhrase,
   specScope,
   type NodePath,
   type SetBuildRead,
@@ -58,19 +70,19 @@ export interface RegisterToolsOptions {
   cwd?: string;
   /** Spec file reader; injectable for tests. */
   readSpecFile?: (absolutePath: string) => Promise<string>;
+  /**
+   * Turn an absolute `specPath` into the real path to read, refusing one
+   * outside the allowed roots. Default: `containedSpecPath` over the repo
+   * root and `INIT_CWD`. Injectable for tests.
+   */
+  resolveSpecPath?: (absolutePath: string) => Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
 // Scrubbing
 // ---------------------------------------------------------------------------
 
-const JWT_RE = /eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]*/g;
 const MAX_ERROR_CHARS = 1500;
-
-/** Redact secret values and anything JWT-shaped. */
-export function scrub(text: string, secrets: readonly string[]): string {
-  return redact(text, secrets).replace(JWT_RE, "[redacted-token]");
-}
 
 /** An error's message with stack frames removed and its length bounded. */
 function cleanMessage(err: unknown): string {
@@ -185,7 +197,8 @@ const confirm = z
   .string()
   .optional()
   .describe(
-    "The confirm phrase, exactly: BUILD <convex host> <scope>. Copy it from nb_plan (or from this tool's error when it is missing); never compose it.",
+    "The confirm phrase, exactly: BUILD <convex host> <scope> <digest>. The digest binds it to this call's content. " +
+      "Copy it from nb_plan (nb_apply) or from this tool's error when it is missing; never compose it.",
   );
 
 // The answer shapes are the spec's own zod schemas, so an MCP answer and a
@@ -214,9 +227,42 @@ async function defaultReadSpecFile(absolutePath: string): Promise<string> {
   return readFile(absolutePath, "utf8");
 }
 
+/** The monorepo root: this file is apps/web/tools/setbuild/mcp-tools.ts. */
+export const REPO_ROOT = resolvePath(dirname(fileURLToPath(import.meta.url)), "../../../..");
+
+function within(root: string, path: string): boolean {
+  const rel = relative(root, path);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * The real path of `absolutePath` (every symlink and `..` resolved), provided
+ * it sits inside one of `roots` (themselves real-pathed). Throws otherwise,
+ * naming the path as given and never where a symlink pointed.
+ */
+export async function containedSpecPath(
+  absolutePath: string,
+  roots: ReadonlyArray<string | undefined>,
+  realpathFn: (p: string) => Promise<string> = realpath,
+): Promise<string> {
+  const real = await realpathFn(absolutePath).catch(() => {
+    throw new SpecInputError(`No spec file at ${absolutePath}.`);
+  });
+  const realRoots = await Promise.all(
+    roots.filter((r): r is string => !!r).map((r) => realpathFn(r).catch(() => undefined)),
+  );
+  if (!realRoots.some((r) => r !== undefined && within(r, real))) {
+    throw new SpecInputError(
+      `specPath ${absolutePath} is outside the repository and the directory the server was launched from; ` +
+        "give a spec inside one of them, or pass the spec object instead.",
+    );
+  }
+  return real;
+}
+
 async function loadSpec(
   input: { spec?: Record<string, unknown>; specPath?: string },
-  opts: Required<Pick<RegisterToolsOptions, "cwd" | "readSpecFile">>,
+  opts: Required<Pick<RegisterToolsOptions, "cwd" | "readSpecFile" | "resolveSpecPath">>,
 ): Promise<SetBuildSpecInput> {
   if ((input.spec === undefined) === (input.specPath === undefined)) {
     throw new SpecInputError("Give exactly one of spec (an object) or specPath (a .json file).");
@@ -224,7 +270,7 @@ async function loadSpec(
   if (input.spec !== undefined) return input.spec;
   const p = input.specPath!;
   if (!p.toLowerCase().endsWith(".json")) throw new SpecInputError("specPath must name a .json file.");
-  const absolute = isAbsolute(p) ? p : resolvePath(opts.cwd, p);
+  const absolute = await opts.resolveSpecPath(isAbsolute(p) ? p : resolvePath(opts.cwd, p));
   const text = await opts.readSpecFile(absolute);
   try {
     return JSON.parse(text) as unknown;
@@ -242,6 +288,7 @@ interface Ctx {
   secrets: string[];
   cwd: string;
   readSpecFile: (absolutePath: string) => Promise<string>;
+  resolveSpecPath: (absolutePath: string) => Promise<string>;
 }
 
 const WORKFLOW =
@@ -326,9 +373,9 @@ export function registerWriteTools(
     async ({ confirm: given, ...input }) =>
       run(ctx.secrets, async () => {
         const spec = await loadSpec(input, ctx);
-        const scope = specScope(spec);
-        if (!scope) throw new SpecInputError("The spec declares no scope; nb_plan explains what is wrong with it.");
-        assertConfirm(getTarget(), scope, given);
+        if (!specScope(spec)) throw new SpecInputError("The spec declares no scope; nb_plan explains what is wrong with it.");
+        // Parsing is local; the phrase carries the parsed spec's digest.
+        assertPhrase(specConfirmPhrase(getTarget(), parseSpec(spec)), given);
         return write.apply(spec, given);
       }),
   );
@@ -342,7 +389,8 @@ export function registerWriteTools(
         'team or league by its exact name, "create", "skip", or {"link": "<existing NB name>"}. Teams may carry ' +
         "location and league. row names the checklist (variant type + row name); omit it for the Base row. Only " +
         "answers the operator gave; an unanswered item stays open. confirm is BUILD <convex host> " +
-        "<sport>/<year>/<manufacturer>/<set>; a call without it returns the exact phrase to show the operator.",
+        "<sport>/<year>/<manufacturer>/<set> <digest>, the digest binding it to these exact answers; a call " +
+        "without it returns the exact phrase to show the operator with the answers.",
       inputSchema: {
         path: setPathSchema,
         row: z
@@ -360,8 +408,9 @@ export function registerWriteTools(
     async ({ path, confirm: given, row, players, teams, leagues }) =>
       run(ctx.secrets, async () => {
         const setPath = toPath(path) as Parameters<SetBuildWrite["decide"]>[0];
-        assertConfirm(getTarget(), formatPath(setPath), given);
-        return write.decide(setPath, { row, players, teams, leagues }, given);
+        const decisions = { row, players, teams, leagues };
+        assertPhrase(decideConfirmPhrase(getTarget(), setPath, decisions), given);
+        return write.decide(setPath, decisions, given);
       }),
   );
 
@@ -372,8 +421,9 @@ export function registerWriteTools(
       description:
         "WRITES. Builds one Parallel row's checklist from the set's Base checklist, as the Set Builder's " +
         '"Build from Base" does. name is the exact Parallel row name. A row that already has cards is skipped ' +
-        "unless rebuild is true. confirm is BUILD <convex host> <sport>/<year>/<manufacturer>/<set>; a call " +
-        "without it returns the exact phrase to show the operator.",
+        "unless rebuild is true. confirm is BUILD <convex host> <sport>/<year>/<manufacturer>/<set> <digest>, " +
+        "the digest binding it to this row and rebuild flag; a call without it returns the exact phrase to show " +
+        "the operator.",
       inputSchema: {
         path: setPathSchema,
         name: name("The exact Parallel row name."),
@@ -385,8 +435,9 @@ export function registerWriteTools(
     async ({ path, name: rowName, rebuild, confirm: given }) =>
       run(ctx.secrets, async () => {
         const setPath = toPath(path) as Parameters<SetBuildWrite["buildParallel"]>[0];
-        assertConfirm(getTarget(), formatPath(setPath), given);
-        return write.buildParallel(setPath, rowName, rebuild === undefined ? {} : { rebuild }, given);
+        const o = rebuild === undefined ? {} : { rebuild };
+        assertPhrase(buildParallelConfirmPhrase(getTarget(), setPath, rowName, o), given);
+        return write.buildParallel(setPath, rowName, o, given);
       }),
   );
 
@@ -398,8 +449,9 @@ export function registerWriteTools(
         "WRITES. Applies SportLots set-review decisions at a brand-year (see nb_review_items). Each row is " +
         'named by its SportLots id: {"slId", "placement": "own-set"} makes it its own set; {"slId", "set", ' +
         '"variantType", "name"?} places it under an existing NB set. Every row in the review must be answered: ' +
-        "if any row is unanswered or unknown, nothing is saved and the open rows come back. Nothing is applied by position. confirm is BUILD <convex host> <sport>/<year>/<manufacturer>; a call without it " +
-        "returns the exact phrase to show the operator.",
+        "if any row is unanswered or unknown, nothing is saved and the open rows come back. Nothing is applied " +
+        "by position. confirm is BUILD <convex host> <sport>/<year>/<manufacturer> <digest>, the digest binding " +
+        "it to these exact decisions; a call without it returns the exact phrase to show the operator.",
       inputSchema: {
         path: brandYearPathSchema,
         decisions: z.array(slDecision).min(1).max(200),
@@ -410,7 +462,7 @@ export function registerWriteTools(
     async ({ path, decisions, confirm: given }) =>
       run(ctx.secrets, async () => {
         const byPath = toPath(path);
-        assertConfirm(getTarget(), formatPath(byPath), given);
+        assertPhrase(slReviewConfirmPhrase(getTarget(), byPath, decisions), given);
         return write.slReviewApply(byPath, decisions, given);
       }),
   );
@@ -422,6 +474,8 @@ export function registerTools(server: McpServer, service: SetBuildService, opts:
     secrets: opts.secrets ?? secretValues(process.env),
     cwd: opts.cwd ?? process.env.INIT_CWD ?? process.cwd(),
     readSpecFile: opts.readSpecFile ?? defaultReadSpecFile,
+    resolveSpecPath:
+      opts.resolveSpecPath ?? ((p) => containedSpecPath(p, [REPO_ROOT, process.env.INIT_CWD])),
   };
   registerReadTools(server, service.read, ctx);
   // A getter, not the value: a service whose connection failed to resolve
