@@ -302,7 +302,7 @@ describe("ReconciliationModal — names begin with the visible text", () => {
     const a = keepAllBsc().getAttribute("aria-label")!;
     const b = keepAllSl().getAttribute("aria-label")!;
     expect(a.includes(b) || b.includes(a)).toBe(false);
-    // CardPairingModal's ids, which topps-chrome-insert-keep-all-no-wizard.yaml taps.
+    // CardPairingModal's ids (the retired setup.yaml tapped them by id).
     for (const id of ["Keep all BSC-only cards", "Keep all SportLots-only cards"]) {
       expect(new RegExp(id).test(a) || new RegExp(id).test(b)).toBe(false);
     }

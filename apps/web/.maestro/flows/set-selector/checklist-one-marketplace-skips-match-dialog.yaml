@@ -165,7 +165,7 @@ tags:
 #   Every other flow that reaches the pairing dialog is on a TWO-sided set and
 #   proves the opposite half of the same rule, unchanged by this ticket:
 #   `checklist-pairing-dialog-cancel` (Future Stars),
-#   `topps-chrome-insert-keep-all-no-wizard` (once the retired `setup.yaml`),
+#   `topps-chrome-insert-known-roster-no-wizard` (once the retired `setup.yaml`),
 #   `util-fetch-real-set-checklist-to-wizard` (Topps Big League),
 #   `inserts-1996-score-one-nb-set-two-bsc-sources`. None of them is modified.
 #

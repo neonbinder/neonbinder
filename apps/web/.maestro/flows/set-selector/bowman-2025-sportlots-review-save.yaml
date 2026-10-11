@@ -39,27 +39,26 @@ tags:
 #   a re-run finds no pill and the own set already a row, and fails by name
 #   at the claim-1 search; CI reseeds every run.
 #
-#   TODO(NEO-339 measure) — none of 2025 Bowman's review rows has been read
-#   yet. The `evalScript` constants below are 2026 Bowman's shapes as
-#   placeholders. Measure on a seeded PR preview (open the pill, read the
-#   rows in the dialog's folded order; or `slSetReviews` for brand Bowman,
-#   year 2025) and fix each one:
-#     * OWN_LABEL — a SportLots-only review row that is a product of its own
-#       (2026: `Bowman Sterling`). Its default set name, OWN_SET (the label
-#       itself when it already starts with the brand — `candidateDefaultName`),
-#       must not be a substring of ANY 2025 BSC set filed under Bowman, or the
-#       claim-1 search finds that set instead of `No matches found`. ⚠️ 2025
-#       Bowman Sterling is a released product, so BSC may already list it —
-#       in which case SportLots' row is auto-matched, never reviewed, and
-#       another own-set label is needed.
-#     * INSERT_ROW — a review row that belongs under Bowman › Insert (2026:
-#       `All-America Game Autos`), and it must be the review's FIRST row in
-#       folded order with the filter empty: its tick is then at the top of the
-#       dialog's body, which no scroll can move (R8 case 2). If no insert-like
-#       row sorts first, change step 2b to filter by its name first.
-#     * the review must hold at least three rows (one own set, one insert, at
-#       least one parallel) and `Bowman`, `Insert` and `Parallel` must be in
-#       the dialog's set and type pickers (Bowman's variant types).
+#   THE ROWS (MEASURED read-only 2026-10-11 against a seeded PR preview: the
+#   SportLots 2025 Bowman list and BSC's 2025 baseball sets, classified with
+#   the sync's own `routeSlSets`; nothing was synced). The review holds 175
+#   rows (cap 200), no twins, sorted by folded label — `Base Set` first, then
+#   the `Best …` family:
+#     * OWN_LABEL = `Best` — SportLots' brand-stripped label for Bowman's Best,
+#       a product of its own. Its default set name (`candidateDefaultName`) is
+#       OWN_SET = `Bowman Best`, which is not a substring of any 2025 BSC set
+#       filed under Bowman (`Bowman`, `Bowman Chrome`, `Bowman Chrome Sapphire
+#       Edition`, `Bowman Draft`, `Bowman Draft Sapphire Edition`, `Bowman
+#       Sapphire Edition`, `Bowman's Best` — the apostrophe keeps the last one
+#       out). 2025 Bowman Sterling is not in SportLots' 2025 Bowman list at
+#       all, so it could not be the own set. `Best` is the first row its own
+#       filter shows (its ~110 `Best …` siblings sort after it).
+#     * INSERT_ROW = `Prospects` — the Bowman Prospects subset. NO insert-like
+#       row sorts first (`Base Set` does), so step 2b types INSERT_ROW into
+#       the filter before the tick, and step 2c erases it before typing
+#       OWN_LABEL. `Prospects` is the first row its own filter shows (its 30
+#       `Prospects …` siblings sort after it).
+#     * Every other row (173) is filed under Bowman › Parallel.
 #   NEO-339 decision: if the measured run exceeds ~480 s of the 600 s per-flow kill,
 #   drop step 2c (the own set) and its read-back, and change the tallies to
 #   `0 sets`.
@@ -82,13 +81,13 @@ tags:
 
 - evalScript: '${output.BRAND = "Bowman"}'
 - evalScript: '${output.YEAR = "2025"}'
-# TODO(NEO-339 measure) — see the header. 2026 Bowman's values, as placeholders.
-- evalScript: '${output.OWN_LABEL = "Bowman Sterling"}'
-- evalScript: '${output.OWN_SET = "Bowman Sterling"}'
+# Measured 2025 Bowman review rows — see the header ("THE ROWS").
+- evalScript: '${output.OWN_LABEL = "Best"}'
+- evalScript: '${output.OWN_SET = "Bowman Best"}'
 # Escaped once for the full-match `text:` selectors (runtime names need regex
 # escaping); the raw form goes into the search box.
 - evalScript: '${output.OWN_SET_RE = output.OWN_SET.replace(/[\^\[\]()*+?.|]/g, function (c) { return "\\" + c; })}'
-- evalScript: '${output.INSERT_ROW = "All-America Game Autos"}'
+- evalScript: '${output.INSERT_ROW = "Prospects"}'
 - evalScript: '${output.TYPE_PARALLEL = "Parallel"}'
 - evalScript: '${output.TYPE_INSERT = "Insert"}'
 
@@ -282,11 +281,17 @@ tags:
           timeout: 7000
 
       # 2b — ONE ROW → Bowman › Insert, through its row tick and the bulk
-      # bar. INSERT_ROW is the review's FIRST row in folded order (header,
-      # TODO measure), so with the filter empty its tick is at the top of the
-      # body (R8 case 2: the body is the dialog's own scroller). The bulk set
-      # is still Bowman (no second sync); only the type changes, and the
-      # list's `Insert` option is the nearest below the trigger.
+      # bar. INSERT_ROW is NOT the review's first row (`Base Set` is — header,
+      # "THE ROWS"), so it is filtered first: the filter is in the pinned
+      # header and still empty, and INSERT_ROW is the first row its own
+      # filter shows, so its tick is at the top of the body (R8 case 2: the
+      # body is the dialog's own scroller). The filter narrows the view, not
+      # the selection or the save. The bulk set is still Bowman (no second
+      # sync); only the type changes, and the list's `Insert` option is the
+      # nearest below the trigger.
+      - tapOn:
+          id: "Find a SportLots set"
+      - inputText: ${output.INSERT_ROW}
       - tapOn:
           id: "Select ${output.INSERT_ROW}"
       - extendedWaitUntil:
@@ -319,12 +324,14 @@ tags:
           id: "${output.TYPE_INSERT}: where ${output.INSERT_ROW} is filed"
 
       # 2c — PER ROW: OWN_LABEL BACK TO ITS OWN SET, through its own "Belongs
-      # to" picker. The filter is in the pinned header and still empty, so
-      # typing needs no erase. Rows sort by folded label, so the bare label is
-      # the FIRST row the filter shows and its list opens at the top of the
-      # body (R8 case 2).
+      # to" picker. The filter still holds INSERT_ROW from 2b, a short value,
+      # so the centre tap lands past its end and the erase clears it (surplus
+      # backspaces on an empty box are inert). Rows sort by folded label, so
+      # the bare label is the FIRST row the filter shows and its list opens at
+      # the top of the body (R8 case 2).
       - tapOn:
           id: "Find a SportLots set"
+      - eraseText: 30
       - inputText: ${output.OWN_LABEL}
       # The row's picker names its current choice first: 2a's bulk mark put
       # it under Bowman (the precondition, R2). Full match — `…: set

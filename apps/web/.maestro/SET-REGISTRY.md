@@ -97,7 +97,7 @@ BuySportsCards alone for the whole run:
 
 | Set | Variant types provisioned | Provisioned by |
 |---|---|---|
-| Baseball → 2024 → Topps → Topps Chrome | `Base` — mapped on BOTH sides, 335 cards COMMITTED with the players, teams and leagues its review creates; `Insert` reconciled, `Future Stars` 20 cards COMMITTED, and the insert `topps-chrome-insert-keep-all-no-wizard` reads left with an EMPTY checklist (TODO(NEO-339 measure): which insert); `Parallel` reconciled — 41 rows, ONE of them built from Base by the seed (never `Gold Wave Refractors` — its flow builds it — and never the first buildable row, which `base-parallels-build-from-section` builds), every other one EMPTY, `Gold Wave Refractors` included | **seed**. Sole writers, one datum each: the cards of the first buildable row under `Parallel` (measured: `Sepia Refractors`) — `base-parallels-build-from-section.yaml` (NEO-321, approved Jason 2026-10-04); `Gold Wave Refractors`' cards — `gold-wave-build-from-base-row.yaml` (NEO-339); the measured insert's cards — `topps-chrome-insert-keep-all-no-wizard.yaml` (NEO-339). See "2024 Topps Chrome › Parallel — the base-parallel build" and "The NEO-339 flows on 2024 Topps Chrome" |
+| Baseball → 2024 → Topps → Topps Chrome | `Base` — mapped on BOTH sides, 335 cards COMMITTED with the players, teams and leagues its review creates; `Insert` reconciled, `Future Stars` 20 cards COMMITTED, and `Youthquake` (50 cards, both sides) left with an EMPTY checklist; `Parallel` reconciled — 41 rows, ONE of them built from Base by the seed (never `Gold Wave Refractors` — its flow builds it — and never the first buildable row, which `base-parallels-build-from-section` builds), every other one EMPTY, `Gold Wave Refractors` included | **seed**. Sole writers, one datum each: the cards of the first buildable row under `Parallel` (measured: `Sepia Refractors`) — `base-parallels-build-from-section.yaml` (NEO-321, approved Jason 2026-10-04); `Gold Wave Refractors`' cards — `gold-wave-build-from-base-row.yaml` (NEO-339); `Youthquake`'s cards — `topps-chrome-insert-known-roster-no-wizard.yaml` (NEO-339). See "2024 Topps Chrome › Parallel — the base-parallel build" and "The NEO-339 flows on 2024 Topps Chrome" |
 | Baseball → 2024 → Topps → Topps Big League | `Base` — variant types synced and Base MAPPED on both sides, checklist deliberately EMPTY (NEO-248 wizard fixture) | **seed** |
 | Baseball → 2024 → Topps → Topps 206 | none — variant types sync on first use; Base stays **UNMAPPED** (NOT pre-synced) | `flows/set-selector/base-mapping-cancel-recovers.yaml` — **sole writer**, and it writes nothing |
 | Baseball → 2024 → Topps → Topps Chicago Cubs | `Base` — variant types synced, Base MAPPED on BOTH sides and the checklist fetched and COMMITTED, all in-flow (NOT pre-synced; the seed provisions nothing here) | **sole writer** `checklist-wizard-skip-commits-and-unskip.yaml`, which provisions it cold through `util-fetch-real-set-checklist-to-wizard` |
@@ -110,7 +110,7 @@ BuySportsCards alone for the whole run:
 | Hockey → 1997 (the whole year) | a manufacturer row `SPx` linked through SportLots' All Brands option; the per-brand SportLots reviews the year-wide Sync Sets leaves behind (NEO-306: SportLots-only names are no longer saved as sets; the reviews stay unsaved, labels never read or asserted); the year's BSC sets filed under the brands / `Unknown` and the prefix-matching ones re-homed to `SPx`. No checklist is fetched. | `flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-21 (NEO-237 §0.1); the prefix `SPx` **measured** on PR #272's preview 2026-09-21 — see the Hockey 1997 section |
 | Baseball → 2024 → Topps → Topps MLB at Rickwood Field Negro Leagues Collection | `Base` — 4 cards, BSC only (the SportLots picker is CANCELLED in-flow; SportLots does not carry the set), fetched and COMMITTED in-flow (NOT pre-synced) | `flows/set-selector/checklist-wizard-link-team-saves-alias.yaml` — **sole writer**. Approved by Jason 2026-09-16 (NEO-284) |
 | Baseball → 2026 → Bowman (the whole brand-year) | **seed:** Bowman's Sets synced and its SportLots review SAVED (NEO-306): the set `Bowman Sterling` (+ Base), `All-America Game Autos` under Bowman › `Insert`, every other SportLots-only name under Bowman › `Parallel`; Bowman's Variant Types synced. **inserts flow:** Bowman › `Insert` reconciled and grouped — `Anime Kanji` promoted to a parallel of `Anime`, re-synced; `Anime`'s checklist COMMITTED, which BUILDS all of `Anime`'s parallels (NEO-312). **links flow:** Bowman › `Parallel` re-synced and saved (BSC's `Blue` paired with the filed row); `Blue`'s SportLots link promoted to `Bowman Blue` and folded back; the Parallel row `All-America Game Autos Red Ink` moved under Bowman › Insert › `All-America Game Autos` as the parallel `Red Ink` | **seed** (Sets + review + Variant Types; the paused-mode `Bowman` manufacturer row — server-side since NEO-339; the review's UI is proved on 2025 Bowman instead), `flows/set-selector/bowman-insert-grouping-builds-parallels.yaml` (Bowman › Insert's BSC inserts and their grouping), `flows/set-selector/bowman-sportlots-links-move-between-set-parallel-insert.yaml` (Bowman › Parallel, `Blue`, `Bowman Blue`, `Red Ink`) — **one sole writer per row**, split from one flow at 570 s of the 600 s kill (NEO-312, owner-approved shape). Requested by the owner 2026-09-21 (NEO-293) |
-| Baseball → 2025 (the whole year) → Bowman | Bowman's Sets synced cold (BSC's 2025 list is year-wide, so every 2025 BSC set is filed under the year's brands) and its SportLots review SAVED through the UI: one row its own set, one row under Bowman › `Insert`, every other row under Bowman › `Parallel`; Bowman's Variant Types synced inside the review. The year's Manufacturers column is synced cold by the same drill. No checklist is fetched (NOT pre-synced) | `flows/set-selector/bowman-2025-sportlots-review-save.yaml` — **sole writer** of the year; under the pause it also hand-makes the `Bowman` row. ✅ Approved by Jason 2026-10-11 (NEO-339); see "2025 Bowman — the SportLots review flow" |
+| Baseball → 2025 (the whole year) → Bowman | Bowman's Sets synced cold (BSC's 2025 list is year-wide, so every 2025 BSC set is filed under the year's brands) and its SportLots review SAVED through the UI — 175 rows: `Best` its own set (`Bowman Best`), `Prospects` under Bowman › `Insert`, the other 173 under Bowman › `Parallel`; Bowman's Variant Types synced inside the review. The year's Manufacturers column is synced cold by the same drill. No checklist is fetched (NOT pre-synced) | `flows/set-selector/bowman-2025-sportlots-review-save.yaml` — **sole writer** of the year; under the pause it also hand-makes the `Bowman` row. ✅ Approved by Jason 2026-10-11 (NEO-339); see "2025 Bowman — the SportLots review flow" |
 | Baseball → 1990 (the whole year) | Every brand row NB's known-brands list mints for the year, the year's `Unknown` row, and every BSC set of the year filed under one of them; one set (expected `CMC…`) is MOVED to `Unknown` by the operator control and left there. No checklist is fetched, no Base is mapped, nothing is renamed or deleted, and NO row is added to Baseball's shared Years column (1990 is synced, and the drill selects it). | `flows/set-selector/known-brand-files-set-and-operator-move-sticks.yaml` — **sole writer** of the year. ✅ Claimed by Jason 2026-09-22 (NEO-294); see the Baseball 1990 section |
 | Baseball → 2024 → Topps → Topps (the flagship: BSC's Series 1 + 2 set) | `Insert` — Variant Types synced on first entry; the `Insert` reconcile SAVED twice (once built, once re-synced): every Ready set it holds, including `City Connect Swatch Collection Relics (Series One)` linked to SportLots **299607** and `… (Series Two)` linked to **307437**. No checklist is fetched (NOT pre-synced; the `Topps` row itself is the seed's 2024 Topps Sets sync) | `flows/set-selector/reconcile-sportlots-twins-save-each-to-its-own-set.yaml` — **sole writer**, not self-cleaning (the run-start reset is its cleanup). ✅ Approved by Jason 2026-10-08 (NEO-325); see "SportLots twin names" |
 
@@ -497,7 +497,7 @@ and the UI claim moved to a brand-year nobody else touches:
 | readers | none: no other flow drills Baseball → 2025 |
 | paused | the skip sentence and no pill; nothing else |
 | re-runs | fresh-only per deployment: a second run finds no pill and the own set already a row, and fails at the claim-1 search by name |
-| measured | NOT YET. TODO(NEO-339 measure): the review's rows in folded order; OWN_LABEL (a SportLots-only product of its own whose default set name is no substring of a 2025 BSC Bowman set — 2025 Bowman Sterling exists, so BSC may already list it); INSERT_ROW (an insert-like row that sorts FIRST in the review); Bowman's variant types; the flow's wall time (drop the own-set sub-step if it exceeds ~480 s of the 600 s kill) |
+| measured | 2026-10-11, read-only against a seeded PR preview (SportLots' 2025 Bowman list and BSC's 2025 baseball sets, classified with the sync's own `routeSlSets`; nothing synced): the review holds **175** rows (cap 200), no twins, folded order `Base Set` first, then the `Best …` family. OWN_LABEL `Best` (Bowman's Best) → OWN_SET `Bowman Best`, no substring of any 2025 BSC set under Bowman (`Bowman's Best` differs by its apostrophe; 2025 Bowman Sterling is not in SportLots' list). INSERT_ROW `Prospects`; no insert-like row sorts first, so the flow filters to it before the tick and erases the filter before OWN_LABEL. Expected toast `Saved 1 set, 173 parallels, 1 insert.` (the flow matches the parallel count by shape). NOT YET measured: a live run's wall time — drop the own-set sub-step only if it exceeds ~480 s of the 600 s kill |
 
 ### The one sanctioned read-only visitor
 
@@ -803,7 +803,7 @@ matching"**.
 
 **There is currently ZERO one-sided coverage.** Every flow in the suite that
 reaches the pairing dialog — the old `setup.yaml` ×3 (now
-`topps-chrome-insert-keep-all-no-wizard`), `checklist-pairing-dialog-cancel`,
+`topps-chrome-insert-known-roster-no-wizard`), `checklist-pairing-dialog-cancel`,
 `util-fetch-real-set-checklist-to-wizard` and its four `checklist-wizard-*`
 callers, the three `*-commits` siblings, `inserts-1996-score` — is on a set with
 BOTH sides attached. They cover the ≥2 half of the rule, which this ticket does
@@ -1996,7 +1996,7 @@ queue — and none touches another's datum:
 | `topps-chrome-add-feature.yaml` | toggles one feature on the anchor, twice per run | sole writer of that feature; returns it to its starting state |
 | `base-parallels-build-from-section.yaml` (NEO-321) | the CARDS of the first buildable base parallel under `Parallel` (measured: `Sepia Refractors`), rebuilt from Base by the section's run and stopped after the one in flight | sole writer of those rows' cards; no other queue flow reads that parallel's cards; never writes Base, a player, a team or a row. Approved: Jason, 2026-10-04 — see the section below |
 | `gold-wave-build-from-base-row.yaml` (NEO-339) | the CARDS of `Gold Wave Refractors` under `Parallel`, built from Base through the row's own `Build from Base` | sole writer of Gold Wave's cards; it alone reads them (its SportLots badge check); never writes Base, a player, a team or a row — see "The NEO-339 flows on 2024 Topps Chrome" |
-| `topps-chrome-insert-keep-all-no-wizard.yaml` (NEO-339) | the CARDS of one insert under `Insert` (TODO(NEO-339 measure): which), fetched and committed with both `Keep all`s | sole writer of that insert's cards; no player, team or league is created (the flow asserts there is no review) — see the same section |
+| `topps-chrome-insert-known-roster-no-wizard.yaml` (NEO-339) | the CARDS of `Youthquake` under `Insert`, fetched and committed through Match Cards → Confirm | sole writer of that insert's cards; no player, team or league is created (the flow asserts there is no review) — see the same section |
 
 **`signed-by-autofills-from-players.yaml` no longer self-heals an empty Base
 checklist (NEO-260).** It used to carry a `when:`-guarded fallback that fetched
@@ -2048,7 +2048,7 @@ copied with it or skipped ("skipped — Base changed them mid-build"); the flow
 asserts neither the card nor the count, only that N > 0 cards were built and
 that a copy's title names its parallel.
 
-### The NEO-339 flows on 2024 Topps Chrome — Gold Wave's row build and the keep-all insert
+### The NEO-339 flows on 2024 Topps Chrome — Gold Wave's row build and the known-roster insert
 
 When the seed became a server-side bulk load (NEO-339), two UI behaviours the
 old `setup.yaml` exercised on this set needed flows of their own. Both write
@@ -2056,25 +2056,27 @@ data the old seed wrote before the queue, so neither adds a real set; each is
 the sole writer of one datum and fresh-only per deployment (CI reseeds every
 run; re-seed before a local re-run).
 
-| | `gold-wave-build-from-base-row.yaml` | `topps-chrome-insert-keep-all-no-wizard.yaml` |
+| | `gold-wave-build-from-base-row.yaml` | `topps-chrome-insert-known-roster-no-wizard.yaml` |
 | -- | -- | -- |
-| proves | the base-parallel row's `Build from Base` (no Match Cards, no review), pinned `Built 300 cards`, and the `SL` badge on the last copies (the SportLots pagination guard, NEO-137); paused, `BSC only` | both `Keep all` buttons with HARD preconditions (the old seed `when:`-guarded them), the footer growing by exactly the two columns, and a fetch whose roster NB already holds saving with no review |
-| row | `Parallel` › `Gold Wave Refractors` (left EMPTY by the seed) | an `Insert` row, TODO(NEO-339 measure) — left EMPTY by the seed |
-| writes | Gold Wave's cards (copies of Base's; no player, team or row) | that insert's cards; no player, team or league (asserted) |
+| proves | the base-parallel row's `Build from Base` (no Match Cards, no review), pinned `Built 300 cards`, and the `SL` badge on the last copies (the SportLots pagination guard, NEO-137); paused, `BSC only` | a fetch whose whole roster NB already holds goes Match Cards → Confirm → `Saved 50 cards.` with NO `Confirm New Players & Teams` review (the old seed's Future Stars "no wizard" contract); paused, the same with no dialog |
+| row | `Parallel` › `Gold Wave Refractors` (left EMPTY by the seed) | `Insert` › `Youthquake` (left EMPTY by the seed) |
+| writes | Gold Wave's cards (copies of Base's; no player, team or row) | Youthquake's 50 cards; no player, team or league (asserted) |
 | who else reads it | nobody. `base-parallels-build-from-section` reaches Gold Wave only if its Stop never lands, and fails first | nobody: not Future Stars, which `checklist-pairing-dialog-cancel` reads |
 | concurrency note | `signed-by-autofills-from-players` edits Base card #300 mid-queue; a copy taken while it lands is skipped, so the notice pattern admits `Built 299 cards, …, 1 skipped — Base changed them mid-build` and nothing else | none known |
-| measured | the build: 4.5 s tap → notice, 300 copied / 35 left off (CI 37179999943, under the old seed) | NOT YET — see below |
+| measured | the build: 4.5 s tap → notice, 300 copied / 35 left off (CI 37179999943, under the old seed) | 2026-10-11 on a seeded PR preview: 50 cards, roster entirely inside the seed's 335-card Base roster, both marketplaces, empty after the seed. The flow's own timings are not measured yet |
 
-**Choosing the insert (TODO(NEO-339 measure)).** Measure on a seeded PR preview
-and record here: a Topps Chrome insert that (1) the seed's `Insert`
-reconcile saves and leaves with an EMPTY checklist; (2) whose every BSC card
-names a player AND a team already in NB after the seed (a roster inside the
-335-card Base roster, MLB clubs only), so no review opens; (3) whose fetch
-leaves at least one BSC-only and at least one SportLots-only card, so both
-`Keep all`s have work; (4) both marketplaces list; (5) small, a few dozen
-cards. Record the name, the card count and both column counts. If no insert
-meets (2) and (3) together, stop and ask the owner: the claim pair would have
-to split across two inserts.
+**The pairing dialog's `Keep all` buttons have NO live E2E, and why.** This
+flow was drafted to prove `Keep all BSC-only cards` / `Keep all
+SportLots-only cards` too, with both columns as hard preconditions. Measured
+on a seeded PR preview (2026-10-11): every Insert row the seed saves under
+Topps Chrome pairs 100% between BSC and SportLots, so no insert has a
+one-sided card and neither button ever has work. The old `setup.yaml`
+pressed them only behind `when: visible "BSC only (…)"` guards, so live E2E
+never really exercised them either (R2). They are covered at component level
+only: `CardPairingModal.test.tsx` ("Keep all saves every card in a column")
+and `ReconciliationModal.keepAll.test.tsx` (the reconcile's own Keep all).
+Live coverage would need a real set with one-sided cards on both sides — a
+new real set, so an owner decision (rule 1), not a flow edit.
 
 ### SportLots twin names (NEO-325) — read-only on the shared anchor, plus one sole writer
 
