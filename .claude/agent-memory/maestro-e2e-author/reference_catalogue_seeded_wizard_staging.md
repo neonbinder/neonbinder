@@ -1,6 +1,6 @@
 ---
 name: catalogue-seeded-wizard-staging
-description: NEO-330 — with the reference catalogue loaded, which checklist names still reach the entity-review wizard, how to check a name against a preview's catalogue read-only, and what the catalogue does and does not cover (measured 2026-10-10)
+description: NEO-330 — with the reference catalogue loaded, which checklist names still reach the entity-review wizard (incl. same-name legends on every retro Base set), the defunct-club auto/operator shape, how to check a name read-only, and what the catalogue covers (measured 2026-10-10/11)
 metadata:
   type: reference
 ---
@@ -48,6 +48,23 @@ to spaces, tokens SORTED: "Frank Thomas" → "frank thomas", "Josh Gibson" →
 plus `playerAliases.by_alias_normalized_and_sport_id` and
 `playerSports.by_name_normalized_and_sport_id`. Count per sport by iterating
 `by_sport_id` (32k-doc read limit; Football/Soccer exceed it).
+
+**Retro/legend sets stage SAME-NAME legends (measured 2026-10-11).** A
+retired star's career span never covers a modern card year (tolerance 2), so
+any legend who shares a name with another catalogue row gets 0 survivors and
+a "Same name, different people" step: Frank Thomas, Randy Johnson, Tony
+Gwynn (Jr. holds the alias), Joe Morgan, Bob Gibson, Pedro Martinez, Billy
+Williams, Sam Crawford, Eddie Collins, John McGraw recur across Tribute,
+Museum, Gilded, Archives, Diamond Kings, Cooperstown. Every 90–400-card retro
+Base checked staged 1–15 such rows. For a team-only batch, hunt SMALL
+unique-name star sets (Topps online "Welcome to the Club" style) and run the
+names through `sameNamePlayers`' three legs + `careerSpan`/`spanCoversCardYear`
+offline before proposing. Defunct-club shape (Baseball catalogue): Brooklyn
+Dodgers, NY Giants, Boston/Milwaukee Braves, KC Athletics, Homestead Grays,
+Montreal Expos, California Angels = ONE dated row (auto past-era link);
+St. Louis Browns (2), Washington Senators (3), Philadelphia Athletics (4),
+St. Louis Stars (3), Detroit Stars (2) = operator step for any year after
+their eras; Kansas City Monarchs = in-era 2021– trap.
 
 **Reading a wizard red:** a walk util that spins its 200-iteration repeat
 (~1.7s each, ~340s) and then fails on `Skip .* not a person` means the batch
