@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "scope": "Baseball/2024/Topps/Topps Chrome",
+  "steps": [
+    {
+      "kind": "set",
+      "path": {"sport": "Baseball", "year": "2024", "manufacturer": "Topps", "set": "Topps Chrome"},
+      "variantTypes": {"sync": true},
+      "variants": [
+        {
+          "type": "Parallel",
+          "rows": [
+            {"name": "Refractors", "buildFromBase": {}, "expectCards": 300}
+          ]
+        }
+      ]
+    }
+  ]
+}

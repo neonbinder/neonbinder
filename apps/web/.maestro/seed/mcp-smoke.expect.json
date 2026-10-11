@@ -1,0 +1,36 @@
+{
+  "before": [
+    {
+      "path": {"sport": "Baseball", "year": "2024", "manufacturer": "Topps", "set": "Topps Chrome"},
+      "base": {"cards": 335, "linked": {"buysportscards": true, "sportlots": true}},
+      "rows": [
+        {"type": "Insert", "name": "Future Stars", "cards": 20},
+        {"type": "Parallel", "name": "Sepia Refractors", "cards": 0},
+        {"type": "Parallel", "name": "Gold Wave Refractors", "cards": 0},
+        {"type": "Parallel", "name": "Refractors", "cards": 0}
+      ],
+      "rowCounts": [
+        {"type": "Insert", "count": 76},
+        {"type": "Parallel", "count": 41}
+      ]
+    },
+    {
+      "path": {"sport": "Baseball", "year": "2024", "manufacturer": "Topps", "set": "Topps Big League"},
+      "base": {"cards": 0, "linked": {"buysportscards": true, "sportlots": true}}
+    }
+  ],
+  "plan": {"openDecisions": 0},
+  "apply": {"counts": {"built": 300}},
+  "after": [
+    {
+      "path": {"sport": "Baseball", "year": "2024", "manufacturer": "Topps", "set": "Topps Chrome"},
+      "base": {"cards": 335},
+      "rows": [
+        {"type": "Parallel", "name": "Refractors", "cards": 300},
+        {"type": "Parallel", "name": "Sepia Refractors", "cards": 0},
+        {"type": "Parallel", "name": "Gold Wave Refractors", "cards": 0}
+      ],
+      "rowCounts": [{"type": "Parallel", "count": 41}]
+    }
+  ]
+}
