@@ -38,7 +38,10 @@
     "e2e:local": "./e2e-local-stack.sh",
     "e2e:local:fresh": "./e2e-local-stack.sh --seed",
     "e2e:local:seed": "./e2e-seed.sh",
-    "postinstall": "husky install"
+    "postinstall": "husky install",
+    "test:pw": "playwright test",
+    "test:pw:list": "playwright test --list",
+    "test:pw:typecheck": "tsc -p playwright/tsconfig.json"
   },
   "dependencies": {
     "@clerk/backend": "^3.18.1",
@@ -72,6 +75,7 @@
   "devDependencies": {
     "@edge-runtime/vm": "^5.0.0",
     "@eslint/eslintrc": "^3",
+    "@playwright/test": "1.63.0",
     "@tailwindcss/vite": "^4",
     "@testing-library/dom": "^10.4.2",
     "@testing-library/react": "^16.3.3",
