@@ -28,12 +28,14 @@ vi.mock("../../convex/_generated/api", () => ({
       getSelectorSyncStatus: "getSelectorSyncStatus",
       addCustomSelectorOption: "addCustomSelectorOption",
       ensureSelectorOptions: "ensureSelectorOptions",
+      dismissSelectorSyncNotice: "dismissSelectorSyncNotice",
     },
   },
 }));
 
 const mockEnsure = vi.fn();
 const mockAddCustom = vi.fn();
+const mockDismiss = vi.fn();
 // Mutable holders read lazily by the mocked hooks at call time.
 const state: { items: unknown; status: unknown } = {
   items: undefined,
@@ -41,7 +43,8 @@ const state: { items: unknown; status: unknown } = {
 };
 
 vi.mock("convex/react", () => ({
-  useMutation: () => mockAddCustom,
+  useMutation: (ref: string) =>
+    ref === "dismissSelectorSyncNotice" ? mockDismiss : mockAddCustom,
   // NEO-219: EntityColumn takes the client at render for the one-shot
   // cross-parent duplicate lookup. Nothing here submits a custom value, so the
   // query is never called — but `useConvex()` must exist.
@@ -62,6 +65,18 @@ const vtProps: EntityColumnProps = {
   level: "variantType",
   useEnsureSync: true,
   syncingLabel: "Syncing Variant Types",
+};
+
+// The real root Sports column (components/modules/SetSelector.tsx): level
+// "sport", NO parentId, ensure-sync path.
+const sportProps: EntityColumnProps = {
+  selector: <div>selector</div>,
+  renderForm: () => <div>legacy-form</div>,
+  addButtonText: "Sync Sports",
+  isVisible: true,
+  level: "sport",
+  useEnsureSync: true,
+  syncingLabel: "Syncing Sport Options",
 };
 
 function renderVT() {
@@ -104,6 +119,74 @@ describe("EntityColumn — ensureSync new path (NEO-47)", () => {
     await act(async () => {});
     expect(getByText("Couldn't sync options.")).toBeTruthy();
     expect(getByText("+ Custom")).toBeTruthy();
+  });
+
+  // The root Sports column has no parent, so a cold mount on a completely empty
+  // deployment is the only moment it can populate itself. The E2E seed flow that
+  // used to cover this was retired (NEO-339).
+  describe("root Sports column on a cold, empty deployment (NEO-339)", () => {
+    it("calls ensureSelectorOptions({level:'sport'}) exactly once on a cold mount with no rows", async () => {
+      state.items = undefined; // loading
+      const { rerender } = render(<EntityColumn {...sportProps} />);
+      await act(async () => {});
+      expect(mockEnsure).not.toHaveBeenCalled();
+
+      state.items = []; // query resolves empty
+      await act(async () => {
+        rerender(<EntityColumn {...sportProps} />);
+      });
+      // Re-renders while still empty must not re-fire.
+      await act(async () => {
+        rerender(<EntityColumn {...sportProps} />);
+      });
+
+      expect(mockEnsure).toHaveBeenCalledTimes(1);
+      expect(mockEnsure).toHaveBeenCalledWith({
+        level: "sport",
+        parentId: undefined,
+      });
+    });
+
+    it("does not call ensureSelectorOptions when rows already exist", async () => {
+      state.items = [{ _id: "s1", value: "Baseball", level: "sport" }];
+      render(<EntityColumn {...sportProps} />);
+      await act(async () => {});
+      expect(mockEnsure).not.toHaveBeenCalled();
+    });
+
+    it("does not call it again once the sync has populated rows", async () => {
+      state.items = [];
+      const { rerender } = render(<EntityColumn {...sportProps} />);
+      await act(async () => {});
+      expect(mockEnsure).toHaveBeenCalledTimes(1);
+
+      state.items = [{ _id: "s1", value: "Baseball", level: "sport" }];
+      await act(async () => {
+        rerender(<EntityColumn {...sportProps} />);
+      });
+      expect(mockEnsure).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders the paused-platform done notice with its Dismiss control and clears it server-side", async () => {
+      const message =
+        "SportLots is on pause: nothing from SportLots was asked for or changed.";
+      state.items = [];
+      state.status = { status: "done", message };
+      const { getByText, getByRole } = render(
+        <EntityColumn {...sportProps} />,
+      );
+      await act(async () => {});
+
+      expect(getByText(message)).toBeTruthy();
+      const dismiss = getByRole("button", { name: "Dismiss Sports notice" });
+      await act(async () => {
+        dismiss.click();
+      });
+      expect(mockDismiss).toHaveBeenCalledWith({
+        level: "sport",
+        parentId: undefined,
+      });
+    });
   });
 
   // The Sport aggregator level's selectorSyncStatus row is a single GLOBAL
