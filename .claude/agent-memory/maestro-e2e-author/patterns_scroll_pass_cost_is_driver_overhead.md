@@ -30,6 +30,7 @@ Per read on those pages: 0.35 / 0.35 / 0.40 s. On the real app the effect is a l
 **How to apply.**
 - To explain a slow scroll, count the `Swiping` lines and multiply by ~2 s before suspecting the app.
 - Don't propose list virtualisation for a scroll whose list is already filtered. Both NEO-313 player flows type a token before opening the panel, so the master list is 1 row.
-- The levers are fewer swipes (a target nearer the top, or not centring a bottom-locked target, R8 case 2), or a tool fix. Never a timeout.
+- The levers are fewer swipes (a target nearer the top, or not centring a bottom-locked target, R8 case 2), or a tool fix. A bigger timeout is never self-granted: since 2026-10-10 travel past ~900px may be REQUESTED from Jason with the swipe count and pixels, and applied only on his yes, dated at the site (README R5; [[feedback-never-diagnose-timing-first]] 3a).
+- Count travel swipes as the `Swiping` lines BEFORE the step's first `Scrolling try count: 0`; swipes between try counts are centring, not travel.
 
 Related: [[maestro-web-driver-primitives]] §4, [[below-the-fold-asserts-and-bottom-locked-scrolls]].

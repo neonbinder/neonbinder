@@ -1412,9 +1412,9 @@ from the catalogue.
 | -- | -- |
 | BSC cards | **300** (BSC `teamName` facets: Tigres de Aragua 47 listings, Leones del Caracas 38, Navegantes del Magallanes 35, Aguilas del Zulia 33, Pastora de Occidente 32, Tiburones de la Guaira 31, Caribes de Oriente 29, Cardenales de Lara 26) |
 | unknown names | **200 players + 8 teams** at open (`Kept all 300 cards from BSC … 200 new players + 8 new teams need confirmation`, `0 of 208 reviewed · 208 still being looked up`) |
-| settled | **211 rows** after ~144 s of live Wikidata lookups (no other runner on the pool): the 8 clubs, ONE staged league (`New League: Venezuelan Professional Baseball League`) and TWO staged career teams (`New Team: EDA Rhinos`, `New Team: Athletics` — Wikidata stints, not checklist clubs) |
+| settled | **211 rows** after ~144 s of LIVE Wikidata lookups (no other runner on the pool; measured before the recording, which now answers all 211): the 8 clubs, ONE staged league (`New League: Venezuelan Professional Baseball League`) and TWO staged career teams (`New Team: EDA Rhinos`, `New Team: Athletics` — Wikidata stints, not checklist clubs) |
 | step order seen | the league, EDA Rhinos, Athletics, Navegantes, Cardenales, Tigres, Aguilas, Leones, Pastora, Caribes, Tiburones — the flow does not depend on it |
-| cost | ~6–7 min end to end locally, ~144 s of it the lookups |
+| cost | ~6–7 min end to end locally with LIVE lookups, ~144 s of it the lookups (before the recording) |
 
 **The rows under test are named.** The flow walks every team/league step,
 reads its heading, links **Navegantes del Magallanes** to its minted team
@@ -1456,11 +1456,15 @@ columns above it are shared with `inserts-1996-score-one-nb-set-two-bsc-sources`
 (Score), which drills the `Score` brand; this flow opens the year's All Brands
 view, whose first Sets sync is year-wide on BSC. A concurrent first sync
 doubles the round-trip, never the rows (measured for Hockey 1994, see the 1995
-hockey section). ⚠️ The 208 Wikidata lookups go through the deployment-wide
-pool (`maxParallelism: 5`) that every runner's wizard flows share, so on CI
-they queue behind other flows' lookups and slow those too; the flow's 180 s
-lookup ceiling had ~36 s of headroom on an idle pool. Read the convex-logs
-artifact before touching that number.
+hockey section). The batch's lookups no longer leave the deployment: the
+NEO-289 enrichment recording answers all 211 of them (200 players, the 8
+clubs, the 2 staged career teams and the staged league; checked offline
+against the committed file, 2026-10-10). They still run through the
+deployment-wide pool (`maxParallelism: 5`) that every runner's wizard flows
+share, so on CI they can queue FIFO behind other flows' LIVE lookups. The
+flow's 180 s lookup ceiling is the live-lane value, kept until the first CI
+run with the recording deployed measures the recorded settle time to tighten
+it to (R5). Read the convex-logs artifact before touching that number.
 
 **Retired:** `Pittsburgh Crawfords` is no longer created by the flow (the
 catalogue has it), and the old automatic past-era resolution claim

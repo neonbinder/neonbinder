@@ -265,11 +265,17 @@ tags:
 # The Cards list is the panel's last section, under Save. The scroll is its
 # own assertion that a card links him (R6): with none the panel says "No cards
 # link to … yet." and renders no list.
+# R5 travel budget: timeout 10000 APPROVED by Jason 2026-10-10 (NEO-330). The
+# cost is distance, not page speed: the list sits ~900px down the panel, and
+# every 312px half-viewport swipe costs ~2s of Maestro web-driver overhead
+# (plus ~1.2s for the first look and ~1.4s for the finding pass), which is
+# right at the 7s edge. Shortening the travel in the product brings this back
+# to 7000; a higher figure is a new request to Jason, not a tuning knob.
 - scrollUntilVisible:
     element:
       id: "Cards for Gp${output.ATTEMPT_TOKEN}"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 - assertVisible:
     text: "#315-${ATTEMPT_ID}"
     childOf:

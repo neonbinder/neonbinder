@@ -445,6 +445,56 @@ one; each says that shortening the page brings the budget back to 7000 and
 that raising it further is a new decision, not a tuning knob. A step that is
 merely slow still does not qualify — that is the bug report.
 
+**Why scroll travel is slow: the cost is the driver, not the page.** A
+`scrollUntilVisible` works in passes: look for the target, swipe if it is not
+there, wait for the page to settle, look again. On Maestro web every one of
+those looks and swipes is a JavaScript call into the browser, and each call
+opens a fresh CDP websocket, re-injects the 14 KB `maestro-web.js`, sleeps
+100 ms and only then runs. Measured on NEO-330 (cli 2.8.0, the same code as
+the pinned 2.6.0):
+
+- the first look costs **about 1.2 s**;
+- every pass that still has to scroll costs **about 2 s** and moves the page
+  one swipe, which is half the viewport: **312 px** at our 625 px height;
+- the pass that finds the target costs **about 1.4 s**.
+
+None of that depends on the page. The same four-swipe scroll took 8.5 s over
+1 row and 9.6 s over 2,000 rows, so a long DOM adds a little and a long
+distance adds a lot. The arithmetic: 900 px is about three swipes, and
+1.2 + 2 × 2.0 + 1.4 ≈ 6.7 s. **About 900 px is the most a 7 s scroll can
+travel**, whatever the page is doing. A slow scroll therefore means distance:
+count the `Swiping` lines in `maestro.log` before the step's first
+`Scrolling try count: 0` and multiply by ~2 s before suspecting the app.
+
+**Extra budget for scroll travel can be asked for, never granted
+automatically.** Jason, 2026-10-10: *"going forward I want to continue to make
+every decision intentionally around extra time … extra budget can be asked
+for but not automatically granted."* The order is fixed:
+
+1. **Shorten the distance in the product first.** Move the target nearer the
+   top, collapse what sits above it, or stop centring a bottom-locked target
+   (R8 case 2). Fewer swipes is the fix; a number is not.
+2. **If the distance is the product's real shape, ask the owner.** The
+   request carries the measured passes (`Swiping` lines from a green run's
+   `maestro.log`) and the distance in pixels, and asks for a specific figure.
+   Nothing above 7000 is ever applied before the answer.
+3. **Record every approved exception at the site**: the date, that Jason
+   approved it, the distance and pass arithmetic, and that shortening the
+   travel brings it back to 7000. A different flow with the same shape is a
+   new request, not a precedent.
+
+The first approvals under this rule are the three `Cards for <name>` scrolls
+on `/admin/players` (`checklist-wizard-link-commits`,
+`card-player-picker-cross-sport`, `player-sports-multi-sport-membership`):
+10000, approved 2026-10-10 (NEO-330), for ~900 px of travel sitting right at
+the 7 s edge. Read one of their comments before writing a request.
+
+**This is about travel only. Everything else stays at 7000.** Waits,
+asserts, taps and our own server writes are the product answering a user, and
+R5 above governs them unchanged: a slow one is a product finding. A centred
+scroll that reaches the give-up path is R8's problem, and travel budget never
+funds it.
+
 **Where a step really does wait on one of those exceptions, split it.** The
 wait and the scroll are different jobs and want different ceilings: put a long
 `extendedWaitUntil` GATE above, named for what it is waiting on, and leave the
@@ -533,6 +583,16 @@ costs the whole budget: measured across the 83 give-up steps in green CI run
 34361627641, minimum 7.007 s, median 7.19 s, maximum 9.48 s — and
 `waitToSettleTimeoutMs` made no difference, because the cost is five swipes
 at `scrollDuration=601` plus six hierarchy reads either way.
+
+**Tell travel from give-up before choosing a remedy.** A centred step can run
+long for two different reasons. Travel is the swipes it takes to bring the
+target into view: ~2 s per 312 px swipe, before centring even starts (R5,
+"Why scroll travel is slow"). Give-up is the `Scrolling try count` loop below,
+after the target is already visible. `maestro.log` separates them: travel
+is the `Swiping` lines, each after an `ElementNotFound` warning, before the
+step's first `Scrolling try count: 0`; centring is the swipes between try
+counts; give-up is try counts running on to 5. Travel may earn an
+owner-approved budget under R5; give-up never does.
 
 **A centred step that runs long is a product finding, never a bigger
 ceiling.** There are exactly two legitimate remedies.

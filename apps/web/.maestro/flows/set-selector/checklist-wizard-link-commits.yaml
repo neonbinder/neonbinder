@@ -369,11 +369,17 @@ tags:
 # The Cards list is the LAST section of the detail panel, under Save, so it is
 # below the fold. The scroll is its own assertion that the list rendered at
 # all (R6): a player no card links shows "No cards link to … yet." and no list.
+# R5 travel budget: timeout 10000 APPROVED by Jason 2026-10-10 (NEO-330). The
+# cost is distance, not page speed: the list sits ~900px down the panel, and
+# every 312px half-viewport swipe costs ~2s of Maestro web-driver overhead
+# (plus ~1.2s for the first look and ~1.4s for the finding pass), which is
+# right at the 7s edge. Shortening the travel in the product brings this back
+# to 7000; a higher figure is a new request to Jason, not a tuning knob.
 - scrollUntilVisible:
     element:
       id: "Cards for Gw${output.ATTEMPT_TOKEN}"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 # The card is this set's — its breadcrumb names the set — and it carries the
 # "Hockey" tag, which the list prints only for a card whose set's sport is
 # not the player's own. Both inside the list, so neither the row's sport nor
