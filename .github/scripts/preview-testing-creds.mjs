@@ -32,15 +32,18 @@ export function extractTestingSecret(js) {
     from = at + HEADER.length;
     // `"x-testing-auth":"<literal>"`  (Vite inlines the define)
     const after = js.slice(from, from + 200);
-    const direct = after.match(/^["'`]?\s*:\s*"([^"\\]{8,})"/);
-    if (direct) return direct[1];
+    // Vite/rolldown emit template-literal strings (`...`), so accept all three quotes.
+    const direct = after.match(/^["'`]?\s*:\s*(["'`])([^"'`\\]{8,})\1/);
+    if (direct) return direct[2];
     // `"x-testing-auth":<ident>` with `<ident>="<literal>"` declared earlier.
     const ident = after.match(/^["'`]?\s*:\s*([A-Za-z_$][\w$]*)\s*[},]/);
     if (ident) {
       const name = ident[1].replace(/\$/g, "\\$");
       const before = js.slice(Math.max(0, at - 1500), at);
-      const decl = [...before.matchAll(new RegExp(`(?:^|[^\\w$.])${name}\\s*=\\s*"([^"\\\\]{8,})"`, "g"))];
-      if (decl.length) return decl[decl.length - 1][1];
+      const q = "[\"'\u0060]";
+      const re = new RegExp("(?:^|[^\\w$.])" + name + "\\s*=\\s*(" + q + ")([^\"'\u0060\\\\]{8,})\\1", "g");
+      const decl = [...before.matchAll(re)];
+      if (decl.length) return decl[decl.length - 1][2];
     }
   }
 }
