@@ -13925,18 +13925,34 @@ export const fetchCardChecklist = action({
       //    players below, instead of trickling in via the background
       //    enrichment queue after save. SportLots-only cards (no BSC ref)
       //    are skipped — this feature is BSC-only.
+      //
+      //    NEO-330: a card with an empty BSC ref is not looked up. Nothing can
+      //    route an answer back to it (`resolveCandidateTeams` keys on the
+      //    ref), so including it would publish a row `pending` that no chunk
+      //    can ever flip — and the one-marketplace auto-keep path waits for
+      //    every row to be `ready`.
       const needsTeamLookup = out.filter(
-        (c) => !c.teams?.length && !c.team && c.platformData.bsc,
+        (c) => !c.teams?.length && !c.team && c.platformData.bsc?.ref,
       );
+      // NEO-330 — which rows are waiting on that lookup, by identity: the
+      // candidates below are built from the same `ReconciledCard` objects.
+      const awaitingLookup = new Set<ReconciledCard>(needsTeamLookup);
 
       // NEO-195 — publish the reconciled candidates NOW, before the team
       // lookup, so the modal can start filling in at ~6s instead of ~80s.
       //
-      // Every row goes in as `pending` when a lookup is outstanding; the chunk
-      // loop below flips each to `ready` as its team lands. `status` reports
-      // enrichment progress, it does not gate visibility — pairing needs card
-      // numbers and descriptions, not teams, and Confirm is separately blocked
-      // until the whole fetch finishes (see checklistCandidates.ts).
+      // A row goes in as `pending` only when a lookup for THAT row is
+      // outstanding; the chunk loop below flips each to `ready` as its team
+      // lands, and every other row is `ready` from the start (NEO-330 — the
+      // batch-wide `pending` left rows nothing would ever flip, so `ready`
+      // could not say "the teams are in"). `status` reports enrichment
+      // progress, it does not gate visibility — pairing needs card numbers
+      // and descriptions, not teams, and Confirm is separately blocked until
+      // the whole fetch finishes (see checklistCandidates.ts). The
+      // one-marketplace auto-keep path, which commits with no operator, DOES
+      // wait on it: this action resolves before the client's subscription
+      // shows the last chunk's patch, so `ready === total` is the only signal
+      // that the teams it is about to hand to entity resolution have arrived.
       //
       // This is the ONLY copy that reaches the client. The action used to
       // return the same three buckets again at the end; that second wire is
@@ -13973,6 +13989,7 @@ export const fetchCardChecklist = action({
         playersConflict: card.playersConflict,
         bucket,
         confidence,
+        awaitsTeamLookup: awaitingLookup.has(card),
       });
       await ctx.runMutation(
         internal.checklistCandidates.startCandidateBatch,

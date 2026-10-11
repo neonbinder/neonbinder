@@ -21,6 +21,10 @@ Large sets hide it: only the LAST chunk's patch races.
 
 **How to apply:** when a client continues after an action, gate on a value
 the action's writes set (a per-row status, a stamped version), never on
-counts the pre-write snapshot already satisfies. Proof in logs: the reactive
+counts the pre-write snapshot already satisfies. A per-row status only works
+as that gate if EVERY row can reach the terminal state: the fix (NEO-330) had
+to write `checklistCandidates.status` per row (`initialCandidateStatus`),
+because a batch-wide `pending` stranded rows no lookup would ever flip, so
+`ready` never reached `total`. Proof in logs: the reactive
 query's re-run Completion lands AFTER the action's Completion. See
 [[sync-action-message-is-log-only]].

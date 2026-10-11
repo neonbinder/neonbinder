@@ -225,7 +225,10 @@ export const soloProgressMessage = (
  * only ever commit a batch it has all of. If the subscription has not caught
  * up with the count the action reported, nothing is saved and the operator is
  * told to try again — the one thing that must not happen is committing a
- * partial checklist over a real set.
+ * partial checklist over a real set. NEO-330: the same message covers a batch
+ * whose rows all arrived but whose teams did not — committing it would hand
+ * entity resolution a checklist with no teams on it, which is the same
+ * partial checklist by another route.
  */
 export const SOLO_STREAM_TIMEOUT_MESSAGE =
   "The fetched cards did not arrive — nothing was saved. Run the sync again.";
@@ -894,32 +897,45 @@ export default function CardChecklist({
 
   /**
    * NEO-255 — block until the streamed batch this run published has reached
-   * the client in full, or give up.
+   * the client in full, teams included, or give up.
    *
    * The auto-keep path commits cards the operator never sees, so it may only
    * commit a COMPLETE batch: `candidateCount` is the action's own count of
    * what it wrote, and the subscription has to agree with it before a single
-   * card is promoted. Since NEO-296 `startCandidateBatch` clears and rewrites
+   * card is promoted. Since NEO-294 `startCandidateBatch` clears and rewrites
    * in bounded PAGES, chained through the scheduler, so the subscription can
-   * legitimately show a half-written batch for a moment. That is exactly what
-   * this wait is for and no change was needed here: the loop polls until
-   * `live.total === expectedCount` inside a 30s budget, so a chained write
-   * only makes it wait a few more milliseconds. What it must never do is
-   * treat a short count as final.
+   * legitimately show a half-written batch for a moment; the loop polls until
+   * `live.total === expectedCount` inside a 30s budget. What it must never do
+   * is treat a short count as final.
    *
    * The batch id must MOVE. Without that check a previous run's abandoned rows
    * — same set, same operator, coincidentally the same count — would satisfy
    * the equality and be committed as if they were this fetch's.
    *
-   * `ready` is deliberately NOT part of the gate, and that is not an oversight.
-   * It counts rows whose TEAM has resolved, and `startCandidateBatch` writes
-   * every row `pending` whenever ANY row needs a BSC team lookup while the
-   * enrichment loop only flips the rows it actually looked up — so on a set
-   * where some cards arrived with teams already parsed, `ready` never reaches
-   * `total` at all. Gating on it would hang this path forever on exactly the
-   * BSC-only sets it exists for. Teams do not gate Confirm in the dialog
-   * either (`CardPairingModal` gates on the fetch, not on enrichment), so this
-   * waits on the same thing the dialog does.
+   * NEO-330 — and every row must be `ready`. A Convex ACTION's promise
+   * resolves before the client's subscriptions show the action's last writes
+   * (mutations wait for their write to be visible; actions do not). The fetch
+   * publishes its rows, THEN runs the BSC team lookup and patches each chunk's
+   * teams in, so the moment `fetchChecklist` resolves the subscription can
+   * still hold the pre-patch snapshot: right `batchId`, right `total`, no
+   * teams. Gating on `total` alone committed that snapshot, so entity
+   * resolution saw no team names, staged no team steps, and the post-commit
+   * queue turned an ambiguous name into "needs a team" with no review (a
+   * small set, whose single lookup chunk lands milliseconds before the action
+   * returns, lost every team this way).
+   *
+   * `ready` is the signal because the server now writes it per row: `pending`
+   * only while a lookup for THAT row is outstanding, `ready` otherwise
+   * (`initialCandidateStatus`). Before NEO-330 a row whose team was already
+   * parsed stayed `pending` forever, which is why this gate used to leave
+   * `ready` out. Waiting on it also covers `resolveCandidateTeams`' one
+   * delayed retry (~1s) for a ref whose row the paged write had not reached
+   * yet — that retry lands after the action has returned.
+   *
+   * If the teams do not arrive inside the budget, nothing is committed and
+   * the operator gets the same honest timeout message as a short batch.
+   * Committing without the teams is exactly the failure this wait exists to
+   * prevent.
    */
   const awaitStreamedBatch = useCallback(
     async (
@@ -935,7 +951,9 @@ export default function CardChecklist({
           live.batchId !== undefined &&
           live.batchId !== previousBatchId &&
           live.total === expectedCount &&
-          live.cards.length === expectedCount
+          live.cards.length === expectedCount &&
+          // NEO-330 — every team this fetch will produce has landed.
+          live.ready === expectedCount
         ) {
           return live;
         }

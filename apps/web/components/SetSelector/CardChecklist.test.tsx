@@ -341,7 +341,7 @@ vi.mock("convex/react", () => ({
 // Component under test — imported after mocks
 // ---------------------------------------------------------------------------
 
-import CardChecklist from "./CardChecklist";
+import CardChecklist, { SOLO_STREAM_TIMEOUT_MESSAGE } from "./CardChecklist";
 
 /**
  * The fetch's own words when it published nothing because neither marketplace
@@ -1299,6 +1299,155 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
     expect(screen.getByText(/Match Cards/)).toBeTruthy();
     expect(mockResolveEntities).not.toHaveBeenCalled();
     expect(mockCommitChecklist).not.toHaveBeenCalled();
+  });
+
+  /**
+   * NEO-330 — the teams have to land before anything is committed.
+   *
+   * A Convex action's promise resolves before the client's subscription shows
+   * its last writes. The fetch publishes its rows and THEN patches each BSC
+   * team lookup in, so the instant `fetchChecklist` resolves the subscription
+   * can show the right batch id and the right count with no teams on it. The
+   * old gate accepted that snapshot, entity resolution saw no team names, and
+   * a small set lost every team. The server now writes `ready` per row, so
+   * `ready === total` is "the teams are in".
+   */
+  describe("waits for every row to be ready (NEO-330)", () => {
+    /** BSC attached at the set, nothing on the variant: one marketplace. */
+    const soloBscChain = () => [
+      {
+        _id: SPORT_ID,
+        level: "sport",
+        value: "Baseball",
+        platformData: { bsc: { b0: "baseball" } },
+      },
+      {
+        _id: SET_ID,
+        level: "setName",
+        value: "Test Set",
+        platformData: { bsc: { b0: "2024-topps" } },
+      },
+      { _id: VARIANT_ID, level: "variantType", value: "Base", platformData: {} },
+    ];
+
+    const bscCard = (n: string, player: string, teams?: string[]) => ({
+      cardNumber: n,
+      cardName: player,
+      players: [player],
+      ...(teams ? { teams } : {}),
+      bucket: "bscOnly" as const,
+      platformData: { bsc: { ref: `bsc-${n}` } },
+    });
+
+    /** Right batch, right count — and the team lookup not yet visible. */
+    const prePatch = {
+      batchId: "batch-330",
+      ready: 0,
+      total: 2,
+      cards: [bscCard("1", "Elly De La Cruz"), bscCard("2", "Hunter Greene")],
+    };
+    /** The same batch once the lookup chunk's patch has reached the client. */
+    const patched = {
+      batchId: "batch-330",
+      ready: 2,
+      total: 2,
+      cards: [
+        bscCard("1", "Elly De La Cruz", ["Cincinnati Reds"]),
+        bscCard("2", "Hunter Greene", ["Cincinnati Reds"]),
+      ],
+    };
+
+    const fetchDone = {
+      success: true,
+      message: "0 matched, 2 BSC-only, 0 SL-only",
+      candidateCount: 2,
+      attachedSides: ["bsc"],
+    };
+
+    beforeEach(() => {
+      state.ancestorChain = soloBscChain();
+    });
+
+    it("does not commit a complete batch whose teams have not landed, and hands entity resolution the teams once they do", async () => {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      expect(screen.getByText(/Fetching from BSC/)).toBeTruthy();
+
+      await streamCandidates(rerender, prePatch);
+      await act(async () => {
+        resolveFetch(fetchDone);
+      });
+
+      // Several poll turns on the pre-patch snapshot: the count agrees, the
+      // batch id moved, and it must still not commit.
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      });
+      expect(mockResolveEntities).not.toHaveBeenCalled();
+      expect(mockDiffChecklist).not.toHaveBeenCalled();
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+      expect(screen.queryByText(/Match Cards/)).toBeNull();
+
+      // The patch lands.
+      await streamCandidates(rerender, patched);
+      await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+
+      // The teams reach entity resolution ON the cards, which is also where the
+      // player gate's card-team tie-break (`cardTeamNamesByPlayer`) reads them.
+      expect(mockResolveEntities).toHaveBeenCalledWith({
+        selectorOptionId: VARIANT_ID,
+        sportId: SPORT_ID,
+        cards: [
+          expect.objectContaining({
+            cardNumber: "1",
+            players: ["Elly De La Cruz"],
+            teams: ["Cincinnati Reds"],
+            unmatched: "sl",
+          }),
+          expect.objectContaining({
+            cardNumber: "2",
+            players: ["Hunter Greene"],
+            teams: ["Cincinnati Reds"],
+            unmatched: "sl",
+          }),
+        ],
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      for (const card of mockCommitChecklist.mock.calls[0][0].cards) {
+        expect(card.teams).toEqual(["Cincinnati Reds"]);
+      }
+    });
+
+    it("gives up after the budget with the honest timeout message, and commits nothing without the teams", async () => {
+      const { rerender } = renderChecklist();
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, prePatch);
+
+      // Fake the clock only for the wait itself: `awaitStreamedBatch` reads
+      // `Date.now()` for its deadline and polls on `setTimeout`.
+      vi.useFakeTimers();
+      try {
+        await act(async () => {
+          resolveFetch(fetchDone);
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(31_000);
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+
+      await waitFor(() =>
+        expect(screen.getByText(SOLO_STREAM_TIMEOUT_MESSAGE)).toBeTruthy(),
+      );
+      expect(mockResolveEntities).not.toHaveBeenCalled();
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+      // The session is binned exactly as a short batch's is.
+      expect(mockDiscardCandidates).toHaveBeenCalledWith({
+        selectorOptionId: VARIANT_ID,
+      });
+      expect(screen.queryByText(/Fetching from BSC/)).toBeNull();
+    });
   });
 });
 
