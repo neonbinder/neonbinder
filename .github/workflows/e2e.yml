@@ -209,6 +209,10 @@ jobs:
     if: always() && needs.setup.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      # NEO-330: wall-clock ms when the seed began; the report job passes it to
+      # the post-drain coverage call so both use the same `since` boundary.
+      seed_since_ms: ${{ steps.seed_start.outputs.since_ms }}
     # NEO-330: id-token:write lets this job mint a WIF token to read the private
     # reference-seed bundle. A job-level block REPLACES the workflow-level one,
     # so the existing grants are repeated. Callers must grant id-token:write too
@@ -403,6 +407,16 @@ jobs:
             echo "- Bundle download: ${secs}s"
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # NEO-330: the seed's start time in ms, for the fixture coverage calls.
+      # `since` bounds which rows count as "looked up by this run"; passing it
+      # explicitly beats the backend's first-year-row inference.
+      - name: Record seed start time
+        id: seed_start
+        run: |
+          since_ms=$(date +%s%3N)
+          echo "NB_SEED_SINCE_MS=${since_ms}" >> "$GITHUB_ENV"
+          echo "since_ms=${since_ms}" >> "$GITHUB_OUTPUT"
+
       - name: Seed global baseline (scripted reset, then setup track worker 0)
         env:
           APP_URL: http://localhost:3000
@@ -478,63 +492,90 @@ jobs:
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          COVERAGE_LABEL: "after the seed"
+          COVERAGE_SINCE_MS: "${{ env.NB_SEED_SINCE_MS }}"
         run: |
           set -uo pipefail
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
-            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY is not set — skipping enrichment fixture coverage."
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY is not set — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
             exit 0
           fi
-          report=$(npx --yes convex@1.39.1 run enrichmentFixtures:coverageReportFromCli \
-            '{"sportQid":"Q5369","confirm":"CAPTURE_ENRICHMENT_FIXTURES"}' \
-            --deployment "$CONVEX_NAME" 2>&1)
+          args=$(python3 -c '
+          import json, os
+          a = {"sportQid": "Q5369", "confirm": "CAPTURE_ENRICHMENT_FIXTURES"}
+          s = os.environ.get("COVERAGE_SINCE_MS", "")
+          if s.isdigit():
+              a["since"] = int(s)
+          print(json.dumps(a))
+          ')
+          out=$(mktemp); err=$(mktemp); md=$(mktemp)
+          # stdout is the result alone (JSON.stringify(result, null, 2) off a
+          # TTY, so several lines); function logs and CLI chatter go to stderr.
+          npx --yes convex@1.39.1 run enrichmentFixtures:coverageReportFromCli \
+            "$args" --deployment "$CONVEX_NAME" >"$out" 2>"$err"
           status=$?
-          echo "$report"
+          cat "$err"
+          cat "$out"
           if [ $status -ne 0 ]; then
             # Name the cause: a missing function means the Convex side is not
             # on this preview yet; anything else is a real error to look at.
-            case "$report" in
+            case "$(cat "$err" "$out")" in
               *"Could not find"*|*"not found"*|*"does not exist"*)
                 why="function not on this preview yet (Convex side not deployed here)";;
               *)
                 why="coverage action returned an error";;
             esac
-            echo "::warning::Enrichment fixture coverage report could not be run — ${why}. See job log for details."
+            echo "::warning::Enrichment fixture coverage report (${COVERAGE_LABEL}) could not be run — ${why}. See job log for details."
             {
-              echo "### Enrichment fixture coverage (NEO-289)";
+              echo "### Enrichment fixture coverage, ${COVERAGE_LABEL} (NEO-289)";
               echo "- Could not run \`enrichmentFixtures:coverageReportFromCli\` — ${why}; see job log.";
             } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          # The report is the LAST line of output (Convex CLI may print log lines
-          # above it); parse defensively and never fail the job on a parse miss.
-          parsed=$(echo "$report" | tail -n 1 | python3 -c '
-          import json, sys
+          # Parse ALL of stdout as one JSON document. Annotations go to stdout
+          # (workflow commands); the summary markdown goes to $md. Names only,
+          # never row contents. A parse miss never fails the job.
+          python3 - "$out" "$md" <<'PY'
+          import json, os, sys
+          label = os.environ.get("COVERAGE_LABEL", "")
+          def clean(x):
+              return str(x).replace("%", "%25").replace("\r", " ").replace("\n", " ")
           try:
-              d = json.load(sys.stdin)
-              covered = d.get("covered", [])
-              missing = d.get("missing", [])
-              covered_n = len(covered) if isinstance(covered, list) else covered
-              missing_joined = ",".join(missing) if isinstance(missing, list) else missing
-              print(str(covered_n) + "|" + str(missing_joined))
-          except Exception:
-              print("?|")
-          ' 2>/dev/null || echo "?|")
-          covered_n="${parsed%%|*}"
-          missing="${parsed#*|}"
+              d = json.load(open(sys.argv[1]))
+              covered = d["covered"]
+              missing = [str(m) for m in d.get("missing", [])]
+              truncated = bool(d.get("truncated"))
+              tsrc = [str(t) for t in d.get("truncatedSources", [])]
+              total, since, ssrc = d.get("total"), d.get("since"), d.get("sinceSource")
+          except Exception as e:
+              print("::warning::Enrichment fixture coverage (%s): could not parse the report (%s)." % (label, clean(type(e).__name__)))
+              open(sys.argv[2], "w").write("- Report could not be parsed; see job log.\n")
+              sys.exit(0)
+          lines = [
+              "- covered: `%s`" % covered,
+              "- total looked-up names: `%s`" % total,
+              "- missing: `%s`" % (", ".join(missing) or "<none>"),
+              "- since: `%s` (source: `%s`)" % (since, ssrc),
+          ]
+          if truncated:
+              lines.append("- **truncated** sources: `%s`" % (", ".join(tsrc) or "<unnamed>"))
+              print("::warning::Enrichment fixture coverage (%s) is truncated, so covered/missing describe only the rows read. Truncated sources: %s" % (label, clean(", ".join(tsrc) or "<unnamed>")))
+          if missing:
+              shown = missing[:100]
+              extra = " (+%d more)" % (len(missing) - 100) if len(missing) > 100 else ""
+              print("::warning::Enrichment fixture coverage gaps (%s) for sportQid Q5369: %s%s" % (label, clean("; ".join(shown)), extra))
+          open(sys.argv[2], "w").write("\n".join(lines) + "\n")
+          PY
           {
-            echo "### Enrichment fixture coverage (NEO-289)";
-            echo "- covered: \`${covered_n}\`";
-            echo "- missing: \`${missing:-<none>}\`";
+            echo "### Enrichment fixture coverage, ${COVERAGE_LABEL} (NEO-289)";
+            cat "$md";
             echo '<details><summary>Raw report</summary>';
             echo;
             echo '```json';
-            echo "$report";
+            cat "$out";
             echo '```';
             echo '</details>';
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$missing" ]; then
-            echo "::warning::Enrichment fixture coverage gaps for sportQid Q5369: ${missing}"
-          fi
 
       - name: Enqueue flows into the work-queue
         # After the baseline exists, populate the shared queue with the runnable
@@ -795,13 +836,113 @@ jobs:
     defaults:
       run:
         working-directory: apps/web
-    needs: [runner]
+    needs: [setup, seed, runner]
     # Run even when a runner fails so the merged report always publishes.
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # NEO-330: the seed-time call above never sees what the runner flows look
+      # up. Run it again once every runner has finished, with the same `since`.
+      # Non-failing; skipped with a note when the deploy key or deployment name
+      # is missing (e.g. a Dependabot run, or setup did not produce a name).
+      - name: Enrichment fixture coverage (post-drain)
+        working-directory: apps/web
+        continue-on-error: true
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          COVERAGE_LABEL: "after the runners drained"
+          COVERAGE_SINCE_MS: "${{ needs.seed.outputs.seed_since_ms }}"
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ]; then
+            echo "::warning::No Convex preview name from setup — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
+            echo "- Enrichment fixture coverage (${COVERAGE_LABEL}) skipped: no Convex preview name." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY is not set — skipping enrichment fixture coverage (${COVERAGE_LABEL})."
+            exit 0
+          fi
+          args=$(python3 -c '
+          import json, os
+          a = {"sportQid": "Q5369", "confirm": "CAPTURE_ENRICHMENT_FIXTURES"}
+          s = os.environ.get("COVERAGE_SINCE_MS", "")
+          if s.isdigit():
+              a["since"] = int(s)
+          print(json.dumps(a))
+          ')
+          out=$(mktemp); err=$(mktemp); md=$(mktemp)
+          # stdout is the result alone (JSON.stringify(result, null, 2) off a
+          # TTY, so several lines); function logs and CLI chatter go to stderr.
+          npx --yes convex@1.39.1 run enrichmentFixtures:coverageReportFromCli \
+            "$args" --deployment "$CONVEX_NAME" >"$out" 2>"$err"
+          status=$?
+          cat "$err"
+          cat "$out"
+          if [ $status -ne 0 ]; then
+            # Name the cause: a missing function means the Convex side is not
+            # on this preview yet; anything else is a real error to look at.
+            case "$(cat "$err" "$out")" in
+              *"Could not find"*|*"not found"*|*"does not exist"*)
+                why="function not on this preview yet (Convex side not deployed here)";;
+              *)
+                why="coverage action returned an error";;
+            esac
+            echo "::warning::Enrichment fixture coverage report (${COVERAGE_LABEL}) could not be run — ${why}. See job log for details."
+            {
+              echo "### Enrichment fixture coverage, ${COVERAGE_LABEL} (NEO-289)";
+              echo "- Could not run \`enrichmentFixtures:coverageReportFromCli\` — ${why}; see job log.";
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # Parse ALL of stdout as one JSON document. Annotations go to stdout
+          # (workflow commands); the summary markdown goes to $md. Names only,
+          # never row contents. A parse miss never fails the job.
+          python3 - "$out" "$md" <<'PY'
+          import json, os, sys
+          label = os.environ.get("COVERAGE_LABEL", "")
+          def clean(x):
+              return str(x).replace("%", "%25").replace("\r", " ").replace("\n", " ")
+          try:
+              d = json.load(open(sys.argv[1]))
+              covered = d["covered"]
+              missing = [str(m) for m in d.get("missing", [])]
+              truncated = bool(d.get("truncated"))
+              tsrc = [str(t) for t in d.get("truncatedSources", [])]
+              total, since, ssrc = d.get("total"), d.get("since"), d.get("sinceSource")
+          except Exception as e:
+              print("::warning::Enrichment fixture coverage (%s): could not parse the report (%s)." % (label, clean(type(e).__name__)))
+              open(sys.argv[2], "w").write("- Report could not be parsed; see job log.\n")
+              sys.exit(0)
+          lines = [
+              "- covered: `%s`" % covered,
+              "- total looked-up names: `%s`" % total,
+              "- missing: `%s`" % (", ".join(missing) or "<none>"),
+              "- since: `%s` (source: `%s`)" % (since, ssrc),
+          ]
+          if truncated:
+              lines.append("- **truncated** sources: `%s`" % (", ".join(tsrc) or "<unnamed>"))
+              print("::warning::Enrichment fixture coverage (%s) is truncated, so covered/missing describe only the rows read. Truncated sources: %s" % (label, clean(", ".join(tsrc) or "<unnamed>")))
+          if missing:
+              shown = missing[:100]
+              extra = " (+%d more)" % (len(missing) - 100) if len(missing) > 100 else ""
+              print("::warning::Enrichment fixture coverage gaps (%s) for sportQid Q5369: %s%s" % (label, clean("; ".join(shown)), extra))
+          open(sys.argv[2], "w").write("\n".join(lines) + "\n")
+          PY
+          {
+            echo "### Enrichment fixture coverage, ${COVERAGE_LABEL} (NEO-289)";
+            cat "$md";
+            echo '<details><summary>Raw report</summary>';
+            echo;
+            echo '```json';
+            cat "$out";
+            echo '```';
+            echo '</details>';
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Download all runner reports
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
