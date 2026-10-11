@@ -100,7 +100,8 @@
     "vite": "^8.3.0",
     "vite-plugin-mkcert": "^2.1.0",
     "vitest": "^4.1.11",
-    "zod": "3.25.76"
+    "zod": "3.25.76",
+    "zod-to-json-schema": "3.25.2"
   },
   "overrides": {
     "eslint-plugin-jsx-a11y": {
