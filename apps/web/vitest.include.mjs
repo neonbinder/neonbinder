@@ -58,7 +58,7 @@ export const ALL_TEST_INCLUDE = [...CONVEX_LIB_INCLUDE, ...COMPONENTS_INCLUDE];
  */
 // `playwright` holds the NEO-338 Playwright E2E port: its *.spec.ts files are
 // run by `playwright test`, never by vitest, so they are not "expected" here.
-export const EXCLUDED_DIRS = ["node_modules", "dist", "build", "playwright"];
+export const EXCLUDED_DIRS = ["node_modules", "dist", "build", "playwright", "playwright-idiomatic"];
 
 /**
  * DISCOVERY glob — deliberately broader than the COLLECTION globs above, and

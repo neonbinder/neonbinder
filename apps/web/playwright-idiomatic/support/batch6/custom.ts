@@ -30,9 +30,16 @@ export async function createCustom(
   await expect(value).toBeVisible();
   await value.fill(name);
   await value.press("Enter");
-  // The form first checks where the name is already used, then asks to confirm.
-  await page.getByRole("button", { name: `Create ${singular}`, exact: true }).click();
-  await expect(page.getByRole("heading", { name: "Add Custom Entry" })).toBeHidden();
+  // Two outcomes (util-drill-to-custom's "when visible Create ..."): a confirm
+  // to press, or the name already exists, so the form selects it and closes.
+  const heading = page.getByRole("heading", { name: "Add Custom Entry" });
+  const confirm = page.getByRole("button", { name: `Create ${singular}`, exact: true });
+  await Promise.race([
+    confirm.waitFor({ state: "visible" }),
+    heading.waitFor({ state: "hidden" }),
+  ]);
+  if (await confirm.isVisible()) await confirm.click();
+  await expect(heading).toBeHidden();
 }
 
 /**

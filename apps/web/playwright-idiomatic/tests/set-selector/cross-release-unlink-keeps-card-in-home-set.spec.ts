@@ -6,7 +6,7 @@
 import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { addCustomCard, drillToCustomSet } from "../../support/batch6/custom";
-import { crossListCards } from "../../support/batch6/cross-list";
+import { crossListCards } from "../../support/batch4/cross-list";
 
 test(
   "Cross-release — 'Unlink' removes a visiting card from this checklist without deleting it from the set it was printed in",

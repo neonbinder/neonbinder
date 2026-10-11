@@ -106,6 +106,10 @@ test(
     await expect(wizard.getByText(/^1 of [0-9]+ reviewed/)).toBeVisible();
 
     await wizard.getByRole("button", { name: /Add remaining players as new/ }).click();
+    // The bulk walk reads "Adding players…" while it runs; deciding a team step
+    // in the middle of it would race the bulk's own writes (Convex OCC), and a
+    // user watches the walk finish before touching the next step.
+    await expect(wizard.getByRole("button", { name: "Adding players…" })).toBeHidden({ timeout: 240_000 });
     const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
     const addTeam = wizard.getByRole("button", { name: /^Add as New (Team|League)$/, disabled: false });
     for (let i = 0; i < 250; i++) {

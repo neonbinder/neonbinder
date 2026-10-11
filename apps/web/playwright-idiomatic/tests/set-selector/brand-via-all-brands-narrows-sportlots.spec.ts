@@ -84,11 +84,15 @@ test(
     // The brand's own view: its sets moved out of Unknown, and its attributes say how SportLots is matched.
     await drillToColdManufacturer(page, env, { sport: "Hockey", year: YEAR, manufacturer: BRAND });
     await expect(columnHeading(page, "Sets")).toBeVisible();
-    // TODO(pwi): red locally against the PR preview. The create wrote its
-    // "moved out of Unknown" status row (the brand does hold the re-homed
-    // set), but by the time the brand's own Sets column is open here no
-    // notice is rendered (the column's own open-sync clears a clean "done"
-    // row). The Maestro run of this flow was green in CI; unresolved locally.
+    // TODO(pwi): red in CI (shard 4) with SPx, and not reproducible on another
+    // brand. Same steps as the Maestro flow (nothing between "Sets" and this
+    // assert but the util's own waits). The notice is the "done" status row the
+    // brand's create wrote on its Sets column; on SplitSecond, Zebra and
+    // Collector's Choice (same year) it shows up a moment after the column
+    // opens and survives the Base-mapping picker, so the web-first assert is
+    // the right shape. With SPx the picker also lists SportLots candidates and
+    // the row is gone by the time the brand is reopened: a status-row clear in
+    // the SportLots-candidate path is the suspect. Needs a fresh SPx to look.
     await expect(page.getByText(/[0-9]+ sets? moved out of Unknown/)).toBeVisible();
     await page.getByRole("button", { name: "Edit attributes" }).click();
     await expect(page.getByRole("button", { name: "Hide attributes" })).toBeVisible();
