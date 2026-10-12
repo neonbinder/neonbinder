@@ -109,13 +109,19 @@ export default function WizardChrome({
             {total > 0 ? stepCounterText(step, total) : ""}
           </p>
         </div>
-        {/* At the 1024px CI viewport and up the growth line shares the
-            subtitle's row and truncates if it must (its region still reads
-            the whole line). Below `sm` it may wrap under the subtitle instead,
-            so a phone never cuts off the player's name. */}
-        <div className="mt-0.5 flex min-h-5 flex-wrap items-baseline justify-between gap-x-4">
+        {/* The growth line WRAPS — it is the line that carries a player's
+            name, and clipping it hid exactly that (a11y audit). From `sm` up
+            it shares the subtitle's row in its own column, and the row
+            reserves two of its lines (`sm:min-h-8`), so a line arriving or
+            wrapping never moves the body below. Narrower than its 12rem basis
+            it drops under the subtitle instead. */}
+        <div className="mt-0.5 flex min-h-5 flex-wrap items-baseline justify-between gap-x-4 sm:min-h-8">
           <p className="min-w-0 shrink-0 text-sm text-gray-400">{subtitle}</p>
-          <p aria-live="polite" className="min-w-0 text-right text-xs text-gray-400 sm:truncate">
+          <p
+            aria-live="polite"
+            data-growth-line=""
+            className="min-w-0 flex-1 basis-48 text-right text-xs text-gray-400 sm:whitespace-normal"
+          >
             {announcement ?? ""}
           </p>
         </div>

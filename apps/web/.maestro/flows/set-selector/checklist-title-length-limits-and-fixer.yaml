@@ -40,9 +40,9 @@ tags:
 #       committing it MUST produce a "Saved Variation" confirmation — a
 #       variation cap that started blocking fails here;
 #     • the walker must open on THIS card (the Skip button's accessible name is
-#       the only card-specific handle in the dialog) and its counter must read
-#       "1 card needs attention · 0 fixed" before and "0 cards need attention ·
-#       1 fixed" after;
+#       the only card-specific handle in the dialog), under the subtitle
+#       "Card titles", and its counter must read "Step 1 of 1" (NEO-335
+#       Phase 2: one counter, no "fixed" count) before and after;
 #     • the badge must be GONE from the grid afterwards, which is a re-read of
 #       the stored row — the only assertion that distinguishes a real write
 #       from a dialog that closed politely.
@@ -589,15 +589,18 @@ tags:
 
 - tapOn: "1 needs you"
 - extendedWaitUntil:
-    visible: "Cards Needing Attention"
+    visible: "Tidy up this set"
     timeout: 7000
 
-# It opened on THIS card, and its own counter agrees with the header pill.
-# The "." matches the middot separator.
+# It opened on THIS card, its own counter agrees with the header pill, and
+# the subtitle names the question (NEO-335 Phase 2: the walker wears the
+# wizard's chrome — "Tidy up this set", the question's type as the subtitle,
+# one "Step x of y"). The walker and the wizard share that text; the walker's
+# own "Skip for now, card <number>" is what says which one this is.
 - assertVisible:
-    id: "Skip card 101-${ATTEMPT_ID} for now"
-- assertVisible:
-    text: ".*1 card needs attention . 0 fixed.*"
+    id: "Skip for now, card 101-${ATTEMPT_ID}"
+- assertVisible: "Step 1 of 1"
+- assertVisible: "Card titles"
 # The reason it is asking, in the operator's words.
 - assertVisible: "variation text is over the 65-character limit"
 
@@ -649,20 +652,21 @@ tags:
 - tapOn:
     text: "Save \\(Enter\\)"
 
-# Nothing is left in this sitting, and the counter says one card was FIXED —
-# a walker that advanced without writing would still read "0 fixed".
+# Nothing is left in this sitting: the done line, and the counter at y of y.
+# There is no "fixed" count any more (NEO-335 Phase 2) — that the save WROTE
+# is proved on the grid below, where the badge is gone because the row
+# changed (a walker that advanced without writing leaves it there).
 - extendedWaitUntil:
     visible: ".*All clear.*nothing on this checklist needs attention.*"
     timeout: 7000
-- assertVisible:
-    text: ".*0 cards need attention . 1 fixed.*"
+- assertVisible: "Step 1 of 1"
 
 # Opened by hand, the walker stays up and says "All clear" rather than closing
 # itself, so the footer button reads "Done" and closing is the operator's move.
 - tapOn:
     text: "Done \\(Esc\\)"
 - extendedWaitUntil:
-    notVisible: "Cards Needing Attention"
+    notVisible: "Tidy up this set"
     timeout: 7000
 
 # ════════════════════════════════════════════════════════════════════════════

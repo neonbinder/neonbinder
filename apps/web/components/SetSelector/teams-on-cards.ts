@@ -221,6 +221,9 @@ export type GroupChoice =
   /** Per-card only: follow the line again. */
   | { kind: "line" };
 
+/** The one line every teamless card with no players shares. */
+export const NO_PLAYERS_GROUP_KEY = "no-players";
+
 /** How many team chips one line offers before "Other team…". */
 export const TEAMS_SECTION_MAX_OPTIONS = 6;
 
@@ -628,13 +631,30 @@ export function buildTeamsGroups(input: {
     const claimKey =
       (listedNames.length > 0 ? `|listed:${listedNames.map(norm).sort().join("|")}` : "") +
       (lookupFailed ? "|lookup-failed" : "");
-    // No people → no evidence and no sibling to share a line with.
+    // No people → no player evidence at all, so every such card (a
+    // checklist, a league leaders card, a highlight) shares ONE line, keyed
+    // on having no players — never on a card's name. Its listing claims are
+    // pooled: nothing on it is pre-filled anyway, and each card can still
+    // take its own answer (C3).
     const groupKey =
-      players.length > 0 ? `players:${playerSetKey(players)}${claimKey}` : `card:${index}`;
+      players.length > 0 ? `players:${playerSetKey(players)}${claimKey}` : NO_PLAYERS_GROUP_KEY;
     const existing = groups.get(groupKey);
     const entry = { index, cardNumber: card.cardNumber, cardName: card.cardName };
     if (existing) {
       existing.cards.push(entry);
+      if (groupKey === NO_PLAYERS_GROUP_KEY) {
+        existing.lookupFailed ||= lookupFailed;
+        for (const name of listedNames) {
+          if (existing.listedNames.some((n) => norm(n) === norm(name))) continue;
+          existing.listedNames.push(name);
+          const found = input.teamNameEvidence?.get(norm(name));
+          if (input.teamNameEvidence && !found) existing.loading = true;
+          existing.refs = dedupeRefs([
+            ...existing.refs,
+            ...(found ?? []).map(refFromServer),
+          ]).slice(0, TEAMS_SECTION_MAX_OPTIONS);
+        }
+      }
       continue;
     }
 
@@ -694,7 +714,7 @@ export function buildTeamsGroups(input: {
       multi: players.length > 1 || lead.length > 1,
       refs,
       suggestion: suggestion && suggestion.length > 0 ? suggestion.map((r) => r.key) : null,
-      listedNames,
+      listedNames: [...listedNames],
       lookupFailed,
       loading,
     });
@@ -860,6 +880,17 @@ export function teamAnswersByCard(
     }
   }
   return out;
+}
+
+/**
+ * The card numbers a grouped line covers, for the line itself: up to four
+ * in full ("#5 · #407"), past that the first three and a count
+ * ("#5, #407, #512 +3"). Display only — a number is never a key here.
+ */
+export function cardNumbersSummary(cards: ReadonlyArray<{ cardNumber: string }>): string {
+  const numbers = cards.map((c) => `#${c.cardNumber}`);
+  if (numbers.length <= 4) return numbers.join(" · ");
+  return `${numbers.slice(0, 3).join(", ")} +${numbers.length - 3}`;
 }
 
 /** Every team id found with "Other team…" across the section (for one label read). */

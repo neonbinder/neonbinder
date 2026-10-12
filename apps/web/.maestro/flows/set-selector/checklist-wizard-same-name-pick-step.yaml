@@ -12,7 +12,8 @@ tags:
 # deciding anything, and taking a candidate records a link to THAT player.
 #
 # R2 — HARD ASSERTIONS, every one unhedged:
-#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (a) the review starts with nothing decided — "Step 1 of N" (NEO-335
+#         Phase 2's counter: on a name step x is the decided count plus one);
 #     (b) the wizard OPENS on the pick step, while every other name is still
 #         being looked up — the same-name row arrives ready, with no lookup
 #         of its own: the question, the intro that counts the players on
@@ -234,7 +235,7 @@ tags:
 
 # R2(a)
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # ============================================================
 # STEP 1 — R2(b): THE PICK STEP, PRESENTED AS THE WIZARD OPENS
@@ -273,17 +274,21 @@ tags:
     id: "Create new"
 - assertVisible:
     id: "Skip Shuya Yamada — not a person"
+# NEO-335 Phase 2 — the pick step is its own screen type in the wizard's
+# header: subtitle "Which player is this?" under "Tidy up this set". Header
+# text, pinned, so it reads the same wherever the body sits.
+- assertVisible: "Which player is this\\?"
 
-# ── THE COUNTER: ONLY THE DECIDED NUMBER IS EVER ASSERTED ──────────────────
-# The header reads "<decided> of <total> reviewed[ · K still being looked up]".
-# Nothing is decided until STEP 4, so <decided> is 0 here and 0 again after
-# Back to the list (R2(a) already read it), and 1 after the link. <total> is
-# NOT this flow's to pin: it GROWS while the batch's lookups land, because a
-# settled player's Wikidata career teams are staged as New Team rows. CI run
-# 38068520584 copied "0 of 221" here and read "0 of 229" ten seconds later on
-# a screen that was otherwise exactly right. So every counter read below is
-# "<decided> of [0-9]+ reviewed.*" — a full-match regex, so "0 of" cannot
-# match "10 of" — and the total and the lookup tail are left free.
+# ── THE COUNTER: ONLY THE STEP NUMBER IS EVER ASSERTED ─────────────────────
+# NEO-335 Phase 2: the header reads "Step <x> of <y>", and on a name step x is
+# the decided count plus one. Nothing is decided until STEP 4, so x is 1 here
+# and 1 again after Back to the list (R2(a) already read it), and 2 after the
+# link. <y> is NOT this flow's to pin: it GROWS while the batch's lookups land,
+# because a settled player's Wikidata career teams are staged as New Team rows
+# (CI run 38068520584 saw the old total go 221 → 229 in ten seconds on a
+# screen that was otherwise exactly right). So every counter read below is
+# "Step <x> of [0-9]+" — a full-match regex, so "Step 1 of" cannot match
+# "Step 11 of" — and the total is left free.
 
 # ============================================================
 # STEP 2 — R2(c): CREATE NEW OPENS THE NEW PLAYER STEP, WITHOUT THE LIST
@@ -306,6 +311,8 @@ tags:
     text: "Which Shuya Yamada is this\\?"
 - assertNotVisible:
     id: "Link to Shuya Yamada, b\\. 185[12]"
+# …and the header says which screen type this is now: a New Player step.
+- assertVisible: "New player"
 
 # ============================================================
 # STEP 3 — R2(d): BACK TO THE LIST DECIDES NOTHING
@@ -326,7 +333,7 @@ tags:
     text: "Back at the list\\. 2 on file\\."
 # Nothing was recorded: still none decided (the total is free, see STEP 1).
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # ============================================================
 # STEP 4 — R2(e): TAKE ONE, AND THE READ-BACK SAYS WHICH
@@ -337,7 +344,7 @@ tags:
 # Exactly one decision: the link (the total is free, see STEP 1).
 - extendedWaitUntil:
     visible:
-      text: "1 of [0-9]+ reviewed.*"
+      text: "Step 2 of [0-9]+"
     timeout: 7000
 - assertNotVisible:
     text: "Which Shuya Yamada is this\\?"

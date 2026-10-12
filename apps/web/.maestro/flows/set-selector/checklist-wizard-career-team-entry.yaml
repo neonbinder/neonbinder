@@ -45,7 +45,7 @@ tags:
 #         while the first (ProbeTeam, STEP 4) keeps the "+ Add" tap, so both
 #         paths are covered. Enter with no from-year leaves the typed name in
 #         its box; Enter with a valid entry clears the year, stages the New
-#         Team step, and leaves the header's reviewed count where it was (the
+#         Team step, and leaves the header's step number where it was (the
 #         keystroke did not also decide the player). The chip's years are read
 #         back in STEP 5 like every other entry's.
 #
@@ -154,8 +154,10 @@ tags:
 - runFlow:
     file: util-discard-resumed-review-batch.yaml
 
+# NEO-335 Phase 2 — "Step 1 of N" is the old "0 of N reviewed": on a name
+# step x is the decided count plus one.
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # ORDER MATTERS. Wait for the row to become ACTIONABLE first: a row renders no
 # action controls at all until its background Wikidata lookup settles, so a kind
@@ -433,8 +435,8 @@ tags:
 - tapOn:
     id: "From year"
 - copyTextFrom:
-    text: "[0-9]+ of [0-9]+ reviewed.*"
-- evalScript: '${output.REVIEWED_BEFORE = maestro.copiedText.match(/^[0-9]+/)[0]}'
+    text: "Step [0-9]+ of [0-9]+"
+- evalScript: '${output.STEP_BEFORE = maestro.copiedText.match(/^Step ([0-9]+)/)[1]}'
 
 # INVALID: a name with no from-year. Enter must do nothing. A successful add
 # clears the form before Maestro's next read, so the name still being in its
@@ -470,13 +472,15 @@ tags:
     visible: "New Team: TempTeam${output.ATTEMPT_TOKEN}"
     timeout: 7000
 # NOTHING ELSE HAPPENED: Enter did not also decide the player. The header's
-# reviewed count is the one captured before either Enter (the total grew by the
-# staged team row, so only the first number is pinned). It moves only when a
-# row is decided, and nothing has been decided since the capture. The header
-# is pinned, so this read never depends on the body's scroll (README
-# "Asserting inside a dialog").
+# step number is the one captured before either Enter (the total grew by the
+# staged team row, so only the first number is pinned). On a name step x is
+# the decided count plus one — the staged team step the walk hopped to is
+# undecided like the player was — so it moves only when a row is decided, and
+# nothing has been decided since the capture. The header is pinned, so this
+# read never depends on the body's scroll (README "Asserting inside a
+# dialog").
 - assertVisible:
-    text: "${output.REVIEWED_BEFORE} of [0-9]+ reviewed.*"
+    text: "Step ${output.STEP_BEFORE} of [0-9]+"
 # R2(f) NEO-307, second half: a league staged on ONE team's step is offered to
 # every later team as "<name> (new)", not re-offered as a create (NEO-254).
 # The bare <token> is a strict substring of "Lg<token>", so the staged option

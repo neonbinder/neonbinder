@@ -500,7 +500,8 @@ tags:
 
       # THE WIZARD IS NOT OPTIONAL HERE, AND THIS WAIT NO LONGER PRETENDS IT MIGHT BE.
       # This used to be an either/or gate (".*Confirm New Players.*|.*Saved N cards.*")
-      # feeding a `when: visible: "Confirm New Players & Teams"` block — so a run in
+      # feeding a `when: visible: "Confirm New Players & Teams"` block (the
+      # wizard's title, "Tidy up this set" since NEO-335 Phase 2) — so a run in
       # which the wizard never appeared skipped every assertion below it and went
       # GREEN having tested nothing (R2). It cannot legitimately not appear: setup.yaml
       # resets the set-builder tables at the head of every run, so these 220 cards are
@@ -511,7 +512,7 @@ tags:
       #
       # 120s: hundreds of unknown names, each queued behind a live Wikidata lookup.
       - extendedWaitUntil:
-          visible: "Confirm New Players & Teams"
+          visible: "Tidy up this set"
           timeout: 120000
 
       # ── 6a. CANCEL WITH WORK ON THE BOOKS ASKS FIRST, AND "KEEP WORKING"
@@ -584,9 +585,11 @@ tags:
           below:
             text: ".*The same names come back the next time you sync this set.*"
       # Nothing was lost: the wizard is still open …
-      - assertVisible: "Confirm New Players & Teams"
+      - assertVisible: "Tidy up this set"
       # … and the decision is still on the books — read off the wizard's own
-      # progress numerator, which is the ONE place the count is always rendered.
+      # step counter, which is the ONE place the count is always rendered.
+      # NEO-335 Phase 2: "Step x of y", where on a name step x is the decided
+      # count plus one, so ONE decision reads "Step 2 of …".
       #
       # ⚠️ DO NOT go back to `Decided (1)` here. That list is the LAST thing in the
       # dialog body, and on a tall step it falls out of the reported hierarchy
@@ -599,12 +602,13 @@ tags:
       # in it at all. On a short step the same list IS reported, which is why this
       # passed for months and then did not.
       #
-      # "1 of N reviewed" is the same claim, exactly as strict — one decision, no
-      # more — against a node that sits at the top of the dialog and is always there.
+      # "Step 2 of N" (formerly "1 of N reviewed") is the same claim, exactly as
+      # strict — one decision, no more — against a node that sits at the top of
+      # the dialog and is always there.
       # Generalised in `.maestro/README.md` → "Asserting inside a dialog: header and
       # footer only, never the body"; two runs found this independently.
       - assertVisible:
-          text: "1 of [0-9]+ reviewed.*"
+          text: "Step 2 of [0-9]+"
 
       # ── 6b. BULK-DECIDE THE REST AND COMMIT ───────────────────────────
       # The one decision above is absorbed by the bulk (it is already decided,
@@ -644,11 +648,15 @@ tags:
       # tapped its reported bounds at (687,235) — dead space between the filter
       # row and the skipped panel — and the drawer never opened. Creating the
       # teams leaves the page exactly as the rest of this flow expects it.
+      #
+      # NEO-335 Phase 2 — the terminal state is the NAMES-DONE footer: "Next
+      # (Enter)" when the wizard has a teams / titles step to show, else
+      # Confirm & Save. Neither renders while a name is undecided.
       - repeat:
           times: 250
           while:
             notVisible:
-              text: ".*Confirm & Save.*"
+              text: "Next \\(Enter\\)|.*Confirm & Save.*"
           commands:
             # NEO-254 — ANSWER WHATEVER STEP IS UP, WITH ONE GUARD.
             #
@@ -693,12 +701,13 @@ tags:
             # button vanishing between the two reads means the row was
             # ANSWERED, which is this loop finishing, not a failure.
             #
-            # ADJUDICATOR: `.*Confirm & Save.*`, the wait immediately below.
+            # ADJUDICATOR: the names-done footer, the wait immediately below.
             # It is hard, and the product makes it load-bearing —
-            # `components/SetSelector/EntityReviewWizard.tsx` renders that
-            # button ONLY when `allDecided` (`total > 0 && decided === total`),
+            # `components/SetSelector/EntityReviewWizard.tsx` reaches its
+            # post-name steps (whose footers carry `Next (Enter)` / Confirm &
+            # Save) ONLY when `allDecided` (`total > 0 && decided === total`),
             # so a row this loop failed to answer leaves `decided < total`,
-            # the button never appears, and the wait fails by name. R2 holds.
+            # neither button appears, and the wait fails by name. R2 holds.
             #
             # Full mechanism written once at the corresponding step of
             # `util-wizard-walk-to-player-row.yaml` (R3 — not duplicated).
@@ -717,11 +726,16 @@ tags:
       # for the bigger ceiling.
       - extendedWaitUntil:
           visible:
-            text: ".*Confirm & Save.*"
+            text: "Next \\(Enter\\)|.*Confirm & Save.*"
           timeout: 240000
+      # NEO-335 Phase 2 — the teams / titles steps between the names and Save,
+      # left on their defaults (this flow's features are the discard confirm
+      # and the Enter commit, not those steps).
+      - runFlow: util-wizard-advance-to-save.yaml
       # KEYBOARD COMMIT, not a tap (NEO-220). Confirm & Save is autofocused the
-      # moment every row is decided, and its label says "(Enter)" — so Enter
-      # committing IS the feature, and a tap would leave that promise untested.
+      # moment the Save step opens (NEO-335 Phase 2: focus follows the step),
+      # and its label says "(Enter)" — so Enter committing IS the feature, and a
+      # tap would leave that promise untested.
       # This works only because the button carries its own `useFieldTestClass`
       # marker class (`mb-field-<id>-btn-confirm-save`): maestro-web's `pressKey`
       # re-finds the active element by an XPath that falls back to the class
@@ -1031,8 +1045,8 @@ tags:
 
       # Every player and team on these 220 cards was created by STEP 6's commit, so
       # the entity wizard has no NAMES to ask about. NEO-335: it can still open
-      # TEAMS-ONLY — same title, straight onto its final step, no "Skip
-      # remaining names" — when a card would save with no team (a re-synced row
+      # TEAMS-ONLY — same title ("Tidy up this set"), straight onto its teams
+      # step, no "Skip remaining names" — when a card would save with no team (a re-synced row
       # that already holds a team is not asked again; one STEP 6 saved teamless
       # is). Whether any card here is in that state is the marketplaces'
       # business, so both shapes are accepted and the save is asserted after
@@ -1047,27 +1061,34 @@ tags:
       # the identical 220-card commit.
       - extendedWaitUntil:
           visible:
-            text: "Confirm New Players & Teams|.*Saved 220 cards.*"
+            text: "Tidy up this set|.*Saved 220 cards.*"
           timeout: 120000
       - copyTextFrom:
-          text: "Confirm New Players & Teams|.*Saved 220 cards.*"
-      - evalScript: '${output.TEAMS_ONLY_REVIEW = maestro.copiedText.indexOf("Confirm New Players") === 0}'
+          text: "Tidy up this set|.*Saved 220 cards.*"
+      - evalScript: '${output.TEAMS_ONLY_REVIEW = maestro.copiedText.indexOf("Tidy up this set") === 0}'
       - runFlow:
           when:
             true: "${output.TEAMS_ONLY_REVIEW}"
           commands:
             # R2 — the precondition, by name: no names to decide (so this
-            # really is the teams-only shape, not a names review this flow
-            # would wrongly confirm), and the final step is up.
+            # really is the no-names shape, not a names review this flow
+            # would wrongly confirm), and a post-name step is up — the
+            # sitting's first step, under its own subtitle (header text,
+            # pinned). Teams here; "Card titles" is the D7 twin for a NEW card
+            # whose title gets trimmed (a re-sync of stored rows is excluded
+            # from it, but accepting it costs nothing and fails nothing).
             - assertNotVisible:
                 text: ".*Skip remaining names.*"
+            - assertVisible: "Cards with no team|Card titles"
+            - assertVisible: "Step 1 of [0-9]+"
+            # Teams are not this flow's business: Next leaves every line on
+            # its own default (a pre-filled suggestion, else "Leave for
+            # later") and the util walks on to the Save step.
+            - runFlow: util-wizard-advance-to-save.yaml
             # The count is left open here: what the re-sync writes is the
             # review's business, and "Saved 220 cards" below pins the result.
             - assertVisible:
-                text: ".*All reviewed — save [0-9]+ cards?\\?.*"
-            # Teams are not this flow's business: Confirm & Save takes the
-            # section's own defaults (a pre-filled suggestion, else "Leave for
-            # later"). The save is asserted just below.
+                text: "Save [0-9]+ cards?\\?"
             - tapOn:
                 text: ".*Confirm & Save.*"
             - extendedWaitUntil:

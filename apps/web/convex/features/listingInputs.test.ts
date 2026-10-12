@@ -16,6 +16,7 @@ import { deriveCardAttention } from "./cardAttention";
 import {
   assessNewCardListing,
   checkTitleAnswer,
+  isFillerToken,
   leftOutOfTitle,
   listingInputsForCard,
   mergeCardFeatures,
@@ -236,7 +237,11 @@ describe("leftOutOfTitle", () => {
     expect(assessment.coreFits).toBe(false);
     const left = leftOutOfTitle(inputs, assessment);
     expect(left).toContain("Shohei Ohtani");
-    expect(left.at(-1)).toBe("Baseball");
+    // The sport and the second rookie spelling are FILLER: dropped, never
+    // listed as a loss.
+    expect(assessment.dropped).toEqual(expect.arrayContaining(["Rookie", "Baseball"]));
+    expect(left).not.toContain("Baseball");
+    expect(left).not.toContain("Rookie");
     for (const entry of left) {
       expect(assessment.title.toLowerCase()).not.toContain(entry.toLowerCase());
     }
@@ -392,5 +397,31 @@ describe("a generational suffix is never trimmed off a name (NEO-335 visual pass
     expect(
       results.filter((r) => /Shohei #1$/.test(r.title)).every((r) => r.left.includes("Shohei Ohtani")),
     ).toBe(true);
+  });
+});
+
+describe("filler is never listed as a loss (collector review)", () => {
+  test("a set or player word that reads like the sport is still reported; the sport TOKEN is not", () => {
+    const inputs = listingInputsForCard(
+      { cardNumber: "1" },
+      { sportValue: "Baseball", setNameValue: `${"x".repeat(70)} Baseball Heroes` },
+      { playerNames: ["Shohei Ohtani"] },
+    );
+    const a = assessListingTitle(inputs);
+    expect(a.coreFits).toBe(false);
+    expect(a.dropped).toContain("Baseball");
+    const left = leftOutOfTitle(inputs, a);
+    // "Baseball" here is a SET word the core cut lost, so it is a real loss;
+    // the sport token dropped beside it is filler and not listed again.
+    expect(left).toEqual(["Baseball Heroes", "Shohei Ohtani"]);
+  });
+
+  test("isFillerToken: the sport, and Rookie only beside RC", () => {
+    const base = { cardNumber: "1", sport: "Baseball" };
+    expect(isFillerToken("Baseball", base)).toBe(true);
+    expect(isFillerToken("Rookie", { ...base, isRookie: true })).toBe(true);
+    expect(isFillerToken("Rookie", base)).toBe(false);
+    expect(isFillerToken("RC", { ...base, isRookie: true })).toBe(false);
+    expect(isFillerToken("Los Angeles Dodgers", base)).toBe(false);
   });
 });

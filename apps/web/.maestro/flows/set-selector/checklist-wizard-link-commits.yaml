@@ -13,7 +13,8 @@ tags:
 # against the wizard's render.
 #
 # R2 — HARD ASSERTIONS:
-#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (a) the review starts with nothing decided — "Step 1 of N" (NEO-335
+#         Phase 2's counter: on a name step x is the decided count plus one);
 #     (b) the row under test is a PLAYER row (its link panel is labelled for
 #         players), asserted before the feature action;
 #     (c) the search finds the existing roster player BY NAME and taking it
@@ -136,7 +137,7 @@ tags:
 # ============================================================
 
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # NEO-236 — the wizard does not open on a player row, and the first player it
 # shows can move out from under you while its career teams are staged. The util
@@ -323,8 +324,12 @@ tags:
     text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm & Save.*"
+      text: "Next \\(Enter\\)|.*Confirm & Save.*"
     timeout: 120000
+# NEO-335 Phase 2 — past the names the wizard may ask about teamless cards and
+# card titles; this flow's feature is the link, so those stay on their
+# defaults and the util walks to the Save step.
+- runFlow: util-wizard-advance-to-save.yaml
 - tapOn:
     text: ".*Confirm & Save.*"
 - extendedWaitUntil:

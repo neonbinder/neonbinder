@@ -135,7 +135,7 @@ tags:
       SET: "Topps Baltimore Orioles"
 
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # ============================================================
 # STEP 1 — WAIT FOR THE ROW TO SETTLE
@@ -250,8 +250,12 @@ tags:
     text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm & Save.*"
+      text: "Next \\(Enter\\)|.*Confirm & Save.*"
     timeout: 120000
+# NEO-335 Phase 2 — past the names the wizard may ask about teamless cards and
+# card titles; this flow's feature is the staged team, so those stay on their
+# defaults and the util walks to the Save step.
+- runFlow: util-wizard-advance-to-save.yaml
 - tapOn:
     text: ".*Confirm & Save.*"
 - extendedWaitUntil:

@@ -877,6 +877,12 @@ export default function EntityReviewWizard({
    * hears what the step asks without focus being moved to tell them.
    */
   const teamsIntroId = useId();
+  /**
+   * NEO-335 Phase 2 (a11y) — the titles step's lead heading, which
+   * CardTitlesStep renders under this id. The step's Next is described by it,
+   * as the teams step's Next is by its intro.
+   */
+  const titlesLeadId = useId();
   /** NEO-335 Phase 2 — the post-review steps' forward button ("Next (Enter)"). */
   const nextStepButtonRef = useRef<HTMLButtonElement>(null);
   /**
@@ -2754,12 +2760,32 @@ export default function EntityReviewWizard({
    * teams and titles steps focus their Next.
    */
   const screenKey = expired ? "expired" : (postStep ?? "review");
+  /*
+   * a11y audit — keyed on the screen the focus was GIVEN for, not on the
+   * screen key alone. An effect on `[screenKey]` fired once, and if the
+   * button was not in the DOM at that moment (the dialog still closed, or the
+   * titles-only entry whose cards and title context arrive a render later)
+   * focus never landed. This runs after every commit and does nothing once
+   * the screen's target has had focus, so an operator who then moves focus
+   * elsewhere on the same screen is left alone.
+   */
+  const focusedScreenRef = useRef<string | null>(null);
   useEffect(() => {
-    if (screenKey === "save") confirmButtonRef.current?.focus();
-    else if (screenKey === "teams" || screenKey === "titles") {
-      nextStepButtonRef.current?.focus();
+    if (!isOpen || rows === undefined) {
+      focusedScreenRef.current = null;
+      return;
     }
-  }, [screenKey]);
+    if (focusedScreenRef.current === screenKey) return;
+    const target =
+      screenKey === "save"
+        ? confirmButtonRef.current
+        : screenKey === "teams" || screenKey === "titles"
+          ? nextStepButtonRef.current
+          : null;
+    if (screenKey !== "review" && screenKey !== "expired" && !target) return; // not mounted yet
+    focusedScreenRef.current = screenKey;
+    target?.focus();
+  });
 
   if (!isOpen || rows === undefined) return null;
 
@@ -4778,6 +4804,7 @@ export default function EntityReviewWizard({
                   answers={titleDrafts}
                   onAnswersChange={setTitleDrafts}
                   disabled={saving}
+                  headingId={titlesLeadId}
                 />
               ) : null
             ) : postStep === "save" ? (
@@ -5145,7 +5172,13 @@ export default function EntityReviewWizard({
                       // same reason Confirm & Save carries one — see
                       // `footerFieldClass`.
                       className={footerFieldClass("btn-next-step")}
-                      aria-describedby={postStep === "teams" ? teamsIntroId : undefined}
+                      aria-describedby={
+                        postStep === "teams"
+                          ? teamsIntroId
+                          : postStep === "titles"
+                            ? titlesLeadId
+                            : undefined
+                      }
                       aria-disabled={saving || undefined}
                       onClick={() => {
                         if (saving) return;

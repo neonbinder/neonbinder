@@ -11,7 +11,8 @@ tags:
 # reason the wizard has three outcomes rather than two.
 #
 # R2 — HARD ASSERTIONS:
-#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (a) the review starts with nothing decided — "Step 1 of N" (NEO-335
+#         Phase 2's counter: on a name step x is the decided count plus one);
 #     (b) the row under test is a PLAYER row — its link panel is labelled for
 #         players — asserted BEFORE the feature action, as the precondition it
 #         is;
@@ -73,7 +74,7 @@ tags:
     file: util-discard-resumed-review-batch.yaml
 
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # ORDER MATTERS. Wait for the row to become ACTIONABLE first: a row renders no
 # action controls at all until its background Wikidata lookup settles, so a kind

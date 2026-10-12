@@ -1,0 +1,79 @@
+appId: com.neonbinder.web
+name: "Utility — walk the entity review wizard from its last name to the Save step"
+tags:
+  - util
+---
+# ════════════════════════════════════════════════════════════════════════════
+# NEO-335 Phase 2 — THE WIZARD NO LONGER ENDS ON ITS LAST NAME.
+#
+# Once every name is decided the wizard walks up to two more screens before
+# the one that saves, each with its own subtitle under "Tidy up this set":
+#
+#   "Cards with no team"  — only if a card would save with no team
+#   "Card titles"         — only if a new card's title needs a look
+#   "Ready to save"       — always; heading "Save N cards?", footer
+#                           "Confirm & Save (Enter)"
+#
+# The first two carry a footer "Next (Enter)" and NO Confirm & Save, so a flow
+# that used to wait for Confirm & Save straight after its last decision now has
+# to press Next on whatever comes first. Which of the two a fixture raises is
+# the fixture's business (a skipped team name makes a card teamless; a long
+# variation makes a title need a look), not something a caller whose feature
+# is a NAME decision should have to know — so this util presses Next until the
+# Save step is up, and nothing else.
+#
+# WHAT IT DOES NOT DO: answer anything on those steps. Next leaves every line
+# on its default (a pre-filled team, else "Leave for later"; every title kept),
+# which is exactly what pressing Confirm & Save on the old final step did. A
+# flow whose FEATURE is the teams or titles step drives that step itself
+# (`checklist-one-marketplace-skips-match-dialog`) and does not call this.
+#
+# ── CONTRACT ────────────────────────────────────────────────────────────────
+#   ENTRY  the wizard is open and every name is decided: its footer shows
+#          "Next (Enter)" or "Confirm & Save". Callers gate on exactly that
+#          (`Next \(Enter\)|.*Confirm & Save.*`) before calling.
+#   EXIT   the Save step: subtitle "Ready to save", "Confirm & Save" on
+#          screen. Nothing pressed on it — the caller asserts its own
+#          "Save N cards?" and owns the commit.
+#
+# ── R2 ──────────────────────────────────────────────────────────────────────
+#   The `when:` that presses Next is preceded by a hard wait for one of the
+#   two footer states and followed by a hard wait for Confirm & Save and an
+#   assert of the "Ready to save" subtitle, so a wizard stuck on the teams or
+#   titles step (Next doing nothing) fails here by name rather than in the
+#   caller's commit.
+#
+# ── R5 ──────────────────────────────────────────────────────────────────────
+#   7000 throughout: Next is a client-side step change, no server round-trip.
+#
+# `times: 3` is a runaway guard, not a budget: at most two screens sit between
+# the names and Save, so a third press means Next stopped moving the wizard,
+# and the gate under the loop fails by name.
+# ════════════════════════════════════════════════════════════════════════════
+
+- repeat:
+    times: 3
+    while:
+      notVisible:
+        text: ".*Confirm & Save.*"
+    commands:
+      - extendedWaitUntil:
+          visible:
+            text: "Next \\(Enter\\)|.*Confirm & Save.*"
+          timeout: 7000
+      # No guard/tap race: the wizard never leaves a post-review step on its
+      # own, only on the operator's Next or Back (entity-review-steps.ts), so
+      # the button the guard saw is still there for the tap.
+      - runFlow:
+          when:
+            visible:
+              text: "Next \\(Enter\\)"
+          commands:
+            - tapOn:
+                text: "Next \\(Enter\\)"
+- extendedWaitUntil:
+    visible:
+      text: ".*Confirm & Save.*"
+    timeout: 7000
+# The header subtitle, which is pinned with the footer — not body content.
+- assertVisible: "Ready to save"

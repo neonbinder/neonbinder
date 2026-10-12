@@ -97,6 +97,20 @@ describe("WizardChrome", () => {
     expect(screen.getByText("Step 3 of 12")).toBeTruthy();
   });
 
+  it("lets a long growth line wrap rather than clip it, in a row whose height is reserved", () => {
+    const long =
+      "3 more steps: teams for Jean-Baptiste Giancarlo Fernández-Montgomery and Ken Griffey Jr.";
+    render(<WizardChrome step={3} total={12} subtitle="New player" announcement={long} />);
+    const line = document.querySelector<HTMLElement>("[data-growth-line]")!;
+    expect(line.textContent).toBe(long);
+    // a11y audit: never truncated, at any width.
+    expect(line.className).not.toMatch(/(^|\s)(sm:)?truncate(\s|$)/);
+    expect(line.className).toContain("sm:whitespace-normal");
+    // Two lines reserved from `sm` up, so a line arriving or wrapping does not
+    // move the body.
+    expect(line.parentElement!.className).toContain("sm:min-h-8");
+  });
+
   it("renders children under the subtitle row", () => {
     render(
       <WizardChrome step={1} total={2} subtitle="Cards with no team">

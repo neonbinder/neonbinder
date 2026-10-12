@@ -270,7 +270,7 @@ describe("TeamsOnCardsSection on the wizard's teams step", () => {
     const { onTeamAnswersChange } = renderWizard([
       { cardNumber: "1", cardName: "Checklist", players: [] },
     ]);
-    fireEvent.click(screen.getByRole("radio", { name: "No team on this card — #1 Checklist" }));
+    fireEvent.click(screen.getByRole("radio", { name: "No team on this card — Cards with no players (1)" }));
     expect(lastAnswers(onTeamAnswersChange)).toEqual([{ teamNone: true }]);
   });
 
@@ -361,7 +361,7 @@ describe("TeamsOnCardsSection on the wizard's teams step", () => {
     const { onTeamAnswersChange } = renderWizard([
       { cardNumber: "1", cardName: "Checklist", players: [] },
     ]);
-    fireEvent.click(screen.getByRole("radio", { name: "No team on this card — #1 Checklist" }));
+    fireEvent.click(screen.getByRole("radio", { name: "No team on this card — Cards with no players (1)" }));
     expect(lastAnswers(onTeamAnswersChange)).toEqual([{ teamNone: true }]);
 
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
@@ -371,7 +371,7 @@ describe("TeamsOnCardsSection on the wizard's teams step", () => {
     expect(counter()).toBe("Step 3 of 4");
     expect(
       screen
-        .getByRole("radio", { name: "No team on this card — #1 Checklist" })
+        .getByRole("radio", { name: "No team on this card — Cards with no players (1)" })
         .getAttribute("aria-checked"),
     ).toBe("true");
     expect(lastAnswers(onTeamAnswersChange)).toEqual([{ teamNone: true }]);

@@ -786,7 +786,7 @@ tags:
 # every candidate rather than silently narrowing the checklist.
 - extendedWaitUntil:
     visible:
-      text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
+      text: "Match Cards.*|Tidy up this set|.*Saved [0-9]+.*"
     timeout: 60000
 # NEO-287 — LIVE: the two-marketplace pairing dialog, verbatim. PAUSED: the
 # one-marketplace path (SportLots was never asked; nothing to match).
@@ -843,13 +843,15 @@ tags:
       - assertNotVisible: "Match Cards.*"
 
 # First fetch: all players/teams are new → EntityReviewWizard opens.
+# NEO-335 Phase 2: the wizard's title (and its dialog name) is "Tidy up this
+# set"; "Confirm New Players & Teams" is gone.
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
+      text: "Tidy up this set|.*Saved [0-9]+.*"
     timeout: 60000
 - runFlow:
     when:
-      visible: "Confirm New Players & Teams"
+      visible: "Tidy up this set"
     commands:
       # NEO-92 bulk-confirm: this setup flow WIPES players first (global reset
       # above), so a fresh real-set fetch surfaces HUNDREDS of unknowns. Rather
@@ -870,8 +872,8 @@ tags:
       # its own New Team step, because that step asks which LEAGUE and the bulk
       # path could only ever guess it from the enrichment's suggestion.
       #
-      # So the bulk tap above no longer takes the batch to "Confirm & Save" on
-      # its own. Every New Team step has to be answered, and this loop answers
+      # So the bulk tap above no longer takes the batch to the end of the names
+      # on its own. Every New Team step has to be answered, and this loop answers
       # them the way an operator would who agrees with the pre-fill: one tap on
       # the step's primary action, which stores the Location, Name and League
       # the step is already showing.
@@ -882,13 +884,24 @@ tags:
       # through Team Management first would cost far more wall-clock than this
       # and would test the wrong screen.
       #
-      # WHY `while: notVisible "Confirm & Save"` RATHER THAN `while: visible
+      # WHY `while: notVisible <names done>` RATHER THAN `while: visible
       # "New Team:"`. The two drain at once: the armed bulk keeps deciding
       # players as their lookups land, and each player that settles can stage
       # fresh team steps. A loop keyed on a New Team step being visible would
       # exit the first time it caught the batch between lookups, with steps
       # still to come. Keyed on the terminal state instead, it cannot exit
       # early.
+      #
+      # NEO-335 Phase 2 — "NAMES DONE" IS TWO FOOTER STATES NOW. With every
+      # name decided the wizard walks on to its post-name steps: "Cards with no
+      # team" (a card that would save teamless) and "Card titles" (a new card
+      # whose title needs a look), each with a footer "Next (Enter)" and NO
+      # Confirm & Save, then "Ready to save", the only step that carries
+      # Confirm & Save. So the terminal state of THIS loop is
+      # `Next \(Enter\)|.*Confirm & Save.*`, whichever comes first, and
+      # `util-wizard-advance-to-save` walks the rest after it. Neither button
+      # is ever on screen while a name is undecided (the footer renders them
+      # only on the post-name steps), so the predicate cannot fire early.
       #
       # ⚠️ AN IDLE ITERATION IS NOT FREE — AND IT IS NOT CONSTANT EITHER. This
       # note used to claim a `runFlow when` that finds no step "costs one
@@ -908,13 +921,13 @@ tags:
       # 345-name batch, so whether the seed goes green is a coin flip on lookup
       # pace. Both runs spent the budget polling (80 taps / 170 idle in the
       # first, 1 tap / 249 idle in the second) and ran out with rows still
-      # undecided, so the `Confirm & Save` gate below failed loudly, as
+      # undecided, so the names-done gate below failed loudly, as
       # designed. The loop was counting POLLS against a guard sized for
       # ANSWERS.
       #
       # So the idle path now WAITS instead of polling: each iteration blocks
-      # until either the next answerable step's button or `Confirm & Save` is
-      # on screen, and only then decides whether to tap. An iteration is
+      # until either the next answerable step's button or the names-done
+      # footer is on screen, and only then decides whether to tap. An iteration is
       # consumed per row answered (plus the rare no-op tap on a button that is
       # `aria-disabled` mid-round-trip), not per poll — which is what makes
       # `times` a runaway guard again rather than a hidden time budget.
@@ -938,7 +951,7 @@ tags:
           times: 250
           while:
             notVisible:
-              text: ".*Confirm & Save.*"
+              text: "Next \\(Enter\\)|.*Confirm & Save.*"
           commands:
             # NEO-254 — ANSWER WHATEVER STEP IS UP. The wizard stages a New League step
             # immediately AHEAD of the first team that needs that league, and later teams
@@ -958,20 +971,22 @@ tags:
             #
             # NEO-288 — WAIT, THEN PROBE. The `extendedWaitUntil` ahead of the probe
             # blocks until there is something to decide: the next step's primary
-            # button OR the terminal `Confirm & Save`. Only after that does the probe
-            # ask which it was. The `while` on the repeat exits on `Confirm & Save`,
-            # so an iteration that wakes on the terminal state does one cheap FALSE
-            # probe and the loop ends. `text:` is used for the wait because the web
+            # button OR the names-done footer (`Next (Enter)` on a teams/titles
+            # step, `Confirm & Save` when neither is needed). Only after that does
+            # the probe ask which it was. The `while` on the repeat exits on the
+            # names-done footer, so an iteration that wakes on the terminal state
+            # does one cheap FALSE probe and the loop ends. `text:` is used for the wait because the web
             # driver exposes the button's label as BOTH `text` and `resource-id`
             # (run 35487600584's final hierarchy: `"text": "Add as New League",
             # "resource-id": "Add as New League"`) and the terminal button is only
             # ever matched by text (`.*Confirm & Save.*`, the contract the wizard's
-            # own comment names), so one alternation covers both; the tap below keeps
+            # own comment names) and so is `Next (Enter)` (NEO-335 Phase 2, plain
+            # visible text), so one alternation covers all three; the tap below keeps
             # `id:` — its established contract.
             #
             # 240000 — R5 SIGN-OFF, Jason, 2026-09-20 (NEO-288). This wait is the
             # setup track's sanctioned live-Wikidata exception to R5, the same one
-            # the `Confirm & Save` wait after this loop already carries at the same
+            # the names-done wait after this loop already carries at the same
             # ceiling, and it is NOT an in-app response budget: between two
             # answerable steps the flow is waiting on the 5-wide Wikidata lane to
             # settle the next name, and nothing the product renders makes that
@@ -1002,7 +1017,7 @@ tags:
             # as new (N)` fall outside both branches of the full match.
             - extendedWaitUntil:
                 visible:
-                  text: "Add as New (Team|League)|.*Confirm & Save.*"
+                  text: "Add as New (Team|League)|Next \\(Enter\\)|.*Confirm & Save.*"
                 timeout: 240000
             # `optional: true` — THE GUARD/TAP RACE, AND WHAT ADJUDICATES IT
             # HERE. The probe above and this tap are two hierarchy reads ~0.3s
@@ -1019,14 +1034,15 @@ tags:
             # tap is tolerated, and the next iteration's `extendedWaitUntil`
             # above blocks until the next step or the terminal state.
             #
-            # THE ADJUDICATOR IS `.*Confirm & Save.*` — the wait immediately
+            # THE ADJUDICATOR IS THE NAMES-DONE FOOTER — the wait immediately
             # after this loop — and it is a hard gate no tolerated tap can
             # reach past. Verified at source, not inferred:
-            # `components/SetSelector/EntityReviewWizard.tsx` computes
-            # `allDecided = total > 0 && decided === total`, and renders the
-            # Confirm & Save button ONLY `{allDecided && !commitError && …}`.
+            # `components/SetSelector/EntityReviewWizard.tsx` reaches its
+            # post-name steps only `onPostReview = current === null &&
+            # allDecided`, and renders `Next (Enter)` only on the teams/titles
+            # steps and Confirm & Save only on the Save step (NEO-335 Phase 2).
             # So a row this loop failed to answer leaves `decided < total`,
-            # the button never renders, and that wait fails by name — exactly
+            # neither button renders, and that wait fails by name — exactly
             # the outcome this loop's own header already demands ("if this
             # loop ends early, that wait fails loudly rather than the flow
             # committing a half-reviewed batch"). R2 holds: the tolerance
@@ -1049,7 +1065,9 @@ tags:
       # NEO-221 — the bulk button no longer decides rows whose Wikidata lookup
       # is still in flight (deciding a name nobody has looked up yet was the
       # defect). It decides the SETTLED rows now and stays armed, adding the
-      # rest as their lookups land, until "Confirm & Save" appears on its own.
+      # rest as their lookups land, until the names-done footer appears on its
+      # own (NEO-335 Phase 2: `Next (Enter)` on a teams/titles step, else
+      # Confirm & Save).
       # So this wait is no longer "one mutation patches N rows" (~seconds) but
       # "the 5-wide Wikidata lane drains a real set's worth of names". That is
       # a live external round-trip, which is the sanctioned exception to the 7s
@@ -1075,8 +1093,13 @@ tags:
       # that looks up a name deliberately absent from the recording.
       - extendedWaitUntil:
           visible:
-            text: ".*Confirm & Save.*"
+            text: "Next \\(Enter\\)|.*Confirm & Save.*"
           timeout: 240000
+      # NEO-335 Phase 2 — the teams / titles steps, each left on its defaults
+      # by Next (the same answers the old final step's Confirm & Save saved),
+      # then the Save step. The seed is a data-loading track; it proves none
+      # of those steps.
+      - runFlow: set-selector/util-wizard-advance-to-save.yaml
       - tapOn:
           text: ".*Confirm & Save.*"
       # NEO-163: no gate on the wizard closing. The "Saved N cards" wait below
@@ -1096,8 +1119,8 @@ tags:
 # the budget the removed notVisible wait used to hold (30s + 30s), plus room.
 #
 # After "Confirm & Save" the wizard shows "Saving..." while the bulk row patch
-# and the card write land, and the header counts "N still being looked up" down
-# from the background Wikidata queue. On a slow runner that outran the old 30s
+# and the card write land, and (before NEO-335 Phase 2) the header counted "N
+# still being looked up" down from the background Wikidata queue. On a slow runner that outran the old 30s
 # and killed the flow while the app was working correctly — this was the single
 # largest source of red CI, failing on unrelated branches about half the time.
 #
@@ -1361,7 +1384,7 @@ tags:
 # baseline as before, not a silently narrowed one.
 - extendedWaitUntil:
     visible:
-      text: "Match Cards.*|.*Confirm New Players.*|.*Saved [0-9]+.*"
+      text: "Match Cards.*|Tidy up this set|.*Saved [0-9]+.*"
     timeout: 90000
 # NEO-287 — LIVE: the two-marketplace pairing dialog, verbatim. PAUSED: the
 # one-marketplace path (SportLots was never asked; nothing to match).
@@ -1419,11 +1442,12 @@ tags:
       - assertNotVisible: "Match Cards.*"
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
+      text: "Tidy up this set|.*Saved [0-9]+.*"
     timeout: 90000
 # ── NO WIZARD ON THIS FETCH, AND THAT IS THE CONTRACT (NEO-260) ─────────────
 #
-# This is where a `when: visible "Confirm New Players & Teams"` branch used to
+# This is where a `when: visible "Confirm New Players & Teams"` (now "Tidy up
+# this set") branch used to
 # sit, tapping `.*Add All Remaining as New.*`. Two things were wrong with it.
 #
 # 1. THE LABEL IS GONE. EntityReviewWizard.tsx renders the bulk button as
@@ -1433,7 +1457,7 @@ tags:
 # 2. IT WOULD HANG IF THE MATCHER WERE FIXED. The branch also never grew the
 #    NEO-236 New Team `repeat` loop the Base block carries, and teams are no
 #    longer bulk-decided — so a corrected matcher would tap the bulk link and
-#    then wait out 240s at `Confirm & Save`, which never arrives.
+#    then wait out 240s at the end of the names, which never arrives.
 #
 # It was dead either way: the Base fetch above commits this set's roster first,
 # so this later fetch finds every name already known and raises no wizard.
@@ -1443,19 +1467,22 @@ tags:
 # that ever does appear is caught right here under its own name rather than
 # 120s later, blamed on the "Saved N cards" count.
 #
-# NEO-335 — ONE wizard shape IS legitimate here: TEAMS-ONLY. Every name is
-# known, but a card that would save with NO team (a SportLots-only card never
-# carries one) now opens the review straight onto its final step — same
-# title, "All reviewed — save N cards?", the "K cards have no team yet"
-# section and Confirm & Save, and no names to decide. So the contract is
-# restated: no NAMES on this fetch; teams may be asked. Which state the gate
+# NEO-335 — ONE wizard shape IS legitimate here: NO NAMES, past-the-names
+# steps only. Every name is known, but a card that would save with NO team (a
+# SportLots-only card never carries one) opens the review straight onto its
+# teams step — same title "Tidy up this set", subtitle "Cards with no team",
+# "Step 1 of …", "Next (Enter)", then the Save step ("Save N cards?",
+# Confirm & Save). NEO-335 Phase 2 (D7) adds its twin: a NEW card whose
+# generated title gets trimmed opens it on the "Card titles" step instead
+# (or after teams, when both apply). So the contract is restated: no NAMES on
+# this fetch; teams and titles may be asked. Which state the gate
 # found is read ONCE and branched on as a value (`when: true:`), so the
 # direct-commit path pays no missed-`when: visible` lookup (R10). The two
 # never coexist: the banner is cleared when a sync starts, and the wizard is
 # open until its commit writes "Saved N".
 - copyTextFrom:
-    text: ".*Confirm New Players.*|.*Saved [0-9]+.*"
-- evalScript: '${output.FUTURE_STARS_REVIEW = maestro.copiedText.indexOf("Confirm New Players") >= 0}'
+    text: "Tidy up this set|.*Saved [0-9]+.*"
+- evalScript: '${output.FUTURE_STARS_REVIEW = maestro.copiedText.indexOf("Tidy up this set") >= 0}'
 - runFlow:
     when:
       true: "${output.FUTURE_STARS_REVIEW}"
@@ -1466,12 +1493,17 @@ tags:
           text: ".*Skip remaining names.*"
       - assertNotVisible:
           text: ".*Add remaining players as new.*"
-      # The final step, for all 20 — the strict count below then pins the save.
-      - assertVisible:
-          text: ".*All reviewed — save 20 cards\\?.*"
-      # The seed answers nothing: the section's defaults (a suggestion where
-      # the set's own evidence gives one, else "Leave for later") are what an
-      # operator gets by pressing the one button.
+      # A no-names sitting opens ON its first post-name step — teams, or
+      # (D7) titles when no card is teamless — with no name step before it
+      # (NEO-335 Phase 2). Header text, pinned.
+      - assertVisible: "Cards with no team|Card titles"
+      - assertVisible: "Step 1 of [0-9]+"
+      # The seed answers nothing: Next leaves every line on its default (a
+      # suggestion where the set's own evidence gives one, else "Leave for
+      # later") — what an operator gets by pressing straight through.
+      - runFlow: set-selector/util-wizard-advance-to-save.yaml
+      # The Save step, for all 20 — the strict count below then pins the save.
+      - assertVisible: "Save 20 cards\\?"
       - tapOn:
           text: ".*Confirm & Save.*"
 # Strict count — a card checklist is immutable once produced, so "Saved 20 cards"
@@ -1734,7 +1766,7 @@ tags:
 # D3 — the pairing dialog is retired on a base-parallel row. Paired with the
 # positive above, so it cannot pass on a dead page.
 - assertNotVisible: "Match Cards.*"
-- assertNotVisible: "Confirm New Players & Teams"
+- assertNotVisible: "Tidy up this set"
 
 # ── SPORTLOTS PAGINATION GUARD (NEO-137, kept through NEO-321) ──────────────
 # Both marketplace badges must appear on this checklist's rows.

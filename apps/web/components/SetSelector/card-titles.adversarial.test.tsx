@@ -302,7 +302,8 @@ describe("answers are positional beside re-synced rows", () => {
 
 describe("grouping never keys on a card number", () => {
   test("two cards sharing a number but losing different words are two lines, each with its own index", () => {
-    const cards = [card("5"), card("5", { isRookie: true })];
+    // A dropped variation is a real loss; "Rookie" would be filler (hidden).
+    const cards = [card("5"), card("5", { cardVariation: "Sapphire Throwback Gold Refractor" })];
     const { titleGroups } = buildTitleGroups(cards, context());
     expect(titleGroups.map((g) => g.cards.map((c) => c.index))).toEqual([[0], [1]]);
   });
@@ -342,7 +343,7 @@ describe("grouping never keys on a card number", () => {
 
   test("groups keep the order of their first card", () => {
     const { titleGroups } = buildTitleGroups(
-      [card("1", { isRookie: true }), card("2"), card("3", { isRookie: true })],
+      [card("1", { cardVariation: "Sapphire Throwback Gold Refractor" }), card("2"), card("3", { cardVariation: "Sapphire Throwback Gold Refractor" })],
       context(),
     );
     expect(titleGroups.map((g) => g.cards.map((c) => c.index))).toEqual([[0, 2], [1]]);

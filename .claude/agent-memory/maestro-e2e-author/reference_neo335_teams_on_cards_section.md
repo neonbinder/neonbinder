@@ -1,65 +1,55 @@
 ---
 name: reference_neo335_teams_on_cards_section
-description: NEO-335 wizard final-step "K cards have no team yet" section selectors (radio `<choice> — <owner>`, checked = ✓ child, count is a child span) and the teams-only wizard shape every sync-and-commit flow must tolerate; branch on which terminal state a gate found with copyTextFrom + `when: true:`
+description: NEO-335 Phase 2 wizard chrome ("Tidy up this set", "Step x of y", subtitles), the teams/titles/Save post-name steps and their footers, teams-line selectors (radio `<choice> — <owner>`, ✓ = checked, "Other team…" picker), no-names entry, and the drawer Next-card walk
 metadata:
   type: reference
 ---
 
-Read from the working tree (`TeamsOnCardsSection.tsx`, `teams-on-cards.ts`)
-2026-10-10; first used in `checklist-one-marketplace-skips-match-dialog`
-STEP 6b — not yet run live when written, so trust a green CI run over this.
+Written 2026-10-11 from the working tree while Phase 2 was still landing, NOT
+from a green run. Trust a green CI run over this.
 
-**The section** (wizard body, below "All reviewed — save N cards?" + its dl):
-- Heading `<h3>`: `<span>K</span> cards have no team yet` — the count is a
-  CHILD span, so the h3's own text is ` cards have no team yet`
-  ([[maestro-web-getnodetext-form-values]]). Assert `text: ".*cards? ha(s|ve)
-  no team yet"`, then the count as `text: "K"` + `childOf:` that heading.
-- One line per player set; a card whose names were all SKIPPED is its own
-  line, owner `#<number> <card name>` (players → `A & B`, plus `, N cards`
-  when collapsed). Radio group `id: "Team for <owner>"`; radios
-  `id: "<choice> — <owner>"` (em dash) for each team chip, `No team on this
-  card`, `Leave for later`. Default = the pre-filled suggestion, else Leave
-  for later.
-- CHECKED is a `✓` span inside the checked radio only → `text: "✓"` +
-  `childOf: {id: "<radio>", index: n}`. When card numbers repeat (`NNO`) pick
-  lines by `index:` (position).
-- Never gates Confirm & Save; it is BODY content, so guard a tap with a
-  lower line `above: {text: ".*Confirm & Save.*"}`
-  ([[guard-a-tap-at-a-footer-buttons-x]]).
+**Chrome (wizard AND post-save walker).** h2 `Tidy up this set`; one
+`role=status` text node `Step x of y`; subtitle per screen: `New league`,
+`New team`, `New player`, `Which player is this?`, `Cards with no team`,
+`Card titles`, `Ready to save`. On a NAME step x = decided + 1 (`Step 1 of …`
+= old `0 of … reviewed`; one decision = `Step 2 of …`). y grows with staged
+steps, so pin x only. Save is always `Step y of y`. Old strings
+(`Confirm New Players & Teams`, `N of M reviewed`, `· N still being looked
+up`, `All reviewed — save N cards?`, `K cards have no team yet`) are gone. The
+footer `N still looking up — wait or skip` line still exists.
 
-**Teams-only wizard.** A sync with no unknown names but a card that would save
-with no team (SportLots-only, true BSC blank) now OPENS the wizard — same
-title `Confirm New Players & Teams`, straight onto the final step, no
-`Skip remaining names`/`Add remaining players as new`, no "N of M reviewed".
-Any flow that waited for `Saved N cards` after a known-names sync, or
-asserted the wizard absent, must accept it (setup's Future Stars step,
-bowman STEP 7, inserts-1996 STEP 7d were patched for it).
+**Post-name steps.** Teams (only if a card would save teamless) and Card
+titles (only if a NEW card's title needs a look) each have footer
+`Next (Enter)` (marker class btn-next-step, handles its own Enter) and NO
+Confirm & Save; `Back` is aria `Back to previous step`. Save: h3
+`Save N cards?`/`Save 1 card?`, Confirm & Save autofocused. "Names done" =
+`text: "Next \\(Enter\\)|.*Confirm & Save.*"`; then
+`set-selector/util-wizard-advance-to-save.yaml`. The Decided list renders on
+names and Save only, never on teams/titles.
 
-**Branch on which terminal state, for free:** gate on `A|B`, then
-`copyTextFrom` the same pattern, `evalScript` a boolean off
-`maestro.copiedText`, `runFlow when: true:`. No missed `when: visible`
-7s lookup on either path (R10). Only valid when A and B never coexist (the
-names wizard's bulk links and Confirm & Save are mutually exclusive; a sync
-clears the previous "Saved N" banner when it starts).
+**No-names entry (teams-only / D7 titles-only).** No unknown names but a
+teamless card, or a new card with a trimmed title → wizard opens straight on
+that step (`Step 1 of 2`), no bulk links. Re-syncs of stored rows never get
+the titles step. Branch with gate `Tidy up this set|.*Saved N.*` +
+copyTextFrom + `when: true:`; assert subtitle `Cards with no team|Card titles`.
 
-After save the header pill (`N need you`) is FINAL at "Saved N cards." — the
-commit stamps cards whose fetch-time BSC lookup answered.
+**Teams lines.** Intro `Pick a team for each card, or leave it for later.`
+Radio group `id: "Team for <owner>"` (multi-player line: `Teams for <owner>`,
+checkbox chips); radios `<choice> — <owner>` for chips, `No team on this
+card`, `Leave for later`; owner = `A & B[, N cards]` or `#<number> <card
+name>` for a skipped-name card. CHECKED = `text: "✓"` + `childOf:` the radio.
+`Other team… — <owner>` (match the ellipsis with `.`) opens a TeamPicker with
+search `Team name to find`; `No matches.` + `pressKey: Enter` opens the New
+Team dialog; `Create team <name>` joins the line selected (chip reads
+`Loading…` first). Grouped line: `Different team… — #<n> <name>` /
+`Match the others — …` per card. Pre-fill = exactly ONE career team covering
+`[setYear-1, setYear]`; a skipped team string never counts.
 
-**Pre-fill from a created player:** a player row decided "Add as New Player"
-with ONE staged career team (CareerTeamEntry → its New Team step → "Add as
-New Team") pre-fills his card's line (`createdPlayerVerdict`: one-team career
-= answer; else the single stint covering the set year). Chip radio id is
-`<team full name> — <printed player name>`.
+**Body scroll is shared across steps** (one `overflow-y-auto` div, not keyed),
+so a step can open scrolled if the previous one was. Assert the intro
+`below:` the subtitle before tapping lines; red there is a product finding.
 
-**Re-sync of a committed set:** the NEO-203 content review ALWAYS opens when a
-stored card's team or player link differs from the incoming card (a stored
-team vs a blank marketplace team, a skipped name vs no player link) — tap
-`id: "Skip reviewing changes and continue"`. With every name known or skipped
-for the set (skip records are consulted), the review then opens teams-only and
-asks only about stored-teamless cards (rows with a team / "no team" / pending
-team name are settled via the diff's `existingId`).
-
-**Reaching one of many identically-numbered cards:** open any drawer and walk
-`id: "Next card"` in a `repeat while notVisible` on what only the target
-shows (e.g. `id: "Remove team .*"` when it is the only teamed card). Display
-order is `compareCardNumbers` (digits before text; "NB…" before "NNO").
+**Reaching identically-numbered cards:** open any drawer, walk `id: "Next
+card"` in `repeat while notVisible: id: "Remove team .*"`; read which chip via
+`copyTextFrom id: "Team: <name>…"`; tap Next once and wait the chip gone
+before walking to the next teamed card. Order is `compareCardNumbers`.

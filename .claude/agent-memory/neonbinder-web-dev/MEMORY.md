@@ -97,6 +97,6 @@
 - [Convex snapshot import keeps table numbers](reference_convex_snapshot_import_keeps_table_numbers.md) — ids encode table numbers (prod vs preview collide); bare ints import as int64, write floats as N.0
 - [Ref cleanup sees focus before removal](reference_ref_cleanup_sees_focus_before_removal.md) — park focus when a focused control unmounts: React 19 callback-ref cleanup, not a parent effect cleanup
 - [Relabelled primary slot needs a focus move](reference_relabelled_primary_slot_needs_a_focus_move.md) — move focus off a relabelled footer slot; arm the ref only on a real change; park-on-heading effect goes AFTER the opener-reading open effect
-- [Render-phase state for previous-render values](reference_render_phase_state_for_previous_render_values.md) — conditional setState in render passes lint; reducer returns same object; key transient lines on progress, not x
+- [Render-phase state for previous-render values](reference_render_phase_state_for_previous_render_values.md) — conditional setState in render passes lint; reducer returns same object; key transient lines on progress, not x; focus effects key on "focused for", not [screenKey]
 - [Wizard step local drafts settle pattern](reference_wizard_step_local_drafts_settle_pattern.md) — many-field step: local drafts, report on blur/Enter/timer/unmount; Escape undo = focus-time; long title = wrapping Textarea
 - [vi.mock stub component needs a name](reference_vi_mock_stub_component_needs_a_name.md) — stateful stub in a vi.mock factory must be `function StubX` or lint fails rules-of-hooks

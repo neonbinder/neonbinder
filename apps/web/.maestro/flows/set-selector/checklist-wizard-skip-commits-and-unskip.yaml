@@ -12,10 +12,12 @@ tags:
 # back in front of the next sync. That is what this flow owns.
 #
 # R2 — HARD ASSERTIONS:
-#     (a) the review starts with nothing decided — "0 of N reviewed";
-#     (b) "Skip remaining names" decides EVERY row in one go, lookups included — the
-#         wizard's own "All reviewed — save N cards?" and the appearance of
-#         "Confirm & Save" (which renders only once `allDecided`) both say so;
+#     (a) the review starts with nothing decided — "Step 1 of N" (NEO-335
+#         Phase 2's counter: on a name step x is the decided count plus one);
+#     (b) "Skip remaining names" decides EVERY row in one go, lookups included —
+#         the wizard leaves its name steps (footer "Next (Enter)" on a teams /
+#         titles step, else "Confirm & Save") only once `allDecided`, and its
+#         Save step then says "Save N cards?" and offers "Confirm & Save";
 #     (c) every one of those decisions is a SKIP, not a create — the history
 #         reads "Skipped" and never "Added as new". This is the assertion that
 #         catches a mis-landed tap, which is how CI runs 34050688656 and
@@ -80,7 +82,7 @@ tags:
 # ============================================================
 
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # ============================================================
 # STEP 2 — R2(b)+(c): decide the whole review from the footer
@@ -123,15 +125,22 @@ tags:
     text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm & Save.*"
+      text: "Next \\(Enter\\)|.*Confirm & Save.*"
     timeout: 120000
 
-# EVERY row is decided — the wizard says so in its own words. "Confirm & Save"
-# renders only once `allDecided`, and this line only with it, so the two agree.
-- assertVisible:
-    text: "All reviewed . save [0-9]+ cards\\?"
+# NEO-335 Phase 2 — past the names the wizard may ask about teamless cards and
+# card titles before it saves; this flow's feature is the skips, so it leaves
+# those on their defaults and walks to the Save step.
+- runFlow: util-wizard-advance-to-save.yaml
 
-# ...and every decision is a SKIP. `describeDecision` writes exactly one of
+# EVERY row is decided — the wizard says so in its own words. The Save step is
+# reachable only once `allDecided`, and this heading lives only on it.
+- assertVisible:
+    text: "Save [0-9]+ cards?\\?"
+
+# ...and every decision is a SKIP. The Decided list renders on the names and
+# on the Save step (not on the teams / titles steps), so it is read here.
+# `describeDecision` writes exactly one of
 # "Skipped", "Added as new" or "Linked to …", so this distinguishes all three —
 # and it is the assertion that fails loudly if a tap ever lands on
 # "Add All Remaining as New" again.

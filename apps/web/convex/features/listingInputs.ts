@@ -263,6 +263,16 @@ function wordsOf(text: string): string[] {
 }
 
 /**
+ * NEO-335 — is this dropped token one of the generator's FILLER words: the
+ * sport, or "Rookie" (the second spelling, appended only beside "RC")?
+ */
+export function isFillerToken(token: string, inputs: ListingCardInputs): boolean {
+  const sport = inputs.sport?.trim();
+  if (sport && token === sport) return true;
+  return inputs.isRookie === true && token === "Rookie";
+}
+
+/**
  * NEO-335 — what the title had to leave out, in the order the generator
  * would have spent characters on it: the identity words the core cut lost
  * (year, maker, set, each player), then the optional tokens it dropped.
@@ -276,6 +286,13 @@ function wordsOf(text: string): string[] {
  * is reported as that, never as a bare "Sr." because "Ken Griffey" survives
  * in his son's name beside it. The maker is skipped when NB does not know the
  * brand (NEO-272): the generator never put it in.
+ *
+ * FILLER is not listed (collector review, NEO-335): the sport word and the
+ * second spelling of rookie ("Rookie" beside "RC") are the generator's
+ * deliberate fill tail — they exist to spend characters that would otherwise
+ * go unused — so they are not a loss an operator should be shown, let alone
+ * first. Only the dropped TOKENS are filtered; a set or player word that
+ * happens to read "Baseball" is still reported.
  *
  * Display only. Nothing is stored from this.
  */
@@ -309,6 +326,7 @@ export function leftOutOfTitle(
     }
   }
   for (const token of assessment.dropped) {
+    if (isFillerToken(token, inputs)) continue;
     if (!out.includes(token)) out.push(token);
   }
   return out;

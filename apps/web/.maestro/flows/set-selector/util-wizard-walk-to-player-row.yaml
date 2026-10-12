@@ -151,9 +151,9 @@ tags:
 # This is a sanctioned R10 exception; do not "optimise" it.
 - runFlow:
     when:
-      notVisible: "Confirm New Players & Teams"
+      notVisible: "Tidy up this set"
     commands:
-      - assertVisible: "Confirm New Players & Teams"
+      - assertVisible: "Tidy up this set"
 
 # --- 4. drain whatever the staging inserted, and settle on the player
 - extendedWaitUntil:

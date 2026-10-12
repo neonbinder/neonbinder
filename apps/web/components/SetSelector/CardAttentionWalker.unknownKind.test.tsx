@@ -90,11 +90,20 @@ describe("CardAttentionWalker — a kind with no registered fixer", () => {
   it("leaves Skip and Close reachable so the operator is never stuck", () => {
     const { onClose } = renderWalker();
 
-    expect(screen.getByRole("button", { name: "Skip card 1 for now" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Skip card 1 for now" }));
+    expect(screen.getByRole("button", { name: "Skip for now, card 1" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Skip for now, card 1" }));
 
     fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("Skip's name starts with its visible words (2.5.3) and its target clears 24px (2.5.8)", () => {
+    renderWalker();
+    const skip = screen.getByRole("button", { name: "Skip for now, card 1" });
+    expect(skip.textContent).toBe("Skip for now");
+    expect(skip.getAttribute("aria-label")!.startsWith(skip.textContent!)).toBe(true);
+    expect(skip.className).toContain("py-2");
+    expect(skip.className).toContain("-my-2");
   });
 
   it("Skip-ing between two cards neither of which has a fixer does not yank focus off Skip", async () => {
@@ -117,11 +126,11 @@ describe("CardAttentionWalker — a kind with no registered fixer", () => {
       />,
     );
 
-    const skip1 = screen.getByRole("button", { name: "Skip card 1 for now" });
+    const skip1 = screen.getByRole("button", { name: "Skip for now, card 1" });
     skip1.focus();
     fireEvent.click(skip1);
 
-    const skip2 = screen.getByRole("button", { name: "Skip card 2 for now" });
+    const skip2 = screen.getByRole("button", { name: "Skip for now, card 2" });
     expect(skip2).toBe(skip1); // literally the same node, per the comment above
 
     // Give the walker's own requestAnimationFrame-scheduled effect a full
@@ -149,7 +158,7 @@ describe("CardAttentionWalker — a kind with no registered fixer", () => {
     // frame always elapses here in practice.
     await waitFor(() => expect(document.activeElement?.tagName).toBe("BUTTON"));
 
-    const skip = screen.getByRole("button", { name: "Skip card 1 for now" });
+    const skip = screen.getByRole("button", { name: "Skip for now, card 1" });
     skip.focus();
     fireEvent.click(skip);
 

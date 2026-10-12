@@ -14,6 +14,7 @@ import {
   answerForChoice,
   buildTeamsGroups,
   cardChoiceKey,
+  cardNumbersSummary,
   chooseKind,
   defaultChoice,
   effectiveCardChoice,
@@ -22,6 +23,7 @@ import {
   extraTeamIds,
   hasCardOverride,
   MAX_CARD_TEAMS,
+  NO_PLAYERS_GROUP_KEY,
   sameTeamAnswers,
   teamIdKey,
   teamNameRequests,
@@ -169,9 +171,53 @@ describe("buildTeamsGroups — grouping", () => {
     expect(groups).toHaveLength(1);
   });
 
-  test("a card with nobody on it gets its own line", () => {
-    const groups = build([card("1", []), card("2", [])]);
-    expect(groups.map((g) => g.cards.length)).toEqual([1, 1]);
+  // REWRITTEN (collector review): playerless cards used to get a line each.
+  // Checklists, leaders and highlights now share ONE line, keyed on having
+  // no players, never on a card's name.
+  test("every card with nobody on it shares one line, whatever it is called", () => {
+    const groups = build([
+      card("1", [], undefined, "Checklist"),
+      card("2", ["Johnny Bench"]),
+      card("3", [], undefined, "League Leaders"),
+      card("4", [], undefined, "Checklist"),
+    ]);
+    expect(groups.map((g) => g.cards.map((c) => c.index))).toEqual([[0, 2, 3], [1]]);
+    expect(groups[0].key).toBe(NO_PLAYERS_GROUP_KEY);
+    expect(groups[0].players).toEqual([]);
+    expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+  });
+
+  test("a card whose only names were skipped as not-a-person joins the no-players line", () => {
+    const rows = [row({ kind: "player", name: "Team Leaders", decision: { action: "skip" } })];
+    const groups = build([card("1", ["Team Leaders"]), card("2", [])], rows);
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe(NO_PLAYERS_GROUP_KEY);
+  });
+
+  test("the no-players line pools its cards' listing claims and holds back every pre-fill", () => {
+    const rows = [
+      row({ kind: "team", name: "Bulls", decision: null }),
+      row({ kind: "team", name: "Bears", decision: null }),
+    ];
+    const BULLS = "team_bulls" as Id<"teams">;
+    const groups = build(
+      [card("1", [], ["Bulls"]), card("2", [], ["Bears"]), card("3", [])],
+      rows,
+      {},
+      undefined,
+      { teamNameEvidence: { bulls: [serverTeam(BULLS, "Durham Bulls")], bears: [] } },
+    );
+    expect(groups).toHaveLength(1);
+    expect(groups[0].listedNames).toEqual(["Bulls", "Bears"]);
+    expect(labels(groups[0])).toEqual(["Durham Bulls"]);
+    expect(groups[0].suggestion).toBeNull();
+  });
+
+  test("cardNumbersSummary: up to four in full, then three and a count", () => {
+    const n = (...numbers: string[]) => numbers.map((cardNumber) => ({ cardNumber }));
+    expect(cardNumbersSummary(n("5", "407"))).toBe("#5 · #407");
+    expect(cardNumbersSummary(n("1", "2", "3", "4"))).toBe("#1 · #2 · #3 · #4");
+    expect(cardNumbersSummary(n("5", "407", "512", "6", "7", "8"))).toBe("#5, #407, #512 +3");
   });
 
   test("a player skipped as not-a-person is nobody", () => {

@@ -78,14 +78,14 @@ describe("the titles step follows the team answers", () => {
     // Teams, then Save — no titles step yet.
     expect(counter()).toBe("Step 1 of 2");
 
-    fireEvent.click(screen.getByRole("radio", { name: "No team on this card — #1 Checklist" }));
+    fireEvent.click(screen.getByRole("radio", { name: "No team on this card — Cards with no players (1)" }));
     expect(seenTeamAnswers.at(-1)).toEqual([{ teamNone: true }]);
     expect(counter()).toBe("Step 1 of 3");
     expect(growthRegion().textContent).toBe("1 more step: card titles");
 
     // The answer goes back to "later": the step has nothing in it, y keeps
     // its promise, and Next passes the empty step over to Save.
-    fireEvent.click(screen.getByRole("radio", { name: "Leave for later — #1 Checklist" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Leave for later — Cards with no players (1)" }));
     expect(counter()).toBe("Step 1 of 3");
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
     expect(counter()).toBe("Step 3 of 3");

@@ -496,7 +496,7 @@ describe("CardAttentionWalker — dialog geometry (NEO-271)", () => {
 
     const heading = screen.getByRole("heading", { level: 2 });
     const progress = screen.getByText("Step 1 of 2");
-    const skip = screen.getByRole("button", { name: /Skip card/ });
+    const skip = screen.getByRole("button", { name: /^Skip for now, card / });
     const close = screen.getByRole("button", { name: /Close/ });
 
     expect(header.contains(heading)).toBe(true);
@@ -855,7 +855,7 @@ describe("CardAttentionWalker — deferring", () => {
     ];
     renderWalker(rows);
 
-    fireEvent.click(screen.getByRole("button", { name: "Skip card 1 for now" }));
+    fireEvent.click(screen.getByRole("button", { name: "Skip for now, card 1" }));
 
     expect(screen.getByRole("heading", { level: 3 }).textContent).toBe(
       "#2 NL Leaders ERA LL",
@@ -943,7 +943,7 @@ describe("CardAttentionWalker — deferring", () => {
     );
 
     expect(screen.getByText(/All clear/)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Skip card/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Skip for now, card / })).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("dialog")));
   });
 });
@@ -1018,7 +1018,7 @@ describe("CardAttentionWalker — walk order (NEO-335)", () => {
   });
 
   const heading = () => screen.getByRole("heading", { level: 3 }).textContent;
-  const skip = () => fireEvent.click(screen.getByRole("button", { name: /^Skip card .* for now$/ }));
+  const skip = () => fireEvent.click(screen.getByRole("button", { name: /^Skip for now, card .*$/ }));
 
   it("asks every missing team first (by number), then unlinked names, then titles", () => {
     // Handed over in an order that matches neither rule.
@@ -1120,7 +1120,7 @@ describe("CardAttentionWalker — Step x of y and the subtitle (NEO-335 Phase 2)
   const teamRow3 = row("card-3", "3");
   const teamRow10 = row("card-10", "10");
   const skip = () =>
-    fireEvent.click(screen.getByRole("button", { name: /^Skip card .* for now$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /^Skip for now, card .*$/ }));
   const subtitleOf = (text: string) => screen.queryByText(text);
   const rerenderWith = (
     rerender: (ui: React.ReactElement) => void,
@@ -1324,7 +1324,7 @@ describe("CardAttentionWalker — keyboard-only", () => {
     expect(saveButton().getAttribute("aria-disabled")).toBeNull();
     expect(chip("Detroit Tigers", "Tarik Skubal").getAttribute("aria-pressed")).toBe("true");
 
-    fireEvent.click(screen.getByRole("button", { name: "Skip card 1 for now" }));
+    fireEvent.click(screen.getByRole("button", { name: "Skip for now, card 1" }));
 
     // Focus follows the new card rather than staying on a control that
     // belonged to the one just deferred. The walker remounts the fixer per

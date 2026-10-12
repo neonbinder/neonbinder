@@ -199,7 +199,8 @@ describe("grouping identical drops", () => {
     const cards = [
       card("1"),
       card("2", { players: ["Doc Gooden"] }),
-      card("3", { isRookie: true }),
+      // A dropped variation is a real loss ("Rookie" is filler and hidden).
+      card("3", { cardVariation: "Sapphire Throwback Gold Refractor" }),
     ];
     const { titleGroups } = buildTitleGroups(cards, context());
     expect(titleGroups.map((g) => g.cards.map((c) => c.cardNumber))).toEqual([["1", "2"], ["3"]]);
@@ -207,7 +208,7 @@ describe("grouping identical drops", () => {
     expect(titleGroups[0].leftOut.join(" ")).not.toMatch(/Ohtani|Gooden/);
     expect(titleGroups[0].cards[0].ownLeftOut).toEqual(["Shohei Ohtani"]);
     expect(titleGroups[0].cards[1].ownLeftOut).toEqual(["Dwight Gooden"]);
-    expect(titleGroups[1].leftOut).toContain("Rookie");
+    expect(titleGroups[1].leftOut).toContain("Sapphire Throwback Gold Refractor");
   });
 
   test("cards printing the same over-long variation share one field", () => {

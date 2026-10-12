@@ -29,3 +29,11 @@ Two traps from that build:
   screen), so keying the growth line on x wiped it. Key it on operator
   progress (decided count + requested step) instead. See
   [[e2e-viewport-is-the-ux-constraint]] for why status text stays near its cause.
+
+Related focus trap (NEO-335 a11y audit): `useEffect(() => ref.current?.focus(), [screenKey])`
+fires ONCE, so if the target mounts a render later (dialog opened after the
+screen was decided, a prop arriving async) focus never lands. Use a no-deps
+effect plus a `focusedForRef` holding the screen key focus was GIVEN for:
+skip when it matches, return early (without recording) while the target is
+not mounted, reset it when the dialog closes. It also leaves an operator who
+moved focus on the same screen alone.

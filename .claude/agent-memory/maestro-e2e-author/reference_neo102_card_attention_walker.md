@@ -39,16 +39,17 @@ per-attempt** custom set under REAL `Baseball / 2024 / Topps`:
   opens on the lowest-numbered flagged card and its counter is the queue
   length. Walk order (NEO-335): missing team → unlinked names → titles, then
   card number.
-- **Walker** — `"Cards Needing Attention"` (h2); progress `<p role="status">`
-  renders `2 cards need attention · 0 fixed` — match it as
-  `".*2 cards need attention . 0 fixed.*"` (the `.` covers the middot without
-  typing U+00B7); footer `id: "Skip card <cardNumber> for now"` — **the only
-  card-specific handle in the dialog, so it is how you prove the walker is on
-  the card you expect**; close button text flips `"Close (Esc)"` →
+- **Walker** — NEO-335 Phase 2: wears the wizard chrome — h2 `Tidy up this
+  set`, subtitle (`Cards with no team` / `Names not yet linked` / `Card
+  titles`), one `Step x of y` (y = cards seen this sitting, never shrinks; a
+  Skip or an answer advances x; NO "fixed" count — prove writes by the row
+  badge/pill after close). Footer `id: "Skip for now, card <cardNumber>"` —
+  **the only card-specific handle in the dialog, so it is how you prove the
+  walker is on the card you expect** (and how to tell it from the wizard,
+  which shares its title). Never tap the h2 by its DOM id; tap its text; close button text flips `"Close (Esc)"` →
   `"Done (Esc)"` when nothing is left; all-clear step
   `"All clear — nothing on this checklist needs attention."`, or (NEO-335)
-  `"All clear for now — K more card(s) is/are still being checked for a
-  team."` when BSC-linked cards still await their lookup — never on a
+  `"All clear for now. Still looking up teams for K cards."` (`1 card`) when BSC-linked cards still await their lookup — never on a
   hand-made card (no BSC ref)
 - **MissingTeamFixer** — `"No players on this card."` (a custom card carries
   pending player NAMES, never linked player rows, so this is the deterministic

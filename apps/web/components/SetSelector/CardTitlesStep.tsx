@@ -121,6 +121,7 @@ export default function CardTitlesStep({
   answers,
   onAnswersChange,
   disabled = false,
+  headingId,
 }: {
   /** The confirmed preview cards, in preview order. */
   cards: readonly PreviewCardForTitles[];
@@ -138,6 +139,13 @@ export default function CardTitlesStep({
   onAnswersChange: (answers: Array<TitleAnswer | undefined>) => void;
   /** A commit is in flight; the fields hold still. */
   disabled?: boolean;
+  /**
+   * The id the step's lead line carries, so the wizard can describe its Next
+   * button with it. On the titles lead ("Trimmed to fit. Keep it, or make it
+   * yours." — what Next does to them) when there are titles on the step, else
+   * on the variation lead. Generated when absent.
+   */
+  headingId?: string;
 }) {
   const uid = useId();
   const [drafts, setDrafts] = useState<Array<TitleAnswer | undefined>>(() =>
@@ -232,6 +240,9 @@ export default function CardTitlesStep({
     };
 
   if (variationGroups.length === 0 && titleGroups.length === 0) return null;
+  const variationsId =
+    headingId && titleGroups.length === 0 ? headingId : `${uid}-variations`;
+  const titlesId = headingId ?? `${uid}-titles`;
 
   return (
     <div
@@ -241,8 +252,8 @@ export default function CardTitlesStep({
       }}
     >
       {variationGroups.length > 0 && (
-        <section aria-labelledby={`${uid}-variations`}>
-          <h3 id={`${uid}-variations`} className="text-sm font-normal text-gray-200">
+        <section aria-labelledby={variationsId}>
+          <h3 id={variationsId} className="text-sm font-normal text-gray-200">
             {VARIATION_LEAD}
           </h3>
           <ul className="mt-1 divide-y divide-gray-800">
@@ -250,7 +261,7 @@ export default function CardTitlesStep({
               <VariationLine
                 key={group.key}
                 group={group}
-                leadId={`${uid}-variations`}
+                leadId={variationsId}
                 value={drafts[group.cards[0].index]?.cardVariation ?? group.variation}
                 onChange={(value) =>
                   setField(
@@ -272,8 +283,8 @@ export default function CardTitlesStep({
       )}
 
       {titleGroups.length > 0 && (
-        <section aria-labelledby={`${uid}-titles`}>
-          <h3 id={`${uid}-titles`} className="text-sm font-normal text-gray-200">
+        <section aria-labelledby={titlesId}>
+          <h3 id={titlesId} className="text-sm font-normal text-gray-200">
             {TITLES_LEAD}
           </h3>
           <TitleGroups
@@ -395,42 +406,53 @@ function TitleGroups({
   disabled: boolean;
 }) {
   const labels = useMemo(() => rowNames(groups.flatMap((g) => g.cards)), [groups]);
+  const uid = useId();
   return (
     <ul className="mt-1 divide-y divide-gray-800">
-      {groups.map((group) => (
-        <li key={group.key} className="py-2">
-          {/* The shared reason first, so a run of cards that lost the same
-              words reads as one decision. TitleFixer's wording and tone.
-              Absent when the only losses are each card's own names, which
-              every row states for itself. */}
-          {group.leftOut.length > 0 && (
-            <p className="mb-1.5 break-words text-xs text-[#FFB020]">
-              Left out to fit: {group.leftOut.join(", ")}
-              {group.cards.length > 1 && (
-                <span className="text-gray-400">
-                  {" "}
-                  (<span className="tabular-nums">{group.cards.length}</span> cards)
-                </span>
+      {groups.map((group, groupIndex) => {
+        const lineId = `${uid}-group-${groupIndex}`;
+        const hasLine = group.leftOut.length > 0;
+        return (
+          <li key={group.key} className="py-2">
+            {/* a11y: a group described by its shared "Left out to fit" line, so
+                tabbing into any of its fields says what the trim cost them all.
+                A div inside the <li> rather than role="group" ON the <li>: that
+                would strip the list item from its <ul> (axe "list"). */}
+            <div role="group" aria-describedby={hasLine ? lineId : undefined}>
+              {/* The shared reason first, so a run of cards that lost the same
+                  words reads as one decision. TitleFixer's wording and tone.
+                  Absent when the only losses are each card's own names, which
+                  every row states for itself. */}
+              {hasLine && (
+                <p id={lineId} className="mb-1.5 break-words text-xs text-[#FFB020]">
+                  Left out to fit: {group.leftOut.join(", ")}
+                  {group.cards.length > 1 && (
+                    <span className="text-gray-400">
+                      {" "}
+                      (<span className="tabular-nums">{group.cards.length}</span> cards)
+                    </span>
+                  )}
+                </p>
               )}
-            </p>
-          )}
-          <ul className="space-y-2">
-            {group.cards.map((card) => (
-              <TitleRow
-                key={card.index}
-                card={card}
-                label={labels.get(card.index) ?? `#${card.cardNumber}`}
-                draft={drafts[card.index]?.listingTitle}
-                onChange={(value) => onChange(card.index, value)}
-                onReset={() => onReset(card.index)}
-                onBlur={onBlur}
-                onKeyDown={keysFor(card.index)}
-                disabled={disabled}
-              />
-            ))}
-          </ul>
-        </li>
-      ))}
+              <ul className="space-y-2">
+                {group.cards.map((card) => (
+                  <TitleRow
+                    key={card.index}
+                    card={card}
+                    label={labels.get(card.index) ?? `#${card.cardNumber}`}
+                    draft={drafts[card.index]?.listingTitle}
+                    onChange={(value) => onChange(card.index, value)}
+                    onReset={() => onReset(card.index)}
+                    onBlur={onBlur}
+                    onKeyDown={keysFor(card.index)}
+                    disabled={disabled}
+                  />
+                ))}
+              </ul>
+            </div>
+          </li>
+        );
+      })}
     </ul>
   );
 }
@@ -456,6 +478,8 @@ function TitleRow({
 }) {
   const meterId = useId();
   const alertId = useId();
+  const ownLineId = useId();
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
   const value = draft ?? card.title;
   const state = titleDraftState(draft, card.title);
   const over = state.kind === "over";
@@ -470,6 +494,7 @@ function TitleRow({
       <div className="min-w-0">
         <Textarea
           bare
+          ref={fieldRef}
           rows={2}
           value={value}
           onChange={(e) => onChange(oneLine(e.target.value))}
@@ -477,7 +502,13 @@ function TitleRow({
           onKeyDown={onKeyDown}
           // No maxLength: an over-long title must stay visible to be fixed.
           aria-label={`Title for ${label}`}
-          aria-describedby={over ? `${meterId} ${alertId}` : meterId}
+          aria-describedby={[
+            card.ownLeftOut.length > 0 ? ownLineId : null,
+            meterId,
+            over ? alertId : null,
+          ]
+            .filter(Boolean)
+            .join(" ")}
           aria-invalid={over || undefined}
           aria-disabled={disabled || undefined}
           readOnly={disabled}
@@ -486,7 +517,7 @@ function TitleRow({
         {card.ownLeftOut.length > 0 && (
           // The card's own names the trim cost it — the loss an operator most
           // wants to put back, so it sits right under the field.
-          <p className="mt-0.5 break-words text-[11px] text-[#FFB020]">
+          <p id={ownLineId} className="mt-0.5 break-words text-[11px] text-[#FFB020]">
             Left out to fit: {card.ownLeftOut.join(", ")}
           </p>
         )}
@@ -495,11 +526,18 @@ function TitleRow({
             <button
               type="button"
               onClick={() => {
-                if (!disabled) onReset();
+                if (disabled) return;
+                onReset();
+                // a11y: this button unmounts the moment the title is the
+                // trimmed one again, which would drop focus to <body> inside
+                // the modal. Hand it to the field it just reset, before the
+                // re-render removes the button.
+                fieldRef.current?.focus();
               }}
               aria-label={`Use trimmed title for ${label}`}
               aria-disabled={disabled || undefined}
-              className="-my-1 rounded py-1 text-[#00B7FF] underline decoration-dotted hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
+              // leading-4 + py-1: a 24px target (SC 2.5.8) at text-[11px].
+              className="-my-1 rounded py-1 leading-4 text-[#00B7FF] underline decoration-dotted hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-[#00B7FF]"
             >
               Use trimmed title
             </button>
@@ -507,7 +545,10 @@ function TitleRow({
             <span />
           )}
           <span id={meterId}>
-            <TitleLengthMeter length={value.trim().length} max={LISTING_TITLE_MAX} soft surface="dark" />
+            {/* Neutral until past the cap (no `soft` bands): every title on
+                this step sits near 80, so "may clip in search" would be on
+                every row and say nothing. TitleFixer keeps its bands. */}
+            <TitleLengthMeter length={value.trim().length} max={LISTING_TITLE_MAX} surface="dark" />
           </span>
         </div>
         {/* Always mounted, so its text is announced when it appears (a live

@@ -48,6 +48,7 @@ function setup(props: {
   teamAnswers?: Array<TeamAnswer | undefined>;
   answers?: Array<TitleAnswer | undefined>;
   names?: React.ComponentProps<typeof CardTitlesStep>["names"];
+  headingId?: string;
 }) {
   const onAnswersChange = vi.fn();
   const onWizardKey = vi.fn();
@@ -59,6 +60,7 @@ function setup(props: {
         titleContext={p.titleContext ?? CONTEXT}
         teamAnswers={p.teamAnswers}
         names={p.names}
+        headingId={p.headingId}
         answers={p.answers ?? []}
         onAnswersChange={onAnswersChange}
       />
@@ -243,5 +245,95 @@ describe("CardTitlesStep — never blocks", () => {
     const buttons = screen.queryAllByRole("button").map((b) => b.textContent);
     expect(buttons).toEqual(["Use trimmed title"]);
     expect(document.querySelector("[disabled]")).toBeNull();
+  });
+});
+
+describe("CardTitlesStep — accessibility wiring", () => {
+  test("'Use trimmed title' hands focus to its field instead of dropping it on <body>", () => {
+    setup({ cards: [card("1")] });
+    const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
+    fireEvent.change(field, { target: { value: "Mine #1" } });
+    const reset = screen.getByRole("button", { name: "Use trimmed title for #1 Card 1" });
+    reset.focus();
+    fireEvent.click(reset);
+    expect(screen.queryByRole("button", { name: "Use trimmed title for #1 Card 1" })).toBeNull();
+    expect(document.activeElement).toBe(field);
+  });
+
+  test("'Use trimmed title' clears the 24px target floor", () => {
+    setup({ cards: [card("1")] });
+    fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
+      target: { value: "Mine #1" },
+    });
+    const reset = screen.getByRole("button", { name: "Use trimmed title for #1 Card 1" });
+    expect(reset.className).toContain("leading-4");
+    expect(reset.className).toContain("py-1");
+  });
+
+  test("headingId lands on the titles lead when there are titles, for the wizard's Next", () => {
+    setup({
+      cards: [card("1"), card("2", { cardVariation: LONG_VARIATION })],
+      headingId: "titles-lead",
+    });
+    expect(document.getElementById("titles-lead")?.textContent).toBe(
+      "Trimmed to fit. Keep it, or make it yours.",
+    );
+  });
+
+  test("headingId lands on the variation lead when only variations are on the step", () => {
+    setup({
+      cards: [card("2", { cardVariation: LONG_VARIATION })],
+      titleContext: SHORT,
+      headingId: "titles-lead",
+    });
+    expect(document.getElementById("titles-lead")?.textContent).toBe(
+      "Variation's too long to list. Trim it to 65.",
+    );
+  });
+
+  test("each field is described by its own 'Left out to fit' line and its meter", () => {
+    setup({ cards: [card("1")] });
+    const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
+    const ids = (field.getAttribute("aria-describedby") ?? "").split(" ");
+    const texts = ids.map((id) => document.getElementById(id)?.textContent);
+    expect(texts).toContain("Left out to fit: Shohei Ohtani");
+    expect(texts.some((t) => /\/80/.test(t ?? ""))).toBe(true);
+    // The over-cap status joins only once the title is over.
+    fireEvent.change(field, { target: { value: "t".repeat(84) } });
+    const after = (field.getAttribute("aria-describedby") ?? "")
+      .split(" ")
+      .map((id) => document.getElementById(id)?.textContent);
+    expect(after).toContain("Too long to list as-is.");
+  });
+
+  test("a group of cards is described by the drop they share; its <li> stays a list item", () => {
+    setup({ cards: [card("1"), card("2", { players: ["Mike Trout"] })] });
+    const group = screen.getByRole("group");
+    const line = document.getElementById(group.getAttribute("aria-describedby")!);
+    expect(line?.textContent).toMatch(/^Left out to fit: Collectors Box/);
+    expect(group.tagName).toBe("DIV");
+    expect(group.parentElement?.tagName).toBe("LI");
+    expect(within(group).getAllByRole("textbox")).toHaveLength(2);
+  });
+});
+
+describe("CardTitlesStep — the meter is neutral until past the cap", () => {
+  test("a title near 80 shows a plain N/80, with no 'may clip' band", () => {
+    setup({ cards: [card("1")] });
+    const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" }) as HTMLTextAreaElement;
+    expect(field.value.length).toBeGreaterThanOrEqual(70);
+    const meter = screen.getByText(`${field.value.length}/80`);
+    expect(meter.parentElement?.className).toContain("text-gray-400");
+    expect(screen.queryByText(/may clip/)).toBeNull();
+  });
+
+  test("past 80 it turns the over colour and says by how much", () => {
+    setup({ cards: [card("1")] });
+    fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
+      target: { value: "t".repeat(84) },
+    });
+    const meter = screen.getByText("84/80");
+    expect(meter.parentElement?.className).toContain("text-[#FF2EB3]");
+    expect(screen.getByText("4 over")).toBeTruthy();
   });
 });

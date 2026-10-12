@@ -18,7 +18,7 @@ tags:
 # R2 — HARD ASSERTIONS, none satisfiable by an inert page:
 #     (a) the fixture team exists before the fetch — its chip in the career
 #         editor proves `teams.findOrCreate` returned;
-#     (b) the wizard opens with nothing decided ("0 of N reviewed") and the row
+#     (b) the wizard opens with nothing decided ("Step 1 of N") and the row
 #         under test is a TEAM row: its skip control says "not a team";
 #     (c) the "Search all teams" combobox is on this team step under its
 #         "Link to existing team" heading and opens EMPTY (it reads back its
@@ -49,7 +49,7 @@ tags:
 #         prints "Pittsburgh Crawfords already answers to this name as an alias —
 #         remove it there before a team can take the name.", offers
 #         "Link to Pittsburgh Crawfords · 1926–1940", and "Add as New Team" records
-#         nothing (the header's reviewed-count is unchanged seconds later).
+#         nothing (the header's "Step x of y" is unchanged seconds later).
 #         About 10s, on a step the flow already stands on.
 #     (h) NEO-307 — A CARD CAN SHOW A TEAM'S PAST. A club on this checklist,
 #         "Pittsburgh Crawfords" (card RW-2's), is created through the UI
@@ -400,14 +400,14 @@ tags:
 # R5 marketplace exception: the wizard opens once the batch is queued, and
 # every name in it is behind a live Wikidata lookup.
 - extendedWaitUntil:
-    visible: "Confirm New Players & Teams"
+    visible: "Tidy up this set"
     timeout: 60000
 
 # ============================================================
 # PART 3 — THE TEAM ROW (R2b)
 # ============================================================
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # Wait the batch's lookups out (live Wikidata, R5 exception — the same gate
 # `util-wizard-walk-to-player-row` uses), so the row presented next is settled
@@ -571,10 +571,11 @@ tags:
 # en dash matched with "."). Asserted only. The flow's own link is to
 # Loc<token> Ali<token>, below.
 - assertVisible: "Link to Pittsburgh Crawfords . 1926.1940"
-# The refused create. The header's counter counts every decision, so it is
+# The refused create. The header's "Step x of y" moves with every decision
+# (on a name step x is the decided count plus one, NEO-335 Phase 2), so it is
 # read before the tap and must still read the same after it.
 - copyTextFrom:
-    text: "[0-9]+ of [0-9]+ reviewed.*"
+    text: "Step [0-9]+ of [0-9]+"
 - evalScript: '${output.COUNT_BEFORE = maestro.copiedText}'
 - tapOn:
     id: "Add as New Team"
@@ -616,7 +617,7 @@ tags:
 # R2(i), the refusal's second reading: seconds after the tap on the refused
 # "Add as New Team", nothing has been decided (a create would have counted).
 - copyTextFrom:
-    text: "[0-9]+ of [0-9]+ reviewed.*"
+    text: "Step [0-9]+ of [0-9]+"
 - assertTrue: '${maestro.copiedText === output.COUNT_BEFORE}'
 # The option's only direct text node is the composed full name (its "League ·
 # years" line is a separate node; this fixture has neither, so there is none).
@@ -728,8 +729,11 @@ tags:
     text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm & Save.*"
+      text: "Next \\(Enter\\)|.*Confirm & Save.*"
     timeout: 7000
+# NEO-335 Phase 2 — the teams / titles steps (a skipped team name leaves its
+# cards teamless) stay on their defaults; this flow's feature is the alias.
+- runFlow: util-wizard-advance-to-save.yaml
 - tapOn:
     text: ".*Confirm & Save.*"
 - extendedWaitUntil:

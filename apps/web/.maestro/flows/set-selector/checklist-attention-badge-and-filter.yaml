@@ -32,8 +32,8 @@ tags:
 #       TeamPicker;
 #     • that row's badge disappears, the pill drops to "1 needs you", the
 #       other row keeps its badge;
-#     • the pill opens the walker on that one card and no other ("1 card needs
-#       attention · 0 fixed", "Skip card 701-… for now").
+#     • the pill opens the walker on that one card and no other ("Step 1 of
+#       1", "Skip for now, card 701-…").
 #   The count is asserted as an EXACT number, so a rule that over- or
 #   under-flags fails here rather than reading as "some badge exists" (R2).
 #
@@ -655,9 +655,10 @@ tags:
 # This replaces the retired filter chip's proof (NEO-335). A count says HOW
 # MANY rows are flagged; the walker's queue says WHICH, because it is derived
 # from the same rule over the same rows. It opens on the lowest-numbered
-# flagged card — #701 — and its counter is the queue's length, so a walker
-# that also held #702 (answered) or #703 (born linked) reads "2 cards" or "3
-# cards" and fails here. The Skip button's accessible name is the dialog's one
+# flagged card — #701 — and its counter's y is the queue's length (NEO-335
+# Phase 2: "Step x of y", y = every card in the sitting), so a walker that
+# also held #702 (answered) or #703 (born linked) reads "Step 1 of 2" or
+# "Step 1 of 3" and fails here. The Skip button's accessible name is the dialog's one
 # card-specific handle. Nothing is answered: Close defers, writes nothing, and
 # the sibling walker flow owns the fixer itself.
 #
@@ -673,17 +674,16 @@ tags:
     timeout: 7000
 - tapOn: "1 needs you"
 - extendedWaitUntil:
-    visible: "Cards Needing Attention"
+    visible: "Tidy up this set"
     timeout: 7000
 - assertVisible:
-    id: "Skip card 701-${ATTEMPT_ID} for now"
-# The "." matches the middot separator.
-- assertVisible:
-    text: ".*1 card needs attention . 0 fixed.*"
+    id: "Skip for now, card 701-${ATTEMPT_ID}"
+# Full match, so "Step 1 of 2" fails it.
+- assertVisible: "Step 1 of 1"
 - tapOn:
     text: "Close \\(Esc\\)"
 - extendedWaitUntil:
-    notVisible: "Cards Needing Attention"
+    notVisible: "Tidy up this set"
     timeout: 7000
 # Closing deferred, so #701 is still the one flagged card.
 - assertVisible: "1 needs you"

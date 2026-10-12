@@ -22,7 +22,8 @@ tags:
 #
 # R2 — HARD ASSERTIONS, no branch that can green this flow without exercising
 #   the feature:
-#     (a) the wizard opens with NOTHING decided — "0 of N reviewed";
+#     (a) the wizard opens with NOTHING decided — "Step 1 of N" (NEO-335
+#         Phase 2's counter: on a name step x is the decided count plus one);
 #     (b) one CREATE is taken and shows up in the history as "Added as new" —
 #         the state Back must preserve. Read as a name, not as a count: getting
 #         to a player row means answering every team step first (see
@@ -34,7 +35,7 @@ tags:
 #         notVisible would also pass on a dead error-boundary page);
 #     (d) re-confirming reopens the wizard on the SAME batch, with that same
 #         "Added as new" still in the history. A Back that cancelled the batch
-#         would reopen at "0 of N" with no Decided list at all; a Back that lost
+#         would reopen at "Step 1 of N" with no Decided list at all; a Back that lost
 #         the parked session would fail at (c).
 #
 #   The counts are regexes, not literals. How many unknown names the fixture
@@ -89,7 +90,7 @@ tags:
       # ============================================================
       # STEP 1 — R2(a): the review starts with nothing decided
       # Asserting it HERE is what makes STEP 4's read meaningful: without it,
-      # "1 of N" after the round trip could just be where we started.
+      # "Added as new" after the round trip could just be where we started.
       # ============================================================
 
       # A sibling read-only flow that went red left its batch on this shared set, and
@@ -99,7 +100,7 @@ tags:
           file: util-discard-resumed-review-batch.yaml
 
       - assertVisible:
-          text: "0 of [0-9]+ reviewed.*"
+          text: "Step 1 of [0-9]+"
 
       # ============================================================
       # STEP 2 — R2(b): take exactly ONE decision
@@ -132,7 +133,7 @@ tags:
 
       - tapOn: "Back to matching"
       - extendedWaitUntil:
-          notVisible: "Confirm New Players & Teams"
+          notVisible: "Tidy up this set"
       - assertVisible:
           id: "Confirm card matches"
 
@@ -145,13 +146,13 @@ tags:
       # re-looks-up, so a healthy run resolves this well inside the ceiling.
       #
       # THESE TWO ASSERTIONS ARE THE POINT OF THE FLOW. A Back that had cancelled the
-      # batch would reopen at "0 of N reviewed" with no Decided list at all.
+      # batch would reopen at "Step 1 of N" with no Decided list at all.
       # ============================================================
 
       - tapOn:
           id: "Confirm card matches"
       - extendedWaitUntil:
-          visible: "Confirm New Players & Teams"
+          visible: "Tidy up this set"
           timeout: 60000
       # THE POINT OF THE FLOW: the create survived the round trip. Still the only
       # "Added as new" among the drained skips, so this cannot pass by accident.
@@ -206,7 +207,7 @@ tags:
       - runFlow:
           file: util-discard-resumed-review-batch.yaml
       - assertVisible:
-          text: "0 of [0-9]+ reviewed.*"
+          text: "Step 1 of [0-9]+"
       - assertVisible:
           text: "Cancel (Esc)"
       - assertNotVisible: "Back to matching"

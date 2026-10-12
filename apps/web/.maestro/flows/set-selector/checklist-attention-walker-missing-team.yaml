@@ -25,16 +25,25 @@ tags:
 #             exists for, and the one thing that distinguishes a real
 #             persisted decision from a local UI toggle.
 #
-# The walker's counter ("N cards need attention · k fixed") is asserted at each
-# step, so a walker that advances without recording anything, or records
-# without advancing, fails here (R2).
+# The walker wears the wizard's chrome since NEO-335 Phase 2: title "Tidy up
+# this set", the question's type as the subtitle ("Cards with no team" here)
+# and ONE counter, "Step x of y" — y is every card seen this sitting (it never
+# shrinks), x moves on a Skip and on an answer alike, and there is no "fixed"
+# count any more. So the counter is asserted at each step to prove the walker
+# ADVANCED, and what each answer WROTE is proved where it lives: the row's
+# badge and the header pill after the walker closes, and (for "No team on this
+# card") after a full reload. A walker that advances without recording, or
+# records without advancing, still fails here (R2).
+#
+# The walker and the wizard share title, subtitle and counter text; this flow
+# tells them apart by the walker's own "Skip for now, card <number>" control.
 #
 # ORDER IS DETERMINISTIC, NOT ASSUMED
 #   getCardChecklist returns its rows already sorted by compareCardNumbers, and
 #   the walker pins the first flagged row of that list at mount. So with #801
 #   and #802 both flagged, the walker opens on #801 — and every step below
 #   names the card it expects in the Skip button's accessible name
-#   ("Skip card <number> for now"), so a walker that presents the wrong card
+#   ("Skip for now, card <number>"), so a walker that presents the wrong card
 #   fails immediately instead of silently answering someone else's question.
 #
 # NOT COVERED HERE — and why
@@ -42,8 +51,8 @@ tags:
 #     then titles). Both cards here carry the same kind, so the order is card
 #     number alone; a mixed queue would assert the sort, not the fixer this
 #     flow is about. Component-covered in CardAttentionWalker.test.tsx.
-#   • The "All clear for now — K more cards are still being checked for a
-#     team." done line. It counts BSC-linked cards whose lookup has not
+#   • The "All clear for now. Still looking up teams for K cards." done line
+#     (NEO-335 Phase 2 wording). It counts BSC-linked cards whose lookup has not
 #     answered; a hand-made card carries no BSC ref, so it can never be one
 #     (NEO-239), and the real sets are read-only (R7a). Component-covered in
 #     CardAttentionWalker.test.tsx. The live proof that a sync's count is
@@ -216,14 +225,15 @@ tags:
 - tapOn: "2 need you"
 
 - extendedWaitUntil:
-    visible: "Cards Needing Attention"
+    visible: "Tidy up this set"
     timeout: 7000
-# The walker opened on the LOWEST-numbered flagged card, and its own counter
-# agrees with the header pill. The "." matches the middot separator.
+# The walker opened on the LOWEST-numbered flagged card, its own counter
+# agrees with the header pill (two cards, the first on screen), and the
+# subtitle names the question. All header text, pinned.
 - assertVisible:
-    id: "Skip card 801-${ATTEMPT_ID} for now"
-- assertVisible:
-    text: ".*2 cards need attention . 0 fixed.*"
+    id: "Skip for now, card 801-${ATTEMPT_ID}"
+- assertVisible: "Step 1 of 2"
+- assertVisible: "Cards with no team"
 # The fixer body rendered for this card: a custom card carries pending player
 # NAMES rather than linked player rows, so there is nothing to suggest from and
 # nothing preselected — the operator has to answer it themselves.
@@ -235,15 +245,14 @@ tags:
 # ════════════════════════════════════════════════════════════════════════════
 
 - tapOn:
-    id: "Skip card 801-${ATTEMPT_ID} for now"
+    id: "Skip for now, card 801-${ATTEMPT_ID}"
 - extendedWaitUntil:
     visible:
-      id: "Skip card 802-${ATTEMPT_ID} for now"
+      id: "Skip for now, card 802-${ATTEMPT_ID}"
     timeout: 7000
-# One card left in this sitting, and NOTHING has been fixed — a skip is not a
-# write, so the "fixed" half of the counter must not have moved.
-- assertVisible:
-    text: ".*1 card needs attention . 0 fixed.*"
+# The walk moved on to the second of the two cards. A skip is not a write —
+# that half is proved after the walker closes, where #801 keeps its badge.
+- assertVisible: "Step 2 of 2"
 
 # ════════════════════════════════════════════════════════════════════════════
 # ANSWER 2 — "No team on this card" for #802. The explicit, recordable answer.
@@ -253,12 +262,13 @@ tags:
 - extendedWaitUntil:
     visible: "All clear — nothing on this checklist needs attention."
     timeout: 7000
-- assertVisible:
-    text: ".*0 cards need attention . 1 fixed.*"
+# Nothing is left: the counter reads y of y (the rail is full) and holds the
+# two cards this sitting saw — y never shrinks.
+- assertVisible: "Step 2 of 2"
 # The footer button says "Done" rather than "Close" once nothing is left.
 - tapOn: "Done (Esc)"
 - extendedWaitUntil:
-    notVisible: "Cards Needing Attention"
+    notVisible: "Tidy up this set"
     timeout: 7000
 
 # Back on the grid: #802 is answered and un-flagged, #801 was only DEFERRED and
@@ -280,10 +290,10 @@ tags:
 - tapOn: "1 needs you"
 - extendedWaitUntil:
     visible:
-      id: "Skip card 801-${ATTEMPT_ID} for now"
+      id: "Skip for now, card 801-${ATTEMPT_ID}"
     timeout: 7000
-- assertVisible:
-    text: ".*1 card needs attention . 0 fixed.*"
+# A fresh sitting counts only what is flagged now: one card.
+- assertVisible: "Step 1 of 1"
 
 # The same picker the card drawer uses, including its typeahead — and its
 # "+ New team" row, which is how this flow gets a team at all (NEO-214: the global
@@ -400,14 +410,19 @@ tags:
 # fixer. Escape is deliberately not used: in this walker it means "defer this
 # card" (and maestro-web cannot send it anyway).
 #
+# Tapped by its VISIBLE title, "Tidy up this set" (NEO-335 Phase 2). This used
+# to be `id: "card-attention-walker-title"` — the h2's DOM id, which the house
+# rule forbids as a handle (README, "Anything a flow drives…": only what a user
+# can perceive). The title is the only node with that text while the walker is
+# open: the wizard that shares it is never open at the same time.
+#
 # NEO-236 removed the `scrollIntoView` the old inline create form needed, which
 # is what used to move this whole panel 63px a second after the create (CI run
 # 33982239886) and made "Save & Next" a moving target. The New Team dialog is
 # portalled, so nothing scrolls the walker's body any more — and since NEO-272
 # the popover is portalled too, so it no longer adds to the body's scrollable
 # height either.
-- tapOn:
-    id: "card-attention-walker-title"
+- tapOn: "Tidy up this set"
 # The popover is gone. Only now is "Save & Next" read for its coordinates.
 - extendedWaitUntil:
     notVisible:
@@ -419,11 +434,10 @@ tags:
 - extendedWaitUntil:
     visible: "All clear — nothing on this checklist needs attention."
     timeout: 7000
-- assertVisible:
-    text: ".*0 cards need attention . 1 fixed.*"
+- assertVisible: "Step 1 of 1"
 - tapOn: "Done (Esc)"
 - extendedWaitUntil:
-    notVisible: "Cards Needing Attention"
+    notVisible: "Tidy up this set"
     timeout: 7000
 
 # Nothing on this checklist needs attention any more, so the whole header row

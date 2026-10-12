@@ -11,18 +11,21 @@ tags:
 # person" and creates NOTHING.
 #
 # R2 — HARD ASSERTIONS, no silent fall-through:
-#     (a) the review starts with nothing decided — "0 of N reviewed";
+#     (a) the review starts with nothing decided — "Step 1 of N" (NEO-335
+#         Phase 2's counter: on a name step x is the decided count plus one);
 #     (b) the per-row control is bound to a REAL queued row (its accessible name
 #         composes the row's own name) AND says what it does ("Skip — not a
 #         person"). Two different claims; neither is a duplicate of the other;
-#     (c) one tap records exactly ONE decision — "1 of N reviewed" with a
-#         "Decided (1)" history. A control that rendered but wrote nothing
-#         leaves the header at "0 of N";
+#     (c) one tap records exactly ONE decision — a "Skipped" entry in the
+#         "Decided (N)" history. A control that rendered but wrote nothing
+#         leaves no such entry;
 #     (d) "Skip remaining names" decides every row that is left, INCLUDING ones whose
-#         Wikidata lookup has not come back. "Confirm & Save" renders only once
-#         EVERY row carries a decision (`allDecided`), so its appearance IS that
-#         assertion — and the bulk links unmount at the same moment, which is
-#         the same fact read the other way round.
+#         Wikidata lookup has not come back. The wizard leaves its name steps
+#         for the post-name steps only once EVERY row carries a decision
+#         (`allDecided`), and their footer is "Next (Enter)" (teams / titles)
+#         or "Confirm & Save" (Save) — NEO-335 Phase 2 — so that footer's
+#         appearance IS that assertion; the bulk links unmount at the same
+#         moment, which is the same fact read the other way round.
 #
 # ── WHAT THIS FLOW NO LONGER COVERS, AND WHY ────────────────────────────────
 #   The "Skipped names" panel and its Unskip live behind a COMMIT: skip records
@@ -78,7 +81,7 @@ tags:
     file: util-discard-resumed-review-batch.yaml
 
 - assertVisible:
-    text: "0 of [0-9]+ reviewed.*"
+    text: "Step 1 of [0-9]+"
 
 # ============================================================
 # STEP 2 — R2(b): the skip control, said both ways
@@ -144,7 +147,7 @@ tags:
     text: ".*Skip remaining names \\([0-9]+\\).*"
 - extendedWaitUntil:
     visible:
-      text: ".*Confirm & Save.*"
+      text: "Next \\(Enter\\)|.*Confirm & Save.*"
     timeout: 120000
 # The same fact read the other way round: the bulk links render only while a
 # row is still undecided, so their absence is `allDecided` confirming itself.
@@ -154,7 +157,8 @@ tags:
 # ============================================================
 # STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)
 #
-# Every row is decided now, so the confirm names them all. The count is a
+# Every row is decided now, so the confirm names them all. Cancel (Esc) is in
+# the footer on every step, the post-name ones included. The count is a
 # regex and plural: it is the fixture's unknown total (88 when measured), which
 # is the marketplace's business, not this flow's claim.
 # ============================================================
