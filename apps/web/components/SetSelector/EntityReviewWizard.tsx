@@ -512,11 +512,18 @@ export default function EntityReviewWizard({
   >({});
   /**
    * NEO-254 — the same, per LEAGUE row, and never reset per row for the same
-   * reason: a typed correction must survive NEO-221 back-navigation. Absent
-   * means "untouched", which renders the live prefill.
+   * reason: a typed correction must survive NEO-221 back-navigation.
+   *
+   * Holds only the fields the operator has TOUCHED, never a snapshot of the
+   * whole draft. A league step is presented before its Wikidata lookup lands
+   * (NEO-307) and Level is its one required press, so a snapshot taken at that
+   * press froze abbreviation, years and QID as blank and the lookup's answer
+   * never arrived. Merged over the live prefill instead: the lookup fills every
+   * field nobody touched, and never overwrites one somebody did (a pressed
+   * level, a corrected name, even a field cleared on purpose).
    */
   const [leagueCreateByRow, setLeagueCreateByRow] = useState<
-    Record<string, NewLeagueDraft>
+    Record<string, Partial<NewLeagueDraft>>
   >({});
   /**
    * NEO-313 — per PLAYER row moved off the set's sport: "also add the set's
@@ -2497,10 +2504,12 @@ export default function EntityReviewWizard({
     }));
   };
 
-  // NEO-254 — the league step's draft, read and written the same way.
+  // NEO-254 — the league step's draft: the operator's touched fields over the
+  // LIVE prefill, so a lookup that lands later still fills the rest (see
+  // `leagueCreateByRow`).
   const leagueCreate: NewLeagueDraft =
     current && current.kind === "league"
-      ? (leagueCreateByRow[current._id] ?? newLeaguePrefill(current))
+      ? { ...newLeaguePrefill(current), ...leagueCreateByRow[current._id] }
       : {
           name: "",
           abbreviation: "",
@@ -2555,7 +2564,7 @@ export default function EntityReviewWizard({
   const patchLeagueCreate = (rowId: string, patch: Partial<NewLeagueDraft>) => {
     setLeagueCreateByRow((prev) => ({
       ...prev,
-      [rowId]: { ...(prev[rowId] ?? leagueCreate), ...patch },
+      [rowId]: { ...prev[rowId], ...patch },
     }));
   };
 

@@ -7557,6 +7557,65 @@ describe("EntityReviewWizard — the New League step keeps its footer pinned", (
     });
   });
 
+  it("keeps a pressed level when the lookup lands, and still lets the lookup fill the fields nobody touched", async () => {
+    // The step is on screen before its Wikidata lookup answers (NEO-307) and
+    // promises "wait and they'll fill in". Level is the one required tap, so a
+    // quick operator presses it first. The lookup landing afterwards must keep
+    // that choice AND still fill the empty fields — pressing a level used to
+    // freeze the whole draft, so the years and QID never arrived.
+    const league = seedLookingUpLeague("ready");
+    const { rerender } = renderWizard();
+    pressWizardLevel("Other");
+
+    // The operator also corrects the name before the lookup lands: an edit is
+    // theirs, and enrichment never overwrites it.
+    fireEvent.change(screen.getByLabelText("New league name"), {
+      target: { value: "NHL proper" },
+    });
+
+    currentRows = currentRows.map((r) =>
+      r._id === league._id
+        ? {
+            ...r,
+            enrichment: {
+              wikidataId: "Q1215892",
+              abbreviation: "NHL",
+              yearsActive: { from: 1917 },
+            },
+          }
+        : r,
+    );
+    rerenderWizard(rerender);
+
+    const other = within(screen.getByRole("radiogroup", { name: "Level" })).getByRole(
+      "radio",
+      { name: "Other" },
+    );
+    expect(other.getAttribute("aria-checked")).toBe("true");
+    const primary = screen.getByRole("button", { name: "Add as New League" });
+    expect(primary.getAttribute("aria-disabled")).toBeNull();
+    expect((screen.getByLabelText("New league name") as HTMLInputElement).value).toBe(
+      "NHL proper",
+    );
+
+    fireEvent.click(primary);
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reviewRowId: league._id,
+          action: "create",
+          createLeague: {
+            name: "NHL proper",
+            level: "other",
+            abbreviation: "NHL",
+            yearsActive: { from: 1917 },
+            wikidataId: "Q1215892",
+          },
+        }),
+      );
+    });
+  });
+
   it("lets a READY league with no prefill yet be added while other rows are still looking up", async () => {
     // How staging inserts a league today: `ready` at once, lookup in flight.
     const league = seedLookingUpLeague("ready");

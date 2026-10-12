@@ -95,24 +95,59 @@ export function addAsNewStep(page: Page): Locator {
 }
 
 /**
+ * The presented New Team / New League step's heading ("New League: Pacific
+ * League"). Its accessible name is the step's identity: it goes away exactly
+ * when the step does.
+ */
+export function newStepHeading(page: Page): Locator {
+  return reviewWizard(page).getByRole("heading", { level: 3, name: /^New (Team|League): / });
+}
+
+/**
  * util-wizard-answer-step-as-new.yaml (NEO-331): answer the wizard's
- * presented New Team / New League step as a create. A league cannot be added
- * without a level and none is pre-pressed (its primary stays aria-disabled
- * until one is), so a league step first gets `level` (default "Other", what
- * the step pre-pressed before NEO-331; a drain claims nothing). A team step
- * is one tap. The click waits (LOOKUPS) for the step's own live lookup to
- * settle, which keeps the primary aria-disabled.
+ * presented New Team / New League step as a create, and return once the
+ * wizard has moved off it.
+ *
+ * A league cannot be added without a level and none is pre-pressed (its
+ * primary stays aria-disabled until one is), so a league step first gets
+ * `level` (default "Other", what the step pre-pressed before NEO-331; a
+ * drain claims nothing), checked before the primary is pressed. A team step
+ * is one tap. The league's Wikidata lookup is not waited for: the step says
+ * "Add it now", and the lookup fills the fields nobody touched when it lands.
+ *
+ * It ends by waiting for the step's heading to go. Until the decision write
+ * returns, the step just answered stays on screen with its primary
+ * aria-disabled, so a caller looping on "a primary is visible" would read the
+ * OLD step, press a level on it, and leave the next league with none pressed
+ * (CI run 38195356897: a 180 s wait on a held "Add as New League").
  */
 export async function answerStepAsNew(
   page: Page,
   { level = "Other" }: { level?: "Major" | "Minor" | "College" | "International" | "Independent" | "Other" } = {},
 ): Promise<void> {
   const wizard = reviewWizard(page);
-  const isLeague = /League/.test((await addAsNewStep(page).first().textContent()) ?? "");
-  if (isLeague) await wizard.getByRole("radio", { name: level, exact: true }).click();
-  await wizard
-    .getByRole("button", { name: isLeague ? "Add as New League" : "Add as New Team", exact: true })
-    .click({ timeout: LOOKUPS });
+  const heading = newStepHeading(page);
+  await expect(heading).toBeVisible();
+  const step = ((await heading.textContent()) ?? "").trim();
+  const isLeague = step.startsWith("New League: ");
+  const primary = wizard.getByRole("button", {
+    name: isLeague ? "Add as New League" : "Add as New Team",
+    exact: true,
+  });
+  if (isLeague) {
+    const radio = wizard.getByRole("radio", { name: level, exact: true });
+    await radio.click();
+    await expect(radio, `Level "${level}" is not pressed on "${step}"`).toBeChecked();
+  }
+  // No lookup holds the primary: only a missing level (pressed above), a
+  // draft error, or a decision write in flight, so it is a UX budget, not a
+  // lookup wait.
+  await expect(primary, `"${step}": its Add as New is still held`).toBeEnabled();
+  await primary.click();
+  await expect(
+    wizard.getByRole("heading", { level: 3, name: step, exact: true }),
+    `"${step}" is still on screen after Add as New`,
+  ).toBeHidden();
 }
 
 /**

@@ -1815,8 +1815,8 @@ always did. A flow whose assertions depend on a level presses it itself
 New League` (and the picker form's `Add league`, and League Management's
 `Create league …`) is held (aria-disabled) until one of the six level radios is
 pressed. Every drain answers a league step through `answerStepAsNew` in
-`support/wizard.ts`, which reads the step's kind off the primary button and
-presses `Other` first — the level the step pre-pressed before NEO-331, so a
+`support/wizard.ts`, which reads the step's kind off its heading, presses
+`Other` first and waits for the step to leave the screen — the level the step pre-pressed before NEO-331, so a
 drained league carries what it always did (the seed's Base wizard drain adds
 the "Major League Baseball" league this way, abbreviation MLB). A spec whose
 assertions depend on a level presses it itself (`team-picker-ranks-by-set-context`'s
