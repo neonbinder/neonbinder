@@ -12,7 +12,7 @@ tags:
 # ambiguously — then it stays one), so a checklist fetch links the card to
 # BOTH clubs and never asks the operator to create a team named after the
 # pair. Proved on live data, through the operator's own path (Sync card
-# checklist → Confirm New Players & Teams → Confirm & Save):
+# checklist → the "Tidy up this set" wizard → Confirm & Save):
 #
 #   (a) STEP 5 — while the wizard is drained, no team step is ever about a
 #       comma-joined name: every `New Team:` / `New League:` step presented
@@ -107,10 +107,11 @@ tags:
 #              cards from BSC`, `Saved N cards`; a row's sub-line is ONE text
 #              node, `<teams> · <print run> · <auto>` (CardChecklistItem
 #              `subParts.join(" · ")`)
-#   wizard     `Confirm New Players & Teams`, `N still looking up — wait or
-#              skip`, `Skip <name> — not a person|not a team`, `Skip <name> —
-#              this team has no league`, `New Team: <name>` / `New League:
-#              <name>` (h3), `Skip remaining names (N)`, `Confirm & Save`
+#   wizard     `Tidy up this set` (the title, NEO-335 WIZARD_TITLE), `N still
+#              looking up — wait or skip`, `Skip <name> — not a person|not a
+#              team`, `Skip <name> — this team has no league`, `New Team:
+#              <name>` / `New League: <name>` (h3), `Skip remaining names
+#              (N)`, `Next (Enter)`, `Ready to save`, `Confirm & Save`
 #   teams      `Filter teams`, `N of M teams` (TeamManagement.tsx; a
 #              case-insensitive SUBSTRING match on the full name and aliases)
 #
@@ -412,12 +413,13 @@ tags:
 # The wizard MUST open: every player on this set is unknown on a fresh
 # preview (header note). Required rather than either/or with "Saved N cards",
 # because a fetch that committed straight through would leave (a) unexercised
-# (R2). 60000: it opens behind the live lookups the batch queues (R5, the
-# Bowman inserts flow's STEP 7 ceiling).
+# (R2). Gated on its title, "Tidy up this set" since NEO-335 (WizardChrome
+# `WIZARD_TITLE`). 60000: it opens behind the live lookups the batch queues
+# (R5, the Bowman inserts flow's STEP 7 ceiling).
 # ============================================================
 
 - extendedWaitUntil:
-    visible: "Confirm New Players & Teams"
+    visible: "Tidy up this set"
     timeout: 60000
 
 # WAIT OUT THE LOOKUPS FIRST. Team rows go through the same Wikidata pool as
@@ -523,6 +525,16 @@ tags:
 # with the players rather than checked. That is why the press is retried
 # once: a late staged row leaves one row undecided after the first press.
 # Skip remaining is an NB write: 7000 (R5).
+#
+# NEO-335: deciding the last name no longer lands on Save. The wizard walks
+# up to two more screens first, "Cards with no team" (a skipped team spelling
+# leaves its card teamless) and "Card titles", each with "Next (Enter)" and no
+# Confirm & Save. So the press's terminal state is EITHER footer, and
+# `util-wizard-advance-to-save` presses Next on whatever comes up, leaving
+# every line on its default ("Leave for later" or a pre-filled team, every
+# title kept), until "Ready to save". PDA-WW is not on the teams step: both
+# its clubs resolve, so it never saves teamless. Teams and titles are not this
+# flow's claim; (b) below reads what the save stored.
 - retry:
     maxRetries: 1
     commands:
@@ -530,8 +542,9 @@ tags:
           text: ".*Skip remaining names \\([0-9]+\\).*"
       - extendedWaitUntil:
           visible:
-            text: ".*Confirm & Save.*"
+            text: "Next \\(Enter\\)|.*Confirm & Save.*"
           timeout: 7000
+- runFlow: util-wizard-advance-to-save.yaml
 - tapOn:
     text: ".*Confirm & Save.*"
 

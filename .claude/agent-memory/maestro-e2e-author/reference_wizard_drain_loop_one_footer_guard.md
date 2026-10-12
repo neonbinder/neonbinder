@@ -74,3 +74,15 @@ Any loop that answers steps needs to know a `New League:` step exists:
 * `setup.yaml` has THREE drain sites; the two behind the smaller sets are
   normally skipped entirely (the Base sync creates the whole roster first), so a
   defect there stays invisible until it doesn't.
+
+## The same cost hits a `repeat while:` at its EXIT (2026-10-12)
+
+`while: notVisible: X` is evaluated like a `when:` — so the pass where X HAS
+appeared (the loop's exit) waits the ~7s optional timeout for X to go away
+before reporting false. Measured on `util-wizard-advance-to-save`: one Next
+press, then the repeat's final check took 7.00s (Next tap COMPLETED → Repeat
+COMPLETED) with `Confirm & Save` on screen the whole time; the entry check,
+with X absent, cost ~1s. Every caller of a `while: notVisible`-exit loop pays
+that 7s once. Where it matters, read the state once (`copyTextFrom` the
+footer, as in [[branch-on-copied-button-text]]) and loop on a `true:` script
+condition, which costs nothing to evaluate.
