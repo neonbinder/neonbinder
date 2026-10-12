@@ -992,6 +992,14 @@ export default function EntityReviewWizard({
    * guard on the footer primary. See `CREATE_NEW_DOUBLE_CLICK_MS`.
    */
   const createNewPressedAtRef = useRef<Record<string, number>>({});
+  /**
+   * NEO-332 — the row whose EXPLICIT pin "Back to the list" made, if any (see
+   * `leaveCreateNew`). Pressing Create new again hands that pin back to the
+   * walk, so the New Player step behaves exactly as it did the first time:
+   * its own staged New Team steps still come before it (NEO-236). A pin the
+   * operator made some other way (Back, Change decision) is left alone.
+   */
+  const backPinnedRowRef = useRef<string | null>(null);
 
   /** Rows already decided "link" — their TARGET's canonical name is what the
    *  batch will actually use, so both the staging list and the decided list
@@ -1377,6 +1385,11 @@ export default function EntityReviewWizard({
 
   useEffect(() => {
     navRef.current = nav;
+    // NEO-332 — "Back to the list"'s pin is forgotten once the walk or the
+    // operator moves anywhere else (see `backPinnedRowRef`).
+    if (!nav.explicit || nav.rowId !== backPinnedRowRef.current) {
+      backPinnedRowRef.current = null;
+    }
   }, [nav]);
 
   /**
@@ -1886,6 +1899,7 @@ export default function EntityReviewWizard({
       // NEO-332 — the row is answered (or its answer cleared), so the next
       // time it is live it opens on its pick step again.
       clearCreateNew(rowId);
+      if (backPinnedRowRef.current === rowId) backPinnedRowRef.current = null;
       setHistory((prev) => {
         const without = prev.filter((id) => id !== rowId);
         return historyMode === "push" ? [...without, rowId] : without;
@@ -2051,6 +2065,18 @@ export default function EntityReviewWizard({
       console.warn("Failed to request the player lookup:", error);
     });
     createNewPressedAtRef.current[rowId] = pressedAt;
+    // NEO-332 — the pin "Back to the list" made goes back to the walk; the
+    // flag set below holds the row against a settled team exactly as before.
+    if (
+      backPinnedRowRef.current === rowId &&
+      navRef.current.rowId === rowId &&
+      navRef.current.explicit
+    ) {
+      const next: NavState = { rowId, explicit: false };
+      navRef.current = next;
+      setNav(next);
+    }
+    backPinnedRowRef.current = null;
     // a11y S4 — the focus move is armed only when the flag is really added.
     // A repeat press would otherwise leave "heading" waiting in the ref for
     // the NEXT unrelated `createNewByRow` change to act on.
@@ -2073,6 +2099,20 @@ export default function EntityReviewWizard({
    */
   const leaveCreateNew = (rowId: Id<"entityReviewQueue">) => {
     if (createNewByRow[rowId] === undefined) return;
+    /*
+     * Pinned EXPLICITLY, like every other Back. Dropping the flag also drops
+     * `pinnedRowHasEdits`, and a team or league that settled while the New
+     * Player step was open would otherwise take the walk the moment the
+     * operator came back (CI run 38283279709: a staged league did) — landing
+     * them on a step they never asked for, with the focus move below aimed at
+     * THAT step's primary. Answering the pick step (`decide`) resumes the walk.
+     */
+    if (navRef.current.rowId === rowId && !navRef.current.explicit) {
+      const next: NavState = { rowId, explicit: true };
+      navRef.current = next;
+      backPinnedRowRef.current = rowId;
+      setNav(next);
+    }
     pendingStepFocusRef.current = "primary";
     clearCreateNew(rowId);
     const count = sameNameScanCapped

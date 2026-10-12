@@ -8121,6 +8121,83 @@ describe("NEO-332: the pick step and the New Player step it opens", () => {
     );
   });
 
+  // CI run 38283279709: a team settled (and staged its league) while the
+  // operator was on the New Player step. "Create new" held the walk still;
+  // "Back to the list" dropped that flag and the walk yielded the player to
+  // the league, so the operator landed on a step they never asked for — with
+  // focus sent to ITS primary ("Add as New League"). Back is the operator's
+  // own navigation and pins the row explicitly, like every other Back.
+  it("Back to the list stays on the pick step when a team settled meanwhile", async () => {
+    const rowA = ambiguousRow();
+    const team = makeRow({ kind: "team", name: "JR East Baseball Team", status: "pending" });
+    currentRows = [rowA, team];
+    const { rerender } = renderWizard();
+    expect(pickHeading()).toBeTruthy();
+    clickCreateNew();
+
+    currentRows = [rowA, { ...team, status: "ready" }];
+    rerenderWizard(rerender);
+    // Create new is work on the row: the settled team waits.
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Back to the list" }));
+    rerenderWizard(rerender);
+
+    expect(pickHeading()).toBeTruthy();
+    expect(
+      screen.queryByRole("heading", { name: "New Team: JR East Baseball Team" }),
+    ).toBeNull();
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Create new" }),
+      ),
+    );
+    expect(screen.getByText("Back at the list. 2 on file.")).toBeTruthy();
+
+    // Answering the pick step hands the walk back: the team comes next.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Link to Bob Allen, b. 1937 · Padres 1961–present" }),
+    );
+    await waitFor(() =>
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "link", linkedPlayerId: "player-young" }),
+      ),
+    );
+    currentRows = [
+      { ...rowA, decision: { action: "link", linkedPlayerId: "player-young" } },
+      { ...team, status: "ready" },
+    ];
+    rerenderWizard(rerender);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("heading", { name: "New Team: JR East Baseball Team" }),
+      ).toBeTruthy(),
+    );
+  });
+
+  // The pin Back made is handed back by a second Create new, so the New Player
+  // step behaves as it did the first time: the player's own staged New Team
+  // steps still come before it (NEO-236).
+  it("Create new again after Back still yields to the player's own staged teams", () => {
+    const rowA = ambiguousRow();
+    currentRows = [rowA];
+    const { rerender } = renderWizard();
+    clickCreateNew();
+    fireEvent.click(screen.getByRole("button", { name: "Back to the list" }));
+    rerenderWizard(rerender);
+    expect(pickHeading()).toBeTruthy();
+
+    clickCreateNew();
+    expect(screen.getByRole("button", { name: "Add as New Player" })).toBeTruthy();
+    // The lookup Create new asked for lands and stages one of his clubs.
+    currentRows = [makeCareerTeamRow(rowA._id, "Sydney Blue Sox"), rowA];
+    rerenderWizard(rerender);
+
+    expect(
+      screen.getByRole("heading", { name: "New Team: Sydney Blue Sox" }),
+    ).toBeTruthy();
+  });
+
   it("Escape on the New Player step goes back to the pick step without a discard confirm", () => {
     // A decided row makes a plain Escape ask "Discard 1 decision?", so the
     // absence of that dialog is the one-level-at-a-time rule, not an empty batch.
