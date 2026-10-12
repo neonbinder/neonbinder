@@ -1,10 +1,10 @@
 appId: com.neonbinder.web
 url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
-name: "Entity review — Back to matching leaves the wizard without discarding, and re-confirming comes back to the same review with the decision still on it"
+name: "Entity review — Back to Match Cards leaves the wizard without discarding, and re-confirming comes back to the same review with the decision still on it"
 tags:
   - set-selector
 ---
-# R1 — ONE FEATURE (NEO-221, D9): "Back to matching". Before it, the only way
+# R1 — ONE FEATURE (NEO-221, D9): "Back to Match Cards". Before it, the only way
 # out of the entity-review wizard was Cancel, which threw the whole review
 # away. Back PARKS the review instead: the operator returns to the card-pairing
 # dialog, and confirming it again lands on the SAME batch with every decision
@@ -30,7 +30,7 @@ tags:
 #         util-wizard-walk-to-player-row), and those are answered as SKIPS, so
 #         "Added as new" can only be this flow's decision while "Decided (N)"
 #         is the whole batch's;
-#     (c) "Back to matching" closes the wizard AND the parked pairing dialog is
+#     (c) "Back to Match Cards" closes the wizard AND the parked pairing dialog is
 #         what replaced it, asserted POSITIVELY by its Confirm control (a bare
 #         notVisible would also pass on a dead error-boundary page);
 #     (d) re-confirming reopens the wizard on the SAME batch, with that same
@@ -79,7 +79,7 @@ tags:
 
 # NEO-287 — the parked pairing session exists only when TWO marketplaces were
 # fetched. LIVE: STEPS 1-5, verbatim. PAUSED (`-e PAUSED_PLATFORMS`, decided
-# by util-paused-platforms): "Back to matching" is NOT offered — see the
+# by util-paused-platforms): "Back to Match Cards" is NOT offered — see the
 # util's return contract — and the wizard is left without a decision.
 - runFlow:
     file: ../util/util-paused-platforms.yaml
@@ -127,11 +127,11 @@ tags:
 
       # ============================================================
       # STEP 3 — R2(c): THE FEATURE — leave review WITHOUT discarding it
-      # "Back to matching" drops the preview and re-opens the parked pairing
+      # "Back to Match Cards" drops the preview and re-opens the parked pairing
       # session. It deliberately does NOT cancel the batch.
       # ============================================================
 
-      - tapOn: "Back to matching"
+      - tapOn: "Back to Match Cards"
       - extendedWaitUntil:
           notVisible: "Tidy up this set"
       - assertVisible:
@@ -149,6 +149,15 @@ tags:
       # batch would reopen at "Step 1 of N" with no Decided list at all.
       # ============================================================
 
+      # Confirm's settled text before the re-confirm (NEO-195 sync point,
+      # enforced by scripts/maestro-pairing-sync.test.mjs now that this flow
+      # names "Back to Match Cards"). The session is PARKED, not re-fetched —
+      # the util already waited this text out before the first confirm — so it
+      # is on screen at once: an in-app 7000, not the 120000 a live fetch gets.
+      - extendedWaitUntil:
+          visible:
+            text: "^Confirm$"
+          timeout: 7000
       - tapOn:
           id: "Confirm card matches"
       - extendedWaitUntil:
@@ -210,7 +219,7 @@ tags:
           text: "Step 1 of [0-9]+"
       - assertVisible:
           text: "Cancel (Esc)"
-      - assertNotVisible: "Back to matching"
+      - assertNotVisible: "Back to Match Cards"
       - tapOn:
           text: "Cancel (Esc)"
           retryTapIfNoChange: true

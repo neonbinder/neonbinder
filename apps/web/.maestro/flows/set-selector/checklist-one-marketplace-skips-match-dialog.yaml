@@ -9,7 +9,7 @@ tags:
 # set, "Sync card checklist" no longer opens the Match Cards dialog. There is
 # nothing to line up, so every fetched card is kept as a single-marketplace
 # card and the operator lands straight on the entity review with NO
-# "Back to matching".
+# "Back to Match Cards".
 #
 # WHAT THIS FLOW PROVES, end to end, on live marketplace data:
 #   1. PRECONDITION: BSC really answers for this set — the base picker offers a
@@ -19,7 +19,7 @@ tags:
 #   2. The "Match Cards" dialog NEVER appears — asserted at the two moments it
 #      would still have to be up if it were coming (the result surface, and
 #      again at the entity review), not once at a random instant.
-#   3. The entity review opens with NO "Back to matching": there was no pairing
+#   3. The entity review opens with NO "Back to Match Cards": there was no pairing
 #      session to go back to.
 #   4. Every card the fetch produced is SAVED. The count is read ONCE, off the
 #      run's own "Kept all N cards from <marketplace>" sentence, and then has
@@ -172,16 +172,19 @@ tags:
 #       (STEP 6c);
 #     • every card that would save with NO team is asked about on its OWN
 #       step after the names ("Pick a team for each card, or leave it for
-#       later.", one line per card or per player), left with "Next (Enter)";
+#       later.", one line per player, and ONE shared line "Cards with no
+#       players (N)" for every card nobody is on, whose cards open one by one
+#       for answers of their own), left with "Next (Enter)";
 #     • a line whose evidence gives exactly one team is PRE-FILLED with it —
 #       here a player created in this review with ONE career team covering the
 #       set's window [setYear-1, setYear] (STEP 6), whose card's line comes up
 #       with that team checked (STEP 6b), and whose card carries it after the
 #       save (STEP 9, read in the card drawer);
-#     • "Other team…" on any line finds or CREATES a team the evidence never
-#       offered: here a brand-new team typed into the line's picker, created
-#       in the New Team dialog it opens, selected on that line (STEP 6b), and
-#       read back on that card's drawer after the save (STEP 9);
+#     • "Other team…" on any answer row finds or CREATES a team the evidence
+#       never offered: here a brand-new team typed into its search field,
+#       created in the New Team dialog it opens, selected on ONE card of the
+#       shared line through "Just this card…" (STEP 6b), and read back on
+#       that card's drawer after the save (STEP 9);
 #     • "No team on this card" and "Leave for later" are answers that ride the
 #       commit (STEP 6b), and the checklist's "N need you" count is FINAL the
 #       moment "Saved N cards." shows (STEP 7) — a card whose fetch-time BSC
@@ -581,11 +584,11 @@ tags:
 # ── STILL NO DIALOG, at the terminal surface ────────────────────────────────
 - assertNotVisible: "Match Cards.*"
 
-# ── NO "Back to matching" ───────────────────────────────────────────────────
+# ── NO "Back to Match Cards" ──────────────────────────────────────────────
 # The wizard offers it only when there is a parked pairing session to go back
 # TO. There was never one, so the footer must not offer it. This is the clause
 # that would break if the client entered the review phase "just in case".
-- assertNotVisible: "Back to matching"
+- assertNotVisible: "Back to Match Cards"
 
 # ============================================================
 # STEP 6 — CREATE ONE PLAYER WITH ONE CAREER TEAM, THEN SKIP EVERY OTHER NAME
@@ -710,26 +713,34 @@ tags:
 # subtitle "Cards with no team", the intro "Pick a team for each card, or
 # leave it for later.", and the footer's "Next (Enter)" (class
 # `btn-next-step`) in place of Confirm & Save, which lives on the Save step
-# alone. No count anywhere on the step: the header's "Step x of y" is the only
-# number (the old "K cards have no team yet" heading is gone).
+# alone. The header's "Step x of y" is the step's only running number.
 #
 # Each line is a radio group "Team for <owner>" whose radios are named
 # "<choice> — <owner>" (`lineOwner`, TeamsOnCardsSection.tsx), followed by an
-# "Other team… — <owner>" button. A skipped name is nobody, so each of the
-# skipped players' cards is its own line, owned `#<number> <card name>`,
-# offering just "No team on this card" and "Leave for later" with the second
-# checked. The card of the player STEP 6 created is a PLAYER line, owned by
-# that player's printed name, offering the career team `RXT<token>` as well —
-# CHECKED. Every card number here is `NNO` and the card names are the
-# marketplace's (STEP 8's block), so the `#`-owned lines are told apart by
-# POSITION: `index:` sorts by y then x, and line 1 is the top-most. The player
-# line is never one of them (its owner does not start with `#`).
+# "Other team… — <owner>" button. Two lines here:
+#   • the card of the player STEP 6 created — a PLAYER line, owned by that
+#     player's printed name, offering the career team `RXT<token>` CHECKED;
+#   • every other card. A skipped name is nobody, so those cards have NO
+#     players, and every teamless card with no players shares ONE line, owned
+#     "Cards with no players (N)" — keyed on having no players, never on a
+#     card's name or number. It offers "No team on this card" and "Leave for
+#     later", defaults to the second, and is never pre-filled (no player, no
+#     evidence). Its card numbers and count ("#NNO, #NNO, #NNO +21 · 24 cards
+#     ▸") are a button that opens the cards one by one, each with
+#     "Just this card… — #<n> <name>", which gives that card its own answers
+#     (a "Match the others" button takes it back).
+#
+# Every card number here is `NNO` and the card names are the marketplace's
+# (STEP 8's block), so the cards inside the shared line are told apart by
+# POSITION: `index:` sorts by y then x, and card 1 is the top-most.
 #
 # ⚠️ BODY CONTENT, which the README's dialog rule ("header and footer only")
 # warns about: the section lives in the wizard's inner-scrolling body. Only
-# the FIRST two `#` lines are touched, and the guards below fail by name if
-# they are not clear of the pinned footer (README; guard-a-tap-at-a-footer).
-# Nothing here scrolls the body until the pre-fill read at the end.
+# the shared line and its FIRST two cards are touched, and each tap's target
+# is first asserted above the pinned footer's "Next (Enter)", so it cannot
+# land on a footer button through a clipped row (README;
+# guard-a-tap-at-a-footer). Nothing here scrolls the body until the pre-fill
+# read at the end.
 #
 # "checked" is unreadable as an attribute on maestro-web, so it is read off
 # the radio's own ✓ glyph — rendered INSIDE the checked radio only (1.4.1:
@@ -739,65 +750,109 @@ tags:
 # THE STEP, by its own header and intro. The subtitle is pinned header text;
 # the intro is the first line of the body, at its top on arrival.
 - assertVisible: "Cards with no team"
-# …and the step OPENS AT ITS TOP: the intro sits under the header, not
-# scrolled up behind it. The wizard's body is one scroll box for every step,
-# so a step that inherited the previous step's scroll would put line 1 above
-# the body's visible top — where Maestro still "sees" it (an inner scroller's
-# clip is invisible to it) and a tap lands on the header. `below:` compares
-# top edges, so the intro reads below the subtitle only while the body is at
-# (or within ~60px of) its top. A red here is the product keeping a stale
-# scroll position across steps, not a flow to work around.
+# …and the step OPENS AT ITS TOP (the wizard resets its body's scroll on
+# every step change): the intro sits under the header, not scrolled up behind
+# it. A step that inherited the previous step's scroll would put the lines
+# above the body's visible top — where Maestro still "sees" them (an inner
+# scroller's clip is invisible to it) and a tap lands on the header. `below:`
+# compares top edges, so the intro reads below the subtitle only while the
+# body is at (or within ~60px of) its top.
 - assertVisible:
     text: "Pick a team for each card, or leave it for later\\."
     below:
       text: "Cards with no team"
-# "LEAVE FOR LATER" IS THE DEFAULT where nothing is known — line 1 says so
-# before anything is touched.
+
+# ── THE SHARED NO-PLAYERS LINE ──────────────────────────────────────────────
+# Every card but the created player's has no players (all 24 names were
+# skipped; one Roanoke card per player, SET-REGISTRY measurement 5), so ALL of
+# them are ONE line — an exact count, in the line's own accessible names.
+- evalScript: '${output.NO_PLAYERS = String(Number(output.FETCHED) - 1)}'
+# "LEAVE FOR LATER" IS ITS DEFAULT — nothing is known about a card nobody is
+# on, so nothing is pre-filled.
 - assertVisible:
     text: "✓"
     childOf:
-      id: "Leave for later — #.*"
-      index: 0
+      id: "Leave for later — Cards with no players \\(${output.NO_PLAYERS}\\)"
 
-# GUARD (README dialog rule): line 2's radio group is ABOVE the footer's
-# "Next (Enter)", so line 1 is wholly inside the visible body and the tap
-# below cannot land on a footer button through a clipped row.
+# Open its cards. The button's words are the line's card numbers and its card
+# count ("… · 24 cards"); no accessible name of its own, so by text.
 - assertVisible:
-    id: "Team for #.*"
+    text: "#.* · ${output.NO_PLAYERS} cards"
+    above:
+      text: "Next \\(Enter\\)"
+- tapOn:
+    text: "#.* · ${output.NO_PLAYERS} cards"
+# Client-side disclosure: 7000. `.` matches the label's U+2026 ellipsis.
+- extendedWaitUntil:
+    visible:
+      id: "Just this card. — #.*"
+    timeout: 7000
+
+# ── CARD 1: "NO TEAM ON THIS CARD" ──────────────────────────────────────────
+# GUARD, then "Just this card…" gives card 1 its own answers, starting from
+# the line's ("Leave for later"); its button turns into "Match the others".
+- assertVisible:
+    id: "Just this card. — #.*"
     index: 1
     above:
       text: "Next \\(Enter\\)"
-
-# ANSWER LINE 1: "No team on this card". Recorded on the card at commit as the
+- tapOn:
+    id: "Just this card. — #.*"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "Match the others — #.*"
+    timeout: 7000
+# Card 1's own row is the only per-card row open, so its "No team on this
+# card — #…" is the only one on screen (the line's own is owned "Cards with no
+# players (…)" and cannot match `— #`). Recorded on the card at commit as the
 # operator's answer (`teamNone`), so it is not flagged after the save.
+- assertVisible:
+    id: "No team on this card — #.*"
+    above:
+      text: "Next \\(Enter\\)"
 - tapOn:
     id: "No team on this card — #.*"
-    index: 0
 - extendedWaitUntil:
     visible:
       text: "✓"
       childOf:
         id: "No team on this card — #.*"
-        index: 0
     timeout: 7000
-# …and line 2, untouched, is still left for later — the answer is per line.
+# …and the LINE, untouched, is still left for later — a card's own answer is
+# per card, not the line's.
 - assertVisible:
     text: "✓"
     childOf:
-      id: "Leave for later — #.*"
-      index: 1
+      id: "Leave for later — Cards with no players \\(${output.NO_PLAYERS}\\)"
 
-# ── ANSWER LINE 2: "OTHER TEAM…" CREATES A TEAM NOBODY OFFERED (C1) ──────────
-# Every line carries "Other team…", which opens the one-field TeamPicker under
-# the line, already open and ready to type (`OtherTeamPicker` clicks its own
-# trigger). A name nothing matches opens the New Team dialog; the team is
-# created THERE, at once, and joins the line selected. The fixture comes from
-# the UI (a single-token name minted per attempt), and its chip is read back
-# on the card after the save (STEP 9).
+# ── CARD 2: "OTHER TEAM…" CREATES A TEAM NOBODY OFFERED (C1) ────────────────
+# Card 1's button now reads "Match the others", so the top-most
+# "Just this card…" is card 2's.
+- assertVisible:
+    id: "Just this card. — #.*"
+    index: 0
+    above:
+      text: "Next \\(Enter\\)"
+- tapOn:
+    id: "Just this card. — #.*"
+    index: 0
+- extendedWaitUntil:
+    visible:
+      id: "Match the others — #.*"
+      index: 1
+    timeout: 7000
+# Every answer row carries "Other team…". It opens ONE focused search field
+# under the row (placeholder "Search or add a team…", accessible name
+# "Team name to find"); its last option is always `+ New team "<typed>"…`,
+# and a name nothing matches opens the New Team dialog, where the team is
+# created at once and joins the row selected. The fixture comes from the UI (a
+# single-token name minted per attempt), and its chip is read back on the
+# card after the save (STEP 9).
 #
-# GUARD, as above: the button sits in line 2's own row, which the guard just
-# held above the footer — asserted on the button itself, because it is the
-# coordinate the tap reads. `.` matches the label's U+2026 ellipsis.
+# Two per-card rows are open now, card 1's above card 2's, so card 2's
+# "Other team… — #…" is index 1 (the line's own is owned "Cards with no
+# players (…)", the player line's by his name; neither matches `— #`).
 - assertVisible:
     id: "Other team. — #.*"
     index: 1
@@ -806,10 +861,8 @@ tags:
 - tapOn:
     id: "Other team. — #.*"
     index: 1
-# The picker's search box is its own accessible name (OTHER_TEAM_PICKER_LABELS
-# — worded apart from every other team picker on purpose). Its popover is
-# portalled and `fixed` against its trigger (NEO-272), so the wizard body's
-# scroll box cannot clip it. Client-side mount: 7000.
+# Client-side mount: 7000. The field takes focus on arrival; the tap below is
+# belt-and-braces so the typing cannot land anywhere else.
 - extendedWaitUntil:
     visible:
       id: "Team name to find"
@@ -818,16 +871,17 @@ tags:
     id: "Team name to find"
 - inputText: "RXO${output.ATTEMPT_TOKEN}T"
 # NOTHING MATCHES THAT NAME — the precondition for creating it, and the proof
-# that Enter below can only mean "open the New Team dialog" (TeamPicker's Enter
-# takes the highlighted MATCH when there is one). `teams.search` answers after
-# a debounce: in-app, 7000.
+# that Enter below can only mean "create": the field shows "No matches." only
+# once the search has answered for exactly what was typed and returned
+# nothing, leaving `+ New team "<typed>"…` the one option. In-app search
+# behind a debounce: 7000.
 - extendedWaitUntil:
     visible: "No matches."
     timeout: 7000
-# Enter on the search input runs the SAME code as the `+ New team "<typed>"…`
-# row and reads no coordinates (the walker flow's reasoning, written once
-# there). The input carries the Input primitive's per-field marker class, so
-# maestro-web's XPath re-find lands on it and no other node (README, pressKey).
+# Enter picks the field's highlighted option — the create row — and reads no
+# coordinates. The field sits under a uniquely-id'd host, so maestro-web's
+# XPath re-find of the focused element lands on it and no other node
+# (README, pressKey).
 - pressKey: Enter
 # THE DIALOG, labelled and seeded (`checklist-attention-walker-missing-team`
 # has why both): portalled to `document.body` at z-[60], so nothing clips it.
@@ -842,10 +896,10 @@ tags:
 # a class string — README, pressKey).
 - tapOn:
     id: "Create team RXO${output.ATTEMPT_TOKEN}T"
-# The created team joins line 2 SELECTED. The chip reads "Loading…" until the
-# team's row arrives, so this waits on the chip's real name being the checked
-# radio — a create that wrote nothing, or a pick that missed the line, leaves
-# no such radio. Our own write and a query: 7000.
+# The created team joins card 2's row SELECTED. The chip reads "Loading…"
+# until the team's row arrives, so this waits on the chip's real name being
+# the checked radio — a create that wrote nothing, or a pick that missed the
+# row, leaves no such radio. Our own write and a query: 7000.
 - extendedWaitUntil:
     visible:
       text: "✓"
@@ -855,13 +909,14 @@ tags:
 
 # THE PRE-FILL. The created player's line offers his one in-window career team
 # and has it CHECKED by default — nobody touched it. Read last, because
-# reaching it may scroll the wizard's body: the lines are in preview order and
-# that card can sit anywhere among the 25. The body is an inner scroller the
-# window never moves, so the reach is TOUCH swipes (half a swipe, ~157px each)
-# that start in the body's own left padding (the max-w-2xl dialog spans
-# x≈168-840, so x=18% is its p-6 gutter, clear of every radio) and stop the
-# moment the chip is in the hierarchy. Usually that is at once: ~8 lines lie
-# above the viewport's bottom edge before any swipe.
+# reaching it may scroll the wizard's body: lines are in preview order, so his
+# line is either above the shared no-players line or below it — and below it
+# means below that line's opened list of 24 cards. The body is an inner
+# scroller the window never moves, so the reach is TOUCH swipes (half a swipe,
+# ~157px each) that start in the body's own left padding (the max-w-2xl dialog
+# spans x≈168-840, so x=18% is its p-6 gutter, clear of every radio) and stop
+# the moment the chip is in the hierarchy; 8 cover ~1,250px, more than the
+# opened list.
 - repeat:
     times: 8
     while:
@@ -882,9 +937,9 @@ tags:
 # flagged; the one answered "no team" is not, nor the pre-filled one, nor the
 # one given RXO — K - 3, in the pill's own words ("1 needs you" singular, "N
 # need you" otherwise). Exactly 3 because one Roanoke card per player (25
-# cards, 25 unknown player names, SET-REGISTRY measurement 5), so each answered
-# line is one card. LEFT is the bare number the re-sync in STEP 10 leaves for
-# later again.
+# cards, 25 unknown player names, SET-REGISTRY measurement 5), so each answer
+# above covers one card. LEFT is the bare number the re-sync in STEP 10 finds
+# on its no-players line.
 - evalScript: '${output.LEFT = String(Number(output.FETCHED) - 3)}'
 - evalScript: '${output.NEED_YOU = output.LEFT === "1" ? "1 needs you" : output.LEFT + " need you"}'
 
@@ -1211,7 +1266,8 @@ tags:
 # STEP 9 — BOTH TEAMS ANSWERED IN THE WIZARD ARE ON THEIR CARDS (NEO-335)
 #
 # The pre-filled `RXT<token>` on the created player's card, and the
-# `RXO<token>T` created with "Other team…" on line 2's card.
+# `RXO<token>T` created with "Other team…" on the second card of the shared
+# no-players line.
 #
 # The drawer STEP 8 opened is the way to those cards. Every committed card is
 # `NNO` and its name is the marketplace's, so no selector can pick the row
@@ -1301,9 +1357,9 @@ tags:
 # rows that carry a team (the pre-filled one, the RXO one) or an operator's
 # "no team" (the one STEP 6b answered) are settled (`settledTeamIndexes`),
 # and NB272 carries no marketplace id, so it is not in the fetch at all. The
-# step prints no count (Phase 2), so how MANY lines it holds is not asserted
-# here; the settled pre-filled card's absence is (below), and STEP 7 already
-# pinned the left-for-later count on the pill.
+# LEFT cards are all playerless (their names were skipped for this set), so
+# they are ONE line, "Cards with no players (LEFT)" — an exact count of what
+# the step asks about, in the line's own accessible names.
 # ============================================================
 
 # The Refresh button heads the checklist, ABOVE the rows the drawer walk
@@ -1343,13 +1399,14 @@ tags:
     text: ".*Skip remaining names.*"
 - assertNotVisible:
     text: ".*Add remaining players as new.*"
-# The lines are the left-for-later cards, each back on "Leave for later" (the
-# same default; nothing about them is known now that was not known then)…
+# The LEFT cards, exactly, on one shared line, back on "Leave for later" (the
+# same default; nothing about them is known now that was not known then).
+# Full match on the count, so a step that re-asked the "no team" or RXO card
+# reads LEFT+1 or LEFT+2 and fails here…
 - assertVisible:
     text: "✓"
     childOf:
-      id: "Leave for later — #.*"
-      index: 0
+      id: "Leave for later — Cards with no players \\(${output.LEFT}\\)"
 # …and the settled pre-filled card is NOT asked again: its line would be the
 # created player's, offering (and pre-filling) `RXT<token>` from his stored
 # card and career. Paired with the positive above.

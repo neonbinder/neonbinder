@@ -21,7 +21,7 @@ Surfaces to key on (verified in the NEO-255 branch, `CardChecklist.tsx`):
 | inline progress, sentence | `Fetching from <BSC\|SportLots>… <ready> of <total> cards ready.` — the `n of n` half exists only between batch publish and enrichment catch-up, so its window can be short on a small set |
 | the result, and the FETCH COUNT | `Kept all <n> cards from <marketplace>. Nothing to match, no other marketplace attached.` — appears only once the action RESOLVED, so it is the solo path's equivalent of waiting on `^Confirm$` |
 | stream never arrived | `The fetched cards did not arrive — nothing was saved. Run the sync again.` (30s cap; commits nothing) |
-| wizard | opens as normal, but **no "Back to matching"** — `onBack` is gated on `streamedPairing`, which is null when the review phase was never entered |
+| wizard | opens as normal, but **no "Back to Match Cards"** — `onBack` is gated on `streamedPairing`, which is null when the review phase was never entered |
 | the kept card's badge | `BSC only` (token `unmatched-sl`) / `SL only` (token `unmatched-bsc`) — the mapping in `CardChecklistItem.badgeLabel` reads inverted at a glance |
 
 **`scripts/maestro-pairing-sync.test.mjs` trips on the LITERAL string

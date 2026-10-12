@@ -554,7 +554,7 @@ before touching any of these four.
 
 | flow | what it owns |
 |---|---|
-| `checklist-wizard-back-to-matching-resumes-decisions` | "Back to matching" parks the review; re-confirming resumes the SAME batch with its decisions |
+| `checklist-wizard-back-to-matching-resumes-decisions` | "Back to Match Cards" parks the review; re-confirming resumes the SAME batch with its decisions |
 | `checklist-wizard-skip-not-a-person` | the per-row skip, and "Skip Remaining" deciding every row that is left, lookups included |
 | `checklist-wizard-link-to-existing-player` | "Link to Existing" resolves onto a roster player instead of minting a duplicate |
 | `checklist-wizard-career-team-entry` | the inline career-team mini-form on a player row, and the decision it feeds |
@@ -816,7 +816,7 @@ not change; none of them can express the =1 half.
 5. **The entity-review wizard.** Opens, on a **New Team** or player row, ~0.8s
    after the fetch resolves. 25 unknown names, all players. Footer offers
    `Add remaining players as new (25)` / `Skip remaining names (25)` /
-   `Cancel (Esc)` and — the point of the ticket — **no `Back to matching`**.
+   `Cancel (Esc)` and — the point of the ticket — **no `Back to Match Cards`**.
 6. **The count chain — all four agree.** Measured on the pilot set
    (`Dayton Bombers ECHL`, 32 cards): `Kept all 32 cards from BSC. Nothing to
    match, no other marketplace attached.` → `All reviewed — save 32 cards?` →
@@ -889,11 +889,13 @@ old attention count climbed to). The step prints no count; the header's
   `careerTeamVerdict`); the set year is 1995, the window `[1994, 1995]`, and
   the 1994–1996 stint covers it — the only one that can (Wikidata career teams
   met on the way are skipped, and a skipped team string is not a team). The
-  top card-only line is answered `No team on this card`; the second is given
-  a team CREATED through `Other team…` → the line's picker (`Team name to
-  find`) → `No matches.` → Enter → the New Team dialog → `Create team
-  RXO<token>T`, which joins the line selected; the rest stay on `Leave for
-  later`.
+  other 24 cards have no players (their names were skipped), so they share
+  ONE line, `Cards with no players (24)`, on `Leave for later`. Its card list
+  (`#NNO, #NNO, #NNO +21 · 24 cards`) opens; card 1 takes
+  `Just this card… — #…` → `No team on this card`; card 2 takes
+  `Just this card…` → `Other team…` → the search field (`Team name to find`)
+  → `No matches.` → Enter → the New Team dialog → `Create team RXO<token>T`,
+  which joins that card selected; the line itself stays on `Leave for later`.
 - **STEP 6c** leaves with `Next (Enter)` and asserts the Save step is
   `Step y of y` (y read on the teams step) and `Save 25 cards?`.
 - **STEP 7** asserts the pill reads `22 need you` within 7s of
@@ -907,7 +909,9 @@ old attention count climbed to). The step prints no count; the header's
   RXO cards store a team BSC does not list; skipped cards store no player
   link against an incoming name), and the flow presses `Skip changes`. With
   no names left the review opens TEAMS-ONLY — `Step 1 of 2`,
-  `Cards with no team`, no bulk links, the pre-filled card not asked again —
+  `Cards with no team`, no bulk links, ONE line `Cards with no players (22)`
+  on `Leave for later` (exactly the cards left for later), the pre-filled card
+  not asked again —
   then `Step 2 of 2`, `Save 25 cards?`, and Confirm & Save lands
   `Saved 25 cards.` again.
 
@@ -1434,7 +1438,7 @@ cleanly. Nothing about it is hand-made.
 | Base pairing | **310 matched**, 0 BSC-only, 1 SportLots-only (`#228 John Doe`), 1 name conflict |
 | unknown names | **88 — 87 players + 1 team** ("0 of 88 reviewed") |
 | first row presented | a PLAYER (`Taylor Ward`, Wikidata Q56169880), *"No career-team history found."* |
-| controls present | `Add as New Player`, `Link to Existing…`, `Skip — not a person`, the career-team mini-form, `Back to matching`, `Add All Remaining as New (88)`, `Skip Remaining (88)` |
+| controls present | `Add as New Player`, `Link to Existing…`, `Skip — not a person`, the career-team mini-form, `Back to Match Cards`, `Add All Remaining as New (88)`, `Skip Remaining (88)` |
 | cost | one live BSC + SportLots round-trip per flow (~40s fetch, ~30s to the wizard) |
 
 **Why this set and not a hand-made one.** Three designs are dead and must not be

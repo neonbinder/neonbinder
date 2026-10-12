@@ -37,17 +37,24 @@ copyTextFrom + `when: true:`; assert subtitle `Cards with no team|Card titles`.
 Radio group `id: "Team for <owner>"` (multi-player line: `Teams for <owner>`,
 checkbox chips); radios `<choice> — <owner>` for chips, `No team on this
 card`, `Leave for later`; owner = `A & B[, N cards]` or `#<number> <card
-name>` for a skipped-name card. CHECKED = `text: "✓"` + `childOf:` the radio.
-`Other team… — <owner>` (match the ellipsis with `.`) opens a TeamPicker with
-search `Team name to find`; `No matches.` + `pressKey: Enter` opens the New
-Team dialog; `Create team <name>` joins the line selected (chip reads
-`Loading…` first). Grouped line: `Different team… — #<n> <name>` /
-`Match the others — …` per card. Pre-fill = exactly ONE career team covering
+name>`. Every teamless card with NO players (skipped names included)
+shares ONE line owned `Cards with no players (N)` — never pre-filled; N is an
+exact count. CHECKED = `text: "✓"` + `childOf:` the radio. A grouped line's
+expander is a button whose text is `#5 · #407 · 2 cards` (past four numbers:
+`#a, #b, #c +K · N cards`); inside, `Just this card… — #<n> <name>` gives a
+card its own row (owner `#<n> <name>`), flipping to `Match the others — …`.
+`Other team… — <owner>` (match the ellipsis with `.`) opens ONE focused
+search field (aria `Team name to find`, placeholder `Search or add a team…`,
+last option `+ New team “X”…`); `No matches.` + `pressKey: Enter` opens the
+New Team dialog; `Create team <name>` joins the row selected (chip reads
+`Loading…` first). Pre-fill = exactly ONE career team covering
 `[setYear-1, setYear]`; a skipped team string never counts.
 
-**Body scroll is shared across steps** (one `overflow-y-auto` div, not keyed),
-so a step can open scrolled if the previous one was. Assert the intro
-`below:` the subtitle before tapping lines; red there is a product finding.
+**Each step opens scrolled to the top** (fixed in Phase 2 after the body kept
+the previous step's scroll). Keep asserting the intro `below:` the subtitle
+before tapping lines. Footer: `Back to Match Cards` (text link, was `Back to
+matching`) and an outlined `Back` (aria `Back to previous step`) sit in the
+right-hand group before Cancel.
 
 **Reaching identically-numbered cards:** open any drawer, walk `id: "Next
 card"` in `repeat while notVisible: id: "Remove team .*"`; read which chip via
