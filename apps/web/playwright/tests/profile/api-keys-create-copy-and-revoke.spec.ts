@@ -58,9 +58,18 @@ test(
     await expect(row.getByText(/Created.*Expires/)).toBeVisible();
 
     // Revoke: the dialog asks you to type "Revoke".
-    await row.getByRole("button", { name: "Open menu" }).click();
-    await page.getByRole("menuitem", { name: "Revoke key" }).click();
+    // Clerk's <APIKeys/> re-renders its list (and the open row menu) while the
+    // menu animates in, so a click can land on a detached item (CI run
+    // 38229048524). Open the menu and choose Revoke as one unit, retried until
+    // the confirm dialog shows, the way a user would just open it again.
     const revoke = page.getByRole("dialog").filter({ hasText: /Revoke.*secret key/ });
+    await expect(async () => {
+      if (!(await revoke.isVisible())) {
+        await row.getByRole("button", { name: "Open menu" }).click({ timeout: 2_000 });
+        await page.getByRole("menuitem", { name: "Revoke key" }).click({ timeout: 2_000 });
+      }
+      await expect(revoke).toBeVisible({ timeout: 1_000 });
+    }).toPass({ timeout: 7_000 });
     await expect(revoke.getByText(new RegExp(`Revoke.*${keyName}.*secret key`))).toBeVisible();
     await expectAccessible(page, { within: revoke, label: "Revoke API key dialog" });
     await revoke.getByRole("textbox").fill("Revoke");
