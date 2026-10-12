@@ -537,6 +537,31 @@ tags:
 # THE FILTER — the chip collapses the grid to the flagged rows, and back.
 # Its accessible name carries the on/off state, so the two taps target
 # different names — which is also what proves the toggle actually toggled.
+#
+# EVERY ROW ASSERT HERE SCROLLS FIRST, because where the chip lands is not
+# fixed. A centred UP scroll only promises the chip's centre ends up below
+# ~0.3 of the viewport (maestro's isElementNearScreenCenter is one-sided:
+# UP accepts centre > 187, DOWN accepts centre < 437, at most one ~313px
+# swipe), so the chip can come to rest anywhere from y≈175 to the fold. The
+# rows sit below it, each up to 80px tall (the card number wraps four lines
+# with a five-digit ATTEMPT_ID), so the second row can start past y=629,
+# where maestro-web's viewport-clipped hierarchy cannot see it.
+#
+# CI 38086104270 r7 (NEO-334) is that case: the page rested 40px higher after
+# the drill than in green run 38078580410 (every util-drill-to-custom flow's
+# `Add custom Inserts` at y=297, was 257), the chip centred from y=169 to
+# y=482, #701 filled 534-614 and #702 came back below the fold — the final
+# "Bravo is visible" failed on a row that was rendered. The same geometry
+# made the filter-ON negatives below vacuous: Bravo's slot was off screen
+# either way. So:
+#   - ON: a centred DOWN scroll to #701 (centre < 437 puts #701's top above
+#     ~397, so the two slots below it are on screen) BEFORE the negatives,
+#     which is what makes "Bravo/Charlie not visible" mean "filtered out"
+#     rather than "below the fold" (R2).
+#   - OFF: the chip is re-centred before its tap (R8 — the DOWN scroll can
+#     leave it under the sticky header), and Bravo's return is proven by a
+#     DOWN scroll to its row (R6 — the scroll is the assertion; R5 —
+#     the rows are below the chip in DOM order, so DOWN).
 # ════════════════════════════════════════════════════════════════════════════
 
 - scrollUntilVisible:
@@ -548,15 +573,30 @@ tags:
 - tapOn:
     id: "Show only cards needing attention"
 
+# R6 — this scroll is the "#701 is still listed" assertion.
+- scrollUntilVisible:
+    element:
+      text: "AttnAlpha${output.ATTEMPT_TOKEN}"
+    direction: DOWN
+    centerElement: true
+    timeout: 7000
 - extendedWaitUntil:
     notVisible: "AttnBravo${output.ATTEMPT_TOKEN}"
     timeout: 7000
-- assertVisible: "AttnAlpha${output.ATTEMPT_TOKEN}"
 # The born-linked card is filtered out too — it was never in the flagged set.
 - assertNotVisible: "AttnCharlie${output.ATTEMPT_TOKEN}"
 
+- scrollUntilVisible:
+    element:
+      id: "Show only cards needing attention \\(on\\)"
+    direction: UP
+    centerElement: true
+    timeout: 7000
 - tapOn:
     id: "Show only cards needing attention \\(on\\)"
-- extendedWaitUntil:
-    visible: "AttnBravo${output.ATTEMPT_TOKEN}"
+# Not followed by a tap, so not centred (R8 covers scrolls before a tap).
+- scrollUntilVisible:
+    element:
+      text: "AttnBravo${output.ATTEMPT_TOKEN}"
+    direction: DOWN
     timeout: 7000

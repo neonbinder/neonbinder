@@ -1,116 +1,80 @@
 /**
- * NEO-306 — one-shot backfill: give every existing `variantType` row the
- * `metadata.variantRole` NB flag its `variant`-tagged BSC slot says it has.
+ * NEO-334 — a variant type's title is its kind; this module retires the flags
+ * that used to say it.
  *
- * ## Why this exists
- *
- * Until NEO-306 `variantTypeRole` re-read the id in a variant type's
- * `variant`-tagged BSC slot at RUNTIME, every time a child was created or a
- * set-shape door asked what a type was — NB behaviour keyed on a marketplace
- * value (product invariant 4). The role is now an NB flag, conferred once by
- * the sync that writes the row (`conferredVariantRole` in both stores). Rows
- * written before that, and never re-synced since, carry no flag and read as
- * "no role" — so "Make parallel of…" refuses and a reconcile under them mints
- * children with no `isInsert`/`isParallel`. This task closes that window.
+ * Until NEO-334 a variant type's kind lived in two NB flags beside its title:
+ * `metadata.isBase` (NEO-239) and `metadata.variantRole` (NEO-306), and the
+ * rows beneath it carried `metadata.isInsert` / `metadata.isParallel`
+ * (NEO-291). Jason, 2026-10-10: the title IS the kind ("Base", "Insert(s)",
+ * "Parallel(s)"), read by `variantTypeKind` in `variantRole.ts`, and no flag
+ * mirrors it. The code stopped reading and writing all four in NEO-334; this
+ * module is the data half.
  *
  * ## Operator commands
  *
- *   # 0. first, on a deployment that has never had it, the NEO-239 tag
- *   #    backfill: this one reads only `variant`-TAGGED slots, so untagged
- *   #    legacy slots land in `noEvidence` until that has run.
- *   npx convex run backfillVariantFacetAndBaseRole:run '{}'
+ *   # 1. READ-ONLY: would reading the title change any row's kind?
+ *   npx convex run backfillVariantTypeRole:reportTitleKind '{}'
+ *   #    (resumes with '{"cursor":"<continueCursor>"}')
  *
- *   # 1. dry run — reports exactly what an armed run would do, writes nothing
- *   npx convex run backfillVariantTypeRole:run '{}'
+ *   # 2. READ-ONLY: sets with no Base / two Bases / two same-word types
+ *   npx convex run backfillVariantTypeRole:reportBaseAnomalies '{}'
  *
- *   # 2. arm the deployment, run for real, disarm
+ *   # 3. dry run of the strip — reports what an armed run would remove
+ *   npx convex run backfillVariantTypeRole:stripRoleFlags '{}'
+ *
+ *   # 4. arm the deployment, strip for real, disarm
  *   npx convex env set ALLOW_SELECTOR_BACKFILL 1
- *   npx convex run backfillVariantTypeRole:run '{"confirm":"BACKFILL"}'
+ *   npx convex run backfillVariantTypeRole:stripRoleFlags '{"confirm":"BACKFILL"}'
  *   npx convex env remove ALLOW_SELECTOR_BACKFILL
  *
- *   # a run that stops at the page cap says so and returns continueCursor:
- *   npx convex run backfillVariantTypeRole:run \
- *     '{"confirm":"BACKFILL","cursor":"<continueCursor>"}'
+ *   # a strip that stops at the page cap says so and returns where it was:
+ *   npx convex run backfillVariantTypeRole:stripRoleFlags \
+ *     '{"confirm":"BACKFILL","level":"<continueLevel>","cursor":"<continueCursor>"}'
  *
  *   # production: the same steps with --prod
  *
- *   # NEO-306 — READ-ONLY: sets whose base role is not exactly one row
- *   npx convex run backfillVariantTypeRole:reportBaseAnomalies '{}'
- *   # (resumes the same way: '{"cursor":"<continueCursor>"}')
+ * Run the strip only AFTER the NEO-334 code is deployed: an older deployment
+ * still reads the flags. The schema keeps the four fields until the follow-up
+ * PR removes them, which must land after the strip has run on every
+ * deployment (Convex validates stored documents against the schema).
  *
  * Two independent arms, the house rule (`backfillBrandUnknownRole` explains
  * why both): `confirm: "BACKFILL"` per invocation, `ALLOW_SELECTOR_BACKFILL`
  * per deployment. Dry run is the default; an armed invocation on an unarmed
- * deployment is REFUSED (reported, not thrown) and writes nothing. The confirm
- * is an argument, so a `!` run with no TTY works. No `--identity`: these are
- * internal functions and the deploy credential is the gate.
+ * deployment is REFUSED (reported, not thrown) and writes nothing. No
+ * `--identity`: these are internal functions and the deploy credential is the
+ * gate.
  *
- * ## Shape: an action paging a mutation
+ * ## The strip: an action paging a mutation
  *
- * `run` (internalAction) loops `runPage` (internalMutation) over the
- * `by_level` variantType rows, 500 per page, until the index is exhausted or
- * `MAX_PAGES` is reached. A variantType row carries its `children` id array
- * (hundreds of ids on an Insert or Parallel type), so the bound that matters
- * is the per-transaction read budget, not a row count — which is why neither
- * of the older single-transaction models (`SCAN_LIMIT` + `.take`) is copied.
- * Every page re-asserts both arms itself, so an internal caller that skips
- * `run` gets the same refusal.
+ * `stripRoleFlags` (internalAction) loops `stripRoleFlagsPage`
+ * (internalMutation) over the `by_level` index, variantType rows first, then
+ * insert, then parallel, `PAGE_SIZE` per page, until every level is exhausted
+ * or `MAX_PAGES` is reached. Every page re-asserts both arms itself, so an
+ * internal caller that skips the action gets the same refusal.
  *
- * ## What it decides — one planner, both runs
- *
- *   flagged        no role yet, single evidence → gets `variantRole`
- *   alreadyFlagged carries a role → left exactly as it is (never flipped)
- *   base           `isBase` → never written (the reader checks `isBase` first)
- *   ambiguous      tagged ids name both roles, or two tagged slots disagree
- *   noEvidence     no tagged slot, or tagged ids name neither role
- *
- * `conferredVariantRole` / `bscVariantEvidence` are the SAME functions the
- * sync conferral calls, so this task and the sync cannot decide differently.
- *
- * ## What it writes
- *
- * `metadata` only, through a spread of the existing object. Never
- * `platformData`, `platformFacets` or `platformLabels` — the BSC slots are
- * what listing reads (Jason's condition on NEO-306 D1). `lastUpdated` is not
- * bumped: it is the optimistic version open dialogs compare against, and a
- * role flag is not an edit an operator made.
- *
- * ## The base-role anomaly report (NEO-306)
- *
- * The base role and the Base row are one thing: `setBaseVariantType` grants
- * the role only to a set that has none, and the only way to take it away is
- * to delete the (empty) row. Data written before that rule can still break
- * it, and `reportBaseAnomalies` counts the two shapes that matter, per SET:
- *
- *   multipleBase      more than one variant type carries `isBase` — the
- *                     readers pick by document order, or (teamFill) give up
- *   noBaseWithCards   no variant type carries `isBase`, yet one of them has
- *                     cards hanging straight off it — the shape a Base that
- *                     lost its flag leaves behind (the retired "Clear base
- *                     set"); the row is no longer terminal in the builder
- *
- * It NEVER writes and needs no arm: which row is the base is the operator's
- * decision, so the report hands back sample set ids and stops there.
- *
- * ## Deploy the validator first; roll forward only
- *
- * `metadata` is an exact object validator, validated on read. Deploy the
- * schema carrying `variantRole` first; once a row carries it, no deployment
- * whose validator predates the field can read that row.
+ * It writes `metadata` only: the four keys are removed, every other key is
+ * kept, and a `metadata` left empty is removed rather than stored as `{}`.
+ * Never `platformData`, `platformFacets`, `platformLabels` or `value`.
+ * `lastUpdated` is not bumped: it is the optimistic version open dialogs
+ * compare against, and removing a dead flag is not an operator's edit.
+ * Idempotent: a second run finds nothing to strip.
  */
 
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
-import type { Id } from "./_generated/dataModel";
-import { bscVariantEvidence, conferredVariantRole } from "./variantRole";
+import type { Doc, Id } from "./_generated/dataModel";
+import { sameTitleWord, variantTypeKind, type VariantTypeKind } from "./variantRole";
 
 const CONFIRM_TOKEN = "BACKFILL";
 const ENV_FLAG = "ALLOW_SELECTOR_BACKFILL";
 /** Rows per page: ~501 system operations, `RESET_BATCH_SIZE`'s order. */
 export const PAGE_SIZE = 500;
-/** Pages per `run`: 100,000 variant types, far above any deployment today. */
+/** Pages per `stripRoleFlags` call: 100,000 rows. Resume with the cursor. */
 export const MAX_PAGES = 200;
+/** Ids returned per finding, so a deployment-wide fault stays readable. */
+export const SAMPLE_LIMIT = 25;
 
 function deploymentIsArmed(): boolean {
   const value = process.env[ENV_FLAG];
@@ -129,40 +93,74 @@ const DRY_RUN_MESSAGE =
 function truncatedMessage(pages: number): string {
   return (
     `Stopped after ${pages} pages with rows left. Re-run the same command with ` +
-    `"cursor" set to the continueCursor below; the run carries on from there.`
+    `the continue values below; the run carries on from there.`
   );
 }
 
-const countsValidator = v.object({
-  scanned: v.number(),
-  flagged: v.number(),
-  alreadyFlagged: v.number(),
-  base: v.number(),
-  ambiguous: v.number(),
-  noEvidence: v.number(),
-});
-type Counts = {
-  scanned: number;
-  flagged: number;
-  alreadyFlagged: number;
-  base: number;
-  ambiguous: number;
-  noEvidence: number;
-};
-
-function emptyCounts(): Counts {
-  return { scanned: 0, flagged: 0, alreadyFlagged: 0, base: 0, ambiguous: 0, noEvidence: 0 };
+function pushSample<T>(into: T[], value: T): void {
+  if (into.length < SAMPLE_LIMIT) into.push(value);
 }
 
-export const runPage = internalMutation({
+// ───────────────────────────────────────────────────────────────────────────
+// The strip. ARMED.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** The levels the strip walks, in order, and the flags each may carry. */
+export const STRIP_LEVELS = ["variantType", "insert", "parallel"] as const;
+type StripLevel = (typeof STRIP_LEVELS)[number];
+const stripLevelValidator = v.union(
+  v.literal("variantType"),
+  v.literal("insert"),
+  v.literal("parallel"),
+);
+
+/** The retired metadata keys (NEO-334). */
+export const RETIRED_ROLE_KEYS = [
+  "isBase",
+  "variantRole",
+  "isInsert",
+  "isParallel",
+] as const;
+
+/**
+ * `metadata` without the retired keys, or `undefined` when nothing is left;
+ * `null` when the row carries none of them (nothing to write).
+ */
+export function strippedMetadata(
+  metadata: Doc<"selectorOptions">["metadata"],
+): Doc<"selectorOptions">["metadata"] | null {
+  if (!metadata) return null;
+  const rest: Record<string, unknown> = { ...metadata };
+  let removed = false;
+  for (const key of RETIRED_ROLE_KEYS) {
+    if (key in rest) {
+      delete rest[key];
+      removed = true;
+    }
+  }
+  if (!removed) return null;
+  return Object.keys(rest).length > 0
+    ? (rest as Doc<"selectorOptions">["metadata"])
+    : undefined;
+}
+
+const stripCountsValidator = v.object({
+  scanned: v.number(),
+  stripped: v.number(),
+  clean: v.number(),
+});
+type StripCounts = { scanned: number; stripped: number; clean: number };
+
+export const stripRoleFlagsPage = internalMutation({
   args: {
     confirm: v.optional(v.string()),
+    level: stripLevelValidator,
     cursor: v.union(v.string(), v.null()),
   },
   returns: v.object({
     armed: v.boolean(),
     refusedForFlag: v.boolean(),
-    counts: countsValidator,
+    counts: stripCountsValidator,
     isDone: v.boolean(),
     continueCursor: v.string(),
   }),
@@ -173,44 +171,31 @@ export const runPage = internalMutation({
 
     const page = await ctx.db
       .query("selectorOptions")
-      .withIndex("by_level", (q) => q.eq("level", "variantType"))
+      .withIndex("by_level", (q) => q.eq("level", args.level))
       .paginate({ numItems: PAGE_SIZE, cursor: args.cursor });
 
-    const counts = emptyCounts();
+    const counts: StripCounts = { scanned: 0, stripped: 0, clean: 0 };
     for (const row of page.page) {
-      // Belt: the index is keyed on level, but the planner is the guard.
-      if (row.level !== "variantType") continue;
+      // Belt: the index is keyed on level, but the guard is here.
+      if (row.level !== args.level) continue;
       counts.scanned++;
-      if (row.metadata?.isBase === true) {
-        counts.base++;
+      const next = strippedMetadata(row.metadata);
+      if (next === null) {
+        counts.clean++;
         continue;
       }
-      if (row.metadata?.variantRole !== undefined) {
-        counts.alreadyFlagged++;
-        continue;
-      }
-      const role = conferredVariantRole(row.metadata, row);
-      if (!role) {
-        if (bscVariantEvidence(row) === "ambiguous") counts.ambiguous++;
-        else counts.noEvidence++;
-        continue;
-      }
-      counts.flagged++;
+      counts.stripped++;
       if (armed) {
-        // Metadata only, spread: `cardNumberPrefix` and the rest stay. No
-        // platform field is in this patch, so the BSC slots cannot move.
-        await ctx.db.patch(row._id, {
-          metadata: { ...(row.metadata ?? {}), variantRole: role },
-        });
+        // Metadata only. `undefined` removes the field.
+        await ctx.db.patch(row._id, { metadata: next });
       }
     }
 
-    // One audit line per page. Counts and the arm state only — no row
-    // values, no marketplace ids. No identity exists to record: the deploy
-    // credential is the actor.
+    // One audit line per page: counts, level and arm state only.
     console.log(
       JSON.stringify({
-        msg: "backfill_variant_type_role_page",
+        msg: "strip_variant_role_flags_page",
+        level: args.level,
         armed,
         refusedForFlag,
         ...counts,
@@ -228,15 +213,13 @@ export const runPage = internalMutation({
   },
 });
 
-export const run = internalAction({
+export const stripRoleFlags = internalAction({
   args: {
     /** `"BACKFILL"` to write; anything else (or nothing) is a dry run. */
     confirm: v.optional(v.string()),
-    /**
-     * Resume point: a previous run's `continueCursor`. Absent starts from the
-     * first variant type. (Re-running from the top is also safe — flagged
-     * rows write nothing — but only a cursor gets PAST the page cap.)
-     */
+    /** Resume: the `continueLevel` of a truncated run. */
+    level: v.optional(stripLevelValidator),
+    /** Resume: the `continueCursor` of a truncated run (within `level`). */
     cursor: v.optional(v.string()),
     /** Pages this run walks, 1..`MAX_PAGES` (default `MAX_PAGES`). */
     maxPages: v.optional(v.number()),
@@ -246,45 +229,49 @@ export const run = internalAction({
     message: v.string(),
     pages: v.number(),
     truncated: v.boolean(),
-    /** Present when `truncated`: pass it back as `cursor` to carry on. */
+    /** Present when `truncated`: pass both back to carry on. */
+    continueLevel: v.optional(stripLevelValidator),
     continueCursor: v.optional(v.string()),
-    counts: countsValidator,
+    counts: stripCountsValidator,
   }),
   handler: async (ctx, args) => {
-    const totals = emptyCounts();
-    let cursor: string | null = args.cursor ?? null;
+    const totals: StripCounts = { scanned: 0, stripped: 0, clean: 0 };
     const maxPages = Math.max(
       1,
       Math.min(MAX_PAGES, Math.floor(args.maxPages ?? MAX_PAGES)),
     );
+    let levelIndex = args.level ? STRIP_LEVELS.indexOf(args.level) : 0;
+    let cursor: string | null = args.cursor ?? null;
     let pages = 0;
     let armed = false;
     let refusedForFlag = false;
-    let isDone = false;
-    while (pages < maxPages) {
+    while (pages < maxPages && levelIndex < STRIP_LEVELS.length) {
+      const level: StripLevel = STRIP_LEVELS[levelIndex];
       const page: {
         armed: boolean;
         refusedForFlag: boolean;
-        counts: Counts;
+        counts: StripCounts;
         isDone: boolean;
         continueCursor: string;
-      } = await ctx.runMutation(internal.backfillVariantTypeRole.runPage, {
+      } = await ctx.runMutation(internal.backfillVariantTypeRole.stripRoleFlagsPage, {
         confirm: args.confirm,
+        level,
         cursor,
       });
       pages++;
       armed = page.armed;
       refusedForFlag = page.refusedForFlag;
-      for (const key of Object.keys(totals) as Array<keyof Counts>) {
+      for (const key of Object.keys(totals) as Array<keyof StripCounts>) {
         totals[key] += page.counts[key];
       }
       if (page.isDone) {
-        isDone = true;
-        break;
+        levelIndex++;
+        cursor = null;
+      } else {
+        cursor = page.continueCursor;
       }
-      cursor = page.continueCursor;
     }
-    const truncated = !isDone;
+    const truncated = levelIndex < STRIP_LEVELS.length;
     return {
       armed,
       message: refusedForFlag
@@ -296,6 +283,7 @@ export const run = internalAction({
             : DRY_RUN_MESSAGE,
       pages,
       truncated,
+      ...(truncated ? { continueLevel: STRIP_LEVELS[levelIndex] } : {}),
       ...(truncated && cursor !== null ? { continueCursor: cursor } : {}),
       counts: totals,
     };
@@ -303,7 +291,174 @@ export const run = internalAction({
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// NEO-306 — the base-role anomaly report. READ-ONLY.
+// Title vs flags. READ-ONLY.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** The kind the retired flags gave a variant type, or `undefined`. */
+function flaggedKind(
+  metadata: Doc<"selectorOptions">["metadata"],
+): VariantTypeKind | undefined {
+  if (metadata?.isBase === true) return "base";
+  return metadata?.variantRole;
+}
+
+const titleKindCountsValidator = v.object({
+  scanned: v.number(),
+  /** Title and flags give the same kind (or both none). */
+  agree: v.number(),
+  /** No flag, but the title names a kind: the row GAINS one. */
+  gained: v.number(),
+  /** A flag, but the title names no kind: the row LOSES it. */
+  lost: v.number(),
+  /** Both name a kind, and they differ. */
+  switched: v.number(),
+});
+type TitleKindCounts = {
+  scanned: number;
+  agree: number;
+  gained: number;
+  lost: number;
+  switched: number;
+};
+const titleKindSamplesValidator = v.object({
+  gained: v.array(v.id("selectorOptions")),
+  lost: v.array(v.id("selectorOptions")),
+  switched: v.array(v.id("selectorOptions")),
+});
+type TitleKindSamples = {
+  gained: Array<Id<"selectorOptions">>;
+  lost: Array<Id<"selectorOptions">>;
+  switched: Array<Id<"selectorOptions">>;
+};
+
+export const reportTitleKindPage = internalQuery({
+  args: { cursor: v.union(v.string(), v.null()) },
+  returns: v.object({
+    counts: titleKindCountsValidator,
+    samples: titleKindSamplesValidator,
+    isDone: v.boolean(),
+    continueCursor: v.string(),
+  }),
+  handler: async (ctx, args) => {
+    const page = await ctx.db
+      .query("selectorOptions")
+      .withIndex("by_level", (q) => q.eq("level", "variantType"))
+      .paginate({ numItems: PAGE_SIZE, cursor: args.cursor });
+    const counts: TitleKindCounts = {
+      scanned: 0,
+      agree: 0,
+      gained: 0,
+      lost: 0,
+      switched: 0,
+    };
+    const samples: TitleKindSamples = { gained: [], lost: [], switched: [] };
+    for (const row of page.page) {
+      if (row.level !== "variantType") continue;
+      counts.scanned++;
+      const byTitle = variantTypeKind(row);
+      const byFlag = flaggedKind(row.metadata);
+      if (byTitle === byFlag) {
+        counts.agree++;
+      } else if (byFlag === undefined) {
+        counts.gained++;
+        pushSample(samples.gained, row._id);
+      } else if (byTitle === undefined) {
+        counts.lost++;
+        pushSample(samples.lost, row._id);
+      } else {
+        counts.switched++;
+        pushSample(samples.switched, row._id);
+      }
+    }
+    return {
+      counts,
+      samples,
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+    };
+  },
+});
+
+/**
+ * NEO-334 — does reading the title change any variant type's kind, against
+ * the retired flags? Writes nothing, ever. Ids only in the result and the log
+ * line: a row's name is operator content. Meaningful only while rows still
+ * carry the flags, so run it before `stripRoleFlags`.
+ */
+export const reportTitleKind = internalAction({
+  args: {
+    /** A previous report's `continueCursor`; absent starts at the first row. */
+    cursor: v.optional(v.string()),
+    /** Pages this report walks, 1..`MAX_PAGES` (default the max). */
+    maxPages: v.optional(v.number()),
+  },
+  returns: v.object({
+    message: v.string(),
+    pages: v.number(),
+    truncated: v.boolean(),
+    continueCursor: v.optional(v.string()),
+    counts: titleKindCountsValidator,
+    /** Up to `SAMPLE_LIMIT` ids of each, in scan order. */
+    samples: titleKindSamplesValidator,
+  }),
+  handler: async (ctx, args) => {
+    const totals: TitleKindCounts = {
+      scanned: 0,
+      agree: 0,
+      gained: 0,
+      lost: 0,
+      switched: 0,
+    };
+    const samples: TitleKindSamples = { gained: [], lost: [], switched: [] };
+    let cursor: string | null = args.cursor ?? null;
+    const maxPages = Math.max(
+      1,
+      Math.min(MAX_PAGES, Math.floor(args.maxPages ?? MAX_PAGES)),
+    );
+    let pages = 0;
+    let isDone = false;
+    while (pages < maxPages) {
+      const page: {
+        counts: TitleKindCounts;
+        samples: TitleKindSamples;
+        isDone: boolean;
+        continueCursor: string;
+      } = await ctx.runQuery(internal.backfillVariantTypeRole.reportTitleKindPage, {
+        cursor,
+      });
+      pages++;
+      for (const key of Object.keys(totals) as Array<keyof TitleKindCounts>) {
+        totals[key] += page.counts[key];
+      }
+      for (const key of Object.keys(samples) as Array<keyof TitleKindSamples>) {
+        for (const id of page.samples[key]) pushSample(samples[key], id);
+      }
+      if (page.isDone) {
+        isDone = true;
+        break;
+      }
+      cursor = page.continueCursor;
+    }
+    const truncated = !isDone;
+    console.log(
+      JSON.stringify({ msg: "report_variant_title_kind", ...totals, pages, truncated }),
+    );
+    return {
+      message: truncated
+        ? truncatedMessage(pages)
+        : "Report only — nothing written. `gained`, `lost` and `switched` are " +
+          "the variant types whose kind changes when it is read from the title.",
+      pages,
+      truncated,
+      ...(truncated && cursor !== null ? { continueCursor: cursor } : {}),
+      counts: totals,
+      samples,
+    };
+  },
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// The per-set Base report. READ-ONLY.
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
@@ -316,17 +471,19 @@ export const REPORT_PAGE_SIZE = 50;
 /** Pages per `reportBaseAnomalies`: 20,000 sets. Resume with the cursor. */
 export const REPORT_MAX_PAGES = 400;
 /** Set ids returned per anomaly, so a deployment-wide fault stays readable. */
-export const REPORT_SAMPLE_LIMIT = 25;
+export const REPORT_SAMPLE_LIMIT = SAMPLE_LIMIT;
 
 const anomalyCountsValidator = v.object({
   setsScanned: v.number(),
   multipleBase: v.number(),
   noBaseWithCards: v.number(),
+  sameWordSiblings: v.number(),
 });
 type AnomalyCounts = {
   setsScanned: number;
   multipleBase: number;
   noBaseWithCards: number;
+  sameWordSiblings: number;
 };
 
 export const reportBaseAnomaliesPage = internalQuery({
@@ -335,6 +492,7 @@ export const reportBaseAnomaliesPage = internalQuery({
     counts: anomalyCountsValidator,
     multipleBaseSetIds: v.array(v.id("selectorOptions")),
     noBaseWithCardsSetIds: v.array(v.id("selectorOptions")),
+    sameWordSiblingsSetIds: v.array(v.id("selectorOptions")),
     isDone: v.boolean(),
     continueCursor: v.string(),
   }),
@@ -348,9 +506,11 @@ export const reportBaseAnomaliesPage = internalQuery({
       setsScanned: 0,
       multipleBase: 0,
       noBaseWithCards: 0,
+      sameWordSiblings: 0,
     };
     const multipleBaseSetIds: Array<Id<"selectorOptions">> = [];
     const noBaseWithCardsSetIds: Array<Id<"selectorOptions">> = [];
+    const sameWordSiblingsSetIds: Array<Id<"selectorOptions">> = [];
 
     for (const set of page.page) {
       if (set.level !== "setName") continue;
@@ -361,7 +521,16 @@ export const reportBaseAnomaliesPage = internalQuery({
           q.eq("level", "variantType").eq("parentId", set._id),
         )
         .collect();
-      const bases = types.filter((type) => type.metadata?.isBase === true);
+
+      const clash = types.some((a, i) =>
+        types.slice(i + 1).some((b) => sameTitleWord(a.value, b.value)),
+      );
+      if (clash) {
+        counts.sameWordSiblings++;
+        sameWordSiblingsSetIds.push(set._id);
+      }
+
+      const bases = types.filter((type) => variantTypeKind(type) === "base");
       if (bases.length > 1) {
         counts.multipleBase++;
         multipleBaseSetIds.push(set._id);
@@ -387,6 +556,7 @@ export const reportBaseAnomaliesPage = internalQuery({
       counts,
       multipleBaseSetIds,
       noBaseWithCardsSetIds,
+      sameWordSiblingsSetIds,
       isDone: page.isDone,
       continueCursor: page.continueCursor,
     };
@@ -394,9 +564,13 @@ export const reportBaseAnomaliesPage = internalQuery({
 });
 
 /**
- * NEO-306 — count the sets whose base role is not exactly one row. Writes
- * nothing, ever; see the header. Ids only in the result and the log line —
- * a set's name is operator content.
+ * Count the sets that break a NEO-334 rule, read from the TITLES: more than
+ * one variant type titled "Base" (`multipleBase`), none titled "Base" while
+ * one of them has cards hanging straight off it (`noBaseWithCards`: the Base
+ * was renamed or never titled), and two variant types whose titles are the
+ * same word (`sameWordSiblings`: "Promo" beside "Promos"). Writes nothing,
+ * ever: which row is each set's Base is the operator's call, made by renaming.
+ * Ids only in the result and the log line.
  */
 export const reportBaseAnomalies = internalAction({
   args: {
@@ -414,15 +588,18 @@ export const reportBaseAnomalies = internalAction({
     /** Up to `REPORT_SAMPLE_LIMIT` of each, in scan order. */
     multipleBaseSetIds: v.array(v.id("selectorOptions")),
     noBaseWithCardsSetIds: v.array(v.id("selectorOptions")),
+    sameWordSiblingsSetIds: v.array(v.id("selectorOptions")),
   }),
   handler: async (ctx, args) => {
     const totals: AnomalyCounts = {
       setsScanned: 0,
       multipleBase: 0,
       noBaseWithCards: 0,
+      sameWordSiblings: 0,
     };
     const multipleBaseSetIds: Array<Id<"selectorOptions">> = [];
     const noBaseWithCardsSetIds: Array<Id<"selectorOptions">> = [];
+    const sameWordSiblingsSetIds: Array<Id<"selectorOptions">> = [];
     let cursor: string | null = args.cursor ?? null;
     const maxPages = Math.max(
       1,
@@ -435,6 +612,7 @@ export const reportBaseAnomalies = internalAction({
         counts: AnomalyCounts;
         multipleBaseSetIds: Array<Id<"selectorOptions">>;
         noBaseWithCardsSetIds: Array<Id<"selectorOptions">>;
+        sameWordSiblingsSetIds: Array<Id<"selectorOptions">>;
         isDone: boolean;
         continueCursor: string;
       } = await ctx.runQuery(
@@ -445,14 +623,9 @@ export const reportBaseAnomalies = internalAction({
       for (const key of Object.keys(totals) as Array<keyof AnomalyCounts>) {
         totals[key] += page.counts[key];
       }
-      for (const id of page.multipleBaseSetIds) {
-        if (multipleBaseSetIds.length < REPORT_SAMPLE_LIMIT) multipleBaseSetIds.push(id);
-      }
-      for (const id of page.noBaseWithCardsSetIds) {
-        if (noBaseWithCardsSetIds.length < REPORT_SAMPLE_LIMIT) {
-          noBaseWithCardsSetIds.push(id);
-        }
-      }
+      for (const id of page.multipleBaseSetIds) pushSample(multipleBaseSetIds, id);
+      for (const id of page.noBaseWithCardsSetIds) pushSample(noBaseWithCardsSetIds, id);
+      for (const id of page.sameWordSiblingsSetIds) pushSample(sameWordSiblingsSetIds, id);
       if (page.isDone) {
         isDone = true;
         break;
@@ -474,13 +647,14 @@ export const reportBaseAnomalies = internalAction({
       message: truncated
         ? truncatedMessage(pages)
         : "Report only — nothing written. The set ids are samples; which row " +
-          "is each set's base is the operator's decision.",
+          "is each set's Base is the operator's call, made by renaming.",
       pages,
       truncated,
       ...(truncated && cursor !== null ? { continueCursor: cursor } : {}),
       counts: totals,
       multipleBaseSetIds,
       noBaseWithCardsSetIds,
+      sameWordSiblingsSetIds,
     };
   },
 });

@@ -57,8 +57,7 @@ import { api } from "../../convex/_generated/api";
 import { slotEntries, slotIds, slotLabel } from "../../convex/platformSlots";
 import type { Id } from "../../convex/_generated/dataModel";
 import type { SourceChips } from "../SetSelector/ChecklistSourceFilter";
-import { isBaseRole } from "../SetSelector/baseRole";
-import { variantTypeRole } from "../../convex/variantRole";
+import { variantTypeKind } from "../../convex/variantRole";
 import { bscSourceView } from "../../convex/bscFacets";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
 
@@ -321,9 +320,9 @@ export default function SetSelector() {
 
   // Base is a terminal variantType: when selected, the cascade stops
   // there and the CardChecklist attaches to the variantType row itself
-  // (no Variant / Variant-of-Variant columns). Read the row for its NB base
-  // role (NEO-239: `metadata.isBase`, never the display value) and to drive
-  // the auto-mapping prompt.
+  // (no Variant / Variant-of-Variant columns). Read the row for its kind
+  // (NEO-334: a variant type's title IS its kind — `variantTypeKind`) and to
+  // drive the auto-mapping prompt.
   const selectedVariantType = useQuery(
     api.selectorOptions.getSelectorOptionById,
     selectedVariantTypeId ? { id: selectedVariantTypeId } : "skip",
@@ -342,14 +341,27 @@ export default function SetSelector() {
   const stableVariantTypeFlagsRef = useRef<{
     forId: GenericId<"selectorOptions"> | null;
     isBase: boolean;
-    /** NEO-321: the row's NB role is `parallel` — the base set's parallels live under it. */
+    /** NEO-321: the row is a Parallel type — the base set's parallels live under it. */
     isParallelType: boolean;
+    /**
+     * NEO-334: the row is an Insert type — the only variant type whose
+     * inserts carry a Sub-Variants column.
+     */
+    isInsertType: boolean;
+    /**
+     * NEO-334: the row has been read at least once for `forId`, so the flags
+     * above are answers rather than their defaults. Lets the cascade tell
+     * "not an Insert type" from "not loaded yet".
+     */
+    kindRead: boolean;
     hasMapping: boolean;
     value: string;
   }>({
     forId: null,
     isBase: false,
     isParallelType: false,
+    isInsertType: false,
+    kindRead: false,
     hasMapping: false,
     value: "",
   });
@@ -358,19 +370,24 @@ export default function SetSelector() {
       forId: selectedVariantTypeId,
       isBase: false,
       isParallelType: false,
+      isInsertType: false,
+      kindRead: false,
       hasMapping: false,
       value: "",
     };
   }
   if (selectedVariantType !== undefined) {
-    stableVariantTypeFlagsRef.current.isBase = isBaseRole(
-      selectedVariantType?.metadata,
-    );
-    // NEO-321: read through the one role rule (`metadata.variantRole`),
-    // never the row's name — a variant type an operator called "Parallel" is
-    // just a row called "Parallel".
-    stableVariantTypeFlagsRef.current.isParallelType =
-      variantTypeRole(selectedVariantType) === "parallel";
+    // NEO-334: a variant type's title IS its kind (Jason, 2026-10-10), read
+    // through the one rule every door shares (`variantTypeKind`): exactly
+    // "Base", "Insert(s)" or "Parallel(s)", nothing by substring. Sub-variants
+    // live only under an Insert type, so Base, Parallel, Promo and a type
+    // with no kind all end the cascade at the insert (the server refuses the
+    // rows too: `assertSubVariantParent`).
+    const kind = variantTypeKind(selectedVariantType);
+    stableVariantTypeFlagsRef.current.isBase = kind === "base";
+    stableVariantTypeFlagsRef.current.isParallelType = kind === "parallel";
+    stableVariantTypeFlagsRef.current.isInsertType = kind === "insert";
+    stableVariantTypeFlagsRef.current.kindRead = true;
     // Auto-prompt is gated on the SportLots mapping specifically. The BSC
     // slug on the row is auto-populated by "Sync Variant Types" (BSC's
     // variant facet returns "Base" with a slug), so testing it would
@@ -396,6 +413,28 @@ export default function SetSelector() {
   const isBaseVariantTypeSelected = stableVariantTypeFlagsRef.current.isBase;
   const isParallelTypeSelected =
     stableVariantTypeFlagsRef.current.isParallelType;
+  const isInsertTypeSelected = stableVariantTypeFlagsRef.current.isInsertType;
+  const variantTypeKindRead = stableVariantTypeFlagsRef.current.kindRead;
+  /**
+   * NEO-334 — the Sub-Variants column (level 7) is on screen only under an
+   * insert of an Insert type. `isInsertType` implies not-Base, so this is the
+   * whole gate.
+   */
+  const subVariantColumnVisible = isInsertTypeSelected && !!selectedVariantId;
+  /**
+   * NEO-334 — the parallel selection the page acts on. Under a variant type
+   * that is KNOWN not to be an Insert type there is no Sub-Variants column,
+   * so a `parallel` id in the drill is not a selection: the checklist, the
+   * attributes panel and the build role all fall back to the insert. The
+   * resolver already drops such an id from a link (`resolveDrillPath`) and
+   * the effect below clears it from the URL; this is the render in between.
+   * While the kind is still loading the id stands, so a deep link to a real
+   * sub-variant does not flash its insert's checklist first.
+   */
+  const effectiveVariantOfVariantId =
+    variantTypeKindRead && !isInsertTypeSelected
+      ? null
+      : selectedVariantOfVariantId;
   const baseHasMapping = stableVariantTypeFlagsRef.current.hasMapping;
   // Pluralized variantType label ("Insert" → "Inserts") used as the column
   // header and Sync button text on the Variants column. Falls back to the
@@ -439,8 +478,7 @@ export default function SetSelector() {
   if (selectedSetId) revealedColumns.push("Variant Types");
   if (!isBaseVariantTypeSelected && selectedVariantTypeId)
     revealedColumns.push(variantsColumnLabel);
-  if (!isBaseVariantTypeSelected && selectedVariantId)
-    revealedColumns.push("Parallels");
+  if (subVariantColumnVisible) revealedColumns.push("Parallels");
   const deepestColumn = revealedColumns[revealedColumns.length - 1];
 
   /**
@@ -504,8 +542,8 @@ export default function SetSelector() {
     {
       level: "parallel",
       parentId: selectedVariantId,
-      visible: !isBaseVariantTypeSelected && !!selectedVariantId,
-      selected: !!selectedVariantOfVariantId,
+      visible: subVariantColumnVisible,
+      selected: !!effectiveVariantOfVariantId,
       expanded: variantOfVariantExpanded,
     },
   ];
@@ -530,7 +568,7 @@ export default function SetSelector() {
     selectedSetId,
     selectedVariantTypeId,
     selectedVariantId,
-    selectedVariantOfVariantId,
+    effectiveVariantOfVariantId,
   ].join("/");
 
   // Manual trigger; the form also auto-opens on first selection when no
@@ -697,6 +735,22 @@ export default function SetSelector() {
   };
 
   /**
+   * NEO-334 — a `parallel` id left in the drill under a variant type that is
+   * not an Insert type (an in-session link the resolver never saw, or a type
+   * whose kind was read after the pick) is cleared from the URL, so the
+   * address bar says what the page shows: the insert, with no Sub-Variants
+   * column. A `replace` — the operator did not navigate.
+   * `effectiveVariantOfVariantId` already ignores the id until this lands.
+   */
+  const staleSubVariantId =
+    variantTypeKindRead && !isInsertTypeSelected
+      ? selectedVariantOfVariantId
+      : null;
+  useEffect(() => {
+    if (staleSubVariantId) drillClearFrom("parallel");
+  }, [staleSubVariantId, drillClearFrom]);
+
+  /**
    * NEO-294: the set the attributes panel was describing now lives under a
    * DIFFERENT brand. The Sets column is scoped to `selectedManufacturerRowId`
    * — the brand the set just left — so without this the row vanishes out of
@@ -766,7 +820,7 @@ export default function SetSelector() {
   // CardChecklist attaches to the deepest selected node — for Base
   // variantTypes that's the variantType row itself (Base is terminal).
   const cardChecklistId =
-    selectedVariantOfVariantId ||
+    effectiveVariantOfVariantId ||
     selectedVariantId ||
     (isBaseVariantTypeSelected ? selectedVariantTypeId : null);
 
@@ -789,7 +843,7 @@ export default function SetSelector() {
   // NEO-237: the All Brands VIEW is not a row, so with the view open and
   // nothing picked beneath it the deepest ROW is the year.
   const deepestSelectedId =
-    selectedVariantOfVariantId ||
+    effectiveVariantOfVariantId ||
     selectedVariantId ||
     selectedVariantTypeId ||
     selectedSetId ||
@@ -872,8 +926,8 @@ export default function SetSelector() {
   /**
    * NEO-312 — which half of a source → parallel pair the open checklist is.
    *
-   * Read off the cascade's own selections and NB roles, never off a name or a
-   * marketplace value: a checklist on the Variants column's row is an insert,
+   * Read off the cascade's own selections and variant-type kinds, never off
+   * a marketplace value: a checklist on the Variants column's row is an insert,
    * and one on the column below it is a parallel of that insert. The insert's
    * name is the parallel button's label ("Build from Anime"), taken from the
    * chain this component already reads for the checklist row — the insert is
@@ -881,7 +935,7 @@ export default function SetSelector() {
    * id. Until the chain loads it is undefined and the button waits.
    *
    * NEO-321 (D3) — a row on the Variants column under a variant type whose
-   * role is `parallel` is a parallel of the BASE set, not an insert: its Sync
+   * kind is `parallel` is a parallel of the BASE set, not an insert: its Sync
    * slot builds from Base ("Build from Base") instead of fetching, and its
    * save builds nothing beneath it. Base's id and name are the server's
    * answer (`source` on the same list the Base-parallels section shows), so
@@ -910,7 +964,7 @@ export default function SetSelector() {
 
   const parallelBuild: ParallelBuildRole | undefined = useMemo(() => {
     if (isBaseVariantTypeSelected || !selectedVariantId) return undefined;
-    if (selectedVariantOfVariantId) {
+    if (effectiveVariantOfVariantId) {
       return {
         role: "parallel",
         sourceId: selectedVariantId,
@@ -936,7 +990,7 @@ export default function SetSelector() {
     isBaseVariantTypeSelected,
     isParallelTypeSelected,
     selectedVariantId,
-    selectedVariantOfVariantId,
+    effectiveVariantOfVariantId,
     cardChecklistChain,
     baseSource,
     baseParallelsPlan,
@@ -1039,8 +1093,14 @@ export default function SetSelector() {
    * own, or a dialog (the Base mapping picker auto-opens on an unmapped Base)
    * is up.
    */
+  // NEO-334: with an insert selected and its variant type's kind still
+  // loading, whether a Sub-Variants column opens below it is not known yet,
+  // so the selection is not terminal yet either.
+  const subVariantColumnPending = !!selectedVariantId && !variantTypeKindRead;
   const terminalChecklistId =
-    !drill.resolving && openColumnKey === null ? cardChecklistId : null;
+    !drill.resolving && !subVariantColumnPending && openColumnKey === null
+      ? cardChecklistId
+      : null;
   const terminalCards = useQuery(
     api.selectorOptions.getCardChecklist,
     terminalChecklistId ? { selectorOptionId: terminalChecklistId } : "skip",
@@ -1411,7 +1471,10 @@ export default function SetSelector() {
                 onSelectExisting={handleVariantSelect}
                 onDrillToExisting={handleDrillToExisting}
                 extraActions={
-                  selectedVariantTypeId ? (
+                  // NEO-334: grouping lands rows as sub-variants, which live
+                  // only under an Insert type (the server refuses it
+                  // elsewhere), so the door is shown only there.
+                  selectedVariantTypeId && isInsertTypeSelected ? (
                     <NeonButton secondary onClick={() => setGroupingOpen(true)}>
                       Group Parallels
                     </NeonButton>
@@ -1420,13 +1483,14 @@ export default function SetSelector() {
               />
             )}
 
-            {/* 7. Variant of Variant (NB only — translates to variant on BSC/SL) */}
-            {!isBaseVariantTypeSelected && selectedVariantId && (
+            {/* 7. Variant of Variant (NB only — translates to variant on BSC/SL).
+                NEO-334: only under an insert of an Insert type (its kind). */}
+            {subVariantColumnVisible && (
               <ResilientEntityColumn
                 selector={
                   <ParallelSelector
                     insertId={selectedVariantId!}
-                    selectedParallelId={selectedVariantOfVariantId}
+                    selectedParallelId={effectiveVariantOfVariantId}
                     onParallelSelect={handleVariantOfVariantSelect}
                     expanded={variantOfVariantExpanded}
                     setExpanded={setVariantOfVariantExpanded}
@@ -1485,7 +1549,7 @@ export default function SetSelector() {
 
       {/* NEO-321: the base set's parallels, built from Base in one go — only
           when the operator presses the button (D2). Shown for the variant
-          type whose NB role is `parallel`, and kept while one of its rows is
+          type whose kind is `parallel`, and kept while one of its rows is
           open, in the same variant-type slot Base's mapping button uses. */}
       {selectedVariantTypeId && isParallelTypeSelected && (
         <BaseParallelsBuildSection

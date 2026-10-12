@@ -2,10 +2,11 @@
  * NEO-321 — when the set builder shows the "Parallels of Base" section, and
  * what it hands the checklist beneath it.
  *
- * The gate is the selected variant type's NB role (`metadata.variantRole ===
- * "parallel"`, read through `variantTypeRole`), never its name. The fixtures
- * below lean on that: a row NAMED "Parallel" with no role gets no section,
- * and a row named anything at all with the role gets one.
+ * The gate is the selected variant type's TITLE (NEO-334: "Parallel" or
+ * "Parallels", read through `variantTypeKind`), never a flag. The fixtures
+ * below lean on that: a type titled "Parallel Set" gets no section, a type
+ * titled "Gold" that still carries a stray `variantRole: "parallel"` gets
+ * none either, and the plural title gets one.
  *
  * Mocking mirrors SetSelector.baseMapping.test.tsx: every column child is a
  * stub, `useQuery` is routed by reference string. Unlike that file, the real
@@ -23,39 +24,42 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const BASE_ROW = {
   _id: "vt-base",
   value: "Base",
-  metadata: { isBase: true },
   platformData: {},
 };
 
-/** The Parallel variant type, as the sync flags it. */
+/** The Parallel variant type, titled by its kind. */
 const PARALLEL_TYPE = {
   _id: "vt-parallel",
   value: "Parallel",
+  platformData: {},
+};
+
+/** The plural is the same kind. */
+const PARALLEL_TYPE_PLURAL = {
+  _id: "vt-parallel-plural",
+  value: "  parallels ",
+  platformData: {},
+};
+
+/** An Insert type: its rows stay inserts. */
+const INSERT_TYPE = {
+  _id: "vt-inserts",
+  value: "Inserts",
+  platformData: {},
+};
+
+/** CONTAINS the word Parallel: exact word only, so no kind. */
+const PARALLEL_SET_TYPE = {
+  _id: "vt-parallel-set",
+  value: "Parallel Set",
+  platformData: {},
+};
+
+/** A stray retired flag changes nothing: the title is Gold. */
+const FLAGGED_GOLD_TYPE = {
+  _id: "vt-flagged",
+  value: "Gold",
   metadata: { variantRole: "parallel" },
-  platformData: {},
-};
-
-/** Same role, an operator's own name: the role is the gate, not the label. */
-const PARALLEL_TYPE_RENAMED = {
-  _id: "vt-parallel-renamed",
-  value: "Shimmer Stuff",
-  metadata: { variantRole: "parallel" },
-  platformData: {},
-};
-
-/** NAMED "Parallel" but flagged insert: a label is just a label. */
-const LOOKALIKE_INSERT_TYPE = {
-  _id: "vt-lookalike",
-  value: "Parallel",
-  metadata: { variantRole: "insert" },
-  platformData: {},
-};
-
-/** NAMED "Parallel" with no role recorded at all. */
-const LOOKALIKE_NO_ROLE = {
-  _id: "vt-no-role",
-  value: "Parallel",
-  metadata: {},
   platformData: {},
 };
 
@@ -63,9 +67,10 @@ const ROWS: Record<string, unknown> = Object.fromEntries(
   [
     BASE_ROW,
     PARALLEL_TYPE,
-    PARALLEL_TYPE_RENAMED,
-    LOOKALIKE_INSERT_TYPE,
-    LOOKALIKE_NO_ROLE,
+    PARALLEL_TYPE_PLURAL,
+    INSERT_TYPE,
+    PARALLEL_SET_TYPE,
+    FLAGGED_GOLD_TYPE,
   ].map((r) => [r._id, r]),
 );
 
@@ -246,27 +251,33 @@ beforeEach(() => {
 });
 
 describe("SetSelector — Parallels of Base section visibility (NEO-321)", () => {
-  it("shows for a variant type whose role is parallel", () => {
+  it("shows for a variant type titled Parallel", () => {
     render(<SetSelector />, { wrapper: DrilledToASet });
     selectType("vt-parallel");
     expect(sectionHeading()?.textContent).toBe("Parallels of Base");
   });
 
-  it("shows for a role-parallel type with ANY name: renaming the row does not change the result", () => {
+  it("shows for the plural title, whatever its case and spacing", () => {
     render(<SetSelector />, { wrapper: DrilledToASet });
-    selectType("vt-parallel-renamed");
+    selectType("vt-parallel-plural");
     expect(sectionHeading()).toBeTruthy();
   });
 
-  it("does not show for a row merely named Parallel when its role is insert", () => {
+  it("does not show for an Insert type", () => {
     render(<SetSelector />, { wrapper: DrilledToASet });
-    selectType("vt-lookalike");
+    selectType("vt-inserts");
     expect(sectionHeading()).toBeNull();
   });
 
-  it("does not show for a row merely named Parallel with no role at all", () => {
+  it("does not show for a type titled Parallel Set: the exact word decides", () => {
     render(<SetSelector />, { wrapper: DrilledToASet });
-    selectType("vt-no-role");
+    selectType("vt-parallel-set");
+    expect(sectionHeading()).toBeNull();
+  });
+
+  it("does not show for a type titled Gold that still carries variantRole parallel: the title decides, never a flag", () => {
+    render(<SetSelector />, { wrapper: DrilledToASet });
+    selectType("vt-flagged");
     expect(sectionHeading()).toBeNull();
   });
 
@@ -282,9 +293,9 @@ describe("SetSelector — Parallels of Base section visibility (NEO-321)", () =>
     expect(sectionHeading()).toBeTruthy();
 
     planCalls.length = 0;
-    selectType("vt-lookalike");
+    selectType("vt-inserts");
     expect(sectionHeading()).toBeNull();
-    // The plan query is skipped for a type that is not role-parallel.
+    // The plan query is skipped for a type that is not titled Parallel.
     expect(planCalls.every((args) => args === "skip")).toBe(true);
   });
 
@@ -402,9 +413,9 @@ describe("SetSelector — a base-parallel row builds from Base (NEO-321 D3)", ()
     expect(document.getElementById(BASE_PARALLELS_REASON_ID)).toBeTruthy();
   });
 
-  it("a row under a role-insert type stays an insert", () => {
+  it("a row under an Insert type stays an insert", () => {
     render(<SetSelector />, { wrapper: DrilledToASet });
-    selectType("vt-lookalike");
+    selectType("vt-inserts");
     fireEvent.click(screen.getByText("select-row"));
     expect(checklistProps().parallelBuild).toEqual({ role: "insert" });
   });

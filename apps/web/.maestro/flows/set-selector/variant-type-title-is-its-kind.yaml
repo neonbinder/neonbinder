@@ -1,0 +1,800 @@
+appId: com.neonbinder.web
+url: ${APP_URL || "http://localhost:3000"}/testing/sign-in?redirect=/set-selector&worker=${WORKER_INDEX || "0"}
+name: "Variant type title is its kind — Inserts nests sub-variants through a rename, Parallel does not, and one type titled Base is terminal (hand-made set)"
+tags:
+  - set-selector
+---
+# R1 — ONE FEATURE (NEO-334, Jason 2026-10-10): a variant type's TITLE is its
+# kind. "Base" is the set's Base, "Insert"/"Inserts" an Insert type,
+# "Parallel"/"Parallels" a Parallel type; nothing else has a kind, and no flag
+# mirrors the title. Every claim below is that one rule seen from a different
+# side, on a type the operator titled by hand:
+#
+#   1. "Inserts" is an Insert type: its column reads "Inserts", and an insert
+#      under it opens the Sub-Variants column, which takes a sub-variant.
+#   2. Singular and plural are one word: "Insert" beside "Inserts" is refused.
+#   3. "Parallel" is a Parallel type: an insert under it opens NO Sub-Variants
+#      column, and its checklist holds the build-from-Base slot instead of a
+#      marketplace fetch (NEO-321's Parallel processing, now read off the title).
+#   4. Renaming "Inserts" -> "Promos" while sub-variants sit beneath it is
+#      refused and the title stands; "Inserts" -> "Insert" is the same kind and
+#      goes through, and the sub-variant is still there under its insert.
+#   5. An EMPTY type renamed "Base" becomes the Base: terminal (no Variants
+#      column), its checklist hangs off the type, and the Base mapping panel
+#      answers. A second type renamed "Base" is refused.
+#
+# WHY HAND-MADE TYPES (R2): before NEO-334's ruling the kind was a flag that
+# only a sync conferred, so a type an operator typed in had no kind at all and
+# every claim above would have gone the other way (no Sub-Variants column under
+# "Inserts", no terminal "Base"). A regression to a flag, or to substring
+# matching, fails here at the claim it breaks.
+#
+# ISOLATION (R7, R7a): every write lands in ONE per-attempt hand-made set,
+# `vtk<token>`, under the real Baseball › 2024 › Topps (SET-REGISTRY.md, Custom
+# sets). Hand-made, so neither marketplace side is resolvable at any level
+# below it and nothing here waits on BSC or SportLots — every wait is R5's
+# 7000. Per-attempt because the flow renames types and makes a Base: a retry
+# in a set that already holds "Insert", "Base" and the rest would refuse the
+# very creates it needs. Nothing is deleted; the set is the debris.
+#
+# MINTED NAMES are single tokens (README companion rules): `vtk<token>` (set),
+# `vtkins` / `vtksub` / `vtkpar` / `vtkpro` / `vtksec` + token (rows). The
+# kind words themselves ("Inserts", "Insert", "Parallel", "Base", "Promos")
+# are the inputs under test and are deliberately NOT minted: they are scoped
+# by the per-attempt set, where nothing else can hold them.
+#
+# R9: the Sport › Year › Manufacturer › Set drill goes through
+# util-drill-to-custom.yaml. The variant types and rows are created INLINE from
+# the selected set (the set-team-carries-down-to-cards STEP 3 shape), because
+# the util cannot drill to two of these types: it waits for `${VARIANT_TYPE}s`
+# as the Variants header, which is "Insertss" for "Inserts", and "Base" has no
+# Variants column at all — that is claim 5.
+#
+# DRAFT COPY (NEO-245, no copywriter; Jason signs off): two refusal anchors
+# below are draft sentences from convex/variantRole.ts and may be reworded at
+# sign-off. Each anchors on the clause most likely to survive:
+#   - same-word sibling: `"Inserts" is already here, and one word gets one
+#     row. Use that one instead.`  -> anchored on "one word gets one row"
+#   - second Base: "This set already has a Base."  -> "already has a Base"
+# The Insert-with-sub-variants sentence is Jason-approved; it is anchored on
+# "only live under an Insert type", the clause it shares with the kept
+# SUB_VARIANT_INSERT_ONLY message. A reworded draft fails its step loudly —
+# update the anchor, never loosen it to ".*".
+#
+# PAGE ORDER (R5 — every `direction:` below follows from it):
+#   components/modules/SetSelector.tsx renders the selector columns, then the
+#   Base mapping panel, the Base-parallels section, MultiSourcePanel,
+#   SetAttributesPanel, and CardChecklist last. EntityColumn puts each
+#   column's `+ Custom` below every row in it, and a picked column collapses
+#   to a card ("<Title>: <row> — change") at the TOP of its column. So from
+#   the attributes panel or the checklist every column control is UP; from a
+#   column's `+ Custom`, its own rows and the collapsed cards are UP.
+#
+# THE LATE COLLAPSE: a picked column collapses only once the drill's
+# selection has propagated, and until then every column to its right sits
+# 80px further right (memory: columns-row-clip-and-late-collapse). Every pick
+# below is therefore followed by a gate on its collapsed card BEFORE any tap
+# in a column to its right — the product's own "the cascade settled" signal,
+# exactly as util-drill-to-custom's Level 5 does after the set pick.
+# Collapsed-card gates carry `visibilityPercentage: 50` (normalises to
+# "present in the viewport"): the columns row is a horizontal scroller the
+# window cannot move, so a card's horizontal clip is not a scroll question.
+
+# ============================================================
+# LAUNCH + SIGN IN
+# ============================================================
+
+- launchApp
+# The post-launchApp heading gate — R5's sanctioned launch exception
+# (README "Launching a flow").
+- extendedWaitUntil:
+    visible: ".*Build set parameters using marketplace APIs.*"
+    timeout: 45000
+
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
+# ============================================================
+# STEP 0 — DRILL TO A FRESH PER-ATTEMPT SET (R9)
+# Returns with the set picked and its Variant Types column open and empty.
+# ============================================================
+
+- runFlow:
+    file: util-drill-to-custom.yaml
+    env:
+      SPORT: "Baseball"
+      YEAR: "2024"
+      MANUFACTURER: "Topps"
+      SET_NAME: "vtk${output.ATTEMPT_TOKEN}"
+
+# The Sets column collapses when the Variant Types query lands, sliding the
+# Variant Types column 80px left (util-drill-to-custom Level 5, CI
+# 35731602457). UP: the card heads the column the util left centred.
+- scrollUntilVisible:
+    element:
+      id: "Sets: vtk${output.ATTEMPT_TOKEN} — change"
+    direction: UP
+    visibilityPercentage: 50
+    timeout: 7000
+
+# ============================================================
+# CLAIM 1 — "Inserts" IS AN INSERT TYPE
+# ============================================================
+
+# R8 centred: the next step taps it. The util returns with it in view, so this
+# exits at try 0 or 1.
+- scrollUntilVisible:
+    element:
+      id: "Add custom Variant Types"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Variant Types"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible: "Add Custom Entry"
+    timeout: 7000
+- inputText: "Inserts"
+- pressKey: Enter
+# NEO-272: the confirm's Create button by its accessible name
+# (EntityColumn `confirmCreateLabel`), never a second blind Enter.
+# Unconditional: the set is per-attempt and was empty, so the confirm always
+# renders (R2, R10).
+- extendedWaitUntil:
+    visible:
+      id: "Create variant type"
+    timeout: 7000
+- tapOn:
+    id: "Create variant type"
+# The form REPLACES the list, and its input's text is the typed value — gate on
+# the form going before matching the row (memory:
+# entitycolumn-custom-form-replaces-list).
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+# The new row sits above the column's `+ Custom` the page is centred on: UP.
+- scrollUntilVisible:
+    element:
+      text: "Inserts"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: "Inserts"
+    waitToSettleTimeoutMs: 2000
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: Inserts — change"
+    direction: UP
+    visibilityPercentage: 50
+    timeout: 7000
+
+# THE COLUMN READS "Inserts". SetSelector's `variantsColumnLabel` is both the
+# Variants column's header and its Sync button's text, and the header's search
+# box is named from the header ("Search " + title). Not `text: "Inserts"`: the
+# collapsed Variant Types card above shows that same word, so it would prove
+# nothing. A title stored as "Insertss" or a generic "Variants" header fails
+# all three handles.
+# R5 7000, R8 centred (the next claim taps it) — the util's own Level 5 step,
+# measured there at 1.99s.
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- assertVisible: "Sync Inserts"
+- assertVisible:
+    id: "Search inserts"
+
+# ============================================================
+# CLAIM 2 — "Insert" BESIDE "Inserts" IS REFUSED (same word)
+# EntityColumn says it before any round trip, in the server's own sentence
+# (`sameWordSiblingMessage`); addCustomSelectorOption refuses it again for a
+# stale tab. No confirm renders, so nothing is written.
+# ============================================================
+
+# The Variant Types action row sits under its collapsed card, above the
+# Variants column's `+ Custom` the page is centred on: UP.
+- scrollUntilVisible:
+    element:
+      id: "Add custom Variant Types"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Variant Types"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible: "Add Custom Entry"
+    timeout: 7000
+- inputText: "Insert"
+- pressKey: Enter
+# DRAFT copy — see the header. The refusal renders in the form's own alert.
+- extendedWaitUntil:
+    visible: ".*one word gets one row.*"
+    timeout: 7000
+- tapOn:
+    id: "Cancel new variant type"
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+# Positive after the negative (memory: negative-asserts-pass-on-a-dead-page):
+# the column is back on its card and "Inserts" is still the pick.
+- assertVisible:
+    id: "Variant Types: Inserts — change"
+
+# ============================================================
+# CLAIM 1, continued — AN INSERT UNDER "Inserts" OPENS THE SUB-VARIANTS
+# COLUMN, AND THE COLUMN TAKES A SUB-VARIANT
+# ============================================================
+
+# Below the Variant Types action row the previous step tapped: DOWN.
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Add custom Inserts"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible: "Add Custom Entry"
+    timeout: 7000
+- inputText: "vtkins${output.ATTEMPT_TOKEN}"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Create insert"
+    timeout: 7000
+- tapOn:
+    id: "Create insert"
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      text: "vtkins${output.ATTEMPT_TOKEN}"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: "vtkins${output.ATTEMPT_TOKEN}"
+    waitToSettleTimeoutMs: 2000
+- scrollUntilVisible:
+    element:
+      id: "Inserts: vtkins${output.ATTEMPT_TOKEN} — change"
+    direction: UP
+    visibilityPercentage: 50
+    timeout: 7000
+
+# THE SUB-VARIANTS COLUMN IS THERE. Its `+ Custom` is named from its Sync
+# button ("Sync Sub-Variants" -> "Add custom Sub-Variants"), a name no other
+# column carries (memory: neo334-sub-variants-column-is-role-gated).
+- scrollUntilVisible:
+    element:
+      id: "Add custom Sub-Variants"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Add custom Sub-Variants"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible: "Add Custom Entry"
+    timeout: 7000
+- inputText: "vtksub${output.ATTEMPT_TOKEN}"
+- pressKey: Enter
+# "Create " + LEVEL_SINGULAR.parallel ("Sub-Variant") lower-cased. The server
+# guard (assertSubVariantParent) reads the parent type's TITLE, so a refusal
+# here would mean "Inserts" was not read as an Insert type.
+- extendedWaitUntil:
+    visible:
+      id: "Create sub-variant"
+    timeout: 7000
+- tapOn:
+    id: "Create sub-variant"
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+# The row lands above the column's `+ Custom`: UP. Not tapped, so not centred.
+- scrollUntilVisible:
+    element:
+      text: "vtksub${output.ATTEMPT_TOKEN}"
+    direction: UP
+    timeout: 7000
+
+# ============================================================
+# CLAIM 3 — "Parallel" IS A PARALLEL TYPE: NO SUB-VARIANTS COLUMN
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Add custom Variant Types"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Variant Types"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible: "Add Custom Entry"
+    timeout: 7000
+- inputText: "Parallel"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Create variant type"
+    timeout: 7000
+- tapOn:
+    id: "Create variant type"
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+
+# Re-open the Variant Types list from its card — the only way to change a
+# picked column's selection — and pick "Parallel" through the column's search
+# box (util-drill-to-custom's one path, NEO-224). The card heads the column,
+# above its action row: UP.
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: Inserts — change"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Variant Types: Inserts — change"
+- extendedWaitUntil:
+    visible:
+      id: "Search variant types"
+    timeout: 7000
+- tapOn:
+    id: "Search variant types"
+- inputText: "Parallel"
+- extendedWaitUntil:
+    visible:
+      text: "Parallel"
+      below:
+        id: "Search variant types"
+    timeout: 7000
+- tapOn:
+    text: "Parallel"
+    below:
+      id: "Search variant types"
+    waitToSettleTimeoutMs: 2000
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: Parallel — change"
+    direction: UP
+    visibilityPercentage: 50
+    timeout: 7000
+
+- scrollUntilVisible:
+    element:
+      id: "Add custom Parallels"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Add custom Parallels"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible: "Add Custom Entry"
+    timeout: 7000
+- inputText: "vtkpar${output.ATTEMPT_TOKEN}"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Create insert"
+    timeout: 7000
+- tapOn:
+    id: "Create insert"
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+# Exact `text:`: the Base-parallels section lists this row as
+# "vtkpar<token> — skipped: not linked to a marketplace yet", which a
+# `.*vtkpar….*` pattern would also match.
+- scrollUntilVisible:
+    element:
+      text: "vtkpar${output.ATTEMPT_TOKEN}"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: "vtkpar${output.ATTEMPT_TOKEN}"
+    waitToSettleTimeoutMs: 2000
+# The pick has rendered: its column is on its card. The Sub-Variants column is
+# decided in the SAME render (SetSelector's `subVariantColumnVisible` reads the
+# selection and the already-loaded title), so the negatives below cannot be
+# early.
+- scrollUntilVisible:
+    element:
+      id: "Parallels: vtkpar${output.ATTEMPT_TOKEN} — change"
+    direction: UP
+    visibilityPercentage: 50
+    timeout: 7000
+# Two handles of column 7, both of which render from its first frame: its
+# `+ Custom`, and its search box. Under this type the Variants column is ALSO
+# titled "Parallels", but it is collapsed to the card above, which drops its
+# own search box — so `Search parallels` can only be column 7's (memory:
+# selected-column-collapses-to-card).
+- assertNotVisible:
+    id: "Add custom Sub-Variants"
+- assertNotVisible:
+    id: "Search parallels"
+# Positive, and the Parallel half of the rule: the checklist opened on the
+# insert, and its Sync slot is the build-from-Base stand-in (NEO-321 D3) — this
+# set has no Base yet, so it reads SOURCE_MISSING_LABEL — rather than a
+# marketplace fetch. An Insert type, or a type with no kind, shows
+# "Fetch from Marketplaces" here. The checklist is the last thing on the page:
+# DOWN, not centred (nothing is tapped; cards-parallel-custom's R8 note).
+- scrollUntilVisible:
+    element:
+      text: "Can.t build yet"
+    timeout: 7000
+
+# ============================================================
+# CLAIM 4 — "Inserts" -> "Promos" IS REFUSED WHILE SUB-VARIANTS EXIST;
+# "Inserts" -> "Insert" IS THE SAME KIND AND GOES THROUGH
+# ============================================================
+
+# Back to "Inserts" with nothing picked beneath it, so the attributes panel
+# (which follows the DEEPEST selection) is on the variant type. Picking a
+# different type and coming back is what clears the insert: re-picking the
+# selected row clears nothing (handleVariantTypeSelect). Columns are above
+# the checklist: UP.
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: Parallel — change"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Variant Types: Parallel — change"
+- extendedWaitUntil:
+    visible:
+      id: "Search variant types"
+    timeout: 7000
+- tapOn:
+    id: "Search variant types"
+- inputText: "Inserts"
+- extendedWaitUntil:
+    visible:
+      text: "Inserts"
+      below:
+        id: "Search variant types"
+    timeout: 7000
+- tapOn:
+    text: "Inserts"
+    below:
+      id: "Search variant types"
+    waitToSettleTimeoutMs: 2000
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: Inserts — change"
+    direction: UP
+    visibilityPercentage: 50
+    timeout: 7000
+
+# R2 precondition: the panel is on the type we are about to rename. Below the
+# columns: DOWN. R8 centred, with the 208px spacer note from
+# rename-selector-option.yaml (the same header, measured there): THIS STEP
+# DEPENDS ON THAT SPACER (src/layouts/binder-layout.tsx, NEO-260).
+- scrollUntilVisible:
+    element:
+      text: '.*Attributes for Inserts \(.*'
+    centerElement: true
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      id: "Rename Inserts"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Rename Inserts"
+# The field opens EMPTY (current name as placeholder) — nothing to erase.
+- extendedWaitUntil:
+    visible:
+      id: "Edit name for Inserts"
+    timeout: 7000
+- tapOn:
+    id: "Edit name for Inserts"
+    waitToSettleTimeoutMs: 250
+- inputText: "Promos"
+- pressKey: Enter
+
+# THE REFUSAL (Jason-approved sentence; anchored on the clause it shares with
+# SUB_VARIANT_INSERT_ONLY). It renders on its own line under the panel header.
+- extendedWaitUntil:
+    visible: ".*only live under an Insert type.*"
+    timeout: 7000
+# The title stands: the header renders the stored row, not the field.
+- assertVisible: '.*Attributes for Inserts \(.*'
+
+# The field stays open holding "Promos" after a refusal (RenameEntityControl
+# keeps `editing`), so clear it before typing the next name. Tap the field
+# itself, not its label: a centre click lands past the end of a six-letter
+# value in the w-32 box, so the caret is at the end and every Backspace
+# counts (memory: erase-text-needs-the-caret-at-the-end). The tap does not
+# blur the field, so it commits nothing.
+- tapOn:
+    id: "Edit name for Inserts"
+    waitToSettleTimeoutMs: 250
+- eraseText: 10
+- inputText: "Insert"
+- pressKey: Enter
+
+# Same kind (insert -> insert), so the guard lets it through. The header is the
+# stored row and still the selection (R6: this scroll is the assertion).
+- scrollUntilVisible:
+    element:
+      text: '.*Attributes for Insert \(.*'
+    centerElement: true
+    timeout: 7000
+
+# THE COLUMN IS STILL THERE. The Variants column still reads "Inserts"
+# ("Insert" + "s"), the insert still opens the Sub-Variants column, and the
+# sub-variant is still under it. Columns are above the panel: UP.
+- scrollUntilVisible:
+    element:
+      id: "Add custom Inserts"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- assertVisible: "Sync Inserts"
+- scrollUntilVisible:
+    element:
+      text: "vtkins${output.ATTEMPT_TOKEN}"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    text: "vtkins${output.ATTEMPT_TOKEN}"
+    waitToSettleTimeoutMs: 2000
+- scrollUntilVisible:
+    element:
+      id: "Inserts: vtkins${output.ATTEMPT_TOKEN} — change"
+    direction: UP
+    visibilityPercentage: 50
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      id: "Add custom Sub-Variants"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- assertVisible: "vtksub${output.ATTEMPT_TOKEN}"
+
+# ============================================================
+# CLAIM 5a — AN EMPTY TYPE RENAMED "Base" BECOMES THE BASE
+# ============================================================
+
+- scrollUntilVisible:
+    element:
+      id: "Add custom Variant Types"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Variant Types"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible: "Add Custom Entry"
+    timeout: 7000
+- inputText: "vtkpro${output.ATTEMPT_TOKEN}"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Create variant type"
+    timeout: 7000
+- tapOn:
+    id: "Create variant type"
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: Insert — change"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Variant Types: Insert — change"
+- extendedWaitUntil:
+    visible:
+      id: "Search variant types"
+    timeout: 7000
+- tapOn:
+    id: "Search variant types"
+- inputText: "vtkpro${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible:
+      text: "vtkpro${output.ATTEMPT_TOKEN}"
+      below:
+        id: "Search variant types"
+    timeout: 7000
+- tapOn:
+    text: "vtkpro${output.ATTEMPT_TOKEN}"
+    below:
+      id: "Search variant types"
+    waitToSettleTimeoutMs: 2000
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: vtkpro${output.ATTEMPT_TOKEN} — change"
+    direction: UP
+    visibilityPercentage: 50
+    timeout: 7000
+# R2 precondition: titled with no kind, the type is NOT terminal — it has a
+# Variants column ("vtkpro<token>s"). Claim 5a is that this goes away.
+- scrollUntilVisible:
+    element:
+      id: "Add custom vtkpro${output.ATTEMPT_TOKEN}s"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+
+# Same rename path as claim 4. Below the columns: DOWN. Centred, spacer-
+# dependent (see claim 4).
+- scrollUntilVisible:
+    element:
+      text: '.*Attributes for vtkpro${output.ATTEMPT_TOKEN} \(.*'
+    centerElement: true
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      id: "Rename vtkpro${output.ATTEMPT_TOKEN}"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Rename vtkpro${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible:
+      id: "Edit name for vtkpro${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+- tapOn:
+    id: "Edit name for vtkpro${output.ATTEMPT_TOKEN}"
+    waitToSettleTimeoutMs: 250
+- inputText: "Base"
+- pressKey: Enter
+
+# The Base mapping panel answers: it mounts only for a Base type
+# (SetSelector `isBaseVariantTypeSelected`), auto-runs its fetch, and on a set
+# with no marketplace ids both sides are skipped without a round trip
+# (fetchRawOptions -> NOTHING_TO_LINK_MESSAGE). Its loading dialog closes on
+# that answer. The panel sits between the columns and the attributes panel,
+# above the header the page is centred on: UP. Not tapped, so not centred.
+- scrollUntilVisible:
+    element:
+      text: ".*Nothing to link yet.*"
+    direction: UP
+    timeout: 7000
+# The type's card now reads "Base" (above the panel: UP) ...
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: Base — change"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+# ... and Base is terminal: no Variants column beside it. Its search box would
+# render from the column's first frame, at the height of this card, which is
+# centred; the same render that mounted the panel above removed the column.
+- assertNotVisible:
+    id: "Search bases"
+# Positives below the columns: DOWN. The panel header is the stored title ...
+- scrollUntilVisible:
+    element:
+      text: '.*Attributes for Base \(.*'
+    timeout: 7000
+# ... with the static Base tag beside it (SetAttributesPanel `BaseSetTag`) ...
+- assertVisible: "Base set"
+# ... and the checklist hangs off the type itself, with no variant picked
+# (SetSelector `cardChecklistId` falls back to the type only for a Base).
+- scrollUntilVisible:
+    element:
+      id: "Open add card form"
+    visibilityPercentage: 50
+    timeout: 7000
+
+# ============================================================
+# CLAIM 5b — A SECOND TYPE RENAMED "Base" IS REFUSED
+# ============================================================
+
+# From the checklist, the columns are UP.
+- scrollUntilVisible:
+    element:
+      id: "Add custom Variant Types"
+    direction: UP
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Add custom Variant Types"
+    waitToSettleTimeoutMs: 2000
+- extendedWaitUntil:
+    visible: "Add Custom Entry"
+    timeout: 7000
+- inputText: "vtksec${output.ATTEMPT_TOKEN}"
+- pressKey: Enter
+- extendedWaitUntil:
+    visible:
+      id: "Create variant type"
+    timeout: 7000
+- tapOn:
+    id: "Create variant type"
+- extendedWaitUntil:
+    notVisible: "Add Custom Entry"
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: Base — change"
+    direction: UP
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+- tapOn:
+    id: "Variant Types: Base — change"
+- extendedWaitUntil:
+    visible:
+      id: "Search variant types"
+    timeout: 7000
+- tapOn:
+    id: "Search variant types"
+- inputText: "vtksec${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible:
+      text: "vtksec${output.ATTEMPT_TOKEN}"
+      below:
+        id: "Search variant types"
+    timeout: 7000
+- tapOn:
+    text: "vtksec${output.ATTEMPT_TOKEN}"
+    below:
+      id: "Search variant types"
+    waitToSettleTimeoutMs: 2000
+- scrollUntilVisible:
+    element:
+      id: "Variant Types: vtksec${output.ATTEMPT_TOKEN} — change"
+    direction: UP
+    visibilityPercentage: 50
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      id: "Add custom vtksec${output.ATTEMPT_TOKEN}s"
+    centerElement: true
+    visibilityPercentage: 50
+    timeout: 7000
+
+- scrollUntilVisible:
+    element:
+      text: '.*Attributes for vtksec${output.ATTEMPT_TOKEN} \(.*'
+    centerElement: true
+    timeout: 7000
+- scrollUntilVisible:
+    element:
+      id: "Rename vtksec${output.ATTEMPT_TOKEN}"
+    centerElement: true
+    timeout: 7000
+- tapOn:
+    id: "Rename vtksec${output.ATTEMPT_TOKEN}"
+- extendedWaitUntil:
+    visible:
+      id: "Edit name for vtksec${output.ATTEMPT_TOKEN}"
+    timeout: 7000
+- tapOn:
+    id: "Edit name for vtksec${output.ATTEMPT_TOKEN}"
+    waitToSettleTimeoutMs: 250
+- inputText: "Base"
+- pressKey: Enter
+
+# DRAFT copy — see the header. The one-Base rule runs before the sibling
+# clash in renameSelectorOption, so this is the sentence, not the same-word one.
+- extendedWaitUntil:
+    visible: ".*already has a Base.*"
+    timeout: 7000
+# The title stands — the flow ends on a positive.
+- assertVisible: '.*Attributes for vtksec${output.ATTEMPT_TOKEN} \(.*'

@@ -78,7 +78,6 @@ async function seed(t: T) {
     platformData: { bsc: { b0: "insert" } },
     platformFacets: { bsc: { b0: "variant" } },
     platformSlotSeq: { bsc: 1 },
-    metadata: { variantRole: "insert" },
     features: { season: "2026" },
   });
   // A second variant type under the SAME set, and a second set under the
@@ -87,7 +86,6 @@ async function seed(t: T) {
     level: "variantType",
     value: "Other Cards",
     parentId: setId,
-    metadata: { variantRole: "insert" },
     features: { season: "2026" },
   });
   const otherSetId = await insertRow(t, {
@@ -99,7 +97,6 @@ async function seed(t: T) {
     level: "variantType",
     value: "Insert",
     parentId: otherSetId,
-    metadata: { variantRole: "insert" },
     features: { season: "2026" },
   });
   return { insertTypeId, otherTypeId, otherSetTypeId };
@@ -123,7 +120,6 @@ function insertRowWith(
       ...(ids.bsc ? { bsc: 1 } : {}),
       ...(ids.sportlots ? { sportlots: 1 } : {}),
     },
-    metadata: { isInsert: true },
     features: { season: "2026", cardType: "Insert" },
   });
 }

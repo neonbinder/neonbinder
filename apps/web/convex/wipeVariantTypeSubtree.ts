@@ -113,6 +113,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { selectorOptionLevelValidator } from "./schema";
 import { selectorValueKey } from "./selectorSyncMatch";
+import { variantTypeKind } from "./variantRole";
 // NEO-313 — the derived player → cards index goes with each wiped card,
 // through the table's own helper (`cardPlayerLinks.pin.test.ts`).
 import { deleteCardPlayerLinks } from "./cardPlayerLinks";
@@ -666,7 +667,7 @@ export const locate = internalQuery({
               described.push({
                 id: vt._id,
                 value: vt.value,
-                isBase: vt.metadata?.isBase === true,
+                isBase: variantTypeKind(vt) === "base",
                 children: children.length,
                 bsc: vt.platformData.bsc ?? {},
                 sportlots: vt.platformData.sportlots ?? {},
@@ -712,7 +713,7 @@ export const readTarget = internalQuery({
       value: target.row.value,
       path: target.path.join(" / "),
       confirmPhrase: target.confirmPhrase,
-      isBase: target.row.metadata?.isBase === true,
+      isBase: variantTypeKind(target.row) === "base",
       bsc: target.row.platformData.bsc ?? {},
       sportlots: target.row.platformData.sportlots ?? {},
       hasOwnCards: ownCard !== null,

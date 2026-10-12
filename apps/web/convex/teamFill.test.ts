@@ -12,9 +12,10 @@
  * Fixture shape follows selectorOptions.setSelectorOptionTeams.test.ts
  * (sport → setName → variantType → insert → parallel, raw inserts) and
  * cardChecklist.noTeam.test.ts (insertCard/insertTeam/insertPlayer). The
- * variantType carries `metadata.isBase` by default — the NB role tier 3
- * reads — and `seedTree(t, { isBase: false })` is the hand-built shape the
- * E2E flow makes, where a row NAMED "Base" is not the base.
+ * variantType is titled "Base" by default — NEO-334: a variant type's title is
+ * its kind, and tier 3 reads the one titled "Base" — and
+ * `seedTree(t, { variantTitle: "Starter" })` is a set whose only variant type
+ * has no kind, so it has no base checklist.
  */
 
 import { convexTest } from "convex-test";
@@ -49,10 +50,10 @@ const SIGNED_IN_IDENTITY = { subject: "user_team_fill_002" };
 
 type T = ReturnType<typeof convexTest>;
 
-/** sport → setName (season 2024) → variantType (isBase) → insert → parallel. */
+/** sport → setName (season 2024) → variantType ("Base") → insert → parallel. */
 async function seedTree(
   t: T,
-  opts: { season?: string; isBase?: boolean } = {},
+  opts: { season?: string; variantTitle?: string } = {},
 ): Promise<{
   sportId: Id<"selectorOptions">;
   setNameId: Id<"selectorOptions">;
@@ -61,7 +62,7 @@ async function seedTree(
   parallelId: Id<"selectorOptions">;
 }> {
   const season = opts.season ?? "2024";
-  const isBase = opts.isBase ?? true;
+  const variantTitle = opts.variantTitle ?? "Base";
   return t.run(async (ctx) => {
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
@@ -82,9 +83,8 @@ async function seedTree(
     });
     const variantTypeId = await ctx.db.insert("selectorOptions", {
       level: "variantType",
-      value: "Base",
+      value: variantTitle,
       platformData: {},
-      ...(isBase ? { metadata: { isBase: true } } : {}),
       parentId: setNameId,
       children: [],
       lastUpdated: Date.now(),
@@ -197,7 +197,7 @@ describe("previewTeamFill", () => {
     const tatis = await insertPlayer(t, sportId, "Fernando Tatis Jr.", []);
     const bench = await insertPlayer(t, sportId, "Johnny Bench", []);
 
-    // Base (isBase): Tatis teamed, and a teamless Tatis beside it → tier 1.
+    // Base (titled "Base"): Tatis teamed, and a teamless Tatis beside it → tier 1.
     await insertCard(t, variantTypeId, { cardNumber: "ev", playerIds: [tatis], teamOnCardIds: [padres] });
     const underBase = await insertCard(t, variantTypeId, { cardNumber: "1", playerIds: [tatis] });
     // Stars (insert): Bench teamed on S-1; a teamless Tatis on S-2 → tier 3
@@ -263,19 +263,20 @@ describe("previewTeamFill", () => {
     }
   });
 
-  test("the E2E shape — a hand-built 'Base' with no isBase role, two single-player cards, one teamed — fills by the same node", async () => {
-    // set-fill-teams-from-teammate-card.yaml builds Insert › Base by hand;
-    // its variantType is named "Base" but carries no `metadata.isBase`. The
-    // teamless card fills from its teamed sibling under the same node, and
-    // the ledger clause is the one the flow full-matches.
+  test("a set whose only variant type has no kind: two single-player cards, one teamed, fill by the same node", async () => {
+    // The variant type is titled "Starter", so the set has no Base and tier 3
+    // is skipped. The teamless card fills from its teamed sibling under the
+    // same node, and the ledger clause names that node.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const { sportId, setNameId, variantTypeId, insertId } = await seedTree(t, { isBase: false });
+    const { sportId, setNameId, variantTypeId, insertId } = await seedTree(t, {
+      variantTitle: "Starter",
+    });
     const team = await insertTeam(t, sportId, "FTT Team");
     const ftp = await insertPlayer(t, sportId, "FTP Player", []);
     await insertCard(t, variantTypeId, { cardNumber: "781", playerIds: [ftp], teamOnCardIds: [team] });
     const teamless = await insertCard(t, variantTypeId, { cardNumber: "782", playerIds: [ftp] });
-    // The same player, teamless, under the insert: with no base flagged there
+    // The same player, teamless, under the insert: with no Base titled there
     // is no tier that reaches across nodes, so it stays.
     const onInsert = await insertCard(t, insertId, { cardNumber: "S-1", playerIds: [ftp] });
 
@@ -292,7 +293,7 @@ describe("previewTeamFill", () => {
         rule: "samePlayerInSet",
         scope: "sameNode",
         mixed: false,
-        nodeNames: ["Base"],
+        nodeNames: ["Starter"],
         nodeCount: 1,
         cardCount: 1,
       },
@@ -312,8 +313,8 @@ describe("previewTeamFill", () => {
   });
 
   test("a teamed card on ANOTHER insert is never evidence: the base card decides, or nothing does", async () => {
-    // Favre: a Jet on one insert, teamless on another. With the base flagged
-    // and the base card a Packer, the base wins; with the flag gone, the
+    // Favre: a Jet on one insert, teamless on another. With a Base titled
+    // "Base" and the base card a Packer, the base wins; with it retitled, the
     // other insert still counts for nothing and the card remains.
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
@@ -347,23 +348,22 @@ describe("previewTeamFill", () => {
       nodeNames: ["Stars"],
     });
 
-    await t.run(async (ctx) => ctx.db.patch(variantTypeId, { metadata: {} }));
+    await t.run(async (ctx) => ctx.db.patch(variantTypeId, { value: "Starter" }));
     const withoutBase = await asAdmin.action(api.teamFill.previewTeamFill, { selectorOptionId: setNameId });
     expect(withoutBase.fillable).toBe(0);
     expect(withoutBase.remaining).toBe(1);
     expect((await getCard(t, target))!.teamOnCardIds).toBeUndefined();
   });
 
-  test("two variantTypes both flagged isBase: the base is ambiguous and tier 3 is skipped", async () => {
+  test("two variantTypes both titled Base: the base is ambiguous and tier 3 is skipped", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, setNameId, variantTypeId, insertId } = await seedTree(t);
     await t.run(async (ctx) => {
       const id = await ctx.db.insert("selectorOptions", {
         level: "variantType",
-        value: "Base Too",
+        value: "Bases",
         platformData: {},
-        metadata: { isBase: true },
         parentId: setNameId,
         children: [],
         lastUpdated: Date.now(),
@@ -844,7 +844,7 @@ describe("applyTeamFill", () => {
 // ===========================================================================
 
 describe("listTeamFillSubtree", () => {
-  test("returns the root with its level, parent, isBase role and children", async () => {
+  test("returns the root with its level, parent, isBase (from the title) and children", async () => {
     const t = convexTest(schema, modules);
     const { setNameId, sportId, variantTypeId } = await seedTree(t);
     const result = await t.query(internal.teamFill.listTeamFillSubtree, {
@@ -888,16 +888,24 @@ describe("readTeamFillNodes", () => {
     ]);
   });
 
-  test("isBase is the metadata ROLE, never the display value", async () => {
+  test("isBase is read from the title: no kind means not the base", async () => {
     const t = convexTest(schema, modules);
-    const { variantTypeId } = await seedTree(t, { isBase: false });
+    const { variantTypeId } = await seedTree(t, { variantTitle: "Starter" });
     const [base] = await t.query(internal.teamFill.readTeamFillNodes, {
       nodeIds: [variantTypeId],
     });
     expect(base).toMatchObject({ level: "variantType", isBase: false });
-    // The row IS named "Base"; that is exactly what must not count.
-    const row = await t.run(async (ctx) => ctx.db.get(variantTypeId));
-    expect(row!.value).toBe("Base");
+  });
+
+  test("a type titled Bases is the base, and a stray isBase flag under another title is not", async () => {
+    const t = convexTest(schema, modules);
+    const { variantTypeId } = await seedTree(t, { variantTitle: "Bases" });
+    const { variantTypeId: flaggedId } = await seedTree(t, { variantTitle: "Gold" });
+    await t.run(async (ctx) => ctx.db.patch(flaggedId, { metadata: { isBase: true } }));
+    const rows = await t.query(internal.teamFill.readTeamFillNodes, {
+      nodeIds: [variantTypeId, flaggedId],
+    });
+    expect(rows.map((row) => row.isBase)).toEqual([true, false]);
   });
 
   test("a dangling child id is omitted rather than answered as a node", async () => {

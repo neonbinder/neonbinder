@@ -189,12 +189,19 @@ tags:
 #   called. Rename the row and the fetch quietly asked the marketplace for a
 #   set that does not exist — so the product refused the rename instead.
 #
-#   Both readers now work off ids and an NB role flag rather than the label:
-#   base is a flag NB sets on the row, and the marketplace `variant` comes off
-#   the id the row already carries. Nothing user-facing keys on a marketplace
-#   value, and no marketplace query is built from an NB name. That makes a
-#   variant type's name a plain label like every other level's — so ANY
-#   variant type can be renamed, not merely a hand-added one.
+#   The marketplace `variant` now comes off the id the row already carries,
+#   so no marketplace query is built from an NB name, and ANY variant type can
+#   be renamed, not merely a hand-added one.
+#
+#   NEO-334 (Jason, 2026-10-10): a variant type's TITLE is its kind — "Base",
+#   "Insert(s)" and "Parallel(s)" are the three kinds, read off the title, with
+#   no flag beside it. So a rename CAN change what a type is, and the server
+#   refuses that while rows sit beneath the type, refuses a second "Base", and
+#   refuses a singular/plural twin of a sibling. None of that applies here:
+#   `vt-<w>-<attempt>` and `vtx-<w>-<attempt>` carry NO kind (kindless to
+#   kindless) and the type is empty, so this stays a plain relabel. The kind
+#   changes and their refusals are proved in
+#   variant-type-title-is-its-kind.yaml. Never rename this pair to a kind word.
 #
 # WHY THIS CANNOT PASS BY ACCIDENT (R2):
 #   The old refusal exempted rows flagged as hand-added, and this row IS added

@@ -1,9 +1,8 @@
 /**
  * NEO-237 — `isSlAllBrandsBrandId`, the adapter-boundary predicate that
  * recognises SportLots' all-brands option by ITS id, never by an NB display
- * value. Small and self-contained, mirroring `bscFacets.test.ts`'s coverage
- * of `isBscBaseVariantId` for the same reason: a marketplace-vocabulary
- * predicate is worth pinning on its own, since every caller (the adapter, the
+ * value. Small and self-contained: a marketplace-vocabulary predicate is
+ * worth pinning on its own, since every caller (the adapter, the
  * manufacturer sync, the suggestion doors) trusts it completely.
  */
 

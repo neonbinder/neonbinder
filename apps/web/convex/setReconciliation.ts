@@ -60,21 +60,26 @@ import {
 } from "./selectorSyncStore";
 import {
   resolveBscFacetFilters,
-  soleBscBaseVariantId,
   syncWrittenBscFacet,
 } from "./bscFacets";
-// NEO-291 — the insert/parallel flags are derived from where a row sits, not
-// taken from the client. See convex/variantRole.ts.
+// NEO-291 / NEO-334 — the insert/parallel reading of a row is derived from
+// where it sits (its level and the parent variant type's kind, which is that
+// row's title), never taken from the client, and never stored. See
+// convex/variantRole.ts.
 import {
-  conferredVariantRole,
   derivedVariantFlags,
-  variantTypeRole,
+  sameTitleWord,
+  variantTypeKind,
 } from "./variantRole";
 // NEO-291 — the one rule for a card number prefix, shared with
 // `setSelectorOptionCardNumberPrefix` so the modal and the panel agree.
 import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
 // NEO-277: the set-level team a fresh child inherits from its parent.
 import { inheritedTeamIds } from "./lib/selectorTeams";
+import {
+  assertSubVariantParent,
+  variantTypeRenameCheck,
+} from "./lib/selectorAncestry";
 // NEO-239 — the per-side "can this marketplace be asked?" rule, shared with
 // selectorOptions.ts so the reconciler and the aggregator cannot disagree.
 import {
@@ -148,8 +153,9 @@ const levelValidator = v.union(
  * number prefix. Deliberately NOT `selectorOptionFields.metadata` any more
  * (NEO-239 derived it from the table so a new field reached the wire for
  * free): the insert/parallel flags are now DERIVED from where a row sits
- * (convex/variantRole.ts) and `isBase` from BSC's base id, and a client-sent
- * value for any of them must be refused at the validator, not merged. A
+ * (convex/variantRole.ts), a variant type's kind is its title (NEO-334), and
+ * a client-sent value for any of them must be refused at the validator, not
+ * merged. A
  * bundle deployed before this ticket that still sends `isInsert` /
  * `isParallel` / `isBase` gets an argument-validation error rather than a
  * silent write, which is the right failure for a role a client no longer
@@ -555,8 +561,8 @@ const MAX_VARIANT_TYPES_READ = 500;
 /**
  * NEO-325 — the SportLots ids on the Base row of the set `variantTypeId`
  * sits under: what `fetchRawOptions` drops from an insert-level SportLots
- * list, BY ID. The Base is the NB role (`metadata.isBase`, `variantTypeRole`),
- * never a name. Empty when `variantTypeId` IS the Base (the Base picker is
+ * list, BY ID. The Base is the variant type titled "Base" (NEO-334: a
+ * variant type's title is its kind, `variantTypeKind`). Empty when `variantTypeId` IS the Base (the Base picker is
  * choosing the Base's own SportLots set, so nothing may be hidden from it),
  * when it is not a variant type, or when the set has no Base or the Base no
  * SportLots slot. Every slot counts, not only the primary: each is a
@@ -568,7 +574,7 @@ export const baseSlIdsBesideVariantType = internalQuery({
   handler: async (ctx, args) => {
     const type = await ctx.db.get(args.variantTypeId);
     if (!type || type.level !== "variantType" || !type.parentId) return [];
-    if (variantTypeRole(type) === "base") return [];
+    if (variantTypeKind(type) === "base") return [];
     const setId = type.parentId;
     const types = await ctx.db
       .query("selectorOptions")
@@ -578,7 +584,7 @@ export const baseSlIdsBesideVariantType = internalQuery({
       .take(MAX_VARIANT_TYPES_READ);
     const ids = new Set<string>();
     for (const row of types) {
-      if (variantTypeRole(row) !== "base") continue;
+      if (variantTypeKind(row) !== "base") continue;
       for (const id of slotIds(row, "sportlots")) ids.add(id);
     }
     return [...ids];
@@ -1721,6 +1727,11 @@ export const storeReconciledOptions = mutation({
       );
     }
 
+    // NEO-334 — sub-variants live only under an Insert type's inserts. The
+    // whole call shares one parent, so it is refused before anything is read
+    // or written (see `assertSubVariantParent`).
+    await assertSubVariantParent(ctx, level, parentId);
+
     // NEO-71-74: reconciledItems share one parentId — fetch its
     // already-complete `features` snapshot once and copy it onto every
     // fresh insert below (write-once feature snapshots: see
@@ -1750,7 +1761,13 @@ export const storeReconciledOptions = mutation({
           ...(sportlots ? { sportlots } : {}),
         },
         ...(item.existingId ? { existingId: item.existingId } : {}),
-        ...(item.identityOnly === true ? { identityOnly: true } : {}),
+        // NEO-334 — never at variantType level. `identityOnly` skips the
+        // name tier, which there is what keeps a set to one Base and one row
+        // per word (singular = plural); a line for a variant type always
+        // goes through it.
+        ...(item.identityOnly === true && level !== "variantType"
+          ? { identityOnly: true }
+          : {}),
       };
     });
 
@@ -1877,6 +1894,11 @@ export const storeReconciledOptions = mutation({
             elsewhereUncheckedSides: subtree.uncheckedSides,
           }
         : {}),
+      // NEO-334 — at variantType level the name tier matches by WORD:
+      // singular and plural are one word and a set has one Base, so an
+      // incoming "Inserts" links to an existing "Insert" (additive, never a
+      // rename) instead of minting a second sibling. Unsafe links withhold.
+      ...(level === "variantType" ? { sameName: sameTitleWord } : {}),
     });
     if (plan.ambiguities.length > 0) {
       console.warn(
@@ -1995,26 +2017,12 @@ export const storeReconciledOptions = mutation({
       return patch;
     };
 
-    // NEO-239 — the base ROLE, decided once for the whole batch. Same rule as
-    // `storeSelectorOptions`: exactly one incoming BSC id may name the base
-    // variant, and a set whose base an operator has already chosen is left
-    // alone. See `isBscBaseVariantId` for why it is a token match on the
-    // marketplace id rather than a literal or the NB display value.
-    const baseVariantId =
-      level === "variantType"
-        ? soleBscBaseVariantId(items.map((item) => item.ids.bsc))
-        : undefined;
-    const siblingHoldsBaseRole = existingOptions.some(
-      (row) => row.metadata?.isBase === true,
-    );
-    const confersBaseRole = (ids: Partial<Record<"bsc" | "sportlots", string>>) =>
-      baseVariantId !== undefined &&
-      !siblingHoldsBaseRole &&
-      ids.bsc === baseVariantId;
-
-    // NEO-291 — the flags every insert/parallel-level row in this batch is
-    // born with, from its level and the parent's role (the parent's tagged
-    // BSC slot, never its name). One parent per call, so one answer.
+    // NEO-291 / NEO-334 — the insert/parallel reading every insert/parallel-
+    // level row in this batch is born with, from its level and the parent
+    // variant type's kind (its title). One parent per call, so one answer.
+    // TRANSIENT: it feeds `deriveOwnLevelFeatures` at insert and is never
+    // written to the row. No Base / Insert / Parallel kind is conferred here
+    // either: a variant type's kind is its title.
     const variantFlags = derivedVariantFlags(level, parentRowForCopyDown);
 
     const linkedIds: Id<"selectorOptions">[] = [];
@@ -2163,42 +2171,67 @@ export const storeReconciledOptions = mutation({
           outcome.tier === 0 &&
           selectorValueKey(item.value) !== selectorValueKey(w.value)
         ) {
-          const renamePlan = planValueRename({
-            row: {
-              _id: row._id,
-              level: row.level,
-              value: w.value,
-              features: w.features,
-              sportConfig: row.sportConfig,
-              // NEO-294 — this modal runs at every level, manufacturer
-              // included, so a tier-0 title edit is a fourth door onto the
-              // year's Unknown row. Hand over the role flags and the shared
-              // planner refuses it here too; the `!renamePlan.ok` branch
-              // below already logs and keeps the linkage.
-              metadata: row.metadata,
-            },
-            nextValue: item.value,
-            siblings: workingSiblings(),
-          });
+          // NEO-334 — the variant-type kind guard, BEFORE the planner: a
+          // variant type's title is its kind, so a title edit that changes
+          // it is refused while rows sit beneath the type (and a second
+          // "Base" is refused outright). Against the row as this call has
+          // left it (`w.value`). The guard reads stored siblings, and this
+          // store's renames land in its write pass, so a batch that retitles
+          // the Base away and another type TO "Base" is refused (fail-closed);
+          // two lines both asking for "Base" are caught by the planner's
+          // same-word clash over `workingSiblings()`. A no-op without reads
+          // for every other level.
+          const kindCheck = await variantTypeRenameCheck(
+            ctx,
+            { ...row, value: w.value },
+            item.value,
+          );
+          const renamePlan:
+            | ReturnType<typeof planValueRename>
+            | { ok: false; reason: "invalid"; message: string } = kindCheck.ok
+            ? planValueRename({
+                row: {
+                  _id: row._id,
+                  level: row.level,
+                  value: w.value,
+                  features: w.features,
+                  sportConfig: row.sportConfig,
+                  // NEO-294 — this modal runs at every level, manufacturer
+                  // included, so a tier-0 title edit is a fourth door onto
+                  // the year's Unknown row. Hand over the role flags and the
+                  // shared planner refuses it here too; the
+                  // `!renamePlan.ok` branch below already logs and keeps the
+                  // linkage.
+                  metadata: row.metadata,
+                },
+                nextValue: item.value,
+                siblings: workingSiblings(),
+              })
+            : { ok: false, reason: "invalid", message: kindCheck.message };
           if (renamePlan.ok && !renamePlan.unchanged) {
             w.value = renamePlan.value;
             if (renamePlan.features) w.features = renamePlan.features;
             if (renamePlan.sportConfig) w.sportConfig = renamePlan.sportConfig;
           } else if (!renamePlan.ok) {
-            // Clashing or invalid. (The "protected variantType" refusal is gone
-            // as of NEO-239.) The LINKAGE below still applies — refusing a name
-            // is not a reason to drop the marketplace mapping the operator just
-            // confirmed.
+            // Clashing, invalid, or (NEO-334) a refused kind change. The
+            // LINKAGE below still applies — refusing a name is not a reason
+            // to drop the marketplace mapping the operator just confirmed.
             console.warn(
               `[storeReconciledOptions] rename refused (${renamePlan.reason}) ` +
                 `for ${row._id} at level=${level}: ${renamePlan.message}`,
             );
             // NEO-325 — and told to the operator, with the row in the way.
+            // NEO-334 — among variant types a clash is the same WORD
+            // (singular/plural), the rule `planValueRename` applied.
             const clashKey = selectorValueKey(item.value);
             const clash =
               renamePlan.reason === "clash"
                 ? workingSiblings().find(
-                    (o) => o._id !== row._id && selectorValueKey(o.value) === clashKey,
+                    (o) =>
+                      o._id !== row._id &&
+                      (level === "variantType"
+                        ? sameTitleWord(o.value, item.value)
+                        : selectorValueKey(o.value) === clashKey),
                   )
                 : undefined;
             renameRefusedAll.push({
@@ -2215,6 +2248,9 @@ export const storeReconciledOptions = mutation({
                     },
                   }
                 : {}),
+              // NEO-334 — a variant type's refusals carry the operator's
+              // sentence (kind change, second Base, same-word sibling).
+              ...(level === "variantType" ? { message: renamePlan.message } : {}),
             });
           }
         }
@@ -2317,34 +2353,6 @@ export const storeReconciledOptions = mutation({
           w.metadata = { ...(w.metadata ?? {}), cardNumberPrefix: incomingPrefix };
         }
 
-        // NEO-239 — the base ROLE, from BSC's own base variant id, never from
-        // the display value. ADDS ONLY: a row that already carries a value
-        // keeps it, so an operator's `setBaseVariantType` decision survives
-        // every later sync.
-        if (w.metadata?.isBase === undefined && confersBaseRole(parsed.ids)) {
-          w.metadata = { ...(w.metadata ?? {}), isBase: true };
-        }
-
-        // NEO-306 — the variant type's insert/parallel ROLE, read once from
-        // its `variant`-tagged BSC slot as refreshed above and recorded as an
-        // NB flag. ADDS ONLY, never on a Base row; metadata only.
-        if (level === "variantType") {
-          const role = conferredVariantRole(w.metadata, w);
-          if (role) w.metadata = { ...(w.metadata ?? {}), variantRole: role };
-        }
-
-        // NEO-291 — same ADDS-ONLY rule for the insert/parallel flags: a row
-        // carrying neither gets the derived pair, a row carrying either keeps
-        // what it has. Never flipped here; a level move
-        // (`applyParallelGroupings`) is the only thing that rewrites them.
-        if (
-          variantFlags &&
-          w.metadata?.isInsert === undefined &&
-          w.metadata?.isParallel === undefined
-        ) {
-          w.metadata = { ...(w.metadata ?? {}), ...variantFlags };
-        }
-
         // NEO-296 — charge the budget only if this item actually dirtied the
         // row. A re-send of an already-stored list lands here and adds
         // nothing, so the next call's budget is free to reach the tail.
@@ -2431,28 +2439,18 @@ export const storeReconciledOptions = mutation({
             }
           : alloc.platformFacets;
       //
-      // NEO-291 — the insert/parallel flags come from the derivation, never
-      // from `item.metadata`, whose validator no longer admits them. The
-      // prefix is the one thing the modal may still say about a new row.
+      // NEO-291 — the insert/parallel reading comes from the derivation, never
+      // from `item.metadata`, whose validator no longer admits it. The prefix
+      // is the one thing the modal may still say about a new row.
       const insertPrefix =
         item.metadata?.cardNumberPrefix === undefined
           ? undefined
           : normalizeCardNumberPrefix(item.metadata.cardNumberPrefix);
-      // NEO-306 — and a variant type's insert/parallel role, from the tagged
-      // slot this insert creates. Never on the Base.
-      const insertBase = confersBaseRole(parsed.ids);
-      const insertRole =
-        level === "variantType"
-          ? conferredVariantRole(insertBase ? { isBase: true } : undefined, {
-              platformData: alloc.platformData,
-              platformFacets: insertFacets,
-            })
-          : undefined;
+      // NEO-334 — and nothing else: no Base / Insert / Parallel kind (a
+      // variant type's kind is its title) and no insert/parallel flag (the
+      // derivation feeds `features` below and is not persisted).
       const insertMetadata = {
         ...(insertPrefix ? { cardNumberPrefix: insertPrefix } : {}),
-        ...(insertBase ? { isBase: true } : {}),
-        ...(insertRole ? { variantRole: insertRole } : {}),
-        ...(variantFlags ?? {}),
       };
 
       const newPrimary: { bsc?: string; sportlots?: string } = {};

@@ -1,21 +1,21 @@
 /**
- * NEO-291 — `metadata.isInsert` / `isParallel` at row creation and re-sync.
+ * NEO-291 / NEO-334 — the kind of a row at creation and re-sync.
  *
- * `writeOnceFeatureSnapshots.test.ts` already pins the FRESH-INSERT
- * derivation through `storeReconciledOptions` (and how it feeds
- * `features.cardType`). This file covers the ground that is unique to the
- * flags themselves:
+ * A variant type's TITLE is its kind (NEO-334), so a row created beneath one
+ * is born with the `features.cardType` that title implies and NO
+ * `metadata.isInsert` / `isParallel` flag. `writeOnceFeatureSnapshots.test.ts`
+ * pins the fresh-insert derivation through `storeReconciledOptions`. This file
+ * covers the ground that is unique to the doors:
  *
  *   - `addCustomSelectorOption` derives the same way `storeReconciledOptions`
- *     does — an operator hand-adding a row gets the same fail-closed rule.
- *   - a `parallel`-level row is always a parallel, whatever its (insert-level)
+ *     does, and writes no flag.
+ *   - a `parallel`-level row is always a Parallel, whatever its (insert-level)
  *     parent is.
  *   - a client that still sends `metadata.isInsert` to
  *     `storeReconciledOptions` is rejected at the validator, not merged.
- *   - a MATCHED row (one that already existed) gets the derived pair only
- *     when it carries NEITHER flag; a row that already has one is never
- *     flipped by a later sync — in both `storeSelectorOptions` and
- *     `storeReconciledOptions`.
+ *   - a MATCHED row (one that already existed) is given no flag by a later
+ *     sync, and a stray one it still carries is left exactly as found, in
+ *     both `storeSelectorOptions` and `storeReconciledOptions`.
  */
 
 import { convexTest } from "convex-test";
@@ -41,9 +41,8 @@ const ADMIN_IDENTITY = {
 const SENTINEL = 1_000_000;
 
 /**
- * A variantType row whose `variant`-tagged BSC slot carries `role`'s token,
- * with the NB role flag the sync confers from it (NEO-306) — exactly the
- * shape a real variantType sync writes.
+ * A variantType row titled "Inserts" or "Parallels" (its kind), with the
+ * `variant`-tagged BSC slot a real variantType sync writes beside it.
  */
 async function insertVariantType(
   t: ReturnType<typeof convexTest>,
@@ -53,12 +52,11 @@ async function insertVariantType(
   return t.run(async (ctx) =>
     ctx.db.insert("selectorOptions", {
       level: "variantType",
-      value: role === "insert" ? "Inserts" : "Base",
+      value: role === "insert" ? "Inserts" : "Parallels",
       parentId,
       children: [],
       platformData: { bsc: { b0: role } },
       platformFacets: { bsc: { b0: "variant" } },
-      metadata: { variantRole: role },
       lastUpdated: SENTINEL,
     }),
   );
@@ -86,8 +84,8 @@ async function getRow(t: ReturnType<typeof convexTest>, id: Id<"selectorOptions"
 // addCustomSelectorOption — same derivation as the marketplace paths
 // ===========================================================================
 
-describe("addCustomSelectorOption — NEO-291 flag derivation", () => {
-  test("an insert-level row added under an insert-role variant type gets isInsert and cardType Insert", async () => {
+describe("addCustomSelectorOption — kind from the parent's title (NEO-334)", () => {
+  test("an insert-level row added under a type titled Inserts gets cardType Insert and no flag", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const setNameId = await insertSetName(t);
@@ -99,11 +97,11 @@ describe("addCustomSelectorOption — NEO-291 flag derivation", () => {
     );
 
     const row = await getRow(t, insertId);
-    expect(row?.metadata).toEqual({ isInsert: true });
+    expect(row?.metadata).toBeUndefined();
     expect(row?.features?.cardType).toBe("Insert");
   });
 
-  test("an insert-level row added under a parallel-role variant type gets isParallel and cardType Parallel", async () => {
+  test("an insert-level row added under a type titled Parallels gets cardType Parallel and no flag", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const setNameId = await insertSetName(t);
@@ -115,11 +113,11 @@ describe("addCustomSelectorOption — NEO-291 flag derivation", () => {
     );
 
     const row = await getRow(t, insertId);
-    expect(row?.metadata).toEqual({ isParallel: true });
+    expect(row?.metadata).toBeUndefined();
     expect(row?.features?.cardType).toBe("Parallel");
   });
 
-  test("a parallel-level row is always isParallel, whatever its (insert-level) parent is", async () => {
+  test("a parallel-level row is always cardType Parallel, whatever its (insert-level) parent is", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const setNameId = await insertSetName(t);
@@ -138,11 +136,11 @@ describe("addCustomSelectorOption — NEO-291 flag derivation", () => {
     );
 
     const row = await getRow(t, parallelId);
-    expect(row?.metadata).toEqual({ isParallel: true });
+    expect(row?.metadata).toBeUndefined();
     expect(row?.features?.cardType).toBe("Parallel");
   });
 
-  test("an insert-level row added under a role-less variant type gets no flag", async () => {
+  test("an insert-level row added under a type with no kind gets no flag and no Insert/Parallel derivation", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const setNameId = await insertSetName(t);
@@ -200,8 +198,8 @@ describe("storeReconciledOptions — the modal cannot send a role (NEO-291)", ()
 // Matched rows — adds-only, never a flip
 // ===========================================================================
 
-describe("storeSelectorOptions — matched row, adds-only flags (NEO-291)", () => {
-  test("a matched row carrying NEITHER flag gets the derived pair", async () => {
+describe("storeSelectorOptions — matched row, no flag written (NEO-334)", () => {
+  test("a matched row carrying no flag is given none", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const setNameId = await insertSetName(t);
@@ -225,15 +223,15 @@ describe("storeSelectorOptions — matched row, adds-only flags (NEO-291)", () =
     });
 
     const row = await getRow(t, insertId);
-    expect(row?.metadata).toEqual({ isInsert: true });
+    expect(row?.metadata).toBeUndefined();
   });
 
-  test("a matched row that already carries isInsert is never flipped to isParallel", async () => {
+  test("a matched row that still carries a stray isInsert is left as found, whatever the parent's title says", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const setNameId = await insertSetName(t);
-    // The parent's role now says parallel — contradicting what the row
-    // already carries. A re-sync must not "correct" it.
+    // The parent's title says Parallels — contradicting the stray flag the
+    // row still carries. A re-sync neither reads nor "corrects" it.
     const variantTypeId = await insertVariantType(t, setNameId, "parallel");
     const insertId = await t.run(async (ctx) =>
       ctx.db.insert("selectorOptions", {
@@ -259,8 +257,8 @@ describe("storeSelectorOptions — matched row, adds-only flags (NEO-291)", () =
   });
 });
 
-describe("storeReconciledOptions — matched row, adds-only flags (NEO-291)", () => {
-  test("a matched row carrying NEITHER flag gets the derived pair", async () => {
+describe("storeReconciledOptions — matched row, no flag written (NEO-334)", () => {
+  test("a matched row carrying no flag is given none", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const setNameId = await insertSetName(t);
@@ -286,10 +284,10 @@ describe("storeReconciledOptions — matched row, adds-only flags (NEO-291)", ()
     });
 
     const row = await getRow(t, insertId);
-    expect(row?.metadata).toEqual({ isParallel: true });
+    expect(row?.metadata).toBeUndefined();
   });
 
-  test("a matched row that already carries isParallel is never flipped to isInsert", async () => {
+  test("a matched row that still carries a stray isParallel is left as found, whatever the parent's title says", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const setNameId = await insertSetName(t);

@@ -77,15 +77,13 @@ async function insertRow(
 
 /**
  * A variant type as a BSC variant-type sync writes it: the `variant`-tagged
- * BSC slot, and the NB role conferred from it once (NEO-306: `isBase`, or
- * `metadata.variantRole`, is what `variantTypeRole` reads).
+ * BSC slot. Its kind is its TITLE (NEO-334), so no flag is written.
  */
 function roleType(role: "base" | "insert" | "parallel") {
   return {
     platformData: { bsc: { b0: role } },
     platformFacets: { bsc: { b0: "variant" as const } },
     platformSlotSeq: { bsc: 1 },
-    metadata: role === "base" ? { isBase: true } : { variantRole: role },
   };
 }
 
@@ -139,7 +137,6 @@ async function seed(t: T) {
     parentId: parallelTypeId,
     platformData: { bsc: { b0: "blue" } },
     platformSlotSeq: { bsc: 1 },
-    metadata: { isParallel: true },
   });
   const goldId = await insertRow(t, {
     level: "insert",
@@ -147,7 +144,6 @@ async function seed(t: T) {
     parentId: parallelTypeId,
     platformData: { bsc: { b0: "gold" } },
     platformSlotSeq: { bsc: 1 },
-    metadata: { isParallel: true },
   });
 
   // A second BSC set of the brand, with a Parallel type of its own.
@@ -432,9 +428,13 @@ describe("convertSetToParallel — guards", () => {
         }),
       conversionRefusal.moreThanBase("Bowman Aqua"),
     );
-    // The one child is not flagged as the base (a name is not a role).
+    // The one child is not titled Base: the title is the kind, so it is not
+    // the Base (and a stray isBase flag would not make it one).
     await t.run(async (ctx) => {
-      await ctx.db.patch(sl["Bowman Black"].baseId, { metadata: {} });
+      await ctx.db.patch(sl["Bowman Black"].baseId, {
+        value: "Starter",
+        metadata: { isBase: true },
+      });
     });
     await expectRefusal(
       t,
@@ -497,7 +497,7 @@ describe("convertSetToParallel — guards", () => {
     );
   });
 
-  test("the target variant type is a Parallel type (its NB role, never its name)", async () => {
+  test("the target variant type is a Parallel type (its title, never a flag)", async () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t);
     const sl = await slSets(t, ids.brandId, [{ id: "SL-RED", label: "Bowman Red" }]);
@@ -511,11 +511,18 @@ describe("convertSetToParallel — guards", () => {
         }),
       conversionRefusal.notParallelType("Insert", "Bowman"),
     );
-    // Called "Parallel" with no role behind it: still not a Parallel type.
+    // A title that only contains the word is no Parallel type, and a stray
+    // retired flag on another title does not make one.
     const named = await insertRow(t, {
       level: "variantType",
-      value: "Parallel",
+      value: "Parallel Set",
       parentId: ids.chromeId,
+    });
+    const flagged = await insertRow(t, {
+      level: "variantType",
+      value: "Gold",
+      parentId: ids.chromeId,
+      metadata: { variantRole: "parallel" },
     });
     await expectRefusal(
       t,
@@ -524,7 +531,16 @@ describe("convertSetToParallel — guards", () => {
           setId: sl["Bowman Red"].setId,
           targetParallelTypeId: named,
         }),
-      conversionRefusal.notParallelType("Parallel", "Bowman Chrome"),
+      conversionRefusal.notParallelType("Parallel Set", "Bowman Chrome"),
+    );
+    await expectRefusal(
+      t,
+      () =>
+        as.mutation(api.setParallelConversion.convertSetToParallel, {
+          setId: sl["Bowman Red"].setId,
+          targetParallelTypeId: flagged,
+        }),
+      conversionRefusal.notParallelType("Gold", "Bowman Chrome"),
     );
   });
 
@@ -673,7 +689,6 @@ describe("convertSetToParallel — guards", () => {
       level: "variantType",
       value: "Base",
       parentId: setId,
-      metadata: { isBase: true },
       platformData: { sportlots: { s0: "SL-BOWMAN" } },
       platformLabels: { sportlots: { s0: "Bowman" } },
       platformSlotSeq: { sportlots: 1 },
@@ -741,7 +756,7 @@ describe("convertSetToParallel — the move", () => {
     expect(row.platformData).toEqual({ sportlots: { s0: "SL-FUCHSIA" } });
     expect(row.platformLabels).toEqual({ sportlots: { s0: "Bowman Fuchsia" } });
     expect(row.platformSlotSeq).toEqual({ sportlots: 1 });
-    expect(row.metadata).toEqual({ isParallel: true });
+    expect(row.metadata).toBeUndefined();
     expect(row.createdByUserId).toBe(ADMIN.subject);
     // Features copied down from the Parallel type at creation.
     expect(row.features?.season).toBe("2026");
@@ -1050,11 +1065,12 @@ describe("promoteParallelToSet — the move", () => {
     expect(base).toMatchObject({
       level: "variantType",
       value: "Base",
-      metadata: { isBase: true },
       platformData: { sportlots: { s0: "SL-PRISTINE" } },
       platformLabels: { sportlots: { s0: "Pristine" } },
       createdByUserId: ADMIN.subject,
     });
+    // The title is the kind: no flag is written on the new Base.
+    expect(base.metadata).toBeUndefined();
     const cards = await cardsOn(t, base._id);
     expect(cards.map((c) => c._id).sort()).toEqual([c1, c2].sort());
     expect(cards.find((c) => c._id === c2)!.platformData).toEqual({
@@ -1548,7 +1564,7 @@ describe("security audit — convertSetToParallel", () => {
     );
   });
 
-  test("a NEW parallel carries the card prefix, the attributes and the team; the Base's own role keys stay behind", async () => {
+  test("a NEW parallel carries the card prefix, the attributes and the team; the Base's own keys stay behind", async () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t);
     const sl = await slSets(t, ids.brandId, [{ id: "SL-FUCHSIA", label: "Bowman Fuchsia" }]);
@@ -1567,7 +1583,7 @@ describe("security audit — convertSetToParallel", () => {
         declinedUpstreamLabels: { sportlots: "bowman fuchsia refractor" },
       });
       await ctx.db.patch(baseId, {
-        metadata: { isBase: true, cardNumberPrefix: "BF-" },
+        metadata: { cardNumberPrefix: "BF-" },
         features: { cardType: "Base", parallelName: "Base", isCaseHit: "true" },
         teamIds: [teamId as Id<"teams">],
       });
@@ -1602,14 +1618,14 @@ describe("security audit — convertSetToParallel", () => {
         targetParallelTypeId: ids.parallelTypeId,
       });
     const row = (await get(t, result.parallelId))!;
-    expect(row.metadata).toEqual({ isParallel: true, cardNumberPrefix: "BF-" });
+    expect(row.metadata).toEqual({ cardNumberPrefix: "BF-" });
     expect(row.teamIds).toEqual([teamId]);
     expect(row.features).toMatchObject({
       season: "2026",
       releaseDate: "2026-05-01",
       isCaseHit: "true",
     });
-    // The parallel's own role, not the Base's.
+    // The parallel's own cardType, not the Base's.
     expect(row.features?.cardType).not.toBe("Base");
     expect(row.features?.parallelName).toBeUndefined();
   });

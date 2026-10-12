@@ -47,8 +47,8 @@
  * Then PER PLAYER, each player on the card independently, in this order:
  *
  *  3. **baseSet.** The base checklist is the cards under the variantType
- *     node flagged `metadata.isBase` (an NB role, never the literal "Base");
- *     a set with no flagged node skips this tier. A player's SINGLE-player
+ *     node titled "Base" (NEO-334: a variant type's title is its kind,
+ *     `variantTypeKind`); a set with no Base skips this tier. A player's SINGLE-player
  *     base cards with a team are that player's evidence; exactly one distinct
  *     team set → that is their team here. A candidate that is itself in the
  *     base checklist skips this tier — tier 1 already was its base.
@@ -588,7 +588,7 @@ export function planTeamFill(input: {
   yearByNodeId: ReadonlyMap<string, number | undefined>;
   /** Per node: level and parent, so tier 2 knows which node a parallel copies. */
   nodesById: ReadonlyMap<string, TeamFillNode>;
-  /** The variantType node flagged `metadata.isBase`, or null when the set has none. */
+  /** The variantType node titled "Base", or null when the set has none (or two). */
   baseNodeId: Id<"selectorOptions"> | null;
   currentYear: number;
   /**

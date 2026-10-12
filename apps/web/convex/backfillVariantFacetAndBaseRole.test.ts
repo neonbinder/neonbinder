@@ -109,7 +109,6 @@ describe("backfillVariantFacetAndBaseRole — the dry run", () => {
 
     expect(report.armed).toBe(false);
     expect(report.tagged).toBe(2);
-    expect(report.rolesSet).toBe(1);
 
     // NOT WRITTEN. This is the whole contract of a dry run, and the assertion
     // that a report the operator reads is not itself the change.
@@ -118,7 +117,7 @@ describe("backfillVariantFacetAndBaseRole — the dry run", () => {
       await ctx.db.get(insert),
     ]);
     expect(after[0]?.platformFacets).toBeUndefined();
-    expect(after[0]?.metadata?.isBase).toBeUndefined();
+    expect(after[0]?.metadata).toBeUndefined();
     expect(after[1]?.platformFacets).toBeUndefined();
   });
 
@@ -139,12 +138,11 @@ describe("backfillVariantFacetAndBaseRole — the dry run", () => {
     // The plan is still reported in full, so the refusal costs the operator
     // nothing but the second command.
     expect(report.tagged).toBe(1);
-    expect(report.rolesSet).toBe(1);
 
     // AND nothing was written.
     const row = await t.run(async (ctx) => ctx.db.get(base));
     expect(row?.platformFacets).toBeUndefined();
-    expect(row?.metadata?.isBase).toBeUndefined();
+    expect(row?.metadata).toBeUndefined();
     expect(row?.lastUpdated).toBe(SENTINEL);
   });
 
@@ -195,7 +193,7 @@ describe("backfillVariantFacetAndBaseRole — the dry run", () => {
 });
 
 describe("backfillVariantFacetAndBaseRole — the armed run", () => {
-  test("tags the slot and grants the base role", async () => {
+  test("tags the slot and writes no role flag (the title is the kind, NEO-334)", async () => {
     const t = convexTest(schema, modules);
     const setId = await seedSet(t);
     const base = await seedVariantType(t, setId, "Base", { bsc: { b0: "base" } });
@@ -206,17 +204,14 @@ describe("backfillVariantFacetAndBaseRole — the armed run", () => {
     const report = await armed(t);
     expect(report.armed).toBe(true);
     expect(report.tagged).toBe(2);
-    expect(report.rolesSet).toBe(1);
 
     const baseRow = await t.run(async (ctx) => ctx.db.get(base));
     expect(baseRow?.platformFacets?.bsc).toEqual({ b0: "variant" });
-    expect(baseRow?.metadata?.isBase).toBe(true);
+    expect(baseRow?.metadata).toBeUndefined();
 
-    // The role comes from the SLOT ID being "base", so a Parallel row gets the
-    // tag and no role.
     const parallelRow = await t.run(async (ctx) => ctx.db.get(parallel));
     expect(parallelRow?.platformFacets?.bsc).toEqual({ b0: "variant" });
-    expect(parallelRow?.metadata?.isBase).toBeUndefined();
+    expect(parallelRow?.metadata).toBeUndefined();
   });
 
   test("matching is fold-insensitive, because the display value was seeded from the slug", async () => {
@@ -229,7 +224,7 @@ describe("backfillVariantFacetAndBaseRole — the armed run", () => {
     await armed(t);
     const row = await t.run(async (ctx) => ctx.db.get(id));
     expect(row?.platformFacets?.bsc).toEqual({ b0: "variant" });
-    expect(row?.metadata?.isBase).toBe(true);
+    expect(row?.metadata).toBeUndefined();
   });
 
   test("is IDEMPOTENT — a second run writes nothing and reports the steady state", async () => {
@@ -242,17 +237,15 @@ describe("backfillVariantFacetAndBaseRole — the armed run", () => {
 
     const second = await armed(t);
     expect(second.tagged).toBe(0);
-    expect(second.rolesSet).toBe(0);
     expect(second.skippedCounts.alreadyTagged).toBe(1);
 
     const afterSecond = await t.run(async (ctx) => ctx.db.get(base));
     expect(afterSecond?.lastUpdated).toBe(afterFirst?.lastUpdated);
   });
 
-  test("never overwrites an operator's `isBase` decision", async () => {
-    // `setBaseVariantType` is the operator's door onto the same field. A
-    // backfill that re-derived the role from the slug on every run would undo
-    // their answer the next time anybody ran it.
+  test("a stray isBase flag is left exactly as found: tagging neither reads nor rewrites it", async () => {
+    // The flag is retired (the strip migration removes it); a tag run must not
+    // grant, flip or clear it.
     const t = convexTest(schema, modules);
     const setId = await seedSet(t);
     const demoted = await seedVariantType(t, setId, "Base", {
@@ -261,10 +254,10 @@ describe("backfillVariantFacetAndBaseRole — the armed run", () => {
     });
 
     const report = await armed(t);
-    expect(report.rolesSet).toBe(0);
-    expect((await t.run(async (ctx) => ctx.db.get(demoted)))?.metadata?.isBase).toBe(
-      false,
-    );
+    expect(report.tagged).toBe(1);
+    const row = await t.run(async (ctx) => ctx.db.get(demoted));
+    expect(row?.metadata).toEqual({ isBase: false });
+    expect(row?.platformFacets?.bsc).toEqual({ b0: "variant" });
   });
 
   test("never overwrites an existing facet tag", async () => {
@@ -299,7 +292,6 @@ describe("backfillVariantFacetAndBaseRole — what it refuses to touch", () => {
 
     const report = await armed(t);
     expect(report.tagged).toBe(0);
-    expect(report.rolesSet).toBe(0);
     expect(report.skippedCounts.slugDoesNotMatchValue).toBe(1);
     expect(report.needsRemapping).toEqual([
       { id: corrupted, value: "Base" },
@@ -307,7 +299,7 @@ describe("backfillVariantFacetAndBaseRole — what it refuses to touch", () => {
 
     const row = await t.run(async (ctx) => ctx.db.get(corrupted));
     expect(row?.platformFacets).toBeUndefined();
-    expect(row?.metadata?.isBase).toBeUndefined();
+    expect(row?.metadata).toBeUndefined();
   });
 
   test("a row with no BSC slot at all is counted separately — there is nothing to tag", async () => {

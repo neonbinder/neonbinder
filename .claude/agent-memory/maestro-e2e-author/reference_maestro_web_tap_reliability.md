@@ -70,3 +70,14 @@ Durable maestro-web tap facts (confirmed via NEO-39 forensics on credentials-lif
    renders when a column has >8 items (real-synced); custom/short columns have none.
 
 Related: [[patterns_util_drill_to_custom]] (the drill the Year-select net lives in).
+
+## Pre-click variant: `No message with id N received` inside `scrollToPoint`
+Same `null cannot be cast to non-null type kotlin.Int` / junit `Unknown error`,
+but logged as `CdpWebDriver.executeJS ... IllegalStateException: No message
+with id N received` from `CdpClient.waitForMessage` ← `scrollToPoint` ← `tap`,
+milliseconds after the tap starts. `waitForMessage` iterates the CDP websocket's
+`incoming` channel and throws when the channel CLOSES before the reply — the
+driver's socket dropped, so the click was NEVER dispatched (failure screenshot
+still shows the pre-tap UI). Diagnose by comparing the target's bounds and the
+preceding app state with a green run of the same flow: identical ⇒ driver-side,
+not the change under test. No in-flow mitigation; a whole-run rerun covers it.

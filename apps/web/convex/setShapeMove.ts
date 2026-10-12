@@ -48,7 +48,7 @@ import {
   stripMatchedBrandPrefix,
 } from "./selectorSyncMatch";
 import { MAX_YEAR_SET_ROWS } from "./setFromMarketplace";
-import { variantTypeRole } from "./variantRole";
+import { variantTypeKind } from "./variantRole";
 import { compareCardNumbers } from "../lib/cards/card-number";
 
 type Row = Doc<"selectorOptions">;
@@ -363,20 +363,21 @@ export function lossFieldNames(loss: ConversionLoss): string[] {
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * The first variant type under `setId` whose NB role is `role`. Never by
- * name: the role is `variantTypeRole`, NB's flag.
+ * The ONE variant type under `setId` of kind `kind`: titled "Insert" /
+ * "Inserts" or "Parallel" / "Parallels" (`variantTypeKind`, NEO-334: a
+ * variant type's title is its kind). Exactly one or nothing: no match, or
+ * more than one (two siblings may not share a word, so two would be a set
+ * NB cannot read), is null, which the doors show as "no Insert / Parallel
+ * type yet" and refuse on.
  *
- * Bounded (NEO-306 security audit). A matching type within the first
- * `MAX_VARIANT_TYPES_PER_SET` is exactly the answer an unbounded read gives
- * (the index order is the same). Past the cap with none found, the answer is
- * FAIL CLOSED: null plus a warning, which the doors show as "no Insert /
- * Parallel type yet" and refuse on — nothing is written under a type NB
- * could not read.
+ * Bounded (NEO-306 security audit). Past `MAX_VARIANT_TYPES_PER_SET` the
+ * answer is FAIL CLOSED: null plus a warning. Nothing is written under a
+ * type NB could not read.
  */
-export async function variantTypeWithRole(
+export async function variantTypeOfKind(
   ctx: { db: QueryCtx["db"] },
   setId: RowId,
-  role: "insert" | "parallel",
+  kind: "insert" | "parallel",
 ): Promise<Row | null> {
   const types = await ctx.db
     .query("selectorOptions")
@@ -384,16 +385,22 @@ export async function variantTypeWithRole(
       q.eq("level", "variantType").eq("parentId", setId),
     )
     .take(MAX_VARIANT_TYPES_PER_SET + 1);
-  const found = types
-    .slice(0, MAX_VARIANT_TYPES_PER_SET)
-    .find((t) => variantTypeRole(t) === role);
-  if (!found && types.length > MAX_VARIANT_TYPES_PER_SET) {
+  if (types.length > MAX_VARIANT_TYPES_PER_SET) {
     console.warn(
       `[setShapeMove] set=${setId} has more than ${MAX_VARIANT_TYPES_PER_SET} ` +
-        `variant types; its ${role} type was not looked for past them`,
+        `variant types; its ${kind} type was not looked for`,
     );
+    return null;
   }
-  return found ?? null;
+  const found = types.filter((t) => variantTypeKind(t) === kind);
+  if (found.length > 1) {
+    console.warn(
+      `[setShapeMove] set=${setId} has ${found.length} ${kind} variant types; ` +
+        `refusing to pick one`,
+    );
+    return null;
+  }
+  return found[0] ?? null;
 }
 
 export async function childrenOf(
@@ -458,7 +465,10 @@ export async function insertRowsUnder(
     .collect();
 }
 
-/** The Base of a set: its variant type carrying the NB base role. */
+/**
+ * The Base of a set: its ONE variant type titled "Base" (`variantTypeKind`).
+ * None, or more than one, is null.
+ */
 export async function baseOf(
   ctx: { db: QueryCtx["db"] },
   setId: RowId,
@@ -469,7 +479,8 @@ export async function baseOf(
       q.eq("level", "variantType").eq("parentId", setId),
     )
     .collect();
-  return types.find((t) => t.metadata?.isBase === true) ?? null;
+  const bases = types.filter((t) => variantTypeKind(t) === "base");
+  return bases.length === 1 ? bases[0] : null;
 }
 
 /** The brand's sets folded by name, bounded like the sync's year index. */
@@ -543,7 +554,7 @@ export async function readConversionSource(
   if (
     children.length > 1 ||
     base.level !== "variantType" ||
-    base.metadata?.isBase !== true
+    variantTypeKind(base) !== "base"
   ) {
     return { ok: false, reason: refusals.moreThanBase(set.value) };
   }

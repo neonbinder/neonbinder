@@ -60,9 +60,17 @@ tags:
 #   util-drill-to-custom.yaml; Step 2 creates the two rows BENEATH the
 #   selected set inline (the stt- STEP 3 / features-propagation STEP B shape
 #   and measurement). Since NEO-306 the fill is reached from the checklist
-#   itself, so there is no second drill back to the set row. A hand-added variant type named
-#   "Base" is NOT terminal — the base is `metadata.isBase`, never the display
-#   value (NEO-239) — so the checklist needs the Insert › Base pair.
+#   itself, so there is no second drill back to the set row. The checklist sits
+#   on the Insert › Base pair: a variant TYPE titled "Insert" with an INSERT
+#   named "Base" beneath it. Under NEO-334 a title is a kind only at the
+#   variant-type level (convex/variantRole.ts), so the type is an Insert type
+#   (picking "Base" also opens the Sub-Variants column, which this flow never
+#   touches, exactly as when it was measured) and the insert "Base" is NOT the
+#   set's Base: the set has no variant type titled Base. That keeps the ledger
+#   claim honest — teamFill's base-checklist tier (scope "baseSet") has nothing
+#   to read, so the one fill is rule A on its own node ("same player in this
+#   set", scope "sameNode"). A type titled "Base" would be terminal and put the
+#   checklist on the type itself; this flow does not depend on that.
 #
 # WHAT THIS DOES NOT EXERCISE (R1): rules B (one-team career) and C (one
 #   stint in the set year) — both need `players.teamYears`, which only the

@@ -15,7 +15,9 @@ tags:
 #   - Step 2: picking the first team on a set with nothing beneath it asks no
 #     question, saves, and the cascade it schedules lands ("Team applied to
 #     cards") with the team chipped on the set.
-#   - Step 3: two cards added under the set's Base with NO team picked on the
+#   - Step 3: two cards added under the set's Insert › Base row (an insert
+#     named "Base", not the set's Base — NEO-334 reads a kind off variant-type
+#     titles only) with NO team picked on the
 #     way in are born with the set's team — proven on card #1's row sub-line
 #     and in card #2's drawer chip.
 #   - Step 4: card #2 is hand-set to a second team in the drawer.
