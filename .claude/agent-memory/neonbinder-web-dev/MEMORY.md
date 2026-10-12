@@ -98,3 +98,4 @@
 - [Readline iterator loses lines under a slow consumer](reference_readline_iterator_loses_lines_under_slow_consumer.md) — ERR_USE_AFTER_CLOSE + dropped last line when the loop awaits; split child.stdout by hand
 - [Scope to a run on a catalogue deployment](reference_scope_to_a_run_on_a_catalogue_deployment.md) — _creationTime range from a boundary, not a field; `convex run` prints pretty JSON off a TTY
 - [Panel-wide shortcut via capture phase](reference_panel_wide_shortcut_via_capture_phase.md) — Ctrl+Enter over a typeahead: onKeyDownCapture + stopPropagation, guard nested role=dialog; stub spy proves the typeahead never sees it
+- [Relabelled primary slot needs a focus move](reference_relabelled_primary_slot_needs_a_focus_move.md) — move focus off a relabelled footer slot; arm the ref only on a real change; park-on-heading effect goes AFTER the opener-reading open effect
