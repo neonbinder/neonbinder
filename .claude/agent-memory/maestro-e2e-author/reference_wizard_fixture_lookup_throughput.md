@@ -1,9 +1,19 @@
 ---
 name: wizard-fixture-lookup-throughput
-description: Size an entity-review fixture, and any timing claim on it, by its unknown-name count — one live lookup of a name Wikidata knows takes ~4-5s Convex-side (a laptop sees ~0.5s), the pool is 5-wide and deployment-wide, teams settle LAST (players inserted first, FIFO), a READY row is presented at once, and a `notVisible` dwell before a timing assert spends the window
+description: Size an entity-review fixture, and any timing claim on it, by its unknown-name count and the 5-wide pool's depth — one live lookup's Convex-side time varies 0.3-20s (never a guarantee), the pool is 5-wide and deployment-wide, teams settle LAST (players inserted first, FIFO), a READY row is presented at once, and a `notVisible` dwell before a timing assert spends the window
 metadata:
   type: reference
 ---
+
+**Per-lookup time varies too much to size a window on — size it on the
+pool's depth.** One NPB batch on a PR preview (2026-10-11) ran Convex-side
+lookups from 0.3s to 20s (Wikidata 502 retries in the tail; one 502'd name
+was re-looked-up ~42s later and held the tail to +44s). The structural floor
+is the 5-wide FIFO pool: N unknowns need ceil(N/5) rounds, each a round-trip
+plus ~0.2s between a slot freeing and the next start, and staged teams queue
+behind every player. Measured there: first five lookups +0.5s after
+`startBatch`, last player started +13.3s, first team settled +14.1s. The
+older figures below are one sample, not a rule.
 
 **Per-lookup time is a CONVEX number, never a laptop number.** Running the
 `*Live` lookup bodies under tsx from a laptop (5 workers) settled 20 NPB names

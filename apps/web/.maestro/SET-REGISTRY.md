@@ -1559,41 +1559,49 @@ the flow syncs its variant types and maps Base on both sides on its first drill,
 through `util-fetch-real-set-checklist-to-wizard`, like the three committing
 fixtures above.
 
-**What the flow does to make the fixture.** Before it fetches, it forks two
-Baseball players named after card #1 on `/admin/players` — `Shuya Yamada`,
-b. 1851 and b. 1852 — so that name reaches the wizard as a row two players on
-file answer to, which is what the pick step ("Which Shuya Yamada is this?") is
-for. Card #1 is Shuya Yamada RC, Hanshin Tigers (TCDb), and BSC spells it the
+**What the flow does to make the fixture.** Before it fetches, it adds a
+Baseball player named after card #1 on `/admin/players` — `Shuya Yamada`,
+b. 1851 — beside the catalogue's own `Shuya Yamada` (below), so that name
+reaches the wizard as a row two players on file answer to, which is what the
+pick step ("Which Shuya Yamada is this?") is for. Card #1 is Shuya Yamada RC, Hanshin Tigers (TCDb), and BSC spells it the
 same: the pick heading read `Which Shuya Yamada is this?` on the first live
 fetch.
 
 **Why NPB, and not an MLB team set.** The name only reaches the pick step while
 card-year narrowing (`narrowSameNamePlayersByCardYear`) cannot pick one row: no
 same-name player may hold a stint on the card's printed team covering 2024. The
-forks hold no stints at all. On an MLB team set the catalogue's own row for the
+b. 1851 row holds no stints at all. On an MLB team set the catalogue's own row for the
 name would carry that stint and the step would never open.
 
-**Three on file, not two (NEO-330 catalogue, measured 2026-10-11).** The
-reference catalogue is a prod snapshot and already holds a `Shuya Yamada`:
-Wikidata-linked, Hanshin Tigers from 2026, no birth year. His span covers a 2024
-card within the ±2-year tolerance, so he survives the narrowing; his only stint
-starts after 2024, so the card's team does not pick him outright. The step
-therefore lists three and its intro reads `We've got 3 on file under that name.`
-⚠️ If a catalogue refresh moves his stint to 2024 or earlier, the narrowing
-picks him and the step disappears: the flow fails at STEP 1 by name.
+**Two on file: the catalogue's man and ours (NEO-330 catalogue, measured
+2026-10-11).** The reference catalogue is a prod snapshot and already holds a
+`Shuya Yamada`: Wikidata-linked, Hanshin Tigers from 2026, no birth year. His
+span covers a 2024 card within the ±2-year tolerance, so he survives the
+narrowing; his only stint starts after 2024, so the card's team does not pick
+him outright. The step therefore lists two and its intro reads `We've got 2 on
+file under that name.` ⚠️ If a catalogue refresh moves his stint to 2024 or
+earlier, or drops him, the step disappears: the flow fails at STEP 1 by name.
+
+**Why one row of our own, not two (CI run 38197074499).** The flow used to fork
+b. 1851 and b. 1852. On a catalogue preview the second create is REFUSED, every
+time: `createByAdmin` (`adoptOrForkOnCreate`, NEO-254) forks past one undated
+rival but refuses once there are several and any is undated — "2 players are
+already filed under Shuya Yamada. Pick the right one instead of adding
+another." The catalogue's row is undated, so a second dated fork cannot be made
+through the product while he is on file.
 
 **Read-only on the set.** The flow leaves through Cancel → Discard: it commits
-nothing and creates nothing from the wizard. It does write two GLOBAL `players`
-rows named `Shuya Yamada` that nothing deletes, so:
+nothing and creates nothing from the wizard. It does write one GLOBAL `players`
+row named `Shuya Yamada` (b. 1851) that nothing deletes, so:
 
 * ⚠️ **No other flow may fetch a checklist carrying that name.** Its wizard
   would open a pick step where it expects a New Player step.
 * ⚠️ **No flow may commit this set.** A commit creates or links a Yamada with a
   2024 Hanshin stint, which narrows the name and removes the step for the rest
   of the run.
-* **Re-runs are idempotent.** On a deployment that already holds both forks,
-  each create ADOPTS (a birth year exactly one row carries), and the flow
-  asserts both rows exist rather than that it created them. A review batch a
+* **Re-runs are idempotent.** On a deployment that already holds the b. 1851
+  row, the create ADOPTS (a birth year exactly one row carries), and the flow
+  asserts the row exists rather than that it created it. A review batch a
   red attempt left behind is detected by one read of the decided count and
   cleared through `util-discard-resumed-review-batch` (with `SET` passed
   through) only when that count is not 0, so the normal path pays no 7s dwell.
@@ -1617,17 +1625,21 @@ names.)
 
 **The timing claim, and why it holds.** STEP 1 asserts that the wizard opens on
 the pick step while the other names are still being looked up (Jason,
-2026-10-11: the claim stays in E2E). One live lookup of a name Wikidata knows
-takes ~4-5s Convex-side, not the ~0.5s a laptop sees: CI run 38073638557 had
-the 5-wide pool to itself for this set and started 21 NPB lookups in 21s. So the
-20 lookups keep the header's `· N still being looked up` on screen for ≥ ~16s,
-and the staged career teams (looked up after them) for longer; contention from
-other flows only lengthens it. The flow's first read after the wizard opens is
-that assertion, ~1s after the batch starts (in that run the wizard's title
-painted 0.6s before the first NPB lookup started).
+2026-10-11: the claim stays in E2E). What holds the window open is the pool's depth, not
+how slow one lookup is: the 20 unknown names need at least four rounds of the
+deployment's 5-wide FIFO pool, and every career team they stage is queued behind
+all of them, so the header's `· N still being looked up` stays on screen until
+the last settles. One lookup's Convex-side time varies widely — 0.3s to 20s in
+one batch on the PR preview (2026-10-11, with Wikidata 502 retries), ~4-5s in CI
+run 38073638557 — so even an all-fast batch keeps the tail ≥ ~2.5s; contention
+from other flows only lengthens it. The flow's first read after the wizard opens
+is that assertion, ~1s after the batch starts. Measured on the PR preview,
+2026-10-11 (laptop and Convex clocks): batch start +0.0s, first five lookups
++0.5s, STEP 1 COMPLETED +1.1s, last player lookup started +13.3s, first team
+settled +14.1s, tail gone +44s (+26.7s without one late 502 retry).
 
 **Then the flow walks.** An untouched pick step yields to the first settled
-team or league (teams first, NEO-236), and the career teams above settle ~17-25s
+team or league (teams first, NEO-236), and the career teams above settle ~14-25s
 in, inside the window the Create new / Back to the list / link steps need. So
 after STEP 1 the flow runs `util-wizard-walk-to-player-row`, which waits the
 batch out, answers each team and league step as a skip, and stops on the first

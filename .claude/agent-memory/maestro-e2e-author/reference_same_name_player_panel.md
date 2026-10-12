@@ -1,6 +1,6 @@
 ---
 name: same-name-player-panel
-description: NEO-332 same-name PICK STEP ("Which <name> is this?") — inserted READY with no lookup, bulk create skips it, bulk skip decides it; selectors, why to tap the TOP candidate, and why an untouched pick step yields to a settled team
+description: NEO-332 same-name PICK STEP ("Which <name> is this?") — inserted READY with no lookup, bulk create skips it, bulk skip decides it; selectors, why to tap the TOP candidate, why an untouched pick step yields to a settled team, and why a second dated fork beside an undated catalogue row is refused
 metadata:
   type: reference
 ---
@@ -26,10 +26,17 @@ Selectors (all user-visible):
   decision"` and read `text: "Linked to …"` `childOf: id: "Decision for <name>"`
   (the read-only panel; the live footer group of the same name is not
   rendered then).
-- the catalogue holds real same-name rows: on a catalogue preview a name you
-  fork twice can list THREE (NPB `Shuya Yamada`: the catalogue row survives
-  the narrowing on a ±2 span, its stint starts after the card). Count the
-  catalogue's rows read-only before asserting `N on file`.
+- the catalogue holds real same-name rows, often UNDATED. You cannot fork a
+  name twice beside one: `createByAdmin` (`adoptOrForkOnCreate`) forks past
+  ONE undated rival but REFUSES a dated create once there are several and any
+  is undated ("2 players are already filed under X. Pick the right one…").
+  The refusal renders in the add form's button row (below the fold) and the
+  form stays filled, so the flow sees only "no Added line"; the proof is a
+  `ConvexError` on `players:createByAdmin` in convex-logs. NPB `Shuya Yamada`
+  is therefore ONE fork (b. 1851) + the catalogue's row = 2 on file (CI run
+  38197074499 lost a whole run to the 3-on-file plan). Assert the undated
+  candidate with `id: "Link to <name>, (?!b\\. ).+"` (Java lookahead works)
+  rather than pinning catalogue career text.
 
 Bulk: `Add remaining players as new (N)` excludes these rows and can read (0)
 while they remain; `Skip remaining names (N)` decides them.
