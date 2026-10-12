@@ -27,9 +27,14 @@ test(
     await expect(linkOhtani).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, link search results" });
     await linkOhtani.click();
-    // The history collapses past five decided names, so open it first.
-    const decidedNames = await openDecidedList(page);
-    await expect(decidedNames.getByText("Linked to Shohei Ohtani")).toBeVisible();
+    // The history collapses past five decided names, so open it first. The
+    // auto-add of settled rows can push the count past five a moment later and
+    // fold an open list shut again (only the operator's own toggle latches it
+    // open), so re-open and re-check together until the line is on screen.
+    await expect(async () => {
+      const decidedNames = await openDecidedList(page);
+      await expect(decidedNames.getByText("Linked to Shohei Ohtani")).toBeVisible({ timeout: 1_500 });
+    }).toPass({ timeout: 7_000 });
 
     // Row 2: change the sport this name belongs to, Baseball -> Football.
     await walkToPlayerRow(page);
