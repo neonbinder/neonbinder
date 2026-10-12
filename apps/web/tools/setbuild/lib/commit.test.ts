@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { fakeClient } from "../runner/fake-client";
-import { buildParallelFromBase, BuildParallelError } from "./build-parallel";
+import { buildParallel, BuildParallelError } from "./build-parallel";
 import { checklistDone, runChecklistStep } from "./commit";
 import { ChecklistStepError } from "./fetch-checklist";
 
@@ -79,7 +79,7 @@ describe("build-parallel", () => {
     const client = fakeClient()
       .on("parallelChecklistBuild:getParallelsForBuild", plan(true))
       .on("selectorOptions:getSlotCardCounts", { bsc: {}, sportlots: {}, total: 300 });
-    const r = await buildParallelFromBase(client, { sourceId: "vtP" as never, name: "Sepia Refractors", expectCards: 300, at: "x" });
+    const r = await buildParallel(client, { sourceId: "vtP" as never, name: "Sepia Refractors", expectCards: 300, at: "x" });
     expect(r.outcome).toBe("skipped");
     expect(client.writes()).toEqual([]);
   });
@@ -89,14 +89,14 @@ describe("build-parallel", () => {
       .on("parallelChecklistBuild:getParallelsForBuild", plan(true))
       .on("parallelChecklistBuild:buildParallelChecklist", { status: "built", copied: 300 })
       .on("selectorOptions:getSlotCardCounts", { bsc: {}, sportlots: {}, total: 300 });
-    const r = await buildParallelFromBase(client, { sourceId: "vtP" as never, name: "Sepia Refractors", rebuild: true, at: "x" });
+    const r = await buildParallel(client, { sourceId: "vtP" as never, name: "Sepia Refractors", rebuild: true, at: "x" });
     expect(r).toMatchObject({ outcome: "built", built: 300 });
     expect(client.callsTo("parallelChecklistBuild:buildParallelChecklist")[0].args).toEqual({ parallelId: "p2" });
   });
 
   test("a parallel with no marketplace id of its own is never sent", async () => {
     const client = fakeClient().on("parallelChecklistBuild:getParallelsForBuild", plan(false, { bsc: false, sportlots: false }));
-    await expect(buildParallelFromBase(client, { sourceId: "vtP" as never, name: "Sepia Refractors", at: "x" })).rejects.toBeInstanceOf(BuildParallelError);
+    await expect(buildParallel(client, { sourceId: "vtP" as never, name: "Sepia Refractors", at: "x" })).rejects.toBeInstanceOf(BuildParallelError);
     expect(client.writes()).toEqual([]);
   });
 
@@ -105,6 +105,6 @@ describe("build-parallel", () => {
       .on("parallelChecklistBuild:getParallelsForBuild", plan(false))
       .on("parallelChecklistBuild:buildParallelChecklist", { status: "built", copied: 299 })
       .on("selectorOptions:getSlotCardCounts", { bsc: {}, sportlots: {}, total: 299 });
-    await expect(buildParallelFromBase(client, { sourceId: "vtP" as never, name: "Sepia Refractors", expectCards: 300, at: "x" })).rejects.toThrow(/expects 300/);
+    await expect(buildParallel(client, { sourceId: "vtP" as never, name: "Sepia Refractors", expectCards: 300, at: "x" })).rejects.toThrow(/expects 300/);
   });
 });

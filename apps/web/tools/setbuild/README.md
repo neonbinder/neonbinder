@@ -21,6 +21,12 @@ npm run setbuild:mcp          # MCP server over stdio (repo-root .mcp.json: nb-s
 Exit codes: 0 ok, 1 the command failed, 2 usage error (including `apply
 --auth machine` without a terminal), 3 `apply` stopped at an open decision.
 
+`apply` stops at the first open decision; `apply --collect` (and `nb_apply`,
+whose `stopAt` defaults to `"end"`) runs every step that does not depend on
+one and returns them all, with one fill-in template. What waits on what is the
+table at the top of `runner/engine.ts`. The confirm phrase does not cover
+`stopAt`: it changes how far a run goes, never what the spec allows.
+
 `plan`, `apply` and `decisions-template` take `--paused-platforms <keys>`
 (default: env `PAUSED_PLATFORMS`; an explicit `""` means nothing is paused).
 `mcp-smoke` passes it to the server it spawns, and the MCP server reads
@@ -57,8 +63,8 @@ the bypass header goes only to an https origin.
 auth/      token sources (machine API key, testing ticket -> Clerk template JWT)
 client/    target parsing, connection resolution, ConvexClient wrapper
 spec/      the zod spec schema and loader
-lib/       one module per operation (credentials, sync, map base, reconcile, review, commit, parallel)
-runner/    plan and apply: ordering, idempotency, open-decision templates
+lib/       one module per operation (credentials, sync, map base, reconcile, group parallels, review, commit, parallel build)
+runner/    plan and apply: ordering, idempotency, stopAt (first / collect), open-decision templates
 service.ts the seam the CLI and the MCP tools both call (read vs write halves)
 mcp*.ts    the MCP server, its seven tools, and mcp-smoke
 ```
@@ -83,7 +89,12 @@ mcp*.ts    the MCP server, its seven tools, and mcp-smoke
   decision. Ties are never given to the first candidate.
 - **Idempotent and resumable.** Every step checks state before it writes.
 - **No marketplace name is ever a key.** Rows are addressed by NB path or by a
-  marketplace id from a slot.
+  marketplace id from a slot (a `group` ref may be `{ "bsc": id }` or
+  `{ "sportlots": id }`, matched against the rows' platform slots).
+- **Group Parallels runs the dialog's own code.** `lib/group-parallels.ts`
+  drives `lib/set-build/grouping.ts` (the reducer, tree builder and diff the
+  modal imports) and `chunkGroupingPlan`; never re-implement a rule there. It
+  takes no prefix suggestion: a row the spec does not name stays put.
 
 ## Tests and gates
 

@@ -1,7 +1,14 @@
 /**
- * NEO-339 — "Build from Base" for one Parallel row: the same
- * `getParallelsForBuild` plan the panel reads, the same send-or-not rule
- * (`planParallelBuildOrder` → `initialLine`), and one `buildParallelChecklist`.
+ * NEO-339 — build one parallel's checklist from its source, the way the
+ * parallel-build panel does: the same `getParallelsForBuild` plan the panel
+ * reads, the same send-or-not rule (`planParallelBuildOrder` → `initialLine`),
+ * and one `buildParallelChecklist`.
+ *
+ * The source is whatever `getParallelsForBuild` is asked about (NEO-321): a
+ * Parallel variant type, whose rows are built from the set's Base checklist
+ * ("Build from Base"), or an insert row, whose parallels are built from the
+ * insert's own checklist (NEO-312 J1). The server resolves which; this module
+ * reads `source` from the plan and never assumes one.
  *
  * Idempotent: a row that already has cards is skipped unless the spec says
  * `rebuild: true`. A row the server would refuse (no marketplace id of its own,
@@ -69,8 +76,8 @@ export async function planParallelBuild(
   };
 }
 
-/** Build one parallel's checklist. Writes; the caller has already checked the confirm phrase. */
-export async function buildParallelFromBase(client: NbClient, input: BuildParallelInput): Promise<BuildParallelOutcome> {
+/** Build one parallel's checklist from its source. Writes; the caller has already checked the confirm phrase. */
+export async function buildParallel(client: NbClient, input: BuildParallelInput): Promise<BuildParallelOutcome> {
   const planned = await planParallelBuild(client, input);
   const parallelId = planned.parallelId!;
   if (planned.status === "done") {
@@ -78,7 +85,7 @@ export async function buildParallelFromBase(client: NbClient, input: BuildParall
     if (input.expectCards !== undefined && cards !== input.expectCards) {
       throw new BuildParallelError(
         `${input.at}: "${input.name}" already holds ${cards} cards and the spec expects ${input.expectCards}; ` +
-          "set buildFromBase.rebuild to rebuild it.",
+          "set rebuild: true on its build (buildFromBase, or the parallel's build) to rebuild it.",
       );
     }
     return { outcome: "skipped", cards, detail: `already holds ${cards} cards` };

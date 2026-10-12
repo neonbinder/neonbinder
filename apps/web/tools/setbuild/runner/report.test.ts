@@ -15,7 +15,7 @@ function report(reason: string): ApplyReport {
     scope: "e2e-baseline",
     confirmPhrase: "BUILD happy-otter-123.convex.cloud e2e-baseline 0123abcd",
     steps: [{ index: 0, kind: "set", path: "Baseball/2024/Topps/Topps Chrome", action: `sync (${reason})`, status: "todo" }],
-    openDecisions: { names: [], baseCandidates: [], reconcile: [], review: { players: [], teams: [], leagues: [] }, slReview: [], conflicts: [] },
+    openDecisions: { names: [], baseCandidates: [], reconcile: [], review: { players: [], teams: [], leagues: [] }, slReview: [], conflicts: [], grouping: [] },
     template: null,
     counts: { built: 0, committed: 0, skipped: 0 },
     durationMs: 1,

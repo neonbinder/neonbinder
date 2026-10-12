@@ -294,8 +294,11 @@ interface Ctx {
 const WORKFLOW =
   "Workflow: nb_inspect / nb_plan first (read-only) → show the operator the plan and its open decisions → " +
   "edit the spec with the operator's answers and plan again until openDecisions is empty → nb_apply with " +
-  "nb_plan's confirmPhrase. Never guess a decision or pick a candidate by position; ambiguity comes back as " +
-  "candidates for the operator to choose from.";
+  "nb_plan's confirmPhrase. nb_apply runs everything it can and returns every decision that only appears " +
+  "once it writes (checklist reviews, card conflicts) together with one fill-in template: take them all to " +
+  "the operator at once, put the answers in the spec, plan and apply again (a re-run skips what is done). " +
+  "Never guess a decision or pick a candidate by position; ambiguity comes back as candidates for the " +
+  "operator to choose from.";
 
 /** The three read tools. Receives `read` only: no path to a write exists here. */
 export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ctx): void {
@@ -322,10 +325,12 @@ export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ct
       description:
         "Read-only; always call before nb_apply. Validates a set-build spec against the target and returns: " +
         "the steps apply would run (done / todo / blocked); every open decision the spec does not answer " +
-        "(names matching zero or several rows, Base candidates, reconcile pairs, entity-review players / teams / " +
-        "leagues, SportLots review rows, card-number conflicts) with marketplace ids and candidates; a fill-in " +
-        "template; and confirmPhrase, the exact string nb_apply needs. Wizard rows for a checklist that has not " +
-        "been fetched yet cannot be planned; they appear when nb_apply stops. " +
+        "(names matching zero or several rows, Base candidates, reconcile pairs, Group Parallels entries — a " +
+        "named insert that is itself a parallel, a named parallel holding parallels, a row named twice — " +
+        "entity-review players / teams / leagues, SportLots review rows, card-number conflicts) with marketplace " +
+        "ids and candidates; a fill-in template; and confirmPhrase, the exact string nb_apply needs. It reports " +
+        "the moves a variant type's group would make and each insert's parallels to build. Wizard rows for a " +
+        "checklist that has not been fetched yet cannot be planned; they appear when nb_apply runs. " +
         WORKFLOW,
       inputSchema: specInputShape,
       annotations: { readOnlyHint: true, openWorldHint: false },
@@ -362,21 +367,34 @@ export function registerWriteTools(
     {
       title: "Apply a set-build spec (writes)",
       description:
-        "WRITES to NeonBinder. Runs a set-build spec: syncs, maps Base, reconciles variants, fetches, " +
-        "commits and builds, skipping every step whose state already matches, so a re-run is safe. Requires " +
-        "confirm to equal the confirmPhrase nb_plan returned for the same spec; call nb_plan first and let the " +
-        "operator see it. Stops at the first decision the spec does not answer and returns it (stoppedAt, " +
-        "openDecisions, template): take it to the operator, put the answer in the spec, plan and apply again.",
-      inputSchema: { ...specInputShape, confirm },
+        "WRITES to NeonBinder. Runs a set-build spec: syncs, maps Base, reconciles variants, groups parallels, " +
+        "fetches, commits and builds (from Base, and each insert's parallels from the insert), skipping every " +
+        "step whose state already matches, so a re-run is safe. Requires confirm to equal the confirmPhrase " +
+        "nb_plan returned for the same spec; call nb_plan first and let the operator see it. stopAt \"end\" " +
+        "(the default) runs every step that does not depend on an unanswered decision and returns ALL of them " +
+        "(stops, openDecisions, one template); stopAt \"first\" stops at the first. Take the decisions to the " +
+        "operator, put the answers in the spec, plan and apply again.",
+      inputSchema: {
+        ...specInputShape,
+        confirm,
+        stopAt: z
+          .enum(["first", "end"])
+          .optional()
+          .describe(
+            'Where to stop at an unanswered decision. "end" (default): carry on with everything that does not ' +
+              'depend on it and return every decision together. "first": stop at the first one.',
+          ),
+      },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
-    async ({ confirm: given, ...input }) =>
+    async ({ confirm: given, stopAt, ...input }) =>
       run(ctx.secrets, async () => {
         const spec = await loadSpec(input, ctx);
         if (!specScope(spec)) throw new SpecInputError("The spec declares no scope; nb_plan explains what is wrong with it.");
-        // Parsing is local; the phrase carries the parsed spec's digest.
+        // Parsing is local; the phrase carries the parsed spec's digest. stopAt
+        // is not in it: it changes how far a run goes, not what the spec allows.
         assertPhrase(specConfirmPhrase(getTarget(), parseSpec(spec)), given);
-        return write.apply(spec, given);
+        return write.apply(spec, given, { stopAt: stopAt ?? "end" });
       }),
   );
 

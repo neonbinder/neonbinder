@@ -132,7 +132,10 @@ export const inspectCommand: CommandSpec = {
       for (const s of report.sets ?? []) ctx.io.stdout(`  ${s.name}  (${links(s.links)})`);
       for (const t of report.variantTypes ?? []) {
         ctx.io.stdout(`  ${t.type}${t.rows.length === 1 && t.rows[0].isBase ? "" : ` — ${t.rows.length} rows`}`);
-        for (const r of t.rows) ctx.io.stdout(`    ${r.isBase ? "[Base] " : ""}${r.name}: ${r.cards} cards (${links(r.links)})`);
+        for (const r of t.rows) {
+          ctx.io.stdout(`    ${r.isBase ? "[Base] " : ""}${r.name}: ${r.cards} cards (${links(r.links)})`);
+          for (const p of r.parallels ?? []) ctx.io.stdout(`      ↳ ${p.name}: ${p.cards} cards (${links(p.links)})`);
+        }
       }
       return 0;
     }),
@@ -171,10 +174,16 @@ export const MACHINE_NEEDS_TTY =
 
 export const applyCommand: CommandSpec = {
   summary:
-    'WRITES: run a spec. Needs --confirm "BUILD <host> <scope> <digest>" (setbuild confirm-phrase prints it); with --auth machine, a terminal prompt instead. Stops (exit 3) at the first unanswered decision.',
+    'WRITES: run a spec. Needs --confirm "BUILD <host> <scope> <digest>" (setbuild confirm-phrase prints it); with --auth machine, a terminal prompt instead. Stops (exit 3) at the first unanswered decision; with --collect, runs everything that does not depend on one and stops (exit 3) with all of them.',
   usage:
-    'setbuild apply --spec <file.json> --confirm "BUILD <host> <scope> <digest>" [--paused-platforms <keys>] [--report <out.json>] [--json] [connection flags]',
-  options: { spec: { type: "string" }, confirm: { type: "string" }, report: { type: "string" }, ...PAUSED_OPTION },
+    'setbuild apply --spec <file.json> --confirm "BUILD <host> <scope> <digest>" [--collect] [--paused-platforms <keys>] [--report <out.json>] [--json] [connection flags]',
+  options: {
+    spec: { type: "string" },
+    confirm: { type: "string" },
+    report: { type: "string" },
+    collect: { type: "boolean" },
+    ...PAUSED_OPTION,
+  },
   run: (ctx) =>
     usageGuard(ctx, async () => {
       const spec = await readSpecFile(str(ctx.values.spec));
@@ -200,7 +209,11 @@ export const applyCommand: CommandSpec = {
       const client = makeClient(conn.target, conn.tokens, { transport: conn.transport });
       try {
         const report = publicApplyReport(
-          await applySpec(client, conn.target, spec, confirm, { pausedPlatforms: pausedPlatforms(ctx) }),
+          await applySpec(client, conn.target, spec, confirm, {
+            pausedPlatforms: pausedPlatforms(ctx),
+            // The phrase does not cover it: it changes how far the run goes, not what the spec allows.
+            stopAt: ctx.values.collect === true ? "end" : "first",
+          }),
         );
         if (out) await writeReportFiles(out, report, secretsOf(ctx));
         printReport(ctx, report);

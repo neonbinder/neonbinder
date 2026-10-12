@@ -1,7 +1,8 @@
 /**
  * NEO-339 — `inspect`: what a path holds now. Read-only (public admin queries
  * only), and the numbers `mcp-smoke` asserts against: the Base row's card
- * count and links, every variant type's rows with their card counts.
+ * count and links, every variant type's rows with their card counts, and an
+ * insert row's parallels (the `parallel` level under it) beneath it.
  */
 
 import { variantTypeRole } from "../../../convex/variantRole";
@@ -54,7 +55,15 @@ export async function inspectPath(
       }
       const rows = await childrenOf(client, "insert", t._id);
       const out: InspectRow[] = [];
-      for (const r of rows) out.push(await inspectRow(client, r, false));
+      for (const r of rows) {
+        const row = await inspectRow(client, r, false);
+        const parallels = await childrenOf(client, "parallel", r._id);
+        if (parallels.length > 0) {
+          row.parallels = [];
+          for (const p of parallels) row.parallels.push(await inspectRow(client, p, false));
+        }
+        out.push(row);
+      }
       variantTypes.push({ type: t.value, rows: out });
     }
     return { ...head, found: true, base, variantTypes };

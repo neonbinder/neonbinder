@@ -41,7 +41,7 @@ import {
 import { childrenOf, resolveBrandYear, resolveSetPath } from "../spec/resolve";
 import { variantTypeRole } from "../../../convex/variantRole";
 import type { ReviewSession } from "../lib/commit";
-import { buildParallelFromBase } from "../lib/build-parallel";
+import { buildParallel } from "../lib/build-parallel";
 import { openItemsOf, readReviewRows, runReview } from "../lib/review";
 import { applySlReview, openSlRows, readSlReview } from "../lib/sl-review";
 import { checkPausedPlatforms } from "../lib/sync-column";
@@ -115,8 +115,8 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
       },
     },
     write: {
-      async apply(spec, confirm) {
-        const result = await applySpec(client, target, spec, confirm, runOpts());
+      async apply(spec, confirm, o) {
+        const result = await applySpec(client, target, spec, confirm, { ...runOpts(), ...(o?.stopAt ? { stopAt: o.stopAt } : {}) });
         remember(result.sessions);
         return publicApplyReport(result);
       },
@@ -162,7 +162,7 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
             message: `${pathText} has ${types.length} variant types with the Parallel role; build-from-Base needs exactly one.`,
           });
         }
-        const r = await buildParallelFromBase(client, {
+        const r = await buildParallel(client, {
           sourceId: types[0]._id,
           name,
           rebuild: o.rebuild,

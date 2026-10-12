@@ -13,6 +13,26 @@
  * of a finished spec writes nothing and a run that stopped resumes where it
  * left off.
  *
+ * `stopAt` (apply only). `first` ends the run at the first open decision.
+ * `end` collects: the step is recorded blocked, its open decisions and
+ * fill-ins go into the report, every step that DEPENDS on it is recorded
+ * blocked without running ("waits: …"), and every other step carries on. The
+ * report then holds all the open decisions of the run and one template with
+ * all their fill-ins. What depends on what (plan addendum §3.4):
+ *
+ * | open decision at            | waits                                                        |
+ * |-----------------------------|--------------------------------------------------------------|
+ * | a brand-year (path, SL review) | every later set step under that brand-year                 |
+ * | the Base mapping            | the Base checklist, every variant type's sync (the matcher reads the Base's SportLots label) and every `buildFromBase` |
+ * | the Base checklist          | every `buildFromBase` of the set                             |
+ * | a variant type's sync       | that type's rows, grouping and parallels                     |
+ * | Group Parallels             | the type's rows' `parallels`                                 |
+ * | a row's checklist           | that row's `parallels`                                       |
+ * | a name that does not resolve | everything below it (the step cannot find its row)          |
+ *
+ * A failure that is not a decision (a refused build, a wrong expected count)
+ * still ends the run in either mode.
+ *
  * Never writes to stdout: the MCP server's protocol runs over it.
  */
 
@@ -26,9 +46,10 @@ import {
   type OpenDecisions,
   type PlanReport,
   type PlanStep,
+  type StopAt,
 } from "../service";
-import type { BrandYearStep, SetBuildSpec, SetStep, VariantTypeStep } from "../spec/schema";
-import { resolveVariantRow, resolveVariantType, childrenOf, type RowId } from "../spec/resolve";
+import type { BrandYearStep, InsertParallel, SetBuildSpec, SetStep, VariantTypeStep } from "../spec/schema";
+import { resolveChild, resolveVariantRow, resolveVariantType, type RowId } from "../spec/resolve";
 import { ensureCredentials } from "../lib/credentials";
 import {
   checkPausedPlatforms,
@@ -42,9 +63,20 @@ import { confirmMapping, findBaseVariantType } from "../lib/map-base";
 import { reconcileVariants } from "../lib/reconcile-variants";
 import { applySlReview } from "../lib/sl-review";
 import { cardCount, checklistDone, runChecklistStep, type ReviewSession } from "../lib/commit";
-import { buildParallelFromBase, planParallelBuild } from "../lib/build-parallel";
+import { buildParallel, planParallelBuild, type BuildParallelInput } from "../lib/build-parallel";
+import { groupParallels, planGrouping, type GroupOpen } from "../lib/group-parallels";
+import { api } from "../../../convex/_generated/api";
 import { PlanWouldWrite } from "./read-only-client";
 
+/**
+ * `plan`: read-only, collects every decision without dependency gating.
+ * `apply`: writes; `stopAt` says whether it stops or collects.
+ *
+ * NEO-339 part B adds `draft` here (the read-only walk that FILLS the spec
+ * from the server previews). It is meant to collect like `apply` with
+ * `stopAt: "end"` — see `collecting` in `runSpec` — and to run on the draft
+ * client, so no step module needs a new branch for it.
+ */
 export type RunMode = "plan" | "apply";
 
 export function emptyOpenDecisions(): OpenDecisions {
@@ -55,6 +87,7 @@ export function emptyOpenDecisions(): OpenDecisions {
     review: { players: [], teams: [], leagues: [] },
     slReview: [],
     conflicts: [],
+    grouping: [],
   };
 }
 
@@ -62,6 +95,7 @@ export function emptyCounts(): ApplyCounts {
   return {
     built: 0,
     committed: 0,
+    grouped: 0,
     skipped: 0,
     synced: 0,
     mapped: 0,
@@ -96,10 +130,15 @@ export interface RunOptions {
   /** `PAUSED_PLATFORMS` as declared for this run (comma-separated site keys). */
   pausedPlatforms?: string;
   now?: () => number;
+  /** Apply only; default `first`. See the module comment. */
+  stopAt?: StopAt;
 }
 
 export interface RunResult extends PlanReport {
+  /** The first stop (with `stopAt: "end"`, the first of `stops`). */
   stoppedAt?: { step: number; reason: string };
+  /** `stopAt: "end"`: every stop, in walk order. */
+  stops?: Array<{ step: number; reason: string }>;
   counts: ApplyCounts;
   durationMs: number;
   /** Entity reviews left open at the stop, for `decide` / `reviewItems`. */
@@ -163,12 +202,28 @@ export async function runSpec(
     templateTouched = true;
   };
   let stoppedAt: RunResult["stoppedAt"];
+  /**
+   * Apply carries on past an open decision, gating its dependents. (Part B's
+   * draft mode joins here.) Plan collects too, but gates nothing: it reports
+   * every step as it finds it.
+   */
+  const collecting = mode === "apply" && opts.stopAt === "end";
+  const stops: NonNullable<RunResult["stops"]> = [];
+  /** Brand-years (`formatPath`, folded) whose step left something open. */
+  const blockedBrandYears = new Map<string, string>();
 
   const record = (s: PlanStep) => steps.push(s);
 
-  /** Record an open decision: plan collects it, apply stops. */
+  /** Record an open decision: plan collects it, apply stops — or, collecting, records the stop and goes on. */
   const stop = (index: number, reason: string): void => {
-    if (mode === "apply") throw new StopRun(index, reason);
+    if (mode !== "apply") return;
+    if (!collecting) throw new StopRun(index, reason);
+    stops.push({ step: index, reason });
+  };
+
+  /** A step that does not run because one it depends on is open (collecting only). */
+  const waits = (index: number, kind: string, path: string, action: string, on: string): void => {
+    record({ index, kind, path, action, status: "blocked", detail: `waits: ${on}` });
   };
 
   /** Run one sub-step; `PlanWouldWrite` = todo, `ResolveError` = open name. */
@@ -191,6 +246,9 @@ export async function runSpec(
     if (stopReason) stop(index, stopReason);
     return value;
   }
+
+  /** `true` when `sub` came back without a value or with an open outcome. */
+  const isOpen = (v: { outcome: string } | undefined): boolean => v === undefined || v.outcome === "open";
 
   /** `PlanWouldWrite` = todo; `ResolveError` = an open name (apply stops); anything else is thrown. */
   function failed(err: unknown, index: number, kind: string, path: string, action: string): undefined {
@@ -258,6 +316,7 @@ export async function runSpec(
   return finish();
 
   function finish(): RunResult {
+    if (stops.length > 0) stoppedAt = stops[0];
     return {
       target: { convexUrl: target.convexUrl, host: target.host },
       scope: spec.scope,
@@ -266,6 +325,7 @@ export async function runSpec(
       openDecisions: open,
       template: templateTouched ? template : null,
       ...(stoppedAt ? { stoppedAt } : {}),
+      ...(stops.length > 0 ? { stops: [...stops] } : {}),
       counts,
       durationMs: now() - started,
       sessions,
@@ -276,13 +336,19 @@ export async function runSpec(
   async function brandYear(i: number, step: BrandYearStep): Promise<void> {
     const path = formatPath(step.path);
     const at = `steps[${i}]`;
+    const hold = (on: string) => {
+      if (collecting && !blockedBrandYears.has(brandYearKey(step.path))) blockedBrandYears.set(brandYearKey(step.path), on);
+    };
     const brand = await sub(i, "brand-year", path, "sync the path's columns", () =>
       ensureBrandYearPath(client, step.path, { paused, manufacturer: step.manufacturer, at: `${at}.path` }),
     (b) => {
       if (b.manufacturerCreated) counts.synced++;
       return { status: "done", detail: b.manufacturerCreated ? "manufacturer created" : undefined };
     });
-    if (!brand) return blocked(i, "brand-year", path, "sync Sets", "the path does not resolve yet");
+    if (!brand) {
+      hold(`${path} does not resolve (steps[${i}])`);
+      return blocked(i, "brand-year", path, "sync Sets", "the path does not resolve yet");
+    }
 
     await sub(i, "brand-year", path, "sync Sets", () => syncBrandSets(client, brand.manufacturerId, { paused }), (r) => {
       if (r.outcome === "synced") counts.synced++;
@@ -292,7 +358,7 @@ export async function runSpec(
 
     if (step.slReview) {
       const decisions = step.slReview.decisions;
-      await sub(i, "sl-review", path, "apply the SportLots set review", () =>
+      const reviewed = await sub(i, "sl-review", path, "apply the SportLots set review", () =>
         applySlReview(client, brand.manufacturerId, decisions, { paused, at: `${at}.slReview`, path }),
       (r) => {
         if (r.outcome === "skipped") {
@@ -315,6 +381,7 @@ export async function runSpec(
           detail: `${r.applied} filed, ${r.remaining} remaining${r.refused ? `, ${r.refused.rows.length} refused` : ""}`,
         };
       });
+      if (isOpen(reviewed)) hold(`the SportLots set review of ${path} (steps[${i}])`);
     }
   }
 
@@ -322,6 +389,8 @@ export async function runSpec(
   async function setStep(i: number, step: SetStep): Promise<void> {
     const path = formatPath(step.path);
     const at = `steps[${i}]`;
+    const heldBy = blockedBrandYears.get(brandYearKey(step.path));
+    if (heldBy) return waits(i, "set", path, "everything below the set", heldBy);
     const set = await sub(i, "set", path, "sync the path's columns and variant types", () =>
       ensureSetPath(client, step.path, { paused, manufacturer: step.manufacturer, at: `${at}.path`, syncVariantTypes: true }),
     (s) => {
@@ -335,10 +404,12 @@ export async function runSpec(
       return;
     }
     const sportId = set.sportId;
+    /** Collecting: why the Base's dependents wait, when they do. */
+    const deps: SetDeps = {};
 
     if (step.base) {
       const base = step.base;
-      await sub(i, "base-map", path, `map Base to BSC ${base.map.bsc}${base.map.sportlots ? ` + SportLots ${base.map.sportlots}` : ""}`, () =>
+      const mapped = await sub(i, "base-map", path, `map Base to BSC ${base.map.bsc}${base.map.sportlots ? ` + SportLots ${base.map.sportlots}` : ""}`, () =>
         confirmMapping(client, set.setId, base.map, { paused, at: `${at}.base.map`, path }),
       (r) => {
         if (r.outcome === "mapped") {
@@ -353,22 +424,43 @@ export async function runSpec(
         for (const o of r.open) patch(o.at, PICK(o.candidates.map((c) => `${c.id} (${c.name})`)));
         return { status: "blocked", detail: "open decisions", stopReason: `the Base ${r.open.map((o) => o.side).join(" and ")} id is not among the offered candidates` };
       });
+      if (collecting && isOpen(mapped)) deps.baseMap = `the Base mapping (${at}.base.map)`;
 
       if (base.checklist) {
-        const baseRow = await findBaseVariantType(client, set.setId);
-        await checklist(i, path, `${at}.base.checklist`, baseRow._id, sportId, base.checklist, null, "Base");
+        const action = "fetch and commit the Base checklist";
+        if (deps.baseMap) {
+          waits(i, "checklist", path, action, deps.baseMap);
+          deps.baseChecklist = deps.baseMap;
+        } else {
+          const baseRow = await findBaseVariantType(client, set.setId);
+          const status = await checklist(i, path, `${at}.base.checklist`, baseRow._id, sportId, base.checklist, null, "Base");
+          if (collecting && status === "blocked") deps.baseChecklist = `the Base checklist (${at}.base.checklist)`;
+        }
       }
     }
 
     for (let j = 0; j < (step.variants ?? []).length; j++) {
-      await variantType(i, j, path, set.setId, sportId, step.variants![j]);
+      await variantType(i, j, path, set.setId, sportId, step.variants![j], deps);
     }
   }
 
   // ---------------------------------------------------------------------
-  async function variantType(i: number, j: number, path: string, setId: RowId, sportId: RowId, vt: VariantTypeStep): Promise<void> {
+  async function variantType(
+    i: number,
+    j: number,
+    path: string,
+    setId: RowId,
+    sportId: RowId,
+    vt: VariantTypeStep,
+    deps: SetDeps,
+  ): Promise<void> {
     const at = `steps[${i}].variants[${j}]`;
     let syncTodo = false;
+    if (vt.sync && deps.baseMap) {
+      waits(i, "reconcile", path, `sync ${vt.type} rows`, deps.baseMap);
+      waits(i, "row", path, `${vt.type} rows`, deps.baseMap);
+      return;
+    }
     if (vt.sync) {
       const sync = vt.sync;
       const synced = await sub(i, "reconcile", path, `sync ${vt.type} rows`, () =>
@@ -402,16 +494,26 @@ export async function runSpec(
       blocked(i, "row", path, `${vt.type} rows`, "checked once the sync has run");
       return;
     }
+    if (syncTodo && collecting) {
+      waits(i, "row", path, `${vt.type} rows`, `the ${vt.type} sync (${at}.sync)`);
+      return;
+    }
 
     const type = await sub(i, "variant-type", path, `find ${vt.type}`, () => resolveVariantType(client, setId, vt.type, `${at}.type`), () => ({ status: "done" }));
     if (!type) return;
 
     if (vt.expectRows !== undefined) {
-      const rows = await childrenOf(client, "insert", type._id);
-      const ok = rows.length === vt.expectRows;
-      record({ index: i, kind: "expect-rows", path, action: `${vt.type} holds ${vt.expectRows} rows`, status: ok ? "done" : mode === "plan" ? "todo" : "blocked", detail: `${rows.length} now` });
-      if (!ok && mode === "apply") throw new Error(`${at}.expectRows: ${vt.type} holds ${rows.length} rows; the spec expects ${vt.expectRows}.`);
+      // Top-level and grouped alike, so the count holds before and after `group`.
+      const tree = await client.query(api.selectorOptions.getInsertTreeByVariantType, { variantTypeId: type._id });
+      const n = tree.reduce((sum, t) => sum + 1 + t.parallels.length, 0);
+      const ok = n === vt.expectRows;
+      record({ index: i, kind: "expect-rows", path, action: `${vt.type} holds ${vt.expectRows} rows`, status: ok ? "done" : mode === "plan" ? "todo" : "blocked", detail: `${n} now` });
+      if (!ok && mode === "apply") throw new Error(`${at}.expectRows: ${vt.type} holds ${n} rows; the spec expects ${vt.expectRows}.`);
     }
+
+    /** Why this type's rows' `parallels` wait (collecting), or are not checked yet (plan). */
+    let groupWaits: string | undefined;
+    if (vt.group) groupWaits = await groupStep(i, at, path, vt, type._id);
 
     for (let k = 0; k < (vt.rows ?? []).length; k++) {
       const spec = vt.rows![k];
@@ -419,36 +521,144 @@ export async function runSpec(
       const label = `${vt.type} › ${spec.name}`;
       const row = await sub(i, "row", path, `find ${label}`, () => resolveVariantRow(client, type._id, spec.name, `${rowAt}.name`), () => ({ status: "done" }));
       if (!row) continue;
+      let checklistStatus: StepStatus | undefined;
       if (spec.checklist) {
-        await checklist(i, path, `${rowAt}.checklist`, row._id, sportId, spec.checklist, { type: vt.type, name: spec.name }, label);
+        checklistStatus = await checklist(i, path, `${rowAt}.checklist`, row._id, sportId, spec.checklist, { type: vt.type, name: spec.name }, label);
       }
       if (spec.buildFromBase) {
-        const input = { sourceId: type._id, name: spec.name, rebuild: spec.buildFromBase.rebuild, expectCards: spec.expectCards, at: rowAt };
-        if (mode === "plan") {
-          const p = await planParallelBuild(client, input).catch((err) => {
-            if (err instanceof ResolveError) return { status: "blocked" as const, detail: err.message };
-            throw err;
-          });
-          record({ index: i, kind: "build-parallel", path, action: `build ${label} from Base`, status: p.status, detail: p.detail });
+        const action = `build ${label} from Base`;
+        const on = deps.baseChecklist ?? deps.baseMap;
+        if (on) {
+          waits(i, "build-parallel", path, action, on);
         } else {
-          let r: Awaited<ReturnType<typeof buildParallelFromBase>>;
-          try {
-            r = await buildParallelFromBase(client, input);
-          } catch (err) {
-            failed(err, i, "build-parallel", path, `build ${label} from Base`);
-            continue;
-          }
-          if (r.outcome === "built") counts.built += r.built;
-          else counts.skipped++;
-          record({ index: i, kind: "build-parallel", path, action: `build ${label} from Base`, status: "done", detail: r.outcome === "built" ? `built ${r.built}, holds ${r.cards}` : r.detail });
+          const input = { sourceId: type._id, name: spec.name, rebuild: spec.buildFromBase.rebuild, expectCards: spec.expectCards, at: rowAt };
+          await build(i, path, action, input);
         }
       } else if (!spec.checklist && spec.expectCards !== undefined) {
-        const n = await cardCount(client, row._id);
-        const ok = n === spec.expectCards;
-        record({ index: i, kind: "expect-cards", path, action: `${label} holds ${spec.expectCards} cards`, status: ok ? "done" : mode === "plan" ? "todo" : "blocked", detail: `${n} now` });
-        if (!ok && mode === "apply") throw new Error(`${rowAt}.expectCards: ${label} holds ${n} cards; the spec expects ${spec.expectCards}.`);
+        await expectCards(i, path, label, row._id, spec.expectCards, `${rowAt}.expectCards`);
+      }
+      if (spec.parallels) {
+        const on =
+          groupWaits ?? (collecting && checklistStatus === "blocked" ? `the ${label} checklist (${rowAt}.checklist)` : undefined);
+        for (let m = 0; m < spec.parallels.length; m++) {
+          await insertParallel(i, path, `${rowAt}.parallels[${m}]`, label, row._id, spec.parallels[m], on);
+        }
       }
     }
+  }
+
+  // ---------------------------------------------------------------------
+  /**
+   * Group Parallels for one type. Returns why the type's insert parallels must
+   * wait (collecting: an open decision; plan: the grouping has not run yet),
+   * or undefined when they need not.
+   */
+  async function groupStep(i: number, at: string, path: string, vt: VariantTypeStep, typeId: RowId): Promise<string | undefined> {
+    const group = vt.group!;
+    const ctx = { at, path, type: vt.type };
+    const action = `group ${vt.type} parallels (${group.parents.length} insert${group.parents.length === 1 ? "" : "s"})`;
+    const openOf = (o: GroupOpen) => {
+      open.names.push(...o.names);
+      open.grouping.push(...o.grouping);
+      for (const f of o.fills) patch(f.at, f.value);
+      return `${vt.type}: ${o.names.length + o.grouping.length} Group Parallels decision(s) need an answer`;
+    };
+    /** `n` top-level rows holding no parallels: now, or (plan) once the moves land. */
+    const expect = (n: number, projected: boolean) => {
+      if (group.expectUngrouped === undefined) return;
+      const ok = n === group.expectUngrouped;
+      const what = `${vt.type} leaves ${group.expectUngrouped} rows ungrouped`;
+      record({ index: i, kind: "expect-ungrouped", path, action: what, status: ok ? "done" : "blocked", detail: `${n} ${projected ? "after the grouping" : "now"}` });
+      if (!ok && mode === "apply") {
+        throw new Error(`${at}.group.expectUngrouped: ${vt.type} leaves ${n} rows ungrouped; the spec expects ${group.expectUngrouped}.`);
+      }
+    };
+
+    if (mode === "plan") {
+      const p = await planGrouping(client, typeId, group, ctx);
+      if (p.outcome === "open") {
+        record({ index: i, kind: "group", path, action, status: "blocked", detail: "open decisions" });
+        openOf(p);
+        return "checked once Group Parallels has its answers";
+      }
+      if (p.outcome === "done") {
+        record({ index: i, kind: "group", path, action, status: "done", detail: "already grouped" });
+        expect(p.ungrouped, false);
+        return undefined;
+      }
+      record({ index: i, kind: "group", path, action, status: "todo", detail: `${p.moves} move(s) in ${p.chunks.length} save(s)` });
+      expect(p.ungrouped, true);
+      return "checked once Group Parallels has run";
+    }
+
+    const r = await sub(i, "group", path, action, () => groupParallels(client, typeId, group, ctx), (r) => {
+      if (r.outcome === "open") return { status: "blocked", detail: "open decisions", stopReason: openOf(r) };
+      if (r.outcome === "skipped") {
+        counts.skipped++;
+        return { status: "done", detail: "already grouped" };
+      }
+      counts.grouped += r.moved;
+      return { status: "done", detail: `moved ${r.moved} row(s) in ${r.saves} save(s)` };
+    });
+    if (r === undefined || r.outcome === "open") return collecting ? `Group Parallels for ${vt.type} (${at}.group)` : undefined;
+    expect(r.ungrouped, false);
+    return undefined;
+  }
+
+  // ---------------------------------------------------------------------
+  /** One parallel under an insert row: build it from the insert, or check it exists (and its count). */
+  async function insertParallel(
+    i: number,
+    path: string,
+    at: string,
+    rowLabel: string,
+    insertId: RowId,
+    p: InsertParallel,
+    on: string | undefined,
+  ): Promise<void> {
+    const label = `${rowLabel} › ${p.name}`;
+    const action = p.build ? `build ${label} from ${rowLabel}` : `find ${label}`;
+    if (on) {
+      if (mode === "plan") blocked(i, p.build ? "build-parallel" : "parallel", path, action, on);
+      else waits(i, p.build ? "build-parallel" : "parallel", path, action, on);
+      return;
+    }
+    if (p.build) {
+      await build(i, path, action, { sourceId: insertId, name: p.name, rebuild: p.build.rebuild, expectCards: p.expectCards, at });
+      return;
+    }
+    const par = await sub(i, "parallel", path, action, () => resolveChild(client, "parallel", insertId, p.name, `${at}.name`), () => ({ status: "done" }));
+    if (par && p.expectCards !== undefined) await expectCards(i, path, label, par._id, p.expectCards, `${at}.expectCards`);
+  }
+
+  /** One parallel build, from Base or from an insert (`input.sourceId`). */
+  async function build(i: number, path: string, action: string, input: BuildParallelInput): Promise<void> {
+    if (mode === "plan") {
+      const p = await planParallelBuild(client, input).catch((err) => {
+        if (err instanceof ResolveError) return { status: "blocked" as const, detail: err.message };
+        throw err;
+      });
+      record({ index: i, kind: "build-parallel", path, action, status: p.status, detail: p.detail });
+      return;
+    }
+    let r: Awaited<ReturnType<typeof buildParallel>>;
+    try {
+      r = await buildParallel(client, input);
+    } catch (err) {
+      failed(err, i, "build-parallel", path, action);
+      return;
+    }
+    if (r.outcome === "built") counts.built += r.built;
+    else counts.skipped++;
+    record({ index: i, kind: "build-parallel", path, action, status: "done", detail: r.outcome === "built" ? `built ${r.built}, holds ${r.cards}` : r.detail });
+  }
+
+  /** Assert a row's card count: plan reports, apply fails the run on a mismatch. */
+  async function expectCards(i: number, path: string, label: string, rowId: RowId, want: number, at: string): Promise<void> {
+    const n = await cardCount(client, rowId);
+    const ok = n === want;
+    record({ index: i, kind: "expect-cards", path, action: `${label} holds ${want} cards`, status: ok ? "done" : mode === "plan" ? "todo" : "blocked", detail: `${n} now` });
+    if (!ok && mode === "apply") throw new Error(`${at}: ${label} holds ${n} cards; the spec expects ${want}.`);
   }
 
   // ---------------------------------------------------------------------
@@ -461,7 +671,7 @@ export async function runSpec(
     spec: NonNullable<NonNullable<SetStep["base"]>["checklist"]>,
     row: { type: string; name: string } | null,
     label: string,
-  ): Promise<void> {
+  ): Promise<StepStatus> {
     const action = `fetch and commit the ${label} checklist`;
     if (mode === "plan") {
       const n = await cardCount(client, rowId);
@@ -470,10 +680,10 @@ export async function runSpec(
         done = checklistDone(n, spec.expectCards, at);
       } catch (err) {
         record({ index: i, kind: "checklist", path, action, status: "blocked", detail: err instanceof Error ? err.message : String(err) });
-        return;
+        return "blocked";
       }
       record({ index: i, kind: "checklist", path, action, status: done ? "done" : "todo", detail: done ? `holds ${n} cards` : "the review is only known once apply fetches it" });
-      return;
+      return done ? "done" : "todo";
     }
     let r: Awaited<ReturnType<typeof runChecklistStep>>;
     try {
@@ -481,12 +691,12 @@ export async function runSpec(
     } catch (err) {
       // A link target or a card ref that is not exactly one: an open name.
       failed(err, i, "checklist", path, action);
-      return;
+      return "blocked";
     }
     if (r.outcome === "skipped") {
       counts.skipped++;
       record({ index: i, kind: "checklist", path, action, status: "done", detail: r.detail });
-      return;
+      return "done";
     }
     if (r.outcome === "committed") {
       counts.committed += r.committed;
@@ -499,7 +709,7 @@ export async function runSpec(
         status: "done",
         detail: `saved ${r.committed} (holds ${r.cards}); ${r.pairing}; review: ${r.review.players} players, ${r.review.teams} teams, ${r.review.leagues} leagues${r.notes.length ? `; ${r.notes.join("; ")}` : ""}`,
       });
-      return;
+      return "done";
     }
     open.conflicts.push(...r.open.conflicts);
     open.review.players.push(...r.open.review.players);
@@ -509,5 +719,21 @@ export async function runSpec(
     if (r.session) sessions.push({ ...r.session, path });
     record({ index: i, kind: "checklist", path, action, status: "blocked", detail: r.reason });
     stop(i, `${label}: ${r.reason}`);
+    return "blocked";
   }
+}
+
+type StepStatus = PlanStep["status"];
+
+/** Collecting: why a set's Base-dependent steps wait. */
+interface SetDeps {
+  /** The Base mapping is open. */
+  baseMap?: string;
+  /** The Base checklist is open (or waits on the mapping). */
+  baseChecklist?: string;
+}
+
+/** A brand-year path folded for comparison: the spec spells both steps' paths. */
+function brandYearKey(p: { sport: string; year: string; manufacturer: string }): string {
+  return [p.sport, p.year, p.manufacturer].map((s) => s.trim().toLowerCase()).join("/");
 }

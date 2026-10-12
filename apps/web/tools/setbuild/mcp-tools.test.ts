@@ -62,6 +62,7 @@ function noDecisions(): OpenDecisions {
     review: { players: [], teams: [], leagues: [] },
     slReview: [],
     conflicts: [],
+    grouping: [],
   };
 }
 
@@ -411,6 +412,56 @@ describe("write tools: the confirm phrase", () => {
     const r = await callTool(client, "nb_apply", { spec: SPEC, confirm: PHRASE.apply });
     expect(r.isError).toBe(true);
     expect(r.json()).toMatchObject({ error: "confirm_mismatch", expected: "BUILD other scope" });
+  });
+});
+
+describe("nb_apply stopAt", () => {
+  test('defaults to "end", passes "first" through, and is optional in the schema', async () => {
+    const f = fakeService();
+    const client = await connect(f.service);
+    const { tools } = await client.listTools();
+    const apply = tools.find((t) => t.name === "nb_apply")!;
+    expect(Object.keys(apply.inputSchema.properties ?? {})).toContain("stopAt");
+    expect(apply.inputSchema.required ?? []).not.toContain("stopAt");
+
+    expect((await callTool(client, "nb_apply", { spec: SPEC, confirm: PHRASE.apply })).isError).toBe(false);
+    expect(f.write.apply).toHaveBeenLastCalledWith(SPEC, PHRASE.apply, { stopAt: "end" });
+
+    expect((await callTool(client, "nb_apply", { spec: SPEC, confirm: PHRASE.apply, stopAt: "first" })).isError).toBe(false);
+    expect(f.write.apply).toHaveBeenLastCalledWith(SPEC, PHRASE.apply, { stopAt: "first" });
+
+    expect((await callTool(client, "nb_apply", { spec: SPEC, confirm: PHRASE.apply, stopAt: "end" })).isError).toBe(false);
+    expect(f.write.apply).toHaveBeenLastCalledWith(SPEC, PHRASE.apply, { stopAt: "end" });
+    expect(f.write.apply).toHaveBeenCalledTimes(3);
+  });
+
+  test("the phrase is the same whatever stopAt says, and a wrong phrase is refused before the service either way", async () => {
+    const f = fakeService();
+    const client = await connect(f.service);
+    for (const stopAt of ["first", "end"]) {
+      const r = await callTool(client, "nb_apply", { spec: SPEC, stopAt });
+      expect(r.isError).toBe(true);
+      expect(r.json()).toMatchObject({ error: "confirm_mismatch", expected: PHRASE.apply });
+    }
+    expect(f.totalCalls()).toBe(0);
+  });
+
+  test("an unknown stopAt is a validation error and reaches no service method", async () => {
+    const f = fakeService();
+    const client = await connect(f.service);
+    const r = await callTool(client, "nb_apply", { spec: SPEC, confirm: PHRASE.apply, stopAt: "middle" });
+    expect(r.isError).toBe(true);
+    expect(f.totalCalls()).toBe(0);
+  });
+
+  test("the description and the workflow say decisions come back together", async () => {
+    const client = await connect(fakeService().service);
+    const { tools } = await client.listTools();
+    const byName = Object.fromEntries(tools.map((t) => [t.name, t.description ?? ""]));
+    expect(byName.nb_apply).toMatch(/stopAt "end"/);
+    expect(byName.nb_apply).toMatch(/returns ALL of them/);
+    expect(byName.nb_inspect).toMatch(/together with one fill-in template/);
+    expect(byName.nb_plan).toMatch(/Group Parallels/);
   });
 });
 

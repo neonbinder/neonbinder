@@ -240,6 +240,26 @@ export interface OpenConflict {
   detail: string;
 }
 
+/**
+ * A Group Parallels entry the dialog would refuse or cannot settle by itself.
+ *
+ * - `parent-is-parallel`: the named insert is itself a parallel.
+ * - `child-holds-parallels`: a named parallel holds parallels of its own.
+ * - `chain`: a row named as an insert is also named as a parallel.
+ * - `named-twice`: one row is named as a parallel more than once.
+ * - `self`: a row is named as a parallel of itself.
+ * - `refused`: the save was refused by the server; `detail` says what landed.
+ */
+export interface OpenGrouping {
+  at: string;
+  path: string;
+  type: string;
+  problem: "parent-is-parallel" | "child-holds-parallels" | "chain" | "named-twice" | "self" | "refused";
+  /** The row's NB name (or, for `refused`, the variant type's). */
+  name: string;
+  detail: string;
+}
+
 export interface OpenDecisions {
   names: OpenName[];
   baseCandidates: OpenBaseCandidates[];
@@ -247,6 +267,7 @@ export interface OpenDecisions {
   review: { players: OpenReviewItem[]; teams: OpenReviewItem[]; leagues: OpenReviewItem[] };
   slReview: OpenSlReview[];
   conflicts: OpenConflict[];
+  grouping: OpenGrouping[];
 }
 
 export function countOpenDecisions(d: OpenDecisions): number {
@@ -258,7 +279,9 @@ export function countOpenDecisions(d: OpenDecisions): number {
     d.review.teams.length +
     d.review.leagues.length +
     d.slReview.reduce((n, s) => n + s.rows.length, 0) +
-    d.conflicts.length
+    d.conflicts.length +
+    // A report written before NEO-339 part A has no `grouping` (decisions-template --from-report).
+    (d.grouping?.length ?? 0)
   );
 }
 
@@ -300,9 +323,24 @@ export interface ApplyCounts {
   [other: string]: number;
 }
 
+/**
+ * Where `apply` stops at an open decision.
+ *
+ * - `first`: at the first one; the run ends there (the CLI's default).
+ * - `end`: records it, marks the step and every step that depends on it
+ *   blocked, carries on with the rest, and returns every open decision
+ *   together (`nb_apply`'s default, CLI `apply --collect`).
+ */
+export type StopAt = "first" | "end";
+
 export interface ApplyReport extends PlanReport {
-  /** Set when apply stopped at an open decision (the template carries it). */
+  /**
+   * Set when apply stopped at an open decision (the template carries it).
+   * With `stopAt: "end"`, the first of `stops`.
+   */
   stoppedAt?: { step: number; reason: string };
+  /** `stopAt: "end"` only: every step that stopped at an open decision, in walk order. */
+  stops?: Array<{ step: number; reason: string }>;
   counts: ApplyCounts;
   durationMs: number;
 }
@@ -312,6 +350,8 @@ export interface InspectRow {
   cards: number;
   isBase: boolean;
   links: MarketplaceLinks;
+  /** An insert row's parallels (the `parallel` level under it); absent when it has none. */
+  parallels?: InspectRow[];
 }
 
 export interface InspectReport {
@@ -369,8 +409,13 @@ export interface SetBuildRead {
   reviewItems(path: NodePath): Promise<ReviewItemsReport>;
 }
 
+export interface ApplyOptions {
+  /** Default `first`. Not covered by the confirm phrase: it changes how far one run goes, never what the spec allows it to write. */
+  stopAt?: StopAt;
+}
+
 export interface SetBuildWrite {
-  apply(spec: SetBuildSpecInput, confirm: string | undefined): Promise<ApplyReport>;
+  apply(spec: SetBuildSpecInput, confirm: string | undefined, opts?: ApplyOptions): Promise<ApplyReport>;
   decide(path: SetPath, decisions: ReviewDecisions, confirm: string | undefined): Promise<DecideReport>;
   buildParallel(
     path: SetPath,

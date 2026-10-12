@@ -2,8 +2,10 @@
  * NEO-339 — `apply`: run a spec, writing. The spec is parsed and the confirm
  * phrase checked before anything touches the network; the phrase carries the
  * parsed spec's digest, so it confirms this spec and no edited copy of it.
- * Stops at the first decision the spec does not answer and returns it with a
- * fill-in template; a re-run resumes.
+ * With `stopAt: "first"` (the default) it stops at the first decision the spec
+ * does not answer; with `"end"` it runs every step that does not depend on an
+ * open decision and returns them all. Either way the report carries a fill-in
+ * template, and a re-run resumes.
  */
 
 import type { NbClient } from "../client/convex-client";

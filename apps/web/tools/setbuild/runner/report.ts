@@ -42,6 +42,7 @@ function openLines(d: OpenDecisions): string[] {
   }
   for (const s of d.slReview) for (const row of s.rows) lines.push(`- \`${s.at}\` ${s.path}: SportLots ${row.slId} "${row.name}"`);
   for (const c of d.conflicts) lines.push(`- \`${c.at}\` #${c.cardNumber}: ${c.detail}`);
+  for (const g of d.grouping ?? []) lines.push(`- \`${g.at}\` ${g.path} › ${g.type}: ${g.problem} "${g.name}" — ${g.detail}`);
   return lines;
 }
 
@@ -57,7 +58,15 @@ export function reportMarkdown(r: PlanReport | ApplyReport): string {
     const counts = Object.entries(r.counts)
       .map(([k, v]) => `${k} ${v}`)
       .join(", ");
-    out.push(`${r.stoppedAt ? `**Stopped** at step ${r.stoppedAt.step}: ${r.stoppedAt.reason}` : "**Done**"} in ${(r.durationMs / 1000).toFixed(1)}s — ${counts}`);
+    const stops = r.stops ?? (r.stoppedAt ? [r.stoppedAt] : []);
+    const head =
+      stops.length > 1
+        ? `**Stopped** at ${stops.length} open decisions (the rest ran)`
+        : r.stoppedAt
+          ? `**Stopped** at step ${r.stoppedAt.step}: ${r.stoppedAt.reason}`
+          : "**Done**";
+    out.push(`${head} in ${(r.durationMs / 1000).toFixed(1)}s — ${counts}`);
+    if (stops.length > 1) for (const s of stops) out.push(`- step ${s.step}: ${s.reason}`);
   }
   out.push("");
   out.push("| # | Step | Path | Action | Status |");

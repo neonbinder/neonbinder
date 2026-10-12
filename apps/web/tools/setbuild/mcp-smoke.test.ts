@@ -63,7 +63,7 @@ const bigLeague: InspectReport = {
 };
 
 function none(): OpenDecisions {
-  return { names: [], baseCandidates: [], reconcile: [], review: { players: [], teams: [], leagues: [] }, slReview: [], conflicts: [] };
+  return { names: [], baseCandidates: [], reconcile: [], review: { players: [], teams: [], leagues: [] }, slReview: [], conflicts: [], grouping: [] };
 }
 
 const EXPECT: SmokeExpect = smokeExpectSchema.parse({

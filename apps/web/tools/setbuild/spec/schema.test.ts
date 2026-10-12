@@ -1,4 +1,7 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "vitest";
+import { contentDigest } from "../client/target";
 import { parseSpec, parseSpecJson, SpecError, specJsonSchema } from "./schema";
 
 const minimal = {
@@ -123,8 +126,63 @@ describe("SetBuildSpec", () => {
     expect(parseSpecJson(JSON.stringify(minimal)).scope).toBe("e2e-baseline");
   });
 
+  test("NEO-339 one-shot: group (names and marketplace-id refs) and an insert's parallels parse", () => {
+    const withGroup = structuredClone(minimal) as unknown as { steps: Array<{ variants?: Array<Record<string, unknown>> }> };
+    const insert = withGroup.steps[1].variants![0];
+    insert.group = {
+      parents: [
+        { insert: "Chrome Prospect Autographs", parallels: ["Chrome Prospect Autographs Gold", { bsc: "cpa-red" }, { sportlots: "378117" }] },
+        { insert: { bsc: "future-stars" }, parallels: [{ sportlots: "9003" }] },
+      ],
+      expectUngrouped: 12,
+    };
+    (insert.rows as Array<Record<string, unknown>>)[0].parallels = [
+      { name: "Future Stars Gold", build: { rebuild: true }, expectCards: 20 },
+      { name: "Future Stars Red" },
+    ];
+    const spec = parseSpec(withGroup);
+    const set = spec.steps[1];
+    if (set.kind !== "set") throw new Error("expected a set step");
+    expect(set.variants![0].group!.parents[0].parallels).toEqual(["Chrome Prospect Autographs Gold", { bsc: "cpa-red" }, { sportlots: "378117" }]);
+    expect(set.variants![0].rows![0].parallels).toEqual([
+      { name: "Future Stars Gold", build: { rebuild: true }, expectCards: 20 },
+      { name: "Future Stars Red" },
+    ]);
+  });
+
+  test.each([
+    ["a ref with both ids", { parents: [{ insert: { bsc: "a", sportlots: "b" }, parallels: ["x"] }] }],
+    ["a ref by an unknown key", { parents: [{ insert: { name: "a" }, parallels: ["x"] }] }],
+    ["a parent with no parallels", { parents: [{ insert: "a", parallels: [] }] }],
+    ["a blank name", { parents: [{ insert: "  ", parallels: ["x"] }] }],
+    ["a misspelt key", { parents: [], expectUngroupd: 3 }],
+  ])("group refuses %s", (_label, group) => {
+    const bad = structuredClone(minimal) as unknown as { steps: Array<{ variants?: Array<Record<string, unknown>> }> };
+    bad.steps[1].variants![0].group = group;
+    expect(() => parseSpec(bad)).toThrow(SpecError);
+  });
+
+  test("an insert parallel's keys are strict too", () => {
+    const bad = structuredClone(minimal) as unknown as { steps: Array<{ variants?: Array<{ rows?: Array<Record<string, unknown>> }> }> };
+    bad.steps[1].variants![0].rows![0].parallels = [{ name: "Gold", buildFromBase: {} }];
+    expect(() => parseSpec(bad)).toThrow(SpecError);
+  });
+
+  test("every committed seed spec still parses, unchanged by the new keys", () => {
+    const dir = join(__dirname, "../../../.maestro/seed");
+    for (const file of ["baseline.spec.json", "parallel.spec.json"]) {
+      const raw = JSON.parse(readFileSync(join(dir, file), "utf8"));
+      const spec = parseSpec(raw);
+      // The new keys carry no defaults, so a spec without them parses to the
+      // same object (and the same confirm-phrase digest) as before them.
+      expect(JSON.stringify(spec), file).not.toMatch(/"group"|"parallels"|"expectUngrouped"/);
+      expect(contentDigest(parseSpec(JSON.parse(JSON.stringify(spec)))), file).toBe(contentDigest(spec));
+    }
+  });
+
   test("exports a JSON Schema for the spec", () => {
     const schema = specJsonSchema();
     expect(JSON.stringify(schema)).toContain("whenPaused");
+    expect(JSON.stringify(schema)).toContain("expectUngrouped");
   });
 });

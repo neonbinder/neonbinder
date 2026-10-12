@@ -249,6 +249,27 @@ export const BaseMapSchema = z
   })
   .strict();
 
+/**
+ * One parallel of an insert row (NEO-312 J1): a row at the `parallel` level
+ * under the insert, named exactly. `build` builds its checklist from the
+ * INSERT's checklist (the panel's "Build" on an insert), after that checklist
+ * is committed; without it the parallel is only checked to exist, and
+ * `expectCards`, when given, asserted.
+ */
+export const InsertParallelSchema = z
+  .object({
+    name: text,
+    build: z
+      .object({
+        /** Rebuild even when the parallel already has cards. */
+        rebuild: z.boolean().optional(),
+      })
+      .strict()
+      .optional(),
+    expectCards: z.number().int().nonnegative().optional(),
+  })
+  .strict();
+
 export const VariantRowSchema = z
   .object({
     /** The row's NB name under its variant type. */
@@ -263,6 +284,51 @@ export const VariantRowSchema = z
       .strict()
       .optional(),
     expectCards: z.number().int().nonnegative().optional(),
+    /** This insert's parallels, handled after its checklist (see `InsertParallelSchema`). */
+    parallels: z.array(InsertParallelSchema).optional(),
+  })
+  .strict();
+
+// ---------------------------------------------------------------------------
+// Group Parallels (the "Group Parallels" dialog)
+// ---------------------------------------------------------------------------
+
+/**
+ * A row of one variant type, by its exact NB name or by a marketplace id in
+ * one of its platform slots (`{ "bsc": "<slug>" }`, `{ "sportlots": "<id>" }`).
+ * Either form must match exactly one row of the type (top-level or already
+ * grouped); an id is the steadier form, since it survives a rename.
+ */
+export const RowRefSchema = z.union([
+  text,
+  z.object({ bsc: text }).strict(),
+  z.object({ sportlots: text }).strict(),
+]);
+
+/** One insert and the rows that should sit under it as its parallels. */
+export const GroupParentSchema = z
+  .object({
+    insert: RowRefSchema,
+    parallels: z.array(RowRefSchema).min(1),
+  })
+  .strict();
+
+/**
+ * The nesting the dialog's moves would leave. A named parallel already under
+ * its insert is done; one under another insert is moved; a top-level row is
+ * moved under it. A named insert that is itself a parallel, or a named
+ * parallel that holds parallels of its own, is an open decision. A row the
+ * spec does not name stays where it is: leaving is the default, never a
+ * wildcard.
+ */
+export const GroupSchema = z
+  .object({
+    parents: z.array(GroupParentSchema),
+    /**
+     * Top-level rows of the type that hold no parallels, after the grouping
+     * (asserted, never used to decide).
+     */
+    expectUngrouped: z.number().int().nonnegative().optional(),
   })
   .strict();
 
@@ -272,8 +338,14 @@ export const VariantTypeStepSchema = z
     type: text,
     /** Run the type's row sync (Sync Inserts / Sync Parallels) with these answers. */
     sync: ReconcileSyncSchema.optional(),
-    /** Rows the type must hold after the sync (asserted, never used to decide). */
+    /**
+     * Rows the type must hold after the sync, top-level and grouped alike, so
+     * the count is the same before and after `group` (asserted, never used to
+     * decide).
+     */
     expectRows: z.number().int().nonnegative().optional(),
+    /** Group Parallels, after the sync and before `rows`. */
+    group: GroupSchema.optional(),
     rows: z.array(VariantRowSchema).optional(),
   })
   .strict();
@@ -345,6 +417,10 @@ export type ManufacturerPolicy = z.infer<typeof ManufacturerPolicySchema>;
 export type BaseMap = z.infer<typeof BaseMapSchema>;
 export type VariantTypeStep = z.infer<typeof VariantTypeStepSchema>;
 export type VariantRow = z.infer<typeof VariantRowSchema>;
+export type InsertParallel = z.infer<typeof InsertParallelSchema>;
+export type RowRef = z.infer<typeof RowRefSchema>;
+export type GroupParent = z.infer<typeof GroupParentSchema>;
+export type Group = z.infer<typeof GroupSchema>;
 export type ReconcileSync = z.infer<typeof ReconcileSyncSchema>;
 export type ReconcilePair = z.infer<typeof ReconcilePairSchema>;
 export type ReconcilePending = z.infer<typeof ReconcilePendingSchema>;
