@@ -38,9 +38,13 @@ Read it back by tapping `id: "Back to previous decision"` after the link
 (the wizard walks on immediately) → `id: "Decision for <row name>"` group →
 the text; then `Next` (anchored `below: "Already decided:.*"`) resumes.
 
-**The row's raw name is read off its heading** with `copyTextFrom: text:
-"New Team: .*"` + `evalScript` strip — the alias claim is "the checklist's
-spelling, exactly", so no club name is hard-coded.
+**The linked row is "Homestead Grays", by name (2026-10-12).** It used to be
+"whichever club comes first", read off the heading; that linked "Montreal
+Royals", a career team the Big League flows also stage, and the live alias
+changed their walks (see [[pick-a-fixture-owned-name-by-name]]). The Grays
+are staged only off Josh Gibson. Card clubs (BSC `teamName`): Kansas City
+Monarchs RW-1/RW-3, Birmingham Black Barons RW-4, Pittsburgh Crawfords RW-2;
+the first two reach the wizard only after NEO-333.
 
 **The Base-mapping notice's Close straddles the fold** after the warm drill
 (local y=603-635 on 625; CI's 15px horizontal scrollbar → 618-650 on 629 →

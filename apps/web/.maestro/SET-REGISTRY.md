@@ -1383,7 +1383,7 @@ lists under 2024 Topps this is the smallest with that shape:
 | -- | -- |
 | BSC cards | **4** — RW-1 Satchel Paige, RW-2 Josh Gibson, RW-3 Jackie Robinson, RW-4 Willie Mays |
 | unknown names | **8** — 4 players, the Negro League clubs (Pittsburgh Crawfords on RW-2, …; "Homestead Grays" is a STAGED career team from Gibson's Wikidata stint, not a card's club), and ONE staged league ("Negro league baseball", raised by the first club's Wikidata lookup and asked once for the batch) |
-| first row presented | the staged **League** step; the flow skips it ("Skip — no league") and the first **team** row follows |
+| first row presented | measured 2026-10-12 on NEO-335: `New Team: Montreal Royals` (staged off Jackie Robinson), then `New League: Negro league baseball`, then `New Team: Homestead Grays` (staged off Josh Gibson, the row the flow links). The card clubs Kansas City Monarchs (RW-1, RW-3) and Birmingham Black Barons (RW-4) reach the wizard only once the fetch waits for its BSC team lookups (NEO-333) |
 | cost | ~60s to the wizard on a warm Baseball drill, ~3 min end to end |
 
 **It is ONE-SIDED, and the flow keeps it that way.** SportLots does not carry
@@ -1401,12 +1401,24 @@ That is the Roanoke Express shape above, on a warm drill.
 two-sided Match Cards dialog this set never shows. The flow hand-rolls the
 Base tap → picker cancel → sync, exactly as the one-marketplace flow does.
 
-**Sole writer, self-cleaning on the TEAM side.** The flow links the first
-club to a per-attempt team it created (`Loc<token> Ali<token>`), commits,
-reads the alias back in Team Management, then REMOVES it and saves. So the
-alias never outlives the flow: while it exists, any checklist naming that
-club would resolve to the flow's own team through the alias union, which is
-the feature — and why it is taken out again before the flow ends. The set
+**Sole writer, self-cleaning on the TEAM side.** The flow links
+**"Homestead Grays"**, by name, to a per-attempt team it created
+(`Loc<token> Ali<token>`), commits, reads the alias back in Team Management,
+then REMOVES it and saves. So the alias never outlives the flow — but for the
+~70 s it is live, any lookup of that string anywhere in the deployment
+resolves to the flow's own team through the alias union, which is the
+feature. That is why the linked name must be one NO other flow can look up,
+and why it is chosen by name rather than "whichever club comes first": CI run
+38198207277 linked the first one, `Montreal Royals`, which is also a staged
+career team on Topps Big League (Robinson and Clemente are the recording's
+two players with that stint), and the alias changed the four read-only
+`checklist-wizard-*` walks while it was live. `Homestead Grays` is staged
+only off Josh Gibson (the recording `enrichment-lookups.json` has no other
+player with that stint, and no other flow's set carries him), no other
+flow has ever shown it in a CI log, and no flow types it. Every other team
+step on this set is skipped (skips are scoped to this set's
+`selectorOptionId`). **Do not change the linked name to one another flow's
+set can raise.** The set
 itself drains within a run like the other committing fixtures (a committed
 set's names are known; a re-sync raises no review), and CI reseeds every run.
 A LOCAL re-run needs a fresh seed.
