@@ -6,9 +6,10 @@
  *   1. Free-text add: a name that matches no existing team is still accepted
  *      (unlike EntityLinkSearch, which is pick-existing-only) — that name
  *      becomes a new team via get-or-create at commit time.
- *   2. Typeahead: STAGED names (teams this review will create) come first and are
- *      tagged, then `teams.search` results the staged list does not already
- *      cover. Picking one fills the name field without adding.
+ *   2. Typeahead: STAGED names (teams this review will create) come first, then
+ *      `teams.pickerCandidates` results the staged list does not already
+ *      cover, IN THE SERVER'S ORDER (NEO-331: ranked by the set under review,
+ *      never re-sorted here). Picking one fills the name field without adding.
  *   3. The "Did you mean {existing}?" prompt for a name that is close to
  *      something already in play but not equal to it — the "NY Yankees" vs
  *      "New York Yankees" case no substring filter catches.
@@ -28,7 +29,9 @@
  *
  * Mocking mirrors EntityLinkSearch.test.tsx / PlayerPicker.test.tsx:
  * convex/react's useQuery is module-mocked, routed by the string-mocked
- * teams.search reference.
+ * teams.pickerCandidates reference. `currentTeams` holds team rows in the
+ * server's order; the mock wraps each as `{ team, tier: 4 }` (the context-free
+ * answer) unless a test hands it ranked rows itself.
  */
 
 import { act, fireEvent, render, screen } from "@testing-library/react";
@@ -38,12 +41,14 @@ import type { Id } from "../../convex/_generated/dataModel";
 
 // NEO-96: the sport-level selectorOptions ROW ID, not a display string.
 const SPORT_ID = "selopt-sport-1" as unknown as Id<"selectorOptions">;
+/** NEO-331: the set under review — a 2022 Donruss baseball variant row. */
+const SET_ID = "selopt-set-1" as unknown as Id<"selectorOptions">;
 
 /** Matches SEARCH_DEBOUNCE_MS in the component. */
 const DEBOUNCE_MS = 200;
 
 vi.mock("../../convex/_generated/api", () => ({
-  api: { teams: { search: "teams.search" } },
+  api: { teams: { pickerCandidates: "teams.pickerCandidates" } },
 }));
 
 let currentTeams: unknown;
@@ -53,7 +58,12 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     queryCalls.push({ ref, args });
     if (args === "skip") return undefined;
-    if (ref === "teams.search") return currentTeams;
+    if (ref === "teams.pickerCandidates") {
+      if (!Array.isArray(currentTeams)) return currentTeams;
+      return currentTeams.map((row: Record<string, unknown>) =>
+        "team" in row ? row : { team: row, tier: 4 },
+      );
+    }
     return undefined;
   },
 }));
@@ -169,19 +179,129 @@ describe("CareerTeamEntry — adding", () => {
 // ---------------------------------------------------------------------------
 
 describe("CareerTeamEntry — search source", () => {
-  it("queries teams.search with the typed name and sport", () => {
+  it("queries teams.pickerCandidates with the typed name and sport", () => {
     renderEntry();
     typeName("Blue");
 
-    const lastSearch = queryCalls.filter((c) => c.ref === "teams.search").pop();
-    expect(lastSearch?.args).toEqual({ query: "Blue", sportId: SPORT_ID });
+    const lastSearch = queryCalls
+      .filter((c) => c.ref === "teams.pickerCandidates")
+      .pop();
+    expect(lastSearch?.args).toEqual({
+      query: "Blue",
+      sportId: SPORT_ID,
+      contextOptionId: undefined,
+    });
+  });
+
+  it("NEO-331: passes the set under review as contextOptionId", () => {
+    renderEntry({ contextOptionId: SET_ID });
+    typeName("pad");
+
+    const lastSearch = queryCalls
+      .filter((c) => c.ref === "teams.pickerCandidates")
+      .pop();
+    expect(lastSearch?.args).toEqual({
+      query: "pad",
+      sportId: SPORT_ID,
+      contextOptionId: SET_ID,
+    });
   });
 
   it("skips the query while the field is blank", () => {
-    renderEntry();
+    renderEntry({ contextOptionId: SET_ID });
 
-    const lastSearch = queryCalls.filter((c) => c.ref === "teams.search").pop();
+    const lastSearch = queryCalls
+      .filter((c) => c.ref === "teams.pickerCandidates")
+      .pop();
     expect(lastSearch?.args).toBe("skip");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-331 — the saved half keeps the server's tiered order
+// ---------------------------------------------------------------------------
+
+describe("CareerTeamEntry — set-ranked order (NEO-331)", () => {
+  const SAN_DIEGO = { _id: "t-sd", location: "San Diego", name: "Padres" };
+  const ARIZONA_LEAGUE = {
+    _id: "t-azl",
+    location: "Arizona League",
+    name: "Padres",
+  };
+
+  it("lists the tier-1 team first even though it sorts after a tier-4 one A–Z", () => {
+    // Jason's repro: Baseball › 2022 › Donruss, League MLB, typing "pad".
+    // "Arizona League Padres" < "San Diego Padres" alphabetically, and both
+    // are prefix-less for "pad", so the old client sort put Arizona first.
+    currentTeams = [
+      { team: SAN_DIEGO, tier: 1 },
+      { team: ARIZONA_LEAGUE, tier: 4 },
+    ];
+    renderEntry({ contextOptionId: SET_ID });
+
+    typeName("pad");
+
+    expect(
+      screen.getAllByRole("option").map((el) => el.getAttribute("aria-label")),
+    ).toEqual(["Use San Diego Padres", "Use Arizona League Padres"]);
+  });
+
+  it("does not promote a client-side prefix match over a higher tier", () => {
+    // "Paducah Chiefs" STARTS WITH "pad"; "San Diego Padres" does not. The old
+    // client sort put every prefix hit first — the server ranks prefix only
+    // WITHIN a tier, and that is the order shown.
+    const PADUCAH = { _id: "t-pad", location: "Paducah", name: "Chiefs" };
+    currentTeams = [
+      { team: SAN_DIEGO, tier: 1 },
+      { team: PADUCAH, tier: 4 },
+      { team: ARIZONA_LEAGUE, tier: 4 },
+    ];
+    renderEntry({ contextOptionId: SET_ID });
+
+    typeName("pad");
+
+    expect(
+      screen.getAllByRole("option").map((el) => el.getAttribute("aria-label")),
+    ).toEqual([
+      "Use San Diego Padres",
+      "Use Paducah Chiefs",
+      "Use Arizona League Padres",
+    ]);
+  });
+
+  it("still puts staged names ahead of the ranked saved half", () => {
+    currentTeams = [
+      { team: SAN_DIEGO, tier: 1 },
+      { team: ARIZONA_LEAGUE, tier: 4 },
+    ];
+    renderEntry({ contextOptionId: SET_ID, stagedNames: ["Padres Prospects"] });
+
+    typeName("pad");
+
+    expect(
+      screen.getAllByRole("option").map((el) => el.getAttribute("aria-label")),
+    ).toEqual([
+      "Use Padres Prospects",
+      "Use San Diego Padres",
+      "Use Arizona League Padres",
+    ]);
+  });
+
+  it("Enter takes the top-ranked saved team", () => {
+    currentTeams = [
+      { team: SAN_DIEGO, tier: 1 },
+      { team: ARIZONA_LEAGUE, tier: 4 },
+    ];
+    renderEntry({ contextOptionId: SET_ID });
+
+    typeName("pad");
+    fireEvent.keyDown(screen.getByLabelText("Career team name"), {
+      key: "Enter",
+    });
+
+    expect(
+      (screen.getByLabelText("Career team name") as HTMLInputElement).value,
+    ).toBe("San Diego Padres");
   });
 });
 

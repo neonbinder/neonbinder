@@ -19,11 +19,16 @@
  * --- Mocking strategy (identity-routed useQuery, per PlayerPicker.test.tsx /
  * TeamPicker.test.tsx conventions) ---
  * convex/react's useQuery is module-mocked, routed by the (string-mocked)
- * query reference, so `players.search` and `teams.search` resolve independently
- * depending on the `kind` prop (the component "skip"s whichever one isn't
- * relevant, and skips BOTH while the query is blank). The mock records the args
- * it was handed so the debounce and the sport filter can be asserted directly
- * rather than inferred from what rendered.
+ * query reference, so `players.search` and `teams.pickerCandidates` resolve
+ * independently depending on the `kind` prop (the component "skip"s whichever
+ * one isn't relevant, and skips BOTH while the query is blank). The mock records
+ * the args it was handed so the debounce and the sport filter can be asserted
+ * directly rather than inferred from what rendered.
+ *
+ * NEO-331: teams come from `teams.pickerCandidates`, ranked by the set under
+ * review and returned as `{ team, tier }` in final order. `currentTeams` holds
+ * team rows in the server's order; the mock wraps each as `{ team, tier: 4 }`
+ * unless a test hands it ranked rows itself.
  */
 
 import { act, fireEvent, render, screen } from "@testing-library/react";
@@ -33,6 +38,8 @@ import type { Id } from "../../convex/_generated/dataModel";
 
 // NEO-96: the sport-level selectorOptions ROW ID, not a display string.
 const SPORT_ID = "selopt-sport-1" as unknown as Id<"selectorOptions">;
+/** NEO-331: the set under review — its variant `selectorOptions` row. */
+const SET_ID = "selopt-set-1" as unknown as Id<"selectorOptions">;
 
 /** Matches SEARCH_DEBOUNCE_MS in the component. */
 const DEBOUNCE_MS = 200;
@@ -44,7 +51,7 @@ const DEBOUNCE_MS = 200;
 vi.mock("../../convex/_generated/api", () => ({
   api: {
     players: { search: "players.search", list: "players.list" },
-    teams: { search: "teams.search" },
+    teams: { pickerCandidates: "teams.pickerCandidates" },
     // NEO-254: leagues have no `search` — a sport's leagues fit on a screen, so
     // the component reads the whole list and filters client-side.
     leagues: { list: "leagues.list" },
@@ -62,7 +69,12 @@ vi.mock("convex/react", () => ({
     queryCalls.push({ ref, args });
     if (args === "skip") return undefined;
     if (ref === "players.search") return currentPlayers;
-    if (ref === "teams.search") return currentTeams;
+    if (ref === "teams.pickerCandidates") {
+      if (!Array.isArray(currentTeams)) return currentTeams;
+      return currentTeams.map((row: Record<string, unknown>) =>
+        "team" in row ? row : { team: row, tier: 4 },
+      );
+    }
     if (ref === "leagues.list") return currentLeagues;
     return undefined;
   },
@@ -144,16 +156,41 @@ describe("EntityLinkSearch — search source", () => {
     expect(queryCalls.some((c) => c.ref === "players.list")).toBe(false);
   });
 
-  it("queries teams.search for kind='team', and skips the player query", () => {
+  it("queries teams.pickerCandidates for kind='team', and skips the player query", () => {
     currentTeams = [makeCandidate("t1", "Los Angeles Angels")];
     renderSearch({ kind: "team" });
     typeAndSettle("Search existing teams", "Angels");
 
-    expect(lastArgsFor("teams.search")).toEqual({
+    expect(lastArgsFor("teams.pickerCandidates")).toEqual({
       query: "Angels",
       sportId: SPORT_ID,
+      contextOptionId: undefined,
     });
     expect(lastArgsFor("players.search")).toBe("skip");
+  });
+
+  it("NEO-331: hands a team search the set under review as contextOptionId", () => {
+    currentTeams = [makeCandidate("t1", "Los Angeles Angels")];
+    renderSearch({ kind: "team", contextOptionId: SET_ID });
+    typeAndSettle("Search existing teams", "Angels");
+
+    expect(lastArgsFor("teams.pickerCandidates")).toEqual({
+      query: "Angels",
+      sportId: SPORT_ID,
+      contextOptionId: SET_ID,
+    });
+  });
+
+  it("NEO-331: a player search is unchanged by a set context", () => {
+    currentPlayers = [makeCandidate("p1", "Mike Trout")];
+    renderSearch({ kind: "player", contextOptionId: SET_ID });
+    typeAndSettle("Search existing players", "Trout");
+
+    expect(lastArgsFor("players.search")).toEqual({
+      query: "Trout",
+      sportId: SPORT_ID,
+    });
+    expect(lastArgsFor("teams.pickerCandidates")).toBe("skip");
   });
 
   it("trims the query before sending it", () => {
@@ -194,7 +231,13 @@ describe("EntityLinkSearch — search source", () => {
     renderSearch();
 
     expect(lastArgsFor("players.search")).toBe("skip");
-    expect(lastArgsFor("teams.search")).toBe("skip");
+    expect(lastArgsFor("teams.pickerCandidates")).toBe("skip");
+  });
+
+  it("skips the team query while the field is blank, set context or not", () => {
+    renderSearch({ kind: "team", contextOptionId: SET_ID });
+
+    expect(lastArgsFor("teams.pickerCandidates")).toBe("skip");
   });
 });
 
@@ -427,13 +470,15 @@ describe("EntityLinkSearch — split team names", () => {
     ).toBeTruthy();
   });
 
-  it("ranks 'starts with what I typed' on the FULL name", () => {
-    // Sorting on the nickname would put "Padres" ahead of "San Diego Padres"
-    // for the query "San", which is the opposite of what the operator sees.
+  it("lists teams in the server's order — the full-name prefix rule is the server's", () => {
+    // NEO-331: "starts with what I typed", on the FULL name, is now applied by
+    // `rankTeamsForContext` (lib/teams/team-rank.test.ts) inside each tier.
+    // The component shows the answer as it arrives, so an order no client sort
+    // would produce must survive verbatim.
     currentTeams = [
+      { _id: "t3", name: "Mariners", location: "Seattle" },
       { _id: "t1", name: "Padres", location: "San Diego" },
       { _id: "t2", name: "Sandlot Club" },
-      { _id: "t3", name: "Mariners", location: "Seattle" },
     ];
     renderSearch({ kind: "team" });
     typeAndSettle("Search existing teams", "San");
@@ -442,10 +487,86 @@ describe("EntityLinkSearch — split team names", () => {
       .getAllByRole("option")
       .map((el) => el.getAttribute("aria-label"));
     expect(names).toEqual([
+      "Link to Seattle Mariners",
       "Link to San Diego Padres",
       "Link to Sandlot Club",
-      "Link to Seattle Mariners",
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-331 — teams keep the server's set-ranked order
+// ---------------------------------------------------------------------------
+
+describe("EntityLinkSearch — set-ranked teams (NEO-331)", () => {
+  const SAN_DIEGO = { _id: "t-sd", location: "San Diego", name: "Padres" };
+  const ARIZONA_LEAGUE = {
+    _id: "t-azl",
+    location: "Arizona League",
+    name: "Padres",
+  };
+  const PADUCAH = { _id: "t-pad", location: "Paducah", name: "Chiefs" };
+
+  it("lists a tier-1 team first even though a tier-4 one sorts ahead of it A–Z", () => {
+    currentTeams = [
+      { team: SAN_DIEGO, tier: 1 },
+      { team: ARIZONA_LEAGUE, tier: 4 },
+    ];
+    renderSearch({ kind: "team", contextOptionId: SET_ID });
+    typeAndSettle("Search existing teams", "pad");
+
+    expect(
+      screen.getAllByRole("option").map((el) => el.getAttribute("aria-label")),
+    ).toEqual(["Link to San Diego Padres", "Link to Arizona League Padres"]);
+  });
+
+  it("never lifts a client-side prefix match over a higher tier", () => {
+    // "Paducah Chiefs" starts with "pad"; "San Diego Padres" does not.
+    currentTeams = [
+      { team: SAN_DIEGO, tier: 1 },
+      { team: PADUCAH, tier: 4 },
+      { team: ARIZONA_LEAGUE, tier: 4 },
+    ];
+    renderSearch({ kind: "team", contextOptionId: SET_ID });
+    typeAndSettle("Search existing teams", "pad");
+
+    expect(
+      screen.getAllByRole("option").map((el) => el.getAttribute("aria-label")),
+    ).toEqual([
+      "Link to San Diego Padres",
+      "Link to Paducah Chiefs",
+      "Link to Arizona League Padres",
+    ]);
+  });
+
+  it("Enter links the top-ranked team", () => {
+    currentTeams = [
+      { team: SAN_DIEGO, tier: 1 },
+      { team: ARIZONA_LEAGUE, tier: 4 },
+    ];
+    const { onSelect } = renderSearch({ kind: "team", contextOptionId: SET_ID });
+    typeAndSettle("Search existing teams", "pad");
+
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Search existing teams" }), {
+      key: "Enter",
+    });
+
+    expect(onSelect).toHaveBeenCalledWith("t-sd", "San Diego Padres");
+  });
+
+  it("still caps the ranked list at 8, keeping its head", () => {
+    currentTeams = Array.from({ length: 12 }, (_, i) => ({
+      team: { _id: `t${i}`, name: `Club ${String.fromCharCode(90 - i)}` },
+      tier: i < 2 ? 1 : 4,
+    }));
+    renderSearch({ kind: "team", contextOptionId: SET_ID });
+    typeAndSettle("Search existing teams", "Club");
+
+    const names = screen
+      .getAllByRole("option")
+      .map((el) => el.getAttribute("aria-label"));
+    expect(names).toHaveLength(8);
+    expect(names.slice(0, 2)).toEqual(["Link to Club Z", "Link to Club Y"]);
   });
 });
 

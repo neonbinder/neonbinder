@@ -11,8 +11,10 @@
  *    matches — with league and years under each — and no search is sent.
  *  - NEO-326: the section is always headed "Link to existing team", and the
  *    caller's children render inside it, directly under the field.
- *  - Typing hands the finding to `teams.search` (server-backed, sport-scoped,
- *    debounced), never to a client-side filter of a bulk list.
+ *  - Typing hands the finding to `teams.pickerCandidates` (server-backed,
+ *    sport-scoped, debounced), never to a client-side filter of a bulk list.
+ *  - NEO-331: given the set under review (`contextOptionId`), the server's
+ *    tiered order is listed verbatim — never re-sorted by the component.
  *  - An option is "Location Name" with "League · years" on its own line, so
  *    the five Dodgers can be told apart.
  *  - A pick, by mouse or by keyboard, reports the team's id and full name to
@@ -27,12 +29,17 @@ import type { Id } from "../../convex/_generated/dataModel";
 import type { NearMatch } from "./NearMatchPanel";
 
 const SPORT_ID = "selopt-sport-baseball" as unknown as Id<"selectorOptions">;
+/** NEO-331: the set under review — a 2022 baseball variant row. */
+const SET_ID = "selopt-set-2022" as unknown as Id<"selectorOptions">;
 /** Matches SEARCH_DEBOUNCE_MS in the component. */
 const DEBOUNCE_MS = 200;
 
 vi.mock("../../convex/_generated/api", () => ({
   api: {
-    teams: { search: "teams.search", getManyByIds: "teams.getManyByIds" },
+    teams: {
+      pickerCandidates: "teams.pickerCandidates",
+      getManyByIds: "teams.getManyByIds",
+    },
     leagues: { list: "leagues.list" },
   },
 }));
@@ -94,6 +101,12 @@ const NEAR: NearMatch[] = [
 /** What the server search "finds" for a term — a crude stand-in for the index. */
 const ALL_TEAMS = [BROOKLYN_DODGERS, LA_DODGERS, BRIDEGROOMS, EAGLES, CYCLONES];
 let searchResponds = true;
+/**
+ * NEO-331 — when set, the search answers with exactly these ranked rows (the
+ * server's final order), whatever was typed. Otherwise every name-matching
+ * team comes back at tier 4, in fixture order.
+ */
+let rankedOverride: Array<{ team: TeamRow; tier: 1 | 2 | 3 | 4 }> | null = null;
 let queryCalls: Array<{ ref: string; args: unknown }>;
 
 vi.mock("convex/react", () => ({
@@ -105,12 +118,13 @@ vi.mock("convex/react", () => ({
       const ids = (args as { ids: string[] }).ids;
       return ALL_TEAMS.filter((t) => ids.includes(t._id));
     }
-    if (ref === "teams.search") {
+    if (ref === "teams.pickerCandidates") {
       if (!searchResponds) return undefined;
+      if (rankedOverride) return rankedOverride;
       const q = (args as { query: string }).query.toLowerCase();
       return ALL_TEAMS.filter((t) =>
         `${t.location ?? ""} ${t.name}`.toLowerCase().includes(q),
-      );
+      ).map((team) => ({ team, tier: 4 }));
     }
     return undefined;
   },
@@ -122,10 +136,18 @@ import {
   TEAM_MATCH_SECTION_HEADING,
 } from "./TeamMatchSearch";
 
-function renderSearch(defaultMatches: NearMatch[] = NEAR) {
+function renderSearch(
+  defaultMatches: NearMatch[] = NEAR,
+  contextOptionId?: Id<"selectorOptions">,
+) {
   const onPick = vi.fn();
   render(
-    <TeamMatchSearch sportId={SPORT_ID} defaultMatches={defaultMatches} onPick={onPick} />,
+    <TeamMatchSearch
+      sportId={SPORT_ID}
+      contextOptionId={contextOptionId}
+      defaultMatches={defaultMatches}
+      onPick={onPick}
+    />,
   );
   return { onPick };
 }
@@ -157,6 +179,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   queryCalls = [];
   searchResponds = true;
+  rankedOverride = null;
 });
 
 afterEach(() => {
@@ -194,7 +217,7 @@ describe("TeamMatchSearch", () => {
       "Negro National League · 1935–1935",
     ]);
 
-    const searches = queryCalls.filter((c) => c.ref === "teams.search");
+    const searches = queryCalls.filter((c) => c.ref === "teams.pickerCandidates");
     expect(searches.length).toBeGreaterThan(0);
     expect(searches.every((c) => c.args === "skip")).toBe(true);
   });
@@ -315,9 +338,62 @@ describe("TeamMatchSearch", () => {
     typeInto("Dodgers");
 
     const sent = queryCalls
-      .filter((c) => c.ref === "teams.search" && c.args !== "skip")
+      .filter((c) => c.ref === "teams.pickerCandidates" && c.args !== "skip")
       .map((c) => c.args);
-    expect(sent.at(-1)).toEqual({ query: "Dodgers", sportId: SPORT_ID, limit: 25 });
+    expect(sent.at(-1)).toEqual({
+      query: "Dodgers",
+      sportId: SPORT_ID,
+      contextOptionId: undefined,
+      limit: 25,
+    });
+  });
+
+  it("NEO-331: ranks the typed search by the set under review", () => {
+    renderSearch(NEAR, SET_ID);
+    fireEvent.focus(field());
+    typeInto("Dodgers");
+
+    const sent = queryCalls
+      .filter((c) => c.ref === "teams.pickerCandidates" && c.args !== "skip")
+      .map((c) => c.args);
+    expect(sent.at(-1)).toEqual({
+      query: "Dodgers",
+      sportId: SPORT_ID,
+      contextOptionId: SET_ID,
+      limit: 25,
+    });
+  });
+
+  it("NEO-331: lists the server's tiered order verbatim — the tier-1 club first though it sorts last A–Z", () => {
+    // A 2022 MLB set: the Los Angeles Dodgers are active in the set's league
+    // that year (tier 1); the Brooklyn Dodgers are the same league in a closed
+    // era (tier 3). "Brooklyn" < "Los Angeles", so any alphabet would flip it.
+    rankedOverride = [
+      { team: LA_DODGERS, tier: 1 },
+      { team: BROOKLYN_DODGERS, tier: 3 },
+    ];
+    const { onPick } = renderSearch(NEAR, SET_ID);
+    fireEvent.focus(field());
+    typeInto("Dodgers");
+
+    expect(options().map(labelOf)).toEqual(["Los Angeles Dodgers", "Brooklyn Dodgers"]);
+
+    // Enter on the opening highlight takes the top-ranked club.
+    fireEvent.keyDown(field(), { key: "Enter" });
+    expect(onPick).toHaveBeenCalledWith(LA_DODGERS._id, "Los Angeles Dodgers");
+  });
+
+  it("NEO-331: the near matches still answer the empty field, with no search sent, set context or not", () => {
+    renderSearch(NEAR, SET_ID);
+    fireEvent.focus(field());
+
+    expect(options().map(labelOf)).toEqual([
+      "Brooklyn Bridegrooms",
+      "Brooklyn Cyclones",
+      "Brooklyn Eagles",
+    ]);
+    const searches = queryCalls.filter((c) => c.ref === "teams.pickerCandidates");
+    expect(searches.every((c) => c.args === "skip")).toBe(true);
   });
 
   it("finds the existing Brooklyn Dodgers the near matches missed, and a click picks it", () => {
@@ -390,9 +466,14 @@ describe("TeamMatchSearch", () => {
     fireEvent.focus(field());
     typeInto("Brooklyn Dodgers");
     const sent = queryCalls
-      .filter((c) => c.ref === "teams.search" && c.args !== "skip")
+      .filter((c) => c.ref === "teams.pickerCandidates" && c.args !== "skip")
       .map((c) => c.args);
-    expect(sent.at(-1)).toEqual({ query: "Brooklyn Dodgers", sportId: SPORT_ID, limit: 25 });
+    expect(sent.at(-1)).toEqual({
+      query: "Brooklyn Dodgers",
+      sportId: SPORT_ID,
+      contextOptionId: undefined,
+      limit: 25,
+    });
     expect(options().map(labelOf)).toEqual(["Brooklyn Dodgers"]);
   });
 });

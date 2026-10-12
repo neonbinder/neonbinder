@@ -3486,6 +3486,8 @@ export default function EntityReviewWizard({
                       <TeamMatchSearch
                         key={current._id}
                         sportId={current.sportId}
+                        // NEO-331: ranks the typed search by this set.
+                        contextOptionId={selectorOptionId}
                         defaultMatches={panelMatches}
                         onPick={(id) => {
                           if (busy) return;
@@ -3648,6 +3650,8 @@ export default function EntityReviewWizard({
                       <EntityLinkSearch
                         kind={current.kind}
                         sportId={current.sportId}
+                        // NEO-331: ranks a team search by this set.
+                        contextOptionId={selectorOptionId}
                         onSelect={(id) => {
                           void handleLink(current._id, current.kind, id, linkOptions);
                         }}
@@ -3851,6 +3855,8 @@ export default function EntityReviewWizard({
                             )}
                             <CareerTeamEntry
                               sportId={current.sportId}
+                              // NEO-331: ranks the saved suggestions by this set.
+                              contextOptionId={selectorOptionId}
                               stagedNames={stagedTeamNames}
                               onDirtyChange={setCareerEntryDirty}
                               onAdd={(entry) => {

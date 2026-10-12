@@ -130,13 +130,14 @@ vi.mock("../../convex/_generated/api", () => ({
       // NEO-221: resolves a linked player's canonical name for the decided list.
       getManyByIds: "players.getManyByIds",
     },
-    // `teams.search` is CareerTeamEntry's typeahead (rendered for player rows);
+    // `teams.pickerCandidates` is CareerTeamEntry's typeahead (rendered for
+    // player rows, NEO-331);
     // `getManyByIds` resolves linked teams for the staging list; `resolveNames`
     // backs the "will create N new teams" summary. Each returns undefined from
     // the mock unless a test sets it.
     teams: {
       nearMatches: "teams.nearMatches",
-      search: "teams.search",
+      pickerCandidates: "teams.pickerCandidates",
       getManyByIds: "teams.getManyByIds",
       resolveNames: "teams.resolveNames",
       // NEO-307: which other team already answers to the step's name as an alias.
@@ -225,18 +226,24 @@ vi.mock("convex/react", () => ({
   },
 }));
 
-let lastLinkSearchProps: { kind: string; sportId: string } | null = null;
+let lastLinkSearchProps: {
+  kind: string;
+  sportId: string;
+  contextOptionId?: string;
+} | null = null;
 vi.mock("./EntityLinkSearch", () => ({
   default: ({
     kind,
     sportId,
+    contextOptionId,
     onSelect,
   }: {
     kind: "player" | "team" | "league";
     sportId: string;
+    contextOptionId?: string;
     onSelect: (id: string) => void;
   }) => {
-    lastLinkSearchProps = { kind, sportId };
+    lastLinkSearchProps = { kind, sportId, contextOptionId };
     return (
       <div aria-label="Entity link search (stub)">
         <button onClick={() => onSelect("linked-id-123")}>Stub link select</button>
@@ -689,9 +696,11 @@ describe("EntityReviewWizard — decision actions", () => {
 
     expect(screen.getByLabelText("Entity link search (stub)")).toBeTruthy();
     // NEO-96: the wizard hands the search a sport ROW ID, not a label.
+    // NEO-331: and the set under review, which a TEAM search ranks by.
     expect(lastLinkSearchProps).toEqual({
       kind: "player",
       sportId: "selopt-sport-2",
+      contextOptionId: "selopt-1",
     });
   });
 
@@ -1361,6 +1370,34 @@ describe("EntityReviewWizard — cancel", () => {
 
     await waitFor(() => expect(mockCancelBatch).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(onCancel).toHaveBeenCalledTimes(1));
+  });
+
+  it("NEO-331: the career-team search is ranked by the set under review", () => {
+    vi.useFakeTimers();
+    try {
+      currentRows = [
+        makeRow({ kind: "player", status: "ready", enrichment: { careerTeams: [] } }),
+      ];
+      renderWizard();
+
+      fireEvent.change(screen.getByLabelText("Career team name"), {
+        target: { value: "pad" },
+      });
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+
+      const call = queryCalls
+        .filter((c) => c.ref === "teams.pickerCandidates" && c.args !== "skip")
+        .pop();
+      expect(call?.args).toEqual({
+        query: "pad",
+        sportId: expect.any(String),
+        contextOptionId: "selopt-1",
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("Escape from inside a text field never reaches the dialog", async () => {

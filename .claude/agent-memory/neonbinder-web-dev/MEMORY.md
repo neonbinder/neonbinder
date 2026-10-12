@@ -99,3 +99,4 @@
 - [Source-slice tests key on export names](reference_source_slice_tests_key_on_export_names.md) — deleting/renaming an export breaks readFileSync slice tests (indexOf -1 = whole file); grep before deleting
 - [Search mock must honour query args](reference_search_mock_must_honour_query_args.md) — a useQuery mock ignoring args hides a client re-filter; emulate the server before trusting its rows
 - [One search per index per query](reference_one_search_per_index_per_query.md) — two same-text withSearchIndex reads go stale (narrower filter wins); narrow leg = index range + JS text filter
+- [Agent Bash node ignores .nvmrc](reference_agent_bash_node_ignores_nvmrc.md) — agent shells skip load-nvmrc; export PATH to ~/.nvm/versions/node/v$(cat apps/web/.nvmrc)/bin per gate call

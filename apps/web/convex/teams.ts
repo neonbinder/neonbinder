@@ -2158,9 +2158,9 @@ function pickerRowMatchesQuery(
  * `teams.search` answers "which teams match this text"; this answers "which
  * of them does THIS card most likely show", and returns them in final order
  * with the tier each landed in (see `lib/teams/team-rank.ts` for the tiers and
- * why an undated team is never "active"). `teams.search` is untouched — the
- * entity-link and match screens rank for dedup, where the set year is the
- * wrong signal.
+ * why an undated team is never "active"). Every team search inside the set
+ * builder uses it, the review wizard's career entry, link and match searches
+ * included; `teams.search` remains for searches with no set.
  *
  * Search (`query` non-empty), three legs merged and deduped before ranking:
  *   A. the set's league, read by `by_league_id` (the league's teams, up to
