@@ -731,9 +731,16 @@ const previewGroupValidator = v.object({
 });
 
 /**
- * NEO-330 — one card Fill left alone because BSC names a different team.
- * `cardNumber` with `nodeName`, because a card number is not unique even in a
- * set (product invariant 7) and the operator has to find the card.
+ * NEO-330 — one card Fill left alone because the listing names a different
+ * team (product invariant 8). `cardNumber` with `nodeName`, because a card
+ * number is not unique even in a set (product invariant 7) and the operator
+ * has to find the card.
+ *
+ * Where Fill's team came from travels too, so the row can say "(from #36)"
+ * rather than a vague "this set says": `sourceCardNumber` when ONE card was
+ * the whole of the evidence, with `sourceNodeName` only when that card sits
+ * under a different node (a parallel's original, a base card). With no single
+ * source card the client names the rule instead, from `rule`/`scope`/`mixed`.
  */
 const previewConflictValidator = v.object({
   cardNumber: v.string(),
@@ -741,8 +748,13 @@ const previewConflictValidator = v.object({
   playerNames: v.array(v.string()),
   /** What Fill would have written. */
   teamNames: v.array(v.string()),
-  /** What BSC says, as BSC said it (already capped at storage). */
+  /** What the listing says, as it said it (already capped at storage). */
   bscTeamName: v.string(),
+  rule: ruleValidator,
+  scope: scopeValidator,
+  mixed: v.boolean(),
+  sourceCardNumber: v.optional(v.string()),
+  sourceNodeName: v.optional(v.string()),
 });
 
 type PreviewConflict = {
@@ -751,6 +763,11 @@ type PreviewConflict = {
   playerNames: Array<string>;
   teamNames: Array<string>;
   bscTeamName: string;
+  rule: TeamFillRule;
+  scope: TeamFillScope;
+  mixed: boolean;
+  sourceCardNumber?: string;
+  sourceNodeName?: string;
 };
 
 type PreviewResult = {
@@ -792,7 +809,7 @@ export const previewTeamFill = action({
     setYear: v.union(v.number(), v.null()),
     groups: v.array(previewGroupValidator),
     groupsTotal: v.number(),
-    /** NEO-330: cards left alone because BSC names a different team. */
+    /** NEO-330: cards left alone because the listing names a different team. */
     conflicts: v.number(),
     /** The first `TEAM_FILL_CONFLICT_CAP` of them (the planner's cap), per card. */
     conflictCards: v.array(previewConflictValidator),
@@ -830,8 +847,17 @@ export const previewTeamFill = action({
       })),
       groupsTotal: plan.groupsTotal,
       conflicts: plan.conflictsTotal,
-      conflictCards: plan.conflicts.map((conflict) => {
+      conflictCards: plan.conflicts.map((conflict): PreviewConflict => {
         const card = cardsById.get(conflict.cardId);
+        const source =
+          conflict.sourceCardId !== undefined ? cardsById.get(conflict.sourceCardId) : undefined;
+        // Named only when the source sits under ANOTHER node; "#36" alone is
+        // enough when it is beside the card. A node the walk did not name
+        // drops only the name, never the number.
+        const sourceNodeName =
+          source && card && source.selectorOptionId !== card.selectorOptionId
+            ? nameByNodeId.get(source.selectorOptionId)
+            : undefined;
         return {
           cardNumber: card?.cardNumber ?? "",
           nodeName: (card && nameByNodeId.get(card.selectorOptionId)) ?? "",
@@ -842,6 +868,11 @@ export const previewTeamFill = action({
             .map((id) => teamsById.get(id)?.name)
             .filter((name): name is string => name !== undefined),
           bscTeamName: conflict.bscTeamName,
+          rule: conflict.rule,
+          scope: conflict.scope,
+          mixed: conflict.mixed,
+          ...(source?.cardNumber ? { sourceCardNumber: source.cardNumber } : {}),
+          ...(sourceNodeName ? { sourceNodeName } : {}),
         };
       }),
     };

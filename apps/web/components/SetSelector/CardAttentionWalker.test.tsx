@@ -148,8 +148,9 @@ function renderWalker(cards: CardChecklistRow[], props: Record<string, unknown> 
   return { ...utils, onClose };
 }
 
+// NEO-330: a career chip's name reads "<team> · <players> played here".
 const chip = (name: string, from: string) =>
-  screen.getByRole("button", { name: `${name} (from ${from}'s career)` }) as HTMLButtonElement;
+  screen.getByRole("button", { name: `${name} · ${from} played here` }) as HTMLButtonElement;
 
 const saveButton = () =>
   screen.getByRole("button", { name: /Save & Next/ }) as HTMLButtonElement;
@@ -394,7 +395,7 @@ describe("CardAttentionWalker — presentation", () => {
     ];
     renderWalker([needsTeamRow()]);
 
-    expect(chip("Detroit Tigers", "Tarik Skubal and Riley Greene")).toBeTruthy();
+    expect(chip("Detroit Tigers", "Tarik Skubal & Riley Greene")).toBeTruthy();
     expect(screen.getByTestId("picker-value").textContent).toBe("team-tigers");
   });
 });

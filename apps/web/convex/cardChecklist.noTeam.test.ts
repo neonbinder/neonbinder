@@ -718,7 +718,7 @@ describe("suggestedTeamsForCard", () => {
     ]);
   });
 
-  test("dedupes by teamId across a multi-player card, attributing the first player", async () => {
+  test("one suggestion per player per team — a shared team names every player who played there (NEO-330)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, leafId } = await seedTree(t, { season: "2024" });
@@ -739,8 +739,9 @@ describe("suggestedTeamsForCard", () => {
       api.cardChecklist.suggestedTeamsForCard,
       { cardId },
     );
-    // A League Leaders card whose players share a team yields ONE chip, and
-    // `playerName` says why it is being suggested.
+    // A League Leaders card whose players share a team yields one suggestion
+    // per player; the fixer folds them into ONE chip that says "Chris Sale &
+    // Reynaldo Lopez played here". (It used to keep only the first player.)
     expect(suggestions).toEqual([
       {
         teamId: braves,
@@ -748,6 +749,14 @@ describe("suggestedTeamsForCard", () => {
         label: "Atlanta Braves",
         source: "career",
         playerName: "Chris Sale",
+        inSetYear: true,
+      },
+      {
+        teamId: braves,
+        name: "Atlanta Braves",
+        label: "Atlanta Braves",
+        source: "career",
+        playerName: "Reynaldo Lopez",
         inSetYear: true,
       },
       {
@@ -806,8 +815,9 @@ describe("suggestedTeamsForCard", () => {
       "Washington Nationals",
     ]);
     // NEO-330: with no year, nothing is IN the set year — so the fixer
-    // preselects none of them.
+    // preselects none of them — and there is no year to name.
     expect(suggestions.every((s) => !s.inSetYear)).toBe(true);
+    expect(suggestions.every((s) => s.uncoveredSetYear === undefined)).toBe(true);
   });
 
   test("returns nothing for a card with no players, and skips dangling links", async () => {
@@ -908,6 +918,9 @@ describe("suggestedTeamsForCard", () => {
         source: "career",
         playerName: "Old Timer",
         inSetYear: false,
+        // NEO-330: the year it looked for, so the fixer can say "No 2026 team
+        // on file — here's the whole career."
+        uncoveredSetYear: 2026,
       },
     ]);
   });
@@ -971,15 +984,34 @@ describe("suggestedTeamsForCard", () => {
     const suggestions = await asAdmin.query(api.cardChecklist.suggestedTeamsForCard, {
       cardId,
     });
-    expect(suggestions.map((s) => [s.teamId, s.label, s.inSetYear])).toEqual([
-      [athletics.al, "Philadelphia Athletics · 1901–1954", false],
-      [redSox, "Boston Red Sox", false],
-      [cubs, "Chicago Cubs", false],
-      [phillies, "Philadelphia Phillies", false],
+    expect(
+      suggestions.map((s) => [s.teamId, s.label, s.inSetYear, s.uncoveredSetYear]),
+    ).toEqual([
+      [athletics.al, "Philadelphia Athletics · 1901–1954", false, 2025],
+      [redSox, "Boston Red Sox", false, 2025],
+      [cubs, "Chicago Cubs", false, 2025],
+      [phillies, "Philadelphia Phillies", false, 2025],
     ]);
     // `name` stays the bare full name — composed ONCE from Location + Name,
     // never "Philadelphia Philadelphia Athletics".
     expect(suggestions[0].name).toBe("Philadelphia Athletics");
+  });
+
+  test("two stints at one team are still ONE suggestion for that player", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, leafId } = await seedTree(t, { season: "2026" });
+    const reds = await insertTeam(t, sportId, "Cincinnati Reds");
+    const rose = await insertPlayer(t, sportId, "Pete Rose", [
+      { teamId: reds, fromYear: 1963, toYear: 1978 },
+      { teamId: reds, fromYear: 1984, toYear: 1986 },
+    ]);
+    const cardId = await insertCard(t, leafId, { playerIds: [rose] });
+
+    const suggestions = await asAdmin.query(api.cardChecklist.suggestedTeamsForCard, {
+      cardId,
+    });
+    expect(suggestions.map((s) => [s.teamId, s.playerName])).toEqual([[reds, "Pete Rose"]]);
   });
 
   test("a set-year stint at a shared name is in the set year and still era-labelled", async () => {

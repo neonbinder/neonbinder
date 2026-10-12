@@ -624,17 +624,21 @@ export const confirmCardNoTeam = mutation({
  * "Legends" insert, the whole premise of a legends set — has no stint
  * covering the set year, and the filtered list came back empty, so the fixer
  * showed zero chips for a card whose answer was one lookup away. The career
- * is then offered whole, still deduped by team and attributed to the first
- * player naming it. Still suggestions: a chip the operator judges, never a
- * fill. The set-level "Fill teams" (`convex/teamFill.ts`) is where a
- * one-team career becomes a write, and only after a preview.
+ * is then offered whole, one suggestion per player per team. Still
+ * suggestions: a chip the operator judges, never a fill. The set-level "Fill
+ * teams" (`convex/teamFill.ts`) is where a one-team career becomes a write,
+ * and only after a preview. Each fallback suggestion carries the year it
+ * looked for (`uncoveredSetYear`), so the fixer can say "No 2025 team on file
+ * — here's the whole career".
  *
- * ## Deduped by teamId
+ * ## One per (player, team)
  *
  * A multi-player card whose players share a team (the common League Leaders
- * case) yields one chip, attributed to the first player that produced it —
- * `playerName` is there so the operator can see WHY a team is being suggested,
- * which is the difference between a suggestion they can judge and a guess.
+ * case) yields one suggestion PER PLAYER for that team, and the fixer folds
+ * them into one chip that says "Bench & Rose played here" — `playerName` is
+ * there so the operator can see WHY a team is being suggested, which is the
+ * difference between a suggestion they can judge and a guess. (NEO-330: this
+ * used to keep only the first player, so a shared chip named one of them.)
  *
  * ## `inSetYear` — what the fixer may preselect (NEO-330)
  *
@@ -681,6 +685,12 @@ export const suggestedTeamsForCard = query({
        * fixer preselects only `true`.
        */
       inSetYear: v.boolean(),
+      /**
+       * NEO-330: on a whole-career fallback made because no stint covers the
+       * set's year, that year. Absent on a set-year suggestion and when the
+       * set has no resolvable year.
+       */
+      uncoveredSetYear: v.optional(v.number()),
     }),
   ),
   handler: async (ctx, args) => {
@@ -714,16 +724,20 @@ export const suggestedTeamsForCard = query({
       source: "career";
       playerName: string;
       inSetYear: boolean;
+      uncoveredSetYear?: number;
     };
     const teamTextById = new Map<string, { name: string; label: string } | null>();
 
     const collect = async (
       inYear: (fromYear: number, toYear?: number) => boolean,
       inSetYear: boolean,
+      uncoveredSetYear?: number,
     ): Promise<Array<Suggestion>> => {
       const out: Array<Suggestion> = [];
-      const seenTeamIds = new Set<string>();
       for (const player of players) {
+        // Per player: two stints at one team are one suggestion, but a team
+        // two players share is one suggestion EACH (the fixer folds them).
+        const seenTeamIds = new Set<string>();
         for (const entry of player.teamYears ?? []) {
           if (!inYear(entry.fromYear, entry.toYear)) continue;
           if (seenTeamIds.has(entry.teamId)) continue;
@@ -754,6 +768,7 @@ export const suggestedTeamsForCard = query({
             source: "career",
             playerName: player.name,
             inSetYear,
+            ...(uncoveredSetYear !== undefined ? { uncoveredSetYear } : {}),
           });
         }
       }
@@ -771,6 +786,6 @@ export const suggestedTeamsForCard = query({
     // Nothing covers the set year: the retired-player case (see "when it lets
     // go" above). Offer the career rather than an empty fixer — as choices,
     // never as an answer (`inSetYear: false`).
-    return collect(wholeCareer, false);
+    return collect(wholeCareer, false, year);
   },
 });

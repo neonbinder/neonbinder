@@ -71,26 +71,28 @@
  * ## A marketplace that names a different team (NEO-330)
  *
  * None of the tiers read `bscTeamName` — they are NB evidence, and that is
- * right. But a card can carry BSC's claim AND have a tier answer it with a
- * different team: Jimmie Foxx #34/#35 on a 2025 retro insert, BSC saying
- * "Philadelphia Athletics", while tier 1 copies the Red Sox off his #36. A
- * fill there would contradict the marketplace without anyone seeing it, and
- * product invariant 7 says a disagreement is surfaced, never settled.
+ * right. But a card can carry a listing's claim AND have a tier answer it
+ * with a different team: Jimmie Foxx #34/#35 on a 2025 retro insert, the
+ * listing naming "Philadelphia Athletics", while tier 1 copies the Red Sox off
+ * his #36. Product invariant 8: a data claim holds back a guess; it never
+ * makes one.
  *
  * So after a tier decides, a card carrying `bscTeamName` is checked against
  * the NB rows that name resolves to (`bscTeamIdsByName`, resolved by the
  * caller through the same identity lookup every picker uses). The fill stands
- * when ANY of its teams is one of those rows — a combo card filled with each
- * player's team agrees with a BSC name for any one of them. Otherwise the
- * card is NOT filled and is reported in `conflicts` instead, with the team
- * the tier would have written, so the preview can say "BSC lists X, this set
- * says Y" per card and the operator answers it in the attention walker.
+ * only when EVERY team it would write is one of those rows. A combo card a
+ * tier fills with each player's team, where the listing names one of them,
+ * is NOT vouched for: the other teams are a guess the data never made, so
+ * the card goes to the operator. Any team the listing does not name makes
+ * the card a conflict, reported in `conflicts` with the team the tier would
+ * have written and, when one card was the whole of its evidence, that card
+ * (`sourceCardId`), so the preview can say "Fill: Boston Red Sox (from #36)".
  *
- * The marketplace name decides nothing here except "a human looks at this
- * one": it never chooses a team, never writes one, and a card BSC agrees with
- * is filled exactly as before. A name the caller could not resolve to any
- * row (or a call with no map at all) cannot vouch for the fill, so it counts
- * as a disagreement — the safe direction is one more card for a human.
+ * The listing's name decides nothing here except "a human looks at this
+ * one": it never chooses a team, never writes one, and a card it fully agrees
+ * with is filled exactly as before. A name the caller could not resolve to
+ * any row (or a call with no map at all) cannot vouch for the fill, so it
+ * counts as a disagreement — the safe direction is one more card for a human.
  *
  * ## What is deliberately NOT evidence
  *
@@ -190,16 +192,25 @@ export type TeamFillDecision = {
 };
 
 /**
- * NEO-330: a card a tier could fill, left alone because BSC names a team the
- * fill does not include. `teamIds` is what the tier would have written.
+ * NEO-330: a card a tier could fill, left alone because the listing's name
+ * does not cover every team the fill would write (product invariant 8).
+ * `teamIds` is what the tier would have written.
  */
 export type TeamFillConflict = {
   cardId: Id<"cardChecklist">;
   teamIds: Array<Id<"teams">>;
   rule: TeamFillRule;
   scope: TeamFillScope;
+  mixed: boolean;
   /** The card's `bscTeamName`, trimmed. */
   bscTeamName: string;
+  /**
+   * The one card the tier copied from, when a single card was the whole of
+   * its evidence (tier 1 with one teamed neighbour, tier 2 always, tier 3 on
+   * a one-player card with one base card). Absent when the answer came from
+   * several cards or from a career — the preview then names the rule.
+   */
+  sourceCardId?: Id<"cardChecklist">;
 };
 
 /** How many conflicts a plan lists; `conflictsTotal` carries the full count. */
@@ -300,7 +311,11 @@ function distinctTeamIds(player: TeamFillPlayer): Array<Id<"teams">> {
   return [...new Set<Id<"teams">>((player.teamYears ?? []).map((entry) => entry.teamId))];
 }
 
-type TeamSets = Array<Array<Id<"teams">>>;
+/**
+ * The distinct team sets seen at one evidence key, each with the cards that
+ * carried it — so a decision that copied ONE card can name it.
+ */
+type TeamSets = Array<{ teams: Array<Id<"teams">>; cardIds: Array<Id<"cardChecklist">> }>;
 
 type Evidence = {
   /** `nodeId + "\n" + playerKey` → distinct team sets seen under that node (tier 1). */
@@ -319,10 +334,18 @@ function byNumberKey(nodeId: Id<"selectorOptions">, cardNumber: string, pKey: st
   return `${nodeId}\n${cardNumber}\n${pKey}`;
 }
 
-function addTeamSet(map: Map<string, TeamSets>, key: string, teams: ReadonlyArray<Id<"teams">>): void {
+function addTeamSet(
+  map: Map<string, TeamSets>,
+  key: string,
+  teams: ReadonlyArray<Id<"teams">>,
+  cardId: Id<"cardChecklist">,
+): void {
   const sets = map.get(key) ?? [];
-  if (!sets.some((seen) => sameTeamSet(seen, teams))) {
-    sets.push([...new Set<Id<"teams">>(teams)]);
+  const seen = sets.find((entry) => sameTeamSet(entry.teams, teams));
+  if (seen) {
+    seen.cardIds.push(cardId);
+  } else {
+    sets.push({ teams: [...new Set<Id<"teams">>(teams)], cardIds: [cardId] });
     map.set(key, sets);
   }
 }
@@ -349,18 +372,28 @@ function buildEvidence(
     }
     const teams = card.teamOnCardIds ?? [];
     if (teams.length === 0) continue;
-    addTeamSet(evidence.sameNode, sameNodeKey(card.selectorOptionId, key), teams);
+    addTeamSet(evidence.sameNode, sameNodeKey(card.selectorOptionId, key), teams, card._id);
     if (baseNodeId !== null && card.selectorOptionId === baseNodeId) {
       const distinct = splitKey<Id<"players">>(key);
-      if (distinct.length === 1) addTeamSet(evidence.base, distinct[0], teams);
+      if (distinct.length === 1) addTeamSet(evidence.base, distinct[0], teams, card._id);
     }
   }
   return evidence;
 }
 
-/** The single team set, or undefined when none or several. */
-function soleTeamSet(sets: TeamSets | undefined): Array<Id<"teams">> | undefined {
-  return sets && sets.length === 1 ? [...sets[0]] : undefined;
+/**
+ * The single team set, or undefined when none or several. `sourceCardId` is
+ * set only when exactly one card carried it.
+ */
+function soleTeamSet(
+  sets: TeamSets | undefined,
+): { teams: Array<Id<"teams">>; sourceCardId?: Id<"cardChecklist"> } | undefined {
+  if (!sets || sets.length !== 1) return undefined;
+  const [only] = sets;
+  return {
+    teams: [...only.teams],
+    ...(only.cardIds.length === 1 ? { sourceCardId: only.cardIds[0] } : {}),
+  };
 }
 
 /**
@@ -400,7 +433,12 @@ function playerTierRisk(tier: PlayerTier): number {
 
 type PlayerTier = "baseSet" | "oneTeamCareer" | "oneStintInYear";
 
-type PlayerAnswer = { teamIds: Array<Id<"teams">>; tier: PlayerTier };
+type PlayerAnswer = {
+  teamIds: Array<Id<"teams">>;
+  tier: PlayerTier;
+  /** Tier 3 only: the one base card that answered, when it was one. */
+  sourceCardId?: Id<"cardChecklist">;
+};
 
 /**
  * One player's answer through tiers 3 → B → C, or undefined when none can
@@ -419,7 +457,13 @@ function resolvePlayer(input: {
 
   if (!inBase) {
     const fromBase = soleTeamSet(evidence.base.get(playerId));
-    if (fromBase) return { teamIds: fromBase, tier: "baseSet" };
+    if (fromBase) {
+      return {
+        teamIds: fromBase.teams,
+        tier: "baseSet",
+        ...(fromBase.sourceCardId !== undefined ? { sourceCardId: fromBase.sourceCardId } : {}),
+      };
+    }
   }
 
   if (!player) return undefined;
@@ -438,13 +482,22 @@ function resolvePlayer(input: {
   return undefined;
 }
 
-type Decision = Omit<TeamFillDecision, "cardId">;
+type Decision = Omit<TeamFillDecision, "cardId"> & {
+  /** See `TeamFillConflict.sourceCardId`. Carried to a conflict, never to a fill. */
+  sourceCardId?: Id<"cardChecklist">;
+};
 
 /** Tier 1: the same players teamed under the same node, one way. */
 function decideSameNode(card: TeamFillCard, pKey: string, evidence: Evidence): Decision | undefined {
   const nearby = soleTeamSet(evidence.sameNode.get(sameNodeKey(card.selectorOptionId, pKey)));
   if (!nearby) return undefined;
-  return { teamIds: nearby, rule: "samePlayerInSet", scope: "sameNode", mixed: false };
+  return {
+    teamIds: nearby.teams,
+    rule: "samePlayerInSet",
+    scope: "sameNode",
+    mixed: false,
+    ...(nearby.sourceCardId !== undefined ? { sourceCardId: nearby.sourceCardId } : {}),
+  };
 }
 
 /** Tier 2: the one card under the parent node this parallel is a copy of. */
@@ -466,6 +519,7 @@ function decideParallelOf(
     rule: "samePlayerInSet",
     scope: "parallelOf",
     mixed: false,
+    sourceCardId: matches[0]._id,
   };
 }
 
@@ -484,7 +538,9 @@ function decidePerPlayer(input: {
   const union = new Set<Id<"teams">>();
   const tiers = new Set<PlayerTier>();
   let riskiest: PlayerTier | undefined;
-  for (const playerId of new Set<Id<"players">>(players)) {
+  const distinctPlayers = new Set<Id<"players">>(players);
+  let sourceCardId: Id<"cardChecklist"> | undefined;
+  for (const playerId of distinctPlayers) {
     const answer = resolvePlayer({
       playerId,
       player: playersById.get(playerId),
@@ -494,6 +550,9 @@ function decidePerPlayer(input: {
       currentYear,
     });
     if (!answer) return undefined;
+    // Only a one-player card has ONE source; a combo card's players each
+    // brought their own evidence.
+    if (distinctPlayers.size === 1) sourceCardId = answer.sourceCardId;
     for (const teamId of answer.teamIds) union.add(teamId);
     tiers.add(answer.tier);
     if (riskiest === undefined || playerTierRisk(answer.tier) > playerTierRisk(riskiest)) {
@@ -506,6 +565,7 @@ function decidePerPlayer(input: {
     rule: riskiest === "baseSet" ? "samePlayerInSet" : riskiest,
     scope: riskiest === "baseSet" ? "baseSet" : "career",
     mixed: tiers.size > 1,
+    ...(sourceCardId !== undefined ? { sourceCardId } : {}),
   };
 }
 
@@ -533,8 +593,9 @@ export function planTeamFill(input: {
   currentYear: number;
   /**
    * NEO-330: each distinct trimmed `bscTeamName` → the ids of the NB rows it
-   * names in the set's sport. A card whose name is missing here cannot be
-   * vouched for, so its fill becomes a conflict (see the header).
+   * names in the set's sport. A fill stands only when every team it writes is
+   * among them; a card whose name is missing here cannot be vouched for, so
+   * its fill becomes a conflict (see the header).
    */
   bscTeamIdsByName?: ReadonlyMap<string, ReadonlySet<string>>;
 }): TeamFillPlan {
@@ -594,8 +655,10 @@ export function planTeamFill(input: {
     }
     const bscTeamName = card.bscTeamName?.trim() ?? "";
     if (bscTeamName !== "") {
+      // Invariant 8: EVERY team written must be one the listing names. An
+      // empty list (the name resolves to no row) vouches for nothing.
       const named = bscTeamIdsByName?.get(bscTeamName);
-      if (!named || !decision.teamIds.some((id) => named.has(id))) {
+      if (!named || !decision.teamIds.every((id) => named.has(id))) {
         conflictsTotal += 1;
         if (conflicts.length < TEAM_FILL_CONFLICT_CAP) {
           conflicts.push({
@@ -603,14 +666,22 @@ export function planTeamFill(input: {
             teamIds: decision.teamIds,
             rule: decision.rule,
             scope: decision.scope,
+            mixed: decision.mixed,
             bscTeamName,
+            ...(decision.sourceCardId !== undefined ? { sourceCardId: decision.sourceCardId } : {}),
           });
         }
         continue;
       }
     }
 
-    fills.push({ cardId: card._id, ...decision });
+    fills.push({
+      cardId: card._id,
+      teamIds: decision.teamIds,
+      rule: decision.rule,
+      scope: decision.scope,
+      mixed: decision.mixed,
+    });
     byRule[decision.rule] += 1;
     const tKey = teamKey(decision.teamIds);
     const groupId = `${decision.rule}\n${decision.scope}\n${decision.mixed}\n${pKey}\n${tKey}`;

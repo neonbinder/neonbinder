@@ -44,16 +44,21 @@ import { useAttentionSportId, type AttentionFixerProps } from "./cardAttentionRe
  *   focus on Save, so one Enter wrote four teams onto a one-team card. Only an
  *   `inSetYear` suggestion is preselected now, and focus lands on Save only
  *   when something is.
- * - **The marketplace's claim is offered as NB's rows, era by era (NEO-330).**
- *   When BSC named a team the background lookup could not settle — usually a
- *   name we hold in several eras, none covering the set year — the rows under
- *   that name are shown as chips, era-labelled and NOT preselected, under a
- *   line that says BSC is the one claiming it. The operator picks the era in
- *   one click. BSC's string only finds the candidates (`teams.erasByNameAndSport`,
- *   the same identity lookup every picker uses); the chip writes an NB row id.
- *   A set-year stint that BSC contradicts is a disagreement (product invariant
- *   7): nothing is preselected and the line says so, rather than either side
- *   winning silently.
+ * - **The listing's claim is offered as NB's rows, era by era (NEO-330).**
+ *   When the marketplace listing named a team the background lookup could not
+ *   settle — usually a name we hold in several eras, none covering the set
+ *   year — the rows under that name are shown as chips, era-labelled and NOT
+ *   preselected, under a line that says the listing is the one claiming it.
+ *   The operator picks the era in one click. The listing's string only finds
+ *   the candidates (`teams.erasByNameAndSport`, the same identity lookup every
+ *   picker uses); the chip writes an NB row id. A set-year stint the listing
+ *   contradicts is a disagreement (product invariants 7 and 8): nothing is
+ *   preselected and the line says so, rather than either side winning
+ *   silently. Operator copy never names the marketplace — "the listing".
+ * - **Ctrl/Cmd+Enter saves from anywhere (NEO-330 a11y).** Plain Enter stays
+ *   what it was (it saves from the panel's background, and activates the
+ *   focused button — a chip toggles), so a chip or the picker is never a
+ *   dead end for a keyboard user who has made their pick.
  * - **Colour carries role, not decoration.** Green is a chosen/confirmed
  *   team, blue (#00B7FF) is provenance and the "no team" affirmative, and
  *   pink never appears here — that is Cancel's colour, and recording "no
@@ -71,37 +76,70 @@ type TeamChip = {
   inSetYear: boolean;
 };
 
-/** "Jimmie Foxx" / "Bench and Rose" — the provenance a chip carries. */
-function careerOf(playerNames: string[]): string {
-  return `${playerNames.join(" and ")}'s career`;
+/**
+ * "Jimmie Foxx played here" / "Johnny Bench & Pete Rose played here" /
+ * "A, B & C played here" — the provenance a chip carries. Full names, never a
+ * derived surname: "Ken Griffey Jr." has no safe one.
+ */
+export function playedHere(playerNames: string[]): string {
+  const names =
+    playerNames.length <= 2
+      ? playerNames.join(" & ")
+      : `${playerNames.slice(0, -1).join(", ")} & ${playerNames[playerNames.length - 1]}`;
+  return `${names} played here`;
 }
 
 /**
- * The line over BSC's chips. Exported for the copy test.
+ * The line over the listing's chips. Exported for the copy test. Never names
+ * the marketplace (Jason, 2026-10-11) — "the listing".
  *
- *   agreed   — a set-year stint is one of BSC's rows, so it is preselected
+ *   agreed   — a set-year stint is one of the listing's rows, so it is
+ *              preselected and focus is on Save
  *   several  — the name is held in several eras: pick the one on the card
  *   one      — one row: offered, not assumed (the background lookup already
  *              links a lone row whose era fits, so reaching here means it
  *              did not)
  */
-export function marketplaceHeading(bscName: string, rowCount: number, agreed: boolean): string {
-  if (agreed) return `BSC lists “${bscName}” and career history agrees — Enter accepts it`;
+export function marketplaceHeading(listingName: string, rowCount: number, agreed: boolean): string {
+  if (agreed) return `The listing names “${listingName}” and the career agrees — Enter accepts it.`;
   if (rowCount > 1) {
-    return `BSC lists “${bscName}” — ${rowCount} teams by that name, pick the one on the card`;
+    return `The listing names “${listingName}” — ${rowCount} teams share that name. Pick the one on the card.`;
   }
-  return `BSC lists “${bscName}” — pick it if it’s the team on the card`;
+  return `The listing names “${listingName}” — pick it if it matches the card.`;
 }
 
-/** The line over the career chips. Exported for the copy test. */
-export function careerHeading(inSetYear: boolean, bscDisagrees: boolean): string {
+/**
+ * The line over the career chips. Exported for the copy test.
+ *
+ * `uncoveredSetYear` is the set's year when the server fell back to the whole
+ * career because no stint covers it; undefined when the set has no year.
+ */
+export function careerHeading(
+  inSetYear: boolean,
+  listingDisagrees: boolean,
+  uncoveredSetYear?: number,
+): string {
   if (!inSetYear) {
-    return "From career history, but none from this card’s year — pick the one on the card";
+    return uncoveredSetYear !== undefined
+      ? `No ${uncoveredSetYear} team on file — here’s the whole career. Pick the one on the card.`
+      : "No year on this set — here’s the whole career. Pick the one on the card.";
   }
-  if (bscDisagrees) {
-    return "From career history, but BSC lists a different team — pick the one on the card";
+  if (listingDisagrees) {
+    return "From the career — the listing names a different team, so pick the one on the card.";
   }
-  return "Suggested from career history — Enter accepts these";
+  return "Suggested from career history — Enter accepts these.";
+}
+
+/**
+ * "Ctrl+Enter", or "Cmd+Enter" on a Mac — the save-from-anywhere shortcut as
+ * the hint says it. Exported for the test.
+ */
+export function saveShortcutLabel(): string {
+  if (typeof navigator === "undefined") return "Ctrl+Enter";
+  const uaPlatform = (navigator as Navigator & { userAgentData?: { platform?: string } })
+    .userAgentData?.platform;
+  const platform = uaPlatform ?? navigator.platform ?? "";
+  return /mac|iphone|ipad/i.test(platform) ? "Cmd+Enter" : "Ctrl+Enter";
 }
 
 export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) {
@@ -144,6 +182,14 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   const saveBtnRef = useRef<HTMLButtonElement>(null);
   const optionsRef = useRef<HTMLDivElement>(null);
   const pickerRegionRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  /**
+   * NEO-330 a11y — the operator has started working the picker (a key or a
+   * press inside it, its portalled popover included: React events follow the
+   * component tree). From then on the arrival of the suggestions never moves
+   * focus: yanking it off a half-typed search to a chip loses their place.
+   */
+  const pickerEngagedRef = useRef(false);
 
   /**
    * One chip per TEAM, not per suggestion. Two players on a League Leaders
@@ -172,8 +218,13 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
     return byTeam;
   }, [suggestions]);
 
+  /** The set year a whole-career fallback looked for, when the server says so. */
+  const uncoveredSetYear = (suggestions ?? []).find(
+    (s) => s.uncoveredSetYear !== undefined,
+  )?.uncoveredSetYear;
+
   /**
-   * The rows BSC's name could mean. A row that is ALSO in a player's career
+   * The rows the listing's name could mean. A row that is ALSO in a player's career
    * carries that provenance here and is not repeated in the career list — one
    * chip per team, and the fact that Foxx played for the 1901–1954 Athletics
    * is exactly what tells the operator which of the four eras the card means.
@@ -230,12 +281,14 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   // Initial focus follows what the copy promises (NEO-282, NEO-330). With a
   // set-year team preselected the panel says "Enter accepts", so focus lands
   // on "Save & Next (Enter)" and the first Enter saves. With chips on screen
-  // and NOTHING preselected — a career fallback, or BSC's eras — Save is
-  // aria-disabled and would write nothing anyway; focus goes to the first
+  // and NOTHING preselected — a career fallback, or the listing's eras — Save
+  // is aria-disabled and would write nothing anyway; focus goes to the first
   // chip, where Enter or Space picks it (the eras come first, so that is
-  // usually the era BSC named). With no chips at all it goes to the picker's
-  // trigger. The walker remounts this component per card, so this IS "focus
-  // on every advance" — focus is never left on a control belonging to the
+  // usually the era the listing named). With no chips at all it goes to the
+  // picker's trigger. And never once the operator has started in the picker
+  // (`pickerEngagedRef`): the suggestions arriving late must not pull focus
+  // off a half-typed search. The walker remounts this component per card, so
+  // this IS "focus on every advance" — focus is never left on a control belonging to the
   // card just answered (the NEO-189 stranding finding). Keyed on the target,
   // not on live selection, so toggling a chip never moves focus.
   const chipCount = marketplaceChips.length + careerChips.length;
@@ -248,6 +301,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
         : "picker";
   useEffect(() => {
     const raf = requestAnimationFrame(() => {
+      if (pickerEngagedRef.current) return;
       if (focusTarget === "save" && saveBtnRef.current) saveBtnRef.current.focus();
       else if (focusTarget === "chip" && optionsRef.current?.querySelector("button")) {
         optionsRef.current.querySelector("button")?.focus();
@@ -296,6 +350,9 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   const renderChip = (chip: TeamChip, opts: { ariaLabel?: string; suffix?: string }) => {
     const on = chosenSet.has(chip.teamId as string);
     const blocked = !on && atCap;
+    // Enter on a chip is a pure toggle — the button's native activation. The
+    // panel's plain-Enter save skips BUTTON targets; Ctrl/Cmd+Enter is the
+    // save from here.
     return (
       <li key={chip.teamId as string}>
         <button
@@ -331,6 +388,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
   }, [playerRows, suggestions]);
 
   const canSave = chosen.length > 0 && !busy;
+  const shortcut = saveShortcutLabel();
 
   const save = async () => {
     if (!canSave) return;
@@ -379,7 +437,24 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
 
   return (
     <div
+      ref={rootRef}
       className="space-y-3"
+      onKeyDownCapture={(e) => {
+        // NEO-330 a11y — Ctrl/Cmd+Enter saves from ANYWHERE in the fixer: a
+        // chip, the picker's trigger, its typeahead. Capture phase, and the
+        // event stops here, so the typeahead's own Enter (pick the
+        // highlighted team) and a chip's native activation never also run:
+        // one keystroke, one meaning. The picker's popover is portalled, but
+        // React events follow the component tree, so it arrives here too.
+        // A NESTED dialog (the picker's New Team form) owns its own keys.
+        if (e.key !== "Enter" || !(e.ctrlKey || e.metaKey)) return;
+        const ownDialog = rootRef.current?.closest('[role="dialog"]') ?? null;
+        const targetDialog = (e.target as HTMLElement).closest?.('[role="dialog"]') ?? null;
+        if (targetDialog !== null && targetDialog !== ownDialog) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (canSave) void save();
+      }}
       onKeyDown={(e) => {
         // Enter saves from anywhere inside the fixer. INPUT is excluded
         // because TeamPicker's typeahead owns its own Enter (select, or create
@@ -394,6 +469,11 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
         // same keystroke, which nothing else prevents.
         const tag = (e.target as HTMLElement)?.tagName;
         if (e.key !== "Enter" || tag === "INPUT" || tag === "BUTTON") return;
+        // The picker's New Team form is a dialog of its own, and its Enter
+        // is not this panel's.
+        const ownDialog = rootRef.current?.closest('[role="dialog"]') ?? null;
+        const targetDialog = (e.target as HTMLElement).closest?.('[role="dialog"]') ?? null;
+        if (targetDialog !== null && targetDialog !== ownDialog) return;
         e.preventDefault();
         void save();
       }}
@@ -418,11 +498,12 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
       <div className="space-y-3 empty:hidden" ref={optionsRef}>
         {marketplaceChips.length > 0 && (
           <div className="space-y-1">
-            {/* NEO-330 — BSC's claim, as NB's rows. Blue is provenance in this
-                panel, and the line names who is claiming it; the chips are
-                never preselected unless a set-year stint agrees. BSC's string
-                is plain text, never an anchor or a `title` (untrusted content
-                on an admin screen, the same rule as the card name). */}
+            {/* NEO-330 — the listing's claim, as NB's rows. Blue is provenance
+                in this panel, and the line says the listing is claiming it;
+                the chips are never preselected unless a set-year stint
+                agrees. The listing's string is plain text, never an anchor or
+                a `title` (untrusted content on an admin screen, the same rule
+                as the card name). */}
             <p id="attention-team-marketplace" className="text-xs text-[#00B7FF]">
               {marketplaceHeading(bscName, marketplaceChips.length, marketplaceChips.some((chip) => preselect.includes(chip.teamId)))}
             </p>
@@ -430,8 +511,9 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
               {marketplaceChips.map((chip) =>
                 renderChip(chip, {
                   // No aria-label: the visible text, era and provenance
-                  // included, IS the name, and the list's label says BSC.
-                  suffix: chip.playerNames.length > 0 ? ` (${careerOf(chip.playerNames)})` : undefined,
+                  // included, IS the name, and the list's label names the
+                  // listing.
+                  suffix: chip.playerNames.length > 0 ? ` · ${playedHere(chip.playerNames)}` : undefined,
                 }),
               )}
             </ul>
@@ -441,7 +523,11 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
         {careerChips.length > 0 && (
           <div className="space-y-1">
             <p id="attention-team-suggestions" className="text-xs text-[#00B7FF]">
-              {careerHeading(careerChips.some((chip) => chip.inSetYear), bscDisagrees)}
+              {careerHeading(
+                careerChips.some((chip) => chip.inSetYear),
+                bscDisagrees,
+                uncoveredSetYear,
+              )}
             </p>
             <ul
               className="flex flex-wrap gap-1.5"
@@ -449,7 +535,9 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
             >
               {careerChips.map((chip) =>
                 renderChip(chip, {
-                  ariaLabel: `${chip.label} (from ${careerOf(chip.playerNames)})`,
+                  // The same words the listing's chips show, so the two lists
+                  // say provenance one way (NEO-330).
+                  ariaLabel: `${chip.label} · ${playedHere(chip.playerNames)}`,
                 }),
               )}
             </ul>
@@ -457,7 +545,18 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
         )}
       </div>
 
-      <div className="space-y-1" ref={pickerRegionRef}>
+      <div
+        className="space-y-1"
+        ref={pickerRegionRef}
+        onKeyDownCapture={(e) => {
+          // Tab moves through; anything else is the operator working the
+          // picker (see `pickerEngagedRef`).
+          if (e.key !== "Tab" && e.key !== "Shift") pickerEngagedRef.current = true;
+        }}
+        onPointerDownCapture={() => {
+          pickerEngagedRef.current = true;
+        }}
+      >
         {/*
           NEO-236 — the marketplace's own answer, above the picker, when it
           names no team we hold (NEO-330: when it names one or more, the chips
@@ -510,6 +609,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
           // NeonButton dims it the same way.
           aria-disabled={canSave ? undefined : true}
           aria-describedby="attention-team-hint"
+          aria-keyshortcuts="Control+Enter Meta+Enter"
           onClick={() => void save()}
         >
           {busy ? "Saving…" : "Save & Next (Enter)"}
@@ -540,7 +640,7 @@ export default function MissingTeamFixer({ row, onSaved }: AttentionFixerProps) 
       <p id="attention-team-hint" className="text-xs text-gray-400">
         {chosen.length === 0
           ? "Pick at least one team, or record that this card has none."
-          : `Saves ${chosen.length} ${chosen.length === 1 ? "team" : "teams"} on this card.`}
+          : `Saves ${chosen.length} ${chosen.length === 1 ? "team" : "teams"} on this card. ${shortcut} saves from anywhere.`}
       </p>
     </div>
   );

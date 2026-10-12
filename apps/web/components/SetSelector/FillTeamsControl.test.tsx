@@ -7,7 +7,7 @@
  * `previewTeamFill` and `applyTeamFill` can be independently controlled.
  */
 
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ConvexError } from "convex/values";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -44,6 +44,7 @@ import FillTeamsControl, {
   FILL_TEAMS_CHECKING_LABEL,
   FILL_TEAMS_CONFLICTS_HEADING,
   FILL_TEAMS_LIST_LABEL,
+  FILL_TEAMS_LIST_LABEL_WITH_SKIPS,
   FILL_TEAMS_TOOLTIP,
   nothingToFillToast,
   type TeamFillConflictCard,
@@ -335,19 +336,20 @@ describe("fillConfirmCopy", () => {
 describe("nothingToFillToast", () => {
   it("tells a fully teamed set apart from one whose leftovers need the operator", () => {
     expect(nothingToFillToast(0)).toBe("Nothing to fill — every card here has its team.");
+    // The a11y review asked for the destination: the walker's link.
     expect(nothingToFillToast(1)).toBe(
-      "Nothing to fill — the 1 still without a team needs your call.",
+      "Nothing to fill — 1 card still needs a team, and it's your call. Use “Fix them one at a time” to choose.",
     );
     expect(nothingToFillToast(4)).toBe(
-      "Nothing to fill — the 4 still without a team need your call.",
+      "Nothing to fill — 4 cards still need a team, and they're your call. Use “Fix them one at a time” to choose.",
     );
   });
 });
 
 /**
- * NEO-330 — the Jimmie Foxx shape: #34/#35 carry no team and BSC's
- * "Philadelphia Athletics"; a rule would copy the Red Sox off #36. Fill leaves
- * them alone and says so, per card.
+ * NEO-330 — the Jimmie Foxx shape: #34/#35 carry no team and the listing's
+ * "Philadelphia Athletics"; a rule would copy the Red Sox off #36. Fill skips
+ * them and says so, per card — and never names the marketplace.
  */
 const FOXX_34: TeamFillConflictCard = {
   cardNumber: "34",
@@ -355,44 +357,86 @@ const FOXX_34: TeamFillConflictCard = {
   playerNames: ["Jimmie Foxx"],
   teamNames: ["Boston Red Sox"],
   bscTeamName: "Philadelphia Athletics",
+  rule: "samePlayerInSet",
+  scope: "sameNode",
+  mixed: false,
+  sourceCardNumber: "36",
 };
 
-describe("NEO-330 — cards BSC disagrees on", () => {
-  it("fillConflictLine names the card, where it is, and both sides", () => {
-    expect(fillConflictLine(FOXX_34)).toEqual({
+const FOXX_34_LINE =
+  "#34 Jimmie Foxx · 3X MVP · Listing: Philadelphia Athletics · Fill: Boston Red Sox (from #36)";
+
+describe("NEO-330 — cards the listing disagrees on", () => {
+  it("fillConflictLine names the card, where it is, the listing, and Fill's team with its source card", () => {
+    expect(fillConflictLine(FOXX_34, 2025)).toEqual({
       card: "#34 Jimmie Foxx",
       where: "3X MVP",
-      claim: "BSC lists Philadelphia Athletics; this set says Boston Red Sox",
-      line: "#34 Jimmie Foxx · 3X MVP · BSC lists Philadelphia Athletics; this set says Boston Red Sox",
+      listing: "Listing: Philadelphia Athletics",
+      fill: "Fill: Boston Red Sox (from #36)",
+      line: FOXX_34_LINE,
     });
+  });
+
+  it("a source under another node is named by node and number", () => {
+    expect(
+      fillConflictLine(
+        { ...FOXX_34, scope: "parallelOf", sourceCardNumber: "7", sourceNodeName: "Stars" },
+        2025,
+      ).fill,
+    ).toBe("Fill: Boston Red Sox (from Stars #7)");
+  });
+
+  it("with no single source card, the rule's clause stands in — never “this set says”", () => {
+    const noSource = { ...FOXX_34, sourceCardNumber: undefined };
+    expect(fillConflictLine(noSource, 2025).fill).toBe(
+      "Fill: Boston Red Sox (same player in this set)",
+    );
+    expect(
+      fillConflictLine({ ...noSource, rule: "oneTeamCareer", scope: "career" }, 2025).fill,
+    ).toBe("Fill: Boston Red Sox (only team on file)");
+    expect(
+      fillConflictLine({ ...noSource, rule: "oneStintInYear", scope: "career" }, 2025).fill,
+    ).toBe("Fill: Boston Red Sox (only team in 2025)");
+    expect(
+      fillConflictLine({ ...noSource, rule: "oneStintInYear", scope: "career" }, null).fill,
+    ).toBe("Fill: Boston Red Sox (only team that year)");
+    expect(
+      fillConflictLine(
+        { ...noSource, teamNames: ["Cincinnati Reds", "Philadelphia Phillies"], mixed: true },
+        2025,
+      ).fill,
+    ).toBe("Fill: Cincinnati Reds / Philadelphia Phillies (each player's own team)");
+    for (const line of [fillConflictLine(FOXX_34, 2025).line, fillConflictLine(noSource, 2025).line]) {
+      expect(line).not.toMatch(/this set says|BSC|SportLots/);
+    }
   });
 
   it("fillConflictLine degrades without players, node or our side", () => {
     expect(
-      fillConflictLine({ ...FOXX_34, playerNames: [], nodeName: "", teamNames: [] }).line,
-    ).toBe("#34 · BSC lists Philadelphia Athletics");
+      fillConflictLine({ ...FOXX_34, playerNames: [], nodeName: "", teamNames: [] }, 2025).line,
+    ).toBe("#34 · Listing: Philadelphia Athletics");
   });
 
-  it("fillConfirmCopy says how many were left alone, before the your-call sentence", () => {
+  it("fillConfirmCopy says how many were skipped, before the your-call sentence", () => {
     expect(
       fillConfirmCopy(makePreview({ conflicts: 2, remaining: 1 })).description,
     ).toBe(
-      "11 from the same player's other cards here, 2 from the only team on file, 1 from the only team that year. 2 cards left alone — BSC lists a different team. 1 still needs your call.",
+      "11 from the same player's other cards here, 2 from the only team on file, 1 from the only team that year. 2 cards skipped — the listing names a different team. Your call. 1 still needs your call.",
     );
     expect(fillConfirmCopy(makePreview({ conflicts: 1 })).description).toContain(
-      "1 card left alone — BSC lists a different team.",
+      "1 card skipped — the listing names a different team. Your call.",
     );
   });
 
-  it("nothingToFillToast counts BSC's cards as the operator's, and says BSC is why", () => {
+  it("nothingToFillToast counts the listing's cards as the operator's, and says where to answer them", () => {
     expect(nothingToFillToast(0, 2)).toBe(
-      "Nothing to fill — the 2 still without a team need your call (BSC disagrees on 2).",
+      "Nothing to fill — 2 cards still need a team, and they're your call (2 where the listing disagrees). Use “Fix them one at a time” to choose.",
     );
     expect(nothingToFillToast(1, 1)).toBe(
-      "Nothing to fill — the 2 still without a team need your call (BSC disagrees on 1).",
+      "Nothing to fill — 2 cards still need a team, and they're your call (1 where the listing disagrees). Use “Fix them one at a time” to choose.",
     );
     expect(nothingToFillToast(0, 1)).toBe(
-      "Nothing to fill — the 1 still without a team needs your call (BSC disagrees on 1).",
+      "Nothing to fill — 1 card still needs a team, and it's your call (1 where the listing disagrees). Use “Fix them one at a time” to choose.",
     );
   });
 });
@@ -599,7 +643,7 @@ describe("FillTeamsControl", () => {
     fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith(
-        "Nothing to fill — the 3 still without a team need your call.",
+        "Nothing to fill — 3 cards still need a team, and they're your call. Use “Fix them one at a time” to choose.",
       ),
     );
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -619,7 +663,7 @@ describe("FillTeamsControl", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("NEO-330: zero fillable with only BSC conflicts toasts the reason and opens no dialog", async () => {
+  it("NEO-330: zero fillable with only listing conflicts toasts the reason and opens no dialog", async () => {
     mockPreview.mockResolvedValue(
       makePreview({
         fillable: 0,
@@ -637,13 +681,13 @@ describe("FillTeamsControl", () => {
     fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await waitFor(() =>
       expect(showToast).toHaveBeenCalledWith(
-        "Nothing to fill — the 2 still without a team need your call (BSC disagrees on 2).",
+        "Nothing to fill — 2 cards still need a team, and they're your call (2 where the listing disagrees). Use “Fix them one at a time” to choose.",
       ),
     );
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("NEO-330: lists the cards BSC disagrees on under their own labelled heading, apart from the fills", async () => {
+  it("NEO-330: lists the skipped cards FIRST, under their own labelled heading, in a group named for both", async () => {
     mockPreview.mockResolvedValue(
       makePreview({ conflicts: 3, conflictCards: [FOXX_34, { ...FOXX_34, cardNumber: "35" }] }),
     );
@@ -652,25 +696,39 @@ describe("FillTeamsControl", () => {
     fireEvent.click(screen.getByRole("button", { name: LABEL }));
     const dialog = await screen.findByRole("dialog");
     // The count is the server's total, not the length of the capped list.
-    expect(dialog.textContent).toContain("3 cards left alone — BSC lists a different team.");
+    expect(dialog.textContent).toContain(
+      "3 cards skipped — the listing names a different team. Your call.",
+    );
+    expect(FILL_TEAMS_CONFLICTS_HEADING).toBe("Skipped — the listing names a different team");
     const list = screen.getByRole("list", { name: FILL_TEAMS_CONFLICTS_HEADING });
     expect(Array.from(list.querySelectorAll("li")).map((li) => li.textContent)).toEqual([
-      "#34 Jimmie Foxx· 3X MVP· BSC lists Philadelphia Athletics; this set says Boston Red Sox",
-      "#35 Jimmie Foxx· 3X MVP· BSC lists Philadelphia Athletics; this set says Boston Red Sox",
+      "#34 Jimmie Foxx· 3X MVP· Listing: Philadelphia Athletics· Fill: Boston Red Sox (from #36)",
+      "#35 Jimmie Foxx· 3X MVP· Listing: Philadelphia Athletics· Fill: Boston Red Sox (from #36)",
       "…and 1 more",
     ]);
+    // a11y: the skipped block sits ABOVE the ledger, and the group's name is
+    // true of both.
+    const group = screen.getByRole("group", { name: FILL_TEAMS_LIST_LABEL_WITH_SKIPS });
+    const ledgerRow = within(group).getByText("Johnny Bench");
+    expect(
+      list.compareDocumentPosition(ledgerRow) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(screen.queryByRole("group", { name: FILL_TEAMS_LIST_LABEL })).toBeNull();
+    expect(dialog.textContent).not.toMatch(/BSC|this set says/);
     // The marketplace string is text, never a link or a tooltip.
     expect(list.querySelector("a")).toBeNull();
     expect(list.querySelector("[title]")).toBeNull();
   });
 
-  it("NEO-330: no conflict section when BSC agrees with every fill", async () => {
+  it("NEO-330: no conflict section when the listing agrees with every fill, and the group keeps its E2E name", async () => {
     mockPreview.mockResolvedValue(makePreview());
     renderControl();
 
     fireEvent.click(screen.getByRole("button", { name: LABEL }));
     await screen.findByRole("dialog");
     expect(screen.queryByText(FILL_TEAMS_CONFLICTS_HEADING)).toBeNull();
+    // set-fill-teams-from-teammate-card.yaml finds the group by this name.
+    expect(screen.getByRole("group", { name: FILL_TEAMS_LIST_LABEL })).toBeTruthy();
   });
 
   it("opens the dialog with the preview's title, body and ledger rows", async () => {

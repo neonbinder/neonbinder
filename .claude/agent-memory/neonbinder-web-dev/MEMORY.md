@@ -97,3 +97,4 @@
 - [Convex snapshot import keeps table numbers](reference_convex_snapshot_import_keeps_table_numbers.md) — ids encode table numbers (prod vs preview collide); bare ints import as int64, write floats as N.0
 - [Readline iterator loses lines under a slow consumer](reference_readline_iterator_loses_lines_under_slow_consumer.md) — ERR_USE_AFTER_CLOSE + dropped last line when the loop awaits; split child.stdout by hand
 - [Scope to a run on a catalogue deployment](reference_scope_to_a_run_on_a_catalogue_deployment.md) — _creationTime range from a boundary, not a field; `convex run` prints pretty JSON off a TTY
+- [Panel-wide shortcut via capture phase](reference_panel_wide_shortcut_via_capture_phase.md) — Ctrl+Enter over a typeahead: onKeyDownCapture + stopPropagation, guard nested role=dialog; stub spy proves the typeahead never sees it

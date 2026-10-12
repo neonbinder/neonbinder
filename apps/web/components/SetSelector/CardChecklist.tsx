@@ -3014,6 +3014,7 @@ export default function CardChecklist({
           // late join without disturbing a decision already made.
           initialData={streamedPairing}
           isStreaming={fetchInFlight}
+          teamsLateNotice={TEAMS_LATE_NOTICE}
           streamProgress={
             liveCandidates
               ? { ready: liveCandidates.ready, total: liveCandidates.total }

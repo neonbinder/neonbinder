@@ -64,15 +64,19 @@ import SetRowActionButton from "./SetRowActionButton";
  * node, then the card a parallel copies. The top of the list is where a
  * second look pays.
  *
- * ## When BSC names a different team (NEO-330)
+ * ## When the listing names a different team (NEO-330, invariant 8)
  *
- * A card whose `bscTeamName` contradicts the team a rule would give it is not
- * filled. The server reports it as a conflict instead, and the dialog says so
- * in the description ("2 cards left alone — BSC lists a different team.") and
- * lists each one under the ledger: card number, node, player, what BSC lists
- * and what this set says. Those cards stay in the missing-team lane, where
- * the fixer offers BSC's eras beside the career — the operator decides there.
- * A preview that can fill nothing but has conflicts says so in the toast.
+ * A card whose listing names a team that does not cover EVERY team a rule
+ * would give it is not filled. The server reports it as a conflict instead,
+ * and the dialog says so in the description ("2 cards skipped — the listing
+ * names a different team. Your call.") and lists each one ABOVE the ledger,
+ * where it is seen before two hundred fills scroll it away: card number,
+ * node, player, what the listing names and what Fill would have written, with
+ * the card it copied ("from #36") or, failing one, the rule. Those cards stay
+ * in the missing-team lane, where the fixer offers the listing's eras beside
+ * the career — the operator decides there. A preview that can fill nothing
+ * but has conflicts says so in the toast. Operator copy never names the
+ * marketplace (Jason, 2026-10-11): it is "the listing".
  *
  * Copy helpers are exported and pure so the pluralisation and the joined
  * sentence can be pinned in a test without a Convex client in the way — the
@@ -102,7 +106,7 @@ export type TeamFillGroup = {
   cardCount: number;
 };
 
-/** NEO-330: a card left alone because BSC names a different team. */
+/** NEO-330: a card skipped because the listing names a different team. */
 export type TeamFillConflictCard = {
   cardNumber: string;
   /** The node the card sits under — a card number alone is not unique. */
@@ -110,8 +114,16 @@ export type TeamFillConflictCard = {
   playerNames: string[];
   /** What Fill would have written. */
   teamNames: string[];
-  /** What BSC lists. Untrusted marketplace text: rendered plain, never a link. */
+  /** What the listing names. Untrusted marketplace text: rendered plain, never a link. */
   bscTeamName: string;
+  /** How Fill reached its team — named when there is no single source card. */
+  rule: TeamFillRule;
+  scope: TeamFillScope;
+  mixed: boolean;
+  /** The one card Fill copied, when there was one. */
+  sourceCardNumber?: string;
+  /** That card's node, only when it is not the skipped card's own. */
+  sourceNodeName?: string;
 };
 
 export type TeamFillPreview = {
@@ -123,7 +135,7 @@ export type TeamFillPreview = {
   /** At most 200, riskiest first, then `cardCount` descending. */
   groups: TeamFillGroup[];
   groupsTotal: number;
-  /** NEO-330: cards left alone because BSC disagrees; not in `remaining`. */
+  /** NEO-330: cards skipped because the listing disagrees; not in `remaining`. */
   conflicts: number;
   /** The first 50 of them. */
   conflictCards: TeamFillConflictCard[];
@@ -147,11 +159,28 @@ export function fillTeamsLabel(missing: number): string {
 /** The trigger's text while the preview is in flight. */
 export const FILL_TEAMS_CHECKING_LABEL = "Checking…";
 
-/** Accessible name of the dialog's scrollable list. */
+/**
+ * Accessible name of the dialog's scrollable list. E2E finds the group by it
+ * (`set-fill-teams-from-teammate-card.yaml`), so it stays as is whenever the
+ * list holds only fills.
+ */
 export const FILL_TEAMS_LIST_LABEL = "Who gets which team";
 
-/** NEO-330: the heading over the cards Fill left alone. */
-export const FILL_TEAMS_CONFLICTS_HEADING = "Left alone — BSC lists a different team";
+/**
+ * NEO-330 a11y — the same group's name when it also holds skipped cards, so
+ * the name is true of everything in it.
+ */
+export const FILL_TEAMS_LIST_LABEL_WITH_SKIPS = "Who gets which team, and which cards are skipped";
+
+/** NEO-330: the heading over the cards Fill skipped. */
+export const FILL_TEAMS_CONFLICTS_HEADING = "Skipped — the listing names a different team";
+
+/**
+ * Where the operator answers a skipped card: the checklist's walker link,
+ * "Fix them one at a time" (CardChecklist.tsx). Keep in step with that label;
+ * a sentence quoting a control goes stale silently.
+ */
+export const FILL_TEAMS_DESTINATION_LABEL = "Fix them one at a time";
 
 /** The trigger's tooltip: what pressing it does, and that nothing changes unseen. */
 export const FILL_TEAMS_TOOLTIP =
@@ -231,33 +260,59 @@ export function fillGroupLine(
 }
 
 /**
- * NEO-330 — one left-alone card, as the pieces the ledger sets:
+ * NEO-330 — one skipped card, as the pieces the list sets:
  *
- *   card: "#34 Jimmie Foxx"   where: "3X MVP"
- *   claim: "BSC lists Philadelphia Athletics; this set says Boston Red Sox"
+ *   card:    "#34 Jimmie Foxx"   where: "3X MVP"
+ *   listing: "Listing: Philadelphia Athletics"
+ *   fill:    "Fill: Boston Red Sox (from #36)"
+ *   line:    "#34 Jimmie Foxx · 3X MVP · Listing: Philadelphia Athletics ·
+ *             Fill: Boston Red Sox (from #36)"
  *
  * The node is named because card numbers are not unique even within a set
- * (product invariant 7) — "#34" alone does not find the card.
+ * (product invariant 7) — "#34" alone does not find the card. Fill's source
+ * is the one card it copied — "(from #36)", or "(from Base #36)" when that
+ * card is under another node — and, when no single card was the source, the
+ * rule's clause: "(same player in this set)", "(only team on file)". Names
+ * are unquoted here; the fixer's headings quote them.
  */
-export function fillConflictLine(conflict: TeamFillConflictCard): {
+export function fillConflictLine(
+  conflict: TeamFillConflictCard,
+  setYear: number | null,
+): {
   card: string;
   where: string;
-  claim: string;
+  listing: string;
+  fill: string;
   line: string;
 } {
   const players = conflict.playerNames.join(" & ");
   const card = players ? `#${conflict.cardNumber} ${players}` : `#${conflict.cardNumber}`;
+  const listing = `Listing: ${conflict.bscTeamName}`;
   const ours = conflict.teamNames.join(" / ");
-  const claim = ours
-    ? `BSC lists ${conflict.bscTeamName}; this set says ${ours}`
-    : `BSC lists ${conflict.bscTeamName}`;
+  const fill = ours ? `Fill: ${ours} (${conflictSource(conflict, setYear)})` : "";
   const where = conflict.nodeName;
-  return { card, where, claim, line: [card, where, claim].filter(Boolean).join(" · ") };
+  return {
+    card,
+    where,
+    listing,
+    fill,
+    line: [card, where, listing, fill].filter(Boolean).join(" · "),
+  };
 }
 
-/** "2 cards left alone — BSC lists a different team." */
-function leftAlone(conflicts: number): string {
-  return `${plural(conflicts, "card", "cards")} left alone — BSC lists a different team.`;
+/** "from #36" / "from Base #36" / the rule's clause when there is no one card. */
+function conflictSource(conflict: TeamFillConflictCard, setYear: number | null): string {
+  if (conflict.sourceCardNumber) {
+    return conflict.sourceNodeName
+      ? `from ${conflict.sourceNodeName} #${conflict.sourceCardNumber}`
+      : `from #${conflict.sourceCardNumber}`;
+  }
+  return conflict.mixed ? "each player's own team" : sourceClause(conflict, setYear);
+}
+
+/** "2 cards skipped — the listing names a different team. Your call." */
+function skipped(conflicts: number): string {
+  return `${plural(conflicts, "card", "cards")} skipped — the listing names a different team. Your call.`;
 }
 
 /**
@@ -289,7 +344,7 @@ export function fillConfirmCopy(preview: TeamFillPreview): {
   }
   const sentences: string[] = [];
   if (parts.length > 0) sentences.push(`${parts.join(", ")}.`);
-  if (preview.conflicts > 0) sentences.push(leftAlone(preview.conflicts));
+  if (preview.conflicts > 0) sentences.push(skipped(preview.conflicts));
   if (preview.remaining > 0) sentences.push(stillNeedYourCall(preview.remaining));
   return {
     title: `Fill teams on ${plural(preview.fillable, "card", "cards")}?`,
@@ -306,16 +361,22 @@ function stillNeedYourCall(remaining: number): string {
  * Said when the preview finds nothing to do; no dialog follows it. Two
  * different facts, told apart: every card is teamed (nothing left at all), or
  * some are not and no rule can honestly answer them (they are the operator's).
- * NEO-330: cards a rule could have filled but BSC contradicts are the
- * operator's too, and the toast says how many of them BSC is the reason for.
+ * NEO-330: cards a rule could have filled but the listing contradicts are the
+ * operator's too, and the toast says how many — and, per the a11y review,
+ * where to go to answer them.
+ *
+ *   "Nothing to fill — 3 cards still need a team, and they're your call
+ *    (2 where the listing disagrees). Use “Fix them one at a time” to choose."
  */
 export function nothingToFillToast(remaining: number, conflicts = 0): string {
   const open = remaining + conflicts;
   if (open === 0) return "Nothing to fill — every card here has its team.";
-  const base = `Nothing to fill — the ${open} still without a team ${
-    open === 1 ? "needs" : "need"
-  } your call`;
-  return conflicts > 0 ? `${base} (BSC disagrees on ${conflicts}).` : `${base}.`;
+  const need =
+    open === 1
+      ? "1 card still needs a team, and it's your call"
+      : `${open} cards still need a team, and they're your call`;
+  const why = conflicts > 0 ? ` (${conflicts} where the listing disagrees)` : "";
+  return `Nothing to fill — ${need}${why}. Use “${FILL_TEAMS_DESTINATION_LABEL}” to choose.`;
 }
 
 /**
@@ -495,7 +556,11 @@ export default function FillTeamsControl({
           busyLabel="Filling…"
           busy={filling}
           error={error}
-          childrenLabel={FILL_TEAMS_LIST_LABEL}
+          childrenLabel={
+            preview.conflictCards.length > 0
+              ? FILL_TEAMS_LIST_LABEL_WITH_SKIPS
+              : FILL_TEAMS_LIST_LABEL
+          }
           onConfirm={() => void fill()}
           onCancel={() => {
             if (filling) return;
@@ -504,6 +569,40 @@ export default function FillTeamsControl({
             setPreview(null);
           }}
         >
+          {/* NEO-330 — the cards Fill skipped, FIRST, under their own heading
+              so nobody reads them as fills (a11y review: at the bottom of a
+              capped scroller they sat under two hundred fills, inside a group
+              named for fills only — the group's name now covers both). The
+              same three weights as the ledger; the listing's string is plain
+              text, never a link or a title. */}
+          {preview.conflictCards.length > 0 && (
+            <div className="border-b border-slate-500 px-3 pt-2 pb-1.5 text-xs">
+              <p id="fill-teams-conflicts" className="font-semibold text-gray-200">
+                {FILL_TEAMS_CONFLICTS_HEADING}
+              </p>
+              <ul aria-labelledby="fill-teams-conflicts" className="divide-y divide-slate-600">
+                {preview.conflictCards.map((conflict, i) => {
+                  const row = fillConflictLine(conflict, preview.setYear);
+                  return (
+                    <li
+                      key={`${conflict.cardNumber}|${conflict.nodeName}|${i}`}
+                      className="flex flex-wrap items-baseline gap-x-1.5 py-1.5"
+                    >
+                      <span className="text-gray-100">{row.card}</span>
+                      {row.where && <span className="text-gray-400">· {row.where}</span>}
+                      <span className="text-gray-300">· {row.listing}</span>
+                      {row.fill && <span className="text-gray-300">· {row.fill}</span>}
+                    </li>
+                  );
+                })}
+                {preview.conflicts > preview.conflictCards.length && (
+                  <li className="py-1.5 text-gray-400 italic">
+                    …and {preview.conflicts - preview.conflictCards.length} more
+                  </li>
+                )}
+              </ul>
+            </div>
+          )}
           {/* The ledger: who gets which team, riskiest first (the server
               orders career rules, then base-card reads, then same-node
               finds, then parallels of a teamed original; most cards first
@@ -534,36 +633,6 @@ export default function FillTeamsControl({
               <li className="py-1.5 text-gray-400 italic">…and {overflow} more</li>
             )}
           </ul>
-          {/* NEO-330 — the cards BSC contradicts, under their own heading so
-              nobody reads them as fills. Same three weights as the ledger;
-              BSC's string is plain text, never a link or a title. */}
-          {preview.conflictCards.length > 0 && (
-            <div className="border-t border-slate-500 px-3 pt-2 pb-1.5 text-xs">
-              <p id="fill-teams-conflicts" className="font-semibold text-gray-200">
-                {FILL_TEAMS_CONFLICTS_HEADING}
-              </p>
-              <ul aria-labelledby="fill-teams-conflicts" className="divide-y divide-slate-600">
-                {preview.conflictCards.map((conflict, i) => {
-                  const row = fillConflictLine(conflict);
-                  return (
-                    <li
-                      key={`${conflict.cardNumber}|${conflict.nodeName}|${i}`}
-                      className="flex flex-wrap items-baseline gap-x-1.5 py-1.5"
-                    >
-                      <span className="text-gray-100">{row.card}</span>
-                      {row.where && <span className="text-gray-400">· {row.where}</span>}
-                      <span className="text-gray-300">· {row.claim}</span>
-                    </li>
-                  );
-                })}
-                {preview.conflicts > preview.conflictCards.length && (
-                  <li className="py-1.5 text-gray-400 italic">
-                    …and {preview.conflicts - preview.conflictCards.length} more
-                  </li>
-                )}
-              </ul>
-            </div>
-          )}
         </ConfirmDialog>
       )}
     </>

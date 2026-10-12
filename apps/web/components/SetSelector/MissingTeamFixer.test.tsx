@@ -45,6 +45,7 @@ type Suggestion = {
   source: "career";
   playerName: string;
   inSetYear: boolean;
+  uncoveredSetYear?: number;
 };
 
 type Era = {
@@ -62,6 +63,8 @@ let erasByName: Record<string, Era[]>;
 /** Every args object the era lookup was asked with, `"skip"` included. */
 let eraLookups: unknown[];
 const mockUpdateCard = vi.fn();
+/** Every key the picker stub's typeahead saw — a swallowed key never lands here. */
+const pickerKeys = vi.fn();
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
@@ -82,23 +85,33 @@ vi.mock("./TeamPicker", () => ({
   default: ({ value }: { value: string[] }) => (
     <div data-testid="team-picker-stub">
       <button type="button">Pick teams</button>
+      {/* Stands in for the typeahead: its own Enter handler, like the real one. */}
+      <input
+        aria-label="Search teams stub"
+        onKeyDown={(e) => pickerKeys(e.key, e.ctrlKey || e.metaKey)}
+      />
       <span data-testid="picker-value">{value.join(",")}</span>
     </div>
   ),
 }));
 
-import MissingTeamFixer, { careerHeading, marketplaceHeading } from "./MissingTeamFixer";
+import MissingTeamFixer, {
+  careerHeading,
+  marketplaceHeading,
+  playedHere,
+  saveShortcutLabel,
+} from "./MissingTeamFixer";
 import { AttentionSportContext } from "./cardAttentionRegistry";
 
 const CARD_ID = "card-1" as unknown as Id<"cardChecklist">;
 const SPORT_ID = "sport-baseball" as unknown as Id<"selectorOptions">;
 
-function renderFixer(
+function fixerElement(
   rowOverrides: { bscTeamName?: string; cardNumber?: string; cardName?: string } = {},
   opts: { sportId?: Id<"selectorOptions"> | null } = {},
 ) {
   const sportId = opts.sportId === null ? undefined : (opts.sportId ?? SPORT_ID);
-  return render(
+  return (
     <AttentionSportContext.Provider value={sportId}>
       <MissingTeamFixer
         row={{
@@ -111,8 +124,15 @@ function renderFixer(
         onSaved={vi.fn()}
         onSkip={vi.fn()}
       />
-    </AttentionSportContext.Provider>,
+    </AttentionSportContext.Provider>
   );
+}
+
+function renderFixer(
+  rowOverrides: { bscTeamName?: string; cardNumber?: string; cardName?: string } = {},
+  opts: { sportId?: Id<"selectorOptions"> | null } = {},
+) {
+  return render(fixerElement(rowOverrides, opts));
 }
 
 function suggestion(overrides: Partial<Suggestion> & { teamId: string; name: string }): Suggestion {
@@ -142,19 +162,24 @@ const ATHLETICS_ERAS: Era[] = [
 
 /** No stint in 2025, so the server offered the whole career — `inSetYear: false`. */
 function foxxCareerFallback(): Suggestion[] {
+  const fallback = { playerName: "Jimmie Foxx", inSetYear: false, uncoveredSetYear: 2025 };
   return [
-    suggestion({ teamId: PHA_AL, name: "Philadelphia Athletics", label: "Philadelphia Athletics · 1901–1954", playerName: "Jimmie Foxx", inSetYear: false }),
-    suggestion({ teamId: "team-red-sox", name: "Boston Red Sox", playerName: "Jimmie Foxx", inSetYear: false }),
-    suggestion({ teamId: "team-cubs", name: "Chicago Cubs", playerName: "Jimmie Foxx", inSetYear: false }),
-    suggestion({ teamId: "team-phillies", name: "Philadelphia Phillies", playerName: "Jimmie Foxx", inSetYear: false }),
+    suggestion({ teamId: PHA_AL, name: "Philadelphia Athletics", label: "Philadelphia Athletics · 1901–1954", ...fallback }),
+    suggestion({ teamId: "team-red-sox", name: "Boston Red Sox", ...fallback }),
+    suggestion({ teamId: "team-cubs", name: "Chicago Cubs", ...fallback }),
+    suggestion({ teamId: "team-phillies", name: "Philadelphia Phillies", ...fallback }),
   ];
 }
+
+const FOXX_FALLBACK_HEADING =
+  "No 2025 team on file — here’s the whole career. Pick the one on the card.";
 
 const FOXX_ROW = { cardNumber: "34", cardName: "Jimmie Foxx" };
 
 beforeEach(() => {
   vi.clearAllMocks();
   mockUpdateCard.mockResolvedValue(null);
+  pickerKeys.mockReset();
   suggestions = [];
   erasByName = {};
   eraLookups = [];
@@ -167,7 +192,7 @@ describe("MissingTeamFixer — chip labels (NEO-236, NEO-330)", () => {
     ];
     renderFixer();
 
-    expect(screen.getByLabelText("San Diego Padres (from Fernando Tatis Jr.'s career)")).toBeTruthy();
+    expect(screen.getByLabelText("San Diego Padres · Fernando Tatis Jr. played here")).toBeTruthy();
     // Composed once, on the server — never "San Diego San Diego Padres".
     expect(screen.getByText("San Diego Padres")).toBeTruthy();
   });
@@ -180,7 +205,7 @@ describe("MissingTeamFixer — chip labels (NEO-236, NEO-330)", () => {
     renderFixer();
 
     expect(
-      screen.getByLabelText("San Diego Padres (from Fernando Tatis Jr. and Manny Machado's career)"),
+      screen.getByLabelText("San Diego Padres · Fernando Tatis Jr. & Manny Machado played here"),
     ).toBeTruthy();
     expect(screen.getAllByText("San Diego Padres")).toHaveLength(1);
   });
@@ -190,9 +215,9 @@ describe("MissingTeamFixer — chip labels (NEO-236, NEO-330)", () => {
     renderFixer(FOXX_ROW);
 
     expect(
-      screen.getByLabelText("Philadelphia Athletics · 1901–1954 (from Jimmie Foxx's career)"),
+      screen.getByLabelText("Philadelphia Athletics · 1901–1954 · Jimmie Foxx played here"),
     ).toBeTruthy();
-    expect(screen.getByLabelText("Boston Red Sox (from Jimmie Foxx's career)")).toBeTruthy();
+    expect(screen.getByLabelText("Boston Red Sox · Jimmie Foxx played here")).toBeTruthy();
   });
 });
 
@@ -202,7 +227,7 @@ describe("MissingTeamFixer — what is preselected, and where focus lands (NEO-3
     renderFixer();
 
     expect(pressed()).toHaveLength(1);
-    expect(screen.getByText("Suggested from career history — Enter accepts these")).toBeTruthy();
+    expect(screen.getByText("Suggested from career history — Enter accepts these.")).toBeTruthy();
     await waitFor(() => expect(document.activeElement).toBe(saveButton()));
   });
 
@@ -214,9 +239,8 @@ describe("MissingTeamFixer — what is preselected, and where focus lands (NEO-3
     expect(pressed()).toHaveLength(0);
     expect(screen.getByTestId("picker-value").textContent).toBe("");
     expect(saveButton().getAttribute("aria-disabled")).toBe("true");
-    expect(
-      screen.getByText("From career history, but none from this card’s year — pick the one on the card"),
-    ).toBeTruthy();
+    // The set's actual year, from the server.
+    expect(screen.getByText(FOXX_FALLBACK_HEADING)).toBeTruthy();
     // Focus goes to the first chip, where Enter or Space picks it — never to a
     // Save that one Enter would turn into four teams.
     await waitFor(() => expect(document.activeElement).toBe(chips()[0]));
@@ -242,7 +266,7 @@ describe("MissingTeamFixer — what is preselected, and where focus lands (NEO-3
   });
 });
 
-describe("MissingTeamFixer — BSC's claim as NB's eras (NEO-330)", () => {
+describe("MissingTeamFixer — the listing's claim as NB's eras (NEO-330)", () => {
   it("offers every row under BSC's name, era-labelled, none preselected, in a labelled list", async () => {
     suggestions = foxxCareerFallback();
     erasByName["Philadelphia Athletics"] = ATHLETICS_ERAS;
@@ -251,7 +275,8 @@ describe("MissingTeamFixer — BSC's claim as NB's eras (NEO-330)", () => {
     // Looked up by BSC's name in the SET's sport.
     expect(eraLookups).toContainEqual({ name: "Philadelphia Athletics", sportId: SPORT_ID });
 
-    const heading = "BSC lists “Philadelphia Athletics” — 4 teams by that name, pick the one on the card";
+    const heading =
+      "The listing names “Philadelphia Athletics” — 4 teams share that name. Pick the one on the card.";
     const bscList = screen.getByRole("list", { name: heading });
     const options = within(bscList).getAllByRole("button");
     expect(options.map((b) => b.textContent)).toEqual([
@@ -259,14 +284,12 @@ describe("MissingTeamFixer — BSC's claim as NB's eras (NEO-330)", () => {
       "Philadelphia Athletics · 1876–1876",
       "Philadelphia Athletics · 1882–1890",
       // The era Foxx played in says so — that is what tells the four apart.
-      "Philadelphia Athletics · 1901–1954 (Jimmie Foxx's career)",
+      "Philadelphia Athletics · 1901–1954 · Jimmie Foxx played here",
     ]);
     expect(options.every((b) => b.getAttribute("aria-pressed") === "false")).toBe(true);
 
     // The 1901–1954 row is not repeated in the career list: one chip per team.
-    const careerList = screen.getByRole("list", {
-      name: "From career history, but none from this card’s year — pick the one on the card",
-    });
+    const careerList = screen.getByRole("list", { name: FOXX_FALLBACK_HEADING });
     expect(within(careerList).getAllByRole("button").map((b) => b.textContent)).toEqual([
       "Boston Red Sox",
       "Chicago Cubs",
@@ -286,7 +309,7 @@ describe("MissingTeamFixer — BSC's claim as NB's eras (NEO-330)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /1901–1954/ }));
     expect(pressed().map((b) => b.textContent)).toEqual([
-      "Philadelphia Athletics · 1901–1954 (Jimmie Foxx's career)",
+      "Philadelphia Athletics · 1901–1954 · Jimmie Foxx played here",
     ]);
     fireEvent.click(saveButton());
     await waitFor(() =>
@@ -294,7 +317,7 @@ describe("MissingTeamFixer — BSC's claim as NB's eras (NEO-330)", () => {
     );
   });
 
-  it("a set-year stint BSC contradicts is surfaced, not preselected", async () => {
+  it("a set-year stint the listing contradicts is surfaced, not preselected", async () => {
     // 1937 card: Foxx's stint is the Red Sox; BSC says Athletics.
     suggestions = [
       suggestion({ teamId: "team-red-sox", name: "Boston Red Sox", playerName: "Jimmie Foxx", inSetYear: true }),
@@ -304,13 +327,15 @@ describe("MissingTeamFixer — BSC's claim as NB's eras (NEO-330)", () => {
 
     expect(pressed()).toHaveLength(0);
     expect(
-      screen.getByText("From career history, but BSC lists a different team — pick the one on the card"),
+      screen.getByText(
+        "From the career — the listing names a different team, so pick the one on the card.",
+      ),
     ).toBeTruthy();
     expect(saveButton().getAttribute("aria-disabled")).toBe("true");
     await waitFor(() => expect(document.activeElement).toBe(chips()[0]));
   });
 
-  it("a set-year stint that IS one of BSC's eras is preselected there, and Enter accepts it", async () => {
+  it("a set-year stint that IS one of the listing's eras is preselected there, and Enter accepts it", async () => {
     // 1930 card: the stint is the 1901–1954 Athletics, which BSC also names.
     suggestions = [
       suggestion({ teamId: PHA_AL, name: "Philadelphia Athletics", label: "Philadelphia Athletics · 1901–1954", playerName: "Jimmie Foxx", inSetYear: true }),
@@ -319,15 +344,17 @@ describe("MissingTeamFixer — BSC's claim as NB's eras (NEO-330)", () => {
     renderFixer({ ...FOXX_ROW, bscTeamName: "Philadelphia Athletics" });
 
     expect(pressed().map((b) => b.textContent)).toEqual([
-      "Philadelphia Athletics · 1901–1954 (Jimmie Foxx's career)",
+      "Philadelphia Athletics · 1901–1954 · Jimmie Foxx played here",
     ]);
     expect(
-      screen.getByText("BSC lists “Philadelphia Athletics” and career history agrees — Enter accepts it"),
+      screen.getByText(
+        "The listing names “Philadelphia Athletics” and the career agrees — Enter accepts it.",
+      ),
     ).toBeTruthy();
     await waitFor(() => expect(document.activeElement).toBe(saveButton()));
   });
 
-  it("one row under BSC's name is offered, not assumed", () => {
+  it("one row under the listing's name is offered, not assumed", () => {
     suggestions = [];
     erasByName["Winnipeg Jets"] = [
       { _id: "team-jets-2011", name: "Jets", location: "Winnipeg", yearsActive: { from: 2011 }, label: "Winnipeg Jets · 2011–present" },
@@ -335,7 +362,7 @@ describe("MissingTeamFixer — BSC's claim as NB's eras (NEO-330)", () => {
     renderFixer({ bscTeamName: "Winnipeg Jets" });
 
     const list = screen.getByRole("list", {
-      name: "BSC lists “Winnipeg Jets” — pick it if it’s the team on the card",
+      name: "The listing names “Winnipeg Jets” — pick it if it matches the card.",
     });
     expect(within(list).getByRole("button").getAttribute("aria-pressed")).toBe("false");
   });
@@ -400,25 +427,188 @@ describe("MissingTeamFixer — the marketplace hint (NEO-236)", () => {
 });
 
 describe("MissingTeamFixer — heading copy (NEO-330)", () => {
-  it("marketplaceHeading", () => {
+  it("marketplaceHeading never names the marketplace", () => {
     expect(marketplaceHeading("Philadelphia Athletics", 4, false)).toBe(
-      "BSC lists “Philadelphia Athletics” — 4 teams by that name, pick the one on the card",
+      "The listing names “Philadelphia Athletics” — 4 teams share that name. Pick the one on the card.",
     );
     expect(marketplaceHeading("Winnipeg Jets", 1, false)).toBe(
-      "BSC lists “Winnipeg Jets” — pick it if it’s the team on the card",
+      "The listing names “Winnipeg Jets” — pick it if it matches the card.",
     );
     expect(marketplaceHeading("Philadelphia Athletics", 4, true)).toBe(
-      "BSC lists “Philadelphia Athletics” and career history agrees — Enter accepts it",
+      "The listing names “Philadelphia Athletics” and the career agrees — Enter accepts it.",
     );
+    for (const line of [
+      marketplaceHeading("X", 4, false),
+      marketplaceHeading("X", 1, false),
+      marketplaceHeading("X", 1, true),
+    ]) {
+      expect(line).not.toMatch(/BSC|SportLots|BuySportsCards/);
+    }
   });
 
   it("careerHeading", () => {
-    expect(careerHeading(true, false)).toBe("Suggested from career history — Enter accepts these");
+    expect(careerHeading(true, false)).toBe("Suggested from career history — Enter accepts these.");
     expect(careerHeading(true, true)).toBe(
-      "From career history, but BSC lists a different team — pick the one on the card",
+      "From the career — the listing names a different team, so pick the one on the card.",
     );
+    expect(careerHeading(false, false, 2025)).toBe(
+      "No 2025 team on file — here’s the whole career. Pick the one on the card.",
+    );
+    // A set with no year: nothing to name.
     expect(careerHeading(false, false)).toBe(
-      "From career history, but none from this card’s year — pick the one on the card",
+      "No year on this set — here’s the whole career. Pick the one on the card.",
     );
+  });
+
+  it("playedHere joins full names", () => {
+    expect(playedHere(["Jimmie Foxx"])).toBe("Jimmie Foxx played here");
+    expect(playedHere(["Johnny Bench", "Pete Rose"])).toBe("Johnny Bench & Pete Rose played here");
+    expect(playedHere(["Bench", "Rose", "Morgan"])).toBe("Bench, Rose & Morgan played here");
+  });
+
+  it("the career fallback with no set year says so in the panel", () => {
+    suggestions = foxxCareerFallback().map(({ uncoveredSetYear: _drop, ...rest }) => rest);
+    renderFixer(FOXX_ROW);
+    expect(
+      screen.getByText("No year on this set — here’s the whole career. Pick the one on the card."),
+    ).toBeTruthy();
+  });
+});
+
+/**
+ * NEO-330 a11y — Ctrl/Cmd+Enter saves from anywhere in the fixer, chips and
+ * picker included, when there is something to save. Plain Enter on a chip
+ * stays a pure toggle.
+ */
+describe("MissingTeamFixer — Ctrl/Cmd+Enter saves from anywhere (NEO-330 a11y)", () => {
+  it("from a chip, after picking it: saves exactly that pick, and does not toggle the chip", async () => {
+    suggestions = foxxCareerFallback();
+    renderFixer(FOXX_ROW);
+
+    const redSox = screen.getByRole("button", { name: /^Boston Red Sox/ });
+    fireEvent.click(redSox);
+    const ctrlEnter = fireEvent.keyDown(redSox, { key: "Enter", ctrlKey: true });
+    // Default prevented: the button's native activation (a toggle) never runs.
+    expect(ctrlEnter).toBe(false);
+    await waitFor(() =>
+      expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, teamOnCardIds: ["team-red-sox"] }),
+    );
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+  });
+
+  it("Cmd (meta) works the same as Ctrl", async () => {
+    suggestions = [suggestion({ teamId: "team-1", name: "San Diego Padres" })];
+    renderFixer();
+
+    fireEvent.keyDown(chips()[0], { key: "Enter", metaKey: true });
+    await waitFor(() =>
+      expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, teamOnCardIds: ["team-1"] }),
+    );
+  });
+
+  it("from the picker's typeahead: saves, and the typeahead never sees the key", async () => {
+    suggestions = [suggestion({ teamId: "team-1", name: "San Diego Padres" })];
+    renderFixer();
+
+    const search = screen.getByLabelText("Search teams stub");
+    fireEvent.keyDown(search, { key: "Enter", ctrlKey: true });
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(pickerKeys).not.toHaveBeenCalled();
+
+    // Plain Enter is still the typeahead's own.
+    fireEvent.keyDown(search, { key: "Enter" });
+    expect(pickerKeys).toHaveBeenCalledWith("Enter", false);
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+  });
+
+  it("from the picker's trigger button too", async () => {
+    suggestions = [suggestion({ teamId: "team-1", name: "San Diego Padres" })];
+    renderFixer();
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Pick teams" }), {
+      key: "Enter",
+      ctrlKey: true,
+    });
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+  });
+
+  it("with nothing picked it writes nothing", async () => {
+    suggestions = foxxCareerFallback();
+    renderFixer(FOXX_ROW);
+
+    fireEvent.keyDown(chips()[0], { key: "Enter", ctrlKey: true });
+    await act(async () => {});
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(pressed()).toHaveLength(0);
+  });
+
+  it("plain Enter on a chip is a toggle only — it never saves", async () => {
+    suggestions = [suggestion({ teamId: "team-1", name: "San Diego Padres" })];
+    renderFixer();
+
+    fireEvent.keyDown(chips()[0], { key: "Enter" });
+    await act(async () => {});
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("a nested dialog (the picker's New Team form) keeps its own Ctrl+Enter", async () => {
+    suggestions = [suggestion({ teamId: "team-1", name: "San Diego Padres" })];
+    renderFixer();
+
+    // Rendered inside the fixer's tree the way a portalled NewTeamDialog's
+    // events reach it: as a descendant in React, in a dialog of its own.
+    const picker = screen.getByTestId("team-picker-stub");
+    const nested = document.createElement("div");
+    nested.setAttribute("role", "dialog");
+    const field = document.createElement("button");
+    nested.appendChild(field);
+    picker.appendChild(nested);
+    fireEvent.keyDown(field, { key: "Enter", ctrlKey: true });
+    await act(async () => {});
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("the hint says so, and Save advertises the shortcut", () => {
+    suggestions = [suggestion({ teamId: "team-1", name: "San Diego Padres" })];
+    renderFixer();
+
+    expect(saveShortcutLabel()).toMatch(/^(Ctrl|Cmd)\+Enter$/);
+    expect(document.getElementById("attention-team-hint")?.textContent).toBe(
+      `Saves 1 team on this card. ${saveShortcutLabel()} saves from anywhere.`,
+    );
+    expect(saveButton().getAttribute("aria-keyshortcuts")).toBe("Control+Enter Meta+Enter");
+  });
+});
+
+/**
+ * NEO-330 a11y — the suggestions can resolve after the operator has already
+ * started in the picker. Focus must not be yanked to Save or a chip then.
+ */
+describe("MissingTeamFixer — focus never leaves a picker in use (NEO-330 a11y)", () => {
+  it("typing in the picker before the suggestions land keeps focus there", async () => {
+    suggestions = undefined;
+    const view = renderFixer();
+    const search = screen.getByLabelText("Search teams stub");
+    act(() => search.focus());
+    fireEvent.keyDown(search, { key: "P" });
+
+    suggestions = [suggestion({ teamId: "team-1", name: "San Diego Padres" })];
+    // A FRESH element, or React bails out of the re-render.
+    view.rerender(fixerElement());
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    });
+
+    // Preselected and ready — but focus stays where the operator is typing.
+    expect(pressed()).toHaveLength(1);
+    expect(document.activeElement).toBe(search);
+  });
+
+  it("without the operator touching the picker, the same arrival still focuses Save", async () => {
+    suggestions = undefined;
+    const view = renderFixer();
+    suggestions = [suggestion({ teamId: "team-1", name: "San Diego Padres" })];
+    view.rerender(fixerElement());
+    await waitFor(() => expect(document.activeElement).toBe(saveButton()));
   });
 });

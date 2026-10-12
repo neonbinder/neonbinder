@@ -1265,6 +1265,11 @@ describe("Fill teams and BSC's team name (NEO-330)", () => {
         playerNames: ["Jimmie Foxx"],
         teamNames: ["Boston Red Sox"],
         bscTeamName: "Philadelphia Athletics",
+        rule: "samePlayerInSet",
+        scope: "sameNode",
+        mixed: false,
+        // #36 was the whole of the evidence, beside the card: no node name.
+        sourceCardNumber: "36",
       },
       {
         cardNumber: "35",
@@ -1272,8 +1277,93 @@ describe("Fill teams and BSC's team name (NEO-330)", () => {
         playerNames: ["Jimmie Foxx"],
         teamNames: ["Boston Red Sox"],
         bscTeamName: "Philadelphia Athletics",
+        rule: "samePlayerInSet",
+        scope: "sameNode",
+        mixed: false,
+        sourceCardNumber: "36",
       },
     ]);
+  });
+
+  test("a parallel's conflict names its original by number AND node — it sits under another one", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const tree = await seedTree(t, { season: "2025" });
+    await insertAthleticsEras(t, tree.sportId);
+    const redSox = await insertTeam(t, tree.sportId, "Boston Red Sox");
+    const foxx = await insertPlayer(t, tree.sportId, "Jimmie Foxx", []);
+    await insertCard(t, tree.insertId, { cardNumber: "7", playerIds: [foxx], teamOnCardIds: [redSox] });
+    await insertCard(t, tree.parallelId, {
+      cardNumber: "7",
+      playerIds: [foxx],
+      teamCheckDoneAt: 1_690_000_000_000,
+      bscTeamName: "Philadelphia Athletics",
+    });
+
+    const preview = await asAdmin.action(api.teamFill.previewTeamFill, {
+      selectorOptionId: tree.setNameId,
+    });
+    expect(preview.conflictCards).toEqual([
+      {
+        cardNumber: "7",
+        nodeName: "Gold",
+        playerNames: ["Jimmie Foxx"],
+        teamNames: ["Boston Red Sox"],
+        bscTeamName: "Philadelphia Athletics",
+        rule: "samePlayerInSet",
+        scope: "parallelOf",
+        mixed: false,
+        sourceCardNumber: "7",
+        sourceNodeName: "Stars",
+      },
+    ]);
+  });
+
+  test("invariant 8 on a two-team card: the listing names one of the two teams, so nothing is written", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const tree = await seedTree(t, { season: "2025" });
+    const reds = await insertTeam(t, tree.sportId, "Cincinnati Reds");
+    const phillies = await insertTeam(t, tree.sportId, "Philadelphia Phillies");
+    const bench = await insertPlayer(t, tree.sportId, "Johnny Bench", [
+      { teamId: reds, fromYear: 1967, toYear: 1983 },
+    ]);
+    const rose = await insertPlayer(t, tree.sportId, "Pete Rose", [
+      { teamId: phillies, fromYear: 1979, toYear: 1983 },
+    ]);
+    const combo = await insertCard(t, tree.insertId, {
+      cardNumber: "LL-1",
+      playerIds: [bench, rose],
+      teamCheckDoneAt: 1_690_000_000_000,
+      bscTeamName: "Cincinnati Reds",
+    });
+
+    const preview = await asAdmin.action(api.teamFill.previewTeamFill, {
+      selectorOptionId: tree.setNameId,
+    });
+    expect(preview.fillable).toBe(0);
+    expect(preview.conflicts).toBe(1);
+    expect(preview.conflictCards[0]).toMatchObject({
+      cardNumber: "LL-1",
+      bscTeamName: "Cincinnati Reds",
+      rule: "oneTeamCareer",
+      scope: "career",
+    });
+    expect([...preview.conflictCards[0].teamNames].sort()).toEqual([
+      "Cincinnati Reds",
+      "Philadelphia Phillies",
+    ]);
+    // A combo card has no single source card; the client names the rule.
+    expect(preview.conflictCards[0].sourceCardNumber).toBeUndefined();
+
+    const result = await asAdmin.action(api.teamFill.applyTeamFill, {
+      selectorOptionId: tree.setNameId,
+      expectedFillable: 0,
+    });
+    expect(result.applied).toBe(0);
+    const row = await getCard(t, combo);
+    expect(row!.teamOnCardIds).toBeUndefined();
+    expect(row!.bscTeamName).toBe("Cincinnati Reds");
   });
 
   test("the apply writes nothing to a contradicted card, and keeps BSC's name on it", async () => {
