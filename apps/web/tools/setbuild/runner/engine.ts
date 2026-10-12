@@ -25,7 +25,7 @@
  * | a brand-year (path, SL review) | every later set step under that brand-year                 |
  * | the Base mapping            | the Base checklist, every variant type's sync (the matcher reads the Base's SportLots label) and every `buildFromBase` |
  * | the Base checklist          | every `buildFromBase` of the set                             |
- * | a variant type's sync       | that type's rows, grouping and parallels                     |
+ * | a variant type's sync       | that type's rows, grouping and parallels, and every LATER type's sync in the set (it reads the ids earlier types hold) |
  * | Group Parallels             | the type's rows' `parallels`                                 |
  * | a row's checklist           | that row's `parallels`                                       |
  * | a name that does not resolve | everything below it (the step cannot find its row)          |
@@ -490,18 +490,28 @@ export async function runSpec(
       waits(i, "row", path, `${vt.type} rows`, deps.baseMap);
       return;
     }
+    // A sync reads which marketplace sets the set's OTHER variant types hold
+    // (NEO-312 `usedIds`): what this type's dialog offers depends on what an
+    // earlier type's sync stored. So, collecting, a sync after an open one in
+    // the same set waits for it, in spec order (the order a draft models).
+    if (vt.sync && collecting && deps.syncOpen) {
+      waits(i, "reconcile", path, `sync ${vt.type} rows`, deps.syncOpen);
+      waits(i, "row", path, `${vt.type} rows`, deps.syncOpen);
+      return;
+    }
     if (vt.sync) {
       const sync = vt.sync;
       const synced = await sub(i, "reconcile", path, `sync ${vt.type} rows`, () =>
         reconcileVariants(client, setId, vt.type, sync, { paused, at, path }),
       (r) => {
+        const moot = r.outcome !== "open" && r.leftMoot?.length ? `; ${mootText(r.leftMoot)}` : "";
         if (r.outcome === "saved") {
           counts.reconciled += r.stored;
-          return { status: "done", detail: `${r.stored} stored (${r.mode})${r.specNotConsulted ? "; one marketplace returned rows, so no dialog — the spec's answers were not needed" : ""}` };
+          return { status: "done", detail: `${r.stored} stored (${r.mode})${r.specNotConsulted ? "; one marketplace returned rows, so no dialog — the spec's answers were not needed" : ""}${moot}` };
         }
         if (r.outcome === "skipped") {
           counts.skipped++;
-          return { status: "done", detail: r.reason };
+          return { status: "done", detail: `${r.reason}${moot}` };
         }
         open.reconcile.push(r.reconcile);
         open.names.push(...r.names);
@@ -528,6 +538,7 @@ export async function runSpec(
     if (syncTodo && collecting) {
       const on = `the ${vt.type} sync (${at}.sync)`;
       (deps.typeSync ??= new Map()).set(typeKey, on);
+      if (syncOpen) deps.syncOpen ??= on;
       waits(i, "row", path, `${vt.type} rows`, on);
       return;
     }
@@ -766,6 +777,19 @@ interface SetDeps {
   baseChecklist?: string;
   /** A variant type's sync is open, by folded type title: its rows wait in every step naming the set. */
   typeSync?: Map<string, string>;
+  /** The first open sync in the set: every later type's sync waits on it (it changes their held ids). */
+  syncOpen?: string;
+}
+
+/** How a step reports `leave` entries that had nothing to leave (no-ops, not decisions). */
+function mootText(moot: ReadonlyArray<{ id: string; why: "held" | "not-listed" }>): string {
+  const held = moot.filter((m) => m.why === "held").length;
+  const gone = moot.length - held;
+  return (
+    `${moot.length} "leave" entr${moot.length === 1 ? "y" : "ies"} had nothing to leave (` +
+    [held ? `${held} now held by another NB row` : "", gone ? `${gone} no longer listed` : ""].filter(Boolean).join(", ") +
+    ")"
+  );
 }
 
 /** A set path folded for comparison, as `brandYearKey` folds a brand-year. */

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { fakeNbClient, row } from "./fake-nb-client";
-import { reconcileVariants, ReconcileFetchError } from "./reconcile-variants";
+import { reconcileVariants, ReconcileFetchError, splitMootLeaves } from "./reconcile-variants";
 import { parseDeclaredPaused } from "./sync-column";
 import type { ReconcileSync } from "../spec/schema";
 
@@ -308,4 +308,33 @@ describe("reconcileVariants: the single-platform path", () => {
 test("the Base is refused: it is mapped, not synced", async () => {
   const client = world({ typeRole: "base" });
   await expect(reconcileVariants(client, "set1" as never, "Insert", cleanSync(), opts)).rejects.toThrow(/Base/);
+});
+
+describe("splitMootLeaves (NEO-339: a leave with nothing to leave)", () => {
+  const outcome = (unmatchedPending: Array<{ entry: { side: "bsc" | "sportlots"; id: string; decision: "own-set" | "leave" }; reason: "not-in-fetch" | "not-pending" }>) => ({
+    state: { ready: [], pendingBsc: [], pendingSl: [], seq: 0 },
+    unmatchedPairs: [],
+    ambiguousPairs: [],
+    unmatchedPending,
+    unaddressedPending: [],
+    unaddressedReady: [],
+    disbanded: [],
+  });
+
+  test("only a leave the dialog no longer shows is moot: held (still fetched) or not listed", () => {
+    const held = { entry: { side: "sportlots" as const, id: "sl-held", decision: "leave" as const }, reason: "not-in-fetch" as const };
+    const gone = { entry: { side: "bsc" as const, id: "bsc-gone", decision: "leave" as const }, reason: "not-in-fetch" as const };
+    const ownSet = { entry: { side: "sportlots" as const, id: "sl-held-2", decision: "own-set" as const }, reason: "not-in-fetch" as const };
+    const paired = { entry: { side: "sportlots" as const, id: "sl-paired", decision: "leave" as const }, reason: "not-pending" as const };
+    const r = splitMootLeaves(outcome([held, gone, ownSet, paired]), {
+      bsc: new Set<string>(),
+      sportlots: new Set(["sl-held", "sl-held-2", "sl-paired"]),
+    });
+    expect(r.moot).toEqual([
+      { side: "sportlots", id: "sl-held", why: "held" },
+      { side: "bsc", id: "bsc-gone", why: "not-listed" },
+    ]);
+    // An own-set for a set it cannot make, and a leave for a set the spec also pairs, stay open.
+    expect(r.outcome.unmatchedPending).toEqual([ownSet, paired]);
+  });
 });

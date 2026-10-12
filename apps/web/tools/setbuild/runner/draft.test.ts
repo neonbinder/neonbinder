@@ -137,7 +137,17 @@ function world(o: WorldOpts = {}): FakeClient {
             sl: [["2024 Topps Chrome Black Something", "sl-other"], ["2024 Topps Chrome Future Stars", "sl-held"]],
           }),
         },
-        { bscVariantId: "parallel", label: "Parallel", role: "parallel", candidates: raw({ autoMatched: [["Gold Refractors", "gold", "2024 Topps Chrome Black Gold Refractors", "sl-gold"]] }) },
+        {
+          bscVariantId: "parallel",
+          label: "Parallel",
+          role: "parallel",
+          // SportLots lists the brand-year flat: the Parallel fetch offers the
+          // set the Insert sync pairs, too.
+          candidates: raw({
+            autoMatched: [["Gold Refractors", "gold", "2024 Topps Chrome Black Gold Refractors", "sl-gold"]],
+            sl: [["2024 Topps Chrome Black Future Stars", "sl-fs"], ["2024 Topps Chrome Black Something", "sl-other"]],
+          }),
+        },
       ],
       ...(a.baseSportlotsId ? { baseSportlots: { id: a.baseSportlotsId, label: "Topps Chrome Black", source: "argument" } } : {}),
       skippedTypes: 0,
@@ -216,6 +226,11 @@ describe("draftSet: proposals vs open decisions", () => {
         kind: "reconcile-leave",
         detail: "1 Insert set(s) not paired; the dialog leaves them in Pending (SportLots 1: sl-other)",
       },
+      {
+        at: "steps[0].variants[1].sync.pending",
+        kind: "reconcile-leave",
+        detail: "1 Parallel set(s) not paired; the dialog leaves them in Pending (SportLots 1: sl-other)",
+      },
     ]);
     expect(JSON.stringify(r.spec)).not.toContain("own-set");
     // With every pending set answered, the counts are proposals too.
@@ -261,6 +276,19 @@ describe("draftSet: proposals vs open decisions", () => {
     expect(parallel.rows).toEqual([{ name: "Gold Refractors", buildFromBase: {} }]);
     expect(parallel.expectRows).toBe(1);
     expect(parallel.group).toBeUndefined();
+  });
+
+  test("a later type's lists are drafted as apply sees them after the earlier types' syncs (NEO-339 live drift b)", async () => {
+    const r = await drafted(world());
+    const spec = r.spec as unknown as Spec;
+    const parallel = spec.steps[0].variants!.find((v) => v.type === "Parallel")!;
+    // sl-fs is paired by the Insert sync, which apply runs first: by the
+    // Parallel sync it is held (NEO-312), so it is not pending there and gets
+    // no `leave`. sl-other is still pending in both types.
+    expect(parallel.sync!.pending).toEqual([{ side: "sportlots", id: "sl-other", decision: "leave" }]);
+    // And the engine makes apply honour that order: the Parallel sync waits
+    // on an open Insert sync rather than run with sl-fs unheld (collect.test.ts).
+    expect(spec.steps[0].variants!.map((v) => v.type)).toEqual(["Insert", "Parallel"]);
   });
 
   test("the previews are sent only ids this draft's structure preview returned; nothing writes", async () => {

@@ -27,7 +27,14 @@
  *  - `ambiguousPairs`: a pair whose exact ids two Ready sets carry;
  *  - `unmatchedPending`: a pending decision whose id is not in the fetch or not
  *    waiting in Pending (a re-run that already saved it is caught earlier, by
- *    `alreadySaved`, before any fetch);
+ *    `alreadySaved`, before any fetch). ONE exception, `leftMoot`: a `leave`
+ *    whose id the dialog no longer shows at all (another row of the brand or
+ *    set now holds it, or the marketplace stopped listing it) is a reported
+ *    no-op, not an open decision. "Leave" means "no row for it here", and
+ *    the dialog would create none: the outcome is identical, and the
+ *    operator never sees a held set in Pending to decide about. An
+ *    `own-set` for such an id stays open (it asked for a row that cannot
+ *    now be made), and so does a `leave` for an id the spec also pairs;
  *  - `unaddressedPending`: EVERY marketplace set left in Pending that no
  *    decision names, on screen in the dialog or not. An auto-match the spec
  *    left out whose halves are both unanswered is offered as `proposedPairs`;
@@ -232,11 +239,14 @@ export type ReconcileOutcome =
       /** The spec's pairs/pending were not consulted (single-platform path asks nothing). */
       specNotConsulted?: boolean;
       pausedSides: PlatformSide[];
+      /** `leave` entries whose id the dialog no longer shows (held elsewhere, or no longer listed): no-ops. */
+      leftMoot?: MootLeave[];
     }
   | {
       outcome: "skipped";
       reason: "already-saved" | "unchanged" | "nothing-fetched" | "all-held";
       pausedSides: PlatformSide[];
+      leftMoot?: MootLeave[];
     }
   | {
       outcome: "open";
@@ -244,6 +254,31 @@ export type ReconcileOutcome =
       names: OpenName[];
       pausedSides: PlatformSide[];
     };
+
+/** A `leave` that had nothing to leave: the id was not in the dialog when the step ran. */
+export interface MootLeave {
+  side: "bsc" | "sportlots";
+  id: string;
+  /** `held`: the fetch returned it and another NB row holds it; `not-listed`: the fetch did not return it. */
+  why: "held" | "not-listed";
+}
+
+/**
+ * Split `applyExplicitPairs`' unmatched pending decisions into the open ones
+ * and the moot `leave`s (see the file comment). Pure.
+ */
+export function splitMootLeaves(
+  outcome: ExplicitPairsOutcome,
+  fetched: { bsc: ReadonlySet<string>; sportlots: ReadonlySet<string> },
+): { outcome: ExplicitPairsOutcome; moot: MootLeave[] } {
+  const moot: MootLeave[] = [];
+  const unmatchedPending = outcome.unmatchedPending.filter(({ entry, reason }) => {
+    if (entry.decision !== "leave" || reason !== "not-in-fetch") return true;
+    moot.push({ side: entry.side, id: entry.id, why: fetched[entry.side].has(entry.id) ? "held" : "not-listed" });
+    return false;
+  });
+  return { outcome: { ...outcome, unmatchedPending }, moot };
+}
 
 export interface ReconcileOptions {
   paused?: PausedContext;
@@ -592,7 +627,9 @@ export async function reconcileVariants(
       ...result.autoMatched.map((m) => m.sl.platformValue),
     ]),
   };
-  const outcome = applyExplicitPairs(seed.state, sync.pairs, sync.pending, { fetched: fetchedIds });
+  const split = splitMootLeaves(applyExplicitPairs(seed.state, sync.pairs, sync.pending, { fetched: fetchedIds }), fetchedIds);
+  const outcome = split.outcome;
+  const leftMoot = split.moot.length > 0 ? { leftMoot: split.moot } : {};
 
   const decisions = dialogOpenDecisions({
     outcome,
@@ -613,7 +650,7 @@ export async function reconcileVariants(
 
   const items = buildReconciledItems(outcome.state.ready);
   if (!itemsChangeAnything(items, ctx.existingRows)) {
-    return { outcome: "skipped", reason: "unchanged", pausedSides };
+    return { outcome: "skipped", reason: "unchanged", pausedSides, ...leftMoot };
   }
   const covered = coveredSidesFromFetch(result.errors, skippedSidesOf(result));
   const storeItems = toStoreItems(items);
@@ -633,5 +670,6 @@ export async function reconcileVariants(
     holds: storeHoldsOf(drained.stored, storeItems),
     unlinkedTotal: drained.stored.unlinkedTotal ?? 0,
     pausedSides,
+    ...leftMoot,
   };
 }

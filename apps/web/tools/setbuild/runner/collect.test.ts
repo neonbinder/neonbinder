@@ -452,3 +452,123 @@ describe('stopAt: "end" — what waits on what', () => {
     expect(client.callsTo("selectorOptions:fetchCardChecklist")).toEqual([]);
   });
 });
+
+/**
+ * NEO-339 live measurement (2024 Topps Chrome Black on the PR preview): the
+ * two drifts between a draft and its apply.
+ *
+ * (a) Between the draft and the apply another writer synced the brand's
+ *     flagship set, so 154 SportLots sets the draft had drafted `leave` for
+ *     were now HELD elsewhere in the brand and no longer in the dialog. A
+ *     `leave` for such an id is a reported no-op: the dialog would create no
+ *     row for it either way. An `own-set` for it stays open.
+ * (b) The Insert sync stopped open, and the Parallel sync then ran with the
+ *     Insert-paired SportLots sets unheld, so they came back as pending. A
+ *     later type's sync now waits on an earlier open one in the same set.
+ */
+describe("draft → apply drift (NEO-339 live measurement)", () => {
+  function fetchWorld(cards: Record<string, number>, holders: string[]) {
+    const bsc = [{ value: "Future Stars", platformValue: "future-stars" }];
+    const yq = { value: "Youthquake", platformValue: "youthquake" };
+    const sl = [
+      { value: "2024 Topps Chrome Future Stars", platformValue: "sl-fs" },
+      { value: "2024 Topps All Topps Team", platformValue: "sl-att" },
+    ];
+    return world(cards)
+      .on("setReconciliation:fetchRawOptions", (a) => ({
+        success: true,
+        bscOptions: a.parentId === "vtB" ? [{ value: "Topps Chrome", platformValue: "bsc-chrome" }] : [...bsc, yq],
+        slOptions: sl,
+        autoMatched: a.parentId === "vtB" ? [] : [{ displayName: "Future Stars", bsc: bsc[0], sl: sl[0], confidence: 0.99 }],
+        unmatchedBsc: a.parentId === "vtB" ? [] : [yq],
+        unmatchedSl: [sl[1]],
+        slCandidates: [],
+        errors: [],
+        message: "",
+        skippedSides: [],
+        pausedSides: [],
+        twinIds: { bsc: [], sportlots: [] },
+      }))
+      .on("selectorOptions:getBaseVariantBySet", null)
+      .on("setParallelConversion:getBrandSlHolders", {
+        rows: holders.map((id) => ({ key: `held-${id}`, name: "Topps All Topps Team", sportlots: [id] })),
+        truncated: false,
+      })
+      .on("selectorOptions:getUsedInsertIdentifiersBySet", { values: [], slPlatformValues: [], bscPlatformValues: [] })
+      .on("setReconciliation:storeReconciledOptions", { optionsCount: 1, unlinkedTotal: 0, done: true });
+  }
+  const MAPPED = { map: { bsc: "bsc-chrome", sportlots: "sl-chrome", whenPaused: "bsc-only" } };
+  const spec = (decision: "leave" | "own-set", variants: unknown[] = []) => ({
+    version: 1,
+    scope: SCOPE,
+    steps: [
+      {
+        kind: "set",
+        path: PATH,
+        variantTypes: { sync: true },
+        base: MAPPED,
+        variants: [
+          {
+            type: "Insert",
+            sync: {
+              pairs: [
+                { name: "Future Stars", bsc: ["future-stars"], sportlots: ["sl-fs"] },
+                { name: "Youthquake", bsc: ["youthquake"] },
+              ],
+              pending: [{ side: "sportlots", id: "sl-att", decision }],
+            },
+          },
+          ...variants,
+        ],
+      },
+    ],
+  });
+
+  test("(a) a drafted `leave` for a set another row of the brand now holds is a reported no-op, not an open decision", async () => {
+    const raw = spec("leave");
+    const client = fetchWorld({ ...WIDE(), vtB: 2 }, ["sl-att"]);
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    expect(r.stops).toBeUndefined();
+    expect(countOpenDecisions(r.openDecisions)).toBe(0);
+    expect(r.steps.find((s) => s.action === "sync Insert rows")).toMatchObject({
+      status: "done",
+      detail: expect.stringContaining('1 "leave" entry had nothing to leave (1 now held by another NB row)'),
+    });
+  });
+
+  test("(a) an `own-set` for a now-held set stays open: it asked for a row that cannot be made", async () => {
+    const raw = spec("own-set");
+    const client = fetchWorld({ ...WIDE(), vtB: 2 }, ["sl-att"]);
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    expect(r.openDecisions.names).toEqual([expect.objectContaining({ at: "steps[0].variants[0].sync.pending[0]", kind: "reconcile-id", name: "sl-att" })]);
+    expect(client.callsTo("setReconciliation:storeReconciledOptions")).toEqual([]);
+  });
+
+  test("(b) a later type's sync waits on an earlier open one in the same set, and never fetches with stale held ids", async () => {
+    // The Insert sync is open (a pair names an id the fetch did not return).
+    const raw = {
+      version: 1,
+      scope: SCOPE,
+      steps: [
+        {
+          kind: "set",
+          path: PATH,
+          variantTypes: { sync: true },
+          base: MAPPED,
+          variants: [
+            { type: "Insert", sync: { pairs: [{ name: "Future Stars", bsc: ["not-fetched"] }], pending: [] } },
+            { type: "Parallel", sync: { pairs: [], pending: [{ side: "sportlots", id: "sl-att", decision: "leave" }] } },
+          ],
+        },
+      ],
+    };
+    const client = fetchWorld({ ...WIDE(), vtB: 2 }, []);
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    expect(r.stops).toHaveLength(1);
+    expect(r.steps.find((s) => s.action === "sync Parallel rows")).toMatchObject({
+      status: "blocked",
+      detail: "waits: the Insert sync (steps[0].variants[0].sync)",
+    });
+    expect(client.callsTo("setReconciliation:fetchRawOptions").map((c) => c.args.parentId)).toEqual(["vtI"]);
+  });
+});
