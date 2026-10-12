@@ -57,6 +57,7 @@ import { findLeagueByName } from "./leagues";
 import { findTeamsByFullName } from "./lib/teamRow";
 import { pickTeamForYear } from "../lib/teams/team-era";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
+import { variantTypeKind } from "./variantRole";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -1020,7 +1021,8 @@ type PlayerSuggestionResult = {
  * picked here.
  *
  * Suggestions only: nothing here writes, and nothing reads a marketplace
- * value or name — every key is an NB id or an NB role (`metadata.isBase`).
+ * value or name — every key is an NB id, or the Base variant type read from
+ * its title (`variantTypeKind`, NEO-334: a variant type's title is its kind).
  * Whether a suggestion may PRE-FILL a card is the browser's call per card
  * (`teams-on-cards.ts`), because only it can see what the card's listing said.
  */
@@ -1137,21 +1139,22 @@ export const teamSuggestionsForPreview = query({
     const parallelOfNodeId =
       node.level === "parallel" && node.parentId ? node.parentId : null;
 
-    // The base checklist, by its NB flag — never by the word "Base". Exactly
-    // one flagged variantType, or the tier is skipped.
+    // The base checklist: the variantType whose title is the word "Base"
+    // (`variantTypeKind`, NEO-334 — the title is the kind, there is no flag).
+    // Exactly one, or the tier is skipped.
     let baseNodeId: Id<"selectorOptions"> | null = null;
     if (setNameNode) {
-      const flagged: Array<Id<"selectorOptions">> = [];
+      const bases: Array<Id<"selectorOptions">> = [];
       for (const childId of (setNameNode.children ?? []).slice(
         0,
         TEAM_SUGGESTION_SET_CHILD_SCAN,
       )) {
         const child = await ctx.db.get(childId);
-        if (child?.level === "variantType" && child.metadata?.isBase === true) {
-          flagged.push(child._id);
+        if (child?.level === "variantType" && variantTypeKind(child) === "base") {
+          bases.push(child._id);
         }
       }
-      if (flagged.length === 1) baseNodeId = flagged[0];
+      if (bases.length === 1) baseNodeId = bases[0];
     }
 
     const relevantNodes = new Set<string>(

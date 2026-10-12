@@ -161,10 +161,10 @@ describe("getSelectorSyncSuggestions", () => {
   test("a variantType row is offered a suggestion like any other level (NEO-239)", async () => {
     // This used to assert the opposite: variantType rows were skipped so the
     // query would "never offer an Accept the server would refuse". The server
-    // refuses nothing now — the row's name stopped being load-bearing when the
-    // BSC `variant` facet moved to a tagged slot and Base became
-    // `metadata.isBase` — so suppressing the suggestion would hide a real
-    // upstream disagreement from the operator for no reason.
+    // refuses nothing it can avoid — the BSC `variant` facet moved to a
+    // tagged slot. (NEO-334: a variant type's title is its kind, so a label
+    // that would change the kind of a type with rows beneath it is omitted;
+    // an empty type like this one is still offered every label.)
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const parentId = await parentRow(t);
@@ -175,7 +175,6 @@ describe("getSelectorSyncSuggestions", () => {
         platformData: { bsc: { b0: "base-slug" } },
         platformLabels: { bsc: { b0: "Base Set" } },
         platformFacets: { bsc: { b0: "variant" } },
-        metadata: { isBase: true },
         primaryPlatformId: { bsc: "b0" },
         parentId,
         children: [],
@@ -662,9 +661,11 @@ describe("NEO-239 — every variantType renames, on every write path", () => {
    * The refusal these tests used to assert (NEO-211 F) existed because two
    * places read a variantType row's DISPLAY VALUE as data: the BSC checklist
    * fetch derived its `variant` facet from it, and "which row is the base set"
-   * was a comparison against the literal "base". Both now read the row —
-   * a `variant`-tagged slot and `metadata.isBase` — so the name carries no
-   * meaning any process depends on and the guard has nothing left to protect.
+   * was a comparison against the literal "base". The first now reads a
+   * `variant`-tagged slot. (NEO-334: the second is back, as NB's own
+   * vocabulary: a variant type's title is its kind, and the kind guard is
+   * covered in variantTypeRename.test.ts. The rows here are EMPTY, so every
+   * rename still lands.)
    *
    * `parentId` here is a setName row, so these rows are siblings under one set.
    */
@@ -677,7 +678,6 @@ describe("NEO-239 — every variantType renames, on every write path", () => {
         platformData: { bsc: { b0: "base-slug" } },
         platformLabels: { bsc: { b0: "Base Set" } },
         platformFacets: { bsc: { b0: "variant" } },
-        metadata: { isBase: true },
         primaryPlatformId: { bsc: "b0" },
         platformSlotSeq: { bsc: 1 },
         parentId,
@@ -709,9 +709,10 @@ describe("NEO-239 — every variantType renames, on every write path", () => {
     });
     const after = await t.run(async (ctx) => ctx.db.get(synced));
     expect(after?.value).toBe("Base Cards");
-    // The name moved; the ROLE and the LINKAGE did not. That is the whole
-    // reason the rename is safe now.
-    expect(after?.metadata?.isBase).toBe(true);
+    // The name moved and the LINKAGE did not. The Base was empty, so
+    // retitling it (and so changing its kind) is allowed (NEO-334), and no
+    // flag is written either way.
+    expect(after?.metadata?.isBase).toBeUndefined();
     expect(after?.platformFacets?.bsc).toEqual({ b0: "variant" });
   });
 
@@ -751,7 +752,7 @@ describe("NEO-239 — every variantType renames, on every write path", () => {
     const after = await t.run(async (ctx) => ctx.db.get(synced));
     expect(after?.value).toBe("Base Cards");
     expect(after?.platformData.bsc).toEqual({ b0: "base-slug" });
-    expect(after?.metadata?.isBase).toBe(true);
+    expect(after?.metadata?.isBase).toBeUndefined();
   });
 
   test("a tier-0 item whose value is UNCHANGED never attempts the rename, so a protected row is not refused", async () => {
@@ -838,7 +839,6 @@ describe("a set label is never offered as a variant-type name", () => {
       ctx.db.insert("selectorOptions", {
         level: "variantType",
         value: "Base",
-        metadata: { isBase: true },
         platformData: {},
         parentId,
         children: [],

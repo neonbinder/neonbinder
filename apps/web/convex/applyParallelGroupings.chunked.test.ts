@@ -49,7 +49,6 @@ async function insertVariantType(
       value: role === "insert" ? "Inserts" : "Base",
       platformData: { bsc: { b0: role } },
       platformFacets: { bsc: { b0: "variant" } },
-      metadata: { variantRole: role },
       children: [],
       lastUpdated: SENTINEL,
     }),

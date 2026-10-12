@@ -75,36 +75,59 @@ function row(
 }
 
 describe("titleChainFacts", () => {
-  test("an insert-level row carrying the insert ROLE puts its name in", () => {
-    expect(
-      titleChainFacts([
-        row("insert", "Dugout Collection", { isInsert: true }),
-        row("variantType", "Inserts"),
-        row("setName", "Score"),
-      ]),
-    ).toEqual({ insertNameValue: "Dugout Collection", insertIsRole: true });
+  // NEO-334: a row's role is its level plus its variant type's KIND, and the
+  // kind is the variant type's title (`variantTypeKind`). No flag is read.
+  test("an insert-level row under an Insert type puts its name in", () => {
+    for (const title of ["Inserts", "Insert", "  inserts "]) {
+      expect(
+        titleChainFacts([
+          row("insert", "Dugout Collection"),
+          row("variantType", title),
+          row("setName", "Score"),
+        ]),
+      ).toEqual({ insertNameValue: "Dugout Collection", insertIsRole: true });
+    }
   });
 
-  test("an insert-level row WITHOUT the role contributes nothing — never by level or name", () => {
+  test("an insert-level row under a type with no kind contributes nothing — never by level or name", () => {
+    for (const title of ["Insert Set", "Promo", "Inserts & Autographs"]) {
+      expect(
+        titleChainFacts([
+          row("insert", "Dugout Collection"),
+          row("variantType", title),
+          row("setName", "Score"),
+        ]),
+      ).toEqual({});
+    }
+    // The insert's OWN name is never the role.
     expect(
       titleChainFacts([
-        row("insert", "Dugout Collection"),
-        row("variantType", "Inserts"),
+        row("insert", "Inserts"),
+        row("variantType", "Promo"),
         row("setName", "Score"),
       ]),
     ).toEqual({});
+    // No variant type in the chain: no kind, no role.
+    expect(
+      titleChainFacts([row("insert", "Dugout Collection"), row("setName", "Score")]),
+    ).toEqual({});
+  });
+
+  test("a stored retired flag is ignored: the title decides", () => {
+    const stale = { isInsert: true, isParallel: true } as unknown as TitleChainRow["metadata"];
     expect(
       titleChainFacts([
-        row("insert", "Dugout Collection", { isInsert: false }),
+        row("insert", "Dugout Collection", stale),
+        row("variantType", "Promo"),
         row("setName", "Score"),
       ]),
     ).toEqual({});
   });
 
-  test("an insert-level row under a parallels type is a parallel, not an insert", () => {
+  test("an insert-level row under a Parallel type is a parallel, not an insert", () => {
     expect(
       titleChainFacts([
-        row("insert", "Artist's Proof", { isParallel: true }),
+        row("insert", "Artist's Proof"),
         row("variantType", "Parallels"),
         row("setName", "Score"),
       ]),
@@ -114,8 +137,8 @@ describe("titleChainFacts", () => {
   test("a parallel leaf under an insert: both the insert and the leaf", () => {
     expect(
       titleChainFacts([
-        row("parallel", "Artist's Proof", { isParallel: true }),
-        row("insert", "Dugout Collection", { isInsert: true }),
+        row("parallel", "Artist's Proof"),
+        row("insert", "Dugout Collection"),
         row("variantType", "Inserts"),
         row("setName", "Score"),
       ]),
@@ -127,25 +150,33 @@ describe("titleChainFacts", () => {
   });
 
   test("the parallel role counts on the LEAF only", () => {
+    // Refractor is a parallel of base (insert-level under Parallels) but not
+    // the leaf: it is neither the insert name nor the parallel token.
     expect(
       titleChainFacts([
-        row("parallel", "Gold", { isParallel: false }),
-        row("insert", "Refractor", { isParallel: true }),
+        row("parallel", "Gold"),
+        row("insert", "Refractor"),
+        row("variantType", "Parallels"),
         row("setName", "Chrome"),
       ]),
+    ).toEqual({ parallelLeafValue: "Gold" });
+    // A variant type is never a parallel leaf, whatever its title.
+    expect(
+      titleChainFacts([row("variantType", "Parallels"), row("setName", "Chrome")]),
     ).toEqual({});
   });
 
   test("the NEAREST short name wins, self first", () => {
     expect(
       titleChainFacts([
-        row("insert", "Hologram", { isInsert: true, listingShortName: "UD Hologram" }),
+        row("insert", "Hologram", { listingShortName: "UD Hologram" }),
+        row("variantType", "Inserts"),
         row("setName", "Collector's Choice", { listingShortName: "UD Choice" }),
       ]).listingShortName,
     ).toBe("UD Hologram");
     expect(
       titleChainFacts([
-        row("insert", "Hologram", { isInsert: true }),
+        row("insert", "Hologram"),
         row("variantType", "Inserts"),
         row("setName", "Collector's Choice", { listingShortName: " UD Choice " }),
       ]).listingShortName,
@@ -158,24 +189,38 @@ describe("titleChainFacts", () => {
         row("variantType", "Base"),
         row("setName", "Score"),
         row("manufacturer", "Score", { listingShortName: "Nope" }),
-        row("insert", "Stray", { isInsert: true }),
+        row("insert", "Stray"),
+        row("variantType", "Inserts"),
+      ]),
+    ).toEqual({});
+    // A variant type past the setName row confers no kind.
+    expect(
+      titleChainFacts([
+        row("insert", "Stray"),
+        row("setName", "Score"),
+        row("variantType", "Inserts"),
       ]),
     ).toEqual({});
   });
 
-  test("the first insert-level row decides; a deeper one is not consulted", () => {
+  test("the first (nearest) insert-level row is the one named", () => {
     expect(
       titleChainFacts([
-        row("insert", "Child", {}),
-        row("insert", "Parent", { isInsert: true }),
+        row("insert", "Child"),
+        row("insert", "Parent"),
+        row("variantType", "Inserts"),
         row("setName", "Score"),
       ]),
-    ).toEqual({});
+    ).toEqual({ insertNameValue: "Child", insertIsRole: true });
   });
 
   test("an empty or broken chain says nothing", () => {
     expect(titleChainFacts([])).toEqual({});
     expect(titleChainFacts([null])).toEqual({});
     expect(titleChainFacts([row("variantType", "Base"), null, row("setName", "x", { listingShortName: "y" })])).toEqual({});
+    // A break before the variant type: the insert has no kind to read.
+    expect(
+      titleChainFacts([row("insert", "Hologram"), null, row("variantType", "Inserts")]),
+    ).toEqual({});
   });
 });

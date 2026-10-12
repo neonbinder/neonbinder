@@ -30,8 +30,9 @@
  *  2. **parallelOf.** Only when that node is a `parallel`: the player's cards
  *     under the node it copies. A parallel is the same card printed again.
  *  3. **baseSet.** The player's cards under the set's base checklist — the
- *     variantType flagged `metadata.isBase` (an NB role, never the literal
- *     "Base"). Skipped when the node being synced IS the base.
+ *     variantType titled "Base" (NEO-334: a variant type's title is its kind,
+ *     `variantTypeKind`); a set with none, or two, skips this tier. Skipped
+ *     when the node being synced IS the base.
  *
  * Exactly one distinct team set in a tier is the answer. Two or more means the
  * set disagrees with itself there (a traded player's base card and his update
@@ -308,7 +309,7 @@ export function suggestTeamsForPlayer(input: {
   nodeId: Id<"selectorOptions">;
   /** The node `nodeId` copies, when `nodeId` is a parallel; else null. */
   parallelOfNodeId: Id<"selectorOptions"> | null;
-  /** The set's base checklist node, or null when the set has none flagged. */
+  /** The variantType node titled "Base", or null when the set has none (or two). */
   baseNodeId: Id<"selectorOptions"> | null;
   year: number | undefined;
   currentYear: number;

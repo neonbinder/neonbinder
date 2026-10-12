@@ -1629,6 +1629,8 @@ describe("a row grouped between insert and parallel is not re-created by the nex
         value: "Inserts",
         platformData: { bsc: { b0: "insert" } },
         platformFacets: { bsc: { b0: "variant" } },
+        // NEO-334: the role the variantType sync confers from that tagged
+        // slot (NEO-306); sub-variants are stored only under an Insert type.
         children: [],
         lastUpdated: SENTINEL,
       }),

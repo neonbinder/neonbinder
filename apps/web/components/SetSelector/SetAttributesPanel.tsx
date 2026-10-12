@@ -30,8 +30,7 @@ import { teamFullName, teamShortName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
 import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl from "./RenameEntityControl";
-import BaseRoleControl from "./BaseRoleControl";
-import { isBaseRole } from "./baseRole";
+import { variantTypeKind } from "../../convex/variantRole";
 import MoveSetToBrandControl from "./MoveSetToBrandControl";
 import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
 import MakeInsertControl from "./MakeInsertControl";
@@ -148,9 +147,9 @@ const ATTRIBUTES_TOGGLE_CLASS =
  * Sport, year, manufacturer and set are containers — a prefix there would
  * apply to every checklist beneath, which no set does.
  */
-function showsCardPrefix(level: Level, metadata: unknown): boolean {
+function showsCardPrefix(level: Level, value: string): boolean {
   if (level === "insert" || level === "parallel") return true;
-  return level === "variantType" && isBaseRole(metadata);
+  return level === "variantType" && variantTypeKind({ value }) === "base";
 }
 
 /**
@@ -159,8 +158,8 @@ function showsCardPrefix(level: Level, metadata: unknown): boolean {
  * self-or-ancestor short name up to the set, so a set-wide name lives on the
  * set and an insert can carry its own.
  */
-function showsShortNameRow(level: Level, metadata: unknown): boolean {
-  return level === "setName" || showsCardPrefix(level, metadata);
+function showsShortNameRow(level: Level, value: string): boolean {
+  return level === "setName" || showsCardPrefix(level, value);
 }
 
 /** Set-side levels, root to leaf: which ancestor is nearest. */
@@ -292,9 +291,11 @@ export default function SetAttributesPanel({
   if (!row || !chain) return null;
 
   const leafLevel = row.level as Level;
-  // NEO-306 — the base role, read once for the header's two controls.
+  // NEO-334 — a variant type's title IS its kind (Jason, 2026-10-10): the
+  // type titled "Base" is the set's Base. Read once for the header's tag and
+  // the delete confirm.
   const isBaseVariantType =
-    leafLevel === "variantType" && isBaseRole(row.metadata);
+    leafLevel === "variantType" && variantTypeKind(row) === "base";
   // NEO-294 — the year the move picker's brands belong to, named so the list
   // says WHICH year's brands it is offering. Not a memo: it is one find over a
   // chain of at most seven, below the guard that makes `chain` non-null.
@@ -302,11 +303,11 @@ export default function SetAttributesPanel({
   const features = row.features ?? {};
   const teamIds: Array<Id<"teams">> = row.teamIds ?? [];
   const showTeamRow = TEAM_LEVELS.has(leafLevel);
-  const showCardPrefixRow = showsCardPrefix(leafLevel, row.metadata);
+  const showCardPrefixRow = showsCardPrefix(leafLevel, row.value);
   const cardNumberPrefix = row.metadata?.cardNumberPrefix;
   // NEO-335 — this row's own short name, and the one it inherits (the
   // nearest ancestor's, up to the set) for the field's placeholder.
-  const showShortNameRow = showsShortNameRow(leafLevel, row.metadata);
+  const showShortNameRow = showsShortNameRow(leafLevel, row.value);
   const listingShortName = row.metadata?.listingShortName;
   const leafDepth = SET_SIDE_ORDER.indexOf(leafLevel);
   const inheritedShortName = chain
@@ -365,9 +366,9 @@ export default function SetAttributesPanel({
   /**
    * Raise a transient confirmation.
    *
-   * Shared by the feature rows below and by the header's base-role control
-   * (NEO-239), which is why it is a helper rather than an inline setToast:
-   * two callers raising a 6s toast had to agree on the 6s.
+   * Shared by every row below that saves, which is why it is a helper rather
+   * than an inline setToast: each caller raising a 6s toast has to agree on
+   * the 6s.
    */
   const showToast = (message: string) => {
     setToast(message);
@@ -558,13 +559,15 @@ export default function SetAttributesPanel({
             <h3 className="text-sm font-semibold text-gray-100">
               {headerTitle}
             </h3>
-            {/* NEO-239: every level renames, variantType included. Base is an
-                NB role flag and the BSC `variant` facet comes off the row's
-                tagged slot, so no display value is load-bearing any more.
+            {/* NEO-239: every level renames, variantType included.
                 NEO-294: with ONE exception — the year's Unknown row, which is
                 frozen at the mutation. The pencil is replaced rather than
                 removed, so the answer to "why can't I rename this one" is
-                where the question gets asked. */}
+                where the question gets asked.
+                NEO-334: a variant type's title IS its kind, so renaming one
+                to or from Base / Insert / Parallel changes what it is. The
+                server refuses that while rows sit beneath it, and the pencil
+                says why in its own refusal line under this header. */}
             {brandUnknownRow ? (
               <BrandUnknownRenameNotice value={row.value} />
             ) : (
@@ -575,22 +578,12 @@ export default function SetAttributesPanel({
             )}
             {/* NEO-239: which variant type is the set's base is IDENTITY, not
                 an attribute, so it sits with the name rather than in the grid
-                below — and stays reachable while the panel is collapsed, which
-                is how an operator building a set by hand will meet it. Only
-                variant types have the role; nothing else in the hierarchy can
-                be a base set.
-                NEO-306: the tag on the base row, "Mark as base set" on a type
-                of a set that has no base, and nothing otherwise. Taking the
-                role away is deleting the row — the delete control below. */}
-            {leafLevel === "variantType" && (
-              <BaseRoleControl
-                id={selectorOptionId}
-                value={row.value}
-                metadata={row.metadata}
-                setId={row.parentId}
-                onResult={showToast}
-              />
-            )}
+                below, and stays visible while the panel is collapsed.
+                NEO-334: the type titled "Base" IS the base (Jason,
+                2026-10-10), so there is nothing to mark: "Mark as base set"
+                and its mutation are gone, and a type becomes the base by
+                being renamed "Base" with the pencil beside this tag. */}
+            {isBaseVariantType && <BaseSetTag />}
             {/* NEO-219: the one sanctioned delete, next to the pencil for the
                 same reason the pencil is next to the title — the title IS the
                 row it acts on.
@@ -743,10 +736,9 @@ export default function SetAttributesPanel({
         // feature rows would otherwise render the toast off-screen above
         // the fold — invisible to the user (and the e2e assertion).
         //
-        // NEO-239: outside the `expanded` branch, because the header now holds
-        // a control ("Mark as base set") that is reachable while the panel is
-        // collapsed. A confirmation that only renders in the expanded state
-        // would leave that action looking like it did nothing.
+        // NEO-239: outside the `expanded` branch, so a confirmation raised
+        // while the panel is collapsed is still seen. (The header control that
+        // first needed this, "Mark as base set", went with NEO-334.)
         <div
           className="fixed top-20 left-1/2 -translate-x-1/2 z-50 px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
           role="status"
@@ -1049,6 +1041,35 @@ export function slViaAllBrandsRefusal(e: unknown): string | null {
  * The accessible name is unchanged — "Rename {value}" — because it is the
  * same affordance in the same place; what changed is that it says no.
  */
+/**
+ * NEO-239 / NEO-334 — the base row's tag. Not a control, and deliberately not
+ * styled like one: the same 10px tag idiom MultiSourcePanel uses for a slot's
+ * facet, which this UI already reads as "a fact about the row". Green rather
+ * than that idiom's grey because it is the single most consequential fact a
+ * variant type carries: it decides whether the row is terminal and holds the
+ * checklist.
+ *
+ * The panel scopes itself to ONE row, so without the tag "which one is the
+ * base?" would need a column hunt. The title says how the role is decided now
+ * that there is no button for it.
+ */
+function BaseSetTag() {
+  return (
+    <span
+      className="shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-[#00D558]/50 text-[#00D558]"
+      title="Titled Base, so this type holds the set's base checklist."
+    >
+      Base set
+      {/* The explanation lives in the DOM too: `title` is hover-only and not
+          reliably announced. The tag stays non-focusable — it is a fact, not
+          a control. */}
+      <span className="sr-only">
+        , titled Base, so this type holds the set&apos;s base checklist
+      </span>
+    </span>
+  );
+}
+
 function BrandUnknownRenameNotice({ value }: { value: string }) {
   const reasonId = useId();
   const [revealed, setRevealed] = useState(false);
@@ -2153,7 +2174,9 @@ function DeleteSelectorRowControl({
 
   const description =
     "Nothing is below it. This cannot be undone." +
-    (isBase ? " The set will have no base set until you mark one." : "") +
+    (isBase
+      ? " The set will have no base set until you rename a type to Base."
+      : "") +
     (linkedSides.length > 0
       ? ` It is linked to ${joinLabels(
           linkedSides,

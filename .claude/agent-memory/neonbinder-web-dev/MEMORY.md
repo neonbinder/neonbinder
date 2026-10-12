@@ -72,7 +72,7 @@
 - [Team resolver serves card and stint years](reference_team_resolver_serves_card_and_stint_years.md) — card callers opt into allowPastEra, stint callers stay strict (resolveTeamIdByName is a stint path); an alias is never another team's name, any era
 - [Bulkload budget tests pin exact ops](reference_bulkload_budget_tests_pin_exact_ops.md) — 854/989 opsSpent are asserted exactly; reuse a read the row loop already made, and run the whole file
 - [Autocomplete list is a fixed layer](reference_autocomplete_list_is_a_fixed_layer.md) — portalled into nearest role=dialog, fixed, body-bounded; focus returns use focusWithoutOpening; act() around el.focus() in tests
-- [Base role and row are one thing](project_base_role_and_row_are_one_thing.md) — isBase never cleared/transferred; delete the empty Base row instead (NEO-306)
+- [Variant type title is its kind](project_base_role_and_row_are_one_thing.md) — NEO-334: Base/Insert(s)/Parallel(s) exact word via variantTypeKind; no flags; kind-changing rename refused with rows beneath
 - [SetRowActionButton quiet tone is dark-only](reference_setrowactionbutton_quiet_tone_is_dark_only.md) — on the white-in-light-OS checklist card use NeonButton + its contract
 - [Convex mutation resolves after queries reflect it](reference_convex_mutation_resolves_after_queries_reflect_it.md) — after `await apply()` useQuery holds the writes; an ACTION's do not — fence on a server-read count
 - [Review row sport can differ from the set](reference_review_row_sport_can_differ_from_the_set.md) — NEO-313 switchRowSport: prelude decisions use the ROW's sport, staged maps key sport|name; automated paths stay on the set's

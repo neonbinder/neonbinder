@@ -15,12 +15,13 @@
  * one written at insert and the one Regenerate offers read the same rows the
  * same way.
  *
- * Pure and dependency-light on purpose (`convex/values` only), so the SPA may
- * import the cap and the rule (see reference memory: client imports from
- * convex only pure modules).
+ * Pure and dependency-light on purpose (`convex/values` and the pure
+ * `variantRole` helpers only), so the SPA may import the cap and the rule (see
+ * reference memory: client imports from convex only pure modules).
  */
 
 import { ConvexError, v } from "convex/values";
+import { derivedVariantFlags } from "./variantRole";
 
 /**
  * Ceiling on a short name. A title is 80 characters and the short name stands
@@ -73,8 +74,6 @@ export type TitleChainRow = {
   level: string;
   value: string;
   metadata?: {
-    isInsert?: boolean;
-    isParallel?: boolean;
     listingShortName?: string;
   };
 };
@@ -86,11 +85,11 @@ export type TitleChainRow = {
  * context it did before.
  */
 export type TitleChainFacts = {
-  /** The insert-level row's value — only when that row carries `isInsert`. */
+  /** The insert-level row's value — only when it is an insert of an Insert type. */
   insertNameValue?: string;
   /** Always `true` when present; absent means "no insert in the core". */
   insertIsRole?: boolean;
-  /** The LEAF's own value — only when the leaf carries `isParallel`. */
+  /** The LEAF's own value — only when the leaf is a parallel (see below). */
   parallelLeafValue?: string;
   /** The nearest self-or-ancestor short name, up to the setName row. */
   listingShortName?: string;
@@ -112,24 +111,39 @@ export const titleChainFactsFields = {
  * Read the title facts off a chain, LEAF FIRST. Rows past the first `setName`
  * row are ignored, so a caller may pass the whole chain up to the sport.
  *
- * Roles only, never names or levels alone (product invariant 4): the insert
- * name enters on the insert-level row's `isInsert` (an insert-level row under
- * a parallels-type variant carries `isParallel` instead and is not an
- * insert); the leaf's value is a parallel name only on its `isParallel`.
+ * Roles only, never an insert's own name (product invariant 4). A row's role
+ * is its level together with its variant type's KIND, and that kind is the
+ * variant type's title (NEO-334, `variantRole.ts`): `derivedVariantFlags` is
+ * the one reading, the same one a row is created with. So the insert name
+ * enters only when the chain's insert-level row sits under an Insert type (an
+ * insert-level row under a Parallel type is a parallel of base, not an
+ * insert), and the leaf's value is a parallel name only when the leaf is a
+ * sub-variant or an insert-level row under a Parallel type. A variant type
+ * whose title has no kind ("Promo", "Insert Set") confers neither.
+ *
+ * The variant type is read off the chain itself — every caller walks up to
+ * the setName row, so it is already in hand and costs no read.
  */
 export function titleChainFacts(
   leafFirst: ReadonlyArray<TitleChainRow | null | undefined>,
 ): TitleChainFacts {
+  const chain: Array<TitleChainRow> = [];
+  for (const row of leafFirst) {
+    if (!row) break;
+    chain.push(row);
+    if (row.level === "setName") break;
+  }
+  const variantType = chain.find((row) => row.level === "variantType");
+
   const facts: TitleChainFacts = {};
   let insertSeen = false;
-  for (const [index, row] of leafFirst.entries()) {
-    if (!row) break;
-    if (index === 0 && row.metadata?.isParallel === true) {
+  for (const [index, row] of chain.entries()) {
+    if (index === 0 && derivedVariantFlags(row.level, variantType)?.isParallel === true) {
       facts.parallelLeafValue = row.value;
     }
     if (row.level === "insert" && !insertSeen) {
       insertSeen = true;
-      if (row.metadata?.isInsert === true) {
+      if (derivedVariantFlags(row.level, variantType)?.isInsert === true) {
         facts.insertNameValue = row.value;
         facts.insertIsRole = true;
       }
@@ -138,7 +152,6 @@ export function titleChainFacts(
     if (short && facts.listingShortName === undefined) {
       facts.listingShortName = short;
     }
-    if (row.level === "setName") break;
   }
   return facts;
 }

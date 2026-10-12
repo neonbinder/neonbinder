@@ -66,15 +66,17 @@ export type ListingSetContext = {
    */
   insertNameValue?: string;
   /**
-   * NEO-335 — the insert-level row's NB role: `metadata.isInsert === true`
-   * (variantRole.ts). The insert name enters the title core on this flag,
-   * never on the row's level or name.
+   * NEO-335 — the insert-level row's NB role: an insert of an Insert type,
+   * the kind read from its variant type's title (NEO-334, `variantRole.ts`,
+   * via `titleChainFacts`). The insert name enters the title core on this
+   * role, never on the insert row's own level or name.
    */
   insertIsRole?: boolean;
   /**
    * NEO-335 — a directly-synced parallel LEAF's own value, set only when the
-   * leaf carries the NB parallel role (`metadata.isParallel === true`). Used
-   * as the parallel token when the features snapshot names no parallel.
+   * leaf is a parallel by role (a sub-variant, or an insert-level row under a
+   * Parallel type: `derivedVariantFlags`, NEO-334). Used as the parallel token
+   * when the features snapshot names no parallel.
    */
   parallelLeafValue?: string;
   /**

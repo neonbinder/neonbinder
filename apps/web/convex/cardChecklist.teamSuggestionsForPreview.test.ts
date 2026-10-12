@@ -2,11 +2,11 @@
  * NEO-335 — `cardChecklist.teamSuggestionsForPreview`, the wizard's pre-save
  * per-player team evidence. The tier DECISIONS are pinned in
  * lib/teamFill.test.ts; this file proves the WIRING: which stored cards are
- * read (this node, the node a parallel copies, the flagged base — and not
+ * read (this node, the node a parallel copies, the Base — and not
  * another insert), the name → player rule (exactly one, or nothing), the sport
  * filter, the admin gate and the cap.
  *
- * Fixture: sport → year → setName → { base variantType (isBase), insert →
+ * Fixture: sport → year → setName → { variantType titled "Base", insert →
  * parallel, other insert }, with `cardPlayerLinks` rows written beside each
  * card the way every production `playerIds` writer does.
  */
@@ -79,7 +79,7 @@ async function seed(t: T) {
       children: [],
       lastUpdated: now,
     });
-    const node = (level: "variantType" | "insert" | "parallel", value: string, parentId: Id<"selectorOptions">, isBase?: boolean) =>
+    const node = (level: "variantType" | "insert" | "parallel", value: string, parentId: Id<"selectorOptions">) =>
       ctx.db.insert("selectorOptions", {
         level,
         value,
@@ -87,10 +87,10 @@ async function seed(t: T) {
         parentId,
         children: [],
         lastUpdated: now,
-        ...(isBase ? { metadata: { isBase: true } } : {}),
       });
-    // Named "Flagship", not "Base": the base is found by its flag.
-    const baseId = await node("variantType", "Flagship", setId, true);
+    // NEO-334: a variant type's title IS its kind — the base is the type
+    // titled "Base" (`variantTypeKind`), never a flag beside it.
+    const baseId = await node("variantType", "Base", setId);
     const insertId = await node("variantType", "Inserts", setId);
     const parallelId = await node("parallel", "Gold", insertId);
     const otherInsertId = await node("variantType", "Other", setId);
@@ -182,7 +182,7 @@ describe("teamSuggestionsForPreview — stored rows", () => {
     const b = await player(t, s.sportId, "Player B");
     const c = await player(t, s.sportId, "Player C");
     await storedCard(t, s.sportId, s.insertId, [a], [s.reds]); // the node a parallel copies
-    await storedCard(t, s.sportId, s.baseId, [b], [s.phillies]); // the flagged base
+    await storedCard(t, s.sportId, s.baseId, [b], [s.phillies]); // the Base
     await storedCard(t, s.sportId, s.otherInsertId, [c], [s.yankees]); // never evidence
 
     const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
@@ -458,19 +458,19 @@ describe("teamSuggestionsForPreview — adversarial", () => {
     expect(result.candidates.map((c) => c.teamId)).toEqual([s.reds]);
   });
 
-  test("two variantTypes flagged as the base: the base tier is skipped, never guessed", async () => {
+  test("two variantTypes titled as the base: the base tier is skipped, never guessed", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
     const setId = await t.run(async (ctx) => (await ctx.db.get(s.baseId))!.parentId!);
     const secondBase = await t.run(async (ctx) => {
       const id = await ctx.db.insert("selectorOptions", {
         level: "variantType",
-        value: "Also Flagged",
+        // "Bases" is the same word as "Base" (NEO-334: singular and plural).
+        value: "Bases",
         platformData: {},
         parentId: setId,
         children: [],
         lastUpdated: Date.now(),
-        metadata: { isBase: true },
       });
       const set = (await ctx.db.get(setId))!;
       await ctx.db.patch(setId, { children: [...(set.children ?? []), id] });
@@ -487,11 +487,11 @@ describe("teamSuggestionsForPreview — adversarial", () => {
     expect(result.players[0].answer).toBeNull();
   });
 
-  test("a node merely NAMED \"Base\" without the flag is not the base", async () => {
+  test("a stale isBase flag under another title is not the base: the title decides (NEO-334)", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
-    // Drop the flag from the real base and call it "Base" instead.
-    await t.run((ctx) => ctx.db.patch(s.baseId, { value: "Base", metadata: undefined }));
+    // Retitle the real base and leave the retired flag behind on it.
+    await t.run((ctx) => ctx.db.patch(s.baseId, { value: "Flagship", metadata: { isBase: true } }));
     const b = await player(t, s.sportId, "Player B");
     await storedCard(t, s.sportId, s.baseId, [b], [s.phillies]);
 

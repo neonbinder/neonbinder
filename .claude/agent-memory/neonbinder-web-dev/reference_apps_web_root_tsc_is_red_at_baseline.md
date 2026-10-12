@@ -30,6 +30,10 @@ array literal + `.filter`) passed lint, all tests and the build; only the
 root `tsc` showed it. So for any `.tsx` change, run
 `npx tsc --noEmit -p . 2>&1 | grep -E "<your files>"` and expect an EMPTY
 result — the exit code is meaningless, the per-file grep is the gate.
+Merges hit this hardest: a main-side change to a helper's signature
+(NEO-334 made `showsCardPrefix(level, value: string)`) left the branch's
+auto-merged caller passing `row.metadata` — every gate green, wrong at runtime.
+After resolving a merge, grep the root run for every `.tsx` either side touched.
 
 **Why it matters:** it is NOT a CI gate and never has been. The documented
 apps/web gates are `npm run lint`, `npm run test:unit`, `npm run build`, and

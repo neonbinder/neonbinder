@@ -49,13 +49,14 @@
  *
  * ## What a parallel is built FROM (NEO-321)
  *
- * The same build serves two shapes, told apart by level and NB flags only —
- * never by a row's name (`resolveBuildSource`):
+ * The same build serves two shapes, told apart by level and the variant
+ * type's kind (`resolveBuildSource`; NEO-334: a variant type's title is its
+ * kind, `variantTypeKind`):
  *
  *   - a `parallel`-level row is built from its parent INSERT (NEO-312);
- *   - an `insert`-level row under a variantType whose `variantRole` is
- *     `"parallel"` (a parallel of the base set) is built from the set's BASE:
- *     the exactly-one sibling variantType carrying `metadata.isBase`
+ *   - an `insert`-level row under a variantType titled "Parallel" /
+ *     "Parallels" (a parallel of the base set) is built from the set's BASE:
+ *     the exactly-one sibling variantType titled "Base"
  *     (Jason D1, 2026-10-03).
  *
  * Everything else about the build — the side gate, the link key, the blocks,
@@ -119,7 +120,7 @@ import { teamFullName } from "../lib/teams/team-name";
 import { deleteCardPlayerLinks } from "./cardPlayerLinks";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { safeMarketplaceText } from "../lib/marketplace/safe-text";
-import { derivedVariantFlags, variantTypeRole } from "./variantRole";
+import { derivedVariantFlags, variantTypeKind } from "./variantRole";
 import { titleChainFacts } from "./listingShortName";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { classifyAdapterError } from "./observability";
@@ -241,9 +242,9 @@ export const BLOCKED_PARALLEL_TOO_MANY_CARDS =
   "it holds more than one rebuild can replace (more than 5,000 cards, or too much card data)";
 export const BLOCKED_NOTHING_MATCHED =
   "none of the cards it's built from turned up on its marketplace checklists, so its cards were left as they were";
-/** NEO-321 — a base parallel whose set has no variantType flagged `isBase`. */
+/** NEO-321 — a base parallel whose set has no variantType titled "Base". */
 export const BLOCKED_NO_BASE = "this set has no Base yet";
-/** NEO-321 — more than one variantType of the set is flagged `isBase`. */
+/** NEO-321 — more than one variantType of the set is titled "Base". */
 export const BLOCKED_MANY_BASES =
   "this set has more than one Base, so there's no single checklist to copy";
 /**
@@ -436,14 +437,15 @@ export type BuildSourceResolution =
   | { status: "blocked"; kind: BuildSourceKind; blockedReason: string };
 
 /**
- * Pure: the Base among a set's variant-type rows, by the NB flag only. The
- * caller passes every variantType under the setName (its own Parallel type
- * included — a row carrying `isBase` has role "base", never "parallel").
+ * Pure: the Base among a set's variant-type rows, by kind (`variantTypeKind`:
+ * the row titled "Base"). The caller passes every variantType under the
+ * setName (its own Parallel type included — a row of kind "base" is never
+ * "parallel").
  */
-export function pickBaseVariantType<R extends { metadata?: { isBase?: boolean } }>(
+export function pickBaseVariantType<R extends { value?: string }>(
   variantTypes: readonly R[],
 ): { base: R } | { blockedReason: string } {
-  const bases = variantTypes.filter((row) => row.metadata?.isBase === true);
+  const bases = variantTypes.filter((row) => variantTypeKind(row) === "base");
   if (bases.length === 0) return { blockedReason: BLOCKED_NO_BASE };
   if (bases.length > 1) return { blockedReason: BLOCKED_MANY_BASES };
   return { base: bases[0] };
@@ -469,12 +471,12 @@ async function baseOfParallelType(
 }
 
 /**
- * NEO-321 — the row `target`'s cards are copied from, decided by shape and NB
- * flags only, never by `value`:
+ * NEO-321 — the row `target`'s cards are copied from, decided by shape and the
+ * variant type's kind (its title), never by the target's own `value`:
  *
  *   - a `parallel`-level row → its parent insert (NEO-312);
- *   - an `insert`-level row whose parent variant type has role `"parallel"` →
- *     the exactly-one sibling variant type flagged `isBase`; none, or more
+ *   - an `insert`-level row whose parent variant type is of kind `"parallel"` →
+ *     the exactly-one sibling variant type titled "Base"; none, or more
  *     than one, is `blocked`;
  *   - anything else → `notBuildable` (`NOT_A_PARALLEL`).
  *
@@ -497,7 +499,7 @@ export async function resolveBuildSource(
     if (
       parent &&
       parent.level === "variantType" &&
-      variantTypeRole(parent) === "parallel"
+      variantTypeKind(parent) === "parallel"
     ) {
       const found = await baseOfParallelType(ctx, parent);
       if ("blockedReason" in found) {
@@ -511,29 +513,26 @@ export async function resolveBuildSource(
 
 /**
  * Risk 2 (NEO-321) — the features snapshot a copy starts from, with a WRONG
- * `cardType` replaced by the one the target's NB flags give.
+ * `cardType` replaced by the one the target's position gives.
  *
  * A base parallel written before NEO-291 derived its flags was born with
  * `cardType: "Insert"` (the level-only reading of an `insert`-level row), and
  * `copyFeaturesForParallel` lets the target's snapshot win on `cardType`, so
  * every copy would be listed as an insert. The value is recomputed from the
- * row's level and its parent's role (`derivedVariantFlags`), never its name.
+ * row's level and its parent variant type's kind (`derivedVariantFlags`).
  *
  * Only a value that IS the flagless level reading and differs from the flag
  * reading is replaced: an absent `cardType` stays absent, and a parallel-level
  * row (always "Parallel" by level) is never changed.
  */
 export function snapshotForCopies(
-  target: Pick<Doc<"selectorOptions">, "level" | "value" | "features" | "metadata">,
-  parent: Pick<Doc<"selectorOptions">, "metadata"> | null,
+  target: Pick<Doc<"selectorOptions">, "level" | "value" | "features">,
+  parent: Pick<Doc<"selectorOptions">, "value"> | null,
 ): Record<string, string> | undefined {
   const snapshot = target.features;
   const stored = snapshot?.cardType;
   if (!snapshot || stored === undefined) return snapshot;
-  const flags = {
-    ...(derivedVariantFlags(target.level, parent) ?? {}),
-    ...(target.metadata?.isParallel ? { isParallel: true as const } : {}),
-  };
+  const flags = derivedVariantFlags(target.level, parent);
   const byFlags = deriveOwnLevelFeatures(target.level, target.value, flags).cardType;
   const byLevelOnly = deriveOwnLevelFeatures(target.level, target.value).cardType;
   if (byFlags === undefined || stored === byFlags || stored !== byLevelOnly) {
@@ -773,7 +772,7 @@ function cardLabel(card: { cardNumber: string; cardName: string }): string {
  * `sourceId` is the row the client stands on — the parent of the parallels:
  *
  *   - an `insert` row → its `parallel`-level children, built from the insert;
- *   - a variantType whose NB role is `"parallel"` → its `insert`-level
+ *   - a variantType of kind `"parallel"` (its title) → its `insert`-level
  *     children (the base parallels), built from the set's Base. No single
  *     Base → `source` is absent and `sourceBlocked` says why; the parallels
  *     are still listed.
@@ -823,7 +822,7 @@ export const getParallelsForBuild = query({
     if (!parentId || !parent) return { parallels: [], truncated: false };
 
     // Which children are the parallels, and which row they are built from —
-    // by level and NB role only (the same rules as `resolveBuildSource`).
+    // by level and kind only (the same rules as `resolveBuildSource`).
     let childLevel: "parallel" | "insert";
     let source: Doc<"selectorOptions"> | undefined;
     let sourceKind: BuildSourceKind;
@@ -834,7 +833,7 @@ export const getParallelsForBuild = query({
       sourceKind = "insert";
     } else if (
       parent.level === "variantType" &&
-      variantTypeRole(parent) === "parallel"
+      variantTypeKind(parent) === "parallel"
     ) {
       childLevel = "insert";
       sourceKind = "base";
@@ -1509,8 +1508,7 @@ export const insertParallelCardsPage = internalMutation({
     // NEO-321 (security audit S1) — by the time a page runs, the parallel's
     // old cards are already deleted. So a target or source that no longer
     // resolves to what the action linked against (the parallel deleted or
-    // moved, `isBase` moved by `setBaseVariantType` mid-run, a second Base
-    // marked) answers the `changed` sentinel and writes nothing, rather than
+    // moved, the Base renamed mid-run, a second Base titled) answers the `changed` sentinel and writes nothing, rather than
     // throwing: the action then reports BLOCKED_CHANGED_MID_BUILD with the
     // deleted count and the links that went with them.
     const refuse = (why: "gone" | "notBuildable" | "blocked" | "sourceMoved") => {

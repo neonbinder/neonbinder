@@ -79,19 +79,17 @@ const world: {
 };
 
 const ROWS: Record<string, unknown> = {
-  "vt-base": { _id: "vt-base", value: "Base", metadata: { isBase: true }, platformData: {} },
-  "vt-base-2": { _id: "vt-base-2", value: "Base", metadata: { isBase: true }, platformData: {} },
+  "vt-base": { _id: "vt-base", value: "Base", platformData: {} },
+  "vt-base-2": { _id: "vt-base-2", value: "Base", platformData: {} },
   // Mapped on SportLots: no picker, a "Re-map Base" button in its place.
   "vt-base-mapped": {
     _id: "vt-base-mapped",
     value: "Base",
-    metadata: { isBase: true },
     platformData: { sportlots: { s0: "884412" } },
   },
   "vt-insert": {
     _id: "vt-insert",
     value: "Insert",
-    metadata: { variantRole: "insert" },
     platformData: {},
   },
 };

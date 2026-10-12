@@ -59,15 +59,18 @@ const LONG_SET_NAME =
 const FEATURES = { manufacturer: "Topps", season: "2026" };
 
 /**
- * sport › setName › variantType (insert-typed) › insert (the leaf).
- * `isInsert` is the insert row's NB role; `setNameMetadata` lands on the set.
+ * sport › setName › variantType › insert (the leaf). `typeTitle` is the
+ * variant type's title, which IS its kind (NEO-334, `variantTypeKind`):
+ * "Inserts" makes the leaf an insert of an Insert type (the NB insert role),
+ * a title with no kind ("Promo") makes it role-less, "Parallels" makes it a
+ * parallel of base. `setNameMetadata` lands on the set.
  */
 async function seedTree(
   t: T,
   opts: {
     setName?: string;
     insertName?: string;
-    isInsert?: boolean;
+    typeTitle?: string;
     setNameMetadata?: Record<string, unknown>;
   } = {},
 ): Promise<Ids> {
@@ -92,10 +95,9 @@ async function seedTree(
     });
     const typeId = await ctx.db.insert("selectorOptions", {
       level: "variantType",
-      value: "Inserts",
+      value: opts.typeTitle ?? "Inserts",
       platformData: {},
       features: FEATURES,
-      metadata: { variantRole: "insert" },
       parentId: setNameId,
       children: [],
       lastUpdated: Date.now(),
@@ -105,7 +107,6 @@ async function seedTree(
       value: opts.insertName ?? "Hologram Heroes",
       platformData: {},
       features: FEATURES,
-      ...(opts.isInsert === undefined ? {} : { metadata: { isInsert: opts.isInsert } }),
       parentId: typeId,
       children: [],
       // Fixed and old, so a write's Date.now() is always later.
@@ -181,7 +182,7 @@ async function settle(t: T) {
 describe("commitCardChecklist — the batch's short name for titles (NEO-335)", () => {
   test("written onto the leaf BEFORE the chunks: the kept title regenerates identically and is not flagged", async () => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t, { isInsert: true });
+    const ids = await seedTree(t);
     const seededAt = (await t.run(async (ctx) => ctx.db.get(ids.leafId)))!.lastUpdated;
     const shown = await shownTitle(t, ids, "1", "Topps Sapphire");
     // The premise: with the full names the core is cut, the short name fixes it.
@@ -191,7 +192,7 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
 
     await commit(t, ids, [card({ cardNumber: "1", listingTitleKept: shown.title })], "  Topps Sapphire ");
 
-    expect(await leafMetadata(t, ids)).toEqual({ isInsert: true, listingShortName: "Topps Sapphire" });
+    expect(await leafMetadata(t, ids)).toEqual({ listingShortName: "Topps Sapphire" });
     // N3 — an edit is an edit: the leaf's lastUpdated moves, as the mutation's does.
     expect((await t.run(async (ctx) => ctx.db.get(ids.leafId)))!.lastUpdated).toBeGreaterThan(seededAt);
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
@@ -202,12 +203,12 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
 
   test("control: the same kept title WITHOUT the short name is not what the server generates, so it is flagged", async () => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t, { isInsert: true });
+    const ids = await seedTree(t);
     const shown = await shownTitle(t, ids, "1", "Topps Sapphire");
 
     await commit(t, ids, [card({ cardNumber: "1", listingTitleKept: shown.title })]);
 
-    expect(await leafMetadata(t, ids)).toEqual({ isInsert: true });
+    expect(await leafMetadata(t, ids)).toBeUndefined();
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
     expect(row.listingTitle).not.toBe(shown.title);
     expect(row.listingTitleTruncated).toBe(true);
@@ -216,7 +217,7 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
 
   test("every card of the batch is titled with it, not only the first chunk's", async () => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t, { isInsert: true });
+    const ids = await seedTree(t);
     await commit(
       t,
       ids,
@@ -234,7 +235,6 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
   test("a short name already on an ancestor is used with no batch arg", async () => {
     const t = convexTest(schema, modules);
     const ids = await seedTree(t, {
-      isInsert: true,
       setNameMetadata: { listingShortName: "Topps Sapphire" },
     });
     expect((await setFacts(t, ids)).listingShortName).toBe("Topps Sapphire");
@@ -246,7 +246,7 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
     expect(row.listingTitle).toBe(shown.title);
     expect(row.listingTitleTruncated).toBeUndefined();
     // The leaf was not written: the commit only writes what it was sent.
-    expect(await leafMetadata(t, ids)).toEqual({ isInsert: true });
+    expect(await leafMetadata(t, ids)).toBeUndefined();
     await settle(t);
   });
 
@@ -258,38 +258,39 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
     ["a line separator", "Topps\u2028Sapphire", /line breaks or control characters/],
   ])("%s refuses the WHOLE commit before anything is written", async (_label, shortName, message) => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t, { isInsert: true });
+    const ids = await seedTree(t);
     await expect(
       commit(t, ids, [card({ cardNumber: "1" }), card({ cardNumber: "2" })], shortName),
     ).rejects.toThrow(message);
     expect((await rowsByNumber(t, ids.leafId)).size).toBe(0);
-    expect(await leafMetadata(t, ids)).toEqual({ isInsert: true });
+    expect(await leafMetadata(t, ids)).toBeUndefined();
     await settle(t);
   });
 
   test("a blank short name is no answer: nothing is written to the leaf, and nothing is cleared", async () => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t, { isInsert: true });
+    const ids = await seedTree(t);
     await t.run(async (ctx) =>
-      ctx.db.patch(ids.leafId, { metadata: { isInsert: true, listingShortName: "Stored" } }),
+      ctx.db.patch(ids.leafId, { metadata: { listingShortName: "Stored" } }),
     );
     await commit(t, ids, [card({ cardNumber: "1" })], "   ");
-    expect(await leafMetadata(t, ids)).toEqual({ isInsert: true, listingShortName: "Stored" });
+    expect(await leafMetadata(t, ids)).toEqual({ listingShortName: "Stored" });
     await settle(t);
   });
 });
 
-describe("every title walk reports the insert's name only on the insert ROLE (NEO-335)", () => {
+describe("every title walk reports the insert's name only on the insert ROLE (NEO-335, kind by title NEO-334)", () => {
   /** A short set name, so the insert's name fits in the core. */
   const SHORT = { setName: "Score", insertName: "Dugout Collection" };
 
   test.each([
-    ["with the role", true, true],
-    ["without the role", undefined, false],
-    ["with the role explicitly false", false, false],
-  ])("titleSetFacts, %s", async (_label, isInsert, expected) => {
+    ["under an Insert type", "Inserts", true],
+    ["under a type with no kind", "Promo", false],
+    ["under a type merely containing the word", "Insert Set", false],
+    ["under a Parallel type", "Parallels", false],
+  ])("titleSetFacts, %s", async (_label, typeTitle, expected) => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t, { ...SHORT, isInsert });
+    const ids = await seedTree(t, { ...SHORT, typeTitle });
     const facts = await setFacts(t, ids);
     if (expected) {
       expect(facts.insertNameValue).toBe("Dugout Collection");
@@ -301,11 +302,11 @@ describe("every title walk reports the insert's name only on the insert ROLE (NE
   });
 
   test.each([
-    ["with the role", true, true],
-    ["without the role", undefined, false],
-  ])("the commit prelude, %s", async (_label, isInsert, expected) => {
+    ["under an Insert type", "Inserts", true],
+    ["under a type with no kind", "Promo", false],
+  ])("the commit prelude, %s", async (_label, typeTitle, expected) => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t, { ...SHORT, isInsert });
+    const ids = await seedTree(t, { ...SHORT, typeTitle });
     const prelude = await t
       .withIdentity(ADMIN_IDENTITY)
       .mutation(internal.selectorOptions.commitCardChecklistPrelude, {
@@ -319,11 +320,11 @@ describe("every title walk reports the insert's name only on the insert ROLE (NE
   });
 
   test.each([
-    ["with the role", true, true],
-    ["without the role", undefined, false],
-  ])("the commit's insert (prelude → chunk), %s", async (_label, isInsert, expected) => {
+    ["under an Insert type", "Inserts", true],
+    ["under a type with no kind", "Promo", false],
+  ])("the commit's insert (prelude → chunk), %s", async (_label, typeTitle, expected) => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t, { ...SHORT, isInsert });
+    const ids = await seedTree(t, { ...SHORT, typeTitle });
     await commit(t, ids, [card({ cardNumber: "7" })]);
     const title = (await rowsByNumber(t, ids.leafId)).get("7")!.listingTitle!;
     expect(title.includes("Dugout Collection")).toBe(expected);
@@ -332,11 +333,11 @@ describe("every title walk reports the insert's name only on the insert ROLE (NE
   });
 
   test.each([
-    ["with the role", true, true],
-    ["without the role", undefined, false],
-  ])("addCustomCard and previewListingTitle (findAncestorLabels), %s", async (_label, isInsert, expected) => {
+    ["under an Insert type", "Inserts", true],
+    ["under a type with no kind", "Promo", false],
+  ])("addCustomCard and previewListingTitle (findAncestorLabels), %s", async (_label, typeTitle, expected) => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t, { ...SHORT, isInsert });
+    const ids = await seedTree(t, { ...SHORT, typeTitle });
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: ids.leafId,
@@ -355,7 +356,7 @@ describe("every title walk reports the insert's name only on the insert ROLE (NE
 
   test("previewListingTitle reads a short name set AFTER the card was created (Regenerate)", async () => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t, { isInsert: true });
+    const ids = await seedTree(t);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const cardId = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
       selectorOptionId: ids.leafId,
@@ -377,20 +378,23 @@ describe("every title walk reports the insert's name only on the insert ROLE (NE
     await settle(t);
   });
 
-  test("the prelude reports a parallel leaf's own value only on the parallel ROLE", async () => {
+  test.each([
+    ["an insert of an Insert type", "Inserts", undefined],
+    ["an insert-level row under a type with no kind", "Promo", undefined],
+    ["an insert-level row under a Parallel type (a parallel of base)", "Parallels", "Dugout Collection"],
+  ])("the prelude reports a parallel leaf's own value only on the parallel ROLE: %s", async (_label, typeTitle, expected) => {
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t, SHORT);
-    const run = () =>
-      t
-        .withIdentity(ADMIN_IDENTITY)
-        .mutation(internal.selectorOptions.commitCardChecklistPrelude, {
-          selectorOptionId: ids.leafId,
-          sportId: ids.sportId,
-          playerNames: [],
-          teamNames: [],
-        });
-    expect((await run()).parallelLeafValue).toBeUndefined();
-    await t.run(async (ctx) => ctx.db.patch(ids.leafId, { metadata: { isParallel: true } }));
-    expect((await run()).parallelLeafValue).toBe("Dugout Collection");
+    const ids = await seedTree(t, { ...SHORT, typeTitle });
+    const prelude = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(internal.selectorOptions.commitCardChecklistPrelude, {
+        selectorOptionId: ids.leafId,
+        sportId: ids.sportId,
+        playerNames: [],
+        teamNames: [],
+      });
+    expect(prelude.parallelLeafValue).toBe(expected);
+    // A parallel of base is not an insert: its name is the parallel token only.
+    if (expected !== undefined) expect(prelude.insertIsRole).toBeUndefined();
   });
 });

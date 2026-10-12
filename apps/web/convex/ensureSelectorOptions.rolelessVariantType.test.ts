@@ -1,20 +1,22 @@
 /**
- * NEO-306 — the backstop: no SportLots-only auto-sync of the rows under a
- * variant type that has NO role.
+ * NEO-306 / NEO-334 — the backstop: no SportLots-only auto-sync of the rows
+ * under a variant type that has NO kind.
  *
- * What happened on a PR preview: "Clear base set" removed `isBase` from an
- * SL-only set's Base and left the row. Base stopped being terminal, the
- * cascade opened an Inserts column under it, and the drill's auto-sync asked
- * SportLots — which answers `insert` with every set the brand has that year.
- * Those junk rows' SL ids then counted as covered and hid real sets from Sync
- * Sets and the review.
+ * A variant type's kind is its TITLE (NEO-334): Base, Insert(s) or
+ * Parallel(s), exactly. What happened on a PR preview: "Clear base set"
+ * removed the Base marking from an SL-only set's Base and left the row. Base
+ * stopped being terminal, the cascade opened an Inserts column under it, and
+ * the drill's auto-sync asked SportLots — which answers `insert` with every
+ * set the brand has that year. Those junk rows' SL ids then counted as
+ * covered and hid real sets from Sync Sets and the review.
  *
- * The clear is gone (`setBaseVariantType.test.ts`), but a legacy row can still
- * be in that state. So `ensureSelectorOptions` refuses exactly this case on
- * DRILL: level `insert`, parent a variant type with no NB role, BSC not asked
- * for want of ids, SportLots askable. Pinned alongside it, the cases that must
- * keep syncing: a role'd type, a role-less type BSC can scope (an
- * "Autographs" type), and an explicit Sync.
+ * The clear is gone, and so is the flag, but a type titled neither of the
+ * three words (say "Promo") is in the same position. So `ensureSelectorOptions`
+ * refuses exactly this case on DRILL: level `insert`, parent a variant type
+ * with no kind, BSC not asked for want of ids, SportLots askable. Pinned
+ * alongside it, the cases that must keep syncing: a type with a kind, a
+ * kindless type BSC can scope (an "Autographs" type), and an explicit Sync.
+ * The reason code on the wire is still `no_variant_role`.
  */
 
 import { convexTest } from "convex-test";
@@ -94,7 +96,7 @@ type Metadata = Doc<"selectorOptions">["metadata"];
  */
 async function seedChain(
   t: ReturnType<typeof convexTest>,
-  opts: { metadata?: Metadata; bsc?: { variantId: string } },
+  opts: { title?: string; metadata?: Metadata; bsc?: { variantId: string } },
 ): Promise<Id<"selectorOptions">> {
   const bsc = (id: string) => (opts.bsc ? { bsc: { b0: id } } : {});
   return t.run(async (ctx) => {
@@ -131,7 +133,7 @@ async function seedChain(
     });
     return ctx.db.insert("selectorOptions", {
       level: "variantType",
-      value: "Base",
+      value: opts.title ?? "Promo",
       platformData: {
         ...(opts.bsc ? { bsc: { b0: opts.bsc.variantId } } : {}),
         sportlots: { s0: "884412" },
@@ -169,16 +171,20 @@ const insertRowsUnder = (
       .collect(),
   );
 
-describe("ensureSelectorOptions at insert — a role-less variant type", () => {
+describe("ensureSelectorOptions at insert — a variant type with no kind", () => {
   test.each([
-    ["no metadata at all (a Base that lost its flag)", undefined],
-    ["a legacy `isBase: false`", { isBase: false }],
-    ["unrelated metadata only", { cardNumberPrefix: "B-" }],
+    ["Promo", undefined],
+    ["Insert Set", undefined],
+    ["Base Parallels", undefined],
+    // A stray retired flag does not give a kind; the title decides.
+    ["Gold", { variantRole: "insert" }],
+    ["Gold", { isBase: true }],
   ] as const)(
-    "%s, SportLots-only: the drill does NOT sync, and no marketplace is asked",
-    async (_label, metadata) => {
+    "titled %j (metadata %j), SportLots-only: the drill does NOT sync, and no marketplace is asked",
+    async (title, metadata) => {
       const t = convexTest(schema, modules);
       const typeId = await seedChain(t, {
+        title,
         metadata: metadata as Metadata,
       });
 
@@ -212,11 +218,11 @@ describe("ensureSelectorOptions at insert — a role-less variant type", () => {
     expect(outgoing.length).toBeGreaterThan(0);
   });
 
-  test.each(["insert", "parallel"] as const)(
-    "a type with variantRole %s is NOT blocked: SportLots' pool is what its column is for",
-    async (variantRole) => {
+  test.each(["Insert", "Inserts", "Parallel", "Parallels"] as const)(
+    "a type titled %s is NOT blocked: SportLots' pool is what its column is for",
+    async (title) => {
       const t = convexTest(schema, modules);
-      const typeId = await seedChain(t, { metadata: { variantRole } });
+      const typeId = await seedChain(t, { title });
 
       const res = await drill(t, typeId);
 
@@ -226,11 +232,14 @@ describe("ensureSelectorOptions at insert — a role-less variant type", () => {
     },
   );
 
-  test("a role-less type BSC can scope (an 'Autographs' type) still syncs its rows, from BSC", async () => {
-    // `autographs` names neither insert nor parallel, so the sync never
-    // conferred a role — and it legitimately has children on BSC.
+  test("a kindless type BSC can scope (an 'Autographs' type) still syncs its rows, from BSC", async () => {
+    // "Autographs" is none of the three words, so it has no kind — and it
+    // legitimately has children on BSC.
     const t = convexTest(schema, modules);
-    const typeId = await seedChain(t, { bsc: { variantId: "autographs" } });
+    const typeId = await seedChain(t, {
+      title: "Autographs",
+      bsc: { variantId: "autographs" },
+    });
 
     const res = await drill(t, typeId);
 
@@ -240,14 +249,15 @@ describe("ensureSelectorOptions at insert — a role-less variant type", () => {
     expect(outgoing.length).toBeGreaterThan(0);
   });
 
-  test("the block is by ROLE, never by name: a role-less type named 'Inserts' is blocked too", async () => {
+  test("the title decides, exactly: renaming the type from Promo to Inserts lifts the block", async () => {
     const t = convexTest(schema, modules);
     const typeId = await seedChain(t, {});
-    await t.run(async (ctx) => ctx.db.patch(typeId, { value: "Inserts" }));
+    expect((await drill(t, typeId)).reason).toBe("no_variant_role");
 
+    await t.run(async (ctx) => ctx.db.patch(typeId, { value: "Inserts" }));
     const res = await drill(t, typeId);
 
-    expect(res.reason).toBe("no_variant_role");
-    expect(outgoing).toEqual([]);
+    expect(res.ran).toBe(true);
+    expect(res.reason).not.toBe("no_variant_role");
   });
 });

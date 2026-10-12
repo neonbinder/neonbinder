@@ -1,20 +1,12 @@
 /**
- * NEO-306 — the variant type's insert/parallel ROLE is conferred at WRITE
- * time, by the two stores, as `metadata.variantRole`.
+ * NEO-334 — the two stores write NO role flag.
  *
- * `variantTypeRole` no longer reads a BSC slot at runtime (variantRole.test.ts
- * pins that). So the only places a synced variant type gets its role are the
- * insert and patch sites of `storeSelectorOptions` and
- * `storeReconciledOptions`, plus the armed backfill for rows no sync
- * reaches. This file pins both stores:
- *
- *   - a fresh variantType row is born with the role its tagged BSC slot says;
- *   - a matched row with no role gets one (adds only);
- *   - a role already there is never flipped, the Base never gets one, and
- *     ambiguous evidence writes nothing;
- *   - the BSC slots are untouched by the conferral: `platformData.bsc` and
- *     `platformFacets.bsc` deep-equal their pre-write snapshot (Jason's
- *     condition on D1 — listing needs them).
+ * NEO-306 had `storeSelectorOptions` / `storeReconciledOptions` confer
+ * `metadata.variantRole` / `isBase` from a tagged BSC slot. A variant type's
+ * title is its kind now (convex/variantRole.ts), so neither store writes a
+ * flag on a fresh row or a matched one, and a stray flag already on a row is
+ * left exactly as found (the armed `stripRoleFlags` removes it). The BSC
+ * slots are untouched either way (listing needs them).
  */
 
 import { convexTest } from "convex-test";
@@ -113,8 +105,8 @@ const STORES = {
 } as const;
 
 for (const [storeName, store] of Object.entries(STORES)) {
-  describe(`${storeName} — variantRole conferral (NEO-306)`, () => {
-    test("fresh rows: insert/parallel get the role, the Base gets isBase and no role", async () => {
+  describe(`${storeName} — writes no role flag (NEO-334)`, () => {
+    test("fresh Base/Insert/Parallel rows carry no flag; their BSC slots are written as before", async () => {
       const t = convexTest(schema, modules);
       const setId = await insertSetName(t);
       await store(t, setId, [
@@ -123,38 +115,31 @@ for (const [storeName, store] of Object.entries(STORES)) {
         { value: "Parallel", bsc: "parallel" },
       ]);
       const rows = await rowsUnder(t, setId);
-      const byValue = new Map(rows.map((r) => [r.value, r]));
-      expect(byValue.get("Base")?.metadata?.isBase).toBe(true);
-      expect(byValue.get("Base")?.metadata?.variantRole).toBeUndefined();
-      expect(byValue.get("Insert")?.metadata?.variantRole).toBe("insert");
-      expect(byValue.get("Parallel")?.metadata?.variantRole).toBe("parallel");
-      // The BSC slot the role was read from is written exactly as before.
-      expect(Object.values(byValue.get("Insert")?.platformData.bsc ?? {})).toEqual([
-        "insert",
-      ]);
-      expect(Object.values(byValue.get("Insert")?.platformFacets?.bsc ?? {})).toEqual([
-        "variant",
-      ]);
+      expect(rows.map((r) => r.value).sort()).toEqual(["Base", "Insert", "Parallel"]);
+      for (const row of rows) {
+        expect(row.metadata?.isBase).toBeUndefined();
+        expect(row.metadata?.variantRole).toBeUndefined();
+      }
+      const insert = rows.find((r) => r.value === "Insert");
+      expect(Object.values(insert?.platformData.bsc ?? {})).toEqual(["insert"]);
+      expect(Object.values(insert?.platformFacets?.bsc ?? {})).toEqual(["variant"]);
     });
 
-    test("fresh row with ambiguous or role-less evidence gets no role", async () => {
+    test("a fresh row whose BSC id says insert but whose title is plain gets no flag", async () => {
       const t = convexTest(schema, modules);
       const setId = await insertSetName(t);
       await store(t, setId, [
         { value: "Base", bsc: "base" },
-        { value: "Both", bsc: "insert-parallel" },
-        { value: "Promo", bsc: "promo" },
+        { value: "Gold Stuff", bsc: "insert" },
       ]);
       const rows = await rowsUnder(t, setId);
-      for (const value of ["Both", "Promo"]) {
-        expect(rows.find((r) => r.value === value)?.metadata?.variantRole).toBeUndefined();
-      }
+      expect(rows.find((r) => r.value === "Gold Stuff")?.metadata?.variantRole).toBeUndefined();
     });
 
-    test("a matched legacy row gets its role, and its BSC slots deep-equal the pre-write snapshot", async () => {
+    test("a matched legacy row gains no flag, keeps its other metadata, and its BSC slots deep-equal the pre-write snapshot", async () => {
       const t = convexTest(schema, modules);
       const setId = await insertSetName(t);
-      const baseId = await insertLegacyVariantType(t, setId, "Base", "base", { isBase: true });
+      const baseId = await insertLegacyVariantType(t, setId, "Base", "base");
       const insertId = await insertLegacyVariantType(t, setId, "Inserts", "insert", {
         cardNumberPrefix: "IN-",
       });
@@ -176,18 +161,18 @@ for (const [storeName, store] of Object.entries(STORES)) {
         insert: await ctx.db.get(insertId),
         parallel: await ctx.db.get(parallelId),
       }));
-      expect(after.insert?.metadata).toEqual({ cardNumberPrefix: "IN-", variantRole: "insert" });
-      expect(after.parallel?.metadata).toEqual({ variantRole: "parallel" });
-      expect(after.base?.metadata).toEqual({ isBase: true });
+      expect(after.insert?.metadata).toEqual({ cardNumberPrefix: "IN-" });
+      expect(after.parallel?.metadata).toBeUndefined();
+      expect(after.base?.metadata).toBeUndefined();
       for (const key of ["base", "insert", "parallel"] as const) {
         expect(bscSnapshot(after[key])).toEqual(bscSnapshot(before[key]));
       }
     });
 
-    test("a role already there is never flipped, even when the slot now says otherwise", async () => {
+    test("a stray flag already on a row is left as found, never acted on", async () => {
       const t = convexTest(schema, modules);
       const setId = await insertSetName(t);
-      await insertLegacyVariantType(t, setId, "Base", "base", { isBase: true });
+      await insertLegacyVariantType(t, setId, "Base", "base");
       const id = await insertLegacyVariantType(t, setId, "Odd", "insert", {
         variantRole: "parallel",
       });
@@ -196,18 +181,7 @@ for (const [storeName, store] of Object.entries(STORES)) {
         { value: "Odd", bsc: "insert" },
       ]);
       const row = await t.run(async (ctx) => ctx.db.get(id));
-      expect(row?.metadata?.variantRole).toBe("parallel");
-    });
-
-    test("an operator's Base keeps no role even if its slot carries a role token", async () => {
-      const t = convexTest(schema, modules);
-      const setId = await insertSetName(t);
-      const id = await insertLegacyVariantType(t, setId, "Parallels", "parallel", {
-        isBase: true,
-      });
-      await store(t, setId, [{ value: "Parallels", bsc: "parallel" }]);
-      const row = await t.run(async (ctx) => ctx.db.get(id));
-      expect(row?.metadata).toEqual({ isBase: true });
+      expect(row?.metadata).toEqual({ variantRole: "parallel" });
     });
   });
 }

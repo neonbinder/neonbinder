@@ -17,11 +17,12 @@
  *     NEO-237 write, `createSetsFromSlRootsImpl`), or
  *   - a row under one variant type of one of the brand's sets that holds a
  *     BSC id: an `insert`-level row carrying the SportLots link, born with
- *     the flags that type's NB role gives it (`derivedVariantFlags`).
+ *     the cardType that type's kind (its title) gives it
+ *     (`derivedVariantFlags`, transient: no flag is stored).
  *
  * NB never creates an Insert or Parallel variant type here: the types come
  * from that set's Sync Variant Types (`ensureSelectorOptions`), which the
- * dialog runs once per picked set. The Base-role type is excluded — Base is
+ * dialog runs once per picked set. The Base type is excluded — Base is
  * terminal in the set builder, so a row under it would be unreachable.
  *
  * ## The doc
@@ -73,7 +74,7 @@ import {
   chunkSlRoots,
 } from "./setFromMarketplace";
 import { nameAfterPrefixes, targetNamePrefixes } from "./setShapeMove";
-import { derivedVariantFlags, variantTypeRole } from "./variantRole";
+import { derivedVariantFlags, variantTypeKind } from "./variantRole";
 
 type Row = Doc<"selectorOptions">;
 type RowId = Id<"selectorOptions">;
@@ -304,7 +305,7 @@ async function typeRefusal(
   if (!type || type.level !== "variantType" || !type.parentId) {
     return { reason: "That isn't a variant type." };
   }
-  if (variantTypeRole(type) === "base") {
+  if (variantTypeKind(type) === "base") {
     return { reason: "Nothing can go under the Base. Pick another variant type." };
   }
   const set = await ctx.db.get(type.parentId);
@@ -615,8 +616,8 @@ export const getSlSetReview = query({
 });
 
 /**
- * The "Variant type" picker for one set: its variant types with their NB
- * role, the Base excluded (terminal in the set builder). Empty until the
+ * The "Variant type" picker for one set: its variant types with their kind
+ * (read from the title), the Base excluded (terminal in the set builder). Empty until the
  * set's Sync Variant Types has run — the dialog runs it through
  * `api.selectorOptions.ensureSelectorOptions({level: "variantType",
  * parentId: setId})` and watches `api.selectorOptions.getSelectorSyncStatus`
@@ -643,7 +644,7 @@ export const getVariantTypesOfSet = query({
       .take(MAX_VARIANT_TYPES_PER_SET);
     const out: Array<{ _id: RowId; value: string; role?: "insert" | "parallel" }> = [];
     for (const type of types) {
-      const role = variantTypeRole(type);
+      const role = variantTypeKind(type);
       if (role === "base") continue;
       out.push({ _id: type._id, value: type.value, ...(role ? { role } : {}) });
     }
@@ -869,7 +870,8 @@ export const saveSetsChunk = internalMutation({
  * Each row: the entry's name with the target set's taken off the front
  * (`rowNameUnderSet`), the SportLots link in its own slot
  * (`initialSlots({sportlots})` — no BSC slot is written or read), the flags
- * the type's NB role gives it (`derivedVariantFlags`), the type's features
+ * the type's kind gives it (`derivedVariantFlags`, read for the features
+ * only and never stored), the type's features
  * copied down plus its own level's, the type's teams. A sibling under the
  * type that already holds the SportLots id is SKIPPED and counted (the line
  * leaves the review: it is linked). A sibling that already folds to the name,
@@ -912,7 +914,7 @@ export const createSlRowsUnderVariantType = internalMutation({
     const checked = await typeRefusal(ctx, brand._id, args.typeId);
     if ("reason" in checked) throw new ConvexError(checked.reason);
     const { type, set } = checked;
-    const typeRole = variantTypeRole(type);
+    const typeRole = variantTypeKind(type);
     const role: "insert" | "parallel" | "none" =
       typeRole === "insert" || typeRole === "parallel" ? typeRole : "none";
 
@@ -1004,7 +1006,6 @@ export const createSlRowsUnderVariantType = internalMutation({
         parentId: type._id,
         children: [],
         createdByUserId: args.createdByUserId,
-        ...(flags ? { metadata: { ...flags } } : {}),
         ...(Object.keys(features).length > 0 ? { features } : {}),
         ...(teamIds ? { teamIds } : {}),
         lastUpdated: now,
@@ -1072,7 +1073,7 @@ export const MAX_DECISION_NAME_LENGTH = 500;
 const applyResultValidator = v.object({
   /** Entries filed as their own set. */
   sets: v.number(),
-  /** Entries filed under a variant type, by that type's NB role. */
+  /** Entries filed under a variant type, by that type's kind (its title). */
   underType: v.object({
     insert: v.number(),
     parallel: v.number(),

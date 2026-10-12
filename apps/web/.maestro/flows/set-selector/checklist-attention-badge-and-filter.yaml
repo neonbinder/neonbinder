@@ -664,6 +664,14 @@ tags:
 #
 # Centred before the tap (R8). UP: the #702 drawer step above centred that
 # row, and the attention row sits above the rows in the checklist header.
+#
+# No ROW is asserted after this scroll, on purpose. NEO-334 found that a
+# centred UP scroll is one-sided (it only promises the target's centre lands
+# below ~0.3 of the viewport), so a row below the target can rest past y=629
+# where the hierarchy cannot see it — that broke the retired filter's
+# "Bravo is back" check. Everything read here is the pill itself (centred by
+# this scroll, and nothing moves the page before the re-read below) or the
+# walker dialog, a fixed portal the page scroll cannot push off screen.
 # ════════════════════════════════════════════════════════════════════════════
 
 - scrollUntilVisible:

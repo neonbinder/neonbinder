@@ -722,9 +722,9 @@ describe("deleteSelectorOption — refusals", () => {
     // NEO-219 refused this as `SELECTOR_ROW_PROTECTED`, on the reasoning that
     // Base/Insert/Parallel are load-bearing STRINGS the sync,
     // `getBaseVariantBySet` and the BSC facet derivation resolve by name.
-    // NEO-239 made every one of those read the row instead — `metadata.isBase`
-    // and a `variant`-tagged slot — so the name is a name and there is no
-    // protected row class left. The other half of that reasoning, "the sync
+    // NEO-239 made the BSC facet read a `variant`-tagged slot, and NEO-334
+    // made the title the kind (an empty type still deletes freely), so there
+    // is no protected row class left. The other half of that reasoning, "the sync
     // would just re-create it", is real and is reported as `syncedBack`, not
     // used to refuse.
     const t = convexTest(schema, modules);

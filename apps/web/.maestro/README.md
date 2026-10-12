@@ -871,10 +871,11 @@ Two corollaries worth knowing before you write the selector:
   picked from the column BELOW an insert, the Sync slot is `Build from
   <insert>`, or `Rebuild from <insert>` once the parallel has cards (a
   confirm, `Replace the cards`, guards the rebuild). A row in the column
-  directly under a variant type is the insert role and keeps the ordinary
-  Sync (`Prizm Gold` in `cards-parallel-custom`: a hand-made `Parallel` type
-  carries no NB role) — EXCEPT under a variant type whose NB role is
-  `parallel` (NEO-321): those rows are parallels of the BASE set, and their
+  directly under a variant type is an insert and keeps the ordinary Sync —
+  EXCEPT under a Parallel type (NEO-321; since NEO-334 a variant type's TITLE
+  is its kind, so that is any type titled `Parallel`/`Parallels`, hand-made
+  or synced — `Prizm Gold` in `cards-parallel-custom` included): those rows
+  are parallels of the BASE set, and their
   Sync slot is `Build from Base` / `Rebuild from Base` (Gold Wave in
   `setup.yaml`; `Blue` under Bowman › `Parallel`). Selecting such a type also
   mounts the `Parallels of Base` section between the columns row and the
