@@ -567,7 +567,66 @@ export function resolveNav<T extends NavRow>(
           waitingOnStagedLeagues(presented, rows))));
   if (!stale) return nav;
 
-  const nextId = nextUndecided(rows)?._id ?? null;
+  const next = nextUndecided(rows);
+
+  /*
+   * NEO-335 — a decided staged step hands the walk back to the row it was
+   * staged FOR.
+   *
+   * `walkOrder` sits a staged step next to the row that needs it: the team,
+   * then the player who needs it. `nextUndecided` alone does not keep that
+   * promise, because it walks in batch order. Here is how that loses a player:
+   *
+   * 1. The walk pins the first row to settle, say J.
+   * 2. B is earlier in the batch but settles later, so the pin stays on J.
+   * 3. On J the operator adds career team T, and the walk goes to T.
+   * 4. T is answered, and `nextUndecided` returns B.
+   *
+   * J and the chip just staged on him vanish. A CI flow hit exactly this: it
+   * landed on another player at "Step 2 of 28".
+   *
+   * So when the walk was on a staged step and that step is now decided, go
+   * back to its parent. The same rule covers each level: a league returns to
+   * its team, and that team returns to its player.
+   *
+   * The parent must be one the walk would present right now. It must be
+   * undecided and settled, and none of its own staged steps may still be open.
+   * Otherwise we fall through and `nextUndecided` picks the open step.
+   *
+   * Tiers still win, so leagues come before teams and teams before players.
+   * The parent is used only when `nextUndecided` would pick a row of the
+   * parent's own kind. Without this check, an untouched player would be shown
+   * for one render and then yield to the waiting team. One limit remains: if
+   * other teams are waiting, they go first, and once they drain the walk
+   * continues in batch order. Remembering where the walk came from needs state,
+   * not this rule.
+   *
+   * Implicit pins only. An explicit row stays put once decided, so this code
+   * never runs for one.
+   */
+  if (presented?.decision && !nav.explicit && next) {
+    const src = presented.source;
+    const parentId =
+      src?.kind === "careerTeamOf"
+        ? src.playerRowId
+        : src?.kind === "leagueOf"
+          ? src.teamRowId
+          : null;
+    const parent = parentId ? rows.find((r) => r._id === parentId) : undefined;
+    if (
+      parent &&
+      // A parent is a player or a team, never a league, so this also means
+      // its lookup has settled.
+      isPresentable(parent) &&
+      !waitingOnStagedTeams(parent, rows) &&
+      !waitingOnStagedLeagues(parent, rows) &&
+      next.kind === parent.kind
+    ) {
+      return { rowId: parent._id, explicit: false };
+    }
+  }
+
+  const nextId = next?._id ?? null;
   // Already sitting on the right answer implicitly — returning a fresh object
   // here would re-render forever for no change.
   if (nextId === nav.rowId && !nav.explicit) return nav;
