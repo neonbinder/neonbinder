@@ -1164,7 +1164,12 @@ export default function SetSelector() {
     <div
       ref={pageRef}
       onPointerDownCapture={notePointer}
-      className="max-w-full mx-auto p-6 flex flex-col gap-6"
+      // NEO-341: no side padding below lg. binder-layout already pads the
+      // page by 24px a side, and a second 24px left a 412px phone a 316px
+      // strip, narrower than a 340px column, so every open column rendered
+      // with its leading edge (and "Sync <X>") cut off. lg (1024px) and up
+      // keep p-6 exactly as before.
+      className="max-w-full mx-auto py-6 lg:p-6 flex flex-col gap-6"
     >
       {/* `sr-only` is position:absolute, so this is NOT a flex item and costs
           the layout nothing — which matters here: every pixel above the
@@ -1211,7 +1216,17 @@ export default function SetSelector() {
           full-bleed math over-pulls ~8px left, rendering "Sync Sports" at
           x=-2 (~98% visible). Maestro's scrollUntilVisible(visibility:100%)
           then can't tap it. Mac overlay scrollbars (0px) hide this locally —
-          custom-entry-survives-resync 8/8 CI failure, NEO root-cause. */}
+          custom-entry-survives-resync 8/8 CI failure, NEO root-cause.
+
+          `relative` makes this row the containing block of every absolutely
+          positioned descendant, so its overflow clips them (NEO-341). Without
+          it the open column's `sr-only` filter status (EntitySelector) took
+          binder-layout's `relative` wrapper as its containing block, escaped
+          this row's clip and sat at its static position at the end of the
+          columns, stretching the DOCUMENT to the row's full scroll width
+          (1818px at a deep drill). On a phone that zoomed the layout viewport
+          out to ~1650px, the page slid sideways under the reader's thumb and
+          taps landed on whatever sat beside the control. Keep it positioned. */}
       <div
         ref={columnRowRef}
         // a11y: -1 keeps the row out of the tab order while leaving it a valid
@@ -1219,7 +1234,7 @@ export default function SetSelector() {
         tabIndex={-1}
         data-set-selector-scroll
         onKeyDownCapture={noteKeyboardCommit}
-        className="flex flex-row gap-4 overflow-x-auto pb-4 pl-4 focus:outline-none"
+        className="relative flex flex-row gap-4 overflow-x-auto pb-4 pl-4 focus:outline-none"
       >
         {drill.resolving ? (
           // NEO-224 — a deep link is being checked. One column-shaped card,
@@ -1236,7 +1251,7 @@ export default function SetSelector() {
             role="group"
             aria-label={RESOLVING_LINK_LABEL}
             aria-busy="true"
-            className="min-w-[260px] max-w-[340px] flex-shrink-0 bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
+            className="min-w-[260px] max-w-[min(340px,calc(100vw-80px))] flex-shrink-0 bg-white dark:bg-gray-800 p-6 rounded-lg shadow"
           >
             <div
               aria-hidden="true"

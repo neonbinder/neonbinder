@@ -2737,7 +2737,10 @@ function ReconciliationDialog({
                   life when the check was asked for, so it is in the tree
                   (empty) before its first words. */}
               {baseCheck && <LiveLine text={probe.announcement} />}
-              <div className="grid grid-cols-2 gap-4">
+              {/* NEO-341: one column below sm. Side by side in a phone-width
+                  dialog each column was ~170px, and a row's "Make its own
+                  set" button left the item name one letter wide. */}
+              <div className="grid grid-cols-2 max-sm:grid-cols-1 gap-4">
                 {renderPendingColumn("bsc")}
                 {renderPendingColumn("sl")}
               </div>

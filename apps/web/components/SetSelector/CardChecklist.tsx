@@ -2196,7 +2196,11 @@ export default function CardChecklist({
             )}
           </h2>
           {!showAddForm && (
-            <div className="flex gap-2">
+            // NEO-341: `flex-wrap` — Add Card, Add Cross-Release Cards and
+            // Refresh measure ~400px together, wider than a phone's card
+            // panel, so unwrapped they pushed the page 6px past a 412px
+            // viewport. At desktop widths they still sit on one line.
+            <div className="flex flex-wrap gap-2">
               {/* NEO-312 (a11y 1): held while a build is replacing these
                   cards — aria-disabled (focusable, and described by the line
                   that says why), never native `disabled`. */}

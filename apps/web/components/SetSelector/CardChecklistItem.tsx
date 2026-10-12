@@ -267,10 +267,19 @@ export default function CardChecklistItem({
     ? `${card.cardNumber}, ${card.cardName.trim()}`
     : card.cardNumber;
 
+  // NEO-341 — below sm (a phone) the row is TWO lines: the disclosure slot,
+  // number and name/subtitle fill line 1 (the name block's basis is the row
+  // minus the two fixed slots and their gaps), and the badges, attention mark
+  // and Edit/Del wrap to line 2, right-aligned. On one line at 412px the fixed
+  // pieces left the name ~5px (one letter and an ellipsis), and a card with an
+  // RC badge pushed "Del" past the row's edge, clipped by the list. Every row
+  // has the same two lines, so a row's height still never changes after it
+  // renders (the Virtuoso reflow the reserved slots below guard against). sm
+  // and up are the single line exactly as before.
   return (
     <div
       onClick={() => onEdit(card._id)}
-      className={`flex items-center gap-3 p-2.5 border rounded-md dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50 group cursor-pointer ${
+      className={`flex items-center gap-x-2 gap-y-1 sm:gap-3 max-sm:flex-wrap max-sm:justify-end p-2.5 border rounded-md dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700/50 group cursor-pointer ${
         isVariation ? "ml-8 border-l-2 border-l-gray-300 dark:border-l-gray-500" : ""
       } ${
         isSelected
@@ -324,7 +333,7 @@ export default function CardChecklistItem({
           button) so we don't add a focusable tab-stop per row into the
           virtualized list — the always-rendered "Edit" button is the
           keyboard/Maestro-targeted opener. */}
-      <div className="flex-1 min-w-0">
+      <div className="flex-1 min-w-0 max-sm:basis-[calc(100%-5.75rem)]">
         <div className="text-sm font-medium truncate">{card.cardName}</div>
         {/* Always reserve this secondary line's height, even when empty. The
             NEO-90 background enrichment resolves a card's team AFTER the row

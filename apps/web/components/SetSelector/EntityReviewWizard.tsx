@@ -4690,7 +4690,14 @@ export default function EntityReviewWizard({
                * twice over: the body just got ~226px BACK from bounding the
                * league picker, and a reserved gap cannot move under a cursor.
                */
-              className="flex min-h-[4.25rem] items-center justify-between gap-4"
+              /*
+               * NEO-341 — below sm (a phone) row 1 wraps instead: the decision
+               * group takes its own full-width line and the exits drop to the
+               * line under it, right-aligned. Squeezed onto one line at 412px
+               * the decision links wrapped word by word ("Link to / Existing…")
+               * in a ~120px sliver beside the buttons. sm and up are unchanged.
+               */
+              className="flex min-h-[4.25rem] items-center justify-between gap-4 max-sm:flex-wrap max-sm:gap-y-3"
             >
             {/*
               ROW 1 LEFT — THE DECISION FOR THE ROW ON SCREEN.
@@ -4708,12 +4715,12 @@ export default function EntityReviewWizard({
               Mutually exclusive with "Confirm & Save" on the right by
               construction: a presented row means not every row is decided.
             */}
-            <div className="flex min-w-0 flex-wrap items-center gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-3 max-sm:basis-full">
               {decisionControls}
             </div>
             {/* The buttons never yield: if row 1 is ever too narrow, the bulk
                 links clip, not the way out of the dialog. */}
-            <div className="flex shrink-0 items-center gap-3">
+            <div className="flex shrink-0 items-center gap-3 max-sm:ml-auto">
               {expired ? (
                 // Nothing to discard — the rows are already gone, so this is a
                 // plain acknowledgement, not a cancel.
@@ -4838,7 +4845,16 @@ export default function EntityReviewWizard({
               than a stack: the operator is either waiting on lookups or
               watching them be added, never both.
             */}
-            <div className="flex min-h-6 items-center gap-3">
+            {/*
+              NEO-341 — below sm row 2 wraps, and the live status line takes a
+              full-width line of its own (`max-sm:basis-full` below). On a 412px
+              phone the bulk links alone outgrow the row, so the `flex-1` line
+              beside them was squeezed to zero width: "N still looking up" and
+              "Back at the list. N on file." were in the DOM and invisible. The
+              bulk links wrap onto the next line inside the dialog rather than
+              running past its right edge. sm and up are unchanged.
+            */}
+            <div className="flex min-h-6 items-center gap-3 max-sm:flex-wrap max-sm:gap-y-2">
               {/*
                 The live region is its OWN element and holds only text. The bulk
                 links sit beside it, deliberately outside it: a button inside a
@@ -4866,7 +4882,7 @@ export default function EntityReviewWizard({
                      it this inherits Radix's 16px body size, which is not the
                      `text-xs` line `min-h-6` reserves the footer's height
                      for. */
-                  className="flex min-w-0 flex-1 items-center gap-2 text-xs text-[#FF2EB3]"
+                  className="flex min-w-0 flex-1 items-center gap-2 text-xs text-[#FF2EB3] max-sm:basis-full"
                 >
                   {/*
                     The id sits on the TEXT, not on this flex wrapper: the
@@ -4902,7 +4918,7 @@ export default function EntityReviewWizard({
                    note above. Inherited, this was Radix's `--gray-12` at 16px:
                    not a contrast failure, but not the muted status line the
                    footer's reserved height is measured against either. */
-                className={`min-w-0 truncate text-xs text-gray-400 ${
+                className={`min-w-0 truncate text-xs text-gray-400 max-sm:basis-full ${
                   createBlocked && !pickStep ? "shrink-0" : "flex-1"
                 }`}
                 role="status"
@@ -4960,7 +4976,7 @@ export default function EntityReviewWizard({
                    * reason takes the width. Nothing moves vertically either
                    * way, which is what row 1 is protected by.
                    */
-                  className={`flex items-center gap-3 whitespace-nowrap ${
+                  className={`flex items-center gap-3 whitespace-nowrap max-sm:basis-full max-sm:flex-wrap max-sm:gap-y-2 ${
                     createBlocked ? "min-w-0 overflow-hidden" : "shrink-0"
                   }`}
                 >

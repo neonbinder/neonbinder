@@ -795,10 +795,14 @@ export default function CardDetailPanel({
           NEO-47's reasoning, inherited from SetAttributesPanel: FIXED in the
           viewport rather than in-flow, because an edit made while scrolled
           down to the print run would otherwise render its confirmation above
-          the fold, invisible to the operator who just made it. */}
+          the fold, invisible to the operator who just made it.
+
+          NEO-341: `pointer-events-none`. It only reports; on a phone the
+          drawer is full width and this toast lands on the Card name field,
+          so for its few seconds it swallowed the tap meant for the field. */}
       {toast && (
         <div
-          className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
+          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-gray-900 border border-[#00D558]/60 rounded text-xs text-[#00D558] shadow-lg"
           role="status"
           aria-live="polite"
         >
