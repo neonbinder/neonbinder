@@ -278,6 +278,9 @@ jobs:
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
+          # Warm the npx cache sequentially so the backgrounded logs process and the
+          # later npx convex commands never install into _npx concurrently.
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for the seed job."
             exit 0
@@ -613,6 +616,9 @@ jobs:
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
+          # Warm the npx cache sequentially so the backgrounded logs process and the
+          # later npx convex commands never install into _npx concurrently.
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for desktop shard 1."
             exit 0
@@ -746,6 +752,9 @@ jobs:
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
+          # Warm the npx cache sequentially so the backgrounded logs process and the
+          # later npx convex commands never install into _npx concurrently.
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for the seed-mobile job."
             exit 0
@@ -1019,6 +1028,9 @@ jobs:
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
+          # Warm the npx cache sequentially so the backgrounded logs process and the
+          # later npx convex commands never install into _npx concurrently.
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for mobile shard 1."
             exit 0

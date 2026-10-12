@@ -3,11 +3,19 @@
 #
 # Several CI jobs write env vars to the same Convex preview concurrently, and
 # Convex answers a colliding write with "503 ... OptimisticConcurrencyControlFailure".
-# npx can also die on a torn cache ("Cannot find module './buffer-util'"); a
-# retry re-resolves the package, which repairs a half-written cache entry.
+# npx can also die on a torn cache entry ("Cannot find module 'prettier'",
+# "./buffer-util"), typically two npx processes installing the same package into
+# the same ~/.npm/_npx/<hash> at once. npx treats an existing entry as installed,
+# so a plain retry fails identically: on "Cannot find module" this script deletes
+# the _npx/<hash> dir that holds convex, so the next attempt reinstalls cleanly.
+#
+# Jobs that background `npx convex logs` must first run the sequential warm-up
+# (`convex-env-retry.sh --version`), so nothing installs concurrently. This is
+# the one place the CLI pin lives.
 #
 # Usage: convex-env-retry.sh env set NAME VALUE --deployment X
 #        convex-env-retry.sh env remove NAME --deployment X
+#        convex-env-retry.sh --version            (warm-up, no deployment)
 # Arguments are passed to `npx --yes convex@<pin>`. Override the runner for
 # tests with CONVEX_RETRY_CMD (a command prefix, word-split) and the backoff
 # with CONVEX_RETRY_DELAYS (space-separated seconds).
@@ -36,12 +44,22 @@ while :; do
      && grep -qiE 'not (set|found)|does not exist|no such' "$out"; then
     exit "$rc"
   fi
+  if grep -q 'Cannot find module' "$out"; then
+    # Torn npx entry: remove it (CONVEX_RETRY_NPX_CACHE overrides the cache dir for tests).
+    cache="${CONVEX_RETRY_NPX_CACHE:-$(npm config get cache 2>/dev/null)/_npx}"
+    for dir in "$cache"/*/node_modules/convex; do
+      [ -d "$dir" ] || continue
+      entry="${dir%/node_modules/convex}"
+      echo "::warning::removing torn npx cache entry $entry" >&2
+      rm -rf "$entry"
+    done
+  fi
   if [ "$attempt" -ge "$max" ]; then
     echo "::error::convex $* failed after $attempt attempts (last exit $rc)" >&2
     exit "$rc"
   fi
   delay="${delays[$((attempt - 1))]}"
-  echo "::warning::convex $1 $2 failed (attempt $attempt/$max, exit $rc); retrying in ${delay}s" >&2
+  echo "::warning::convex ${1:-} ${2:-} failed (attempt $attempt/$max, exit $rc); retrying in ${delay}s" >&2
   sleep "$delay"
   attempt=$((attempt + 1))
 done
