@@ -1048,6 +1048,9 @@ jobs:
           # on this pass's project timings.
           files=$(node playwright/shard-plan.mjs 8 "$SHARD" --project "$PROJECT")
           node playwright/shard-plan.mjs 8 --project "$PROJECT"   # per-shard totals, to stderr
+          # PLANTED (NEO-341 gate proof, reverted next commit): shard 8 dies, shard 2 drops a spec.
+          if [ "$SHARD" = "8" ]; then echo "PLANTED: shard 8 dies before its tests"; exit 1; fi
+          if [ "$SHARD" = "2" ]; then echo "PLANTED: dropping $(echo "$files" | head -1)"; files=$(echo "$files" | tail -n +2); fi
           if [ -z "$files" ]; then
             # `playwright test` with no file arguments runs the WHOLE suite, and
             # an empty plan means the planner and the spec tree disagree. Either
