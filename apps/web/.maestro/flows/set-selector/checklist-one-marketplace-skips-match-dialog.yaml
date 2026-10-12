@@ -195,11 +195,22 @@ tags:
 #       Save (STEP 10).
 #
 #   Same justification as STEP 8: this is the suite's one fixture where every
-#   card is a TRUE BLANK (BSC lists no team for any of the 25, so K = the
-#   fetch count), it is already committed here, it is this flow's alone, and
+#   card saves TEAMLESS (K = the fetch count), it is already committed here,
+#   it is this flow's alone, and
 #   only a real fetch + commit can put a BSC-linked card through the stamp. A
 #   hand-made set carries no BSC ref (NEO-239), so its cards never wait on a
 #   lookup and could never be re-synced at all.
+#
+#   ⚠️ MEASURED (CI run 38285320710, after NEO-333 #316 merged): the fetch now
+#   waits for BSC's per-card team lookups, so all 25 cards ARRIVE listing
+#   "Roanoke Express". Before, the lookup landed after the commit and the
+#   cards came in blank (green run 38208753526 raised no team step). The walk
+#   util in STEP 6 now meets a "New Team: Roanoke Express" step before the
+#   first player and answers it "Skip — not a team". That skip is recorded
+#   for this set (`entityReviewSkips`), so the listed team holds no guess back
+#   and links nothing: the cards still save teamless, K is still the fetch
+#   count, and STEP 10's re-sync has no team NAME left to ask, only
+#   teamless cards.
 #
 #   ⚠️ WRITES BEYOND THE CARDS, deliberately: ONE player (whichever Roanoke
 #   name the wizard presents first — a name no other flow touches, filed under
@@ -637,7 +648,9 @@ tags:
 # card here is teamless, so the wizard MUST walk on to its teams step — a
 # straight "Confirm & Save" would mean the step never came, and STEP 6b then
 # fails by name on its subtitle. (Roanoke Express ECHL measured 25 players and 0 teams,
-# stable for 27s — so on the happy path the retry costs nothing at all.)
+# stable for 27s — so on the happy path the retry costs nothing at all. Since
+# NEO-333 the listed team "Roanoke Express" is a 26th row, a team, which the
+# walk util skips before it reaches the player; header ⚠️.)
 # ============================================================
 
 # R9-equivalent for the wizard: the util owns the walk (and its R5 lookup
@@ -1355,7 +1368,8 @@ tags:
 #
 # THE CONTENT REVIEW COMES FIRST, AND IT ALWAYS COMES. A re-sync diffs every
 # incoming card against its stored row (NEO-203). The pre-filled card is
-# stored WITH `RXT<token>` and arrives with no team (BSC has none), and every
+# stored WITH `RXT<token>` and arrives with none (BSC lists "Roanoke Express",
+# which the first sitting skipped as "not a team"; header ⚠️), and every
 # skipped card is stored with no player link against an incoming name — both
 # are content changes, so `needsSyncReview` is true on every run of this
 # flow, and "Skip changes" (apply nothing, keep NeonBinder's version) is the
@@ -1430,9 +1444,24 @@ tags:
 
 # Never gated: Confirm & Save with every line on its default saves the same
 # cards again, and the count must hold. Our own write: 7000 (R5).
+#
+# EXACTLY "Saved N cards.", with NO tail (R2). Every name on these cards was
+# answered in the first sitting (one created, the rest skipped, the skips
+# stored per set), so this commit has nothing to report beyond the count.
+# The banner is ONE text node holding the count and every note the commit
+# appends (CardChecklist `committedText`), and `text:` is a full match, so
+# any note fails here by name. The one this pins:
+# "N names were not reviewed; those cards have no player/team link." That is
+# the commit treating names it found in the set's stored skips as
+# unanswered, and stamping them back onto the cards as pending names. CI run
+# 38285320710 showed it as "25 names were not reviewed" with
+# "Roanoke Express (unconfirmed)" on the rows, a team the operator had ruled
+# "not a team". The other notes cannot apply here: nothing is deleted or
+# stale, no card links twice, all 25 match by BSC ref, and NB272 carries no
+# marketplace id, so it is never "no longer listed upstream".
 - tapOn:
     text: ".*Confirm & Save.*"
 - extendedWaitUntil:
     visible:
-      text: ".*Saved ${output.FETCHED} cards.*"
+      text: "Saved ${output.FETCHED} cards\\."
     timeout: 7000

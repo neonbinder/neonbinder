@@ -143,3 +143,4 @@ Non-markdown helpers: `tools/`
 - [takeScreenshot paths + nested runFlow env](patterns_screenshots_and_nested_env.md) — absolute paths refused; env is inherited, so pass SET to the discard util
 - [Wizard fixture lookup throughput](reference_wizard_fixture_lookup_throughput.md) — ~0.7 rows/s live; walk util covers ~125 names; teams settle last; READY rows present at once
 - [No `$` inside `${…}`](patterns_no_dollar_inside_a_script_template.md) — Maestro's script regex is `\$\{([^$]*)}`; a `$` = never run, output undefined, assertTrue "false is true"
+- [Diff optional branches green vs red](patterns_diff_optional_branches_green_vs_red.md) — a util branch SKIPPED→COMPLETED proves the live fixture changed; `.*Saved N cards.*` hides a "not reviewed" tail
