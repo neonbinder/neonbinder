@@ -16,6 +16,7 @@ import SameNamePlayerPanel, {
   ACTIVE_IN_SET_YEAR_LABEL,
   candidateDetail,
   candidateLinkLabel,
+  pickStepIntro,
   type SameNameCandidate,
 } from "./SameNamePlayerPanel";
 
@@ -83,13 +84,31 @@ describe("SameNamePlayerPanel", () => {
     expect(container.innerHTML).toBe("");
   });
 
-  it("states the situation and the count", () => {
+  it("states the count and what to do, in one sentence", () => {
     render(
       <SameNamePlayerPanel candidates={[older, younger]} onPick={vi.fn()} />,
     );
-    expect(screen.getByText("Same name, different people")).toBeTruthy();
     expect(
-      screen.getByText(/2 players are already filed under this name/),
+      screen.getByText(
+        "We've got 2 on file under that name. Pick the one on this card.",
+      ),
+    ).toBeTruthy();
+    // The step's heading owns the question now; the panel no longer frames itself.
+    expect(screen.queryByText("Same name, different people")).toBeNull();
+  });
+
+  it("names the way out when the scan was capped", () => {
+    render(
+      <SameNamePlayerPanel
+        candidates={[older, younger]}
+        scanCapped
+        onPick={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByText(
+        "More than 2 answer to that name — here are the first 2. Can't see them? Link to Existing searches them all.",
+      ),
     ).toBeTruthy();
   });
 
@@ -224,5 +243,16 @@ describe("a candidate matched by a former name says so", () => {
       2,
     );
     expect(label).toBe("Link to Bob Allen, also known as Ron Artest");
+  });
+});
+
+describe("pickStepIntro", () => {
+  it("uses the plain intro unless the scan was capped", () => {
+    expect(pickStepIntro(3, false)).toBe(
+      "We've got 3 on file under that name. Pick the one on this card.",
+    );
+    expect(pickStepIntro(8, true)).toBe(
+      "More than 8 answer to that name — here are the first 8. Can't see them? Link to Existing searches them all.",
+    );
   });
 });
