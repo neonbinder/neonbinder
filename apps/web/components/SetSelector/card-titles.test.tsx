@@ -216,7 +216,9 @@ describe("titleAnswersForCommit — never blocks, never invents", () => {
     const out = titleAnswersForCommit([card("1"), card("2")], context(), undefined, {
       existingIndexes: [1],
     });
-    expect(out).toEqual([{ listingTitleKept: true }, undefined]);
+    // The kept answer carries the very title the step showed.
+    const shown = buildTitleGroups([card("1")], context()).titleGroups[0].cards[0].title;
+    expect(out).toEqual([{ listingTitleKept: shown }, undefined]);
     expect(titleAnswersForCommit([card("1")], SHORT)).toEqual([undefined]);
   });
 

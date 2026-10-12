@@ -128,13 +128,16 @@ export type NewCardRow = {
    */
   listingTitle?: string;
   /**
-   * NEO-335 — the operator saw this card's trimmed title on the "Card titles"
-   * step and kept it. The title is still GENERATED here (the server's names
-   * are the truth, not the client's prediction of them), but the "auto title
-   * was cut short" flag is not written: the question it raises has been
-   * asked and answered before save. Only the commit's insert branch passes it.
+   * NEO-335 — the trimmed title the "Card titles" step SHOWED the operator,
+   * which they kept. The title is still GENERATED here (the server's names
+   * are the truth, not the client's prediction of them). The "auto title was
+   * cut short" flag is skipped only when the generated title is exactly this
+   * text: then the question it raises was asked and answered before save. A
+   * title that came out differently is one nobody saw, so it is flagged as
+   * before (security audit, NEO-335). Only the commit's insert branch passes
+   * it, already trimmed and capped (`listingInputs.checkTitleAnswer`).
    */
-  listingTitleKept?: boolean;
+  listingTitleKept?: string;
 };
 
 export type BuiltCardRow = {
@@ -197,7 +200,9 @@ export function buildCardRowForInsert(
   // the cut-short question was put before save, so the flag is not written.
   const operatorTitle = card.listingTitle?.trim();
   const flagTruncated =
-    !listingTitle.coreFits && !operatorTitle && card.listingTitleKept !== true;
+    !listingTitle.coreFits &&
+    !operatorTitle &&
+    card.listingTitleKept !== listingTitle.title;
 
   const carried = card.carried ?? {};
   const row: WithoutSystemFields<Doc<"cardChecklist">> = {

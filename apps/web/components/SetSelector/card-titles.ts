@@ -78,7 +78,12 @@ export type TitleAnswer = {
 /** What one card's answer puts on its preview card for `commitCardChecklist`. */
 export type TitleCommitFields = {
   listingTitle?: string;
-  listingTitleKept?: true;
+  /**
+   * The trimmed title the step showed and the operator kept. The server
+   * regenerates the title and skips the cut-short flag only when it comes
+   * out as exactly this text.
+   */
+  listingTitleKept?: string;
   cardVariation?: string;
   cardVariationAnswered?: true;
 };
@@ -401,8 +406,9 @@ export function titleDraftState(draft: string | undefined, generated: string): T
  * (undefined = nothing; the card commits exactly as it did before the step).
  *
  *  - A card on the step for its TITLE sends its own title when the operator
- *    wrote one that fits, else `listingTitleKept` — the step showed it, so
- *    keeping is the answer and the walker does not ask again after save. A
+ *    wrote one that fits, else `listingTitleKept` carrying the title the
+ *    step showed — keeping is the answer, and the walker does not ask again
+ *    after save as long as the server generates that same title. A
  *    draft over the cap sends neither: the server titles the card itself and
  *    flags it, and the walker picks it up (the step never blocks a save).
  *  - A card on the step for its VARIATION sends the trimmed variation when it
@@ -421,7 +427,7 @@ export function titleAnswersForCommit(
     if (a.items.some((i) => i.kind === "titleTruncated")) {
       const state = titleDraftState(answer?.listingTitle, a.title);
       if (state.kind === "own") fields.listingTitle = state.title;
-      else if (state.kind === "kept") fields.listingTitleKept = true;
+      else if (state.kind === "kept") fields.listingTitleKept = a.title;
     }
     if (a.items.some((i) => i.kind === "aspectValueOverLimit")) {
       const variation = validVariationAnswer(cards[a.index], answer);

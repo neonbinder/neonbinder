@@ -367,6 +367,33 @@ describe("teamSuggestionsForPreview — gate and bounds", () => {
     ).rejects.toThrow(/Too many team names/);
   });
 
+  test("refuses players and team names in ONE call (each cap is one job's read budget)", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await expect(
+      t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ name: "Anyone" }],
+        teamNames: ["Reds"],
+      }),
+    ).rejects.toThrow(/players or team names in one call, not both/);
+    // Either alone is served, and an empty list on the other side is no ask.
+    await expect(
+      t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ name: "Anyone" }],
+        teamNames: [],
+      }),
+    ).resolves.toMatchObject({ teamNames: [] });
+    await expect(
+      t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [],
+        teamNames: ["Reds"],
+      }),
+    ).resolves.toMatchObject({ players: [] });
+  });
+
   test("a deleted node answers empty rather than throwing", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);

@@ -245,6 +245,15 @@ describe("checkTitleAnswer — the write path's caps", () => {
     ).toThrow(/card #1: the title is 81 characters; the limit is 80/);
   });
 
+  test("a kept title is held to the same cap", () => {
+    expect(() =>
+      checkTitleAnswer({ listingTitleKept: "t".repeat(LISTING_TITLE_MAX + 1) }, "card #3"),
+    ).toThrow(/card #3: the title is 81 characters; the limit is 80/);
+    expect(checkTitleAnswer({ listingTitleKept: " Shown #3 " }, "card #3")).toEqual({
+      listingTitleKept: "Shown #3",
+    });
+  });
+
   test("a blank title is no answer", () => {
     expect(checkTitleAnswer({ listingTitle: "   " }, "card #1")).toEqual({});
   });
@@ -272,12 +281,22 @@ describe("buildCardRowForInsert — the operator's pre-save answer", () => {
   test("kept: the generated title, NOT flagged — the question was asked before save", () => {
     const plain = buildCardRowForInsert(newCardRow(truncatedCase), truncatedCase.set, NOW);
     const kept = buildCardRowForInsert(
-      { ...newCardRow(truncatedCase), listingTitleKept: true },
+      { ...newCardRow(truncatedCase), listingTitleKept: plain.row.listingTitle },
       truncatedCase.set,
       NOW,
     );
     expect(kept.row.listingTitle).toBe(plain.row.listingTitle);
     expect(kept.row).not.toHaveProperty("listingTitleTruncated");
+  });
+
+  test("kept, but the server generated a different title: flagged as before", () => {
+    const kept = buildCardRowForInsert(
+      { ...newCardRow(truncatedCase), listingTitleKept: "A title nobody generated #300" },
+      truncatedCase.set,
+      NOW,
+    );
+    expect(kept.row.listingTitle).not.toBe("A title nobody generated #300");
+    expect(kept.row.listingTitleTruncated).toBe(true);
   });
 
   test("their own title: written verbatim, NOT flagged; the description is still generated", () => {

@@ -942,6 +942,16 @@ export const teamSuggestionsForPreview = query({
         `Too many team names to look up at once (${teamNameArgs.length}; max ${TEAM_SUGGESTION_MAX_TEAM_NAMES}).`,
       );
     }
+    // NEO-335 security audit — the read budget. Each cap above is sized for a
+    // call that does ONE of the two jobs; a full player slice plus a full name
+    // slice in one transaction stacks both budgets. The browser already sends
+    // them as separate calls (TeamsOnCardsSection's `p…` and `n…` queries),
+    // so a call carrying both is refused rather than served.
+    if (args.players.length > 0 && teamNameArgs.length > 0) {
+      throw new ConvexError(
+        "Ask for players or team names in one call, not both.",
+      );
+    }
 
     const empty = (): PlayerSuggestionResult => ({
       playerId: null,

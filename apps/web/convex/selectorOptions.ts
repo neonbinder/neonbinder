@@ -13000,11 +13000,13 @@ const previewCardFields = {
   // (`listingInputs.checkTitleAnswer`); over the cap refuses the commit, the
   // same rule `updateCard` applies to a title edit.
   listingTitle: v.optional(v.string()),
-  // `listingTitleKept` — the operator kept the trimmed title the step showed.
-  // The server still GENERATES the title (its names are the truth, not the
-  // client's prediction of them) and just does not flag it cut short: that
-  // question was asked and answered before save.
-  listingTitleKept: v.optional(v.literal(true)),
+  // `listingTitleKept` — the trimmed title the step SHOWED, which the
+  // operator kept. The server still GENERATES the title (its names are the
+  // truth, not the client's prediction of them) and skips the cut-short flag
+  // only when what it generated is exactly this text; anything else is a
+  // title nobody saw, flagged as before. Held to LISTING_TITLE_MAX like
+  // `listingTitle` (`checkTitleAnswer`).
+  listingTitleKept: v.optional(v.string()),
   // `cardVariationAnswered` — this card's `cardVariation` is the operator's
   // trimmed answer, not what the card printed, so it is held to the aspect
   // cap (ASPECT_VALUE_MAX) the step asked them to trim it to. Absent, the
@@ -17049,7 +17051,7 @@ const commitChunkCardValidator = v.object({
   // re-caps the title (the writer caps) and the update branch never reads
   // them.
   listingTitle: v.optional(v.string()),
-  listingTitleKept: v.optional(v.literal(true)),
+  listingTitleKept: v.optional(v.string()),
 });
 
 /**
@@ -17628,10 +17630,10 @@ export const commitCardChecklistChunk = internalMutation({
         // NEO-335 — the operator's pre-save title answer. The action already
         // refused an over-cap one before any phase wrote; capped again here
         // because this is the writer (`checkTitleAnswer`).
-        let insertTitleAnswer: { listingTitle?: string } = {};
+        let insertTitleAnswer: { listingTitle?: string; listingTitleKept?: string } = {};
         try {
           insertTitleAnswer = checkTitleAnswer(
-            { listingTitle: card.listingTitle },
+            { listingTitle: card.listingTitle, listingTitleKept: card.listingTitleKept },
             `card #${card.cardNumber}`,
           );
         } catch (error) {
@@ -17679,7 +17681,9 @@ export const commitCardChecklistChunk = internalMutation({
             ...(insertTitleAnswer.listingTitle
               ? { listingTitle: insertTitleAnswer.listingTitle }
               : {}),
-            ...(card.listingTitleKept === true ? { listingTitleKept: true } : {}),
+            ...(insertTitleAnswer.listingTitleKept
+              ? { listingTitleKept: insertTitleAnswer.listingTitleKept }
+              : {}),
           },
           {
             sportSkuCode: args.sportSkuCode,
@@ -20478,8 +20482,8 @@ export const commitCardChecklist = action({
           ...(match.existingIdByIndex[index] === undefined && c.listingTitle?.trim()
             ? { listingTitle: c.listingTitle.trim() }
             : {}),
-          ...(match.existingIdByIndex[index] === undefined && c.listingTitleKept === true
-            ? { listingTitleKept: true as const }
+          ...(match.existingIdByIndex[index] === undefined && c.listingTitleKept?.trim()
+            ? { listingTitleKept: c.listingTitleKept.trim() }
             : {}),
         },
       };

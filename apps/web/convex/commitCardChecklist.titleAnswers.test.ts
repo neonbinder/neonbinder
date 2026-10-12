@@ -94,7 +94,7 @@ function card(opts: {
   slRef?: string;
   cardVariation?: string;
   listingTitle?: string;
-  listingTitleKept?: true;
+  listingTitleKept?: string;
   cardVariationAnswered?: true;
 }) {
   return {
@@ -105,7 +105,7 @@ function card(opts: {
     platformData: { sportlots: { ref: opts.slRef ?? `SL-${opts.cardNumber}` } },
     ...(opts.cardVariation !== undefined ? { cardVariation: opts.cardVariation } : {}),
     ...(opts.listingTitle !== undefined ? { listingTitle: opts.listingTitle } : {}),
-    ...(opts.listingTitleKept ? { listingTitleKept: opts.listingTitleKept } : {}),
+    ...(opts.listingTitleKept !== undefined ? { listingTitleKept: opts.listingTitleKept } : {}),
     ...(opts.cardVariationAnswered ? { cardVariationAnswered: opts.cardVariationAnswered } : {}),
   };
 }
@@ -152,15 +152,39 @@ describe("commitCardChecklist — the 'Card titles' answers (NEO-335)", () => {
     await settle(t);
   });
 
-  test("kept: the same generated title, not flagged", async () => {
+  test("kept: the title the step showed, generated again and matching — not flagged", async () => {
     const t = convexTest(schema, modules);
     const ids = await seedTree(t);
-    await commit(t, ids, [card({ cardNumber: "1" }), card({ cardNumber: "2", listingTitleKept: true })]);
-    const rows = await rowsByNumber(t, ids.leafId);
-    const plain = rows.get("1")!;
-    const kept = rows.get("2")!;
-    expect(kept.listingTitle).toBe(plain.listingTitle!.replace("#1", "#2"));
+    await commit(t, ids, [card({ cardNumber: "1" })]);
+    const shown = (await rowsByNumber(t, ids.leafId)).get("1")!.listingTitle!.replace("#1", "#2");
+    await commit(t, ids, [card({ cardNumber: "2", listingTitleKept: shown })]);
+    const kept = (await rowsByNumber(t, ids.leafId)).get("2")!;
+    expect(kept.listingTitle).toBe(shown);
     expect(kept.listingTitleTruncated).toBeUndefined();
+    await settle(t);
+  });
+
+  test("kept text that differs from what the server generates: the flag is still written", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedTree(t);
+    await commit(t, ids, [
+      card({ cardNumber: "1", listingTitleKept: "2026 Topps Something Else Entirely #1" }),
+    ]);
+    const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
+    // The generated title is written, never the client's text…
+    expect(row.listingTitle).not.toBe("2026 Topps Something Else Entirely #1");
+    // …and nobody saw it, so the walker still asks.
+    expect(row.listingTitleTruncated).toBe(true);
+    await settle(t);
+  });
+
+  test("a kept title over the cap refuses the commit before anything is written", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedTree(t);
+    await expect(
+      commit(t, ids, [card({ cardNumber: "1", listingTitleKept: "t".repeat(LISTING_TITLE_MAX + 1) })]),
+    ).rejects.toThrow(/card #1: the title is 81 characters; the limit is 80/);
+    expect((await rowsByNumber(t, ids.leafId)).size).toBe(0);
     await settle(t);
   });
 

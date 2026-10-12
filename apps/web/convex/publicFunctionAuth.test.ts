@@ -1602,6 +1602,13 @@ describe("NEO-325 internal queries stay internal", () => {
     // with no `requireAdmin`; only `commitCardChecklist`, behind its own
     // gate, may call it.
     ["selectorOptions.ts", "validateOperatorTeamIds"],
+    // NEO-335 — the "Card titles" context. `titleSetFacts` reads a set's
+    // features and set-level teams for a caller-supplied node, and
+    // `playerNamesByIds` answers names for caller-supplied ids; neither runs
+    // `requireAdmin`. Only `resolveChecklistEntities`, behind its own gate,
+    // may call them.
+    ["listingTitleContext.ts", "titleSetFacts"],
+    ["listingTitleContext.ts", "playerNamesByIds"],
   ])("%s :: %s is declared internalQuery (it trusts its arguments)", (file, fn) => {
     const src = readFileSync(join(__dirname, file), "utf8");
     expect(src).toContain(`export const ${fn} = internalQuery({`);

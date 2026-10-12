@@ -301,18 +301,27 @@ export function leftOutOfTitle(
  * does for every internal arg that lands in a stored field).
  */
 export function checkTitleAnswer(
-  answer: { listingTitle?: string; cardVariation?: string; cardVariationAnswered?: boolean },
+  answer: {
+    listingTitle?: string;
+    listingTitleKept?: string;
+    cardVariation?: string;
+    cardVariationAnswered?: boolean;
+  },
   where: string,
-): { listingTitle?: string; cardVariation?: string } {
-  const out: { listingTitle?: string; cardVariation?: string } = {};
-  if (answer.listingTitle !== undefined) {
-    const title = answer.listingTitle.trim();
+): { listingTitle?: string; listingTitleKept?: string; cardVariation?: string } {
+  const out: { listingTitle?: string; listingTitleKept?: string; cardVariation?: string } = {};
+  // Both title fields are held to the same cap: the kept one is the title
+  // the step SHOWED, which the generator never makes longer than this.
+  for (const field of ["listingTitle", "listingTitleKept"] as const) {
+    const raw = answer[field];
+    if (raw === undefined) continue;
+    const title = raw.trim();
     if (title.length > LISTING_TITLE_MAX) {
       throw new Error(
         `${where}: the title is ${title.length} characters; the limit is ${LISTING_TITLE_MAX}.`,
       );
     }
-    if (title) out.listingTitle = title;
+    if (title) out[field] = title;
   }
   if (answer.cardVariationAnswered && answer.cardVariation !== undefined) {
     const variation = answer.cardVariation.trim();
