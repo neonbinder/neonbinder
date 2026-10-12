@@ -12,16 +12,26 @@
  *   setup     — tests/setup.spec.ts, the seed track. Seed job only, worker 0.
  *   bootstrap — tests/profile/worker-bootstrap.spec.ts. `e2e` depends on it,
  *               so every shard first resets + seeds ITS account.
- *   e2e       — everything else. CI hands each shard an explicit file list
- *               (shard-plan.mjs, longest-first) instead of --shard.
+ *   e2e       — everything else, desktop (1024x629). CI hands each shard an
+ *               explicit file list (shard-plan.mjs, longest-first) instead of
+ *               --shard.
+ *   e2e-mobile — the same specs on a phone (Chromium, Pixel 7). Every spec
+ *               runs on BOTH; the shard runs both projects on its files.
  *
- * One worker per shard: each shard owns one test account (TEST_EMAIL_<n>).
+ * One worker per shard: each shard owns one test account (TEST_EMAIL_<n>),
+ * so a spec's desktop and mobile runs happen one after the other on the same
+ * account, never at the same time (sole-writer specs stay sole writers).
+ * Minted names carry a d/m project marker (support/env.ts) so the two runs
+ * never share a row. setup and bootstrap stay single, desktop.
+ *
+ * Project names are load-bearing: shard-plan.mjs (PROJECTS) and e2e.yml's
+ * gate read the same two names.
  *
  * Budgets: 7 s per action / expect — the suite's UX budget. A step the flow
  * states a longer timeout for (live marketplace round-trips, the launch
  * gate) passes that number on that one call. No retries.
  */
-import { defineConfig } from "@playwright/test";
+import { defineConfig, devices } from "@playwright/test";
 
 const CI = !!process.env.CI;
 const APP_URL = (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
@@ -70,6 +80,15 @@ export default defineConfig({
       name: "e2e",
       testIgnore: [SETUP, BOOTSTRAP],
       dependencies: ["bootstrap"],
+    },
+    {
+      // Chromium only: CI installs nothing else. The descriptor brings the
+      // phone viewport, touch, isMobile and a mobile user agent; it replaces
+      // the desktop viewport above for this project.
+      name: "e2e-mobile",
+      testIgnore: [SETUP, BOOTSTRAP],
+      dependencies: ["bootstrap"],
+      use: { ...devices["Pixel 7"] },
     },
   ],
   // CI: localhost:3000 -> Vercel preview proxy that injects the

@@ -77,8 +77,15 @@ jobs:
 
           old_doc = json.load(open(sys.argv[1]))
           new_doc = json.load(open(sys.argv[2]))
-          old = old_doc.get("seconds", {})
           measured = new_doc.get("seconds", {})
+          # Each value sums the projects in the doc's `projects` (absent = the
+          # desktop-only format, ["e2e"]). Put the committed values on the new
+          # run's basis before comparing or merging, so a desktop-only file
+          # and a desktop+mobile run never read as drift (or mix) by 2x.
+          new_projects = new_doc.get("projects") or ["e2e"]
+          old_projects = old_doc.get("projects") or ["e2e"]
+          old = {k: round(v * len(new_projects) / len(old_projects))
+                 for k, v in old_doc.get("seconds", {}).items()}
 
           # main's current spec set (the checkout), same filter as shard-plan.mjs.
           tests = "playwright/tests"
@@ -120,7 +127,8 @@ jobs:
           print("Drift:", drift, "-", reason)
 
           if drift:
-              out = {"_source": new_doc.get("_source", old_doc.get("_source", "")), "seconds": merged}
+              out = {"_source": new_doc.get("_source", old_doc.get("_source", "")),
+                     "projects": new_projects, "seconds": merged}
               with open(sys.argv[2], "w") as fh:
                   fh.write(json.dumps(out, indent=2) + "\n")
           else:

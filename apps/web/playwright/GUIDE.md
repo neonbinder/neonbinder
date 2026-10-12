@@ -13,7 +13,7 @@ Layout:
 | `support/` | shared helpers (see "Support") |
 | `SET-REGISTRY.md` | every real set the suite touches, who provisions it, who may write |
 | `shard-plan.mjs`, `timings.json` | how CI splits files across shards |
-| `../playwright.config.ts` | projects `setup`, `bootstrap`, `e2e`; 7 s budget; no retries |
+| `../playwright.config.ts` | projects `setup`, `bootstrap`, `e2e` (desktop), `e2e-mobile` (phone); 7 s budget; no retries |
 
 Reference specs that show the patterns below:
 
@@ -157,8 +157,9 @@ typed into "+ Custom" (the form refuses the name) and never searched for.
   a card; the row survives), so nothing a spec creates is removed within the
   run that created it, and shards share one preview: every minted team is
   visible to every other spec for the whole run. `ATTEMPT_ID` is spelled
-  `pw<worker>-a1-<random>` and `ATTEMPT_TOKEN` is that with hyphens stripped;
-  anything that reconstructs a prefix from `WORKER_INDEX` by hand is wrong.
+  `pw<worker><d|m>-a1-<random>` (`d` desktop, `m` mobile; see "Desktop and
+  mobile") and `ATTEMPT_TOKEN` is that with hyphens stripped; anything that
+  reconstructs a prefix from `WORKER_INDEX` by hand is wrong.
 - **Committing specs are sole writers and self-cleaning.** A spec that
   commits data (wizard flows, set builds) owns what it commits, uses minted
   names, and leaves nothing a later spec or the same worker's next run
@@ -205,11 +206,16 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 
 ## Support (use these, keep the set small)
 
-- `support/fixtures.ts`: `test` with `env` (`WORKER_INDEX`, `ATTEMPT_ID`,
-  `ATTEMPT_TOKEN`, `TEST_USERNAME`, `PAUSED_PLATFORMS`, `SL_PAUSED`) and
-  `signIn(redirect, { account? })`, which opens
+- `support/fixtures.ts`: `test` with `env` (`WORKER_INDEX`, `WORKER_KEY`,
+  `ATTEMPT_ID`, `ATTEMPT_TOKEN`, `TEST_USERNAME`, `PAUSED_PLATFORMS`,
+  `SL_PAUSED`) and `signIn(redirect, { account? })`, which opens
   `/testing/sign-in?redirect=<redirect>[&account=<a>]&worker=<n>` (a nested
   `?` stays literal and a nested `&` is written `%26`). `LAUNCH_GATE` (45 s).
+  `expectAccessible(page, { within?, label? })`, the axe check (see
+  "Accessibility checks").
+- `support/a11y.ts`: what `expectAccessible` runs: the WCAG tags, the one
+  list of excluded third-party regions (each with its reason), the failure
+  summary and the attachment. Specs never import it directly.
 - `support/env.ts`: how `env` is built (`makeEnv`, `isSlPaused`); import types
   from here, do not re-derive.
 - `support/credentials.ts`: `loginToBsc(page)`, `loginToSportLots(page, env)`,
@@ -320,6 +326,83 @@ Idioms:
 - **Fresh-only specs** (wikidata live proof, the committing wizard flows) pass
   once per seed. A second local run fails at its "nothing exists yet"
   precondition; that is correct, not flaky. Re-seed.
+
+## Desktop and mobile
+
+Every spec runs twice: on `e2e` (desktop Chromium, 1024x629) and on
+`e2e-mobile` (Chromium with the Pixel 7 descriptor: 412x839, touch,
+`isMobile`, a mobile user agent). CI runs both projects on each shard's
+files, so a spec's two runs happen one after the other on the same worker
+and account, never at the same time; a sole writer stays a sole writer. The
+`e2e` gate needs a passing result for every planned spec on BOTH projects,
+and a skipped test counts as a failure.
+
+- **Write one spec for both.** Role, label and text locators do not care
+  about the viewport, and `click()` scrolls by itself. Most specs need no
+  change at all.
+- **Branch only where the mobile layout genuinely differs** (a menu behind a
+  toggle, a panel that becomes a sheet), and branch on the project, never on
+  what the screen happens to show: Playwright's own `isMobile` fixture
+  (`async ({ page, isMobile }) => ...`) or `test.info().project.name ===
+  "e2e-mobile"`. Each branch still locates only by what a user perceives and
+  ends in hard asserts that prove the same feature (R2). A difference you did
+  not expect is a finding to report, not a branch to add.
+- **Never skip mobile without a stated reason.** `test.skip` is a lint error
+  and the gate fails on a skip. A spec that truly cannot run on a phone is
+  an owner decision: propose it with the reason; never quietly ignore a
+  project.
+- **Minted names differ per project.** The `env` fixture folds the project
+  into every name it mints: `ATTEMPT_ID` is `pw3d-a1-…` on desktop and
+  `pw3m-a1-…` on mobile, so `ATTEMPT_TOKEN`s never collide and the mobile run
+  never meets a row the desktop run made (nothing deletes a minted row
+  mid-run). For a per-WORKER name (a hand-made set), use `env.WORKER_KEY`
+  (`3d` / `3m`), not `env.WORKER_INDEX`, so each project gets its own row.
+  `WORKER_INDEX` stays the bare account number, shared by both projects:
+  it is what `signIn` passes as `worker=`, and it names what the account's
+  bootstrap seeded.
+- **Local runs** pass both projects, or the one you are debugging:
+  `npx playwright test --project=e2e --project=e2e-mobile --no-deps <spec>`.
+
+## Accessibility checks
+
+`expectAccessible(page)` runs axe-core against the page and fails the test
+on any WCAG 2.0, 2.1 or 2.2 level A or AA violation, one line per violated
+rule (impact, rule id, what to fix, how many elements, the first element's
+selector, the rule's help link). The result, without any node's HTML, is
+attached to the test as JSON (`axe <label> (<project>)` in the report).
+
+```ts
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+
+await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
+await expectAccessible(page, { label: "Profile settings" });
+
+const dialog = page.getByRole("dialog", { name: "New Team" });
+await expect(dialog.getByRole("textbox", { name: "Location" })).toBeVisible();
+await expectAccessible(page, { within: dialog, label: "New Team dialog" });
+```
+
+- **Call it at every new screen or state a spec reaches**, right after the
+  assertion that proves the screen is showing (never before: axe checks
+  whatever is in the DOM at that moment). A dialog opening, a wizard step, an
+  error state and an empty state are each a state. It runs on both projects
+  with the same call, so the phone layout is checked too.
+- **Whole page by default.** `within` takes a Locator (role, label or text,
+  like any other locator; it must resolve to exactly one element) for a
+  region whose page the spec already checked. `label` names what the user
+  sees; it defaults to the URL path.
+- **Violations are product bugs.** Fix them in the product (contrast, names,
+  roles, landmarks), never in the spec. There is no option to disable a rule,
+  and `EXCLUDED_REGIONS` in `support/a11y.ts` holds only UI that is not
+  NeonBinder's and that NeonBinder cannot change, each entry with its reason.
+  Never add NeonBinder's own UI to it, and never exclude something to make a
+  spec pass.
+- The browser runs in Playwright's default light colour scheme, as a user
+  with a light OS setting sees the app. A contrast failure that only shows in
+  light mode is still a real failure.
+- `incomplete` results in the attachment (axe could not decide, e.g. text
+  over an image or gradient) never fail a test; read them when changing a
+  screen's colours.
 
 ## Worker-state seeding
 
@@ -528,7 +611,7 @@ VITE_CONVEX_URL=<the PR's Convex preview URL> VITE_DEV_DISABLE_HTTPS=1 \
 ./e2e-baseline.sh reset --deployment <the preview's deployment name>
 APP_URL=http://localhost:3002 npx playwright test --project=setup
 APP_URL=http://localhost:3002 WORKER_INDEX=0 \
-  npx playwright test --project=e2e --no-deps <path-substring>
+  npx playwright test --project=e2e --project=e2e-mobile --no-deps <path-substring>
 ```
 
 `TESTING_ENDPOINT_SECRET` must be exported into the Vite process itself (its
@@ -544,14 +627,18 @@ timeboxed check and then push; CI validates.
 **CI shape.** `pr-pipeline.yml` calls `.github/workflows/e2e.yml` on every
 PR: reset, then seed (the `setup` project, worker 0), then 8 shards. Each
 shard gets an explicit file list from `shard-plan.mjs` (longest-processing-
-time-first over `timings.json`, not `--shard`) and runs the `bootstrap`
-project for its own account first (workers 0-7 are used; accounts 0-11
-exist). The `e2e` gate fails on any failed spec or any missing result (a shard
-that died before reporting fails it too). A `report` job publishes the
+time-first over `timings.json`, each spec weighted desktop + mobile, not
+`--shard`), runs it on both `e2e` and `e2e-mobile` (`shard-plan.mjs
+--projects` names them), and runs the `bootstrap` project for its own account
+first (workers 0-7 are used; accounts 0-11 exist). The `e2e` gate fails on any
+failed spec or any missing result on either project (a shard that died before
+reporting fails it too). A `report` job publishes the
 "Playwright E2E" check and a sticky PR comment. `e2e-repeat.yml` runs the
 suite N times (flake sampling); `refresh-flow-timings.yml` refreshes
 `timings.json` from CI. Refresh by hand from a run's merged results with
-`node playwright/shard-plan.mjs --from-results <results.json>`.
+`node playwright/shard-plan.mjs --from-results <results.json>`: it sums each
+spec's desktop and mobile time and records `"projects"` in the file (a file
+without it is the older desktop-only format, which the planner scales up).
 
 **Reading a red run.**
 1. Find which spec failed in the "Playwright E2E" check or the sticky comment.
@@ -580,10 +667,14 @@ public repo are public. Traces are only on locally (`retain-on-failure`).
       justified at the site and on that call only. Nothing else exceeds 7 s.
 - [ ] No sleeps, no CSS/XPath/test ids; locators are role/label/text.
 - [ ] Minted names come from `env.ATTEMPT_TOKEN` / `env.ATTEMPT_ID` as single
-      tokens.
+      tokens; per-worker names use `env.WORKER_KEY`.
+- [ ] `expectAccessible` runs at every new screen or state the spec reaches.
+- [ ] The spec passes on `e2e` AND `e2e-mobile`; any mobile branch keys on
+      `isMobile` and ends in hard asserts.
 - [ ] Writes go to a per-worker hand-made set, or the spec is the registered
       sole writer (R7a); nothing destructive (R7).
 - [ ] If the spec drives a shared helper you changed, a deliberate throw in
       the helper turns the covering specs red.
 - [ ] `npm run test:e2e:typecheck` and `npx eslint playwright` pass;
-      `npm run test:e2e:list -- --project=e2e` lists the test once.
+      `npm run test:e2e:list -- --project=e2e --project=e2e-mobile` lists
+      the test once per project.

@@ -82,6 +82,13 @@ Things that look like failures during the apps/web fast gates but are not.
    from npm's version), then check `npm ci --dry-run`. Restore anything npm
    pruned from `node_modules` by extracting the locked tarballs (`npm pack
    <pkg>@<ver>`, verify the sha512 against the lock's `integrity`).
+   When the new package's own dependencies are ALREADY in the lock (e.g.
+   `@axe-core/playwright` -> `axe-core`, NEO-341), skip `npm install`
+   entirely: add the devDependency to both package.json and the lock root,
+   hand-write one `node_modules/<pkg>` entry from `npm view <pkg>@<ver>
+   dist.integrity dependencies peerDependencies license`, `npm ci --dry-run`,
+   then `npm pack` + sha512 check + `tar -xzf --strip-components=1` into
+   `node_modules/<pkg>`. Lock diff is exactly the new lines.
 10. **The Bash tool's shell is zsh, which does not word-split `$VAR`.**
    `FILES=$(grep -l … ); npx vitest run $FILES` hands vitest ONE argument
    (the whole space-joined list) and it answers "No test files found,

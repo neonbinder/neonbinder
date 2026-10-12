@@ -58,6 +58,7 @@
     "react-virtuoso": "^4.18.13"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@edge-runtime/vm": "^5.0.0",
     "@eslint/eslintrc": "^3",
     "@playwright/test": "1.63.0",

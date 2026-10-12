@@ -50,7 +50,9 @@ permissions:
 # ─── The Playwright suite (NEO-341) ───────────────────────────────────────────
 # main deploys to prod on every merge, so the FULL suite is the merge-blocking
 # gate. Specs live in apps/web/playwright/tests/; config is
-# apps/web/playwright.config.ts (projects: setup / bootstrap / e2e).
+# apps/web/playwright.config.ts (projects: setup / bootstrap / e2e /
+# e2e-mobile). Every spec runs on BOTH e2e (desktop) and e2e-mobile (a
+# Chromium phone); `shard-plan.mjs --projects` names them for this file.
 #
 #   setup → adopt the PR's Vercel preview URL, wait for it (with the bypass
 #           header), derive the preview's Convex deployment name.
@@ -58,19 +60,25 @@ permissions:
 #           then the `setup` project (the global baseline) as worker 0.
 #   shard → 8 x ubuntu-latest. Each shard runs the spec files that
 #           playwright/shard-plan.mjs assigns it (longest-first over the per-spec
-#           timings in playwright/timings.json), NOT Playwright's count-based
-#           --shard. One shard = one worker = one account (shard i ->
-#           WORKER_INDEX i-1 -> TEST_EMAIL_<i-1>); each runs the `bootstrap`
-#           project first via the project dependency.
+#           timings in playwright/timings.json, each weighted desktop + mobile),
+#           NOT Playwright's count-based --shard, on BOTH spec projects. One
+#           shard = one worker = one account (shard i -> WORKER_INDEX i-1 ->
+#           TEST_EMAIL_<i-1>), so a spec's desktop and mobile tests run back to
+#           back, never concurrently; each shard runs the `bootstrap` project
+#           first via the project dependency.
 #   e2e   → the single ruleset-gated verdict (job id and name are load-bearing:
 #           pr-pipeline.yml's `e2e` job and ci-gate read it). Merges every
 #           report and is green iff setup + seed + every shard succeeded AND every
-#           planned spec produced a passing result.
+#           planned spec produced a passing result on EVERY spec project.
 #   report→ merged JUnit as ONE "Playwright E2E" check, per-test timing table in
 #           the step summary, sticky PR comment.
 #
 # To scale: extend the shard matrix AND the `8` passed to shard-plan.mjs (both in
-# this file), and provision TEST_EMAIL_8.. — nothing else changes.
+# this file), and provision TEST_EMAIL_8.. — nothing else changes. Accounts
+# 0-11 exist, so up to 12 shards. 8 holds with mobile (NEO-341, from
+# timings.json): desktop + mobile is ~3,600 s of test time, ~450 s a shard at
+# 8, but the longest single spec alone is ~600 s doubled (both its projects
+# run in its one shard), so wall-clock is bound by that spec at any N >= 7.
 #
 # Artifacts are screenshots + reports ONLY. Never traces: a trace records the
 # network traffic, including Clerk testing tokens, and these artifacts are public
@@ -578,6 +586,9 @@ jobs:
           set -euo pipefail
           # Longest-first file plan instead of --shard (see shard-plan.mjs).
           files=$(node playwright/shard-plan.mjs 8 "$SHARD")
+          # Every planned spec runs on every spec project (desktop + mobile).
+          project_args=()
+          while IFS= read -r p; do project_args+=("--project=$p"); done < <(node playwright/shard-plan.mjs --projects)
           node playwright/shard-plan.mjs 8   # per-shard totals, to stderr
           if [ -z "$files" ]; then
             # `playwright test` with no file arguments runs the WHOLE suite, and
@@ -586,11 +597,11 @@ jobs:
             echo "::error::Shard ${SHARD}/8 has no specs planned."
             exit 1
           fi
-          echo "Shard ${SHARD} runs:"; echo "$files"
+          echo "Shard ${SHARD} runs (${project_args[*]}):"; echo "$files"
           start=$(date +%s)
-          # `bootstrap` runs first via the project dependency.
+          # `bootstrap` runs first via the project dependency (once, for both).
           # shellcheck disable=SC2086 # one path per line, no spaces
-          npx playwright test --project=e2e $files || code=$?
+          npx playwright test "${project_args[@]}" $files || code=$?
           echo "Shard ${SHARD}: exit ${code:-0}, $(( $(date +%s) - start ))s"
           exit "${code:-0}"
 
@@ -654,8 +665,9 @@ jobs:
   #   * setup and seed succeeded,
   #   * every shard job succeeded,
   #   * the merged report has no failed / timed-out / interrupted / skipped test,
-  #   * and EVERY spec the planner knows about produced a result — so a shard
-  #     that died before reporting (or never started) cannot pass by omission.
+  #   * and EVERY spec the planner knows about produced a result on EVERY spec
+  #     project (desktop and mobile) — so a shard, or one project's half of
+  #     it, that died before reporting cannot pass by omission.
   e2e:
     needs: [setup, seed, shard]
     if: always()
@@ -733,11 +745,17 @@ jobs:
             echo "::error::The shard planner lists no specs."
             exit 1
           fi
-          python3 - planned.txt pw-merged/results.json <<'PY'
+          # ...and on which projects: each planned spec, on each of them.
+          node playwright/shard-plan.mjs --projects > projects.txt
+          python3 - planned.txt pw-merged/results.json projects.txt <<'PY'
           import json, sys
 
           planned = {l.strip() for l in open(sys.argv[1]) if l.strip()}
           data = json.load(open(sys.argv[2]))
+          projects = [l.strip() for l in open(sys.argv[3]) if l.strip()]
+          if "e2e" not in projects or "e2e-mobile" not in projects:
+              print(f"::error::shard-plan.mjs --projects must name e2e and e2e-mobile, got {projects}")
+              sys.exit(1)
 
           rows = []  # (project, file, title, verdict)
           def walk(suite, file=""):
@@ -768,20 +786,24 @@ jobs:
           if not seed_ok:
               errors.append("no passing result from the `setup` project (the seed)")
 
-          seen = {r[1] for r in rows if r[0] == "e2e"}
-          missing = sorted(planned - seen)
-          for m in missing:
-              errors.append(f"planned spec produced no result: {m}")
+          # Bad results are errors above, so "a result on every project" plus
+          # "no bad result" is "a passing result on every project".
+          missing = []
+          for proj in projects:
+              seen = {r[1] for r in rows if r[0] == proj}
+              for m in sorted(planned - seen):
+                  missing.append((proj, m))
+                  errors.append(f"planned spec produced no result on [{proj}]: {m}")
 
-          n_e2e = sum(1 for r in rows if r[0] == "e2e")
-          print(f"planned specs={len(planned)} · e2e tests reported={n_e2e} · specs with a result={len(seen & planned)} · missing={len(missing)}")
+          counts = " · ".join(f"{p} tests reported={sum(1 for r in rows if r[0] == p)}" for p in projects)
+          print(f"planned specs={len(planned)} x projects={len(projects)} · {counts} · missing={len(missing)}")
           if errors:
               for line in errors[:200]:
                   print("::error::" + line.replace("\n", " "))
               if len(errors) > 200:
                   print(f"::error::... and {len(errors) - 200} more")
               sys.exit(1)
-          print("All planned specs ran and passed.")
+          print(f"All planned specs ran and passed on {', '.join(projects)}.")
           PY
 
       # Last on purpose: a red verdict above already fails the job, and this

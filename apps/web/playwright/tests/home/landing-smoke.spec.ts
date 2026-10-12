@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/home/landing-smoke.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect } from "../../support/fixtures";
+import { test, expect, expectAccessible } from "../../support/fixtures";
 
 test("Landing Page Smoke Test", { tag: ["@smoke", "@home"] }, async ({ page }) => {
   // Signed out: every test starts in a fresh browser context.
@@ -12,6 +12,10 @@ test("Landing Page Smoke Test", { tag: ["@smoke", "@home"] }, async ({ page }) =
 
   // Hero CTA.
   await expect(page.getByRole("button", { name: "Get Started" })).toBeVisible();
+
+  // The whole marketing page passes WCAG 2.2 A/AA (axe reads the full
+  // document, not just what is scrolled into view).
+  await expectAccessible(page, { label: "Landing page" });
 
   // Bottom CTA, at the end of a long marketing page. The flow's 25 s is a
   // signed-off TRAVEL budget for Maestro's swipes; kept as stated.
