@@ -30,7 +30,10 @@ explicit answer for every operator decision) and:
 | `inspect` | no | What exists for a set path: Base mapping, card counts, rows. |
 | `plan` | no | Lists every decision the spec has to make, with marketplace ids, as a fill-in template. |
 | `apply` | **yes** | Builds the spec. Idempotent and resumable. Stops at the first decision the spec does not answer and prints it as a template. |
+| `draft-set` | no (read-only on NB data) | Drafts a whole set's spec from the server's read-only previews: proposals filled, open decisions left as a fill-in template (§2.4). |
+| `build-set` | **yes**, interactively | Terminal only: draft → show it → you type the phrase → apply with `--collect` → you answer what only the run could see → apply again (§2.4). |
 | `mcp-smoke` | **yes** | Spawns the MCP server over stdio and runs inspect, plan, apply, inspect against an expectations file. CI only. |
+| `oneshot-smoke` | **yes** | Spawns the MCP server and proves the one-shot build: draft, merge with the committed answers, plan, apply, inspect. CI only (§2.4). |
 | `confirm-phrase` | no | Offline (no network, no sign-in): prints the confirm phrase `apply` and `nb_apply` need for a spec on a deployment. |
 
 Writes (`apply`, and the MCP write tools) require the **confirm phrase**, bound
@@ -174,8 +177,9 @@ The enrichment coverage report and the queue enqueue run after, unchanged.
 
 `npm run setbuild:mcp` (stdio). The repo-root `.mcp.json` registers it as
 `nb-setbuild`; it carries environment variable **names** only, expanded from
-your shell. Seven tools: `nb_inspect`, `nb_plan`, `nb_review_items` (read) and
-`nb_apply`, `nb_decide`, `nb_build_parallel`, `nb_sl_review_apply` (write). Each
+your shell. Eight tools: `nb_inspect`, `nb_plan`, `nb_review_items`,
+`nb_draft_set` (read-only on NB data) and `nb_apply`, `nb_decide`,
+`nb_build_parallel`, `nb_sl_review_apply` (write). Each
 write tool checks the confirm phrase (bound to that call's content) before the
 service is touched and returns the expected phrase on a mismatch. The write
 tools are on no permission allowlist, so Claude Code asks you for each call.
@@ -183,12 +187,109 @@ Never add them to one (`mcp-allowlist.test.ts` fails if you do).
 
 - The read tools run on a query-only client: a mutation or action throws
   before it is sent. `nb_plan` additionally allows the one marketplace
-  candidate read (`fetchRawOptions`).
+  candidate read (`fetchRawOptions`); `nb_draft_set` allows that and exactly
+  the two read-only preview actions (`previewSetStructure`,
+  `previewCardChecklist`). None writes NB data; a marketplace adapter may
+  refresh its session, as any fetch does.
 - A `specPath` is resolved to its real path and must sit inside the
   repository or the directory the server was launched from (`INIT_CWD`);
   a symlink or `..` out of them is refused.
 - The server reads `PAUSED_PLATFORMS` from its environment (listed in
   `.mcp.json`), as the CLI's `--paused-platforms` defaults to it.
+
+### 2.4 One-shot set build (`nb_draft_set`, `draft-set`, `build-set`)
+
+An operator says "build 2025 Topps Pristine". The agent calls `nb_draft_set`
+with the set's path; the draft comes back with:
+
+- `spec`: the whole set, every **proposal** filled in, every open decision
+  left out;
+- `proposals`: what the draft filled and why (a sole or pre-selected Base
+  candidate, the Reconcile dialog's own auto-matches, Group Parallels prefix
+  suggestions, Match Cards' keep-all defaults, `create` for a player or team
+  no NB row is named like, observed counts, parallel builds);
+- `openDecisions` and `template`: what the operator must answer (every pending
+  marketplace set: `own-set` or `leave`, never proposed; a Base side with
+  several candidates and no pre-selection; a card disagreement; any player or
+  team with an existing NB candidate, never linked by name), each as a `<…>`
+  fill-in in the template;
+- `confirmPhrase`, only when nothing is open. It is not an approval: the
+  operator reads the draft and the proposals and gives the phrase.
+
+Then: put the answers into the template, `nb_plan` it, show the operator the
+plan and its phrase, and `nb_apply` with that phrase. `nb_apply` collects
+(`stopAt: "end"`): the decisions only a write can surface (career teams and
+New League steps the lookups stage, a review name the preview could not see)
+come back together with one template; answer them and apply again. A set that
+does not resolve comes back `unresolved` with near names, plus the brand-year
+prepare spec when its Sets were never synced; nothing is created.
+
+On a terminal, `npm run setbuild -- build-set --path "Baseball/2025/Topps/Pristine"`
+runs the same loop: it drafts, writes the template (or spec) to `--out`
+(default `<path>.build.json`), waits while you answer every `<…>` in that file,
+asks for the confirm phrase, applies with `--collect`, and repeats for what the
+run collected. It refuses without a terminal, under any auth.
+`draft-set --path … --out <file>` only drafts (exit 3 when something needs an
+answer).
+
+**Cost.** A draft reads both marketplaces through the previews, one after
+another: 1 call for the variant types plus up to 2 per Base / Insert / Parallel
+type (`previewSetStructure`, run twice when the Base's SportLots pick differs
+from the first read), then per checklist (Base and each insert row) up to 3
+calls to confirm the ids, 1 BSC, 1 per SportLots set, and BSC's per-card team
+lookup. `marketplaceCalls` in the result is the total the server reported. The
+team lookup is most of a big set's wall-clock, so it is bounded per draft by
+`teamLookupBudget` (default 2000 cards, `--team-lookup-budget`, 0 = off),
+checked before each preview; once spent, later checklists' teams are looked up
+when apply fetches them. Nothing is retried. A preview that reads as a refused
+session stops every later preview needing that marketplace, and each skipped
+checklist is an open decision. Expect minutes for a 100-row set; apply repeats
+the fetches (drift between the two becomes an open decision, by design). Every
+preview is read-only on NB data, and the result never carries an adapter's
+error text, only the platform and the failure class.
+
+Limits worth knowing: a cold set cannot preview a Base mapped to a BSC set
+other than the set's own listing (a NEO-189 extra), or any checklist on a set
+with no BSC listing; those checklists are open decisions. SportLots sets
+another set of the brand holds are read with the same walk the Reconcile
+dialog's held-id query makes. Group Parallels suggestions are drafted for
+Insert types only. A name is decided at the first checklist apply reaches it
+in; a later checklist does not repeat it.
+
+**The live proof (`setbuild-oneshot` in `e2e.yml`).** After `seed`, in
+parallel with the runner pool, required by the `e2e` gate. Fixture: 2024
+Topps Chrome Black (`.maestro/seed/oneshot.spec.json`, the committed spec;
+`oneshot.expect.json`, its expectations). `setbuild oneshot-smoke` drafts it,
+requires exactly `draft.openDecisions` open decisions, merges the draft's
+template with the committed spec (each `<…>` from the committed file,
+everything else from the draft; `credentials` from the committed file) and
+requires the merge to have the committed spec's digest, then `nb_plan`,
+`nb_apply` (`stopAt: "end"`, no stop, the expected `reconciled`, `grouped`,
+`committed`, `built` counts) and `nb_inspect` (an insert holding a built
+parallel; every row of `builtFromBaseType` holding cards; any `after`
+expectations). It signs in as its own worker (`ONESHOT_WORKER`), not one a
+runner drains the queue with. Its output never names the deployment.
+
+Measuring the fixture (once the server previews are on the PR preview):
+
+1. `npm run setbuild -- draft-set --path "Baseball/2024/Topps/Topps Chrome Black"
+   --out oneshot.draft.json --report oneshot.report.json --auth testing
+   --app-url <preview> --convex-url https://<slug>.convex.cloud --worker 8`.
+2. Answer every `<…>` in `oneshot.draft.json` (pending sets: `leave` unless
+   the operator says otherwise), add the `credentials` block the baseline spec
+   uses, and commit it as `.maestro/seed/oneshot.spec.json`.
+3. `plan` it against the same preview; then `apply --collect` on a throwaway
+   preview run to read the counts, and commit `oneshot.expect.json`:
+   `{ "path", "draft": { "openDecisions": <the report's openCount> },
+   "apply": { "counts": { "reconciled", "grouped", "committed", "built" } },
+   "builtFromBaseType": "Parallel", "after": [] }`.
+4. A red merge later is drift: the failing line names the paths that differ.
+   Re-measure in the same PR as the evidence.
+
+Until both files are measured they are placeholders (`"measured": false`) and
+the job fails with "fixture not measured yet". A rerun of the oneshot job alone
+(without the seed's reset) drafts an already-built set and will not match;
+rerun the whole workflow.
 
 ## 3. Production usage
 

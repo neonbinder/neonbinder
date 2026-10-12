@@ -10,7 +10,7 @@ import { DECISION_PLACEHOLDER } from "../lib/review";
 import { applySpec } from "./apply";
 import { FAKE_TARGET, fakeClient, type FakeClient } from "./fake-client";
 import { planSpec } from "./plan";
-import { PlanWouldWrite, queryOnlyClient, ReadOnlyViolation, readOnlyClient } from "./read-only-client";
+import { DRAFT_READ_ACTIONS, PlanWouldWrite, queryOnlyClient, ReadOnlyViolation, readOnlyClient } from "./read-only-client";
 import { createSetBuildService } from "./service";
 
 const PATH = { sport: "Baseball", year: "2024", manufacturer: "Topps", set: "Topps Chrome" };
@@ -380,12 +380,14 @@ describe("MCP read tools — structurally read-only (security audit item 2)", ()
     const { client, attempts } = throwingWorld(w);
     const { mcp, close } = await connect(client);
     try {
-      const calls: Record<(typeof READ_TOOLS)[number], Record<string, unknown>> = {
+      const calls: Record<Exclude<(typeof READ_TOOLS)[number], "nb_draft_set">, Record<string, unknown>> = {
         nb_inspect: { path: PATH },
         nb_plan: { spec: spec() },
         nb_review_items: { path: PATH },
       };
-      for (const tool of READ_TOOLS) {
+      // nb_draft_set reads marketplaces through the preview actions; its own
+      // test below holds it to exactly those.
+      for (const tool of READ_TOOLS.filter((t) => t !== "nb_draft_set") as Array<keyof typeof calls>) {
         const r = await mcp.callTool({ name: tool, arguments: calls[tool] });
         const text = (r.content as Array<{ text?: string }>).map((c) => c.text ?? "").join("");
         expect(r.isError, `${tool}: ${text}`).not.toBe(true);
@@ -397,6 +399,21 @@ describe("MCP read tools — structurally read-only (security audit item 2)", ()
       await mcp.callTool({ name: "nb_review_items", arguments: { path: brandYear } });
       expect(attempts).toEqual([]);
       expect(client.calls.filter((c) => c.kind === "mutation" || c.kind === "action")).toEqual([]);
+    } finally {
+      await close();
+    }
+  });
+
+  test.each([
+    ["a finished set", done()],
+    ["an unsynced tree", { synced: false, baseCards: 0, sepiaCards: 0, reviewRows: [] }],
+  ])("nb_draft_set on %s attempts no mutation, and no action beyond the draft's marketplace reads", async (_label, w) => {
+    const { client, attempts } = throwingWorld(w);
+    const { mcp, close } = await connect(client);
+    try {
+      await mcp.callTool({ name: "nb_draft_set", arguments: { path: PATH } });
+      expect(attempts.filter((a) => a.startsWith("mutation"))).toEqual([]);
+      for (const a of attempts) expect(DRAFT_READ_ACTIONS.has(a.replace(/^action /, "")), a).toBe(true);
     } finally {
       await close();
     }

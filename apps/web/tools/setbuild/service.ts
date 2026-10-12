@@ -192,13 +192,15 @@ export interface ReviewDecisions {
   leagues?: NamedDecision[];
 }
 
-/** A spec name that resolved to zero or several NB rows. */
+/** A spec name that resolved to zero or several NB rows (or, from a draft, something it could not settle). */
 export interface OpenName {
   /** Where in the spec, e.g. `steps[1].path.manufacturer`. */
   at: string;
   kind: string;
   name: string;
   candidates: ResolveCandidate[];
+  /** Why, when the kind alone does not say (a draft's open conditions). Never adapter text. */
+  detail?: string;
 }
 
 export interface OpenBaseCandidates {
@@ -407,7 +409,107 @@ export interface SetBuildRead {
   /** Read-only on NB data. */
   plan(spec: SetBuildSpecInput): Promise<PlanReport>;
   reviewItems(path: NodePath): Promise<ReviewItemsReport>;
+  /** Read-only on NB data: draft a whole set's spec from the server previews (runner/draft.ts). */
+  draftSet(path: SetPath, opts?: DraftOptions): Promise<DraftReport>;
 }
+
+// ---------------------------------------------------------------------------
+// Draft (nb_draft_set / setbuild draft-set)
+// ---------------------------------------------------------------------------
+
+/** How many cards one draft may send to BSC's per-card team lookup, by default. */
+export const DEFAULT_TEAM_LOOKUP_BUDGET = 2000;
+/** The most a caller may raise that budget to. */
+export const MAX_TEAM_LOOKUP_BUDGET = 20000;
+
+export interface DraftOptions {
+  /** Preview every checklist (Base and each insert row). Default true. */
+  checklists?: boolean;
+  /** Add build entries: Parallel rows from Base, an insert's parallels from the insert. Default true. */
+  builds?: boolean;
+  /**
+   * Cards the draft may send to BSC's per-card team lookup in total. Checked
+   * before each checklist preview: once spent, later previews skip the lookup
+   * (their teams are looked up when apply fetches). Default
+   * `DEFAULT_TEAM_LOOKUP_BUDGET`; 0 turns the lookup off.
+   */
+  teamLookupBudget?: number;
+}
+
+/**
+ * A value the drafter filled because the Set Builder UI would settle it
+ * without asking (or Jason ruled it is pre-filled): a sole or pre-selected
+ * Base candidate, the Reconcile dialog's own auto-matches, a Group Parallels
+ * prefix suggestion, the Match Cards defaults, a `create` for a name with no
+ * NB candidate, an observed count, a build entry. Listed beside the spec so
+ * approving it is informed. The value itself is in the spec at `at`.
+ */
+export interface DraftProposal {
+  at: string;
+  kind:
+    | "base-map"
+    | "reconcile-pairs"
+    | "grouping"
+    | "pairing"
+    | "review-create"
+    | "expect"
+    | "build"
+    | "already-built";
+  detail: string;
+}
+
+export interface DraftedReport {
+  status: "drafted";
+  target: Pick<Target, "convexUrl" | "host">;
+  path: SetPath;
+  pathText: string;
+  scope: string;
+  /**
+   * The drafted spec: every proposal, with each open decision LEFT OUT. With
+   * open decisions it is not approvable as it stands (`confirmPhrase` is
+   * null): fill in `template` instead.
+   */
+  spec: Record<string, unknown>;
+  proposals: DraftProposal[];
+  openDecisions: OpenDecisions;
+  /** `countOpenDecisions(openDecisions)`. */
+  openCount: number;
+  /** The spec with every open decision as a `<…>` fill-in; null when nothing is open. */
+  template: Record<string, unknown> | null;
+  /**
+   * `nb_apply`'s phrase for `spec`, only when nothing is open. Not an
+   * approval: the operator still reads the draft and gives the phrase.
+   */
+  confirmPhrase: string | null;
+  /** What apply would do with `spec` now (the engine's draft walk; read-only, no marketplace call). */
+  steps: PlanStep[];
+  /** What the draft could not see or chose not to do (budgets, previews skipped). */
+  notes: string[];
+  /** Marketplace requests the previews reported making. */
+  marketplaceCalls: number;
+  durationMs: number;
+}
+
+export interface UnresolvedDraftReport {
+  status: "unresolved";
+  target: Pick<Target, "convexUrl" | "host">;
+  path: SetPath;
+  pathText: string;
+  /** Which level did not resolve ("sport", "year", "manufacturer", "set"). */
+  kind: string;
+  message: string;
+  /** Near names at that level. Nothing is created and nothing is picked. */
+  candidates: ResolveCandidate[];
+  /**
+   * When the brand-year's Sets were never synced (or the brand-year itself
+   * does not resolve): the one spec to apply first, then draft again.
+   */
+  prepare?: { reason: string; spec: Record<string, unknown> };
+  marketplaceCalls: number;
+  durationMs: number;
+}
+
+export type DraftReport = DraftedReport | UnresolvedDraftReport;
 
 export interface ApplyOptions {
   /** Default `first`. Not covered by the confirm phrase: it changes how far one run goes, never what the spec allows it to write. */

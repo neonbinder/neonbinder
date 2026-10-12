@@ -235,7 +235,7 @@ describe("previewSetStructure", () => {
       t.withIdentity(SIGNED_IN).action(api.setReconciliation.previewSetStructure, {
         setId,
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/Admin access required/);
     expect(state.bscCalls).toHaveLength(0);
   });
 

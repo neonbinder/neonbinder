@@ -116,7 +116,7 @@ describe("WRITE_TOOLS is the complete write set", () => {
     };
     const service = {
       target: parseTarget("https://happy-otter-123.convex.cloud"),
-      read: { inspect: fail, plan: fail, reviewItems: fail },
+      read: { inspect: fail, plan: fail, reviewItems: fail, draftSet: fail },
       write: { apply: fail, decide: fail, buildParallel: fail, slReviewApply: fail },
     } as SetBuildService;
     const server = new McpServer({ name: SERVER, version: "0.0.0" });

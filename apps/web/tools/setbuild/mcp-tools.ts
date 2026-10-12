@@ -1,13 +1,14 @@
 /**
  * NEO-339 — the set-build MCP tools.
  *
- * Seven tools over `SetBuildService` (service.ts):
+ * Eight tools over `SetBuildService` (service.ts):
  *
  * | tool                | kind  | service call               |
  * |---------------------|-------|----------------------------|
  * | nb_inspect          | read  | read.inspect               |
  * | nb_plan             | read  | read.plan                  |
  * | nb_review_items     | read  | read.reviewItems           |
+ * | nb_draft_set        | read  | read.draftSet              |
  * | nb_apply            | write | write.apply                |
  * | nb_decide           | write | write.decide               |
  * | nb_build_parallel   | write | write.buildParallel        |
@@ -48,6 +49,7 @@ import { parseSpec } from "./spec/schema";
 import {
   buildParallelConfirmPhrase,
   decideConfirmPhrase,
+  MAX_TEAM_LOOKUP_BUDGET,
   ResolveError,
   slReviewConfirmPhrase,
   specConfirmPhrase,
@@ -59,7 +61,7 @@ import {
   type SetBuildWrite,
 } from "./service";
 
-export const READ_TOOLS = ["nb_inspect", "nb_plan", "nb_review_items"] as const;
+export const READ_TOOLS = ["nb_inspect", "nb_plan", "nb_review_items", "nb_draft_set"] as const;
 export const WRITE_TOOLS = ["nb_apply", "nb_decide", "nb_build_parallel", "nb_sl_review_apply"] as const;
 export type ToolName = (typeof READ_TOOLS)[number] | (typeof WRITE_TOOLS)[number];
 
@@ -292,15 +294,18 @@ interface Ctx {
 }
 
 const WORKFLOW =
-  "Workflow: nb_inspect / nb_plan first (read-only) → show the operator the plan and its open decisions → " +
-  "edit the spec with the operator's answers and plan again until openDecisions is empty → nb_apply with " +
-  "nb_plan's confirmPhrase. nb_apply runs everything it can and returns every decision that only appears " +
-  "once it writes (checklist reviews, card conflicts) together with one fill-in template: take them all to " +
-  "the operator at once, put the answers in the spec, plan and apply again (a re-run skips what is done). " +
-  "Never guess a decision or pick a candidate by position; ambiguity comes back as candidates for the " +
-  "operator to choose from.";
+  "Workflow: to build a whole set, nb_draft_set first (read-only on NB data): it drafts the complete spec, " +
+  "lists every proposal it filled and every open decision it could not settle, and gives a fill-in template. " +
+  "Show the operator the draft, its proposals and open decisions; put the operator's answers into the " +
+  "template. Otherwise nb_inspect / nb_plan first (read-only) on a spec you wrote. Then nb_plan the spec, show " +
+  "the operator the plan and confirmPhrase, and only once the operator approves call nb_apply with that " +
+  "phrase. A draft's or a plan's confirmPhrase is never an approval by itself. nb_apply runs everything it " +
+  "can and returns every decision that only appears once it writes (checklist reviews, lookup-staged teams " +
+  "and leagues, card conflicts) together with one fill-in template: take them all to the operator at once, " +
+  "put the answers in the spec, plan and apply again (a re-run skips what is done). Never guess a decision " +
+  "or pick a candidate by position; ambiguity comes back as candidates for the operator to choose from.";
 
-/** The three read tools. Receives `read` only: no path to a write exists here. */
+/** The four read tools. Receives `read` only: no path to a write exists here. */
 export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ctx): void {
   server.registerTool(
     "nb_inspect",
@@ -352,6 +357,46 @@ export function registerReadTools(server: McpServer, read: SetBuildRead, ctx: Ct
       annotations: { readOnlyHint: true, openWorldHint: false },
     },
     async ({ path }) => run(ctx.secrets, () => read.reviewItems(toPath(path))),
+  );
+
+  server.registerTool(
+    "nb_draft_set",
+    {
+      title: "Draft a whole set's build spec",
+      description:
+        "Read-only on NB data (it reads both marketplaces through the server's previews; an adapter may refresh " +
+        "a marketplace session, as any fetch does). Drafts the complete set-build spec for one set: variant types, " +
+        "the Base mapping, every Insert/Parallel reconcile pair, Group Parallels nesting, every checklist with its " +
+        "Match Cards answers and entity-review proposals, and every parallel build. Returns spec (proposals only; " +
+        "open decisions left out), proposals (what was filled and why), openDecisions (what the operator must " +
+        "answer: every pending marketplace set, Base candidates when there is no sole or pre-selected one, card " +
+        "conflicts, any name with existing NB candidates), template (the spec with a <…> fill-in per open " +
+        "decision), notes, marketplaceCalls, and confirmPhrase only when nothing is open. An unknown set comes " +
+        'back as status "unresolved" with candidates (and, when the brand\'s Sets were never synced, the prepare ' +
+        "spec); nothing is created. Slow on a big set (minutes): it previews every checklist. " +
+        WORKFLOW,
+      inputSchema: {
+        path: setPathSchema,
+        checklists: z.boolean().optional().describe("Preview every checklist (default true)."),
+        builds: z.boolean().optional().describe("Add parallel build entries (default true)."),
+        teamLookupBudget: z
+          .number()
+          .int()
+          .min(0)
+          .max(MAX_TEAM_LOOKUP_BUDGET)
+          .optional()
+          .describe("Cards the draft may send to BSC's per-card team lookup in total (default 2000; 0 = none)."),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    async ({ path, checklists, builds, teamLookupBudget }) =>
+      run(ctx.secrets, () =>
+        read.draftSet(toPath(path) as Parameters<SetBuildRead["draftSet"]>[0], {
+          ...(checklists !== undefined ? { checklists } : {}),
+          ...(builds !== undefined ? { builds } : {}),
+          ...(teamLookupBudget !== undefined ? { teamLookupBudget } : {}),
+        }),
+      ),
   );
 }
 
@@ -486,7 +531,7 @@ export function registerWriteTools(
   );
 }
 
-/** Register all seven tools. */
+/** Register all eight tools. */
 export function registerTools(server: McpServer, service: SetBuildService, opts: RegisterToolsOptions = {}): void {
   const ctx: Ctx = {
     secrets: opts.secrets ?? secretValues(process.env),

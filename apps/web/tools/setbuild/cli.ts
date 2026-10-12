@@ -21,6 +21,7 @@ import {
 } from "./client/connect";
 import { makeClient } from "./client/convex-client";
 import { mcpSmokeCommand } from "./mcp-smoke";
+import { oneshotSmokeCommand } from "./mcp-oneshot";
 import { RUNNER_COMMANDS } from "./runner/cli-commands";
 
 export interface CliIO {
@@ -154,13 +155,14 @@ const whoamiCommand: CommandSpec = {
 // ---------------------------------------------------------------------------
 
 /**
- * Every command: whoami (here), mcp-smoke (MCP), and the runner's inspect,
- * plan, apply, decisions-template, schema and confirm-phrase
- * (runner/cli-commands.ts).
+ * Every command: whoami (here), mcp-smoke and oneshot-smoke (MCP), and the
+ * runner's inspect, plan, apply, decisions-template, schema, confirm-phrase,
+ * draft-set and build-set (runner/cli-commands.ts).
  */
 export const COMMANDS: Record<string, CommandSpec> = {
   whoami: whoamiCommand,
   "mcp-smoke": mcpSmokeCommand,
+  "oneshot-smoke": oneshotSmokeCommand,
   ...RUNNER_COMMANDS,
 };
 

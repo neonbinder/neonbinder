@@ -154,7 +154,7 @@ describe("previewChecklistEntities", () => {
         players: ["Known Player"],
         teams: [],
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/Admin access required/);
   });
 
   test("classifies by the review gate's rule, honours skips, and writes nothing", async () => {

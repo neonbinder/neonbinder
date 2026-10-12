@@ -306,7 +306,7 @@ export function itemsChangeAnything(
   });
 }
 
-function existingRowsForSeed(rows: readonly SelectorRow[]): ExistingReconcileRow[] {
+export function existingRowsForSeed(rows: readonly SelectorRow[]): ExistingReconcileRow[] {
   return rows.map((r) => ({
     existingId: r._id,
     value: r.value,

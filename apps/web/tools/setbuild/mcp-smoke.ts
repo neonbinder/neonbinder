@@ -72,7 +72,7 @@ const pathSchema = z
   })
   .strict();
 
-const inspectExpectSchema = z
+export const inspectExpectSchema = z
   .object({
     path: pathSchema,
     base: z
@@ -388,10 +388,12 @@ export const mcpSmokeCommand: CommandSpec = {
     };
     const env: NodeJS.ProcessEnv = { ...ctx.io.env };
     for (const [k, v] of Object.entries(flagEnv)) if (v !== undefined) env[k] = v;
-    const secrets = secretValues(env);
+    // The deployment is never printed (CI logs are public): its host is
+    // redacted along with the secrets, phrases included.
+    const secrets = [...secretValues(env), conn.target.host, conn.target.convexUrl];
     const say = (line: string) => ctx.io.stdout(scrub(line, secrets));
 
-    if (!ctx.json) say(`mcp-smoke  ${conn.target.host}  spec ${specArg}`);
+    if (!ctx.json) say(`mcp-smoke  spec ${specArg}`);
     const server = await connectToSpawnedServer(env);
     let checks: SmokeCheck[];
     try {
@@ -406,7 +408,7 @@ export const mcpSmokeCommand: CommandSpec = {
     }
     const ok = checks.length > 0 && checks.every((c) => c.ok);
     if (ctx.json) {
-      say(JSON.stringify({ ok, target: conn.target.host, checks }, null, 2));
+      say(JSON.stringify({ ok, checks }, null, 2));
     } else {
       say(ok ? `mcp-smoke passed (${checks.length} checks).` : "mcp-smoke FAILED.");
       if (!ok && server.stderrTail().length > 0) {

@@ -393,7 +393,7 @@ describe("previewCardChecklist", () => {
         .action(api.selectorOptions.previewCardChecklist, {
           selectorOptionId: baseId,
         }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/Admin access required/);
     expect(state.bscChecklistCalls).toHaveLength(0);
   });
 

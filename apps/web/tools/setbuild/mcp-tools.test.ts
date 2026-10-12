@@ -71,6 +71,7 @@ function fakeService() {
     inspect: vi.fn(async () => ({ found: true, pathText: "x" })),
     plan: vi.fn(async () => ({ confirmPhrase: PHRASE.apply, openDecisions: noDecisions(), steps: [] })),
     reviewItems: vi.fn(async () => ({ review: noDecisions().review, slReview: [] })),
+    draftSet: vi.fn(async () => ({ status: "drafted", openCount: 0, confirmPhrase: null as string | null, openDecisions: noDecisions() })),
   };
   const write = {
     apply: vi.fn(async () => ({ counts: { built: 300, committed: 0, skipped: 0 } })),
@@ -134,11 +135,13 @@ const WRITE_CALLS: Record<(typeof WRITE_TOOLS)[number], { args: Record<string, u
 };
 
 describe("tool list", () => {
-  test("exactly seven tools: three read-only, four writes taking an optional confirm", async () => {
+  test("exactly eight tools: four read-only, four writes taking an optional confirm", async () => {
     const client = await connect(fakeService().service);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([...READ_TOOLS, ...WRITE_TOOLS].sort());
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(8);
+    expect([...READ_TOOLS]).toEqual(["nb_inspect", "nb_plan", "nb_review_items", "nb_draft_set"]);
+    expect(WRITE_TOOLS as readonly string[]).not.toContain("nb_draft_set");
     for (const t of tools) {
       const isWrite = (WRITE_TOOLS as readonly string[]).includes(t.name);
       expect(t.annotations?.readOnlyHint, t.name).toBe(!isWrite);
@@ -194,6 +197,33 @@ describe("read tools", () => {
     expect(f.read.reviewItems).toHaveBeenCalledWith(TOPPS_CHROME);
 
     for (const spy of Object.values(f.write)) expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("nb_draft_set calls read.draftSet once with the path and options, and never a write", async () => {
+    const f = fakeService();
+    const client = await connect(f.service);
+    expect((await callTool(client, "nb_draft_set", { path: TOPPS_CHROME })).isError).toBe(false);
+    expect(f.read.draftSet).toHaveBeenLastCalledWith(TOPPS_CHROME, {});
+    await callTool(client, "nb_draft_set", { path: { ...TOPPS_CHROME, year: 2024 }, checklists: false, builds: true, teamLookupBudget: 0 });
+    expect(f.read.draftSet).toHaveBeenLastCalledWith(TOPPS_CHROME, { checklists: false, builds: true, teamLookupBudget: 0 });
+    expect(f.read.draftSet).toHaveBeenCalledTimes(2);
+    // A brand-year path is not a set: refused by the schema, the service is not called.
+    expect((await callTool(client, "nb_draft_set", { path: BOWMAN })).isError).toBe(true);
+    // The budget is bounded.
+    expect((await callTool(client, "nb_draft_set", { path: TOPPS_CHROME, teamLookupBudget: 10_000_000 })).isError).toBe(true);
+    expect(f.read.draftSet).toHaveBeenCalledTimes(2);
+    for (const spy of Object.values(f.write)) expect(spy).not.toHaveBeenCalled();
+  });
+
+  test("nb_draft_set is registered with the read half only: a write-only service cannot reach it", async () => {
+    // registerTools hands the read tools `service.read` and nothing else; a
+    // draft's result never reaches a write, whatever it returns.
+    const f = fakeService();
+    f.read.draftSet.mockResolvedValueOnce({ status: "drafted", openCount: 0, confirmPhrase: PHRASE.apply, openDecisions: noDecisions() });
+    const client = await connect(f.service);
+    const r = await callTool(client, "nb_draft_set", { path: TOPPS_CHROME });
+    expect(r.json().confirmPhrase).toBe(PHRASE.apply);
+    expect(f.write.apply).not.toHaveBeenCalled();
   });
 
   test("a relative specPath resolves against the launch directory", async () => {

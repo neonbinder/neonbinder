@@ -71,13 +71,14 @@ import { PlanWouldWrite } from "./read-only-client";
 /**
  * `plan`: read-only, collects every decision without dependency gating.
  * `apply`: writes; `stopAt` says whether it stops or collects.
- *
- * NEO-339 part B adds `draft` here (the read-only walk that FILLS the spec
- * from the server previews). It is meant to collect like `apply` with
- * `stopAt: "end"` — see `collecting` in `runSpec` — and to run on the draft
- * client, so no step module needs a new branch for it.
+ * `draft`: the walk `nb_draft_set` runs over the spec it drafted (runner/
+ * draft.ts), on the draft client. Read-only like `plan` (every step takes its
+ * plan branch), and it collects like `apply` with `stopAt: "end"`: each open
+ * decision is recorded in `stops` and what depends on it is recorded as
+ * waiting, so the drafted spec's step list reads the way the collecting apply
+ * would run it.
  */
-export type RunMode = "plan" | "apply";
+export type RunMode = "plan" | "apply" | "draft";
 
 export function emptyOpenDecisions(): OpenDecisions {
   return {
@@ -202,21 +203,29 @@ export async function runSpec(
     templateTouched = true;
   };
   let stoppedAt: RunResult["stoppedAt"];
+  /** Only `apply` writes; `plan` and `draft` take every step's read-only branch. */
+  const readOnly = mode !== "apply";
   /**
-   * Apply carries on past an open decision, gating its dependents. (Part B's
-   * draft mode joins here.) Plan collects too, but gates nothing: it reports
+   * Apply with `stopAt: "end"`, and draft, carry on past an open decision,
+   * gating its dependents. Plan collects too, but gates nothing: it reports
    * every step as it finds it.
    */
-  const collecting = mode === "apply" && opts.stopAt === "end";
+  const collecting = (mode === "apply" && opts.stopAt === "end") || mode === "draft";
   const stops: NonNullable<RunResult["stops"]> = [];
   /** Brand-years (`formatPath`, folded) whose step left something open. */
   const blockedBrandYears = new Map<string, string>();
+  /**
+   * Collecting: why each set's Base-dependent steps wait, by folded set path.
+   * Run-level, like `blockedBrandYears`, so a second step naming the same set
+   * still waits on what the first left open.
+   */
+  const setDeps = new Map<string, SetDeps>();
 
   const record = (s: PlanStep) => steps.push(s);
 
   /** Record an open decision: plan collects it, apply stops — or, collecting, records the stop and goes on. */
   const stop = (index: number, reason: string): void => {
-    if (mode !== "apply") return;
+    if (mode === "plan") return;
     if (!collecting) throw new StopRun(index, reason);
     stops.push({ step: index, reason });
   };
@@ -247,15 +256,24 @@ export async function runSpec(
     return value;
   }
 
-  /** `true` when `sub` came back without a value or with an open outcome. */
-  const isOpen = (v: { outcome: string } | undefined): boolean => v === undefined || v.outcome === "open";
+  /** Why the last `sub` came back without a value: a write it stopped before (read-only walks), or an open name. */
+  let lastFailed: "todo" | "open" = "open";
+  /**
+   * `true` when `sub` came back with an open outcome, or without a value
+   * because of an open name. A step a read-only walk stopped before its write
+   * ("todo") is not open: its dependents are reported, not held.
+   */
+  const isOpen = (v: { outcome: string } | undefined): boolean =>
+    v === undefined ? lastFailed === "open" : v.outcome === "open";
 
   /** `PlanWouldWrite` = todo; `ResolveError` = an open name (apply stops); anything else is thrown. */
   function failed(err: unknown, index: number, kind: string, path: string, action: string): undefined {
     if (err instanceof PlanWouldWrite) {
+      lastFailed = "todo";
       record({ index, kind, path, action, status: "todo" });
       return undefined;
     }
+    lastFailed = "open";
     if (err instanceof ResolveError) {
       open.names.push({ at: err.at ?? `steps[${index}]`, kind: err.kind, name: err.query, candidates: err.candidates });
       if (err.at) patch(err.at, PICK(err.candidates.map((c) => c.name)));
@@ -276,7 +294,7 @@ export async function runSpec(
 
     if (spec.credentials) {
       const creds = spec.credentials;
-      if (mode === "plan") {
+      if (readOnly) {
         record({ index: -1, kind: "credentials", path: "", action: `seed ${creds.seed.join(", ") || "nothing"}${creds.warm ? " and warm" : ""}`, status: "todo" });
       } else {
         const out = await ensureCredentials(client, creds, paused);
@@ -404,8 +422,10 @@ export async function runSpec(
       return;
     }
     const sportId = set.sportId;
-    /** Collecting: why the Base's dependents wait, when they do. */
-    const deps: SetDeps = {};
+    /** Collecting: why the Base's dependents wait, when they do (shared by every step naming this set). */
+    const key = setKey(step.path);
+    const deps: SetDeps = setDeps.get(key) ?? {};
+    setDeps.set(key, deps);
 
     if (step.base) {
       const base = step.base;
@@ -455,7 +475,16 @@ export async function runSpec(
     deps: SetDeps,
   ): Promise<void> {
     const at = `steps[${i}].variants[${j}]`;
+    const typeKey = vt.type.trim().toLowerCase();
     let syncTodo = false;
+    let syncOpen = false;
+    const heldSync = deps.typeSync?.get(typeKey);
+    if (collecting && heldSync) {
+      // An earlier step naming this set left this type's sync open: its sync
+      // and rows wait here too, rather than asking the same question twice.
+      waits(i, "row", path, `${vt.type} rows`, heldSync);
+      return;
+    }
     if (vt.sync && deps.baseMap) {
       waits(i, "reconcile", path, `sync ${vt.type} rows`, deps.baseMap);
       waits(i, "row", path, `${vt.type} rows`, deps.baseMap);
@@ -489,13 +518,17 @@ export async function runSpec(
         return { status: "blocked", detail: "open decisions", stopReason: `${vt.type}: ${r.reconcile.proposedPairs.length + r.reconcile.pending.length + r.names.length} reconcile decision(s) need an answer` };
       });
       syncTodo = synced === undefined || synced.outcome === "open";
+      syncOpen = isOpen(synced);
     }
-    if (syncTodo && mode === "plan") {
+    // Plan, or a draft walk that stopped before the sync's write: no rows to read yet.
+    if (syncTodo && readOnly && (!collecting || !syncOpen)) {
       blocked(i, "row", path, `${vt.type} rows`, "checked once the sync has run");
       return;
     }
     if (syncTodo && collecting) {
-      waits(i, "row", path, `${vt.type} rows`, `the ${vt.type} sync (${at}.sync)`);
+      const on = `the ${vt.type} sync (${at}.sync)`;
+      (deps.typeSync ??= new Map()).set(typeKey, on);
+      waits(i, "row", path, `${vt.type} rows`, on);
       return;
     }
 
@@ -507,8 +540,8 @@ export async function runSpec(
       const tree = await client.query(api.selectorOptions.getInsertTreeByVariantType, { variantTypeId: type._id });
       const n = tree.reduce((sum, t) => sum + 1 + t.parallels.length, 0);
       const ok = n === vt.expectRows;
-      record({ index: i, kind: "expect-rows", path, action: `${vt.type} holds ${vt.expectRows} rows`, status: ok ? "done" : mode === "plan" ? "todo" : "blocked", detail: `${n} now` });
-      if (!ok && mode === "apply") throw new Error(`${at}.expectRows: ${vt.type} holds ${n} rows; the spec expects ${vt.expectRows}.`);
+      record({ index: i, kind: "expect-rows", path, action: `${vt.type} holds ${vt.expectRows} rows`, status: ok ? "done" : readOnly ? "todo" : "blocked", detail: `${n} now` });
+      if (!ok && !readOnly) throw new Error(`${at}.expectRows: ${vt.type} holds ${n} rows; the spec expects ${vt.expectRows}.`);
     }
 
     /** Why this type's rows' `parallels` wait (collecting), or are not checked yet (plan). */
@@ -569,17 +602,17 @@ export async function runSpec(
       const ok = n === group.expectUngrouped;
       const what = `${vt.type} leaves ${group.expectUngrouped} rows ungrouped`;
       record({ index: i, kind: "expect-ungrouped", path, action: what, status: ok ? "done" : "blocked", detail: `${n} ${projected ? "after the grouping" : "now"}` });
-      if (!ok && mode === "apply") {
+      if (!ok && !readOnly) {
         throw new Error(`${at}.group.expectUngrouped: ${vt.type} leaves ${n} rows ungrouped; the spec expects ${group.expectUngrouped}.`);
       }
     };
 
-    if (mode === "plan") {
+    if (readOnly) {
       const p = await planGrouping(client, typeId, group, ctx);
       if (p.outcome === "open") {
         record({ index: i, kind: "group", path, action, status: "blocked", detail: "open decisions" });
-        openOf(p);
-        return "checked once Group Parallels has its answers";
+        stop(i, openOf(p));
+        return collecting ? `Group Parallels for ${vt.type} (${at}.group)` : "checked once Group Parallels has its answers";
       }
       if (p.outcome === "done") {
         record({ index: i, kind: "group", path, action, status: "done", detail: "already grouped" });
@@ -619,7 +652,7 @@ export async function runSpec(
     const label = `${rowLabel} › ${p.name}`;
     const action = p.build ? `build ${label} from ${rowLabel}` : `find ${label}`;
     if (on) {
-      if (mode === "plan") blocked(i, p.build ? "build-parallel" : "parallel", path, action, on);
+      if (!collecting) blocked(i, p.build ? "build-parallel" : "parallel", path, action, on);
       else waits(i, p.build ? "build-parallel" : "parallel", path, action, on);
       return;
     }
@@ -633,7 +666,7 @@ export async function runSpec(
 
   /** One parallel build, from Base or from an insert (`input.sourceId`). */
   async function build(i: number, path: string, action: string, input: BuildParallelInput): Promise<void> {
-    if (mode === "plan") {
+    if (readOnly) {
       const p = await planParallelBuild(client, input).catch((err) => {
         if (err instanceof ResolveError) return { status: "blocked" as const, detail: err.message };
         throw err;
@@ -657,8 +690,8 @@ export async function runSpec(
   async function expectCards(i: number, path: string, label: string, rowId: RowId, want: number, at: string): Promise<void> {
     const n = await cardCount(client, rowId);
     const ok = n === want;
-    record({ index: i, kind: "expect-cards", path, action: `${label} holds ${want} cards`, status: ok ? "done" : mode === "plan" ? "todo" : "blocked", detail: `${n} now` });
-    if (!ok && mode === "apply") throw new Error(`${at}: ${label} holds ${n} cards; the spec expects ${want}.`);
+    record({ index: i, kind: "expect-cards", path, action: `${label} holds ${want} cards`, status: ok ? "done" : readOnly ? "todo" : "blocked", detail: `${n} now` });
+    if (!ok && !readOnly) throw new Error(`${at}: ${label} holds ${n} cards; the spec expects ${want}.`);
   }
 
   // ---------------------------------------------------------------------
@@ -673,7 +706,7 @@ export async function runSpec(
     label: string,
   ): Promise<StepStatus> {
     const action = `fetch and commit the ${label} checklist`;
-    if (mode === "plan") {
+    if (readOnly) {
       const n = await cardCount(client, rowId);
       let done: boolean;
       try {
@@ -731,6 +764,13 @@ interface SetDeps {
   baseMap?: string;
   /** The Base checklist is open (or waits on the mapping). */
   baseChecklist?: string;
+  /** A variant type's sync is open, by folded type title: its rows wait in every step naming the set. */
+  typeSync?: Map<string, string>;
+}
+
+/** A set path folded for comparison, as `brandYearKey` folds a brand-year. */
+function setKey(p: { sport: string; year: string; manufacturer: string; set: string }): string {
+  return [p.sport, p.year, p.manufacturer, p.set].map((s) => s.trim().toLowerCase()).join("/");
 }
 
 /** A brand-year path folded for comparison: the spec spells both steps' paths. */

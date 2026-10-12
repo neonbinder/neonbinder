@@ -14,12 +14,30 @@ enrichment capture). This file is for people changing the tool.
 cd apps/web
 npm run setbuild -- help
 npm run setbuild -- whoami|inspect|plan|apply|decisions-template|schema|mcp-smoke ...
+npm run setbuild -- draft-set --path "Sport/Year/Manufacturer/Set" --out draft.json   # read-only draft
+npm run setbuild -- build-set --path "Sport/Year/Manufacturer/Set"                    # terminal only: draft → approve → apply
 npm run --silent setbuild -- confirm-phrase --spec <file.json> --convex-url <url>   # offline
 npm run setbuild:mcp          # MCP server over stdio (repo-root .mcp.json: nb-setbuild)
 ```
 
 Exit codes: 0 ok, 1 the command failed, 2 usage error (including `apply
---auth machine` without a terminal), 3 `apply` stopped at an open decision.
+--auth machine` and `build-set` without a terminal), 3 `apply` stopped at an
+open decision, or `draft-set` / `build-set` left one for the operator.
+
+`draft-set` / `nb_draft_set` (`runner/draft.ts`) draft a whole set's spec from
+the server's three read-only previews (`previewSetStructure`,
+`previewCardChecklist`, `previewChecklistEntities`), through the same
+`lib/set-build` modules the UI runs. They return `{ spec, proposals,
+openDecisions, template, confirmPhrase, marketplaceCalls }`: proposals are
+what the UI settles without asking (and the two Jason ruled pre-filled:
+Group Parallels suggestions and `create` for a name with no NB candidate);
+everything else is an open decision with a `<…>` fill-in. `confirmPhrase` is
+null while anything is open, and is never an approval. The draft runs on
+`draftClient` (`DRAFT_READ_ACTIONS` = `fetchRawOptions` + the two preview
+actions; every mutation refused) and is bounded: a per-draft BSC team-lookup
+budget, no retries, and a refused marketplace session stops that side's later
+previews. Adapter error text never reaches the result. The engine's `draft`
+mode walks the drafted spec read-only (no action at all) for `steps`.
 
 `apply` stops at the first open decision; `apply --collect` (and `nb_apply`,
 whose `stopAt` defaults to `"end"`) runs every step that does not depend on
@@ -64,9 +82,9 @@ auth/      token sources (machine API key, testing ticket -> Clerk template JWT)
 client/    target parsing, connection resolution, ConvexClient wrapper
 spec/      the zod spec schema and loader
 lib/       one module per operation (credentials, sync, map base, reconcile, group parallels, review, commit, parallel build)
-runner/    plan and apply: ordering, idempotency, stopAt (first / collect), open-decision templates
+runner/    plan, apply and draft: ordering, idempotency, stopAt (first / collect), open-decision templates
 service.ts the seam the CLI and the MCP tools both call (read vs write halves)
-mcp*.ts    the MCP server, its seven tools, and mcp-smoke
+mcp*.ts    the MCP server, its eight tools, mcp-smoke and oneshot-smoke
 ```
 
 ## Rules to keep
@@ -115,3 +133,11 @@ value is a `${VAR}` reference.
 .maestro/seed/parallel.spec.json --expect .maestro/seed/mcp-smoke.expect.json`
 (its `--confirm` must equal `nb_plan`'s phrase). `e2e-seed.sh` computes its
 phrase the same way. The reports upload as the `setbuild-seed` artifact.
+
+`e2e.yml` `setbuild-oneshot` job (after `seed`, beside the runners, required
+by the gate): `oneshot-smoke --answers .maestro/seed/oneshot.spec.json
+--expect .maestro/seed/oneshot.expect.json` drafts 2024 Topps Chrome Black,
+checks the draft merged with the committed answers has the committed spec's
+digest (`mergeDraftAnswers`), then plans, applies (`stopAt: "end"`) and
+inspects. Placeholder fixture files (`"measured": false`) fail it on purpose.
+Neither job prints the deployment: the host is masked and redacted.

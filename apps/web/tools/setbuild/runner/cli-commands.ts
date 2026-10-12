@@ -1,7 +1,7 @@
 /**
  * NEO-339 — the runner's CLI commands: inspect, plan, apply,
- * decisions-template, schema, confirm-phrase. Registered in `cli.ts`'s
- * `COMMANDS`.
+ * decisions-template, schema, confirm-phrase, draft-set, build-set.
+ * Registered in `cli.ts`'s `COMMANDS`.
  *
  * Exit codes (beside cli.ts's 0 / 1 / 2): `apply` exits 3 when it stopped at a
  * decision the spec does not answer — the run is resumable, the template is
@@ -14,15 +14,28 @@
  * operator about on every call, are the only unattended path.
  */
 
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import type { CommandContext, CommandSpec } from "../cli";
 import { scrub } from "../auth/token-source";
 import { secretValues } from "../client/connect";
 import { makeClient, type NbClient } from "../client/convex-client";
 import { contentDigest, parseTarget } from "../client/target";
-import { countOpenDecisions, specConfirmPhrase, type NodePath, type PlanReport } from "../service";
+import {
+  countOpenDecisions,
+  isSetPath,
+  MAX_TEAM_LOOKUP_BUDGET,
+  specConfirmPhrase,
+  type ApplyReport,
+  type DraftedReport,
+  type DraftOptions,
+  type DraftReport,
+  type NodePath,
+  type PlanReport,
+  type SetPath,
+} from "../service";
 import { parseSpec, specJsonSchema } from "../spec/schema";
 import { applySpec, confirmedSpec, publicApplyReport } from "./apply";
+import { draftSet, placeholdersIn } from "./draft";
 import { RunFailed } from "./engine";
 import { inspectPath } from "./inspect";
 import { planSpec } from "./plan";
@@ -310,6 +323,181 @@ export const confirmPhraseCommand: CommandSpec = {
     }),
 };
 
+// ---------------------------------------------------------------------------
+// draft-set / build-set (NEO-339 part B)
+// ---------------------------------------------------------------------------
+
+const DRAFT_OPTIONS = {
+  path: { type: "string" },
+  "skip-checklists": { type: "boolean" },
+  "skip-builds": { type: "boolean" },
+  "team-lookup-budget": { type: "string" },
+} as const;
+
+function setPathFlag(ctx: CommandContext): SetPath {
+  const raw = str(ctx.values.path);
+  if (!raw) throw new UsageError("Pass --path Sport/Year/Manufacturer/Set.");
+  const path = parsePathArg(raw);
+  if (!isSetPath(path)) throw new UsageError(`--path ${raw} names a brand-year; a draft needs a set (Sport/Year/Manufacturer/Set).`);
+  return path;
+}
+
+function draftOptions(ctx: CommandContext): DraftOptions {
+  const budgetRaw = str(ctx.values["team-lookup-budget"]);
+  const budget = budgetRaw === undefined ? undefined : Number(budgetRaw);
+  if (budget !== undefined && (!Number.isInteger(budget) || budget < 0 || budget > MAX_TEAM_LOOKUP_BUDGET)) {
+    throw new UsageError(`--team-lookup-budget must be an integer from 0 to ${MAX_TEAM_LOOKUP_BUDGET}.`);
+  }
+  return {
+    ...(ctx.values["skip-checklists"] === true ? { checklists: false } : {}),
+    ...(ctx.values["skip-builds"] === true ? { builds: false } : {}),
+    ...(budget !== undefined ? { teamLookupBudget: budget } : {}),
+  };
+}
+
+/** A draft for a person: the plan-style report, then the proposals and notes. */
+export function draftMarkdown(r: DraftReport): string {
+  if (r.status === "unresolved") {
+    const lines = [
+      `## setbuild draft-set: ${r.pathText}`,
+      "",
+      `**Not found.** ${r.message}`,
+      ...(r.candidates.length ? ["", "Did you mean:", ...r.candidates.map((c) => `- ${c.name}`)] : []),
+      ...(r.prepare ? ["", r.prepare.reason, "", "```json", JSON.stringify(r.prepare.spec, null, 2), "```"] : []),
+    ];
+    return `${lines.join("\n")}\n`;
+  }
+  const head = reportMarkdown({
+    target: r.target,
+    scope: r.scope,
+    confirmPhrase: r.confirmPhrase ?? "(none yet: answer the open decisions first)",
+    steps: r.steps,
+    openDecisions: r.openDecisions,
+    template: r.template,
+  }).replace(/^## setbuild plan:/, "## setbuild draft-set:");
+  const out = [head.trimEnd(), "", `### ${r.proposals.length} proposal${r.proposals.length === 1 ? "" : "s"} (filled by the draft; read them before approving)`, ""];
+  for (const p of r.proposals) out.push(`- \`${p.at}\` ${p.kind}: ${p.detail}`);
+  if (r.notes.length) out.push("", "### Notes", "", ...r.notes.map((n) => `- ${n}`));
+  out.push("", `Marketplace requests: ${r.marketplaceCalls} · ${(r.durationMs / 1000).toFixed(1)}s`);
+  return `${out.join("\n")}\n`;
+}
+
+/** What an operator edits or applies: the template while anything is open, else the spec. */
+function draftFile(r: DraftedReport): Record<string, unknown> {
+  return r.template ?? r.spec;
+}
+
+export const draftSetCommand: CommandSpec = {
+  summary:
+    "Read-only on NB data: draft a whole set's spec from the server previews. Writes the spec (or, with open decisions, its fill-in template) to --out. Exit 3 when something needs an answer.",
+  usage:
+    "setbuild draft-set --path <Sport/Year/Manufacturer/Set> --out <file.json> [--skip-checklists] [--skip-builds] [--team-lookup-budget <n>] [--report <draft.json>] [--json] [connection flags]",
+  options: { ...DRAFT_OPTIONS, out: { type: "string" }, report: { type: "string" } },
+  run: (ctx) =>
+    usageGuard(ctx, async () => {
+      const path = setPathFlag(ctx);
+      const out = str(ctx.values.out);
+      if (!out) throw new UsageError("Pass --out <file.json> for the drafted spec.");
+      const opts = draftOptions(ctx);
+      const report = await withClient(ctx, (client, conn) => draftSet(client, conn.target, path, opts));
+      const secrets = secretsOf(ctx);
+      const reportPath = str(ctx.values.report);
+      if (reportPath) await writeFile(reportPath, scrub(`${JSON.stringify(report, null, 2)}\n`, secrets), "utf8");
+      if (report.status === "drafted") await writeFile(out, scrub(`${JSON.stringify(draftFile(report), null, 2)}\n`, secrets), "utf8");
+      ctx.io.stdout(scrub(ctx.json ? JSON.stringify(report, null, 2) : draftMarkdown(report).trimEnd(), secrets));
+      if (report.status === "drafted" && !ctx.json) {
+        ctx.io.stdout(
+          report.openCount > 0
+            ? `\nWrote the fill-in template to ${out}: answer every <…>, then plan and apply it.`
+            : `\nWrote the spec to ${out}.`,
+        );
+      }
+      return report.status === "drafted" && report.openCount === 0 ? 0 : EXIT_STOPPED;
+    }),
+};
+
+/** The message `build-set` refuses with when there is no terminal. */
+export const BUILD_SET_NEEDS_TTY =
+  "build-set runs only in an interactive terminal: it shows the draft and asks for the confirm phrase before each " +
+  "write. Without a terminal, use draft-set, then plan and apply (or the MCP tools, which ask the operator on every write).";
+
+/** Wait for the operator to answer every <…> in `file`; undefined when they stop. */
+async function answeredSpec(ctx: CommandContext, file: string): Promise<unknown | undefined> {
+  for (;;) {
+    const answer = (await ctx.io.prompt!(`Answer every <…> in ${file}, save it, then press Enter (q to stop): `)).trim();
+    if (answer.toLowerCase() === "q") return undefined;
+    let raw: unknown;
+    try {
+      raw = JSON.parse(await readFile(file, "utf8"));
+    } catch {
+      ctx.io.stderr(`${file} is not JSON yet.`);
+      continue;
+    }
+    const left = placeholdersIn(raw);
+    if (left.length > 0) {
+      ctx.io.stderr(`${left.length} fill-in(s) still open: ${left.slice(0, 5).join(", ")}${left.length > 5 ? ", …" : ""}`);
+      continue;
+    }
+    try {
+      parseSpec(raw);
+    } catch (err) {
+      ctx.io.stderr(err instanceof Error ? err.message : String(err));
+      continue;
+    }
+    return raw;
+  }
+}
+
+export const buildSetCommand: CommandSpec = {
+  summary:
+    "WRITES, interactively: draft a set, show the draft, ask for the confirm phrase, apply --collect, then ask for the answers to anything only the run could see and apply again. Terminal only.",
+  usage:
+    "setbuild build-set --path <Sport/Year/Manufacturer/Set> [--out <file.json>] [--skip-checklists] [--skip-builds] [--team-lookup-budget <n>] [--paused-platforms <keys>] [connection flags]",
+  options: { ...DRAFT_OPTIONS, out: { type: "string" }, ...PAUSED_OPTION },
+  run: (ctx) =>
+    usageGuard(ctx, async () => {
+      // A person approves every write here: refuse before anything connects.
+      if (!ctx.io.prompt) throw new UsageError(BUILD_SET_NEEDS_TTY);
+      const path = setPathFlag(ctx);
+      const opts = draftOptions(ctx);
+      const file = str(ctx.values.out) ?? `${formatSlug(path)}.build.json`;
+      const secrets = secretsOf(ctx);
+      return withClient(ctx, async (client, conn) => {
+        const draft = await draftSet(client, conn.target, path, opts);
+        ctx.io.stdout(scrub(draftMarkdown(draft).trimEnd(), secrets));
+        if (draft.status === "unresolved") return EXIT_STOPPED;
+        await writeFile(file, scrub(`${JSON.stringify(draftFile(draft), null, 2)}\n`, secrets), "utf8");
+        let spec: unknown = draft.spec;
+        if (draft.openCount > 0) {
+          ctx.io.stderr(`\n${draft.openCount} open decision(s); the fill-in template is in ${file}.`);
+          spec = await answeredSpec(ctx, file);
+          if (spec === undefined) return EXIT_STOPPED;
+        } else {
+          ctx.io.stderr(`\nThe drafted spec is in ${file}.`);
+        }
+        for (;;) {
+          const expected = specConfirmPhrase(conn.target, parseSpec(spec));
+          const confirm = await promptConfirm(ctx, expected, conn.target.host);
+          confirmedSpec(conn.target, spec, confirm);
+          const report: ApplyReport = publicApplyReport(
+            await applySpec(client, conn.target, spec, confirm, { pausedPlatforms: pausedPlatforms(ctx), stopAt: "end" }),
+          );
+          printReport(ctx, report);
+          if (!report.stoppedAt) return 0;
+          if (!report.template) return EXIT_STOPPED;
+          await writeFile(file, scrub(`${JSON.stringify(report.template, null, 2)}\n`, secrets), "utf8");
+          ctx.io.stderr(`\nThe run collected ${countOpenDecisions(report.openDecisions)} decision(s) it could only see once it wrote; the fill-in template is in ${file}.`);
+          spec = await answeredSpec(ctx, file);
+          if (spec === undefined) return EXIT_STOPPED;
+        }
+      });
+    }),
+};
+
+function formatSlug(p: SetPath): string {
+  return [p.sport, p.year, p.manufacturer, p.set].join("-").replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "").toLowerCase();
+}
+
 export const RUNNER_COMMANDS: Record<string, CommandSpec> = {
   inspect: inspectCommand,
   plan: planCommand,
@@ -317,4 +505,6 @@ export const RUNNER_COMMANDS: Record<string, CommandSpec> = {
   "decisions-template": decisionsTemplateCommand,
   schema: schemaCommand,
   "confirm-phrase": confirmPhraseCommand,
+  "draft-set": draftSetCommand,
+  "build-set": buildSetCommand,
 };

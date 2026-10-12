@@ -22,7 +22,7 @@ import { main, type CliIO } from "../cli";
 import { parseTarget } from "../client/target";
 import { specConfirmPhrase } from "../service";
 import { parseSpec } from "../spec/schema";
-import { MACHINE_NEEDS_TTY, parsePathArg } from "./cli-commands";
+import { BUILD_SET_NEEDS_TTY, MACHINE_NEEDS_TTY, parsePathArg } from "./cli-commands";
 
 function io(env: NodeJS.ProcessEnv = {}): CliIO & { out: string[]; err: string[] } {
   const out: string[] = [];
@@ -239,5 +239,53 @@ describe("setbuild schema", () => {
     expect(await main(["schema"], a)).toBe(0);
     const schema = JSON.parse(a.out.join("\n"));
     expect(JSON.stringify(schema)).toContain("SetBuildSpec");
+  });
+});
+
+describe("setbuild draft-set / build-set", () => {
+  const SET = "Baseball/2024/Topps/Topps Chrome Black";
+
+  test("build-set without a terminal is refused before any network call, under either auth", async () => {
+    for (const env of [ENV, TESTING_ENV]) {
+      const a = io(env);
+      expect(await main(["build-set", "--path", SET], a)).toBe(2);
+      expect(a.err.join("\n")).toContain(BUILD_SET_NEEDS_TTY);
+      expect([...a.out, ...a.err].join("\n")).not.toMatch(/ak_secret_value|tes_secret_value_123/);
+    }
+    expect(sent()).toBe(0);
+  });
+
+  test("build-set takes no --confirm: the phrase is only ever typed at its prompt", async () => {
+    const a = ttyIo(ENV, "never asked");
+    expect(await main(["build-set", "--path", SET, "--confirm", "BUILD x y 00000000"], a)).toBe(2);
+    expect(a.err.join("\n")).toMatch(/confirm/);
+    expect(sent()).toBe(0);
+  });
+
+  test("build-set on a terminal drafts first (read-only): no phrase is asked before the draft", async () => {
+    const a = ttyIo(TESTING_ENV, "q");
+    expect(await main(["build-set", "--path", SET], a)).toBe(1);
+    expect(a.asked).toEqual([]);
+    expect(sent()).toBeGreaterThan(0);
+  });
+
+  test("draft-set usage errors come before any network call", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "setbuild-draft-"));
+    const out = join(dir, "draft.json");
+    expect(await main(["draft-set", "--path", SET], io(ENV))).toBe(2);
+    expect(await main(["draft-set", "--out", out], io(ENV))).toBe(2);
+    expect(await main(["draft-set", "--path", "Baseball/2024/Topps", "--out", out], io(ENV))).toBe(2);
+    expect(await main(["draft-set", "--path", SET, "--out", out, "--team-lookup-budget", "-1"], io(ENV))).toBe(2);
+    expect(await main(["draft-set", "--path", SET, "--out", out, "--team-lookup-budget", "999999"], io(ENV))).toBe(2);
+    expect(sent()).toBe(0);
+  });
+
+  test("draft-set is a read: it needs no phrase and no terminal, even with machine auth", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "setbuild-draft-"));
+    const a = io(ENV);
+    // The fake server refuses the sign-in, so the run fails past the gate.
+    expect(await main(["draft-set", "--path", SET, "--out", join(dir, "draft.json")], a)).toBe(1);
+    expect(sent()).toBeGreaterThan(0);
+    expect(a.err.join("\n")).not.toContain("ak_secret_value");
   });
 });

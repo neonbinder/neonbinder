@@ -1,0 +1,4 @@
+{
+  "measured": false,
+  "note": "NEO-339 one-shot proof fixture (2024 Topps Chrome Black). Not measured yet: replace this file with the committed spec — nb_draft_set's template on the PR preview with every <…> answered (docs/operations/neo339-setbuild.md §2.4). Until then the setbuild-oneshot job fails with \"fixture not measured yet\"."
+}

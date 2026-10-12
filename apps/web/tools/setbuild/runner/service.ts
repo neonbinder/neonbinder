@@ -49,6 +49,7 @@ import { applySpec, publicApplyReport } from "./apply";
 import { emptyOpenDecisions, type RunOptions } from "./engine";
 import { inspectPath } from "./inspect";
 import { planSpec } from "./plan";
+import { draftSet } from "./draft";
 import { queryOnlyClient } from "./read-only-client";
 
 /** A write that could not go on because it needs answers it was not given. */
@@ -89,6 +90,8 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
     read: {
       inspect: (path) => inspectPath(reads, target, path),
       plan: (spec) => planSpec(client, target, spec, runOpts()),
+      // Read-only on NB data: drafts on `draftClient` (runner/draft.ts).
+      draftSet: (path, o) => draftSet(client, target, path, { ...(o ?? {}), ...(opts.now ? { now: opts.now } : {}) }),
       async reviewItems(path): Promise<ReviewItemsReport> {
         const pathText = formatPath(path);
         const review: ReviewItemsReport["review"] = { players: [], teams: [], leagues: [] };

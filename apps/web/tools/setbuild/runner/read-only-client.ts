@@ -26,6 +26,20 @@ import type { NbClient } from "../client/convex-client";
  */
 export const READ_ONLY_ACTIONS: ReadonlySet<string> = new Set(["setReconciliation:fetchRawOptions"]);
 
+/**
+ * What `nb_draft_set` may run: `READ_ONLY_ACTIONS` plus exactly the two
+ * read-only preview actions (NEO-339 part B). Never `fetchCardChecklist`
+ * (it stages candidate rows) or `resolveChecklistEntities` (it opens a review
+ * batch). The third preview, `previewChecklistEntities`, is a query and needs
+ * no entry. Read-only on NB data; a marketplace adapter may still refresh its
+ * session, as any fetch does.
+ */
+export const DRAFT_READ_ACTIONS: ReadonlySet<string> = new Set([
+  ...READ_ONLY_ACTIONS,
+  "setReconciliation:previewSetStructure",
+  "selectorOptions:previewCardChecklist",
+]);
+
 /** The write a plan step stopped at. Not an error: it means "apply would do this". */
 export class PlanWouldWrite extends Error {
   readonly fn: string;
@@ -36,7 +50,11 @@ export class PlanWouldWrite extends Error {
   }
 }
 
-export function readOnlyClient(inner: NbClient): NbClient {
+/**
+ * Queries pass; every mutation is refused; an action passes only when it is in
+ * `allowed` (default `READ_ONLY_ACTIONS`). An empty set refuses every action.
+ */
+export function readOnlyClient(inner: NbClient, allowed: ReadonlySet<string> = READ_ONLY_ACTIONS): NbClient {
   return {
     target: inner.target,
     transport: inner.transport,
@@ -47,12 +65,17 @@ export function readOnlyClient(inner: NbClient): NbClient {
     },
     action: async (fn, args) => {
       const name = getFunctionName(fn as FunctionReference<"action">);
-      if (!READ_ONLY_ACTIONS.has(name)) throw new PlanWouldWrite(name);
+      if (!allowed.has(name)) throw new PlanWouldWrite(name);
       return inner.action(fn, args);
     },
     // The plan does not own the connection.
     close: async () => {},
   };
+}
+
+/** The client `nb_draft_set` drafts on: `readOnlyClient` over `DRAFT_READ_ACTIONS`. */
+export function draftClient(inner: NbClient): NbClient {
+  return readOnlyClient(inner, DRAFT_READ_ACTIONS);
 }
 
 /** A mutation or action attempted through `queryOnlyClient`. */

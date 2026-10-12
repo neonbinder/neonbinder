@@ -41,7 +41,7 @@ export const SERVER_VERSION = "0.1.0";
 
 const SERVER_INSTRUCTIONS =
   "Builds NeonBinder sets through the same admin functions the Set Builder UI calls. " +
-  "Read tools (nb_inspect, nb_plan, nb_review_items) never write. Write tools (nb_apply, nb_decide, " +
+  "Read tools (nb_inspect, nb_plan, nb_review_items, nb_draft_set) are read-only on NB data. Write tools (nb_apply, nb_decide, " +
   "nb_build_parallel, nb_sl_review_apply) need confirm = BUILD <convex host> <scope> <digest>, the digest " +
   "binding it to the call's content; take it from nb_plan " +
   "or from the write tool's own error, and only after the operator has seen what will be written and where. " +
@@ -78,9 +78,12 @@ export function lazyService(
       inspect: (path) => get().read.inspect(path),
       plan: (spec) => get().read.plan(spec),
       reviewItems: (path) => get().read.reviewItems(path),
+      draftSet: (path, opts) => get().read.draftSet(path, opts),
     },
     write: {
-      apply: (spec, confirm) => get().write.apply(spec, confirm),
+      // Pass the options through: `stopAt` must reach the runner (nb_apply's
+      // default "end" was being dropped here).
+      apply: (spec, confirm, opts) => get().write.apply(spec, confirm, opts),
       decide: (path, decisions, confirm) => get().write.decide(path, decisions, confirm),
       buildParallel: (path, name, opts, confirm) => get().write.buildParallel(path, name, opts, confirm),
       slReviewApply: (path, decisions, confirm) => get().write.slReviewApply(path, decisions, confirm),
@@ -98,7 +101,7 @@ export function unavailableService(err: unknown): SetBuildService {
     get target(): Target {
       throw err;
     },
-    read: { inspect: fail, plan: fail, reviewItems: fail },
+    read: { inspect: fail, plan: fail, reviewItems: fail, draftSet: fail },
     write: { apply: fail, decide: fail, buildParallel: fail, slReviewApply: fail },
   };
 }

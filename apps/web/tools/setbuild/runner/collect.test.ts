@@ -326,3 +326,129 @@ describe("Group Parallels and insert parallels through the engine", () => {
     });
   });
 });
+
+/**
+ * Security audit S2 — the gating rows of the engine's table that had no test,
+ * and the duplicate-set-step case: the gate state is run-level, keyed by the
+ * folded set path, so a second step naming the same set still waits.
+ */
+describe('stopAt: "end" — what waits on what', () => {
+  /** `fetchRawOptions`: the Base picker's list under vtB; under any other type, one BSC and one SportLots set. */
+  function withFetch(client: FakeClient): FakeClient {
+    return client
+      .on("setReconciliation:fetchRawOptions", (a) => {
+        const base = a.parentId === "vtB";
+        const bsc = base ? [{ value: "Topps Chrome", platformValue: "bsc-chrome" }] : [{ value: "Future Stars", platformValue: "future-stars" }];
+        const sl = base ? [{ value: "2024 Topps Chrome", platformValue: "sl-chrome" }] : [{ value: "2024 Topps Chrome Future Stars", platformValue: "sl-fs" }];
+        return {
+          success: true,
+          bscOptions: bsc,
+          slOptions: sl,
+          autoMatched: [],
+          unmatchedBsc: bsc,
+          unmatchedSl: sl,
+          slCandidates: [],
+          errors: [],
+          message: "",
+          skippedSides: [],
+          pausedSides: [],
+          twinIds: { bsc: [], sportlots: [] },
+        };
+      })
+      .on("selectorOptions:getBaseVariantBySet", null)
+      .on("setParallelConversion:getBrandSlHolders", { rows: [], truncated: false })
+      .on("selectorOptions:getUsedInsertIdentifiersBySet", { values: [], slPlatformValues: [], bscPlatformValues: [] });
+  }
+
+  const setStep = (extra: Record<string, unknown>) => ({ kind: "set", path: PATH, variantTypes: { sync: true }, ...extra });
+  const OPEN_BASE = { map: { bsc: "bsc-not-offered", whenPaused: "bsc-only" } };
+  const MAPPED_BASE = { map: { bsc: "bsc-chrome", sportlots: "sl-chrome", whenPaused: "bsc-only" } };
+  const run = async (steps: unknown[], cards = WIDE()) => {
+    const raw = { version: 1, scope: SCOPE, steps };
+    const client = withFetch(world(cards));
+    const r = await applySpec(client, FAKE_TARGET, raw, confirmFor(raw), { pausedPlatforms: "", stopAt: "end" });
+    return { r, client, step: (action: string) => r.steps.filter((s) => s.action === action) };
+  };
+
+  test("an open Base mapping: every variant sync and every buildFromBase waits, nothing is fetched under them", async () => {
+    const { r, client, step } = await run([
+      setStep({
+        base: OPEN_BASE,
+        variants: [
+          { type: "Insert", sync: { pairs: [{ name: "Future Stars", bsc: ["future-stars"] }], pending: [] } },
+          { type: "Parallel", rows: [{ name: "Sepia Refractors", buildFromBase: {} }] },
+        ],
+      }),
+    ]);
+    expect(r.openDecisions.baseCandidates).toHaveLength(1);
+    const on = "waits: the Base mapping (steps[0].base.map)";
+    expect(step("sync Insert rows")).toEqual([expect.objectContaining({ status: "blocked", detail: on })]);
+    expect(step("build Parallel › Sepia Refractors from Base")).toEqual([expect.objectContaining({ status: "blocked", detail: on })]);
+    // Only the Base picker's fetch: the Insert sync never asked a marketplace.
+    expect(client.callsTo("setReconciliation:fetchRawOptions").map((c) => c.args.parentId)).toEqual(["vtB"]);
+    expect(client.writes().filter((c) => c.kind === "mutation")).toEqual([]);
+  });
+
+  test("an open variant-type sync: that type's rows wait; another type carries on", async () => {
+    const { r, client, step } = await run([
+      setStep({
+        base: MAPPED_BASE,
+        variants: [
+          {
+            type: "Insert",
+            sync: { pairs: [{ name: "Future Stars", bsc: ["not-fetched"] }], pending: [] },
+            rows: [{ name: "Future Stars", checklist: checklist() }],
+          },
+          { type: "Parallel", rows: [{ name: "Sepia Refractors", buildFromBase: {} }] },
+        ],
+      }),
+    ], { ...WIDE(), vtB: 2 });
+    expect(r.stops).toHaveLength(1);
+    expect(step("Insert rows")).toEqual([
+      expect.objectContaining({ status: "blocked", detail: "waits: the Insert sync (steps[0].variants[0].sync)" }),
+    ]);
+    expect(client.callsTo("selectorOptions:fetchCardChecklist")).toEqual([]);
+    expect(step("build Parallel › Sepia Refractors from Base")).toEqual([expect.objectContaining({ status: "done" })]);
+  });
+
+  test("an open brand-year: every later set step under it waits", async () => {
+    const BAD = { sport: "Baseball", year: "2024", manufacturer: "Topp" };
+    const { r, client, step } = await run([
+      { kind: "brand-year", path: BAD, syncSets: true },
+      { kind: "set", path: { ...BAD, set: "Topps Chrome" }, variantTypes: { sync: true }, base: MAPPED_BASE },
+    ]);
+    expect(r.openDecisions.names.map((n) => n.at)).toEqual(["steps[0].path.manufacturer"]);
+    expect(step("everything below the set")).toEqual([
+      expect.objectContaining({ index: 1, status: "blocked", detail: "waits: Baseball/2024/Topp does not resolve (steps[0])" }),
+    ]);
+    expect(client.callsTo("setReconciliation:fetchRawOptions")).toEqual([]);
+  });
+
+  test("two steps naming one set share the gate: the second step's builds and syncs wait on the first's open Base", async () => {
+    const { client, step } = await run([
+      setStep({ base: OPEN_BASE }),
+      setStep({
+        variants: [
+          { type: "Insert", sync: { pairs: [{ name: "Future Stars", bsc: ["future-stars"] }], pending: [] } },
+          { type: "Parallel", rows: [{ name: "Sepia Refractors", buildFromBase: {} }] },
+        ],
+      }),
+    ], { ...WIDE(), vtB: 2 });
+    const on = "waits: the Base mapping (steps[0].base.map)";
+    expect(step("build Parallel › Sepia Refractors from Base")).toEqual([expect.objectContaining({ index: 1, status: "blocked", detail: on })]);
+    expect(step("sync Insert rows")).toEqual([expect.objectContaining({ index: 1, status: "blocked", detail: on })]);
+    expect(client.callsTo("parallelChecklistBuild:buildParallelChecklist")).toEqual([]);
+  });
+
+  test("two steps naming one set: rows of a type whose sync the first step left open wait in the second", async () => {
+    const { client, step } = await run([
+      setStep({ base: MAPPED_BASE, variants: [{ type: "Insert", sync: { pairs: [{ name: "Future Stars", bsc: ["not-fetched"] }], pending: [] } }] }),
+      setStep({ variants: [{ type: "Insert", rows: [{ name: "Future Stars", checklist: checklist() }] }] }),
+    ], { ...WIDE(), vtB: 2 });
+    expect(step("Insert rows").map((s) => [s.index, s.detail])).toEqual([
+      [0, "waits: the Insert sync (steps[0].variants[0].sync)"],
+      [1, "waits: the Insert sync (steps[0].variants[0].sync)"],
+    ]);
+    expect(client.callsTo("selectorOptions:fetchCardChecklist")).toEqual([]);
+  });
+});

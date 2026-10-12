@@ -1,0 +1,4 @@
+{
+  "measured": false,
+  "note": "NEO-339 one-shot proof expectations (2024 Topps Chrome Black). Not measured yet: replace with { path, draft: { openDecisions }, apply: { counts: { reconciled, grouped, committed, built } }, builtFromBaseType, after } measured on the PR preview (docs/operations/neo339-setbuild.md §2.4). Until then the setbuild-oneshot job fails with \"fixture not measured yet\"."
+}

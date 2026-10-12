@@ -64,6 +64,9 @@ permissions:
 #   runner → strategy.matrix.runner: identical runners, each bootstraps its account
 #            (runner N → TEST_EMAIL_N) then loops claim→run→report until the queue
 #            drains. A flow failure is recorded in the queue, not the job exit code.
+#   setbuild-oneshot → NEO-339: the one-shot set build's live proof (draft →
+#            merge with the committed answers → plan → apply → inspect), in
+#            parallel with the runners; the gate requires it.
 #   e2e    → the single ruleset-required gate: reads QUEUE status; green iff every
 #            queued flow passed and the queue fully drained.
 #   report → merge every runner's JUnit into ONE "Maestro E2E" check + sticky comment.
@@ -398,6 +401,9 @@ jobs:
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
+          # The deployment is never printed (this log is public): mask its
+          # name before anything below can echo it (phrases name the host).
+          echo "::add-mask::$CONVEX_NAME"
           started=$SECONDS
           creds_dir="$(mktemp -d)"; chmod 700 "$creds_dir"
           trap 'rm -rf "$creds_dir" "$GITHUB_WORKSPACE/.vercel"' EXIT
@@ -503,7 +509,8 @@ jobs:
           {
             echo "### Seed (setbuild, NEO-339)"
             echo "- duration: \`${duration}s\`"
-            echo "- baseline confirm phrase: \`${base_phrase}\`"
+            # The step summary is not masked: the digest only, never the host.
+            echo "- baseline spec digest: \`${base_phrase##* }\`"
             echo "- apply counts: \`$(jq -c '.counts // .summary // {}' setbuild-seed-report.json 2>/dev/null || echo '?')\`"
             echo "- mcp-smoke: \`$(jq -r '"ok=\(.ok), checks=\(.checks | length), failed=\([.checks[] | select(.ok | not)] | length)"' setbuild-mcp-smoke-report.json 2>/dev/null || echo '?')\`"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -664,6 +671,158 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  # NEO-339 part B — the live proof of the one-shot set build. After the seed
+  # (it needs the seeded 2024 Topps brand-year and the seeded test admin's
+  # marketplace credentials), IN PARALLEL with the runner pool, and required
+  # by the `e2e` gate. It drives the MCP server as an agent would: nb_draft_set
+  # on a real set no flow touches (2024 Topps Chrome Black), the draft merged
+  # with the committed answers must digest to the committed spec (drift is a
+  # visible failure), nb_plan, nb_apply (stopAt "end") with the phrase, then
+  # nb_inspect. `setbuild oneshot-smoke` (tools/setbuild/mcp-oneshot.ts).
+  # Fixture: .maestro/seed/oneshot.spec.json + oneshot.expect.json. Until they
+  # are measured on a PR preview they are placeholders and this job FAILS
+  # ("fixture not measured yet"); it never passes vacuously.
+  # Runbook: docs/operations/neo339-setbuild.md §2.4.
+  setbuild-oneshot:
+    defaults:
+      run:
+        working-directory: apps/web
+    needs: [setup, seed]
+    if: always() && needs.seed.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: The fixture must be measured
+        run: |
+          set -euo pipefail
+          for f in .maestro/seed/oneshot.spec.json .maestro/seed/oneshot.expect.json; do
+            if [ "$(jq -r '.measured // "yes"' "$f")" = "false" ]; then
+              echo "::error file=apps/web/$f::fixture not measured yet — measure 2024 Topps Chrome Black with nb_draft_set on this PR's preview (docs/operations/neo339-setbuild.md §2.4)"
+              exit 1
+            fi
+          done
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Signs in exactly as the seed job does (keep the two credential blocks
+      # in step): `vercel pull`, else the PR preview's own served bundle;
+      # the testing secret masked before first use and exported to this step
+      # only. The account is its own worker index (ONESHOT_WORKER), not one a
+      # runner drains the queue with: a runner's per-flow reset is scoped to
+      # its own user, and this build's candidate and review batches are scoped
+      # to this one. Its marketplace credentials come from the committed
+      # spec's `credentials` block (seeded on the preview, as the baseline's).
+      - name: One-shot build (nb_draft_set → nb_plan → nb_apply → nb_inspect)
+        env:
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+          ONESHOT_WORKER: "8"
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+          HEAD_REF: ${{ github.head_ref || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # Never print the deployment: this log is public.
+          echo "::add-mask::$CONVEX_NAME"
+          started=$SECONDS
+          creds_dir="$(mktemp -d)"; chmod 700 "$creds_dir"
+          trap 'rm -rf "$creds_dir" "$GITHUB_WORKSPACE/.vercel"' EXIT
+
+          env_value() {
+            local v
+            v="$(grep -E "^$2=" "$1" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+            v="${v%\"}"; v="${v#\"}"; v="${v%\'}"; v="${v#\'}"
+            printf '%s' "$v"
+          }
+          report() {
+            if [ -n "$2" ]; then echo "  $1: present (length ${#2})"; else echo "  $1: EMPTY"; fi
+          }
+
+          secret=""; pk=""
+          if [ -n "${VERCEL_TOKEN:-}" ] && [ -n "${VERCEL_ORG_ID:-}" ] && [ -n "${VERCEL_PROJECT_ID:-}" ]; then
+            echo "Trying vercel pull (preview, branch $HEAD_REF)"
+            if (cd "$GITHUB_WORKSPACE" && env -u VERCEL_AUTOMATION_BYPASS_SECRET \
+                  npx --yes vercel@48.2.0 pull --yes --environment=preview \
+                  --git-branch="$HEAD_REF" --token="$VERCEL_TOKEN" > "$creds_dir/vercel-pull.log" 2>&1); then
+              envfile="$GITHUB_WORKSPACE/.vercel/.env.preview.local"
+              secret="$(env_value "$envfile" TESTING_ENDPOINT_SECRET)"
+              pk="$(env_value "$envfile" VITE_CLERK_PUBLISHABLE_KEY)"
+              echo "vercel pull result:"
+              report TESTING_ENDPOINT_SECRET "$secret"
+              report VITE_CLERK_PUBLISHABLE_KEY "$pk"
+            else
+              echo "::warning::vercel pull failed; falling back to the preview bundle."
+              tail -n 5 "$creds_dir/vercel-pull.log" | sed 's/^/  /'
+            fi
+          fi
+          [ -n "$secret" ] && echo "::add-mask::$secret"
+          if [ -z "$secret" ] || [ -z "$pk" ]; then
+            echo "Falling back to the PR preview's served bundle"
+            node "$GITHUB_WORKSPACE/.github/scripts/preview-testing-creds.mjs" "$PREVIEW_URL" "$creds_dir" \
+              || echo "::warning::preview bundle did not yield both values."
+            if [ -z "$secret" ] && [ -s "$creds_dir/testing-secret" ]; then
+              secret="$(cat "$creds_dir/testing-secret")"
+              echo "::add-mask::$secret"
+            fi
+            if [ -z "$pk" ] && [ -s "$creds_dir/publishable-key" ]; then
+              pk="$(cat "$creds_dir/publishable-key")"
+            fi
+          fi
+          if [ -z "$secret" ] || [ -z "$pk" ]; then
+            echo "::error::Could not obtain TESTING_ENDPOINT_SECRET / VITE_CLERK_PUBLISHABLE_KEY from vercel pull or the preview bundle."
+            exit 1
+          fi
+          export TESTING_ENDPOINT_SECRET="$secret"
+          export VITE_CLERK_PUBLISHABLE_KEY="$pk"
+
+          convex_url="https://${CONVEX_NAME}.convex.cloud"
+          phrase="$(npm run --silent setbuild -- confirm-phrase \
+            --spec .maestro/seed/oneshot.spec.json --convex-url "$convex_url")"
+
+          status=0
+          npm run --silent setbuild -- oneshot-smoke \
+            --answers .maestro/seed/oneshot.spec.json \
+            --expect .maestro/seed/oneshot.expect.json \
+            --auth testing \
+            --app-url "$PREVIEW_URL" \
+            --convex-url "$convex_url" \
+            --worker "$ONESHOT_WORKER" \
+            --paused-platforms "${PAUSED_PLATFORMS:-}" \
+            --confirm "$phrase" \
+            --json > setbuild-oneshot-report.json || status=$?
+
+          duration=$((SECONDS - started))
+          # Check lines only (labels and counts; the tool redacts the host).
+          jq -r '.checks[]? | "\(if .ok then "ok  " else "FAIL" end)  \(.label): \(.detail)"' setbuild-oneshot-report.json || true
+          {
+            echo "### One-shot set build (setbuild, NEO-339)"
+            echo "- duration: \`${duration}s\`"
+            echo "- spec digest: \`${phrase##* }\`"
+            echo "- checks: \`$(jq -r '"ok=\(.ok), checks=\(.checks | length), failed=\([.checks[] | select(.ok | not)] | length)"' setbuild-oneshot-report.json 2>/dev/null || echo '?')\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - name: Upload one-shot report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: setbuild-oneshot
+          path: apps/web/setbuild-oneshot-report.json
+          if-no-files-found: ignore
+          retention-days: 14
+
   runner:
     defaults:
       run:
@@ -809,7 +968,7 @@ jobs:
   # nonzero running means a runner died holding a claimed flow). Stable name
   # regardless of how many runners.
   e2e:
-    needs: [setup, seed, runner]
+    needs: [setup, seed, runner, setbuild-oneshot]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -819,9 +978,13 @@ jobs:
           CONVEX_SITE_URL: ${{ needs.setup.outputs.convex_site }}
           E2E_QUEUE_SECRET: ${{ secrets.E2E_QUEUE_SECRET }}
         run: |
-          echo "jobs: setup=${{ needs.setup.result }} seed=${{ needs.seed.result }} runner=${{ needs.runner.result }}"
+          echo "jobs: setup=${{ needs.setup.result }} seed=${{ needs.seed.result }} runner=${{ needs.runner.result }} setbuild-oneshot=${{ needs.setbuild-oneshot.result }}"
           if [ "${{ needs.setup.result }}" != "success" ] || [ "${{ needs.seed.result }}" != "success" ]; then
             echo "::error::setup or seed did not succeed"; exit 1
+          fi
+          # NEO-339: the one-shot set build's live proof is required too.
+          if [ "${{ needs.setbuild-oneshot.result }}" != "success" ]; then
+            echo "::error::setbuild-oneshot did not succeed (see its job: a red draft merge is drift, an unmeasured fixture says so)"; exit 1
           fi
           status=$(curl -fsS -X POST "$CONVEX_SITE_URL/e2e/status" \
             -H "x-e2e-queue-secret: $E2E_QUEUE_SECRET" -H "Content-Type: application/json" \
