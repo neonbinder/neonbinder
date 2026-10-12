@@ -44,7 +44,8 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     const variantClasses = {
       default: "bg-neon-green text-black hover:bg-neon-green/85",
       primary: "bg-neon-green text-black hover:bg-neon-green/85",
-      destructive: "bg-neon-pink text-white hover:bg-neon-pink/90",
+      // Black ink, like NeonButton: white on neon pink is 3.44:1 (SC 1.4.3).
+      destructive: "bg-neon-pink text-black hover:bg-neon-pink/90",
       outline:
         "border border-slate-300 bg-white text-slate-900 hover:bg-slate-50",
       subtle: "bg-slate-100 text-slate-900 hover:bg-slate-200",

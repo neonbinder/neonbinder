@@ -100,3 +100,4 @@
 - [Ensure-sync idle window races Playwright](reference_ensure_sync_idle_window_races_playwright.md) — idle "Sync X" shows before the syncing write; wait for data, not the button (NEO-341 SPx notice)
 - [Dark variant is class-based (was OS-based)](reference_playwright_default_light_scheme_breaks_dark_variants.md) — NEO-341: @custom-variant + html.dark; light halves of dark: pairs are dead; never force colorScheme
 - [Print paths and Radix root scheme](reference_print_paths_and_radix_root_scheme.md) — Print buttons use isolated docs (globals.css never prints); print override needs html:root to beat Radix
+- [Neon contrast ink and axe text-shadow](reference_neon_contrast_ink_and_axe_text_shadow.md) — black ink on neon fills; text-neon-purple-text for purple text; axe counts animate-pulse fades and blurred glow halos

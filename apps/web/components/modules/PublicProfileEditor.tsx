@@ -503,6 +503,9 @@ export default function PublicProfileEditor() {
         <div
           className="h-8 rounded-md w-full"
           style={{ background: `linear-gradient(135deg, ${brandColor1}, ${brandColor2})` }}
+          // role="img" so the label names something: aria-label on a bare div
+          // is prohibited (axe aria-prohibited-attr) and is never announced.
+          role="img"
           aria-label="Gradient preview"
         />
       </div>

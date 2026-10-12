@@ -30,7 +30,11 @@ const NeonButton = forwardRef<HTMLButtonElement, NeonButtonProps>(
             : secondary
               ? "#00C2FF"
               : "#00D558",
-          color: cancel || secondary ? "white" : "black",
+          // Black ink on every neon fill: white measured 3.44:1 on the pink
+          // and 2.07:1 on the cyan (SC 1.4.3 needs 4.5:1); black is 6.11:1,
+          // 10.16:1 and 10.66:1 on pink, cyan and green. One ink for all
+          // three keeps the buttons reading as one family.
+          color: "#000000",
           // The inline backgroundColor above overrides Radix's own disabled
           // styling, so without this a disabled button renders at full neon
           // and reads as clickable — you press it and nothing happens, with

@@ -95,11 +95,10 @@ function eraLabel(years?: { from: number; to?: number }): string {
  * `py-1` on a text-xs line box makes the pointer target exactly 24px — WCAG 2.2
  * SC 2.5.8's floor — the same treatment the inline links on Team Management get.
  *
- * `text-neon-pink` on this ground is 5.2:1. Note that `text-neon-purple`
- * (#A44AFF), used for the links beside it, measures only 4.25:1 against
- * `bg-slate-900` — it passes on the page and panel grounds it is actually used
- * on, but do not move a purple label onto a slate-900 surface without
- * re-checking it.
+ * `text-neon-pink` on this ground is 5.2:1. The purple links beside it use
+ * `text-neon-purple-text` (#B56BFF), which holds 4.5:1 on every dark ground
+ * here down to gray-800; plain `neon-purple` (#A44AFF) is for borders and
+ * rings only and fails as text on slate-900 (4.25:1).
  */
 function RemoveTeamButton({
   busy,
@@ -299,7 +298,7 @@ function FranchiseDetail({
             No teams yet. Open a team on{" "}
             <Link
               to="/admin/teams"
-              className="rounded-sm text-neon-purple underline underline-offset-2 hover:text-neon-purple/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-purple"
+              className="rounded-sm text-neon-purple-text underline underline-offset-2 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-purple"
             >
               Team Management
             </Link>{" "}
@@ -682,7 +681,7 @@ export default function FranchiseManagement() {
                       aria-current={isSelected ? "true" : undefined}
                       className={`flex w-full flex-col gap-y-0.5 border-l-2 px-3 py-2 text-left text-sm transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
                         isSelected
-                          ? "border-neon-purple bg-neon-purple/10 text-neon-purple"
+                          ? "border-neon-purple bg-neon-purple/10 text-neon-purple-text"
                           : "border-transparent text-slate-300 hover:bg-slate-900"
                       }`}
                     >

@@ -410,6 +410,41 @@ body {
   box-shadow: 0 0 12px 2px rgba(0, 229, 192, 0.4), inset 0 0 8px rgba(0, 229, 192, 0.1);
 }
 
+/* Dark ink on Radix's solid pink and blue. Radix ships white
+ * (`--pink-contrast` / `--blue-contrast` on `:root`), which is 3.9:1 on its
+ * dark pink-9 and 3.2:1 on its dark blue-9, under SC 1.4.3's 4.5:1. Black is
+ * 5.1:1 and 6.4:1, and the same ink NeonButton puts on our own neon fills.
+ * `:root.dark` outweighs Radix's `:root`; `.dark` covers the Theme root and
+ * its portals, which carry the class themselves. */
+:root.dark,
+.dark,
+.dark-theme {
+  --pink-contrast: #000000;
+  --blue-contrast: #000000;
+}
+
+/* A neon sign that breathes instead of fading: Tailwind's `animate-pulse`
+ * dims text to 50% opacity, which drops neon pink on black to ~3:1 at the
+ * trough (axe caught #c62478 mid-fade). The glow pulses; the letters keep
+ * full colour. One soft 12px halo, no more: axe composites a blurred shadow
+ * into the background (alpha 0.185 / (blur/font-size + 0.4)), and two stacked
+ * halos tinted the ground enough to drop pink to 4.4:1; one 12px halo on 18px
+ * text keeps it above 4.5:1 at the peak. Still under reduced motion. */
+@keyframes neon-glow-pulse {
+  0%, 100% { text-shadow: 0 0 12px transparent; }
+  50%      { text-shadow: 0 0 12px currentColor; }
+}
+
+.animate-neon-glow {
+  animation: neon-glow-pulse 2s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-neon-glow {
+    animation: none;
+  }
+}
+
 /* Mobile nav slide-in */
 @keyframes slide-in-right {
   from { transform: translateX(100%); }

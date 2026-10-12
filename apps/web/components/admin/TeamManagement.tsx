@@ -1039,7 +1039,7 @@ function TeamDetail({
                 ? `/admin/franchises?franchise=${franchiseId}`
                 : "/admin/franchises"
             }
-            className="mt-1 inline-block rounded-sm py-1 text-xs text-neon-purple underline underline-offset-2 transition-colors hover:text-neon-purple/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-purple"
+            className="mt-1 inline-block rounded-sm py-1 text-xs text-neon-purple-text underline underline-offset-2 transition-colors hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neon-purple"
           >
             See the franchise
           </Link>
@@ -1564,7 +1564,7 @@ export default function TeamManagement() {
                       }
                       className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm border-l-2 transition-colors focus:outline-none focus:ring-2 focus:ring-inset focus:ring-green-500 ${
                         isSelected
-                          ? "border-neon-purple bg-neon-purple/10 text-neon-purple"
+                          ? "border-neon-purple bg-neon-purple/10 text-neon-purple-text"
                           : "border-transparent text-slate-300 hover:bg-slate-900"
                       }`}
                     >

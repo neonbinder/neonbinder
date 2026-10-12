@@ -1068,7 +1068,9 @@ export default function CardDetailPanel({
                   // always-dark walker dialog. #0369A1 measures 5.93:1
                   // against white; #00B7FF unchanged for dark mode (6.44:1
                   // against gray-800).
-                  className="rounded px-1 uppercase tracking-wide text-[#0369A1] dark:text-[#00B7FF] underline decoration-dotted hover:text-black dark:hover:text-white focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
+                  // inline-flex + min-h-6: the 10px label alone is a 15px-tall target;
+                  // SC 2.5.8 needs 24px (axe target-size).
+                  className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-[#0369A1] dark:text-[#00B7FF] underline decoration-dotted hover:text-black dark:hover:text-white focus:outline-none focus:ring-1 focus:ring-[#00B7FF]"
                 >
                   {preview.loading
                     ? "Rebuilding…"
