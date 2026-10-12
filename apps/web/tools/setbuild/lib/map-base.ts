@@ -21,7 +21,7 @@
 import { api } from "../../../convex/_generated/api";
 import type { FunctionReturnType } from "convex/server";
 import { slotEntries, slotFacet, primaryId, type PlatformSide, type SlotBearingRow } from "../../../convex/platformSlots";
-import { variantTypeRole } from "../../../convex/variantRole";
+import { variantTypeKind } from "../../../convex/variantRole";
 import {
   buildBaseMappingPayload,
   listBaseCandidates,
@@ -37,14 +37,17 @@ import { assertPausedSidesDeclared, errorCode, type PausedContext } from "./sync
 export type AncestorRow = FunctionReturnType<typeof api.selectorOptions.getAncestorChain>[number];
 export type RawOptions = FunctionReturnType<typeof api.setReconciliation.fetchRawOptions>;
 
-/** The set has no variant type holding the Base role (run Sync Variant Types first). */
+/**
+ * The set has no variant type titled Base (run Sync Variant Types first), or
+ * more than one. NEO-334: a variant type's title is its kind.
+ */
 export class NoBaseVariantType extends Error {
   readonly setId: RowId;
   constructor(setId: RowId, count: number) {
     super(
       count === 0
         ? `The set ${setId} has no Base variant type yet; sync its variant types first.`
-        : `The set ${setId} has ${count} variant types holding the Base role; name exactly one.`,
+        : `The set ${setId} has ${count} variant types titled Base; rename all but one.`,
     );
     this.name = "NoBaseVariantType";
     this.setId = setId;
@@ -65,7 +68,7 @@ export class BaseFetchError extends Error {
 
 export interface BaseContext {
   setId: RowId;
-  /** The Base variant type row (NB's `isBase` role, never its title). */
+  /** The Base variant type row: the one titled Base (NEO-334, `variantTypeKind`). */
   base: SelectorRow;
   chain: AncestorRow[];
   setNameAncestor: AncestorRow | undefined;
@@ -79,10 +82,10 @@ export interface BaseContext {
   };
 }
 
-/** The set's Base variant type, by NB's role flag, exactly one. */
+/** The set's Base variant type, by its title's kind (`variantTypeKind`), exactly one. */
 export async function findBaseVariantType(client: NbClient, setId: RowId): Promise<SelectorRow> {
   const types = await childrenOf(client, "variantType", setId);
-  const bases = types.filter((t) => variantTypeRole(t) === "base");
+  const bases = types.filter((t) => variantTypeKind(t) === "base");
   if (bases.length !== 1) throw new NoBaseVariantType(setId, bases.length);
   return bases[0];
 }

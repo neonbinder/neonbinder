@@ -5,7 +5,7 @@
  * insert row's parallels (the `parallel` level under it) beneath it.
  */
 
-import { variantTypeRole } from "../../../convex/variantRole";
+import { variantTypeKind } from "../../../convex/variantRole";
 import type { NbClient } from "../client/convex-client";
 import type { Target } from "../client/target";
 import { formatPath, isSetPath, ResolveError, type InspectReport, type InspectRow, type MarketplaceLinks, type NodePath } from "../service";
@@ -22,7 +22,7 @@ export function linksOf(row: Pick<SelectorRow, "platformData">): MarketplaceLink
 }
 
 export function isBaseRow(row: SelectorRow): boolean {
-  return variantTypeRole(row) === "base";
+  return variantTypeKind(row) === "base";
 }
 
 async function inspectRow(client: NbClient, row: SelectorRow, isBase: boolean): Promise<InspectRow> {

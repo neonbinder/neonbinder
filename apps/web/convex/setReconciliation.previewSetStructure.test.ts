@@ -6,8 +6,10 @@
  *   - it writes nothing (every table compared before and after);
  *   - over a VIRTUAL variant type it returns what `fetchRawOptions` returns
  *     under the REAL row the sync would create, field for field;
- *   - roles come from BSC's own ids by the store's rules (sole base, token
- *     rule, fail-closed), and only Base / Insert / Parallel types are fetched;
+ *   - each type's kind is read from BSC's label, the title the sync gives the
+ *     row (NEO-334: a variant type's title is its kind; exact word, one Base,
+ *     fail-closed), never from its id, and only Base / Insert / Parallel
+ *     types are fetched;
  *   - every marketplace filter it sends is an id from a slot (or the id BSC
  *     just returned), never an NB display value;
  *   - a Base SportLots pick is accepted by id only, from the Base candidates
@@ -186,13 +188,15 @@ async function seedSet(t: ReturnType<typeof convexTest>) {
   });
 }
 
-/** A variant-type row exactly as the variant-type sync writes one. */
+/**
+ * A variant-type row exactly as the variant-type sync writes one: no role
+ * flag (NEO-334), its kind is its title.
+ */
 async function seedVariantType(
   t: ReturnType<typeof convexTest>,
   setId: Id<"selectorOptions">,
   bscVariantId: string,
   label: string,
-  metadata: { isBase?: boolean; variantRole?: "insert" | "parallel" },
   sportlots?: { id: string; label: string },
 ) {
   return t.run(async (ctx) =>
@@ -208,7 +212,6 @@ async function seedVariantType(
         : {}),
       platformFacets: { bsc: { b0: "variant" } },
       platformSlotSeq: { bsc: 1, ...(sportlots ? { sportlots: 1 } : {}) },
-      metadata,
       parentId: setId,
       children: [],
       lastUpdated: T,
@@ -251,7 +254,7 @@ describe("previewSetStructure", () => {
     expect(state.slCalls).toHaveLength(0);
   });
 
-  test("writes nothing, confers roles from BSC's ids, fetches only Base/Insert/Parallel", async () => {
+  test("writes nothing, reads each kind from BSC's label, fetches only Base/Insert/Parallel", async () => {
     const t = convexTest(schema, modules);
     const { setId } = await seedSet(t);
     const before = await snapshotAll(t);
@@ -320,13 +323,9 @@ describe("previewSetStructure", () => {
       .action(api.setReconciliation.previewSetStructure, { setId });
 
     // Now the rows the variant-type sync would write, and the dialogs' fetch.
-    await seedVariantType(t, setId, "base", "Base", { isBase: true });
-    const insertTypeId = await seedVariantType(t, setId, "insert", "Insert", {
-      variantRole: "insert",
-    });
-    const parallelTypeId = await seedVariantType(t, setId, "parallel", "Parallel", {
-      variantRole: "parallel",
-    });
+    await seedVariantType(t, setId, "base", "Base");
+    const insertTypeId = await seedVariantType(t, setId, "insert", "Insert");
+    const parallelTypeId = await seedVariantType(t, setId, "parallel", "Parallel");
     const filters = {
       sport: "Baseball",
       year: "2024",
@@ -371,13 +370,11 @@ describe("previewSetStructure", () => {
     );
 
     // Same answer the Reconcile dialog gets once the Base row carries that set.
-    await seedVariantType(t, setId, "base", "Base", { isBase: true }, {
+    await seedVariantType(t, setId, "base", "Base", {
       id: "100",
       label: "Topps Chrome",
     });
-    const insertTypeId = await seedVariantType(t, setId, "insert", "Insert", {
-      variantRole: "insert",
-    });
+    const insertTypeId = await seedVariantType(t, setId, "insert", "Insert");
     const real = await t
       .withIdentity(ADMIN)
       .action(api.setReconciliation.fetchRawOptions, {
@@ -398,7 +395,7 @@ describe("previewSetStructure", () => {
   test("an existing Base row's SportLots set is used when no pick is passed", async () => {
     const t = convexTest(schema, modules);
     const { setId } = await seedSet(t);
-    await seedVariantType(t, setId, "base", "Base", { isBase: true }, {
+    await seedVariantType(t, setId, "base", "Base", {
       id: "100",
       label: "Topps Chrome",
     });
@@ -431,18 +428,34 @@ describe("previewSetStructure", () => {
     expect(res.types.find((x) => x.role === "insert")?.candidates).toBeUndefined();
   });
 
-  test("two BSC base ids confer no base role (sole-base rule, fail-closed)", async () => {
+  test("a kind is the exact word of the label, never a token of the id", async () => {
     const t = convexTest(schema, modules);
     const { setId } = await seedSet(t);
     state.variants = [
-      { value: "Base", platformValue: "base" },
+      { value: "Base", platformValue: "promo" },
       { value: "Base Set", platformValue: "base-set" },
       { value: "Insert Parallel", platformValue: "insert-parallel" },
+      { value: "Inserts", platformValue: "special" },
     ];
     const res = await t
       .withIdentity(ADMIN)
       .action(api.setReconciliation.previewSetStructure, { setId });
-    expect(res.types.map((x) => x.role)).toEqual([null, null, null]);
+    expect(res.types.map((x) => x.role)).toEqual(["base", null, null, "insert"]);
+    // 1 variant-type list + (BSC + SportLots) for the Base and the Inserts.
+    expect(res.marketplaceCalls).toBe(5);
+  });
+
+  test("two labels that read Base answer no Base (one Base per set, fail-closed)", async () => {
+    const t = convexTest(schema, modules);
+    const { setId } = await seedSet(t);
+    state.variants = [
+      { value: "Base", platformValue: "base" },
+      { value: "Bases", platformValue: "bases" },
+    ];
+    const res = await t
+      .withIdentity(ADMIN)
+      .action(api.setReconciliation.previewSetStructure, { setId });
+    expect(res.types.map((x) => x.role)).toEqual([null, null]);
     expect(res.marketplaceCalls).toBe(1);
   });
 

@@ -5,7 +5,7 @@
  *
  * Same adapter mocks as `parallelChecklistBuild.test.ts`. S1 also wraps
  * `deleteCardPlayerLinks`, which `deleteParallelCardsPage` calls for every
- * card it deletes, so a test can move `isBase` INSIDE the delete transaction:
+ * card it deletes, so a test can move the Base (NEO-334: retitle it) INSIDE the delete transaction:
  * exactly "between the delete and the insert".
  */
 
@@ -105,7 +105,7 @@ beforeEach(() => {
 
 type T = ReturnType<typeof convexTest>;
 
-/** sport → year → setName ─┬─ "Base" (isBase) └─ "Parallel" → "Gold Wave". BSC only. */
+/** sport → year → setName ─┬─ "Base" └─ "Parallel" → "Gold Wave". BSC only. */
 async function seedSet(t: T) {
   return t.run(async (ctx) => {
     const sport = await ctx.db.insert("selectorOptions", {
@@ -137,7 +137,6 @@ async function seedSet(t: T) {
       parentId: setName,
       platformData: { bsc: { b0: "base" } },
       platformFacets: { bsc: { b0: "variant" } },
-      metadata: { isBase: true },
       children: [],
       lastUpdated: SENTINEL,
     });
@@ -147,7 +146,6 @@ async function seedSet(t: T) {
       parentId: setName,
       platformData: { bsc: { b0: "parallel" } },
       platformFacets: { bsc: { b0: "variant" } },
-      metadata: { variantRole: "parallel" },
       children: [],
       lastUpdated: SENTINEL,
     });
@@ -157,7 +155,6 @@ async function seedSet(t: T) {
       parentId: parallelType,
       platformData: { bsc: { b0: "gold-wave" } },
       platformFacets: { bsc: { b0: "variantName" } },
-      metadata: { isParallel: true },
       children: [],
       lastUpdated: SENTINEL,
     });
@@ -219,7 +216,7 @@ async function addHeavyCards(
   }
 }
 
-describe("S1 — isBase moved between the delete and the insert", () => {
+describe("S1 — the Base moved between the delete and the insert", () => {
   test("the insert page answers `changed`, and the build reports the partial wipe with its lost links", async () => {
     const t = convexTest(schema, modules);
     const { setName, base, gold } = await seedSet(t);
@@ -232,15 +229,15 @@ describe("S1 — isBase moved between the delete and the insert", () => {
     });
     bscState.cards = [{ cardNumber: "1", cardName: "Aaron Judge", platformRef: "bsc-1" }];
 
-    // Inside the delete transaction: the operator marks another type the Base.
+    // Inside the delete transaction: the Base is retitled and another type is
+    // titled Base.
     deleteHook.once = async (ctx) => {
-      await ctx.db.patch(base, { metadata: {} });
+      await ctx.db.patch(base, { value: "Flagship" });
       await ctx.db.insert("selectorOptions", {
         level: "variantType",
-        value: "Base Too",
+        value: "Base",
         parentId: setName,
         platformData: {},
-        metadata: { isBase: true },
         children: [],
         lastUpdated: SENTINEL,
       });
@@ -286,13 +283,12 @@ describe("the changed-mid-build sentence is true to what was removed", () => {
     // after the context read and before the first insert page.
     bscState.onFetch = async () => {
       await t.run(async (ctx) => {
-        await ctx.db.patch(base, { metadata: {} });
+        await ctx.db.patch(base, { value: "Flagship" });
         await ctx.db.insert("selectorOptions", {
           level: "variantType",
-          value: "Base Too",
+          value: "Base",
           parentId: setName,
           platformData: {},
-          metadata: { isBase: true },
           children: [],
           lastUpdated: SENTINEL,
         });

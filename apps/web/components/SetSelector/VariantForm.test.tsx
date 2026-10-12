@@ -85,7 +85,7 @@ let brandHolders: { rows: unknown[]; truncated: boolean } = {
 // NEO-325: the inserts already saved under this variant type (what the
 // reconciler treats as `existingRows`). Empty by default.
 let savedRows: unknown[] = [];
-// NEO-325: replaces the chain's variantType row, to give it an NB role.
+// NEO-325: replaces the chain's variantType row, to give it a title (its kind).
 let variantTypeRow: Record<string, unknown> | null = null;
 // NEO-325: the client the Reconcile dialog gets from `useConvex()` — only when
 // it was asked for the Base check. Its signature query answers "skip", so the
@@ -1562,7 +1562,7 @@ describe("VariantForm — the Base match check is for the parallel variant type 
     twinIds: { bsc: ["team-canada"], sportlots: [] },
   });
 
-  async function openDialogFor(metadata: Record<string, unknown> | undefined, value = "Insert") {
+  async function openDialogFor(value: string, metadata?: Record<string, unknown>) {
     variantTypeRow = { _id: "vt1", level: "variantType", value, metadata };
     mockFetchRawOptions.mockResolvedValue(opensDialog());
     await renderForm();
@@ -1572,30 +1572,39 @@ describe("VariantForm — the Base match check is for the parallel variant type 
     await act(async () => {});
   }
 
-  it("a variant type with the parallel role hands the dialog the check, keyed on its id", async () => {
-    await openDialogFor({ variantRole: "parallel" });
+  it.each(["Parallel", "Parallels", " parallels "])(
+    "a variant type titled %j hands the dialog the check, keyed on its id",
+    async (title) => {
+      await openDialogFor(title);
 
-    expect(mockUseConvex).toHaveBeenCalled();
-    expect(mockConvexQuery).toHaveBeenCalledTimes(1);
-    expect(mockConvexQuery).toHaveBeenCalledWith("getBaseSignatureForVariantType", {
-      variantTypeId: "vt1",
-    });
-  });
+      expect(mockUseConvex).toHaveBeenCalled();
+      expect(mockConvexQuery).toHaveBeenCalledTimes(1);
+      expect(mockConvexQuery).toHaveBeenCalledWith("getBaseSignatureForVariantType", {
+        variantTypeId: "vt1",
+      });
+    },
+  );
 
   it("the Base type itself gets no check", async () => {
-    await openDialogFor({ isBase: true });
+    await openDialogFor("Base");
     expect(mockUseConvex).not.toHaveBeenCalled();
     expect(mockConvexQuery).not.toHaveBeenCalled();
   });
 
   it("an insert type gets no check", async () => {
-    await openDialogFor({ variantRole: "insert" });
+    await openDialogFor("Inserts");
     expect(mockUseConvex).not.toHaveBeenCalled();
     expect(mockConvexQuery).not.toHaveBeenCalled();
   });
 
-  it("a row merely NAMED Parallel, with no role, gets no check", async () => {
-    await openDialogFor(undefined, "Parallel");
+  it("a type whose title only contains Parallel gets no check", async () => {
+    await openDialogFor("Parallel Set");
+    expect(mockUseConvex).not.toHaveBeenCalled();
+    expect(mockConvexQuery).not.toHaveBeenCalled();
+  });
+
+  it("a type titled Gold that still carries variantRole parallel gets no check: the title decides, never a flag", async () => {
+    await openDialogFor("Gold", { variantRole: "parallel" });
     expect(mockUseConvex).not.toHaveBeenCalled();
     expect(mockConvexQuery).not.toHaveBeenCalled();
   });

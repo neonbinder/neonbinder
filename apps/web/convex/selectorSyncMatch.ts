@@ -34,6 +34,8 @@
  *      `setPrimarySlotId`, which reuses the slot KEY so every card on it keeps
  *      resolving; matching a placeholder row upgrades it to the real id
  *      through the same slot, and the outcome says so (`placeholderSides`).
+ *      NEO-334: at variantType level "same name" is the same WORD
+ *      (`sameTitleWord`, singular = plural), passed in as `sameName`.
  *   3. No candidate → insert. Ambiguous candidate → withheld and surfaced.
  *      Withholding writes nothing; it never deletes and never guesses.
  *
@@ -55,6 +57,9 @@ import {
 } from "./platformSlots";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { sportConfigDefaultsFor } from "./sportConfig";
+// NEO-334 — one word, one variant type: the rename door's sibling guard reads
+// the same singular/plural rule the custom-add door does.
+import { sameTitleWord, sameWordSiblingMessage } from "./variantRole";
 
 export type { PlatformSide } from "./platformSlots";
 
@@ -414,10 +419,14 @@ function trimLeadingSeparators(rest: string): string {
 // human had not typed. It existed because two places read that row's DISPLAY
 // VALUE as if it were data: the BSC checklist fetch re-derived its `variant`
 // facet from the value, and "which row is the base set" was detected by the
-// literal string "base". Both are now read from the row instead — a
-// `variant`-tagged BSC slot and `metadata.isBase` — so the name carries no
-// meaning any process depends on, and every variantType row renames like every
-// other level.
+// literal string "base". The facet is read from the row's `variant`-tagged
+// BSC slot instead.
+//
+// NEO-334 — a variant type's title IS its kind (Base / Insert / Parallel,
+// convex/variantRole.ts), so a rename that changes the kind is refused while
+// rows sit beneath the type. That guard is `variantTypeRenameCheck` in
+// lib/selectorAncestry.ts (it reads the database), run by every rename door
+// BEFORE `planValueRename`; the singular/plural sibling rule is below.
 // ───────────────────────────────────────────────────────────────────────────
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -880,6 +889,22 @@ export function planSelectorSync<TId extends string>(args: {
    * effect.
    */
   elsewhereUncheckedSides?: readonly PlatformSide[];
+  /**
+   * NEO-334 — the name tier's "is this the same name?" rule, when it is wider
+   * than `selectorValueKey` equality. At `variantType` level the stores pass
+   * `sameTitleWord`: singular and plural are ONE word there (Jason,
+   * 2026-10-10), and a set has exactly one Base, so an incoming "Inserts"
+   * must MATCH an existing "Insert" (attach its id to that row's slot,
+   * additive, never renaming it) rather than mint a second sibling. Every
+   * guard of the name tier applies unchanged: a namesake already linked to a
+   * different live id, two namesakes, two incoming items for one word, or a
+   * row claimed earlier in the batch is WITHHELD, never inserted.
+   *
+   * Must include plain equality under `selectorValueKey`. Absent → the
+   * exact-name rule, through the keyed index (the levels with thousands of
+   * rows never pay the pairwise scan).
+   */
+  sameName?: (a: string, b: string) => boolean;
 }): SelectorSyncPlan<TId> {
   const { existing, items, isPlaceholderId } = args;
 
@@ -1072,21 +1097,54 @@ export function planSelectorSync<TId extends string>(args: {
   // behind it. Counted over the items that reach this pass carrying an id (an
   // id-less item is withheld below whatever the count says when a namesake
   // exists), excluding operator-promoted `identityOnly` lines.
+  const sameNameRule = args.sameName;
   const incomingByKey = new Map<string, number>();
+  /** NEO-334 — the id-carrying items counted above, for the `sameName` scan. */
+  const countedValues: string[] = [];
+  /**
+   * NEO-334 — every item reaching this pass (id-less too, `identityOnly`
+   * excluded), for the `sameName` rule's NO-NAMESAKE twin check only. Under
+   * the exact rule an id-less item with no namesake row is inserted alone;
+   * under the word rule two items of one word ("Base" and "Bases", either
+   * carrying an id or not) would become two rows of one word — a second
+   * Base — so each is withheld instead (`nameSharedInBatch`, same family,
+   * same channel). Where a namesake row EXISTS an id-less item is withheld
+   * as `noIdToAttach` anyway, so the id-carrying count stays the rule there.
+   */
+  const allValues: string[] = [];
   for (let i = 0; i < items.length; i++) {
     if (outcomes[i]) continue;
     if (items[i].identityOnly) continue;
+    allValues.push(items[i].value);
     if (!PLATFORM_SIDES.some((s) => items[i].ids[s])) continue;
     const key = selectorValueKey(items[i].value);
     incomingByKey.set(key, (incomingByKey.get(key) ?? 0) + 1);
+    countedValues.push(items[i].value);
   }
+  /** Siblings that carry this item's name (NEO-334: or its word). */
+  const namesakesOf = (value: string): Array<MatchableRow<TId>> =>
+    sameNameRule
+      ? existing.filter((row) => sameNameRule(row.value, value))
+      : (byKey.get(selectorValueKey(value)) ?? []);
+  /** Incoming items, counted above, that carry this name (or its word). */
+  const incomingNamed = (value: string): number =>
+    sameNameRule
+      ? countedValues.filter((other) => sameNameRule(other, value)).length
+      : (incomingByKey.get(selectorValueKey(value)) ?? 0);
+  /** NEO-334 — the no-namesake twin count: id-less items too, under the rule. */
+  const incomingNamedAny = (value: string): number =>
+    sameNameRule
+      ? allValues.filter((other) => sameNameRule(other, value)).length
+      : (incomingByKey.get(selectorValueKey(value)) ?? 0);
   for (let i = 0; i < items.length; i++) {
     if (outcomes[i]) continue;
     const item = items[i];
     let withheld = carriedReason[i];
     let sibling = carriedSibling[i];
 
-    const sameName = byKey.get(selectorValueKey(item.value)) ?? [];
+    const sameName = namesakesOf(item.value);
+    const incomingCount = incomingNamed(item.value);
+    const incomingCountAny = incomingNamedAny(item.value);
     const sidesCarried = PLATFORM_SIDES.filter((s) => item.ids[s]);
 
     if (item.identityOnly) {
@@ -1114,10 +1172,7 @@ export function planSelectorSync<TId extends string>(args: {
         rowIds: sameName.map((r) => r._id),
       };
       ambiguities.push({ item: item.value, reason: withheld });
-    } else if (
-      sameName.length === 0 &&
-      (incomingByKey.get(selectorValueKey(item.value)) ?? 0) > 1
-    ) {
+    } else if (sameName.length === 0 && incomingCountAny > 1) {
       // NEO-325 — name twins with no namesake row: two or more incoming items
       // carrying DIFFERENT marketplace ids (pass 1 matched none of them) under
       // one name. Inserting each would auto-create same-named rows, one per
@@ -1126,7 +1181,7 @@ export function planSelectorSync<TId extends string>(args: {
       // that" (Jason). Withheld and reported; the operator links each one
       // (reconcile dialog, Attach sets) or, from the modal, promotes a line
       // to its own set with `identityOnly`, which this count excludes.
-      withheld = `${incomingByKey.get(selectorValueKey(item.value))} incoming items share this name`;
+      withheld = `${incomingCountAny} incoming items share this name`;
       sibling = { reason: "nameSharedInBatch", rowIds: [] };
       ambiguities.push({ item: item.value, reason: withheld });
     } else if (sameName.length === 1) {
@@ -1152,8 +1207,8 @@ export function planSelectorSync<TId extends string>(args: {
         withheld = "name matches a row already linked to a different live id";
         sibling = { reason: "nameLinkedToOtherSet", rowIds: [row._id] };
         ambiguities.push({ item: item.value, reason: withheld });
-      } else if ((incomingByKey.get(selectorValueKey(item.value)) ?? 0) > 1) {
-        withheld = `${incomingByKey.get(selectorValueKey(item.value))} incoming items fold to one existing row`;
+      } else if (incomingCount > 1) {
+        withheld = `${incomingCount} incoming items fold to one existing row`;
         sibling = { reason: "nameClaimedTwice", rowIds: [row._id] };
         ambiguities.push({ item: item.value, reason: withheld });
       } else if (claimed.has(row._id)) {
@@ -1380,14 +1435,26 @@ export function planValueRename(args: {
   } else {
     // Two rows under one parent must not share a display value, or the drill
     // utils and the pickers cannot tell them apart.
+    //
+    // NEO-334 — among variant types the rule is wider: singular and plural
+    // are ONE word (Jason, 2026-10-10), so "Promos" clashes with "Promo" and
+    // "Inserts" with "Insert". `sameTitleWord` is the rule the custom-add door
+    // asks too. Every other level keeps the exact-name rule.
     const clash = siblings.find(
-      (o) => o._id !== row._id && selectorValueKey(o.value) === key,
+      (o) =>
+        o._id !== row._id &&
+        (row.level === "variantType"
+          ? sameTitleWord(o.value, trimmed)
+          : selectorValueKey(o.value) === key),
     );
     if (clash) {
       return {
         ok: false,
         reason: "clash",
-        message: `Another ${row.level} here is already called "${clash.value}"`,
+        message:
+          row.level === "variantType"
+            ? sameWordSiblingMessage(clash.value)
+            : `Another ${row.level} here is already called "${clash.value}"`,
       };
     }
   }

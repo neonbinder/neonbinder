@@ -16,9 +16,10 @@
  *
  * ## The invariant, here
  *
- *   - Nothing takes an NB display name. The Base is found by the NB flag
- *     (`metadata.isBase`, `pickBaseVariantType`), the parallel type by its NB
- *     role (`variantTypeRole`), and every marketplace request is built from
+ *   - No marketplace request is built from an NB display name. The Base and
+ *     the parallel type are found by their kind, which is their title
+ *     (NEO-334, `variantTypeKind` / `pickBaseVariantType`), and every
+ *     marketplace request is built from
  *     ids: the SportLots set ids the client holds, the BSC `variantName` ids
  *     it holds plus the chain's own slot ids (`resolveBscFacetFilters`).
  *   - A BSC request the chain cannot scope (`missingBscChecklistScope`) is
@@ -49,7 +50,7 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx } from "./_generated/server";
 import { requireAdmin } from "./auth";
-import { variantTypeRole } from "./variantRole";
+import { variantTypeKind } from "./variantRole";
 import {
   MAX_INSERT_CARDS_FOR_BUILD,
   MAX_VARIANT_TYPES_PER_SET,
@@ -185,9 +186,9 @@ async function deepestCardNumberPrefix(
  * The NB Base a PARALLEL variant type is built from, reduced to what the
  * Reconcile dialog compares a marketplace set against. Reads only.
  *
- * `variantTypeId` must be a variantType whose NB role is `"parallel"`
- * (`notParallelType` otherwise). Its Base is the exactly-one sibling flagged
- * `isBase` (`noBase`, `manyBases`); a set with more variant types than the
+ * `variantTypeId` must be a variantType of kind `"parallel"` (titled
+ * "Parallel" / "Parallels"; `notParallelType` otherwise). Its Base is the
+ * exactly-one sibling titled "Base" (`noBase`, `manyBases`); a set with more variant types than the
  * lookup reads is `manyBases` too, because an unread row could be a second
  * Base. Cards over 5,000, or over `SIGNATURE_CARD_READ_BYTES`, are
  * `tooManyCards`; a Base with no non-variation card is `noCards`.
@@ -198,7 +199,7 @@ export const getBaseSignatureForVariantType = query({
   handler: async (ctx, args): Promise<BaseSignature> => {
     await requireAdmin(ctx);
     const row = await ctx.db.get(args.variantTypeId);
-    if (!row || row.level !== "variantType" || variantTypeRole(row) !== "parallel") {
+    if (!row || row.level !== "variantType" || variantTypeKind(row) !== "parallel") {
       return { status: "notParallelType" };
     }
     const setNameId = row.parentId;
@@ -216,7 +217,7 @@ export const getBaseSignatureForVariantType = query({
     const picked = pickBaseVariantType(siblings);
     if ("blockedReason" in picked) {
       return {
-        status: siblings.some((s) => s.metadata?.isBase === true)
+        status: siblings.some((s) => variantTypeKind(s) === "base")
           ? "manyBases"
           : "noBase",
       };
@@ -387,7 +388,7 @@ export const probeBscSets = action({
       !leaf ||
       leaf._id !== args.variantTypeId ||
       leaf.level !== "variantType" ||
-      variantTypeRole(leaf) !== "parallel"
+      variantTypeKind(leaf) !== "parallel"
     ) {
       return ids.map((id) => ({ id, status: "refused" as const }));
     }

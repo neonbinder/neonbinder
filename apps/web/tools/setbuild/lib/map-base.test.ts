@@ -10,7 +10,6 @@ const WRITE = "selectorOptions:setVariantTypePlatformData";
 
 const unmappedBase = () =>
   row("vt-base", "variantType", "Base", {
-    metadata: { isBase: true },
     platformData: { bsc: { b0: "base" } },
     platformFacets: { bsc: { b0: "variant" } },
     lastUpdated: 5,
@@ -18,7 +17,6 @@ const unmappedBase = () =>
 
 const mappedBase = () =>
   row("vt-base", "variantType", "Base", {
-    metadata: { isBase: true },
     platformData: { bsc: { b0: "base", b1: "2024-topps-chrome" }, sportlots: { s0: "884412" } },
     platformFacets: { bsc: { b0: "variant", b1: "setName" } },
     lastUpdated: 9,
@@ -34,7 +32,7 @@ function world(opts: {
   return fakeNbClient({
     [LIST]: (a) =>
       a.level === "variantType"
-        ? [row("vt-ins", "variantType", "Insert", { metadata: { variantRole: "insert" } }), base]
+        ? [row("vt-ins", "variantType", "Insert"), base]
         : [],
     [CHAIN]: () => [
       row("s1", "sport", "Baseball"),
@@ -170,9 +168,11 @@ describe("confirmMapping", () => {
     expect(twice.callsTo(WRITE)).toHaveLength(2);
   });
 
-  test("a set with no Base role row refuses before any fetch", async () => {
-    const client = fakeNbClient({ [LIST]: () => [row("vt", "variantType", "Base")] });
+  test("a set with no type titled Base refuses before any fetch", async () => {
+    // NEO-334: the title is the kind, by exact word; "Base Set" has none.
+    const client = fakeNbClient({ [LIST]: () => [row("vt", "variantType", "Base Set")] });
     await expect(confirmMapping(client, "set1" as never, both)).rejects.toBeInstanceOf(NoBaseVariantType);
+    expect(client.callsTo(FETCH)).toHaveLength(0);
   });
 });
 

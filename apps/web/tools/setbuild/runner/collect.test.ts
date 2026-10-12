@@ -58,11 +58,10 @@ function world(cards: Record<string, number>): FakeClient {
     "setName:mf": [sel("st", "setName", "Topps Chrome")],
     "variantType:st": [
       sel("vtB", "variantType", "Base", {
-        metadata: { isBase: true },
         platformData: { bsc: { b0: "bsc-chrome" }, sportlots: { s0: "sl-chrome" } },
       }),
-      sel("vtP", "variantType", "Parallel", { metadata: { variantRole: "parallel" } }),
-      sel("vtI", "variantType", "Insert", { metadata: { variantRole: "insert" } }),
+      sel("vtP", "variantType", "Parallel"),
+      sel("vtI", "variantType", "Insert"),
     ],
     "insert:vtP": [sel("pS", "insert", "Sepia Refractors", { platformData: { bsc: { b0: "bsc-sepia" } } })],
     "insert:vtI": [

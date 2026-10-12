@@ -107,7 +107,7 @@ function world(o: WorldOpts = {}): FakeClient {
     "year:sp": [sel("yr", "year", "2024")],
     "manufacturer:yr": [sel("mf", "manufacturer", "Topps")],
     "setName:mf": sets,
-    "variantType:tc": [sel("tcI", "variantType", "Insert", { metadata: { variantRole: "insert" } })],
+    "variantType:tc": [sel("tcI", "variantType", "Insert")],
   };
   const baseCands = raw({ bsc: [["Topps Chrome Black", "topps-chrome-black"]], sl: o.baseSl ?? [["Topps Chrome Black", "sl-black"], ["Topps Chrome", "sl-chrome"]] });
   return fakeClient()

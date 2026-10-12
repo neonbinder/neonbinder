@@ -26,10 +26,6 @@ import {
   BSC_SOURCE_FACETS,
   MAX_BSC_FAN_OUT,
   missingBscChecklistScope,
-  isBscBaseVariantId,
-  isBscInsertVariantId,
-  isBscParallelVariantId,
-  soleBscBaseVariantId,
   legacyBscFacetForLevel,
   chainWithoutInsertAncestors,
   planBscFanOut,
@@ -363,101 +359,6 @@ describe("syncWrittenBscFacet", () => {
     ]) {
       expect(syncWrittenBscFacet(level)).toBeUndefined();
     }
-  });
-});
-
-// ===========================================================================
-// NEO-239 — recognising BSC's base variant id
-// ===========================================================================
-
-describe("isBscBaseVariantId", () => {
-  test.each(["base", "Base", "BASE", " base ", "base-set", "base_cards", "2024-topps-chrome-base"])(
-    "%s is the base variant",
-    (id) => {
-      // The first shipped version of this was `id === "base"`, and CI caught it
-      // against real BSC: the rows synced, the Base row got no role, and the
-      // setup flow's tap on "Base" produced no mapping form. We still have no
-      // recorded sample of BSC's actual slug, so the match is on whole TOKENS
-      // of the id rather than a literal nobody has verified.
-      expect(isBscBaseVariantId(id)).toBe(true);
-    },
-  );
-
-  test.each(["insert", "parallel", "promo", "mail-in", "short-print"])(
-    "%s is not",
-    (id) => {
-      expect(isBscBaseVariantId(id)).toBe(false);
-    },
-  );
-
-  test("`baseball` is NOT a base variant — the reason this is a token match", () => {
-    // A substring test would say yes. BSC's `sport` facet uses this exact
-    // string, and nothing stops a future caller passing the wrong facet's id.
-    expect(isBscBaseVariantId("baseball")).toBe(false);
-    expect(isBscBaseVariantId("database")).toBe(false);
-    expect(isBscBaseVariantId("rebase")).toBe(false);
-  });
-});
-
-// ===========================================================================
-// NEO-291 — recognising BSC's insert/parallel variant ids, same token rule
-// ===========================================================================
-
-describe("isBscInsertVariantId", () => {
-  test.each(["insert", "Insert", "INSERT", " insert ", "insert-cards", "Insert-Cards"])(
-    "%s is an insert variant",
-    (id) => {
-      expect(isBscInsertVariantId(id)).toBe(true);
-    },
-  );
-
-  test.each(["base", "parallel", "promo"])("%s is not", (id) => {
-    expect(isBscInsertVariantId(id)).toBe(false);
-  });
-
-  test("`insertion` is NOT an insert variant — one token, not two", () => {
-    expect(isBscInsertVariantId("insertion")).toBe(false);
-  });
-});
-
-describe("isBscParallelVariantId", () => {
-  test.each(["parallel", "Parallel", "PARALLEL", " parallel ", "parallel-set", "2024-topps-chrome-parallel"])(
-    "%s is a parallel variant",
-    (id) => {
-      expect(isBscParallelVariantId(id)).toBe(true);
-    },
-  );
-
-  test.each(["base", "insert", "promo"])("%s is not", (id) => {
-    expect(isBscParallelVariantId(id)).toBe(false);
-  });
-
-  test("`parallels` is NOT a parallel variant — one token, not two", () => {
-    expect(isBscParallelVariantId("parallels")).toBe(false);
-  });
-});
-
-describe("soleBscBaseVariantId", () => {
-  test("names the one base id in a batch", () => {
-    expect(soleBscBaseVariantId(["insert", "base", "parallel"])).toBe("base");
-  });
-
-  test("returns undefined when NOTHING matches", () => {
-    expect(soleBscBaseVariantId(["insert", "parallel"])).toBeUndefined();
-    expect(soleBscBaseVariantId([])).toBeUndefined();
-    expect(soleBscBaseVariantId([undefined, undefined])).toBeUndefined();
-  });
-
-  test("returns undefined when TWO match — ambiguity is not resolved by guessing", () => {
-    // Fail-closed. No role is one click of `setBaseVariantType` away; two base
-    // rows make `getBaseVariantBySet` answer by document order.
-    expect(soleBscBaseVariantId(["base", "base-parallel"])).toBeUndefined();
-  });
-
-  test("the SAME id twice is still one answer", () => {
-    // Two NB rows may legitimately map to one marketplace set (NEO-137 M:1);
-    // that is not the ambiguity this guards against.
-    expect(soleBscBaseVariantId(["base", "base", "insert"])).toBe("base");
   });
 });
 

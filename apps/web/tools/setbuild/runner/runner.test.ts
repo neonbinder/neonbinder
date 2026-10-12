@@ -64,10 +64,9 @@ function world(w: World): FakeClient {
     "setName:mf": [sel("st", "setName", "Topps Chrome")],
     "variantType:st": [
       sel("vtB", "variantType", "Base", {
-        metadata: { isBase: true },
         platformData: { bsc: { s1: "bsc-chrome" }, sportlots: { s1: "sl-chrome" } },
       }),
-      sel("vtP", "variantType", "Parallel", { metadata: { variantRole: "parallel" } }),
+      sel("vtP", "variantType", "Parallel"),
     ],
     "insert:vtP": [sel("pS", "insert", "Sepia Refractors", { platformData: { bsc: { s1: "bsc-sepia" } } })],
   };
@@ -84,7 +83,7 @@ function world(w: World): FakeClient {
       sel("yr", "year", "2024"),
       sel("mf", "manufacturer", "Topps"),
       sel("st", "setName", "Topps Chrome"),
-      sel("vtB", "variantType", "Base", { metadata: { isBase: true } }),
+      sel("vtB", "variantType", "Base"),
     ])
     .on("selectorOptions:getSlotCardCounts", (a) => ({
       bsc: {},

@@ -22,6 +22,14 @@ tags:
 #      `Parallel`'s `Sync Parallels`, run again after the move, does not
 #      bring the Red Ink row back, and `Red Ink` under `All-America Game
 #      Autos` still holds the link (STEPS 15–16; NEO-312).
+#  10. The same line, read in the columns: only an INSERT has sub-variants.
+#      A parallel of Base (`Blue`, under the parallel-role `Parallel`) opens
+#      no seventh column — no `Search parallels` box of its own, no `Sync
+#      Sub-Variants` (STEP 10); an insert (`All-America Game Autos`, under
+#      the insert-role `Insert`) does, and its `Sync Sub-Variants` is there
+#      (STEP 16; NEO-334). The flow already stands on both sides of the line,
+#      so the claim costs two reads, not a second drill (R3: no other flow
+#      proves the seventh column's gating).
 #
 # CLAIM AND STEP NUMBERS ARE THE MERGED FLOW'S. This flow and
 # `bowman-insert-grouping-builds-parallels` were one flow
@@ -90,6 +98,8 @@ tags:
 #   column's status box) and the Red Ink name is not in the column (under
 #   the pause the review never filed it, so this is the same negative, read
 #   on the same column). STEP 16 is live-only: there is no moved row.
+#   Claim 10's negative half (STEP 10, `Blue` under `Parallel`) runs in both
+#   modes; its positive half rides STEP 16 and is live-only with it.
 #
 # ── R5 ──────────────────────────────────────────────────────────────────────
 #   7000 for every NB write and read. Longer only for the two Parallels
@@ -109,7 +119,9 @@ tags:
 #   columns       `Sync Parallels`, `Search parallels`, `No matches found`,
 #                 `Search inserts`, `Inserts`, `Parallels`, row text; the
 #                 status box's `Stored N variants (single platform)`; Sets
-#                 column `Sync Sets` and its rows
+#                 column `Sync Sets` and its rows; a picked column's card
+#                 `<Title>: <row> — change`; the seventh (sub-variants)
+#                 column's `Sync Sub-Variants` and `Add custom Sub-Variants`
 #   chips         `Remove <SportLots label>`, its confirm `Detach SportLots
 #                 "<label>"? …` and `Cancel detach <label>`
 #   panel         `Attributes for <row>`, the `Set actions` group's
@@ -294,6 +306,35 @@ tags:
     text: "^${output.COLOUR}$"
     below:
       id: "Search parallels"
+
+# ── CLAIM 10, NEGATIVE HALF: A PARALLEL OF BASE OPENS NO SEVENTH COLUMN ─────
+# (NEO-334, both modes.) `Parallel` is Bowman's parallel-role type, so `Blue`
+# is a parallel of the base set and nothing nests under it: the set builder
+# renders the sub-variants column only under an insert-role type.
+#
+# POSITIVE FIRST (R2; README → "Negative asserts pass on a dead page"): the
+# pick landed and the Parallels column collapsed to its card. That collapse
+# is also what removes the column's OWN `Search parallels` box, so after this
+# gate the only box that could carry that name is a seventh column's. Such a
+# column mounts in the same render as this card (one `selectedVariantId`),
+# top-aligned beside it in the columns row, and EntityColumn's reveal scroll
+# (instant, on mount) pulls a new column into the row's view — so the
+# negatives below are read on the very band it would occupy. `.*` after the
+# name admits a twin suffix ` (#<id>)`. A Convex read: the 7000 bar.
+- extendedWaitUntil:
+    visible:
+      id: "Parallels: ${output.COLOUR}.* — change"
+    timeout: 7000
+# The box is the decisive one: an EMPTY seventh column auto-syncs, and while
+# its form runs the idle buttons are not drawn, but its search box renders
+# from the first frame (NEO-224) whatever the column is doing. The two
+# buttons are the column's own names (EntityColumn: `Sync Sub-Variants`, and
+# `+ Custom`'s accessible name `Add custom Sub-Variants`).
+- assertNotVisible:
+    id: "Search parallels"
+- assertNotVisible: "Sync Sub-Variants"
+- assertNotVisible:
+    id: "Add custom Sub-Variants"
 
 # The attributes panel follows the selection — the parallel row. DOWN and
 # centred (a tap follows on the live branch): the panel is below the
@@ -868,6 +909,26 @@ tags:
           text: "^${output.NEW_PARALLEL}$"
           below:
             text: "Parallels"
+      # ── CLAIM 10, POSITIVE HALF: AN INSERT HAS A SUB-VARIANTS COLUMN ──────
+      # (NEO-334.) `Insert` is Bowman's insert-role type, so picking `All-
+      # America Game Autos` opened the seventh column — its `Parallels`
+      # header anchored the tap above. The pick just made collapses that
+      # column to its card (the gate: the tap took, R2), and a collapsed
+      # column keeps its action row, where `Sync Sub-Variants` is (memory:
+      # selected column collapses to a card). The action row sits under the
+      # card in the same column, so DOWN; nothing is tapped, so no centring
+      # (R8), and the scroll is the assertion (R6). Convex reads: 7000.
+      # Live only, as STEP 16 is: paused, no moved row exists to stand on,
+      # and STEP 10's negative half still runs.
+      - extendedWaitUntil:
+          visible:
+            id: "Parallels: ${output.NEW_PARALLEL}.* — change"
+          timeout: 7000
+      - scrollUntilVisible:
+          element:
+            text: "Sync Sub-Variants"
+          direction: DOWN
+          timeout: 7000
       # The panel follows the selection. DOWN, centred, as the sibling's
       # STEP 9 (the panel sits below the columns).
       - scrollUntilVisible:

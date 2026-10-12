@@ -329,7 +329,6 @@ async function seedBase(
       platformLabels: { sportlots: { s0: "Topps Heritage" } },
       platformFacets: { bsc: { b0: "variant" } },
       platformSlotSeq: { bsc: 1, sportlots: 1 },
-      metadata: { isBase: true },
       parentId: setId,
       children: [],
       lastUpdated: T,

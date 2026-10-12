@@ -80,7 +80,6 @@ async function seed(t: ReturnType<typeof convexTest>) {
       level: "variantType",
       value: "Base",
       platformData: {},
-      metadata: { isBase: true },
       parentId: setId,
       children: [],
       lastUpdated: T,

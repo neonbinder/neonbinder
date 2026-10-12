@@ -146,9 +146,8 @@ async function seedParallel(t: T): Promise<Id<"selectorOptions">> {
     });
     return ins({
       level: "variantType",
-      value: "Gold",
+      value: "Parallel",
       parentId: set,
-      metadata: { variantRole: "parallel" },
       platformData: { bsc: { b0: "parallel" } },
       platformFacets: { bsc: { b0: "variant" } },
     });

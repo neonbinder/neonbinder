@@ -472,10 +472,6 @@ describe("setVariantTypePlatformData", () => {
       ctx.db.insert("selectorOptions", {
         level: "variantType",
         value: "Base",
-        // NEO-239 — the base ROLE, not the display value. `setVariantTypePlatformData`
-        // used to compare `value.toLowerCase()` to "base", which tied an NB
-        // behaviour to a word BSC happens to use and broke on rename.
-        metadata: { isBase: true },
         platformData: {},
         parentId,
         children: [],
@@ -509,7 +505,6 @@ describe("setVariantTypePlatformData", () => {
       ctx.db.insert("selectorOptions", {
         level: "variantType",
         value: "Base",
-        metadata: { isBase: true },
         platformData: { sportlots: { s0: "884412" } },
         platformSlotSeq: { sportlots: 1 },
         primaryPlatformId: { sportlots: "s0" },
@@ -530,7 +525,7 @@ describe("setVariantTypePlatformData", () => {
     expect(row!.platformLabels?.sportlots).toEqual({ s0: "Corrected Set" });
   });
 
-  test("rejects a variantType row that does not hold the base role", async () => {
+  test("rejects a variantType row that is not titled Base", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const parentId = await insertParent(t);
@@ -550,7 +545,7 @@ describe("setVariantTypePlatformData", () => {
         variantTypeId: insertId,
         platformData: { sportlots: "884412" },
       }),
-    ).rejects.toThrow(/does not hold the base role/);
+    ).rejects.toThrow(/not titled Base/);
   });
 });
 

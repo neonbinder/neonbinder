@@ -478,8 +478,9 @@ export function seedReconciliationState(
       ),
       confidence: 0,
       // NEO-291: project to the one field the modal edits. Callers hand
-      // over the row's whole stored metadata (`isBase`, retired
-      // `isInsert`/`isParallel`), which tsc accepts structurally but
+      // over the row's whole stored metadata (retired `isBase` /
+      // `variantRole` / `isInsert` / `isParallel` until the NEO-334 strip
+      // runs, among others), which tsc accepts structurally but
       // `storeReconciledOptions`' `v.object` rejects at runtime.
       metadata: row.metadata?.cardNumberPrefix
         ? { cardNumberPrefix: row.metadata.cardNumberPrefix }

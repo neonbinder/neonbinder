@@ -220,7 +220,6 @@ async function seedBaseRow(
       value: "Base",
       platformData: { bsc: { b0: "base" }, sportlots: { s0: "884412" } },
       platformFacets: { bsc: { b0: "variant" } },
-      metadata: { isBase: true },
       primaryPlatformId: { bsc: "b0", sportlots: "s0" },
       platformSlotSeq: { bsc: 1, sportlots: 1 },
       parentId: setNameId,

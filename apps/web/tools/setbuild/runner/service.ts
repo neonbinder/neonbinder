@@ -39,7 +39,7 @@ import {
   slReviewConfirmPhrase,
 } from "../service";
 import { childrenOf, resolveBrandYear, resolveSetPath } from "../spec/resolve";
-import { variantTypeRole } from "../../../convex/variantRole";
+import { variantTypeKind } from "../../../convex/variantRole";
 import type { ReviewSession } from "../lib/commit";
 import { buildParallel } from "../lib/build-parallel";
 import { openItemsOf, readReviewRows, runReview } from "../lib/review";
@@ -155,14 +155,14 @@ export function createSetBuildService(client: NbClient, target: Target, opts: Se
         const started = (opts.now ?? Date.now)();
         const set = await resolveSetPath(client, path);
         const types = (await childrenOf(client, "variantType", set.setId)).filter(
-          (t) => variantTypeRole(t) === "parallel",
+          (t) => variantTypeKind(t) === "parallel",
         );
         if (types.length !== 1) {
           throw new ResolveError({
             kind: "parallel variant type",
             query: pathText,
             candidates: types.map((t) => ({ id: String(t._id), name: t.value })),
-            message: `${pathText} has ${types.length} variant types with the Parallel role; build-from-Base needs exactly one.`,
+            message: `${pathText} has ${types.length} variant types titled Parallel; build-from-Base needs exactly one.`,
           });
         }
         const r = await buildParallel(client, {

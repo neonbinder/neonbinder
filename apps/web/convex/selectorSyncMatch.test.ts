@@ -952,7 +952,8 @@ describe("planValueRename", () => {
     // because two things read that row's DISPLAY VALUE as data: the BSC
     // checklist fetch derived its `variant` facet from it, and "which row is
     // the base set" was the literal string "base". Both now read the row — a
-    // `variant`-tagged BSC slot and `metadata.isBase` — so the name is a name.
+    // `variant`-tagged BSC slot, and (NEO-334) the kind guard lives at the rename
+    // doors, not in the planner — so the planner allows it.
     //
     // Renaming a variantType was the one thing an operator could not do to
     // their own taxonomy, and the reason was always an adapter's shortcut.

@@ -48,7 +48,7 @@ export type ReconciliationEditState = {
 /**
  * Order- and undefined-insensitive metadata identity.
  *
- * `{ cardNumberPrefix: "DK-" }` and `{ cardNumberPrefix: "DK-", isBase:
+ * `{ cardNumberPrefix: "DK-" }` and `{ cardNumberPrefix: "DK-", isInsert:
  * undefined }` are the same statement; a set's metadata arrives from the
  * stored row on one path and from the editor on another, and a naive compare
  * would report an edit where nothing was typed.

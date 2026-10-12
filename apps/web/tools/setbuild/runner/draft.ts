@@ -60,7 +60,7 @@ import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { api } from "../../../convex/_generated/api";
 import type { Id } from "../../../convex/_generated/dataModel";
 import { slotIds } from "../../../convex/platformSlots";
-import { variantTypeRole } from "../../../convex/variantRole";
+import { variantTypeKind } from "../../../convex/variantRole";
 import { normalizeEntityName } from "../../../lib/entities/normalize-name";
 import { listBaseCandidates } from "../../../lib/set-build/base-candidates";
 import { buildInitialState } from "../../../lib/set-build/grouping";
@@ -339,7 +339,7 @@ export async function draftSet(
 
   // ── Base mapping ─────────────────────────────────────────────────────────
   const baseType = structure.types.find((t) => t.role === "base");
-  const baseRow = existingTypes.find((r) => variantTypeRole(r) === "base");
+  const baseRow = existingTypes.find((r) => variantTypeKind(r) === "base");
   let baseMap: { bsc: string; sportlots?: string } | undefined;
   let baseOpen = false;
   const mapAt = `${at0}.base.map`;
@@ -456,7 +456,7 @@ export async function draftSet(
   let brandHolders: HeldRow[] | null = null;
   const typed = structure.types.filter((t) => t.role === "insert" || t.role === "parallel");
   for (const t of structure.types) {
-    if (t.role === null) notes.push(`BSC lists a "${t.label}" variant with no Insert/Parallel role; the variant-type sync creates it, the draft has no rows for it.`);
+    if (t.role === null) notes.push(`BSC lists a "${t.label}" variant whose title is not Base, Insert or Parallel; the variant-type sync creates it, the draft has no rows for it.`);
   }
   for (let j = 0; j < typed.length; j++) {
     const t = typed[j];
@@ -701,7 +701,7 @@ export async function draftSet(
       if (s._id === set.setId) continue;
       add(s, s.value);
       for (const vt of await childrenOf(client, "variantType", s._id)) {
-        add(vt, variantTypeRole(vt) === "base" ? s.value : `${s.value} ${vt.value}`);
+        add(vt, variantTypeKind(vt) === "base" ? s.value : `${s.value} ${vt.value}`);
         for (const node of await insertTree(vt._id)) {
           add(node.insert as SelectorRow, `${s.value} ${node.insert.value}`);
           for (const p of node.parallels) add(p as SelectorRow, `${s.value} ${p.value}`);

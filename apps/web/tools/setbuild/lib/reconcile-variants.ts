@@ -57,7 +57,7 @@ import {
   type PlatformSide,
   type SlotBearingRow,
 } from "../../../convex/platformSlots";
-import { variantTypeRole } from "../../../convex/variantRole";
+import { variantTypeKind } from "../../../convex/variantRole";
 import {
   applyExplicitPairs,
   buildReconciledItems,
@@ -154,7 +154,7 @@ export async function loadReconcileContext(
   at?: string,
 ): Promise<ReconcileContext> {
   const variantType = await resolveVariantType(client, setId, typeTitle, at);
-  if (variantTypeRole(variantType) === "base") {
+  if (variantTypeKind(variantType) === "base") {
     throw new Error(
       `"${variantType.value}" is the set's Base; it has no rows to sync (map it with base.map instead).`,
     );

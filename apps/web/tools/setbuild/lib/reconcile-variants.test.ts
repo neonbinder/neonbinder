@@ -42,16 +42,14 @@ const twoSided = (): Fetch => {
   };
 };
 
-function world(opts: { fetch?: Fetch; existing?: ReturnType<typeof row>[]; usedBsc?: string[]; typeRole?: "base" } = {}) {
+function world(opts: { fetch?: Fetch; existing?: ReturnType<typeof row>[]; usedBsc?: string[]} = {}) {
   const fetch = opts.fetch ?? twoSided();
   return fakeNbClient({
     [LIST]: (a) => {
       if (a.level === "variantType") {
         return [
-          row("vt-base", "variantType", "Base", { metadata: { isBase: true } }),
-          row("vt-ins", "variantType", "Insert", {
-            metadata: opts.typeRole === "base" ? { isBase: true } : { variantRole: "insert" },
-          }),
+          row("vt-base", "variantType", "Base"),
+          row("vt-ins", "variantType", "Insert"),
         ];
       }
       if (a.level === "insert") return opts.existing ?? [];
@@ -306,8 +304,9 @@ describe("reconcileVariants: the single-platform path", () => {
 });
 
 test("the Base is refused: it is mapped, not synced", async () => {
-  const client = world({ typeRole: "base" });
-  await expect(reconcileVariants(client, "set1" as never, "Insert", cleanSync(), opts)).rejects.toThrow(/Base/);
+  // NEO-334: the type titled Base IS the Base; no flag says so.
+  const client = world();
+  await expect(reconcileVariants(client, "set1" as never, "Base", cleanSync(), opts)).rejects.toThrow(/Base/);
 });
 
 describe("splitMootLeaves (NEO-339: a leave with nothing to leave)", () => {
