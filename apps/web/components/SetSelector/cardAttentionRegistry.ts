@@ -18,8 +18,10 @@ import UnreviewedNameFixer from "./UnreviewedNameFixer";
  *     `deriveCardAttention` when it applies),
  *  2. add a component here and one entry to `attentionFixers`.
  *
- * `CardAttentionWalker` needs no change for either. It owns the queue, the
- * dialog chrome, the progress line, Skip and Close; a fixer owns one card's
+ * `CardAttentionWalker` needs no change for either beyond the kind's place in
+ * `WALK_RANK` and `WALK_SUBTITLE` below, which are `Record`s so the compiler
+ * asks. It owns the queue, the dialog chrome ("Tidy up this set", "Step x of
+ * y"), Skip and Close; a fixer owns one card's
  * question, its own writes, and its own primary action. NEO-101 landed
  * `{ kind: "titleOverLimit"; length: number }`, `{ kind: "titleTruncated" }`
  * and `{ kind: "aspectValueOverLimit"; field: "cardVariation"; length: number }`
@@ -236,6 +238,38 @@ export function attentionWalkRank(items: AttentionItem[]): number {
   const { item, Fixer } = pickAttentionFixer(items);
   if (!item || !Fixer) return UNRANKED;
   return WALK_RANK[item.kind as AttentionItem["kind"]] ?? UNRANKED;
+}
+
+/**
+ * NEO-335 Phase 2 — the walker's subtitle: the screen type under "Tidy up this
+ * set", one per QUESTION rather than one per kind, so the three title kinds
+ * share "Card titles" the way they share a fixer and a rank. The same words as
+ * the entity review wizard's screens of the same type.
+ *
+ * A `Record` over every kind for the same reason as `WALK_RANK`: a new kind
+ * must decide what its screen is called.
+ */
+const WALK_SUBTITLE: Record<AttentionItem["kind"], string> = {
+  missingTeam: "Cards with no team",
+  unreviewedName: "Names not yet linked",
+  titleOverLimit: "Card titles",
+  titleTruncated: "Card titles",
+  aspectValueOverLimit: "Card titles",
+};
+
+/** A card flagged only for kinds this bundle has no fixer for. */
+export const UNFIXABLE_WALK_SUBTITLE = "Needs a look";
+
+/**
+ * The subtitle for the card on screen, read off the item the walker will
+ * actually ask about (`pickAttentionFixer`) — the same item `attentionWalkRank`
+ * files the card under, so a card is never walked with one group and labelled
+ * as another.
+ */
+export function attentionWalkSubtitle(items: AttentionItem[]): string {
+  const { item, Fixer } = pickAttentionFixer(items);
+  if (!item || !Fixer) return UNFIXABLE_WALK_SUBTITLE;
+  return WALK_SUBTITLE[item.kind as AttentionItem["kind"]] ?? UNFIXABLE_WALK_SUBTITLE;
 }
 
 /**

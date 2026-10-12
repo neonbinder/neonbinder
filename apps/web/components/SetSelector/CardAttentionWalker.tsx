@@ -5,9 +5,11 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { compareCardNumbers } from "@/lib/cards/card-number";
 import NeonButton from "../modules/NeonButton";
 import { deriveCardAttention } from "./card-attention";
+import WizardChrome from "./WizardChrome";
 import {
   AttentionSportContext,
   attentionWalkRank,
+  attentionWalkSubtitle,
   isAwaitingTeamLookup,
   pickAttentionFixer,
   unfixableReason,
@@ -31,14 +33,38 @@ export {
  * cards are still waiting on the automatic team lookup (see
  * `isAwaitingTeamLookup`), it says so, because those can still join the walk
  * after the operator has finished it.
+ *
+ * Phase 2 wording (Jason-approved): "All clear for now. Still looking up teams
+ * for K cards." The singular keeps "teams" — a card can carry more than one.
  */
 export function walkDoneLine(awaitingLookup: number): string {
   if (awaitingLookup <= 0) {
     return "All clear — nothing on this checklist needs attention.";
   }
-  return awaitingLookup === 1
-    ? "All clear for now — 1 more card is still being checked for a team."
-    : `All clear for now — ${awaitingLookup} more cards are still being checked for a team.`;
+  return `All clear for now. Still looking up teams for ${awaitingLookup} ${
+    awaitingLookup === 1 ? "card" : "cards"
+  }.`;
+}
+
+/**
+ * NEO-335 Phase 2 (D9) — "Step x of y" for the walker.
+ *
+ * - `seen` is every card that has been in the walk at any point this sitting.
+ *   It only grows, so y never shrinks: a card answered here, skipped, or
+ *   resolved somewhere else (a lookup landing, another tab) still counts as
+ *   walked. A card flagged mid-sitting joins it and y grows by one.
+ * - `left` is how many are still to be asked, the card on screen included.
+ * - With a card on screen, x is the walked count plus one. Once nothing is left
+ *   the counter reads y of y and the rail is full.
+ */
+export function walkStep(
+  seen: number,
+  left: number,
+  onScreen: boolean,
+): { step: number; total: number } {
+  const total = Math.max(seen, left);
+  const walked = total - left;
+  return { step: onScreen ? Math.min(total, walked + 1) : total, total };
 }
 
 /**
@@ -61,6 +87,16 @@ export function walkDoneLine(awaitingLookup: number): string {
  * in the checklist header (NEO-335). An earlier revision opened it
  * automatically inside a grace window after a commit; that put a
  * `fixed inset-0` overlay over whatever the operator did next, and it is gone.
+ *
+ * ## A safety net (NEO-335 Phase 2)
+ *
+ * Teams and titles are now answered in the entity review wizard before a
+ * save, so what reaches this walk is what that could not settle: a team
+ * lookup that failed, a review the operator cancelled, an edit made since, a
+ * set saved before the wizard asked. It wears the wizard's chrome
+ * (`WizardChrome`): "Tidy up this set", ONE "Step x of y" across every card
+ * the sitting walks (`walkStep`), and the question's type as the subtitle
+ * (`attentionWalkSubtitle`). No per-kind counts anywhere.
  *
  * ## The order (NEO-335)
  *
@@ -96,7 +132,7 @@ export function walkDoneLine(awaitingLookup: number): string {
  *
  * ## Extensibility
  *
- * The walker owns the queue, the chrome, the progress line, Skip and Close.
+ * The walker owns the queue, the chrome and its counter, Skip and Close.
  * Everything card-specific comes from `cardAttentionRegistry.ts`, keyed on
  * `AttentionItem["kind"]`, so NEO-101's title fixer is a registry entry and a
  * component — no change here. A kind with no registered fixer renders no
@@ -144,10 +180,10 @@ export default function CardAttentionWalker({
   //                 the derived rule because the write and the subscription
   //                 update are not the same instant, and without it the card
   //                 would flash back on screen in between.
-  //  - `fixed`    — how many landed this sitting, for the progress line.
+  //  - `seen`     — every card that has been in the walk this sitting, for
+  //                 "Step x of y" (see `walkStep`). Only ever grows.
   const [skipped, setSkipped] = useState<Set<string>>(() => new Set());
   const [answered, setAnswered] = useState<Set<string>>(() => new Set());
-  const [fixed, setFixed] = useState(0);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeBtnRef = useRef<HTMLButtonElement | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
@@ -168,6 +204,26 @@ export default function CardAttentionWalker({
         .map(({ card }) => card),
     [cards],
   );
+
+  /*
+   * y's memory. Seeded with the walk as it opens, and grown in the render
+   * that first sees a newly flagged card — the render-phase update React
+   * documents for "information from previous renders", which is what keeps
+   * this from being an effect that chases the derived list (one extra render
+   * with a stale y) or a ref read during render. Cards are only ever ADDED:
+   * one that leaves the list by any route has been walked, and y holds.
+   */
+  const [seen, setSeen] = useState<ReadonlySet<string>>(
+    () => new Set(attentionCards.map((c) => c._id as string)),
+  );
+  const unseen = attentionCards.filter((c) => !seen.has(c._id as string));
+  if (unseen.length > 0) {
+    setSeen((prev) => {
+      const next = new Set(prev);
+      for (const c of unseen) next.add(c._id as string);
+      return next;
+    });
+  }
 
   /** Cards the automatic team lookup has yet to answer; for the done line only. */
   const awaitingLookup = useMemo(
@@ -212,6 +268,17 @@ export default function CardAttentionWalker({
   // flagged for a kind this bundle does not know about plus one it does must
   // still be fixable for the one it does.
   const { item: primaryItem, Fixer } = pickAttentionFixer(items);
+
+  // `unseen` is counted in too: the render that first sees a card already
+  // shows it in y, rather than waiting on the queued `setSeen`.
+  const { step, total } = walkStep(
+    seen.size + unseen.length,
+    remaining.length,
+    current !== null,
+  );
+  // The question's type. Empty once the walk is done: the body's done line is
+  // the whole story then, and a subtitle naming the last group would be stale.
+  const subtitle = current ? attentionWalkSubtitle(items) : "";
 
   /** Move the pin past `cardId`, so the next render presents the card after it. */
   const movePinPast = (cardId: string) => {
@@ -282,11 +349,10 @@ export default function CardAttentionWalker({
     setSkipped((prev) => new Set(prev).add(cardId));
   };
 
-  /** A fixer's write landed. Count it and leave the card behind. */
+  /** A fixer's write landed. Leave the card behind; it counts as walked. */
   const markAnswered = (cardId: string) => {
     movePinPast(cardId);
     setAnswered((prev) => new Set(prev).add(cardId));
-    setFixed((n) => n + 1);
   };
 
   return createPortal(
@@ -374,27 +440,21 @@ export default function CardAttentionWalker({
           window — nothing in here carries a min-width, so it reflows.
         */}
         <div className="flex max-h-full w-full max-w-[45rem] flex-col rounded-lg border border-gray-700 bg-gray-900 shadow-xl">
-          <div className="shrink-0 border-b border-gray-700 px-6 py-4">
-            <h2
-              id="card-attention-walker-title"
-              className="text-lg font-semibold text-gray-100"
-            >
-              Cards Needing Attention
-            </h2>
-            {/*
-              role="status" with no explicit aria-live, per
-              accessibility-auditor/live-region-role-pattern.md — the role
-              already implies a polite live region, and this line never
-              switches to role="alert" (a failed write is announced by the
-              fixer's own alert region), so it needs neither the aria-live
-              override nor the key-remount that pattern prescribes for regions
-              that DO switch roles.
-            */}
-            <p className="mt-0.5 text-xs text-gray-400" role="status">
-              {remaining.length} {remaining.length === 1 ? "card needs" : "cards need"}{" "}
-              attention · {fixed} fixed
-            </p>
-          </div>
+          {/*
+            NEO-335 Phase 2 (D9) — the wizard's own header: "Tidy up this
+            set", "Step x of y" (a role="status" region, so moving it is
+            announced, as the "N cards need attention · K fixed" line it
+            replaces was), the question's type as the subtitle, and the neon
+            rail as the header's bottom edge. The rail only animates forward
+            and never under prefers-reduced-motion — see WizardChrome.
+            `<header class="shrink-0">`, so it stays out of the scrolling body.
+          */}
+          <WizardChrome
+            titleId="card-attention-walker-title"
+            step={step}
+            total={total}
+            subtitle={subtitle}
+          />
 
           {/*
             NEO-110 / NEO-271 — THE BODY GROWS WITH ITS CONTENT, FROM A FLOOR,

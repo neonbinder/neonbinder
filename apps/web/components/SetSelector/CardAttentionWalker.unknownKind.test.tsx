@@ -78,7 +78,10 @@ describe("CardAttentionWalker — a kind with no registered fixer", () => {
 
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(screen.getByText(/no fixer for it/)).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain("1 card needs attention");
+    // Counted in the walk like any other card, under a subtitle that names no
+    // kind this bundle does not know.
+    expect(screen.getByRole("status").textContent).toBe("Step 1 of 1");
+    expect(screen.getByText("Needs a look")).toBeTruthy();
     // Nothing that could write the wrong thing.
     expect(screen.queryByRole("button", { name: /Save & Next/ })).toBeNull();
     expect(screen.queryByRole("button", { name: "No team on this card" })).toBeNull();

@@ -1837,7 +1837,7 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
     fireEvent.click(needsYou());
 
     const dialog = await screen.findByRole("dialog");
-    expect(dialog.textContent).toContain("Cards Needing Attention");
+    expect(dialog.textContent).toContain("Tidy up this set");
     expect(screen.getByRole("heading", { level: 3 }).textContent).toBe(
       "#1 AL Leaders ERA LL",
     );
