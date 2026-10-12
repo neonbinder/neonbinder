@@ -969,6 +969,10 @@ jobs:
     # `fail-fast: false` lets every other shard finish and report; the `e2e`
     # gate below reads the merged results for the verdict.
     needs: [setup, seed-mobile]
+    # Explicit condition: the default success() also looks at seed-mobile's
+    # own needs, so a red desktop shard would skip the whole mobile pass even
+    # though seed-mobile ran and passed. Mobile results are collected anyway.
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed-mobile.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -1145,7 +1149,9 @@ jobs:
           echo "jobs: setup=$R_SETUP seed=$R_SEED shard-desktop=$R_SHARD_DESKTOP seed-mobile=$R_SEED_MOBILE shard-mobile=$R_SHARD_MOBILE"
           if [ "$R_SETUP" != "success" ] || [ "$R_SEED" != "success" ] || [ "$R_SEED_MOBILE" != "success" ]; then
             echo "::error::setup or a seed did not succeed (setup=$R_SETUP seed=$R_SEED seed-mobile=$R_SEED_MOBILE)"
-            exit 1
+            # Record, don't exit: the reports still merge and publish so a red
+            # run is readable; the "Upstream verdict" step fails the gate.
+            echo "UPSTREAM_FAILED=1" >> "$GITHUB_ENV"
           fi
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1274,10 +1280,15 @@ jobs:
       # catches the rarer case of a shard that failed outside any test (install,
       # crash) while the surviving results still looked complete.
       - name: Shard jobs
+        if: always()
         env:
           R_SHARD_DESKTOP: ${{ needs.shard-desktop.result }}
           R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
         run: |
+          if [ "${UPSTREAM_FAILED:-0}" = "1" ]; then
+            echo "::error::Upstream verdict: setup or a seed did not succeed (see the Upstream jobs step)"
+            exit 1
+          fi
           if [ "$R_SHARD_DESKTOP" != "success" ] || [ "$R_SHARD_MOBILE" != "success" ]; then
             echo "::error::a shard job did not succeed (desktop=$R_SHARD_DESKTOP mobile=$R_SHARD_MOBILE)"
             exit 1
