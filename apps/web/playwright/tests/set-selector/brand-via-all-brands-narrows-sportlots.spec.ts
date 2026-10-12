@@ -76,15 +76,16 @@ test(
     // The brand's own view: its sets moved out of Unknown, and its attributes say how SportLots is matched.
     await drillToColdManufacturer(page, env, { sport: "Hockey", year: YEAR, manufacturer: BRAND });
     await expect(columnHeading(page, "Sets")).toBeVisible();
-    // TODO(pwi): red in CI (shard 4) with SPx, and not reproducible on another
-    // brand. Same steps as the Maestro flow (nothing between "Sets" and this
-    // assert but the util's own waits). The notice is the "done" status row the
-    // brand's create wrote on its Sets column; on SplitSecond, Zebra and
-    // Collector's Choice (same year) it shows up a moment after the column
-    // opens and survives the Base-mapping picker, so the web-first assert is
-    // the right shape. With SPx the picker also lists SportLots candidates and
-    // the row is gone by the time the brand is reopened: a status-row clear in
-    // the SportLots-candidate path is the suspect. Needs a fresh SPx to look.
+    // TODO(NEO-341): a spec race, not a product bug. The notice exists only if
+    // the SPx sets were already under Unknown when the brand was created. The
+    // year-wide wait at the top ("Sync Sets" visible, "Syncing Sets" hidden)
+    // passes before ensureSelectorOptions writes its "syncing" row, so on a
+    // cold year SPx is created while that sync is still fetching BSC. The sync
+    // reads the year's brands AFTER its fetch (syncSetsAcrossManufacturers,
+    // holder index), sees SPx and files the SPx sets straight under it. They
+    // never sit in Unknown, nothing moves, and no notice is written. Maestro
+    // was slow enough to miss the race. Fix: before "Add custom Manufacturers",
+    // wait for an SPx-prefixed set in the All Brands Sets list.
     await expect(page.getByText(/[0-9]+ sets? moved out of Unknown/)).toBeVisible();
     await page.getByRole("button", { name: "Edit attributes" }).click();
     await expect(page.getByRole("button", { name: "Hide attributes" })).toBeVisible();
