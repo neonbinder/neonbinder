@@ -18,7 +18,7 @@ tags:
 #     (b) the row under test is a PLAYER row (its link panel is labelled for
 #         players), asserted before the feature action;
 #     (c) the search finds the existing roster player BY NAME and taking it
-#         records a LINK — the history reads "Linked to Shohei Ohtani", the one
+#         records a LINK — its own row reads "Linked to Shohei Ohtani", the one
 #         string neither a create ("Added as new") nor a skip ("Skipped") can
 #         produce;
 #     (d) the commit lands cleanly ("Saved N cards") with the link on the batch.
@@ -183,9 +183,16 @@ tags:
       id: "Link to Shohei Ohtani"
 - tapOn:
     id: "Link to Shohei Ohtani"
-- extendedWaitUntil:
-    visible:
-      text: "Linked to Shohei Ohtani"
+# Read back off the row the link was made on (its "Already decided:" panel),
+# never off the "Decided (N)" history — batch-ordered and collapsed past five,
+# the same reason STEP 3b below already gave for not reading it. CI run
+# 38198207277 went red here on a link that had landed. RESUME hands the walk
+# back its own rule before the next util call.
+- runFlow:
+    file: util-wizard-read-back-decision.yaml
+    env:
+      DECISION: "Linked to Shohei Ohtani"
+      RESUME: "true"
 
 # ============================================================
 # STEP 3b — R2(e)+(f): the NEXT player, moved to Football and linked

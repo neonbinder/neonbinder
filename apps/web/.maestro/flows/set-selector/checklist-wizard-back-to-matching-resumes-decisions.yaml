@@ -112,8 +112,14 @@ tags:
       # shows can move out from under you while its career teams are staged. The util
       # walks to a settled player row the operator's way (see its header for the two
       # behaviours and the evidence). Every row it answers is a SKIP, so this flow's
-      # own decision is the only non-skip in the Decided list.
-      - runFlow: util-wizard-walk-to-player-row.yaml
+      # own decision is the only non-skip in the Decided list. READY_TO_CREATE:
+      # the create below needs a player whose create is not held by a career
+      # team the walk skipped (the util's step 5; CI run 38198207277 handed
+      # its siblings such players).
+      - runFlow:
+          file: util-wizard-walk-to-player-row.yaml
+          env:
+            READY_TO_CREATE: "true"
       - tapOn:
           id: "Add as New Player"
       # The drain above answered every team step as a SKIP, so the create just made

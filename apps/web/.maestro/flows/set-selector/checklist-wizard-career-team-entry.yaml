@@ -25,8 +25,9 @@ tags:
 #         and a staged entry can be removed again, leaving the other's years
 #         untouched;
 #     (e) "Add as New Player" carries the one kept entry into a real decision:
-#         the history reads "Added as new" and the wizard has ADVANCED PAST the
-#         player row (its career-team form is gone). `recordDecision`
+#         the wizard has ADVANCED PAST the player row (its staged chip is
+#         gone) and, presented again by "Back", the row reads "Already
+#         decided: Added as new". `recordDecision`
 #         re-validates the manual years server-side, so a payload it rejected
 #         would leave the wizard where it was rather than moving on.
 #     (f) NEO-307 — the New Team steps (d)'s hops walk through answer their
@@ -167,9 +168,14 @@ tags:
 # NEO-236 — the wizard does not open on a player row, and the first player it
 # shows can move out from under you while its career teams are staged. The util
 # walks to a settled player row the operator's way (see its header for the two
-# behaviours and the evidence). Every row it answers is a SKIP, so this flow's
-# own decision is the only non-skip in the Decided list.
-- runFlow: util-wizard-walk-to-player-row.yaml
+# behaviours and the evidence). Every row it answers is a SKIP. READY_TO_CREATE:
+# this flow ends on "Add as New Player", so the util also walks past any player
+# whose create is held by a career team it skipped (its step 5 has why that is
+# now the norm, CI run 38198207277).
+- runFlow:
+    file: util-wizard-walk-to-player-row.yaml
+    env:
+      READY_TO_CREATE: "true"
 
 # ============================================================
 # STEP 2 — R2(a): a PLAYER row, with the manual-entry affordance on it
@@ -188,6 +194,11 @@ tags:
 # — expressed against something that will not drift.
 - assertVisible:
     id: "Career team name"
+# The form follows the row's career chips, so on a player with staged stints
+# its year fields sit under the footer, where a tap clicks the footer instead
+# (CI run 38198207277: `From year` at y=469-503, the entry never staged). The
+# util brings it into the body's visible slice and asserts that it did.
+- runFlow: util-wizard-career-form-into-view.yaml
 
 # ============================================================
 # STEP 3 — R2(b): a name with no from-year is REFUSED, silently doing nothing
@@ -422,6 +433,9 @@ tags:
 # read after the hop is therefore also the proof that Enter carried the years.
 # ============================================================
 
+# Back on the player the body opened at its top again (a new screen), so the
+# form is brought above the footer once more before any of it is tapped.
+- runFlow: util-wizard-career-form-into-view.yaml
 - tapOn:
     id: "Career team name"
 - inputText: "TempTeam${output.ATTEMPT_TOKEN}"
@@ -537,7 +551,7 @@ tags:
 # STEP 6 — R2(e): the decision carries the staged entry, and the wizard moves on
 #
 # Two readings of the same event, each saying something the other does not: the
-# history (the decision was a CREATE, not a link or a skip) and the STAGED CHIP
+# row's own read-back (the decision was a CREATE, not a link or a skip) and the STAGED CHIP
 # being gone (the wizard advanced off the row we staged it on).
 #
 # ⚠️ DO NOT assert the career-team FORM disappeared. It does not. The fixture
@@ -559,15 +573,24 @@ tags:
 # no "Decide team" link left to take — an earlier version of this flow waited
 # for one here and would now hang until its timeout.
 - tapOn: "Add as New Player"
-- extendedWaitUntil:
-    visible:
-      text: "Added as new"
 # Matched WITH the years, not on the bare name: once the club is decided its
 # name also appears in the "Decided (N)" history, so a bare-name matcher would
 # be asserting the history had collapsed rather than that the chip had gone.
-# "<name> (2001–2005)" renders only in the career-team chip list.
-- assertNotVisible:
-    text: ".*ProbeTeam${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
+# "<name> (2001–2005)" renders only in the career-team chip list. A negative
+# passes on a dead page too; the read-back below is its positive.
+- extendedWaitUntil:
+    notVisible:
+      text: ".*ProbeTeam${output.ATTEMPT_TOKEN} \\(2001.2005\\).*"
+    timeout: 7000
+# The decision was a CREATE, read back off the player's own "Already decided:"
+# panel — not off the "Decided (N)" history, which is batch-ordered and
+# collapsed past five and showed it only while the walk landed on one of the
+# batch's first rows (the util's header has the mechanism). After the chip
+# check on purpose: "Back" presents this player again.
+- runFlow:
+    file: util-wizard-read-back-decision.yaml
+    env:
+      DECISION: "Added as new"
 
 # ============================================================
 # STEP 7 — EXIT WITHOUT WRITING ANYTHING (R7)

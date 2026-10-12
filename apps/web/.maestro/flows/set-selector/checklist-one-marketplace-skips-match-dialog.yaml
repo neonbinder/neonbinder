@@ -959,7 +959,15 @@ tags:
 # which is always "Step y of y" and adds nothing (entity-review-steps.ts, C6).
 - copyTextFrom:
     text: "Step [0-9]+ of [0-9]+"
-- evalScript: '${output.STEPS_TOTAL = maestro.copiedText.match(/of ([0-9]+)$/)[1]}'
+# NO `$` ANYWHERE INSIDE `${…}`. Maestro finds a script with the regex
+# `(?<!\\)\$\{([^$]*)}` (maestro-orchestra-models `Env`), so a `$` in the body —
+# here a regex end-anchor — means the text is never recognised as a script:
+# the evalScript completes without running, STEPS_TOTAL stays undefined, and
+# the assertTrue below compares against NaN. CI run 38198207277 failed exactly
+# so ("false is true") on a header that read "Step 27 of 28" (re-run locally
+# with the copied text logged: "Step 27 of 28"). The counter has one "of", so
+# the anchor bought nothing.
+- evalScript: '${output.STEPS_TOTAL = maestro.copiedText.match(/of ([0-9]+)/)[1]}'
 # The teams step is never the last step: Save comes after it.
 - assertTrue: '${Number(maestro.copiedText.match(/^Step ([0-9]+)/)[1]) < Number(output.STEPS_TOTAL)}'
 

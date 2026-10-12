@@ -17,9 +17,10 @@ tags:
 #         players — asserted BEFORE the feature action, as the precondition it
 #         is;
 #     (c) the search finds the existing roster row and offers it BY NAME;
-#     (d) taking it records a LINK, not a create: the history reads "Linked to
-#         <name>". "Added as new" and "Skipped" are the other two strings that
-#         can appear there, so this assertion distinguishes all three.
+#     (d) taking it records a LINK, not a create: "Back" presents the row just
+#         decided and it reads "Already decided: Linked to <name>". "Added as
+#         new" and "Skipped" are the other two strings that can appear there,
+#         so this assertion distinguishes all three.
 #
 #   (d) asserts the decision's CONTENT, not a count, on purpose — see the kind
 #   guard below, which can legitimately put one extra decision on the books.
@@ -138,16 +139,22 @@ tags:
 # ============================================================
 # STEP 4 — R2(d): THE FEATURE — take the existing row
 #
-# The history line is where the decision is READ BACK, and it names the row
-# that was linked. "Linked to Shohei Ohtani" is the one string only the link
+# The row's own "Already decided:" panel is where the decision is READ BACK,
+# and it names the row that was linked. "Linked to Shohei Ohtani" is the one string only the link
 # path can produce: a create reads "Added as new", a skip reads "Skipped".
 # ============================================================
 
 - tapOn:
     id: "Link to Shohei Ohtani"
-- extendedWaitUntil:
-    visible:
-      text: "Linked to Shohei Ohtani"
+# Read back off the row the link was made on (its "Already decided:" panel),
+# never off the "Decided (N)" history: batch-ordered and collapsed past five,
+# it showed this line only while the walk landed on one of the batch's first
+# rows (CI run 38198207277: red on a link that had landed). The util's header
+# has the mechanism. No RESUME: the flow leaves through Cancel next.
+- runFlow:
+    file: util-wizard-read-back-decision.yaml
+    env:
+      DECISION: "Linked to Shohei Ohtani"
 
 # ============================================================
 # STEP 5 — EXIT WITHOUT WRITING ANYTHING (R7)

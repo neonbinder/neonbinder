@@ -16,9 +16,9 @@ tags:
 #     (b) the per-row control is bound to a REAL queued row (its accessible name
 #         composes the row's own name) AND says what it does ("Skip — not a
 #         person"). Two different claims; neither is a duplicate of the other;
-#     (c) one tap records exactly ONE decision — a "Skipped" entry in the
-#         "Decided (N)" history. A control that rendered but wrote nothing
-#         leaves no such entry;
+#     (c) one tap records a SKIP on that row — "Back" presents the row just
+#         decided, and it reads "Already decided: Skipped". A control that
+#         rendered but wrote nothing leaves no decision to go back to;
 #     (d) "Skip remaining names" decides every row that is left, INCLUDING ones whose
 #         Wikidata lookup has not come back. The wizard leaves its name steps
 #         for the post-name steps only once EVERY row carries a decision
@@ -110,8 +110,8 @@ tags:
 # NEO-236 — the wizard does not open on a player row, and the first player it
 # shows can move out from under you while its career teams are staged. The util
 # walks to a settled player row the operator's way (see its header for the two
-# behaviours and the evidence). Every row it answers is a CREATE, so the single
-# "Skipped" this flow then makes can only be its own.
+# behaviours and the evidence). Every row it answers is a CREATE; this flow's
+# own skip is read back off its own row (STEP 3).
 - runFlow: util-wizard-walk-to-player-row-creating-teams.yaml
 - extendedWaitUntil:
     visible:
@@ -126,12 +126,18 @@ tags:
 
 - tapOn:
     id: "Skip .* not a (person|team)"
-# The drain above answered every team step as a CREATE, so the skip just made
-# is the ONLY "Skipped" in the history — a sharper claim than a count, which
-# the drain has moved off 1. `Decided (N)` proves the list is up at all.
-- extendedWaitUntil:
-    visible:
-      text: "Skipped"
+# Read the decision back off the row it was made on, not off the "Decided (N)"
+# history: that list is in batch order and collapsed past five entries, so it
+# carried this skip on screen only while the walk happened to land on one of
+# the batch's first rows (CI run 38198207277: the walk handed this flow Roberto
+# Clemente, ~30 rows down, and "Skipped" was nowhere on screen). The util's
+# header has the mechanism. "Back" presents THIS decision alone, so the line is
+# exactly scoped; RESUME hands the walk back before the bulk skip below.
+- runFlow:
+    file: util-wizard-read-back-decision.yaml
+    env:
+      DECISION: "Skipped"
+      RESUME: "true"
 - assertVisible:
     text: "Decided \\([0-9]+\\)"
 

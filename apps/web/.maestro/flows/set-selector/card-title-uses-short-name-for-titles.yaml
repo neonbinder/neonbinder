@@ -54,11 +54,21 @@ tags:
 #   The title core is "<year> <maker> <set> [<insert>] #<number>", capped at 80
 #   with " #SN1" reserved, so the words before it get 75 characters.
 #   "2024 Topps " is 11; the set name is `stn-<w>-` (6) + ATTEMPT_ID (7-11 on
-#   both runners) + "-" + a 59-character word = 73-77 with NO spaces. So the
-#   core is 84 or more before the insert name, and `cutAtWordBoundary` can only
-#   cut at the space after "Topps": the title becomes "2024 Topps #SN1", then
-#   whatever optional tokens fit (the sport). With the short name
-#   (`SNT<token>`, 11-15 characters) the core is ~33 and fits whole.
+#   both runners) + "-" + a 60-character hyphenated tail = 74-78 with NO
+#   spaces. So the core is 85 or more before the insert name, and
+#   `cutAtWordBoundary` (spaces only) can only cut at the space after "Topps":
+#   the title becomes "2024 Topps #SN1", then whatever optional tokens fit (the
+#   sport). With the short name (`SNT<token>`, 11-15 characters) the core is
+#   ~33 and fits whole.
+#
+#   HYPHENS, NOT ONE LONG WORD. The Sets column's search result wraps its name
+#   only at a break opportunity, and a hyphen is one where nothing in a single
+#   59-letter word was: CI run 38198207277 rendered that word as a 597px line in
+#   a 292px listbox (text bounds [472,432][1069,480]), so the drill util's tap
+#   on its centre (x=770) landed beside the list and the set was never picked
+#   ("Variant Types" never mounted). Hyphenated, the longest unbreakable run is
+#   "Commemorative-" and the name wraps inside the list; the generator still
+#   sees one space-free token, so the cut is unchanged.
 # ════════════════════════════════════════════════════════════════════════════
 
 - launchApp
@@ -80,7 +90,7 @@ tags:
       SPORT: "Baseball"
       YEAR: "2024"
       MANUFACTURER: "Topps"
-      SET_NAME: "stn-${WORKER_INDEX || 0}-${ATTEMPT_ID}-Commemorativeanniversarycollectorseditionhologramsuperseries"
+      SET_NAME: "stn-${WORKER_INDEX || 0}-${ATTEMPT_ID}-Commemorative-anniversary-collectors-edition-hologram-series"
       VARIANT_TYPE: "Insert"
       VARIANT: "Base"
 
