@@ -68,3 +68,4 @@
 - [Inline re-auth bypasses backoff](patterns_inline_reauth_bypasses_backoff.md) — adapter 401 → authenticate* skips NEO-278 backoff + lock; batches multiply logins
 - [Patterns neo318 derived copy column](patterns_neo318_derived_copy_column.md) — exported *Impl split of a gated query is safe if gate stays in handler; derived copy: strip in public helper, spread-insert gap, two-step revert
 - [Patterns neo331 context-id side channel](patterns_neo331_context_id_side_channel.md) — signed-in query ranking by an admin-gated row leaks it via tier/order; old public query left live and unclamped after a client move
+- [Playwright report exposure](patterns_playwright_report_exposure.md) — blob/HTML reports embed error-context (ARIA snapshot, password values in plaintext); results/ glob is not a scope; .playwright-mcp; host guard

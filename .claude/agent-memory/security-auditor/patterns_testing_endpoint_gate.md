@@ -16,7 +16,7 @@ NeonBinder has two layers of "testing-only" endpoints, both designed to fail clo
 - Data-exposure severity is LOW (ephemeral preview, no PII/creds/product data), but the real risk is **CI integrity**: main auto-deploys to prod on merge, so an unauthenticated write to the gate's result store is a forced **false-green** = a broken PR passes. That is a prod consequence regardless of data sensitivity.
 - Fail closed when the secret is unset (even `""` is falsy), keep the secret header-only under `set +x`, never in a test arg or env map, and never `echo` the curl that carries `x-testing-auth`.
 - Validate any value that flows back to a shell runner at the boundary with a strict allowlist and an explicit `..` reject; bound array-insert args.
-- Artifacts: screenshots and reports only. Playwright traces record Clerk testing tokens and must never be uploaded (the repo is public).
+- Artifacts: Playwright traces record Clerk testing tokens and must never be uploaded (the repo is public). "Screenshots and reports only" is NOT a scope: the blob/HTML report embeds error-context ARIA snapshots (input values in plaintext) - see [[patterns-playwright-report-exposure]].
 - A secret compare using plain `!==` rather than `timingSafeEqual` is INFORMATIONAL only (HTTPS header, no per-char oracle, high-entropy secret).
 
 
