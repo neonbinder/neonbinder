@@ -1,6 +1,6 @@
 ---
 name: reference-convex-mutation-resolves-after-queries-reflect-it
-description: A successful useMutation promise resolves only after this client's query subscriptions hold the mutation's writes — safe to rebuild UI state from useQuery right after `await`; a FAILED one resolves at once
+description: A successful useMutation promise resolves only after query subscriptions hold the writes but BEFORE React re-renders — rebuild from useQuery after `await`, but a `.then` must not rely on an effect having seen the new data; a FAILED one resolves at once
 metadata:
   type: reference
 ---
@@ -20,3 +20,14 @@ let a one-shot INIT effect rebuild from the live `useQuery` value (NEO-308's
 partial-save rebuild relies on this). Do not snapshot the query value into a
 ref inside the async handler instead — the handler's closure and a render-time
 ref can both be one render stale. Related: [[reference-rerender-same-element-bails-out]].
+
+**The flip side (NEO-330 × NEO-332):** the query data is new but React has
+NOT rendered yet when `.then` runs, so an effect keyed on that data (the
+wizard's `resolveNav` effect) has not seen it. A `.then` that rewrites nav
+state from a ref (`navRef.current`) reads the pre-update nav and can clobber
+what the effect would have done. Make the handler self-sufficient rather than
+relying on effect order. To reproduce in a component test with module-state
+`useQuery` mocks: have the mutation mock assign the new rows to the query
+variable and THEN return `Promise.resolve(...)` — the next render (triggered
+by the `.then`'s own setState) reads the new rows, which is exactly the
+production order. Prove the test bites by neutralising the fix.
