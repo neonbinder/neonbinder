@@ -215,6 +215,8 @@ export default defineConfig(async ({ mode }) => {
         "**/maestro-report-*/**",
         "**/tmp/**",
         "**/.maestro/tests/**",
+        "**/playwright/report/**",
+        "**/playwright/results/**",
       ],
     },
     proxy: {

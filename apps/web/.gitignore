@@ -53,6 +53,10 @@ yarn-error.log*
 .env.local
 .env*.local
 
+# Playwright E2E outputs (PW_REPORT_DIR defaults to playwright/report)
+/playwright/report/
+/playwright/results/
+
 # Maestro E2E outputs
 maestro-report/
 # Local debugging runs use a custom REPORT_DIR (e.g. maestro-report-local) so a

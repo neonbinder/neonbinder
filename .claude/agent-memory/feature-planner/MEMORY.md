@@ -13,3 +13,5 @@
 - [Image metadata must survive every re-encode](image-metadata-must-survive-every-re-encode-on-the-intake-path.md) — raw-buffer/sharp re-encodes drop density and blind scan_meta; check `scan_meta:` log ratio
 - [Seeded roster is the read-only fixture for name matching](seeded-roster-is-the-read-only-fixture-for-name-matching.md) — probe setup.yaml's roster via the Players add form's `Open <name>` demotion; never mint a multi-token name (NEO-322)
 - [ARIA ids rewrite Maestro handles; height above bottom-anchored controls is free](aria-ids-change-maestro-handles-and-max-scroll-geometry.md) — activedescendant ids break `id: "<aria-label>"` flows; put new cascade chrome BELOW the columns
+- [Maestro-green / PW-red = mid-transition assert](maestro-green-playwright-red-means-a-mid-transition-assert.md) — PW helpers wait for the settle; fix the product status overwrite, never the spec (NEO-341)
+- [Convex table removal does not fail the push](convex-table-removal-does-not-fail-the-push.md) — only unlisted tables go unvalidated; field removal on a kept table is the hazard
