@@ -13,3 +13,4 @@
 - [Image metadata must survive every re-encode](image-metadata-must-survive-every-re-encode-on-the-intake-path.md) — raw-buffer/sharp re-encodes drop density and blind scan_meta; check `scan_meta:` log ratio
 - [Seeded roster is the read-only fixture for name matching](seeded-roster-is-the-read-only-fixture-for-name-matching.md) — probe setup.yaml's roster via the Players add form's `Open <name>` demotion; never mint a multi-token name (NEO-322)
 - [ARIA ids rewrite Maestro handles; height above bottom-anchored controls is free](aria-ids-change-maestro-handles-and-max-scroll-geometry.md) — activedescendant ids break `id: "<aria-label>"` flows; put new cascade chrome BELOW the columns
+- [Optional→required is two merges](optional-to-required-is-two-merges.md) — deploy validates existing rows; writers+backfill first, schema flip second; one PR only if prod is hand-cleaned and rechecked (NEO-331)

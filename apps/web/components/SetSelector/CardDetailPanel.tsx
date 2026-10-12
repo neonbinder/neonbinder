@@ -202,6 +202,12 @@ type CardDetailPanelProps = {
   ancestorSport?: string;
   /** NEO-96: sport-level selectorOptions row id, for the entity pickers. */
   ancestorSportId?: Id<"selectorOptions">;
+  /**
+   * NEO-331 — the checklist's selectorOptions row (the set being worked on).
+   * Orders the Teams picker by the set's league and year; omit and the picker
+   * falls back to name order.
+   */
+  contextOptionId?: Id<"selectorOptions">;
   onClose: () => void;
   onPrev: () => void;
   onNext: () => void;
@@ -271,6 +277,7 @@ export default function CardDetailPanel({
   ancestorChain,
   ancestorSport,
   ancestorSportId,
+  contextOptionId,
   onClose,
   onPrev,
   onNext,
@@ -995,6 +1002,7 @@ export default function CardDetailPanel({
               value={teamIds}
               onChange={(next) => void saveTeams(next)}
               sportId={ancestorSportId}
+              contextOptionId={contextOptionId}
             />
             <FieldFeedback
               busy={teamsPending !== null}

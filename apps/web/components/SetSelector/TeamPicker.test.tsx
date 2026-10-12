@@ -38,7 +38,7 @@
  * --- Mocking strategy (identity-routed useQuery/useMutation) ---
  * `convex/react`'s `useQuery`/`useMutation` are module-mocked, routed by the
  * (string-mocked) query/mutation reference, so `teams.getManyByIds`,
- * `teams.list` and (for the dialog's League pills) `leagues.list` resolve
+ * `teams.pickerCandidates` and (for the dialog's League pills) `leagues.list` resolve
  * independently, and `teams.findOrCreate` resolves to its own spy.
  */
 
@@ -64,13 +64,13 @@ vi.mock("../../convex/_generated/api", () => ({
   api: {
     teams: {
       getManyByIds: "teams.getManyByIds",
-      list: "teams.list",
-      // NEO-254: once anything is typed the picker asks the SERVER to find the
-      // rows, because a client-side filter over a 500-row window cannot reach
-      // soccer's 8,305 teams in one sport. The fixture answers both refs with
-      // the same rows: finding is the server's job, ranking is the client's,
-      // and these tests are about the ranking.
-      search: "teams.search",
+      // NEO-331: ONE server query finds and ranks, typed or not. The fixture
+      // answers it with `{ team, tier }` pairs built from `currentCandidates`,
+      // matched by name the way the server matches (plus `currentAliasHits`,
+      // the exact-alias leg); the real finding and ordering are tested in
+      // `teams.pickerCandidates.test.ts`, and these tests are about what the
+      // picker does with the rows it is handed.
+      pickerCandidates: "teams.pickerCandidates",
       findOrCreate: "teams.findOrCreate",
     },
     // NEO-236: the New Team dialog this picker opens renders `NewTeamForm`,
@@ -87,6 +87,9 @@ vi.mock("../../convex/_generated/api", () => ({
 let queryCalls: Array<{ ref: string; args: unknown }> = [];
 let currentSelectedRows: unknown;
 let currentCandidates: unknown;
+// NEO-331: the server's exact-alias leg, keyed by the query sent. A row here
+// comes back for that query although its full name does not contain the text.
+let currentAliasHits: Record<string, unknown[]> = {};
 let currentLeagues: unknown;
 // NEO-313: backs SportTagById and the popover's SportSwitch. Most tests never
 // open the switch's list, so an empty pool by default is enough — the
@@ -102,7 +105,22 @@ vi.mock("convex/react", () => ({
     // filtering a stale window is invisible in the rendered output.
     queryCalls.push({ ref, args });
     if (ref === "teams.getManyByIds") return currentSelectedRows;
-    if (ref === "teams.list" || ref === "teams.search") return currentCandidates;
+    if (ref === "teams.pickerCandidates") {
+      if (!Array.isArray(currentCandidates)) return currentCandidates;
+      // The server answers a typed query with its matches only — the picker
+      // trusts that answer and does not re-filter it, so the fixture must not
+      // hand back rows the server would never return.
+      const q = (args as { query: string }).query;
+      const byName = q
+        ? currentCandidates.filter((team) =>
+            nameMatchesQuery(teamFullName(team as TeamRow), q),
+          )
+        : currentCandidates;
+      const byAlias = (currentAliasHits[q] ?? []).filter(
+        (team) => !byName.includes(team),
+      );
+      return [...byName, ...byAlias].map((team) => ({ team, tier: 1 }));
+    }
     if (ref === "leagues.list") return currentLeagues;
     if (ref === "selectorOptions.getSelectorOptions") return currentSports;
     return undefined;
@@ -119,6 +137,10 @@ vi.mock("convex/react", () => ({
 
 import TeamPicker from "./TeamPicker";
 import type { Id } from "../../convex/_generated/dataModel";
+import { nameMatchesQuery } from "../../lib/entities/name-search";
+import { teamFullName } from "../../lib/teams/team-name";
+
+type TeamRow = Parameters<typeof teamFullName>[0];
 
 // NEO-96: pickers take the sport-level selectorOptions ROW ID now, not a
 // display string. These stand in for a seeded sport row.
@@ -183,6 +205,7 @@ describe("TeamPicker", () => {
     vi.clearAllMocks();
     currentSelectedRows = [];
     currentCandidates = [];
+    currentAliasHits = {};
     currentLeagues = [];
     currentSports = [];
     queryCalls = [];
@@ -225,14 +248,14 @@ describe("TeamPicker", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Candidate list (teams.list), filtered/ranked by typed query
+  // Candidate list (teams.pickerCandidates), filtered/ranked by typed query
   // -------------------------------------------------------------------------
 
   // NEO-236: this used to assert a "Bronx" SUFFIX printed after the name.
   // A split row's location is the front of its name now, so the option reads
   // as one composed string and the suffix slot carries the league alone —
   // printing the location twice read as a stutter.
-  it("lists candidates from teams.list as their composed full name, with the league as the only suffix", () => {
+  it("lists candidates from teams.pickerCandidates as their composed full name, with the league as the only suffix", () => {
     currentCandidates = [
       { ...makeTeam("t1", "Yankees", "New York"), league: "MLB" },
     ];
@@ -296,11 +319,16 @@ describe("TeamPicker", () => {
     expect(screen.getByLabelText("Add Boston Red Sox")).toBeTruthy();
   });
 
-  it("ranks prefix matches above substring matches when a query is typed", () => {
+  // NEO-331: the ORDER belongs to the server (tier, alias, prefix, A-Z). The
+  // picker must never re-sort what it is handed: a client alphabet would undo
+  // the tiers.
+  it("renders server order unchanged after filtering", () => {
     currentCandidates = [
-      makeTeam("t1", "Brand Newington Athletics"), // "new" is a substring, not a prefix
-      makeTeam("t2", "Newt City Miners"), // prefix match
-      makeTeam("t3", "New York Yankees"), // prefix match, alphabetically first
+      makeTeam("t1", "Zebra Newcastle"), // tier-1 head, though Z sorts last
+      makeTeam("t2", "Unrelated Club"), // not a match, so the server omits it
+      makeTeam("t3", "Brand Newington Athletics"),
+      makeTeam("t4", "Newt City Miners"),
+      makeTeam("t5", "New York Yankees"),
     ];
     renderPicker();
 
@@ -314,10 +342,165 @@ describe("TeamPicker", () => {
       .filter((el) => el.getAttribute("aria-label")?.startsWith("Add "))
       .map((el) => el.getAttribute("aria-label"));
     expect(options).toEqual([
-      "Add New York Yankees",
-      "Add Newt City Miners",
+      "Add Zebra Newcastle",
       "Add Brand Newington Athletics",
+      "Add Newt City Miners",
+      "Add New York Yankees",
     ]);
+  });
+
+  // NEO-331: `useQuery` answers undefined while each new query (one per
+  // keystroke) loads. The rows already on screen are kept, filtered by the new
+  // text, instead of flashing "Loading…" on every character.
+  it("keeps the last ranked rows on screen while the next answer is loading", () => {
+    currentCandidates = [makeTeam("t1", "Yankees"), makeTeam("t2", "Yellow Jackets")];
+    renderPicker();
+    openPopover();
+    expect(screen.getByLabelText("Add Yankees")).toBeTruthy();
+
+    currentCandidates = undefined; // the next keystroke's answer has not landed
+    fireEvent.change(screen.getByLabelText("Search teams"), { target: { value: "Yank" } });
+
+    expect(screen.getByLabelText("Add Yankees")).toBeTruthy();
+    // Filtered by the CURRENT text: a stale pool shows fewer rows, never wrong ones.
+    expect(screen.queryByLabelText("Add Yellow Jackets")).toBeNull();
+    expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
+  // NEO-331: the server matched the typed query, and part of that match is
+  // the exact-alias leg (NEO-284). An alias hit's full name need not contain
+  // the text — "Aardvarks" finds "Zzz Club" — so a client name filter over
+  // the current answer dropped exactly the row the operator was looking for.
+  it("renders a row the server found by alias although its name lacks the typed text", () => {
+    const zzz = makeTeam("t9", "Zzz Club");
+    currentCandidates = [zzz, makeTeam("t1", "Yankees")];
+    currentAliasHits = { Aardvarks: [zzz] };
+    renderPicker();
+    openPopover();
+
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Aardvarks" },
+    });
+
+    expect(screen.getByLabelText("Add Zzz Club")).toBeTruthy();
+    expect(screen.queryByLabelText("Add Yankees")).toBeNull();
+    expect(screen.queryByText("No matches.")).toBeNull();
+    // The alias hit is a different full name, so it is not "already here":
+    // Create stays on offer and names no existing row.
+    expect(createRow()).not.toBeNull();
+    expect(createRow()!.textContent).not.toContain("Already here:");
+  });
+
+  it("still name-filters HELD alias rows while the next keystroke loads", () => {
+    const zzz = makeTeam("t9", "Zzz Club");
+    currentCandidates = [zzz];
+    currentAliasHits = { Aardvarks: [zzz] };
+    renderPicker();
+    openPopover();
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Aardvarks" },
+    });
+    expect(screen.getByLabelText("Add Zzz Club")).toBeTruthy();
+
+    currentCandidates = undefined; // "Aardvarksx" has not answered yet
+    fireEvent.change(screen.getByLabelText("Search teams"), {
+      target: { value: "Aardvarksx" },
+    });
+
+    // A held row from an earlier query is only shown if it matches the text
+    // by name — fewer rows while loading, never wrong ones.
+    expect(screen.queryByLabelText("Add Zzz Club")).toBeNull();
+    expect(screen.queryByText("Loading…")).toBeNull();
+  });
+
+  it("shows Loading… before the first answer has ever landed", () => {
+    currentCandidates = undefined;
+    renderPicker();
+    openPopover();
+    expect(screen.getByText("Loading…")).toBeTruthy();
+  });
+
+  // NEO-331: held rows filtered to nothing mean "not answered yet", never "no
+  // such team". Showing "No matches." there, and letting Enter open the create
+  // path, opened New Team for a team NB already had whenever an operator typed
+  // its name and pressed Enter before the server answered.
+  describe("while the rows on screen are HELD from an earlier query", () => {
+    it("says nothing rather than 'No matches.' until the current answer lands", () => {
+      currentCandidates = [makeTeam("t1", "Yankees")];
+      const { rerender, onChange } = renderPicker();
+      openPopover();
+
+      currentCandidates = undefined; // "Zzz Unknown" has not answered yet
+      fireEvent.change(screen.getByLabelText("Search teams"), {
+        target: { value: "Zzz Unknown" },
+      });
+      expect(screen.queryByLabelText("Add Yankees")).toBeNull();
+      expect(screen.queryByText("No matches.")).toBeNull();
+      expect(screen.queryByText("Loading…")).toBeNull();
+
+      currentCandidates = [makeTeam("t1", "Yankees")]; // the answer: no match
+      rerender(<TeamPicker value={[]} onChange={onChange} sportId={SPORT_ID} />);
+
+      expect(screen.getByText("No matches.")).toBeTruthy();
+    });
+
+    it("Enter on the create row does not open New Team; the landed answer's match takes the next Enter", () => {
+      currentCandidates = [makeTeam("t1", "Yankees")];
+      const { rerender, onChange } = renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      const input = screen.getByLabelText("Search teams");
+      currentCandidates = undefined; // the server has not answered "Savannah Bananas"
+      fireEvent.change(input, { target: { value: "Savannah Bananas" } });
+      // Nothing held matches, so the only row — and the highlighted one — is
+      // the create row.
+      expect(
+        screen.getByLabelText("New team Savannah Bananas").getAttribute("aria-current"),
+      ).toBe("true");
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(mockFindOrCreate).not.toHaveBeenCalled();
+
+      // The answer lands: the team exists, outside the browse window.
+      currentCandidates = [makeTeam("t1", "Yankees"), makeTeam("t7", "Savannah Bananas")];
+      rerender(<TeamPicker value={[]} onChange={onChange} sportId={SPORT_ID} />);
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      expect(onChange).toHaveBeenCalledWith([tid("t7")]);
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("once the answer lands with no match, Enter on the create row opens New Team", () => {
+      currentCandidates = [makeTeam("t1", "Yankees")];
+      const { rerender, onChange } = renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      const input = screen.getByLabelText("Search teams");
+      currentCandidates = undefined;
+      fireEvent.change(input, { target: { value: "Savannah Bananas" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      currentCandidates = [makeTeam("t1", "Yankees")];
+      rerender(<TeamPicker value={[]} onChange={onChange} sportId={SPORT_ID} />);
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      expect(screen.getByRole("dialog")).toBeTruthy();
+    });
+
+    it("a highlighted held MATCH still takes Enter", () => {
+      currentCandidates = [makeTeam("t1", "Yankees"), makeTeam("t2", "Yellow Jackets")];
+      const { onChange } = renderPicker({ sportId: SPORT_ID });
+      openPopover();
+
+      const input = screen.getByLabelText("Search teams");
+      currentCandidates = undefined; // "Yank" has not answered yet
+      fireEvent.change(input, { target: { value: "Yank" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+
+      expect(onChange).toHaveBeenCalledWith([tid("t1")]);
+    });
   });
 
   it("clicking a candidate adds its id via onChange and clears the query", () => {
@@ -1023,6 +1206,7 @@ describe("TeamPicker — cross-sport search switch (NEO-313)", () => {
     vi.clearAllMocks();
     currentSelectedRows = [];
     currentCandidates = [];
+    currentAliasHits = {};
     currentLeagues = [];
     currentSports = [
       { _id: SPORT_ID, value: "Baseball" },
@@ -1044,7 +1228,7 @@ describe("TeamPicker — cross-sport search switch (NEO-313)", () => {
     );
   }
 
-  it("switches teams.search/list to the picked sport", () => {
+  it("switches teams.pickerCandidates to the picked sport", () => {
     renderPicker({ sportId: SPORT_ID });
     openPopover();
 
@@ -1053,13 +1237,25 @@ describe("TeamPicker — cross-sport search switch (NEO-313)", () => {
       target: { value: "packers" },
     });
 
-    const search = queryCalls.filter((c) => c.ref === "teams.search");
-    expect(search[search.length - 1].args).toMatchObject({
+    const asks = queryCalls.filter((c) => c.ref === "teams.pickerCandidates");
+    expect(asks[asks.length - 1].args).toMatchObject({
       query: "packers",
       sportId: OTHER_SPORT_ID,
     });
-    const list = queryCalls.filter((c) => c.ref === "teams.list");
-    expect(list[list.length - 1].args).toMatchObject({ sportId: OTHER_SPORT_ID });
+  });
+
+  it("keeps the set context through a cross-sport switch (the server decides what it means)", () => {
+    const CONTEXT = "selopt-set-1" as unknown as Id<"selectorOptions">;
+    renderPicker({ sportId: SPORT_ID, contextOptionId: CONTEXT });
+    openPopover();
+
+    switchSearchSport("Baseball", "Football");
+
+    const asks = queryCalls.filter((c) => c.ref === "teams.pickerCandidates");
+    expect(asks[asks.length - 1].args).toMatchObject({
+      sportId: OTHER_SPORT_ID,
+      contextOptionId: CONTEXT,
+    });
   });
 
   it("opens the New Team dialog, and creates, on the picked sport rather than the set's", async () => {
@@ -1078,6 +1274,19 @@ describe("TeamPicker — cross-sport search switch (NEO-313)", () => {
         sportId: OTHER_SPORT_ID,
       });
     });
+  });
+
+  it("drops the held rows when the sport switches — they are wrong rows, not stale ones", () => {
+    currentCandidates = [makeTeam("t1", "Yankees")];
+    renderPicker({ sportId: SPORT_ID });
+    openPopover();
+    expect(screen.getByLabelText("Add Yankees")).toBeTruthy();
+
+    currentCandidates = undefined;
+    switchSearchSport("Baseball", "Football");
+
+    expect(screen.queryByLabelText("Add Yankees")).toBeNull();
+    expect(screen.getByText("Loading…")).toBeTruthy();
   });
 
   it("resets to the set's sport the next time the popover opens", () => {
@@ -1118,34 +1327,54 @@ describe("TeamPicker — finding past the list window", () => {
     vi.clearAllMocks();
     currentSelectedRows = [];
     currentCandidates = [];
+    currentAliasHits = {};
     currentLeagues = [];
     currentSports = [];
     queryCalls = [];
   });
 
-  it("asks the server once anything is typed, scoped to the sport", () => {
+  it("asks the server once anything is typed, scoped to the sport and capped", () => {
     renderPicker();
     openPopover();
     fireEvent.change(screen.getByLabelText("Search teams"), {
       target: { value: "yank" },
     });
 
-    const search = queryCalls.filter((c) => c.ref === "teams.search");
-    expect(search.length).toBeGreaterThan(0);
-    expect(search[search.length - 1].args).toMatchObject({
+    const asks = queryCalls.filter((c) => c.ref === "teams.pickerCandidates");
+    expect(asks[asks.length - 1].args).toMatchObject({
       query: "yank",
+      limit: 25,
       sportId: SPORT_ID,
     });
   });
 
-  it("does NOT search before anything is typed", () => {
-    // A typeahead that queries before you type is noise, and the browse pool
-    // already covers the empty state.
+  it("browses with an empty query and no limit, so the server's own browse window applies", () => {
     renderPicker();
     openPopover();
+
+    const asks = queryCalls.filter((c) => c.ref === "teams.pickerCandidates");
+    expect(asks[asks.length - 1].args).toMatchObject({
+      query: "",
+      limit: undefined,
+      sportId: SPORT_ID,
+    });
+  });
+
+  it("sends the set context it was given, and none when it was given none", () => {
+    const CONTEXT = "selopt-set-1" as unknown as Id<"selectorOptions">;
+    const { unmount } = renderPicker({ contextOptionId: CONTEXT });
     expect(
-      queryCalls.filter((c) => c.ref === "teams.search" && c.args !== "skip"),
-    ).toHaveLength(0);
+      (queryCalls.filter((c) => c.ref === "teams.pickerCandidates").at(-1)
+        ?.args as { contextOptionId?: string }).contextOptionId,
+    ).toBe(CONTEXT);
+    unmount();
+
+    queryCalls = [];
+    renderPicker();
+    expect(
+      (queryCalls.filter((c) => c.ref === "teams.pickerCandidates").at(-1)
+        ?.args as { contextOptionId?: string }).contextOptionId,
+    ).toBeUndefined();
   });
 });
 

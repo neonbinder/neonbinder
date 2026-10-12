@@ -1,0 +1,59 @@
+appId: com.neonbinder.web
+name: "Utility — answer the wizard's presented New Team / New League step as a create (a league gets its required level first)"
+tags:
+  - util
+---
+# NEO-331 — A NEW LEAGUE CANNOT BE ADDED WITHOUT A LEVEL, AND NOTHING IS
+# PRE-PRESSED. Jason, 2026-10-10: "force a choice". The New League step's
+# level pills (`LevelGroup`, shared with League Management and the picker's
+# league form) open with none checked, and the step's primary
+# `Add as New League` stays held (`aria-disabled`; a press only moves focus to
+# the pills) until one is. Before NEO-331 "Other" was pressed by default, so a
+# drain answered a league step with the same single tap as a team step; now a
+# drain that taps only the primary parks on the first league step and spins
+# its `times` budget, and its adjudicating wait fails by name.
+#
+# THE CALLER OWNS THE GUARD. Every drain already wraps this in
+# `runFlow: when: visible: id: "^Add as New (Team|League)$"` (ONE guard, on
+# the pinned footer button: see the cost note at that guard in
+# `util-wizard-walk-to-player-row-creating-teams.yaml`). This util only
+# decides WHICH kind of step that button belongs to, and answers it.
+#
+# WHICH STEP, READ OFF THE SAME BUTTON. `copyTextFrom` on the button the guard
+# just saw, then a SCRIPT condition (`when: true:`), which costs nothing when
+# false. Deliberately NOT a second `when: visible` on the "Other" pill: a
+# visibility guard that misses on every team step is the expensive shape the
+# drains were rebuilt to avoid (a missing guard waits out its visibility
+# timeout; a present element's copy is one hierarchy read).
+#
+# `optional: true` on all three, for the guard/tap race the callers already
+# document: the wizard settles rows on its own (NEO-221's armed bulk), so the
+# button the guard saw can be gone ~0.3s later. A tolerated miss here means
+# the row was answered, or that `maestro.copiedText` still holds the previous
+# iteration's label — the worst that costs is one optional "Other" lookup
+# (7000) on a team step, or a held tap on a league step that the next
+# iteration answers properly. Neither can buy a green: each caller's hard
+# post-condition (`.*Confirm & Save.*`, which the wizard renders only when
+# every row is decided; or a presented player row, which `nextUndecided`
+# withholds while any settled team or league row is undecided) adjudicates.
+#
+# "Other" — the level that claims nothing. A drain does not know whether a
+# league Wikidata named is a major, a minor or a college conference, and
+# "Other" is exactly the answer the step pre-pressed before NEO-331, so the
+# data a drain leaves is what it always left. A flow that needs a SPECIFIC
+# level (the picker ranking's minor league) taps it itself. The pill is
+# matched by its visible text, a full match: nothing else in the wizard reads
+# exactly "Other".
+- copyTextFrom:
+    id: "^Add as New (Team|League)$"
+    optional: true
+- runFlow:
+    when:
+      true: '${maestro.copiedText === "Add as New League"}'
+    commands:
+      - tapOn:
+          text: "Other"
+          optional: true
+- tapOn:
+    id: "^Add as New (Team|League)$"
+    optional: true

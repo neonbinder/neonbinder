@@ -99,7 +99,9 @@
  *     `ambiguous` with `nameHeldAsAliasBy`, and settles once the alias is
  *     removed from the holder or the answer becomes `adopt: <holder id>`.
  *  5. **Adopt** gap-fills ABSENT fields only: `leagueId` (clearing the legacy
- *     `league` string), `yearsActive`, `externalIds.wikidataId`; aliases are
+ *     `league` string — and only when the dataset row NAMES a league; a row
+ *     with none leaves it absent, NEO-331), `yearsActive`,
+ *     `externalIds.wikidataId`; aliases are
  *     unioned. A different `wikidataId` already on the row is reported as
  *     `wikidataMismatch` and left alone — it is the one signal that the match
  *     picked the wrong program.
@@ -138,10 +140,10 @@
  *
  * ## Nothing here schedules enrichment — including through its helpers
  *
- * `findOrCreateLeague`'s insert branch schedules a league lookup, and
- * `resolveDefaultLeagueId` reaches it on the fallback path a team with no
- * league takes. Both accept `skipEnrichment` and every call in this file
- * passes it. Teams are not enriched at creation anywhere (NEO-254). Asserted
+ * `findOrCreateLeague`'s insert branch schedules a league lookup; it accepts
+ * `skipEnrichment` and every call in this file passes it. (A team row with no
+ * league used to reach it through `resolveDefaultLeagueId`; since NEO-331 such
+ * a row gets no league at all, so that path is gone.) Teams are not enriched at creation anywhere (NEO-254). Asserted
  * in `bulkLoad.test.ts` off `_scheduled_functions`, because a comment is
  * exactly the wrong place for this to live.
  *
@@ -174,13 +176,11 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
-  defaultLeagueNameFor,
   findLeagueByName,
   findOrCreateLeague,
   normalizeAliasList as normalizeLeagueAliasList,
   normalizeLeagueName,
   requireValidLeagueAbbreviation,
-  resolveDefaultLeagueId,
 } from "./leagues";
 import type { LeagueLevel } from "./leagues";
 // NEO-284 — the loader is a second door into `teams.aliases`, so it uses the
@@ -298,13 +298,6 @@ const MIN_YEAR = 1800;
 /** How many `nearExisting` rows a create reports, and how many the search feeds it. */
 const NEAR_EXISTING_SEARCH_CANDIDATES = 10;
 const NEAR_EXISTING_LIMIT = 5;
-
-/**
- * The per-chunk league cache's slot for "no league named, use the sport
- * default". Prefixed so it cannot collide with `name:<normalised>`, which is
- * how every real league name is keyed.
- */
-const DEFAULT_LEAGUE_CACHE_KEY = "default:";
 
 // ---------------------------------------------------------------------------
 // The gate
@@ -646,7 +639,9 @@ export const upsertLeagues = internalMutation({
       v.object({
         name: v.string(),
         abbreviation: v.optional(v.string()),
-        level: v.optional(levelValidator),
+        // NEO-331: required — a league row cannot exist without a level, and
+        // a curated dataset is exactly the caller that knows it.
+        level: levelValidator,
         yearsActive: v.optional(yearsValidator),
         aliases: v.optional(v.array(v.string())),
         wikidataId: v.optional(v.string()),
@@ -696,7 +691,7 @@ export const upsertLeagues = internalMutation({
         sportId,
         // See the header: no call in this file queues a Wikidata lookup.
         skipEnrichment: true,
-        ...(row.level ? { level: row.level as LeagueLevel } : {}),
+        level: row.level as LeagueLevel,
         ...(aliases.length > 0 ? { aliases } : {}),
         ...(row.yearsActive ? { yearsActive: row.yearsActive } : {}),
         ...(wikidataId ? { wikidataId } : {}),
@@ -885,49 +880,46 @@ async function loadTeams(
   // is fifty teams in one or two leagues, and `findLeagueByName`'s alias leg
   // is a `by_sport_id` collect — an array member cannot be indexed — so
   // resolving per row would pay that scan fifty times to reach one id. Keyed
-  // on the normalised name, and on a reserved key for the sport-default
-  // fallback, so the two paths share one cache without colliding with a real
-  // league name. The cache doubles as the `leagues` summary on the result.
+  // on the normalised name. The cache doubles as the `leagues` summary on the
+  // result.
   const leagueCache = new Map<string, { name: string; id: Id<"leagues"> | null }>();
   const resolveLeagueId = async (
     leagueName: string | undefined,
     key: string,
   ): Promise<Id<"leagues"> | undefined> => {
-    const cacheKey = leagueName
-      ? `name:${normalizeLeagueName(leagueName)}`
-      : DEFAULT_LEAGUE_CACHE_KEY;
+    /*
+     * NEO-331 — a row that names NO league gets no league. Jason, 2026-10-10:
+     * "An unanswered League stays blank, same as No league. No team lands
+     * under MLB without someone saying so." Until then a league-less dataset
+     * row fell back to the sport's configured default (creating it on first
+     * use), on both the create and the adopt gap-fill — so a minor, indie or
+     * college club the dataset said nothing about was filed under the top
+     * flight. Free: no read, no cache entry, no line in the `leagues` summary.
+     */
+    if (!leagueName) return undefined;
+    const cacheKey = `name:${normalizeLeagueName(leagueName)}`;
     if (!leagueCache.has(cacheKey)) {
       // A cache MISS is the only time this costs anything, and it happens once
       // or twice per chunk. `findLeagueByName` is a name read plus the alias
-      // leg's `by_sport_id` collect; `findOrCreateLeague` adds its insert.
+      // leg's `by_sport_id` collect; charged at 3, the price the budget's
+      // arithmetic was set with.
       ops += 3;
-      if (leagueName) {
-        const name = boundedName(leagueName, "A league name", key);
-        const id = mutationCtx
-          ? await findOrCreateLeague(mutationCtx, {
-              name,
-              sportId,
-              // See the header: the helper's insert branch schedules a
-              // Wikidata lookup, and a bulk write must not queue pooled
-              // network work as a side effect.
-              skipEnrichment: true,
-            })
-          : ((await findLeagueByName(ctx, { name, sportId }))?._id ?? null);
-        leagueCache.set(cacheKey, { name, id });
-      } else {
-        // The sport default: the same name `resolveDefaultLeagueId` would
-        // resolve, read without the create when this is a dry run.
-        const configured = await defaultLeagueNameFor(ctx, sportId);
-        const name = configured?.name ?? "(sport default)";
-        const id = !configured
-          ? null
-          : mutationCtx
-            ? ((await resolveDefaultLeagueId(mutationCtx, sportId, {
-                skipEnrichment: true,
-              })) ?? null)
-            : ((await findLeagueByName(ctx, { name, sportId }))?._id ?? null);
-        leagueCache.set(cacheKey, { name, id });
+      const name = boundedName(leagueName, "A league name", key);
+      // NEO-331: FIND-ONLY. A team row names its league by text, which says
+      // nothing about the league's level — and a league row now requires
+      // one. Leagues are loaded first, by `upsertLeagues`, from a dataset
+      // that carries its own level; a team naming a league that run did not
+      // load is a dataset error. The dry run reports it as `id: null`; the
+      // write run refuses the whole chunk (a thrown mutation writes
+      // nothing), naming the league so the operator can fix the dataset.
+      const id = (await findLeagueByName(ctx, { name, sportId }))?._id ?? null;
+      if (id === null && mutationCtx) {
+        throw new ConvexError(
+          `No league "${name}" in this sport on this deployment (team "${key}"). ` +
+            `Load it with upsertLeagues first — teams never create leagues.`,
+        );
       }
+      leagueCache.set(cacheKey, { name, id });
     }
     return leagueCache.get(cacheKey)?.id ?? undefined;
   };

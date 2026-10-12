@@ -129,6 +129,7 @@ async function insertBareTeam(
 ) {
   return t.run(async (ctx) => {
     const leagueId = await ctx.db.insert("leagues", {
+      level: "major" as const,
       name: "Major League Baseball",
       nameNormalized: "baseball league major",
       sportId,
@@ -430,7 +431,7 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
 
     await t
       .withIdentity(ADMIN)
-      .mutation(api.leagues.createByAdmin, { name: "Texas League", sportId });
+      .mutation(api.leagues.createByAdmin, { name: "Texas League", level: "minor", sportId });
 
     expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
   });
@@ -444,6 +445,7 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
     const asAdmin = t.withIdentity(ADMIN);
     const first = await asAdmin.mutation(api.leagues.createByAdmin, {
       name: "Texas League",
+      level: "minor",
       sportId,
     });
     expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
@@ -452,6 +454,7 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
     // this proves the guard is the row lookup and not string equality.
     const second = await asAdmin.mutation(api.leagues.createByAdmin, {
       name: "  texas league ",
+      level: "minor",
       sportId,
     });
 
@@ -460,17 +463,16 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
     expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
   });
 
-  test("creating the first team of a sport enqueues the DEFAULT league exactly once", async () => {
-    // The path that actually creates most league rows in production:
-    // `teams.findOrCreate` → `resolveDefaultLeagueId` → `findOrCreateLeague`.
-    // The second team reuses the league, so the league is never enqueued twice.
+  test("creating teams with no league answer mints no default league, so enqueues none", async () => {
+    // Was "creating the first team of a sport enqueues the DEFAULT league
+    // exactly once": `teams.findOrCreate` → `resolveDefaultLeagueId` →
+    // `findOrCreateLeague`. NEO-331 removed that fallback (Jason, 2026-10-10:
+    // "No team lands under MLB without someone saying so"), so an unanswered
+    // team creates no league row and there is nothing to enrich.
     //
-    // NEO-254: the `teamIds` counts here used to be 1 and 2 alongside these.
-    // Team enrichment no longer fires at creation, so they are 0 — and they
-    // stay in this test deliberately rather than moving out of it, because
-    // this is the case that could most easily restore one by accident: the
-    // team path and the league path run in the same mutation, and the league
-    // half must keep firing while the team half does not.
+    // NEO-254: the `teamIds` counts stay pinned at 0 here deliberately — this
+    // is the team-creation mutation, the case that could most easily restore
+    // a team enqueue by accident.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const asAdmin = t.withIdentity({ subject: "admin_neo240", role: "admin" });
@@ -480,14 +482,15 @@ describe("findOrCreateLeague enqueues enrichment on INSERT only (NEO-240)", () =
       sportId,
     });
     expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
-    expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
+    expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(0);
 
     await asAdmin.mutation(api.teams.findOrCreate, {
       name: "Boston Red Sox",
       sportId,
     });
     expect(await scheduledEnrichmentCount(t, "teamIds")).toBe(0);
-    expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(1);
+    expect(await scheduledEnrichmentCount(t, "leagueIds")).toBe(0);
+    expect(await t.run(async (ctx) => ctx.db.query("leagues").collect())).toEqual([]);
   });
 });
 
@@ -608,11 +611,11 @@ describe("enrichPlayer — creation-only (NEO-203)", () => {
 /**
  * How many `enqueueEnrichment` calls were scheduled FOR ONE KIND of row.
  *
- * NEO-240 made the kind matter. `leagues.findOrCreateLeague` now schedules its
- * own enrichment on ITS insert branch, and every team-creation path runs
- * through `resolveDefaultLeagueId` — so creating the first team of a sport
- * schedules two enqueues, one carrying `teamIds` and one carrying `leagueIds`,
- * and a bare count can no longer say which contract it is measuring. Reading
+ * NEO-240 made the kind matter. `leagues.findOrCreateLeague` schedules its
+ * own enrichment on ITS insert branch, and until NEO-331 every team-creation
+ * path ran through `resolveDefaultLeagueId` — so creating the first team of a
+ * sport scheduled two enqueues, one carrying `teamIds` and one carrying
+ * `leagueIds`, and a bare count could not say which contract it was measuring. Reading
  * the scheduled ARGS keeps each assertion about the path it names, and makes
  * the league cases below assertable in the same terms.
  */
@@ -743,7 +746,7 @@ describe("no team-creation path enqueues enrichment (NEO-254)", () => {
   test("a sportId that is not a SPORT row is refused, so no orphan team is created", async () => {
     // `v.id("selectorOptions")` proves the id is in that table, not that it
     // points at a sport. A team hung off a variantType row is unreachable by
-    // every query that matters (`teams.list` and `findByNameAndSport` key on
+    // every query that matters (`teams.search` and `findByNameAndSport` key on
     // the sport row id) — the same unfindable-row class the pre-NEO-96
     // `sport ?? ""` fallback produced.
     const t = convexTest(schema, modules);
@@ -877,7 +880,7 @@ describe("no team-creation path enqueues enrichment (NEO-254)", () => {
     const teamsSrc = readFileSync(join(__dirname, "teams.ts"), "utf8");
     const findOrCreate = teamsSrc.slice(
       teamsSrc.indexOf("export const findOrCreate"),
-      teamsSrc.indexOf("export const list"),
+      teamsSrc.indexOf("export const get = query"),
     );
     expect(findOrCreate).not.toContain("internal.wikidataPool.enqueueEnrichment");
 

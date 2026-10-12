@@ -1667,6 +1667,9 @@ function SetTeamRow({
         disabled={busy || inFlight}
         labels={SET_TEAM_PICKER_LABELS}
         ariaDescribedBy={hintId}
+        // NEO-331: the row being edited is the set context — its league and
+        // year order the candidates.
+        contextOptionId={selectorOptionId}
       />
       {inFlight && (
         // Next to the control it describes, not only in the toast: this is
