@@ -33,9 +33,9 @@ tags:
 #         exists and the list still reads "1 matches";
 #     (f) "Create anyway" with a year nobody carries FORKS: "Added <name>." and
 #         the list grows to "2 matches" holding BOTH "b. 1960" and "b. 1975" —
-#         which is the state the review wizard's "Same name, different people"
-#         panel exists for, and which nothing in the product could produce from
-#         the UI before this ticket.
+#         which is the state the review wizard's same-name pick step ("Which
+#         <name> is this?", NEO-332) exists for, and which nothing in the
+#         product could produce from the UI before NEO-254.
 #
 # ── WHAT THIS FLOW DELIBERATELY DOES NOT PROVE ──────────────────────────────
 # The PlayerPicker's refusal. Once two rows share the name, a picker's
@@ -54,8 +54,15 @@ tags:
 #
 # R3 — DEDUP: `player-management-add-and-career-history.yaml` owns hand-adding a
 #   player and its career history; it never types a birth year, never repeats a
-#   name and never touches the near-match hierarchy. Nothing else in the suite
-#   goes near `/admin/players`.
+#   name and never touches the near-match hierarchy.
+#
+#   THE WIZARD SIDE of the state STEP 6 makes (two people, one name) is
+#   `set-selector/checklist-wizard-same-name-pick-step.yaml` (NEO-332): it
+#   forks two players under a real checklist name the same way, fetches that
+#   checklist, and proves the review wizard's pick step ("Which <name> is
+#   this?", Create new, Back to the list, the link read-back). This flow stays
+#   the owner of the fork itself; that one never asserts the bounds or the
+#   adopt/fork split.
 #
 # R4 — the entry URL is the whole setup. No in-body login, no credential step.
 #
@@ -449,8 +456,9 @@ tags:
 # pressed the button that says "anyway" — so it INSERTS rather than adopting.
 #
 # This is the only way in the product to reach two same-name players from the
-# UI, and therefore the only thing that makes the review wizard's "Same name,
-# different people" panel reachable at all outside the terminal-only preload.
+# UI, and therefore the only thing that makes the review wizard's same-name
+# pick step reachable at all outside the terminal-only preload —
+# checklist-wizard-same-name-pick-step uses exactly this to reach it.
 # ============================================================
 
 - scrollUntilVisible:

@@ -84,6 +84,15 @@ above the insertion point goes up; a `Ready (N of M)` gate then fails on a
 pair that landed. Gate on a Pending header (`BSC (0 of M)`) and read Ready
 after a re-pin to the top.
 
+**A dialog that gets SHORTER turns a safe drag into a window scroll.** A drag
+chains whenever the body under the finger cannot move that way, so a product
+change that shrinks a step (NEO-332: the wizard's Decided list stopped latching
+open and collapses past five) made one pin-to-top drag move the page behind the
+wizard ~470px, and the post-Discard "Fetch cancelled" notice ended below the
+fold with no flow change (CI 38068520584; reproduced locally: first poll not
+found, one scroll found it). After any swipe in a dialog, read page content with
+`scrollUntilVisible`, never with a bare wait.
+
 **After a fixed-portal dialog closes, the page is back at its TOP** (the
 column it was opened from is there, but a button under a 400px column list is
 below the fold). The post-close positive is a `scrollUntilVisible`, not an

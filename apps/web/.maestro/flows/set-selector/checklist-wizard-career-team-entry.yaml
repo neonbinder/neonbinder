@@ -314,6 +314,14 @@ tags:
 # WINDOW. Measured locally 2026-09-25: two drags left the page behind the
 # wizard at scroll 0, and after Discard the "Fetch cancelled" notice was below
 # the fold.
+# One drag can chain too, and nothing here can stop it: when the step under
+# the finger has NO room to scroll up (a short body already at its top), the
+# whole drag moves the page behind the fixed dialog. Until NEO-332 every step
+# here was tall, because the Decided list latched open at ~30 rows; now it
+# collapses past five, the New League step is short, and CI run 38068520584
+# finished with the page ~470px (one drag) above where the drill left it. The
+# drags themselves are harmless to the dialog. STEP 7 therefore reads the
+# notice with a scroll and assumes nothing about where the page was left.
 - swipe:
     start: "18%, 20%"
     end: "18%, 95%"
@@ -561,5 +569,16 @@ tags:
     text: "Discard [0-9]+ decisions?.*"
 - tapOn:
     text: "Discard"
-- extendedWaitUntil:
-    visible: "Fetch cancelled — no cards saved."
+# The notice renders in the card checklist on the PAGE behind the wizard, and
+# this flow's touch drags may have moved that page (see the pin-to-top note in
+# STEP 4), so it is read with a scroll rather than where the drill left it.
+# DOWN is the direction: the card checklist is the LAST panel on this short
+# page, so it is on screen at the page's bottom and below the fold anywhere
+# above it, and a chained drag moves the page somewhere between the two.
+# CI run 38068520584: the wizard closed (only a resolved
+# `cancelBatch` closes it, and the same call sets this notice) with the page at
+# scroll ~118, where the checklist starts below the 629px fold.
+- scrollUntilVisible:
+    element:
+      text: "Fetch cancelled — no cards saved."
+    timeout: 7000

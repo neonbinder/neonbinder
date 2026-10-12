@@ -169,6 +169,41 @@ type PendingReview = {
 };
 
 /**
+ * NEO-332 — the sync banner's count of names waiting in the review wizard.
+ *
+ * `ambiguousPlayers` is the subset of `unknownPlayers` that is not new at all:
+ * two or more players are already on file under the name, so the operator's
+ * job is to pick one, and calling them "new players" told them the opposite.
+ * They are taken out of the "new" count and get their own tail.
+ *
+ * With nothing ambiguous the sentence is byte-for-byte what it has always been
+ * — zeros included ("1 new players + 0 new teams need confirmation") — so
+ * every matcher written against it still holds. With something ambiguous the
+ * zero parts are left out, and a run whose only open names are ambiguous reads
+ * as the tail alone ("1 to pick from the roster").
+ */
+export const entityConfirmationMessage = (
+  unknownPlayers: readonly string[],
+  unknownTeams: readonly string[],
+  ambiguousPlayers: readonly string[] = [],
+): string => {
+  const ambiguous = new Set(ambiguousPlayers);
+  const ambiguousCount = unknownPlayers.filter((n) => ambiguous.has(n)).length;
+  if (ambiguousCount === 0) {
+    return `${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation`;
+  }
+  const newPlayers = unknownPlayers.length - ambiguousCount;
+  const newParts = [
+    newPlayers > 0 ? `${newPlayers} new players` : null,
+    unknownTeams.length > 0 ? `${unknownTeams.length} new teams` : null,
+  ].filter((part): part is string => part !== null);
+  const tail = `${ambiguousCount} to pick from the roster`;
+  return newParts.length > 0
+    ? `${newParts.join(" + ")} need confirmation · ${tail}`
+    : tail;
+};
+
+/**
  * NEO-255 — what a sync says when exactly one marketplace is attached.
  *
  * The Match Cards dialog exists to line the same card up across two
@@ -1311,11 +1346,12 @@ export default function CardChecklist({
     const kept = cards
       .map((card, index) => ({ card, index }))
       .filter(({ index }) => !heldBack.has(index));
-    const { unknownPlayers, unknownTeams, batchId } = await resolveEntities({
-      selectorOptionId: variantId,
-      sportId,
-      cards: kept.map(({ card }) => card),
-    });
+    const { unknownPlayers, unknownTeams, ambiguousPlayers, batchId } =
+      await resolveEntities({
+        selectorOptionId: variantId,
+        sportId,
+        cards: kept.map(({ card }) => card),
+      });
     const preview: FetchPreview = {
       sportId,
       batchId,
@@ -1343,7 +1379,11 @@ export default function CardChecklist({
       setSyncMessage(
         [
           soloKeptRef.current,
-          `${unknownPlayers.length} new players + ${unknownTeams.length} new teams need confirmation`,
+          entityConfirmationMessage(
+            unknownPlayers,
+            unknownTeams,
+            ambiguousPlayers,
+          ),
         ]
           .filter(Boolean)
           .join(" "),
