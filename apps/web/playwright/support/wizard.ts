@@ -84,6 +84,22 @@ export async function discardResumedReviewBatch(page: Page, env: FlowEnv): Promi
   await expect(reviewedLine(page)).toHaveText(/^[0-9]+ of [1-9][0-9]* reviewed/);
 }
 
+/**
+ * The decided-names history of the open wizard, opened. The product collapses
+ * it once more than five names are decided (a batch's lookups settle dozens of
+ * rows on their own), so a row decided a moment ago is in the DOM but hidden.
+ * Opening it is the user's own step; the hard assert after it is the proof.
+ */
+export async function openDecidedList(page: Page): Promise<Locator> {
+  const wizard = reviewWizard(page);
+  const names = wizard.getByRole("list", { name: "Decided names" });
+  const summary = wizard.getByText(/^Decided \([0-9]+\)$/);
+  await expect(summary).toBeVisible();
+  if (!(await names.isVisible())) await summary.click();
+  await expect(names).toBeVisible();
+  return names;
+}
+
 /** The "not a person" skip: its presence means the wizard is on a player row. */
 export function personSkip(page: Page): Locator {
   return reviewWizard(page).getByRole("button", { name: /^Skip .* — not a person$/ });

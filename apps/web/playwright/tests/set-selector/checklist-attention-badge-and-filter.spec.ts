@@ -13,6 +13,9 @@ async function addNewTeam(page: Page, name: string) {
   // The picker is keyboard-first: Enter on a name no team has opens "New team".
   // (Its dropdown can sit below the fold of the card form, so no click here.)
   await expect(page.getByRole("button", { name: `New team ${name}` })).toBeVisible();
+  // NEO-331: Enter on the create row is dropped while the rows are HELD from an
+  // earlier query; "No matches." is the verdict for THIS query, so wait for it.
+  await expect(page.getByText("No matches.")).toBeVisible();
   await search.press("Enter");
   const dialog = page.getByRole("dialog", { name: `New team: ${name}` });
   await expect(dialog).toBeVisible();

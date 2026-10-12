@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-skip-not-a-person.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
-import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, personSkip, reviewWizard, walkToPlayerRow } from "../../support/wizard";
+import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, openDecidedList, personSkip, reviewWizard, walkToPlayerRow } from "../../support/wizard";
 
 test(
   "Entity review — Skip marks a name as not a person, and the footer skip decides every row that is left, lookups included",
@@ -20,9 +20,13 @@ test(
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, player row" });
 
     // Skipping marks the name "not a person" and records a decision.
+    const playerName = ((await wizard.getByRole("heading", { level: 3 }).textContent()) ?? "").trim();
     await personSkip(page).click();
-    await expect(wizard.getByText("Skipped").first()).toBeVisible();
-    await expect(wizard.getByText(/Decided \([0-9]+\)/)).toBeVisible();
+    // The history collapses past five decided names, so open it, then find THIS name.
+    const decidedNames = await openDecidedList(page);
+    await expect(
+      decidedNames.getByRole("listitem").filter({ hasText: playerName }).filter({ hasText: "Skipped" }),
+    ).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, name skipped" });
 
     // The footer skip decides every row that is left, lookups included.

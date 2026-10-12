@@ -29,7 +29,7 @@ test(
     // ── FIXTURE: two Baseball players named Shuya Yamada, b. 1851 and b. 1852 ──
     await emptyListAndPickSport(page, "Baseball");
     const newName = page.getByRole("textbox", { name: "New player name" });
-    const birthYear = page.getByRole("textbox", { name: /^Birth year \(optional\)/ });
+    const birthYear = page.getByRole("spinbutton", { name: /^Birth year \(optional\)/ });
     // A re-run (retry, local re-run) finds a fork already on file: creation is
     // then the demoted "anyway" control and the result reads "already exists".
     // Either outcome is a row on file; the hard proof is the list read below.

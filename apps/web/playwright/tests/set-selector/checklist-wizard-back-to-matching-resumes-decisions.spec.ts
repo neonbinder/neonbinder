@@ -1,7 +1,8 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-back-to-matching-resumes-decisions.yaml (Maestro suite retired in NEO-341; see git history)
+import type { Locator } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
-import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, reviewWizard, reviewedLine, walkToPlayerRow } from "../../support/wizard";
+import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, openDecidedList, reviewWizard, reviewedLine, walkToPlayerRow } from "../../support/wizard";
 
 test(
   "Entity review — Back to matching leaves the wizard without discarding, and re-confirming comes back to the same review with the decision still on it",
@@ -18,10 +19,13 @@ test(
     if (!env.SL_PAUSED) {
       // Decide one player, then go back to the pairing step.
       await walkToPlayerRow(page);
+      const playerName = ((await wizard.getByRole("heading", { level: 3 }).textContent()) ?? "").trim();
       await wizard.getByRole("button", { name: "Add as New Player" }).click();
-      await expect(wizard.getByText("Added as new").first()).toBeVisible();
+      // The history collapses past five decided names, so open it, then find THIS name.
+      const added = (names: Locator) =>
+        names.getByRole("listitem").filter({ hasText: playerName }).filter({ hasText: "Added as new" });
+      await expect(added(await openDecidedList(page))).toBeVisible();
       const decided = wizard.getByText(/^Decided \([0-9]+\)$/);
-      await expect(decided).toBeVisible();
       const decidedBefore = (await decided.textContent()) ?? "";
       await expectAccessible(page, { within: wizard, label: "Entity review wizard, player decided" });
 
@@ -40,8 +44,7 @@ test(
       await expect(decided).toHaveText(decidedBefore);
       await expectAccessible(page, { within: wizard, label: "Entity review wizard, resumed with decision" });
       // Open the decided list: the player added as new is still on it.
-      await decided.click();
-      await expect(wizard.getByText("Added as new").first()).toBeVisible();
+      await expect(added(await openDecidedList(page))).toBeVisible();
 
       await cancelAndDiscard(page);
     } else {

@@ -2,7 +2,7 @@
 // Cancels out at the end and discards, so nothing is committed.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
-import { discardResumedReviewBatch, fetchChecklistToWizard, reviewedLine, reviewWizard, walkToPlayerRow } from "../../support/wizard";
+import { discardResumedReviewBatch, fetchChecklistToWizard, openDecidedList, reviewedLine, reviewWizard, walkToPlayerRow } from "../../support/wizard";
 
 test(
   "Entity review — a player row takes hand-entered career teams, refuses an entry with no from-year, and carries the staged history into the Add as New decision",
@@ -98,8 +98,10 @@ test(
     // Add as New Player carries the staged history into the decision.
     const playerName = ((await wizard.getByRole("heading", { level: 3 }).textContent()) ?? "").trim();
     await wizard.getByRole("button", { name: "Add as New Player" }).click();
+    // The history collapses past five decided names, so open it first.
+    const decidedNames = await openDecidedList(page);
     await expect(
-      wizard.getByRole("listitem").filter({ hasText: playerName }).filter({ hasText: "Added as new" }),
+      decidedNames.getByRole("listitem").filter({ hasText: playerName }).filter({ hasText: "Added as new" }),
     ).toBeVisible();
     await expect(wizard.getByText(new RegExp(`${probe} \\(2001.2005\\)`))).toBeHidden();
 

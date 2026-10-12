@@ -57,6 +57,10 @@ test(
       await expect(find).toBeVisible();
       await find.fill(team.short);
       await expect(page.getByRole("button", { name: `New team ${team.short}` })).toBeVisible();
+      // NEO-331: the create row shows while the rows are still HELD from an
+      // earlier query, and Enter on it is dropped then; "No matches." is the
+      // picker's verdict for THIS query, so wait for it before pressing.
+      await expect(page.getByText("No matches.")).toBeVisible();
       await find.press("Enter");
       const dialog = page.getByRole("dialog", { name: `New team: ${team.short}` });
       await expect(dialog).toBeVisible();
