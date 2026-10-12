@@ -63,7 +63,7 @@ tags:
 # Wait for the COUNTER, not the "Player Management" heading — the heading paints
 # while the list is still loading, and the filter would swallow keystrokes then.
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 # ── The minted name's single search token (SET-REGISTRY.md, "A name typed into
@@ -422,11 +422,11 @@ tags:
 # ── TEAM A — the long stint, and the colour the designer must default to ────
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 - inputText: "SLA${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
-    visible: "1 of .* teams.*"
+    visible: "1 match( . [0-9,]+ need attention)?"
     timeout: 15000
 # Anchored below the counter: maestro-web reports an input's value as its text,
 # so the filter box now answers to this same string, and it sits above the list.
@@ -434,7 +434,7 @@ tags:
 - tapOn:
     text: "SLA${output.ATTEMPT_TOKEN}"
     below:
-      text: "1 of .* teams.*"
+      text: "1 match( . [0-9,]+ need attention)?"
 # The Primary colour field, reached by its PLACEHOLDER: maestro-web reports an
 # empty input as its placeholder, and "#01214b" is this field's and appears
 # nowhere else in the app. The scroll IS the assertion that the panel opened on
@@ -503,16 +503,16 @@ tags:
 # ── TEAM B — the short stint, in a colour nothing like team A's ─────────────
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 - inputText: "SLB${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
-    visible: "1 of .* teams.*"
+    visible: "1 match( . [0-9,]+ need attention)?"
     timeout: 15000
 - tapOn:
     text: "SLB${output.ATTEMPT_TOKEN}"
     below:
-      text: "1 of .* teams.*"
+      text: "1 match( . [0-9,]+ need attention)?"
 # Same step, same screen, same measurement and same dependency as team A's
 # above: bounds FROZEN at y=490 across tries 0..5, give-up at 9.8 s over 4
 # green CI runs; 490 - 208 = 282 (centre 303) once NEO-260's 208px shell spacer

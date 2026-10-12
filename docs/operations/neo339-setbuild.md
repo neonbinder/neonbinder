@@ -154,8 +154,15 @@ the enrichment-fixtures flag:
 3. Compute both confirm phrases offline with `setbuild confirm-phrase` (for
    `baseline.spec.json` and `parallel.spec.json`). A spec that does not parse
    fails here, before the reset.
-4. `./e2e-baseline.sh reset` against the PR's preview (the shape-checked
-   `$CONVEX_NAME`).
+4. `./e2e-reset-for-seed.sh --deployment "$CONVEX_NAME"` against the PR's
+   preview (the shape-checked `$CONVEX_NAME`): `e2e-baseline.sh reset`, and,
+   with the downloaded bundle in `NB_REFERENCE_BUNDLE`, the NEO-330
+   reference-catalogue import (check → scoped reset → `convex import
+   --replace`; `docs/operations/neo330-reference-seed.md` §4). The apply
+   below therefore runs against prod's players, teams and leagues: its review
+   stages only names the catalogue lacks and same-name players (the pick
+   step, `Which <name> is this?`), and the spec's answers for every other name
+   are moot no-ops.
 5. `setbuild apply --spec .maestro/seed/baseline.spec.json --auth testing
    --app-url <preview> --convex-url https://<slug>.convex.cloud --worker 0
    --paused-platforms "$PAUSED_PLATFORMS" --confirm "$base_phrase"

@@ -129,7 +129,7 @@ tags:
     timeout: 15000
 - inputText: "889-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Team Feature Player ${ATTEMPT_ID}"
+- inputText: "TeamFeaturePlayer${output.ATTEMPT_TOKEN}"
 # Scroll the "Submit new card" (Add) button into center before tapping. It sits
 # at the bottom of the add-card form, at y=610-642 — below the fold on the
 # 1024×629 CI viewport. centerElement lands it near y≈315 so its own
@@ -143,7 +143,7 @@ tags:
     timeout: 7000
 - tapOn:
     id: "Submit new card"
-- assertVisible: "Team Feature Player ${ATTEMPT_ID}"
+- assertVisible: "TeamFeaturePlayer${output.ATTEMPT_TOKEN}"
 
 # Scroll the just-added card into view before tapping its Edit button.
 - scrollUntilVisible:
@@ -358,7 +358,7 @@ tags:
 # Close the drawer and read the row underneath.
 - tapOn:
     id: "Done editing card"
-- assertVisible: "Team Feature Player ${ATTEMPT_ID}"
+- assertVisible: "TeamFeaturePlayer${output.ATTEMPT_TOKEN}"
 
 - assertVisible:
     text: ".*TPT${output.ATTEMPT_TOKEN}.*"
@@ -386,7 +386,7 @@ tags:
 # settles in 0.55s, 0 centring swipes; nothing here waits on a marketplace.
 - scrollUntilVisible:
     element:
-      text: "Team Feature Player ${ATTEMPT_ID}"
+      text: "TeamFeaturePlayer${output.ATTEMPT_TOKEN}"
     timeout: 7000
 - assertVisible:
     text: ".*TPT${output.ATTEMPT_TOKEN}.*"
@@ -400,4 +400,4 @@ tags:
 - assertVisible: "Confirm?"
 - tapOn:
     id: "Confirm delete card 889-${ATTEMPT_ID}(, .*)?"
-- assertNotVisible: "Team Feature Player ${ATTEMPT_ID}"
+- assertNotVisible: "TeamFeaturePlayer${output.ATTEMPT_TOKEN}"

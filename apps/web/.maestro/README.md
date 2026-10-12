@@ -91,7 +91,7 @@ app bug never looks like that. Full write-up:
 | `npm run test:e2e:check` | Verify installed Maestro + Java + Chrome match the pins; print actionable next steps if not |
 | `npm run e2e:clean-chrome` | Kill Chrome/chromedriver processes a previous run left detached (never touches your real browser) |
 | `npm run test:e2e` | **The full suite** — every flow, no tag filter (minus `util`/`wip`) |
-| `npm run test:e2e -- setup` | The seed only — `e2e-baseline.sh reset`, then the scripted bulk load (`npm run setbuild`, NEO-339; runbook `docs/operations/neo339-setbuild.md`). No flow runs |
+| `npm run test:e2e -- setup` | The seed only — `e2e-reset-for-seed.sh` (`e2e-baseline.sh reset`, plus the reference catalogue when `NB_REFERENCE_BUNDLE` is set), then the scripted bulk load (`npm run setbuild`, NEO-339; runbook `docs/operations/neo339-setbuild.md`). No flow runs |
 | `npm run test:e2e:smoke` | Smoke tag only — the fast subset |
 | `npm run test:e2e:pick -- <selector>` | Run just a piece of the suite (by name / list / regex / tag) — see below |
 | `npm run test:e2e:plan -- <selector>` | Dry-run: print exactly what `:pick` *would* run and exit |
@@ -128,7 +128,7 @@ npm run test:e2e:pick -- /parallel-grouping/        # run all parallel-grouping 
 run whatever you want as often as you want:
 
 ```bash
-npm run test:e2e -- setup    # e2e-baseline.sh reset + the setbuild bulk load (NEO-339)
+npm run test:e2e -- setup    # reset (+ catalogue with NB_REFERENCE_BUNDLE) + the setbuild bulk load (NEO-339)
 npm run test:e2e:pick -- name:<your-flow>
 ```
 
@@ -233,9 +233,12 @@ two buckets.
    script calls — there is no public reset any more) or use unique values per
    run (`${TEST_USERNAME}` is timestamp-based per CI run).
 
-   Note what that wipe means for `teams` and `players`: they are **empty at the
-   start of every run**, and no flow seeds a shared fixture into them (NEO-214
-   deleted the "Seed Test Teams" button and the mutation behind it). A flow that
+   Note what that means for `teams` and `players`. Since NEO-330 they are **not
+   empty** at the start of a CI run: they hold prod's reference catalogue,
+   loaded right after the reset (see "A reference catalogue is on every CI
+   preview" under Companion rules). What they never hold is a row any flow can
+   claim as its own fixture, and no flow seeds a shared one (NEO-214 deleted the
+   "Seed Test Teams" button and the mutation behind it). A flow that
    needs a team or a player creates its own, named per **worker and attempt**,
    through the product's own screens — `/admin/players` for a player and its
    career stints, TeamPicker's "+ New team" row and the New Team dialog it
@@ -247,6 +250,21 @@ two buckets.
    picker offers "+ New team <name>" only while no team of that name exists, so a
    name a previous attempt left behind renders "Add <name>" instead and the
    create step reaches for a control that is not there.
+
+4b. **The PR's preview will not deploy after a schema change to a reference
+   table (NEO-330).** Previews persist across pushes, and the catalogue rows
+   loaded by the previous run are still in them. Remove or retype a field on
+   `leagues`, `franchises`, `teams`, `teamAliases`, `players`,
+   `playerAliases`, `playerSports` or `selectorOptions`, and the next push's
+   `convex deploy` (inside `web-preview`) fails schema validation against those
+   rows, so E2E never starts. A rerun cannot fix it, and neither can the reset,
+   which runs on code that never deployed. Empty the tables with
+   `npm run reference-seed:clear -- --deployment <the PR's preview>` (one
+   atomic import; it needs no deployed code), then do a full rerun of the
+   pipeline. The next seed loads the catalogue again. Adding a REQUIRED field to
+   one of those tables is a different problem: the bundle cannot satisfy it, and
+   the reference-seed schema unit test fails before you push. Those tables take
+   optional fields only. Runbook: `docs/operations/neo330-reference-seed.md`.
 5. **Intentional platform divergence.** If you've ruled out 1–4, you're
    probably looking at a real Mac↔Linux Chrome difference — that's the
    coverage we want. Reproduce by reading the bounds out of the CI
@@ -437,6 +455,56 @@ one; each says that shortening the page brings the budget back to 7000 and
 that raising it further is a new decision, not a tuning knob. A step that is
 merely slow still does not qualify — that is the bug report.
 
+**Why scroll travel is slow: the cost is the driver, not the page.** A
+`scrollUntilVisible` works in passes: look for the target, swipe if it is not
+there, wait for the page to settle, look again. On Maestro web every one of
+those looks and swipes is a JavaScript call into the browser, and each call
+opens a fresh CDP websocket, re-injects the 14 KB `maestro-web.js`, sleeps
+100 ms and only then runs. Measured on NEO-330 (cli 2.8.0, the same code as
+the pinned 2.6.0):
+
+- the first look costs **about 1.2 s**;
+- every pass that still has to scroll costs **about 2 s** and moves the page
+  one swipe, which is half the viewport: **312 px** at our 625 px height;
+- the pass that finds the target costs **about 1.4 s**.
+
+None of that depends on the page. The same four-swipe scroll took 8.5 s over
+1 row and 9.6 s over 2,000 rows, so a long DOM adds a little and a long
+distance adds a lot. The arithmetic: 900 px is about three swipes, and
+1.2 + 2 × 2.0 + 1.4 ≈ 6.7 s. **About 900 px is the most a 7 s scroll can
+travel**, whatever the page is doing. A slow scroll therefore means distance:
+count the `Swiping` lines in `maestro.log` before the step's first
+`Scrolling try count: 0` and multiply by ~2 s before suspecting the app.
+
+**Extra budget for scroll travel can be asked for, never granted
+automatically.** Jason, 2026-10-10: *"going forward I want to continue to make
+every decision intentionally around extra time … extra budget can be asked
+for but not automatically granted."* The order is fixed:
+
+1. **Shorten the distance in the product first.** Move the target nearer the
+   top, collapse what sits above it, or stop centring a bottom-locked target
+   (R8 case 2). Fewer swipes is the fix; a number is not.
+2. **If the distance is the product's real shape, ask the owner.** The
+   request carries the measured passes (`Swiping` lines from a green run's
+   `maestro.log`) and the distance in pixels, and asks for a specific figure.
+   Nothing above 7000 is ever applied before the answer.
+3. **Record every approved exception at the site**: the date, that Jason
+   approved it, the distance and pass arithmetic, and that shortening the
+   travel brings it back to 7000. A different flow with the same shape is a
+   new request, not a precedent.
+
+The first approvals under this rule are the three `Cards for <name>` scrolls
+on `/admin/players` (`checklist-wizard-link-commits`,
+`card-player-picker-cross-sport`, `player-sports-multi-sport-membership`):
+10000, approved 2026-10-10 (NEO-330), for ~900 px of travel sitting right at
+the 7 s edge. Read one of their comments before writing a request.
+
+**This is about travel only. Everything else stays at 7000.** Waits,
+asserts, taps and our own server writes are the product answering a user, and
+R5 above governs them unchanged: a slow one is a product finding. A centred
+scroll that reaches the give-up path is R8's problem, and travel budget never
+funds it.
+
 **Where a step really does wait on one of those exceptions, split it.** The
 wait and the scroll are different jobs and want different ceilings: put a long
 `extendedWaitUntil` GATE above, named for what it is waiting on, and leave the
@@ -525,6 +593,16 @@ costs the whole budget: measured across the 83 give-up steps in green CI run
 34361627641, minimum 7.007 s, median 7.19 s, maximum 9.48 s — and
 `waitToSettleTimeoutMs` made no difference, because the cost is five swipes
 at `scrollDuration=601` plus six hierarchy reads either way.
+
+**Tell travel from give-up before choosing a remedy.** A centred step can run
+long for two different reasons. Travel is the swipes it takes to bring the
+target into view: ~2 s per 312 px swipe, before centring even starts (R5,
+"Why scroll travel is slow"). Give-up is the `Scrolling try count` loop below,
+after the target is already visible. `maestro.log` separates them: travel
+is the `Swiping` lines, each after an `ElementNotFound` warning, before the
+step's first `Scrolling try count: 0`; centring is the swipes between try
+counts; give-up is try counts running on to 5. Travel may earn an
+owner-approved budget under R5; give-up never does.
 
 **A centred step that runs long is a product finding, never a bigger
 ceiling.** There are exactly two legitimate remedies.
@@ -655,7 +733,66 @@ listed here so a flow author meets them in one place.
   is indifferent to that, but anything that RECONSTRUCTS a prefix from
   `${WORKER_INDEX}` matches nothing in CI — so never rebuild the token by hand. (`output.ATTEMPT_TOKEN` is a value the
   flow sets itself, which is fine; the banned one is `output.ATTEMPT_ID`, a
-  binding the runner never populates.)
+  binding the runner never populates.) Prefix it with a word, not words:
+  `WalkerAlpha${output.ATTEMPT_TOKEN}`, never `Walker Alpha ${ATTEMPT_ID}`.
+  Every word in a minted name is a search term that real rows share (next
+  bullet).
+- **A reference catalogue is on every CI preview, so a fixture set must be one
+  the catalogue does not know, and real names collide (NEO-330).** Every CI
+  run loads prod's reference catalogue onto the PR's preview right after the
+  reset and before the seed's `setbuild apply`: all leagues, franchises, teams, team aliases,
+  players, player aliases and player sports, plus the sport rows — about 113k
+  players and 10.5k teams, including the Lahman, Negro Leagues and nflverse
+  loads. The reset leaves those tables alone and the bundle's
+  `convex import --replace` is their clear (`e2e-reset-for-seed.sh`, with
+  `NB_REFERENCE_BUNDLE` set). Flows still make their own fixtures through the
+  UI; the catalogue is the backdrop they make them against. It is never
+  trimmed to suit a flow, so a flow that breaks against it is fixed in the
+  flow or, when the screen cannot cope, in the product. Four consequences:
+  1. **The wizard only opens for names the catalogue does not know.**
+     "Confirm New Players & Teams" stages a player or team only when no row of
+     that name exists. A set whose roster is all real, well-known players
+     commits straight through with no wizard, so any flow that drives the
+     wizard needs a fixture set the catalogue does not cover. Choosing one is
+     a real-set decision (`SET-REGISTRY.md`, owner approval).
+  2. **A real name always has company.** Type a real person or club into a
+     picker, a filter or the add form and the catalogue answers: search rows
+     crowd the popover, the add form demotes `Create player X` to `Open X`,
+     and the team typeahead lists `Add X` rows above its `+ New team` row. A flow that
+     needs a real row reads the catalogue's own spelling (for example
+     `player-add-spaced-initials-opens-roster-row`, whose roster row is the
+     catalogue's `J. T. Realmuto`) and never creates one. A flow that must
+     CREATE a real name needs one the catalogue lacks; check the bundle
+     before choosing it, as well as the committed checklists. Free text that
+     never reaches a search (the spine label's name, a card's name) is
+     unaffected.
+  3. **Lists are long.** `/admin/players` lists 500 rows and `/admin/teams`
+     2000, and with nothing typed each counter sits at its cap, `500 players`
+     and `2,000 teams` (the `admin/players-list-at-catalogue-scale` flow
+     proves it). Never scroll a
+     master list looking for a row, never assume one fits on screen, and never
+     assert a bare count. Filter to a minted single token, then target that
+     row by its name (`id:` on the row's `title`). If a screen cannot surface a
+     row you just minted by filtering for it, that is a product bug to report,
+     never a flow workaround. The counters read `{N} players` / `{N} teams`
+     unfiltered and `{N} matches` (`1 match`, `50+ matches`) filtered; Team
+     Management's adds ` · K need attention` when K > 0, and an sr-only
+     `role="status"` line beside it repeats the sentence WITHOUT that suffix.
+     So write every Teams counter pattern with the suffix optional
+     (`"1 match( . [0-9,]+ need attention)?"`): the visible counter then
+     always matches whenever the hidden line does, and it comes first in the
+     DOM, so an unindexed selector resolves to it. As a `below:` anchor
+     either match works: the sr-only line's static position is the filter
+     row's bottom edge (`items-end`), under the filter box like the counter.
+  4. **Local runs do not have it unless you load it.** CI downloads the bundle;
+     a local `test:e2e -- setup` loads it only when `NB_REFERENCE_BUNDLE`
+     (a local bundle path) is set; the target is the harness's own deployment,
+     the same one the reset and the setbuild apply use.
+     Without it the catalogue-dependent flows fail locally for want of data,
+     not because of a bug. `npm run reference-seed:load` puts it on a dev
+     deployment (it remaps sports by name and asks you to retype the
+     deployment, since dev is shared). Runbook:
+     `docs/operations/neo330-reference-seed.md`.
 - **`pressKey` needs a unique, user-visible handle** on its target — an
   accessible name, never a DOM `id` (own section below).
 - **Prefer `openLink` over tapping a link** to reach a page (own section).
@@ -963,12 +1100,17 @@ screenshot for `[testing] …` before suspecting anything else.
 ## Worker-state seeding
 
 **The seed is a script, not a flow (NEO-339).** It is two scripted steps
-against the target deployment: `e2e-baseline.sh reset` (the set-builder
-wipe), then `npm run setbuild -- apply` on `.maestro/seed/baseline.spec.json`,
-a bulk load that drives the same public Convex functions the Set Builder UI
-calls, as a real admin, and asserts its own counts server-side. CI's `seed`
-job runs both before the queue starts; locally `npm run test:e2e -- setup`
-runs both. How to run, resume and read it — the confirm phrase, the auth
+against the target deployment: `e2e-reset-for-seed.sh` (the set-builder
+wipe, `e2e-baseline.sh reset`), then `npm run setbuild -- apply` on
+`.maestro/seed/baseline.spec.json`, a bulk load that drives the same public
+Convex functions the Set Builder UI calls, as a real admin, and asserts its
+own counts server-side. CI's `seed` job runs both before the queue starts;
+locally `npm run test:e2e -- setup` runs both. With `NB_REFERENCE_BUNDLE` set
+(CI always sets it), the reset skips the eight reference tables and the
+bundle's import replaces them (NEO-330); see "A reference catalogue is on
+every CI preview" under Companion rules. Neither step seeds a team or a
+player a flow may claim: a flow makes its own per-worker rows (see
+troubleshooting item 4 above). How to run, resume and read it — the confirm phrase, the auth
 source, the spec, the report — is the runbook,
 `docs/operations/neo339-setbuild.md`, and the tool's own
 `tools/setbuild/README.md`; this file does not repeat them.
@@ -976,8 +1118,8 @@ source, the spec, the report — is the runbook,
 What the baseline holds, and which flow may write to which part of it, is
 `SET-REGISTRY.md` → "Real marketplace-backed sets". In short: the Sports,
 Years and Manufacturers syncs, 2024 Topps' Sets, 2024 Topps Chrome (Base
-mapped on both sides and committed, with the players, teams and leagues its
-review creates; Future Stars; the `Insert` and `Parallel` reconciles; one base
+mapped on both sides and committed; its review creates only the players the
+catalogue lacks, plus an answer for each same-name pick step; Future Stars; the `Insert` and `Parallel` reconciles; one base
 parallel built from Base), Topps Big League's structure with an EMPTY
 checklist, and 2026 Bowman's Sets, SportLots review and Variant Types. Each
 runner's own worker credentials still come from its Phase-0 bootstrap.
@@ -1192,9 +1334,21 @@ What that changes for flows:
   `wikidata_lookup_unavailable` (kind, row id and reason, never a name).
   Then re-run per "Re-running a red E2E (NEO-187)". A red with no such lines,
   or a repeat with `query.wikidata.org` healthy, is a product finding.
+- **The live-proof name must also be absent from the reference catalogue
+  (NEO-330).** The catalogue is loaded onto the preview after the reset, so
+  "the reset clears players" no longer makes a name new. The flow's name is
+  **Vladislav Tretiak** (Hockey, Q316864; Jason's pick, 2026-10-10): the
+  catalogue's Hockey players are NHL-only and he never played in the NHL.
+  Harmon Killebrew, the earlier pick, is in the catalogue, so his add form
+  offered `Open Harmon Killebrew` and the flow failed on `Create player …` by
+  name. Any replacement has to pass four checks: the bundle (read-only
+  `--inline-query` on the preview's `players` and `playerAliases`), the
+  recording, the committed checklists, and exactly one `Q5` binding for the
+  adapter's `findPlayerQid` SPARQL with the sport's QID and no `LIMIT`. Only
+  the four sports that carry `sportConfig.wikidata` can host it.
 - **Do not add the live-proof name to the recording.** The capture reads the
   deployment's `players` rows, so a capture taken after the suite has run
-  would sweep it in; `convex/adapters/enrichmentFixtureFile.test.ts` refuses
+  would sweep it in; `convex/enrichmentFixtureFile.test.ts` refuses
   a recording that contains it.
 
 Running the live proof locally, against a PR preview (never shared dev — the

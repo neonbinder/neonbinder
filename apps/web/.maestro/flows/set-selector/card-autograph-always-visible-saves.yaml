@@ -67,6 +67,10 @@ tags:
 # DRILL TO PER-WORKER CUSTOM SET + ADD A CUSTOM CARD
 # ============================================================
 
+# Minted names are single search tokens (README → Companion rules): the
+# ATTEMPT_ID with its hyphens stripped, folded into one word.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
 - runFlow:
     file: util-add-custom-card.yaml
     env:
@@ -74,7 +78,7 @@ tags:
       VARIANT_TYPE: "Insert"
       INSERT_NAME: "Base"
       CARD_NUMBER: "778-${ATTEMPT_ID}"
-      PLAYER_NAME: "Autograph Test Player ${ATTEMPT_ID}"
+      PLAYER_NAME: "AutographPlayer${output.ATTEMPT_TOKEN}"
 
 # Open the drawer via the Edit button (the reliable opener).
 - assertVisible:
@@ -145,4 +149,4 @@ tags:
 - assertVisible: "Confirm?"
 - tapOn:
     id: "Confirm delete card 778-${ATTEMPT_ID}(, .*)?"
-- assertNotVisible: "Autograph Test Player ${ATTEMPT_ID}"
+- assertNotVisible: "AutographPlayer${output.ATTEMPT_TOKEN}"

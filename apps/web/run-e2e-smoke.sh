@@ -69,9 +69,10 @@ if [ -f .env.test ]; then
 fi
 
 # ─── `setup`: seed the deployment, no Maestro involved (NEO-339) ─────────────
-# Scripted reset (e2e-baseline.sh), then `npm run setbuild -- apply` of the
-# baseline spec through the harness's OWN deployment, signing in via the local
-# Vite at $APP_URL. There is no setup.yaml flow or `setup` tag any more. This
+# Scripted reset (e2e-reset-for-seed.sh: e2e-baseline.sh, plus the NEO-330
+# reference-catalogue load when NB_REFERENCE_BUNDLE names a bundle zip), then
+# `npm run setbuild -- apply` of the baseline spec through the harness's OWN
+# deployment, signing in via the local Vite at $APP_URL. There is no setup.yaml flow or `setup` tag any more. This
 # runs before the Chrome-for-Testing / Maestro prerequisites below because it
 # needs neither. When no harness is up, the target falls back to the
 # deployment VITE_CONVEX_URL names (exported, or in .env.local); e2e-seed.sh

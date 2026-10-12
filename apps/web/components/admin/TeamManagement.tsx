@@ -12,12 +12,12 @@ import {
 import NeonButton from "@/components/modules/NeonButton";
 import { parseAliases } from "@/components/SetSelector/NewLeagueForm";
 import { AddLeagueDialog } from "./AddLeagueDialog";
-import { FIELD_BOX_HEIGHT } from "./AddLeagueForm";
 import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { teamFullName, teamShortName } from "@/lib/teams/team-name";
 import { eraLabel, teamOptionLabel } from "@/lib/teams/team-era";
 import { useFollowedParam } from "@/src/hooks/use-followed-param";
+import { teamFilterReadings, teamMatchesFilter } from "@/lib/teams/team-filter";
 
 /**
  * NEO-236 security review — the browser-side half of `teams.saveTeamFields`'s
@@ -53,6 +53,17 @@ const MAX_TEAM_NAME_LENGTH = 120;
  */
 
 type Team = Doc<"teams">;
+
+/**
+ * NEO-330 — below two characters the loaded list is filtered in the browser;
+ * at two the screen asks `teams.searchForManagement`, which reaches every team
+ * rather than the capped window `listForManagement` returns. The same split,
+ * and the same numbers, as Player Management.
+ */
+const SEARCH_MIN_CHARS = 2;
+
+/** One Convex subscription per distinct arg set, so the filter is debounced. */
+const SEARCH_DEBOUNCE_MS = 200;
 
 /**
  * NEO-240 — `leagues.level`, widened to `string`.
@@ -1151,6 +1162,106 @@ function TeamDetail({
   );
 }
 
+/**
+ * NEO-330 — the team the detail panel shows.
+ *
+ * The by-id read is the truth once it has answered: a row, or `null` for a
+ * team that is gone (which closes the panel rather than leaving a stale row
+ * open). Until it answers, the first stand-in that IS the selected team: the
+ * row on screen (a click), then the row a `?team=` link was read through (a
+ * link to a team outside the list's window has no row on screen). Without the
+ * second, a followed link to such a team flashed the "Select a team"
+ * placeholder for a round trip before its panel opened.
+ */
+export function resolveSelectedTeam({
+  selectedId,
+  selectedById,
+  selectedOnScreen,
+  linkedTeam,
+}: {
+  selectedId: Id<"teams"> | null;
+  selectedById: Team | null | undefined;
+  selectedOnScreen: Team | null;
+  linkedTeam: Team | null | undefined;
+}): Team | null {
+  if (!selectedId) return null;
+  if (selectedById !== undefined) return selectedById;
+  return (
+    selectedOnScreen ?? (linkedTeam?._id === selectedId ? linkedTeam : null)
+  );
+}
+
+/** Counts print with thousands separators: "2,000 teams", never "2000 teams". */
+export function formatCount(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
+/**
+ * NEO-330 — the counter's sentence: bare counts (Jason's sign-off).
+ *
+ * Browsing, it is how many rows the list shows ("2,000 teams"); with anything
+ * in the filter box it is how many of them match ("12 matches"), whether the
+ * browser or the server answered. A server answer that ran past its limit is
+ * "50+ matches" — the count it returned, with a plus, because how many more
+ * there are is exactly what the limit stops it knowing. The "type to search"
+ * hint that used to ride here is the filter's placeholder.
+ *
+ * No "of N": the window's size is not a number the operator acts on, and the
+ * old "N of M" made two numbers to read on every keystroke.
+ */
+export function teamCounterSentence({
+  typed,
+  matched,
+  serverTruncated,
+}: {
+  /** The filter box's text, trimmed. */
+  typed: string;
+  /** Rows the master list shows. */
+  matched: number;
+  /** The server answered `typed` and its answer ran past its limit. */
+  serverTruncated: boolean;
+}): string {
+  if (typed.length === 0) {
+    return `${formatCount(matched)} ${matched === 1 ? "team" : "teams"}`;
+  }
+  if (serverTruncated) return `${formatCount(matched)}+ matches`;
+  return `${formatCount(matched)} ${matched === 1 ? "match" : "matches"}`;
+}
+
+/**
+ * NEO-330 — what the counter's live region says, or `null` while the typed
+ * filter is waiting on the server.
+ *
+ * The same sentence as the visible counter, with two differences. It is only
+ * ever a SETTLED answer: the visible counter changes on every keystroke (the
+ * browser filters the window, then the server's answer replaces it), and a
+ * live region fed that would announce a count that is about to be wrong. And
+ * it leaves out the need-attention count, which is about the rows rather than
+ * the filter and would double the length of every announcement.
+ */
+export function teamCounterAnnouncement({
+  typed,
+  matched,
+  answered,
+  serverTruncated,
+}: {
+  /** The filter box's text, trimmed. */
+  typed: string;
+  /** Rows the master list shows. */
+  matched: number;
+  /** Whether the server has answered `typed` (irrelevant below two chars). */
+  answered: boolean;
+  /** The server's answer ran past its limit. */
+  serverTruncated: boolean;
+}): string | null {
+  if (typed.length >= SEARCH_MIN_CHARS && !answered) return null;
+  return teamCounterSentence({
+    typed,
+    matched,
+    serverTruncated: answered && serverTruncated,
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Screen
 // ---------------------------------------------------------------------------
@@ -1160,8 +1271,48 @@ export default function TeamManagement() {
   const leagues = useQuery(api.leagues.list, {});
 
   const [filter, setFilter] = useState("");
+  const [debouncedFilter, setDebouncedFilter] = useState("");
   const [leagueFilter, setLeagueFilter] = useState<string>(ALL_LEAGUES);
   const [selectedId, setSelectedId] = useState<Id<"teams"> | null>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(
+      () => setDebouncedFilter(filter),
+      SEARCH_DEBOUNCE_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [filter]);
+
+  /**
+   * NEO-330 — the typed filter, answered by the server.
+   *
+   * `listForManagement` is a capped window (newest first), so a filter over it
+   * alone could never find a team outside it. From two characters this asks
+   * the search index instead, with the league filter applied server-side so
+   * the limit cannot spend itself on other leagues.
+   *
+   * `searchAnswer` is the server's answer only while it answers the text that
+   * is in the box NOW. Until then — the debounce window, and the round trip
+   * after it — the screen keeps filtering the loaded window, by the same
+   * every-word rule the server applies, so the list never blanks to "No teams
+   * match" while the operator types.
+   */
+  const searchTerm = debouncedFilter.trim();
+  const searchResults = useQuery(
+    api.teams.searchForManagement,
+    searchTerm.length >= SEARCH_MIN_CHARS
+      ? leagueFilter === ALL_LEAGUES
+        ? { query: searchTerm }
+        : {
+            query: searchTerm,
+            leagueId: leagueFilter as Id<"leagues"> | "none",
+          }
+      : "skip",
+  );
+  const searchAnswer =
+    filter.trim().length >= SEARCH_MIN_CHARS && searchTerm === filter.trim()
+      ? searchResults
+      : undefined;
 
   // The filter takes focus on arrival: the reason to open this screen is to
   // work on a particular team, and typing its name is how you find it.
@@ -1230,10 +1381,31 @@ export default function TeamManagement() {
     }
   }
 
+  // NEO-330 — the linked team is read BY ID, not looked up in the list. The
+  // list is a capped window, and a link to any team outside it used to be
+  // ignored as if the id were stale. `getByIdParam` takes the raw string and
+  // answers `null` for anything that is not a live team id, so a hand-mangled
+  // param is an unselected screen rather than a thrown query.
+  //
+  // The subscription outlives the follow while the linked team is the open
+  // one: `selectedById` below asks for the same row with the same args, and a
+  // Convex subscription that is still live answers a second identical one
+  // synchronously. Dropped the moment the link was followed, the panel's own
+  // read would start cold and the panel would blink to its placeholder for a
+  // round trip (NEO-330 audit). Same query, same args — no extra read.
+  const linkPending = teamParam !== null && !followedTeam.hasFollowed(teamParam);
+  const linkedTeam = useQuery(
+    api.teams.getByIdParam,
+    teamParam !== null && (linkPending || selectedId === teamParam)
+      ? { id: teamParam }
+      : "skip",
+  );
+
   if (
+    linkPending &&
     teamParam !== null &&
-    !followedTeam.hasFollowed(teamParam) &&
-    management !== undefined
+    management !== undefined &&
+    linkedTeam !== undefined
   ) {
     // The click handler below marks the param followed too — what it writes is
     // the operator's own selection, not a fresh link to follow. Following a
@@ -1241,17 +1413,18 @@ export default function TeamManagement() {
     // followed link clears the filters, it would empty the word the operator
     // typed a moment ago under their own click and drop the row they picked.
     followedTeam.follow(teamParam);
-    const match = management.teams.find((team) => team._id === teamParam);
     // An id this deployment does not carry — a stale link, or one copied from
     // another deployment — leaves the screen exactly as it was: no selection,
     // no error banner. There is nothing the operator could do about it here.
-    if (match) {
-      setSelectedId(match._id);
-      // The linked row has to be REACHABLE, not merely selected.
-      // `listForManagement` returns every team whatever is typed here, but
-      // both client-side filters below can hide the linked row from the master
-      // list, so following a link clears them.
+    if (linkedTeam) {
+      setSelectedId(linkedTeam._id);
+      // The linked row has to be REACHABLE, not merely selected: both filters
+      // below can hide it from the master list, so following a link clears
+      // them. The debounced copy goes with the box it mirrors, or the search
+      // subscription outlives the text that opened it. A team outside the
+      // list's window has no row to reach; its panel opens all the same.
       setFilter("");
+      setDebouncedFilter("");
       setLeagueFilter(ALL_LEAGUES);
     }
   }
@@ -1274,16 +1447,16 @@ export default function TeamManagement() {
   /**
    * NEO-253 — open a team this screen was handed the id of.
    *
-   * Clears both client-side filters for the same reason the `?team=` link
-   * follower above does: `listForManagement` returns every team, but the name
-   * filter and the league dropdown can each hide the destination row from the
-   * master list, and a row that is selected but not REACHABLE reads as the
-   * button having done nothing. The URL is written too, so the team on screen
-   * is the team a reload reopens.
+   * Clears both filters for the same reason the `?team=` link follower above
+   * does: the name filter and the league dropdown can each hide the
+   * destination row from the master list, and a row that is selected but not
+   * REACHABLE reads as the button having done nothing. The URL is written too,
+   * so the team on screen is the team a reload reopens.
    */
   const selectTeam = (id: Id<"teams">) => {
     setSelectedId(id);
     setFilter("");
+    setDebouncedFilter("");
     setLeagueFilter(ALL_LEAGUES);
     // Marking the param followed is part of writing it, exactly as in the row
     // click handler below: a param this screen wrote itself must not read back
@@ -1328,9 +1501,15 @@ export default function TeamManagement() {
    * to each other in a stable order rather than in whatever order the server
    * happened to return them.
    */
+  /**
+   * NEO-330 — the rows the master list filters: the server's answer to the
+   * typed filter once it has one, the loaded window otherwise.
+   */
+  const base = searchAnswer?.teams ?? teams;
+  const filterReadings = useMemo(() => teamFilterReadings(filter), [filter]);
+
   const visible = useMemo(() => {
-    const needle = filter.trim().toLowerCase();
-    const matched = teams.filter((team) => {
+    const matched = base.filter((team) => {
       // NEO-236 — matched on the composed name, so typing "san diego" finds
       // the Padres even though `name` alone now holds only "Padres". The row
       // below prints the short name; the filter has to answer to what the
@@ -1338,13 +1517,11 @@ export default function TeamManagement() {
       // NEO-284 — and on the aliases, for the same reason they exist: the
       // operator folding "LSU" into a row is very likely typing the spelling
       // they came here about.
-      if (
-        needle &&
-        !teamFullName(team).toLowerCase().includes(needle) &&
-        !(team.aliases ?? []).some((alias) =>
-          alias.toLowerCase().includes(needle),
-        )
-      ) {
+      // NEO-330 — by `teamMatchesFilter`, the rule the server applies to the
+      // typed filter too, so the window's answer and the server's agree. The
+      // server's rows are already matched (an exact alias included), so they
+      // are not re-tested.
+      if (!searchAnswer && !teamMatchesFilter(team, filterReadings)) {
         return false;
       }
       if (leagueFilter === ALL_LEAGUES) return true;
@@ -1363,9 +1540,33 @@ export default function TeamManagement() {
         // with work outstanding, not the row the history starts with.
         (a.yearsActive?.from ?? Infinity) - (b.yearsActive?.from ?? Infinity),
     );
-  }, [teams, filter, leagueFilter]);
+  }, [base, searchAnswer, filterReadings, leagueFilter]);
 
-  const selected = teams.find((t) => t._id === selectedId) ?? null;
+  /**
+   * NEO-330 — the open team, read by id.
+   *
+   * It used to be found in `teams`, the capped window, so a team the operator
+   * opened from a search result, a `?team=` link or the NAME_TAKEN alert was
+   * no team at all once it lay outside that window. `getByIdParam` keeps the
+   * panel on the stored row wherever it is (and reactive to its own saves).
+   * Until that answers — the moment after a click — the row already on screen
+   * stands in, so the panel does not blink empty between two teams.
+   */
+  const selectedById = useQuery(
+    api.teams.getByIdParam,
+    selectedId ? { id: selectedId } : "skip",
+  );
+  const selectedOnScreen = selectedId
+    ? (searchAnswer?.teams.find((t) => t._id === selectedId) ??
+      teams.find((t) => t._id === selectedId) ??
+      null)
+    : null;
+  const selected = resolveSelectedTeam({
+    selectedId,
+    selectedById,
+    selectedOnScreen,
+    linkedTeam,
+  });
   /**
    * NEO-254 — the franchise threads for the panel's Franchise pills, scoped to
    * the SELECTED team's sport.
@@ -1385,7 +1586,49 @@ export default function TeamManagement() {
     api.franchises.list,
     selected ? { sportId: selected.sportId } : "skip",
   );
-  const needingAttention = teams.filter((t) => attentionFor(t) !== null).length;
+  // Counted over `visible`, the rows the counter's number names: with the
+  // "of N" gone, "12 matches · 3 need attention" can only be read as 3 of
+  // those 12, so that is what it has to count.
+  const needingAttention = visible.filter((t) => attentionFor(t) !== null).length;
+
+  /**
+   * NEO-330 (a11y, SC 4.1.3) — the counter, announced.
+   *
+   * Held at the last settled sentence while a typed filter waits on the
+   * server, so the region only ever changes to an answer, never to the
+   * interim browser-side count. Adjusted during render (the "state from a
+   * changing value" pattern the `?team=` follower uses), not in an effect.
+   */
+  const settledAnnouncement =
+    management === undefined
+      ? null
+      : teamCounterAnnouncement({
+          typed: filter.trim(),
+          matched: visible.length,
+          answered: searchAnswer !== undefined,
+          serverTruncated: searchAnswer?.truncated ?? false,
+        });
+  const counterText =
+    teamCounterSentence({
+      typed: filter.trim(),
+      matched: visible.length,
+      serverTruncated: searchAnswer?.truncated ?? false,
+    }) +
+    (needingAttention > 0
+      ? ` · ${formatCount(needingAttention)} need attention`
+      : "");
+  const [announcement, setAnnouncement] = useState("");
+  if (settledAnnouncement !== null && settledAnnouncement !== announcement) {
+    setAnnouncement(settledAnnouncement);
+  }
+
+  /**
+   * NEO-330 — a typed filter the server has not answered yet, with nothing in
+   * the loaded window to show meanwhile. That is a search in flight, not a
+   * miss, so the list says "Searching…" rather than "No teams match".
+   */
+  const awaitingSearch =
+    filter.trim().length >= SEARCH_MIN_CHARS && searchAnswer === undefined;
 
   if (management === undefined) {
     return <p className="text-sm text-slate-400">Loading teams…</p>;
@@ -1400,7 +1643,7 @@ export default function TeamManagement() {
           franchise box) have moved all of them into the panel, beside the
           controls that produce them. Nothing was left to render. */}
 
-      <div className="flex flex-wrap items-end gap-3">
+      <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
         <Input
           ref={filterRef}
           label="Filter teams"
@@ -1455,24 +1698,41 @@ export default function TeamManagement() {
             ))}
           </select>
         </div>
-        {/* Floored and matched to the field-box height like its siblings
-            (LeagueManagement.tsx, PlayerManagement.tsx, FranchiseManagement.tsx)
-            rather than nudged up with a `pb-2`: centred against the field boxes
-            it stays put when the row wraps, and the `min-w` floor keeps a
-            resolving count from widening the row under the cursor. */}
-        <p
-          className={`flex items-center text-xs text-slate-400 min-w-[13rem] ${FIELD_BOX_HEIGHT}`}
-        >
-          {visible.length} of {teams.length} teams
-          {needingAttention > 0 && ` · ${needingAttention} need attention`}
-          {management.truncated && " · list truncated"}
+        {/* NEO-330 — the counter always takes a line of its own, under the
+            fields and directly over the list it counts (`basis-full` in a
+            wrapping row forces the break).
+
+            Beside the fields it was the one item whose width followed the
+            data: from two typed characters its text switches between the
+            window's count and the server's (then with a "keep typing" tail), and
+            at 1024px the longer string tipped it past the row's wrap boundary
+            — so the whole master list dropped a line on the second keystroke,
+            under the operator's eyes. On its own line its length moves
+            nothing: one line at every width the admin screens are used at,
+            and floored so the first render does not collapse it. */}
+        <p className="basis-full min-h-5 text-xs leading-5 text-slate-400">
+          {/* NEO-330 — one string in ONE text node, as the E2E flows read
+              it: "2,000 teams" browsing, "12 matches" / "50+ matches"
+              filtering, plus " · K need attention". Not a live region: it
+              changes on every keystroke, and a screen reader would read the
+              interim count. The settled sentence is the sr-only status line
+              beside it. */}
+          {counterText}
+        </p>
+        {/* NEO-330 (SC 4.1.3) — mounted for the screen's whole life: a live
+            region inserted together with its text is announced unreliably
+            (PlayerManagement's note on its own status line). */}
+        <p role="status" className="sr-only">
+          {announcement}
         </p>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-[minmax(0,18rem)_1fr] gap-4">
         {/* Master */}
         <div className="rounded-lg border border-slate-800 max-h-[32rem] overflow-y-auto">
-          {visible.length === 0 ? (
+          {visible.length === 0 && awaitingSearch ? (
+            <p className="p-3 text-sm text-slate-400">Searching…</p>
+          ) : visible.length === 0 ? (
             <p className="p-3 text-sm text-slate-400">
               No teams match that filter.
             </p>

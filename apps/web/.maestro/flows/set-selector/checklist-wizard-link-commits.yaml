@@ -17,7 +17,7 @@ tags:
 #     (b) the row under test is a PLAYER row (its link panel is labelled for
 #         players), asserted before the feature action;
 #     (c) the search finds the existing roster player BY NAME and taking it
-#         records a LINK — the history reads "Linked to Shohei Ohtani", the one
+#         records a LINK — the history reads "Linked to Wayne Gretzky", the one
 #         string neither a create ("Added as new") nor a skip ("Skipped") can
 #         produce;
 #     (d) the commit lands cleanly ("Saved N cards") with the link on the batch.
@@ -27,18 +27,18 @@ tags:
 #
 # NEO-313 — THE SAME DECISION, ACROSS SPORTS (ticket decision 8: this fixture,
 # one row switched to Football, no new real set). A checklist name can belong
-# to a player of ANOTHER sport (a football player in a baseball autograph
-# book). The review stays scoped to the set's sport until the operator reaches
-# for the quiet per-name switch "(Player · Baseball ▾)", and only then does
-# "Link to Existing…" search that other sport. Added hard assertions:
+# to a player of ANOTHER sport (a football player in a hockey set). The review
+# stays scoped to the set's sport until the operator reaches for the quiet
+# per-name switch "(Player · Hockey ▾)", and only then does "Link to
+# Existing…" search that other sport. Added hard assertions:
 #     (e) the next player step opens on the SET's sport — the switch reads
-#         "Sport for this name: Baseball" — so nothing cross-sport is on by
+#         "Sport for this name: Hockey" — so nothing cross-sport is on by
 #         default;
 #     (f) after the switch the same row reads "…: Football", and a Link to
 #         Existing search finds `Gw<token>`, a FOOTBALL player this flow made
-#         by hand (a Baseball-scoped search cannot return him);
+#         by hand (a Hockey-scoped search cannot return him);
 #     (g) after the commit, `Gw<token>`'s own Players admin panel lists this
-#         set's card under "Cards for Gw<token>" with a "Baseball" tag — the
+#         set's card under "Cards for Gw<token>" with a "Hockey" tag — the
 #         card's sport, shown only because it differs from his. That list is
 #         read back from the saved cards (the derived `cardPlayerLinks`
 #         index), so it is the proof the cross-sport link was COMMITTED rather
@@ -54,38 +54,46 @@ tags:
 #   the link persisted, which is exactly the shape of assertion R2 forbids. It
 #   also doubled the flow's runtime for that non-claim.
 #
-# ── THE FIXTURE, AND WHY IT IS BASEBALL ─────────────────────────────────────
-#   `Baseball → 2024 → Topps → Topps Brooklyn Collection → Base`.
-#   Measured on PR #235's preview, 2026-09-06: 50 matched cards → **12 unknown
-#   names (11 players + 1 team)**, wizard opens, first row a player.
+# ── THE FIXTURE, AND THE LINK TARGET ────────────────────────────────────────
+#   `Hockey → 1995 → Unknown (via the All Brands view) → San Antonio Iguanas
+#   CHL → Base`, BSC only. Approved by Jason 2026-10-10 (NEO-330), replacing
+#   Topps Brooklyn Collection: the reference catalogue every CI preview now
+#   loads knows that set's players, so its wizard no longer opened (CI run
+#   38063558063). MEASURED on PR #314's preview, 2026-10-10: 18 cards, "Kept
+#   all 18 cards from BSC" → **16 unknown names, all players, 0 teams**, still
+#   16 once every Wikidata lookup had settled. The flow needs two player rows
+#   (one linked in-sport, one moved to Football); it has sixteen.
 #
-#   IT HAS TO BE BASEBALL, and this is not a preference. `EntityLinkSearch`
-#   queries `players.search({ query, sportId })` — scoped to the row's SPORT —
-#   and the only players the seed (`npm run setbuild`) ever creates are the
-#   ~494 from 2024 Topps
-#   Chrome, all baseball. A basketball or football fixture has an EMPTY roster
-#   and nothing to link to. All three committing fixtures are baseball for other
-#   reasons too (one sport keeps the seed cheap), but for THIS flow it is a hard
-#   requirement rather than a convenience.
-#   VERIFIED on this fixture, not assumed: typing "Ohtani" into the link panel
-#   returned `Link to Shohei Ohtani`.
+#   THE LINK TARGET MUST SHARE THE SET'S SPORT. `EntityLinkSearch` queries
+#   `players.search({ query, sportId })`, scoped to the row's SPORT, so the
+#   target is a HOCKEY player: Wayne Gretzky, from the reference catalogue.
+#   VERIFIED read-only on the preview's catalogue, 2026-10-10: exactly ONE
+#   `players` row named "Wayne Gretzky" (key "gretzky wayne"), home sport
+#   Hockey. "Gretzky" also finds Brent Gretzky, a different accessible name
+#   (`Link to Brent Gretzky`), so the full-match `id:` below takes Wayne.
 #
 #   THIS FLOW IS THE SOLE WRITER OF THIS SET. Nothing else reads or writes it,
 #   so committing races nothing and drains no other fixture. CI cannot serialize
 #   two flows (`run-e2e-queue.sh` filters only `util`/`wip`/`setup`; the lanes
 #   live only in the LOCAL `run-e2e-smoke.sh`), so "one set, one writer" is the
-#   only isolation that actually holds. It does drain its OWN fixture within a
-#   run — accepted, because CI reseeds the preview every run.
+#   only isolation that actually holds. The columns above the set are shared
+#   with the other 1995 hockey flows (SET-REGISTRY.md: concurrent first syncs
+#   double the round-trip, never the rows). It does drain its OWN fixture
+#   within a run — accepted, because CI reseeds the preview every run; a local
+#   re-run fails at the util's "No cards in this checklist yet." precondition
+#   until re-seeded.
 #
-# ⚠️ DATA DEPENDENCY — THE LINK TARGET. Shohei Ohtani is card #1 of 2024 Topps
-#   Chrome and is therefore in the roster the seed commits. If he is ever
-#   absent this fails at STEP 3 with a readable message; the fix is to change
-#   the two literals to another player setup provisions. He is deliberately not
-#   a player this flow creates — the Ohtani half proves a link onto the SEEDED
-#   roster, which a minted player cannot stand in for.
+# ⚠️ DATA DEPENDENCY — THE LINK TARGET. Wayne Gretzky is a reference-catalogue
+#   row (NEO-330), on every CI preview from the bundle import. If a bundle
+#   refresh ever drops him, or adds a second "Wayne Gretzky", this fails at
+#   STEP 3 with a readable message; the fix is to change the two literals to
+#   another single-row Hockey player in the catalogue (check read-only first).
+#   He is deliberately not a player this flow creates — the Gretzky half proves
+#   a link onto a roster the operator did not just make, which a minted player
+#   cannot stand in for.
 #
-# THE CROSS-SPORT TARGET IS MINTED, and it has to be. No Football player exists
-#   on a seeded preview (every seeded name is baseball), so the NEO-313 half
+# THE CROSS-SPORT TARGET IS MINTED, and it has to be. The catalogue's Football
+#   players are real names any search would crowd, so the NEO-313 half
 #   makes `Gw<token>` under Football on /admin/players first, through
 #   `../admin/util-add-player-by-hand.yaml`. One search token per attempt
 #   (README → "Minted names are single tokens"; registered in SET-REGISTRY.md),
@@ -97,7 +105,7 @@ tags:
 #
 # R3 — DEDUP: the link ACTION is checklist-wizard-link-to-existing-player
 #   (read-only, on the shared Big League fixture). This flow adds only the
-#   commit side.
+#   commit side. The fetch is `util-fetch-one-marketplace-set-checklist-to-wizard`.
 
 # ============================================================
 # LAUNCH + SIGN IN
@@ -108,7 +116,7 @@ tags:
 # the list COUNTER, which renders only once the list query answers (the
 # heading paints first — see player-management-add-and-career-history).
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 # ============================================================
@@ -123,14 +131,14 @@ tags:
 
 # ============================================================
 # SETUP — this flow's OWN real set, real fetch, wizard open
-# Mapped on both marketplaces, so every card auto-matches and the unmatched
-# columns are omitted entirely — nothing to keep before confirming.
+# BSC only: the util cancels the base picker, so the fetch keeps every card
+# ("Kept all N cards from BSC") and opens the review with nothing to pair.
 # ============================================================
 
 - runFlow:
-    file: util-fetch-real-set-checklist-to-wizard.yaml
+    file: util-fetch-one-marketplace-set-checklist-to-wizard.yaml
     env:
-      SET: "Topps Brooklyn Collection"
+      SET: "San Antonio Iguanas CHL"
 
 # ============================================================
 # STEP 1 — R2(a)
@@ -159,8 +167,8 @@ tags:
 # ~330ms later, so a panel landing in that window pushes "Link to Existing…"
 # down and the click lands on nothing: no error, no decision recorded, and the
 # assert below fails with the row still showing "Link to Existing…".
-# Measured locally on Topps Brooklyn Collection, where "Victor Scott II" draws a
-# near match for "Victor Scott".
+# Measured locally on Topps Brooklyn Collection (this flow's fixture until
+# NEO-330), where "Victor Scott II" drew a near match for "Victor Scott".
 #
 # The retry re-taps and re-checks, so a genuinely broken link panel still fails.
 - retry:
@@ -177,15 +185,17 @@ tags:
           timeout: 10000
 - tapOn:
     id: "Search existing players"
-- inputText: "Ohtani"
+- inputText: "Gretzky"
 - extendedWaitUntil:
     visible:
-      id: "Link to Shohei Ohtani"
+      id: "Link to Wayne Gretzky"
+    timeout: 7000
 - tapOn:
-    id: "Link to Shohei Ohtani"
+    id: "Link to Wayne Gretzky"
 - extendedWaitUntil:
     visible:
-      text: "Linked to Shohei Ohtani"
+      text: "Linked to Wayne Gretzky"
+    timeout: 7000
 
 # ============================================================
 # STEP 3b — R2(e)+(f): the NEXT player, moved to Football and linked
@@ -194,13 +204,13 @@ tags:
 
 # Settle on the next player the operator's way — the same util, for the same
 # reasons (teams first; a presented player can be traded for a team step that
-# settles meanwhile). Ohtani's link staged nothing, so this is normally the
+# settles meanwhile). Gretzky's link staged nothing, so this is normally the
 # walk's fast path.
 - runFlow: util-wizard-walk-to-player-row.yaml
 
 # R2(e): the default is the set's sport. This is the switch's accessible name
 # ("Sport for this name: <current>"); its visible form is the muted
-# "(Player · Baseball ▾)" tag beside the name.
+# "(Player · Hockey ▾)" tag beside the name.
 #
 # SWITCH FIRST, DECIDE NOTHING ON THIS ROW BEFORE IT. `switchRowSport` refuses
 # a row that carries a decision. The row's STAGED team steps may already be
@@ -208,9 +218,9 @@ tags:
 # any player); the switch discards those, since they were answers about the
 # old sport, and keeps any step another player in the batch still needs.
 - assertVisible:
-    id: "Sport for this name: Baseball"
+    id: "Sport for this name: Hockey"
 - tapOn:
-    id: "Sport for this name: Baseball"
+    id: "Sport for this name: Hockey"
 - extendedWaitUntil:
     visible:
       id: "Choose a sport"
@@ -246,7 +256,7 @@ tags:
 - assertVisible:
     text: "Football"
     below:
-      id: "Sport for this name: Baseball"
+      id: "Sport for this name: Hockey"
     above:
       id: "Decision for .*"
 - tapOn:
@@ -291,7 +301,7 @@ tags:
     id: "Search existing players"
 - inputText: "Gw${output.ATTEMPT_TOKEN}"
 # `players.search` scoped to the ROW's sport — Football now. A search still
-# scoped to Baseball returns nothing for this name, so this is R2(f).
+# scoped to Hockey returns nothing for this name, so this is R2(f).
 - extendedWaitUntil:
     visible:
       id: "Link to Gw${output.ATTEMPT_TOKEN}"
@@ -311,7 +321,7 @@ tags:
       id: "Sport for this name: Football"
     timeout: 7000
 - assertVisible:
-    id: "Sport for this name: Baseball"
+    id: "Sport for this name: Hockey"
 
 # ============================================================
 # STEP 4 — R2(d): resolve the rest as skips, then COMMIT
@@ -342,37 +352,43 @@ tags:
 # heading, for the reason at the top of this file.
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/players
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 20000
 - tapOn: "Filter players"
 - inputText: "Gw${output.ATTEMPT_TOKEN}"
 - extendedWaitUntil:
-    visible: ".*matches.*"
+    visible: "[0-9,+]+ match(es)?"
     timeout: 7000
 # Below the counter: the filter box reports its VALUE as its text, and it holds
 # this same name (see player-management-add-and-career-history).
 - tapOn:
     text: "Gw${output.ATTEMPT_TOKEN}"
     below:
-      text: ".*matches.*"
+      text: "[0-9,+]+ match(es)?"
 
 # The Cards list is the LAST section of the detail panel, under Save, so it is
 # below the fold. The scroll is its own assertion that the list rendered at
 # all (R6): a player no card links shows "No cards link to … yet." and no list.
+# R5 travel budget: timeout 10000 APPROVED by Jason 2026-10-10 (NEO-330). The
+# cost is distance, not page speed: the list sits ~900px down the panel, and
+# every 312px half-viewport swipe costs ~2s of Maestro web-driver overhead
+# (plus ~1.2s for the first look and ~1.4s for the finding pass), which is
+# right at the 7s edge. Shortening the travel in the product brings this back
+# to 7000; a higher figure is a new request to Jason, not a tuning knob.
 - scrollUntilVisible:
     element:
       id: "Cards for Gw${output.ATTEMPT_TOKEN}"
     centerElement: true
-    timeout: 7000
+    timeout: 10000
 # The card is this set's — its breadcrumb names the set — and it carries the
-# "Baseball" tag, which the list prints only for a card whose set's sport is
+# "Hockey" tag, which the list prints only for a card whose set's sport is
 # not the player's own. Both inside the list, so neither the row's sport nor
 # the panel's "Sport: Football" can answer.
 - assertVisible:
-    text: ".*Brooklyn Collection.*"
+    text: ".*San Antonio Iguanas CHL.*"
     childOf:
       id: "Cards for Gw${output.ATTEMPT_TOKEN}"
 - assertVisible:
-    text: "Baseball"
+    text: "Hockey"
     childOf:
       id: "Cards for Gw${output.ATTEMPT_TOKEN}"

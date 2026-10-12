@@ -174,6 +174,9 @@ describe("NEO-154: taxonomy reads and writes require a signed-in caller", () => 
     // `v.string()` precisely so a malformed id is a `null` rather than a throw,
     // so the throw asserted here can only be the identity gate.
     ["players.getByIdParam", (t: ReturnType<typeof convexTest>) => t.query(api.players.getByIdParam, { id: "not-an-id" })],
+    // NEO-330. Its twin, for Team Management's `?team=` link: signed-in like the
+    // `teams.get` it wraps, and called with a non-id for the same reason.
+    ["teams.getByIdParam", (t: ReturnType<typeof convexTest>) => t.query(api.teams.getByIdParam, { id: "not-an-id" })],
   ])("%s rejects an anonymous caller", async (_name, call) => {
     const t = convexTest(schema, modules);
     await expect(call(t)).rejects.toThrow(/Not authenticated/);
@@ -260,6 +263,10 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // NEO-307. The reverse-order twin of `aliasesInUse`: which OTHER team holds
     // a New Team step's name as an alias. Same editors, same gate.
     ["teams.nameHeldAsAliasBy", (t, sportId) => t.query(api.teams.nameHeldAsAliasBy, { sportId, name: "Brooklyn Dodgers" })],
+    // NEO-330. Team Management's typed filter, answered from the whole table
+    // instead of the capped list. It stands in for `teams.listForManagement`,
+    // so it carries that list's gate.
+    ["teams.searchForManagement", (t) => t.query(api.teams.searchForManagement, { query: "Yankees" })],
     // NEO-301: both bulk fast paths are public ACTIONS now (a query picks the
     // page, an internal mutation writes it), and the admin gate runs in the
     // action before either half is reached. The create twin was never pinned
@@ -1072,6 +1079,8 @@ describe("NEO-279: Fill teams is admin-gated, and its reads/writes are internal"
     ["readTeamFillNodes", "internalQuery"],
     ["readTeamFillPlayers", "internalQuery"],
     ["readTeamFillTeams", "internalQuery"],
+    // NEO-330 — resolves BSC's team names so a fill BSC contradicts is held back.
+    ["readTeamFillBscTeamNames", "internalQuery"],
     ["applyTeamFillChunk", "internalMutation"],
   ])("%s is declared %s, not the public form", (fn, keyword) => {
     const src = readFileSync(join(__dirname, "teamFill.ts"), "utf8");
@@ -1113,8 +1122,8 @@ describe("NEO-287: the marketplace pause switch is readable by any signed-in use
 
 describe("NEO-289: the enrichment-fixture capture is internal and armed, never public", () => {
   /**
-   * `captureFromCli` runs the live Wikidata + ESPN lookups for every name on
-   * the deployment and `coverageReportFromCli` lists the deployment's names;
+   * `captureFromCli` runs the live Wikidata + ESPN lookups for every name the
+   * deployment's runs looked up and `coverageReportFromCli` lists those names;
    * both are `npx convex run` tools in the `resetSetBuilderDataFromCli` /
    * `bulkLoad` mould — reached WITHOUT `--identity`, so they carry no
    * `requireAdmin` and the declaration keyword plus the arming flag are the
@@ -1130,7 +1139,7 @@ describe("NEO-289: the enrichment-fixture capture is internal and armed, never p
     ["enrichmentFixtures.ts", "captureFromCli", "internalAction"],
     ["enrichmentFixtures.ts", "coverageReportFromCli", "internalAction"],
     ["enrichmentFixtures.ts", "resolveSportByQid", "internalQuery"],
-    ["enrichmentFixtures.ts", "listCaptureNames", "internalQuery"],
+    ["enrichmentFixtures.ts", "listLookedUpNames", "internalQuery"],
     ["adapters/wikidata.ts", "runCaptureLookups", "internalAction"],
   ])("%s :: %s is declared %s", (file, fn, keyword) => {
     const src = readFileSync(join(__dirname, file), "utf8");

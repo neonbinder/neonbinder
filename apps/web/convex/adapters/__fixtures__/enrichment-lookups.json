@@ -387,6 +387,16 @@
         "enwikiTitle": "Adolis Garc\u00eda"
       }
     },
+    "player|Q5369|adrian jordan": {
+      "kind": "player",
+      "name": "Adrian Jordan",
+      "result": null
+    },
+    "player|Q5369|agustin gomez": {
+      "kind": "player",
+      "name": "Agustin Gomez",
+      "result": null
+    },
     "player|Q5369|aj smith-shawver": {
       "kind": "player",
       "name": "AJ Smith-Shawver",
@@ -516,6 +526,27 @@
         "enwikiTitle": "Alec Bohm"
       }
     },
+    "player|Q5369|alejandro alvarez": {
+      "kind": "player",
+      "name": "Alejandro Alvarez",
+      "result": null
+    },
+    "player|Q5369|alejandro bracho": {
+      "kind": "player",
+      "name": "Alejandro Bracho",
+      "result": {
+        "wikidataId": "Q134391015",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "baseball player",
+        "birthYear": 1976
+      }
+    },
+    "player|Q5369|alejandro prieto": {
+      "kind": "player",
+      "name": "Alejandro Prieto",
+      "result": null
+    },
     "player|Q5369|alek thomas": {
       "kind": "player",
       "name": "Alek Thomas",
@@ -622,6 +653,11 @@
         "enwikiTitle": "Alex Kirilloff"
       }
     },
+    "player|Q5369|alex oviedo": {
+      "kind": "player",
+      "name": "Alex Oviedo",
+      "result": null
+    },
     "player|Q5369|alex rodriguez": {
       "kind": "player",
       "name": "Alex Rodriguez",
@@ -716,6 +752,29 @@
         "enwikiTitle": "Alexander Canario"
       }
     },
+    "player|Q5369|alexander delgado": {
+      "kind": "player",
+      "name": "Alexander Delgado",
+      "result": {
+        "wikidataId": "Q4716905",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Boston Red Sox",
+          "Huntsville Stars",
+          "Memphis Redbirds",
+          "Trenton Thunder"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1971,
+        "enwikiTitle": "Alex Delgado"
+      }
+    },
+    "player|Q5369|alexander portillo": {
+      "kind": "player",
+      "name": "Alexander Portillo",
+      "result": null
+    },
     "player|Q5369|alexis diaz": {
       "kind": "player",
       "name": "Alexis Diaz",
@@ -735,6 +794,16 @@
         "birthYear": 1968,
         "enwikiTitle": "Alex Diaz (outfielder)"
       }
+    },
+    "player|Q5369|alexis santaella": {
+      "kind": "player",
+      "name": "Alexis Santaella",
+      "result": null
+    },
+    "player|Q5369|alfredo ortiz": {
+      "kind": "player",
+      "name": "Alfredo Ortiz",
+      "result": null
     },
     "player|Q5369|alika williams": {
       "kind": "player",
@@ -778,6 +847,11 @@
         "birthYear": 1995,
         "enwikiTitle": "Allan Winans"
       }
+    },
+    "player|Q5369|amador arias": {
+      "kind": "player",
+      "name": "Amador Arias",
+      "result": null
     },
     "player|Q5369|andre dawson": {
       "kind": "player",
@@ -830,6 +904,11 @@
         "birthYear": 1998,
         "enwikiTitle": "Andre Lipcius"
       }
+    },
+    "player|Q5369|andres espinoza": {
+      "kind": "player",
+      "name": "Andres Espinoza",
+      "result": null
     },
     "player|Q5369|andres galarraga": {
       "kind": "player",
@@ -1101,6 +1180,16 @@
         "enwikiTitle": "Andy Van Slyke"
       }
     },
+    "player|Q5369|andy vicentino": {
+      "kind": "player",
+      "name": "Andy Vicentino",
+      "result": null
+    },
+    "player|Q5369|angel pocho gomez": {
+      "kind": "player",
+      "name": "Angel Pocho Gomez",
+      "result": null
+    },
     "player|Q5369|anthony rendon": {
       "kind": "player",
       "name": "Anthony Rendon",
@@ -1217,6 +1306,27 @@
         "enwikiTitle": "Anthony Volpe"
       }
     },
+    "player|Q5369|antonio armas jr.": {
+      "kind": "player",
+      "name": "Antonio Armas Jr.",
+      "result": null
+    },
+    "player|Q5369|antonio castillo": {
+      "kind": "player",
+      "name": "Antonio Castillo",
+      "result": null
+    },
+    "player|Q5369|argenis conde": {
+      "kind": "player",
+      "name": "Argenis Conde",
+      "result": {
+        "wikidataId": "Q134391018",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "baseball player",
+        "birthYear": 1966
+      }
+    },
     "player|Q5369|ariel prieto": {
       "kind": "player",
       "name": "Ariel Prieto",
@@ -1294,6 +1404,16 @@
         "birthYear": 1988,
         "enwikiTitle": "Aroldis Chapman"
       }
+    },
+    "player|Q5369|arquimedes rojas": {
+      "kind": "player",
+      "name": "Arquimedes Rojas",
+      "result": null
+    },
+    "player|Q5369|asdrubal estrada": {
+      "kind": "player",
+      "name": "Asdrubal Estrada",
+      "result": null
     },
     "player|Q5369|austin hays": {
       "kind": "player",
@@ -1472,6 +1592,20 @@
         "enwikiTitle": "Ben McDonald"
       }
     },
+    "player|Q5369|benito malave": {
+      "kind": "player",
+      "name": "Benito Malave",
+      "result": {
+        "wikidataId": "Q46372469",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Navegantes del Magallanes"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1961
+      }
+    },
     "player|Q5369|benji gil": {
       "kind": "player",
       "name": "Benji Gil",
@@ -1630,6 +1764,17 @@
         "enwikiTitle": "Blake Snell"
       }
     },
+    "player|Q5369|blas cedeno": {
+      "kind": "player",
+      "name": "Blas Cedeno",
+      "result": {
+        "wikidataId": "Q134391019",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "baseball player",
+        "birthYear": 1972
+      }
+    },
     "player|Q5369|bo bichette": {
       "kind": "player",
       "name": "Bo Bichette",
@@ -1672,6 +1817,65 @@
         "birthYear": 2000,
         "enwikiTitle": "Bo Naylor"
       }
+    },
+    "player|Q5369|boanerge corzo": {
+      "kind": "player",
+      "name": "Boanerge Corzo",
+      "result": null
+    },
+    "player|Q5369|bob abreu": {
+      "kind": "player",
+      "name": "Bob Abreu",
+      "result": {
+        "wikidataId": "Q1322518",
+        "careerTeams": [
+          {
+            "name": "Houston Astros",
+            "fromYear": 1996,
+            "toYear": 1997,
+            "wikidataId": "Q848117"
+          },
+          {
+            "name": "Philadelphia Phillies",
+            "fromYear": 1998,
+            "toYear": 2006,
+            "wikidataId": "Q650840"
+          },
+          {
+            "name": "New York Yankees",
+            "fromYear": 2006,
+            "toYear": 2008,
+            "wikidataId": "Q213417"
+          },
+          {
+            "name": "Los Angeles Angels",
+            "fromYear": 2009,
+            "toYear": 2012,
+            "wikidataId": "Q743309"
+          },
+          {
+            "name": "Los Angeles Dodgers",
+            "fromYear": 2012,
+            "toYear": 2012,
+            "wikidataId": "Q334634"
+          },
+          {
+            "name": "New York Mets",
+            "fromYear": 2014,
+            "toYear": 2014,
+            "wikidataId": "Q692417"
+          }
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player (born 1974)",
+        "birthYear": 1974,
+        "enwikiTitle": "Bobby Abreu"
+      }
+    },
+    "player|Q5369|bob humphryes co": {
+      "kind": "player",
+      "name": "Bob Humphryes CO",
+      "result": null
     },
     "player|Q5369|bobby bonilla": {
       "kind": "player",
@@ -2260,6 +2464,16 @@
         "enwikiTitle": "Cal Ripken Jr."
       }
     },
+    "player|Q5369|carlos aguilar": {
+      "kind": "player",
+      "name": "Carlos Aguilar",
+      "result": null
+    },
+    "player|Q5369|carlos alvarez": {
+      "kind": "player",
+      "name": "Carlos Alvarez",
+      "result": null
+    },
     "player|Q5369|carlos baerga": {
       "kind": "player",
       "name": "Carlos Baerga",
@@ -2279,6 +2493,11 @@
         "birthYear": 1968,
         "enwikiTitle": "Carlos Baerga"
       }
+    },
+    "player|Q5369|carlos burguillos": {
+      "kind": "player",
+      "name": "Carlos Burguillos",
+      "result": null
     },
     "player|Q5369|carlos correa": {
       "kind": "player",
@@ -2341,6 +2560,11 @@
         "enwikiTitle": "Carlos Delgado"
       }
     },
+    "player|Q5369|carlos moreno co": {
+      "kind": "player",
+      "name": "Carlos Moreno CO",
+      "result": null
+    },
     "player|Q5369|carlos perez": {
       "kind": "player",
       "name": "Carlos Perez",
@@ -2355,6 +2579,26 @@
         "birthYear": 1971,
         "enwikiTitle": "Carlos P\u00e9rez (pitcher)"
       }
+    },
+    "player|Q5369|carlos subero": {
+      "kind": "player",
+      "name": "Carlos Subero",
+      "result": {
+        "wikidataId": "Q5042682",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Tiburones de La Guaira"
+        ],
+        "isHallOfFame": false,
+        "description": "American/Venezuelan baseball player and manager",
+        "birthYear": 1972,
+        "enwikiTitle": "Carlos Subero"
+      }
+    },
+    "player|Q5369|carlos tovar trillo": {
+      "kind": "player",
+      "name": "Carlos Tovar Trillo",
+      "result": null
     },
     "player|Q5369|carmen mlodzinski": {
       "kind": "player",
@@ -2463,6 +2707,22 @@
         "description": "American baseball player (born 1994)",
         "birthYear": 1994,
         "enwikiTitle": "Cedric Mullins"
+      }
+    },
+    "player|Q5369|cesar diaz": {
+      "kind": "player",
+      "name": "Cesar Diaz",
+      "result": null
+    },
+    "player|Q5369|cesar morillo": {
+      "kind": "player",
+      "name": "Cesar Morillo",
+      "result": {
+        "wikidataId": "Q134391021",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "baseball player",
+        "birthYear": 1973
       }
     },
     "player|Q5369|chad curtis": {
@@ -2579,6 +2839,21 @@
         "birthYear": 1995,
         "enwikiTitle": "Chas McCormick"
       }
+    },
+    "player|Q5369|checklist 1-100": {
+      "kind": "player",
+      "name": "Checklist 1-100",
+      "result": null
+    },
+    "player|Q5369|checklist 101-200": {
+      "kind": "player",
+      "name": "Checklist 101-200",
+      "result": null
+    },
+    "player|Q5369|checklist 201-300": {
+      "kind": "player",
+      "name": "Checklist 201-300",
+      "result": null
     },
     "player|Q5369|chili davis": {
       "kind": "player",
@@ -2780,6 +3055,11 @@
         "birthYear": 2000,
         "enwikiTitle": "CJ Abrams"
       }
+    },
+    "player|Q5369|clasico de la chinita": {
+      "kind": "player",
+      "name": "Clasico De La Chinita",
+      "result": null
     },
     "player|Q5369|clayton kershaw": {
       "kind": "player",
@@ -3109,6 +3389,11 @@
         "enwikiTitle": "Craig Kimbrel"
       }
     },
+    "player|Q5369|cristobal colon": {
+      "kind": "player",
+      "name": "Cristobal Colon",
+      "result": null
+    },
     "player|Q5369|curtis goodwin": {
       "kind": "player",
       "name": "Curtis Goodwin",
@@ -3158,6 +3443,16 @@
         "enwikiTitle": "Curtis Mead"
       }
     },
+    "player|Q5369|damaso betancourt": {
+      "kind": "player",
+      "name": "Damaso Betancourt",
+      "result": null
+    },
+    "player|Q5369|dan urbina": {
+      "kind": "player",
+      "name": "Dan Urbina",
+      "result": null
+    },
     "player|Q5369|dane myers": {
       "kind": "player",
       "name": "Dane Myers",
@@ -3168,6 +3463,22 @@
         "description": "American baseball player (born 1996)",
         "birthYear": 1996,
         "enwikiTitle": "Dane Myers"
+      }
+    },
+    "player|Q5369|danilo leon": {
+      "kind": "player",
+      "name": "Danilo Leon",
+      "result": {
+        "wikidataId": "Q5219611",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Nashville Sounds",
+          "Texas Rangers"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1967,
+        "enwikiTitle": "Danilo Le\u00f3n"
       }
     },
     "player|Q5369|danny tartabull": {
@@ -3302,6 +3613,11 @@
         "enwikiTitle": "Darryl Strawberry"
       }
     },
+    "player|Q5369|darwin bracho": {
+      "kind": "player",
+      "name": "Darwin Bracho",
+      "result": null
+    },
     "player|Q5369|daulton varsho": {
       "kind": "player",
       "name": "Daulton Varsho",
@@ -3434,6 +3750,25 @@
         "enwikiTitle": "David Bednar (baseball)"
       }
     },
+    "player|Q5369|david concepcion": {
+      "kind": "player",
+      "name": "David Concepcion",
+      "result": {
+        "wikidataId": "Q5228579",
+        "careerTeams": [
+          {
+            "name": "Cincinnati Reds",
+            "fromYear": 1970,
+            "toYear": 1988,
+            "wikidataId": "Q826751"
+          }
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1948,
+        "enwikiTitle": "Dave Concepci\u00f3n"
+      }
+    },
     "player|Q5369|david cone": {
       "kind": "player",
       "name": "David Cone",
@@ -3465,6 +3800,11 @@
         "enwikiTitle": "David Hamilton (baseball)"
       }
     },
+    "player|Q5369|david jauss": {
+      "kind": "player",
+      "name": "David Jauss",
+      "result": null
+    },
     "player|Q5369|david justice": {
       "kind": "player",
       "name": "David Justice",
@@ -3489,6 +3829,11 @@
         "birthYear": 1966,
         "enwikiTitle": "David Justice"
       }
+    },
+    "player|Q5369|david montiel": {
+      "kind": "player",
+      "name": "David Montiel",
+      "result": null
     },
     "player|Q5369|david segui": {
       "kind": "player",
@@ -3582,6 +3927,11 @@
         "birthYear": 1967,
         "enwikiTitle": "Deion Sanders"
       }
+    },
+    "player|Q5369|delgados": {
+      "kind": "player",
+      "name": "Delgados",
+      "result": null
     },
     "player|Q5369|dennis eckersley": {
       "kind": "player",
@@ -3728,6 +4078,28 @@
         "enwikiTitle": "Devon White (baseball)"
       }
     },
+    "player|Q5369|didimo bracho": {
+      "kind": "player",
+      "name": "Didimo Bracho",
+      "result": null
+    },
+    "player|Q5369|domingo carrasquel": {
+      "kind": "player",
+      "name": "Domingo Carrasquel",
+      "result": {
+        "wikidataId": "Q27974356",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player (1937-2016)",
+        "birthYear": 1937,
+        "enwikiTitle": "Domingo Carrasquel"
+      }
+    },
+    "player|Q5369|domingo e. carrasquel": {
+      "kind": "player",
+      "name": "Domingo E. Carrasquel",
+      "result": null
+    },
     "player|Q5369|dominic canzone": {
       "kind": "player",
       "name": "Dominic Canzone",
@@ -3758,6 +4130,11 @@
         "birthYear": 1961,
         "enwikiTitle": "Don Mattingly"
       }
+    },
+    "player|Q5369|douglas aguillar": {
+      "kind": "player",
+      "name": "Douglas Aguillar",
+      "result": null
     },
     "player|Q5369|drew millas": {
       "kind": "player",
@@ -3916,6 +4293,20 @@
         "enwikiTitle": "Eddie Rosario"
       }
     },
+    "player|Q5369|edgar alfonzo": {
+      "kind": "player",
+      "name": "Edgar Alfonzo",
+      "result": {
+        "wikidataId": "Q27916836",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "\u00c1guilas del Zulia"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1984
+      }
+    },
     "player|Q5369|edgar martinez": {
       "kind": "player",
       "name": "Edgar Martinez",
@@ -3934,6 +4325,16 @@
         "birthYear": 1963,
         "enwikiTitle": "Edgar Mart\u00ednez"
       }
+    },
+    "player|Q5369|edgar naveda": {
+      "kind": "player",
+      "name": "Edgar Naveda",
+      "result": null
+    },
+    "player|Q5369|edgar tovar": {
+      "kind": "player",
+      "name": "Edgar Tovar",
+      "result": null
     },
     "player|Q5369|edgardo alfonzo": {
       "kind": "player",
@@ -4017,6 +4418,20 @@
         "enwikiTitle": "Edouard Julien"
       }
     },
+    "player|Q5369|eduardo rios": {
+      "kind": "player",
+      "name": "Eduardo Rios",
+      "result": {
+        "wikidataId": "Q12606666",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Lotte Giants"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1972
+      }
+    },
     "player|Q5369|eduardo rodriguez": {
       "kind": "player",
       "name": "Eduardo Rodriguez",
@@ -4030,6 +4445,23 @@
         "description": "Puerto Rican baseball player (1952-2009)",
         "birthYear": 1952,
         "enwikiTitle": "Eduardo Rodr\u00edguez (right-handed pitcher)"
+      }
+    },
+    "player|Q5369|eduardo zambrano": {
+      "kind": "player",
+      "name": "Eduardo Zambrano",
+      "result": {
+        "wikidataId": "Q3719865",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Chicago Cubs",
+          "Tiburones de La Guaira",
+          "Trenton Thunder"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1966,
+        "enwikiTitle": "Eduardo Zambrano"
       }
     },
     "player|Q5369|edwin diaz": {
@@ -4046,6 +4478,11 @@
         "birthYear": 1975,
         "enwikiTitle": "Edwin D\u00edaz (second baseman)"
       }
+    },
+    "player|Q5369|edwin marquez": {
+      "kind": "player",
+      "name": "Edwin Marquez",
+      "result": null
     },
     "player|Q5369|elias diaz": {
       "kind": "player",
@@ -4070,6 +4507,11 @@
         "birthYear": 1990,
         "enwikiTitle": "El\u00edas D\u00edaz"
       }
+    },
+    "player|Q5369|elias lugo": {
+      "kind": "player",
+      "name": "Elias Lugo",
+      "result": null
     },
     "player|Q5369|elly de la cruz": {
       "kind": "player",
@@ -4116,6 +4558,11 @@
         "enwikiTitle": "Emerson Hancock"
       }
     },
+    "player|Q5369|eminson soto": {
+      "kind": "player",
+      "name": "Eminson Soto",
+      "result": null
+    },
     "player|Q5369|emmanuel clase": {
       "kind": "player",
       "name": "Emmanuel Clase",
@@ -4155,6 +4602,11 @@
         "enwikiTitle": "Emmet Sheehan"
       }
     },
+    "player|Q5369|ender perozo": {
+      "kind": "player",
+      "name": "Ender Perozo",
+      "result": null
+    },
     "player|Q5369|endy rodriguez": {
       "kind": "player",
       "name": "Endy Rodriguez",
@@ -4190,6 +4642,16 @@
         "enwikiTitle": "Eric Karros"
       }
     },
+    "player|Q5369|erick ojeda": {
+      "kind": "player",
+      "name": "Erick Ojeda",
+      "result": null
+    },
+    "player|Q5369|erick perez": {
+      "kind": "player",
+      "name": "Erick Perez",
+      "result": null
+    },
     "player|Q5369|erik hanson": {
       "kind": "player",
       "name": "Erik Hanson",
@@ -4208,6 +4670,11 @@
         "birthYear": 1965,
         "enwikiTitle": "Erik Hanson (baseball)"
       }
+    },
+    "player|Q5369|esmili guerra": {
+      "kind": "player",
+      "name": "Esmili Guerra",
+      "result": null
     },
     "player|Q5369|esteury ruiz": {
       "kind": "player",
@@ -4340,6 +4807,11 @@
         "enwikiTitle": "F\u00e9lix Bautista (baseball)"
       }
     },
+    "player|Q5369|fernando mejias": {
+      "kind": "player",
+      "name": "Fernando Mejias",
+      "result": null
+    },
     "player|Q5369|fernando tatis jr.": {
       "kind": "player",
       "name": "Fernando Tatis Jr.",
@@ -4462,6 +4934,11 @@
         "birthYear": 1993,
         "enwikiTitle": "Francisco Lindor"
       }
+    },
+    "player|Q5369|francisco munoz": {
+      "kind": "player",
+      "name": "Francisco Munoz",
+      "result": null
     },
     "player|Q5369|frank rodriguez": {
       "kind": "player",
@@ -4602,6 +5079,11 @@
         "birthYear": 1989,
         "enwikiTitle": "Freddie Freeman"
       }
+    },
+    "player|Q5369|freddy gonzalez": {
+      "kind": "player",
+      "name": "Freddy Gonzalez",
+      "result": null
     },
     "player|Q5369|freddy peralta": {
       "kind": "player",
@@ -4930,6 +5412,11 @@
         "enwikiTitle": "Giancarlo Stanton"
       }
     },
+    "player|Q5369|gilberto marcano co": {
+      "kind": "player",
+      "name": "Gilberto Marcano CO",
+      "result": null
+    },
     "player|Q5369|gleyber torres": {
       "kind": "player",
       "name": "Gleyber Torres",
@@ -5124,6 +5611,26 @@
         "enwikiTitle": "Gregg Zaun"
       }
     },
+    "player|Q5369|gregorio machado": {
+      "kind": "player",
+      "name": "Gregorio Machado",
+      "result": {
+        "wikidataId": "Q27430250",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Saraperos de Saltillo"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1949,
+        "enwikiTitle": "Gregorio Machado"
+      }
+    },
+    "player|Q5369|guillermo larreal": {
+      "kind": "player",
+      "name": "Guillermo Larreal",
+      "result": null
+    },
     "player|Q5369|gunnar henderson": {
       "kind": "player",
       "name": "Gunnar Henderson",
@@ -5141,6 +5648,11 @@
         "birthYear": 2001,
         "enwikiTitle": "Gunnar Henderson"
       }
+    },
+    "player|Q5369|gustavo jose gil": {
+      "kind": "player",
+      "name": "Gustavo Jose Gil",
+      "result": null
     },
     "player|Q5369|ha-seong kim": {
       "kind": "player",
@@ -5196,6 +5708,31 @@
         "birthYear": 1965,
         "enwikiTitle": "Hal Morris"
       }
+    },
+    "player|Q5369|heberto andrade": {
+      "kind": "player",
+      "name": "Heberto Andrade",
+      "result": null
+    },
+    "player|Q5369|hector ortega": {
+      "kind": "player",
+      "name": "Hector Ortega",
+      "result": null
+    },
+    "player|Q5369|hector rincones": {
+      "kind": "player",
+      "name": "Hector Rincones",
+      "result": null
+    },
+    "player|Q5369|hector ugueto": {
+      "kind": "player",
+      "name": "Hector Ugueto",
+      "result": null
+    },
+    "player|Q5369|henry centeno": {
+      "kind": "player",
+      "name": "Henry Centeno",
+      "result": null
     },
     "player|Q5369|henry davis": {
       "kind": "player",
@@ -5265,6 +5802,16 @@
         "birthYear": 1968,
         "enwikiTitle": "Hideo Nomo"
       }
+    },
+    "player|Q5369|homer baez": {
+      "kind": "player",
+      "name": "Homer Baez",
+      "result": null
+    },
+    "player|Q5369|hugo pinero": {
+      "kind": "player",
+      "name": "Hugo Pinero",
+      "result": null
     },
     "player|Q5369|hunter brown": {
       "kind": "player",
@@ -5369,6 +5916,21 @@
         "wikidataId": "Q600"
       }
     },
+    "player|Q5369|ifrain linares": {
+      "kind": "player",
+      "name": "Ifrain Linares",
+      "result": null
+    },
+    "player|Q5369|igor oropeza": {
+      "kind": "player",
+      "name": "Igor Oropeza",
+      "result": null
+    },
+    "player|Q5369|importados": {
+      "kind": "player",
+      "name": "Importados",
+      "result": null
+    },
     "player|Q5369|irving lopez": {
       "kind": "player",
       "name": "Irving Lopez",
@@ -5447,9 +6009,29 @@
         "enwikiTitle": "Isaiah Campbell"
       }
     },
+    "player|Q5369|isbel cardona": {
+      "kind": "player",
+      "name": "Isbel Cardona",
+      "result": null
+    },
     "player|Q5369|ismael valdes": {
       "kind": "player",
       "name": "Ismael Valdes",
+      "result": null
+    },
+    "player|Q5369|ismel zabala": {
+      "kind": "player",
+      "name": "Ismel Zabala",
+      "result": null
+    },
+    "player|Q5369|ivan arteaga": {
+      "kind": "player",
+      "name": "Ivan Arteaga",
+      "result": null
+    },
+    "player|Q5369|ivan paz montiel": {
+      "kind": "player",
+      "name": "Ivan Paz Montiel",
       "result": null
     },
     "player|Q5369|ivan rodriguez": {
@@ -5525,6 +6107,31 @@
         "birthYear": 1987,
         "enwikiTitle": "J. D. Martinez"
       }
+    },
+    "player|Q5369|j.e. competencias": {
+      "kind": "player",
+      "name": "J.E. Competencias",
+      "result": null
+    },
+    "player|Q5369|j.e. criollos": {
+      "kind": "player",
+      "name": "J.E. Criollos",
+      "result": null
+    },
+    "player|Q5369|j.e. directiva": {
+      "kind": "player",
+      "name": "J.E. Directiva",
+      "result": null
+    },
+    "player|Q5369|j.e. fielder": {
+      "kind": "player",
+      "name": "J.E. Fielder",
+      "result": null
+    },
+    "player|Q5369|j.e. jonrrones": {
+      "kind": "player",
+      "name": "J.E. Jonrrones",
+      "result": null
     },
     "player|Q5369|j.p. crawford": {
       "kind": "player",
@@ -5816,6 +6423,26 @@
         "description": "American baseball player (born 1999)",
         "birthYear": 1999,
         "enwikiTitle": "Jacob Young (baseball)"
+      }
+    },
+    "player|Q5369|jaime torres": {
+      "kind": "player",
+      "name": "Jaime Torres",
+      "result": null
+    },
+    "player|Q5369|jairo ramos": {
+      "kind": "player",
+      "name": "Jairo Ramos",
+      "result": {
+        "wikidataId": "Q3806208",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Tiburones de La Guaira"
+        ],
+        "isHallOfFame": false,
+        "description": "Olympic baseball player",
+        "birthYear": 1971,
+        "enwikiTitle": "Jairo Ramos Gizzi"
       }
     },
     "player|Q5369|jake burger": {
@@ -6494,6 +7121,78 @@
         "enwikiTitle": "Jeremy Pe\u00f1a"
       }
     },
+    "player|Q5369|jesus alfaro": {
+      "kind": "player",
+      "name": "Jesus Alfaro",
+      "result": {
+        "wikidataId": "Q59926289",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1958
+      }
+    },
+    "player|Q5369|jesus avila": {
+      "kind": "player",
+      "name": "Jesus Avila",
+      "result": null
+    },
+    "player|Q5369|jesus azuaje": {
+      "kind": "player",
+      "name": "Jesus Azuaje",
+      "result": null
+    },
+    "player|Q5369|jesus chalao mendez": {
+      "kind": "player",
+      "name": "Jesus Chalao Mendez",
+      "result": null
+    },
+    "player|Q5369|jesus garces": {
+      "kind": "player",
+      "name": "Jesus Garces",
+      "result": null
+    },
+    "player|Q5369|jesus gonzalez": {
+      "kind": "player",
+      "name": "Jesus Gonzalez",
+      "result": {
+        "wikidataId": "Q134391027",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "baseball player",
+        "birthYear": 1966
+      }
+    },
+    "player|Q5369|jesus laya": {
+      "kind": "player",
+      "name": "Jesus Laya",
+      "result": null
+    },
+    "player|Q5369|jesus lugo": {
+      "kind": "player",
+      "name": "Jesus Lugo",
+      "result": null
+    },
+    "player|Q5369|jesus marquez": {
+      "kind": "player",
+      "name": "Jesus Marquez",
+      "result": null
+    },
+    "player|Q5369|jesus mendoza": {
+      "kind": "player",
+      "name": "Jesus Mendoza",
+      "result": null
+    },
+    "player|Q5369|jesus tiamo co": {
+      "kind": "player",
+      "name": "Jesus Tiamo CO",
+      "result": null
+    },
+    "player|Q5369|jesus ugueto": {
+      "kind": "player",
+      "name": "Jesus Ugueto",
+      "result": null
+    },
     "player|Q5369|jim abbott": {
       "kind": "player",
       "name": "Jim Abbott",
@@ -6862,6 +7561,17 @@
         "enwikiTitle": "Joey Wiemer"
       }
     },
+    "player|Q5369|johan lopez": {
+      "kind": "player",
+      "name": "Johan Lopez",
+      "result": {
+        "wikidataId": "Q134391030",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "baseball player",
+        "birthYear": 1975
+      }
+    },
     "player|Q5369|johan rojas": {
       "kind": "player",
       "name": "Johan Rojas",
@@ -7011,6 +7721,11 @@
         "enwikiTitle": "Johnny Bench"
       }
     },
+    "player|Q5369|johnny carvajal": {
+      "kind": "player",
+      "name": "Johnny Carvajal",
+      "result": null
+    },
     "player|Q5369|johnny damon": {
       "kind": "player",
       "name": "Johnny Damon",
@@ -7030,6 +7745,11 @@
         "birthYear": 1973,
         "enwikiTitle": "Johnny Damon"
       }
+    },
+    "player|Q5369|johnny gonzalez": {
+      "kind": "player",
+      "name": "Johnny Gonzalez",
+      "result": null
     },
     "player|Q5369|jon nunnally": {
       "kind": "player",
@@ -7309,6 +8029,26 @@
         "enwikiTitle": "Jorge Soler"
       }
     },
+    "player|Q5369|jorge uribe": {
+      "kind": "player",
+      "name": "Jorge Uribe",
+      "result": null
+    },
+    "player|Q5369|jose alguacil": {
+      "kind": "player",
+      "name": "Jose Alguacil",
+      "result": {
+        "wikidataId": "Q27805430",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "San Francisco Giants"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball coach",
+        "birthYear": 1972,
+        "enwikiTitle": "Jos\u00e9 Alguacil"
+      }
+    },
     "player|Q5369|jose altuve": {
       "kind": "player",
       "name": "Jose Altuve",
@@ -7326,6 +8066,11 @@
         "birthYear": 1990,
         "enwikiTitle": "Jose Altuve"
       }
+    },
+    "player|Q5369|jose amado": {
+      "kind": "player",
+      "name": "Jose Amado",
+      "result": null
     },
     "player|Q5369|jose berrios": {
       "kind": "player",
@@ -7374,6 +8119,33 @@
         "enwikiTitle": "Jose Canseco"
       }
     },
+    "player|Q5369|jose centeno": {
+      "kind": "player",
+      "name": "Jose Centeno",
+      "result": {
+        "wikidataId": "Q134391031",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "baseball player",
+        "birthYear": 1972
+      }
+    },
+    "player|Q5369|jose cheo garcia": {
+      "kind": "player",
+      "name": "Jose Cheo Garcia",
+      "result": null
+    },
+    "player|Q5369|jose correa": {
+      "kind": "player",
+      "name": "Jose Correa",
+      "result": {
+        "wikidataId": "Q134391032",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "baseball player",
+        "birthYear": 1972
+      }
+    },
     "player|Q5369|jose fermin": {
       "kind": "player",
       "name": "Jose Fermin",
@@ -7385,6 +8157,36 @@
         "birthYear": 1999,
         "enwikiTitle": "Jos\u00e9 Ferm\u00edn"
       }
+    },
+    "player|Q5369|jose francisco malave": {
+      "kind": "player",
+      "name": "Jose Francisco Malave",
+      "result": {
+        "wikidataId": "Q624239",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Boston Red Sox"
+        ],
+        "isHallOfFame": false,
+        "description": "baseball player",
+        "birthYear": 1971,
+        "enwikiTitle": "Jos\u00e9 Malav\u00e9"
+      }
+    },
+    "player|Q5369|jose g. urdaneta": {
+      "kind": "player",
+      "name": "Jose G. Urdaneta",
+      "result": null
+    },
+    "player|Q5369|jose luis ramos": {
+      "kind": "player",
+      "name": "Jose Luis Ramos",
+      "result": null
+    },
+    "player|Q5369|jose luis zambrano": {
+      "kind": "player",
+      "name": "Jose Luis Zambrano",
+      "result": null
     },
     "player|Q5369|jose mesa": {
       "kind": "player",
@@ -7460,6 +8262,17 @@
         "enwikiTitle": "Jose Siri"
       }
     },
+    "player|Q5369|jose solarte": {
+      "kind": "player",
+      "name": "Jose Solarte",
+      "result": {
+        "wikidataId": "Q134391033",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "baseball player",
+        "birthYear": 1965
+      }
+    },
     "player|Q5369|jose soriano": {
       "kind": "player",
       "name": "Jose Soriano",
@@ -7495,6 +8308,11 @@
         "birthYear": 2001,
         "enwikiTitle": "Jos\u00e9 Tena (baseball)"
       }
+    },
+    "player|Q5369|jose villa": {
+      "kind": "player",
+      "name": "Jose Villa",
+      "result": null
     },
     "player|Q5369|josh gibson": {
       "kind": "player",
@@ -7567,6 +8385,49 @@
         "enwikiTitle": "Josiah Gray"
       }
     },
+    "player|Q5369|juan carlos moreno": {
+      "kind": "player",
+      "name": "Juan Carlos Moreno",
+      "result": {
+        "wikidataId": "Q6299326",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "Cuban baseball player",
+        "birthYear": 1975,
+        "enwikiTitle": "Juan Carlos Moreno (baseball)"
+      }
+    },
+    "player|Q5369|juan carlos pulido": {
+      "kind": "player",
+      "name": "Juan Carlos Pulido",
+      "result": {
+        "wikidataId": "Q11295205",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Minnesota Twins",
+          "Rochester Red Wings"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1971,
+        "enwikiTitle": "Carlos Pulido"
+      }
+    },
+    "player|Q5369|juan francisco castillo": {
+      "kind": "player",
+      "name": "Juan Francisco Castillo",
+      "result": {
+        "wikidataId": "Q6299479",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "New York Mets"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1970,
+        "enwikiTitle": "Juan Castillo (pitcher)"
+      }
+    },
     "player|Q5369|juan gonzalez": {
       "kind": "player",
       "name": "Juan Gonzalez",
@@ -7583,6 +8444,16 @@
         "birthYear": 1969,
         "enwikiTitle": "Juan Gonz\u00e1lez (baseball)"
       }
+    },
+    "player|Q5369|juan munoz": {
+      "kind": "player",
+      "name": "Juan Munoz",
+      "result": null
+    },
+    "player|Q5369|juan querecuto": {
+      "kind": "player",
+      "name": "Juan Querecuto",
+      "result": null
     },
     "player|Q5369|juan soto": {
       "kind": "player",
@@ -7643,6 +8514,11 @@
         "birthYear": 1973,
         "enwikiTitle": "Juli\u00e1n Tav\u00e1rez"
       }
+    },
+    "player|Q5369|julio cesar strauss": {
+      "kind": "player",
+      "name": "Julio Cesar Strauss",
+      "result": null
     },
     "player|Q5369|julio rodriguez": {
       "kind": "player",
@@ -7892,6 +8768,11 @@
         "birthYear": 1983,
         "enwikiTitle": "Justin Verlander"
       }
+    },
+    "player|Q5369|justo massaro": {
+      "kind": "player",
+      "name": "Justo Massaro",
+      "result": null
     },
     "player|Q5369|karim garcia": {
       "kind": "player",
@@ -8269,6 +9150,11 @@
         "birthYear": 1991,
         "enwikiTitle": "Kevin Gausman"
       }
+    },
+    "player|Q5369|kevin noriega": {
+      "kind": "player",
+      "name": "Kevin Noriega",
+      "result": null
     },
     "player|Q5369|kirby puckett": {
       "kind": "player",
@@ -8693,6 +9579,11 @@
         "enwikiTitle": "Lawrence Butler (baseball)"
       }
     },
+    "player|Q5369|leal": {
+      "kind": "player",
+      "name": "Leal",
+      "result": null
+    },
     "player|Q5369|lee smith": {
       "kind": "player",
       "name": "Lee Smith",
@@ -8743,6 +9634,22 @@
         "enwikiTitle": "Leody Taveras"
       }
     },
+    "player|Q5369|lester straker": {
+      "kind": "player",
+      "name": "Lester Straker",
+      "result": {
+        "wikidataId": "Q6530008",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Minnesota Twins",
+          "Toledo Mud Hens"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1959,
+        "enwikiTitle": "Les Straker"
+      }
+    },
     "player|Q5369|liam hendriks": {
       "kind": "player",
       "name": "Liam Hendriks",
@@ -8762,6 +9669,11 @@
         "birthYear": 1989,
         "enwikiTitle": "Liam Hendriks"
       }
+    },
+    "player|Q5369|lino connell": {
+      "kind": "player",
+      "name": "Lino Connell",
+      "result": null
     },
     "player|Q5369|logan o'hoppe": {
       "kind": "player",
@@ -8804,6 +9716,16 @@
         "birthYear": 1996,
         "enwikiTitle": "Logan Webb"
       }
+    },
+    "player|Q5369|los grandes en la serie": {
+      "kind": "player",
+      "name": "Los Grandes En La Serie",
+      "result": null
+    },
+    "player|Q5369|los hermanos zambrano": {
+      "kind": "player",
+      "name": "Los Hermanos Zambrano",
+      "result": null
     },
     "player|Q5369|lou gehrig": {
       "kind": "player",
@@ -8884,6 +9806,11 @@
         "enwikiTitle": "Luis Arr\u00e1ez"
       }
     },
+    "player|Q5369|luis burelli": {
+      "kind": "player",
+      "name": "Luis Burelli",
+      "result": null
+    },
     "player|Q5369|luis castillo": {
       "kind": "player",
       "name": "Luis Castillo",
@@ -8900,6 +9827,40 @@
         "enwikiTitle": "Luis Castillo (second baseman)"
       }
     },
+    "player|Q5369|luis colmenares": {
+      "kind": "player",
+      "name": "Luis Colmenares",
+      "result": {
+        "wikidataId": "Q27245078",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Tigres de Aragua"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player (1976-)",
+        "birthYear": 1976
+      }
+    },
+    "player|Q5369|luis dorante": {
+      "kind": "player",
+      "name": "Luis Dorante",
+      "result": {
+        "wikidataId": "Q6700482",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Tiburones de La Guaira"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball coach",
+        "birthYear": 1968,
+        "enwikiTitle": "Luis Dorante"
+      }
+    },
+    "player|Q5369|luis lunar": {
+      "kind": "player",
+      "name": "Luis Lunar",
+      "result": null
+    },
     "player|Q5369|luis matos": {
       "kind": "player",
       "name": "Luis Matos",
@@ -8915,6 +9876,26 @@
         "description": "Puerto Rican baseball player",
         "birthYear": 1978,
         "enwikiTitle": "Luis Matos (baseball, born 1978)"
+      }
+    },
+    "player|Q5369|luis rafael salazar": {
+      "kind": "player",
+      "name": "Luis Rafael Salazar",
+      "result": null
+    },
+    "player|Q5369|luis raven": {
+      "kind": "player",
+      "name": "Luis Raven",
+      "result": {
+        "wikidataId": "Q6701034",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Tiburones de La Guaira"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1968,
+        "enwikiTitle": "Luis Raven"
       }
     },
     "player|Q5369|luis robert jr.": {
@@ -8947,6 +9928,11 @@
         "birthYear": 1997,
         "enwikiTitle": "Luis Robert Jr."
       }
+    },
+    "player|Q5369|luis tinoco": {
+      "kind": "player",
+      "name": "Luis Tinoco",
+      "result": null
     },
     "player|Q5369|luken baker": {
       "kind": "player",
@@ -9007,6 +9993,11 @@
         "birthYear": 2000,
         "enwikiTitle": "Maikel Garc\u00eda"
       }
+    },
+    "player|Q5369|malvin matos": {
+      "kind": "player",
+      "name": "Malvin Matos",
+      "result": null
     },
     "player|Q5369|manny machado": {
       "kind": "player",
@@ -9102,6 +10093,11 @@
         "enwikiTitle": "Manny Ramirez"
       }
     },
+    "player|Q5369|manuel gonzalez": {
+      "kind": "player",
+      "name": "Manuel Gonzalez",
+      "result": null
+    },
     "player|Q5369|marc newfield": {
       "kind": "player",
       "name": "Marc Newfield",
@@ -9131,6 +10127,11 @@
         "birthYear": 2001,
         "enwikiTitle": "Marco Luciano"
       }
+    },
+    "player|Q5369|marcos manrique": {
+      "kind": "player",
+      "name": "Marcos Manrique",
+      "result": null
     },
     "player|Q5369|marcus semien": {
       "kind": "player",
@@ -9273,6 +10274,11 @@
         "wikidataId": "Q382303"
       }
     },
+    "player|Q5369|mario gonzalez": {
+      "kind": "player",
+      "name": "Mario Gonzalez",
+      "result": null
+    },
     "player|Q5369|mark grace": {
       "kind": "player",
       "name": "Mark Grace",
@@ -9359,6 +10365,11 @@
     "player|Q5369|mark smith": {
       "kind": "player",
       "name": "Mark Smith",
+      "result": null
+    },
+    "player|Q5369|marlon nava": {
+      "kind": "player",
+      "name": "Marlon Nava",
       "result": null
     },
     "player|Q5369|marquis grissom": {
@@ -9553,6 +10564,16 @@
         "enwikiTitle": "Matthew Liberatore"
       }
     },
+    "player|Q5369|mauricio ruiz": {
+      "kind": "player",
+      "name": "Mauricio Ruiz",
+      "result": null
+    },
+    "player|Q5369|mauro zerpa": {
+      "kind": "player",
+      "name": "Mauro Zerpa",
+      "result": null
+    },
     "player|Q5369|max fried": {
       "kind": "player",
       "name": "Max Fried",
@@ -9660,6 +10681,11 @@
         "birthYear": 1984,
         "enwikiTitle": "Max Scherzer"
       }
+    },
+    "player|Q5369|melchor pacheco": {
+      "kind": "player",
+      "name": "Melchor Pacheco",
+      "result": null
     },
     "player|Q5369|merrill kelly": {
       "kind": "player",
@@ -9895,6 +10921,21 @@
         "enwikiTitle": "Mickey Moniak"
       }
     },
+    "player|Q5369|miguel angel garcia": {
+      "kind": "player",
+      "name": "Miguel Angel Garcia",
+      "result": {
+        "wikidataId": "Q6844569",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Pittsburgh Pirates"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1967,
+        "enwikiTitle": "Miguel Garc\u00eda (baseball)"
+      }
+    },
     "player|Q5369|miguel cabrera": {
       "kind": "player",
       "name": "Miguel Cabrera",
@@ -9919,6 +10960,26 @@
         "birthYear": 1983,
         "enwikiTitle": "Miguel Cabrera"
       }
+    },
+    "player|Q5369|miguel campos": {
+      "kind": "player",
+      "name": "Miguel Campos",
+      "result": null
+    },
+    "player|Q5369|miguel castellanos": {
+      "kind": "player",
+      "name": "Miguel Castellanos",
+      "result": null
+    },
+    "player|Q5369|miguel nieves": {
+      "kind": "player",
+      "name": "Miguel Nieves",
+      "result": null
+    },
+    "player|Q5369|miguel rendon": {
+      "kind": "player",
+      "name": "Miguel Rendon",
+      "result": null
     },
     "player|Q5369|mike blowers": {
       "kind": "player",
@@ -10270,6 +11331,21 @@
         "enwikiTitle": "Nathaniel Lowe"
       }
     },
+    "player|Q5369|nelson canas": {
+      "kind": "player",
+      "name": "Nelson Canas",
+      "result": null
+    },
+    "player|Q5369|nelson porte": {
+      "kind": "player",
+      "name": "Nelson Porte",
+      "result": null
+    },
+    "player|Q5369|nestor serrano": {
+      "kind": "player",
+      "name": "Nestor Serrano",
+      "result": null
+    },
     "player|Q5369|nick castellanos": {
       "kind": "player",
       "name": "Nick Castellanos",
@@ -10362,6 +11438,16 @@
         "birthYear": 1997,
         "enwikiTitle": "Nico Hoerner"
       }
+    },
+    "player|Q5369|nigel alejo": {
+      "kind": "player",
+      "name": "Nigel Alejo",
+      "result": null
+    },
+    "player|Q5369|noe maduro": {
+      "kind": "player",
+      "name": "Noe Maduro",
+      "result": null
     },
     "player|Q5369|noelvi marte": {
       "kind": "player",
@@ -10473,6 +11559,42 @@
         "enwikiTitle": "Nolan Schanuel"
       }
     },
+    "player|Q5369|omar bencomo": {
+      "kind": "player",
+      "name": "Omar Bencomo",
+      "result": {
+        "wikidataId": "Q28925179",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Rochester Red Wings",
+          "Tecolotes de Nuevo Laredo"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player (1989-)",
+        "birthYear": 1989,
+        "enwikiTitle": "Omar Bencomo"
+      }
+    },
+    "player|Q5369|omar malave": {
+      "kind": "player",
+      "name": "Omar Malave",
+      "result": {
+        "wikidataId": "Q7089753",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Cardenales de Lara"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball coach (1963\u20132021)",
+        "birthYear": 1963,
+        "enwikiTitle": "Omar Malav\u00e9"
+      }
+    },
+    "player|Q5369|omar sanchez": {
+      "kind": "player",
+      "name": "Omar Sanchez",
+      "result": null
+    },
     "player|Q5369|oneil cruz": {
       "kind": "player",
       "name": "Oneil Cruz",
@@ -10536,6 +11658,29 @@
     "player|Q5369|osleivis basabe": {
       "kind": "player",
       "name": "Osleivis Basabe",
+      "result": null
+    },
+    "player|Q5369|oswaldo guillen": {
+      "kind": "player",
+      "name": "Oswaldo Guillen",
+      "result": {
+        "wikidataId": "Q2609164",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Atlanta Braves",
+          "Baltimore Orioles",
+          "Chicago White Sox",
+          "Tiburones de La Guaira"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan Major League Baseball player, coach, manager",
+        "birthYear": 1964,
+        "enwikiTitle": "Ozzie Guill\u00e9n"
+      }
+    },
+    "player|Q5369|oswaldo villalobos": {
+      "kind": "player",
+      "name": "Oswaldo Villalobos",
       "result": null
     },
     "player|Q5369|owen white": {
@@ -10757,6 +11902,11 @@
         "enwikiTitle": "Paul Skenes"
       }
     },
+    "player|Q5369|pedro belmonte": {
+      "kind": "player",
+      "name": "Pedro Belmonte",
+      "result": null
+    },
     "player|Q5369|pedro martinez": {
       "kind": "player",
       "name": "Pedro Martinez",
@@ -10860,6 +12010,21 @@
         "enwikiTitle": "Phil Rizzuto"
       }
     },
+    "player|Q5369|premio carrao bracho": {
+      "kind": "player",
+      "name": "Premio Carrao Bracho",
+      "result": null
+    },
+    "player|Q5369|premio pitcher del ano": {
+      "kind": "player",
+      "name": "Premio Pitcher Del Ano",
+      "result": null
+    },
+    "player|Q5369|premio vitico davalillo": {
+      "kind": "player",
+      "name": "Premio Vitico Davalillo",
+      "result": null
+    },
     "player|Q5369|quilvio veras": {
       "kind": "player",
       "name": "Quilvio Veras",
@@ -10890,6 +12055,26 @@
         "birthYear": 2000,
         "enwikiTitle": "Quinn Priester"
       }
+    },
+    "player|Q5369|rafael alvarez": {
+      "kind": "player",
+      "name": "Rafael Alvarez",
+      "result": {
+        "wikidataId": "Q7282384",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Tiburones de La Guaira"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1977,
+        "enwikiTitle": "Rafael \u00c1lvarez (baseball)"
+      }
+    },
+    "player|Q5369|rafael delima": {
+      "kind": "player",
+      "name": "Rafael DeLima",
+      "result": null
     },
     "player|Q5369|rafael devers": {
       "kind": "player",
@@ -10931,6 +12116,64 @@
         "description": "former Major League Baseball player",
         "birthYear": 1964,
         "enwikiTitle": "Rafael Palmeiro"
+      }
+    },
+    "player|Q5369|ramon hernandez": {
+      "kind": "player",
+      "name": "Ramon Hernandez",
+      "result": {
+        "wikidataId": "Q2747846",
+        "careerTeams": [
+          {
+            "name": "Athletics",
+            "fromYear": 1994,
+            "toYear": 2003,
+            "wikidataId": "Q504339"
+          },
+          {
+            "name": "San Diego Padres",
+            "fromYear": 2003,
+            "toYear": 2005,
+            "wikidataId": "Q721134"
+          },
+          {
+            "name": "Baltimore Orioles",
+            "fromYear": 2005,
+            "toYear": 2008,
+            "wikidataId": "Q650816"
+          },
+          {
+            "name": "Cincinnati Reds",
+            "fromYear": 2008,
+            "toYear": 2011,
+            "wikidataId": "Q826751"
+          },
+          {
+            "name": "Colorado Rockies",
+            "fromYear": 2011,
+            "toYear": 2013,
+            "wikidataId": "Q388858"
+          },
+          {
+            "name": "Los Angeles Dodgers",
+            "fromYear": 2013,
+            "toYear": 2013,
+            "wikidataId": "Q334634"
+          },
+          {
+            "name": "Toronto Blue Jays",
+            "fromYear": 2013,
+            "toYear": 2013,
+            "wikidataId": "Q650829"
+          }
+        ],
+        "undatedCareerTeams": [
+          "Huntsville Stars"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1976,
+        "enwikiTitle": "Ram\u00f3n Hern\u00e1ndez"
       }
     },
     "player|Q5369|ramon martinez": {
@@ -11086,6 +12329,16 @@
         "enwikiTitle": "Randy Velarde"
       }
     },
+    "player|Q5369|raul marcano": {
+      "kind": "player",
+      "name": "Raul Marcano",
+      "result": null
+    },
+    "player|Q5369|raul marval": {
+      "kind": "player",
+      "name": "Raul Marval",
+      "result": null
+    },
     "player|Q5369|raul mondesi": {
       "kind": "player",
       "name": "Raul Mondesi",
@@ -11103,6 +12356,20 @@
         "description": "baseball player",
         "birthYear": 1971,
         "enwikiTitle": "Ra\u00fal Mondes\u00ed"
+      }
+    },
+    "player|Q5369|raul perez tovar": {
+      "kind": "player",
+      "name": "Raul Perez Tovar",
+      "result": {
+        "wikidataId": "Q6101387",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Tigres de San Luis"
+        ],
+        "isHallOfFame": false,
+        "description": "Colombian baseball player",
+        "birthYear": 1958
       }
     },
     "player|Q5369|ray durham": {
@@ -11169,6 +12436,24 @@
         "enwikiTitle": "Reggie Sanders (first baseman)"
       }
     },
+    "player|Q5369|remigio hermoso": {
+      "kind": "player",
+      "name": "Remigio Hermoso",
+      "result": {
+        "wikidataId": "Q7312264",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Atlanta Braves",
+          "Cleveland Guardians",
+          "Montreal Expos",
+          "Tiburones de La Guaira"
+        ],
+        "isHallOfFame": false,
+        "description": "baseball player (1947\u20132020)",
+        "birthYear": 1947,
+        "enwikiTitle": "Remy Hermoso"
+      }
+    },
     "player|Q5369|rich becker": {
       "kind": "player",
       "name": "Rich Becker",
@@ -11189,6 +12474,39 @@
         "birthYear": 1972,
         "enwikiTitle": "Rich Becker"
       }
+    },
+    "player|Q5369|richard fernandez": {
+      "kind": "player",
+      "name": "Richard Fernandez",
+      "result": null
+    },
+    "player|Q5369|richard garces": {
+      "kind": "player",
+      "name": "Richard Garces",
+      "result": {
+        "wikidataId": "Q7323265",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Boston Red Sox",
+          "Chicago Cubs",
+          "Miami Marlins",
+          "Minnesota Twins"
+        ],
+        "isHallOfFame": false,
+        "description": "baseball player",
+        "birthYear": 1971,
+        "enwikiTitle": "Rich Garc\u00e9s"
+      }
+    },
+    "player|Q5369|richard negrette": {
+      "kind": "player",
+      "name": "Richard Negrette",
+      "result": null
+    },
+    "player|Q5369|richard romero": {
+      "kind": "player",
+      "name": "Richard Romero",
+      "result": null
     },
     "player|Q5369|rick aguilera": {
       "kind": "player",
@@ -11251,6 +12569,11 @@
         "birthYear": 1970,
         "enwikiTitle": "Rico Brogna"
       }
+    },
+    "player|Q5369|rigoberto mendoza": {
+      "kind": "player",
+      "name": "Rigoberto Mendoza",
+      "result": null
     },
     "player|Q5369|riley greene": {
       "kind": "player",
@@ -11378,6 +12701,27 @@
         "enwikiTitle": "Roberto Clemente"
       }
     },
+    "player|Q5369|roberto espinoza": {
+      "kind": "player",
+      "name": "Roberto Espinoza",
+      "result": {
+        "wikidataId": "Q46372398",
+        "careerTeams": [
+          {
+            "name": "EDA Rhinos",
+            "fromYear": 2015,
+            "toYear": 2016,
+            "wikidataId": "Q716155"
+          }
+        ],
+        "undatedCareerTeams": [
+          "Tigres de Aragua"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1960
+      }
+    },
     "player|Q5369|roberto petagine": {
       "kind": "player",
       "name": "Roberto Petagine",
@@ -11401,6 +12745,11 @@
         "enwikiTitle": "Roberto Petagine"
       }
     },
+    "player|Q5369|roberto zambrano": {
+      "kind": "player",
+      "name": "Roberto Zambrano",
+      "result": null
+    },
     "player|Q5369|robin ventura": {
       "kind": "player",
       "name": "Robin Ventura",
@@ -11419,6 +12768,11 @@
         "birthYear": 1967,
         "enwikiTitle": "Robin Ventura"
       }
+    },
+    "player|Q5369|robinson garces": {
+      "kind": "player",
+      "name": "Robinson Garces",
+      "result": null
     },
     "player|Q5369|roger clemens": {
       "kind": "player",
@@ -11499,6 +12853,17 @@
         "enwikiTitle": "Ronald Acu\u00f1a Jr."
       }
     },
+    "player|Q5369|ronald caridad": {
+      "kind": "player",
+      "name": "Ronald Caridad",
+      "result": {
+        "wikidataId": "Q134391043",
+        "careerTeams": [],
+        "isHallOfFame": false,
+        "description": "baseball player",
+        "birthYear": 1972
+      }
+    },
     "player|Q5369|rondell white": {
       "kind": "player",
       "name": "Rondell White",
@@ -11521,6 +12886,11 @@
         "enwikiTitle": "Rondell White"
       }
     },
+    "player|Q5369|ronnie sorzano": {
+      "kind": "player",
+      "name": "Ronnie Sorzano",
+      "result": null
+    },
     "player|Q5369|ronny mauricio": {
       "kind": "player",
       "name": "Ronny Mauricio",
@@ -11531,6 +12901,21 @@
         "description": "baseball player",
         "birthYear": 2001,
         "enwikiTitle": "Ronny Mauricio"
+      }
+    },
+    "player|Q5369|rouglas odor": {
+      "kind": "player",
+      "name": "Rouglas Odor",
+      "result": {
+        "wikidataId": "Q47544055",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Kinston Indians"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball coach",
+        "birthYear": 1968,
+        "enwikiTitle": "Rouglas Odor"
       }
     },
     "player|Q5369|royce lewis": {
@@ -11550,6 +12935,11 @@
         "birthYear": 1999,
         "enwikiTitle": "Royce Lewis"
       }
+    },
+    "player|Q5369|ruben amaro sr": {
+      "kind": "player",
+      "name": "Ruben Amaro Sr",
+      "result": null
     },
     "player|Q5369|ruben rivera": {
       "kind": "player",
@@ -12247,6 +13637,16 @@
         "enwikiTitle": "Shota Imanaga"
       }
     },
+    "player|Q5369|silverio navas": {
+      "kind": "player",
+      "name": "Silverio Navas",
+      "result": null
+    },
+    "player|Q5369|simon pinango": {
+      "kind": "player",
+      "name": "Simon Pinango",
+      "result": null
+    },
     "player|Q5369|slade cecconi": {
       "kind": "player",
       "name": "Slade Cecconi",
@@ -12586,6 +13986,11 @@
         "enwikiTitle": "Ted Williams"
       }
     },
+    "player|Q5369|temis liendo": {
+      "kind": "player",
+      "name": "Temis Liendo",
+      "result": null
+    },
     "player|Q5369|teoscar hernandez": {
       "kind": "player",
       "name": "Teoscar Hernandez",
@@ -12830,6 +14235,11 @@
         "birthYear": 1966,
         "enwikiTitle": "Tom Glavine"
       }
+    },
+    "player|Q5369|tomas salazar": {
+      "kind": "player",
+      "name": "Tomas Salazar",
+      "result": null
     },
     "player|Q5369|tony gwynn": {
       "kind": "player",
@@ -13136,6 +14546,16 @@
         "enwikiTitle": "Tyler Wells"
       }
     },
+    "player|Q5369|umpires": {
+      "kind": "player",
+      "name": "Umpires",
+      "result": null
+    },
+    "player|Q5369|vargas": {
+      "kind": "player",
+      "name": "Vargas",
+      "result": null
+    },
     "player|Q5369|vaughn grissom": {
       "kind": "player",
       "name": "Vaughn Grissom",
@@ -13148,6 +14568,11 @@
         "enwikiTitle": "Vaughn Grissom"
       }
     },
+    "player|Q5369|vicente garcia": {
+      "kind": "player",
+      "name": "Vicente Garcia",
+      "result": null
+    },
     "player|Q5369|victor mederos": {
       "kind": "player",
       "name": "Victor Mederos",
@@ -13159,6 +14584,11 @@
         "birthYear": 2001,
         "enwikiTitle": "V\u00edctor Mederos"
       }
+    },
+    "player|Q5369|victor oramas": {
+      "kind": "player",
+      "name": "Victor Oramas",
+      "result": null
     },
     "player|Q5369|victor scott": {
       "kind": "player",
@@ -13226,6 +14656,11 @@
         "birthYear": 1967,
         "enwikiTitle": "Vinny Castilla"
       }
+    },
+    "player|Q5369|vitico davalillo": {
+      "kind": "player",
+      "name": "Vitico Davalillo",
+      "result": null
     },
     "player|Q5369|vladimir guerrero jr.": {
       "kind": "player",
@@ -13360,6 +14795,16 @@
         "enwikiTitle": "Wil Cordero"
       }
     },
+    "player|Q5369|wilfredo polidor": {
+      "kind": "player",
+      "name": "Wilfredo Polidor",
+      "result": null
+    },
+    "player|Q5369|wilfredo romero": {
+      "kind": "player",
+      "name": "Wilfredo Romero",
+      "result": null
+    },
     "player|Q5369|will clark": {
       "kind": "player",
       "name": "Will Clark",
@@ -13401,6 +14846,22 @@
         "enwikiTitle": "Will Smith (pitcher)"
       }
     },
+    "player|Q5369|william canate": {
+      "kind": "player",
+      "name": "William Canate",
+      "result": {
+        "wikidataId": "Q8021425",
+        "careerTeams": [],
+        "undatedCareerTeams": [
+          "Tiburones de La Guaira",
+          "Toronto Blue Jays"
+        ],
+        "isHallOfFame": false,
+        "description": "Venezuelan baseball player",
+        "birthYear": 1971,
+        "enwikiTitle": "Willie Ca\u00f1ate"
+      }
+    },
     "player|Q5369|william contreras": {
       "kind": "player",
       "name": "William Contreras",
@@ -13421,6 +14882,21 @@
         "birthYear": 1997,
         "enwikiTitle": "William Contreras"
       }
+    },
+    "player|Q5369|william magallanes": {
+      "kind": "player",
+      "name": "William Magallanes",
+      "result": null
+    },
+    "player|Q5369|william martinez": {
+      "kind": "player",
+      "name": "William Martinez",
+      "result": null
+    },
+    "player|Q5369|william oropeza": {
+      "kind": "player",
+      "name": "William Oropeza",
+      "result": null
     },
     "player|Q5369|willie mays": {
       "kind": "player",
@@ -13504,6 +14980,11 @@
         "enwikiTitle": "Willy Adames"
       }
     },
+    "player|Q5369|wilmer montoya": {
+      "kind": "player",
+      "name": "Wilmer Montoya",
+      "result": null
+    },
     "player|Q5369|wilyer abreu": {
       "kind": "player",
       "name": "Wilyer Abreu",
@@ -13521,6 +15002,11 @@
         "birthYear": 1999,
         "enwikiTitle": "Wilyer Abreu"
       }
+    },
+    "player|Q5369|wuarnner rincones": {
+      "kind": "player",
+      "name": "Wuarnner Rincones",
+      "result": null
     },
     "player|Q5369|wyatt langford": {
       "kind": "player",
@@ -13908,6 +15394,18 @@
         }
       }
     },
+    "team|Q5369|aguilas del zulia": {
+      "kind": "team",
+      "name": "Aguilas del Zulia",
+      "result": {
+        "wikidataId": "Q870427",
+        "league": "Venezuelan Professional Baseball League",
+        "leagueWikidataId": "Q1053005",
+        "yearsActive": {
+          "from": 1969
+        }
+      }
+    },
     "team|Q5369|aoyama gakuin university baseball team": {
       "kind": "team",
       "name": "Aoyama Gakuin University Baseball Team",
@@ -14100,6 +15598,30 @@
         "wikidataId": "Q5028062"
       }
     },
+    "team|Q5369|cardenales de lara": {
+      "kind": "team",
+      "name": "Cardenales de Lara",
+      "result": {
+        "wikidataId": "Q870407",
+        "league": "Venezuelan Professional Baseball League",
+        "leagueWikidataId": "Q1053005",
+        "yearsActive": {
+          "from": 1942
+        }
+      }
+    },
+    "team|Q5369|caribes de oriente": {
+      "kind": "team",
+      "name": "Caribes de Oriente",
+      "result": {
+        "wikidataId": "Q870414",
+        "league": "Venezuelan Professional Baseball League",
+        "leagueWikidataId": "Q1053005",
+        "yearsActive": {
+          "from": 1987
+        }
+      }
+    },
     "team|Q5369|centenary gentlemen baseball": {
       "kind": "team",
       "name": "Centenary Gentlemen baseball",
@@ -14289,6 +15811,19 @@
       "name": "East Carolina Pirates baseball",
       "result": {
         "wikidataId": "Q5328012"
+      }
+    },
+    "team|Q5369|eda rhinos": {
+      "kind": "team",
+      "name": "EDA Rhinos",
+      "result": {
+        "wikidataId": "Q716155",
+        "league": "Chinese Professional Baseball League",
+        "leagueWikidataId": "Q717976",
+        "yearsActive": {
+          "from": 1993,
+          "to": 2016
+        }
       }
     },
     "team|Q5369|estrellas orientales": {
@@ -14545,6 +16080,18 @@
         "leagueWikidataId": "Q1351657",
         "yearsActive": {
           "from": 2008
+        }
+      }
+    },
+    "team|Q5369|leones del caracas": {
+      "kind": "team",
+      "name": "Leones del Caracas",
+      "result": {
+        "wikidataId": "Q1368587",
+        "league": "Venezuelan Professional Baseball League",
+        "leagueWikidataId": "Q1053005",
+        "yearsActive": {
+          "from": 1942
         }
       }
     },
@@ -14866,6 +16413,16 @@
         }
       }
     },
+    "team|Q5369|pastora de occidente": {
+      "kind": "team",
+      "name": "Pastora de Occidente",
+      "result": {
+        "wikidataId": "Q5968819",
+        "yearsActive": {
+          "from": 1997
+        }
+      }
+    },
     "team|Q5369|peoria chiefs": {
       "kind": "team",
       "name": "Peoria Chiefs",
@@ -14875,6 +16432,19 @@
         "leagueWikidataId": "Q105702200",
         "yearsActive": {
           "from": 1983
+        }
+      }
+    },
+    "team|Q5369|philadelphia athletics": {
+      "kind": "team",
+      "name": "Philadelphia Athletics",
+      "result": {
+        "wikidataId": "Q1264750",
+        "league": "National League",
+        "leagueWikidataId": "Q858082",
+        "yearsActive": {
+          "from": 1860,
+          "to": 1876
         }
       }
     },
@@ -15134,6 +16704,18 @@
       "name": "Texas State Bobcats baseball",
       "result": {
         "wikidataId": "Q7708020"
+      }
+    },
+    "team|Q5369|tiburones de la guaira": {
+      "kind": "team",
+      "name": "Tiburones de la Guaira",
+      "result": {
+        "wikidataId": "Q870447",
+        "league": "Venezuelan Professional Baseball League",
+        "leagueWikidataId": "Q1053005",
+        "yearsActive": {
+          "from": 1962
+        }
       }
     },
     "team|Q5369|tigres de aragua": {

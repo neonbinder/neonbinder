@@ -52,6 +52,10 @@ tags:
 # Returns with "Edit card 700-<attempt>" scrolled into view.
 # ============================================================
 
+# Minted names are single search tokens (README → Companion rules): the
+# ATTEMPT_ID with its hyphens stripped, folded into one word.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
 - runFlow:
     file: util-add-custom-card.yaml
     env:
@@ -59,7 +63,7 @@ tags:
       VARIANT_TYPE: "Insert"
       INSERT_NAME: "Base"
       CARD_NUMBER: "700-${ATTEMPT_ID}"
-      PLAYER_NAME: "Base Player ${ATTEMPT_ID}"
+      PLAYER_NAME: "BasePlayer${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # THE VARIATION — #701-<attempt>
@@ -98,7 +102,7 @@ tags:
 # The card-number input is autofocused — type straight into it.
 - inputText: "701-${ATTEMPT_ID}"
 - tapOn: "Player name"
-- inputText: "Variation Player ${ATTEMPT_ID}"
+- inputText: "VariationPlayer${output.ATTEMPT_TOKEN}"
 
 # Submit sits at the bottom of the add-card form; centerElement drives it to
 # mid-viewport so Maestro's own scroll-before-tap has content to scroll to.
@@ -183,7 +187,7 @@ tags:
 # wrong card rather than as a silent success. Regex-contains: the number and the
 # name share one text node, and the assertion is that BOTH resolved.
 - assertVisible:
-    text: ".*#700-${ATTEMPT_ID} Base Player ${ATTEMPT_ID}.*"
+    text: ".*#700-${ATTEMPT_ID} BasePlayer${output.ATTEMPT_TOKEN}.*"
 
 # ════════════════════════════════════════════════════════════════════════════
 # GROUPED: the child leaves the top level and the parent reports the count

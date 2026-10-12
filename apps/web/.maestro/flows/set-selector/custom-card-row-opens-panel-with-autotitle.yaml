@@ -57,6 +57,10 @@ tags:
 # "Edit card 779-${ATTEMPT_ID}" button scrolled into view.
 # ============================================================
 
+# Minted names are single search tokens (README → Companion rules): the
+# ATTEMPT_ID with its hyphens stripped, folded into one word.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
 - runFlow:
     file: util-add-custom-card.yaml
     env:
@@ -64,7 +68,7 @@ tags:
       VARIANT_TYPE: "Insert"
       INSERT_NAME: "Base"
       CARD_NUMBER: "779-${ATTEMPT_ID}"
-      PLAYER_NAME: "Row Click Player ${ATTEMPT_ID}"
+      PLAYER_NAME: "RowClickPlayer${output.ATTEMPT_TOKEN}"
 
 # ============================================================
 # OPEN THE PANEL BY CLICKING THE CARD-NUMBER CELL (the feature)
@@ -131,4 +135,4 @@ tags:
 - assertVisible: "Confirm?"
 - tapOn:
     id: "Confirm delete card 779-${ATTEMPT_ID}(, .*)?"
-- assertNotVisible: "Row Click Player ${ATTEMPT_ID}"
+- assertNotVisible: "RowClickPlayer${output.ATTEMPT_TOKEN}"

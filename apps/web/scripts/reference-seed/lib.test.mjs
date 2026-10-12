@@ -1,0 +1,520 @@
+// NEO-330 — the reference-seed helpers: id codec, number notation, deployment
+// guards, and the two parity checks that stop the script drifting from the
+// places it must agree with. Pure; no Convex, no network.
+
+import { describe, expect, test } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  PROD_DEPLOYMENT_NAME,
+  BUNDLE_TABLES,
+  decodeId,
+  encodeId,
+  retableId,
+  walkIds,
+  convexJson,
+  countIntegerLiterals,
+  integralNumberPaths,
+  toJsonl,
+  parseJsonl,
+  parseTableNumbers,
+  tablesJsonl,
+  deploymentNameProblem,
+  deployKeyProblem,
+  effectiveDeployKey,
+  redactConvexOutput,
+  CONVEX_OUTPUT_REDACT_MARKERS,
+  CONVEX_OUTPUT_MAX_LINE,
+  MIN_BUNDLE_PLAYERS,
+  MIN_BUNDLE_TEAMS,
+  hollowBundleProblems,
+  TABLES,
+  TABLES_THAT_MAY_BE_EMPTY,
+  zipLines,
+  zipJsonl,
+} from "./lib.mjs";
+import { FIXTURE_SOURCE_TABLE_NUMBERS, fixtureTables } from "./make-fixture.mjs";
+import { REFERENCE_SEED_TABLES } from "../../convex/selectorOptions";
+
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const WEB_DIR = path.resolve(HERE, "..", "..");
+
+const internalBytes = (seed) => Uint8Array.from({ length: 16 }, (_, i) => (seed * 31 + i * 7) & 0xff);
+
+describe("document id codec", () => {
+  test.each([1, 127, 128, 10009, 16384, 2 ** 21])("round-trips table number %i", (table) => {
+    const internal = internalBytes(table);
+    const id = encodeId(table, internal);
+    const d = decodeId(id);
+    expect(d.table).toBe(table);
+    expect([...d.internal]).toEqual([...internal]);
+    expect(encodeId(d.table, d.internal)).toBe(id);
+  });
+
+  test("retableId keeps the 16-byte document part and changes only the table number", () => {
+    const internal = internalBytes(3);
+    const id = encodeId(10009, internal);
+
+    const moved = retableId(id, 10025);
+
+    expect(moved).not.toBe(id);
+    const d = decodeId(moved);
+    expect(d.table).toBe(10025);
+    expect([...d.internal]).toEqual([...internal]);
+  });
+
+  test("retableId to the same number is the identity, and there-and-back restores the id", () => {
+    const id = encodeId(10009, internalBytes(4));
+    expect(retableId(id, 10009)).toBe(id);
+    expect(retableId(retableId(id, 12345), 10009)).toBe(id);
+  });
+
+  test("retableId throws on a string that is not a Convex id", () => {
+    expect(() => retableId("not-an-id", 10001)).toThrow(/not a Convex id/);
+  });
+
+  test("decodeId rejects a flipped character, a wrong length and non-strings", () => {
+    const id = encodeId(10009, internalBytes(5));
+    const flipped = id.slice(0, 10) + (id[10] === "0" ? "1" : "0") + id.slice(11);
+    expect(decodeId(flipped)).toBeNull();
+    expect(decodeId(id.slice(1))).toBeNull();
+    expect(decodeId(`${id}0`)).toBeNull();
+    expect(decodeId(id.toUpperCase())).toBeNull();
+    expect(decodeId(undefined)).toBeNull();
+    expect(decodeId(12345)).toBeNull();
+  });
+
+  test("the fixture's ids carry the source table number of their table", () => {
+    const { tables } = fixtureTables();
+    for (const t of BUNDLE_TABLES) {
+      for (const row of tables[t]) expect(decodeId(row._id).table).toBe(FIXTURE_SOURCE_TABLE_NUMBERS[t]);
+    }
+  });
+});
+
+describe("walkIds", () => {
+  const a = encodeId(10009, internalBytes(1));
+  const b = encodeId(10010, internalBytes(2));
+  const c = encodeId(10019, internalBytes(3));
+
+  test("finds ids at any depth and reports shape paths, never values", () => {
+    const row = { _id: a, teamYears: [{ teamId: b }], deep: { x: { y: [c] } }, name: "plain text", n: 5 };
+    const seen = [];
+
+    walkIds(row, (p, d) => seen.push([p, d.table]));
+
+    expect(seen).toEqual([
+      ["_id", 10009],
+      ["teamYears[].teamId", 10010],
+      ["deep.x.y[]", 10019],
+    ]);
+  });
+
+  test("replace swaps the string in place, including inside arrays", () => {
+    const row = { ids: [a, b], one: c };
+
+    walkIds(row, (_p, d, set, str) => set(retableId(str, d.table + 1)));
+
+    expect(decodeId(row.ids[0]).table).toBe(10010);
+    expect(decodeId(row.ids[1]).table).toBe(10011);
+    expect(decodeId(row.one).table).toBe(10020);
+  });
+
+  test("top-level skipKeys are not walked; nested keys of the same name are", () => {
+    const row = { sportId: a, nested: { sportId: b } };
+    const seen = [];
+
+    walkIds(row, (p) => seen.push(p), new Set(["sportId"]));
+
+    expect(seen).toEqual(["nested.sportId"]);
+  });
+});
+
+describe("convexJson", () => {
+  test("writes integral numbers as N.0", () => {
+    expect(convexJson({ a: 2005 })).toBe('{"a":2005.0}');
+    expect(convexJson({ a: 1759999999999 })).toBe('{"a":1759999999999.0}');
+    expect(convexJson({ a: -3 })).toBe('{"a":-3.0}');
+    expect(convexJson({ a: -0 })).toBe('{"a":-0.0}');
+  });
+
+  test("keeps fractions and exponent notation as they are", () => {
+    expect(convexJson({ a: 1700000000000.5 })).toBe('{"a":1700000000000.5}');
+    expect(convexJson({ a: 1e21, b: 1.5e-7 })).toBe('{"a":1e+21,"b":1.5e-7}');
+  });
+
+  test("reaches numbers in nested arrays and objects", () => {
+    expect(convexJson({ t: [{ f: 1990, x: [1, 2.5] }] })).toBe('{"t":[{"f":1990.0,"x":[1.0,2.5]}]}');
+  });
+
+  test("leaves $integer and $bytes wrappers and strings with digits untouched", () => {
+    expect(convexJson({ n: { $integer: "AQAAAAAAAAA=" } })).toBe('{"n":{"$integer":"AQAAAAAAAAA="}}');
+    expect(convexJson({ b: { $bytes: "AAE=" } })).toBe('{"b":{"$bytes":"AAE="}}');
+    expect(convexJson({ s: '12 "3" 4' })).toBe('{"s":"12 \\"3\\" 4"}');
+  });
+
+  test("drops undefined properties and round-trips a float value", () => {
+    expect(convexJson({ a: 1, u: undefined })).toBe('{"a":1.0}');
+    expect(JSON.parse(convexJson({ a: 0.1 + 0.2 })).a).toBe(0.1 + 0.2);
+  });
+
+  test("refuses NaN and Infinity (they would need a $float wrapper)", () => {
+    expect(() => convexJson({ a: NaN })).toThrow(/non-finite/);
+    expect(() => convexJson({ a: Infinity })).toThrow(/non-finite/);
+  });
+});
+
+describe("countIntegerLiterals", () => {
+  test("counts bare integers, not floats, exponents or digits inside strings", () => {
+    expect(countIntegerLiterals('{"a":1,"b":-2,"c":[3,4.0],"d":5e3}')).toBe(3);
+    expect(countIntegerLiterals('{"a":"123","$integer":"MTIz","b":"x\\"9"}')).toBe(0);
+  });
+
+  test("is zero for anything convexJson wrote", () => {
+    expect(countIntegerLiterals(convexJson({ a: 1, b: [2, { c: -0 }], d: 2.5 }))).toBe(0);
+  });
+
+  test("toJsonl refuses a line that would carry a bare integer", () => {
+    expect(toJsonl([{ a: 1 }, { a: 2.5 }])).toBe('{"a":1.0}\n{"a":2.5}\n');
+  });
+});
+
+describe("integralNumberPaths", () => {
+  test("reports field paths of integral numbers only", () => {
+    const paths = [];
+    integralNumberPaths({ a: 1, b: 2.5, c: [{ d: 3 }] }, (p) => paths.push(p));
+    expect(paths).toEqual(["a", "c[].d"]);
+  });
+});
+
+describe("JSONL helpers", () => {
+  test("parseJsonl names the line, never the content, on bad input", () => {
+    expect(() => parseJsonl('{"a":1.0}\nSECRET-ROW\n', "x/documents.jsonl")).toThrow(/line 2 is not valid JSON/);
+    try {
+      parseJsonl("SECRET-ROW\n", "x");
+    } catch (e) {
+      expect(e.message).not.toContain("SECRET-ROW");
+    }
+  });
+
+  test("tablesJsonl and parseTableNumbers round-trip", () => {
+    const text = tablesJsonl(["players", "teams"], { players: 7, teams: 9 });
+    expect([...parseTableNumbers(text)]).toEqual([
+      ["players", 7],
+      ["teams", 9],
+    ]);
+  });
+});
+
+describe("zipLines / zipJsonl (streamed ZIP members)", () => {
+  // A ZIP with an empty member and a long one, written by the real `zip`.
+  const withZip = async (fn) => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "nb-ref-seed-ziplines-"));
+    try {
+      const src = path.join(dir, "src");
+      execFileSync("mkdir", ["-p", path.join(src, "empty"), path.join(src, "long")]);
+      writeFileSync(path.join(src, "empty", "documents.jsonl"), "");
+      const lines = Array.from({ length: LONG_LINES }, (_, i) => `{"i":${i}.0}`);
+      writeFileSync(path.join(src, "long", "documents.jsonl"), lines.join("\n") + "\n");
+      execFileSync("zip", ["-q", "-r", path.join(dir, "t.zip"), "."], { cwd: src });
+      await fn(path.join(dir, "t.zip"));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+  const LONG_LINES = 20_000;
+
+  test("a 0-byte member yields nothing and does not throw (production's playerSports)", async () => {
+    await withZip(async (zip) => {
+      const got = [];
+      for await (const l of zipLines(zip, "empty/documents.jsonl")) got.push(l);
+      expect(got).toEqual([]);
+      const rows = [];
+      for await (const r of zipJsonl(zip, "empty/documents.jsonl")) rows.push(r);
+      expect(rows).toEqual([]);
+    });
+  });
+
+  test("a slow consumer still gets every line of a long member (readline closed under it before)", async () => {
+    // readline's async iterator paused under a consumer that awaits between
+    // lines; when unzip finished meanwhile, the next resume() threw
+    // ERR_USE_AFTER_CLOSE and the last line was lost. build awaits a write
+    // per row, so it hit this on production's teams table.
+    await withZip(async (zip) => {
+      let n = 0;
+      let last;
+      for await (const r of zipJsonl(zip, "long/documents.jsonl")) {
+        n++;
+        last = r.i;
+        if (n % 200 === 0) await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      expect(n).toBe(LONG_LINES);
+      expect(last).toBe(LONG_LINES - 1);
+    });
+  });
+
+  test("stopping early does not hang or throw", async () => {
+    await withZip(async (zip) => {
+      let n = 0;
+      for await (const _ of zipLines(zip, "long/documents.jsonl")) if (++n === 3) break;
+      expect(n).toBe(3);
+    });
+  });
+
+  test("a missing member fails with unzip's exit code", async () => {
+    await withZip(async (zip) => {
+      const drain = async () => {
+        for await (const _ of zipLines(zip, "nope/documents.jsonl")) void _;
+      };
+      await expect(drain()).rejects.toThrow(/unzip -p nope\/documents\.jsonl exited \d+/);
+    });
+  });
+});
+
+describe("deploymentNameProblem", () => {
+  test.each([
+    [PROD_DEPLOYMENT_NAME],
+    [`${PROD_DEPLOYMENT_NAME}-x`],
+    [`x${PROD_DEPLOYMENT_NAME}`],
+    ["prod"],
+    ["production"],
+    ["PROD"],
+    ["prod:happy-animal-123"],
+    ["dev:happy-animal-123"],
+    ["project:ref"],
+    ["Happy-Animal-123"],
+    ["happy-animal"],
+    ["happy_animal_123"],
+    ["happy animal 123"],
+    [""],
+    [undefined],
+    [null],
+  ])("refuses %j", (name) => {
+    expect(deploymentNameProblem(name)).toEqual(expect.any(String));
+  });
+
+  test.each([["happy-animal-123"], ["cheerful-snow-leopard-456"]])("accepts plain name %s", (name) => {
+    expect(deploymentNameProblem(name)).toBeNull();
+  });
+});
+
+describe("deployKeyProblem", () => {
+  test("no key is not a problem", () => {
+    expect(deployKeyProblem("", "happy-animal-123")).toBeNull();
+    expect(deployKeyProblem(undefined, undefined)).toBeNull();
+  });
+
+  test.each([["prod:happy-animal-123|tok"], ["project:acme:app|tok"], [`dev:${PROD_DEPLOYMENT_NAME}|tok`], [`preview:x|${PROD_DEPLOYMENT_NAME}`]])(
+    "refuses production or project-wide key %j",
+    (key) => {
+      expect(deployKeyProblem(key, "happy-animal-123")).toMatch(/production or project-wide/);
+    },
+  );
+
+  test("refuses a dev key that names another deployment", () => {
+    expect(deployKeyProblem("dev:other-animal-9|tok", "happy-animal-123")).toMatch(/different dev deployment/);
+  });
+
+  test("accepts a dev key that names the same deployment", () => {
+    expect(deployKeyProblem("dev:happy-animal-123|tok", "happy-animal-123")).toBeNull();
+  });
+
+  test("refuses any key when no deployment is given", () => {
+    expect(deployKeyProblem("dev:happy-animal-123|tok", undefined)).toMatch(/pass --deployment/);
+    expect(deployKeyProblem("dev:happy-animal-123|tok", "")).toMatch(/pass --deployment/);
+  });
+
+  test("never echoes the key in a refusal", () => {
+    for (const [key, dep] of [
+      ["prod:happy-animal-123|SECRETVALUE", "happy-animal-123"],
+      ["dev:other-animal-9|SECRETVALUE", "happy-animal-123"],
+      ["dev:happy-animal-123|SECRETVALUE", undefined],
+    ]) {
+      expect(deployKeyProblem(key, dep)).not.toContain("SECRETVALUE");
+    }
+  });
+});
+
+describe("effectiveDeployKey", () => {
+  const withWebDir = (envLocal, fn, env = null) => {
+    const dir = mkdtempSync(path.join(os.tmpdir(), "nb-seed-envkey-"));
+    try {
+      if (envLocal !== null) writeFileSync(path.join(dir, ".env.local"), envLocal);
+      if (env !== null) writeFileSync(path.join(dir, ".env"), env);
+      return fn(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  test("the environment wins over .env.local", () => {
+    withWebDir("CONVEX_DEPLOY_KEY=from-file\n", (dir) => {
+      expect(effectiveDeployKey({ CONVEX_DEPLOY_KEY: "from-env" }, dir)).toBe("from-env");
+    });
+  });
+
+  test("falls back to .env.local, stripping quotes and trailing comments", () => {
+    withWebDir('OTHER=1\nCONVEX_DEPLOY_KEY="dev:happy-animal-123|tok" # note\n', (dir) => {
+      expect(effectiveDeployKey({}, dir)).toBe("dev:happy-animal-123|tok");
+    });
+  });
+
+  test("a key in .env is found when .env.local has none", () => {
+    withWebDir("OTHER=1\n", (dir) => expect(effectiveDeployKey({}, dir)).toBe("from-dotenv"), "CONVEX_DEPLOY_KEY=from-dotenv\n");
+    withWebDir(null, (dir) => expect(effectiveDeployKey({}, dir)).toBe("from-dotenv"), "CONVEX_DEPLOY_KEY=from-dotenv\n");
+  });
+
+  test(".env.local wins over .env, and the environment wins over both", () => {
+    withWebDir(
+      "CONVEX_DEPLOY_KEY=from-local\n",
+      (dir) => {
+        expect(effectiveDeployKey({}, dir)).toBe("from-local");
+        expect(effectiveDeployKey({ CONVEX_DEPLOY_KEY: "from-env" }, dir)).toBe("from-env");
+      },
+      "CONVEX_DEPLOY_KEY=from-dotenv\n",
+    );
+  });
+
+  test("is empty with no env key and no file, or no matching line", () => {
+    withWebDir(null, (dir) => expect(effectiveDeployKey({}, dir)).toBe(""));
+    withWebDir("NOT_THE_KEY=1\n", (dir) => expect(effectiveDeployKey({}, dir)).toBe(""));
+  });
+});
+
+describe("parity with the places the script must agree with", () => {
+  test("PROD_DEPLOYMENT_NAME equals the one in e2e-baseline.sh", () => {
+    const sh = readFileSync(path.join(WEB_DIR, "e2e-baseline.sh"), "utf8");
+    const m = /^PROD_DEPLOYMENT_NAME="([^"]+)"/m.exec(sh);
+    expect(m, "e2e-baseline.sh no longer defines PROD_DEPLOYMENT_NAME").not.toBeNull();
+    expect(PROD_DEPLOYMENT_NAME).toBe(m[1]);
+  });
+
+  test("BUNDLE_TABLES is the set the scoped reset skips (REFERENCE_SEED_TABLES)", () => {
+    expect([...REFERENCE_SEED_TABLES].sort()).toEqual(BUNDLE_TABLES.map((t) => `${t}Deleted`).sort());
+  });
+});
+
+describe("no bundle is tracked", () => {
+  test("git ls-files finds no .zip or .jsonl under scripts/reference-seed", () => {
+    const out = execFileSync("git", ["-C", WEB_DIR, "ls-files", "--", "scripts/reference-seed"], { encoding: "utf8" });
+    const files = out.split("\n").filter(Boolean);
+    expect(files.length).toBeGreaterThan(0); // the scripts themselves, so the command is really listing
+    expect(files.filter((f) => /\.(zip|jsonl)$/i.test(f))).toEqual([]);
+  });
+});
+
+describe("redactConvexOutput", () => {
+  // Shaped like a Convex schema-rejection from `convex import`: the summary
+  // line first, then the offending document, its validator and the bad value.
+  const REJECTION = [
+    "✖ Import failed: Document in table players failed schema validation.",
+    "Path: players",
+    "Object: {",
+    '  _id: "SECRET-ID-123",',
+    '  name: "Secret Player Name",',
+    "  birthYear: 2005,",
+    "  note: \"error: could not parse\",",
+    "}",
+    "Validator: v.object({ name: v.string(), birthYear: v.float64() })",
+    "Value: \"Secret Player Name\"",
+    "A later line that says failed and also holds SECRET-TAIL",
+  ].join("\n");
+
+  test("keeps the summary and drops every field value of a quoted document", () => {
+    const out = redactConvexOutput("", REJECTION);
+    expect(out).toContain("Import failed");
+    for (const secret of ["SECRET-ID-123", "Secret Player Name", "2005", "SECRET-TAIL", "could not parse"]) {
+      expect(out).not.toContain(secret);
+    }
+  });
+
+  test("cuts each stream at its first marker and drops all later lines, even ones naming an error", () => {
+    const stderr = "Object: {\n  name: x\n}\nerror: LATER-LINE";
+    expect(redactConvexOutput("", stderr)).toBe("(error text withheld: it quoted document data)");
+  });
+
+  test("a marker mid-line keeps only the text before it", () => {
+    expect(redactConvexOutput("", "Import failed at Value: SECRETVALUE")).toBe("Import failed at");
+  });
+
+  test("redacts stdout the same way as stderr", () => {
+    const out = redactConvexOutput(REJECTION, "");
+    expect(out).toContain("Import failed");
+    expect(out).not.toContain("Secret Player Name");
+  });
+
+  test.each(CONVEX_OUTPUT_REDACT_MARKERS)("treats %s as a marker", (marker) => {
+    expect(redactConvexOutput("", `error here ${marker} SECRETVALUE`)).not.toContain("SECRETVALUE");
+  });
+
+  test("lists exactly the Object, Validator and Value markers", () => {
+    expect(CONVEX_OUTPUT_REDACT_MARKERS).toEqual(["Object:", "Validator:", "Value:"]);
+  });
+
+  test("picks the first error/fail line, preferring stderr, else falls back to the last line", () => {
+    expect(redactConvexOutput("progress\nall good", "noise\nsomething failed here\nmore")).toBe("something failed here");
+    expect(redactConvexOutput("first\nlast line", "")).toBe("last line");
+  });
+
+  test("caps a long line at CONVEX_OUTPUT_MAX_LINE characters plus an ellipsis", () => {
+    const out = redactConvexOutput("", `error ${"x".repeat(1000)}`);
+    expect(CONVEX_OUTPUT_MAX_LINE).toBe(300);
+    expect(out).toHaveLength(CONVEX_OUTPUT_MAX_LINE + 1);
+    expect(out.endsWith("…")).toBe(true);
+  });
+
+  test("says so when there was no output at all", () => {
+    expect(redactConvexOutput("", "")).toBe("(no output)");
+    expect(redactConvexOutput()).toBe("(no output)");
+  });
+});
+
+describe("hollowBundleProblems", () => {
+  const full = { leagues: 5, franchises: 5, teams: MIN_BUNDLE_TEAMS, teamAliases: 1, players: MIN_BUNDLE_PLAYERS, playerAliases: 1, playerSports: 1, selectorOptions: 4 };
+
+  test("a bundle clearing every floor has no problems, in both modes", () => {
+    expect(hollowBundleProblems(full, full, "import")).toEqual([]);
+    expect(hollowBundleProblems(full, full, "remap")).toEqual([]);
+  });
+
+  test.each(TABLES.filter((t) => !TABLES_THAT_MAY_BE_EMPTY.includes(t)))("an empty %s table is a problem", (t) => {
+    const counts = { ...full, [t]: 0 };
+    const problems = hollowBundleProblems(counts, counts, "remap");
+    expect(problems.some((p) => p.startsWith(`${t}: 0`))).toBe(true);
+  });
+
+  test.each(TABLES_THAT_MAY_BE_EMPTY)("an empty %s table is allowed (production holds none)", (t) => {
+    const counts = { ...full, [t]: 0 };
+    expect(hollowBundleProblems(counts, counts, "import")).toEqual([]);
+  });
+
+  test("players and teams must clear their floors; one under is refused, exactly at is not", () => {
+    const players = { ...full, players: MIN_BUNDLE_PLAYERS - 1 };
+    expect(hollowBundleProblems(players, players, "remap").join()).toMatch(/players: 999 .*MIN_BUNDLE_PLAYERS/);
+    const teams = { ...full, teams: MIN_BUNDLE_TEAMS - 1 };
+    expect(hollowBundleProblems(teams, teams, "remap").join()).toMatch(/teams: 99 .*MIN_BUNDLE_TEAMS/);
+  });
+
+  test("a sport row is needed in import mode only", () => {
+    const none = { ...full, selectorOptions: 0 };
+    expect(hollowBundleProblems(none, none, "import").join()).toMatch(/selectorOptions: 0/);
+    expect(hollowBundleProblems(none, none, "remap")).toEqual([]);
+  });
+
+  test("the manifest counts and the actual rows are both checked", () => {
+    const hollowRows = { ...full, players: 3 };
+    const fromRows = hollowBundleProblems(full, hollowRows, "import");
+    expect(fromRows).toHaveLength(1);
+    expect(fromRows[0]).toContain("(rows)");
+    const fromManifest = hollowBundleProblems(hollowRows, full, "import");
+    expect(fromManifest).toHaveLength(1);
+    expect(fromManifest[0]).toContain("(manifest)");
+  });
+
+  test("missing counts count as zero", () => {
+    expect(hollowBundleProblems(undefined, {}, "import").length).toBeGreaterThan(0);
+  });
+});

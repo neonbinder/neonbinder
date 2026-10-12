@@ -16,7 +16,13 @@ import {
   waitFor,
   within,
 } from "@testing-library/react";
-import CardPairingModal, { type PairingCard } from "./CardPairingModal";
+import CardPairingModal, {
+  PAIRING_STREAM_DONE_ANNOUNCEMENT,
+  pairingStreamLateAnnouncement,
+  pairingStreamProgressAnnouncement,
+  pairingStreamingSentence,
+  type PairingCard,
+} from "./CardPairingModal";
 import { keyboardDrag, stubLayout } from "../../lib/testing/keyboard-drag";
 
 const bscCard = (n: string, name: string): PairingCard => ({
@@ -473,16 +479,16 @@ describe("CardPairingModal — isStreaming (NEO-195/a11y)", () => {
     expect(confirm.getAttribute("aria-disabled")).toBe("true");
   });
 
-  test("Confirm carries aria-describedby pointing at the streaming status region", () => {
+  test("Confirm carries aria-describedby pointing at the streaming sentence", () => {
     renderModal({ isStreaming: true });
     const confirm = screen.getByLabelText("Confirm card matches");
     expect(confirm.getAttribute("aria-describedby")).toBe(
       "pairing-streaming-status",
     );
-    // The id it points at must actually exist and be the status banner.
+    // The id it points at must actually exist and be the streaming sentence
+    // (static since NEO-330; the announcements go through the status region).
     const status = document.getElementById("pairing-streaming-status");
-    expect(status).toBeTruthy();
-    expect(status?.getAttribute("role")).toBe("status");
+    expect(status?.textContent).toContain("Confirm unlocks when the fetch finishes.");
   });
 
   test("Confirm has no aria-describedby when not streaming", () => {
@@ -543,20 +549,156 @@ describe("CardPairingModal — isStreaming (NEO-195/a11y)", () => {
     expect(onConfirm).not.toHaveBeenCalled();
   });
 
-  test("the streaming banner has role=status and reports N-of-M progress", () => {
+  test("the streaming sentence reports N-of-M progress, and is NOT itself live (NEO-330 a11y)", () => {
     renderModal({
       isStreaming: true,
       streamProgress: { ready: 7, total: 20 },
     });
-    const status = screen.getByRole("status");
-    expect(status.id).toBe("pairing-streaming-status");
-    expect(status.textContent).toContain("7 of 20 done");
+    const sentence = document.getElementById("pairing-streaming-status")!;
+    expect(sentence.textContent).toBe(pairingStreamingSentence({ ready: 7, total: 20 }));
+    expect(sentence.textContent).toContain("7 of 20 done");
+    // Ticking "(8 of 20 done)" per card must not re-read the whole sentence.
+    expect(sentence.getAttribute("role")).toBeNull();
+    expect(sentence.getAttribute("aria-live")).toBeNull();
   });
 
-  test("the streaming banner is absent when not streaming", () => {
+  test("the streaming sentence is absent when not streaming, but the status region stays mounted", () => {
     renderModal({});
-    expect(screen.queryByRole("status")).toBeNull();
     expect(document.getElementById("pairing-streaming-status")).toBeNull();
+    const region = screen.getByRole("status");
+    expect(region.id).toBe("pairing-streaming-announcer");
+    expect(region.textContent).toBe("");
+  });
+
+  test("Confirm's tooltip while streaming says what it is waiting on", () => {
+    renderModal({ isStreaming: true });
+    expect(screen.getByLabelText("Confirm card matches").getAttribute("title")).toBe(
+      "Still loading teams…",
+    );
+  });
+});
+
+/**
+ * NEO-330 a11y — coarse announcements through an always-mounted status
+ * region: the sentence once at the start, each quarter of the way, and a
+ * brief "Teams are in. Confirm is ready." at the end.
+ */
+describe("CardPairingModal — streaming announcements (NEO-330 a11y)", () => {
+  function streamingModal(props: {
+    isStreaming: boolean;
+    streamProgress?: { ready: number; total: number };
+    teamsLateNotice?: string;
+  }) {
+    return (
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={vi.fn().mockResolvedValue(undefined)}
+        initialData={{ autoMatched: [], unmatchedBsc: [], unmatchedSl: [] }}
+        {...props}
+      />
+    );
+  }
+  const region = () => document.getElementById("pairing-streaming-announcer")!;
+
+  test("start, quarters only, then done — and the done line clears itself", async () => {
+    vi.useFakeTimers();
+    try {
+      const view = render(streamingModal({ isStreaming: true, streamProgress: { ready: 0, total: 20 } }));
+      // The region is in the tree before its text changes.
+      expect(region().textContent).toBe("");
+      await act(async () => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(region().textContent).toBe(pairingStreamingSentence({ ready: 0, total: 20 }));
+
+      // 1..4 of 20 is still the first quarter: nothing new is said.
+      view.rerender(streamingModal({ isStreaming: true, streamProgress: { ready: 4, total: 20 } }));
+      expect(region().textContent).toBe(pairingStreamingSentence({ ready: 0, total: 20 }));
+
+      // 5 of 20 crosses 25%.
+      view.rerender(streamingModal({ isStreaming: true, streamProgress: { ready: 5, total: 20 } }));
+      expect(region().textContent).toBe(pairingStreamProgressAnnouncement(5, 20));
+      view.rerender(streamingModal({ isStreaming: true, streamProgress: { ready: 9, total: 20 } }));
+      expect(region().textContent).toBe(pairingStreamProgressAnnouncement(5, 20));
+      view.rerender(streamingModal({ isStreaming: true, streamProgress: { ready: 10, total: 20 } }));
+      expect(region().textContent).toBe("Teams resolving — 10 of 20 done.");
+      // A growing total lowers the fraction; it never re-announces a quarter.
+      view.rerender(streamingModal({ isStreaming: true, streamProgress: { ready: 11, total: 40 } }));
+      expect(region().textContent).toBe("Teams resolving — 10 of 20 done.");
+
+      view.rerender(streamingModal({ isStreaming: false, streamProgress: { ready: 40, total: 40 } }));
+      expect(region().textContent).toBe(PAIRING_STREAM_DONE_ANNOUNCEMENT);
+      expect(PAIRING_STREAM_DONE_ANNOUNCEMENT).toBe("Teams are in. Confirm is ready.");
+      // The visible "(X of Y done)" line is gone with the stream.
+      expect(document.getElementById("pairing-streaming-status")).toBeNull();
+      await act(async () => {
+        vi.advanceTimersByTime(6000);
+      });
+      expect(region().textContent).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a dialog that never streamed announces nothing", () => {
+    render(streamingModal({ isStreaming: false, streamProgress: { ready: 3, total: 3 } }));
+    expect(region().textContent).toBe("");
+  });
+});
+
+/**
+ * NEO-330 — teams that missed the wait. Confirm unlocks; the sync banner that
+ * says so is behind this modal, so the modal says it too, beside Confirm.
+ */
+describe("CardPairingModal — teams late (NEO-330)", () => {
+  const NOTICE = "Some teams didn't load in time — those cards go in without one.";
+  function lateModal(props: { isStreaming: boolean; streamProgress?: { ready: number; total: number } }) {
+    return (
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={vi.fn().mockResolvedValue(undefined)}
+        initialData={{ autoMatched: [], unmatchedBsc: [], unmatchedSl: [] }}
+        teamsLateNotice={NOTICE}
+        {...props}
+      />
+    );
+  }
+
+  test("the stream ends with teams out: a quiet persistent line by Confirm, and Confirm points at it", () => {
+    const view = render(lateModal({ isStreaming: true, streamProgress: { ready: 1, total: 2 } }));
+    expect(document.getElementById("pairing-teams-late")).toBeNull();
+
+    view.rerender(lateModal({ isStreaming: false, streamProgress: { ready: 1, total: 2 } }));
+    const line = document.getElementById("pairing-teams-late")!;
+    expect(line.textContent).toBe(NOTICE);
+    expect(line.getAttribute("role")).toBeNull();
+    const confirm = screen.getByLabelText("Confirm card matches");
+    expect(confirm.getAttribute("aria-disabled")).toBeNull();
+    expect(confirm.getAttribute("aria-describedby")).toBe("pairing-teams-late");
+    // Never "Teams are in" when they are not.
+    expect(document.getElementById("pairing-streaming-announcer")!.textContent).toBe(
+      pairingStreamLateAnnouncement(NOTICE),
+    );
+  });
+
+  test("a late team that lands takes the line away", () => {
+    const view = render(lateModal({ isStreaming: true, streamProgress: { ready: 1, total: 2 } }));
+    view.rerender(lateModal({ isStreaming: false, streamProgress: { ready: 1, total: 2 } }));
+    expect(document.getElementById("pairing-teams-late")).toBeTruthy();
+    view.rerender(lateModal({ isStreaming: false, streamProgress: { ready: 2, total: 2 } }));
+    expect(document.getElementById("pairing-teams-late")).toBeNull();
+    expect(screen.getByLabelText("Confirm card matches").hasAttribute("aria-describedby")).toBe(false);
+  });
+
+  test("every team in: no line", () => {
+    const view = render(lateModal({ isStreaming: true, streamProgress: { ready: 1, total: 2 } }));
+    view.rerender(lateModal({ isStreaming: false, streamProgress: { ready: 2, total: 2 } }));
+    expect(document.getElementById("pairing-teams-late")).toBeNull();
+    expect(document.getElementById("pairing-streaming-announcer")!.textContent).toBe(
+      PAIRING_STREAM_DONE_ANNOUNCEMENT,
+    );
   });
 });
 

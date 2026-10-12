@@ -65,6 +65,10 @@ tags:
 # as "w<worker>-a<attempt>-<RANDOM>" so attempt-2 never collides with a
 # row left behind by attempt-1 in the per-worker cardChecklist.
 
+# Minted names are single search tokens (README → Companion rules): the
+# ATTEMPT_ID with its hyphens stripped, folded into one word.
+- evalScript: '${output.ATTEMPT_TOKEN = String(ATTEMPT_ID || Date.now()).split("-").join("")}'
+
 - runFlow:
     file: util-add-custom-card.yaml
     env:
@@ -72,7 +76,7 @@ tags:
       VARIANT_TYPE: "Insert"
       INSERT_NAME: "Base"
       CARD_NUMBER: "991-${ATTEMPT_ID}"
-      PLAYER_NAME: "Features Toggle Player ${ATTEMPT_ID}"
+      PLAYER_NAME: "FeaturesTogglePlayer${output.ATTEMPT_TOKEN}"
 
 # Assert visibility before tapping — surfaces a failed scroll as a clear
 # assertion error rather than the null kotlin.Int bounds crash.
@@ -146,4 +150,4 @@ tags:
 - assertVisible: "Confirm?"
 - tapOn:
     id: "Confirm delete card 991-${ATTEMPT_ID}(, .*)?"
-- assertNotVisible: "Features Toggle Player ${ATTEMPT_ID}"
+- assertNotVisible: "FeaturesTogglePlayer${output.ATTEMPT_TOKEN}"

@@ -34,6 +34,14 @@ import { Id } from "./_generated/dataModel";
 // so a seeded row is one the lookup could really have found.
 import { teamRowFields } from "./lib/teamRow";
 import { teamFullName } from "../lib/teams/team-name";
+// NEO-330 — the bound the queue retries a failed lookup within, and the two
+// readers a given-up card must reach: the attention badge and Fill.
+import {
+  BSC_TEAM_CHECK_MAX_PASSES,
+  BSC_TEAM_CHECK_RETRY_DELAYS_MS,
+} from "./adapters/buysportscards";
+import { deriveCardAttention } from "./features/cardAttention";
+import { isTeamFillCandidate } from "./lib/teamFill";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -180,9 +188,11 @@ describe("resolveBscCardTeam", () => {
       makeCardListingFetch({ responses: { "bsc-1": "New York Yankees" }, calls }),
     );
 
-    await t.action(internal.adapters.buysportscards.resolveBscCardTeam, {
-      cardChecklistId: cardId,
-    });
+    await expect(
+      t.action(internal.adapters.buysportscards.resolveBscCardTeam, {
+        cardChecklistId: cardId,
+      }),
+    ).resolves.toBe("answered");
 
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toEqual([yankeesId]);
@@ -222,7 +232,7 @@ describe("resolveBscCardTeam", () => {
     expect(card!.teamCheckDoneAt).toBeTypeOf("number");
   });
 
-  test("non-2xx response is a no-op: row untouched, no exception thrown", async () => {
+  test("non-2xx response reports a failure and leaves the row untouched, no exception thrown", async () => {
     const t = convexTest(schema, modules);
     const variantTypeId = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
@@ -236,14 +246,14 @@ describe("resolveBscCardTeam", () => {
       t.action(internal.adapters.buysportscards.resolveBscCardTeam, {
         cardChecklistId: cardId,
       }),
-    ).resolves.toBeNull();
+    ).resolves.toBe("failed");
 
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toBeUndefined();
     expect(card!.teamCheckDoneAt).toBeUndefined(); // left untouched for a future retry
   });
 
-  test("a thrown fetch error (network failure) is caught — no-op, no exception", async () => {
+  test("a thrown fetch error (network failure) is caught — reported as a failure, no exception", async () => {
     const t = convexTest(schema, modules);
     const variantTypeId = await seedTree(t);
     const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
@@ -259,7 +269,7 @@ describe("resolveBscCardTeam", () => {
       t.action(internal.adapters.buysportscards.resolveBscCardTeam, {
         cardChecklistId: cardId,
       }),
-    ).resolves.toBeNull();
+    ).resolves.toBe("failed");
 
     const card = await getCard(t, cardId);
     expect(card!.teamOnCardIds).toBeUndefined();
@@ -286,9 +296,11 @@ describe("resolveBscCardTeam", () => {
       }) as unknown as typeof fetch,
     );
 
-    await t.action(internal.adapters.buysportscards.resolveBscCardTeam, {
-      cardChecklistId: cardId,
-    });
+    await expect(
+      t.action(internal.adapters.buysportscards.resolveBscCardTeam, {
+        cardChecklistId: cardId,
+      }),
+    ).resolves.toBe("notNeeded");
     expect(fetchCalled).toBe(false);
   });
 
@@ -315,9 +327,11 @@ describe("resolveBscCardTeam", () => {
       }) as unknown as typeof fetch,
     );
 
-    await t.action(internal.adapters.buysportscards.resolveBscCardTeam, {
-      cardChecklistId: cardId,
-    });
+    await expect(
+      t.action(internal.adapters.buysportscards.resolveBscCardTeam, {
+        cardChecklistId: cardId,
+      }),
+    ).resolves.toBe("notNeeded");
     expect(fetchCalled).toBe(false);
   });
 });
@@ -398,4 +412,236 @@ describe("processBscTeamEnrichmentQueue", () => {
   // either. Isolating the vi.mock in its own file avoids breaking every
   // other (real-fetch-based) test here, since vi.mock is hoisted and
   // file-scoped in Vitest.
+});
+
+// ===========================================================================
+// NEO-330 — a lookup that never returns ends with the operator, not in limbo
+// ===========================================================================
+
+/**
+ * Jason, 2026-10-11: "If a team lookup never returns then the user must
+ * select a team." A failed lookup used to leave `teamCheckDoneAt` unset with
+ * nothing scheduled to ask again — and an unset `teamCheckDoneAt` on a
+ * BSC-linked card is what both the attention badge and Fill read as "still
+ * waiting", so the card was never shown to anyone.
+ */
+describe("processBscTeamEnrichmentQueue — bounded retry, then the operator (NEO-330)", () => {
+  // The queue reports retries and give-ups on console.warn/error. Captured so
+  // nothing crosses the vitest worker RPC at teardown (see the tolerance file).
+  const warnLines: string[] = [];
+  beforeEach(() => {
+    vi.useFakeTimers();
+    warnLines.length = 0;
+    vi.spyOn(console, "warn").mockImplementation((...args: unknown[]) => {
+      warnLines.push(args.map(String).join(" "));
+    });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  test("the bound is three passes, a minute then five minutes apart", () => {
+    expect(BSC_TEAM_CHECK_MAX_PASSES).toBe(3);
+    expect([...BSC_TEAM_CHECK_RETRY_DELAYS_MS]).toEqual([60_000, 300_000]);
+    // One delay before every pass after the first.
+    expect(BSC_TEAM_CHECK_RETRY_DELAYS_MS).toHaveLength(
+      BSC_TEAM_CHECK_MAX_PASSES - 1,
+    );
+  });
+
+  test("a card that fails every pass is asked exactly MAX_PASSES times, then flagged with no team written", async () => {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    await seedTeam(t, variantTypeId, { name: "Yankees" });
+    const failing = await insertCard(t, variantTypeId, "1", "bsc-1");
+    const fine = await insertCard(t, variantTypeId, "2", "bsc-2");
+    // A hint an earlier answer left — the give-up must not erase it.
+    await t.run(async (ctx) =>
+      ctx.db.patch(failing, { bscTeamName: "New York Yankees" }),
+    );
+
+    const calls: RecordedCall[] = [];
+    vi.stubGlobal(
+      "fetch",
+      makeCardListingFetch({
+        responses: { "bsc-1": 503, "bsc-2": "Yankees" },
+        calls,
+      }),
+    );
+
+    await t.action(internal.adapters.buysportscards.processBscTeamEnrichmentQueue, {
+      cardChecklistIds: [failing, fine],
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const asked = calls.filter((c) => c.url.includes("/card/bsc-1/"));
+    expect(asked).toHaveLength(BSC_TEAM_CHECK_MAX_PASSES);
+    // The answered card is never asked again.
+    expect(calls.filter((c) => c.url.includes("/card/bsc-2/"))).toHaveLength(1);
+
+    const card = (await getCard(t, failing))!;
+    // Never a guess: nothing came back, so nothing is linked…
+    expect(card.teamOnCardIds).toBeUndefined();
+    expect(card.pendingTeamNames).toBeUndefined();
+    // …but the wait is over, the hint stays, and the operator is told.
+    expect(card.teamCheckDoneAt).toBeTypeOf("number");
+    expect(card.bscTeamName).toBe("New York Yankees");
+    expect(deriveCardAttention(card)).toContainEqual({ kind: "missingTeam" });
+    // Fill no longer skips it as "still waiting on BSC".
+    expect(
+      isTeamFillCandidate({
+        ...card,
+        playerIds: ["player-1" as Id<"players">],
+      }),
+    ).toBe(true);
+
+    expect(warnLines.filter((l) => l.includes("bsc_team_check_retry_scheduled"))).toHaveLength(
+      BSC_TEAM_CHECK_MAX_PASSES - 1,
+    );
+    const gaveUp = warnLines.find((l) => l.includes("bsc_team_check_gave_up"));
+    expect(gaveUp).toBeDefined();
+    expect(JSON.parse(gaveUp!)).toMatchObject({
+      platform: "bsc",
+      failed: 1,
+      flagged: 1,
+      passes: BSC_TEAM_CHECK_MAX_PASSES,
+    });
+    // Counts only on the log line — never the marketplace's team string.
+    expect(gaveUp).not.toContain("Yankees");
+  });
+
+  test("before the give-up, a failed card is neither badged nor offered to Fill (the wait is real)", async () => {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
+    vi.stubGlobal(
+      "fetch",
+      makeCardListingFetch({ responses: { "bsc-1": 503 }, calls: [] }),
+    );
+
+    // One pass only: the retry is scheduled, not yet run.
+    await t.action(internal.adapters.buysportscards.processBscTeamEnrichmentQueue, {
+      cardChecklistIds: [cardId],
+    });
+
+    const card = (await getCard(t, cardId))!;
+    expect(card.teamCheckDoneAt).toBeUndefined();
+    expect(deriveCardAttention(card)).not.toContainEqual({ kind: "missingTeam" });
+  });
+
+  test("a transient failure that succeeds on a later pass links BSC's team and is never given up", async () => {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const yankeesId = await seedTeam(t, variantTypeId, { name: "Yankees" });
+    const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
+
+    let attempt = 0;
+    vi.stubGlobal(
+      "fetch",
+      (async () => {
+        attempt++;
+        if (attempt === 1) return new Response("busy", { status: 503 });
+        return new Response(JSON.stringify({ teamName: "Yankees" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    );
+
+    await t.action(internal.adapters.buysportscards.processBscTeamEnrichmentQueue, {
+      cardChecklistIds: [cardId],
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    expect(attempt).toBe(2);
+    const card = (await getCard(t, cardId))!;
+    expect(card.teamOnCardIds).toEqual([yankeesId]);
+    expect(warnLines.some((l) => l.includes("bsc_team_check_gave_up"))).toBe(false);
+  });
+
+  test("a card the operator answers between passes is not asked again and not stamped over", async () => {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
+    const calls: RecordedCall[] = [];
+    vi.stubGlobal(
+      "fetch",
+      makeCardListingFetch({ responses: { "bsc-1": 503 }, calls }),
+    );
+
+    await t.action(internal.adapters.buysportscards.processBscTeamEnrichmentQueue, {
+      cardChecklistIds: [cardId],
+    });
+    // The operator settles it as teamless while the retry waits.
+    const confirmedAt = 1_700_000_000_000;
+    await t.run(async (ctx) =>
+      ctx.db.patch(cardId, { teamNoneConfirmedAt: confirmedAt }),
+    );
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    expect(calls).toHaveLength(1);
+    const card = (await getCard(t, cardId))!;
+    expect(card.teamNoneConfirmedAt).toBe(confirmedAt);
+    expect(card.teamOnCardIds).toBeUndefined();
+    expect(warnLines.some((l) => l.includes("bsc_team_check_gave_up"))).toBe(false);
+  });
+});
+
+describe("bscTeamCheck.markBscTeamCheckGivenUp (NEO-330)", () => {
+  test("stamps teamCheckDoneAt and writes nothing else", async () => {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
+    const before = (await getCard(t, cardId))!;
+
+    await expect(
+      t.mutation(internal.bscTeamCheck.markBscTeamCheckGivenUp, {
+        cardChecklistId: cardId,
+      }),
+    ).resolves.toBe(true);
+
+    const after = (await getCard(t, cardId))!;
+    expect(after.teamCheckDoneAt).toBeTypeOf("number");
+    const { teamCheckDoneAt: _stamp, ...rest } = after;
+    expect(rest).toEqual(before);
+  });
+
+  test("leaves an already-answered card alone", async () => {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const cardId = await insertCard(t, variantTypeId, "1", "bsc-1");
+    await t.run(async (ctx) => ctx.db.patch(cardId, { teamCheckDoneAt: 42 }));
+
+    await expect(
+      t.mutation(internal.bscTeamCheck.markBscTeamCheckGivenUp, {
+        cardChecklistId: cardId,
+      }),
+    ).resolves.toBe(false);
+    expect((await getCard(t, cardId))!.teamCheckDoneAt).toBe(42);
+  });
+
+  test("ignores a card with no BSC link", async () => {
+    const t = convexTest(schema, modules);
+    const variantTypeId = await seedTree(t);
+    const cardId = await t.run(async (ctx) =>
+      ctx.db.insert("cardChecklist", {
+        selectorOptionId: variantTypeId,
+        cardNumber: "1",
+        cardName: "Card 1",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    await expect(
+      t.mutation(internal.bscTeamCheck.markBscTeamCheckGivenUp, {
+        cardChecklistId: cardId,
+      }),
+    ).resolves.toBe(false);
+    expect((await getCard(t, cardId))!.teamCheckDoneAt).toBeUndefined();
+  });
 });

@@ -64,12 +64,14 @@ export const TEAM_SETTLE_TIMEOUT_MS = 10_000;
 
 /**
  * Every card the fetch looks a team up for has had its answer. The server
- * looks up a card with a BSC ref and no teams; everything else never waits.
- * (`ready === total` is NOT the gate: rows that arrived with teams parsed are
- * written `pending` and never flipped, see `awaitStreamedBatch`.)
+ * looks up a card with a non-empty BSC ref and no teams; everything else never
+ * waits. Since NEO-330 the server writes `status` per row (only a row awaiting
+ * its own lookup starts `pending`, and a failed lookup chunk still flips its
+ * rows), so `teamResolved` alone is the answer on a current server; the other
+ * two legs keep an older server's never-flipped rows from holding the wait.
  */
 export function teamLookupsSettled(cards: readonly ReadyCandidate[]): boolean {
-  return cards.every((c) => c.teamResolved || (c.teams?.length ?? 0) > 0 || !c.platformData.bsc);
+  return cards.every((c) => c.teamResolved || (c.teams?.length ?? 0) > 0 || !c.platformData.bsc?.ref);
 }
 
 export interface FetchedCandidates {

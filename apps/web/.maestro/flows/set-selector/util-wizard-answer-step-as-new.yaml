@@ -16,7 +16,7 @@ tags:
 # THE CALLER OWNS THE GUARD. Every drain already wraps this in
 # `runFlow: when: visible: id: "^Add as New (Team|League)$"` (ONE guard, on
 # the pinned footer button: see the cost note at that guard in
-# `util-wizard-walk-to-player-row-creating-teams.yaml`). This util only
+# `setup.yaml`'s wizard drain, "ONE probe per iteration"). This util only
 # decides WHICH kind of step that button belongs to, and answers it.
 #
 # WHICH STEP, READ OFF THE SAME BUTTON. `copyTextFrom` on the button the guard

@@ -23,7 +23,7 @@ tags:
 #     (c) pressing the same button again CREATES it — the confirmation is armed
 #         by the refusal, so this second press is a different call (`newEra`)
 #         and its chip is the proof;
-#     (d) Team Management lists TWO rows for one name ("2 of N teams") carrying
+#     (d) Team Management lists TWO rows for one name ("2 matches") carrying
 #         BOTH era segments, oldest first;
 #     (e) each row opens its OWN team: the panel reads back 1972/1996 for one
 #         and 2011/blank for the other, which is the only thing that separates
@@ -129,7 +129,7 @@ tags:
 
 - launchApp
 - extendedWaitUntil:
-    visible: ".*of .* players.*"
+    visible: "[0-9,]+ players?"
     timeout: 45000
 
 - evalScript: '${output.TOKEN = String(ATTEMPT_ID).split("-").join("")}'
@@ -335,7 +335,7 @@ tags:
 # holds it", and lands on the screen this feature is FOR.
 - openLink: ${APP_URL || "http://localhost:3000"}/admin/teams
 - extendedWaitUntil:
-    visible: ".*of .* teams.*"
+    visible: "[0-9,]+ teams?( . [0-9,]+ need attention)?"
     timeout: 30000
 
 - tapOn: "Filter teams"
@@ -345,7 +345,7 @@ tags:
 # and both rows carry the identical one, so the counter saying two is the whole
 # feature stated in one line: this screen could not have shown two before.
 - extendedWaitUntil:
-    visible: "2 of .* teams.*"
+    visible: "2 matches( . [0-9,]+ need attention)?"
     timeout: 7000
 
 # Both eras are printed, and they are the only thing telling the rows apart. An
@@ -353,11 +353,11 @@ tags:
 - assertVisible:
     text: "1972–1996"
     below:
-      text: ".*of .* teams.*"
+      text: "[0-9,+]+ match(es)?( . [0-9,]+ need attention)?"
 - assertVisible:
     text: "2011–present"
     below:
-      text: ".*of .* teams.*"
+      text: "[0-9,+]+ match(es)?( . [0-9,]+ need attention)?"
 
 # R2(e) — EACH ROW OPENS ITS OWN TEAM. Tapped by the era text rather than by
 # `id:` because both rows carry the same resource-id (see the header); a tap on
@@ -366,7 +366,7 @@ tags:
 - tapOn:
     text: "1972–1996"
     below:
-      text: ".*of .* teams.*"
+      text: "[0-9,+]+ match(es)?( . [0-9,]+ need attention)?"
 
 # The panel reads back the years this row was created with. Both boxes are
 # `primitives/Input`, which emits no id and no aria-label, so they are matched
@@ -403,7 +403,7 @@ tags:
 - tapOn:
     text: "2011–present"
     below:
-      text: ".*of .* teams.*"
+      text: "[0-9,+]+ match(es)?( . [0-9,]+ need attention)?"
 
 # The open-ended era: a start year and no end. 2011 is read back, and 1996 —
 # the other row's end year, which was on screen a moment ago — is gone, so this

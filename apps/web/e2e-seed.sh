@@ -36,7 +36,10 @@
 # Usage:  npm run e2e:local:seed       (or)   ./e2e-seed.sh
 #         ./run-e2e-smoke.sh setup     (same thing)
 # Knobs:  APP_URL, PAUSED_PLATFORMS (match the target's NEONBINDER_PAUSED_PLATFORMS),
-#         E2E_SEED_SPEC (default .maestro/seed/baseline.spec.json)
+#         E2E_SEED_SPEC (default .maestro/seed/baseline.spec.json),
+#         NB_REFERENCE_BUNDLE (a local reference-seed bundle zip: load prod's
+#         catalogue before the apply, as CI does — NEO-330, see
+#         ./e2e-reset-for-seed.sh and docs/operations/neo330-reference-seed.md)
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")" && pwd)"; cd "$ROOT"
 
@@ -63,8 +66,9 @@ APP_URL="${APP_URL:-http://localhost:3000}"
 ENV_FILE_ARGS=()
 [ -f .env.local ] && ENV_FILE_ARGS=(--env-file .env.local)
 
-echo "── scripted reset (e2e-baseline.sh reset --deployment $CONVEX_SLUG) ──"
-./e2e-baseline.sh reset --deployment "$CONVEX_SLUG" || { echo "✗ reset failed — aborting seed." >&2; exit 1; }
+# The reset (and, with NB_REFERENCE_BUNDLE set, the NEO-330 reference
+# catalogue load) is e2e-reset-for-seed.sh's job, shared with CI's seed job.
+./e2e-reset-for-seed.sh --deployment "$CONVEX_SLUG" || { echo "✗ reset failed — aborting seed." >&2; exit 1; }
 
 echo "── seeding canonical data (setbuild apply $SPEC → $CONVEX_SLUG, app $APP_URL) ──"
 if npm run setbuild -- apply \
