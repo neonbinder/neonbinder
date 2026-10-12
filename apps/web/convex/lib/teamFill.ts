@@ -38,20 +38,47 @@
  * card), and the search STOPS: the teams become unselected candidates for the
  * operator, never a pick. A later tier cannot outvote the set.
  *
- * Then the player row:
+ * Then the player row, through ONE window rule (NEO-335 Phase 2, C2):
  *
- *  B. **oneTeamCareer.** Every stint names the same team. This answers the
- *     retired-player case: a 1960s Yankee on a 2026 insert has no stint
- *     covering 2026, but his career has one team.
- *  C. **oneStintInYear.** Exactly one stint spans the set's year
- *     (`fromYear <= year <= (toYear ?? currentYear)`, an open stint being a
- *     current team). No resolvable year skips C.
+ *  **oneTeamInWindow.** Exactly one team has a stint covering any year of
+ *  `[setYear - 1, setYear]`. The window is two years wide because a set's
+ *  year is not its season: a 2026 Series 1 card shows the 2025 team, so a
+ *  player traded that winter is a tie between two teams, never a pick of the
+ *  new one. An open stint (no `toYear`) is a current team and covers every
+ *  year from its start. A stint that starts AFTER the set year never covers
+ *  it: a card can show a team's past, never its future.
+ *
+ *  There is no year-blind "one-team career" shortcut any more. Enrichment
+ *  routinely lacks a college stint, so a draft-product card in a college
+ *  uniform would pre-fill the pro team. A retired legend on a modern insert
+ *  therefore gets NO pre-fill: his whole career comes back unselected,
+ *  longest stint first (C8).
+ *
+ *  **preferredInWindow.** Two or more teams in the window, and the set's own
+ *  league breaks the tie (C2b): exactly one of them ranks best, and best is
+ *  better than "other". The rank comes from the caller (`rankOf`): 0 = the
+ *  set's league, 1 = the set's level, 2 = anything else or unknown. That is
+ *  how a prospect's card goes to his major-league org ahead of the affiliates
+ *  he also played for that year. The rank only BREAKS a window tie and orders
+ *  the list. It never hides a team (the rest of the window comes back as
+ *  candidates) and never outvotes a one-team window: a college card in a pro
+ *  set still pre-fills the college team when that is the only one in the
+ *  window, because pro sets do carry college cards.
  *
  * With no answer, the candidates are what an operator would want to pick
- * from, in order: the teams of an ambiguous stored tier, then the stints
- * covering the year, then (only when both are empty) the whole career — the
- * same "let go of the year for a retired player" fallback
- * `suggestedTeamsForCard` makes. Capped, deduped, never pre-selected.
+ * from: the teams of an ambiguous stored tier, else the window's teams, else
+ * (window empty, or no year at all) the whole career. Career teams are
+ * ordered by preference rank, then by years with the team, longest first.
+ * Capped, deduped, never pre-selected.
+ *
+ * ## A listing's team name holds the answer back (invariant 8)
+ *
+ * Nothing here sees a card, so nothing here can see what a listing printed
+ * on one. The per-card gate is the browser's: `teams-on-cards.ts` drops any
+ * pre-fill on a card whose listing named a team NB could not resolve (or whose
+ * lookup never answered), and shows these answers as unselected choices
+ * there instead. A rule written here is a suggestion about a PLAYER; whether
+ * it may pre-fill a CARD is decided per card, where the listing is in view.
  *
  * ## What is deliberately NOT evidence
  *
@@ -76,8 +103,122 @@ export type TeamSuggestionTier =
   | "sameNode"
   | "parallelOf"
   | "baseSet"
-  | "oneTeamCareer"
-  | "oneStintInYear";
+  | "oneTeamInWindow"
+  | "preferredInWindow";
+
+/**
+ * How well a career team fits the set being saved: 0 = the set's own league,
+ * 1 = another league at the set's level, 2 = anything else, or unknown.
+ * Lower is better. See `teamPreferenceRank`.
+ */
+export type TeamPreferenceRank = 0 | 1 | 2;
+
+/** The rank of a team nothing is known about. */
+export const UNRANKED: TeamPreferenceRank = 2;
+
+/**
+ * C2b — a team's fit to the set, from NB rows only: the set's
+ * `features.league` resolved to a `leagues` row, and the team's `leagueId`.
+ *
+ * Never a marketplace value or a display name: both sides are NB ids, and the
+ * level is the league row's own NB field. An unclassified league (no level)
+ * can only ever match by id.
+ */
+export function teamPreferenceRank(
+  team: { leagueId?: string | null; leagueLevel?: string | null },
+  set: { leagueId: string; level?: string | null } | null,
+): TeamPreferenceRank {
+  if (!set || !team.leagueId) return UNRANKED;
+  if (team.leagueId === set.leagueId) return 0;
+  if (set.level && team.leagueLevel && team.leagueLevel === set.level) return 1;
+  return UNRANKED;
+}
+
+/** One stint, keyed by whatever identifies its team to the caller. */
+export type KeyedStint<K extends string> = { key: K; fromYear: number; toYear?: number };
+
+/**
+ * Does this stint cover any year of the set's window `[year - 1, year]`?
+ *
+ * An open stint is a current team: it covers every year from its start. A
+ * stint that starts after the set year never covers it.
+ */
+export function stintCoversWindow(
+  stint: { fromYear: number; toYear?: number },
+  year: number,
+): boolean {
+  return stint.fromYear <= year && (stint.toYear ?? Number.POSITIVE_INFINITY) >= year - 1;
+}
+
+/** What one player's career says, keyed like its stints. */
+export type CareerVerdict<K extends string> = {
+  answer: { tier: "oneTeamInWindow" | "preferredInWindow"; key: K } | null;
+  /**
+   * With an answer: the OTHER teams in the window, so a tie-break never
+   * hides the teams it ranked below (empty for a one-team window). Without:
+   * the window's teams, else the whole career. Preference rank first, then
+   * years with the team, longest first, then first seen.
+   */
+  candidates: K[];
+};
+
+/**
+ * The career half of the suggestion, shared by the server (stints keyed by
+ * team id) and the browser (a player created in the wizard, stints keyed by
+ * the chip they will become). See the module note for the rules.
+ */
+export function careerTeamVerdict<K extends string>(input: {
+  stints: ReadonlyArray<KeyedStint<K>>;
+  year: number | undefined;
+  currentYear: number;
+  rankOf?: (key: K) => TeamPreferenceRank;
+}): CareerVerdict<K> {
+  const { stints, year, currentYear } = input;
+  const rankOf = input.rankOf ?? (() => UNRANKED);
+
+  const order: K[] = [];
+  const years = new Map<K, number>();
+  for (const stint of stints) {
+    if (!years.has(stint.key)) order.push(stint.key);
+    const end = stint.toYear ?? Math.max(currentYear, stint.fromYear);
+    years.set(stint.key, (years.get(stint.key) ?? 0) + Math.max(1, end - stint.fromYear + 1));
+  }
+  const ranks = new Map<K, TeamPreferenceRank>(order.map((key) => [key, rankOf(key)]));
+  const ordered = (keys: K[]): K[] =>
+    keys
+      .map((key, i) => ({ key, i }))
+      .sort(
+        (a, b) =>
+          ranks.get(a.key)! - ranks.get(b.key)! ||
+          years.get(b.key)! - years.get(a.key)! ||
+          a.i - b.i,
+      )
+      .map(({ key }) => key);
+
+  const inWindow: K[] =
+    year === undefined
+      ? []
+      : order.filter((key) =>
+          stints.some((stint) => stint.key === key && stintCoversWindow(stint, year)),
+        );
+
+  if (inWindow.length === 1) {
+    return { answer: { tier: "oneTeamInWindow", key: inWindow[0] }, candidates: [] };
+  }
+  if (inWindow.length > 1) {
+    const sorted = ordered(inWindow);
+    const best = ranks.get(sorted[0])!;
+    const atBest = sorted.filter((key) => ranks.get(key) === best);
+    if (best < UNRANKED && atBest.length === 1) {
+      return {
+        answer: { tier: "preferredInWindow", key: sorted[0] },
+        candidates: sorted.slice(1),
+      };
+    }
+    return { answer: null, candidates: sorted };
+  }
+  return { answer: null, candidates: ordered(order) };
+}
 
 /** The card fields a stored tier reads. Satisfied by a full `Doc<"cardChecklist">`. */
 export type SuggestionCard = {
@@ -95,9 +236,9 @@ export type PlayerTeamSuggestion = {
   /** Exactly one answer, from the first tier that gave one; null when none did. */
   answer: { tier: TeamSuggestionTier; teamIds: Array<Id<"teams">> } | null;
   /**
-   * When `answer` is null: teams the operator may pick from, in the order
-   * described in the module note. Empty when `answer` is set — an answer is
-   * not also a list of alternatives.
+   * Teams the operator may pick from, in the order described in the module
+   * note. With an answer this is only ever the rest of a tie-broken window
+   * (`preferredInWindow`); every other answer comes alone.
    */
   candidates: Array<Id<"teams">>;
 };
@@ -138,11 +279,13 @@ function distinct(ids: Iterable<Id<"teams">>): Array<Id<"teams">> {
 }
 
 /**
- * One player's team through tiers 1 → 2 → 3 → B → C.
+ * One player's team through tiers 1 → 2 → 3 → the career window.
  *
  * `cards` is whatever of the player's stored cards the caller read — any
  * node; the tiers pick out the ones under the nodes they name. `player`
- * undefined (a dangling id) skips B and C.
+ * undefined (a dangling id) skips the career. The caller drops stints it
+ * KNOWS cannot be offered (another sport's team, a deleted one) before
+ * calling: a team that cannot be picked must not make a window a tie.
  */
 export function suggestTeamsForPlayer(input: {
   playerId: Id<"players">;
@@ -157,6 +300,8 @@ export function suggestTeamsForPlayer(input: {
   year: number | undefined;
   currentYear: number;
   maxCandidates: number;
+  /** C2b — each career team's fit to the set; absent ranks everything alike. */
+  rankOf?: (teamId: Id<"teams">) => TeamPreferenceRank;
 }): PlayerTeamSuggestion {
   const { playerId, player, cards, nodeId, parallelOfNodeId, baseNodeId, year, currentYear } =
     input;
@@ -180,22 +325,20 @@ export function suggestTeamsForPlayer(input: {
 
   if (!player) return { answer: null, candidates: [] };
 
-  const career = distinct((player.teamYears ?? []).map((entry) => entry.teamId));
-  if (career.length === 1) {
-    return { answer: { tier: "oneTeamCareer", teamIds: career }, candidates: [] };
-  }
-
-  const inYear =
-    year === undefined
-      ? []
-      : distinct(
-          (player.teamYears ?? [])
-            .filter((entry) => entry.fromYear <= year && year <= (entry.toYear ?? currentYear))
-            .map((entry) => entry.teamId),
-        );
-  if (inYear.length === 1) {
-    return { answer: { tier: "oneStintInYear", teamIds: inYear }, candidates: [] };
-  }
-
-  return { answer: null, candidates: cap(inYear.length > 0 ? inYear : career) };
+  const verdict = careerTeamVerdict<Id<"teams">>({
+    stints: (player.teamYears ?? []).map((entry) => ({
+      key: entry.teamId,
+      fromYear: entry.fromYear,
+      ...(entry.toYear !== undefined ? { toYear: entry.toYear } : {}),
+    })),
+    year,
+    currentYear,
+    rankOf: input.rankOf,
+  });
+  return {
+    answer: verdict.answer
+      ? { tier: verdict.answer.tier, teamIds: [verdict.answer.key] }
+      : null,
+    candidates: cap(verdict.candidates),
+  };
 }

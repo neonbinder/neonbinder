@@ -402,13 +402,13 @@ describe("TeamsOnCardsSection on the wizard's teams step", () => {
     expect(confirm.getAttribute("aria-describedby")).toBeNull();
   });
 
-  it("the heading is not itself a live region; its text is", () => {
+  // NEO-335 Phase 2 (unit C): the section's own "K cards have no team yet"
+  // heading is gone — no per-type counts anywhere. The wizard draws the
+  // step's subtitle and intro line; the section draws only the lines.
+  it("the section draws no count heading of its own; the intro line is the wizard's, once", () => {
     renderWizard([{ cardNumber: "1", cardName: "Rookie Card", players: ["Rookie Guy"] }]);
-    const heading = screen.getByRole("heading", { name: "1 card has no team yet" });
-    expect(heading.getAttribute("aria-live")).toBeNull();
-    expect(heading.querySelector('[aria-live="polite"]')?.textContent).toBe(
-      "1 card has no team yet",
-    );
+    expect(screen.queryByText(/no team yet/)).toBeNull();
+    expect(screen.getAllByText("Pick a team for each card, or leave it for later.")).toHaveLength(1);
   });
 
   it("a long owner line wraps rather than truncating behind a mouse-only title", () => {

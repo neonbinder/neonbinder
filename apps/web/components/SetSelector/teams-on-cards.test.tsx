@@ -10,20 +10,37 @@
 import { describe, expect, test } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
+  addOtherTeam,
   answerForChoice,
   buildTeamsGroups,
+  cardChoiceKey,
+  chooseKind,
   defaultChoice,
+  effectiveCardChoice,
   effectiveChoice,
   evidenceRequests,
-  optionLabel,
+  extraTeamIds,
+  hasCardOverride,
+  MAX_CARD_TEAMS,
   sameTeamAnswers,
+  teamIdKey,
+  teamNameRequests,
+  toggleTeam,
   teamAnswersByCard,
   teamlessCardIndexes,
   withTeamAnswer,
   type PreviewCardForTeams,
   type ServerPlayerEvidence,
+  type ServerTeam,
+  type TeamsGroup,
   type TeamsReviewRow,
 } from "./teams-on-cards";
+
+/** What a line's chips say, in order. */
+const labels = (group: TeamsGroup) => group.refs.map((r) => r.label);
+/** What the pre-fill says, in order; null when nothing is pre-filled. */
+const suggested = (group: TeamsGroup) =>
+  group.suggestion?.map((key) => group.refs.find((r) => r.key === key)!.label) ?? null;
 
 const REDS = "team_reds" as Id<"teams">;
 const YANKEES = "team_yankees" as Id<"teams">;
@@ -52,6 +69,10 @@ function build(
   rows: TeamsReviewRow[] = [],
   evidence: Record<string, ServerPlayerEvidence> = {},
   setYear?: number,
+  extra: {
+    teamNameEvidence?: Record<string, ServerTeam[]>;
+    setLeagueId?: string | null;
+  } = {},
 ) {
   return buildTeamsGroups({
     cards,
@@ -60,11 +81,15 @@ function build(
     setYear,
     linkedTeamNameById: new Map([[REDS, "Cincinnati Reds"]]),
     currentYear: 2026,
+    ...(extra.teamNameEvidence
+      ? { teamNameEvidence: new Map(Object.entries(extra.teamNameEvidence)) }
+      : {}),
+    ...(extra.setLeagueId !== undefined ? { setLeagueId: extra.setLeagueId } : {}),
   });
 }
 
 const answered = (...teams: Array<[Id<"teams">, string]>): ServerPlayerEvidence => ({
-  answer: { tier: "oneTeamCareer", teams: teams.map(([id, n]) => serverTeam(id, n)) },
+  answer: { tier: "oneTeamInWindow", teams: teams.map(([id, n]) => serverTeam(id, n)) },
   candidates: [],
 });
 const unsure = (...teams: Array<[Id<"teams">, string]>): ServerPlayerEvidence => ({
@@ -161,10 +186,9 @@ describe("buildTeamsGroups — batch evidence (i)", () => {
   test("a sibling card with the same players and a resolving team pre-fills it", () => {
     const groups = build([card("1", ["Johnny Bench"]), card("2", ["Johnny Bench"], ["Reds"])]);
     expect(groups).toHaveLength(1);
-    expect(groups[0].suggestion?.refs).toEqual([
-      { key: "name:reds", label: "Reds", name: "Reds" },
-    ]);
-    expect(defaultChoice(groups[0])).toEqual({ kind: "team", optionKey: groups[0].suggestion!.key });
+    expect(groups[0].suggestion).toEqual(["name:reds"]);
+    expect(groups[0].refs).toEqual([{ key: "name:reds", label: "Reds", name: "Reds" }]);
+    expect(defaultChoice(groups[0])).toEqual({ kind: "teams", refKeys: ["name:reds"] });
   });
 
   test("a tie between siblings stays unselected — never the first one", () => {
@@ -174,7 +198,7 @@ describe("buildTeamsGroups — batch evidence (i)", () => {
       card("3", ["Johnny Bench"], ["Phillies"]),
     ]);
     expect(groups[0].suggestion).toBeNull();
-    expect(groups[0].options.map(optionLabel)).toEqual(["Reds", "Phillies"]);
+    expect(labels(groups[0])).toEqual(["Reds", "Phillies"]);
     expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
   });
 
@@ -192,7 +216,7 @@ describe("buildTeamsGroups — batch evidence (i)", () => {
       }),
     ];
     const groups = build([card("1", ["Johnny Bench"]), card("2", ["Johnny Bench"], ["reds"])], rows);
-    expect(groups[0].suggestion?.refs[0].label).toBe("Cincinnati Reds");
+    expect(suggested(groups[0])).toEqual(["Cincinnati Reds"]);
     expect(answerForChoice(groups[0], defaultChoice(groups[0]))).toEqual({ teams: ["Reds"] });
   });
 
@@ -202,7 +226,7 @@ describe("buildTeamsGroups — batch evidence (i)", () => {
       [],
       { "name:johnny bench": answered([PHILLIES, "Philadelphia Phillies"]) },
     );
-    expect(optionLabel(groups[0].suggestion!)).toBe("Reds");
+    expect(suggested(groups[0])).toEqual(["Reds"]);
   });
 });
 
@@ -227,7 +251,7 @@ describe("buildTeamsGroups — per-player evidence (ii)+(iii)", () => {
   test("evidence not arrived yet → loading, Leave for later", () => {
     const groups = build([card("1", ["Johnny Bench"])]);
     expect(groups[0].loading).toBe(true);
-    expect(groups[0].options).toEqual([]);
+    expect(groups[0].refs).toEqual([]);
     expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
   });
 
@@ -238,7 +262,7 @@ describe("buildTeamsGroups — per-player evidence (ii)+(iii)", () => {
       [request.key]: unsure([REDS, "Cincinnati Reds"], [YANKEES, "New York Yankees"]),
     });
     expect(groups[0].suggestion).toBeNull();
-    expect(groups[0].options.map(optionLabel)).toEqual(["Cincinnati Reds", "New York Yankees"]);
+    expect(labels(groups[0])).toEqual(["Cincinnati Reds", "New York Yankees"]);
   });
 
   test("multi-player: every player answering → the union, pre-filled", () => {
@@ -248,7 +272,9 @@ describe("buildTeamsGroups — per-player evidence (ii)+(iii)", () => {
       [a.key]: answered([REDS, "Cincinnati Reds"]),
       [b.key]: answered([YANKEES, "New York Yankees"]),
     });
-    expect(optionLabel(groups[0].suggestion!)).toBe("Cincinnati Reds + New York Yankees");
+    // C4: a multi-player card picks several teams, both pre-ticked.
+    expect(groups[0].multi).toBe(true);
+    expect(suggested(groups[0])).toEqual(["Cincinnati Reds", "New York Yankees"]);
     expect(answerForChoice(groups[0], defaultChoice(groups[0]))).toEqual({
       teamIds: [REDS, YANKEES],
     });
@@ -262,14 +288,17 @@ describe("buildTeamsGroups — per-player evidence (ii)+(iii)", () => {
       [b.key]: unsure([YANKEES, "New York Yankees"], [PHILLIES, "Philadelphia Phillies"]),
     });
     expect(groups[0].suggestion).toBeNull();
-    expect(groups[0].options.map(optionLabel)).toEqual([
+    expect(labels(groups[0])).toEqual([
       "Cincinnati Reds",
       "New York Yankees",
       "Philadelphia Phillies",
     ]);
   });
 
-  test("a player created in this wizard answers from their own career", () => {
+  // NEO-335 Phase 2 (C2) — REWRITTEN: Phase 1 pre-filled a created player's
+  // one-team career with NO year. The window rule needs the set year: the
+  // stint must cover [setYear - 1, setYear]. Same fixture, with a set year.
+  test("a player created in this wizard answers from their own career, through the window", () => {
     const rows = [
       row({
         kind: "player",
@@ -286,15 +315,21 @@ describe("buildTeamsGroups — per-player evidence (ii)+(iii)", () => {
     ];
     const cards = [card("1", ["Rookie Guy"])];
     expect(evidenceRequests(cards, rows)).toEqual([]);
-    const groups = build(cards, rows);
-    expect(groups[0].suggestion?.refs[0]).toMatchObject({
+    expect(build(cards, rows)[0].suggestion).toBeNull(); // no set year → no window
+    const groups = build(cards, rows, {}, 2025);
+    expect(groups[0].refs[0]).toMatchObject({
       label: "Cincinnati Reds",
       name: "Reds",
       colors: { primary: "#C6011F" },
     });
   });
 
-  test("a created player's unchecked career team is not evidence; one stint in the year is", () => {
+  // REWRITTEN (C2): "one stint in the year" became "one team in
+  // [setYear-1, setYear]". At 2021 the old fixture is now a Reds/Phillies tie
+  // (the Reds stint ended 2020), so the set year moves to 2022, and the
+  // unchecked Yankees stint is moved INTO that window so unchecking it still
+  // decides the answer.
+  test("a created player's unchecked career team is not evidence; one team in the window is", () => {
     const rows = [
       row({
         kind: "player",
@@ -303,14 +338,14 @@ describe("buildTeamsGroups — per-player evidence (ii)+(iii)", () => {
           careerTeams: [
             { name: "Reds", fromYear: 2018, toYear: 2020 },
             { name: "Phillies", fromYear: 2021, toYear: 2022 },
-            { name: "Yankees", fromYear: 2023 },
+            { name: "Yankees", fromYear: 2022 },
           ],
         },
         decision: { action: "create", excludedCareerTeamNames: ["Yankees"] },
       }),
     ];
-    const groups = build([card("1", ["Traded Guy"])], rows, {}, 2021);
-    expect(optionLabel(groups[0].suggestion!)).toBe("Phillies");
+    const groups = build([card("1", ["Traded Guy"])], rows, {}, 2022);
+    expect(suggested(groups[0])).toEqual(["Phillies"]);
   });
 });
 
@@ -336,7 +371,7 @@ describe("choices and answers", () => {
   });
 
   test("a pick naming an option the line no longer offers falls back to the default", () => {
-    expect(effectiveChoice(groups[0], { kind: "team", optionKey: "gone" })).toEqual(
+    expect(effectiveChoice(groups[0], { kind: "teams", refKeys: ["gone"] })).toEqual(
       defaultChoice(groups[0]),
     );
   });
@@ -382,7 +417,7 @@ describe("adversarial — evidence that must NOT pre-fill", () => {
       { "name:bench johnny": answered([PHILLIES, "Philadelphia Phillies"]) },
     );
     expect(groups[0].suggestion).toBeNull();
-    expect(groups[0].options.map(optionLabel)).toEqual(["Reds", "Yankees"]);
+    expect(labels(groups[0])).toEqual(["Reds", "Yankees"]);
     expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
   });
 
@@ -392,8 +427,7 @@ describe("adversarial — evidence that must NOT pre-fill", () => {
       card("2", ["Johnny Bench"], ["Reds"]),
       card("3", ["Johnny Bench"], ["  reds "]),
     ]);
-    expect(groups[0].suggestion).not.toBeNull();
-    expect(optionLabel(groups[0].suggestion!)).toBe("Reds");
+    expect(suggested(groups[0])).toEqual(["Reds"]);
   });
 
   test("a sibling settled by its stored row is still a sibling, but a skipped string on it is no evidence", () => {
@@ -429,7 +463,7 @@ describe("adversarial — evidence that must NOT pre-fill", () => {
     const groups = build(cards, [], evidence);
     expect(groups[0].suggestion).toBeNull();
     // Every team stays a choice, capped at what a line may offer.
-    expect(groups[0].options).toHaveLength(6);
+    expect(groups[0].refs).toHaveLength(6);
     expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
   });
 
@@ -447,9 +481,12 @@ describe("adversarial — evidence that must NOT pre-fill", () => {
     expect(loading[0].loading).toBe(true);
     expect(loading[0].suggestion).toBeNull();
 
-    const arrived = build(cards, rows, {
-      "name:bench johnny": answered([YANKEES, "New York Yankees"]),
-    });
+    const arrived = build(
+      cards,
+      rows,
+      { "name:bench johnny": answered([YANKEES, "New York Yankees"]) },
+      2025,
+    );
     expect(arrived[0].loading).toBe(false);
     expect(answerForChoice(arrived[0], defaultChoice(arrived[0]))).toEqual({
       teamIds: [YANKEES],
@@ -469,7 +506,7 @@ describe("adversarial — evidence that must NOT pre-fill", () => {
     ];
     const groups = build([card("1", ["Rookie Guy"])], rows);
     expect(groups[0].suggestion).toBeNull();
-    expect(groups[0].options).toEqual([]);
+    expect(groups[0].refs).toEqual([]);
     expect(groups[0].loading).toBe(false);
   });
 });
@@ -494,5 +531,270 @@ describe("adversarial — answers are positional, never by card number", () => {
     const groups = build([card("1", ["A"]), card("2", ["A"])], [], { "name:a": unsure() });
     const answers = teamAnswersByCard(groups, { [groups[0].key]: { kind: "none" } }, 1);
     expect(answers).toEqual([{ teamNone: true }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-335 Phase 2
+// ---------------------------------------------------------------------------
+
+describe("invariant 8 — a listing's team name holds the guess back", () => {
+  const skippedTeam = (name: string) => row({ kind: "team", name, decision: { action: "skip" } });
+
+  test("a listed name blocks a server pre-fill; the line is left for later and says what was listed", () => {
+    const rows = [skippedTeam("Bulls")];
+    const cards = [card("1", ["Johnny Bench"], ["Bulls"])];
+    const groups = build(cards, rows, {
+      "name:bench johnny": answered([REDS, "Cincinnati Reds"]),
+    });
+    expect(groups[0].listedNames).toEqual(["Bulls"]);
+    expect(groups[0].suggestion).toBeNull();
+    expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+    // The would-be pre-fill is still a choice — the operator decides.
+    expect(labels(groups[0])).toEqual(["Cincinnati Reds"]);
+    expect(teamAnswersByCard(groups, {}, 1)).toEqual([undefined]);
+  });
+
+  test("a listed name blocks a batch pre-fill too", () => {
+    const rows = [skippedTeam("Bulls")];
+    const groups = build(
+      [card("1", ["Johnny Bench"], ["Bulls"]), card("2", ["Johnny Bench"], ["Reds"])],
+      rows,
+    );
+    expect(groups[0].suggestion).toBeNull();
+    expect(labels(groups[0])).toEqual(["Reds"]);
+  });
+
+  test("a listed name blocks a created player's career pre-fill", () => {
+    const rows = [
+      skippedTeam("Bulls"),
+      row({
+        kind: "player",
+        name: "Rookie Guy",
+        enrichment: { careerTeams: [{ name: "Reds", fromYear: 2024 }] },
+        decision: { action: "create" },
+      }),
+    ];
+    const groups = build([card("1", ["Rookie Guy"], ["Bulls"])], rows, {}, 2025);
+    expect(groups[0].suggestion).toBeNull();
+  });
+
+  test("the NB teams the listed name resolves to are offered FIRST, unselected", () => {
+    const rows = [skippedTeam("Durham Bulls")];
+    const cards = [card("1", ["Johnny Bench"], ["Durham Bulls"])];
+    expect(teamNameRequests(cards, rows)).toEqual([
+      { key: "bulls durham", name: "Durham Bulls" },
+    ]);
+    const BULLS = "team_bulls" as Id<"teams">;
+    const groups = build(
+      cards,
+      rows,
+      { "name:bench johnny": unsure([REDS, "Cincinnati Reds"]) },
+      undefined,
+      { teamNameEvidence: { "bulls durham": [serverTeam(BULLS, "Durham Bulls")] } },
+    );
+    expect(labels(groups[0])).toEqual(["Durham Bulls", "Cincinnati Reds"]);
+    expect(groups[0].suggestion).toBeNull();
+  });
+
+  test("the listed name's lookup still on its way → the line is loading", () => {
+    const rows = [skippedTeam("Bulls")];
+    const groups = build([card("1", [], ["Bulls"])], rows, {}, undefined, {
+      teamNameEvidence: {},
+    });
+    expect(groups[0].loading).toBe(true);
+  });
+
+  test("a failed team lookup is missing data: nothing pre-filled, the operator picks", () => {
+    const cards: PreviewCardForTeams[] = [
+      { ...card("1", ["Johnny Bench"]), teamLookup: "failed" },
+      { ...card("2", ["Johnny Bench"]), teamLookup: "answered" },
+    ];
+    const groups = build(cards, [], {
+      "name:bench johnny": answered([REDS, "Cincinnati Reds"]),
+    });
+    // Two lines: the claim (or its absence) is part of what a line shares.
+    expect(groups).toHaveLength(2);
+    expect(groups[0].lookupFailed).toBe(true);
+    expect(groups[0].suggestion).toBeNull();
+    expect(suggested(groups[1])).toEqual(["Cincinnati Reds"]);
+  });
+
+  test("the listed string is never written: an answer only ever names a chip", () => {
+    const rows = [skippedTeam("Bulls")];
+    const groups = build([card("1", ["Johnny Bench"], ["Bulls"])], rows, {
+      "name:bench johnny": unsure([REDS, "Cincinnati Reds"]),
+    });
+    const choice = toggleTeam(groups[0], defaultChoice(groups[0]), teamIdKey(REDS));
+    expect(answerForChoice(groups[0], choice)).toEqual({ teamIds: [REDS] });
+  });
+});
+
+describe("created players — the window and the set's league (C2, C2b, C8)", () => {
+  const created = (name: string, careerTeams: Array<{ name: string; fromYear: number; toYear?: number }>) =>
+    row({ kind: "player", name, enrichment: { careerTeams }, decision: { action: "create" } });
+
+  test("a legend gets no pre-fill: career unselected, longest stint first", () => {
+    const rows = [
+      created("Old Timer", [
+        { name: "Red Sox", fromYear: 1914, toYear: 1919 },
+        { name: "Yankees", fromYear: 1920, toYear: 1934 },
+      ]),
+    ];
+    const groups = build([card("1", ["Old Timer"])], rows, {}, 2026, { teamNameEvidence: {
+      "red sox": [], yankees: [],
+    } });
+    expect(groups[0].suggestion).toBeNull();
+    expect(labels(groups[0])).toEqual(["Yankees", "Red Sox"]);
+  });
+
+  test("C8: a prospect's major-league org (existing team, ranked by the server) beats his affiliates", () => {
+    const RAYS = "team_rays" as Id<"teams">;
+    const rows = [
+      created("Prospect Guy", [
+        { name: "Montgomery Biscuits", fromYear: 2024, toYear: 2025 },
+        { name: "Tampa Bay Rays", fromYear: 2024 },
+        { name: "Durham Bulls", fromYear: 2025, toYear: 2026 },
+      ]),
+    ];
+    const cards = [card("1", ["Prospect Guy"])];
+    expect(teamNameRequests(cards, rows).map((r) => r.name)).toEqual([
+      "Montgomery Biscuits",
+      "Tampa Bay Rays",
+      "Durham Bulls",
+    ]);
+    const pending = build(cards, rows, {}, 2026, { teamNameEvidence: {} });
+    expect(pending[0].loading).toBe(true);
+    expect(pending[0].suggestion).toBeNull();
+
+    const groups = build(cards, rows, {}, 2026, {
+      teamNameEvidence: {
+        "biscuits montgomery": [],
+        "bay rays tampa": [{ teamId: RAYS, name: "Tampa Bay Rays", rank: 0 }],
+        "bulls durham": [],
+      },
+    });
+    expect(suggested(groups[0])).toEqual(["Tampa Bay Rays"]);
+    // The affiliates stay offered, behind the pick.
+    expect(labels(groups[0])).toEqual(["Tampa Bay Rays", "Montgomery Biscuits", "Durham Bulls"]);
+  });
+
+  test("a team staged in this wizard is in the set's league when the operator filed it there", () => {
+    const rows = [
+      created("Rookie Guy", [
+        { name: "Sydney Blue Sox", fromYear: 2024, toYear: 2025 },
+        { name: "New Club", fromYear: 2025 },
+      ]),
+      row({
+        kind: "team",
+        name: "New Club",
+        decision: { action: "create", create: { location: "New", name: "Club", leagueId: "league_mlb" } },
+      }),
+      row({
+        kind: "team",
+        name: "Sydney Blue Sox",
+        decision: { action: "create", create: { location: "Sydney", name: "Blue Sox", leagueId: "league_abl" } },
+      }),
+    ];
+    const groups = build([card("1", ["Rookie Guy"])], rows, {}, 2026, {
+      teamNameEvidence: {},
+      setLeagueId: "league_mlb",
+    });
+    expect(suggested(groups[0])).toEqual(["New Club"]);
+  });
+});
+
+describe("choices — multi-select (C4), Other team (C1), per-card (C3)", () => {
+  const multiGroup = () => {
+    const cards = [card("1", ["A", "B"])];
+    const [a, b] = evidenceRequests(cards, []);
+    return build(cards, [], {
+      [a.key]: unsure([REDS, "Cincinnati Reds"]),
+      [b.key]: unsure([YANKEES, "New York Yankees"]),
+    })[0];
+  };
+
+  test("a multi line toggles teams; unticking the last leaves it for later", () => {
+    const group = multiGroup();
+    expect(group.multi).toBe(true);
+    let choice = toggleTeam(group, defaultChoice(group), teamIdKey(REDS));
+    choice = toggleTeam(group, choice, teamIdKey(YANKEES));
+    expect(answerForChoice(group, choice)).toEqual({ teamIds: [REDS, YANKEES] });
+    choice = toggleTeam(group, toggleTeam(group, choice, teamIdKey(REDS)), teamIdKey(YANKEES));
+    expect(choice).toEqual({ kind: "later" });
+  });
+
+  test("a one-team line replaces its pick", () => {
+    const cards = [card("1", ["Johnny Bench"])];
+    const group = build(cards, [], {
+      "name:bench johnny": unsure([REDS, "Cincinnati Reds"], [YANKEES, "New York Yankees"]),
+    })[0];
+    expect(group.multi).toBe(false);
+    const choice = toggleTeam(
+      group,
+      toggleTeam(group, defaultChoice(group), teamIdKey(REDS)),
+      teamIdKey(YANKEES),
+    );
+    expect(choice).toEqual({ kind: "teams", refKeys: [teamIdKey(YANKEES)] });
+  });
+
+  test("the multi-select cap: a ninth team is refused, by toggle and by Other team", () => {
+    const group = multiGroup();
+    const eight = Array.from({ length: MAX_CARD_TEAMS }, (_, i) => `team_x${i}` as Id<"teams">);
+    let choice = defaultChoice(group);
+    for (const id of eight) choice = addOtherTeam(group, choice, id);
+    expect(choice.kind === "teams" && choice.refKeys).toHaveLength(MAX_CARD_TEAMS);
+    expect(toggleTeam(group, choice, teamIdKey(REDS))).toBe(choice);
+    const ninth = addOtherTeam(group, choice, "team_ninth" as Id<"teams">);
+    expect(ninth.kind === "teams" && ninth.refKeys).toHaveLength(MAX_CARD_TEAMS);
+    expect(answerForChoice(group, ninth)?.teamIds).toHaveLength(MAX_CARD_TEAMS);
+  });
+
+  test("Other team: the team joins the line selected, survives No team and back, and answers by id", () => {
+    const cards = [card("1", ["Johnny Bench"])];
+    const group = build(cards, [], { "name:bench johnny": unsure([REDS, "Cincinnati Reds"]) })[0];
+    const MADE = "team_just_made" as Id<"teams">;
+    const picked = addOtherTeam(group, defaultChoice(group), MADE);
+    expect(picked).toEqual({ kind: "teams", refKeys: [teamIdKey(MADE)], extra: [MADE] });
+    expect(answerForChoice(group, effectiveChoice(group, picked))).toEqual({ teamIds: [MADE] });
+    const none = chooseKind(picked, "none");
+    expect(none).toEqual({ kind: "none", extra: [MADE] });
+    expect(extraTeamIds({ [group.key]: none })).toEqual([MADE]);
+    // A pick of a team the line already offers selects that chip, adds nothing.
+    expect(addOtherTeam(group, defaultChoice(group), REDS)).toEqual({
+      kind: "teams",
+      refKeys: [teamIdKey(REDS)],
+    });
+  });
+
+  test("an Other-team pick from another sport never reaches the commit", () => {
+    const group = multiGroup();
+    const FOREIGN = "team_jets" as Id<"teams">;
+    const choice = addOtherTeam(group, toggleTeam(group, defaultChoice(group), teamIdKey(REDS)), FOREIGN);
+    expect(answerForChoice(group, choice, new Set([FOREIGN]))).toEqual({ teamIds: [REDS] });
+  });
+
+  test("per-card: one card in a grouped line takes its own answer; 'line' hands it back", () => {
+    const cards = [card("1", ["Johnny Bench"]), card("2", ["Johnny Bench"]), card("3", ["Johnny Bench"])];
+    const groups = build(cards, [], {
+      "name:bench johnny": answered([REDS, "Cincinnati Reds"]),
+    });
+    const group = groups[0];
+    const own = cardChoiceKey(group.key, 1);
+    const choices = { [own]: { kind: "none" as const } };
+    expect(hasCardOverride(group, choices, 1)).toBe(true);
+    expect(hasCardOverride(group, choices, 0)).toBe(false);
+    expect(teamAnswersByCard(groups, choices, 3)).toEqual([
+      { teamIds: [REDS] },
+      { teamNone: true },
+      { teamIds: [REDS] },
+    ]);
+    const back = { [own]: { kind: "line" as const } };
+    expect(hasCardOverride(group, back, 1)).toBe(false);
+    expect(effectiveCardChoice(group, back, 1)).toEqual(defaultChoice(group));
+    // The line's own pick still reaches the cards that follow it.
+    expect(
+      teamAnswersByCard(groups, { [group.key]: { kind: "later" }, [own]: { kind: "none" } }, 3),
+    ).toEqual([undefined, { teamNone: true }, undefined]);
   });
 });

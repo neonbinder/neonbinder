@@ -18,8 +18,15 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
-import { TEAM_SUGGESTION_MAX_PLAYERS } from "./cardChecklist";
-import { TEAMS_SECTION_PLAYERS_PER_REQUEST } from "../components/SetSelector/teams-on-cards";
+import { normalizeLeagueName } from "./leagues";
+import {
+  TEAM_SUGGESTION_MAX_PLAYERS,
+  TEAM_SUGGESTION_MAX_TEAM_NAMES,
+} from "./cardChecklist";
+import {
+  TEAMS_SECTION_NAMES_PER_REQUEST,
+  TEAMS_SECTION_PLAYERS_PER_REQUEST,
+} from "../components/SetSelector/teams-on-cards";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -212,7 +219,7 @@ describe("teamSuggestionsForPreview — career and names", () => {
   test("a name resolves to exactly one player; two same-name players is no evidence", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
-    await player(t, s.sportId, "Johnny Bench", [{ teamId: s.reds, fromYear: 1967, toYear: 1983 }]);
+    await player(t, s.sportId, "Johnny Bench", [{ teamId: s.reds, fromYear: 1967, toYear: 1984 }]);
     await player(t, s.sportId, "Bob Allen", [{ teamId: s.reds, fromYear: 1980 }]);
     await player(t, s.sportId, "Bob Allen", [{ teamId: s.phillies, fromYear: 1980 }]);
 
@@ -221,26 +228,80 @@ describe("teamSuggestionsForPreview — career and names", () => {
       players: [{ name: "Johnny Bench" }, { name: "Bob Allen" }, { name: "Nobody Atall" }],
     });
     expect(result.players[0].answer).toEqual({
-      tier: "oneTeamCareer",
+      tier: "oneTeamInWindow",
       teams: [{ teamId: s.reds, name: "Reds" }],
     });
     expect(result.players[1]).toEqual({ playerId: null, answer: null, candidates: [] });
     expect(result.players[2]).toEqual({ playerId: null, answer: null, candidates: [] });
   });
 
-  test("one stint covering the set year answers", async () => {
+  // NEO-335 Phase 2 (C2) — REWRITTEN: Phase 1's "one stint in the set year"
+  // (oneStintInYear) became one team in [setYear - 1, setYear]. The old
+  // fixture (Reds to 1984, Phillies from 1985, a 1985 set) is now a TIE —
+  // a 1985 card may well show the 1984 team — so it is split into the two
+  // tests below.
+  test("exactly one team covering [setYear-1, setYear] answers", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
     const traded = await player(t, s.sportId, "Traded Guy", [
-      { teamId: s.reds, fromYear: 1980, toYear: 1984 },
+      { teamId: s.reds, fromYear: 1980, toYear: 1983 },
       { teamId: s.phillies, fromYear: 1985, toYear: 1988 },
     ]);
     const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
       selectorOptionId: s.insertId,
       players: [{ playerId: traded }],
     });
-    expect(result.players[0].answer?.tier).toBe("oneStintInYear");
+    expect(result.players[0].answer?.tier).toBe("oneTeamInWindow");
     expect(result.players[0].answer?.teams.map((x) => x.teamId)).toEqual([s.phillies]);
+  });
+
+  test("a trade the winter before the set year is a tie: both offered, nothing pre-filled", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const traded = await player(t, s.sportId, "Traded Guy", [
+      { teamId: s.reds, fromYear: 1980, toYear: 1984 },
+      { teamId: s.phillies, fromYear: 1985, toYear: 1988 },
+    ]);
+    const [result] = (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId: traded }],
+      })
+    ).players;
+    expect(result.answer).toBeNull();
+    expect(new Set(result.candidates.map((c) => c.teamId))).toEqual(new Set([s.reds, s.phillies]));
+  });
+
+  test("a legend whose one team ended long before the set gets no pre-fill (no year-blind shortcut)", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const legend = await player(t, s.sportId, "Old Timer", [
+      { teamId: s.yankees, fromYear: 1920, toYear: 1934 },
+    ]);
+    const [result] = (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId: legend }],
+      })
+    ).players;
+    expect(result.answer).toBeNull();
+    expect(result.candidates.map((c) => c.teamId)).toEqual([s.yankees]);
+  });
+
+  test("a two-sport athlete's other-sport stint does not make his window a tie", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const bo = await player(t, s.sportId, "Two Way", [
+      { teamId: s.reds, fromYear: 1984, toYear: 1990 },
+      { teamId: s.jets, fromYear: 1984, toYear: 1990 },
+    ]);
+    const [result] = (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId: bo }],
+      })
+    ).players;
+    expect(result.answer?.teams.map((x) => x.teamId)).toEqual([s.reds]);
   });
 
   test("another sport's team is never offered (the commit would refuse it)", async () => {
@@ -266,7 +327,13 @@ describe("teamSuggestionsForPreview — gate and bounds", () => {
     ).rejects.toThrow();
     await expect(
       t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, args),
-    ).resolves.toEqual({ setYear: 1985, players: [] });
+    ).resolves.toEqual({
+      setYear: 1985,
+      sportId: s.sportId,
+      setLeagueId: null,
+      players: [],
+      teamNames: [],
+    });
   });
 
   test("refuses more players than the cap, by count", async () => {
@@ -283,8 +350,21 @@ describe("teamSuggestionsForPreview — gate and bounds", () => {
     ).rejects.toThrow(/Too many players/);
   });
 
-  test("the wizard slices its requests at the server's cap", () => {
+  test("the wizard slices its requests at the server's caps", () => {
     expect(TEAMS_SECTION_PLAYERS_PER_REQUEST).toBe(TEAM_SUGGESTION_MAX_PLAYERS);
+    expect(TEAMS_SECTION_NAMES_PER_REQUEST).toBe(TEAM_SUGGESTION_MAX_TEAM_NAMES);
+  });
+
+  test("refuses more team names than the cap, by count", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await expect(
+      t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [],
+        teamNames: Array.from({ length: TEAM_SUGGESTION_MAX_TEAM_NAMES + 1 }, (_, i) => `T${i}`),
+      }),
+    ).rejects.toThrow(/Too many team names/);
   });
 
   test("a deleted node answers empty rather than throwing", async () => {
@@ -297,7 +377,10 @@ describe("teamSuggestionsForPreview — gate and bounds", () => {
     });
     expect(result).toEqual({
       setYear: null,
+      sportId: null,
+      setLeagueId: null,
       players: [{ playerId: null, answer: null, candidates: [] }],
+      teamNames: [],
     });
   });
 });
@@ -446,5 +529,174 @@ describe("teamSuggestionsForPreview — adversarial", () => {
     // team becoming the answer.
     expect([null, "sameNode"]).toContain(result.answer?.tier ?? null);
     expect(result.answer?.teams.map((x) => x.teamId) ?? []).not.toContain(s.yankees);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-335 Phase 2 — the set's league (C2b) and team names as choices
+// ---------------------------------------------------------------------------
+
+/**
+ * A baseball set whose sport carries `features.league: "MLB"` the way
+ * `deriveSetLevelFeatures` writes it, with the two leagues a prospect plays
+ * in, and an org + an affiliate + a college side.
+ */
+async function seedLeagues(t: T) {
+  const s = await seed(t);
+  return t.run(async (ctx) => {
+    const now = Date.now();
+    await ctx.db.patch(s.sportId, { features: { league: "MLB" } });
+    const league = (name: string, level: "major" | "minor" | "college", aliases?: string[]) =>
+      ctx.db.insert("leagues", {
+        name,
+        nameNormalized: normalizeLeagueName(name),
+        sportId: s.sportId,
+        level,
+        ...(aliases ? { aliases } : {}),
+        lastUpdated: now,
+      });
+    const mlb = await league("Major League Baseball", "major", ["MLB"]);
+    const npb = await league("Nippon Professional Baseball", "major");
+    const il = await league("International League", "minor");
+    const ncaa = await league("NCAA Division I", "college");
+    const team = (name: string, leagueId: Id<"leagues">) =>
+      ctx.db.insert("teams", {
+        name,
+        nameNormalized: normalizeTeamName(name),
+        sportId: s.sportId,
+        leagueId,
+        lastUpdated: now,
+      });
+    const rays = await team("Tampa Bay Rays", mlb);
+    const bulls = await team("Durham Bulls", il);
+    const fighters = await team("Nippon-Ham Fighters", npb);
+    const badgers = await team("Wisconsin Badgers", ncaa);
+    return { ...s, mlb, npb, il, ncaa, rays, bulls, fighters, badgers };
+  });
+}
+
+describe("teamSuggestionsForPreview — league preference (C2b)", () => {
+  test("the set's league comes from features.league, resolved by its alias; the org is preferred over the affiliate", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const prospect = await player(t, s.sportId, "Prospect Guy", [
+      { teamId: s.bulls, fromYear: 1984, toYear: 1985 },
+      { teamId: s.rays, fromYear: 1983 },
+    ]);
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [{ playerId: prospect }],
+    });
+    expect(result.setLeagueId).toBe(s.mlb);
+    expect(result.players[0].answer).toEqual({
+      tier: "preferredInWindow",
+      teams: [{ teamId: s.rays, name: "Tampa Bay Rays", rank: 0 }],
+    });
+    // Never hidden: the affiliate stays offered, ranked.
+    expect(result.players[0].candidates).toEqual([
+      { teamId: s.bulls, name: "Durham Bulls", rank: 2 },
+    ]);
+  });
+
+  test("same league beats same level beats other in the candidate order", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const journeyman = await player(t, s.sportId, "Journeyman", [
+      { teamId: s.bulls, fromYear: 1960, toYear: 1969 },
+      { teamId: s.fighters, fromYear: 1970, toYear: 1971 },
+      { teamId: s.rays, fromYear: 1972, toYear: 1972 },
+    ]);
+    const [result] = (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId: journeyman }],
+      })
+    ).players;
+    expect(result.answer).toBeNull();
+    expect(result.candidates.map((c) => [c.teamId, c.rank])).toEqual([
+      [s.rays, 0],
+      [s.fighters, 1],
+      [s.bulls, 2],
+    ]);
+  });
+
+  test("a college card in a pro set: a one-team window still pre-fills the college team", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const draftee = await player(t, s.sportId, "College Guy", [
+      { teamId: s.badgers, fromYear: 1982, toYear: 1985 },
+      { teamId: s.rays, fromYear: 1987 },
+    ]);
+    const [result] = (
+      await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [{ playerId: draftee }],
+      })
+    ).players;
+    expect(result.answer).toEqual({
+      tier: "oneTeamInWindow",
+      teams: [{ teamId: s.badgers, name: "Wisconsin Badgers", rank: 2 }],
+    });
+  });
+
+  test("an operator's league on a nearer node wins over the sport's", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const setId = await t.run(async (ctx) => (await ctx.db.get(s.baseId))!.parentId!);
+    await t.run((ctx) => ctx.db.patch(setId, { features: { league: "NCAA Division I" } }));
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [],
+    });
+    expect(result.setLeagueId).toBe(s.ncaa);
+  });
+
+  test("no league row for the set's league → nothing is ranked, a tie stays a tie", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    await t.run((ctx) => ctx.db.patch(s.sportId, { features: { league: "MLB" } }));
+    const traded = await player(t, s.sportId, "Traded Guy", [
+      { teamId: s.reds, fromYear: 1980, toYear: 1984 },
+      { teamId: s.phillies, fromYear: 1985 },
+    ]);
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [{ playerId: traded }],
+    });
+    expect(result.setLeagueId).toBeNull();
+    expect(result.players[0].answer).toBeNull();
+    expect(result.players[0].candidates.every((c) => c.rank === undefined)).toBe(true);
+  });
+});
+
+describe("teamSuggestionsForPreview — teamNames (choices, never a pick)", () => {
+  test("a name resolves to every row it names in this sport, the era covering the set year first", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const { oldJets, newJets } = await t.run(async (ctx) => {
+      const make = (from: number, to?: number) =>
+        ctx.db.insert("teams", {
+          name: "Winnipeg Jets",
+          nameNormalized: normalizeTeamName("Winnipeg Jets"),
+          sportId: s.sportId,
+          yearsActive: { from, ...(to !== undefined ? { to } : {}) },
+          lastUpdated: Date.now(),
+        });
+      const newJets = await make(2011);
+      const oldJets = await make(1972, 1996);
+      return { oldJets, newJets };
+    });
+    const result = await t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+      selectorOptionId: s.insertId,
+      players: [],
+      teamNames: ["Winnipeg Jets", "Nobody FC", "Jets", "  tampa bay rays "],
+    });
+    expect(result.teamNames[0].teams.map((x) => x.teamId)).toEqual([oldJets, newJets]);
+    expect(result.teamNames[1].teams).toEqual([]);
+    // Another sport's "Jets" is never a choice.
+    expect(result.teamNames[2].teams).toEqual([]);
+    expect(result.teamNames[3].teams).toEqual([
+      { teamId: s.rays, name: "Tampa Bay Rays", rank: 0 },
+    ]);
   });
 });

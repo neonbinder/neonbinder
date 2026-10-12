@@ -641,8 +641,10 @@ describe("NEO-335 — the wizard's team suggestions are an admin read with no au
         players: [{ playerId }],
       });
 
-    // Not vacuous: the read really answered with the player's team.
-    expect(result.players[0].answer?.teams.map((x) => x.teamId)).toEqual([teamId]);
+    // Not vacuous: the read really answered with the player's team. NEO-335
+    // Phase 2 (C2): the query runs on the sport node, so there is no set year
+    // and no window — the team comes back as a candidate, not a pre-fill.
+    expect(result.players[0].candidates.map((x) => x.teamId)).toEqual([teamId]);
     const wire = JSON.stringify(result);
     expect(wire).not.toContain("createdByUserId");
     expect(wire).not.toContain("clerk_some_operator");
