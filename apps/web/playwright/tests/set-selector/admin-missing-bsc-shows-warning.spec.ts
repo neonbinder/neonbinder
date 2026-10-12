@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/admin-missing-bsc-shows-warning.yaml (Maestro suite retired in NEO-341; see git history)
 // Dedicated admin-sl-only account: only SportLots is seeded, so the gate
 // names BuySportsCards alone.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "Set Builder Gate — admin without BSC credentials sees the warning banner",
@@ -24,6 +24,8 @@ test(
     await expect(page.getByText("SportLots")).toBeHidden();
     await expect(page.getByText("Build set parameters using marketplace APIs")).toBeHidden();
 
+    await expectAccessible(page, { label: "Set Builder credentials gate (BuySportsCards missing)" });
+
     // NEO-287: the pause strip belongs to the panel this account cannot open.
     if (env.SL_PAUSED) {
       await expect(page.getByText(/SportLots is on pause\./)).toBeHidden();
@@ -32,5 +34,6 @@ test(
 
     await banner.getByRole("link", { name: "Configure credentials in Profile" }).click();
     await expect(page.getByText("Profile Settings", { exact: true })).toBeVisible();
+    await expectAccessible(page, { label: "Profile settings" });
   },
 );

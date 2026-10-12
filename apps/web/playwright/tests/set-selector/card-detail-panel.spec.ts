@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/card-detail-panel.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { addCustomCard } from "../../support/cards";
 
@@ -27,10 +27,11 @@ test(
     });
 
     await editCard.click();
-    await expect(cardName).toBeVisible({ timeout: 15_000 });
+    await expect(cardName).toBeVisible();
     await expect(page.getByText(new RegExp(`Card #${cardNumber}`))).toBeVisible();
     await expect(page.getByText("Changes save as you leave each field.")).toBeVisible();
     await expect(done).toBeVisible();
+    await expectAccessible(page, { within: page.getByRole("dialog"), label: "Card detail drawer" });
 
     // Each field saves on Enter / blur, and says so.
     await cardName.fill(renamed);
@@ -61,7 +62,7 @@ test(
 
     // Reopen: everything was persisted.
     await editCard.click();
-    await expect(cardName).toBeVisible({ timeout: 15_000 });
+    await expect(cardName).toBeVisible();
     await expect(cardName).toHaveValue(renamed);
     await expect(title).toHaveValue(`T${id}`);
     await expect(description).toHaveValue(`NEO-25 description body for ${id}`);

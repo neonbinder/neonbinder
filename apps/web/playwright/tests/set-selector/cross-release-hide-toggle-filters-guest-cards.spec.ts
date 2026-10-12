@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/cross-release-hide-toggle-filters-guest-cards.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom, customSport } from "../../support/set-builder";
 import { addCustomCard } from "../../support/cards";
 import { crossListCards } from "../../support/cross-list";
@@ -39,10 +39,12 @@ test(
     await page.getByRole("button", { name: "Hide cross-release cards", exact: true }).click();
     await expect(guest).toBeHidden();
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+    await expectAccessible(page, { label: "Checklist with cross-release cards hidden" });
 
     // Show again: the guest card is restored.
     await page.getByRole("button", { name: "Hide cross-release cards (on)" }).click();
     await expect(guest).toBeVisible();
+    await expectAccessible(page, { label: "Checklist with the guest card restored" });
 
     // Unlink it so the set ends empty for the next run.
     await page

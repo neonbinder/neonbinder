@@ -1,9 +1,9 @@
 // Origin: .maestro/flows/set-selector/card-features-editor-toggle.yaml (Maestro suite retired in NEO-341; see git history)
 // The card drawer's Show/Hide features editor toggle round-trips, then the
 // card deletes cleanly. Per-worker custom subtree; no marketplace call.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
-import { addCustomCard } from "../../support/cards";
+import { addCustomCard, confirmDeleteCardButton, deleteCardButton, editCardButton } from "../../support/cards";
 
 test(
   "Regression — Show/Hide features editor toggle expands then collapses the CardFeaturesEditor, then the card deletes cleanly",
@@ -22,7 +22,7 @@ test(
       playerName: player,
     });
 
-    await page.getByRole("button", { name: `Edit card ${number}` }).click();
+    await editCardButton(page, number).click();
     await expect(page.getByRole("textbox", { name: "Card name" })).toBeVisible();
 
     // Collapsed by default; expand reveals the editor.
@@ -32,6 +32,7 @@ test(
     await expect(editor).toBeHidden();
     await show.click();
     await expect(editor).toBeVisible();
+    await expectAccessible(page, { within: page.getByRole("dialog"), label: "Card detail drawer with features editor open" });
 
     // Collapse hides it and the Show button returns.
     await page.getByRole("button", { name: "Hide features editor" }).click();
@@ -40,9 +41,9 @@ test(
 
     // Close the drawer and delete this attempt's card.
     await page.getByRole("button", { name: "Done editing card" }).click();
-    await page.getByRole("button", { name: `Delete card ${number}` }).click();
+    await deleteCardButton(page, number).click();
     await expect(page.getByText("Confirm?")).toBeVisible();
-    await page.getByRole("button", { name: `Confirm delete card ${number}` }).click();
+    await confirmDeleteCardButton(page, number).click();
     await expect(page.getByText(player)).toBeHidden();
   },
 );

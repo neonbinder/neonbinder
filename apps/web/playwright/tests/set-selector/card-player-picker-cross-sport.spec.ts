@@ -2,7 +2,7 @@
 // NEO-313: switch the quick-add player search to Football and put a football
 // player on a baseball card; the card carries him with his sport, and he stays
 // out of Baseball's roster on /admin/players.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand } from "../../support/players";
 import { confirmDeleteCardButton, deleteCardButton, editCardButton, openVariant } from "../../support/cards";
 import { drillToCustom } from "../../support/set-builder";
@@ -24,6 +24,7 @@ test(
 
     await signIn("/admin/players");
     await expect(page.getByText(/of .* players/)).toBeVisible({ timeout: LAUNCH_GATE });
+    await expectAccessible(page, { label: "Players admin page" });
 
     // A football player, made by hand.
     await addPlayerByHand(page, PLAYER, "Football");
@@ -44,9 +45,11 @@ test(
     await page.getByRole("button", { name: "Add a player to the new card" }).click();
     await page.getByRole("textbox", { name: "Find a player for the new card" }).fill(PLAYER);
     await expect(page.getByRole("option", { name: `Create player ${PLAYER}` })).toBeVisible();
+    await expectAccessible(page, { label: "Add card form with the player picker open" });
     await page.getByRole("button", { name: "Sport to search for players: Baseball" }).click();
     const chooser = page.getByLabel("Choose a sport", { exact: true });
     await expect(chooser).toBeVisible();
+    await expectAccessible(page, { label: "Sport chooser for the player search" });
     await page.keyboard.type("F");
     await chooser.getByText("Football", { exact: true }).click();
     await expect(page.getByRole("button", { name: "Sport to search for players: Football" })).toBeVisible();
@@ -63,7 +66,7 @@ test(
 
     // On /admin/players he is a Football player, not on Baseball's roster.
     await page.goto("/admin/players");
-    await expect(page.getByText(/of .* players/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(/of .* players/)).toBeVisible();
     await page.getByRole("textbox", { name: "Filter players" }).fill(PLAYER);
     await expect(page.getByText(/matches/).first()).toBeVisible();
     const sport = page.getByRole("combobox", { name: "Sport" });
@@ -77,6 +80,7 @@ test(
     await expect(cards).toBeVisible();
     await expect(cards.getByText(`#${card}`)).toBeVisible();
     await expect(cards.getByText("Baseball")).toBeVisible();
+    await expectAccessible(page, { label: "Football player detail with his baseball card" });
 
     // The card carries him, with his sport, in its drawer.
     await drillToCustom(page, target);
@@ -86,6 +90,7 @@ test(
     await expect(drawer.getByRole("textbox", { name: "Card name" })).toBeVisible();
     await expect(drawer.getByRole("button", { name: `Remove player ${PLAYER}` })).toBeVisible();
     await expect(drawer.getByLabel("Player picker", { exact: true }).getByText("Football")).toBeVisible();
+    await expectAccessible(page, { within: drawer, label: "Card detail drawer carrying a football player" });
     await drawer.getByRole("button", { name: "Done editing card" }).click();
     await expect(drawer.getByRole("textbox", { name: "Card name" })).toBeHidden();
 

@@ -7,7 +7,7 @@
 // Sole writer of Bowman > Parallel's rows; fresh-only (the global seed's
 // review fixture is consumed by the moves). Paused SportLots has its own
 // branches, both ending in hard asserts.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   columnOption,
   drillToColdManufacturer,
@@ -60,6 +60,7 @@ test(
       ).toBeVisible();
       // Blue pairs both links: two chips on the one NB row.
       await expect(reconcile.getByRole("button", { name: `Remove ${COLOUR} from ${COLOUR}` }).nth(1)).toBeVisible();
+      await expectAccessible(page, { within: reconcile, label: "Reconcile Parallels dialog" });
       await reconcile.getByRole("button", { name: /Save [0-9]+ sets/ }).click();
       await expect(reconcile).toBeHidden();
     } else {
@@ -71,6 +72,7 @@ test(
 
     await pickParallel(page, COLOUR);
     await expect(page.getByText(new RegExp(`Attributes for ${COLOUR}`))).toBeVisible();
+    await expectAccessible(page, { label: "Blue parallel with its attributes" });
 
     // ── Promote to set (live only: paused, Blue carries no SportLots link) ──
     if (env.SL_PAUSED) {
@@ -80,6 +82,7 @@ test(
       const promote = page.getByRole("dialog", { name: `Promote “${COLOUR}” to a set` });
       await expect(promote).toBeVisible();
       await expect(promote.getByText(new RegExp(`“${COLOUR}” stays, keeping everything else on it\\.`))).toBeVisible();
+      await expectAccessible(page, { within: promote, label: "Promote to set dialog" });
       await promote.getByRole("button", { name: "Promote it" }).click();
       await expect(page.getByText(`“${SL_SET}” is its own set now.`)).toBeVisible();
 
@@ -91,6 +94,7 @@ test(
       await expect(makeParallel).toBeVisible();
       await expect(makeParallel.getByText(`Parallel of: ${BRAND}`)).toBeVisible();
       await expect(makeParallel.getByText("joins").first()).toBeVisible();
+      await expectAccessible(page, { within: makeParallel, label: "Make parallel of dialog" });
       await makeParallel.getByRole("button", { name: "Make it a parallel" }).click();
       await expect(
         page.getByText(new RegExp(`“${SL_SET}” joined ${BRAND}.s “${COLOUR}” parallel\\.`)),
@@ -122,6 +126,7 @@ test(
       await expect(makeInsert.getByText(`Under ${INSERT_ROW} as`)).toBeVisible();
       await expect(makeInsert.getByText(NEW_PARALLEL, { exact: true }).first()).toBeVisible();
       await expect(page.getByRole("dialog", { name: `Make “${SOURCE_ROW}” a parallel` })).toBeVisible();
+      await expectAccessible(page, { within: makeInsert, label: "Make insert of dialog with a destination chosen" });
       await makeInsert.getByRole("button", { name: "Make it a parallel" }).click();
       await expect(
         page.getByText(
@@ -129,6 +134,7 @@ test(
         ),
       ).toBeVisible();
       await expect(page.getByText(new RegExp(`Attributes for ${NEW_PARALLEL}`))).toBeVisible();
+      await expectAccessible(page, { label: "Red Ink parallel after Make insert of" });
     }
 
     // ── STEPS 15–16: a later Parallels sync never re-creates the moved row ──
@@ -168,6 +174,7 @@ test(
       const chip = page.getByRole("button", { name: new RegExp(`^Remove .*${NEW_PARALLEL}$`) });
       await chip.click();
       await expect(page.getByText(new RegExp(`Detach SportLots ".*${NEW_PARALLEL}"\\? `))).toBeVisible();
+      await expectAccessible(page, { label: "Detach SportLots link confirmation" });
       await page.getByRole("button", { name: new RegExp(`^Cancel detach .*${NEW_PARALLEL}`) }).click();
       await expect(page.getByText(/Detach SportLots /)).toBeHidden();
       await expect(chip).toBeVisible();

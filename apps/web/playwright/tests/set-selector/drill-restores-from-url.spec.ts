@@ -3,7 +3,7 @@
 // back to the page restores the drill from the address with keyboard focus in
 // the deepest open column. Typing here goes to whatever holds focus, never to
 // a field the test clicked first: that IS the feature.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   columnHeading,
   columnOption,
@@ -27,6 +27,7 @@ test(
     await expect(columnSearch(page, "Sets")).toBeFocused();
     await expect(columnSelection(page, "Manufacturers", "Topps")).toBeVisible();
     await expect(columnHeading(page, "Variant Types")).toBeHidden();
+    await expectAccessible(page, { label: "Sets column re-opened by Back" });
 
     // Keyboard only: type goes to the focused search, Enter picks the match.
     await page.keyboard.type("Topps Chrome");
@@ -43,6 +44,7 @@ test(
     // Leave for another admin page and type there.
     await page.getByRole("navigation", { name: "Admin sections" }).getByRole("link", { name: "Teams" }).click();
     await expect(page.getByRole("heading", { name: "Team Management" })).toBeVisible();
+    await expectAccessible(page, { label: "Team Management" });
     const filter = page.getByRole("textbox", { name: "Filter teams" });
     await filter.fill("zz");
     await expect(filter).toHaveValue("zz");
@@ -56,6 +58,7 @@ test(
     await expect(vtSearch).toHaveValue("");
     await expect(vtSearch).toHaveAttribute("placeholder", "Search variant types...");
     await expect(vtSearch).toBeFocused();
+    await expectAccessible(page, { label: "Drill restored from the address" });
 
     await page.keyboard.type("Base");
     await expect(vtSearch).toHaveValue("Base");

@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/admin-missing-both-shows-warning.yaml (Maestro suite retired in NEO-341; see git history)
 // Dedicated never-seeded account (admin-no-credentials): sign in and assert,
 // nothing is written.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "Set Builder Gate — admin with neither BSC nor SportLots credentials sees the warning banner",
@@ -27,9 +27,11 @@ test(
     // The gate replaces the builder: neither the panel nor its sync controls render.
     await expect(page.getByText("Build set parameters using marketplace APIs")).toBeHidden();
     await expect(page.getByRole("button", { name: "Sync Sports" })).toBeHidden();
+    await expectAccessible(page, { label: "Set Builder credentials gate (neither marketplace)" });
 
     // The CTA lands on the profile.
     await banner.getByRole("link", { name: "Configure credentials in Profile" }).click();
     await expect(page.getByText("Profile Settings", { exact: true })).toBeVisible();
+    await expectAccessible(page, { label: "Profile settings" });
   },
 );

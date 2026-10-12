@@ -1,9 +1,9 @@
 // Origin: .maestro/flows/set-selector/card-autopopulates-features.yaml (Maestro suite retired in NEO-341; see git history)
 // A freshly created card row carries the inherited physical/production
 // defaults from its ancestor chain, read in the card drawer's features editor.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
-import { addCustomCard } from "../../support/cards";
+import { addCustomCard, confirmDeleteCardButton, deleteCardButton, editCardButton } from "../../support/cards";
 
 test(
   "Write-once feature snapshots — a freshly-created CARD ROW auto-populates its own features with the inherited physical/production defaults from its ancestor chain",
@@ -22,7 +22,7 @@ test(
       playerName: player,
     });
 
-    await page.getByRole("button", { name: `Edit card ${number}` }).click();
+    await editCardButton(page, number).click();
     await expect(page.getByRole("textbox", { name: "Card name" })).toBeVisible();
     await page.getByRole("button", { name: "Show features editor" }).click();
     await expect(page.getByLabel("Card features editor")).toBeVisible();
@@ -42,11 +42,12 @@ test(
       await expect(field).toBeVisible();
       await expect(field).toHaveValue(value);
     }
+    await expectAccessible(page, { within: page.getByRole("dialog"), label: "Card detail drawer with features editor open" });
 
     await page.getByRole("button", { name: "Done editing card" }).click();
-    await page.getByRole("button", { name: `Delete card ${number}` }).click();
+    await deleteCardButton(page, number).click();
     await expect(page.getByText("Confirm?")).toBeVisible();
-    await page.getByRole("button", { name: `Confirm delete card ${number}` }).click();
+    await confirmDeleteCardButton(page, number).click();
     await expect(page.getByText(player)).toBeHidden();
   },
 );

@@ -2,7 +2,7 @@
 // Dedicated admin-bsc-only account: only BuySportsCards is seeded. With
 // SportLots live the gate names SportLots alone; under the NEO-287 pause a
 // paused platform is not required, so the Set Builder opens.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "Set Builder Gate — admin without SportLots credentials sees the warning banner",
@@ -25,9 +25,11 @@ test(
       await expect(banner.getByText("SportLots", { exact: true })).toBeVisible();
       await expect(page.getByText("BuySportsCards")).toBeHidden();
       await expect(panel).toBeHidden();
+      await expectAccessible(page, { label: "Set Builder credentials gate (SportLots missing)" });
 
       await banner.getByRole("link", { name: "Configure credentials in Profile" }).click();
       await expect(page.getByText("Profile Settings", { exact: true })).toBeVisible();
+      await expectAccessible(page, { label: "Profile settings" });
     } else {
       await expect(banner.or(panel)).toBeVisible({ timeout: LAUNCH_GATE });
 
@@ -39,6 +41,7 @@ test(
       await expect(
         page.getByText(/Syncs roll on with BuySportsCards only\. Your SportLots links stay put — nothing gets unlinked\./),
       ).toBeVisible();
+      await expectAccessible(page, { label: "Set Builder with the SportLots pause strip" });
     }
   },
 );

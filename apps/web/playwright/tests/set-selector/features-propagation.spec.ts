@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/features-propagation.yaml (Maestro suite retired in NEO-341; see git history)
 // A set-level feature edit saves that single row (Saved toast) and does NOT
 // cascade to a card that has its own value (per-worker custom set).
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { columnHeading, setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { confirmDeleteCardButton, deleteCardButton, editCardButton, ensureAndSelect, openVariant } from "../../support/cards";
 import type { Page } from "@playwright/test";
@@ -19,6 +19,7 @@ async function saveSetCountry(page: Page, value: string) {
   await coo.fill(value);
   await coo.press("Enter");
   await expect(page.getByText(/Saved Country of Origin/)).toBeVisible();
+  await expectAccessible(page, { label: "Set attributes panel after a saved edit" });
 }
 
 test(
@@ -59,13 +60,21 @@ test(
 
     await editCardButton(page, card).click();
     const drawer = page.getByRole("dialog");
-    await expect(drawer.getByRole("textbox", { name: "Card name" })).toBeVisible({ timeout: 15_000 });
+    await expect(drawer.getByRole("textbox", { name: "Card name" })).toBeVisible();
     await drawer.getByRole("button", { name: "Show features editor" }).click();
     await expect(drawer.getByLabel("Card features editor", { exact: true })).toBeVisible();
+    await expectAccessible(page, { within: drawer, label: "Card detail drawer with features editor open" });
     const cardCoo = drawer.getByRole("textbox", { name: "Value for Country of Origin" });
+    // The drawer's one status line announces each save. The set panel's earlier
+    // "Saved Country of Origin" toast must be gone first, or it would satisfy the
+    // wait below before the card's own save has landed.
+    const cardSaved = page.getByRole("status").filter({ hasText: "Saved Country of Origin" });
+    await expect(cardSaved).toHaveCount(0);
     await cardCoo.fill("CooTest-CARD");
     await cardCoo.press("Enter");
     await expect(cardCoo).toHaveValue("CooTest-CARD");
+    // Closing the drawer before the save is announced would drop the write.
+    await expect(cardSaved).toBeVisible();
     await drawer.getByRole("button", { name: "Done editing card" }).click();
     await expect(drawer.getByRole("textbox", { name: "Card name" })).toBeHidden();
     await expect(page.getByText(player)).toBeVisible();
@@ -79,7 +88,7 @@ test(
     await pickInsert();
     await openVariant(page, "Insert", insertName);
     await editCardButton(page, card).click();
-    await expect(drawer.getByRole("textbox", { name: "Card name" })).toBeVisible({ timeout: 15_000 });
+    await expect(drawer.getByRole("textbox", { name: "Card name" })).toBeVisible();
     await drawer.getByRole("button", { name: "Show features editor" }).click();
     await expect(drawer.getByLabel("Card features editor", { exact: true })).toBeVisible();
     await expect(cardCoo).toHaveValue(/CooTest-CARD/);

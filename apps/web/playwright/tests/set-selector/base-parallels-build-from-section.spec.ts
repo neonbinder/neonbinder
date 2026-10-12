@@ -1,6 +1,6 @@
 // Origin: .maestro/flows/set-selector/base-parallels-build-from-section.yaml (Maestro suite retired in NEO-341; see git history)
 // Sole writer of the 2024 Topps Chrome base set's parallels build.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { columnOption, columnSearch, drillToSet, pick, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -18,18 +18,23 @@ test(
 
     const build = page.getByRole("button", { name: new RegExp(`^Build ${total} parallels from Base$`) });
     await expect(page.getByText("Parallels of Base")).toBeVisible();
+    await expect(build).toBeVisible();
+    await expectAccessible(page, { label: "Parallel column with the Build from Base section" });
     await build.click();
 
     // Parallels that already hold cards ask before they are replaced.
     await expect(
       page.getByText(new RegExp(`Replace the cards on [1-9][0-9]* of ${total} parallels with fresh copies of Base.s\\?`)),
     ).toBeVisible();
+    await expectAccessible(page, { label: "Replace cards confirmation" });
     await page.getByRole("button", { name: "Replace and build" }).click();
 
     await page.getByRole("button", { name: "Stop after this one" }).click();
     await expect(
       page.getByRole("heading", { name: new RegExp(`Base parallels — stopped after 1 of ${total}`) }),
     ).toBeVisible();
+
+    await expectAccessible(page, { label: "Base parallels build stopped after one" });
 
     // The ledger names the one parallel that was built.
     const built = page.getByText(/^.+ — (Built|Rebuilt) [1-9][0-9]* cards?(, .+)?$/).first();
@@ -43,6 +48,7 @@ test(
     await columnSearch(page, "Parallels").fill(parallel);
     await columnOption(page, "Parallels", parallel).click();
     await expect(page.getByRole("heading", { name: `Attributes for ${parallel}` })).toBeVisible();
+    await expectAccessible(page, { label: "Built parallel with its attributes and cards" });
 
     await page.getByRole("button", { name: /^Edit card .+/ }).last().click();
     await expect(page.getByRole("textbox", { name: "Card title" })).toHaveValue(new RegExp(escapeRegExp(parallel)));

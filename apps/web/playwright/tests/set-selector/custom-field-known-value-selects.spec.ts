@@ -2,7 +2,7 @@
 // Typing a value that already exists as synced data into the Sports "+ Custom"
 // form selects it (closes the form, advances the drill) instead of creating a
 // duplicate. Reads only; creates nothing.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { columnHeading, columnOption, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -21,6 +21,7 @@ test(
     // The form's input is focused when it mounts.
     const value = page.getByPlaceholder("Enter custom value...");
     await expect(value).toBeFocused();
+    await expectAccessible(page, { label: "Sports column with the custom entry form open" });
     await value.fill("Baseball");
     await value.press("Enter");
 
@@ -28,5 +29,6 @@ test(
     await expect(page.getByText("Add Custom Entry")).toBeHidden();
     await expect(columnHeading(page, "Years")).toBeVisible();
     await expect(page.getByRole("button", { name: "Sync Years" })).toBeVisible();
+    await expectAccessible(page, { label: "Years column opened by the known value" });
   },
 );

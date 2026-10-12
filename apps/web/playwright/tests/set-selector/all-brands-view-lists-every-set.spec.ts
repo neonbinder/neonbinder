@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/all-brands-view-lists-every-set.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { columnHeading, columnOption, columnSelection, setBuilderReady, drillToCustom } from "../../support/set-builder";
 
 test(
@@ -19,6 +19,7 @@ test(
     const allBrands = columnOption(page, "Manufacturers", "All Brands");
     await expect(allBrands).toBeVisible();
     await expect(allBrands.getByText("Every set in 2026")).toBeVisible();
+    await expectAccessible(page, { label: "Manufacturers column with the pinned All Brands view" });
 
     // ── "All Brands" is refused as a brand name ──
     await page.getByRole("button", { name: "Add custom Manufacturers" }).click();
@@ -29,6 +30,7 @@ test(
     await expect(page.getByText("All Brands is the view at the top of this column, not a brand.")).toBeVisible();
     await expect(page.getByText("Add Custom Entry")).toBeVisible();
     await expect(page.getByRole("button", { name: /^Create manufacturer/ })).toBeHidden();
+    await expectAccessible(page, { label: "Custom manufacturer form refusing All Brands" });
     await page.getByRole("button", { name: "Cancel new manufacturer" }).click();
     await expect(page.getByText("Add Custom Entry")).toBeHidden();
     await expect(page.getByRole("button", { name: "Add custom Manufacturers" })).toBeVisible();
@@ -50,6 +52,7 @@ test(
     const rowB = columnOption(page, "Sets", setB);
     await expect(rowA.getByText("Topps", { exact: true })).toBeVisible();
     await expect(rowB.getByText("Panini", { exact: true })).toBeVisible();
+    await expectAccessible(page, { label: "All Brands view listing every set with its brand" });
 
     // ── Picking a row back-fills its brand ──
     await rowB.click();
@@ -66,5 +69,6 @@ test(
     if (await edit.isVisible()) await edit.click();
     await expect(hide).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Value for Brand" })).toHaveValue("Panini");
+    await expectAccessible(page, { label: "Brand attributes panel for Panini" });
   },
 );

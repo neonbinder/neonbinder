@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/cards-parallel-custom.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, columnOption, syncChecklistButton, addCustomEntry, drillToCustomSet } from "../../support/set-builder";
 
 test(
@@ -24,5 +24,6 @@ test(
     await row.click();
     await expect(syncChecklistButton(page)).toBeVisible();
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
+    await expectAccessible(page, { label: "Hand-added parallel with its empty checklist" });
   },
 );

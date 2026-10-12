@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/cross-release-import-reports-missing-numbers.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom, customSport } from "../../support/set-builder";
 import { openCrossListForm, pickCrossListSource } from "../../support/cross-list";
 
@@ -34,6 +34,7 @@ test(
 
     await expect(modal.getByText(/Not found in source set: 8801, 8802, 8803/)).toBeVisible();
     await expect(modal.getByText(/Linked 0 cards/)).toBeVisible();
+    await expectAccessible(page, { within: modal, label: "Cross-release import reporting missing numbers" });
 
     await modal.getByRole("button", { name: "Cancel cross-release import" }).click();
     await expect(modal).toBeHidden();

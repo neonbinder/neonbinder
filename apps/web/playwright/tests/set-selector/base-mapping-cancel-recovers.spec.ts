@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/base-mapping-cancel-recovers.yaml (Maestro suite retired in NEO-341; see git history)
 // Cancelling the Base-set picker leaves a message and a working Retry (no
 // dead end); Retry reopens the picker with its candidates. Read-only.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToSet, pick, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -34,12 +34,14 @@ test(
 
     await expect(picker).toBeVisible();
     await expectCandidates();
+    await expectAccessible(page, { within: picker, label: "Select Base Set dialog" });
 
     await picker.getByRole("button", { name: "Cancel" }).click();
     await expect(page.getByText(/Base mapping cancelled/)).toBeVisible();
     await expect(page.getByRole("button", { name: "Confirm Base Set" })).toBeHidden();
     const retry = page.getByRole("button", { name: "Retry" });
     await expect(retry).toBeVisible();
+    await expectAccessible(page, { label: "Base mapping cancelled with Retry offered" });
 
     await retry.click();
     await expect(picker).toBeVisible();

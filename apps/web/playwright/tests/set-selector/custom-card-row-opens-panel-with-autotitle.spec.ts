@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/set-selector/custom-card-row-opens-panel-with-autotitle.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
 import { addCustomCard } from "../../support/cards";
 
@@ -26,6 +26,7 @@ test(
     await expect(page.getByRole("textbox", { name: "Card name" })).toBeVisible();
     await expect(page.getByText(new RegExp(`Card #${num}`))).toBeVisible();
     await expect(page.getByRole("textbox", { name: "Card title" })).toHaveValue(new RegExp(`#${num}`));
+    await expectAccessible(page, { within: page.getByRole("dialog"), label: "Card detail drawer opened from the row" });
 
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(page.getByRole("textbox", { name: "Card name" })).toBeHidden();

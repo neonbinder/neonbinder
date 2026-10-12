@@ -2,7 +2,7 @@
 // A card printed in another product (the "home" set) is linked into this set's
 // checklist as a guest, badged with the set it came from; removing it from this
 // set leaves it gone from the checklist.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { addCustomCard, escapeRe, openVariant } from "../../support/cards";
 import { crossListCards } from "../../support/cross-list";
@@ -39,6 +39,10 @@ test(
 
     await crossListCards(page, env, { sport, set: `xsrc-${W}` }, card);
     await expect(page.getByText(/Linked 1 card/)).toBeVisible();
+    await expectAccessible(page, {
+      within: page.getByRole("dialog", { name: "Add cross-release cards" }),
+      label: "Cross-release import after linking a card",
+    });
 
     await page.getByRole("button", { name: "Cancel cross-release import" }).click();
     await expect(page.getByRole("dialog", { name: "Add cross-release cards" })).toBeHidden();
@@ -46,6 +50,7 @@ test(
     // The guest card is listed and badged with the set it came from.
     await expect(page.getByText(`#${card}`)).toBeVisible();
     await expect(page.getByText(new RegExp(`2026 Topps xsrc-${W}`)).first()).toBeVisible();
+    await expectAccessible(page, { label: "Checklist with a guest card badged by its home set" });
 
     // Remove it from this set; it leaves the checklist.
     const remove = page.getByRole("button", {

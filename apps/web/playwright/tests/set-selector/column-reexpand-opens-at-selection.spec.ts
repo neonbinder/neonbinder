@@ -2,7 +2,7 @@
 // NEO-276: re-expanding a collapsed column opens its list scrolled to the
 // selected row, not to the top. Racing sits far down the Sports list, so
 // "Racing in view, Baseball (first) not in view" is the proof. Read-only.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   columnHeading,
   columnOption,
@@ -36,5 +36,6 @@ test(
     }
     await expect(racing).toBeInViewport();
     await expect(baseball).not.toBeInViewport();
+    await expectAccessible(page, { label: "Sports column re-expanded at its selection" });
   },
 );

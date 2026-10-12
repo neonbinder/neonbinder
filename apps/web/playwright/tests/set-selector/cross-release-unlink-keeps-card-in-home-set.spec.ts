@@ -3,7 +3,7 @@
 // says "Unlink", asks to confirm, empties the guest checklist (and the
 // "Hide cross-release cards" control with it), and the card is still intact
 // in the set it was printed in. Per-worker custom subtree; no marketplace.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustomSet } from "../../support/set-builder";
 import { addCustomCard } from "../../support/cards";
 import { crossListCards } from "../../support/cross-list";
@@ -36,6 +36,7 @@ test(
     // 1. The destructive button says "Unlink", not "Del".
     const unlink = page.getByRole("button", { name: new RegExp(`^Remove card ${number}(,.*)? from this set$`) });
     await expect(unlink).toHaveText("Unlink");
+    await expectAccessible(page, { label: "Guest checklist with a visiting card" });
     // 2. It asks before doing anything.
     await unlink.click();
     await expect(page.getByText("Confirm?")).toBeVisible();
@@ -49,6 +50,7 @@ test(
     // 4. The guest appearance is severed, not just hidden: the control that
     // only exists while a visiting card is held is gone.
     await expect(page.getByRole("button", { name: "Hide cross-release cards" })).toBeHidden();
+    await expectAccessible(page, { label: "Guest checklist emptied by Unlink" });
 
     // 5. THE POINT: reopen the home set; the card is still there, intact.
     await drillToCustomSet(page, env, { set: home, variant: "Base" });

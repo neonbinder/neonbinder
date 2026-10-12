@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/bowman-insert-grouping-builds-parallels.yaml (Maestro suite retired in NEO-341; see git history)
 // Fresh-only: it saves 2026 Bowman's inserts as sets, groups them, and builds
 // Anime Kanji's cards from Anime.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   columnHeading,
   columnOption,
@@ -60,6 +60,7 @@ test(
           .or(reconcile.getByRole("button", { name: "Make its own set: Anime Kanji", exact: true })),
       ).toBeVisible();
       await expect(reconcile.getByRole("button", { name: /^Keep all [1-9][0-9]*, BSC sets?$/ })).toBeVisible();
+      await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts dialog" });
 
       // Keep all of the rest of BSC's inserts: Ready grows by exactly what was pending in BSC.
       await filterBsc.clear();
@@ -91,6 +92,7 @@ test(
     await expect(columnOption(page, "Inserts", "Anime Kanji")).toBeVisible();
     await page.getByRole("button", { name: "Group Parallels" }).click();
     await expect(grouping).toBeVisible();
+    await expectAccessible(page, { within: grouping, label: "Group Parallels dialog with suggestions" });
     await grouping.getByRole("button", { name: new RegExp(`^Accept all suggestions \\(${OVER_200}\\)`) }).click();
     await expect(grouping.getByText(new RegExp(`${OVER_200} promotions, 0 demotions`))).toBeVisible();
     await grouping.getByRole("button", { name: new RegExp(`^Save ${OVER_200} changes`) }).click();
@@ -104,6 +106,7 @@ test(
     await expect(grouping).toBeVisible();
     await expect(grouping.getByRole("checkbox", { name: /^Select .+/ }).first()).toBeVisible();
     await expect(grouping.getByText("No changes yet")).toBeVisible();
+    await expectAccessible(page, { within: grouping, label: "Group Parallels dialog with nothing left to suggest" });
     await expect(grouping.getByRole("button", { name: /^Accept all suggestions \([0-9]+\)/ })).toBeHidden();
     await grouping.getByRole("button", { name: "Cancel" }).click();
     await expect(grouping).toBeHidden();
@@ -124,6 +127,7 @@ test(
     ).toBeVisible();
     await expect(page.getByText("Show grouped")).toBeVisible();
     if (!env.SL_PAUSED) {
+      await expectAccessible(page, { within: reconcile, label: "Reconcile Inserts dialog leaving grouped parallels be" });
       await reconcile.getByRole("button", { name: /^Save [0-9]+ sets/ }).click();
       await expect(reconcile).toBeHidden();
     }
@@ -147,6 +151,7 @@ test(
       const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
       await expect(confirm).toBeVisible({ timeout: 120_000 });
       await expect(page.getByText(/Match Cards — Anime/)).toBeVisible();
+      await expectAccessible(page, { within: page.getByRole("dialog", { name: /^Match Cards/ }), label: "Match Cards dialog" });
       await confirm.click();
       await expect(page.getByText(/Match Cards/)).toBeHidden();
     }
@@ -156,6 +161,7 @@ test(
     const saved = page.getByText(/Saved [0-9]+ cards/);
     await expect(wizard.or(saved)).toBeVisible({ timeout: 60_000 });
     if (await wizard.isVisible()) {
+      await expectAccessible(page, { within: wizard, label: "Confirm New Players & Teams wizard" });
       await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();
       const confirmSave = wizard.getByRole("button", { name: /Confirm & Save/ });
       await expect(confirmSave).toBeVisible({ timeout: 60_000 });
@@ -172,6 +178,7 @@ test(
     ).toBeVisible({ timeout: 60_000 });
     // (a status line may repeat this for screen readers: any one of them will do)
     await expect(page.getByText(/Anime Kanji — Built [1-9][0-9]* cards?(, .+)?/).first()).toBeVisible();
+    await expectAccessible(page, { label: "Anime parallels build ledger" });
 
     // Kanji stays attached to BSC as a variant; detaching asks first and can be cancelled.
     await columnOption(page, "Parallels", "Anime Kanji").click();
@@ -183,6 +190,7 @@ test(
     await remove.click();
     const warning = page.getByText(/(1 card was|[1-9][0-9]* cards were) fetched from it; (its|their) BSC link will be dropped/);
     await expect(warning).toBeVisible();
+    await expectAccessible(page, { label: "Detach Anime Kanji confirmation" });
     await page.getByRole("button", { name: "Cancel detach Anime Kanji" }).click();
     await expect(warning).toBeHidden();
     await expect(remove).toBeVisible();
