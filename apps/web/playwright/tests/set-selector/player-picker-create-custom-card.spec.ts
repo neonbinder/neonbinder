@@ -36,14 +36,13 @@ test(
     await page.getByRole("button", { name: "Add player" }).click();
     const search = page.getByRole("textbox", { name: "Search players" });
     await search.fill(player);
-    // Chosen with Enter (the highlighted create row), not a click: the popover is
-    // fixed under its trigger with no flip or clamp, so a trigger near the fold
-    // leaves the row below the viewport ("element is outside of the viewport",
-    // as in CI run 38161836368 for the quick-add picker). The row must still be
-    // offered, by name.
-    await expect(page.getByRole("option", { name: `Create player ${player}` })).toBeVisible();
+    // The create row is offered by name, and on screen even with the trigger near
+    // the fold: the popover flips above or clamps rather than opening below the
+    // viewport (NEO-341).
+    const createPlayer = page.getByRole("option", { name: `Create player ${player}` });
+    await expect(createPlayer).toBeVisible();
     await expectAccessible(page, { label: "Player picker open" });
-    await search.press("Enter");
+    await createPlayer.click();
     await expect(attached).toBeVisible();
     await expect(page.getByText(/Saved Players/)).toBeVisible();
 

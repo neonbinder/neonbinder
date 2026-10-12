@@ -30,12 +30,13 @@ test(
     await page.getByRole("button", { name: "Add team" }).click();
     const search = page.getByRole("textbox", { name: "Search teams" });
     await search.fill(team);
-    // Opened with Enter (the highlighted create row), not a click: the popover is
-    // fixed under its trigger with no flip or clamp, so a trigger near the fold
-    // leaves the row below the viewport ("element is outside of the viewport").
-    await expect(page.getByRole("button", { name: `New team ${team}` })).toBeVisible();
+    // The create row is on screen even with the trigger near the fold: the
+    // popover flips above or clamps rather than opening below the viewport
+    // (NEO-341).
+    const newTeamRow = page.getByRole("button", { name: `New team ${team}` });
+    await expect(newTeamRow).toBeVisible();
     await expectAccessible(page, { label: "Team picker open with a create row" });
-    await search.press("Enter");
+    await newTeamRow.click();
 
     const dialog = page.getByRole("dialog", { name: `New team: ${team}` });
     await expect(dialog).toBeVisible();

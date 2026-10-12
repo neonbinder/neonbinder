@@ -42,16 +42,13 @@ test(
     await page.getByRole("button", { name: "Add a player to the new card" }).click();
     const findPlayer = page.getByRole("textbox", { name: "Find a player for the new card" });
     await findPlayer.fill(PLAYER);
-    // The create row is offered and labelled with the name it would create. It is
-    // chosen with Enter (the highlighted row), not a click: the picker's popover is
-    // fixed under its trigger with no flip or clamp, so with the trigger at the fold
-    // of a 1024x629 window the row sits below the viewport and Playwright reports
-    // "element is outside of the viewport" (CI run 38161836368, shard 6, this spec:
-    // the click timed out on exactly that). Keyboard selection is a user path that
-    // does not depend on where the row falls.
-    await expect(page.getByRole("option", { name: `Create player ${PLAYER}` })).toBeVisible();
+    // The create row is offered and labelled with the name it would create, and it
+    // is on screen: with the trigger at the fold of the 1024x629 window the popover
+    // flips above it rather than opening below the viewport (NEO-341).
+    const createPlayer = page.getByRole("option", { name: `Create player ${PLAYER}` });
+    await expect(createPlayer).toBeVisible();
     await expectAccessible(page, { label: "Quick-add player picker open" });
-    await findPlayer.press("Enter");
+    await createPlayer.click();
     await expect(page.getByRole("button", { name: `Remove player ${PLAYER}` })).toBeVisible();
     await cardName.click();
     await expect(findPlayer).toBeHidden();
@@ -60,7 +57,9 @@ test(
     const searchTeams = page.getByRole("textbox", { name: "Search teams" });
     await searchTeams.fill(TEAM);
     await expect(page.getByText("No matches.")).toBeVisible();
-    await searchTeams.press("Enter");
+    const newTeamRow = page.getByRole("button", { name: `New team ${TEAM}`, exact: true });
+    await expect(newTeamRow).toBeVisible();
+    await newTeamRow.click();
     const newTeam = page.getByRole("dialog", { name: `New team: ${TEAM}` });
     await expect(newTeam).toBeVisible();
     await expect(newTeam.getByRole("textbox", { name: "New team name" })).toHaveValue(TEAM);
@@ -91,8 +90,9 @@ test(
     await page.getByRole("button", { name: "Add a player to the new card" }).click();
     await findPlayer.fill(PLAYER);
     await expect(page.getByRole("option", { name: `Create player ${PLAYER}` })).toBeHidden();
-    await expect(page.getByRole("option", { name: `Add ${PLAYER}` })).toBeVisible();
-    await findPlayer.press("Enter"); // row 0 is the one existing player (see card 781's note)
+    const existingPlayer = page.getByRole("option", { name: `Add ${PLAYER}` });
+    await expect(existingPlayer).toBeVisible();
+    await existingPlayer.click();
     await expect(page.getByRole("button", { name: `Remove player ${PLAYER}` })).toBeVisible();
     await cardName.click();
     await expect(findPlayer).toBeHidden();

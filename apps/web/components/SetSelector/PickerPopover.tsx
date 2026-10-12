@@ -32,20 +32,39 @@ import { Theme } from "@radix-ui/themes";
  * same reason they all need one: a portal escapes the root Theme's CSS scope,
  * and the popover inherits its font from it.
  *
- * ## Position: below the trigger, left-aligned, and nothing clever
+ * ## Position: below the trigger when it fits, and always inside the viewport
  *
- * `top: rect.bottom / left: rect.left` reproduces `top-full left-0` exactly,
- * and `mt-1` stays on the element so the 4px gap is still declared rather than
- * computed. Deliberately NO flip-above and NO viewport clamping: `.maestro`
- * flows tap this popover at measured coordinates
- * (`checklist-attention-walker-missing-team.yaml` documents its own geometry
- * at 1024x629), so the box lands where it has always landed and only the clip
- * changes. A popover that decides for itself which side of the trigger to sit
- * on is a different change, with a different test bill.
+ * The default is unchanged: `top: rect.bottom / left: rect.left` reproduces
+ * `top-full left-0`, and `mt-1` stays on the element so the 4px gap is
+ * declared rather than computed.
+ *
+ * NEO-341 removed the old "no flip, no clamp" rule. A `fixed` element cannot be
+ * scrolled into view, so a trigger near the bottom of the viewport ("+ Add
+ * player" at y≈617 in the 629px-tall E2E window, or most of the card drawer on
+ * a 412px phone) opened a list nobody could reach: Playwright refused the
+ * click as "outside of the viewport", and a person could not scroll to it
+ * either. `placePopover` now decides, every time it measures:
+ *  - **Below** when the whole popover fits under the trigger.
+ *  - **Above** when it does not fit below but fits above, or when neither side
+ *    fits and above has more room. It is pinned by `bottom` (and `mb-1`), so
+ *    a list that shrinks as the operator types stays attached to the trigger.
+ *  - **Sticky**: once above, it stays above while it still fits there. Typing
+ *    narrows the list, and a box that jumped back below on every keystroke
+ *    would move under the cursor.
+ *  - **Clamped** when it fits on neither side: `max-height` is the room on the
+ *    chosen side and the popover scrolls inside itself. `overflow-y` is set
+ *    ONLY then, because an overflow box clips, and `SportSwitch` hangs its
+ *    own absolute list off the popover's footer.
+ *  - **Horizontally**, `left` is clamped so the box keeps an 8px gutter from
+ *    both edges, and `max-width` keeps it inside a viewport narrower than the
+ *    box.
+ * While the popover scrolls, the ArrowDown row (`aria-selected`, or the
+ * create row's `aria-current`) is kept in view, because focus stays in the
+ * search box and the browser would not scroll for it.
  *
  * ## Following the trigger
  *
- * Three things move it, and all three are covered:
+ * Four things move it, and all four are covered:
  *  - an ancestor scrolling — `scroll` is listened for in the CAPTURE phase on
  *    `window`, which is the only way to hear a scroll on an inner element
  *    (scroll events do not bubble, but they do capture);
@@ -54,7 +73,12 @@ import { Theme } from "@radix-ui/themes";
  *    common one: adding a chip reflows the picker's own chip row and pushes
  *    "+ Add team" along. That is why the measurement runs after EVERY commit
  *    rather than only from the two listeners. It is one `getBoundingClientRect`
- *    and a shallow compare, and it no-ops when nothing moved.
+ *    and a shallow compare, and it no-ops when nothing moved;
+ *  - the popover's own content changing height inside a child that keeps its
+ *    own state (`SportSwitch` opening its list), which re-renders nothing
+ *    here. A `MutationObserver` on the subtree hears that. It watches child
+ *    lists only, never attributes, so the style this component writes cannot
+ *    wake it.
  *
  * ## Tab
  *
@@ -88,7 +112,105 @@ export function popoverFocusables(root: HTMLElement | null): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
 }
 
-type Position = { top: number; left: number };
+/** Matches `mt-1` / `mb-1`, the gap the element declares between it and the trigger. */
+export const POPOVER_GAP = 4;
+/** The popover never comes closer than this to a viewport edge. */
+export const POPOVER_EDGE = 8;
+
+export type PopoverPlacement = "below" | "above";
+
+/**
+ * Where the popover goes. `top` is set when it sits below the trigger and
+ * `bottom` when it sits above; `maxHeight` only when it has to scroll.
+ */
+export type PopoverPosition = {
+  placement: PopoverPlacement;
+  top?: number;
+  bottom?: number;
+  left: number;
+  maxHeight?: number;
+  maxWidth: number;
+};
+
+/**
+ * Pure geometry, exported for its unit tests. See "Position" in the
+ * docstring above for the rules.
+ *
+ * @param anchor  the trigger's viewport rect.
+ * @param size    the popover's natural (unclamped) border-box size.
+ * @param viewport the fixed-position containing block (the layout viewport).
+ * @param prev    the side it sat on last time, for the sticky rule.
+ */
+export function placePopover(
+  anchor: { top: number; bottom: number; left: number },
+  size: { width: number; height: number },
+  viewport: { width: number; height: number },
+  prev: PopoverPlacement = "below",
+): PopoverPosition {
+  const spaceBelow = viewport.height - anchor.bottom - POPOVER_GAP - POPOVER_EDGE;
+  const spaceAbove = anchor.top - POPOVER_GAP - POPOVER_EDGE;
+  const fitsBelow = size.height <= spaceBelow;
+  const fitsAbove = size.height <= spaceAbove;
+
+  let placement: PopoverPlacement;
+  if (prev === "above" && fitsAbove) placement = "above";
+  else if (fitsBelow) placement = "below";
+  else if (fitsAbove) placement = "above";
+  else placement = spaceAbove > spaceBelow ? "above" : "below";
+
+  const room = placement === "below" ? spaceBelow : spaceAbove;
+  const maxHeight =
+    size.height > room ? Math.max(0, Math.floor(room)) : undefined;
+
+  const maxWidth = Math.max(0, viewport.width - 2 * POPOVER_EDGE);
+  const width = Math.min(size.width, maxWidth);
+  const left = Math.max(
+    POPOVER_EDGE,
+    Math.min(anchor.left, viewport.width - POPOVER_EDGE - width),
+  );
+
+  return placement === "below"
+    ? { placement, top: anchor.bottom, left, maxHeight, maxWidth }
+    : {
+        placement,
+        bottom: viewport.height - anchor.top,
+        left,
+        maxHeight,
+        maxWidth,
+      };
+}
+
+function samePosition(a: PopoverPosition, b: PopoverPosition): boolean {
+  return (
+    a.placement === b.placement &&
+    a.top === b.top &&
+    a.bottom === b.bottom &&
+    a.left === b.left &&
+    a.maxHeight === b.maxHeight &&
+    a.maxWidth === b.maxWidth
+  );
+}
+
+/**
+ * The fixed-position containing block. `clientWidth/Height` on the root
+ * element excludes classic scrollbars, which is what `bottom` and the right
+ * edge are measured against; happy-dom reports 0 there, hence the fallback.
+ */
+function viewportSize(): { width: number; height: number } {
+  const root = document.documentElement;
+  return {
+    width: root.clientWidth || window.innerWidth,
+    height: root.clientHeight || window.innerHeight,
+  };
+}
+
+/**
+ * The row the ArrowDown cursor is on. Focus stays in the search box, so the
+ * browser never scrolls a clamped popover for it. `SportSwitch`'s own options
+ * also carry `aria-selected` (its current sport), so they are excluded.
+ */
+const HIGHLIGHT_SELECTOR =
+  '[role="option"][aria-selected="true"]:not([data-sport-switch-option]), [aria-current="true"]';
 
 export default function PickerPopover({
   anchorRef,
@@ -135,24 +257,54 @@ export default function PickerPopover({
     [popoverRef],
   );
 
-  const [position, setPosition] = useState<Position>({ top: 0, left: 0 });
+  const [position, setPosition] = useState<PopoverPosition>({
+    placement: "below",
+    top: 0,
+    left: 0,
+    maxWidth: Number.POSITIVE_INFINITY,
+  });
 
   const measure = useCallback(() => {
     const anchor = anchorRef.current;
-    if (!anchor) return;
+    const el = innerRef.current;
+    if (!anchor || !el) return;
     const rect = anchor.getBoundingClientRect();
-    setPosition((prev) =>
-      prev.top === rect.bottom && prev.left === rect.left
-        ? prev
-        : { top: rect.bottom, left: rect.left },
-    );
+    // The NATURAL height, whatever max-height is applied right now:
+    // `scrollHeight` is the content (plus padding) even while the box is
+    // clamped, and offsetHeight - clientHeight adds the borders back.
+    const size = {
+      width: el.offsetWidth,
+      height: el.scrollHeight + (el.offsetHeight - el.clientHeight),
+    };
+    const viewport = viewportSize();
+    setPosition((prev) => {
+      const next = placePopover(rect, size, viewport, prev.placement);
+      return samePosition(prev, next) ? prev : next;
+    });
   }, [anchorRef]);
+
+  /** The highlighted row last kept in view, so a wheel scroll is not undone. */
+  const lastHighlightRef = useRef<Element | null>(null);
 
   // Before paint, and after EVERY commit — see "Following the trigger" above.
   // No dependency array on purpose: the trigger moves when the chip row
   // reflows, with no scroll and no resize to hear.
   useLayoutEffect(() => {
     measure();
+
+    const el = innerRef.current;
+    if (!el) return;
+    const highlighted = el.querySelector(HIGHLIGHT_SELECTOR);
+    if (highlighted === lastHighlightRef.current) return;
+    lastHighlightRef.current = highlighted;
+    if (!highlighted || el.scrollHeight <= el.clientHeight) return;
+    // Nearest-edge scroll inside the popover only. `scrollIntoView` would
+    // also scroll every scrollable ancestor of the TRIGGER's host — the
+    // drawer, the page — which is exactly what must not move under it.
+    const box = el.getBoundingClientRect();
+    const row = highlighted.getBoundingClientRect();
+    if (row.top < box.top) el.scrollTop -= box.top - row.top;
+    else if (row.bottom > box.bottom) el.scrollTop += row.bottom - box.bottom;
   });
 
   useEffect(() => {
@@ -160,9 +312,21 @@ export default function PickerPopover({
     // but it does pass through it on the way down.
     window.addEventListener("scroll", measure, true);
     window.addEventListener("resize", measure);
+    // Content that changes height without re-rendering this component — see
+    // "Following the trigger". Child lists only: never attributes, so the
+    // style written below cannot re-trigger it.
+    const el = innerRef.current;
+    const observer =
+      el && typeof MutationObserver !== "undefined"
+        ? new MutationObserver(measure)
+        : null;
+    if (el && observer) {
+      observer.observe(el, { childList: true, subtree: true, characterData: true });
+    }
     return () => {
       window.removeEventListener("scroll", measure, true);
       window.removeEventListener("resize", measure);
+      observer?.disconnect();
     };
   }, [measure]);
 
@@ -204,11 +368,28 @@ export default function PickerPopover({
         aria-label={ariaLabel}
         onKeyDown={handleKeyDown}
         // `fixed` + measured coordinates, replacing `absolute left-0 top-full`.
-        // `mt-1` is still a class so the 4px gap stays declared, not arithmetic.
+        // The 4px gap stays a class (`mt-1` below the trigger, `mb-1` above
+        // it), so it is declared, not arithmetic.
         // z-[55] sits over the z-50 dialogs that host this picker and under
         // NewTeamDialog's z-[60], which the popover opens and must not cover.
-        className={`fixed z-[55] mt-1 ${className ?? ""}`}
-        style={{ top: position.top, left: position.left }}
+        data-placement={position.placement}
+        className={`fixed z-[55] ${
+          position.placement === "above" ? "mb-1" : "mt-1"
+        } ${className ?? ""}`}
+        style={{
+          top: position.top,
+          bottom: position.bottom,
+          left: position.left,
+          maxWidth: Number.isFinite(position.maxWidth)
+            ? position.maxWidth
+            : undefined,
+          maxHeight: position.maxHeight,
+          // Only while clamped: an overflow box clips, and SportSwitch hangs
+          // its own list off the popover's footer.
+          overflowY: position.maxHeight === undefined ? undefined : "auto",
+          overscrollBehavior:
+            position.maxHeight === undefined ? undefined : "contain",
+        }}
       >
         {children}
       </div>
