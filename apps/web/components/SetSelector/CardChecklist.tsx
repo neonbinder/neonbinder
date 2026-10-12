@@ -11,7 +11,10 @@ import CardDetailPanel from "./CardDetailPanel";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
 import EntityReviewWizard from "./EntityReviewWizard";
-// NEO-335: the final step's team answers, put on the cards at commit.
+// NEO-335 Phase 2: the "Card titles" step's answers, put on the cards at commit.
+import { withTitleAnswer, type TitleCommitFields } from "./card-titles";
+import type { TitleContext } from "../../convex/features/listingInputs";
+// NEO-335: the teams step's answers, put on the cards at commit.
 import {
   sameTeamAnswers,
   teamlessCardIndexes,
@@ -195,6 +198,21 @@ type FetchPreview = {
    * commit gives it that team). See `resolveAndCommit`.
    */
   settledTeamIndexes?: number[];
+  /**
+   * NEO-335 Phase 2 — `resolveChecklistEntities`' `titleContext`: what the
+   * wizard's "Card titles" step needs to title a NEW card the way the insert
+   * will. Absent on an older server answer: no titles step.
+   */
+  titleContext?: TitleContext;
+  /** NEO-335 Phase 2 — positions in `cards` that re-sync a stored row (the diff's `existingId`). */
+  existingIndexes?: number[];
+  /**
+   * NEO-335 Phase 2 — the titles step's answers, POSITIONALLY ALIGNED with
+   * `cards`, as `titleAnswersForCommit` decided them. Absent unless the step
+   * was part of the sitting (the wizard reports nothing otherwise). Client
+   * state only, zipped on by `runCommit` like `teamAnswers`.
+   */
+  titleAnswers?: Array<TitleCommitFields | undefined>;
 };
 
 /** The confirmed cards, waiting on the content-diff review. */
@@ -1389,7 +1407,7 @@ export default function CardChecklist({
     // NEO-332's `ambiguousPlayers` is not read here any more: the banner
     // counts every name as one (`entityConfirmationMessage`), and the wizard
     // finds a same-name row's pick step from the row itself.
-    const { unknownPlayers, unknownTeams, batchId } =
+    const { unknownPlayers, unknownTeams, batchId, titleContext } =
       await resolveEntities({
         selectorOptionId: variantId,
         sportId,
@@ -1416,10 +1434,17 @@ export default function CardChecklist({
       if (existingId) return storedTeamedCardIds.has(existingId) ? [position] : [];
       return diff && setTeamCoversNewRows ? [position] : [];
     });
+    // NEO-335 Phase 2 — the same `existingId` map: a card that re-syncs a
+    // stored row keeps that row's title, so the titles step never asks.
+    const existingIndexes = kept.flatMap(({ index }, position) =>
+      existingIdByIndex.has(index) ? [position] : [],
+    );
     const preview: FetchPreview = {
       sportId,
       batchId,
       settledTeamIndexes,
+      existingIndexes,
+      ...(titleContext ? { titleContext } : {}),
       cards: kept.map(({ card }) => card),
       decisions: kept.map(({ index }) => ({
         applyFields: review.applyFieldsByIndex[index],
@@ -1522,7 +1547,12 @@ export default function CardChecklist({
                 baseVersion: decision.baseVersion,
               }
             : card;
-          return withTeamAnswer(reviewed, preview.teamAnswers?.[i]);
+          // NEO-335 Phase 2: and the titles step's answer, present only
+          // when that step was part of the sitting.
+          return withTitleAnswer(
+            withTeamAnswer(reviewed, preview.teamAnswers?.[i]),
+            preview.titleAnswers?.[i],
+          );
         }),
         batchId: preview.batchId,
         ...(preview.operatorDeleteIds.length > 0
@@ -1678,6 +1708,23 @@ export default function CardChecklist({
           ? { ...prev, teamAnswers: answers }
           : prev,
       );
+    },
+    [],
+  );
+
+  /**
+   * NEO-335 Phase 2 — the titles step's answers (commit fields), held on the
+   * preview until commit. `undefined` = the step was not part of the sitting.
+   */
+  const handleTitleAnswers = useCallback(
+    (fields: Array<TitleCommitFields | undefined> | undefined) => {
+      setPendingPreview((prev) => {
+        if (!prev) return prev;
+        if (JSON.stringify(prev.titleAnswers ?? null) === JSON.stringify(fields ?? null)) {
+          return prev;
+        }
+        return { ...prev, titleAnswers: fields };
+      });
     },
     [],
   );
@@ -2942,6 +2989,10 @@ export default function CardChecklist({
           // NEO-335: the teams step, for cards that would save with no team.
           previewCards={pendingPreview.cards}
           onTeamAnswersChange={handleTeamAnswers}
+          // NEO-335 Phase 2: the "Card titles" step, after Teams.
+          titleContext={pendingPreview.titleContext}
+          existingCardIndexes={pendingPreview.existingIndexes}
+          onTitleAnswersChange={handleTitleAnswers}
           /**
            * NEO-221 (D9) — BACK, not abort.
            *

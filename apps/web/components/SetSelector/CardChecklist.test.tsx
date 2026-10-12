@@ -172,7 +172,17 @@ vi.mock("./EntityReviewWizard", () => ({
     previewCards,
     onTeamAnswersChange,
     cardsWithSettledTeam,
+    titleContext,
+    existingCardIndexes,
+    onTitleAnswersChange,
   }: {
+    // NEO-335 Phase 2 — the titles step, reduced to the parent's half: the
+    // context and positions it hands down, and the commit-field channel.
+    titleContext?: unknown;
+    existingCardIndexes?: number[];
+    onTitleAnswersChange?: (
+      fields: Array<{ listingTitleKept?: string; listingTitle?: string } | undefined> | undefined,
+    ) => void;
     // NEO-335 — the final step's teams section, reduced to what the parent
     // owns: whether the wizard opened teams-only, and the answer channel.
     teamsOnly?: boolean;
@@ -220,6 +230,29 @@ vi.mock("./EntityReviewWizard", () => ({
       )}
       {cardsWithSettledTeam && (
         <p>{`Settled-team positions: [${cardsWithSettledTeam.join(",")}]`}</p>
+      )}
+      <p>{`Title context: ${titleContext ? "yes" : "no"}`}</p>
+      {existingCardIndexes && (
+        <p>{`Existing positions: [${existingCardIndexes.join(",")}]`}</p>
+      )}
+      {onTitleAnswersChange && (
+        <button
+          type="button"
+          onClick={() =>
+            onTitleAnswersChange(
+              (previewCards ?? []).map((_, i) =>
+                i === 0 ? { listingTitleKept: "Kept title" } : { listingTitle: "My own title" },
+              ),
+            )
+          }
+        >
+          Report title answers
+        </button>
+      )}
+      {onTitleAnswersChange && (
+        <button type="button" onClick={() => onTitleAnswersChange(undefined)}>
+          Report no titles step
+        </button>
       )}
       <button type="button" onClick={onConfirm}>
         Confirm entity review
@@ -1042,6 +1075,64 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(mockCommitChecklist).not.toHaveBeenCalled();
       // Only the new row is settled by the set's team; the existing one is asked.
       expect(screen.getByText("Settled-team positions: [1]")).toBeTruthy();
+    });
+
+    it("NEO-335 Phase 2: hands the wizard the title context and the re-synced positions", async () => {
+      mockResolveEntities.mockResolvedValue({
+        unknownPlayers: [],
+        unknownTeams: [],
+        batchId: undefined,
+        titleContext: { sportValue: "Baseball", setTeamNames: [], players: [], teams: [] },
+      });
+      state.cards = [settledCard({ _id: "row-2", cardNumber: "2", teamOnCardIds: undefined })];
+      mockDiffChecklist.mockResolvedValue({
+        ...emptyDiff,
+        cards: [
+          { index: 1, cardNumber: "2", cardName: "Solo Two", bucket: "identical", existingId: "row-2", fields: [] },
+        ],
+      });
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      expect(screen.getByText("Title context: yes")).toBeTruthy();
+      expect(screen.getByText("Existing positions: [1]")).toBeTruthy();
+    });
+
+    it("NEO-335 Phase 2: the titles step's answers ride positionally onto the commit", async () => {
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Answer only the second card"));
+      fireEvent.click(screen.getByText("Report title answers"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      const cards = mockCommitChecklist.mock.calls[0][0].cards;
+      expect(cards[0].listingTitleKept).toBe("Kept title");
+      expect(cards[0]).not.toHaveProperty("listingTitle");
+      // Both answers on the same card: team and title.
+      expect(cards[1].listingTitle).toBe("My own title");
+      expect(cards[1].teamNone).toBe(true);
+    });
+
+    it("NEO-335 Phase 2: no title field rides when the titles step was not part of the sitting", async () => {
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await screen.findByText("Wizard opened teams-only");
+      // Reported, then withdrawn (the wizard reports `undefined` until the
+      // step has shown a card) — the commit must carry nothing of it.
+      fireEvent.click(screen.getByText("Report title answers"));
+      fireEvent.click(screen.getByText("Report no titles step"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      for (const card of mockCommitChecklist.mock.calls[0][0].cards) {
+        expect(card).not.toHaveProperty("listingTitleKept");
+        expect(card).not.toHaveProperty("listingTitle");
+        expect(card).not.toHaveProperty("cardVariationAnswered");
+      }
     });
 
     it("a re-synced row carrying only a pending team name is settled, not asked about", async () => {

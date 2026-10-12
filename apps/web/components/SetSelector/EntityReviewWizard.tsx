@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { inertBackground } from "../../lib/dom/inert-background";
 import { focusWithoutOpening } from "../primitives/Autocomplete";
@@ -58,6 +58,18 @@ import { deriveStagedTeamNames } from "./entity-review-staging";
 import TeamsOnCardsSection from "./TeamsOnCardsSection";
 // NEO-335 Phase 2: the shared "Tidy up this set" header and the step model.
 import WizardChrome from "./WizardChrome";
+// NEO-335 Phase 2: the "Card titles" step (unit B).
+import CardTitlesStep from "./CardTitlesStep";
+import {
+  cardsNeedingTitleReview,
+  teamIdNamesFromRefs,
+  titleAnswersForCommit,
+  type PreviewCardForTitles,
+  type TitleAnswer,
+  type TitleCommitFields,
+  type TitleNameSources,
+} from "./card-titles";
+import type { TitleContext } from "../../convex/features/listingInputs";
 import {
   cardsForTeamsStep,
   nextPostReviewStep,
@@ -375,8 +387,8 @@ const BULK_SKIP_LABEL = "Skip remaining names";
  */
 const NO_BATCH_ROWS: FunctionReturnType<typeof api.entityReviewQueue.getBatch> = [];
 
-/** NEO-335 Phase 2 — `titleReviewIndexes`' default: no titles step. */
-const NO_TITLE_REVIEW_INDEXES: readonly number[] = [];
+/** NEO-335 Phase 2 — `existingCardIndexes`' default. */
+const NO_CARD_INDEXES: readonly number[] = [];
 
 /**
  * NEO-335 Phase 2 (C7) — how many cards make the teams step "long" enough to
@@ -410,7 +422,9 @@ export default function EntityReviewWizard({
   onTeamAnswersChange,
   cardsWithSettledTeam,
   teamsOnly = false,
-  titleReviewIndexes = NO_TITLE_REVIEW_INDEXES,
+  titleContext,
+  existingCardIndexes = NO_CARD_INDEXES,
+  onTitleAnswersChange,
   hasSetTeam = false,
 }: {
   isOpen: boolean;
@@ -447,7 +461,7 @@ export default function EntityReviewWizard({
    * With `onTeamAnswersChange`, turns on the teams step ("Cards with no
    * team") before Save; without them there is no teams step.
    */
-  previewCards?: readonly PreviewCardForTeams[];
+  previewCards?: readonly (PreviewCardForTeams & PreviewCardForTitles)[];
   /**
    * NEO-335 — every card's team answer, positionally aligned with
    * `previewCards` (undefined = none). The parent holds them in client state
@@ -473,11 +487,23 @@ export default function EntityReviewWizard({
    */
   teamsOnly?: boolean;
   /**
-   * NEO-335 Phase 2 — positions in `previewCards` whose listing title needs a
-   * look before the save. Non-empty turns on the "Card titles" step, between
-   * the teams step and Save. Absent or empty: no titles step.
+   * NEO-335 Phase 2 — `resolveChecklistEntities`' `titleContext`. With
+   * `previewCards`, turns on the "Card titles" step (between the teams step
+   * and Save) whenever a NEW card would be born with a title the walker
+   * flags (`cardsNeedingTitleReview`), recomputed as team answers change.
+   * Absent: no titles step.
    */
-  titleReviewIndexes?: readonly number[];
+  titleContext?: TitleContext;
+  /** NEO-335 Phase 2 — positions in `previewCards` that re-sync a stored row; their titles are never asked about. */
+  existingCardIndexes?: readonly number[];
+  /**
+   * NEO-335 Phase 2 — what each card's title answer puts on it at commit
+   * (`titleAnswersForCommit`), positionally aligned with `previewCards`.
+   * `undefined` while the titles step has not been shown in this sitting:
+   * its default answer ("kept") also suppresses the post-save flag, so it is
+   * only ever sent for a card the operator actually saw on the step.
+   */
+  onTitleAnswersChange?: (fields: Array<TitleCommitFields | undefined> | undefined) => void;
   /**
    * NEO-335 Phase 2 (C7) — the node these cards save under already carries a
    * set-level team (NEO-277). Without one, a long teams step hints at setting
@@ -836,7 +862,7 @@ export default function EntityReviewWizard({
   const [decidedListOpen, setDecidedListOpen] = useState<boolean | null>(null);
 
   /**
-   * NEO-335 — the operator's picks in "K cards have no team yet", by line.
+   * NEO-335 — the operator's picks on the teams step, by line.
    * Held here rather than in the section because the section unmounts when
    * the operator steps back into the review, and a pick must survive that the
    * way every other answer in this wizard does. Absent = the line's default.
@@ -858,6 +884,23 @@ export default function EntityReviewWizard({
   const [requestedPostStep, setRequestedPostStep] = useState<PostReviewStep | null>(null);
   /** NEO-335 Phase 2 — "Step x of y"'s memory for this sitting. */
   const [stepTracker, setStepTracker] = useState<StepTracker | null>(null);
+  /**
+   * NEO-335 Phase 2 — the teams step's answers as last reported, mirrored
+   * here because the titles step is computed from them (the team is part of
+   * the title). The parent still holds the copy the commit reads.
+   */
+  const [teamAnswersSeen, setTeamAnswersSeen] = useState<
+    ReadonlyArray<TeamAnswer | undefined>
+  >([]);
+  /** NEO-335 Phase 2 — the titles step's raw drafts, kept while it unmounts (Next, Back). */
+  const [titleDrafts, setTitleDrafts] = useState<Array<TitleAnswer | undefined>>([]);
+  /**
+   * NEO-335 Phase 2 — every preview position the titles step has SHOWN in
+   * this sitting. Only these may send a title answer: the default ("kept")
+   * also clears the post-save flag, which must never happen for a card the
+   * operator was not shown.
+   */
+  const [titlesSeen, setTitlesSeen] = useState<ReadonlySet<number>>(() => new Set());
   /** NEO-335 Phase 2 — the growth line, and the progress it was said at. */
   const [growthNotice, setGrowthNotice] = useState<{
     seq: number;
@@ -1155,8 +1198,15 @@ export default function EntityReviewWizard({
       if (row.decision?.action !== "link") continue;
       if (row.decision.linkedTeamId) ids.add(row.decision.linkedTeamId);
     }
+    // NEO-335 Phase 2 — and the teams a teams-step answer picked by id
+    // ("Other team…", server evidence), so the titles step can title a card
+    // with them. The same one subscription: a second `getManyByIds` would
+    // double the reads for the common case where the two sets overlap.
+    if (titleContext) {
+      for (const answer of teamAnswersSeen) for (const id of answer?.teamIds ?? []) ids.add(id);
+    }
     return [...ids].sort();
-  }, [rows]);
+  }, [rows, titleContext, teamAnswersSeen]);
   const linkedPlayerIds = useMemo(() => {
     const ids = new Set<Id<"players">>();
     for (const row of rows ?? []) {
@@ -2570,9 +2620,39 @@ export default function EntityReviewWizard({
         : [],
     [teamsStepEnabled, previewCards, rows, cardsWithSettledTeam],
   );
+  /** The teams step reports up through here so the titles step can read it. */
+  const handleTeamAnswers = useCallback(
+    (answers: Array<TeamAnswer | undefined>) => {
+      setTeamAnswersSeen(answers);
+      onTeamAnswersChange?.(answers);
+    },
+    [onTeamAnswersChange],
+  );
+  /**
+   * The names the titles step reads — memoised, it is a dependency of its
+   * groups. `linkedTeams` also carries the teams a teams-step answer picked by
+   * id (see `linkedTeamIds`), so one lookup serves both maps.
+   */
+  const titleNames = useMemo<TitleNameSources>(() => {
+    const byId = teamIdNamesFromRefs(
+      (linkedTeams ?? []).map((t) => ({ teamId: t._id, label: teamFullName(t) })),
+    );
+    return { rows: rows ?? [], linkedTeamNameById: byId, teamNameById: byId };
+  }, [rows, linkedTeams]);
+  /** The cards the titles step would ask about, recomputed from the team answers. */
+  const titleIndexes = useMemo(
+    () =>
+      titleContext && previewCards
+        ? cardsNeedingTitleReview(previewCards, titleContext, teamAnswersSeen, {
+            names: titleNames,
+            existingIndexes: existingCardIndexes,
+          })
+        : [],
+    [titleContext, previewCards, teamAnswersSeen, titleNames, existingCardIndexes],
+  );
   const postLive = {
     teams: teamsStepCards.length > 0,
-    titles: titleReviewIndexes.length > 0,
+    titles: titleIndexes.length > 0,
   };
   /** Every name decided and none on screen: the teams / titles / save steps. */
   const onPostReview = !expired && current === null && allDecided;
@@ -2582,6 +2662,37 @@ export default function EntityReviewWizard({
   // Back in the names (Back, Change, Back to review): the post-review steps
   // are walked again from the first when the operator returns to them.
   if (current !== null && requestedPostStep !== null) setRequestedPostStep(null);
+  // Remember what the titles step has shown (render-phase, like the tracker).
+  if (postStep === "titles" && titleIndexes.some((i) => !titlesSeen.has(i))) {
+    setTitlesSeen(new Set([...titlesSeen, ...titleIndexes]));
+  }
+  /**
+   * What the commit receives from the titles step: only for positions the
+   * step showed, and nothing at all when it never appeared.
+   */
+  const titleCommitFields = useMemo(() => {
+    if (titlesSeen.size === 0 || !titleContext || !previewCards) return undefined;
+    return titleAnswersForCommit(previewCards, titleContext, teamAnswersSeen, {
+      names: titleNames,
+      existingIndexes: existingCardIndexes,
+      answers: titleDrafts,
+    }).map((fields, i) => (titlesSeen.has(i) ? fields : undefined));
+  }, [
+    titlesSeen,
+    titleContext,
+    previewCards,
+    teamAnswersSeen,
+    titleNames,
+    existingCardIndexes,
+    titleDrafts,
+  ]);
+  const reportedTitleFields = useRef<string | null>(null);
+  useEffect(() => {
+    const key = JSON.stringify(titleCommitFields ?? null);
+    if (reportedTitleFields.current === key) return;
+    reportedTitleFields.current = key;
+    onTitleAnswersChange?.(titleCommitFields);
+  }, [titleCommitFields, onTitleAnswersChange]);
 
   /*
    * The counter's memory, updated in render (React's "storing information
@@ -4650,11 +4761,22 @@ export default function EntityReviewWizard({
               </p>
             ) : postStep === "titles" ? (
               /*
-                NEO-335 Phase 2 — the "Card titles" step's slot.
-                TODO(A2): mount unit B's CardTitlesStep here, over
-                `titleReviewIndexes`.
+                NEO-335 Phase 2 — the "Card titles" step: the NEW cards that
+                would be born with a title the walker flags, recomputed from
+                the team answers. Never blocks the save.
               */
-              <div data-wizard-step-slot="titles" />
+              previewCards && titleContext ? (
+                <CardTitlesStep
+                  cards={previewCards}
+                  titleContext={titleContext}
+                  teamAnswers={teamAnswersSeen}
+                  names={titleNames}
+                  existingIndexes={existingCardIndexes}
+                  answers={titleDrafts}
+                  onAnswersChange={setTitleDrafts}
+                  disabled={saving}
+                />
+              ) : null
             ) : postStep === "save" ? (
               <div className="space-y-3">
                 {/* NEO-335 Phase 2 — "Save N cards?", the same heading in
@@ -4785,12 +4907,7 @@ export default function EntityReviewWizard({
               this existed.
             */}
             {onPostReview && previewCards && onTeamAnswersChange && (
-              <div
-                hidden={postStep !== "teams"}
-                // TODO(A2): drop once `showSetTeamHint` reaches the section
-                // below; until then the decision is visible to tests here.
-                data-set-team-hint={showSetTeamHint ? "true" : undefined}
-              >
+              <div hidden={postStep !== "teams"}>
                 <TeamsOnCardsSection
                   selectorOptionId={selectorOptionId}
                   cards={previewCards}
@@ -4800,12 +4917,10 @@ export default function EntityReviewWizard({
                   onChoose={(groupKey, choice) =>
                     setTeamChoices((prev) => ({ ...prev, [groupKey]: choice }))
                   }
-                  onAnswersChange={onTeamAnswersChange}
+                  onAnswersChange={handleTeamAnswers}
                   settledIndexes={cardsWithSettledTeam}
                   disabled={saving}
-                  // TODO(A2): unit C adds `showSetTeamHint` to
-                  // TeamsOnCardsSection; un-comment once it lands.
-                  // showSetTeamHint={showSetTeamHint}
+                  showSetTeamHint={showSetTeamHint}
                 />
               </div>
             )}
@@ -4937,7 +5052,14 @@ export default function EntityReviewWizard({
                * twice over: the body just got ~226px BACK from bounding the
                * league picker, and a reserved gap cannot move under a cursor.
                */
-              className="flex min-h-[4.25rem] items-center justify-between gap-4"
+              /*
+               * NEO-335 Phase 2 (visual pass) — below `sm` the row WRAPS: at
+               * 375px the right group ("Back to matching", "Cancel (Esc)",
+               * "Confirm & Save (Enter)") is wider than the dialog and used to
+               * clip the one button the step exists for. From `sm` up nothing
+               * changes, so the 1024 CI viewport keeps its fixed geometry.
+               */
+              className="flex min-h-[4.25rem] items-center justify-between gap-4 max-sm:flex-wrap max-sm:gap-y-2"
             >
             {/*
               ROW 1 LEFT — THE DECISION FOR THE ROW ON SCREEN.
@@ -4978,7 +5100,7 @@ export default function EntityReviewWizard({
             </div>
             {/* The buttons never yield: if row 1 is ever too narrow, the bulk
                 links clip, not the way out of the dialog. */}
-            <div className="flex shrink-0 items-center gap-3">
+            <div className="flex shrink-0 items-center gap-3 max-sm:w-full max-sm:flex-wrap max-sm:justify-end">
               {expired ? (
                 // Nothing to discard — the rows are already gone, so this is a
                 // plain acknowledgement, not a cancel.
@@ -5141,7 +5263,9 @@ export default function EntityReviewWizard({
               than a stack: the operator is either waiting on lookups or
               watching them be added, never both.
             */}
-            <div className="flex min-h-6 items-center gap-3">
+            {/* NEO-335 Phase 2 (visual pass): wraps below `sm`, where the two
+                bulk links alone are wider than a 375px dialog. */}
+            <div className="flex min-h-6 items-center gap-3 max-sm:flex-wrap">
               {/*
                 The live region is its OWN element and holds only text. The bulk
                 links sit beside it, deliberately outside it: a button inside a
@@ -5263,7 +5387,7 @@ export default function EntityReviewWizard({
                    * reason takes the width. Nothing moves vertically either
                    * way, which is what row 1 is protected by.
                    */
-                  className={`flex items-center gap-3 whitespace-nowrap ${
+                  className={`flex items-center gap-3 whitespace-nowrap max-sm:min-w-0 max-sm:shrink max-sm:flex-wrap ${
                     createBlocked ? "min-w-0 overflow-hidden" : "shrink-0"
                   }`}
                 >

@@ -44,6 +44,20 @@ vi.mock("./EntityLinkSearch", () => ({ default: () => null }));
 import EntityReviewWizard from "./EntityReviewWizard";
 
 const CONFIRM_SAVE_NAME = "Confirm & Save (Enter) — commit this review";
+const TITLES_LEAD = "Trimmed to fit. Keep it, or make it yours.";
+const SET_TEAM_HINT =
+  "Most of these share one team? Set a whole-set team in Set details and every new card gets it.";
+/** A set name long enough that every new card's title is trimmed to fit. */
+const LONG_TITLES = {
+  sportValue: "Baseball",
+  setNameValue: "Chrome Update Series Sapphire Edition Platinum Anniversary Collectors Box",
+  inheritedFeatures: { manufacturer: "Topps", season: "2026" },
+  setTeamNames: [],
+  players: [],
+  teams: [],
+};
+/** The same set with a short name: nothing to trim. */
+const SHORT_TITLES = { ...LONG_TITLES, setNameValue: "Chrome" };
 const NEXT_NAME = "Next (Enter)";
 
 let seq = 0;
@@ -210,14 +224,15 @@ describe("the post-review steps", () => {
 
   it("walks teams → titles → save, each in the chrome, Save always y of y", () => {
     currentRows = decidedRows();
-    render(wizard({ titleReviewIndexes: [0] }, teamless));
+    render(wizard({ titleContext: LONG_TITLES }, teamless));
     expect(counter()).toBe("Step 3 of 5");
     expect(screen.getByText("Cards with no team")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
     expect(counter()).toBe("Step 4 of 5");
     expect(screen.getByText("Card titles")).toBeTruthy();
-    expect(document.querySelector("[data-wizard-step-slot='titles']")).toBeTruthy();
+    // Unit B's CardTitlesStep, mounted in the slot.
+    expect(screen.getByRole("heading", { name: TITLES_LEAD })).toBeTruthy();
     expect(document.activeElement).toBe(screen.getByRole("button", { name: NEXT_NAME }));
 
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
@@ -230,26 +245,81 @@ describe("the post-review steps", () => {
     expect(screen.getByText("Card titles")).toBeTruthy();
   });
 
-  it("has no titles step when there are no title indexes", () => {
+  it("has no titles step when no new card's title needs a look", () => {
     currentRows = decidedRows();
-    render(wizard({}, teamless));
+    render(wizard({ titleContext: SHORT_TITLES }, teamless));
     expect(counter()).toBe("Step 3 of 4");
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
     expect(counter()).toBe("Step 4 of 4");
     expect(screen.queryByText("Card titles")).toBeNull();
   });
 
-  it("adds nothing once the operator is on Save", () => {
+  it("adds nothing once the operator is on Save — and sends no title answer for it", () => {
     currentRows = decidedRows();
-    const { rerender } = render(wizard({}, teamless));
+    const onTitleAnswersChange = vi.fn();
+    const { rerender } = render(
+      wizard({ titleContext: SHORT_TITLES, onTitleAnswersChange }, teamless),
+    );
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
     expect(counter()).toBe("Step 4 of 4");
 
     // A titles step turning up now is the walker's, after the save.
-    rerender(wizard({ titleReviewIndexes: [1] }, teamless));
+    rerender(wizard({ titleContext: LONG_TITLES, onTitleAnswersChange }, teamless));
     expect(counter()).toBe("Step 4 of 4");
     expect(screen.getByText("Ready to save")).toBeTruthy();
     expect(growthRegion().textContent).toBe("");
+    // Never shown, so never "kept": the walker still flags them after save.
+    expect(onTitleAnswersChange.mock.calls.every(([fields]) => fields === undefined)).toBe(true);
+  });
+
+  it("teams-only plus titles is three steps", () => {
+    render(
+      wizard({ teamsOnly: true, batchId: "", titleContext: LONG_TITLES }, [
+        { cardNumber: "1", cardName: "Base", players: ["Pete Rose"] },
+      ]),
+    );
+    expect(counter()).toBe("Step 1 of 3");
+    expect(screen.getByText("Cards with no team")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
+    expect(counter()).toBe("Step 2 of 3");
+    expect(screen.getByText("Card titles")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
+    expect(counter()).toBe("Step 3 of 3");
+    expect(screen.getByText("Save 1 card?")).toBeTruthy();
+  });
+
+  it("reports title answers only once the step has shown the cards, defaulting to kept", () => {
+    currentRows = decidedRows();
+    const onTitleAnswersChange = vi.fn();
+    render(wizard({ titleContext: LONG_TITLES, onTitleAnswersChange }, teamless));
+    // On the teams step: the titles step is counted, not yet shown.
+    expect(screen.getByText("Cards with no team")).toBeTruthy();
+    expect(onTitleAnswersChange.mock.calls.every(([fields]) => fields === undefined)).toBe(true);
+
+    fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
+    expect(screen.getByText("Card titles")).toBeTruthy();
+    // "Kept" carries the title the operator was shown, so the server keeps
+    // exactly that one.
+    expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]).toEqual([
+      { listingTitleKept: expect.stringMatching(/#1$/) },
+      { listingTitleKept: expect.stringMatching(/#2$/) },
+    ]);
+  });
+
+  it("never asks about a card that re-syncs a stored row", () => {
+    currentRows = decidedRows();
+    const onTitleAnswersChange = vi.fn();
+    render(
+      wizard(
+        { titleContext: LONG_TITLES, existingCardIndexes: [0], onTitleAnswersChange },
+        teamless,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
+    expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]).toEqual([
+      undefined,
+      { listingTitleKept: expect.stringMatching(/#2$/) },
+    ]);
   });
 
   it("Back from the teams step returns to the name decided in this sitting", async () => {
@@ -280,14 +350,14 @@ describe("the post-review steps", () => {
       players: [`Player ${i}`],
     }));
     const { rerender } = render(wizard({ teamsOnly: true, batchId: "" }, many));
-    const holder = () => document.querySelector("[data-set-team-hint]");
-    expect(holder()).toBeTruthy();
+    const hint = () => screen.queryByText(SET_TEAM_HINT);
+    expect(hint()).toBeTruthy();
 
     rerender(wizard({ teamsOnly: true, batchId: "", hasSetTeam: true }, many));
-    expect(holder()).toBeNull();
+    expect(hint()).toBeNull();
 
     rerender(wizard({ teamsOnly: true, batchId: "" }, many.slice(0, 7)));
-    expect(holder()).toBeNull();
+    expect(hint()).toBeNull();
   });
 });
 
