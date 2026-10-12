@@ -24,7 +24,7 @@ import {
   type StepRow,
 } from "./entity-review-steps";
 import type { NavRow } from "./entity-review-nav";
-import type { TeamsReviewRow } from "./teams-on-cards";
+import { storedPeople, type TeamsReviewRow } from "./teams-on-cards";
 
 const plan = (reviewRows: number, teamsStep = false, titlesStep = false) => ({
   reviewRows,
@@ -219,6 +219,16 @@ describe("cardsForTeamsStep — optimistic while names are open", () => {
 
   it("leaves out settled positions", () => {
     expect(cardsForTeamsStep(cards, [teamRow({ action: "skip" })], [1])).toEqual([0]);
+  });
+
+  it("counts a card from the start when an earlier save skipped its only team name", () => {
+    // NEO-335: a re-sync has no row for a name the set's skip records rule
+    // out (the gate drops it), so the record is what says it is no team.
+    const people = storedPeople(undefined, undefined, ["Reds"]);
+    expect(cardsForTeamsStep(cards, [], undefined, people)).toEqual([0, 1]);
+    // An undecided row in this sitting outranks the record, and is still
+    // assumed to resolve.
+    expect(cardsForTeamsStep(cards, [teamRow(null)], undefined, people)).toEqual([1]);
   });
 });
 

@@ -1086,3 +1086,83 @@ describe("stored people — re-synced playerless rows and the set's skip records
     expect([...(people?.skippedPlayerNames ?? [])]).toEqual(["chris potter"]);
   });
 });
+
+/**
+ * NEO-335 — the set's skip records for TEAM names (CI run 38285320710,
+ * `checklist-one-marketplace-skips-match-dialog` step 10). The first sitting
+ * skipped "Roanoke Express" as "not a team"; a re-sync's gate drops it before
+ * asking, so the second sitting has no review row for it. Judged by the rows
+ * alone it read as a team that resolved before the wizard opened: every card
+ * looked teamed, the teams step never opened, and the save went ahead.
+ */
+describe("stored team skips — a name an earlier save ruled 'not a team'", () => {
+  const ROSTER = ["Jeff Jablonski", "Chris Potter", "Team Photo"];
+  const roanoke = () => ROSTER.map((name) => card("NNO", [name], ["Roanoke Express"], name));
+
+  test("with no row and no record, a printed team string still counts as resolved", () => {
+    expect(teamlessCardIndexes(roanoke(), [])).toEqual([]);
+  });
+
+  test("a no-row string the records skipped does not resolve: every card is in the section", () => {
+    const people = storedPeople(undefined, undefined, ["Roanoke Express"]);
+    expect(teamlessCardIndexes(roanoke(), [], undefined, people)).toEqual([0, 1, 2]);
+  });
+
+  test("matched however it is spelled, and only the skipped string is ruled out", () => {
+    const people = storedPeople(undefined, undefined, ["ROANOKE  express"]);
+    const cards = [
+      card("1", ["A"], ["Roanoke Express"]),
+      card("2", ["B"], ["Roanoke Express", "Reds"]),
+    ];
+    // Card 2 still prints a team that resolves.
+    expect(teamlessCardIndexes(cards, [], undefined, people)).toEqual([0]);
+  });
+
+  test("a skipped string is no listing claim: nothing shown, nothing held back, nothing looked up", () => {
+    const people = storedPeople(undefined, undefined, ["Roanoke Express"]);
+    const cards = [card("1", ["Johnny Bench"], ["Roanoke Express"])];
+    const groups = build(cards, [], { "name:bench johnny": answered([REDS, "Cincinnati Reds"]) }, 1995, {
+      people,
+      teamNameEvidence: {},
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].listedNames).toEqual([]);
+    // Not held back: the player's own evidence pre-fills, as for a card that
+    // printed no team at all.
+    expect(suggested(groups[0])).toEqual(["Cincinnati Reds"]);
+    expect(teamNameRequests(cards, [], undefined, people)).toEqual([]);
+  });
+
+  test("the re-sync's shape: skipped people AND a skipped team share the no-players line", () => {
+    const people = storedPeople(undefined, ROSTER, ["Roanoke Express"]);
+    const groups = build(roanoke(), [], {}, 1995, { people });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe(NO_PLAYERS_GROUP_KEY);
+    expect(groups[0].cards.map((c) => c.index)).toEqual([0, 1, 2]);
+    expect(groups[0].listedNames).toEqual([]);
+  });
+
+  test("a review row in THIS sitting outranks the record", () => {
+    const people = storedPeople(undefined, undefined, ["Roanoke Express"]);
+    const rows = [
+      row({
+        kind: "team",
+        name: "Roanoke Express",
+        decision: { action: "create", create: { location: "Roanoke", name: "Express" } },
+      }),
+    ];
+    expect(teamlessCardIndexes(roanoke(), rows, undefined, people)).toEqual([]);
+  });
+
+  test("a settled position stays settled", () => {
+    const people = storedPeople(undefined, undefined, ["Roanoke Express"]);
+    expect(teamlessCardIndexes(roanoke(), [], new Set([1]), people)).toEqual([0, 2]);
+  });
+
+  test("storedPeople carries the team half, normalized; blanks alone say nothing", () => {
+    expect(storedPeople(undefined, undefined, [" "])).toBeUndefined();
+    const people = storedPeople(undefined, undefined, ["Roanoke Express"]);
+    expect([...(people?.skippedTeamNames ?? [])]).toEqual(["express roanoke"]);
+    expect(people?.skippedPlayerNames).toBeUndefined();
+  });
+});

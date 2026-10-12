@@ -21,10 +21,12 @@ import type { TitleContext } from "../../convex/features/listingInputs";
 // NEO-335: the teams step's answers, put on the cards at commit.
 import {
   sameTeamAnswers,
+  storedPeople,
   teamlessCardIndexes,
   withTeamAnswer,
   type TeamAnswer,
 } from "./teams-on-cards";
+import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
 import CardPairingModal, {
   type PairingCard,
   type PairingConflicts,
@@ -459,6 +461,23 @@ function needsYouLabel(count: number): string {
   return count === 1 ? "1 needs you" : `${count} need you`;
 }
 
+/**
+ * NEO-335 — is any of a stored row's pending names one the set's skip records
+ * have NOT ruled out? A pending name that IS a skipped name is not waiting on
+ * anything — the operator already answered it — so it neither teams a row nor
+ * puts a person on it. (A save before the fix stamped such names; the next
+ * commit retires them, see the prelude's `isStoredSkip`.)
+ */
+function pendingBeyondSkips(
+  pending: readonly string[] | undefined,
+  skipped: readonly string[],
+): boolean {
+  if (!pending || pending.length === 0) return false;
+  if (skipped.length === 0) return true;
+  const ruled = new Set(skipped.map((n) => normalizeEntityName(n.trim())));
+  return pending.some((n) => !ruled.has(normalizeEntityName(n.trim())));
+}
+
 export default function CardChecklist({
   variantId,
   sourceChips,
@@ -471,6 +490,30 @@ export default function CardChecklist({
     selectorOptionId: variantId,
   });
   /**
+   * NEO-335 — the names this set's skip records rule "not a person" / "not a
+   * team". The gate drops them before queuing anything, so on a re-sync no
+   * review row says so: the wizard's teams step needs the player half to keep
+   * them off the player lines, and both halves decide which cards are asked
+   * about at all. The same subscription `SkippedNamesPanel` holds (Convex
+   * dedupes it).
+   */
+  const skipRecords = useQuery(api.entityReviewSkips.listForSet, {
+    selectorOptionId: variantId,
+  });
+  const skippedPlayerNames = useMemo(
+    () => (skipRecords ?? []).filter((s) => s.kind === "player").map((s) => s.name),
+    [skipRecords],
+  );
+  /**
+   * The team half. Without it a re-synced card printing only a skipped team
+   * name looks teamed (no review row, so "resolved before the wizard opened"),
+   * and the save goes ahead without its teams step.
+   */
+  const skippedTeamNames = useMemo(
+    () => (skipRecords ?? []).filter((s) => s.kind === "team").map((s) => s.name),
+    [skipRecords],
+  );
+  /**
    * NEO-335 — stored rows whose team is already answered for: a team, an
    * operator's "no team", or a team NAME still pending review. A re-sync
    * keeps all three, so the card matching one is not asked about in the
@@ -478,6 +521,8 @@ export default function CardChecklist({
    * counts the row as teamed, the commit never stamps "no team" over it, and
    * the attention walker's unreviewed-name step is where it is answered —
    * asking here would put a question whose likeliest answer the save ignores.
+   * Unless the pending name is one the set's skip records rule "not a team":
+   * that is no team at all.
    */
   const storedTeamedCardIds = useMemo(
     () =>
@@ -487,19 +532,20 @@ export default function CardChecklist({
             (row) =>
               (row.teamOnCardIds?.length ?? 0) > 0 ||
               row.teamNoneConfirmedAt !== undefined ||
-              (row.pendingTeamNames?.length ?? 0) > 0,
+              pendingBeyondSkips(row.pendingTeamNames, skippedTeamNames),
           )
           .map((row) => row._id),
       ),
-    [cards],
+    [cards, skippedTeamNames],
   );
   /**
    * NEO-335 — stored rows with nobody on them: no player links, and no
    * player name still waiting to become one (`pendingPlayerNames`, which the
-   * attention walker answers). A re-sync that does not accept a players change
-   * keeps that, so the teams step must not file such a card under whatever
-   * name it prints — most often a name the operator skipped as "not a person"
-   * in the first save, which the review rows of a later sitting never carry.
+   * attention walker answers — a skipped name is not waiting). A re-sync that
+   * does not accept a players change keeps that, so the teams step must not
+   * file such a card under whatever name it prints — most often a name the
+   * operator skipped as "not a person" in the first save, which the review
+   * rows of a later sitting never carry.
    */
   const storedPlayerlessCardIds = useMemo(
     () =>
@@ -508,24 +554,11 @@ export default function CardChecklist({
           .filter(
             (row) =>
               (row.playerIds?.length ?? 0) === 0 &&
-              (row.pendingPlayerNames?.length ?? 0) === 0,
+              !pendingBeyondSkips(row.pendingPlayerNames, skippedPlayerNames),
           )
           .map((row) => row._id),
       ),
-    [cards],
-  );
-  /**
-   * NEO-335 — the player names this set's skip records rule "not a person".
-   * The gate drops them before queuing anything, so no review row says so;
-   * the wizard's teams step needs it to keep them off the player lines. The
-   * same subscription `SkippedNamesPanel` holds (Convex dedupes it).
-   */
-  const skipRecords = useQuery(api.entityReviewSkips.listForSet, {
-    selectorOptionId: variantId,
-  });
-  const skippedPlayerNames = useMemo(
-    () => (skipRecords ?? []).filter((s) => s.kind === "player").map((s) => s.name),
-    [skipRecords],
+    [cards, skippedPlayerNames],
   );
   // Names the set in the pairing dialog's header. That dialog is modal and can
   // be hundreds of rows long — without this it says only "Match Cards" and an
@@ -1608,11 +1641,18 @@ export default function CardChecklist({
     // covers the NEW ones, see `settledTeamIndexes`) nothing changes: commit
     // straight away, no dialog. Every name resolved without review on this
     // path, so the cards are judged against no review rows — the same call
-    // the section itself makes.
+    // the section itself makes. "Resolved" includes a team name an earlier
+    // save skipped (the gate drops it): it is not a team, so a card printing
+    // only that is teamless and asked about.
     const noNames = unknownPlayers.length === 0 && unknownTeams.length === 0;
     const askTeams =
       noNames &&
-      teamlessCardIndexes(preview.cards, [], new Set(settledTeamIndexes)).length > 0;
+      teamlessCardIndexes(
+        preview.cards,
+        [],
+        new Set(settledTeamIndexes),
+        storedPeople(undefined, undefined, skippedTeamNames),
+      ).length > 0;
     // NEO-335 Phase 2 (D7) — and the same for titles: a NEW card that would be
     // born with a title the walker flags gets the wizard's "Card titles" step
     // before the save (Jason: everything pre-save; the walker is only a safety
@@ -3158,6 +3198,8 @@ export default function CardChecklist({
           // skip records rule "not a person".
           cardsWithNoPlayers={pendingPreview.playerlessIndexes}
           skippedPlayerNames={skippedPlayerNames}
+          // NEO-335: and the team names they rule "not a team".
+          skippedTeamNames={skippedTeamNames}
           // NEO-335 Phase 2 (C7): with no set-level team on this node, a long
           // teams step points at Set details instead.
           hasSetTeam={(variantRow?.teamIds?.length ?? 0) > 0}

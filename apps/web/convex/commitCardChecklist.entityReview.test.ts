@@ -2371,6 +2371,187 @@ describe("commitCardChecklist: unreviewed names", () => {
   });
 });
 
+/**
+ * NEO-335 (CI run 38285320710, `checklist-one-marketplace-skips-match-dialog`
+ * STEP 10) — a re-sync of a saved set. The first sitting skipped a team name
+ * and a player name; the re-sync's gate drops both before asking, so the
+ * second commit carries NO review row for them. Judged by the rows alone they
+ * read as "unreviewed": stamped on every card as pending (the listing's
+ * "not a team" written back as an unconfirmed team — invariant 8) and
+ * reported as "N names were not reviewed".
+ */
+describe("commitCardChecklist: a name an EARLIER save skipped is still skipped", () => {
+  const ROANOKE = ["Jeff Jablonski", "Chris Potter"].map((name, i) =>
+    makeCard({
+      cardNumber: String(i + 1),
+      cardName: name,
+      players: ["Team Photo"],
+      teams: ["Roanoke Express"],
+    }),
+  );
+
+  async function firstSaveSkippingBoth(
+    t: ReturnType<typeof convexTest>,
+    ids: { variantTypeId: Id<"selectorOptions">; sportId: Id<"selectorOptions"> },
+  ) {
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    for (const [kind, name] of [
+      ["team", "Roanoke Express"],
+      ["player", "Team Photo"],
+    ] as const) {
+      await insertReviewRow(t, {
+        selectorOptionId: ids.variantTypeId,
+        sportId: ids.sportId,
+        batchId: "batch-1",
+        kind,
+        name,
+        decision: { action: "skip" },
+      });
+    }
+    const first = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: ids.variantTypeId,
+      sportId: ids.sportId,
+      cards: ROANOKE,
+      batchId: "batch-1",
+    });
+    expect(first.unreviewedNameCount).toBe(0);
+    expect(await allSkips(t)).toHaveLength(2);
+  }
+
+  test("the re-sync's commit stamps no pending names and reports nothing unreviewed", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const ids = await seedVariantTypeUnderChromeSet(t);
+    await firstSaveSkippingBoth(t, ids);
+
+    // The re-sync: no names to review, so no batch at all.
+    const second = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: ids.variantTypeId,
+      sportId: ids.sportId,
+      cards: ROANOKE,
+    });
+
+    expect(second.success).toBe(true);
+    expect(second.unreviewedNameCount).toBe(0);
+    const cards = await readCards(t, ids.variantTypeId);
+    expect(cards).toHaveLength(2);
+    for (const card of cards) {
+      expect(card.pendingTeamNames).toBeUndefined();
+      expect(card.pendingPlayerNames).toBeUndefined();
+      expect(card.teamOnCardIds ?? []).toEqual([]);
+      expect(card.playerIds ?? []).toEqual([]);
+    }
+    // Nothing was minted for either name.
+    expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
+    expect(await t.run(async (ctx) => ctx.db.query("players").collect())).toHaveLength(0);
+  });
+
+  test("the prelude reports the names as skipped — not unreviewed, not unresolved", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const ids = await seedVariantTypeUnderChromeSet(t);
+    await firstSaveSkippingBoth(t, ids);
+
+    const prelude = await asAdmin.mutation(
+      internal.selectorOptions.commitCardChecklistPrelude,
+      {
+        selectorOptionId: ids.variantTypeId,
+        sportId: ids.sportId,
+        playerNames: ["Team Photo"],
+        teamNames: ["Roanoke Express"],
+      },
+    );
+
+    expect(prelude.unreviewedPlayerNames).toEqual([]);
+    expect(prelude.unreviewedTeamNames).toEqual([]);
+    expect(prelude.unresolvedTeamNames).toEqual([]);
+    expect(prelude.unresolvedTeamCount).toBe(0);
+    // Reported with the commit's own skips, so the chunk retires a stamp.
+    expect(prelude.skippedPlayerNames).toEqual(["Team Photo"]);
+    expect(prelude.skippedTeamNames).toEqual(["Roanoke Express"]);
+    // Recorded once, by the first save; nothing is re-written.
+    expect(await allSkips(t)).toHaveLength(2);
+  });
+
+  test("a name the records do NOT cover is still stamped and counted", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const ids = await seedVariantTypeUnderChromeSet(t);
+    await firstSaveSkippingBoth(t, ids);
+
+    const second = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: ids.variantTypeId,
+      sportId: ids.sportId,
+      cards: [
+        makeCard({
+          cardNumber: "1",
+          cardName: "Jeff Jablonski",
+          players: ["Team Photo", "Never Reviewed"],
+          teams: ["Roanoke Express", "Reno Aces"],
+        }),
+      ],
+    });
+
+    expect(second.unreviewedNameCount).toBe(2);
+    const [card] = (await readCards(t, ids.variantTypeId)).filter(
+      (c) => c.cardNumber === "1",
+    );
+    expect(card.pendingTeamNames).toEqual(["Reno Aces"]);
+    expect(card.pendingPlayerNames).toEqual(["Never Reviewed"]);
+  });
+
+  test("a row an earlier commit stamped with a skipped name has the stamp retired", async () => {
+    // A save that ran before this fix left the skipped names pending on the
+    // row; the next commit settles them like this commit's own skips.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const ids = await seedVariantTypeUnderChromeSet(t);
+    await firstSaveSkippingBoth(t, ids);
+    await t.run(async (ctx) => {
+      for (const card of await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", ids.variantTypeId))
+        .collect()) {
+        await ctx.db.patch(card._id, {
+          pendingTeamNames: ["Roanoke Express"],
+          pendingPlayerNames: ["Team Photo"],
+        });
+      }
+    });
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: ids.variantTypeId,
+      sportId: ids.sportId,
+      cards: ROANOKE,
+    });
+
+    for (const card of await readCards(t, ids.variantTypeId)) {
+      expect(card.pendingTeamNames).toBeUndefined();
+      expect(card.pendingPlayerNames).toBeUndefined();
+    }
+  });
+
+  test("a skip on ANOTHER set does not count here", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const ids = await seedVariantTypeUnderChromeSet(t);
+    await firstSaveSkippingBoth(t, ids);
+    const otherSetId = await seedSecondVariantType(t, ids.setNameId);
+
+    const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: otherSetId,
+      sportId: ids.sportId,
+      cards: ROANOKE,
+    });
+
+    expect(result.unreviewedNameCount).toBe(2);
+    for (const card of await readCards(t, otherSetId)) {
+      expect(card.pendingTeamNames).toEqual(["Roanoke Express"]);
+      expect(card.pendingPlayerNames).toEqual(["Team Photo"]);
+    }
+  });
+});
+
 // ===========================================================================
 // NEO-221 — the "Back to matching" return trip must not orphan the batch
 // ===========================================================================

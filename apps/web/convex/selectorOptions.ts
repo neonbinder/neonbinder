@@ -14882,6 +14882,11 @@ export const commitCardChecklistPrelude = internalMutation({
     // kind. Returned rather than re-derived because the finalize phase, which
     // retires custom cards' pending* entries, cannot see the batch's review
     // rows — they are read here and deleted there.
+    //
+    // NEO-335: plus the names an EARLIER commit of this set skipped that
+    // reached this one with no decision (`isStoredSkip`). Already recorded,
+    // so nothing is written for them; they ride here so the same pending*
+    // retirement applies.
     skippedPlayerNames: v.array(v.string()),
     skippedTeamNames: v.array(v.string()),
     // NEO-236: team names this commit could NOT link and did not create —
@@ -15190,6 +15195,47 @@ export const commitCardChecklistPrelude = internalMutation({
     for (const row of reviewRows) {
       reviewByKey.set(`${row.kind}:${norm(row.name)}`, row);
     }
+
+    /**
+     * NEO-335 — has an EARLIER commit of this set ruled this name "not a
+     * person / not a team"?
+     *
+     * The review rows only speak for names that were unknown when this
+     * sitting opened. A name skipped in an earlier save never reaches them:
+     * `resolveUnknownsAndStartBatch` drops it at the gate, before it asks
+     * anyone. Judged by the rows alone, such a name read as "unreviewed" and
+     * was stamped onto the card as a pending player or team: a listing's
+     * string the operator had already said is NOT a team, written back onto
+     * the card as an unconfirmed one (invariant 8), with the banner
+     * reporting it as "not reviewed" on every re-sync.
+     *
+     * So a name with no decision consults the set's skip records, and a hit
+     * is handled exactly like a skip decision: nothing linked, nothing
+     * created, not unreviewed, not unresolved.
+     *
+     * Read LAZILY and ONCE per prelude call: one indexed range over this
+     * set's skips, and only when some name actually reaches the no-decision
+     * branch. A commit whose every name resolves pays nothing. The keys use
+     * the same `normalizeEntityName` the gate and the skip writer above use.
+     */
+    let storedSkipKeys: Set<string> | null = null;
+    const isStoredSkip = async (
+      kind: "player" | "team",
+      nameNormalized: string,
+    ): Promise<boolean> => {
+      if (storedSkipKeys === null) {
+        const skips = await ctx.db
+          .query("entityReviewSkips")
+          .withIndex("by_selector_option_and_kind_and_name", (q) =>
+            q.eq("selectorOptionId", args.selectorOptionId),
+          )
+          .collect();
+        storedSkipKeys = new Set(
+          skips.map((s) => `${s.kind}:${s.nameNormalized}`),
+        );
+      }
+      return storedSkipKeys.has(`${kind}:${nameNormalized}`);
+    };
 
     // ── NEO-212: make every skip durable, in THIS transaction ───────────────
     //
@@ -16335,7 +16381,13 @@ export const commitCardChecklistPrelude = internalMutation({
       // unreviewed case counts as either "unresolved" (NEO-236) or
       // "unreviewed" (NEO-221): a skip is an answer to both questions.
       if (!decision || decision.action === "skip") {
-        if (!decision) {
+        // NEO-335 — a name an EARLIER save of this set skipped is an answer
+        // too (see `isStoredSkip`). Reported with this commit's own skips so
+        // the chunk retires it from a stored row's pending names rather than
+        // keeping it there as a team waiting to be confirmed.
+        if (!decision && (await isStoredSkip("team", normalized))) {
+          skippedTeamNames.push(name);
+        } else if (!decision) {
           unresolvedTeamNames.add(name);
           // NEO-221 — same rule as the player loop above.
           unreviewedTeamNames.push(name);
@@ -16716,6 +16768,10 @@ export const commitCardChecklistPrelude = internalMutation({
         continue;
       }
       const decision = reviewByKey.get(`player:${normalized}`)?.decision;
+      // NEO-335 — "not a person" from an EARLIER save of this set (see
+      // `isStoredSkip`). An answer, so it holds back the year narrowing below
+      // exactly as a skip decision does, and it is not unreviewed.
+      const storedSkip = !decision && (await isStoredSkip("player", normalized));
       /**
        * NEO-254 — the card's own year narrows "more than one" back to one.
        *
@@ -16749,7 +16805,7 @@ export const commitCardChecklistPrelude = internalMutation({
        * Placed AFTER the exactly-one fast path so the ordinary name pays
        * nothing for it.
        */
-      if (!decision && existingMatches.length > 1) {
+      if (!decision && !storedSkip && existingMatches.length > 1) {
         const narrowed = await narrowSameNamePlayersByCardYear(
           ctx,
           existingMatches,
@@ -16814,7 +16870,10 @@ export const commitCardChecklistPrelude = internalMutation({
         // NEO-221: no decision at all is an unanswered question — the wizard
         // never ruled on this name, so the card will link to nothing and no
         // later pass will fix it. A skip is an ANSWER and is excluded.
-        if (!decision) unreviewedPlayerNames.push(name);
+        // NEO-335 — and so is an earlier save's skip, reported with this
+        // commit's own so the chunk retires it from a row's pending names.
+        if (storedSkip) skippedPlayerNames.push(name);
+        else if (!decision) unreviewedPlayerNames.push(name);
         continue;
       }
       if (decision.action === "link") {

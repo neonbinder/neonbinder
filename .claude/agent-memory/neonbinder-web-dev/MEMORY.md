@@ -107,3 +107,4 @@
 - [vi.mock stub component needs a name](reference_vi_mock_stub_component_needs_a_name.md) — stateful stub in a vi.mock factory must be `function StubX` or lint fails rules-of-hooks
 - [No prettier config in apps/web](reference_no_prettier_config_in_apps_web.md) — prettier --write reformats whole hand-formatted files; never run it, eslint is the gate
 - [Candidate field reaches commit only through the client](reference_candidate_field_reaches_commit_only_through_the_client.md) — candidate row → commit hops via pairing-cards.ts, CardPairingModal merge, CardChecklist type; convex-only carry is dead
+- [No review row is not unanswered](reference_no_review_row_is_not_unanswered.md) — the gate drops stored skips before queuing; "no row ⇒ resolved/unreviewed" must read entityReviewSkips

@@ -29,9 +29,11 @@ export { MAX_CARD_TEAMS };
  *
  * A confirmed card none of whose team strings will resolve at commit: no
  * strings at all (SportLots never sends one), or every string a name the
- * operator skipped as "not a team". A string with no review row resolved
- * before the wizard opened (`resolveChecklistEntities` only queues unknowns),
- * so it counts as a team. Membership is computed from the cards and the
+ * operator skipped as "not a team" — in this sitting, or in an earlier save
+ * of this set (the set's skip records, `StoredPeople.skippedTeamNames`). Any
+ * other string with no review row resolved before the wizard opened
+ * (`resolveChecklistEntities` only queues unknowns, and drops a skipped name
+ * before it asks), so it counts as a team. Membership is computed from the cards and the
  * Names-phase decisions ONLY — never from this section's own answers, so a
  * line does not vanish under the operator's cursor the moment they answer it.
  *
@@ -74,7 +76,8 @@ export { MAX_CARD_TEAMS };
  * A name the operator ruled "not a team" (its step skipped) in this sitting
  * is no longer a claim (Jason, NEO-335 Phase 2): the operator has already
  * answered it, so it neither blocks the pre-fill nor is shown, and the line
- * falls back to the normal rules.
+ * falls back to the normal rules. The same holds for a name an EARLIER save
+ * of this set skipped: the set's skip records are that answer, kept.
  *
  * Never a guess: a tie stays unselected, and a card number is never a key —
  * a card is identified by its POSITION in the preview, which is the only
@@ -268,15 +271,17 @@ export function cardTeamStrings(card: PreviewCardForTeams): string[] {
 }
 
 /**
- * Who is on the cards, as the STORED data says it — the half the review rows
- * cannot say. Both are facts NB already holds (sets → cards → players, and
- * the set's skip records); nothing here is a stored wizard answer.
+ * Who and what is on the cards, as the STORED data says it — the half the
+ * review rows cannot say. All are facts NB already holds (sets → cards →
+ * players, and the set's skip records); nothing here is a stored wizard
+ * answer.
  *
  * The review rows only describe names that were UNKNOWN when this sitting
  * opened. A re-sync of a set whose names were settled in an earlier save has
  * none (the teams-only entry has no rows at all), so without these every
  * printed name — including the ones an operator ruled "not a person" — would
- * come back as a player line of its own.
+ * come back as a player line of its own, and every string ruled "not a team"
+ * would pass for a team.
  */
 export interface StoredPeople {
   /**
@@ -293,24 +298,37 @@ export interface StoredPeople {
    * too, exactly like a name skipped in this sitting.
    */
   skippedPlayerNames?: ReadonlySet<string>;
+  /**
+   * Team names this set's skip records rule "not a team" (normalized the same
+   * way). The other half of the same fact, and the same reason: a re-sync
+   * carries no review row for them, so without this a skipped string would
+   * read as a team that resolved before the wizard opened — the card would
+   * look teamed, and the save would go ahead without asking. A skipped name is
+   * not a team and not a listing's claim either: the operator answered it.
+   * A review row in this sitting still wins over the record.
+   */
+  skippedTeamNames?: ReadonlySet<string>;
 }
 
 /**
  * The host's wire shapes (positions and RAW skipped names) as `StoredPeople`.
- * Undefined when there is nothing to say, so a caller with neither passes
+ * Undefined when there is nothing to say, so a caller with none passes
  * exactly what it passed before.
  */
 export function storedPeople(
   playerlessIndexes?: readonly number[],
   skippedPlayerNames?: readonly string[],
+  skippedTeamNames?: readonly string[],
 ): StoredPeople | undefined {
   const playerless =
     playerlessIndexes && playerlessIndexes.length > 0 ? new Set(playerlessIndexes) : undefined;
   const skipped = new Set((skippedPlayerNames ?? []).map(norm).filter(Boolean));
-  if (!playerless && skipped.size === 0) return undefined;
+  const skippedTeams = new Set((skippedTeamNames ?? []).map(norm).filter(Boolean));
+  if (!playerless && skipped.size === 0 && skippedTeams.size === 0) return undefined;
   return {
     ...(playerless ? { playerless } : {}),
     ...(skipped.size > 0 ? { skippedPlayerNames: skipped } : {}),
+    ...(skippedTeams.size > 0 ? { skippedTeamNames: skippedTeams } : {}),
   };
 }
 
@@ -319,6 +337,7 @@ interface NamesView {
   playerRowByKey: Map<string, TeamsReviewRow>;
   playerless: ReadonlySet<number>;
   skippedPlayerNames: ReadonlySet<string>;
+  skippedTeamNames: ReadonlySet<string>;
 }
 
 const NOBODY: ReadonlySet<never> = new Set<never>();
@@ -338,19 +357,30 @@ function namesView(rows: readonly TeamsReviewRow[], people?: StoredPeople): Name
     playerRowByKey,
     playerless: people?.playerless ?? NOBODY,
     skippedPlayerNames: people?.skippedPlayerNames ?? NOBODY,
+    skippedTeamNames: people?.skippedTeamNames ?? NOBODY,
   };
+}
+
+/**
+ * Was this printed team string ruled "not a team"? By its review row in this
+ * sitting, else — with no row — by the set's skip records from an earlier
+ * save. A row wins: it is the newer answer.
+ */
+function teamStringSkipped(raw: string, view: NamesView): boolean {
+  const key = norm(raw);
+  const row = view.teamRowByKey.get(key);
+  if (row) return row.decision?.action === "skip";
+  return view.skippedTeamNames.has(key);
 }
 
 /**
  * Invariant 8 — the printed team strings on a section card that still claim
  * a team: every one failed to resolve (that is how the card got here), minus
- * the ones the operator ruled "not a team". A skip is an answer to the
- * claim, so it no longer holds the guess back.
+ * the ones the operator ruled "not a team", now or in an earlier save. A skip
+ * is an answer to the claim, so it no longer holds the guess back.
  */
 function listedClaims(card: PreviewCardForTeams, view: NamesView): string[] {
-  return cardTeamStrings(card).filter(
-    (raw) => view.teamRowByKey.get(norm(raw))?.decision?.action !== "skip",
-  );
+  return cardTeamStrings(card).filter((raw) => !teamStringSkipped(raw, view));
 }
 
 /** Will this printed team string resolve to a team at commit? */
@@ -358,7 +388,9 @@ function teamStringResolves(raw: string, view: NamesView): boolean {
   const key = norm(raw);
   if (!key) return false;
   const row = view.teamRowByKey.get(key);
-  if (!row) return true; // resolved before the wizard opened
+  // No row: resolved before the wizard opened — unless an earlier save of
+  // this set skipped it, which is why the gate never queued it.
+  if (!row) return !view.skippedTeamNames.has(key);
   return row.decision?.action === "create" || row.decision?.action === "link";
 }
 
@@ -417,8 +449,9 @@ export function teamlessCardIndexes(
   cards: readonly PreviewCardForTeams[],
   rows: readonly TeamsReviewRow[],
   settled?: ReadonlySet<number>,
+  people?: StoredPeople,
 ): number[] {
-  const view = namesView(rows);
+  const view = namesView(rows, people);
   const out: number[] = [];
   cards.forEach((card, index) => {
     if (settled?.has(index)) return;
@@ -439,7 +472,7 @@ export function evidenceRequests(
 ): EvidenceRequest[] {
   const view = namesView(rows, people);
   const out = new Map<string, EvidenceRequest>();
-  for (const index of teamlessCardIndexes(cards, rows, settled)) {
+  for (const index of teamlessCardIndexes(cards, rows, settled, people)) {
     for (const player of cardPlayers(cards[index], index, view)) {
       if (player.kind === "server" && !out.has(player.request.key)) {
         out.set(player.request.key, player.request);
@@ -479,7 +512,7 @@ export function teamNameRequests(
     const key = norm(raw);
     if (key && !out.has(key)) out.set(key, { key, name: raw.trim() });
   };
-  for (const index of teamlessCardIndexes(cards, rows, settled)) {
+  for (const index of teamlessCardIndexes(cards, rows, settled, people)) {
     const card = cards[index];
     for (const listed of listedClaims(card, view)) add(listed);
     for (const player of cardPlayers(card, index, view)) {
@@ -663,7 +696,7 @@ export function buildTeamsGroups(input: {
     teamNameEvidence: input.teamNameEvidence,
     setLeagueId: input.setLeagueId,
   };
-  const members = new Set(teamlessCardIndexes(cards, rows, settled));
+  const members = new Set(teamlessCardIndexes(cards, rows, settled, input.people));
 
   // Batch evidence: per player set, the distinct resolving team sets printed
   // on the cards that are NOT in the section.

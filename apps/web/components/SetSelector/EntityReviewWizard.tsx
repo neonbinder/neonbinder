@@ -88,10 +88,11 @@ import {
   type StepTracker,
   type WizardStepKind,
 } from "./entity-review-steps";
-import type {
-  GroupChoice,
-  PreviewCardForTeams,
-  TeamAnswer,
+import {
+  storedPeople,
+  type GroupChoice,
+  type PreviewCardForTeams,
+  type TeamAnswer,
 } from "./teams-on-cards";
 import {
   countBulkCreatable,
@@ -425,6 +426,7 @@ export default function EntityReviewWizard({
   cardsWithSettledTeam,
   cardsWithNoPlayers,
   skippedPlayerNames,
+  skippedTeamNames,
   teamsOnly = false,
   titleContext,
   existingCardIndexes = NO_CARD_INDEXES,
@@ -495,6 +497,13 @@ export default function EntityReviewWizard({
    * nobody; the teams step reads it here instead.
    */
   skippedPlayerNames?: readonly string[];
+  /**
+   * NEO-335 — team names this set's skip records rule "not a team", raw. The
+   * same gate drops them, so on a re-sync no batch row says a card printing
+   * only such names has no team; the teams step (and its place in the step
+   * count) reads it here instead.
+   */
+  skippedTeamNames?: readonly string[];
   /**
    * NEO-335 — there are no names to review (the name is historical: it is
    * the "no names" entry). The wizard opens past the names, on whichever of
@@ -2654,12 +2663,16 @@ export default function EntityReviewWizard({
    * The cards the teams step would list — optimistic while names are still
    * being decided (see `cardsForTeamsStep`), exact once they all are.
    */
+  const storedNames = useMemo(
+    () => storedPeople(cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames),
+    [cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames],
+  );
   const teamsStepCards = useMemo(
     () =>
       teamsStepEnabled && previewCards && rows
-        ? cardsForTeamsStep(previewCards, rows, cardsWithSettledTeam)
+        ? cardsForTeamsStep(previewCards, rows, cardsWithSettledTeam, storedNames)
         : [],
-    [teamsStepEnabled, previewCards, rows, cardsWithSettledTeam],
+    [teamsStepEnabled, previewCards, rows, cardsWithSettledTeam, storedNames],
   );
   /** The teams step reports up through here so the titles step can read it. */
   const handleTeamAnswers = useCallback(
@@ -5078,6 +5091,7 @@ export default function EntityReviewWizard({
                   settledIndexes={cardsWithSettledTeam}
                   playerlessIndexes={cardsWithNoPlayers}
                   skippedPlayerNames={skippedPlayerNames}
+                  skippedTeamNames={skippedTeamNames}
                   disabled={saving}
                   showSetTeamHint={showSetTeamHint}
                 />

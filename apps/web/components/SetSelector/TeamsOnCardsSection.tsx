@@ -223,6 +223,7 @@ export default function TeamsOnCardsSection({
   settledIndexes,
   playerlessIndexes,
   skippedPlayerNames,
+  skippedTeamNames,
   disabled = false,
   showSetTeamHint = false,
 }: {
@@ -264,6 +265,12 @@ export default function TeamsOnCardsSection({
    * Names step.
    */
   skippedPlayerNames?: readonly string[];
+  /**
+   * Team names this set's skip records rule "not a team" (raw). Not a team
+   * and not a listing's claim, on any card, like a name skipped in the Names
+   * step: a card printing only such names is asked about here.
+   */
+  skippedTeamNames?: readonly string[];
   /** A commit is in flight; the choices hold still. */
   disabled?: boolean;
   /**
@@ -278,8 +285,8 @@ export default function TeamsOnCardsSection({
     [settledIndexes],
   );
   const people = useMemo(
-    () => storedPeople(playerlessIndexes, skippedPlayerNames),
-    [playerlessIndexes, skippedPlayerNames],
+    () => storedPeople(playerlessIndexes, skippedPlayerNames, skippedTeamNames),
+    [playerlessIndexes, skippedPlayerNames, skippedTeamNames],
   );
 
   const requests = useMemo(

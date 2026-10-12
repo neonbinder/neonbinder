@@ -32,6 +32,7 @@ import { isAmbiguousPlayerRow, type NavRow } from "./entity-review-nav";
 import {
   teamlessCardIndexes,
   type PreviewCardForTeams,
+  type StoredPeople,
   type TeamsReviewRow,
 } from "./teams-on-cards";
 
@@ -230,16 +231,26 @@ export function upcomingReviewStepKind(rows: readonly NavRow[]): WizardStepKind 
  * the step is counted from the start for cards that print no team at all, and
  * otherwise appears only when the operator SKIPS a team name — an operator
  * decision, which is the only kind of growth the counter allows.
+ *
+ * A team name an EARLIER save of this set skipped (`people.skippedTeamNames`)
+ * is known before the sitting starts, so a card printing only such names is
+ * counted from the start, like a card that prints no team at all.
  */
 export function cardsForTeamsStep(
   cards: readonly PreviewCardForTeams[],
   rows: readonly TeamsReviewRow[],
   settledIndexes?: readonly number[],
+  people?: StoredPeople,
 ): number[] {
-  const assumed = rows.filter((r) => !(r.kind === "team" && !r.decision));
+  // An undecided team name is ASSUMED to resolve: stood in for by a link, so
+  // its row still outranks a skip record for the same name (the gate queued
+  // it, so this sitting is where it is being answered).
+  const assumed = rows.map((r) =>
+    r.kind === "team" && !r.decision ? { ...r, decision: { action: "link" as const } } : r,
+  );
   const settled =
     settledIndexes && settledIndexes.length > 0 ? new Set(settledIndexes) : undefined;
-  return teamlessCardIndexes(cards, assumed, settled);
+  return teamlessCardIndexes(cards, assumed, settled, people);
 }
 
 /**

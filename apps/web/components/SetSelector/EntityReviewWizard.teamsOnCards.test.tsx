@@ -558,6 +558,35 @@ describe("EntityReviewWizard teams-only", () => {
     ]);
   });
 
+  /**
+   * The same re-sync after NEO-333 made the fetch wait for BSC team lookups:
+   * every card now prints "Roanoke Express", which the first save skipped as
+   * "not a team". No batch row says so; the set's skip records do.
+   */
+  it("treats a team name the set's skip records rule out as no team — and no listing claim", () => {
+    serverAnswer = () => ({ playerId: "p", answer: null, candidates: [] });
+    renderTeamsOnly(
+      ["Jeff Jablonski", "Chris Potter", "Team Photo"].map((name) => ({
+        cardNumber: "NNO",
+        cardName: name,
+        players: [name],
+        teams: ["Roanoke Express"],
+      })),
+      "",
+      {
+        cardsWithNoPlayers: [0, 1],
+        skippedPlayerNames: ["Team Photo"],
+        skippedTeamNames: ["Roanoke Express"],
+      },
+    );
+    expect(counter()).toBe("Step 1 of 2");
+    expect(
+      screen.getByRole("radio", { name: "Leave for later — Cards with no players (3)" }),
+    ).toBeTruthy();
+    // The skipped name is an answer, not a claim: it is never shown.
+    expect(screen.queryByText(/Roanoke Express/)).toBeNull();
+  });
+
   it("Cancel with no batch closes without asking the server", async () => {
     const { onCancel } = renderTeamsOnly([
       { cardNumber: "1", cardName: "Base", players: ["Johnny Bench"] },
