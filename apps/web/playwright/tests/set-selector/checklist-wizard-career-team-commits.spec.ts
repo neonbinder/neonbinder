@@ -27,7 +27,7 @@ test(
     // The new name is looked up (live), then raised as its own New Team step.
     const lookingUp = wizard.getByText(/still looking up/);
     const newTeam = wizard.getByRole("heading", { name: `New Team: ${team}` });
-    await expect(newTeam.or(lookingUp)).toBeVisible();
+    await expect(newTeam.or(lookingUp).first()).toBeVisible();
     await expect(lookingUp).toBeHidden({ timeout: 180_000 });
     await expect(newTeam).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, New Team step for a career team" });

@@ -2,7 +2,7 @@
 // Fresh-only: commits the Topps Brooklyn Collection checklist.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand } from "../../support/players";
-import { fetchChecklistToWizard, reviewedLine, reviewWizard, walkToPlayerRow } from "../../support/wizard";
+import { fetchChecklistToWizard, openDecidedList, reviewedLine, reviewWizard, walkToPlayerRow } from "../../support/wizard";
 
 test(
   "Entity review — Link to Existing decisions, including one to a player of another sport, are carried through Confirm & Save into the committed checklist",
@@ -27,7 +27,9 @@ test(
     await expect(linkOhtani).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, link search results" });
     await linkOhtani.click();
-    await expect(wizard.getByText("Linked to Shohei Ohtani")).toBeVisible();
+    // The history collapses past five decided names, so open it first.
+    const decidedNames = await openDecidedList(page);
+    await expect(decidedNames.getByText("Linked to Shohei Ohtani")).toBeVisible();
 
     // Row 2: change the sport this name belongs to, Baseball -> Football.
     await walkToPlayerRow(page);

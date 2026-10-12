@@ -39,7 +39,7 @@ test(
     await toYear.fill("2005");
     await addCareer.click();
     const probeStep = wizard.getByRole("heading", { name: `New Team: ${probe}` });
-    await expect(probeStep.or(lookingUp)).toBeVisible();
+    await expect(probeStep.or(lookingUp).first()).toBeVisible();
     await expect(lookingUp).toBeHidden({ timeout: 180_000 });
     await expect(probeStep).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, New Team step for a career team" });
@@ -76,7 +76,7 @@ test(
     await fromYear.press("Enter");
     await expect(fromYear).not.toHaveValue("2010");
     const tempStep = wizard.getByRole("heading", { name: `New Team: ${temp}` });
-    await expect(tempStep.or(lookingUp)).toBeVisible();
+    await expect(tempStep.or(lookingUp).first()).toBeVisible();
     await expect(lookingUp).toBeHidden({ timeout: 180_000 });
     await expect(tempStep).toBeVisible();
     await expect(reviewedLine(page)).toHaveText(new RegExp(`^${before} of [0-9]+ reviewed`));

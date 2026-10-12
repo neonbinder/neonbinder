@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/checklist-wizard-link-to-existing-player.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady } from "../../support/set-builder";
-import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, reviewWizard, walkToPlayerRow } from "../../support/wizard";
+import { cancelAndDiscard, discardResumedReviewBatch, fetchChecklistToWizard, openDecidedList, reviewWizard, walkToPlayerRow } from "../../support/wizard";
 
 test(
   "Entity review — Link to Existing resolves an unknown name onto a player we already have instead of minting a duplicate",
@@ -25,7 +25,9 @@ test(
     await expect(linkOption).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, link search results" });
     await linkOption.click();
-    await expect(wizard.getByText("Linked to Shohei Ohtani")).toBeVisible();
+    // The history collapses past five decided names, so open it first.
+    const decidedNames = await openDecidedList(page);
+    await expect(decidedNames.getByText("Linked to Shohei Ohtani")).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, linked player" });
 
     await cancelAndDiscard(page);
