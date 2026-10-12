@@ -29,3 +29,4 @@
 - [Adapter re-auth goes through refreshSiteToken](reference_adapter_reauth_goes_through_refresh_site_token.md) — never authenticate* from an adapter; one re-auth per session; the lock inserts a userProfiles row in convex-test
 - [Team names contain separators](reference_team_names_contain_separators.md) — teams split on comma only (Bodø/Glimt, "Korea, South"); players on , / |; resolve the whole raw value first
 - [Team resolution null is two answers](reference_team_resolution_null_is_two_answers.md) — teamId null = unknown OR ambiguous era; branch on candidates.length before any fallback (NEO-333 split bug)
+- [Agent shell node ignores .nvmrc](reference_agent_shell_node_ignores_nvmrc.md) — Bash-tool `node` is the nvm default; prepend $NVM_DIR/versions/node/v$(cat .nvmrc)/bin to PATH per gate call
