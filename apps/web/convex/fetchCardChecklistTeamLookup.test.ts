@@ -71,7 +71,11 @@ type SlCard = {
 const mockState = vi.hoisted(() => ({
   bscCards: [] as BscCard[],
   slCards: [] as SlCard[],
-  teamNamesResult: {} as Record<string, string>,
+  // NEO-333: both forms of BSC's team value, raw and comma split.
+  teamNamesResult: {} as Record<
+    string,
+    { rawTeamName: string; teamNames: string[] }
+  >,
   // NEO-335 — ids whose lookup FAILS (the call itself, not "no team").
   failedIds: [] as string[],
   // NEO-335 — ids the stub leaves out of its answer entirely.
@@ -114,7 +118,8 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
       returns: v.array(
         v.object({
           bscCardId: v.string(),
-          teamName: v.string(),
+          rawTeamName: v.string(),
+          teamNames: v.array(v.string()),
           success: v.boolean(),
         }),
       ),
@@ -124,10 +129,12 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
           .filter((bscCardId) => !mockState.omittedIds.includes(bscCardId))
           .map((bscCardId) =>
           mockState.failedIds.includes(bscCardId)
-            ? { bscCardId, teamName: "", success: false }
+            ? { bscCardId, rawTeamName: "", teamNames: [], success: false }
             : {
                 bscCardId,
-                teamName: mockState.teamNamesResult[bscCardId] ?? "",
+                rawTeamName:
+                  mockState.teamNamesResult[bscCardId]?.rawTeamName ?? "",
+                teamNames: mockState.teamNamesResult[bscCardId]?.teamNames ?? [],
                 success: true,
               },
         );
@@ -349,7 +356,12 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
         // no team/teams — parsePlayersField's bulk parse found nothing.
       },
     ];
-    mockState.teamNamesResult = { "bsc-50": "Cincinnati Reds" };
+    mockState.teamNamesResult = {
+      "bsc-50": {
+        rawTeamName: "Cincinnati Reds",
+        teamNames: ["Cincinnati Reds"],
+      },
+    };
 
     const result = await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
       selectorOptionId: variantTypeId,
@@ -458,7 +470,12 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
       // Team from the bulk parse: no lookup, so no outcome recorded at all.
       { cardNumber: "53", cardName: "Royals", teams: ["Kansas City Royals"], players: ["Royals"], platformRef: "bsc-53" },
     ];
-    mockState.teamNamesResult = { "bsc-50": "Cincinnati Reds" };
+    mockState.teamNamesResult = {
+      "bsc-50": {
+        rawTeamName: "Cincinnati Reds",
+        teamNames: ["Cincinnati Reds"],
+      },
+    };
     mockState.failedIds = ["bsc-52"];
 
     const result = await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
@@ -505,5 +522,41 @@ describe("fetchCardChecklist's synchronous BSC team-lookup wiring (NEO-90)", () 
     expect(bscOnly).toHaveLength(1);
     expect(bscOnly[0].teams).toBeUndefined();
     expect(bscOnly[0].teamLookup).toBe("failed");
+  });
+
+  test("NEO-333 x NEO-335: a comma-joined answer carries its split parts AND the answered outcome", async () => {
+    // Both merges' rules on one card: the split decides which names the card
+    // carries (no NB team matches the whole string, so the parts), and the
+    // lookup outcome still rides to the commit beside them.
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const variantTypeId = await seedTree(t);
+
+    mockState.bscCards = [
+      { cardNumber: "70", cardName: "Dual Prospects", players: ["A", "B"], platformRef: "bsc-70" },
+      { cardNumber: "71", cardName: "Someone", players: ["Someone"], platformRef: "bsc-71" },
+    ];
+    mockState.teamNamesResult = {
+      "bsc-70": {
+        rawTeamName: "Cleveland Guardians, Washington Nationals",
+        teamNames: ["Cleveland Guardians", "Washington Nationals"],
+      },
+      // A failed call's value is never used, even if a stub supplied one.
+      "bsc-71": { rawTeamName: "Boston Red Sox", teamNames: ["Boston Red Sox"] },
+    };
+    mockState.failedIds = ["bsc-71"];
+
+    await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const { bscOnly } = await buckets(t, variantTypeId);
+    const byNumber = new Map(bscOnly.map((c) => [c.cardNumber, c]));
+    expect(byNumber.get("70")).toMatchObject({
+      teams: ["Cleveland Guardians", "Washington Nationals"],
+      teamLookup: "answered",
+      teamResolved: true,
+    });
+    expect(byNumber.get("71")!.teams).toBeUndefined();
+    expect(byNumber.get("71")!.teamLookup).toBe("failed");
   });
 });

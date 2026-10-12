@@ -61,10 +61,11 @@ function makeCardListingFetch(opts: {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("fetchBscCardTeamNames", () => {
-  test("all cards resolve — one answered entry per id, in request order", async () => {
+  test("all cards resolve — one answered entry per id, in request order, raw and split", async () => {
     const t = convexTest(schema, modules);
     vi.stubGlobal(
       "fetch",
@@ -80,8 +81,18 @@ describe("fetchBscCardTeamNames", () => {
     );
 
     expect(result).toEqual([
-      { bscCardId: "bsc-1", teamName: "New York Yankees", success: true },
-      { bscCardId: "bsc-2", teamName: "Boston Red Sox", success: true },
+      {
+        bscCardId: "bsc-1",
+        rawTeamName: "New York Yankees",
+        teamNames: ["New York Yankees"],
+        success: true,
+      },
+      {
+        bscCardId: "bsc-2",
+        rawTeamName: "Boston Red Sox",
+        teamNames: ["Boston Red Sox"],
+        success: true,
+      },
     ]);
   });
 
@@ -101,8 +112,13 @@ describe("fetchBscCardTeamNames", () => {
     );
 
     expect(result).toEqual([
-      { bscCardId: "bsc-1", teamName: "New York Yankees", success: true },
-      { bscCardId: "bsc-2", teamName: "", success: true },
+      {
+        bscCardId: "bsc-1",
+        rawTeamName: "New York Yankees",
+        teamNames: ["New York Yankees"],
+        success: true,
+      },
+      { bscCardId: "bsc-2", rawTeamName: "", teamNames: [], success: true },
     ]);
   });
 
@@ -125,9 +141,14 @@ describe("fetchBscCardTeamNames", () => {
         bscCardIds: ["bsc-1", "bsc-2", "bsc-3"],
       }),
     ).resolves.toEqual([
-      { bscCardId: "bsc-1", teamName: "New York Yankees", success: true },
-      { bscCardId: "bsc-2", teamName: "", success: false },
-      { bscCardId: "bsc-3", teamName: "", success: false },
+      {
+        bscCardId: "bsc-1",
+        rawTeamName: "New York Yankees",
+        teamNames: ["New York Yankees"],
+        success: true,
+      },
+      { bscCardId: "bsc-2", rawTeamName: "", teamNames: [], success: false },
+      { bscCardId: "bsc-3", rawTeamName: "", teamNames: [], success: false },
     ]);
   });
 
@@ -189,5 +210,114 @@ describe("fetchBscCardTeamNames", () => {
     expect(result).toHaveLength(25);
     expect(result.map((r) => r.bscCardId)).toEqual(ids);
     expect(result.every((r) => r.success)).toBe(true);
+  });
+
+  test("NEO-333: a comma-separated value comes back raw AND split, in BSC's order", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makeCardListingFetch({
+        responses: { "bsc-1": "Cleveland Guardians, Washington Nationals" },
+        calls: [],
+      }),
+    );
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    expect(result).toEqual([
+      {
+        bscCardId: "bsc-1",
+        rawTeamName: "Cleveland Guardians, Washington Nationals",
+        teamNames: ["Cleveland Guardians", "Washington Nationals"],
+        success: true,
+      },
+    ]);
+  });
+
+  test("NEO-333: a slash is not a team separator on the wire either", async () => {
+    const t = convexTest(schema, modules);
+    vi.stubGlobal(
+      "fetch",
+      makeCardListingFetch({ responses: { "bsc-1": "Bodø/Glimt" }, calls: [] }),
+    );
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    expect(result).toEqual([
+      {
+        bscCardId: "bsc-1",
+        rawTeamName: "Bodø/Glimt",
+        teamNames: ["Bodø/Glimt"],
+        success: true,
+      },
+    ]);
+  });
+
+  test("NEO-333: more teams than a card carries keeps the raw string and refuses the split", async () => {
+    const t = convexTest(schema, modules);
+    const raw = Array.from({ length: 9 }, (_, i) => `Team ${i}`).join(", ");
+    vi.stubGlobal("fetch", makeCardListingFetch({ responses: { "bsc-1": raw }, calls: [] }));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    expect(result).toEqual([
+      { bscCardId: "bsc-1", rawTeamName: raw, teamNames: [], success: true },
+    ]);
+    // Flagged, with the card id only: never the marketplace text.
+    const logged = warn.mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toContain("bsc-1");
+    expect(logged).not.toContain("Team 3");
+    warn.mockRestore();
+  });
+
+  test("NEO-333 (security N1): a raw value over 120 characters is sent as '' while its parts stand", async () => {
+    const t = convexTest(schema, modules);
+    const a = "A".repeat(70);
+    const b = "B".repeat(70);
+    vi.stubGlobal(
+      "fetch",
+      makeCardListingFetch({ responses: { "bsc-1": `${a}, ${b}` }, calls: [] }),
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    // Dropped, never truncated.
+    expect(result).toEqual([
+      { bscCardId: "bsc-1", rawTeamName: "", teamNames: [a, b], success: true },
+    ]);
+    expect(warn.mock.calls.map((c) => c.join(" ")).join("\n")).not.toContain(a);
+    warn.mockRestore();
+  });
+
+  test("NEO-333 (security N1): an over-length value whose parts are ALSO unusable is an answer with neither form", async () => {
+    const t = convexTest(schema, modules);
+    const raw = "X".repeat(200);
+    vi.stubGlobal("fetch", makeCardListingFetch({ responses: { "bsc-1": raw }, calls: [] }));
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const result = await t.action(
+      internal.adapters.buysportscards.fetchBscCardTeamNames,
+      { bscCardIds: ["bsc-1"] },
+    );
+
+    // One 200-char part is over-length and dropped; raw is dropped: nothing
+    // to carry. BSC still ANSWERED (NEO-335), so the entry is not a failure.
+    expect(result).toEqual([
+      { bscCardId: "bsc-1", rawTeamName: "", teamNames: [], success: true },
+    ]);
   });
 });

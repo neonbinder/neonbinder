@@ -10,6 +10,11 @@ import { cardNumberStem } from "../lib/cards/variations";
 // at this boundary too — see `startCandidateBatch`'s handler.
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
+// NEO-333 — the whole-name-first team match, through the one resolution the
+// review gate and the commit prelude also use.
+import { resolveTeamForSetYear } from "./lib/teamRow";
+import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
+import { findSportForSelectorOption } from "./cardChecklist";
 
 /**
  * NEO-195 — the streaming half of a checklist fetch.
@@ -156,7 +161,9 @@ const candidateInputValidator = v.object({
  * Nothing downstream observes the split. The auto-keep path already polls
  * `getReadyCandidates` until `total` equals the count the action reported
  * (`CardChecklist.awaitStreamedBatch`, 30s budget) before it commits anything,
- * and the pairing modal's Confirm is gated on the action's own promise. The
+ * and the pairing modal's Confirm is gated on the action's own promise — and,
+ * since NEO-333, both also wait for `ready` to reach the action's
+ * `readyAfterTeams`, so the team lookup's writes are on the client too. The
  * one ordering that had to be made explicit is the team lookup's — see
  * `resolveCandidateTeams`, which now retries a card whose row this chain had
  * not reached yet.
@@ -475,6 +482,74 @@ async function writeCandidatePage(
 }
 
 /**
+ * NEO-333 — which team names a candidate card carries: BSC's WHOLE value, or
+ * its comma split.
+ *
+ * Whole-name first (Jason, 2026-10-10). A comma is not a reliable team
+ * separator: real team names and aliases carry one ("Korea, South", "Scranton,
+ * Wilkes-Barre RailRiders"). So when the raw string matches ANY existing team
+ * row in the sport — by name or alias, through `resolveTeamForSetYear`, the
+ * same resolution the review gate (`teams.findByNameAndSport`) and the commit
+ * prelude use — the card carries that one string. Exactly one row: both later
+ * passes find it by that string. Several rows the year cannot separate: the
+ * gate asks the operator which era, as it does for any name. Only when the
+ * whole string matches NOTHING does the card carry the split parts; any part
+ * NB does not hold goes to review, and the operator can then add an alias.
+ *
+ * The match is only attempted when it could change the answer: a value with
+ * no comma splits to itself, and resolving it here would be a second read for
+ * the answer the gate reaches anyway.
+ *
+ * Bounds: the split is refused, not trimmed — an over-cap list or an
+ * over-length part (only reachable by a caller that skipped the adapter)
+ * yields no teams, the same rule `startCandidateBatch` applies to `teams`.
+ * An over-length raw string is never matched.
+ */
+async function chooseCandidateTeams(
+  ctx: MutationCtx,
+  rawTeamName: string | undefined,
+  teamNames: string[] | undefined,
+  scope: () => Promise<{
+    sportId: Id<"selectorOptions"> | undefined;
+    setYear: number | undefined;
+  }>,
+): Promise<string[] | undefined> {
+  const raw = rawTeamName?.trim() ?? "";
+  const parts = (teamNames ?? []).map((n) => n.trim()).filter(Boolean);
+  const splitIsJustRaw = parts.length === 1 && parts[0] === raw;
+  if (raw && !splitIsJustRaw && raw.length <= MAX_PLAYER_NAME_LENGTH) {
+    const { sportId, setYear } = await scope();
+    if (sportId) {
+      const { teamId, candidates } = await resolveTeamForSetYear(
+        ctx,
+        sportId,
+        raw,
+        setYear,
+        {
+          // NEO-307: a SET year — a card can show a team's past. Must agree
+          // with the gate and the prelude, which pass the same option.
+          allowPastEra: true,
+        },
+      );
+      // ANY row answering to the whole string makes it one team, even when
+      // the year cannot pick between several (or the only row is a later
+      // era). The card keeps the raw string so the gate asks ITS question —
+      // which era — instead of this cutting a known name at its comma and the
+      // wizard offering two teams nobody meant.
+      if (teamId || candidates.length > 0) return [raw];
+    }
+  }
+  if (
+    parts.length === 0 ||
+    parts.length > MAX_CARD_TEAMS ||
+    parts.some((n) => n.length > MAX_PLAYER_NAME_LENGTH)
+  ) {
+    return undefined;
+  }
+  return parts;
+}
+
+/**
  * Attach resolved team names to the cards a lookup chunk covered, then release
  * every stem group that is now complete.
  *
@@ -506,7 +581,10 @@ async function writeCandidatePage(
 export const resolveCandidateTeams = internalMutation({
   args: {
     batchId: v.string(),
-    // bsc ref → team name. A ref present with no name resolved to "no team".
+    // bsc ref → the card's team value. NEO-333: BOTH forms — BSC's raw,
+    // unsplit string and the adapter's comma split. The raw string wins when
+    // it names an existing team (see `chooseCandidateTeams`). A ref present
+    // with neither resolved to "no team".
     //
     // NEO-335 — `teamLookup` says whether that "no team" was BSC's ANSWER or a
     // call that failed, and is recorded on the row so it can ride to the commit
@@ -516,7 +594,8 @@ export const resolveCandidateTeams = internalMutation({
     resolved: v.array(
       v.object({
         bscRef: v.string(),
-        teamName: v.optional(v.string()),
+        rawTeamName: v.optional(v.string()),
+        teamNames: v.optional(v.array(v.string())),
         teamLookup: v.optional(teamLookupValidator),
       }),
     ),
@@ -529,6 +608,10 @@ export const resolveCandidateTeams = internalMutation({
     // NEO-294 — refs this call found no row for. Retried once (see above) and
     // then reported.
     missing: v.number(),
+    // NEO-333 — the batch's `ready` count as this call commits it. The fetch
+    // hands the LAST one back to the client as its team fence: see
+    // `readyAfterTeams` on `fetchCardChecklist`.
+    ready: v.number(),
   }),
   handler: async (ctx, args) => {
     const rows = await ctx.db
@@ -544,28 +627,47 @@ export const resolveCandidateTeams = internalMutation({
 
     const touchedStems = new Set<string>();
     /** NEO-294 — refs with no row yet; see the retry note above. */
-    const missed: Array<{
-      bscRef: string;
-      teamName?: string;
-      teamLookup?: "answered" | "failed";
-    }> = [];
+    const missed: Array<(typeof args.resolved)[number]> = [];
     let patched = 0;
+    // NEO-333 — the set's sport and year, read once per call (every row in a
+    // batch belongs to one selectorOption) and only if some card needs a
+    // whole-name match. `undefined` sport = no whole-name match possible.
+    let teamScope:
+      | { sportId: Id<"selectorOptions"> | undefined; setYear: number | undefined }
+      | undefined;
     for (const entry of args.resolved) {
-      const { bscRef, teamName, teamLookup } = entry;
-      const row = byBscRef.get(bscRef);
+      const row = byBscRef.get(entry.bscRef);
       if (!row) {
-        // The entry as it arrived, so the retry carries the same answer.
+        // Forwarded as received — raw string and `teamLookup` included — so
+        // the retry decides exactly what this pass would have.
         missed.push(entry);
         continue;
       }
+      const teams = await chooseCandidateTeams(
+        ctx,
+        entry.rawTeamName,
+        entry.teamNames,
+        async () => {
+          if (!teamScope) {
+            teamScope = {
+              sportId: await findSportForSelectorOption(ctx, row.selectorOptionId),
+              setYear: await findSetYearForSelectorOption(
+                ctx,
+                row.selectorOptionId,
+              ),
+            };
+          }
+          return teamScope;
+        },
+      );
       await ctx.db.patch(row._id, {
         // An empty result is an answer, not a failure — see the note above.
-        // A FAILED lookup never carries a name (the adapter blanks it), so
-        // this cannot attach a team the call did not return.
-        ...(teamName ? { teams: [teamName] } : {}),
+        // A FAILED lookup never carries a value (the adapter blanks both
+        // forms), so this cannot attach a team the call did not return.
+        ...(teams ? { teams } : {}),
         // NEO-335 — the row is `ready` either way (a failed lookup must not
         // strand its stem), so `teamLookup` is what keeps the two apart.
-        ...(teamLookup ? { teamLookup } : {}),
+        ...(entry.teamLookup ? { teamLookup: entry.teamLookup } : {}),
         status: "ready",
         lastUpdated: Date.now(),
       });
@@ -586,6 +688,7 @@ export const resolveCandidateTeams = internalMutation({
     for (const stem of touchedStems) {
       if (!pendingByStem.has(stem)) released++;
     }
+    const ready = fresh.filter((r) => r.status === "ready").length;
 
     /*
      * NEO-294 — the one retry. `args.retry` marks the retry itself, so this
@@ -612,7 +715,7 @@ export const resolveCandidateTeams = internalMutation({
         }),
       );
     }
-    return { patched, released, missing: missed.length };
+    return { patched, released, missing: missed.length, ready };
   },
 });
 

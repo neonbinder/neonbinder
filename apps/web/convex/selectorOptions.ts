@@ -13217,6 +13217,37 @@ export const fetchCardChecklist = action({
      * side paused takes the one-marketplace path for THIS run only.
      */
     pausedSides: v.array(platformSideValidator),
+    /**
+     * NEO-333 — the TEAM FENCE: the batch this run published, and its `ready`
+     * count as the last team-lookup write committed it.
+     *
+     * The team lookup is this action's last step (`resolveCandidateTeams`,
+     * chunk by chunk), but Convex does not order an ACTION's response against
+     * query updates — the client resolves an action's promise the moment the
+     * response arrives (`ActionResponse` in convex/browser's request manager),
+     * while a mutation's waits for the subscriptions to reach its commit. So
+     * when this promise resolves, `getReadyCandidates` may still show the rows
+     * WITHOUT their teams. The row count is no help: the rows were written ~70s
+     * earlier, so it matched long ago. A client that snapshots on the count
+     * alone hands team-less cards to the review wizard and the commit, and
+     * BSC's teams arrive only later through the background queue — never
+     * reviewed.
+     *
+     * `ready` only ever grows within a batch (rows go `pending` → `ready`,
+     * never back), so once the subscription shows this batch with
+     * `ready >= readyAfterTeams` it is at or past the last team write. It is
+     * the count the server SAW, not `total`: rows that arrived with a team
+     * already parsed stay `pending` forever (see `startCandidateBatch`), and a
+     * gate on `ready === total` would hang on exactly those sets.
+     *
+     * Both are absent on a failed run and on the early exit before any batch
+     * is written; the client never reads them when `candidateCount` is 0 (it
+     * leaves through that branch first). `readyAfterTeams` is 0 when no card
+     * needed a lookup: every row was then written `ready`, with its teams, and
+     * the count is the whole fence.
+     */
+    candidateBatchId: v.optional(v.string()),
+    readyAfterTeams: v.optional(v.number()),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
@@ -13224,6 +13255,8 @@ export const fetchCardChecklist = action({
     candidateCount: number;
     attachedSides: Array<"bsc" | "sportlots">;
     pausedSides: Array<"bsc" | "sportlots">;
+    candidateBatchId?: string;
+    readyAfterTeams?: number;
   }> => {
     // NEO-202: this was the one function in this file with no identity check.
     // It is not merely a read: it performs authenticated fetches against BSC
@@ -14105,6 +14138,8 @@ export const fetchCardChecklist = action({
         },
       );
 
+      // NEO-333 — the team fence handed back to the client; see `returns`.
+      let readyAfterTeams = 0;
       if (needsTeamLookup.length > 0) {
         // Chunked, so each chunk's results reach the modal as they resolve
         // rather than all at once when the last card returns. The chunk is
@@ -14121,23 +14156,41 @@ export const fetchCardChecklist = action({
           // boundary: this routes BSC's answer back to the card it was asked
           // about and nothing else. A ref the adapter did not answer for is
           // treated as a failed lookup, never as "BSC has no team".
+          //
+          // NEO-333: each answer carries BSC's raw team value AND its comma
+          // split. Which one the card carries is decided in
+          // `resolveCandidateTeams`, which has the database: the whole string
+          // when it names an existing team ("Korea, South"), else the parts
+          // ("Cleveland Guardians, Washington Nationals" is two teams). The
+          // candidate row that mutation writes is the only copy the modal and
+          // the commit read; nothing below this loop reads `c.teams`.
           const lookupByRef = new Map(lookups.map((l) => [l.bscCardId, l]));
-          const resolved = chunk.map((c) => {
-            const ref = c.platformData.bsc!.ref;
-            const lookup = lookupByRef.get(ref);
-            const answered = lookup?.success === true;
-            const teamName = answered && lookup.teamName ? lookup.teamName : undefined;
-            if (teamName) c.teams = [teamName];
-            return {
-              bscRef: ref,
-              ...(teamName ? { teamName } : {}),
-              teamLookup: answered ? ("answered" as const) : ("failed" as const),
-            };
-          });
-          await ctx.runMutation(
+          const resolvedChunk: { ready: number } = await ctx.runMutation(
             internal.checklistCandidates.resolveCandidateTeams,
-            { batchId: candidateBatchId, resolved },
+            {
+              batchId: candidateBatchId,
+              resolved: chunk.map((c) => {
+                const bscRef = c.platformData.bsc!.ref;
+                const lookup = lookupByRef.get(bscRef);
+                if (lookup?.success !== true) {
+                  return { bscRef, teamLookup: "failed" as const };
+                }
+                return {
+                  bscRef,
+                  ...(lookup.rawTeamName
+                    ? { rawTeamName: lookup.rawTeamName }
+                    : {}),
+                  ...(lookup.teamNames.length > 0
+                    ? { teamNames: lookup.teamNames }
+                    : {}),
+                  teamLookup: "answered" as const,
+                };
+              }),
+            },
           );
+          // `ready` never falls within a batch, so the last chunk's count is
+          // the high-water mark; `max` only guards a reordering nobody makes.
+          readyAfterTeams = Math.max(readyAfterTeams, resolvedChunk.ready);
         }
       }
 
@@ -14195,6 +14248,8 @@ export const fetchCardChecklist = action({
           unmatchedSlCards.length,
         attachedSides,
         pausedSides: pausedList,
+        candidateBatchId,
+        readyAfterTeams,
       };
     } catch (error) {
       console.error(`[fetchCardChecklist] Error:`, error);

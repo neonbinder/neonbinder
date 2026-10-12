@@ -20,3 +20,10 @@ lookup failed"). Test files are not typechecked either
 stub in the same change, choosing a stub return that preserves what each file
 was testing (e.g. an empty answer list = every lookup failed = the old
 "no team" path). Then run those files, not just the action's own test.
+
+**On a merge where both sides reshaped the action:** the grep must run AFTER
+the merge, because the other side's NEW test files (auto-merged, never
+conflicted) bring stubs of the other shape, and so do auto-merged tests that
+call the mutation the action feeds (`resolveCandidateTeams` args). Only the
+conflicted files get your attention by default; the rest show up as red
+`Validator error: Unexpected field` or `.map is not a function` in the unit run.
