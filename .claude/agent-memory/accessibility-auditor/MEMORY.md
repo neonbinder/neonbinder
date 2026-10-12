@@ -44,3 +44,4 @@
 - [Chunked save partial refusal NEO-308](chunked-save-partial-refusal-neo308.md) — RESET-then-re-INIT after a mid-loop chunk refusal: focus-park extended correctly, overlayRef outline-none focus target reused a third time, momentary empty-list render
 - [Combobox drill focus NEO-224](combobox-drill-focus-neo224.md) — same-row re-pick drops focus to body; label-only role=status is silent; highlight ring contrast measured
 - [Teams on cards radio lines NEO-335](teams-on-cards-radio-lines-neo335.md) — unused loading flag, status unmounted at 0, Confirm autofocus hides questions, retired-control E2E strings
+- [Required pill group, no words NEO-331](required-pill-group-no-words-neo331.md) — radiogroup+aria-required and focus-the-field on a held primary, zero new copy

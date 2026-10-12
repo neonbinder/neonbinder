@@ -193,13 +193,20 @@ tags:
 
 # In the DIALOG a create is a real write, so the pick opens the full league
 # form under the field, pre-filled with the typed name (the wizard stages a
-# step instead — checklist-wizard-career-team-entry.yaml). Name is the only
-# required field; "Add league" writes the row and makes it this team's answer.
+# step instead — checklist-wizard-career-team-entry.yaml). Name and Level are
+# required (NEO-331: no level is pre-pressed, and "Add league" is held until
+# one is); "Add league" writes the row and makes it this team's answer.
 - extendedWaitUntil:
     visible:
       id: "New league name"
       text: "STL${output.ATTEMPT_TOKEN}L"
     timeout: 7000
+# The level pill, by its visible text (a full match; nothing else on screen
+# reads exactly "Other"). It sits between the name field and the form's
+# actions row, which the form scrolls into view when it opens, so it shares
+# that slice of the dialog body with "Add league". "Other" claims nothing —
+# this league's level is not what this flow proves.
+- tapOn: "Other"
 - tapOn: "Add league"
 
 # The read-back is decisive here, unlike a read right after the create pick:

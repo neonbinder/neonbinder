@@ -247,9 +247,12 @@ import {
   teamRowFields,
 } from "./lib/teamRow";
 import {
+  // NEO-331: names resolve link-only; only a New League answer (which carries
+  // its level) creates. The sport default is never applied here: an
+  // unanswered League stays blank (Jason, 2026-10-10).
+  findLeagueByName,
   findOrCreateLeague,
   normalizeLeagueName,
-  resolveDefaultLeagueId,
 } from "./leagues";
 import {
   cardPlatformDataValidator,
@@ -15206,19 +15209,6 @@ export const commitCardChecklistPrelude = internalMutation({
       opts: {
         extra?: Partial<Doc<"teams">>;
         /**
-         * NEO-236 — the operator answered the League question, so the sport
-         * default must not be applied on top of their answer.
-         *
-         * This is a separate flag rather than being inferred from
-         * `extra.leagueId`, because the answer that needs protecting most is
-         * "no league": that produces NO `leagueId` at all, which is exactly
-         * what an unanswered decision produces too. Without the flag the two
-         * are indistinguishable and the default silently wins — which is the
-         * defect Jason found ("How does this dialog know which League the new
-         * team is in?"), just moved one layer down.
-         */
-        leagueChosen?: boolean;
-        /**
          * NEO-313 — the sport to create (or find) the team in: the review
          * row's, which is the set's unless the operator switched it. Absent is
          * the set's sport.
@@ -15295,14 +15285,18 @@ export const commitCardChecklistPrelude = internalMutation({
         );
         return null;
       }
-      // NEO-156: every team-creation path attaches a league. The caller
-      // supplies one when the enrichment named it; otherwise the sport's
-      // default.
-      const leagueId =
-        extra.leagueId ??
-        (opts.leagueChosen
-          ? undefined
-          : await resolveDefaultLeagueId(ctx, teamSportId));
+      /*
+       * NEO-331 — the league is exactly what `reviewedTeamFields` resolved
+       * from the operator's answer (or the enrichment's suggestion), and
+       * NOTHING else. Jason, 2026-10-10: "An unanswered League stays blank,
+       * same as No league. No team lands under MLB without someone saying
+       * so." The New Team step's League field shows no sport default — it is
+       * blank until the operator (or the lookup's suggestion) fills it — so
+       * filing an unanswered team under the sport's top flight here was a
+       * league nobody chose. That is how ~20 minor, indie, college and CPBL
+       * clubs landed in MLB and ranked tier 1 in the picker.
+       */
+      const leagueId = extra.leagueId;
       /*
        * NEO-284 — the alias list, re-derived against the row's OWN composed
        * name and bounded fail-soft.
@@ -15388,50 +15382,27 @@ export const commitCardChecklistPrelude = internalMutation({
      * The League is the part this ticket changed, and the order is the fix:
      *
      *  1. **What the operator chose.** An id, or `null` for "no league", or a
-     *     name for a league we do not hold yet. Answered means answered — the
-     *     sport default is never allowed back over it, which is what stopped a
-     *     club side pulled off a player's career list from being filed under
-     *     the sport's top flight.
+     *     name for a league we do not hold yet.
      *  2. **The enrichment's league name**, when the step was never answered
-     *     (a pre-NEO-236 decision, or a row decided in bulk before this
-     *     shipped). Resolved through `findOrCreateLeague` so two spellings of
-     *     one league cannot become two rows.
-     *  3. Otherwise nothing here, and `createTeamFromOperatorInput` falls back
-     *     to the sport default exactly as it always did.
+     *     (the field showed it as the answer), unless this team's own league
+     *     step was skipped.
+     *  3. Otherwise NO league. NEO-331 (Jason, 2026-10-10): "An unanswered
+     *     League stays blank, same as No league. No team lands under MLB
+     *     without someone saying so." The step's League field never shows the
+     *     sport default, so nothing here — and nothing in
+     *     `createTeamFromOperatorInput` — falls back to it.
+     *
+     * NEO-331: names (the operator's `leagueName`, the enrichment's label) are
+     * LINK-ONLY. They resolve to this batch's New League answer, else to an
+     * existing league by name or alias, else to no league at all — never to a
+     * minted row (a league requires a level only the New League step asks
+     * for).
      *
      * `enrichment.location` is deliberately NOT written: the operator saw it
      * (the step pre-fills Location from it) and either kept it, changed it or
      * cleared it, and writing it behind that decision would overwrite the
      * answer. A blank Location is a blank Location.
      */
-    /**
-     * NEO-236 security review, finding 1 — did the operator actually answer the
-     * League question with something still usable?
-     *
-     * `leagueChosen` suppresses the sport-default fallback, so it must be true
-     * only when the stored answer survives the same re-check
-     * `reviewedTeamFields` applies. A `null` (deliberate "no league") IS an
-     * answer; a dangling or cross-sport id is not, and treating it as one would
-     * leave the team with no league at all rather than the sport's default.
-     */
-    const leagueAnswered = async (
-      create: { leagueId?: Id<"leagues"> | null; leagueName?: string },
-      suggestion?: string,
-      teamRowId?: string,
-      // NEO-313 — the team's sport; see `createTeamFromOperatorInput`.
-      sportId: Id<"selectorOptions"> = args.sportId,
-    ): Promise<boolean> => {
-      if (create.leagueId === null) return true;
-      if (create.leagueId !== undefined) {
-        const league = await ctx.db.get(create.leagueId);
-        return !!league && league.sportId === sportId;
-      }
-      // NEO-254 — a skipped league STEP is an answer too, even though the team
-      // row itself carries no `leagueId`. Asked only once the explicit fields
-      // have had their turn; see `leagueStepSkipped`.
-      return leagueStepSkipped(create, teamRowId);
-    };
-
     /**
      * NEO-254 — did THIS team's own league step answer "no league"?
      *
@@ -15498,7 +15469,7 @@ export const commitCardChecklistPrelude = internalMutation({
        * Fail-soft, because this runs inside `commitCardChecklist` with no
        * operator in front of it: throwing would abort a whole checklist commit
        * over one team's league. Dropping falls through to the operator's
-       * `leagueName`, then the enrichment, then the sport default — every one
+       * `leagueName`, then the enrichment, then no league at all — every one
        * of which is a better answer than a wrong league, and none of which
        * loses the team itself. `recordDecision` is where a live operator is
        * told (there it throws); this is the boundary that has to hold anyway.
@@ -15513,15 +15484,15 @@ export const commitCardChecklistPrelude = internalMutation({
         : true;
       if (create.leagueId !== undefined && storedLeagueUsable) {
         // `null` is "no league", and it stays undefined here so nothing is
-        // written — `createTeamFromOperatorInput` reads `leagueChosen` to know
-        // the difference between that and "not answered".
+        // written. Since NEO-331 that is also what "not answered" writes, so
+        // the two no longer need telling apart downstream.
         leagueId = create.leagueId ?? undefined;
       } else if (
         create.leagueName?.trim() &&
         stagedLeagueIdByName.has(stagedLeagueKey(sportId, create.leagueName))
       ) {
         // NEO-254 — the league this batch just created (or linked) for exactly
-        // this name. Consulted BEFORE `findOrCreateLeague` below so the whole
+        // this name. Consulted BEFORE the name lookup below so the whole
         // record the operator entered on the New League step is what the team
         // lands on, rather than a second lookup by name that would find the
         // same row anyway but would also be the path that used to mint a
@@ -15535,10 +15506,17 @@ export const commitCardChecklistPrelude = internalMutation({
         // deliberately — the other way round, an operator who replaced the
         // suggested league with a name of their own would silently get the
         // suggestion back, which is the very defect this ticket closes.
-        leagueId = await findOrCreateLeague(ctx, {
-          name: create.leagueName.trim(),
-          sportId: sportId,
-        });
+        //
+        // NEO-331: LINK-ONLY. A league row requires a level, which only the
+        // New League step asks for — and that step's answer was consulted in
+        // the branch above. So here the name resolves to an existing league
+        // by name or alias, or to nothing: the team lands with NO league.
+        leagueId = (
+          await findLeagueByName(ctx, {
+            name: create.leagueName.trim(),
+            sportId: sportId,
+          })
+        )?._id;
       } else if (
         enrichment?.league &&
         stagedLeagueIdByName.has(stagedLeagueKey(sportId, enrichment.league))
@@ -15555,16 +15533,20 @@ export const commitCardChecklistPrelude = internalMutation({
          * gave on the team's own step is later and more specific. It sits
          * below the staged-suggestion branch so a team that skipped one step
          * and created another still lands on the one it created. And it sits
-         * ABOVE the plain enrichment branch and the sport default, which are
-         * exactly what it exists to silence — `leagueAnswered` reports the
-         * same, so the default stays out of it too.
+         * ABOVE the plain enrichment branch, which is exactly what it exists
+         * to silence.
          */
         leagueId = undefined;
       } else if (enrichment?.league) {
-        leagueId = await findOrCreateLeague(ctx, {
-          name: enrichment.league,
-          sportId: sportId,
-        });
+        // NEO-331: LINK-ONLY, for the reason the `leagueName` branch gives. A
+        // Wikidata P118 label we hold no row for leaves the team blank rather
+        // than minting a level-less league.
+        leagueId = (
+          await findLeagueByName(ctx, {
+            name: enrichment.league,
+            sportId: sportId,
+          })
+        )?._id;
       }
       return {
         ...(leagueId ? { leagueId } : {}),
@@ -15638,7 +15620,7 @@ export const commitCardChecklistPrelude = internalMutation({
      * The same mechanism one level up, and it runs before the team pass for
      * exactly the reason that pass runs before the player loop: a team's
      * league has to exist by the time the team row is written, or the team is
-     * filed under the sport default and the operator's answer is lost.
+     * filed with no league and the operator's answer is lost.
      *
      * Jason, preview test 2026-09-06: on a fresh deployment every hockey team
      * offered `Create National Hockey League`, and whichever one was finally
@@ -15676,8 +15658,7 @@ export const commitCardChecklistPrelude = internalMutation({
      * Without it the skip did nothing at all: the team rows still carry
      * `create.leagueName`, so the precedence below fell through to
      * `findOrCreateLeague` and minted the very league the operator had just
-     * declined — and the sport default would have reasserted itself if it had
-     * not.
+     * declined.
      */
     const teamsWithSkippedLeague = new Set<string>();
 
@@ -15724,16 +15705,26 @@ export const commitCardChecklistPrelude = internalMutation({
        * only (that helper deliberately never widens an existing row's aliases
        * — see its note) which is the right rule here too: this operator's
        * spelling should not silently change what an existing league answers to.
+       *
+       * NEO-331 — a league row requires a level, and `recordDecision` now
+       * refuses a New League answer without one. A draft recorded BEFORE that
+       * (an in-flight queue row) can still lack it: that one may only LINK an
+       * existing league by name or alias, and on a miss it is dropped like an
+       * unfilled step — never inserted with a guessed level.
        */
-      const leagueId = await findOrCreateLeague(ctx, {
-        name: createLeague.name,
-        sportId: row.sportId,
-        ...(createLeague.abbreviation ? { abbreviation: createLeague.abbreviation } : {}),
-        ...(createLeague.level ? { level: createLeague.level } : {}),
-        ...(createLeague.yearsActive ? { yearsActive: createLeague.yearsActive } : {}),
-        ...(createLeague.aliases?.length ? { aliases: createLeague.aliases } : {}),
-        ...(createLeague.wikidataId ? { wikidataId: createLeague.wikidataId } : {}),
-      });
+      const createLevel = createLeague.level;
+      const leagueId = createLevel
+        ? await findOrCreateLeague(ctx, {
+            name: createLeague.name,
+            sportId: row.sportId,
+            level: createLevel,
+            ...(createLeague.abbreviation ? { abbreviation: createLeague.abbreviation } : {}),
+            ...(createLeague.yearsActive ? { yearsActive: createLeague.yearsActive } : {}),
+            ...(createLeague.aliases?.length ? { aliases: createLeague.aliases } : {}),
+            ...(createLeague.wikidataId ? { wikidataId: createLeague.wikidataId } : {}),
+          })
+        : (await findLeagueByName(ctx, { name: createLeague.name, sportId: row.sportId }))?._id;
+      if (!leagueId) continue;
       // `leagueKey` IS the label the step was raised for, and that is what a
       // team row's `leagueName`/`enrichment.league` carries. When the operator
       // RENAMED the league on the step, register the typed name too, so a team
@@ -15905,17 +15896,6 @@ export const commitCardChecklistPrelude = internalMutation({
           row._id as string,
           row.sportId,
         ),
-        // NEO-236 security review, finding 1: a league that failed the re-check
-        // above is NOT an answer, so it must not suppress the sport default —
-        // `reviewedTeamFields` has already fallen through to `leagueName` or
-        // the enrichment, and if both were empty the row is better off with the
-        // sport's default than with nothing.
-        leagueChosen: await leagueAnswered(
-          create,
-          row.enrichment?.league,
-          row._id as string,
-          row.sportId,
-        ),
         // NEO-313: in the step's own sport — its player's.
         sportId: row.sportId,
       });
@@ -16067,12 +16047,6 @@ export const commitCardChecklistPrelude = internalMutation({
         extra: await reviewedTeamFields(
           create,
           enrichment,
-          teamReviewRow?._id as string | undefined,
-          teamReviewRow?.sportId ?? args.sportId,
-        ),
-        leagueChosen: await leagueAnswered(
-          create,
-          enrichment?.league,
           teamReviewRow?._id as string | undefined,
           teamReviewRow?.sportId ?? args.sportId,
         ),

@@ -88,7 +88,7 @@ vi.mock("../../convex/_generated/api", () => ({
     // opens. Routed through the same string-reference mock as everything else.
     teams: {
       getManyByIds: "teams.getManyByIds",
-      list: "teams.list",
+      pickerCandidates: "teams.pickerCandidates",
       findOrCreate: "teams.findOrCreate",
     },
     // NEO-221: UnreviewedNameFixer mounts the REAL PlayerPicker, which needs
@@ -305,7 +305,7 @@ const state: {
   liveCandidates: unknown;
   /**
    * NEO-208: the `teams` table, for the REAL `TeamPicker` now living in the
-   * quick-add form. Serves both `teams.list` (the typeahead's candidate pool)
+   * quick-add form. Serves both `teams.pickerCandidates` (the typeahead's candidate pool)
    * and `teams.getManyByIds` (the chip labels) — the mocked `useQuery` ignores
    * arguments, and returning the same rows for both is exactly right here:
    * every id the picker can hold came from this pool.
@@ -345,8 +345,11 @@ const state: {
   skippedNames: [],
 };
 
+const pickerArgs: unknown[] = [];
+
 vi.mock("convex/react", () => ({
-  useQuery: (ref: string) => {
+  useQuery: (ref: string, args: unknown) => {
+    if (ref === "teams.pickerCandidates") pickerArgs.push(args);
     if (ref === "getCardChecklist") return state.cards;
     if (ref === "getSelectorOptionById") return state.variantRow;
     if (ref === "getAncestorChain") return state.ancestorChain;
@@ -355,7 +358,11 @@ vi.mock("convex/react", () => ({
     // NEO-102: the walker's fixer reads suggestions per card; [] keeps it
     // resolved-but-empty, which is the "no career history" shape.
     if (ref === "cardChecklist.suggestedTeamsForCard") return [];
-    if (ref === "teams.getManyByIds" || ref === "teams.list") return state.teams;
+    if (ref === "teams.getManyByIds") return state.teams;
+    // NEO-331: the picker's candidate pool arrives ranked, as `{ team, tier }`.
+    if (ref === "teams.pickerCandidates") {
+      return state.teams.map((team) => ({ team, tier: 1 }));
+    }
     if (ref === "players.getManyByIds" || ref === "players.list") {
       return state.players;
     }
@@ -2024,6 +2031,43 @@ describe("CardChecklist — NEO-102 attention count and walker (NEO-335: one 'N 
     );
   });
 
+  /**
+   * NEO-331 — both surfaces that hold a TeamPicker for a card on this
+   * checklist hand it THIS checklist's row as `contextOptionId`, so the
+   * candidates rank by the set's league and year. Pinned through the args the
+   * picker's `teams.pickerCandidates` query is called with: with the quick-add
+   * form closed, the opened surface's picker is the only one mounted.
+   */
+  it("NEO-331: the card detail panel's TeamPicker ranks by THIS checklist's row (contextOptionId = variantId)", () => {
+    renderChecklist();
+    pickerArgs.length = 0;
+
+    fireEvent.click(screen.getByLabelText(/^Edit card .*Tarik Skubal/));
+
+    expect(screen.getAllByLabelText("Add team")).toHaveLength(1);
+    expect(pickerArgs.length).toBeGreaterThan(0);
+    for (const args of pickerArgs) {
+      expect(args).toMatchObject({ contextOptionId: VARIANT_ID });
+    }
+  });
+
+  it("NEO-331: the attention walker's TeamPicker ranks by THIS checklist's row (contextOptionId = variantId)", async () => {
+    renderChecklist();
+    pickerArgs.length = 0;
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /^[0-9]+ needs? you$/ }),
+    );
+    const dialog = await screen.findByRole("dialog");
+
+    // The flagged card has no team, so the walker opens on the team fixer.
+    expect(within(dialog).getAllByLabelText("Add team")).toHaveLength(1);
+    expect(pickerArgs.length).toBeGreaterThan(0);
+    for (const args of pickerArgs) {
+      expect(args).toMatchObject({ contextOptionId: VARIANT_ID });
+    }
+  });
+
   it("does not open the walker on its own", () => {
     renderChecklist();
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -2202,6 +2246,15 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
     state.liveCandidates = null;
     state.teams = [YANKEES, METS];
     mockAddCustomCard.mockResolvedValue("new-card-1");
+  });
+
+  it("NEO-331: the quick-add picker ranks by THIS checklist's row (contextOptionId = variantId)", () => {
+    pickerArgs.length = 0;
+    renderChecklist();
+    openAddForm();
+
+    expect(pickerArgs.length).toBeGreaterThan(0);
+    expect(pickerArgs.at(-1)).toMatchObject({ contextOptionId: VARIANT_ID });
   });
 
   it("renders a TeamPicker, not a free-text Team box", () => {

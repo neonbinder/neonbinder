@@ -30,9 +30,17 @@ import { Input } from "../primitives/Input";
  * `PlayerAutocomplete`: Convex opens one reactive subscription per distinct
  * argument set, so an undebounced field opens one per keystroke.
  *
- * Ranking stays client-side over the returned page. The search index orders by
- * relevance, but "starts with what I typed" is what a typeahead user expects to
- * see first, and re-sorting 25 rows in the browser is free.
+ * Ranking stays client-side over the returned page for players and leagues.
+ * The search index orders by relevance, but "starts with what I typed" is what
+ * a typeahead user expects to see first, and re-sorting 25 rows in the browser
+ * is free.
+ *
+ * NEO-331: TEAMS are the exception. They come from `teams.pickerCandidates`,
+ * the query `TeamPicker` types against, given the set under review
+ * (`contextOptionId`), and arrive already in final order — the set's league
+ * active in the set's year first, then minor leagues active that year, then
+ * the set's league in other eras, then the rest; prefix then A–Z within each.
+ * They are not re-sorted here: an alphabet over them would undo the tiers.
  */
 
 /** See `PlayerAutocomplete`'s SEARCH_DEBOUNCE_MS — same value, same reasoning. */
@@ -92,12 +100,19 @@ function stintYears(s: ResultStint): string {
 export default function EntityLinkSearch({
   kind,
   sportId,
+  contextOptionId,
   onSelect,
   onCancel,
 }: {
   kind: "player" | "team" | "league";
   /** NEO-96: the sport-level selectorOptions row id, not its display name. */
   sportId: Id<"selectorOptions">;
+  /**
+   * NEO-331 — the set under review (its `selectorOptions` row). Teams only:
+   * `teams.pickerCandidates` ranks by it. Absent, the server falls back to
+   * name order. Players and leagues ignore it.
+   */
+  contextOptionId?: Id<"selectorOptions">;
   onSelect: (
     id: Id<"players"> | Id<"teams"> | Id<"leagues">,
     name: string,
@@ -118,20 +133,26 @@ export default function EntityLinkSearch({
 
   // Both hooks are always called (React's rules), with the irrelevant one
   // "skip"ped — the same shape EntityReviewWizard uses for its near-match
-  // queries. A blank query also skips: `players.search`/`teams.search` return
-  // [] for one anyway, so there is no reason to open a subscription at all.
+  // queries. A blank query also skips: `players.search` returns [] for one
+  // anyway, and `teams.pickerCandidates` would BROWSE on one, so there is no
+  // reason to open a subscription at all.
   const players = useQuery(
     api.players.search,
     kind === "player" && trimmed ? { query: trimmed, sportId } : "skip",
   );
-  const teams = useQuery(
-    api.teams.search,
-    kind === "team" && trimmed ? { query: trimmed, sportId } : "skip",
+  // NEO-331 — ranked by the set under review; see the note at the top. Every
+  // key written out, never spread (see TeamPicker): `undefined` is dropped on
+  // the wire.
+  const rankedTeams = useQuery(
+    api.teams.pickerCandidates,
+    kind === "team" && trimmed
+      ? { query: trimmed, sportId, contextOptionId }
+      : "skip",
   );
   /*
    * NEO-254 — leagues have no `search` query, and do not need one.
    *
-   * `players.search` and `teams.search` exist because those tables hold tens
+   * The player and team searches exist because those tables hold tens
    * of thousands of rows. A sport's leagues are a couple of dozen at most, so
    * the whole list is one indexed read and the filtering happens below with
    * the same ranking the other two get. Adding a server-side search for a list
@@ -170,7 +191,10 @@ export default function EntityLinkSearch({
           leagues?.filter((l) =>
             l.name.toLowerCase().includes(trimmed.toLowerCase()),
           )
-        : teams?.map((t) => ({ _id: t._id, name: teamFullName(t) }));
+        : rankedTeams?.map(({ team }) => ({
+            _id: team._id,
+            name: teamFullName(team),
+          }));
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- typeahead highlight resets with the query it indexes into
@@ -183,6 +207,8 @@ export default function EntityLinkSearch({
 
   const matches = useMemo(() => {
     if (!candidates) return [];
+    // NEO-331: teams arrive in the server's final, tiered order — keep it.
+    if (kind === "team") return candidates.slice(0, MAX_RESULTS);
     const q = trimmed.toLowerCase();
     return [...candidates]
       .sort((a, b) => {
@@ -192,7 +218,7 @@ export default function EntityLinkSearch({
         return a.name.localeCompare(b.name);
       })
       .slice(0, MAX_RESULTS);
-  }, [candidates, trimmed]);
+  }, [candidates, trimmed, kind]);
 
   const label =
     kind === "player" ? "player" : kind === "league" ? "league" : "team";

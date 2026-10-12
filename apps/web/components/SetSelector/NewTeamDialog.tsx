@@ -254,9 +254,9 @@ export default function NewTeamDialog({
         ...(location ? { location } : {}),
         // Only ever one of the two — `NewTeamForm` clears the other on every
         // pick. `leagueId: null` is sent VERBATIM, because null is the
-        // operator's "no league" and the server tells it apart from "not
-        // answered" (which is what an omitted key means, and what still lets
-        // the sport default apply).
+        // operator's "no league". An omitted key is "not answered" — which,
+        // since NEO-331, the server also files with no league: the field
+        // shows no sport default, so the server applies none.
         ...(draft.leagueId !== undefined ? { leagueId: draft.leagueId } : {}),
         ...(draft.leagueName ? { leagueName: draft.leagueName } : {}),
         // NEO-254 — the era, and the operator's confirmation of it. Both
@@ -406,13 +406,22 @@ export default function NewTeamDialog({
               }}
               leagueSuggestion={leagueSuggestion}
               onCreateLeague={async (leagueDraft) => {
+                // NEO-331: level is required. `NewTeamForm` never calls this
+                // without one (its "Add league" waits on `leagueDraftReady`).
+                // The throw narrows the type; if a future caller forgets, it
+                // lands in that catch, which shows its own generic copy —
+                // this message is never displayed.
+                const level = leagueDraft.level;
+                if (level === null) {
+                  throw new Error("NewTeamDialog: league create without a level");
+                }
                 const { id } = await createLeague({
                   name: leagueDraft.name.trim(),
                   sportId,
+                  level,
                   ...(leagueDraft.abbreviation.trim()
                     ? { abbreviation: leagueDraft.abbreviation.trim() }
                     : {}),
-                  ...(leagueDraft.level ? { level: leagueDraft.level } : {}),
                   ...(leagueDraft.fromYear.trim()
                     ? {
                         yearsActive: {

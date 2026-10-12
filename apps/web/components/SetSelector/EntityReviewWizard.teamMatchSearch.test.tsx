@@ -55,7 +55,7 @@ vi.mock("../../convex/_generated/api", () => ({
     },
     teams: {
       nearMatches: "teams.nearMatches",
-      search: "teams.search",
+      pickerCandidates: "teams.pickerCandidates",
       getManyByIds: "teams.getManyByIds",
       resolveNames: "teams.resolveNames",
     },
@@ -117,11 +117,11 @@ vi.mock("convex/react", () => ({
       const ids = (args as { ids: string[] }).ids;
       return ALL_TEAMS.filter((t) => ids.includes(t._id));
     }
-    if (ref === "teams.search") {
+    if (ref === "teams.pickerCandidates") {
       const q = (args as { query: string }).query.toLowerCase();
       return ALL_TEAMS.filter((t) =>
         `${t.location ?? ""} ${t.name}`.toLowerCase().includes(q),
-      );
+      ).map((team) => ({ team, tier: 4 }));
     }
     return undefined;
   },
@@ -330,14 +330,16 @@ describe("EntityReviewWizard — NEO-307 team search in the link section", () =>
     renderWizard();
 
     typeTeamSearch("Dodgers");
-    // Searched on the server, in this row's sport.
+    // Searched on the server, in this row's sport, ranked by the set under
+    // review (NEO-331).
     expect(
       queryCalls.some(
         (c) =>
-          c.ref === "teams.search" &&
+          c.ref === "teams.pickerCandidates" &&
           c.args !== "skip" &&
           (c.args as { query: string; sportId: string }).query === "Dodgers" &&
-          (c.args as { sportId: string }).sportId === SPORT_ID,
+          (c.args as { sportId: string }).sportId === SPORT_ID &&
+          (c.args as { contextOptionId?: string }).contextOptionId === "selopt-1",
       ),
     ).toBe(true);
 

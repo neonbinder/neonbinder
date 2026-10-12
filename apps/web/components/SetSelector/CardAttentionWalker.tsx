@@ -146,6 +146,7 @@ export default function CardAttentionWalker({
   isOpen,
   cards,
   sportId,
+  contextOptionId,
   onClose,
   restoreFocusRef,
 }: {
@@ -158,6 +159,11 @@ export default function CardAttentionWalker({
   cards: CardChecklistRow[];
   /** NEO-96: the sport-level selectorOptions row id, from the ancestor chain. */
   sportId?: Id<"selectorOptions">;
+  /**
+   * NEO-331: the checklist's selectorOptions row, handed to fixers so their
+   * team picker can order candidates by the set's league and year.
+   */
+  contextOptionId?: Id<"selectorOptions">;
   /** Escape, the Close button, and the all-clear step all end here. Nothing is lost. */
   onClose: () => void;
   /**
@@ -187,6 +193,12 @@ export default function CardAttentionWalker({
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeBtnRef = useRef<HTMLButtonElement | null>(null);
   const triggerRef = useRef<HTMLElement | null>(null);
+  // One object per (sport, set) pair, not per render — a fresh literal on the
+  // Provider would re-render every consumer on each walker render.
+  const setContext = useMemo(
+    () => ({ sportId, contextOptionId }),
+    [sportId, contextOptionId],
+  );
 
   // NEO-335: walk order, then card number — see `attentionWalkRank`. The rank
   // is computed once per card rather than inside the comparator.
@@ -497,7 +509,7 @@ export default function CardAttentionWalker({
           */}
           <div className="min-h-[min(20rem,55vh)] space-y-4 overflow-y-auto p-6">
             {current && Fixer ? (
-              <AttentionSportContext.Provider value={sportId}>
+              <AttentionSportContext.Provider value={setContext}>
                 <Fixer
                   // Remount per card: that is what makes the fixer's
                   // mount-time focus equal "focus the new card's first

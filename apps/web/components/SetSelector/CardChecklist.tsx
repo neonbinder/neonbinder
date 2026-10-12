@@ -2504,6 +2504,9 @@ export default function CardChecklist({
                 value={addFormTeamIds}
                 onChange={setAddFormTeamIds}
                 sportId={ancestorSportId}
+                // NEO-331: this checklist's row orders the candidates by the
+                // set's league and year.
+                contextOptionId={variantId}
               />
             </div>
             <div className="flex gap-2">
@@ -2883,6 +2886,7 @@ export default function CardChecklist({
           ancestorChain={ancestorChain}
           ancestorSport={ancestorSport}
           ancestorSportId={ancestorSportId}
+          contextOptionId={variantId}
           onClose={() => setSelectedCardId(null)}
           onPrev={() => selectByIndex(selectedIndex - 1)}
           onNext={() => selectByIndex(selectedIndex + 1)}
@@ -2901,6 +2905,7 @@ export default function CardChecklist({
           isOpen
           cards={cards}
           sportId={ancestorSportId}
+          contextOptionId={variantId}
           // a11y: the durable restore target, because the control that opened
           // this may not survive the sitting — the pill unmounts at
           // `attentionCount === 0`, which is exactly the state the walker is
