@@ -150,3 +150,4 @@ Non-markdown helpers: `tools/`
 - [Reference catalogue on CI previews](patterns_reference_catalogue_on_ci_previews.md) — NEO-330: prod catalogue on every CI preview; check fixture names against the bundle; capped lists
 - [Merged flows miss a branch copy sweep](patterns_merged_flows_miss_a_branch_copy_sweep.md) — after merging main, grep the old copy a branch sweep replaced; main-added flows keep it
 - [Past-era team fixture (3X MVP)](reference_past_era_team_fixture.md) — era options are a 192px inner list (pin, tap the era line); no card shows an era; fixer/Fill paths cannot share the one commit; Fill rows need fillable>0
+- [Late lookup reopens a bulk-skipped review](reference_late_lookup_reopens_a_bulk_skipped_review.md) — `Needed by: <skipped name>` step after Skip remaining; staging ignores the skip; product bug, never re-tap
