@@ -39,6 +39,13 @@ import {
   type ListingCardInputs,
 } from "./features/generateListing";
 import { LISTING_TITLE_MAX } from "./features/listingLimits";
+import { checkTitleAnswer, type TitleContext } from "./features/listingInputs";
+import {
+  buildTitleContext,
+  emptyResolvedNames,
+  titleContextValidator,
+  type ResolvedNames,
+} from "./listingTitleContext";
 import { generateSku } from "./sku";
 import { insertCardRow, type CarriedCardFields } from "./cardRowCreate";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
@@ -1351,6 +1358,14 @@ async function resolveUnknownsAndStartBatch(
      * tie-break.
      */
     cardTeamNamesByPlayer?: Map<string, string[]>;
+    /**
+     * NEO-335 — filled with what this gate RESOLVED (normalized name → player
+     * id / team full name), for the "Card titles" step's `titleContext`. The
+     * gate's own answer is the only one the context may report: a second
+     * resolution could disagree about which names reach the wizard. Absent,
+     * nothing is recorded and the gate is exactly what it was.
+     */
+    resolvedNames?: ResolvedNames;
   },
 ): Promise<{
   unknownPlayers: string[];
@@ -1534,6 +1549,10 @@ async function resolveUnknownsAndStartBatch(
       ...(setYear !== undefined ? { cardYear: setYear } : {}),
       ...(cardTeamNames.length > 0 ? { cardTeamNames } : {}),
     });
+    // NEO-335 — recorded for the title context. A no-op when not asked for.
+    if (resolved.playerId) {
+      args.resolvedNames?.playerIdByNorm.set(normalized, resolved.playerId);
+    }
     // `playerId`, not `matchCount`: several rows can still resolve to one
     // person once the year is taken into account.
     if (!resolved.playerId) {
@@ -1594,6 +1613,8 @@ async function resolveUnknownsAndStartBatch(
       ...(setYear !== undefined ? { setYear } : {}),
     });
     if (!existing) unknownTeams.push(name);
+    // NEO-335 — recorded for the title context, under the gate's own key.
+    else args.resolvedNames?.teamNameByNorm.set(normalized, teamFullName(existing));
   }
 
   // NEO-92: kick off the review-wizard batch (background Wikidata preview
@@ -12967,6 +12988,28 @@ const previewCardFields = {
   // that ends the commit with any team — from `teamIds`, from a `teams` name
   // that resolved, or a name still pending review — ignores it.
   teamNone: v.optional(v.literal(true)),
+  // ── NEO-335: the card's title, answered before save ("Card titles") ───────
+  //
+  // All OPTIONAL, so an older bundle's payload commits exactly as before. Read
+  // only for a card the commit INSERTS (titles are checked on new rows only);
+  // a card that re-syncs a stored row ignores the two title fields, because
+  // that row's title is NB content the operator may already have edited.
+  //
+  // `listingTitle` — the operator's own title, written verbatim. Trimmed and
+  // held to LISTING_TITLE_MAX before any phase writes
+  // (`listingInputs.checkTitleAnswer`); over the cap refuses the commit, the
+  // same rule `updateCard` applies to a title edit.
+  listingTitle: v.optional(v.string()),
+  // `listingTitleKept` — the operator kept the trimmed title the step showed.
+  // The server still GENERATES the title (its names are the truth, not the
+  // client's prediction of them) and just does not flag it cut short: that
+  // question was asked and answered before save.
+  listingTitleKept: v.optional(v.literal(true)),
+  // `cardVariationAnswered` — this card's `cardVariation` is the operator's
+  // trimmed answer, not what the card printed, so it is held to the aspect
+  // cap (ASPECT_VALUE_MAX) the step asked them to trim it to. Absent, the
+  // variation is marketplace content and is not capped (warn-only, NEO-101).
+  cardVariationAnswered: v.optional(v.literal(true)),
 };
 
 const previewCardValidator = v.object(previewCardFields);
@@ -14139,12 +14182,18 @@ export const resolveChecklistEntities = action({
     // orphaned. It is then a batch of the operator's own decisions and nothing
     // else — see `resolveUnknownsAndStartBatch`.
     batchId: v.optional(v.string()),
+    // NEO-335 — what the wizard's pre-save "Card titles" step titles new
+    // cards from: the set's facts and the canonical name behind every printed
+    // player/team spelling that already resolved. See listingTitleContext.ts.
+    // Optional so the wire change is purely additive; always sent.
+    titleContext: v.optional(titleContextValidator),
   }),
   handler: async (ctx, args): Promise<{
     unknownPlayers: string[];
     unknownTeams: string[];
     ambiguousPlayers?: string[];
     batchId?: string;
+    titleContext?: TitleContext;
   }> => {
     await requireAdmin(ctx);
     assertCardBatchWithinLimits(args.cards, "resolveChecklistEntities");
@@ -14188,14 +14237,24 @@ export const resolveChecklistEntities = action({
       { id: args.sportId },
     );
 
-    return await resolveUnknownsAndStartBatch(ctx, {
+    const resolvedNames = emptyResolvedNames();
+    const result = await resolveUnknownsAndStartBatch(ctx, {
       selectorOptionId: args.selectorOptionId,
       sportId: args.sportId,
       sportLabel: sportRow?.value ?? "",
       additionalPlayerNames,
       additionalTeamNames,
       cardTeamNamesByPlayer,
+      resolvedNames,
     });
+    // NEO-335 — after the gate, from the gate's own answers.
+    const titleContext = await buildTitleContext(ctx, {
+      selectorOptionId: args.selectorOptionId,
+      sportId: args.sportId,
+      cards: args.cards,
+      resolved: resolvedNames,
+    });
+    return { ...result, titleContext };
   },
 });
 /**
@@ -16984,6 +17043,13 @@ const commitChunkCardValidator = v.object({
   // (the operator skipped it). Stored as `bscTeamName`, the hint the
   // missing-team fixer shows, on an answered card. Capped in the handler.
   bscTeamHint: v.optional(v.string()),
+  // ── NEO-335: the operator's pre-save title answer, INSERTS only ──────────
+  // See `previewCardFields.listingTitle` / `listingTitleKept`. The action
+  // sends them only for a card with no `existingId`; the insert branch
+  // re-caps the title (the writer caps) and the update branch never reads
+  // them.
+  listingTitle: v.optional(v.string()),
+  listingTitleKept: v.optional(v.literal(true)),
 });
 
 /**
@@ -17559,6 +17625,21 @@ export const commitCardChecklistChunk = internalMutation({
           now: Date.now(),
         });
 
+        // NEO-335 — the operator's pre-save title answer. The action already
+        // refused an over-cap one before any phase wrote; capped again here
+        // because this is the writer (`checkTitleAnswer`).
+        let insertTitleAnswer: { listingTitle?: string } = {};
+        try {
+          insertTitleAnswer = checkTitleAnswer(
+            { listingTitle: card.listingTitle },
+            `card #${card.cardNumber}`,
+          );
+        } catch (error) {
+          throw new ConvexError(
+            error instanceof Error ? error.message : "Card title is too long.",
+          );
+        }
+
         // NEO-312 — the row itself (features, Signed By, the write-once
         // listing title and description, the SKU) is built by the helper the
         // parallel build shares, so a copied card and a synced card are born
@@ -17592,6 +17673,13 @@ export const commitCardChecklistChunk = internalMutation({
             ...(Object.keys(insertTeamAnswer.fields).length > 0
               ? { carried: insertTeamAnswer.fields }
               : {}),
+            // NEO-335 — the "Card titles" answer: the operator's own title,
+            // or the trimmed one kept. Absent on every card nobody answered,
+            // so its row is exactly what it was before.
+            ...(insertTitleAnswer.listingTitle
+              ? { listingTitle: insertTitleAnswer.listingTitle }
+              : {}),
+            ...(card.listingTitleKept === true ? { listingTitleKept: true } : {}),
           },
           {
             sportSkuCode: args.sportSkuCode,
@@ -19866,6 +19954,25 @@ export const commitCardChecklist = action({
         } still carries an unsettled players conflict. Settle it in the pairing dialog before committing.`,
       );
     }
+    // NEO-335 — the "Card titles" answers, held to the write path's caps before
+    // ANY phase writes: the title to LISTING_TITLE_MAX (`updateCard`'s rule),
+    // an answered variation to ASPECT_VALUE_MAX (the cap the step asked the
+    // operator to trim it to). The step never sends either over its cap, so a
+    // refusal here is a client that skipped it. Named by NB's card number.
+    for (const [index, card] of args.cards.entries()) {
+      try {
+        checkTitleAnswer(
+          card,
+          `commitCardChecklist: ${
+            card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`
+          }`,
+        );
+      } catch (error) {
+        throw new ConvexError(
+          error instanceof Error ? error.message : "commitCardChecklist: card title is too long.",
+        );
+      }
+    }
     // Checked before ANY phase writes, so an over-long delete list costs the
     // operator nothing. Finalize re-checks — it is separately callable.
     const operatorDeleteIds = args.operatorDeleteIds ?? [];
@@ -20322,7 +20429,12 @@ export const commitCardChecklist = action({
           isRelic: c.isRelic,
           printRun: c.printRun,
           autographType: c.autographType,
-          cardVariation: c.cardVariation,
+          // NEO-335 — an operator-trimmed variation ("Card titles") is stored
+          // trimmed, exactly as it was checked against the cap above.
+          cardVariation:
+            c.cardVariationAnswered === true && c.cardVariation?.trim()
+              ? c.cardVariation.trim()
+              : c.cardVariation,
           // NEO-137: WIRE shape here (marketplace set ids); the chunk resolves
           // it to slots so a stored card's `src` always names a slot on its own
           // parent row.
@@ -20359,6 +20471,16 @@ export const commitCardChecklist = action({
           ...(c.teamLookup ? { teamLookup: c.teamLookup } : {}),
           ...(teamNone ? { teamNone: true as const } : {}),
           ...(bscTeamHint ? { bscTeamHint } : {}),
+          // NEO-335 — the "Card titles" answer, for a card this commit
+          // INSERTS only: a re-synced row's title is NB content the step never
+          // asked about. Trimmed (and checked above); an empty title is no
+          // answer.
+          ...(match.existingIdByIndex[index] === undefined && c.listingTitle?.trim()
+            ? { listingTitle: c.listingTitle.trim() }
+            : {}),
+          ...(match.existingIdByIndex[index] === undefined && c.listingTitleKept === true
+            ? { listingTitleKept: true as const }
+            : {}),
         },
       };
     });

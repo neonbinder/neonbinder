@@ -29,24 +29,25 @@
 import type { WithoutSystemFields } from "convex/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { deriveCardObservedFeatures } from "./features/deriveCardFeatures";
 import {
   assessListingTitle,
   generateListingDescription,
-  type ListingCardInputs,
 } from "./features/generateListing";
+import {
+  listingInputsForCard,
+  mergeCardFeatures,
+  type ListingSetContext,
+} from "./features/listingInputs";
 import { generateSku } from "./sku";
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
 
-/** Set-level values resolved once per commit (or per build page). */
-export type CardRowSetContext = {
+/**
+ * Set-level values resolved once per commit (or per build page). The title
+ * half is `listingInputs.ListingSetContext` (NEO-335), which the wizard's
+ * pre-save "Card titles" step reads too.
+ */
+export type CardRowSetContext = ListingSetContext & {
   sportSkuCode?: string;
-  sportValue: string;
-  setNameValue?: string;
-  /** NEO-272 — the manufacturer's brand-unknown ROLE; absent = known. */
-  manufacturerBrandUnknown?: boolean;
-  /** The leaf row's complete `features` snapshot (NEO-71-74). */
-  inheritedFeatures?: Record<string, string>;
 };
 
 /**
@@ -117,6 +118,23 @@ export type NewCardRow = {
    * title names its parallel. The commit never passes it.
    */
   parallelName?: string;
+  /**
+   * NEO-335 — the operator's own title from the wizard's "Card titles" step,
+   * written verbatim instead of the generated one. Already trimmed and held
+   * to `LISTING_TITLE_MAX` by the caller (`listingInputs.checkTitleAnswer`).
+   * A human authored it, so `listingTitleTruncated` is never written beside
+   * it — the same rule `updateCard` applies to an operator title edit. Only
+   * the commit's insert branch passes it.
+   */
+  listingTitle?: string;
+  /**
+   * NEO-335 — the operator saw this card's trimmed title on the "Card titles"
+   * step and kept it. The title is still GENERATED here (the server's names
+   * are the truth, not the client's prediction of them), but the "auto title
+   * was cut short" flag is not written: the question it raises has been
+   * asked and answered before save. Only the commit's insert branch passes it.
+   */
+  listingTitleKept?: boolean;
 };
 
 export type BuiltCardRow = {
@@ -144,18 +162,12 @@ export function buildCardRowForInsert(
   // (already resolved at that node's own creation time) < card-observed
   // facts. A fact seen on THIS card (e.g. it's a rookie) beats the
   // inherited values.
-  const mergedFeatures: Record<string, string> = {
-    ...(card.baseFeatures ?? set.inheritedFeatures ?? {}),
-    ...deriveCardObservedFeatures({
-      isRookie: card.isRookie,
-      isRelic: card.isRelic,
-      autographType: card.autographType,
-      cardVariation: card.cardVariation,
-      attributes: card.attributes,
-    }),
-  };
-  const ownParallelName = card.parallelName?.trim();
-  if (ownParallelName) mergedFeatures.parallelName = ownParallelName;
+  //
+  // NEO-335: the merge (and the title inputs below) live in
+  // `features/listingInputs.ts`, shared with the wizard's pre-save "Card
+  // titles" step, so the title it shows and the one written here cannot
+  // drift.
+  const mergedFeatures = mergeCardFeatures(card, set);
   // A card arriving already-autographed gets the same "just became non-None
   // -> default Signed By from the roster" treatment `setCardFeature` applies
   // for a manual operator edit.
@@ -173,24 +185,19 @@ export function buildCardRowForInsert(
   // at creation time, then freely editable afterward. `previewListingTitle`
   // must be given the same inputs, or a regenerated title disagrees with the
   // one written here.
-  const listingInputs: ListingCardInputs = {
-    cardNumber: card.cardNumber,
-    playerNames,
-    year: mergedFeatures.season,
-    manufacturer: mergedFeatures.manufacturer,
-    manufacturerBrandUnknown: set.manufacturerBrandUnknown,
-    setName: set.setNameValue,
-    parallelName: mergedFeatures.parallelName,
-    isRookie: card.isRookie,
-    isRelic: card.isRelic,
-    autographed: mergedFeatures.autographed,
-    printRun: card.printRun,
-    shortPrint: mergedFeatures.shortPrint,
-    cardVariation: card.cardVariation,
-    teamNames: card.teamNames,
-    sport: set.sportValue,
-  };
+  const listingInputs = listingInputsForCard(
+    card,
+    set,
+    { playerNames, teamNames: card.teamNames },
+    mergedFeatures,
+  );
   const listingTitle = assessListingTitle(listingInputs);
+  // NEO-335 — the operator's answer from the "Card titles" step, when one
+  // rode on the card: their own words, or the trimmed title kept. Either way
+  // the cut-short question was put before save, so the flag is not written.
+  const operatorTitle = card.listingTitle?.trim();
+  const flagTruncated =
+    !listingTitle.coreFits && !operatorTitle && card.listingTitleKept !== true;
 
   const carried = card.carried ?? {};
   const row: WithoutSystemFields<Doc<"cardChecklist">> = {
@@ -212,10 +219,11 @@ export function buildCardRowForInsert(
     cardVariation: card.cardVariation,
     platformData: card.platformData,
     ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
-    listingTitle: listingTitle.title,
+    listingTitle: operatorTitle || listingTitle.title,
     listingDescription: generateListingDescription(listingInputs),
-    // NEO-101: only when the core was actually cut (see schema.ts).
-    ...(listingTitle.coreFits ? {} : { listingTitleTruncated: true }),
+    // NEO-101: only when the core was actually cut (see schema.ts), and
+    // NEO-335: never over an operator's pre-save answer.
+    ...(flagTruncated ? { listingTitleTruncated: true } : {}),
     // NEO-221 / NEO-246 — omitted entirely when empty, so a fully-reviewed
     // commit writes exactly the row it wrote before these fields existed.
     ...(card.pendingPlayerNames.length
