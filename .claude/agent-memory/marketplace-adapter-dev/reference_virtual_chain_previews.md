@@ -26,6 +26,12 @@ and call it from both. Do not write a second matcher.
   unconfirmed ids off the chain used to validate them, and add a side's ids
   only when that side's list is needed. Otherwise you make extra marketplace
   calls.
+- **A decision the staging MUTATION makes with DB reads** (NEO-333's
+  whole-name-first team choice in `resolveCandidateTeams`) is shared the same
+  way: widen the helper's ctx to `QueryCtx | MutationCtx` and expose it through
+  an `internalQuery` the preview calls (`previewCandidateTeams`). Never mirror
+  the rule in the action's memory. An in-memory mirror drifted silently the
+  moment the mutation's rule changed upstream, and only the parity test caught it.
 - Prove it with parity tests. Run the preview, snapshot every table
   (`Object.keys(schema.tables)`) to show nothing was written, then run the
   staging path on the same fixture and compare buckets in order-free,

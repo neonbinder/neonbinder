@@ -14840,7 +14840,11 @@ async function coldChecklistChain(
  *
  * `lookupTeams: true` also runs BSC's per-card team lookup the staging path
  * runs (one request per BSC card that has no team yet), in memory, so the
- * cards carry the teams the staged rows end up with. Off by default: it is
+ * cards carry the teams the staged rows end up with. Which teams a card
+ * carries is `resolveCandidateTeams`' own decision, run read-only by
+ * `checklistCandidates.previewCandidateTeams` (NEO-333: a dual-team value is
+ * two teams, a known comma-bearing name stays one). `teamLookup.resolved`
+ * counts cards that came back with at least one team. Off by default: it is
  * most of a big set's wall-clock.
  *
  * Marketplace calls: up to 3 to confirm cold ids, then BSC (1) and
@@ -15010,26 +15014,56 @@ export const previewCardChecklist = action({
       assertCardBatchWithinLimits(out, "previewCardChecklist");
 
       // The staging path's team lookup, without its writes: same predicate,
-      // same adapter, same chunking, results applied in memory exactly as
-      // `resolveCandidateTeams` applies them (`teams: [name]`).
+      // same adapter, same chunking, and the SAME team decision
+      // (`chooseCandidateTeams`, NEO-333: the whole raw value when it names
+      // an existing team, else its comma parts), run by the read-only
+      // `previewCandidateTeams` query instead of `resolveCandidateTeams`.
+      // The result is applied in memory, as the mutation patches it.
       const needsTeamLookup = out.filter(
         (c) => !c.teams?.length && !c.team && c.platformData.bsc,
       );
       teamLookup.needed = needsTeamLookup.length;
       if (args.lookupTeams && needsTeamLookup.length > 0) {
         teamLookup.performed = true;
+        // The match's sport and year: the row's, or for a cold preview its
+        // set's (a new row's ancestors are the set's).
+        const teamScopeId = args.selectorOptionId ?? args.cold!.setId;
         const TEAM_LOOKUP_CHUNK = 50;
         for (let i = 0; i < needsTeamLookup.length; i += TEAM_LOOKUP_CHUNK) {
           const chunk = needsTeamLookup.slice(i, i + TEAM_LOOKUP_CHUNK);
           report.marketplaceCalls += chunk.length;
-          const teamNames: Record<string, string> = await ctx.runAction(
+          const teamsByRef: Record<
+            string,
+            { rawTeamName: string; teamNames: string[] }
+          > = await ctx.runAction(
             internal.adapters.buysportscards.fetchBscCardTeamNames,
             { bscCardIds: chunk.map((c) => c.platformData.bsc!.ref) },
           );
+          const decided: Array<{ bscRef: string; teams?: string[] }> =
+            await ctx.runQuery(
+              internal.checklistCandidates.previewCandidateTeams,
+              {
+                selectorOptionId: teamScopeId,
+                resolved: chunk.map((c) => {
+                  const bscRef = c.platformData.bsc!.ref;
+                  const found = teamsByRef[bscRef];
+                  return found
+                    ? {
+                        bscRef,
+                        rawTeamName: found.rawTeamName,
+                        teamNames: found.teamNames,
+                      }
+                    : { bscRef };
+                }),
+              },
+            );
+          const teamsFor = new Map(decided.map((d) => [d.bscRef, d.teams]));
           for (const c of chunk) {
-            const name = teamNames[c.platformData.bsc!.ref];
-            if (name) {
-              c.teams = [name];
+            const teams = teamsFor.get(c.platformData.bsc!.ref);
+            if (teams && teams.length > 0) {
+              c.teams = teams;
+              // Cards that now carry at least one team (a dual-team card
+              // counts once).
               teamLookup.resolved++;
             }
           }

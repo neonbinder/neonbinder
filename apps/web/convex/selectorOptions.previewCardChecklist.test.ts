@@ -10,7 +10,9 @@
  *   - by row, it returns exactly the buckets `fetchCardChecklist` stages in
  *     `checklistCandidates` for the same row, card for card;
  *   - cold (no row yet), with the same ids, it returns the same buckets;
- *   - `lookupTeams` yields the teams the staged rows end up with;
+ *   - `lookupTeams` yields the teams the staged rows end up with, through the
+ *     same NEO-333 decision (`chooseCandidateTeams`): a dual-team value is two
+ *     teams, a known comma-bearing team ("Korea, South") stays one;
  *   - a cold id that is not a value of THIS set's own facets refuses the
  *     preview before any checklist is fetched, and a chain with no `variant`
  *     never sends BSC a checklist query (NEO-239).
@@ -30,6 +32,8 @@ import {
   parseVariationDescription,
 } from "./adapters/buysportscards";
 import { cardNumberStem } from "../lib/cards/variations";
+import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
+import { normalizeTeamName } from "./teams";
 
 const modules = (
   import.meta as unknown as {
@@ -69,6 +73,7 @@ const state = vi.hoisted(() => ({
   variants: [] as Item[],
   variantNames: [] as Item[],
   slSets: [] as Item[],
+  /** bsc ref → BSC's raw team value; the mock splits it as the adapter does. */
   teamNames: {} as Record<string, string>,
 }));
 
@@ -93,13 +98,28 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
         return { success: true, cards: state.bscCards };
       },
     }),
+    // NEO-333 shape: the raw value AND its comma split, as
+    // `fetchBscCardTeamNameRaw` produces them (the real splitter).
     fetchBscCardTeamNames: internalAction({
       args: { bscCardIds: v.array(v.string()) },
-      returns: v.record(v.string(), v.string()),
-      handler: async (_ctx, args): Promise<Record<string, string>> => {
-        const out: Record<string, string> = {};
+      returns: v.record(
+        v.string(),
+        v.object({ rawTeamName: v.string(), teamNames: v.array(v.string()) }),
+      ),
+      handler: async (
+        _ctx,
+        args,
+      ): Promise<Record<string, { rawTeamName: string; teamNames: string[] }>> => {
+        const out: Record<string, { rawTeamName: string; teamNames: string[] }> =
+          {};
         for (const id of args.bscCardIds) {
-          if (state.teamNames[id]) out[id] = state.teamNames[id];
+          const raw = state.teamNames[id];
+          if (raw) {
+            out[id] = {
+              rawTeamName: raw,
+              teamNames: splitMarketplaceTeamNames(raw).names,
+            };
+          }
         }
         return out;
       },
@@ -317,6 +337,22 @@ async function seedBase(
   );
 }
 
+/** A team in the sport, plus its alias index rows. */
+async function seedTeam(
+  t: ReturnType<typeof convexTest>,
+  sportId: Id<"selectorOptions">,
+  name: string,
+): Promise<Id<"teams">> {
+  return t.run(async (ctx) =>
+    ctx.db.insert("teams", {
+      name,
+      nameNormalized: normalizeTeamName(name),
+      sportId,
+      lastUpdated: 1,
+    }),
+  );
+}
+
 async function snapshotAll(t: ReturnType<typeof convexTest>) {
   return t.run(async (ctx) => {
     const out: Record<string, unknown[]> = {};
@@ -483,9 +519,19 @@ describe("previewCardChecklist", () => {
 
   test("lookupTeams gives the teams the staged rows end up with, still writing nothing", async () => {
     const t = convexTest(schema, modules);
-    const { setId } = await seedSet(t);
+    const { sportId, setId } = await seedSet(t);
     const baseId = await seedBase(t, setId);
-    state.teamNames = { "bsc-1": "Boston Red Sox", "bsc-11b": "New York Yankees" };
+    // NEO-333 — "Korea, South" is ONE team NB holds, and "Korea" exists too:
+    // the whole value wins over its split. The dual-team value names no team
+    // NB holds as a whole, so it is two teams.
+    await seedTeam(t, sportId, "Korea, South");
+    await seedTeam(t, sportId, "Korea");
+    state.teamNames = {
+      "bsc-1": "Boston Red Sox",
+      "bsc-11b": "New York Yankees",
+      "bsc-2": "Cleveland Guardians, Washington Nationals",
+      "bsc-3": "Korea, South",
+    };
 
     const before = await snapshotAll(t);
     const preview = await t
@@ -496,17 +542,69 @@ describe("previewCardChecklist", () => {
       });
     await drainScheduled(t);
     expect(await snapshotAll(t)).toEqual(before);
+    // `resolved` counts CARDS that came back with a team: the dual-team card
+    // once.
     expect(preview.teamLookup).toEqual({
       needed: 908,
       performed: true,
-      resolved: 2,
+      resolved: 4,
     });
+
+    const teamsOf = (cardNumber: string) => {
+      const all = [
+        ...preview.matched.map((m) => m.card),
+        ...preview.bscOnly,
+      ] as Array<{ cardNumber: string; teams?: string[] }>;
+      const hits = all.filter((c) => c.cardNumber === cardNumber);
+      expect(hits).toHaveLength(1);
+      return hits[0].teams;
+    };
+    expect(teamsOf("1")).toEqual(["Boston Red Sox"]);
+    expect(teamsOf("2")).toEqual(["Cleveland Guardians", "Washington Nationals"]);
+    expect(teamsOf("3")).toEqual(["Korea, South"]);
 
     await t
       .withIdentity(ADMIN)
       .action(api.selectorOptions.fetchCardChecklist, { selectorOptionId: baseId });
     await drainScheduled(t);
     expect(previewBuckets(preview)).toEqual(await stagedBuckets(t, baseId));
+  });
+
+  test("cold lookupTeams decides teams by the set's sport, the same as by row", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, setId } = await seedSet(t);
+    await seedTeam(t, sportId, "Korea, South");
+    state.teamNames = {
+      "bsc-2": "Cleveland Guardians, Washington Nationals",
+      "bsc-3": "Korea, South",
+    };
+
+    const before = await snapshotAll(t);
+    const cold = await t
+      .withIdentity(ADMIN)
+      .action(api.selectorOptions.previewCardChecklist, {
+        cold: {
+          setId,
+          variantType: { bscVariantId: "base", sportlotsIds: ["555"] },
+        },
+        lookupTeams: true,
+      });
+    await drainScheduled(t);
+    expect(await snapshotAll(t)).toEqual(before);
+    expect(cold.teamLookup.resolved).toBe(2);
+
+    const baseId = await seedBase(t, setId);
+    const byRow = await t
+      .withIdentity(ADMIN)
+      .action(api.selectorOptions.previewCardChecklist, {
+        selectorOptionId: baseId,
+        lookupTeams: true,
+      });
+    expect(previewBuckets(cold)).toEqual(previewBuckets(byRow));
+    const korea = [...cold.matched.map((m) => m.card), ...cold.bscOnly].find(
+      (c) => (c as { cardNumber: string }).cardNumber === "3",
+    ) as { teams?: string[] } | undefined;
+    expect(korea?.teams).toEqual(["Korea, South"]);
   });
 
   test("cold: a variant id that is not one of this set's variants is refused before any checklist fetch", async () => {

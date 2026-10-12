@@ -10,7 +10,7 @@ import { api } from "../../../convex/_generated/api";
 import { contentDigest } from "../client/target";
 import { countOpenDecisions, specConfirmPhrase, type DraftedReport, type UnresolvedDraftReport } from "../service";
 import { parseSpec } from "../spec/schema";
-import { draftSet, entitySlices, mergeDraftAnswers, placeholdersIn } from "./draft";
+import { draftSet, entitySlices, mergeDraftAnswers, namesOnCards, placeholdersIn } from "./draft";
 import { FAKE_TARGET, fakeClient, type FakeClient } from "./fake-client";
 import { DRAFT_READ_ACTIONS, draftClient, PlanWouldWrite } from "./read-only-client";
 
@@ -400,6 +400,64 @@ describe("draftSet: never guesses", () => {
     ]);
     const tpl = r.template as { steps: Array<{ base: { checklist: { review: { players: Array<{ name: string; decision: string }> } } } }> };
     expect(tpl.steps[0].base.checklist.review.players.find((p) => p.name === "Aaron Judge")!.decision).toMatch(/^<"create" \| "skip" \| \{"link"/);
+  });
+});
+
+describe("draftSet: multi-team cards (NEO-333)", () => {
+  // The preview hands each card the teams the staged row ends up with
+  // (`previewCandidateTeams`): a dual-team value already split into two teams,
+  // a known comma-bearing team ("Korea, South") whole. The draft must keep
+  // both shapes: two team answers for the first, one for the second, and never
+  // a combined name or a further split.
+  const multiTeamWorld = () =>
+    world({
+      basePreview: preview(
+        [
+          { num: "1", players: ["Shohei Ohtani"], teams: ["Los Angeles Dodgers"], bsc: "b1", sl: "s1" },
+          { num: "5", players: ["Two Team Guy"], teams: ["Cleveland Guardians", "Washington Nationals"], bsc: "b5", sl: "s5" },
+        ],
+        [{ num: "6", players: ["Ji-Hwan Bae"], teams: ["Korea, South"], bsc: "b6" }],
+        { needed: 3 },
+      ),
+    });
+
+  test("a dual-team card proposes two team answers; a comma-bearing team stays one", async () => {
+    const client = multiTeamWorld();
+    const r = await drafted(client);
+    const step = (r.spec as unknown as Spec).steps[0];
+
+    const asked = client
+      .callsTo("selectorOptions:previewChecklistEntities")
+      .flatMap((c) => c.args.teams as string[]);
+    expect(asked).toEqual(expect.arrayContaining(["Cleveland Guardians", "Washington Nationals", "Korea, South"]));
+    expect(asked).not.toContain("Cleveland Guardians, Washington Nationals");
+    expect(asked).not.toContain("Korea");
+    expect(asked).not.toContain("South");
+
+    // The dual-team card's player is checked against BOTH of its teams.
+    const cardTeams = client
+      .callsTo("selectorOptions:previewChecklistEntities")
+      .flatMap((c) => (c.args.playerCardTeams as Array<{ player: string; teams: string[] }> | undefined) ?? []);
+    expect(cardTeams).toContainEqual({ player: "Two Team Guy", teams: ["Cleveland Guardians", "Washington Nationals"] });
+    expect(cardTeams).toContainEqual({ player: "Ji-Hwan Bae", teams: ["Korea, South"] });
+
+    const review = step.base!.checklist!.review as { teams: Array<{ name: string; decision: string }> };
+    expect(review.teams).toEqual([
+      { name: "Cleveland Guardians", decision: "create" },
+      { name: "Washington Nationals", decision: "create" },
+      { name: "Korea, South", decision: "create" },
+    ]);
+  });
+
+  test("namesOnCards keeps each card's teams as given: never joined, never re-split", () => {
+    const names = namesOnCards([
+      { cardNumber: "5", cardName: "x", players: ["Two Team Guy"], teams: ["Cleveland Guardians", "Washington Nationals"] },
+      { cardNumber: "6", cardName: "y", players: ["Ji-Hwan Bae"], teams: ["Korea, South"] },
+      { cardNumber: "7", cardName: "z", players: ["Other"], teams: ["Washington Nationals"] },
+    ] as unknown as Parameters<typeof namesOnCards>[0]);
+    expect(names.teams).toEqual(["Cleveland Guardians", "Washington Nationals", "Korea, South"]);
+    expect(names.playerCardTeams.get("Two Team Guy")).toEqual(["Cleveland Guardians", "Washington Nationals"]);
+    expect(names.playerCardTeams.get("Ji-Hwan Bae")).toEqual(["Korea, South"]);
   });
 });
 

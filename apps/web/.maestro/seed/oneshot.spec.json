@@ -12407,6 +12407,14 @@
                     {
                       "name": "Tampa Tarpons",
                       "decision": "create"
+                    },
+                    {
+                      "name": "Greensboro Grasshoppers",
+                      "decision": "create"
+                    },
+                    {
+                      "name": "USC Trojans baseball",
+                      "decision": "create"
                     }
                   ],
                   "leagues": [
@@ -12479,6 +12487,10 @@
                     },
                     {
                       "name": "KOBE CHIBEN",
+                      "decision": "create"
+                    },
+                    {
+                      "name": "Greensboro Grasshoppers",
                       "decision": "create"
                     }
                   ],

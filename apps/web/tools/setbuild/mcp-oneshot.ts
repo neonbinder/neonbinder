@@ -420,6 +420,11 @@ export async function runOneshotSequence(
     const report = await call<ApplyReport>(client, "nb_apply", { specPath: o.answersPath, confirm: phrase, stopAt: "end" }, APPLY_TIMEOUT_MS);
     const problems: string[] = [];
     for (const s of report.stops ?? (report.stoppedAt ? [report.stoppedAt] : [])) problems.push(`stopped at step ${s.step}: ${s.reason}`);
+    // Name what the review asked, so a red run says which spec answers are missing.
+    const review = report.openDecisions?.review;
+    for (const kind of ["players", "teams", "leagues"] as const) {
+      for (const r of review?.[kind] ?? []) problems.push(`${kind.slice(0, -1)} "${r.name}" ${r.reason} at ${r.at}`);
+    }
     for (const [key, want] of Object.entries(o.expect.apply.counts)) {
       const got = report.counts?.[key];
       if (got !== want) problems.push(`counts.${key} is ${got ?? "missing"}, expected ${want}`);

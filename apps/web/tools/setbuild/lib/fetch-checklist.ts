@@ -117,8 +117,9 @@ export async function fetchCandidates(
         { timeoutMs: opts.teamSettleTimeoutMs ?? TEAM_SETTLE_TIMEOUT_MS, label: "the BSC team lookups" },
       );
     } catch (err) {
-      // The dialog does not gate Confirm on teams either; a card whose lookup
-      // never answered commits without one, as it would in the UI.
+      // Since NEO-333 the dialog holds Confirm on the fetch's team fence, but a
+      // stream that never catches up unlocks it anyway; so here: a card whose
+      // lookup never answered commits without one, as it would in the UI.
       if (!(err instanceof WaitTimeout)) throw err;
     }
   }
