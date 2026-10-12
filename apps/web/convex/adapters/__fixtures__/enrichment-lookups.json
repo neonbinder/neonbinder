@@ -104,6 +104,16 @@
         }
       }
     },
+    "league|Q5369|florida state league": {
+      "kind": "league",
+      "name": "Florida State League",
+      "result": {
+        "wikidataId": "Q1135498",
+        "yearsActive": {
+          "from": 1919
+        }
+      }
+    },
     "league|Q5369|high-a central": {
       "kind": "league",
       "name": "High-A Central",
@@ -420,6 +430,43 @@
         "description": "American baseball player",
         "birthYear": 1966,
         "enwikiTitle": "Albert Belle"
+      }
+    },
+    "player|Q5369|albert pujols": {
+      "kind": "player",
+      "name": "Albert Pujols",
+      "result": {
+        "birthYear": 1980,
+        "careerTeams": [
+          {
+            "fromYear": 2001,
+            "name": "St. Louis Cardinals",
+            "toYear": 2011,
+            "wikidataId": "Q504309"
+          },
+          {
+            "fromYear": 2012,
+            "name": "Los Angeles Angels",
+            "toYear": 2021,
+            "wikidataId": "Q743309"
+          },
+          {
+            "fromYear": 2021,
+            "name": "Los Angeles Dodgers",
+            "toYear": 2021,
+            "wikidataId": "Q334634"
+          },
+          {
+            "fromYear": 2022,
+            "name": "St. Louis Cardinals",
+            "toYear": 2022,
+            "wikidataId": "Q504309"
+          }
+        ],
+        "description": "Dominican-American baseball player (born 1980)",
+        "enwikiTitle": "Albert Pujols",
+        "isHallOfFame": false,
+        "wikidataId": "Q148726"
       }
     },
     "player|Q5369|alec bohm": {
@@ -1018,6 +1065,24 @@
         "enwikiTitle": "Andy Pages"
       }
     },
+    "player|Q5369|andy pettitte": {
+      "kind": "player",
+      "name": "Andy Pettitte",
+      "result": {
+        "birthYear": 1972,
+        "careerTeams": [],
+        "description": "American professional baseball player, pitcher",
+        "enwikiTitle": "Andy Pettitte",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Gulf Coast League Yankees",
+          "Houston Astros",
+          "New York Yankees",
+          "Trenton Thunder"
+        ],
+        "wikidataId": "Q372506"
+      }
+    },
     "player|Q5369|andy van slyke": {
       "kind": "player",
       "name": "Andy Van Slyke",
@@ -1515,6 +1580,21 @@
         "description": "American baseball player",
         "birthYear": 1963,
         "enwikiTitle": "Bip Roberts"
+      }
+    },
+    "player|Q5369|blake rutherford": {
+      "kind": "player",
+      "name": "Blake Rutherford",
+      "result": {
+        "birthYear": 1997,
+        "careerTeams": [],
+        "description": "baseball player (1997-)",
+        "enwikiTitle": "Blake Rutherford",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Gulf Coast League Yankees"
+        ],
+        "wikidataId": "Q24006716"
       }
     },
     "player|Q5369|blake snell": {
@@ -5241,6 +5321,54 @@
         "enwikiTitle": "Ian Happ"
       }
     },
+    "player|Q5369|ichiro": {
+      "kind": "player",
+      "name": "Ichiro",
+      "result": {
+        "birthYear": 1973,
+        "careerTeams": [
+          {
+            "fromYear": 1992,
+            "name": "Orix Buffaloes",
+            "toYear": 2000,
+            "wikidataId": "Q1328038"
+          },
+          {
+            "fromYear": 2001,
+            "name": "Seattle Mariners",
+            "toYear": 2012,
+            "wikidataId": "Q466586"
+          },
+          {
+            "fromYear": 2013,
+            "name": "New York Yankees",
+            "toYear": 2014,
+            "wikidataId": "Q213417"
+          },
+          {
+            "fromYear": 2015,
+            "name": "Miami Marlins",
+            "toYear": 2018,
+            "wikidataId": "Q652879"
+          },
+          {
+            "fromYear": 2018,
+            "name": "Seattle Mariners",
+            "toYear": 2019,
+            "wikidataId": "Q466586"
+          },
+          {
+            "fromYear": 2019,
+            "name": "KOBE CHIBEN",
+            "wikidataId": "Q130348367"
+          }
+        ],
+        "description": "Japanese baseball player (born 1973)",
+        "enwikiTitle": "Ichiro Suzuki",
+        "isHallOfFame": true,
+        "wikidataId": "Q600"
+      }
+    },
     "player|Q5369|irving lopez": {
       "kind": "player",
       "name": "Irving Lopez",
@@ -7558,6 +7686,30 @@
         "enwikiTitle": "Jung Hoo Lee"
       }
     },
+    "player|Q5369|jung-hoo lee": {
+      "kind": "player",
+      "name": "Jung-Hoo Lee",
+      "result": {
+        "birthYear": 1998,
+        "careerTeams": [
+          {
+            "fromYear": 2017,
+            "name": "Kiwoom Heroes",
+            "toYear": 2023,
+            "wikidataId": "Q490137"
+          },
+          {
+            "fromYear": 2024,
+            "name": "San Francisco Giants",
+            "wikidataId": "Q308966"
+          }
+        ],
+        "description": "South Korean baseball player",
+        "enwikiTitle": "Jung Hoo Lee",
+        "isHallOfFame": false,
+        "wikidataId": "Q27952219"
+      }
+    },
     "player|Q5369|junior caminero": {
       "kind": "player",
       "name": "Junior Caminero",
@@ -9048,6 +9200,79 @@
         "enwikiTitle": "Marcus Stroman"
       }
     },
+    "player|Q5369|mariano rivera": {
+      "kind": "player",
+      "name": "Mariano Rivera",
+      "result": {
+        "birthYear": 1969,
+        "careerTeams": [
+          {
+            "fromYear": 1990,
+            "name": "Gulf Coast League Yankees",
+            "toYear": 1990,
+            "wikidataId": "Q5617454"
+          },
+          {
+            "fromYear": 1991,
+            "name": "Greensboro Grasshoppers",
+            "toYear": 1991,
+            "wikidataId": "Q5604449"
+          },
+          {
+            "fromYear": 1992,
+            "name": "Fort Lauderdale Yankees",
+            "toYear": 1992,
+            "wikidataId": "Q5471483"
+          },
+          {
+            "fromYear": 1993,
+            "name": "Greensboro Grasshoppers",
+            "toYear": 1993,
+            "wikidataId": "Q5604449"
+          },
+          {
+            "fromYear": 1993,
+            "name": "Gulf Coast League Yankees",
+            "toYear": 1993,
+            "wikidataId": "Q5617454"
+          },
+          {
+            "fromYear": 1994,
+            "name": "Columbus Clippers",
+            "toYear": 1994,
+            "wikidataId": "Q2465998"
+          },
+          {
+            "fromYear": 1994,
+            "name": "Albany-Colonie Yankees",
+            "toYear": 1994,
+            "wikidataId": "Q4709282"
+          },
+          {
+            "fromYear": 1994,
+            "name": "Tampa Tarpons",
+            "toYear": 1994,
+            "wikidataId": "Q7681741"
+          },
+          {
+            "fromYear": 1995,
+            "name": "Columbus Clippers",
+            "toYear": 1995,
+            "wikidataId": "Q2465998"
+          },
+          {
+            "fromYear": 1995,
+            "name": "New York Yankees",
+            "toYear": 2013,
+            "wikidataId": "Q213417"
+          }
+        ],
+        "description": "Panamanian Hall of Fame baseball player, relief pitcher",
+        "enwikiTitle": "Mariano Rivera",
+        "isHallOfFame": true,
+        "wikidataId": "Q382303"
+      }
+    },
     "player|Q5369|mark grace": {
       "kind": "player",
       "name": "Mark Grace",
@@ -9788,6 +10013,22 @@
         "description": "American baseball player",
         "birthYear": 1968,
         "enwikiTitle": "Mike Piazza"
+      }
+    },
+    "player|Q5369|mike schmidt": {
+      "kind": "player",
+      "name": "Mike Schmidt",
+      "result": {
+        "birthYear": 1949,
+        "careerTeams": [],
+        "description": "American professional baseball player, third baseman",
+        "enwikiTitle": "Mike Schmidt",
+        "isHallOfFame": false,
+        "undatedCareerTeams": [
+          "Ohio Bobcats baseball",
+          "Philadelphia Phillies"
+        ],
+        "wikidataId": "Q1147513"
       }
     },
     "player|Q5369|mike trout": {
@@ -14856,6 +15097,18 @@
           "secondary": "#8fbce6"
         },
         "espnId": "30"
+      }
+    },
+    "team|Q5369|tampa tarpons": {
+      "kind": "team",
+      "name": "Tampa Tarpons",
+      "result": {
+        "league": "Florida State League",
+        "leagueWikidataId": "Q1135498",
+        "wikidataId": "Q7681741",
+        "yearsActive": {
+          "from": 1994
+        }
       }
     },
     "team|Q5369|texas rangers": {
