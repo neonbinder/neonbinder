@@ -5,10 +5,7 @@ import { api } from "../../convex/_generated/api";
 import { teamFullName } from "../../lib/teams/team-name";
 import { eraLabel, teamOptionLabel } from "../../lib/teams/team-era";
 import type { Id } from "../../convex/_generated/dataModel";
-import {
-  nameHasQueryPrefix,
-  nameMatchesQuery,
-} from "../../lib/entities/name-search";
+import { nameMatchesQuery } from "../../lib/entities/name-search";
 import { normalizeEntityName } from "../../lib/entities/normalize-name";
 import NewTeamDialog from "./NewTeamDialog";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
@@ -98,9 +95,11 @@ export const DEFAULT_TEAM_PICKER_LABELS: TeamPickerLabels = {
  * Keyboard contract (per `feedback_keyboard_navigation`):
  *   Tab/Shift+Tab — cycle chips, × buttons, "+ Add" trigger, popover input
  *   Enter on input — select highlighted match, or OPEN the new-team dialog
- *     when the create row is highlighted and no exact match exists. Enter
- *     inside that dialog is what creates: two presses rather than one, and
- *     the second one is where the League is answered.
+ *     when the create row is highlighted. Enter inside that dialog is what
+ *     creates: two presses rather than one, and the second one is where the
+ *     League is answered. While the rows are HELD from an earlier query
+ *     (`showingHeld`), Enter on the create row does nothing — the server has
+ *     not said yet whether the team exists.
  *   ↑/↓ on input — move highlight
  *   Esc on input — close popover without selecting
  *   Backspace on empty input — remove last chip
@@ -119,6 +118,7 @@ export default function TeamPicker({
   disabled,
   labels = DEFAULT_TEAM_PICKER_LABELS,
   ariaDescribedBy,
+  contextOptionId,
 }: {
   value: Array<Id<"teams">>;
   onChange: (next: Array<Id<"teams">>) => void;
@@ -148,6 +148,14 @@ export default function TeamPicker({
    * the description is what lets them hear the consequence before the pick.
    */
   ariaDescribedBy?: string;
+  /**
+   * NEO-331 — the selectorOptions row of the SET this pick is for (any level
+   * at or below the set: the server walks up for the year and reads the set's
+   * league feature). It only changes the ORDER of the candidates; omit it where
+   * there is no set (Player Management) and the order is name-first as before.
+   * Kept through a cross-sport switch — the server decides what it means there.
+   */
+  contextOptionId?: Id<"selectorOptions">;
 }) {
   // Resolve currently-selected ids → display rows for the chip labels.
   // Convex deduplicates this between sibling pickers on the same page.
@@ -172,49 +180,87 @@ export default function TeamPicker({
     !!sportId && !!activeSportId && activeSportId !== sportId;
 
   /**
-   * The "nothing typed yet" pool. Filtered and ranked client-side below.
+   * NEO-331 — ONE server query finds and ranks, typed or not.
    *
-   * Deliberately small and deliberately NOT the thing that finds a team: it is
-   * the handful of rows the popover shows before the operator types.
-   */
-  const browsePool = useQuery(
-    api.teams.list,
-    activeSportId ? { sportId: activeSportId, limit: 500 } : { limit: 500 },
-  );
-
-  /**
-   * NEO-254 — once anything is TYPED, the server does the finding.
+   * NEO-254 moved typed search to the server because a client filter over an
+   * unordered `.take(500)` could not reach most of a big sport (soccer alone
+   * loads 8,305 teams), and an unreachable team made `sameNameTeams` empty, so
+   * the create row offered to mint a duplicate. NEO-331 goes one step further:
+   * `teams.pickerCandidates` also knows the SET being worked on
+   * (`contextOptionId`), and orders by it — the set's league active in the
+   * set's year first, then minor leagues active that year, then the set's
+   * league in other eras, then everything else. Browse (nothing typed, `""`)
+   * uses the same tiers, so the popover's first rows are the teams this card
+   * most likely shows.
    *
-   * This screen used to filter that 500-row pool client-side, and the pool is
-   * an unordered `.take(500)` off the sport index. That was fine at a few dozen
-   * teams per sport and is wrong at the volumes the preload produces: soccer
-   * alone loads 8,305 teams into one sport, so 7,805 of them were unreachable
-   * from this box — and worse, unreachable teams made `sameNameTeams` empty, so
-   * the create row offered to make a team NB already held. A picker that cannot
-   * find a row is a picker that mints duplicates.
-   *
-   * `teams.search` is the same `search_name` index `CareerTeamEntry` already
-   * types against, filtered by sport server-side, so what comes back is ranked
-   * against the whole table rather than against whichever 500 rows the index
-   * walked first.
+   * The rows arrive in their final order. Nothing below re-sorts them: a
+   * client sort would undo the server's tiers with an alphabet.
    */
   const [query, setQuery] = useState("");
-  const searched = useQuery(
-    api.teams.search,
-    query.trim()
-      ? {
-          query: query.trim(),
-          limit: 25,
-          ...(activeSportId ? { sportId: activeSportId } : {}),
-        }
-      : "skip",
-  );
+  // Every key written out, never spread: a spread opts the literal out of
+  // excess-property checking, so a renamed server arg would compile clean and
+  // fail in the browser. `undefined` is dropped on the wire. Browse sends no
+  // limit so the server's own (much larger) browse window applies.
+  const trimmedQuery = query.trim();
+  const ranked = useQuery(api.teams.pickerCandidates, {
+    query: trimmedQuery,
+    limit: trimmedQuery ? 25 : undefined,
+    sportId: activeSportId,
+    contextOptionId,
+  });
+  /**
+   * The last answer, kept on screen while the next one loads.
+   *
+   * `useQuery` re-keys on every keystroke (the query is an arg), so it answers
+   * `undefined` until the server replies — and the popover flashed "Loading…"
+   * over its rows on each character typed. Holding the previous rows is safe
+   * because the list below filters HELD rows by the CURRENT query client-side
+   * (`showingHeld`), so a stale pool can only show fewer rows, never wrong
+   * ones, until the new ranking replaces it.
+   *
+   * Held per sport and set, not across them: rows from the sport the operator
+   * just switched away from are wrong rows, not stale ones, so a switch shows
+   * "Loading…" as before. State adjusted during render, not a ref read there
+   * (`react-hooks/refs`) and not an effect (a frame of the flash would remain).
+   */
+  const rankKey = `${activeSportId ?? ""}|${contextOptionId ?? ""}`;
+  const [heldRanked, setHeldRanked] = useState<{
+    key: string;
+    rows: NonNullable<typeof ranked>;
+  } | null>(null);
+  // Compared by the ids in order, not by identity: the held copy is only
+  // read while a new answer is loading, so a row whose fields changed but
+  // whose place did not needs no update — and an identity check would set
+  // state on every render under any caller (a test's mock, say) that hands
+  // back a fresh array each time, which React stops as an infinite loop.
+  if (
+    ranked !== undefined &&
+    (heldRanked === null ||
+      heldRanked.key !== rankKey ||
+      heldRanked.rows.length !== ranked.length ||
+      ranked.some((r, i) => r.team._id !== heldRanked.rows[i].team._id))
+  ) {
+    setHeldRanked({ key: rankKey, rows: ranked });
+  }
+  const shownRanked =
+    ranked ?? (heldRanked?.key === rankKey ? heldRanked.rows : undefined);
+  /**
+   * The rows on screen are an EARLIER query's answer, held while this one
+   * loads. Only those are name-filtered below: the current query's own answer
+   * is the server's match already, and it includes rows found by an exact
+   * alias (NEO-284) whose full name does not contain the typed text — a
+   * client name filter over it would drop exactly those.
+   */
+  const showingHeld = ranked === undefined && shownRanked !== undefined;
   /**
    * One pool for everything downstream — the option rows, the exact-match
    * hint, the create offer. They must all see the same rows, or the create
    * offer starts contradicting the list directly above it.
    */
-  const candidates = query.trim() ? searched : browsePool;
+  const candidates = useMemo(
+    () => shownRanked?.map((r) => r.team),
+    [shownRanked],
+  );
 
   const [popoverOpen, setPopoverOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(0);
@@ -350,24 +396,20 @@ export default function TeamPicker({
     // dedup key — sorted, "New York Yankees" does not contain "new york",
     // which is the commonest thing anybody types into this box.
     const q = query.trim();
+    //
+    // NEO-331: order-preserving. The server already ranked these (tier, then
+    // prefix, then A–Z); `filter` keeps that order and `slice` takes its head.
+    //
+    // The name filter runs over HELD rows only (see `showingHeld`). The
+    // current query's own answer is trusted as the server matched it — an
+    // alias hit ("Aardvarks" on "Zzz Club") does not contain the typed text,
+    // and it is the row the operator is looking for.
     const filtered = candidates
       .filter((c) => !selectedSet.has(c._id as unknown as string))
-      .filter((c) => nameMatchesQuery(teamFullName(c), q))
-      // Rank exact-prefix matches above substring matches so typing
-      // "New" surfaces "New York Yankees" before "New Orleans Saints"
-      // before "Newark Eagles" before random substring hits.
-      .sort((a, b) => {
-        const aFull = teamFullName(a);
-        const bFull = teamFullName(b);
-        if (!q) return aFull.localeCompare(bFull);
-        const aPrefix = nameHasQueryPrefix(aFull, q) ? 0 : 1;
-        const bPrefix = nameHasQueryPrefix(bFull, q) ? 0 : 1;
-        if (aPrefix !== bPrefix) return aPrefix - bPrefix;
-        return aFull.localeCompare(bFull);
-      })
+      .filter((c) => !showingHeld || nameMatchesQuery(teamFullName(c), q))
       .slice(0, 8);
     return filtered;
-  }, [candidates, query, value]);
+  }, [candidates, query, value, showingHeld]);
 
   // An exact match already exists — no "create" offer, it'd just be a
   // confusing duplicate-name affordance.
@@ -615,10 +657,20 @@ export default function TeamPicker({
                   if (highlightIdx < matches.length) {
                     const pick = matches[highlightIdx];
                     if (pick) addChip(pick._id);
-                  } else if (showCreateOption) {
+                  } else if (showCreateOption && !showingHeld) {
                     // NEO-236: Enter on the create row OPENS the dialog rather
                     // than writing. The team still needs a League answered, and
                     // there is nowhere in this popover to answer it.
+                    //
+                    // NEO-331: not while the rows are HELD. They are an earlier
+                    // query's answer, name-filtered, so an empty list there
+                    // means "not answered yet", not "no such team" — and an
+                    // operator who types an existing team's name and presses
+                    // Enter fast would open New Team for a team NB already
+                    // has. The press is dropped rather than queued: once the
+                    // answer lands, the row they wanted is highlighted, or the
+                    // next Enter opens the dialog. A highlighted real match
+                    // above still takes Enter, held or not.
                     openNewTeam();
                   }
                 } else if (
@@ -644,11 +696,23 @@ export default function TeamPicker({
                 Loading…
               </div>
             )}
-            {candidates && matches.length === 0 && query.trim().length > 0 && (
-              <div className="text-xs text-gray-600 dark:text-gray-400 px-2 py-1">
-                No matches.
-              </div>
-            )}
+            {/* NEO-331: "No matches." is a verdict, so only the CURRENT
+                query's answer may give it. Held rows filtered to nothing say
+                only that the answer is still on its way — and a "No matches."
+                there invited the Enter that opened New Team for a team that
+                exists. The line's height is kept with an empty, hidden twin so
+                the create row below does not jump under the pointer on every
+                keystroke of a new name. */}
+            {candidates && matches.length === 0 && query.trim().length > 0 &&
+              (showingHeld ? (
+                <div aria-hidden="true" className="text-xs px-2 py-1">
+                  {"\u00a0"}
+                </div>
+              ) : (
+                <div className="text-xs text-gray-600 dark:text-gray-400 px-2 py-1">
+                  No matches.
+                </div>
+              ))}
             {candidates && matches.length === 0 && query.trim().length === 0 && (
               <div className="text-xs text-gray-600 dark:text-gray-400 px-2 py-1">
                 Start typing a team name…

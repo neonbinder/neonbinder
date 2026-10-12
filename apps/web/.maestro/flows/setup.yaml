@@ -1038,14 +1038,20 @@ tags:
             # duplicate it here (R3). NOT an R5 matter — the 240000 ceilings
             # around it are this track's sanctioned live-Wikidata exception
             # and are untouched.
+            #
+            # NEO-331 — a New League step's `Add as New League` is HELD until a
+            # level is pressed, and none is pre-pressed any more, so the answer
+            # is no longer one tap. The shared util reads which step the button
+            # belongs to off the button itself and presses "Other" (the level
+            # this step pre-pressed before NEO-331, so the seed's leagues carry
+            # exactly what they always did) before tapping it; its taps keep the
+            # `optional: true` tolerance above, and the `.*Confirm & Save.*` wait
+            # below still adjudicates. The guard keeps its `id:` contract.
             - runFlow:
                 when:
                   visible:
                     id: "Add as New (Team|League)"
-                commands:
-                  - tapOn:
-                      id: "Add as New (Team|League)"
-                      optional: true
+                file: set-selector/util-wizard-answer-step-as-new.yaml
       # NEO-221 — the bulk button no longer decides rows whose Wikidata lookup
       # is still in flight (deciding a name nobody has looked up yet was the
       # defect). It decides the SETTLED rows now and stays armed, adding the

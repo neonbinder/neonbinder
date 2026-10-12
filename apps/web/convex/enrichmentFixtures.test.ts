@@ -541,6 +541,7 @@ async function seedNames(t: T, sportId: Id<"selectorOptions">) {
       lastUpdated: 1,
     });
     await ctx.db.insert("leagues", {
+      level: "major" as const,
       name: "Major League Baseball",
       nameNormalized: "major league baseball",
       sportId,

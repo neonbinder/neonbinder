@@ -92,6 +92,7 @@ async function seedEveryDrainedTable(
 
     // leagues: 1
     const leagueId = await ctx.db.insert("leagues", {
+      level: "major" as const,
       name: "Major League Baseball",
       nameNormalized: "baseball league major",
       sportId,

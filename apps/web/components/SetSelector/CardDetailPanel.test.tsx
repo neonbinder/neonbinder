@@ -103,11 +103,13 @@ vi.mock("./TeamPicker", () => ({
   default: ({
     value,
     onChange,
+    contextOptionId,
   }: {
     value: string[];
     onChange: (next: string[]) => void;
+    contextOptionId?: string;
   }) => (
-    <div aria-label="Team picker (stub)">
+    <div aria-label="Team picker (stub)" data-context-option-id={contextOptionId ?? ""}>
       <span>Teams: {value.join(",")}</span>
       <button onClick={() => onChange([...value, "team-new"])}>
         Stub add team
@@ -1275,5 +1277,21 @@ describe("CardDetailPanel — drawer geometry (NEO-272)", () => {
     // `translateX(100%)` is a percentage of the element's own width, so the
     // animation is width-independent — a wider panel still starts off-screen.
     expect(panel().className).toContain("animate-slide-in-right");
+  });
+});
+
+describe("CardDetailPanel — NEO-331 the set context reaches the team picker", () => {
+  it("passes contextOptionId through, so the drawer's picker ranks by the set", () => {
+    renderPanel({ contextOptionId: "variant-1" as never });
+    expect(
+      screen.getByLabelText("Team picker (stub)").getAttribute("data-context-option-id"),
+    ).toBe("variant-1");
+  });
+
+  it("passes nothing when the host has no set to offer", () => {
+    renderPanel();
+    expect(
+      screen.getByLabelText("Team picker (stub)").getAttribute("data-context-option-id"),
+    ).toBe("");
   });
 });
