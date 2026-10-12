@@ -57,7 +57,7 @@ reliably. Do **not** delegate this to a subagent.
 
 6. **On each notification line**, relay a tight one-liner. The script's line is
    already concise (`[t+4m] RUNNING — checks 6/15 done, 0 failed · seed ✓ ·
-   runners 3/8 · e2e ▶ · maestro ▶ · queue 24✓ 1✗ 4▶ 16⋯/45`) — pass it through;
+   shards 3/8 · e2e ▶ · playwright ▶`) — pass it through;
    don't pad it.
 
 7. **On the `DONE …` line** (terminal), give the final verdict clearly:
@@ -79,7 +79,6 @@ reliably. Do **not** delegate this to a subagent.
 ## Tuning (optional env on the Monitor command)
 - `PR_WATCH_INTERVAL=120` — seconds between ticks (default 120; the ~2-min cadence).
 - `PR_WATCH_MAX_MIN=90` — safety stop.
-- `PR_WATCH_NO_QUEUE=1` — skip the Convex flow-progress enrichment (GitHub only).
 - `PR_WATCH_REQUIRED_CHECK="CI Gate"` — the gate check that must be green before
   a `DONE GREEN` is emitted. Change it only if the pipeline's final gate job is
   renamed.
@@ -104,21 +103,18 @@ the safety timeout. While waiting, the tick line says
 **Corollary for the agent:** a `DONE GREEN` that arrives within a minute of a
 push is still worth one `gh pr checks <PR>` before acting on it.
 
-## What the queue line means
-When resolvable, `queue 24✓ 1✗ 4▶ 16⋯/45` is live flow-level progress from the
-preview Convex `/e2e/status` endpoint (passed / failed / running / pending / total
-flows). The engine auto-resolves the preview `.convex.site` URL (via the Vercel
-bypass secret in `apps/web/.env.local`) and the run id, but it still needs
-`E2E_QUEUE_SECRET` — which is a **preview-only** default, NOT set on the dev
-deployment, so `convex env get` returns empty locally. To light up the queue line,
-export the secret on the Monitor command (`E2E_QUEUE_SECRET=… bash …/watch.sh …`).
-If it's missing the engine prints `(queue progress unavailable …)` once and runs on
-GitHub checks alone — the `e2e` gate check is the source of truth for green/red
-regardless, so the watcher is fully correct without it (it's just finer progress).
+## What the E2E fields mean
+`seed ✓ · shards 3/8 · e2e ▶ · playwright ✓` reads the PR's own check rollup:
+`seed` is the reusable E2E workflow's seed job, `shards n/8` counts its finished
+shard jobs, `e2e` is the single gate job (the real verdict), and `playwright` is
+the merged-JUnit check, which publishes after the gate. No secret or Convex
+access is involved. The `e2e` gate is the source of truth for green/red: it
+fails when any spec fails or when any planned spec produced no result, so a dead
+shard cannot pass.
 
 ## Hard rules
-- **Read-only.** Only read-only `gh` reads + the read-only `/e2e/status` POST. Never
-  comment, review, merge, edit, push, or run convex/npm mutations.
+- **Read-only.** Only read-only `gh` reads. Never comment, review, merge, edit,
+  push, or run convex/npm mutations.
 - **Never act on a terminal verdict without re-checking it.** A `DONE GREEN` is
   a prompt to run `gh pr checks <PR>`, not a fact to merge on. This engine has
   produced confident false greens before; the guard added since makes that far
@@ -130,7 +126,7 @@ regardless, so the watcher is fully correct without it (it's just finer progress
   cancel a watch early (e.g. the user merged it themselves).
 - **No diagnosis by default.** On failure, report which check + (if asked or
   obviously useful) the failing log lines. The decision of what to do is the user's.
-- **The queue secret is never printed.** The engine sends it as a header only.
+- **No secrets.** The engine reads only the PR's public check rollup.
 
 ## If the pipeline never registers (learned 2026-09-04, PR #221)
 A tick line that stays on `waiting for CI Gate (pipeline not registered yet)`

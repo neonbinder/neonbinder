@@ -8,28 +8,24 @@
 # line is the reliable terminal report.
 #
 # WHY a script (not inline Monitor command): the loop is non-trivial (verdict
-# logic + best-effort Convex queue enrichment) and we want it committed,
-# reviewable, and testable on its own.
+# logic + per-job E2E progress) and we want it committed, reviewable, and
+# testable on its own.
 #
-# READ-ONLY. The only network calls are read-only `gh` reads and an OPTIONAL
-# read-only POST to the preview Convex `/e2e/status` query. It never comments,
-# merges, pushes, edits, or mutates anything. The E2E queue secret is only ever
-# sent as a header and is NEVER printed (NEO-29 discipline).
+# READ-ONLY. The only network calls are read-only `gh` reads. It never
+# comments, merges, pushes, edits, or mutates anything, and it needs no
+# secret: E2E progress comes from the shard jobs on the PR's own check rollup.
 #
 # Usage:  watch.sh <pr-number> [repo-dir]
 # Env knobs (all optional):
 #   PR_WATCH_INTERVAL   seconds between ticks (default 120 = the ~2-min cadence)
 #   PR_WATCH_MAX_MIN    safety stop in minutes (default 90)
-#   E2E_QUEUE_SECRET    skip the convex env lookup if already set
-#   CONVEX_SITE_URL     skip preview resolution if already set
-#   PR_WATCH_NO_QUEUE=1 disable the Convex queue enrichment entirely (gh-only)
 #   PR_WATCH_REQUIRED_CHECK  the gate check that must be green before this
 #                       reports GREEN (default "CI Gate"). See the note on the
 #                       verdict in tick(): "no pending checks" alone is not a
 #                       terminal state, because a freshly pushed SHA has only
 #                       the fast third-party checks attached.
 set -uo pipefail
-{ set +x; } 2>/dev/null  # defensive: never trace (the queue secret flows through here)
+{ set +x; } 2>/dev/null  # defensive: never trace
 
 PR="${1:?usage: watch.sh <pr-number> [repo-dir]}"
 REPO_DIR="${2:-.}"
@@ -42,87 +38,10 @@ cd "$REPO_DIR" 2>/dev/null || { echo "DONE ERROR — cannot cd to repo dir: $REP
 START=$(date +%s)
 elapsed_min() { echo $(( ( $(date +%s) - START ) / 60 )); }
 
-# ── helpers ──────────────────────────────────────────────────────────────────
-read_env_key() { # read_env_key FILE KEY -> echoes value (caller must NOT log it)
-  [ -f "$1" ] || return 1
-  local line; line=$(grep -m1 -E "^$2=" "$1" 2>/dev/null) || return 1
-  line="${line#*=}"; line="${line%$'\r'}"
-  case "$line" in
-    \"*\") line="${line#\"}"; line="${line%\"}" ;;
-    \'*\') line="${line#\'}"; line="${line%\'}" ;;
-  esac
-  printf '%s' "$line"
-}
-
-# ── best-effort Convex queue resolution (ONCE, before the loop) ──────────────
-# Mirrors how the CI `setup` job derives the preview .convex.site URL: read the
-# preview index.html (behind Vercel Deployment Protection, so it needs the
-# bypass header), pull the `x-convex-url` <meta>, swap .convex.cloud→.convex.site.
-# The queue secret comes from read-only `convex env get` (dev/preview only; the
-# function fails closed in prod). If ANY piece is missing we silently fall back
-# to GitHub-only — the `e2e` gate check is the source of truth for green/red, so
-# the queue line is purely finer-grained progress.
-QUEUE_READY=0
-E2E_RUN_ID="${E2E_RUN_ID:-}"
-resolve_queue() {
-  [ "${PR_WATCH_NO_QUEUE:-0}" = 1 ] && return 1
-
-  # Queue scope == the workflow run id PLUS the run attempt (NEO-187) — a rerun
-  # gets its own queue, so watching attempt 2 against the bare run id would read
-  # attempt 1's rows and report a stale verdict. The details URL carries only the
-  # id, so the attempt comes from the API.
-  if [ -z "$E2E_RUN_ID" ]; then
-    local run attempt
-    run=$(gh pr view "$PR" --json statusCheckRollup \
-      --jq 'first(.statusCheckRollup[]? | (.detailsUrl // .targetUrl // "") | select(test("/actions/runs/[0-9]+")) | capture("/actions/runs/(?<id>[0-9]+)").id) // empty' 2>/dev/null)
-    [ -z "$run" ] && return 1
-    attempt=$(gh api "repos/{owner}/{repo}/actions/runs/$run" --jq '.run_attempt' 2>/dev/null)
-    E2E_RUN_ID="${run}-${attempt:-1}"
-  fi
-  [ -z "$E2E_RUN_ID" ] && return 1
-
-  # Secret (header-only, never printed).
-  if [ -z "${E2E_QUEUE_SECRET:-}" ]; then
-    E2E_QUEUE_SECRET=$(npx --no-install convex env get E2E_QUEUE_SECRET 2>/dev/null | tr -d '\r\n')
-  fi
-  [ -z "${E2E_QUEUE_SECRET:-}" ] && return 1
-
-  # Preview .convex.site URL.
-  if [ -z "${CONVEX_SITE_URL:-}" ]; then
-    local bypass sha dep purl html cloud
-    bypass="${VERCEL_AUTOMATION_BYPASS_SECRET:-$(read_env_key .env.local VERCEL_AUTOMATION_BYPASS_SECRET)}"
-    [ -z "$bypass" ] && return 1
-    sha=$(gh pr view "$PR" --json headRefOid --jq .headRefOid 2>/dev/null)
-    [ -z "$sha" ] && return 1
-    dep=$(gh api "repos/{owner}/{repo}/deployments?sha=$sha&per_page=100" \
-      --jq '[.[]|select(.creator.login=="vercel[bot]")]|sort_by(.created_at)|reverse|.[0].id // empty' 2>/dev/null)
-    [ -z "$dep" ] && return 1
-    purl=$(gh api "repos/{owner}/{repo}/deployments/$dep/statuses" \
-      --jq 'first(.[]|select(.state=="success")|(.environment_url // .target_url)) // empty' 2>/dev/null)
-    [ -z "$purl" ] && return 1
-    html=$(curl -sS -H "x-vercel-protection-bypass: $bypass" "${purl%/}/" 2>/dev/null) || return 1
-    cloud=$(printf '%s' "$html" | grep -oE 'name="x-convex-url" content="[^"]*"' \
-      | grep -oE 'https://[a-z0-9-]+\.convex\.cloud' | head -1)
-    [ -z "$cloud" ] && return 1
-    CONVEX_SITE_URL="${cloud/.convex.cloud/.convex.site}"
-  fi
-  [ -z "${CONVEX_SITE_URL:-}" ] && return 1
-  QUEUE_READY=1
-}
-
-queue_line() { # echoes " · queue 24✓ 1✗ 4▶ 16⋯/45" or "" (best-effort, never fails the tick)
-  [ "$QUEUE_READY" = 1 ] || { printf ''; return; }
-  local j
-  j=$(curl -fsS -X POST "${CONVEX_SITE_URL%/}/e2e/status" \
-        -H "x-e2e-queue-secret: ${E2E_QUEUE_SECRET}" -H "Content-Type: application/json" \
-        -d "{\"runId\":\"${E2E_RUN_ID}\"}" 2>/dev/null) || { printf ''; return; }
-  printf '%s' "$(echo "$j" | jq -r '" · queue \(.passed)✓ \(.failed)✗ \(.running)▶ \(.pending)⋯/\(.total)"' 2>/dev/null)"
-}
-
 # ── one poll: prints a status line, sets VERDICT + FAILED_NAMES globals ──────
 VERDICT="RUNNING"; FAILED_NAMES=""
 tick() {
-  local data state rollup total failed completed pending r_total r_done seed gate maestro
+  local data state rollup total failed completed pending r_total r_done seed gate pw
   data=$(gh pr view "$PR" --json state,statusCheckRollup 2>/dev/null) || {
     echo "[t+$(elapsed_min)m] poll error (gh read failed) — will retry next tick"; VERDICT="RUNNING"; return 0; }
   state=$(echo "$data" | jq -r '.state // "OPEN"')
@@ -132,8 +51,10 @@ tick() {
   failed=$(echo "$rollup"    | jq '[.[]|select(.c=="FAILURE" or .c=="CANCELLED" or .c=="TIMED_OUT" or .c=="STARTUP_FAILURE" or .c=="ACTION_REQUIRED")]|length')
   completed=$(echo "$rollup" | jq '[.[]|select(.s=="COMPLETED" or .c=="SUCCESS" or .c=="FAILURE" or .c=="NEUTRAL" or .c=="SKIPPED" or .c=="CANCELLED" or .c=="TIMED_OUT")]|length')
   pending=$(( total - completed ))
-  r_total=$(echo "$rollup"   | jq '[.[]|select(.name|test("^runner"))]|length')
-  r_done=$(echo "$rollup"    | jq '[.[]|select((.name|test("^runner")) and (.s=="COMPLETED"))]|length')
+  # The reusable e2e.yml's jobs surface as "E2E / seed", "E2E / shard (N, W)",
+  # "E2E / e2e" (the prefix is the calling job's name).
+  r_total=$(echo "$rollup"   | jq '[.[]|select(.name|test("(^|/ )shard \\("))]|length')
+  r_done=$(echo "$rollup"    | jq '[.[]|select((.name|test("(^|/ )shard \\(")) and (.s=="COMPLETED"))]|length')
 
   # The gate check's own conclusion — see the GREEN condition below.
   local req
@@ -142,7 +63,7 @@ tick() {
 
   symbol() { case "$1" in SUCCESS) echo ✓;; FAILURE|CANCELLED|TIMED_OUT|STARTUP_FAILURE|ACTION_REQUIRED) echo ✗;; NEUTRAL|SKIPPED) echo ⊘;; COMPLETED) echo ✓;; "") echo —;; *) echo ▶;; esac; }
   named() { echo "$rollup" | jq -r --arg re "$1" 'first(.[]|select(.name|test($re;"i"))) | (if (.c|length)>0 then .c else .s end) // "—"' 2>/dev/null; }
-  seed=$(symbol "$(named "^seed$")"); gate=$(symbol "$(named "^e2e$")"); maestro=$(symbol "$(named "maestro")")
+  seed=$(symbol "$(named "(^|/ )seed$")"); gate=$(symbol "$(named "(^|/ )e2e$")"); pw=$(symbol "$(named "^Playwright E2E$")")
 
   # ── verdict (GitHub is the source of truth) ──
   if [ "$state" = "MERGED" ] || [ "$state" = "CLOSED" ]; then VERDICT="$state"
@@ -170,14 +91,11 @@ tick() {
   [ "$VERDICT" = "RUNNING" ] && [ "${pending:-0}" -eq 0 ] && [ -z "$req" ] &&
     waiting=" · waiting for ${REQUIRED_CHECK} (pipeline not registered yet)"
 
-  printf '[t+%sm] %s — checks %s/%s done, %s failed · seed %s · runners %s/%s · e2e %s · maestro %s%s%s\n' \
-    "$(elapsed_min)" "$VERDICT" "$completed" "$total" "$failed" "$seed" "$r_done" "$r_total" "$gate" "$maestro" "$(queue_line)" "$waiting"
+  printf '[t+%sm] %s — checks %s/%s done, %s failed · seed %s · shards %s/%s · e2e %s · playwright %s%s\n' \
+    "$(elapsed_min)" "$VERDICT" "$completed" "$total" "$failed" "$seed" "$r_done" "$r_total" "$gate" "$pw" "$waiting"
 }
 
 # ── main loop ────────────────────────────────────────────────────────────────
-resolve_queue || true
-[ "$QUEUE_READY" = 1 ] || echo "[t+0m] (queue progress unavailable — reporting from GitHub checks only)"
-
 while true; do
   tick
   case "$VERDICT" in

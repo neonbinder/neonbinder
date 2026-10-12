@@ -2,41 +2,44 @@ name: E2E Repeat (flakiness sampler)
 
 # Cloud-native flakiness sampler.
 #
-# A SINGLE dispatch runs the full "E2E Tests" suite N times, sequentially,
-# entirely on GitHub's runners. The loop lives in CI — not on a laptop — so it
-# survives sleep / being away: one approval, then walk away.
+# A SINGLE dispatch runs the full "E2E Tests" Playwright suite (e2e.yml) N times,
+# sequentially, entirely on GitHub's runners. The loop lives in CI — not on a
+# laptop — so it survives sleep / being away: one approval, then walk away.
 #
 # Each sample is dispatched as its OWN "E2E Tests" run (e2e.yml via
-# workflow_dispatch → standalone run against the dev browser default; separate
-# github.run_id → separate work-queue, separate artifacts → no collisions). We
-# wait for each to finish before dispatching the next, so the suite's own
-# cancel-in-progress concurrency never cancels a sample and two runs never contend
-# on the shared Convex preview / dev browser service (the documented 503-under-
-# contention).
+# workflow_dispatch, given the same `preview_url`; separate github.run_id →
+# separate artifacts → no collisions). We wait for each to finish before
+# dispatching the next, so the suite's own cancel-in-progress concurrency never
+# cancels a sample and two runs never contend on the shared Convex preview and
+# test accounts (the documented 503-under-contention). Every sample re-runs the
+# scripted reset and the seed, so each starts from the same baseline.
 #
-# Samples run against the dispatched ref's existing Vercel/Convex preview (resolved
-# by github.sha inside E2E Tests), so all samples share the same code + preview —
-# any flow that flips pass<->fail across samples is genuine flakiness.
+# All samples share the same code + preview, so any spec that flips pass<->fail
+# across samples is genuine flakiness.
+#
+# Get a preview URL from the PR's pr-pipeline `web-preview` job (or a manual
+# `vercel deploy`). It must be live for the whole sweep: closing the PR reclaims
+# its Convex preview.
 #
 # Read the results from the per-sample "E2E Tests" runs (linked in this run's log
 # and in the uploaded sample-index artifact).
+#
+# NOTE: workflow_dispatch only works once this file is on the DEFAULT branch.
+# There is deliberately no tag/push trigger: a tag push cannot pass `preview_url`,
+# and no workflow other than release.yml may carry a push trigger.
 
 on:
   workflow_dispatch:
     inputs:
+      preview_url:
+        description: "Vercel preview URL (*.vercel.app) every sample runs against"
+        required: true
+        type: string
       count:
         description: "Number of sequential full E2E runs (1-12)"
         required: false
         default: "5"
         type: string
-  # NOTE: workflow_dispatch only works once this file is on the DEFAULT branch.
-  # Until it's merged to main, trigger a sweep by pushing a tag like
-  # `e2e-sample-run1` at the branch's HEAD — tag/push triggers run the workflow
-  # from the pushed ref, with no default-branch requirement. Tag triggers can't
-  # pass `count`, so they use the script's default (8) and sample against `main`.
-  push:
-    tags:
-      - "e2e-sample-*"
 
 # Don't let a second dispatch cancel an in-flight sampling sweep.
 concurrency:
@@ -50,22 +53,21 @@ permissions:
 jobs:
   drive:
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # ~24m/sample; 350 covers up to ~12 sequential samples
+    timeout-minutes: 350 # up to 12 sequential samples; re-measure per-sample time, then tighten
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       # No checkout in this job, so gh can't infer the repo from git context —
       # pin it explicitly (otherwise gh errors "not a git repository").
       GH_REPO: ${{ github.repository }}
-      # On a tag push, github.ref_name is the tag — not a branch — so sample
-      # against main. On workflow_dispatch use the dispatch ref.
-      REF: ${{ github.event_name == 'push' && 'main' || github.ref_name }}
+      REF: ${{ github.ref_name }}
       COUNT: ${{ inputs.count }}
+      PREVIEW_URL: ${{ inputs.preview_url }}
     steps:
       - name: Run "E2E Tests" N times sequentially
         run: |
           set -uo pipefail
-          n="${COUNT:-8}"
-          case "$n" in (*[!0-9]*|'') n=8;; esac
+          n="${COUNT:-5}"
+          case "$n" in (*[!0-9]*|'') n=5;; esac
           [ "$n" -lt 1 ] && n=1
           [ "$n" -gt 12 ] && n=12
           echo "Running $n sequential E2E samples on ref '$REF'"
@@ -76,7 +78,7 @@ jobs:
             before=$(gh run list --workflow "E2E Tests" --branch "$REF" \
               --event workflow_dispatch --limit 1 --json databaseId \
               --jq '.[0].databaseId // "0"' 2>/dev/null || echo 0)
-            if ! gh workflow run e2e.yml --ref "$REF"; then
+            if ! gh workflow run e2e.yml --ref "$REF" -f "preview_url=$PREVIEW_URL"; then
               echo "::warning::sample $i: workflow dispatch call failed — skipping"
               echo "sample $i: DISPATCH_FAILED" >> samples.txt
               echo "::endgroup::"
@@ -99,7 +101,7 @@ jobs:
             echo "sample $i = E2E Tests run $rid"
             echo "::endgroup::"
 
-            echo "::group::sample $i/$n — run $rid (waiting ~24m)"
+            echo "::group::sample $i/$n — run $rid (waiting)"
             # Wait for the whole suite; don't let a red sample fail the sweep.
             gh run watch "$rid" --interval 30 --exit-status || true
             concl=$(gh run view "$rid" --json conclusion --jq '.conclusion' 2>/dev/null || echo unknown)

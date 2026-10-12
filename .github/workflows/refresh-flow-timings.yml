@@ -1,20 +1,20 @@
 name: Refresh flow timings
 
-# Keeps apps/web/.maestro/flow-timings.tsv (the NEO-61 LPT seed table) "generally
-# correct" as flows are added / changed, with no babysitting.
+# Keeps apps/web/playwright/timings.json (the longest-first shard-plan seed) "generally
+# correct" as specs are added / changed, with no babysitting.
 #
-# It does NOT run the E2E suite. It only downloads the `flow-timings` artifact that
-# every PR Pipeline run already produces (uploaded by e2e.yml's `report` job, which
-# now runs as a called workflow under pr-pipeline.yml — so the artifact lives on the
-# "PR Pipeline" run), RE-ALIGNS it to main's current flow set (via gen-flow-timings.sh,
-# so branch-only flows drop and main-only flows fall to the consumer's median-default),
-# and — when the table has drifted — force-pushes chore/flow-timings-refresh and posts a
+# It does NOT run the E2E suite. It downloads the `pw-merged` artifact (the merged
+# Playwright JSON report) that e2e.yml's `e2e` job uploads on every PR Pipeline run,
+# rewrites the timings with `shard-plan.mjs --from-results`, RE-ALIGNS them to main's
+# current spec set (branch-only specs drop; specs the run did not measure keep their
+# committed value; main-only specs fall to the planner's median default), and — when
+# the table has drifted — force-pushes chore/flow-timings-refresh and posts a
 # job-summary with a one-click "Compare & pull request" link.
 #
 # Why the nudge (not an auto-opened PR): this public repo is hardened so the built-in
 # GITHUB_TOKEN can't create PRs (and a token-opened PR wouldn't auto-start the required
 # `e2e` check anyway). You open the PR from the link — because you author it, `e2e` runs
-# normally and it's mergeable. Timings only affect the ORDER flows seed into the queue
+# normally and it's mergeable. Timings only affect how specs are split across shards
 # (longest-first), never pass/fail — review is a glance.
 
 on:
@@ -35,86 +35,97 @@ jobs:
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: apps/web # gen-flow-timings.sh + .maestro/ live here
+        working-directory: apps/web # shard-plan.mjs + playwright/ live here
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Download latest PR Pipeline run's flow-timings artifact
+      # shard-plan.mjs is plain node (no dependencies), so no npm ci.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/web/.nvmrc
+
+      - name: Download the latest PR Pipeline run's merged Playwright report
         id: dl
         run: |
           set -uo pipefail
-          rid=$(gh run list --workflow "PR Pipeline" --status success --limit 1 \
-            --json databaseId --jq '.[0].databaseId // ""')
-          if [ -z "$rid" ]; then
-            echo "No successful 'PR Pipeline' run found — nothing to refresh."
-            echo "found=0" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          echo "Latest successful PR Pipeline run: $rid"
-          if ! gh run download "$rid" -n flow-timings -D dl 2>/dev/null; then
-            echo "Run $rid has no 'flow-timings' artifact (predates the producer, or expired)."
-            echo "found=0" >> "$GITHUB_OUTPUT"; exit 0
-          fi
-          echo "found=1" >> "$GITHUB_OUTPUT"
-          echo "rid=$rid" >> "$GITHUB_OUTPUT"
+          # The newest green runs may be dependency-only PRs (E2E skipped, so no
+          # artifact): walk back through recent ones until one has pw-merged.
+          for rid in $(gh run list --workflow "PR Pipeline" --status success --limit 15 \
+                         --json databaseId --jq '.[].databaseId'); do
+            rm -rf dl
+            if gh run download "$rid" -n pw-merged -D dl 2>/dev/null && [ -f dl/results.json ]; then
+              echo "Using PR Pipeline run $rid"
+              echo "found=1" >> "$GITHUB_OUTPUT"
+              echo "rid=$rid" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          done
+          echo "No recent successful 'PR Pipeline' run has a pw-merged artifact (expired, or none ran E2E) — nothing to refresh."
+          echo "found=0" >> "$GITHUB_OUTPUT"
 
-      - name: Re-align to main's flow set + detect drift
+      - name: Rewrite timings, re-align to main's spec set, detect drift
         id: drift
         if: steps.dl.outputs.found == '1'
         run: |
           set -uo pipefail
-          mkdir -p empty-junit
-          # No measured times + downloaded table as the committed input → emits main's
-          # CURRENT enqueue set with the latest run's values, same header/sort as the
-          # committed file (so the diff only fires on real changes).
-          bash gen-flow-timings.sh empty-junit dl/flow-timings.tsv > candidate.tsv
-          python3 - .maestro/flow-timings.tsv candidate.tsv <<'PY'
-          import sys, os
+          cp playwright/timings.json old-timings.json
+          node playwright/shard-plan.mjs --from-results dl/results.json
+          python3 - old-timings.json playwright/timings.json <<'PY'
+          import json, os, sys
 
-          def load(path):
-              order, secs = [], {}
-              try:
-                  fh = open(path)
-              except FileNotFoundError:
-                  return order, secs
-              with fh:
-                  for line in fh:
-                      line = line.rstrip("\n")
-                      if not line or line.startswith("#"):
-                          continue
-                      a = line.split("\t")
-                      if len(a) >= 2:
-                          try:
-                              order.append(a[1]); secs[a[1]] = int(round(float(a[0])))
-                          except ValueError:
-                              pass
-              return order, secs
+          old_doc = json.load(open(sys.argv[1]))
+          new_doc = json.load(open(sys.argv[2]))
+          old = old_doc.get("seconds", {})
+          measured = new_doc.get("seconds", {})
 
-          old_order, old = load(sys.argv[1])
-          new_order, new = load(sys.argv[2])
+          # main's current spec set (the checkout), same filter as shard-plan.mjs.
+          tests = "playwright/tests"
+          excluded = {"setup.spec.ts", "profile/worker-bootstrap.spec.ts"}
+          current = set()
+          for root, _, files in os.walk(tests):
+              for f in files:
+                  rel = os.path.relpath(os.path.join(root, f), tests).replace(os.sep, "/")
+                  if rel.endswith(".spec.ts") and rel not in excluded:
+                      current.add(rel)
+
+          # Measured value where the run has one, else the committed value;
+          # branch-only specs (not on main) are dropped.
+          merged = {}
+          for spec in sorted(current):
+              if spec in measured:
+                  merged[spec] = measured[spec]
+              elif spec in old:
+                  merged[spec] = old[spec]
+
           reasons = []
-          added = [p for p in new_order if p not in old]
-          removed = [p for p in old_order if p not in new]
+          added = [p for p in merged if p not in old]
+          removed = [p for p in old if p not in merged]
           if added:
-              reasons.append(f"{len(added)} added: " + ", ".join(p.split('/')[-1] for p in added[:5]))
+              reasons.append(f"{len(added)} added: " + ", ".join(p.split("/")[-1] for p in added[:5]))
           if removed:
-              reasons.append(f"{len(removed)} removed: " + ", ".join(p.split('/')[-1] for p in removed[:5]))
+              reasons.append(f"{len(removed)} removed: " + ", ".join(p.split("/")[-1] for p in removed[:5]))
           moved = []
-          for p in set(old) & set(new):
-              o, n = old[p], new[p]
-              if abs(n - o) >= max(10, 0.20 * o):  # ≥ max(20%, 10s)
+          for p in set(old) & set(merged):
+              o, n = old[p], merged[p]
+              if abs(n - o) >= max(10, 0.20 * o):  # >= max(20%, 10s)
                   moved.append((p, o, n))
           if moved:
               moved.sort(key=lambda x: -abs(x[2] - x[1]))
               reasons.append(f"{len(moved)} moved, e.g. " +
                   ", ".join(f"{p.split('/')[-1]} {o}->{n}s" for p, o, n in moved[:5]))
-          reorder = (old_order != new_order) and not (added or removed)
-          if reorder:
-              reasons.append("enqueue order changed")
-          drift = bool(added or removed or moved or reorder)
+          drift = bool(added or removed or moved)
           reason = "; ".join(reasons) if reasons else "no material drift"
-          print("Drift:", drift, "—", reason)
+          print("Drift:", drift, "-", reason)
+
+          if drift:
+              out = {"_source": new_doc.get("_source", old_doc.get("_source", "")), "seconds": merged}
+              with open(sys.argv[2], "w") as fh:
+                  fh.write(json.dumps(out, indent=2) + "\n")
+          else:
+              with open(sys.argv[2], "w") as fh:
+                  fh.write(json.dumps(old_doc, indent=2) + "\n")
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write(f"drift={'true' if drift else 'false'}\n")
               fh.write(f"reason={reason}\n")
@@ -131,13 +142,12 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           BR=chore/flow-timings-refresh
           git checkout -B "$BR"
-          cp candidate.tsv .maestro/flow-timings.tsv
-          git add .maestro/flow-timings.tsv
+          git add playwright/timings.json
           if git diff --cached --quiet; then
             echo "Candidate is byte-identical to committed — nothing to commit."; exit 0
           fi
           git commit \
-            -m "chore(e2e): refresh LPT flow-timings from run ${RID}" \
+            -m "chore(e2e): refresh shard timings from run ${RID}" \
             -m "${REASON}" \
             -m "Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
           git push --force origin "$BR"
@@ -146,7 +156,7 @@ jobs:
           # gate). The force-push above auto-updates an already-open PR — no gh pr calls.
           COMPARE="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/main...${BR}?expand=1"
           {
-            echo "## Flow-timings drift detected"
+            echo "## Spec-timings drift detected"
             echo ""
             echo "**Drift:** ${REASON}"
             echo ""
@@ -154,7 +164,7 @@ jobs:
             echo ""
             echo "➡️ **[Open the PR to apply](${COMPARE})** — you author it, so the required \`e2e\` check runs and it's mergeable."
             echo ""
-            echo "_Timings only affect queue **ordering** (longest-first / LPT, NEO-61), never pass/fail — review is a glance._"
+            echo "_Timings only affect how specs are split across shards (longest-first), never pass/fail — review is a glance._"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "Nudge posted. Open the PR: ${COMPARE}"
 

@@ -31,94 +31,68 @@ on:
         required: true
         type: string
 # Cancel any in-flight run on this PR/branch when a newer commit arrives.
-# Two concurrent runs share the same Convex dev deployment, browser service,
-# and test users — concurrent /login/bsc calls for the same BSC account
-# reliably trigger a 503 on the slower request. One active run per branch.
+# Two concurrent runs share the same Convex preview, browser service and test
+# users — concurrent /login/bsc calls for the same BSC account reliably trigger
+# a 503 on the slower request. One active run per branch.
 # (On workflow_call the caller pr-pipeline owns concurrency; this still applies
 # to direct workflow_dispatch runs.)
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
-# action-junit-report needs checks:write to publish the per-flow PR check,
-# and pull-requests:write to add its summary comment. Repo default is read-only.
+# Least privilege: every job reads the repo at most. Only `report` widens, at
+# job level, to publish the check run and the sticky comment. (A called
+# workflow's token can never exceed the caller's; pr-pipeline.yml grants the
+# superset.)
 permissions:
   contents: read
-  checks: write
-  pull-requests: write
 
-# ─── Dynamic work-queue (NEO-49) ──────────────────────────────────────────────
+# ─── The Playwright suite (NEO-341) ───────────────────────────────────────────
 # main deploys to prod on every merge, so the FULL suite is the merge-blocking
-# gate. We run it across many FREE ubuntu-latest runners (public repos get ~20
-# concurrent free jobs), each one isolated (PARALLELISM=1 = one Chrome/VM — web
-# can't parallelize within a VM, the NEO-46 contention). Instead of pre-assigning
-# a static slice per runner, a homogeneous runner pool DRAINS A SHARED QUEUE
-# (work-stealing) so the legs balance themselves and the suite scales by changing
-# only the matrix length — no flow-count re-tuning.
+# gate. Specs live in apps/web/playwright/tests/; config is
+# apps/web/playwright.config.ts (projects: setup / bootstrap / e2e).
 #
-#   setup  → resolve the PR's Vercel preview URL AND the preview Convex .convex.site
-#            URL (where the queue's HTTP endpoints live).
-#   seed   → seed the shared per-PR Convex preview's global baseline ONCE (setup
-#            track, worker 0), THEN enqueue the runnable flow list into the queue.
-#   runner → strategy.matrix.runner: identical runners, each bootstraps its account
-#            (runner N → TEST_EMAIL_N) then loops claim→run→report until the queue
-#            drains. A flow failure is recorded in the queue, not the job exit code.
-#   e2e    → the single ruleset-required gate: reads QUEUE status; green iff every
-#            queued flow passed and the queue fully drained.
-#   report → merge every runner's JUnit into ONE "Maestro E2E" check + sticky comment.
+#   setup → adopt the PR's Vercel preview URL, wait for it (with the bypass
+#           header), derive the preview's Convex deployment name.
+#   seed  → mirror the Convex env switches, scripted reset (e2e-baseline.sh),
+#           then the `setup` project (the global baseline) as worker 0.
+#   shard → 8 x ubuntu-latest. Each shard runs the spec files that
+#           playwright/shard-plan.mjs assigns it (longest-first over the per-spec
+#           timings in playwright/timings.json), NOT Playwright's count-based
+#           --shard. One shard = one worker = one account (shard i ->
+#           WORKER_INDEX i-1 -> TEST_EMAIL_<i-1>); each runs the `bootstrap`
+#           project first via the project dependency.
+#   e2e   → the single ruleset-gated verdict (job id and name are load-bearing:
+#           pr-pipeline.yml's `e2e` job and ci-gate read it). Merges every
+#           report and is green iff setup + seed + every shard succeeded AND every
+#           planned spec produced a passing result.
+#   report→ merged JUnit as ONE "Playwright E2E" check, per-test timing table in
+#           the step summary, sticky PR comment.
 #
-# Runner prep (bypass proxy + pinned Java/Chrome/Xvfb/Maestro) is the local
-# composite action .github/actions/maestro-runner.
+# To scale: extend the shard matrix AND the `8` passed to shard-plan.mjs (both in
+# this file), and provision TEST_EMAIL_8.. — nothing else changes.
 #
-# To scale: extend matrix.runner (e.g. add 8..11) and provision TEST_EMAIL_8.. —
-# the queue auto-distributes; nothing else changes. Requires the E2E_QUEUE_SECRET
-# GitHub secret + the same value set on the Convex preview env.
-
-# ─── Queue scope (NEO-187) ────────────────────────────────────────────────────
-# The run ATTEMPT is part of the key, and that is what makes the rerun button
-# work. `github.run_id` alone is stable across attempts, so a rerun re-entered
-# an already-seeded queue: seedQueue returned `alreadySeeded`, every row was
-# already terminal, `claimNext` found nothing pending, and the gate re-read the
-# same `failed: 1` and exited — in about five seconds, having re-executed
-# nothing. That reads as "the failure is real and reproducible" when it means
-# only "the queue remembers". Adding run_attempt makes each attempt a genuinely
-# fresh queue while preserving the within-attempt idempotency seedQueue exists
-# for (parallel seed steps must not double-insert).
-#
-# Defined ONCE here and inherited by every job: the seed, the runners, and the
-# gate MUST agree on this string, and three step-level copies of it was a
-# standing invitation to drift.
-#
-# Note: queue rows are never purged, so a rerun adds another full set of rows
-# rather than replacing the old attempt's. That is deliberate — the previous
-# attempt's results stay readable — and small next to the accumulation the
-# table already carries per run.
-env:
-  E2E_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
+# Artifacts are screenshots + reports ONLY. Never traces: a trace records the
+# network traffic, including Clerk testing tokens, and these artifacts are public
+# (playwright.config.ts turns traces off in CI; do not turn them back on here).
+# Only png files are uploaded from results/ — the per-failure error-context
+# snapshots stay out until the security review clears them.
 
 jobs:
   setup:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions: {}
     outputs:
       url: ${{ steps.vercel-preview.outputs.url }}
-      convex_site: ${{ steps.convex.outputs.convex_site }}
       convex_name: ${{ steps.convex.outputs.convex_name }}
     steps:
-      # NEO-162: this was a 60-attempt poll of the GitHub Deployments API,
-      # hunting for the vercel[bot] deployment on this SHA. The preview is now
-      # BUILT by pr-pipeline.yml's `web-preview` job and handed straight down, so
-      # the URL cannot be missing, cannot belong to a different commit, and
-      # cannot cost five minutes of polling before failing.
-      #
-      # The old poll's real hazard was that its absence read as a timeout rather
-      # than as a cause: a PR shape that produced no preview spent 5 minutes
-      # looking for one and then reported "timed out", which says nothing about
-      # why. A `needs:` edge says it at graph level instead.
-      #
-      # Readiness is still the NEXT step's job — `vercel deploy` returns once the
-      # deployment is READY, but Deployment Protection means the runner still has
-      # to prove itself with the bypass header before the URL answers 200.
+      # NEO-162: the preview is BUILT by pr-pipeline.yml's `web-preview` job and
+      # handed straight down, so the URL cannot be missing or belong to a
+      # different commit. Readiness is still this job's business: `vercel deploy`
+      # returns once the deployment is READY, but Deployment Protection means the
+      # runner still has to prove itself with the bypass header before the URL
+      # answers 200.
       - name: Adopt the Vercel preview URL
         id: vercel-preview
         env:
@@ -129,6 +103,12 @@ jobs:
             echo "::error::No preview_url supplied — the caller must build a preview first (pr-pipeline.yml's web-preview job)."
             exit 1
           fi
+          # The bypass secret is only ever sent to a *.vercel.app host.
+          host=$(printf '%s' "$URL" | sed -E 's#^https?://([^/]+).*#\1#')
+          case "$host" in
+            *.vercel.app) : ;;
+            *) echo "::error::Refusing non-Vercel preview host '$host'"; exit 1 ;;
+          esac
           echo "Vercel preview URL: $URL"
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
@@ -154,36 +134,32 @@ jobs:
           echo "Preview never returned 200."
           exit 1
 
-      - name: Resolve preview Convex URL (.convex.site)
+      - name: Resolve preview Convex deployment
         id: convex
         env:
           PREVIEW_URL: ${{ steps.vercel-preview.outputs.url }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: |
+          set -euo pipefail
           # The preview's index.html carries
           #   <meta name="x-convex-url" content="https://<deployment>.convex.cloud">
-          # (Vite substitutes VITE_CONVEX_URL at build). Extract it and swap the
-          # .convex.cloud API host for the .convex.site HTTP-actions host, where
-          # the E2E work-queue endpoints live. The queue runners hit this directly.
+          # (Vite substitutes VITE_CONVEX_URL at build).
           html=$(curl -sS -H "x-vercel-protection-bypass: $VERCEL_AUTOMATION_BYPASS_SECRET" "$PREVIEW_URL/")
           cloud=$(printf '%s' "$html" | grep -oE 'name="x-convex-url" content="[^"]*"' | grep -oE 'https://[a-z0-9-]+\.convex\.cloud' | head -1)
           if [ -z "$cloud" ]; then
             echo "::error::Could not resolve Convex URL from preview index.html (x-convex-url meta missing)"
             exit 1
           fi
-          site="${cloud/.convex.cloud/.convex.site}"
-          echo "Convex site URL: $site"
-          echo "convex_site=$site" >> "$GITHUB_OUTPUT"
           # Same slug pr-pipeline.yml's "Resolve Convex preview deployment
           # name" step derives (NEO-214) — the `--deployment` selector the
-          # `seed` job's scripted reset (e2e-baseline.sh, via
-          # `run-e2e-smoke.sh setup`) passes as $CONVEX_NAME. Assert its shape
-          # before writing it out: CONVEX_PREVIEW_DEPLOY_KEY is TEAM+PROJECT
-          # scoped (not deployment-scoped), so a malformed/empty slug here
-          # wouldn't fail closed on its own — the key would still authenticate
-          # fine against a wrong or empty --deployment, and e2e-baseline.sh
-          # would end up resetting some OTHER preview in the project rather
-          # than erroring.
+          # `seed` job's scripted reset (e2e-baseline.sh) and every
+          # `convex env` call pass as $CONVEX_NAME. Assert its shape before
+          # writing it out: CONVEX_PREVIEW_DEPLOY_KEY is TEAM+PROJECT scoped
+          # (not deployment-scoped), so a malformed/empty slug here wouldn't
+          # fail closed on its own — the key would still authenticate fine
+          # against a wrong or empty --deployment, and e2e-baseline.sh would
+          # end up resetting some OTHER preview in the project rather than
+          # erroring.
           name="${cloud#https://}"; name="${name%.convex.cloud}"
           if [ -z "$name" ] || [[ ! "$name" =~ ^[a-z-]+-[0-9]+$ ]]; then
             echo "::error::Could not derive a Convex preview deployment name from '$cloud'"
@@ -193,29 +169,34 @@ jobs:
           echo "convex_name=$name" >> "$GITHUB_OUTPUT"
 
   seed:
+    # Seed the shared per-PR Convex preview's global baseline ONCE, before the
+    # shard matrix fans out: scripted reset, then the `setup` project (Base +
+    # Insert + Parallel in one in-place pass) as worker 0. The per-shard
+    # `bootstrap` project resets only its own user, so it never wipes this
+    # global baseline. By the time this runs, NEONBINDER_BROWSER_URL on the
+    # Convex preview already points at the PR's own browser preview (when
+    # services/browser changed): pr-pipeline.yml sets it and only THEN invokes
+    # this workflow, so seeding marketplace creds here hits the PR's browser
+    # service, not dev.
+    needs: setup
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: apps/web
-    # Seed the shared per-PR Convex preview's global baseline ONCE, before the
-    # matrix fans out. Runs the setup track (setup → insert → parallel) as worker
-    # 0 at parallelism 1; `run-e2e-smoke.sh setup` is the only entry point that
-    # runs setup-tagged flows. Because resetMyTestState (the per-shard Phase-0
-    # bootstrap) is auth-scoped per user, it never wipes this global baseline.
-    # By the time this runs, NEONBINDER_BROWSER_URL on the Convex preview already
-    # points at the PR's own browser preview (when services/browser changed): the
-    # top-level pr-pipeline.yml sets it and only THEN invokes this workflow, so
-    # seeding marketplace creds here hits the PR's browser service, not dev.
-    needs: setup
-    if: always() && needs.setup.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: ./apps/web/.github/actions/maestro-runner
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          preview-url: ${{ needs.setup.outputs.url }}
-          bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
 
       # NEO-301: capture this PR preview's Convex logs for the seed job's own
       # lifetime. Preview log HISTORY is only ~15 minutes, and every attempt to
@@ -251,7 +232,7 @@ jobs:
 
       # NEO-287: mirror the `vars.NEONBINDER_PAUSED_PLATFORMS` repo variable onto
       # THIS PR's Convex preview before seeding, so the preview env and the
-      # Maestro `-e PAUSED_PLATFORMS` variable agree by construction. Without
+      # suite's PAUSED_PLATFORMS variable agree by construction. Without
       # this, a branch-reused preview keeps whatever the dashboard default was
       # last set to (NEO-184) — the exact drift that made per-run wiring
       # necessary for NEONBINDER_BROWSER_URL too. An empty variable means
@@ -336,49 +317,40 @@ jobs:
             echo "- Convex preview \`NEONBINDER_ENRICHMENT_FIXTURES\` = \`${got}\`";
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Seed global baseline (scripted reset, then setup track worker 0)
+      # NEO-214: the scripted reset is the single writer of the global baseline
+      # (shared with local use via `npm run test:e2e:seed`). It needs a PREVIEW
+      # deploy key + the deployment slug to reach THIS PR's Convex preview
+      # rather than the CLI's local default. CONVEX_PREVIEW_DEPLOY_KEY is
+      # TEAM+PROJECT scoped, not deployment-scoped (a wrong CONVEX_NAME would
+      # reach ANOTHER PR's preview in this project, not dev/prod) — hence the
+      # shape assertion on `name` in the `setup` job above. Once --deployment is
+      # passed the CLI selects the target BY THAT NAME and the key only
+      # authenticates the call, so a right key + wrong name is exactly the
+      # "reach another PR's preview" failure mode, not a fail-closed one.
+      - name: Scripted reset (e2e-baseline.sh reset)
         env:
-          APP_URL: http://localhost:3000
-          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-          # NEO-214: `run-e2e-smoke.sh setup` runs the scripted
-          # `e2e-baseline.sh reset` itself (single writer, single entry point
-          # shared with local use) before launching setup.yaml, which then
-          # does Base + Insert + Parallel in one in-place pass (NEO-62).
-          # e2e-baseline.sh needs a PREVIEW deploy key + the deployment slug
-          # to reach THIS PR's Convex preview rather than the CLI's local
-          # default. CONVEX_PREVIEW_DEPLOY_KEY is TEAM+PROJECT scoped, not
-          # deployment-scoped (a wrong CONVEX_NAME would reach ANOTHER PR's
-          # preview in this project, not dev/prod — previews are a separate
-          # deployment class from either) — hence the shape assertion on
-          # `name` in the `setup` job above. Also note: once --deployment is
-          # passed, the CLI selects the target BY THAT NAME directly and
-          # never consults the key for target selection at all — the key
-          # only authenticates the call, so a right key + wrong name is
-          # exactly the "reach another PR's preview" failure mode, not a
-          # fail-closed one.
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-          # Forced serial in the scheduler too (SELECT_MODE setup); pinned
-          # here for clarity. No SHARD_* → single-shard, worker 0.
-          MAESTRO_PARALLELISM: "1"
-          # Skip Phase-0 worker-bootstrap (NEO-62): the setup flow's own url chain
-          # (/testing/sign-in?redirect=/testing/reset?redirect=/testing/seed-credentials)
-          # already signs in + per-user resets + seeds creds + warms BSC/SL for
-          # worker 0, so a separate bootstrap is pure duplication (~66s). Runner
-          # jobs still bootstrap (they don't set this).
-          MAESTRO_SKIP_BOOTSTRAP: "1"
-          # NEO-236: the setup flow answers one New Team step per team the
-          # first sync stages from the players' Wikidata careers (~380 steps at
-          # ~1s each on the Base sync alone), so setup takes ~13 min, not ~6.
-          # The default 600s flow timeout killed it mid-way on CI run 7.
-          MAESTRO_FLOW_TIMEOUT_SEC: "1500"
-          REPORT_DIR: maestro-report
         run: |
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          npm run test:e2e -- setup
+          ./e2e-baseline.sh reset
+
+      # The `setup` project answers one New Team step per team the first sync
+      # stages (NEO-236, ~13 min on CI), so the project carries its own 25 min
+      # timeout; this job's budget covers install + reset + that.
+      - name: Seed global baseline (setup project, worker 0)
+        env:
+          CI: "true"
+          APP_URL: http://localhost:3000
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          WORKER_INDEX: "0"
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          PW_REPORT_DIR: playwright/report
+        run: npx playwright test --project=setup
 
       # NEO-289: report how much of the seed's name set the fixture recording
       # actually covered, without blocking the run on it. `continue-on-error`
@@ -458,22 +430,13 @@ jobs:
             echo "::warning::Enrichment fixture coverage gaps for sportQid Q5369: ${missing}"
           fi
 
-      - name: Enqueue flows into the work-queue
-        # After the baseline exists, populate the shared queue with the runnable
-        # flow list (non-util/wip/setup). Idempotent per runId. The homogeneous
-        # runner pool then drains it. Just curl + find + python3 — no Maestro/Chrome.
-        env:
-          CONVEX_SITE_URL: ${{ needs.setup.outputs.convex_site }}
-          E2E_QUEUE_SECRET: ${{ secrets.E2E_QUEUE_SECRET }}
-        run: ./run-e2e-queue.sh enqueue
-
       # NEO-301: stop the background capture and filter before upload.
       # Filtered, not raw: keep only ERROR/WARN log lines and our structured
       # `{"msg": …}` JSON lines (the house convention — see
       # convex/observability.ts and the adapters), dropping plain INFO/LOG
       # chatter. That chatter can carry a Convex userId (an opaque internal
       # id, e.g. the `player_created`/`team_created`/`marketplace_token_paused`
-      # lines) which has no diagnostic value for a red E2E flow and is
+      # lines) which has no diagnostic value for a red E2E run and is
       # unnecessary to keep in an artifact anyone logged into GitHub can
       # download on this public repo. A grep of apps/web/convex found no raw
       # emails, passwords, tokens or secrets ever reach console.* —
@@ -525,59 +488,64 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: maestro-report-seed
+          name: pw-report-seed
+          # Not under a dot-directory: upload-artifact skips hidden paths by
+          # default. report/ holds the blob, results.json and junit.xml;
+          # results/ holds failure screenshots. PNG ONLY — no traces, and no
+          # error-context snapshots until the security review clears them.
           path: |
-            apps/web/maestro-report/
-            !apps/web/maestro-report/**/commands-*.json
-            !apps/web/maestro-report/maestro-home/**
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
           if-no-files-found: ignore
           retention-days: 14
 
-  runner:
+  shard:
+    # 8 identical shards, each its own VM = ONE Chrome (web can't parallelize
+    # within a VM — the NEO-46 contention). shard i -> global worker i-1 ->
+    # TEST_EMAIL_<i-1> (0..7 provisioned). A test failure fails the shard, but
+    # `fail-fast: false` lets every other shard finish and report; the `e2e`
+    # gate below reads the merged results for the verdict.
+    needs: [setup, seed]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      # Listed, not computed: Actions expressions have no arithmetic.
+      matrix:
+        include:
+          - { shard: 1, worker: 0 }
+          - { shard: 2, worker: 1 }
+          - { shard: 3, worker: 2 }
+          - { shard: 4, worker: 3 }
+          - { shard: 5, worker: 4 }
+          - { shard: 6, worker: 5 }
+          - { shard: 7, worker: 6 }
+          - { shard: 8, worker: 7 }
     defaults:
       run:
         working-directory: apps/web
-    # Homogeneous runner pool (NEO-49 dynamic queue). Every runner is identical —
-    # it drains the SHARED Convex work-queue (work-stealing) instead of a static
-    # shard slice, so the legs balance themselves (no slow-shard tail) and the
-    # suite scales by changing the matrix length alone — no SHARD_TOTAL re-tuning.
-    # Each runner is its own VM = ONE maestro/Chrome (web can't parallelize within
-    # a VM — that was the NEO-46 p=2 Chrome contention). runner N → global worker
-    # N → TEST_EMAIL_N (0..7 provisioned). Needs the preview URL (setup), the
-    # seeded baseline AND the enqueued queue (seed).
-    needs: [setup, seed]
-    # `seed` runs with `if: always()` so it isn't skipped when an upstream
-    # conditional job is. A downstream job that omits `always()` is itself skipped
-    # whenever ANY need was skipped — that cascade would leave the matrix
-    # un-expanded, the queue never drains, and the gate fails on pending>0 having
-    # run zero flows (NEO-68). So gate explicitly on seed's result instead.
-    if: always() && needs.seed.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    strategy:
-      # One runner failing must NOT cancel the others — the queue + gate decide
-      # the verdict, and we want every runner's report.
-      fail-fast: false
-      matrix:
-        runner: [0, 1, 2, 3, 4, 5, 6, 7]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: ./apps/web/.github/actions/maestro-runner
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          preview-url: ${{ needs.setup.outputs.url }}
-          bypass-secret: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
 
-      # NEO-301: the seed job ends before the runner matrix starts, so it can
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+
+      # NEO-301: the seed job ends before the shard matrix starts, so it can
       # only cover its own window (captured above) — nothing spans the WHOLE
-      # E2E run. Runner 0 does: it drains the shared queue until empty, which
-      # by construction covers every flow any runner executes. So runner 0
-      # alone streams Convex logs for its full lifetime; runners 1-7 skip
-      # this (one stream is enough, and it would just be the same preview's
-      # logs duplicated 8x). See "Stop Convex log capture (runner 0)" below
-      # for the filtering rationale. Best-effort only: never fails the job.
-      - name: Start Convex log capture (runner 0)
-        if: matrix.runner == 0
+      # E2E run. Shard 1 does the next best thing: one stream for its full
+      # lifetime (the other seven would just duplicate the same preview's logs
+      # 8x). See "Stop Convex log capture (shard 1)" below for the filtering
+      # rationale. Best-effort only: never fails the job.
+      - name: Start Convex log capture (shard 1)
+        if: matrix.shard == 1
         working-directory: apps/web
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
@@ -585,49 +553,62 @@ jobs:
         run: |
           set -uo pipefail
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
-            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for runner 0."
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for shard 1."
             exit 0
           fi
-          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-runner-0.raw.jsonl"
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-shard-1.raw.jsonl"
           rm -f "$RAW_LOG_FILE"
           nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
-            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-runner-0.stderr.log" &
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-shard-1.stderr.log" &
           disown
-          echo "CONVEX_LOGS_RUNNER0_PID=$!" >> "$GITHUB_ENV"
-          echo "Started Convex log capture for runner 0 (pid $!) -> $RAW_LOG_FILE"
+          echo "CONVEX_LOGS_SHARD1_PID=$!" >> "$GITHUB_ENV"
+          echo "Started Convex log capture for shard 1 (pid $!) -> $RAW_LOG_FILE"
 
-      - name: Drain the work-queue (runner ${{ matrix.runner }})
+      - name: Run shard ${{ matrix.shard }}/8
         env:
+          CI: "true"
           APP_URL: http://localhost:3000
-          # NO secrets to Maestro -e (NEO-29). The queue secret is sent ONLY as an
-          # HTTP header inside run-e2e-queue.sh and never reaches Maestro / its
-          # uploaded debug artifacts.
-          RUNNER_INDEX: ${{ matrix.runner }}
-          CONVEX_SITE_URL: ${{ needs.setup.outputs.convex_site }}
-          E2E_QUEUE_SECRET: ${{ secrets.E2E_QUEUE_SECRET }}
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          WORKER_INDEX: ${{ matrix.worker }}
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-          REPORT_DIR: maestro-report
-        # Exits 0 once the queue is drained — a FLOW failure is recorded in the
-        # queue (not a job failure), so the single `e2e` gate reads queue status
-        # for the real verdict. A HARD error (bootstrap fail / crash) still fails
-        # this job, which the gate also checks.
-        run: ./run-e2e-queue.sh
+          PW_REPORT_DIR: playwright/report
+          SHARD: ${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          # Longest-first file plan instead of --shard (see shard-plan.mjs).
+          files=$(node playwright/shard-plan.mjs 8 "$SHARD")
+          node playwright/shard-plan.mjs 8   # per-shard totals, to stderr
+          if [ -z "$files" ]; then
+            # `playwright test` with no file arguments runs the WHOLE suite, and
+            # an empty plan means the planner and the spec tree disagree. Either
+            # way, refuse rather than pass a shard that ran nothing.
+            echo "::error::Shard ${SHARD}/8 has no specs planned."
+            exit 1
+          fi
+          echo "Shard ${SHARD} runs:"; echo "$files"
+          start=$(date +%s)
+          # `bootstrap` runs first via the project dependency.
+          # shellcheck disable=SC2086 # one path per line, no spaces
+          npx playwright test --project=e2e $files || code=$?
+          echo "Shard ${SHARD}: exit ${code:-0}, $(( $(date +%s) - start ))s"
+          exit "${code:-0}"
 
       # NEO-301: stop the background capture and filter before upload — same
       # filter and same reasoning as "Stop Convex log capture (seed)" above
       # (keep ERROR/WARN + our structured `{"msg": …}` lines, drop plain
       # INFO/LOG chatter that can carry a Convex userId). Never fails the job.
-      - name: Stop Convex log capture (runner 0)
-        if: always() && matrix.runner == 0
+      - name: Stop Convex log capture (shard 1)
+        if: always() && matrix.shard == 1
         working-directory: apps/web
         run: |
           set -uo pipefail
-          if [ -n "${CONVEX_LOGS_RUNNER0_PID:-}" ]; then
-            kill "${CONVEX_LOGS_RUNNER0_PID}" 2>/dev/null || true
-            wait "${CONVEX_LOGS_RUNNER0_PID}" 2>/dev/null || true
+          if [ -n "${CONVEX_LOGS_SHARD1_PID:-}" ]; then
+            kill "${CONVEX_LOGS_SHARD1_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_SHARD1_PID}" 2>/dev/null || true
           fi
-          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-runner-0.raw.jsonl"
-          OUT_FILE="convex-logs-runner-0.jsonl"
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-shard-1.raw.jsonl"
+          OUT_FILE="convex-logs-shard-1.jsonl"
           if [ -s "$RAW_LOG_FILE" ]; then
             jq -c '
                 ((.logLines // [])
@@ -638,231 +619,267 @@ jobs:
                 as $keep
                 | select((.error != null) or ($keep | length) > 0)
                 | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-runner-0-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-shard-1-jq.stderr.log" || true
             gzip -f "$OUT_FILE" || true
-            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for runner 0."
+            echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for shard 1."
           else
-            echo "No Convex logs captured for runner 0 (capture may have been skipped or produced nothing)."
+            echo "No Convex logs captured for shard 1 (capture may have been skipped or produced nothing)."
           fi
 
-      - name: Upload Convex log capture (runner 0)
-        if: always() && matrix.runner == 0
+      - name: Upload Convex log capture (shard 1)
+        if: always() && matrix.shard == 1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: convex-logs-runner-0
-          path: apps/web/convex-logs-runner-0.jsonl.gz
+          name: convex-logs-shard-1
+          path: apps/web/convex-logs-shard-1.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: Upload Maestro report — runner ${{ matrix.runner }}
+      - name: Upload shard report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: maestro-report-runner-${{ matrix.runner }}
-          # Keep junit + failure screenshots + summary, but exclude the files
-          # that serialize Maestro's `-e` env map (NEO-29 defense-in-depth) and
-          # the verbose per-worker home dirs.
+          name: pw-report-shard-${{ matrix.shard }}
+          # Same paths and the same PNG-only rule as the seed report.
           path: |
-            apps/web/maestro-report/
-            !apps/web/maestro-report/**/commands-*.json
-            !apps/web/maestro-report/maestro-home/**
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
           if-no-files-found: ignore
           retention-days: 14
 
-  # Single stable gate required by the `production` ruleset. The runner matrix
-  # emits "runner (N)" checks whose names change with the matrix length, so they
-  # can't be the required check. This ONE "e2e" check is the real verdict: it
-  # reads the QUEUE status (a flow failure is recorded there, not in a runner's
-  # exit code) and is green iff setup + seed succeeded AND every queued flow
-  # passed (failed==0) AND the queue fully drained (pending==0, running==0 — a
-  # nonzero running means a runner died holding a claimed flow). Stable name
-  # regardless of how many runners.
+  # Single stable gate required by the `production` ruleset (through pr-pipeline's
+  # `e2e` job and `ci-gate`). The shard matrix emits "shard (N)" checks whose
+  # names change with the matrix length, so they can't be the required check.
+  # This ONE `e2e` job is the verdict. It is green iff
+  #   * setup and seed succeeded,
+  #   * every shard job succeeded,
+  #   * the merged report has no failed / timed-out / interrupted / skipped test,
+  #   * and EVERY spec the planner knows about produced a result — so a shard
+  #     that died before reporting (or never started) cannot pass by omission.
   e2e:
-    needs: [setup, seed, runner]
+    needs: [setup, seed, shard]
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 3
-    steps:
-      - name: Gate — queue fully drained with zero failures
-        env:
-          CONVEX_SITE_URL: ${{ needs.setup.outputs.convex_site }}
-          E2E_QUEUE_SECRET: ${{ secrets.E2E_QUEUE_SECRET }}
-        run: |
-          echo "jobs: setup=${{ needs.setup.result }} seed=${{ needs.seed.result }} runner=${{ needs.runner.result }}"
-          if [ "${{ needs.setup.result }}" != "success" ] || [ "${{ needs.seed.result }}" != "success" ]; then
-            echo "::error::setup or seed did not succeed"; exit 1
-          fi
-          status=$(curl -fsS -X POST "$CONVEX_SITE_URL/e2e/status" \
-            -H "x-e2e-queue-secret: $E2E_QUEUE_SECRET" -H "Content-Type: application/json" \
-            -d "{\"runId\":\"$E2E_RUN_ID\"}")
-          echo "queue status: $status"
-          echo "$status" | python3 -c "
-          import sys, json
-          d = json.load(sys.stdin)
-          print('passed=%s failed=%s pending=%s running=%s total=%s' % (
-              d.get('passed'), d.get('failed'), d.get('pending'), d.get('running'), d.get('total')))
-          if d.get('total', 0) == 0:
-              print('::error::work-queue is empty — enqueue step failed?'); sys.exit(1)
-          if d.get('failed', 0) > 0 or d.get('pending', 0) > 0 or d.get('running', 0) > 0:
-              print('::error::E2E gate failed — flow failures or undrained queue'); sys.exit(1)
-          print('All queued flows passed.')
-          "
-          # Also fail if a runner job itself hard-failed (bootstrap/crash) even
-          # when the queue otherwise looks clean.
-          if [ "${{ needs.runner.result }}" != "success" ]; then
-            echo "::error::a runner job hard-failed (bootstrap or crash)"; exit 1
-          fi
-
-  report:
+    timeout-minutes: 15
+    permissions:
+      contents: read
     defaults:
       run:
         working-directory: apps/web
-    needs: [runner]
-    # Run even when a runner fails so the merged report always publishes.
-    if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
     steps:
+      - name: Upstream jobs
+        env:
+          R_SETUP: ${{ needs.setup.result }}
+          R_SEED: ${{ needs.seed.result }}
+          R_SHARD: ${{ needs.shard.result }}
+        run: |
+          echo "jobs: setup=$R_SETUP seed=$R_SEED shard=$R_SHARD"
+          if [ "$R_SETUP" != "success" ] || [ "$R_SEED" != "success" ]; then
+            echo "::error::setup or seed did not succeed (setup=$R_SETUP seed=$R_SEED)"
+            exit 1
+          fi
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Download all runner reports
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+
+      - name: Download all reports
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: maestro-report-runner-*
-          path: apps/web/all-shards
+          pattern: pw-report-*
+          path: apps/web/pw-all
 
-      - name: Regenerate flow-timings.tsv (LPT seed table)
-        if: always()
-        # Rebuild .maestro/flow-timings.tsv from this run's per-flow JUnit times so a
-        # later run can seed the queue longest-first (NEO-61). Flows not measured this
-        # run keep their committed value. Uploaded as an artifact (NOT committed here);
-        # the weekly refresh-flow-timings.yml downloads it and opens a chore PR when
-        # it drifts.
-        run: bash gen-flow-timings.sh all-shards .maestro/flow-timings.tsv > flow-timings.tsv
+      - name: Merge reports
+        run: |
+          set -euo pipefail
+          mkdir -p pw-blobs pw-merged
+          find pw-all -path '*/blob/*.zip' -exec cp {} pw-blobs/ \;
+          ls -la pw-blobs
+          if [ -z "$(ls -A pw-blobs)" ]; then
+            echo "::error::No report blobs from any job — nothing ran to completion."
+            exit 1
+          fi
+          PLAYWRIGHT_JSON_OUTPUT_FILE=pw-merged/results.json \
+          PLAYWRIGHT_JUNIT_OUTPUT_FILE=pw-merged/junit.xml \
+          PLAYWRIGHT_HTML_OUTPUT_DIR=pw-merged/html \
+          PLAYWRIGHT_HTML_OPEN=never \
+            npx playwright merge-reports --reporter=json,junit,html pw-blobs
 
-      - name: Upload flow-timings artifact
+      # Screenshots and reports only (see the header). The merged HTML report
+      # embeds attachments, which in CI are failure screenshots.
+      - name: Upload merged report
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: flow-timings
-          path: apps/web/flow-timings.tsv
+          name: pw-merged
+          path: apps/web/pw-merged/
           if-no-files-found: ignore
           retention-days: 14
 
-      - name: ⏱️ Flow timing summary (slowest first)
-        if: always()
+      - name: Verify results
         run: |
-          {
-            echo "## ⏱️ Flow timings (slowest first)"
-            echo "| flow | seconds |"
-            echo "|---|---|"
-          } >> "$GITHUB_STEP_SUMMARY"
-          # Pull "time<TAB>name" from every flow's JUnit <testsuite>, sort slowest-first,
-          # flag anything over 3 min. (maestro writes one testsuite per flow with time=.)
-          find all-shards -path '*/junit/*.xml' -print0 2>/dev/null \
-            | xargs -0 grep -hoE '<testsuite [^>]*>' 2>/dev/null \
-            | sed -E 's/.*name="([^"]+)"[^>]*time="([0-9.]+)".*/\2\t\1/' \
-            | sort -rn \
-            | awk -F'\t' '
-                { secs=$1+0; name=$2; total+=secs; if (secs>180) slow++;
-                  flag=(secs>180)?" :warning:":"";
-                  printf "| %s%s | %.0f |\n", name, flag, secs }
-                END { printf "\n**Total flow-seconds:** %.0f &middot; **flows > 3 min:** %d\n", total, slow }
-              ' >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          # What SHOULD have run: every spec the planner would hand out (one
+          # shard of one = the whole plan), relative to the tests dir.
+          node playwright/shard-plan.mjs 1 1 | sed 's#^playwright/tests/##' | sort -u > planned.txt
+          planned_n=$(wc -l < planned.txt | tr -d ' ')
+          if [ "$planned_n" -eq 0 ]; then
+            echo "::error::The shard planner lists no specs."
+            exit 1
+          fi
+          python3 - planned.txt pw-merged/results.json <<'PY'
+          import json, sys
 
-      - name: Publish Maestro JUnit report (merged)
+          planned = {l.strip() for l in open(sys.argv[1]) if l.strip()}
+          data = json.load(open(sys.argv[2]))
+
+          rows = []  # (project, file, title, verdict)
+          def walk(suite, file=""):
+              file = suite.get("file", file)
+              for spec in suite.get("specs", []):
+                  for t in spec.get("tests", []):
+                      res = t.get("results", [])
+                      last = res[-1].get("status") if res else None
+                      bad = (
+                          t.get("status") in ("unexpected", "skipped")
+                          or last in (None, "failed", "timedOut", "interrupted", "skipped")
+                      )
+                      rows.append((t.get("projectName"), file, spec.get("title"), "bad" if bad else "ok", last or "not run"))
+              for s in suite.get("suites", []):
+                  walk(s, file)
+          for s in data.get("suites", []):
+              walk(s)
+
+          errors = []
+          for e in data.get("errors", []) or []:
+              errors.append("report error: " + str(e.get("message", e))[:300])
+
+          for proj, file, title, verdict, last in rows:
+              if verdict == "bad":
+                  errors.append(f"[{proj}] {file} :: {title} -> {last}")
+
+          seed_ok = [r for r in rows if r[0] == "setup" and r[3] == "ok"]
+          if not seed_ok:
+              errors.append("no passing result from the `setup` project (the seed)")
+
+          seen = {r[1] for r in rows if r[0] == "e2e"}
+          missing = sorted(planned - seen)
+          for m in missing:
+              errors.append(f"planned spec produced no result: {m}")
+
+          n_e2e = sum(1 for r in rows if r[0] == "e2e")
+          print(f"planned specs={len(planned)} · e2e tests reported={n_e2e} · specs with a result={len(seen & planned)} · missing={len(missing)}")
+          if errors:
+              for line in errors[:200]:
+                  print("::error::" + line.replace("\n", " "))
+              if len(errors) > 200:
+                  print(f"::error::... and {len(errors) - 200} more")
+              sys.exit(1)
+          print("All planned specs ran and passed.")
+          PY
+
+      # Last on purpose: a red verdict above already fails the job, and this
+      # catches the rarer case of a shard that failed outside any test (install,
+      # crash) while the surviving results still looked complete.
+      - name: Shard jobs
+        env:
+          R_SHARD: ${{ needs.shard.result }}
+        run: |
+          if [ "$R_SHARD" != "success" ]; then
+            echo "::error::a shard job did not succeed (shard=$R_SHARD)"
+            exit 1
+          fi
+
+  report:
+    # Publish even when the gate is red. Informational only: the `e2e` job is
+    # the verdict, so this check publishes results without double-failing.
+    needs: [e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - name: Download merged report
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: pw-merged
+          path: merged
+
+      - name: Publish Playwright JUnit report (merged)
         if: always()
         uses: mikepenz/action-junit-report@a9170d5795813c01ab4901ffb045b52bab4ab09d # v6.5.0
         with:
-          # Every shard's per-flow JUnit, merged into ONE "Maestro E2E" check.
-          report_paths: apps/web/all-shards/**/junit/*.xml
-          check_name: Maestro E2E
+          report_paths: merged/junit.xml
+          check_name: Playwright E2E
           detailed_summary: true
           include_passed: true
-          # The matrix legs are the gate; this check is informational so it
-          # publishes results without double-failing the run.
           fail_on_failure: false
 
       - name: Build combined summary
         if: always()
-        # Render a per-test pass/fail + duration table from the merged JUnit
-        # (all-shards/**/junit/*.xml) — the same files the "Maestro E2E" check
-        # reads. Replaces the old summary.md-based builder, which always fell
-        # through to "No shard summaries found" once the runners stopped
-        # emitting summary.md (NEO-64). Failures are surfaced first, then
-        # passing flows slowest-first.
         run: |
-          combined=combined-summary.md
-          rows="$(mktemp)"
+          python3 - <<'PY'
+          import json, os
 
-          # One <testsuite> per flow → TSV: <rank>\t<seconds>\t<name>\t<status>
-          # rank 0 = failed/errored (listed first), 1 = passed/skipped.
-          # Attributes parsed by name, space-anchored so "classname" can't
-          # shadow "name".
-          find all-shards -path '*/junit/*.xml' -print0 2>/dev/null \
-            | xargs -0 grep -hoE '<testsuite [^>]*>' 2>/dev/null \
-            | awk '
-                function attr(s, k,   re, m) {
-                  re = "[[:space:]]" k "=\"[^\"]*\""
-                  if (match(s, re)) {
-                    m = substr(s, RSTART, RLENGTH)
-                    sub("^[[:space:]]" k "=\"", "", m); sub(/"$/, "", m)
-                    return m
-                  }
-                  return ""
-                }
-                {
-                  name = attr($0, "name"); if (name == "") next
-                  tests = attr($0, "tests") + 0
-                  fails = attr($0, "failures") + 0
-                  errs  = attr($0, "errors") + 0
-                  skips = attr($0, "skipped") + 0
-                  secs  = attr($0, "time") + 0
-                  if (fails > 0 || errs > 0)             { rank = 0; status = "failed" }
-                  else if (tests == 0 || skips >= tests) { rank = 1; status = "skipped" }
-                  else                                   { rank = 1; status = "passed" }
-                  printf "%d\t%.3f\t%s\t%s\n", rank, secs, name, status
-                }
-              ' > "$rows"
+          out = "combined-summary.md"
+          try:
+              data = json.load(open("merged/results.json"))
+          except Exception as e:
+              with open(out, "w") as fh:
+                  fh.write("## Playwright E2E results\n\n")
+                  fh.write(f"No merged results were produced ({e}). A shard or the seed may have failed before reporting; check the `seed`, `shard` and `e2e` jobs.\n")
+              raise SystemExit(0)
 
-          shards=$(find all-shards -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')
-          passed=$(awk -F'\t' '$4=="passed"'  "$rows" | wc -l | tr -d ' ')
-          failed=$(awk -F'\t' '$4=="failed"'  "$rows" | wc -l | tr -d ' ')
-          skipped=$(awk -F'\t' '$4=="skipped"' "$rows" | wc -l | tr -d ' ')
-          total_secs=$(awk -F'\t' '{t+=$2} END{printf "%.0f", t+0}' "$rows")
-          n_rows=$(wc -l < "$rows" | tr -d ' ')
+          tests = []
+          def walk(suite, file=""):
+              file = suite.get("file", file)
+              for spec in suite.get("specs", []):
+                  for t in spec.get("tests", []):
+                      res = t.get("results", [])
+                      dur = sum(r.get("duration", 0) for r in res) / 1000
+                      status = res[-1].get("status") if res else "skipped"
+                      tests.append((dur, file, spec.get("title"), status, t.get("projectName")))
+              for s in suite.get("suites", []):
+                  walk(s, file)
+          for s in data.get("suites", []):
+              walk(s)
 
-          {
-            echo "## Maestro E2E results (sharded)"
-            echo ""
-            if [ "$n_rows" -eq 0 ]; then
-              echo "⚠️ _No JUnit results were produced by any shard. All shards may have failed before reporting — check the \`runner\` job logs._"
-            else
-              if [ "$failed" -eq 0 ]; then icon="✅"; else icon="❌"; fi
-              line="$icon **${passed} passed"
-              [ "$failed"  -gt 0 ] && line="$line · ${failed} failed"
-              [ "$skipped" -gt 0 ] && line="$line · ${skipped} skipped"
-              line="$line** · ${total_secs}s total · ${shards} shards"
-              echo "$line"
-              echo ""
-              echo "| Test | Status | Duration |"
-              echo "|---|---|---|"
-              sort -t$'\t' -k1,1n -k2,2nr "$rows" \
-                | awk -F'\t' '
-                    { secs=$2; name=$3; status=$4
-                      sym = (status=="failed") ? "❌ fail" : (status=="skipped") ? "⏭️ skip" : "✅ pass"
-                      printf "| %s | %s | %.0fs |\n", name, sym, secs }
-                  '
-            fi
-          } > "$combined"
+          failing = ("failed", "timedOut", "interrupted")
+          passed = sum(1 for t in tests if t[3] == "passed")
+          failed = sum(1 for t in tests if t[3] in failing)
+          skipped = sum(1 for t in tests if t[3] == "skipped")
+          total = sum(t[0] for t in tests)
+          icon = "✅" if failed == 0 and skipped == 0 and tests else "❌"
+          lines = [
+              "## Playwright E2E results",
+              "",
+              f"{icon} **{passed} passed" + (f" · {failed} failed" if failed else "") + (f" · {skipped} skipped" if skipped else "") + f"** · {total:.0f}s total test time",
+              "",
+              "| Test | Project | Status | Duration |",
+              "|---|---|---|---|",
+          ]
+          # Failures first, then slowest first.
+          for dur, file, title, status, proj in sorted(tests, key=lambda t: (t[3] == "passed", -t[0])):
+              flag = " :warning:" if dur > 180 else ""
+              lines.append(f"| {file} :: {title}{flag} | {proj} | {status} | {dur:.0f}s |")
+          with open(out, "w") as fh:
+              fh.write("\n".join(lines) + "\n")
+          PY
+          cat combined-summary.md >> "$GITHUB_STEP_SUMMARY"
 
-          rm -f "$rows"
-          cat "$combined" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Post Maestro summary as sticky PR comment
+      - name: Post Playwright summary as sticky PR comment
         if: always() && github.event_name == 'pull_request'
         uses: marocchino/sticky-pull-request-comment@5770ad5eb8f42dd2c4f34da00c94c5381e49af88 # v3.0.5
         with:
-          header: maestro-results
-          path: apps/web/combined-summary.md
-
+          header: e2e-results
+          path: combined-summary.md

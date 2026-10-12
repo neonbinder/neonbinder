@@ -166,29 +166,20 @@ Procedure:
    exists, with `git stash show --stat`. **Never drop a stash without asking**, and if the
    user says drop it, print `git stash show -p` first and record the dropped blob SHA in
    your report so it can be recovered via `git stash apply <sha>`.
-6. **Orphaned E2E browsers.** Any PR whose worktree ran E2E leaves detached Chrome
-   instances behind — Maestro sets chromedriver's `detach` option, so a flow that timed
-   out or a harness that was Ctrl-C'd leaves a ~280MB headless browser running forever.
-   On 2026-08-10 eleven of them had accumulated on this machine, several hours old.
-   Run the repo's sweeper from the monorepo checkout (not the removed worktree):
+6. **Orphaned E2E browsers.** Playwright launches and closes its own Chromium, so a
+   clean run leaves nothing behind. A run that was Ctrl-C'd or killed can strand its
+   headless browser (they live under the `ms-playwright` cache directory). List them
+   read-only first:
 
    ```bash
-   cd "$(git rev-parse --show-toplevel)/apps/web" && ./lib-e2e-chrome.sh
+   ps -axo pid,etime,command | grep '[m]s-playwright'
    ```
 
-   (Added in NEO-138. If the checkout predates it and the script isn't there, skip this
-   step rather than improvising — see the warning below.)
-
-   It matches on the process *executable* — `chromedriver`, `Google Chrome for Testing`,
-   and branded Chrome only when its args show a chromedriver temp profile or
-   `--test-type=webdriver`. A real browsing session matches none of those, so this
-   never touches the user's own browser and needs no confirmation. Report the count it
-   killed (it prints one line either way).
-
-   **Do not hand-roll this with `pkill -f`/`grep` over full command lines.** Anything
-   whose *arguments* mention the Chrome path — the E2E runner itself, which exports
-   `SE_BROWSER_PATH`, or your own shell — gets swept up and killed. That is exactly how
-   the first version of the sweeper killed its calling shell.
+   Report what you find. Kill only processes **older than an hour** (`etime` of
+   `01:00:00` or more): another Claude session on this machine may have a live run,
+   and a younger browser is more likely theirs than an orphan. Kill by the PID
+   column, never with `pkill -f` over command lines (your own shell's arguments can
+   match). Report the count killed and the count left alone.
 
 ### 8. Final report
 One consolidated summary: merge commit, prod deployment id/URL that went `READY`,

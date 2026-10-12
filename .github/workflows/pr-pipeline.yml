@@ -8,8 +8,8 @@ name: PR Pipeline
 # When a PR changes services/browser, Browser CI (browser.yml) independently
 # builds + deploys a `pr-<N>` tagged, NO-traffic Cloud Run preview on the dev
 # service. THIS pipeline then points the Convex preview's NEONBINDER_BROWSER_URL
-# at that tagged URL and only AFTERWARD invokes the E2E suite — so the Maestro
-# flows exercise the PR's browser service, not shared dev. Web-only PRs skip the
+# at that tagged URL and only AFTERWARD invokes the E2E suite — so the Playwright
+# specs exercise the PR's browser service, not shared dev. Web-only PRs skip the
 # wiring and run E2E against the canonical dev browser default.
 #
 # Why the wiring lives HERE (not in e2e.yml, not in the Vercel build):
@@ -32,7 +32,7 @@ concurrency:
 
 # Superset of what the reusable e2e.yml needs (a called workflow's GITHUB_TOKEN
 # can't exceed the caller's): checks:write + pull-requests:write for the E2E
-# "Maestro E2E" check + sticky comment. The wire-* jobs add id-token:write at the
+# "Playwright E2E" check + sticky comment. The wire-* jobs add id-token:write at the
 # job level (for WIF), and web-preview adds deployments:write (for the preview's
 # Deployment record), without granting either to the E2E jobs.
 #
@@ -102,9 +102,8 @@ jobs:
       # The carve-out swallowed the exact PR it existed to spare.
       #
       # Condition 2 stays deliberately narrow: manifests ONLY. CI-infrastructure
-      # bumps that Dependabot also raises — `.github/workflows/**` and
-      # `apps/web/.github/actions/maestro-runner/**` (setup-chrome, setup-java,
-      # actions/cache) — ARE the E2E harness. Skipping E2E on those would leave
+      # bumps that Dependabot also raises — `.github/workflows/**`
+      # (setup-node, upload-artifact, the Playwright install) — ARE the E2E harness. Skipping E2E on those would leave
       # an unexercised test runner, so they keep running the full matrix.
       #
       # Do not "simplify" condition 1 to `github.actor`. See the note at the
@@ -1150,7 +1149,7 @@ jobs:
   #
   # Why it is here and not in E2E: the border-shaving bug this suite exists to
   # catch shipped to production and ran for a week with E2E green the whole
-  # time. Maestro asserts on rendered UI, and a card cropped to 87% of itself
+  # time. The E2E suite asserts on rendered UI, and a card cropped to 87% of itself
   # still renders, classifies and pairs. The defect was geometry, so the
   # assertion has to be geometry.
   #
