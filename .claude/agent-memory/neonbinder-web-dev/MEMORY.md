@@ -100,3 +100,4 @@
 - [Search mock must honour query args](reference_search_mock_must_honour_query_args.md) — a useQuery mock ignoring args hides a client re-filter; emulate the server before trusting its rows
 - [One search per index per query](reference_one_search_per_index_per_query.md) — two same-text withSearchIndex reads go stale (narrower filter wins); narrow leg = index range + JS text filter
 - [Agent Bash node ignores .nvmrc](reference_agent_bash_node_ignores_nvmrc.md) — agent shells skip load-nvmrc; export PATH to ~/.nvm/versions/node/v$(cat apps/web/.nvmrc)/bin per gate call
+- [Relabelled primary slot needs a focus move](reference_relabelled_primary_slot_needs_a_focus_move.md) — move focus off a relabelled footer slot; arm the ref only on a real change; park-on-heading effect goes AFTER the opener-reading open effect
