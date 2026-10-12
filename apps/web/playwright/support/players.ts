@@ -12,7 +12,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 export const PLAYERS_BROWSING = /^[\d,]+ players?$/;
 
 /** Any filtered count: "12 matches", "1 match", "10+ matches", "0 matches". */
-export const PLAYERS_MATCHES = /^[\d,]+\+? matches?$/;
+export const PLAYERS_MATCHES = /^[\d,]+\+? match(es)?$/;
 
 export function playersCounter(page: Page, pattern: RegExp | string): Locator {
   return page.getByText(pattern, typeof pattern === "string" ? { exact: true } : undefined);

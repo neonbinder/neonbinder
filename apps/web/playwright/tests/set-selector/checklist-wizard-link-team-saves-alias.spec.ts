@@ -184,7 +184,9 @@ test(
     await page.getByRole("button", { name: new RegExp(`Ali${T}`) }).click();
     const aka = page.getByRole("textbox", { name: "Also known as" });
     const currentAliases = page.getByRole("list", { name: "Current aliases" });
-    await expect(aka).toHaveValue(ROW);
+    // The box holds every alias: the fixture team's own `Pca<token>` (PART 1)
+    // and the checklist spelling the link remembered.
+    await expect(aka).toHaveValue(`Pca${T}, ${ROW}`);
     await expect(currentAliases).toBeVisible();
     await expect(currentAliases.getByText(ROW, { exact: true })).toBeVisible();
     await expectAccessible(page, { label: "Team Management, team detail with its remembered alias" });

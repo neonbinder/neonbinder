@@ -80,7 +80,7 @@ test(
 
     // Franchise Management shows both teams on the thread.
     await page.getByRole("link", { name: "See the franchise" }).click();
-    await expect(page.getByText(/of .* franchises/)).toBeVisible();
+    await expect(page.getByText(/of .* franchises/).first()).toBeVisible();
     await expect(page.getByText(/2 teams on this thread/)).toBeVisible();
     await expect(page.getByText(teamA, { exact: true })).toBeVisible();
     await expect(page.getByText(teamB, { exact: true })).toBeVisible();
