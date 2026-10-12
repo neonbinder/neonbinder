@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "playwright-test": {
+      "command": "npx",
+      "args": [
+        "--prefix",
+        "apps/web",
+        "playwright",
+        "run-test-mcp-server",
+        "-c",
+        "apps/web/playwright.config.ts"
+      ]
+    }
+  }
+}

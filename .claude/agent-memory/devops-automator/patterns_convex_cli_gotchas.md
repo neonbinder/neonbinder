@@ -41,17 +41,17 @@ Verified 2026-09-04: `--deployment`, `--identity`, `--typecheck`,
 `^1.44.0`). Safe to pin either for a new ad-hoc CLI invocation without a
 flag-availability risk.
 
-## CI jobs that only run Maestro never `npm ci` apps/web
+## CI jobs without `npm ci` have no local install for `npx`
 
-`.github/actions/maestro-runner` (used by `e2e.yml`'s `seed` and runner
-jobs) installs Java/Chrome/Maestro/Xvfb only — no Node package install,
-since driving Maestro + calling `run-e2e-smoke.sh` needs no node_modules.
-Any script that job runs and that shells out to `npx <pkg>` therefore has
-**no local install to resolve** — use `npx --yes <pkg>@<pinned-version>`
-(matches `pr-pipeline.yml`'s existing `npx --yes convex@1.39.1 …` pattern),
-never a bare `npx convex`. A maintainer's local shell in `apps/web` *does*
-have node_modules, but pinning the same hermetic version there too avoids
-CI/local drift — see `apps/web/e2e-baseline.sh`.
+Some E2E workflow jobs (the `seed` job that runs the scripted reset, for one)
+set up only the runtime they drive and never install `apps/web`'s
+dependencies. Any script such a job runs that shells out to `npx <pkg>`
+therefore has **no local install to resolve**: use `npx --yes
+<pkg>@<pinned-version>` (matches `pr-pipeline.yml`'s existing `npx --yes
+convex@1.39.1 ...` pattern), never a bare `npx convex`. Check the job's steps
+for an `npm ci` before assuming `node_modules` exists. A maintainer's local
+shell in `apps/web` *does* have node_modules, but pinning the same hermetic
+version there too avoids CI/local drift; see `apps/web/e2e-baseline.sh`.
 
 ## Prod deployment identity
 

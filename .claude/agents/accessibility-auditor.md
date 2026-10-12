@@ -56,12 +56,14 @@ the pair is already measured; add a pair to the table when it is not.
 
 ## Constraints the E2E driver imposes on markup
 
-Maestro-web drives this app in CI. Do not propose a native `<select>` as the
-fix for a keyed control a flow drives; propose the radiogroup pattern. Any
-element a flow presses a key at needs a unique DOM `id`. Identically-classed
-sibling buttons collapse into one XPath. An accessibility fix that changes
-an `aria-label` a flow targets breaks the flow; call that out and let the
-coordinator sequence it with maestro-e2e-author.
+The Playwright suite locates controls only by what a user perceives (role plus
+accessible name, label, visible text, placeholder, title, alt), so the markup
+is the test's only handle. A control without a distinct accessible name, or two
+siblings that read the same to a screen reader, is both an accessibility
+defect and a gap the suite cannot work around; report it as one. An
+accessibility fix that changes a role or an `aria-label` a spec targets
+breaks the spec; call that out and let the coordinator sequence it with
+playwright-e2e-author.
 
 A defect that lives in a shared primitive (a NeonButton variant that fails
 contrast site-wide, for instance) is pre-existing and site-wide: report it

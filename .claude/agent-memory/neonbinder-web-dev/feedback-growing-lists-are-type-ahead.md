@@ -22,5 +22,5 @@ Convex table, use Autocomplete in picker mode (`openOnEmpty`, `selectedKey`,
 current answer at rest, focus opens the whole list, typing narrows it (name +
 aliases), a create-from-typed option replaces any separate "+ New…" button, and
 "none" stays an explicit option. Options are `<li role="option">`, so the
-Maestro one-`<select>`-per-page hazard ([[reference_maestro_multi_select_unreachable]])
-does not apply. Related: [[feedback-linking-uis-are-drag-and-drop]] for pairing UIs.
+suite finds each by role and name (`getByRole("option", { name })`), with no
+native-`<select>` quirks. Related: [[feedback-linking-uis-are-drag-and-drop]] for pairing UIs.
