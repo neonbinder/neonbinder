@@ -27,7 +27,7 @@ test(
 
       await wizard.getByRole("button", { name: "Back to matching" }).click();
       await expect(wizard).toBeHidden();
-      const confirmMatches = page.getByRole("button", { name: "Confirm card matches" });
+      const confirmMatches = page.getByRole("button", { name: "Confirm card matches", disabled: false });
       await expect(confirmMatches).toBeVisible();
       await expectAccessible(page, {
         within: page.getByRole("dialog", { name: /^Match Cards/ }),

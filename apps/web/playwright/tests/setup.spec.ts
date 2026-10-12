@@ -60,6 +60,7 @@ async function fetchChecklist(
       // The confirm button reads "Loading…" until both sides have streamed in.
       const confirm = pairing.getByRole("button", { name: "Confirm card matches" });
       await expect(confirm).toHaveText("Confirm", { timeout: 120_000 });
+      await expect(pairing.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
       for (const side of ["BSC", "SportLots"]) {
         // Each side's unmatched section is headed "<side> only (<n>)"; there
         // is no section at all when everything paired.

@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/home/landing-marketing.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect } from "../../support/fixtures";
+import { test, expect, expectAccessible } from "../../support/fixtures";
 
 test("Landing Page Marketing Content", { tag: ["@marketing", "@home"] }, async ({ page }) => {
   await page.goto("/");
@@ -20,4 +20,5 @@ test("Landing Page Marketing Content", { tag: ["@marketing", "@home"] }, async (
   }
 
   await expect(page.getByText("How It Works", { exact: true }).first()).toBeVisible();
+  await expectAccessible(page, { label: "landing page, marketing grid" });
 });

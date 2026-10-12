@@ -1,6 +1,6 @@
 // Origin: .maestro/flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml (Maestro suite retired in NEO-341; see git history)
 // Fresh-only: it creates the "SPx" brand under Hockey / 1997, which then exists.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { columnHeading, columnOption, columnSearch, columnSelection, drillToColdManufacturer, setBuilderReady, drillToCustom, COLD_SYNC } from "../../support/set-builder";
 
 const BRAND = "SPx";
@@ -41,6 +41,9 @@ test(
     await expect(columnOption(page, "Manufacturers", "All Brands")).toBeVisible();
     await page.getByRole("button", { name: "Add custom Manufacturers" }).click();
     await expect(page.getByText("Add Custom Entry")).toBeVisible();
+    // The form is an inline panel, not a role=dialog, so there is no perceivable
+    // region handle to scope to: check the whole page with it open.
+    await expectAccessible(page, { label: "Add custom Manufacturers form" });
     await page.getByPlaceholder("Enter custom value...").fill(BRAND);
     await page.getByPlaceholder("Enter custom value...").press("Enter");
     await expect(page.getByText(`Create manufacturer '${BRAND}' under Hockey › ${YEAR}?`)).toBeVisible();
@@ -77,6 +80,7 @@ test(
       await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
       await expect(picker.getByRole("option", { name: /^SportLots base candidate: / })).toHaveCount(0);
     }
+    await expectAccessible(page, { within: picker, label: "Select Base Set dialog, SportLots list narrowed" });
     await picker.getByRole("button", { name: "Cancel" }).click();
     const cancelled = page.getByText(/Base mapping cancelled/);
     await expect(cancelled).toBeVisible();

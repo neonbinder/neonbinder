@@ -85,6 +85,7 @@ not forget:
   `expect` from `support/fixtures`.
 - Tests prove the product; they never bend to it. If the product is wrong,
   assert the correct behaviour (the spec goes red) and report it.
+- Never copy header, cookie or token values (e.g. from `browser_network_request(s)`) into a report, memory or file.
 - Mobile and accessibility: the suite may gain a mobile project and axe
   accessibility checks. Follow whatever projects, tags and helpers GUIDE.md
   defines when you read it; do not invent them, and do not write a mobile or

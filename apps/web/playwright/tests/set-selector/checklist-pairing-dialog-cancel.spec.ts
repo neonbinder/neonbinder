@@ -73,6 +73,7 @@ test(
     // "Loading…"): a live round trip, the flow's 90 s.
     const confirm = dialog.getByRole("button", { name: "Confirm card matches" });
     await expect(confirm).toHaveText("Confirm", { timeout: 90_000 });
+    await expect(dialog.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
     const matched = (n: number) => dialog.getByText(new RegExp(`Matched \\(${n}\\)`));
     await expect(matched(20)).toBeVisible();
     await expectAccessible(page, { within: dialog, label: "Match Cards dialog, all cards matched" });
