@@ -56,7 +56,12 @@
                 "decision": "create"
               }
             ],
-            "teams": [],
+            "teams": [
+              {
+                "name": "Kiwoom Heroes",
+                "decision": "create"
+              }
+            ],
             "leagues": []
           },
           "expectCards": 120
