@@ -445,6 +445,15 @@ export default function EntityReviewWizard({
    */
   const [careerEntryDirty, setCareerEntryDirty] = useState(false);
   /**
+   * NEO-341 — the row whose sport chooser ("Sport for this name") is open, and
+   * the row whose "Add years" form is open. Both controls keep their open state
+   * themselves and report it up through `onOpenChange`; the ROW id rather than
+   * a boolean, so a report that outlives its row can never hold the next one.
+   * See `rowInteractionOpen`.
+   */
+  const [sportChooserOpenFor, setSportChooserOpenFor] = useState<string | null>(null);
+  const [undatedFormOpenFor, setUndatedFormOpenFor] = useState<string | null>(null);
+  /**
    * Manual career-team entries the admin has staged, keyed by PLAYER review-row
    * id. Held here (not in CareerTeamEntry) so it can be passed through to
    * recordDecision on "Add as New Player".
@@ -1427,8 +1436,25 @@ export default function EntityReviewWizard({
    *  - a New Team form the operator has edited (team rows never yield, so this
    *    is belt-and-braces rather than load-bearing).
    */
-  const pinnedRowHasEdits =
+  /**
+   * NEO-341 — the operator is mid-gesture on the row on screen: a list, search
+   * or form is OPEN on it. Moving now unmounts that control under the pointer
+   * and the click being made is lost (CI, on a phone: the sport chooser open,
+   * a lookup settled, the walk jumped to a New League step). So it holds an
+   * implicit pin against every yield (`resolveNav`'s `interactionOpen`), and
+   * counts as edits for the auto-add timer below. Closing the control
+   * re-resolves, and the held yield lands then.
+   *
+   * The career-team entry's suggestion list only opens on typed text, which
+   * `careerEntryDirty` already covers; the New Team form is `teamCreateByRow`.
+   */
+  const rowInteractionOpen =
     linkingOpen ||
+    (current !== null &&
+      (sportChooserOpenFor === current._id || undatedFormOpenFor === current._id));
+
+  const pinnedRowHasEdits =
+    rowInteractionOpen ||
     careerEntryDirty ||
     // NEO-248: presence of a KEY, not a non-empty list — the same test as
     // `teamCreateByRow` below. The list can now be rehydrated from the batch on
@@ -1459,12 +1485,15 @@ export default function EntityReviewWizard({
 
   useEffect(() => {
     if (!rows) return;
-    const next = resolveNav(rows, nav, { pinnedRowHasEdits });
+    const next = resolveNav(rows, nav, {
+      pinnedRowHasEdits,
+      interactionOpen: rowInteractionOpen,
+    });
     if (next === nav) return;
     navRef.current = next;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- the presented row follows the batch; the rule that decides when is pure and tested in entity-review-nav.test.tsx
     setNav(next);
-  }, [rows, nav, pinnedRowHasEdits]);
+  }, [rows, nav, pinnedRowHasEdits, rowInteractionOpen]);
 
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- one-way latch: a batch that has had rows can never un-have them
@@ -3457,6 +3486,9 @@ export default function EntityReviewWizard({
                           setSportId={current.setSportId}
                           disabled={busy}
                           prefix={null}
+                          onOpenChange={(open) =>
+                            setSportChooserOpenFor(open ? current._id : null)
+                          }
                           onChange={(sportId) => {
                             void handleSwitchSport(current._id, sportId);
                           }}
@@ -3865,6 +3897,9 @@ export default function EntityReviewWizard({
                             key={current._id}
                             names={undatedCareerTeams}
                             disabled={busy}
+                            onOpenChange={(open) =>
+                              setUndatedFormOpenFor(open ? current._id : null)
+                            }
                             onAdd={(entry) =>
                               setStagedCareerTeams((prev) => [...prev, entry])
                             }

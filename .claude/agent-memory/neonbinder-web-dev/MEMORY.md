@@ -104,3 +104,4 @@
 - [axe combobox popup + listbox children](reference_axe_combobox_popup_and_listbox_children.md) — scrollable-region exempts a listbox only if combobox aria-controls names IT; listbox owns only options; empty = review
 - [Axe target-size and animation false reds](reference_axe_target_size_and_animation_false_reds.md) — "partially obscured" = a focusable widget (sticky header buttons) overlaps; Clerk dialog contrast reds can be its fade-in
 - [Abs child escapes an unpositioned scroller](reference_abs_child_escapes_unpositioned_scroller.md) — sr-only in an overflow-x row widens the doc; isMobile zooms out → "intercepts pointer events"; make the row relative
+- [Review walk holds for open controls](reference_review_walk_holds_for_open_controls.md) — pinnedRowHasEdits gates only teams-first; open popovers/forms report onOpenChange (row-id keyed) into rowInteractionOpen

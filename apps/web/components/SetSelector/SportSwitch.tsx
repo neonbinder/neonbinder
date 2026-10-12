@@ -62,6 +62,7 @@ export default function SportSwitch({
   disabled = false,
   label = "Sport for this name",
   prefix = "Sport:",
+  onOpenChange,
 }: {
   /** The sport currently in force (a sport-level `selectorOptions` id). */
   value: Id<"selectorOptions">;
@@ -86,6 +87,14 @@ export default function SportSwitch({
    * already says it is a sport (the review wizard's "(Player · Baseball ▾)").
    */
   prefix?: string | null;
+  /**
+   * NEO-341 — told when the list opens and when it closes, for any reason
+   * (a pick, Escape, Tab or a click away, `disabled`, or this control
+   * unmounting while open). The review wizard holds the row on screen while
+   * the list is open: a lookup that settles mid-choice used to move the walk
+   * on and unmount the list under the operator's pointer.
+   */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const sports = useQuery(api.selectorOptions.getSelectorOptions, {
     level: "sport",
@@ -110,6 +119,30 @@ export default function SportSwitch({
   const listId = useId();
   /** Letters typed on the open list, for jump-to-sport; cleared after a pause. */
   const typeahead = useRef({ text: "", at: 0 });
+
+  /*
+   * Emitted on TRANSITIONS only, through a ref (the CareerTeamEntry
+   * `onDirtyChange` pattern): hosts pass an inline arrow that sets their own
+   * state, so depending on it would re-fire every render.
+   */
+  const onOpenChangeRef = useRef(onOpenChange);
+  useEffect(() => {
+    onOpenChangeRef.current = onOpenChange;
+  }, [onOpenChange]);
+  const reportedOpenRef = useRef(false);
+  useEffect(() => {
+    if (reportedOpenRef.current === open) return;
+    reportedOpenRef.current = open;
+    onOpenChangeRef.current?.(open);
+  }, [open]);
+  // Unmounting while open closes the list as far as the host can tell; left
+  // unsaid, the host would hold its row for a list that no longer exists.
+  useEffect(
+    () => () => {
+      if (reportedOpenRef.current) onOpenChangeRef.current?.(false);
+    },
+    [],
+  );
 
   const currentName =
     options.find((o) => o.id === value)?.name ??

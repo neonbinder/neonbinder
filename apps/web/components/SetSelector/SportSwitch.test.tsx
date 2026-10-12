@@ -196,4 +196,65 @@ describe("SportSwitch", () => {
     );
     expect(container.querySelector('span[class*="FFE600"]')).toBeNull();
   });
+
+  describe("NEO-341 — onOpenChange", () => {
+    test("reports open, then closed on a pick, once each", () => {
+      seedSports();
+      const onOpenChange = vi.fn();
+      render(
+        <SportSwitch
+          value={BASEBALL}
+          setSportId={BASEBALL}
+          onChange={vi.fn()}
+          onOpenChange={onOpenChange}
+        />,
+      );
+      expect(onOpenChange).not.toHaveBeenCalled();
+
+      fireEvent.click(trigger());
+      expect(onOpenChange.mock.calls).toEqual([[true]]);
+
+      fireEvent.click(screen.getByRole("option", { name: /Football/ }));
+      expect(onOpenChange.mock.calls).toEqual([[true], [false]]);
+    });
+
+    test("reports closed on Escape and when it goes disabled while open", () => {
+      seedSports();
+      const onOpenChange = vi.fn();
+      const props = {
+        value: BASEBALL,
+        setSportId: BASEBALL,
+        onChange: vi.fn(),
+        onOpenChange,
+      };
+      const { rerender } = render(<SportSwitch {...props} />);
+
+      fireEvent.click(trigger());
+      fireEvent.keyDown(screen.getByRole("listbox"), { key: "Escape" });
+      expect(onOpenChange.mock.calls).toEqual([[true], [false]]);
+
+      fireEvent.click(trigger());
+      rerender(<SportSwitch {...props} disabled />);
+      expect(onOpenChange.mock.calls).toEqual([[true], [false], [true], [false]]);
+    });
+
+    test("reports closed when it unmounts open, and nothing when it unmounts closed", () => {
+      seedSports();
+      const onOpenChange = vi.fn();
+      const props = {
+        value: BASEBALL,
+        setSportId: BASEBALL,
+        onChange: vi.fn(),
+        onOpenChange,
+      };
+      const first = render(<SportSwitch {...props} />);
+      fireEvent.click(trigger());
+      first.unmount();
+      expect(onOpenChange.mock.calls).toEqual([[true], [false]]);
+
+      onOpenChange.mockClear();
+      render(<SportSwitch {...props} />).unmount();
+      expect(onOpenChange).not.toHaveBeenCalled();
+    });
+  });
 });
