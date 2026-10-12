@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/labels/get-postage-rate.yaml (Maestro suite retired in NEO-341; see git history)
 // The "new-profile" account is reset and handed a sandbox EasyPost key; the
 // flow saves a return address, then prices a letter before buying it.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test("Shipping Labels — price a letter before buying it", { tag: ["@postage"] }, async ({ page, signIn }) => {
   await signIn("/testing/reset?redirect=/testing/seed-credentials?redirect=/profile/shipping", {
@@ -22,10 +22,12 @@ test("Shipping Labels — price a letter before buying it", { tag: ["@postage"] 
   await page.getByLabel("ZIP").fill("78701");
   await page.getByRole("button", { name: "Save Return Address" }).click();
   await expect(page.getByText("Return address saved.")).toBeVisible();
+  await expectAccessible(page, { label: "Profile, Shipping tab, address saved" });
 
   // The seeded sandbox key is on file.
   await page.goto("/profile/postage");
   await expect(page.getByText("EasyPost key saved.")).toBeVisible({ timeout: 30_000 });
+  await expectAccessible(page, { label: "Profile, Postage tab" });
 
   // Address a letter...
   await page.goto("/print/shipping");
@@ -41,4 +43,5 @@ test("Shipping Labels — price a letter before buying it", { tag: ["@postage"] 
   await expect(page.getByRole("button", { name: "Print Label" })).toBeVisible();
   await expect(page.getByText(/\$0\.\d\d/).first()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByRole("button", { name: /Buy postage — \$0\.\d\d/ })).toBeVisible();
+  await expectAccessible(page, { label: "Shipping Labels, priced letter" });
 });

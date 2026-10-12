@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/qr-code/no-profile-empty-state.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test("QR Code — no profile empty state", { tag: ["@smoke", "@qr-code"] }, async ({ page, signIn }) => {
   await signIn("/testing/reset?redirect=/print/qr", { account: "new-profile" });
@@ -7,4 +7,5 @@ test("QR Code — no profile empty state", { tag: ["@smoke", "@qr-code"] }, asyn
     page.getByText("Set up your public profile first to generate sale QR codes."),
   ).toBeVisible({ timeout: LAUNCH_GATE });
   await expect(page.getByRole("link", { name: "Go to Profile" })).toBeVisible();
+  await expectAccessible(page, { label: "QR Code, no public profile" });
 });

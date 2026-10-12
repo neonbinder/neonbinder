@@ -3,7 +3,7 @@
 // real signed-POST path, process on the fast path, and pair front-side-up
 // whatever order they arrived in. The 180 s ceiling is what proves the fast
 // path (six heavy escalations cannot settle inside it).
-import { test, expect } from "../../support/fixtures";
+import { test, expect, expectAccessible } from "../../support/fixtures";
 
 test(
   "Placeholder pipeline (fast path) — six frame-filling scans process fast and pair front-side-up whatever order they arrive in",
@@ -23,6 +23,7 @@ test(
     // Close the batch so the FINAL pairing run records the count.
     await page.getByRole("button", { name: "Finish the batch" }).click();
     await expect(page.getByText("Finish this batch?")).toBeVisible();
+    await expectAccessible(page, { label: "Finish this batch dialog" });
     await page.getByRole("button", { name: "Finish it" }).click();
 
     // 3 pairs x 2 = all six accounted for; none failed, none left over.
@@ -38,5 +39,6 @@ test(
     // NEO-315: the crops can be shown back (the signed-read mint answers).
     await expect(page.getByText(/Loading image/)).toHaveCount(0);
     await expect(page.getByText("Image unavailable")).toHaveCount(0);
+    await expectAccessible(page, { label: "Check the pairs" });
   },
 );

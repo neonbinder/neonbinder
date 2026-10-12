@@ -4,7 +4,7 @@
 // must survive a reload, and the FULL composed name must find the team again in
 // the typeahead (so an operator typing "San Diego Padres" never makes a second
 // Padres). "Discover" is never pressed: it is a live fetch of a third party.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "Team Management — select a team and edit it",
@@ -61,6 +61,7 @@ test(
     await locationBox.fill(location);
     await colourBox.fill("#132448");
     await expect(page.getByRole("button", { name: "Discover" })).toBeVisible();
+    await expectAccessible(page, { label: "Team Management, team selected" });
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page.getByText(new RegExp(`Saved ${fullName}`))).toBeVisible({ timeout: 15_000 });
 

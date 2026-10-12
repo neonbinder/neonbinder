@@ -1,6 +1,6 @@
 // Origin: .maestro/flows/labels/print-label.yaml (Maestro suite retired in NEO-341; see git history)
 // Dedicated `new-profile` account, reset on the way in: no return address yet.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "Shipping Labels — type a recipient and the label preview follows",
@@ -22,6 +22,7 @@ test(
     await page.getByLabel("ZIP").fill("78701");
     await page.getByRole("button", { name: "Save Return Address" }).click();
     await expect(page.getByText("Return address saved.")).toBeVisible();
+    await expectAccessible(page, { label: "Profile, Shipping tab, address saved" });
 
     // The Print Shop form now offers a label.
     await page.goto("/print/shipping");
@@ -38,5 +39,6 @@ test(
     // The preview follows what was typed: buyer's line, and the saved return address.
     await expect(page.getByText("SPRINGFIELD IL 62704")).toBeVisible();
     await expect(page.getByText("AUSTIN TX 78701")).toBeVisible();
+    await expectAccessible(page, { label: "Shipping Labels, preview" });
   },
 );

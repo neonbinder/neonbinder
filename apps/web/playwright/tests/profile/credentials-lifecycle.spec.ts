@@ -3,7 +3,7 @@
 // test, clear, then a rejected sign-in with fake creds (nothing saved: the
 // sign-in form is still showing), re-connect real creds, test, clear.
 import type { Page } from "@playwright/test";
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const SEED_BUDGET = 90_000; // seed-credentials performs a real marketplace sign-in
 const LIVE = 30_000; // live marketplace round trip
@@ -31,6 +31,7 @@ async function testStoredSession(page: Page, label: string, success: RegExp): Pr
   await expect(testButton).toBeVisible({ timeout: LIVE });
   await testButton.click();
   await expect(page.getByText(success)).toBeVisible({ timeout: LIVE });
+  await expectAccessible(page, { label: `Profile, ${label} credentials, tested` });
 }
 
 async function clearConnection(page: Page, label: string): Promise<void> {
@@ -54,6 +55,7 @@ async function failedSignIn(
   await page.getByLabel(new RegExp(`${label} Password`)).fill(pass);
   await page.getByRole("button", { name: "Connect", exact: true }).click();
   await expect(page.getByText(rejection)).toBeVisible({ timeout: REJECTED });
+  await expectAccessible(page, { label: `Profile, ${label} sign-in rejected` });
   // Nothing was saved: the form only renders while the account is unconnected.
   await expect(username).toBeVisible();
 }

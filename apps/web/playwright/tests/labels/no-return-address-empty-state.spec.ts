@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/labels/no-return-address-empty-state.yaml (Maestro suite retired in NEO-341; see git history)
 // Self-contained: the isolated `new-profile` account is reset on the way in,
 // which deletes its userProfiles row, so no return address exists.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "Shipping Labels — no return address empty state",
@@ -19,5 +19,6 @@ test(
 
     // No half-usable label form is offered.
     await expect(page.getByText("Ship To", { exact: true })).toBeHidden();
+    await expectAccessible(page, { label: "Shipping Labels, no return address" });
   },
 );

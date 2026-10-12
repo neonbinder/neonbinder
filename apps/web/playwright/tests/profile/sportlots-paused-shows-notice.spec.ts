@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/profile/sportlots-paused-shows-notice.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "SportLots on pause — the Profile card and the Set Builder strip say so, and the strip dismisses (NEO-287)",
@@ -11,6 +11,7 @@ test(
     });
     await page.getByRole("tab", { name: "SportLots" }).click();
     await expect(page.getByRole("heading", { name: "SportLots Credentials" })).toBeVisible();
+    await expectAccessible(page, { label: "Profile, SportLots credentials" });
 
     const builderReady = page.getByText(/Build set parameters using marketplace APIs/);
     const strip = page.getByText("SportLots is on pause.");
@@ -29,6 +30,7 @@ test(
       await expect(builderReady).toBeVisible({ timeout: 30_000 });
       await expect(strip).toBeHidden();
       await expect(dismiss).toBeHidden();
+      await expectAccessible(page, { label: "Set Builder" });
     } else {
       await expect(page.getByText("SportLots is on pause", { exact: true })).toBeVisible();
       await expect(page.getByText(/^Sign-ins to SportLots are benched for now/)).toBeVisible();
@@ -48,6 +50,7 @@ test(
       ).toBeVisible();
 
       await expect(dismiss).toBeVisible();
+      await expectAccessible(page, { label: "Set Builder, SportLots pause notice" });
       await dismiss.click();
       await expect(strip).toBeHidden();
       await expect(dismiss).toBeHidden();

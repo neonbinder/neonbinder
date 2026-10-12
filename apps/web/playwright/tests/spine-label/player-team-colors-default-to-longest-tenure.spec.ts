@@ -3,7 +3,7 @@
 // a 10-year stint at team A and a 2-year stint at team B, the two teams given
 // deliberately different colours. The asymmetry is the whole point: a designer
 // that defaulted to the wrong team (or none) fails on the hex.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "Spine Labels — a player's colours default to their longest-tenure team",
@@ -38,6 +38,7 @@ test(
       await expect(page.getByText("No matches.")).toBeVisible();
       await search.press("Enter");
       await expect(page.getByRole("dialog", { name: `New team: ${team}` })).toBeVisible();
+    await expectAccessible(page, { within: page.getByRole("dialog", { name: `New team: ${team}` }), label: "New Team dialog" });
       await expect(page.getByRole("textbox", { name: "New team name" })).toHaveValue(team);
       await page.getByRole("button", { name: `Create team ${team}` }).click();
       await expect(page.getByRole("button", { name: `Remove team ${team}` })).toBeVisible();
@@ -86,6 +87,7 @@ test(
     await expect(chipA).toBeVisible();
     await expect(chipB).toBeVisible();
     await expect(page.getByText("Find a team")).toBeHidden();
+    await expectAccessible(page, { label: "Spine Labels, player's career teams" });
 
     // Team A's colour is the default; team B's is not on screen.
     const background = page.getByRole("textbox", { name: "Background" });

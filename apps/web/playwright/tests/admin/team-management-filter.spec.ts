@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/admin/team-management-filter.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "Team Management — filtering to a name nothing matches reports no matches",
@@ -12,6 +12,7 @@ test(
     await expect(page.getByText(/of .* teams/)).toBeVisible();
     const noSelection = page.getByText("Select a team to see and edit everything we know about it.");
     await expect(noSelection).toBeVisible();
+    await expectAccessible(page, { label: "Team Management" });
 
     const filter = page.getByRole("textbox", { name: "Filter teams" });
     await filter.fill("zzzznotateam");
@@ -20,5 +21,6 @@ test(
     await expect(page.getByText("No teams match that filter.")).toBeVisible();
     await expect(page.getByText(/^0 of .* teams/)).toBeVisible();
     await expect(noSelection).toBeVisible();
+    await expectAccessible(page, { label: "Team Management, no matches" });
   },
 );

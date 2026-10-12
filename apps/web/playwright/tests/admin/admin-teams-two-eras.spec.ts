@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/admin/admin-teams-two-eras.yaml (Maestro suite retired in NEO-341; see git history)
 // One location + nickname can be two teams when their eras differ; the second
 // is created only after the operator confirms ("Create again").
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand, expectPlayersLoaded } from "../../support/players";
 
 test(
@@ -29,6 +29,7 @@ test(
     await search.press("Enter");
     const dialog = page.getByRole("dialog", { name: `New team: ${nickname}` });
     await expect(dialog).toBeVisible();
+    await expectAccessible(page, { within: dialog, label: "New Team dialog" });
     await dialog.getByLabel("New team location (optional)").fill(location);
     await dialog.getByLabel("New team active from (optional)").fill("1972");
     await dialog.getByLabel("New team active to").fill("1996");
@@ -67,6 +68,7 @@ test(
     const second = page.getByRole("button", { name: /2011–present/ });
     await expect(first).toBeVisible();
     await expect(second).toBeVisible();
+    await expectAccessible(page, { label: "Team Management, two eras" });
 
     await first.click();
     await expect(page.getByRole("spinbutton", { name: "Active from" })).toHaveValue("1972");

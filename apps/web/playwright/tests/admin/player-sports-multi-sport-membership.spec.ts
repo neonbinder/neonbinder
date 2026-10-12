@@ -2,7 +2,7 @@
 // NEO-313 case B: a football player is given Baseball too. He is listed as a
 // baseball player ("Also: Baseball"), a baseball card's picker finds him on
 // its default path, and Baseball cannot be removed while that card links him.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand, expectPlayersLoaded } from "../../support/players";
 import { drillToCustom } from "../../support/set-builder";
 
@@ -23,6 +23,8 @@ test(
     await page.getByRole("button", { name: "Add sport Baseball" }).click();
     await expect(page.getByText("Added Baseball.")).toBeVisible();
     await expect(page.getByRole("button", { name: "Remove sport Baseball" })).toBeVisible();
+
+    await expectAccessible(page, { label: "Player Management, player with two sports" });
 
     // STEP 2: he is a baseball player now. Reload, narrow to him, scope to Baseball.
     await page.goto("/admin/players");
@@ -75,6 +77,7 @@ test(
     const cards = page.getByRole("list", { name: `Cards for ${player}` });
     await expect(cards.getByText(`#${cardNumber}`)).toBeVisible();
     await expect(cards.getByText("Baseball", { exact: true })).toBeHidden();
+    await expectAccessible(page, { label: "Player Management, refused sport removal" });
 
     // CLEANUP: delete this attempt's card.
     await drillToCustom(page, { sport: "Baseball", year: "2024", manufacturer: "Topps", set, variantType: "Insert", variant: "Base" });

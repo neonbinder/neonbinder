@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/admin/league-management-add-and-edit.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "League Management — add a league by hand, classify it, and edit what we know about it",
@@ -15,6 +15,7 @@ test(
 
     await signIn("/admin/leagues");
     await expect(count(/ of .* leagues/)).toBeVisible({ timeout: LAUNCH_GATE });
+    await expectAccessible(page, { label: "League Management" });
 
     // Empty the list, then pick Baseball so the add form opens with it.
     await page.getByLabel("Filter leagues").fill("zzzznotaleague");
@@ -24,16 +25,26 @@ test(
 
     await page.getByRole("button", { name: "Add league" }).click();
     await expect(page.getByRole("heading", { name: "Add a league" })).toBeVisible();
+    await expectAccessible(page, { label: "League Management, Add a league form" });
     await page.getByLabel("New league name").fill(name);
     await page.getByLabel("Abbreviation").fill(abbreviation);
-    const minor = page.getByRole("button", { name: "Minor", exact: true });
+
+    // NEO-331: Level is required and opens with nothing chosen, so Create is
+    // held (aria-disabled reads as disabled) until one is pressed.
+    const level = page.getByRole("radiogroup", { name: "Level" });
+    const create = page.getByRole("button", { name: `Create league ${name}` });
+    await expect(level.getByRole("radio", { checked: true })).toHaveCount(0);
+    await expect(create).toBeDisabled();
+    const minor = level.getByRole("radio", { name: "Minor", exact: true });
     await minor.click();
-    await expect(minor).toHaveAttribute("aria-pressed", "true");
-    await page.getByRole("button", { name: `Create league ${name}` }).click();
+    await expect(minor).toBeChecked();
+    await expect(create).toBeEnabled();
+    await create.click();
 
     // The new league's panel: confirmation, sport read back.
     await expect(page.getByText(new RegExp(`Added ${name}`))).toBeVisible();
     await expect(page.getByText("Sport: Baseball")).toBeVisible();
+    await expectAccessible(page, { label: "League Management, new league panel" });
 
     // Edit what we know: founding year and aliases.
     await page.getByLabel("Active from").fill("1901");
@@ -55,10 +66,13 @@ test(
     await expect(row.getByText(abbreviation, { exact: true })).toBeVisible();
 
     await row.click();
+    // NEO-331: a stored league opens with its level pressed.
+    await expect(page.getByRole("radiogroup", { name: "Level" }).getByRole("radio", { name: "Minor", exact: true })).toBeChecked();
     await expect(page.getByText(aliasOne)).toBeVisible();
     await expect(page.getByText(aliasTwo)).toBeVisible();
     await expect(page.getByLabel("Active from")).toHaveValue("1901");
     await expect(page.getByText("No teams yet.")).toBeVisible();
+    await expectAccessible(page, { label: "League Management, league selected" });
 
     // The Teams screen offers the league in its filter, abbreviation and all.
     await page.goto("/admin/teams");

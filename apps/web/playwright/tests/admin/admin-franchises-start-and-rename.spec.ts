@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/admin/admin-franchises-start-and-rename.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "Franchise Management — start a franchise under a sport and rename the thread",
@@ -12,6 +12,7 @@ test(
 
     await signIn("/admin/franchises");
     await expect(counter.first()).toBeVisible({ timeout: LAUNCH_GATE });
+    await expectAccessible(page, { label: "Franchise Management" });
 
     // Empty the list, choose Baseball, then clear the filter: the form opens
     // under the sport the list is scoped to.
@@ -22,6 +23,7 @@ test(
 
     await page.getByRole("button", { name: "Start a franchise" }).click();
     await expect(page.getByText(/^One name for a team.s whole run/)).toBeVisible();
+    await expectAccessible(page, { label: "Franchise Management, start form" });
     await page.getByLabel("Franchise name").fill(started);
     await page.getByRole("button", { name: "Start franchise" }).click();
 
@@ -30,6 +32,7 @@ test(
     await expect(page.getByText(/0 teams on this thread/)).toBeVisible();
     await expect(page.getByText("Sport: Baseball")).toBeVisible();
     await expect(page.getByText(/^No teams yet/)).toBeVisible();
+    await expectAccessible(page, { label: "Franchise Management, new franchise panel" });
 
     // Rename the thread.
     await page.getByLabel("Franchise name").fill(renamed);

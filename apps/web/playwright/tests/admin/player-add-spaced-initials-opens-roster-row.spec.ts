@@ -3,7 +3,7 @@
 // player "J.T. Realmuto" (2024 Topps Chrome #261, committed by the seed): the
 // primary button becomes "Open <roster name>", creation is demoted to "Create
 // anyway", and Open lands on the existing row. READ-ONLY.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { emptyListAndPickSport, expectPlayersLoaded } from "../../support/players";
 
 test(
@@ -35,10 +35,12 @@ test(
     const open = page.getByRole("button", { name: /^Open J\.?T\.? Realmuto/ });
     await expect(open).toBeVisible();
     await expect(page.getByRole("button", { name: "Create player J. T. Realmuto", exact: true })).toBeHidden();
+    await expectAccessible(page, { label: "Player Management, add form with an existing match" });
 
     // STEP 4: Open lands on the existing roster row, not on a typed-spelling row.
     await open.click();
     await expect(page.getByRole("heading", { name: /^J\.?T\.? Realmuto$/ })).toBeVisible();
     await expect(page.getByText("Sport: Baseball")).toBeVisible();
+    await expectAccessible(page, { label: "Player Management, player panel" });
   },
 );

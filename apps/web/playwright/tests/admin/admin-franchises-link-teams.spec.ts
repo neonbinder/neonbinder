@@ -3,7 +3,7 @@
 // a thread and puts team A on it, the same field puts team B on the SAME thread
 // by picking its option, Franchise Management shows both, and "Remove <team>"
 // takes one back off. All names are single search tokens.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "Franchises — two team rows are strung onto one franchise from the team side, and taken off again from the franchise side",
@@ -37,6 +37,7 @@ test(
       await expect(page.getByText("No matches.")).toBeVisible();
       await search.press("Enter");
       await expect(page.getByRole("dialog", { name: `New team: ${name}` })).toBeVisible();
+      await expectAccessible(page, { within: page.getByRole("dialog", { name: `New team: ${name}` }), label: "New Team dialog" });
       await page.getByLabel(/^New team location \(optional\)/).fill(`Loc${token}`);
       await page.getByRole("button", { name: `Create team ${locationName}` }).click();
       await expect(page.getByRole("button", { name: `Remove team ${locationName}` })).toBeVisible();
@@ -51,6 +52,7 @@ test(
     await expect(page.getByText(/of .* teams/)).toBeVisible({ timeout: 30_000 });
     await page.getByRole("textbox", { name: "Filter teams" }).fill(`Fr${token}`);
     await expect(page.getByText(/^2 of .* teams/)).toBeVisible();
+    await expectAccessible(page, { label: "Team Management" });
     const franchiseField = page.getByRole("combobox", { name: "Franchise" });
     const saved = (team: string) => page.getByText(new RegExp(`Saved ${team}`));
 
@@ -64,6 +66,7 @@ test(
     ).toBeVisible();
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(saved(teamA)).toBeVisible();
+    await expectAccessible(page, { label: "Team Management, team saved on a franchise" });
 
     // Team B: the same field puts it on the SAME thread by picking its option.
     await page.getByRole("button", { name: teamB, exact: true }).click();
@@ -79,6 +82,8 @@ test(
     await expect(page.getByText(/2 teams on this thread/)).toBeVisible();
     await expect(page.getByText(teamA, { exact: true })).toBeVisible();
     await expect(page.getByText(teamB, { exact: true })).toBeVisible();
+
+    await expectAccessible(page, { label: "Franchise Management, two teams on a thread" });
 
     // Taken off again from the franchise side.
     await page.getByRole("button", { name: `Remove ${teamB}` }).click();

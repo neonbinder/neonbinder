@@ -2,7 +2,7 @@
 // Add a player by hand, create a team from the career editor, record two
 // stints at ONE team out of order, edit the pending stint with Enter, save,
 // reload: both stints survive in year order.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addPlayerByHand, expectPlayersLoaded } from "../../support/players";
 
 test(
@@ -28,6 +28,7 @@ test(
     const dialog = page.getByRole("dialog", { name: `New team: ${team}` });
     await expect(dialog).toBeVisible();
     await expect(dialog.getByLabel("New team name")).toHaveValue(team);
+    await expectAccessible(page, { within: dialog, label: "New Team dialog" });
     await dialog.getByRole("button", { name: `Create team ${team}` }).click();
     await expect(page.getByRole("button", { name: `Remove team ${team}` })).toBeVisible();
 
@@ -68,6 +69,7 @@ test(
     await expect(earlier).toBeVisible();
     const stints = page.getByRole("list", { name: "Career history" }).getByRole("listitem");
     await expect(stints).toHaveCount(2);
+    await expectAccessible(page, { label: "Player Management, career history" });
     await expect(stints.nth(0)).toContainText(`${team} · 2001–2005`);
     await expect(stints.nth(1)).toContainText(`${team} · 2010–2012`);
 

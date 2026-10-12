@@ -4,7 +4,7 @@
 //   a birth year no row on file carries   -> FORK  ("Added <name>.")
 //   a birth year exactly one row carries  -> ADOPT
 // The name is one search token (no hyphens): players.search tokenizes.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "Player Management — a birth year is bounded, shows on the row, and is what lets a repeated name become a genuinely second player",
@@ -24,6 +24,7 @@ test(
 
     await page.getByRole("button", { name: "Add player" }).click();
     await expect(page.getByText("Add a player")).toBeVisible();
+    await expectAccessible(page, { label: "Player Management, add form" });
     const newName = page.getByLabel("New player name");
     const birthYear = page.getByLabel(/^Birth year \(optional\)/);
     const created = page.getByText(new RegExp(`Added ${name}`));

@@ -4,7 +4,7 @@
 // from a row reversal (short edge) from no mirror at all. The pocket numbers
 // shown by "Show cutting guides" are the instrument that reads the mirroring.
 import type { Locator } from "@playwright/test";
-import { test, expect } from "../../support/fixtures";
+import { test, expect, expectAccessible } from "../../support/fixtures";
 
 async function box(locator: Locator) {
   const b = await locator.boundingBox();
@@ -23,8 +23,10 @@ test(
     await expect(page.getByText("All 6 photos read.")).toBeVisible({ timeout: 180_000 });
     await page.getByRole("button", { name: "Finish the batch" }).click();
     await expect(page.getByText("Finish this batch?")).toBeVisible();
+    await expectAccessible(page, { label: "Finish this batch dialog" });
     await page.getByRole("button", { name: "Finish it" }).click();
     await expect(page.getByText("3 pairs ready to print.")).toBeVisible();
+    await expectAccessible(page, { label: "Placeholder batch, pairs ready" });
 
     // The live summary, recomputed from the form: backs are on by default.
     const print = page.getByRole("region", { name: "Print your placeholders" });
@@ -63,5 +65,6 @@ test(
     await expect(print.getByRole("status")).toContainText("3 cards on 1 sheet of Letter, front only.");
     await expect(preview.getByRole("listitem").filter({ hasText: "Sheet 1 — front" })).toBeVisible();
     await expect(preview.getByRole("listitem").filter({ hasText: "Sheet 1 — back" })).toHaveCount(0);
+    await expectAccessible(page, { label: "Print settings, front only" });
   },
 );

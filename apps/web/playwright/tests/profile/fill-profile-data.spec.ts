@@ -1,6 +1,6 @@
 // Origin: .maestro/flows/profile/fill-profile-data.yaml (Maestro suite retired in NEO-341; see git history)
 // Dedicated `new-profile` account: reset on the way in, so every field starts empty.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test("Fill Profile Data", { tag: ["@profile"] }, async ({ page, signIn, env }) => {
   const u = env.TEST_USERNAME;
@@ -11,6 +11,7 @@ test("Fill Profile Data", { tag: ["@profile"] }, async ({ page, signIn, env }) =
 
   // Basic Info.
   await expect(page.getByText("Basic Info", { exact: true })).toBeVisible();
+  await expectAccessible(page, { label: "Profile, Public Profile tab (empty)" });
   await page.getByLabel(/^Username/).fill(u);
   await page.getByLabel("Display Name").fill(u);
   await page.getByLabel("Tagline").fill("Buying and Selling all kinds of Sports Cards");
@@ -42,6 +43,7 @@ test("Fill Profile Data", { tag: ["@profile"] }, async ({ page, signIn, env }) =
   await page.getByRole("button", { name: "Save Public Profile" }).click();
   await expect(page.getByText(/^Profile saved/)).toBeVisible({ timeout: 10_000 });
   await expect(page.getByText(`View your profile at /u/${u}`)).toBeVisible();
+  await expectAccessible(page, { label: "Profile, Public Profile tab (saved)" });
 
   // The public page shows everything that was entered.
   await page.goto(`/u/${u}`);
@@ -57,4 +59,5 @@ test("Fill Profile Data", { tag: ["@profile"] }, async ({ page, signIn, env }) =
   await expect(page.getByText(new RegExp(`x\\.com/${u}-twit`))).toBeVisible();
   await expect(page.getByText(new RegExp(`instagram\\.com/${u}-ig`))).toBeVisible();
   await expect(page.getByText(new RegExp(`tiktok\\.com.*${u}-tt`))).toBeVisible();
+  await expectAccessible(page, { label: "Public profile page" });
 });

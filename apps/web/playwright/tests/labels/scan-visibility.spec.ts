@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/labels/scan-visibility.yaml (Maestro suite retired in NEO-341; see git history)
 // The seed (`sites=label-scans`) gives this worker one bought label with four
 // USPS scans, the latest "Delivery, OLYMPIA, WA" (out_for_delivery).
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test("Label History — see what USPS has scanned", { tag: ["@labels"] }, async ({ page, signIn }) => {
   await signIn("/testing/seed-credentials?sites=label-scans%26redirect=/print/labels");
@@ -30,9 +30,11 @@ test("Label History — see what USPS has scanned", { tag: ["@labels"] }, async 
   // The full timeline is collapsed: the postmark scan is not shown yet.
   const postmark = label.getByText(/Cancellation of Postage.*postmarked/);
   await expect(postmark).toBeHidden();
+  await expectAccessible(page, { label: "Label History, scans collapsed" });
 
   await label.getByRole("button", { name: /^Show all scans \(4\)/ }).click();
   await expect(postmark).toBeVisible();
+  await expectAccessible(page, { label: "Label History, scans expanded" });
 
   await label.getByRole("button", { name: /^Hide all scans \(4\)/ }).click();
   await expect(postmark).toBeHidden();

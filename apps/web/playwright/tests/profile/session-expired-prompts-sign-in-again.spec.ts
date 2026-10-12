@@ -1,5 +1,5 @@
 // Origin: .maestro/flows/profile/session-expired-prompts-sign-in-again.yaml (Maestro suite retired in NEO-341; see git history)
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
   "Expired marketplace session — the panel says sign in again, and goes back to connected once the session proves good",
@@ -35,12 +35,14 @@ test(
       });
       await openSportLotsTab();
       await expect(page.getByText(/Sign in to SportLots again/)).toBeVisible();
+      await expectAccessible(page, { label: "Profile, SportLots session expired" });
       await expect(page.getByRole("button", { name: "Test Credentials" })).toBeHidden();
       await expect(page.getByLabel(/SportLots Username/)).toBeHidden();
 
       // Signing in again opens the form; a good stored session proves itself.
       await page.getByRole("button", { name: "Sign in again" }).click();
       await expect(page.getByLabel(/SportLots Username/)).toBeVisible();
+      await expectAccessible(page, { label: "Profile, SportLots sign-in form" });
       await page.getByRole("button", { name: "Test Stored Credentials" }).click();
       await expect(page.getByText(/SportLots account authenticated successfully/i)).toBeVisible({
         timeout: 30_000,
@@ -68,6 +70,7 @@ test(
       await openSportLotsTab();
       await expect(paused).toBeVisible();
       await expect(page.getByText(/^Sign-ins to SportLots are benched for now/)).toBeVisible();
+      await expectAccessible(page, { label: "Profile, SportLots paused" });
       await expect(page.getByText(/Sign in to SportLots again/)).toBeHidden();
       await expect(page.getByRole("button", { name: "Sign in again" })).toBeHidden();
       await expect(page.getByRole("button", { name: "Test Credentials" })).toBeHidden();

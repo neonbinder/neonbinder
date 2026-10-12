@@ -3,7 +3,7 @@
 // recording). Fresh-only by design: re-running against the same preview finds
 // the player the last run created, and the form offers "Open …" instead of
 // "Create player …". Re-seed before re-running.
-import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
+import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const PLAYER = "Harmon Killebrew";
 
@@ -41,5 +41,6 @@ test(
     await expect(page.getByRole("link", { name: /^Wikidata Q[0-9]+/ })).toBeVisible({
       timeout: 600_000,
     });
+    await expectAccessible(page, { label: "Player Management, enriched player panel" });
   },
 );
