@@ -6,6 +6,10 @@
 // E2E Test Sport <worker> > 2026 > Topps (the synthetic sport keeps the League
 // combobox to what THIS worker minted). Every minted name is a single token.
 //
+// "The set's Base" below means the Insert > Base row: an insert named "Base"
+// under a variant type titled "Insert", not the set's Base (NEO-334 reads a
+// kind off variant-type titles only).
+//
 // The three teams answer the New Team dialog's League question three ways:
 //   STA creates a league from the typed text, STB picks that league as an
 //   EXISTING option, STC answers "No league".
@@ -113,7 +117,7 @@ test(
     await expect(removeChip(teamA.full)).toBeVisible();
     await expectAccessible(page, { label: "Set attributes panel with the set team" });
 
-    // ── STEP 3: two cards under the set's Base, NO team picked on the way in,
+    // ── STEP 3: two cards under the set's Insert > Base row, NO team picked on the way in,
     // are born with the set's team.
     await selectOrCreate(page, "Variant Types", "Insert", { via: "list" });
     await expect(page.getByRole("heading", { name: "Inserts", exact: true })).toBeVisible();

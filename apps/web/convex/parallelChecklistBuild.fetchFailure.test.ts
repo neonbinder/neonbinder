@@ -161,7 +161,6 @@ async function seed(t: T, slIds: string[] = ["SL-P-1"]) {
       parentId: setName,
       platformData: { bsc: { b0: "insert" } },
       platformFacets: { bsc: { b0: "variant" } },
-      metadata: { variantRole: "insert" },
       children: [],
       lastUpdated: SENTINEL,
     });

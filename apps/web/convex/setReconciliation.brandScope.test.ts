@@ -124,7 +124,6 @@ async function seedChain(
     const variantTypeId = await ctx.db.insert("selectorOptions", {
       level: "variantType",
       value: "Base",
-      metadata: { isBase: true },
       platformData: { sportlots: { s0: "501" } },
       platformSlotSeq: { sportlots: 1 },
       parentId: setNameId,

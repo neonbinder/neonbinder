@@ -86,7 +86,6 @@ function roleType(role: "base" | "insert" | "parallel") {
     platformData: { bsc: { b0: role } },
     platformFacets: { bsc: { b0: "variant" as const } },
     platformSlotSeq: { bsc: 1 },
-    metadata: role === "base" ? { isBase: true } : { variantRole: role },
   };
 }
 
@@ -151,7 +150,6 @@ async function seed(t: T) {
     platformFacets: { bsc: { b0: "variantName" } },
     platformLabels: { bsc: { b0: "All-America Game Autos" } },
     platformSlotSeq: { bsc: 1 },
-    metadata: { isInsert: true },
     features: { season: "2026", cardType: "Insert" },
   });
   const goldId = await insertRow(t, {
@@ -161,7 +159,6 @@ async function seed(t: T) {
     platformData: { bsc: { b0: "aa-autos-gold" } },
     platformFacets: { bsc: { b0: "variantName" } },
     platformSlotSeq: { bsc: 1 },
-    metadata: { isParallel: true },
   });
   return { yearId, brandId, bowmanId, baseId, parallelTypeId, insertTypeId, autosId, goldId };
 }
@@ -178,7 +175,6 @@ function slRow(
     value,
     parentId,
     ...slLinks(links),
-    metadata: { isParallel: true },
     features: { cardType: "Parallel", season: "2026" },
   });
 }
@@ -195,7 +191,6 @@ async function slSet(
     level: "variantType",
     value: "Base",
     parentId: setId,
-    metadata: { isBase: true },
     features: { cardType: "Base", parallelName: "Base" },
     ...slLinks(links),
   });

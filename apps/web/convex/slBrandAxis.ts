@@ -22,9 +22,10 @@
  *
  * ## Why a predicate on the id, and not on the row's name
  *
- * The `bscFacets.ts` `isBscBaseVariantId` precedent: a marketplace id
- * compared to that marketplace's own vocabulary, inside the adapter/sync
- * boundary, on a value that came FROM the marketplace. It never reads the NB
+ * A marketplace id compared to that marketplace's own vocabulary, inside the
+ * adapter/sync boundary, on a value that came FROM the marketplace. (The
+ * `bscFacets.ts` variant-id classifiers once followed the same pattern; they
+ * were removed in NEO-334, when a variant type's kind became its title.) It never reads the NB
  * display value — a row called "All Brands" is just a row called that, and
  * `checkCustomSelectorValue` refuses the name at manufacturer level anyway
  * because it is the name of the view pinned at the top of that column.

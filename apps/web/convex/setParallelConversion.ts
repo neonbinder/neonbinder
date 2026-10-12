@@ -119,9 +119,9 @@ import {
   targetNamePrefixes,
   type ConversionLoss,
   type ConversionSource,
-  variantTypeWithRole,
+  variantTypeOfKind,
 } from "./setShapeMove";
-import { derivedVariantFlags, variantTypeRole } from "./variantRole";
+import { derivedVariantFlags, variantTypeKind } from "./variantRole";
 
 type Row = Doc<"selectorOptions">;
 type RowId = Id<"selectorOptions">;
@@ -247,15 +247,15 @@ export function parallelNameFromLabel(
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * The first variant type under `setId` whose NB role is "parallel". Bounded
- * at `MAX_VARIANT_TYPES_PER_SET` and fail closed past it ("no Parallel type
- * yet"); see `variantTypeWithRole`.
+ * The one variant type under `setId` titled "Parallel" / "Parallels".
+ * Bounded at `MAX_VARIANT_TYPES_PER_SET` and fail closed past it, or on two
+ * ("no Parallel type yet"); see `variantTypeOfKind`.
  */
 function parallelTypeOf(
   ctx: { db: QueryCtx["db"] },
   setId: RowId,
 ): Promise<Row | null> {
-  return variantTypeWithRole(ctx, setId, "parallel");
+  return variantTypeOfKind(ctx, setId, "parallel");
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -305,7 +305,7 @@ async function resolveTarget(
       reason: conversionRefusal.otherBrand(targetSet.value, source.brand.value),
     };
   }
-  if (variantTypeRole(targetType) !== "parallel") {
+  if (variantTypeKind(targetType) !== "parallel") {
     return {
       ok: false,
       reason: conversionRefusal.notParallelType(targetType.value, targetSet.value),
@@ -724,8 +724,8 @@ export const convertSetToParallel = mutation({
       const teamIds = sourceData.teamIds
         ? [...sourceData.teamIds]
         : inheritedTeamIds(targetType);
+      // NEO-334: `flags` feed the features above and are never stored.
       const metadata = {
-        ...(flags ?? {}),
         ...(sourceData.cardNumberPrefix !== undefined
           ? { cardNumberPrefix: sourceData.cardNumberPrefix }
           : {}),
@@ -826,12 +826,12 @@ type PromotionSource =
  * (NEO-306 generalised it from NEO-305's parallels of a set):
  *
  *  - an `insert`-level row under any variant type but the Base — a parallel
- *    of the base, an insert, or a row filed under a type with no NB role
+ *    of the base, an insert, or a row filed under a type with no kind
  *    (the SportLots-only review files there too, and invariant 6 says a row
- *    without a role behaves like one with);
+ *    without a kind behaves like one with);
  *  - a `parallel`-level row under such an insert (row → insert → type).
  *
- * Decided by level and the NB base flag, never by a name. The Base is
+ * Decided by level and the variant type's kind (its title). The Base is
  * refused because it is terminal: nothing NB mints sits under it.
  */
 async function readPromotionSource(
@@ -849,7 +849,7 @@ async function readPromotionSource(
   }
   if (!insertRow || insertRow.level !== "insert") return notUnderASet;
   const type = insertRow.parentId ? await ctx.db.get(insertRow.parentId) : null;
-  if (!type || type.level !== "variantType" || variantTypeRole(type) === "base") {
+  if (!type || type.level !== "variantType" || variantTypeKind(type) === "base") {
     return notUnderASet;
   }
   const set = type.parentId ? await ctx.db.get(type.parentId) : null;
@@ -1248,7 +1248,7 @@ export const getBrandSlHolders = query({
             // A Base IS the set to an operator ("Bowman Blue"); any other
             // row reads as the set plus its own name ("Bowman Chrome Gold").
             const childName =
-              child.level === "variantType" && child.metadata?.isBase === true
+              child.level === "variantType" && variantTypeKind(child) === "base"
                 ? set.value
                 : `${set.value} ${child.value}`;
             next.push({ row: child, name: childName });

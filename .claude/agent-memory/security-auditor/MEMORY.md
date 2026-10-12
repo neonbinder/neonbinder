@@ -67,6 +67,7 @@
 - [Patterns neo325 identity-only and twins](patterns_neo325_identity_only_and_twins.md) — forced-insert flag vs multi-id insert; upstream label bound on notice rows; pin internal id readers
 - [Inline re-auth bypasses backoff](patterns_inline_reauth_bypasses_backoff.md) — adapter 401 → authenticate* skips NEO-278 backoff + lock; batches multiply logins
 - [Patterns neo318 derived copy column](patterns_neo318_derived_copy_column.md) — exported *Impl split of a gated query is safe if gate stays in handler; derived copy: strip in public helper, spread-insert gap, two-step revert
+- [Patterns neo334 title is kind](patterns_neo334_title_is_kind.md) — title-as-kind door enumeration; id-less intra-batch twins bypass the sameName twin count; exactly-one readers
 - [Patterns neo333 split raw and report](patterns_neo333_split_raw_and_report.md) — raw-beside-split must be bounded at each consumer; read-only report = internalQuery page + budgeted action; uncapped budget/uncaught page error lose all output
 - [Patterns neo331 context-id side channel](patterns_neo331_context_id_side_channel.md) — signed-in query ranking by an admin-gated row leaks it via tier/order; old public query left live and unclamped after a client move
 - [Playwright report exposure](patterns_playwright_report_exposure.md) — blob/HTML reports embed error-context (ARIA snapshot, password values in plaintext); results/ glob is not a scope; .playwright-mcp; host guard

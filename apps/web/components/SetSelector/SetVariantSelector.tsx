@@ -5,7 +5,7 @@ import EntitySelector, {
   displayByValue,
   type SelectorItem,
 } from "./EntitySelector";
-import { isBaseRole } from "./baseRole";
+import { variantTypeKindFromTitle } from "../../convex/variantRole";
 
 type SetVariantSelectorProps = {
   setId: GenericId<"selectorOptions">;
@@ -26,10 +26,14 @@ const noDescription = () => undefined;
 // the variantType row, so its SL/BSC mapping is meaningful here and drives the
 // SL/BSC pills.
 //
-// NEO-239: the role comes off the row (`metadata.isBase`), not off its name. A
-// renamed Base still shows its pills; a row called "Base" that was never marked
-// as the base set does not. See ./baseRole.
-const isBaseTerminal = (item: SelectorItem) => isBaseRole(item.metadata);
+// NEO-334: a variant type's title IS its kind (Jason, 2026-10-10) — the row
+// titled "Base" is the set's Base, and nothing else is. One rule for the whole
+// app (convex/variantRole.ts); there is no flag beside it. `SelectorItem` is
+// deliberately loose, so the title is narrowed before it is read.
+const isBaseTerminal = (item: SelectorItem) =>
+  variantTypeKindFromTitle(
+    typeof item.value === "string" ? item.value : undefined,
+  ) === "base";
 
 export default function SetVariantSelector({
   setId,

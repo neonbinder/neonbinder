@@ -49,7 +49,11 @@ export type SetLevelFeatureInputs = {
   manufacturer?: string;
   /** `level` of the leaf selectorOption the card lives under. */
   leafLevel?: string;
-  /** leaf `metadata.isInsert` / `metadata.isParallel` (when set). */
+  /**
+   * Whether the leaf is an insert / a parallel, as `derivedVariantFlags`
+   * (convex/variantRole.ts) reads it from the leaf's level and its variant
+   * type's title. Transient: NEO-334 stopped storing these on the row.
+   */
   leafIsInsert?: boolean;
   leafIsParallel?: boolean;
 };
@@ -196,7 +200,8 @@ const LEVEL_HEURISTIC_KEYS: Partial<Record<string, string[]>> = {
 export function deriveOwnLevelFeatures(
   level: string,
   value: string,
-  metadata?: { isInsert?: boolean; isParallel?: boolean },
+  /** `derivedVariantFlags(level, parentVariantType)`; never a stored field. */
+  flags?: { isInsert?: boolean; isParallel?: boolean },
 ): Record<string, string> {
   const keys = LEVEL_HEURISTIC_KEYS[level];
   if (!keys) return {};
@@ -205,8 +210,8 @@ export function deriveOwnLevelFeatures(
     year: level === "year" ? value : undefined,
     manufacturer: level === "manufacturer" ? value : undefined,
     leafLevel: level,
-    leafIsInsert: metadata?.isInsert,
-    leafIsParallel: metadata?.isParallel,
+    leafIsInsert: flags?.isInsert,
+    leafIsParallel: flags?.isParallel,
   });
   const picked: Record<string, string> = {};
   for (const key of keys) {

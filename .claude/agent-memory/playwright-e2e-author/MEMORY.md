@@ -50,3 +50,5 @@
 - [Same-text search legs go stale](patterns_convex_same_text_search_legs_go_stale.md) — two search_name reads, same text, in one query: other-filter inserts never invalidate; prove via HTTP API + ws frames
 - [Unstyled launch = failed stylesheet](patterns_unstyled_launch_is_a_failed_stylesheet.md) — raw-HTML failure PNG, x=8 nodes, modal in flow at page bottom; `Search sports...` bounds fingerprint; full rerun
 - [Multi-team row needs a team count](patterns_multi_team_row_needs_a_team_count.md) — "A, B" sub-line = 2 links OR 1 combined team; Team Mgmt "1 of" on one half closes it; settle lookups before checking team steps
+- [NEO-334 variant type title is its kind](reference_neo334_sub_variants_column_is_role_gated.md) — Base/Insert(s)/Parallel(s) by exact title, hand-made too; column 7 only under Insert; refusal selectors; re-point the panel
+- [NEO-334 title kind vs Insert › Base pair](reference_neo334_title_kind_and_insert_base_pair.md) — kind read at variantType level only; the "Base" insert is not the Base; keep the type "Insert"

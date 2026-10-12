@@ -480,7 +480,7 @@ describe("the EXACT call VariantForm makes", () => {
 
   test("getBaseVariantBySet on a subtree with no base row answers null, it does not throw", async () => {
     // The form resolves `baseSlPrefix` through this query before every sync.
-    // NEO-239 changed it from a name check to `metadata.isBase`, and a
+    // NEO-239 changed it from a name check to a flag and NEO-334 to the title ("Base"), and a
     // hand-made subtree has no row holding the role — so `null` is the answer
     // the form must get. A throw here lands in the same catch.
     const t = convexTest(schema, modules);
@@ -692,7 +692,6 @@ async function seedRealSetAwaitingBaseMapping(
       value: "Base",
       platformData: { bsc: { b0: "base" } },
       platformFacets: { bsc: { b0: "variant" } },
-      metadata: { isBase: true },
       primaryPlatformId: { bsc: "b0" },
       platformSlotSeq: { bsc: 1 },
       parentId: setName,

@@ -116,37 +116,114 @@ describe("RenameEntityControl", () => {
   });
 
   /**
-   * NEO-239 deleted the rename refusal itself — every level renames now, because
-   * Base is an NB role flag and the BSC `variant` facet comes off a tagged slot,
-   * so no display value is code any more. The client's structural read of the
-   * refusal payload stays, and so does this test: an OLD bundle talking to a new
-   * server, or any refusal added later, must still reach the operator with the
-   * server's own sentence rather than a generic "Rename failed". The message
-   * below is a stale server's words on purpose.
+   * NEO-334 — a variant type's title is its kind, so the server refuses a
+   * rename that would change what the type is (while rows sit beneath it), a
+   * second Base, and a same-word sibling. The refusal rides on a structured
+   * ConvexError payload and its sentence is the operator's, not a generic.
    */
-  it("renders a server refusal payload verbatim, not a generic failure", async () => {
-    // Shaped like a ConvexError: the payload rides on `.data`, and `.message`
-    // on the thrown object is the serialized envelope, not the human sentence.
-    const refusal = Object.assign(
-      new Error("[Request ID: abc] Server Error"),
-      {
-        data: {
-          code: "VARIANT_TYPE_RENAME_REFUSED",
-          message:
-            'The variant type name "Base" can\'t be changed — it drives Base detection and the BSC checklist fetch.',
-        },
-      },
-    );
-    mockRename.mockRejectedValueOnce(refusal);
-    renderControl("Base");
-    fireEvent.click(screen.getByLabelText("Rename Base"));
-    const input = screen.getByLabelText("Edit name for Base");
-    fireEvent.change(input, { target: { value: "Basic" } });
-    fireEvent.keyDown(input, { key: "Enter" });
+  describe("a variant-type rename refusal (NEO-334)", () => {
+    const SENTENCE =
+      "Not so fast — some inserts under this type still have sub-variants, and sub-variants only live under an Insert type. Move them out first, then rename.";
 
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("drives Base detection");
-    expect(alert.textContent).not.toContain("Request ID");
+    /** Shaped like a ConvexError: the payload rides on `.data`. */
+    const refusalOf = (data: unknown) =>
+      Object.assign(new Error("[Request ID: abc] Server Error"), { data });
+
+    async function refuse(data: unknown, value = "Promo") {
+      mockRename.mockRejectedValueOnce(refusalOf(data));
+      renderControl("Inserts");
+      fireEvent.click(screen.getByLabelText("Rename Inserts"));
+      const input = screen.getByLabelText("Edit name for Inserts");
+      fireEvent.change(input, { target: { value } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      return { input, alert: await screen.findByRole("alert") };
+    }
+
+    it("renders the server's sentence verbatim, never the envelope", async () => {
+      const { alert } = await refuse({ code: "VARIANT_TYPE_RENAME_REFUSED", message: SENTENCE });
+
+      expect(alert.textContent).toBe(SENTENCE);
+      expect(alert.textContent).not.toContain("Request ID");
+    });
+
+    it("the alert is a role=alert line the field points at, and the field is marked invalid", async () => {
+      const { input, alert } = await refuse({
+        code: "VARIANT_TYPE_RENAME_REFUSED",
+        message: SENTENCE,
+      });
+
+      expect(alert.id).not.toBe("");
+      expect(input.getAttribute("aria-describedby")).toBe(alert.id);
+      expect(input.getAttribute("aria-invalid")).toBe("true");
+      // Still open, so the operator can retype.
+      expect(screen.getByLabelText("Edit name for Inserts")).toBeTruthy();
+    });
+
+    it("the alert is a sibling of the field's wrapper, on a line of its own under the header row", async () => {
+      const { input, alert } = await refuse({
+        code: "VARIANT_TYPE_RENAME_REFUSED",
+        message: SENTENCE,
+      });
+
+      expect(alert.className).toContain("order-last");
+      expect(alert.className).toContain("basis-full");
+      expect(alert.contains(input)).toBe(false);
+      const fieldWrapper = input.closest("div");
+      expect(fieldWrapper?.contains(alert)).toBe(false);
+      expect(fieldWrapper?.parentElement).toBe(alert.parentElement);
+    });
+
+    it("a refusal with no message falls back to a plain sentence", async () => {
+      const { alert } = await refuse({ code: "VARIANT_TYPE_RENAME_REFUSED" });
+
+      expect(alert.textContent).toBe("This name can't be changed.");
+    });
+
+    it("a payload with another code is not read as a refusal", async () => {
+      const { alert } = await refuse({ code: "SOMETHING_ELSE", message: SENTENCE });
+
+      expect(alert.textContent).not.toBe(SENTENCE);
+    });
+
+    it("editing the field clears the refusal and the invalid state, without calling the server", async () => {
+      const { input } = await refuse({ code: "VARIANT_TYPE_RENAME_REFUSED", message: SENTENCE });
+      expect(mockRename).toHaveBeenCalledTimes(1);
+
+      fireEvent.change(input, { target: { value: "Inserts & Autos" } });
+
+      expect(screen.queryByRole("alert")).toBeNull();
+      expect(input.getAttribute("aria-invalid")).toBeNull();
+      expect(input.getAttribute("aria-describedby")).toBeNull();
+      expect(mockRename).toHaveBeenCalledTimes(1);
+    });
+
+    it("a refusal on BLUR keeps the editor open in its error state", async () => {
+      mockRename.mockRejectedValueOnce(
+        refusalOf({ code: "VARIANT_TYPE_RENAME_REFUSED", message: SENTENCE }),
+      );
+      renderControl("Inserts");
+      fireEvent.click(screen.getByLabelText("Rename Inserts"));
+      const input = screen.getByLabelText("Edit name for Inserts");
+      fireEvent.change(input, { target: { value: "Promo" } });
+      fireEvent.blur(input);
+
+      const alert = await screen.findByRole("alert");
+      expect(alert.textContent).toBe(SENTENCE);
+      const stillOpen = screen.getByLabelText("Edit name for Inserts");
+      expect(stillOpen.getAttribute("aria-describedby")).toBe(alert.id);
+      expect(screen.queryByLabelText("Rename Inserts")).toBeNull();
+    });
+
+    it("no alert and no describedby before anything is refused, and Escape clears a refusal", async () => {
+      const { input } = await refuse({ code: "VARIANT_TYPE_RENAME_REFUSED", message: SENTENCE });
+
+      fireEvent.keyDown(input, { key: "Escape" });
+
+      expect(screen.queryByRole("alert")).toBeNull();
+      fireEvent.click(screen.getByLabelText("Rename Inserts"));
+      const reopened = screen.getByLabelText("Edit name for Inserts");
+      expect(reopened.getAttribute("aria-describedby")).toBeNull();
+      expect(reopened.getAttribute("aria-invalid")).toBeNull();
+    });
   });
 });
-

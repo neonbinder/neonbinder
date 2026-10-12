@@ -4,6 +4,16 @@
 // after a preview the operator confirms. Per-worker, per-attempt custom set
 // under E2E Test Sport <worker> > 2026 > Topps; every minted name is a single
 // search token.
+//
+// The checklist sits on the Insert > Base pair: a variant TYPE titled "Insert"
+// with an INSERT named "Base" beneath it. Under NEO-334 a title is a kind only
+// at the variant-type level, so the type is an Insert type (picking "Base" also
+// opens the Sub-Variants column, which this spec never touches) and the insert
+// "Base" is NOT the set's Base: the set has no variant type titled Base. So
+// teamFill's base-checklist tier (scope "baseSet") has nothing to read, and the
+// one fill is rule A on its own node ("same player in this set", scope
+// "sameNode"). A type titled "Base" would be terminal and put the checklist on
+// the type itself; this spec does not depend on that.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom, selectOrCreate } from "../../support/set-builder";
 

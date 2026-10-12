@@ -225,8 +225,8 @@ async function seedYear(t: T) {
 
 /**
  * Bowman's flagship (holding a BSC id) with Base / Insert / Parallel types
- * as a variant-type sync writes them — flagged roles beside tagged slots —
- * plus one named type with no role. And an SL-only set with no BSC id.
+ * as a variant-type sync writes them — titled Base / Insert / Parallel beside
+ * tagged slots — plus one titled Promo, which has no kind. And an SL-only set with no BSC id.
  */
 async function seedBowmanSets(t: T, bowmanId: RowId) {
   const flagshipId = await insertRow(t, {
@@ -237,7 +237,7 @@ async function seedBowmanSets(t: T, bowmanId: RowId) {
     platformSlotSeq: { bsc: 1 },
     features: { league: "MLB" },
   });
-  const type = (value: string, bscId: string | undefined, metadata?: object) =>
+  const type = (value: string, bscId: string | undefined) =>
     insertRow(t, {
       level: "variantType",
       value,
@@ -249,12 +249,11 @@ async function seedBowmanSets(t: T, bowmanId: RowId) {
             platformSlotSeq: { bsc: 1 },
           }
         : {}),
-      ...(metadata ? { metadata } : {}),
       features: { league: "MLB", set: "Bowman" },
     });
-  const baseId = await type("Base", "base", { isBase: true });
-  const insertTypeId = await type("Insert", "insert", { variantRole: "insert" });
-  const parallelTypeId = await type("Parallel", "parallel", { variantRole: "parallel" });
+  const baseId = await type("Base", "base");
+  const insertTypeId = await type("Insert", "insert");
+  const parallelTypeId = await type("Parallel", "parallel");
   const promoTypeId = await type("Promo", "promo");
   const slOnlySetId = await insertRow(t, {
     level: "setName",
@@ -265,7 +264,6 @@ async function seedBowmanSets(t: T, bowmanId: RowId) {
     level: "variantType",
     value: "Parallel",
     parentId: slOnlySetId,
-    metadata: { variantRole: "parallel" },
   });
   return {
     flagshipId,
@@ -536,7 +534,7 @@ describe("the dialog's reads", () => {
     ).toBeNull();
   });
 
-  test("getVariantTypesOfSet: the set's types with their NB role, the Base excluded", async () => {
+  test("getVariantTypesOfSet: the set's types with their kind (read from the title), the Base excluded", async () => {
     const t = convexTest(schema, modules);
     const { bowmanId } = await seedYear(t);
     const ids = await seedBowmanSets(t, bowmanId);
@@ -583,7 +581,6 @@ describe("applySlSetReview — validation by id writes nothing on a refusal", ()
       level: "variantType",
       value: "Parallel",
       parentId: toppsSetId,
-      metadata: { variantRole: "parallel" },
     });
     await seedReviewDoc(t, seeded.yearId, seeded.bowmanId, [
       { slId: "sl-gold", label: "Gold" },
@@ -665,7 +662,7 @@ describe("applySlSetReview — validation by id writes nothing on a refusal", ()
 });
 
 describe("applySlSetReview — every landing", () => {
-  test("own set, under a Parallel-role type, an Insert-role type and a named type with no role — flags, features, teams, children, links; the doc goes when done", async () => {
+  test("own set, under a Parallel type, an Insert type and a Promo type — cardType, features, teams, children, links; the doc goes when done", async () => {
     const t = convexTest(schema, modules);
     const { sportId, yearId, bowmanId } = await seedYear(t);
     const ids = await seedBowmanSets(t, bowmanId);
@@ -725,10 +722,10 @@ describe("applySlSetReview — every landing", () => {
     expect(aaBase.platformData).toEqual({ sportlots: { s0: "sl-aa" } });
 
     // Under the Parallel type: "Gold" (the set's name off the front),
-    // isParallel, cardType Parallel, the type's features and teams, the link.
+    // cardType Parallel (read from the type's title, no flag written), the type's features and teams, the link.
     const [gold] = await childrenAt(t, ids.parallelTypeId, "insert");
     expect(gold.value).toBe("Gold");
-    expect(gold.metadata).toEqual({ isParallel: true });
+    expect(gold.metadata).toBeUndefined();
     expect(gold.features).toMatchObject({ league: "MLB", set: "Bowman", cardType: "Parallel" });
     expect(gold.teamIds).toEqual([teamId]);
     expect(gold.platformData).toEqual({ sportlots: { s0: "sl-gold" } });
@@ -738,13 +735,13 @@ describe("applySlSetReview — every landing", () => {
       gold._id,
     ]);
 
-    // Under the Insert type: isInsert, cardType Insert.
+    // Under the Insert type: cardType Insert, no flag.
     const [autos] = await childrenAt(t, ids.insertTypeId, "insert");
     expect(autos.value).toBe("All-America Game Autos");
-    expect(autos.metadata).toEqual({ isInsert: true });
+    expect(autos.metadata).toBeUndefined();
     expect(autos.features?.cardType).toBe("Insert");
 
-    // Under a named type with no role: no flag, the level-only cardType.
+    // Under a type titled Promo (no kind): the level-only cardType.
     const [promo] = await childrenAt(t, ids.promoTypeId, "insert");
     expect(promo.metadata).toBeUndefined();
     expect(promo.features?.cardType).toBe("Insert");
@@ -781,7 +778,6 @@ describe("applySlSetReview — every landing", () => {
       level: "variantType",
       value: "Parallel",
       parentId: flagship._id,
-      metadata: { variantRole: "parallel" },
     });
     await save(t, bowmanId, [
       { slId: "sl-blue", variantTypeId: parallelTypeId },

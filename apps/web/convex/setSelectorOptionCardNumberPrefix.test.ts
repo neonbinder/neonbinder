@@ -73,17 +73,17 @@ describe("setSelectorOptionCardNumberPrefix", () => {
     expect((await getRow(t, id))?.metadata).toEqual({ cardNumberPrefix: "DK-" });
   });
 
-  test("\"\" removes the key and leaves other metadata (isBase, etc.) intact", async () => {
+  test("\"\" removes the key and leaves other metadata (setNamePrefix, etc.) intact", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    const id = await insertRow(t, { isBase: true, cardNumberPrefix: "DK-" });
+    const id = await insertRow(t, { setNamePrefix: "Topps", cardNumberPrefix: "DK-" });
 
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionCardNumberPrefix, {
       id,
       cardNumberPrefix: "",
     });
 
-    expect((await getRow(t, id))?.metadata).toEqual({ isBase: true });
+    expect((await getRow(t, id))?.metadata).toEqual({ setNamePrefix: "Topps" });
   });
 
   test("clearing the only metadata key drops the object rather than storing {}", async () => {

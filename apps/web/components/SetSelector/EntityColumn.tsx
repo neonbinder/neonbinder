@@ -1,4 +1,4 @@
-import { ReactNode, useEffect, useRef, useState } from "react";
+import { ReactNode, useEffect, useId, useRef, useState } from "react";
 import { useAction, useConvex, useMutation, useQuery } from "convex/react";
 import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
@@ -26,6 +26,12 @@ import {
   type UnlinkedEntry,
 } from "./selector-sync-feedback";
 import { checkCustomSelectorValue } from "../../convex/selectorSyncMatch";
+import {
+  sameTitleWord,
+  sameWordSiblingMessage,
+  SUB_VARIANT_INSERT_ONLY,
+  VARIANT_TYPE_RENAME_REFUSED,
+} from "../../convex/variantRole";
 import { siblingTwinSuffixes } from "./marketplace-item-label";
 
 type Level =
@@ -97,19 +103,31 @@ function customRefusal(
   if (typeof e !== "object" || e === null) return null;
   const data = (e as { data?: unknown }).data;
   if (typeof data !== "object" || data === null) return null;
-  const { code, reason, matches, total } = data as {
+  const { code, reason, message, matches, total } = data as {
     code?: unknown;
     reason?: unknown;
+    message?: unknown;
     matches?: unknown;
     total?: unknown;
   };
-  if (code === "CUSTOM_VALUE_INVALID") {
+  // NEO-334: a sub-variant refused outside an Insert type, and a variant type
+  // the set cannot take (a second "Base", or "Promos" beside "Promo"), read
+  // like an invalid value — one inline sentence under the field, the
+  // server's own. The rename family carries its sentence as `message`.
+  if (
+    code === "CUSTOM_VALUE_INVALID" ||
+    code === SUB_VARIANT_INSERT_ONLY ||
+    code === VARIANT_TYPE_RENAME_REFUSED
+  ) {
+    const sentence =
+      typeof reason === "string" && reason.length > 0
+        ? reason
+        : typeof message === "string" && message.length > 0
+          ? message
+          : null;
     return {
-      code,
-      reason:
-        typeof reason === "string" && reason.length > 0
-          ? reason
-          : "That value isn't allowed here.",
+      code: "CUSTOM_VALUE_INVALID",
+      reason: sentence ?? "That value isn't allowed here.",
     };
   }
   if (code === "CUSTOM_EXISTS_ELSEWHERE") {
@@ -308,6 +326,10 @@ export default function EntityColumn({
   // it type into the first matching input on the page (NEO-39). Same fix as the
   // mb-search-<col> class on the column search input in EntitySelector.
   const fieldClass = useFieldTestClass();
+  // NEO-334 (a11y) — the custom form's refusal line, named by the field it is
+  // about. One id: the form's stages render one at a time, and only the input
+  // stage has a field to describe.
+  const customErrorId = useId();
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   // NEO-219: the confirm's primary button. Focused DIRECTLY in an effect (not
@@ -970,6 +992,21 @@ export default function EntityColumn({
       });
       return;
     }
+    // NEO-334 — singular and plural are one word for a variant type's title
+    // (Jason, 2026-10-10): "Promos" beside "Promo", "Inserts" beside
+    // "Insert". Variant types only; every other level keeps its exact-name
+    // rule above. The server refuses it too, so it is said here first, in the
+    // server's own sentence, without a round-trip. Not a navigation like the
+    // exact match above: the operator typed a different spelling, and the
+    // list beside the field already shows the row to pick.
+    const sameWord =
+      level === "variantType"
+        ? (items ?? []).find((o) => sameTitleWord(o.value, trimmed))
+        : undefined;
+    if (sameWord) {
+      setCustomError(sameWordSiblingMessage(sameWord.value));
+      return;
+    }
 
     setCustomStage({ kind: "checking" });
     let matches: ElsewhereMatch[] = [];
@@ -1183,7 +1220,14 @@ export default function EntityColumn({
             bare
             type="text"
             value={customValue}
-            onChange={(e) => setCustomValue(e.target.value)}
+            onChange={(e) => {
+              setCustomValue(e.target.value);
+              // The refusal was about what WAS typed; once the operator edits,
+              // it no longer describes the field.
+              if (customError) setCustomError(null);
+            }}
+            aria-invalid={customError ? true : undefined}
+            aria-describedby={customError ? customErrorId : undefined}
             onKeyDown={(e) => {
               if (e.key === "Enter") handleCustomSubmit();
             }}
@@ -1207,6 +1251,7 @@ export default function EntityColumn({
           )}
           {customError && (
             <div
+              id={customErrorId}
               role="alert"
               className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
             >
@@ -1255,6 +1300,7 @@ export default function EntityColumn({
           )}
           {customError && (
             <div
+              id={customErrorId}
               role="alert"
               className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
             >
@@ -1311,6 +1357,7 @@ export default function EntityColumn({
           </p>
           {customError && (
             <div
+              id={customErrorId}
               role="alert"
               className="p-2 mb-3 bg-red-100 dark:bg-red-900/30 border border-red-300 dark:border-red-700 rounded-md text-red-800 dark:text-red-200 text-sm"
             >

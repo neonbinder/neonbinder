@@ -3,6 +3,15 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 import { setBuilderReady, drillToCustom, selectOrCreate } from "../../support/set-builder";
 import type { Page } from "@playwright/test";
 
+// NEO-334 (Jason, 2026-10-10): a variant type's TITLE is its kind ("Base",
+// "Insert(s)", "Parallel(s)"), so a rename CAN change what a type is, and the
+// server refuses that while rows sit beneath it, refuses a second "Base", and
+// refuses a singular/plural twin of a sibling. None of that applies here:
+// `vt-<w>-<attempt>` and `vtx-<w>-<attempt>` carry NO kind (kindless to
+// kindless) and the type is empty, so this stays a plain relabel. The kind
+// changes and their refusals are proved in variant-type-title-is-its-kind.
+// Never rename this pair to a kind word.
+
 /** Rename the option the attributes panel is showing, via its pencil control. */
 async function rename(page: Page, from: string, to: string, what: string) {
   await page.getByRole("button", { name: `Rename ${from}` }).click();

@@ -3,8 +3,9 @@
  * twins at the INSERT level.
  *
  *   • The set's Base SportLots set is dropped from `slOptions` BY ID, read off
- *     the Base row's slots (`baseSlIdsBesideVariantType`) — never by the Base's
- *     NAME, which also hid every SportLots twin of that name (invariant 4).
+ *     the slots of the variant type titled "Base" (`baseSlIdsBesideVariantType`)
+ *     — never by the Base's name as a SportLots LABEL, which also hid every
+ *     SportLots twin of that name (invariant 4).
  *   • Nothing is dropped when the parent IS the Base (its picker is choosing
  *     the Base's own set).
  *   • `twinIds` is judged on the FULL list (the Base's set included), so a twin
@@ -186,9 +187,8 @@ async function seed(
           : Object.fromEntries(base.sl.map((id, i) => [`s${i}`, id]));
       baseId = await ctx.db.insert("selectorOptions", {
         level: "variantType",
-        // A name that means nothing: the role is the flag, never the name.
-        value: "Core",
-        metadata: { isBase: true },
+        // The Base is the variant type titled "Base" (NEO-334).
+        value: "Base",
         platformData: base === "no-sl" ? {} : { sportlots: slots },
         parentId: setId,
         children: [],
@@ -254,23 +254,37 @@ describe("fetchRawOptions at insert — the Base's SportLots set is dropped BY I
   test("a set labelled like the Base but carrying another id stays: the name is never the filter", async () => {
     const t = convexTest(schema, modules);
     const { insertTypeId } = await seed(t, { base: { sl: ["100"] } });
-    stubMarketplaces({ sl: [["555", "Core"], ["102", "Anime Gold"]] });
+    stubMarketplaces({ sl: [["555", "Base"], ["102", "Anime Gold"]] });
 
-    const res = await fetchInsert(t, insertTypeId, "Core");
+    const res = await fetchInsert(t, insertTypeId, "Base");
 
     expect(ids(res.slOptions)).toEqual(["102", "555"]);
   });
 
-  test("the Base is found by its ROLE flag, whatever it is called", async () => {
+  test("the Base is found by its TITLE: a plural title is found, a retitled one is not", async () => {
     const t = convexTest(schema, modules);
     const { insertTypeId, baseId } = await seed(t, { base: { sl: ["100"] } });
-    // Rename it: the drop must follow the flag, not "Base".
+    stubMarketplaces({ sl: [["100", "Anime"], ["102", "Anime Gold"]] });
+
+    await t.run((ctx) => ctx.db.patch(baseId!, { value: "Bases" }));
+    expect(ids((await fetchInsert(t, insertTypeId)).slOptions)).toEqual(["102"]);
+
+    // Retitled away from the word, it is no Base: nothing is dropped.
     await t.run((ctx) => ctx.db.patch(baseId!, { value: "Zebra" }));
+    expect(ids((await fetchInsert(t, insertTypeId)).slOptions)).toEqual(["100", "102"]);
+  });
+
+  test("a stray isBase flag on a type with another title drops nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { insertTypeId, baseId } = await seed(t, { base: { sl: ["100"] } });
+    await t.run((ctx) =>
+      ctx.db.patch(baseId!, { value: "Zebra", metadata: { isBase: true } }),
+    );
     stubMarketplaces({ sl: [["100", "Anime"], ["102", "Anime Gold"]] });
 
     const res = await fetchInsert(t, insertTypeId);
 
-    expect(ids(res.slOptions)).toEqual(["102"]);
+    expect(ids(res.slOptions)).toEqual(["100", "102"]);
   });
 
   test("nothing is dropped when the parent IS the Base (the Base picker chooses its own set)", async () => {

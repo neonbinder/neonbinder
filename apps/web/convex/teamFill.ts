@@ -63,6 +63,7 @@ import {
 import { selectorOptionLevelValidator } from "./schema";
 import { findSportForSelectorOption } from "./cardChecklist";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
+import { variantTypeKind } from "./variantRole";
 import { teamFullName } from "../lib/teams/team-name";
 import {
   isTeamFillCandidate,
@@ -171,7 +172,10 @@ type SubtreeNode = {
   _id: Id<"selectorOptions">;
   level: Doc<"selectorOptions">["level"];
   parentId: Id<"selectorOptions"> | null;
-  /** `metadata.isBase === true` — the NB role, never the display value. */
+  /**
+   * A variantType titled "Base" (`variantTypeKind`, NEO-334: a variant type's
+   * title is its kind). Computed when the node is read; never a stored flag.
+   */
   isBase: boolean;
 };
 
@@ -216,8 +220,8 @@ const subtreeNodeValidator = v.object({
 /**
  * The HEAD of the subtree walk: the `setName` row itself — with the three
  * facts the tiers read (its level and parent, so a parallel knows which node
- * it copies; its `isBase` role, so the base checklist is found by flag and
- * never by name) — plus the two set-level facts the rules compare against and
+ * it copies; whether it is the Base, read from its title by
+ * `variantTypeKind`) — plus the two set-level facts the rules compare against and
  * the children the walk continues into.
  *
  * Refuses any other level. A variantType or parallel row is a slice of a set,
@@ -301,7 +305,7 @@ function projectNode(row: Doc<"selectorOptions">): SubtreeNodeWithChildren {
     _id: row._id,
     level: row.level,
     parentId: row.parentId ?? null,
-    isBase: row.metadata?.isBase === true,
+    isBase: row.level === "variantType" && variantTypeKind(row) === "base",
     childIds: row.children ?? [],
   };
 }
@@ -555,10 +559,9 @@ async function computeTeamFillPlan(
       ...(node.parentId !== null ? { parentId: node.parentId } : {}),
     });
   }
-  // The base checklist, by ROLE. Exactly one flagged variantType is the
-  // normal shape (`setBaseVariantType` refuses a second one); none means a set
-  // that has not been told which is its base, and tier 3 is skipped rather
-  // than guessed. More than one is a data fault, and guessing between them
+  // The base checklist, by KIND: the variantType titled "Base". Exactly one
+  // is the normal shape (a second Base is refused at create and rename); none
+  // means a set with no Base, and tier 3 is skipped rather than guessed. More than one is a data fault, and guessing between them
   // would be a fill from the wrong checklist — skipped the same way.
   const baseNodes = nodes.filter((node) => node.level === "variantType" && node.isBase);
   const baseNodeId = baseNodes.length === 1 ? baseNodes[0]._id : null;

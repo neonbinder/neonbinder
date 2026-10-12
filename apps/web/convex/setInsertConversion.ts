@@ -36,8 +36,9 @@
  *
  * ## There are no NB-created Insert types
  *
- * The target's Insert type is found by its NB role (`variantTypeRole`), never
- * by its name, and a set with none is refused with a sentence that names the
+ * The target's Insert type is found by its kind (`variantTypeKind`, NEO-334:
+ * the variant type titled "Insert" / "Inserts"), and a set with none is
+ * refused with a sentence that names the
  * fix (run Sync Variant Types) — v3 of the plan.
  *
  * ## The link-taken rule, one level deeper than NEO-305
@@ -92,9 +93,9 @@ import {
   type ConversionSourceRefusals,
   type MovingLink,
   type SourceData,
-  variantTypeWithRole,
+  variantTypeOfKind,
 } from "./setShapeMove";
-import { derivedVariantFlags, variantTypeRole } from "./variantRole";
+import { derivedVariantFlags, variantTypeKind } from "./variantRole";
 
 // Shared with the Parallel door (NEO-306); re-exported for this door's tests.
 export { MAX_VARIANT_TYPES_PER_SET } from "./setShapeMove";
@@ -265,12 +266,12 @@ async function readInsertConversionSource(
 // Target
 // ───────────────────────────────────────────────────────────────────────────
 
-/** The first variant type under `setId` whose NB role is "insert" (bounded; see `variantTypeWithRole`). */
+/** The one variant type under `setId` titled "Insert" / "Inserts" (bounded; see `variantTypeOfKind`). */
 function insertTypeOf(
   ctx: { db: QueryCtx["db"] },
   setId: RowId,
 ): Promise<Row | null> {
-  return variantTypeWithRole(ctx, setId, "insert");
+  return variantTypeOfKind(ctx, setId, "insert");
 }
 
 /** A target set the source may move under: a set of its own brand, and (S1) not itself. */
@@ -304,7 +305,7 @@ async function resolveTargetSet(
   return { ok: true, targetSet: targetSet!, insertType };
 }
 
-/** For the mutation: the Insert type the client sent, re-checked by role. */
+/** For the mutation: the Insert type the client sent, re-checked by kind. */
 async function resolveTargetType(
   ctx: { db: QueryCtx["db"] },
   source: InsertSource,
@@ -317,7 +318,7 @@ async function resolveTargetType(
   const targetSet = await ctx.db.get(insertType.parentId);
   const refusal = checkTargetSet(source, targetSet);
   if (refusal) return { ok: false, reason: refusal };
-  if (variantTypeRole(insertType) !== "insert") {
+  if (variantTypeKind(insertType) !== "insert") {
     return {
       ok: false,
       reason: insertConversionRefusal.notInsertType(insertType.value, targetSet!.value),
@@ -935,9 +936,10 @@ export const getMakeInsertNamedPreview = query({
 
 /**
  * A new row under `parent`, born the way the set builder's other creation
- * paths make one: flags from `derivedVariantFlags`, features = the parent's
+ * paths make one: features = the parent's
  * copy-down, then the source's operator data, then the row's own level
- * derivation; teams from the source, else inherited; the moving links in
+ * derivation (read through the transient `derivedVariantFlags`, never
+ * stored); teams from the source, else inherited; the moving links in
  * fresh slots.
  */
 async function insertChildRow(
@@ -961,7 +963,6 @@ async function insertChildRow(
   };
   const teamIds = data?.teamIds ? [...data.teamIds] : inheritedTeamIds(parent);
   const metadata = {
-    ...(flags ?? {}),
     ...(data?.cardNumberPrefix !== undefined ? { cardNumberPrefix: data.cardNumberPrefix } : {}),
   };
   const alloc = initialSlots({
@@ -1034,7 +1035,7 @@ type PathStep = {
  * NEO-306 — "Make insert of…".
  *
  * The source (S1 or S2) moves under `targetInsertTypeId`, a variant type
- * whose NB role is "insert", onto the `landing`. Every SportLots link on the
+ * titled "Insert" / "Inserts", onto the `landing`. Every SportLots link on the
  * source moves — id and label — into slots allocated on the destination; the
  * cards follow their own slot; guest cross-listings follow the row; the
  * emptied source rows are deleted child-first through the trash icon's own

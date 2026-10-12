@@ -4,12 +4,21 @@
 // "All-America Game Autos Red Ink" as the parallel "Red Ink"; a later sync
 // never re-creates it, and its SportLots link is still on the moved row.
 //
+// NEO-334, claim 10 (R3: no other spec proves the seventh column's gating):
+// only an INSERT has sub-variants. A parallel of Base (Blue, under the
+// Parallel-titled type) opens no Sub-Variants column; an insert (All-America
+// Game Autos, under the Insert-titled type) does. The spec already stands on
+// both sides of the line, so the claim costs two reads, not a second drill.
+// The negative half runs in both modes; the positive half rides the live-only
+// step at the end.
+//
 // Sole writer of Bowman > Parallel's rows; fresh-only (the global seed's
 // review fixture is consumed by the moves). Paused SportLots has its own
 // branches, both ending in hard asserts.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
   columnOption,
+  columnSearch,
   drillToColdManufacturer,
   drillToSet,
   setBuilderReady,
@@ -71,6 +80,16 @@ test(
     }
 
     await pickParallel(page, COLOUR);
+    // CLAIM 10, NEGATIVE HALF (NEO-334, both modes): Blue is a parallel of the
+    // Base set, so nothing nests under it. POSITIVE FIRST (R2): the pick landed
+    // and the Parallels column collapsed to its card. That collapse also removes
+    // the column's OWN search box, so after this gate the only box that could
+    // carry that name is a seventh column's, which would mount in the same
+    // render. `.*` after the name admits a twin suffix ` (#<id>)`.
+    await expect(page.getByRole("button", { name: new RegExp(`^Parallels: ${COLOUR}.* — change$`) })).toBeVisible();
+    await expect(columnSearch(page, "Parallels")).toBeHidden();
+    await expect(page.getByRole("button", { name: "Sync Sub-Variants" })).toBeHidden();
+    await expect(page.getByRole("button", { name: "Add custom Sub-Variants" })).toBeHidden();
     await expect(page.getByText(new RegExp(`Attributes for ${COLOUR}`))).toBeVisible();
     await expectAccessible(page, { label: "Blue parallel with its attributes" });
 
@@ -169,6 +188,15 @@ test(
       await columnOption(page, "Inserts", INSERT_ROW).click();
       await expect(page.getByRole("heading", { name: "Parallels", exact: true })).toBeVisible();
       await columnOption(page, "Parallels", NEW_PARALLEL).click();
+
+      // CLAIM 10, POSITIVE HALF (NEO-334, live only: paused, no moved row exists
+      // to stand on): an insert has a sub-variants column. The pick collapsed
+      // the Parallels column to its card (the gate: the click took, R2), and the
+      // seventh column's own "Sync Sub-Variants" is on screen.
+      await expect(
+        page.getByRole("button", { name: new RegExp(`^Parallels: ${NEW_PARALLEL}.* — change$`) }),
+      ).toBeVisible();
+      await expect(page.getByRole("button", { name: "Sync Sub-Variants" })).toBeVisible();
 
       await expect(page.getByText("Multi-source sets")).toBeVisible();
       const chip = page.getByRole("button", { name: new RegExp(`^Remove .*${NEW_PARALLEL}$`) });
