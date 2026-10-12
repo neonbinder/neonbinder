@@ -1218,7 +1218,7 @@ export default function LeagueManagement() {
                operator is being handed to the new league's panel and moving
                them off it would be a worse bug than the one this fixes. */
             <p
-              className={`pointer-events-none sticky top-20 z-10 mb-3 rounded-md border border-slate-800 bg-background px-3 py-2 text-sm ${
+              className={`pointer-events-none sticky top-0 sm:top-20 z-10 mb-3 rounded-md border border-slate-800 bg-background px-3 py-2 text-sm ${
                 status.isError ? "text-neon-pink" : "text-slate-300"
               }`}
               role={status.isError ? "alert" : "status"}

@@ -30,9 +30,15 @@
  * before an action, which uses the same primitive) lands the target
  * BELOW the sticky header instead of underneath it. Without this,
  * scrolled-into-view buttons end up occluded by the header and any
- * coordinate-based click hits the header instead of the button. */
-html {
-  scroll-padding-top: 80px;
+ * coordinate-based click hits the header instead of the button.
+ *
+ * From `sm` (40rem) up only: below it the header is not sticky (NEO-341,
+ * see binder-header.tsx), so there is nothing to clear. Code that reads
+ * this value (PlayerManagement's headingInView) follows it automatically. */
+@media (min-width: 40rem) {
+  html {
+    scroll-padding-top: 80px;
+  }
 }
 
 body {

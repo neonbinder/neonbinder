@@ -102,3 +102,4 @@
 - [Print paths and Radix root scheme](reference_print_paths_and_radix_root_scheme.md) — Print buttons use isolated docs (globals.css never prints); print override needs html:root to beat Radix
 - [Neon contrast ink and axe text-shadow](reference_neon_contrast_ink_and_axe_text_shadow.md) — black ink on neon fills; text-neon-purple-text for purple text; axe counts animate-pulse fades and blurred glow halos
 - [axe combobox popup + listbox children](reference_axe_combobox_popup_and_listbox_children.md) — scrollable-region exempts a listbox only if combobox aria-controls names IT; listbox owns only options; empty = review
+- [Axe target-size and animation false reds](reference_axe_target_size_and_animation_false_reds.md) — "partially obscured" = a focusable widget (sticky header buttons) overlaps; Clerk dialog contrast reds can be its fade-in
