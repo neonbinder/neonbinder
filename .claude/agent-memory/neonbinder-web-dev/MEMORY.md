@@ -106,3 +106,4 @@
 - [Abs child escapes an unpositioned scroller](reference_abs_child_escapes_unpositioned_scroller.md) — sr-only in an overflow-x row widens the doc; isMobile zooms out → "intercepts pointer events"; make the row relative
 - [Review walk holds for open controls](reference_review_walk_holds_for_open_controls.md) — pinnedRowHasEdits gates only teams-first; open popovers/forms report onOpenChange (row-id keyed) into rowInteractionOpen
 - [Gate on the subscription, not the action promise](reference_gate_on_the_subscription_not_the_action_promise.md) — action promise beats its runMutation writes; data-as-marker + latch the flag inside ABSORB (NEO-341)
+- [Bulk walk gap strands late-staged steps](reference_bulk_walk_gap_strands_late_staged_steps.md) — lookup landing between listBulkCandidates and decideRowsByIds stages an unseen step; sweep by_source_* in the write

@@ -767,7 +767,16 @@ export default function PlayerPicker({
                         <SportTagById sportId={m.sportId} className="ml-2" />
                       )}
                       {m.stints && m.stints.length > 0 && (
-                        <span className="mt-0.5 block truncate text-[11px] text-gray-600 dark:text-gray-400">
+                        <span
+                          className={`mt-0.5 block truncate text-[11px] ${
+                            // NEO-341 (axe color-contrast): the years read
+                            // 3.8:1 in gray-400 on the green-tinted ArrowDown
+                            // row, so that row's small print is gray-300.
+                            idx === highlightIdx
+                              ? "text-gray-700 dark:text-gray-300"
+                              : "text-gray-600 dark:text-gray-400"
+                          }`}
+                        >
                           {m.stints.slice(0, RESULT_STINT_LIMIT).map((st, i) => {
                             const color = liveryColors(st.primaryColor);
                             // Each theme reads its own custom property, so a

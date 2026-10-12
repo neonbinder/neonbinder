@@ -2509,6 +2509,65 @@ describe("EntityReviewWizard — bulk 'Skip remaining names'", () => {
         .disabled,
     ).toBe(false);
   });
+
+  /*
+   * NEO-341 — CI: "Skip remaining names (11)" was pressed with ten lookups
+   * still out. One landed mid-walk and staged "New Team: Kia Tigers" for a
+   * player just skipped; the walk now skips such a step with its player
+   * (`skipStagedStepsOf`), and the skipped rows' lookups never settle
+   * (`applyLookupResult` drops an answer for a decided row).
+   */
+  it("reaches Confirm & Save after a skip-all whose late lookup staged a team, and stops saying names are being looked up", async () => {
+    const players = Array.from({ length: 11 }, (_, i) =>
+      makeRow({ name: `Skipped ${i}`, status: i === 0 ? "ready" : "pending" }),
+    );
+    currentRows = players;
+    const { rerender } = renderWizard();
+
+    fireEvent.click(screen.getByRole("button", { name: "Skip remaining names (11)" }));
+    await waitFor(() => expect(mockRecordAllRemainingAsSkip).toHaveBeenCalled());
+
+    // What getBatch returns once the walk has landed: every player skipped —
+    // ten still `pending`, for good — and the late Kia Tigers step skipped
+    // with the player it was staged for.
+    const skip = { action: "skip" as const };
+    currentRows = [
+      makeCareerTeamRow(players[0]._id, "Kia Tigers", { decision: skip }),
+      ...players.map((p) => ({ ...p, decision: skip })),
+    ];
+    rerenderWizard(rerender);
+
+    expect(
+      await screen.findByRole("button", { name: /Confirm & Save/ }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: /New Team: Kia Tigers/ })).toBeNull();
+    expect(progressText()).toContain("12 of 12 reviewed");
+    expect(progressText()).not.toContain("still being looked up");
+  });
+
+  it("still presents a staged team that a player who is NOT skipped needs", () => {
+    const skipped = makeRow({
+      name: "Patrick Wisdom",
+      status: "pending",
+      decision: { action: "skip" },
+    });
+    currentRows = [
+      makeCareerTeamRow(skipped._id, "Kia Tigers"),
+      skipped,
+      makeRow({
+        name: "Mel Rojas Jr.",
+        status: "ready",
+        enrichment: { careerTeams: [{ name: "Kia Tigers", fromYear: 2025 }] },
+      }),
+    ];
+    renderWizard();
+
+    expect(screen.getByRole("heading", { name: /New Team: Kia Tigers/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Confirm & Save/ })).toBeNull();
+    // The skipped row's lookup is not something the operator waits on.
+    expect(progressText()).toContain("1 of 3 reviewed");
+    expect(progressText()).not.toContain("still being looked up");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -829,12 +829,14 @@ export default function EntityReviewWizard({
 
   const total = rows?.length ?? 0;
   const decided = useMemo(() => rows?.filter((r) => r.decision).length ?? 0, [rows]);
-  const stillLookingUp = useMemo(
-    () => rows?.filter((r) => r.status === "pending").length ?? 0,
-    [rows],
-  );
   /** What the OPERATOR is waiting on — every kind of row. Drives the status
-   *  line, which is why it must not be narrowed to players. */
+   *  line, which is why it must not be narrowed to players.
+   *
+   *  NEO-341: UNDECIDED rows only, in the header's "N still being looked up"
+   *  too. A row "Skip remaining names" decided mid-lookup stays `pending` for
+   *  good — `applyLookupResult` drops an answer for a decided row — so
+   *  counting it told an operator on the summary that ten names were still
+   *  being looked up when nothing was left to wait for. */
   const pendingUndecided = useMemo(
     () => countPendingUndecided(rows ?? []),
     [rows],
@@ -3345,7 +3347,7 @@ export default function EntityReviewWizard({
             </h2>
             <p className="text-xs text-gray-400 mt-0.5" role="status" aria-live="polite">
               {decided} of {total} reviewed
-              {stillLookingUp > 0 ? ` · ${stillLookingUp} still being looked up` : ""}
+              {pendingUndecided > 0 ? ` · ${pendingUndecided} still being looked up` : ""}
             </p>
           </div>
 
@@ -4599,7 +4601,7 @@ export default function EntityReviewWizard({
               </div>
             ) : (
               <p className="text-sm text-gray-400 italic">
-                Looking up {stillLookingUp} more {stillLookingUp === 1 ? "name" : "names"}…
+                Looking up {pendingUndecided} more {pendingUndecided === 1 ? "name" : "names"}…
               </p>
             )}
 

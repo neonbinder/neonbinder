@@ -11,6 +11,7 @@ Contrast rules for the neon palette that the axe gate (WCAG 2.2 AA, NEO-341) enf
 - **Purple text uses `text-neon-purple-text` (#B56BFF)**. Plain `neon-purple` (#A44AFF) is for borders, rings, fills and glows: as text it is 4.2:1 on gray-900 and 3.5:1 on gray-800.
 - **`animate-pulse` on text fails contrast**: axe samples mid-fade (it caught neon pink at about 78% opacity, #c62478). Use `.animate-neon-glow` (globals.css) instead, which pulses a text-shadow and leaves the letters at full colour.
 - **axe blends a blurred text-shadow into the background.** Its alpha is `0.185 / (blur/fontSize + 0.4)`, and the halos stack. Two halos (6px and 14px) on 18px pink text dropped it to 4.4:1. One 12px halo stays above 4.5:1. Re-check the maths before making a glow brighter.
+- **Small print on a green-highlighted option row** (`bg-[#00D558]/20` over gray-800 = #184b3f) needs gray-300: gray-400 drops to 3.8:1 there (5.6:1 unhighlighted). The axe red is intermittent because it depends on which row is highlighted (NEO-341 TeamPicker era/league, PlayerPicker stint line).
 - Hover states count too. `hover:text-neon-purple/80` fails, so purple links go `hover:text-white`.
 
 **How to apply:** any new neon-on-dark text or neon-filled control. Related: [[reference-slate-border-contrast-on-slate-900]].
